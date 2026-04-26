@@ -350,7 +350,7 @@ p {
 }
 
 .dm-status.online {
-  background: var(--accent);
+  background: var(--success);
   opacity: 1;
 }
 
@@ -400,13 +400,13 @@ p {
 }
 
 .status-dot.online {
-  background: var(--accent);
+  background: var(--success);
 }
 
 .pulse {
   width: 10px;
   height: 10px;
-  background: var(--accent);
+  background: var(--success);
   border: 2px solid var(--border);
 }
 
@@ -1663,7 +1663,7 @@ code {
 }
 
 .agent-status.online::before {
-  background: var(--accent);
+  background: var(--success);
 }
 
 .agent-detail-section {
@@ -1795,7 +1795,7 @@ code {
 }
 
 .member-status.online {
-  color: var(--accent);
+  color: var(--success);
 }
 
 .member-remove-btn {
