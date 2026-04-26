@@ -5,12 +5,26 @@ let selectedSpaceType = 'channel';
 let selectedSpaceId = 'chan_all';
 let activeView = 'space';
 let activeTab = 'chat';
+let railTab = 'spaces'; // 'spaces' or 'members'
 let threadMessageId = null;
+let selectedAgentId = null; // selected agent for detail panel
 let modal = null;
 let searchQuery = '';
 let taskFilter = 'all';
 let stagedAttachments = [];
 let stagedAttachmentIds = [];
+let installedRuntimes = [];
+let selectedRuntimeId = null;
+
+// Agent modal form state
+let agentFormState = {
+  computerId: '',
+  name: '',
+  description: '',
+  model: '',
+  reasoningEffort: '',
+  envVars: [], // [{key: '', value: ''}]
+};
 
 const taskColumns = [
   ['todo', 'Todo'],
@@ -183,50 +197,118 @@ function renderRail() {
 
   return `
     <aside class="rail collab-rail">
-      <div class="brand-block">
-        <div class="brand-mark">MC</div>
-        <div>
-          <h1>Magclaw</h1>
-          <p>LOCAL TEAM RUNTIME</p>
-        </div>
+      <div class="view-switcher">
+        <button class="view-tab${railTab === 'spaces' ? ' active' : ''}" type="button" data-action="set-rail-tab" data-rail-tab="spaces" title="Channels & DMs">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </button>
+        <button class="view-tab${railTab === 'members' ? ' active' : ''}" type="button" data-action="set-rail-tab" data-rail-tab="members" title="Members">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </button>
       </div>
 
-      <div class="quick-stack">
-        ${renderQuick('search', 'Search', searchQuery ? '*' : '')}
-        ${renderQuick('threads', 'Threads', unreadThreads)}
-        ${renderQuick('tasks', 'Tasks', openTasks)}
-        ${renderQuick('saved', 'Saved', saved)}
-        ${renderQuick('missions', 'Missions', appState.missions?.length || 0)}
-        ${renderQuick('cloud', 'Cloud', appState.connection?.mode || 'local')}
+      ${railTab === 'spaces' ? `
+      <div class="nav-list">
+        ${renderNavItem('search', 'Search', 'search', searchQuery ? '⌘K' : '⌘K')}
+        ${renderNavItem('threads', 'Threads', 'message', unreadThreads || '')}
+        ${renderNavItem('tasks', 'Tasks', 'file', openTasks || '')}
+        ${renderNavItem('saved', 'Saved', 'bookmark', saved || '')}
       </div>
 
       <div class="rail-section">
         <div class="rail-title">
-          <span>Channels</span>
+          <span>Channels <em>${channels.length}</em></span>
           <button type="button" data-action="open-modal" data-modal="channel">+</button>
         </div>
-        ${channels.map((channel) => renderSpaceButton('channel', channel.id, `#${channel.name}`, channel.archived ? 'archived' : '')).join('')}
+        ${channels.map((channel) => renderChannelItem(channel)).join('')}
       </div>
 
       <div class="rail-section">
         <div class="rail-title">
-          <span>DMs</span>
+          <span>DMs <em>${dms.length}</em></span>
           <button type="button" data-action="open-modal" data-modal="dm">+</button>
         </div>
         ${dms.map((dm) => {
           const other = dm.participantIds.find((id) => id !== 'hum_local');
-          return renderSpaceButton('dm', dm.id, `@${displayName(other)}`, byId(appState.agents, other)?.status || byId(appState.humans, other)?.status || '');
+          const agent = byId(appState.agents, other);
+          const human = byId(appState.humans, other);
+          const status = agent?.status || human?.status || '';
+          return renderDmItem(dm.id, displayName(other), status, agent?.avatar || human?.avatar);
         }).join('')}
       </div>
+      ` : `
+      <div class="rail-section">
+        <div class="rail-title">
+          <span>Agents <em>${(appState.agents || []).length}</em></span>
+          <button type="button" data-action="open-modal" data-modal="agent">+</button>
+        </div>
+        ${(appState.agents || []).map((agent) => renderAgentListItem(agent)).join('')}
+      </div>
+
+      <div class="rail-section">
+        <div class="rail-title">
+          <span>Humans <em>${(appState.humans || []).length}</em></span>
+          <button type="button" data-action="open-modal" data-modal="human">+</button>
+        </div>
+        ${(appState.humans || []).map((human) => renderHumanListItem(human)).join('')}
+      </div>
+
+      <div class="rail-section">
+        <div class="rail-title">
+          <span>Computers <em>${(appState.computers || []).length}</em></span>
+          <button type="button" data-action="open-modal" data-modal="computer">+</button>
+        </div>
+        ${(appState.computers || []).map((computer) => renderComputerListItem(computer)).join('')}
+      </div>
+      `}
 
       <div class="runtime-chip">
-        <span class="pulse"></span>
+        <span class="status-dot ${appState.connection?.mode === 'cloud' ? 'online' : ''}"></span>
         <div>
           <strong>${escapeHtml(appState.runtime?.host || 'local')}</strong>
-          <small>${escapeHtml(appState.connection?.mode || 'local')} / ${escapeHtml(appState.connection?.pairingStatus || 'local')}</small>
+          <small>${escapeHtml(appState.connection?.mode === 'cloud' ? 'Connected' : 'Local')}</small>
         </div>
       </div>
     </aside>
+  `;
+}
+
+function renderNavItem(view, label, icon, badge) {
+  const active = activeView === view ? ' active' : '';
+  const icons = {
+    search: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>',
+    message: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/></svg>',
+    file: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14,2 14,8 20,8"/></svg>',
+    bookmark: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>',
+  };
+  return `
+    <button class="nav-item${active}" type="button" data-action="set-view" data-view="${view}">
+      ${icons[icon] || ''}
+      <span>${escapeHtml(label)}</span>
+      ${badge ? `<em>${escapeHtml(badge)}</em>` : ''}
+    </button>
+  `;
+}
+
+function renderChannelItem(channel) {
+  const active = activeView === 'space' && selectedSpaceType === 'channel' && selectedSpaceId === channel.id ? ' active' : '';
+  return `
+    <button class="space-btn${active}" type="button" data-action="select-space" data-type="channel" data-id="${channel.id}">
+      <span class="channel-icon">#</span>
+      <span class="channel-name">${escapeHtml(channel.name)}</span>
+    </button>
+  `;
+}
+
+function renderDmItem(id, name, status, avatar) {
+  const active = activeView === 'space' && selectedSpaceType === 'dm' && selectedSpaceId === id ? ' active' : '';
+  const statusClass = status === 'online' || status === 'idle' ? 'online' : '';
+  const initials = name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
+  return `
+    <button class="space-btn dm-btn${active}" type="button" data-action="select-space" data-type="dm" data-id="${id}">
+      <span class="dm-avatar">${avatar ? `<img src="${avatar}" alt="">` : initials}</span>
+      <span class="dm-name">${escapeHtml(name)}</span>
+      <span class="dm-status ${statusClass}"></span>
+    </button>
   `;
 }
 
@@ -272,13 +354,25 @@ function renderHeader(title, subtitle, actions = '') {
   `;
 }
 
+function getChannelMembers(channelId) {
+  const channel = byId(appState?.channels, channelId);
+  if (!channel) return { agents: [], humans: [] };
+  const memberIds = channel.memberIds || [];
+  const agents = (appState.agents || []).filter((a) => memberIds.includes(a.id));
+  const humans = (appState.humans || []).filter((h) => memberIds.includes(h.id));
+  return { agents, humans };
+}
+
 function renderSpace() {
   const space = currentSpace();
   if (!space) return renderHeader('No conversation', 'Local', '');
   const title = spaceName(selectedSpaceType, selectedSpaceId);
+  const members = selectedSpaceType === 'channel' ? getChannelMembers(selectedSpaceId) : null;
+  const memberCount = members ? members.agents.length + members.humans.length : 0;
   const actions = `
+    ${selectedSpaceType === 'channel' ? `<button class="secondary-btn" type="button" data-action="open-modal" data-modal="channel-members">MEMBERS <strong>${memberCount}</strong></button>` : ''}
     <button class="secondary-btn" type="button" data-action="open-modal" data-modal="task">New Task</button>
-    ${selectedSpaceType === 'channel' ? '<button class="secondary-btn" type="button" data-action="open-modal" data-modal="edit-channel">Edit Channel</button>' : ''}
+    ${selectedSpaceType === 'channel' ? '<button class="secondary-btn" type="button" data-action="open-modal" data-modal="edit-channel">Edit</button>' : ''}
     <button class="danger-btn" type="button" data-action="stop-all">Stop Agents</button>
   `;
 
@@ -549,38 +643,96 @@ function renderCloud() {
 function renderInspector() {
   const thread = threadMessageId ? byId(appState.messages, threadMessageId) : null;
   if (thread) return renderThreadDrawer(thread);
+
+  // If in members tab with agent selected, show agent detail
+  if (railTab === 'members' && selectedAgentId) {
+    const agent = byId(appState.agents, selectedAgentId);
+    if (agent) return renderAgentDetail(agent);
+  }
+
+  // Default empty state
   return `
     <section class="pixel-panel inspector-panel">
       <div class="panel-title">
-        <span>Agents</span>
-        <button type="button" data-action="open-modal" data-modal="agent">+</button>
+        <span>Inspector</span>
       </div>
-      ${(appState.agents || []).map(renderAgent).join('')}
+      <div class="empty-box">
+        <p>Select an agent to view details</p>
+      </div>
     </section>
-    <section class="pixel-panel inspector-panel">
+  `;
+}
+
+function renderAgentDetail(agent) {
+  const computer = byId(appState.computers, agent.computerId);
+  const envVars = agent.envVars || [];
+
+  return `
+    <section class="pixel-panel inspector-panel agent-detail">
       <div class="panel-title">
-        <span>Humans</span>
-        <button type="button" data-action="open-modal" data-modal="human">+</button>
+        <span>Agent Profile</span>
+        <button type="button" data-action="close-agent-detail">×</button>
       </div>
-      ${(appState.humans || []).map((human) => `
-        <div class="member-row">
-          <span class="avatar small-avatar">${escapeHtml(displayAvatar(human.id, 'human'))}</span>
-          <div><strong>${escapeHtml(human.name)}</strong><small>${escapeHtml(human.status)} / ${escapeHtml(human.role)}</small></div>
+
+      <div class="agent-profile-header">
+        <span class="avatar">${escapeHtml(displayAvatar(agent.id, 'agent'))}</span>
+        <div class="agent-profile-info">
+          <strong>${escapeHtml(agent.name)}</strong>
+          <span class="agent-status ${agent.status === 'idle' || agent.status === 'online' ? 'online' : ''}">${escapeHtml(agent.status)}</span>
         </div>
-      `).join('')}
-    </section>
-    <section class="pixel-panel inspector-panel">
-      <div class="panel-title">
-        <span>Computers</span>
-        <button type="button" data-action="open-modal" data-modal="computer">+</button>
       </div>
-      ${(appState.computers || []).map((computer) => `
-        <div class="machine-card">
-          <strong>${escapeHtml(computer.name)}</strong>
-          <span>${escapeHtml(computer.status)} / ${escapeHtml(computer.os)}</span>
-          <small>daemon ${escapeHtml(computer.daemonVersion)}</small>
+
+      <div class="agent-detail-section">
+        <div class="detail-label">Description</div>
+        <p class="detail-value">${escapeHtml(agent.description || 'No description')}</p>
+      </div>
+
+      <div class="agent-detail-section">
+        <div class="detail-label">Runtime</div>
+        <div class="detail-value">${escapeHtml(agent.runtime || '--')}</div>
+      </div>
+
+      <div class="agent-detail-section">
+        <div class="detail-label">Model</div>
+        <div class="detail-value">${escapeHtml(agent.model || '--')}</div>
+      </div>
+
+      ${agent.reasoningEffort ? `
+      <div class="agent-detail-section">
+        <div class="detail-label">Reasoning Effort</div>
+        <div class="detail-value">${escapeHtml(agent.reasoningEffort)}</div>
+      </div>
+      ` : ''}
+
+      <div class="agent-detail-section">
+        <div class="detail-label">Computer</div>
+        <div class="detail-value">${escapeHtml(computer?.name || agent.computerId || '--')}</div>
+      </div>
+
+      <div class="agent-detail-section">
+        <div class="detail-label">Workspace</div>
+        <div class="detail-value">${escapeHtml(agent.workspace || '--')}</div>
+      </div>
+
+      ${envVars.length ? `
+      <div class="agent-detail-section">
+        <div class="detail-label">Environment Variables</div>
+        <div class="env-vars-display">
+          ${envVars.map((item) => `
+            <div class="env-var-item">
+              <span class="env-key-display">${escapeHtml(item.key)}</span>
+              <span class="env-eq">=</span>
+              <span class="env-value-display">${escapeHtml(item.value)}</span>
+            </div>
+          `).join('')}
         </div>
-      `).join('')}
+      </div>
+      ` : ''}
+
+      <div class="agent-detail-actions">
+        <button class="secondary-btn" type="button" data-action="open-dm-with-agent" data-id="${agent.id}">Message</button>
+        <button class="danger-btn" type="button" data-action="delete-agent" data-id="${agent.id}">Delete</button>
+      </div>
     </section>
   `;
 }
@@ -594,6 +746,40 @@ function renderAgent(agent) {
       </div>
       <p>${escapeHtml(agent.description || 'No description')}</p>
       <small>${escapeHtml(agent.workspace || '')}</small>
+    </div>
+  `;
+}
+
+function renderAgentListItem(agent) {
+  const active = selectedAgentId === agent.id ? ' active' : '';
+  const statusClass = agent.status === 'online' || agent.status === 'idle' ? 'online' : '';
+  return `
+    <button class="space-btn member-btn${active}" type="button" data-action="select-agent" data-id="${agent.id}">
+      <span class="dm-avatar">${escapeHtml(displayAvatar(agent.id, 'agent'))}</span>
+      <span class="dm-name">${escapeHtml(agent.name)}</span>
+      <span class="dm-status ${statusClass}"></span>
+    </button>
+  `;
+}
+
+function renderHumanListItem(human) {
+  const statusClass = human.status === 'online' || human.status === 'idle' ? 'online' : '';
+  return `
+    <div class="space-btn member-btn">
+      <span class="dm-avatar">${escapeHtml(displayAvatar(human.id, 'human'))}</span>
+      <span class="dm-name">${escapeHtml(human.name)}</span>
+      <span class="dm-status ${statusClass}"></span>
+    </div>
+  `;
+}
+
+function renderComputerListItem(computer) {
+  const statusClass = computer.status === 'connected' ? 'online' : '';
+  return `
+    <div class="space-btn member-btn">
+      <span class="dm-avatar">💻</span>
+      <span class="dm-name">${escapeHtml(computer.name)}</span>
+      <span class="dm-status ${statusClass}"></span>
     </div>
   `;
 }
@@ -658,6 +844,8 @@ function renderModal() {
   const map = {
     channel: renderChannelModal,
     'edit-channel': renderEditChannelModal,
+    'channel-members': renderChannelMembersModal,
+    'add-channel-member': renderAddChannelMemberModal,
     dm: renderDmModal,
     task: renderTaskModal,
     agent: renderAgentModal,
@@ -667,7 +855,7 @@ function renderModal() {
   const content = map[modal]?.() || '';
   return `
     <div class="modal-backdrop" data-action="close-modal">
-      <div class="modal-card pixel-panel" onclick="event.stopPropagation()">
+      <div class="modal-card pixel-panel" data-action="none">
         ${content}
       </div>
     </div>
@@ -679,11 +867,25 @@ function modalHeader(title, subtitle) {
 }
 
 function renderChannelModal() {
+  const agents = appState.agents || [];
   return `
     ${modalHeader('Create Channel', 'Local collaboration')}
     <form id="channel-form" class="modal-form">
       <label><span>Name</span><input name="name" placeholder="frontend-war-room" required /></label>
       <label><span>Description</span><textarea name="description" rows="3"></textarea></label>
+      <div class="form-field">
+        <span>Add Agents</span>
+        <div class="agent-checkboxes">
+          ${agents.map((agent) => `
+            <label class="checkbox-item">
+              <input type="checkbox" name="agentIds" value="${agent.id}" />
+              <span class="dm-avatar">${escapeHtml(displayAvatar(agent.id, 'agent'))}</span>
+              <span>${escapeHtml(agent.name)}</span>
+            </label>
+          `).join('')}
+          ${!agents.length ? '<div class="empty-box small">No agents available</div>' : ''}
+        </div>
+      </div>
       <button class="primary-btn" type="submit">Create</button>
     </form>
   `;
@@ -697,6 +899,79 @@ function renderEditChannelModal() {
       <label><span>Name</span><input name="name" value="${escapeHtml(channel?.name || '')}" required /></label>
       <label><span>Description</span><textarea name="description" rows="3">${escapeHtml(channel?.description || '')}</textarea></label>
       <button class="primary-btn" type="submit">Save</button>
+    </form>
+  `;
+}
+
+function renderChannelMembersModal() {
+  const channel = selectedSpaceType === 'channel' ? currentSpace() : null;
+  const members = getChannelMembers(selectedSpaceId);
+  const isAllChannel = channel?.id === 'chan_all';
+
+  return `
+    ${modalHeader('Channel Members', channel ? `#${channel.name}` : 'No channel')}
+    <div class="members-modal-content">
+      <div class="members-section">
+        <div class="members-section-title">Agents <em>${members.agents.length}</em></div>
+        <div class="members-list">
+          ${members.agents.length ? members.agents.map((agent) => `
+            <div class="member-list-item">
+              <span class="dm-avatar">${escapeHtml(displayAvatar(agent.id, 'agent'))}</span>
+              <span class="member-name">${escapeHtml(agent.name)}</span>
+              <span class="member-status ${agent.status === 'online' || agent.status === 'idle' ? 'online' : ''}">${escapeHtml(agent.status || 'offline')}</span>
+              ${!isAllChannel ? `<button class="member-remove-btn" type="button" data-action="remove-channel-member" data-member-id="${agent.id}">×</button>` : ''}
+            </div>
+          `).join('') : '<div class="empty-box small">No agents in this channel</div>'}
+        </div>
+      </div>
+
+      <div class="members-section">
+        <div class="members-section-title">Humans <em>${members.humans.length}</em></div>
+        <div class="members-list">
+          ${members.humans.length ? members.humans.map((human) => `
+            <div class="member-list-item">
+              <span class="dm-avatar">${escapeHtml(displayAvatar(human.id, 'human'))}</span>
+              <span class="member-name">${escapeHtml(human.name)}</span>
+              <span class="member-status ${human.status === 'online' || human.status === 'idle' ? 'online' : ''}">${escapeHtml(human.status || 'offline')}</span>
+              ${!isAllChannel && human.id !== 'hum_local' ? `<button class="member-remove-btn" type="button" data-action="remove-channel-member" data-member-id="${human.id}">×</button>` : ''}
+            </div>
+          `).join('') : '<div class="empty-box small">No humans in this channel</div>'}
+        </div>
+      </div>
+
+      <div class="members-actions">
+        <button class="secondary-btn" type="button" data-action="open-modal" data-modal="add-channel-member">Add Member</button>
+        ${!isAllChannel ? `<button class="danger-btn" type="button" data-action="leave-channel">Leave Channel</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderAddChannelMemberModal() {
+  const channel = selectedSpaceType === 'channel' ? currentSpace() : null;
+  const members = getChannelMembers(selectedSpaceId);
+  const memberIds = [...members.agents.map((a) => a.id), ...members.humans.map((h) => h.id)];
+  const availableAgents = (appState.agents || []).filter((a) => !memberIds.includes(a.id));
+  const availableHumans = (appState.humans || []).filter((h) => !memberIds.includes(h.id) && h.id !== 'hum_local');
+
+  return `
+    ${modalHeader('Add Member', channel ? `#${channel.name}` : 'No channel')}
+    <form id="add-member-form" class="modal-form">
+      <label>
+        <span>Select Member</span>
+        <select name="memberId">
+          <optgroup label="Agents">
+            ${availableAgents.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}
+          </optgroup>
+          <optgroup label="Humans">
+            ${availableHumans.map((h) => `<option value="${h.id}">${escapeHtml(h.name)}</option>`).join('')}
+          </optgroup>
+        </select>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="secondary-btn" data-action="open-modal" data-modal="channel-members">Back</button>
+        <button class="primary-btn" type="submit">Add</button>
+      </div>
     </form>
   `;
 }
@@ -730,16 +1005,93 @@ function renderTaskModal() {
   `;
 }
 
+function renderEnvVarsList() {
+  if (!agentFormState.envVars.length) {
+    return '<div class="env-empty">No environment variables defined</div>';
+  }
+  return agentFormState.envVars.map((item, index) => `
+    <div class="env-var-row" data-index="${index}">
+      <input type="text" class="env-key" placeholder="KEY" value="${escapeHtml(item.key)}" data-env-index="${index}" data-env-field="key" />
+      <span class="env-eq">=</span>
+      <input type="text" class="env-value" placeholder="value" value="${escapeHtml(item.value)}" data-env-index="${index}" data-env-field="value" />
+      <button type="button" class="env-remove-btn" data-action="remove-env-var" data-index="${index}">×</button>
+    </div>
+  `).join('');
+}
+
 function renderAgentModal() {
+  const availableRuntimes = installedRuntimes.filter((rt) => rt.installed);
+  const currentRuntime = availableRuntimes.find((rt) => rt.id === selectedRuntimeId) || availableRuntimes[0];
+  const models = currentRuntime?.models || [];
+  const modelNames = currentRuntime?.modelNames || models.map(m => ({ slug: m, name: m }));
+  const defaultModel = agentFormState.model || currentRuntime?.defaultModel || '';
+  const hasReasoningEffort = Boolean(currentRuntime?.reasoningEffort?.length);
+  const reasoningEfforts = currentRuntime?.reasoningEffort || [];
+  const defaultReasoningEffort = agentFormState.reasoningEffort || currentRuntime?.defaultReasoningEffort || 'medium';
+  const defaultComputer = agentFormState.computerId || appState.computers?.[0]?.id || '';
+
   return `
-    ${modalHeader('Create Agent', 'Local runtime profile')}
+    ${modalHeader('CREATE AGENT', 'Local runtime profile')}
     <form id="agent-form" class="modal-form">
-      <label><span>Name</span><input name="name" placeholder="Builder Blue" required /></label>
-      <label><span>Description</span><textarea name="description" rows="3"></textarea></label>
-      <label><span>Runtime</span><select name="runtime"><option>Codex CLI</option><option>Claude Code</option><option>OpenCode</option><option>Goose</option></select></label>
-      <label><span>Model</span><input name="model" placeholder="default" /></label>
-      <label><span>Workspace</span><input name="workspace" value="${escapeHtml(appState.settings?.defaultWorkspace || '')}" /></label>
-      <button class="primary-btn" type="submit">Create Agent</button>
+      <label>
+        <span>COMPUTER <span class="required">*</span></span>
+        <select name="computerId">
+          ${(appState.computers || []).map((c) => `<option value="${c.id}" ${c.id === defaultComputer ? 'selected' : ''}>${escapeHtml(c.name)} (${escapeHtml(c.name)})</option>`).join('')}
+        </select>
+      </label>
+      <label>
+        <span>NAME <span class="required">*</span></span>
+        <input name="name" placeholder="e.g. Alice" value="${escapeHtml(agentFormState.name)}" required />
+      </label>
+      <label>
+        <span>DESCRIPTION <span class="optional">(optional)</span></span>
+        <textarea name="description" rows="3" placeholder="Leave blank for a general-purpose agent, or describe a role...">${escapeHtml(agentFormState.description)}</textarea>
+        <small class="char-count">${agentFormState.description.length}/3000</small>
+      </label>
+      <div class="form-field">
+        <span>RUNTIME</span>
+        <select name="runtime" id="agent-runtime-select">
+          ${installedRuntimes.map((rt) => {
+            const label = rt.installed
+              ? `${rt.name}${rt.version ? ` (${rt.version})` : ''}`
+              : `${rt.name} (not installed)`;
+            return `<option value="${rt.id}" ${!rt.installed ? 'disabled' : ''} ${rt.id === selectedRuntimeId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+          }).join('')}
+        </select>
+      </div>
+      <div class="form-field">
+        <span>MODEL</span>
+        <select name="model" id="agent-model-select">
+          ${modelNames.map((m) => {
+            const slug = typeof m === 'string' ? m : m.slug;
+            const name = typeof m === 'string' ? m : m.name;
+            return `<option value="${slug}" ${slug === defaultModel ? 'selected' : ''}>${escapeHtml(name)}</option>`;
+          }).join('')}
+        </select>
+      </div>
+      ${hasReasoningEffort ? `
+      <div class="form-field">
+        <span>REASONING EFFORT</span>
+        <select name="reasoningEffort" id="agent-reasoning-select">
+          ${reasoningEfforts.map((e) => `<option value="${e}" ${e === defaultReasoningEffort ? 'selected' : ''}>${escapeHtml(e.charAt(0).toUpperCase() + e.slice(1))}</option>`).join('')}
+        </select>
+      </div>
+      ` : ''}
+      <details class="advanced-section">
+        <summary>ADVANCED</summary>
+        <div class="advanced-content">
+          <label>
+            <span>ENVIRONMENT VARIABLES</span>
+            <small>These will be injected into the runtime command environment.</small>
+            <div id="env-vars-list">${renderEnvVarsList()}</div>
+            <button type="button" class="add-var-btn" data-action="add-env-var">+ Add Variable</button>
+          </label>
+        </div>
+      </details>
+      <div class="modal-actions">
+        <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+        <button class="primary-btn" type="submit">Create Agent</button>
+      </div>
     </form>
   `;
 }
@@ -765,6 +1117,43 @@ function renderHumanModal() {
       <button class="primary-btn" type="submit">Invite</button>
     </form>
   `;
+}
+
+async function loadInstalledRuntimes() {
+  try {
+    const response = await api('/api/runtimes');
+    installedRuntimes = response.runtimes || [];
+    const firstInstalled = installedRuntimes.find((rt) => rt.installed);
+    if (firstInstalled && !selectedRuntimeId) {
+      selectedRuntimeId = firstInstalled.id;
+    }
+  } catch (error) {
+    console.error('Failed to load runtimes:', error);
+    installedRuntimes = [];
+  }
+}
+
+function saveAgentFormState() {
+  const form = document.getElementById('agent-form');
+  if (!form) return;
+  const data = new FormData(form);
+  agentFormState.computerId = data.get('computerId') || '';
+  agentFormState.name = data.get('name') || '';
+  agentFormState.description = data.get('description') || '';
+  agentFormState.model = data.get('model') || '';
+  agentFormState.reasoningEffort = data.get('reasoningEffort') || '';
+}
+
+function resetAgentFormState() {
+  agentFormState = {
+    computerId: '',
+    name: '',
+    description: '',
+    model: '',
+    reasoningEffort: '',
+    envVars: [],
+  };
+  selectedRuntimeId = null;
 }
 
 function readFileAsDataUrl(file) {
@@ -818,16 +1207,31 @@ function connectEvents() {
   const source = new EventSource('/api/events');
   source.addEventListener('state', (event) => {
     appState = JSON.parse(event.data);
-    render();
+    // When modal is open, don't re-render to avoid interrupting form input
+    if (!modal) {
+      render();
+    }
   });
   source.addEventListener('run-event', (event) => {
     const incoming = JSON.parse(event.data);
     if (!appState.events.some((item) => item.id === incoming.id)) {
       appState.events.push(incoming);
-      render();
+      // When modal is open, don't re-render
+      if (!modal) {
+        render();
+      }
     }
   });
 }
+
+document.addEventListener('keydown', (event) => {
+  const textarea = event.target.closest('#message-form textarea[name="body"]');
+  if (textarea && event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    const form = document.getElementById('message-form');
+    if (form) form.requestSubmit();
+  }
+});
 
 document.addEventListener('input', (event) => {
   if (event.target.id === 'search-input') {
@@ -836,10 +1240,46 @@ document.addEventListener('input', (event) => {
     const input = document.querySelector('#search-input');
     input?.focus();
     input?.setSelectionRange(searchQuery.length, searchQuery.length);
+    return;
+  }
+  // Save agent form state
+  const form = event.target.closest('#agent-form');
+  if (form) {
+    const name = event.target.name;
+    if (name === 'name') agentFormState.name = event.target.value;
+    if (name === 'description') agentFormState.description = event.target.value;
+  }
+  // Environment variable input
+  const envIndex = event.target.dataset.envIndex;
+  const envField = event.target.dataset.envField;
+  if (envIndex !== undefined && envField) {
+    const idx = parseInt(envIndex, 10);
+    if (!Number.isNaN(idx) && agentFormState.envVars[idx]) {
+      agentFormState.envVars[idx][envField] = event.target.value;
+    }
   }
 });
 
 document.addEventListener('change', async (event) => {
+  // Save agent form select state
+  const form = event.target.closest('#agent-form');
+  if (form) {
+    const name = event.target.name;
+    if (name === 'computerId') agentFormState.computerId = event.target.value;
+    if (name === 'model') agentFormState.model = event.target.value;
+    if (name === 'reasoningEffort') agentFormState.reasoningEffort = event.target.value;
+  }
+
+  if (event.target.id === 'agent-runtime-select') {
+    // Save current form state
+    saveAgentFormState();
+    selectedRuntimeId = event.target.value;
+    // Reset model selection (runtime changed)
+    agentFormState.model = '';
+    agentFormState.reasoningEffort = '';
+    render();
+    return;
+  }
   if (event.target.id !== 'chat-attachment-input') return;
   if (!event.target.files?.length) return;
   try {
@@ -853,12 +1293,73 @@ document.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-action]');
   if (!target) return;
   const action = target.dataset.action;
+  if (action === 'none') return;
+
+  // Environment variable actions: don't trigger refreshState
+  if (action === 'add-env-var') {
+    agentFormState.envVars.push({ key: '', value: '' });
+    const listEl = document.getElementById('env-vars-list');
+    if (listEl) listEl.innerHTML = renderEnvVarsList();
+    return;
+  }
+  if (action === 'remove-env-var') {
+    const index = parseInt(target.dataset.index, 10);
+    if (!Number.isNaN(index)) {
+      agentFormState.envVars.splice(index, 1);
+      const listEl = document.getElementById('env-vars-list');
+      if (listEl) listEl.innerHTML = renderEnvVarsList();
+    }
+    return;
+  }
 
   try {
     if (action === 'set-view') {
       activeView = target.dataset.view;
       threadMessageId = null;
       render();
+    }
+    if (action === 'set-rail-tab') {
+      railTab = target.dataset.railTab;
+      if (railTab === 'spaces') {
+        selectedAgentId = null;
+      }
+      render();
+    }
+    if (action === 'select-agent') {
+      selectedAgentId = target.dataset.id;
+      render();
+    }
+    if (action === 'close-agent-detail') {
+      selectedAgentId = null;
+      render();
+    }
+    if (action === 'open-dm-with-agent') {
+      const agentId = target.dataset.id;
+      const existingDm = (appState.dms || []).find((dm) => dm.participantIds.includes(agentId));
+      if (existingDm) {
+        selectedSpaceType = 'dm';
+        selectedSpaceId = existingDm.id;
+        activeView = 'space';
+        railTab = 'spaces';
+        selectedAgentId = null;
+        render();
+      } else {
+        const result = await api('/api/dms', {
+          method: 'POST',
+          body: JSON.stringify({ participantId: agentId }),
+        });
+        selectedSpaceType = 'dm';
+        selectedSpaceId = result.dm.id;
+        activeView = 'space';
+        railTab = 'spaces';
+        selectedAgentId = null;
+      }
+    }
+    if (action === 'delete-agent') {
+      if (!window.confirm('Delete this agent?')) return;
+      await api(`/api/agents/${target.dataset.id}`, { method: 'DELETE' });
+      selectedAgentId = null;
+      toast('Agent deleted');
     }
     if (action === 'select-space') {
       selectedSpaceType = target.dataset.type;
@@ -878,11 +1379,22 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'open-modal') {
       modal = target.dataset.modal;
+      if (modal === 'agent') {
+        await loadInstalledRuntimes();
+      }
       render();
     }
     if (action === 'close-modal') {
-      modal = null;
-      render();
+      const isBackdrop = event.target.classList.contains('modal-backdrop');
+      const isCloseBtn = event.target.closest('.modal-head button[data-action="close-modal"]');
+      const isCancelBtn = event.target.closest('.modal-actions .secondary-btn[data-action="close-modal"]');
+      if (isBackdrop || isCloseBtn || isCancelBtn) {
+        if (modal === 'agent') {
+          resetAgentFormState();
+        }
+        modal = null;
+        render();
+      }
     }
     if (action === 'open-thread') {
       threadMessageId = target.dataset.id;
@@ -958,6 +1470,19 @@ document.addEventListener('click', async (event) => {
       await api('/api/cloud/sync/pull', { method: 'POST', body: '{}' });
       toast('Cloud state pulled');
     }
+    if (action === 'leave-channel') {
+      if (!window.confirm('Leave this channel?')) return;
+      await api(`/api/channels/${selectedSpaceId}/leave`, { method: 'POST', body: '{}' });
+      selectedSpaceType = 'channel';
+      selectedSpaceId = 'chan_all';
+      modal = null;
+      toast('Left channel');
+    }
+    if (action === 'remove-channel-member') {
+      const memberId = target.dataset.memberId;
+      await api(`/api/channels/${selectedSpaceId}/members/${memberId}`, { method: 'DELETE' });
+      toast('Member removed');
+    }
   } catch (error) {
     toast(error.message);
   } finally {
@@ -994,9 +1519,14 @@ document.addEventListener('submit', async (event) => {
       toast('Reply added');
     }
     if (form.id === 'channel-form') {
+      const agentIds = [...form.querySelectorAll('input[name="agentIds"]:checked')].map((el) => el.value);
       const result = await api('/api/channels', {
         method: 'POST',
-        body: JSON.stringify({ name: data.get('name'), description: data.get('description') }),
+        body: JSON.stringify({
+          name: data.get('name'),
+          description: data.get('description'),
+          agentIds: agentIds,
+        }),
       });
       selectedSpaceType = 'channel';
       selectedSpaceId = result.channel.id;
@@ -1009,6 +1539,17 @@ document.addEventListener('submit', async (event) => {
         body: JSON.stringify({ name: data.get('name'), description: data.get('description') }),
       });
       modal = null;
+    }
+    if (form.id === 'add-member-form') {
+      const memberId = data.get('memberId');
+      if (memberId) {
+        await api(`/api/channels/${selectedSpaceId}/members`, {
+          method: 'POST',
+          body: JSON.stringify({ memberId }),
+        });
+        toast('Member added');
+      }
+      modal = 'channel-members';
     }
     if (form.id === 'dm-form') {
       const result = await api('/api/dms', {
@@ -1039,16 +1580,22 @@ document.addEventListener('submit', async (event) => {
       activeTab = 'tasks';
     }
     if (form.id === 'agent-form') {
+      const selectedRuntime = installedRuntimes.find((rt) => rt.id === data.get('runtime'));
+      // Filter out empty environment variables
+      const envVars = agentFormState.envVars.filter((item) => item.key.trim());
       await api('/api/agents', {
         method: 'POST',
         body: JSON.stringify({
           name: data.get('name'),
           description: data.get('description'),
-          runtime: data.get('runtime'),
+          runtime: selectedRuntime?.name || data.get('runtime'),
           model: data.get('model'),
-          workspace: data.get('workspace'),
+          computerId: data.get('computerId'),
+          reasoningEffort: data.get('reasoningEffort') || null,
+          envVars: envVars.length ? envVars : null,
         }),
       });
+      selectedRuntimeId = null;
       modal = null;
     }
     if (form.id === 'computer-form') {

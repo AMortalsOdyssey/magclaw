@@ -27,6 +27,7 @@ const MAX_JSON_BYTES = 40 * 1024 * 1024;
 const CLOUD_PROTOCOL_VERSION = 1;
 
 const runningProcesses = new Map();
+const agentProcesses = new Map(); // agentId -> { child, sessionId, status, inbox }
 const sseClients = new Set();
 let cloudPushTimer = null;
 let syncInProgress = false;
@@ -132,6 +133,7 @@ function defaultState() {
         description: 'Default local coordination channel.',
         humanIds: ['hum_local'],
         agentIds: ['agt_codex'],
+        memberIds: ['hum_local', 'agt_codex'],
         archived: false,
         createdAt: seededAt,
         updatedAt: seededAt,
@@ -619,6 +621,127 @@ async function getRuntimeInfo() {
   };
 }
 
+async function getCodexModels(codexPath) {
+  try {
+    const output = await execText(codexPath, ['debug', 'models']);
+    const data = JSON.parse(output);
+    const models = [];
+    let defaultModel = null;
+    let reasoningEfforts = [];
+
+    for (const m of data.models || []) {
+      if (m.visibility === 'list') {
+        models.push({
+          slug: m.slug,
+          name: m.display_name || m.slug,
+        });
+        if (!defaultModel) {
+          defaultModel = m.slug;
+          reasoningEfforts = (m.supported_reasoning_levels || []).map(r => r.effort);
+        }
+      }
+    }
+    return { models, defaultModel, reasoningEfforts };
+  } catch {
+    return {
+      models: [{ slug: 'gpt-5.5', name: 'GPT-5.5' }],
+      defaultModel: 'gpt-5.5',
+      reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    };
+  }
+}
+
+async function detectInstalledRuntimes() {
+  const runtimes = [];
+
+  // Codex CLI
+  try {
+    const codexPath = state.settings.codexPath || 'codex';
+    const version = await execText(codexPath, ['--version']);
+    const { models, defaultModel, reasoningEfforts } = await getCodexModels(codexPath);
+    runtimes.push({
+      id: 'codex',
+      name: 'Codex CLI',
+      path: codexPath,
+      version: version.trim(),
+      installed: true,
+      models: models.map(m => m.slug),
+      modelNames: models,
+      defaultModel,
+      reasoningEffort: reasoningEfforts,
+      defaultReasoningEffort: 'medium',
+    });
+  } catch {
+    runtimes.push({ id: 'codex', name: 'Codex CLI', installed: false });
+  }
+
+  // Claude Code
+  try {
+    const claudeVersion = await execText('claude', ['--version']);
+    runtimes.push({
+      id: 'claude-code',
+      name: 'Claude Code',
+      path: 'claude',
+      version: claudeVersion.trim(),
+      installed: true,
+      models: ['claude-sonnet-4-6', 'claude-opus-4-7', 'claude-haiku-4-5-20251001'],
+      defaultModel: 'claude-sonnet-4-6',
+    });
+  } catch {
+    runtimes.push({ id: 'claude-code', name: 'Claude Code', installed: false });
+  }
+
+  // OpenCode
+  try {
+    const openCodeVersion = await execText('opencode', ['--version']);
+    runtimes.push({
+      id: 'opencode',
+      name: 'OpenCode',
+      path: 'opencode',
+      version: openCodeVersion.trim(),
+      installed: true,
+      models: ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+      defaultModel: 'gpt-4o',
+    });
+  } catch {
+    runtimes.push({ id: 'opencode', name: 'OpenCode', installed: false });
+  }
+
+  // Goose
+  try {
+    const gooseVersion = await execText('goose', ['--version']);
+    runtimes.push({
+      id: 'goose',
+      name: 'Goose',
+      path: 'goose',
+      version: gooseVersion.trim(),
+      installed: true,
+      models: ['gpt-4o', 'claude-3-opus', 'claude-3-sonnet'],
+      defaultModel: 'gpt-4o',
+    });
+  } catch {
+    runtimes.push({ id: 'goose', name: 'Goose', installed: false });
+  }
+
+  // Aider
+  try {
+    const aiderVersion = await execText('aider', ['--version']);
+    runtimes.push({
+      id: 'aider',
+      name: 'Aider',
+      path: 'aider',
+      version: aiderVersion.trim(),
+      installed: true,
+      models: ['gpt-4o', 'claude-3-opus', 'claude-3-sonnet', 'deepseek-coder'],
+      defaultModel: 'gpt-4o',
+    });
+  } catch {
+    runtimes.push({ id: 'aider', name: 'Aider', installed: false });
+  }
+
+  return runtimes;
+}
+
 function execText(command, args) {
   return new Promise((resolve, reject) => {
     execFile(command, args, { timeout: 10_000 }, (error, stdout, stderr) => {
@@ -816,6 +939,291 @@ function startCodexRun(mission, run) {
   child.stdin.end();
 }
 
+// Agent Process Manager - handles agent conversations
+function getAgentRuntime(agent) {
+  const runtime = String(agent.runtime || '').toLowerCase();
+  if (runtime.includes('claude')) return 'claude';
+  if (runtime.includes('codex')) return 'codex';
+  return 'codex'; // default
+}
+
+function createAgentStandingPrompt(agent, spaceType, spaceId) {
+  const spaceName = spaceType === 'dm'
+    ? `DM with ${agent.name}`
+    : `#${findChannel(spaceId)?.name || 'channel'}`;
+
+  return [
+    `You are ${agent.name}, an AI agent running in Magclaw.`,
+    agent.description ? `Your role: ${agent.description}` : '',
+    '',
+    'Context:',
+    `- You are in: ${spaceName}`,
+    `- Your workspace: ${agent.workspace || state.settings.defaultWorkspace || ROOT}`,
+    '',
+    'Guidelines:',
+    '- Respond helpfully and concisely to the user.',
+    '- If asked to perform coding tasks, do them in your workspace.',
+    '- Be conversational but professional.',
+    '',
+    'The user will send you messages. Respond naturally.',
+  ].filter(Boolean).join('\n');
+}
+
+function createAgentTurnPrompt(messages) {
+  return messages.map(m => {
+    const author = m.authorType === 'human' ? 'Human' : m.authorId;
+    return `[${author}]: ${m.body}`;
+  }).join('\n\n');
+}
+
+async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
+  const agentId = agent.id;
+  const runtime = getAgentRuntime(agent);
+  const workspace = path.resolve(agent.workspace || state.settings.defaultWorkspace || ROOT);
+
+  // Check if agent already has a running process
+  if (agentProcesses.has(agentId)) {
+    const proc = agentProcesses.get(agentId);
+    if (proc.status === 'running' || proc.status === 'starting') {
+      // Queue the message for delivery
+      proc.inbox.push(initialMessage);
+      return proc;
+    }
+  }
+
+  // Create agent process entry
+  const sessionId = makeId('sess');
+  const proc = {
+    sessionId,
+    agentId,
+    spaceType,
+    spaceId,
+    status: 'starting',
+    inbox: initialMessage ? [initialMessage] : [],
+    child: null,
+    runtime,
+    startedAt: now(),
+  };
+  agentProcesses.set(agentId, proc);
+
+  // Update agent status
+  agent.status = 'working';
+  await persistState();
+  broadcastState();
+
+  addSystemEvent('agent_starting', `Starting ${agent.name} (${runtime})`, { agentId, sessionId });
+
+  if (runtime === 'claude') {
+    await startClaudeAgent(agent, proc, workspace);
+  } else {
+    await startCodexAgent(agent, proc, workspace);
+  }
+
+  return proc;
+}
+
+async function startClaudeAgent(agent, proc, workspace) {
+  const standingPrompt = createAgentStandingPrompt(agent, proc.spaceType, proc.spaceId);
+  const turnPrompt = createAgentTurnPrompt(proc.inbox);
+  const fullPrompt = `${standingPrompt}\n\n---\n\n${turnPrompt}`;
+
+  // Claude Code headless mode using --print for simple response
+  const args = [
+    '--print',
+    '-p', fullPrompt,
+  ];
+
+  if (agent.model) {
+    args.push('--model', agent.model);
+  }
+
+  proc.status = 'running';
+  addSystemEvent('agent_started', `${agent.name} started with Claude Code`, { agentId: agent.id });
+
+  const child = spawn('claude', args, {
+    cwd: workspace,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      ...(agent.envVars ? Object.fromEntries(agent.envVars.map(e => [e.key, e.value])) : {}),
+    },
+  });
+
+  proc.child = child;
+  let stdout = '';
+  let stderr = '';
+
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  child.on('error', async (error) => {
+    proc.status = 'error';
+    agent.status = 'error';
+    addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
+    await persistState();
+    broadcastState();
+    agentProcesses.delete(agent.id);
+  });
+
+  child.on('close', async (code) => {
+    proc.status = 'idle';
+    agent.status = 'idle';
+
+    // Post the response back to the conversation
+    const responseText = stdout.trim() || stderr.trim() || '(No response)';
+    if (responseText && responseText !== '(No response)') {
+      await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText);
+    }
+
+    addSystemEvent('agent_completed', `${agent.name} finished (code ${code})`, { agentId: agent.id });
+    await persistState();
+    broadcastState();
+    agentProcesses.delete(agent.id);
+  });
+}
+
+async function startCodexAgent(agent, proc, workspace) {
+  const standingPrompt = createAgentStandingPrompt(agent, proc.spaceType, proc.spaceId);
+  const turnPrompt = createAgentTurnPrompt(proc.inbox);
+  const fullPrompt = `${standingPrompt}\n\n---\n\n${turnPrompt}`;
+
+  const outputFile = path.join(RUNS_DIR, `${proc.sessionId}-agent-response.txt`);
+
+  // Codex exec mode for agent conversation
+  const args = [
+    'exec',
+    '--json',
+    '--skip-git-repo-check',
+    '--sandbox', state.settings.sandbox || 'read-only',
+    '-C', workspace,
+    '-o', outputFile,
+  ];
+
+  if (agent.model) {
+    args.push('-m', agent.model);
+  }
+
+  if (agent.reasoningEffort) {
+    args.push('--reasoning-effort', agent.reasoningEffort);
+  }
+
+  args.push('-');
+
+  proc.status = 'running';
+  addSystemEvent('agent_started', `${agent.name} started with Codex`, { agentId: agent.id });
+
+  const child = spawn(state.settings.codexPath || 'codex', args, {
+    cwd: workspace,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      ...(agent.envVars ? Object.fromEntries(agent.envVars.map(e => [e.key, e.value])) : {}),
+    },
+  });
+
+  proc.child = child;
+  let stdoutBuffer = '';
+
+  child.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk.toString();
+    const lines = stdoutBuffer.split(/\r?\n/);
+    stdoutBuffer = lines.pop() || '';
+    for (const line of lines) {
+      if (line.trim()) {
+        try {
+          const event = JSON.parse(line);
+          addSystemEvent('agent_activity', summarizeCodexEvent(event), { agentId: agent.id, raw: event });
+        } catch {
+          // ignore non-JSON lines
+        }
+      }
+    }
+  });
+
+  child.stderr.on('data', (chunk) => {
+    const msg = chunk.toString().trim();
+    if (msg) {
+      addSystemEvent('agent_stderr', msg, { agentId: agent.id });
+    }
+  });
+
+  child.on('error', async (error) => {
+    proc.status = 'error';
+    agent.status = 'error';
+    addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
+    await persistState();
+    broadcastState();
+    agentProcesses.delete(agent.id);
+  });
+
+  child.on('close', async (code) => {
+    proc.status = 'idle';
+    agent.status = 'idle';
+
+    // Read the output file for the response
+    let responseText = '';
+    try {
+      responseText = (await readFile(outputFile, 'utf8')).trim();
+    } catch {
+      responseText = '';
+    }
+
+    if (responseText) {
+      await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText);
+    }
+
+    addSystemEvent('agent_completed', `${agent.name} finished (code ${code})`, { agentId: agent.id });
+    await persistState();
+    broadcastState();
+    agentProcesses.delete(agent.id);
+  });
+
+  // Write the prompt to stdin
+  child.stdin.write(fullPrompt);
+  child.stdin.end();
+}
+
+async function postAgentResponse(agent, spaceType, spaceId, body) {
+  const message = {
+    id: makeId('msg'),
+    spaceType,
+    spaceId,
+    authorType: 'agent',
+    authorId: agent.id,
+    body,
+    attachmentIds: [],
+    replyCount: 0,
+    savedBy: [],
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  state.messages.push(message);
+  addCollabEvent('agent_response', `${agent.name} responded`, { messageId: message.id, agentId: agent.id });
+  await persistState();
+  broadcastState();
+  return message;
+}
+
+async function deliverMessageToAgent(agent, spaceType, spaceId, message) {
+  // Check if agent has a running process
+  const proc = agentProcesses.get(agent.id);
+
+  if (proc && (proc.status === 'running' || proc.status === 'starting')) {
+    // Agent is busy - queue the message
+    proc.inbox.push(message);
+    addSystemEvent('message_queued', `Message queued for busy agent ${agent.name}`, { agentId: agent.id, messageId: message.id });
+    return;
+  }
+
+  // Start the agent process with this message
+  await startAgentProcess(agent, spaceType, spaceId, message);
+}
+
 function createTaskFromMessage(message, title) {
   if (message.taskId) {
     const existing = findTask(message.taskId);
@@ -995,6 +1403,11 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/runtimes') {
+    sendJson(res, 200, { runtimes: await detectInstalledRuntimes() });
+    return true;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/events') {
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
@@ -1072,12 +1485,16 @@ async function handleApi(req, res, url) {
       sendError(res, 409, 'Channel already exists.');
       return true;
     }
+    const humanIds = Array.isArray(body.humanIds) && body.humanIds.length ? body.humanIds.map(String) : ['hum_local'];
+    const agentIds = Array.isArray(body.agentIds) ? body.agentIds.map(String) : [];
+    const memberIds = [...new Set([...humanIds, ...agentIds])];
     const channel = {
       id: makeId('chan'),
       name,
       description: String(body.description || '').trim(),
-      humanIds: Array.isArray(body.humanIds) && body.humanIds.length ? body.humanIds.map(String) : ['hum_local'],
-      agentIds: Array.isArray(body.agentIds) ? body.agentIds.map(String) : ['agt_codex'],
+      humanIds,
+      agentIds,
+      memberIds,
       archived: false,
       createdAt: now(),
       updatedAt: now(),
@@ -1115,9 +1532,86 @@ async function handleApi(req, res, url) {
     if (body.description !== undefined) channel.description = String(body.description || '').trim();
     if (Array.isArray(body.agentIds)) channel.agentIds = body.agentIds.map(String);
     if (Array.isArray(body.humanIds)) channel.humanIds = body.humanIds.map(String);
+    if (Array.isArray(body.memberIds)) channel.memberIds = body.memberIds.map(String);
     if (body.archived !== undefined) channel.archived = Boolean(body.archived);
     channel.updatedAt = now();
     addCollabEvent('channel_updated', `Channel #${channel.name} updated.`, { channelId: channel.id });
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, { channel });
+    return true;
+  }
+
+  // Channel members management
+  const channelMembersMatch = url.pathname.match(/^\/api\/channels\/([^/]+)\/members$/);
+  if (req.method === 'POST' && channelMembersMatch) {
+    const channel = findChannel(channelMembersMatch[1]);
+    if (!channel) {
+      sendError(res, 404, 'Channel not found.');
+      return true;
+    }
+    const body = await readJson(req);
+    const memberId = String(body.memberId || '').trim();
+    if (!memberId) {
+      sendError(res, 400, 'Member ID is required.');
+      return true;
+    }
+    channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds : [];
+    if (!channel.memberIds.includes(memberId)) {
+      channel.memberIds.push(memberId);
+      // Also update legacy fields
+      if (memberId.startsWith('agt_')) {
+        channel.agentIds = Array.isArray(channel.agentIds) ? channel.agentIds : [];
+        if (!channel.agentIds.includes(memberId)) channel.agentIds.push(memberId);
+      } else if (memberId.startsWith('hum_')) {
+        channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds : [];
+        if (!channel.humanIds.includes(memberId)) channel.humanIds.push(memberId);
+      }
+      channel.updatedAt = now();
+      addCollabEvent('channel_member_added', `Member added to #${channel.name}`, { channelId: channel.id, memberId });
+      await persistState();
+      broadcastState();
+    }
+    sendJson(res, 200, { channel });
+    return true;
+  }
+
+  const channelMemberRemoveMatch = url.pathname.match(/^\/api\/channels\/([^/]+)\/members\/([^/]+)$/);
+  if (req.method === 'DELETE' && channelMemberRemoveMatch) {
+    const channel = findChannel(channelMemberRemoveMatch[1]);
+    if (!channel) {
+      sendError(res, 404, 'Channel not found.');
+      return true;
+    }
+    const memberId = channelMemberRemoveMatch[2];
+    channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds.filter(id => id !== memberId) : [];
+    channel.agentIds = Array.isArray(channel.agentIds) ? channel.agentIds.filter(id => id !== memberId) : [];
+    channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds.filter(id => id !== memberId) : [];
+    channel.updatedAt = now();
+    addCollabEvent('channel_member_removed', `Member removed from #${channel.name}`, { channelId: channel.id, memberId });
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, { channel });
+    return true;
+  }
+
+  // Leave channel
+  const channelLeaveMatch = url.pathname.match(/^\/api\/channels\/([^/]+)\/leave$/);
+  if (req.method === 'POST' && channelLeaveMatch) {
+    const channel = findChannel(channelLeaveMatch[1]);
+    if (!channel) {
+      sendError(res, 404, 'Channel not found.');
+      return true;
+    }
+    if (channel.id === 'chan_all') {
+      sendError(res, 400, 'Cannot leave the #all channel.');
+      return true;
+    }
+    const memberId = 'hum_local';
+    channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds.filter(id => id !== memberId) : [];
+    channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds.filter(id => id !== memberId) : [];
+    channel.updatedAt = now();
+    addCollabEvent('channel_left', `Left #${channel.name}`, { channelId: channel.id, memberId });
     await persistState();
     broadcastState();
     sendJson(res, 200, { channel });
@@ -1189,6 +1683,43 @@ async function handleApi(req, res, url) {
     addCollabEvent('message_sent', 'Message sent.', { messageId: message.id, spaceType, spaceId });
     await persistState();
     broadcastState();
+
+    // Deliver message to agents in the conversation
+    if (message.authorType === 'human') {
+      if (spaceType === 'dm') {
+        // In a DM, deliver to the agent participant
+        const dm = state.dms.find(d => d.id === spaceId);
+        if (dm) {
+          const agentId = dm.participantIds.find(id => id.startsWith('agt_'));
+          const agent = agentId ? findAgent(agentId) : null;
+          if (agent) {
+            // Don't await - let agent process in background
+            deliverMessageToAgent(agent, spaceType, spaceId, message).catch(err => {
+              addSystemEvent('delivery_error', `Failed to deliver to ${agent.name}: ${err.message}`, { agentId });
+            });
+          }
+        }
+      } else if (spaceType === 'channel') {
+        // In a channel, check for @mentions or deliver to all agents
+        const channel = findChannel(spaceId);
+        if (channel && Array.isArray(channel.agentIds)) {
+          // Check for @mentions
+          const mentionedAgents = channel.agentIds
+            .map(id => findAgent(id))
+            .filter(agent => agent && text.includes(`@${agent.name}`));
+
+          if (mentionedAgents.length > 0) {
+            // Deliver only to mentioned agents
+            for (const agent of mentionedAgents) {
+              deliverMessageToAgent(agent, spaceType, spaceId, message).catch(err => {
+                addSystemEvent('delivery_error', `Failed to deliver to ${agent.name}: ${err.message}`, { agentId: agent.id });
+              });
+            }
+          }
+        }
+      }
+    }
+
     sendJson(res, 201, { message, task });
     return true;
   }
@@ -1550,9 +2081,26 @@ async function handleApi(req, res, url) {
       status: 'idle',
       computerId: String(body.computerId || 'cmp_local'),
       workspace: path.resolve(String(body.workspace || state.settings.defaultWorkspace || ROOT)),
+      reasoningEffort: body.reasoningEffort ? String(body.reasoningEffort) : null,
+      envVars: Array.isArray(body.envVars) ? body.envVars : null,
       createdAt: now(),
     };
     state.agents.push(agent);
+
+    // Auto-add to #all channel
+    const allChannel = findChannel('chan_all');
+    if (allChannel) {
+      allChannel.agentIds = Array.isArray(allChannel.agentIds) ? allChannel.agentIds : [];
+      if (!allChannel.agentIds.includes(agent.id)) {
+        allChannel.agentIds.push(agent.id);
+      }
+      allChannel.memberIds = Array.isArray(allChannel.memberIds) ? allChannel.memberIds : [];
+      if (!allChannel.memberIds.includes(agent.id)) {
+        allChannel.memberIds.push(agent.id);
+      }
+      allChannel.updatedAt = now();
+    }
+
     addCollabEvent('agent_created', `Agent created: ${agent.name}`, { agentId: agent.id });
     await persistState();
     broadcastState();
@@ -1589,6 +2137,27 @@ async function handleApi(req, res, url) {
     await persistState();
     broadcastState();
     sendJson(res, 200, { agent });
+    return true;
+  }
+
+  if (req.method === 'DELETE' && agentMatch) {
+    const agentId = agentMatch[1];
+    const agent = findAgent(agentId);
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    // Remove from agents list
+    state.agents = state.agents.filter(a => a.id !== agentId);
+    // Remove from all channels
+    for (const channel of state.channels) {
+      channel.agentIds = Array.isArray(channel.agentIds) ? channel.agentIds.filter(id => id !== agentId) : [];
+      channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds.filter(id => id !== agentId) : [];
+    }
+    addCollabEvent('agent_deleted', `Agent deleted: ${agent.name}`, { agentId });
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, { ok: true });
     return true;
   }
 
@@ -1761,7 +2330,7 @@ async function serveStatic(req, res, url) {
   const ext = path.extname(filePath).toLowerCase();
   res.writeHead(200, {
     'content-type': contentTypes.get(ext) || 'application/octet-stream',
-    'cache-control': ext === '.html' ? 'no-store' : 'public, max-age=3600',
+    'cache-control': 'no-store',
   });
   createReadStream(filePath).pipe(res);
 }
