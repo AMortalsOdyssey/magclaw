@@ -2083,6 +2083,7 @@ async function handleApi(req, res, url) {
       workspace: path.resolve(String(body.workspace || state.settings.defaultWorkspace || ROOT)),
       reasoningEffort: body.reasoningEffort ? String(body.reasoningEffort) : null,
       envVars: Array.isArray(body.envVars) ? body.envVars : null,
+      avatar: body.avatar ? String(body.avatar) : null,
       createdAt: now(),
     };
     state.agents.push(agent);

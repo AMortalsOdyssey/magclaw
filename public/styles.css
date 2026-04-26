@@ -770,10 +770,35 @@ button:disabled {
   font-weight: 900;
 }
 
+.avatar.avatar-img,
+.avatar-img {
+  object-fit: cover;
+}
+
+.avatar-inner {
+  display: contents;
+}
+
+.avatar-inner.avatar-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.dm-avatar.avatar-img {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+}
+
 .small-avatar {
   width: 32px;
   height: 32px;
   font-size: 12px;
+}
+
+.small-avatar.avatar-img {
+  object-fit: cover;
 }
 
 .message-body {
@@ -1855,6 +1880,67 @@ code {
 .checkbox-item input[type="checkbox"] {
   width: auto;
   flex-shrink: 0;
+}
+
+/* Avatar Picker */
+.avatar-picker {
+  margin-bottom: 12px;
+}
+
+.avatar-picker .form-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.avatar-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.avatar-preview {
+  width: 64px;
+  height: 64px;
+  border: 2px solid var(--border);
+  background: var(--bg-input);
+}
+
+.avatar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+  gap: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 12px;
+  border: 2px solid var(--border);
+  background: var(--bg-input);
+}
+
+.avatar-option {
+  width: 48px;
+  height: 48px;
+  border: 2px solid var(--border);
+  cursor: pointer;
+  transition: transform 0.1s, border-color 0.1s;
+}
+
+.avatar-option:hover {
+  border-color: var(--accent);
+  transform: scale(1.1);
+}
+
+.avatar-option.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.modal-wide {
+  max-width: 700px;
+  width: 90vw;
 }
 
 /* ===== 响应式 ===== */

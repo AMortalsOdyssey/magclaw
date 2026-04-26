@@ -23,8 +23,16 @@ let agentFormState = {
   description: '',
   model: '',
   reasoningEffort: '',
+  avatar: '',
   envVars: [], // [{key: '', value: ''}]
 };
+
+// Avatar list (200 avatars)
+const AVATAR_COUNT = 200;
+function getRandomAvatar() {
+  const idx = Math.floor(Math.random() * AVATAR_COUNT) + 1;
+  return `/avatars/avatar_${String(idx).padStart(3, '0')}.svg`;
+}
 
 const taskColumns = [
   ['todo', 'Todo'],
@@ -90,6 +98,18 @@ function displayAvatar(id, type) {
   const name = displayName(id);
   if (type === 'system') return 'MC';
   return name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
+}
+
+function getAvatarHtml(id, type, cssClass = '') {
+  if (type === 'system') {
+    return `<span class="${cssClass}">MC</span>`;
+  }
+  const agent = byId(appState?.agents, id);
+  if (agent?.avatar) {
+    return `<img src="${escapeHtml(agent.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(agent.name)}" />`;
+  }
+  const initials = displayAvatar(id, type);
+  return `<span class="${cssClass}">${escapeHtml(initials)}</span>`;
 }
 
 function currentSpace() {
@@ -403,7 +423,7 @@ function renderMessage(message) {
   const saved = message.savedBy?.includes('hum_local');
   return `
     <article class="message-card">
-      <div class="avatar">${escapeHtml(displayAvatar(message.authorId, message.authorType))}</div>
+      <div class="avatar">${getAvatarHtml(message.authorId, message.authorType, 'avatar-inner')}</div>
       <div class="message-body">
         <div class="message-meta">
           <strong>${escapeHtml(displayName(message.authorId))}</strong>
@@ -675,7 +695,7 @@ function renderAgentDetail(agent) {
       </div>
 
       <div class="agent-profile-header">
-        <span class="avatar">${escapeHtml(displayAvatar(agent.id, 'agent'))}</span>
+        ${getAvatarHtml(agent.id, 'agent', 'avatar')}
         <div class="agent-profile-info">
           <strong>${escapeHtml(agent.name)}</strong>
           <span class="agent-status ${agent.status === 'idle' || agent.status === 'online' ? 'online' : ''}">${escapeHtml(agent.status)}</span>
@@ -741,7 +761,7 @@ function renderAgent(agent) {
   return `
     <div class="agent-card">
       <div class="member-row">
-        <span class="avatar small-avatar">${escapeHtml(displayAvatar(agent.id, 'agent'))}</span>
+        ${getAvatarHtml(agent.id, 'agent', 'avatar small-avatar')}
         <div><strong>${escapeHtml(agent.name)}</strong><small>${escapeHtml(agent.status)} / ${escapeHtml(agent.runtime)}</small></div>
       </div>
       <p>${escapeHtml(agent.description || 'No description')}</p>
@@ -755,7 +775,7 @@ function renderAgentListItem(agent) {
   const statusClass = agent.status === 'online' || agent.status === 'idle' ? 'online' : '';
   return `
     <button class="space-btn member-btn${active}" type="button" data-action="select-agent" data-id="${agent.id}">
-      <span class="dm-avatar">${escapeHtml(displayAvatar(agent.id, 'agent'))}</span>
+      ${getAvatarHtml(agent.id, 'agent', 'dm-avatar')}
       <span class="dm-name">${escapeHtml(agent.name)}</span>
       <span class="dm-status ${statusClass}"></span>
     </button>
@@ -849,13 +869,15 @@ function renderModal() {
     dm: renderDmModal,
     task: renderTaskModal,
     agent: renderAgentModal,
+    'avatar-picker': renderAvatarPickerModal,
     computer: renderComputerModal,
     human: renderHumanModal,
   };
   const content = map[modal]?.() || '';
+  const isAvatarPicker = modal === 'avatar-picker';
   return `
     <div class="modal-backdrop" data-action="close-modal">
-      <div class="modal-card pixel-panel" data-action="none">
+      <div class="modal-card pixel-panel ${isAvatarPicker ? 'modal-wide' : ''}" data-action="none">
         ${content}
       </div>
     </div>
@@ -879,7 +901,7 @@ function renderChannelModal() {
           ${agents.map((agent) => `
             <label class="checkbox-item">
               <input type="checkbox" name="agentIds" value="${agent.id}" />
-              <span class="dm-avatar">${escapeHtml(displayAvatar(agent.id, 'agent'))}</span>
+              ${getAvatarHtml(agent.id, 'agent', 'dm-avatar')}
               <span>${escapeHtml(agent.name)}</span>
             </label>
           `).join('')}
@@ -916,7 +938,7 @@ function renderChannelMembersModal() {
         <div class="members-list">
           ${members.agents.length ? members.agents.map((agent) => `
             <div class="member-list-item">
-              <span class="dm-avatar">${escapeHtml(displayAvatar(agent.id, 'agent'))}</span>
+              ${getAvatarHtml(agent.id, 'agent', 'dm-avatar')}
               <span class="member-name">${escapeHtml(agent.name)}</span>
               <span class="member-status ${agent.status === 'online' || agent.status === 'idle' ? 'online' : ''}">${escapeHtml(agent.status || 'offline')}</span>
               ${!isAllChannel ? `<button class="member-remove-btn" type="button" data-action="remove-channel-member" data-member-id="${agent.id}">×</button>` : ''}
@@ -1030,9 +1052,23 @@ function renderAgentModal() {
   const defaultReasoningEffort = agentFormState.reasoningEffort || currentRuntime?.defaultReasoningEffort || 'medium';
   const defaultComputer = agentFormState.computerId || appState.computers?.[0]?.id || '';
 
+  // Initialize avatar if not set
+  if (!agentFormState.avatar) {
+    agentFormState.avatar = getRandomAvatar();
+  }
+
   return `
     ${modalHeader('CREATE AGENT', 'Local runtime profile')}
     <form id="agent-form" class="modal-form">
+      <div class="avatar-picker">
+        <span class="form-label">AVATAR</span>
+        <div class="avatar-picker-row">
+          <img src="${agentFormState.avatar}" class="avatar-preview" alt="Avatar" />
+          <input type="hidden" name="avatar" value="${agentFormState.avatar}" />
+          <button type="button" class="secondary-btn" data-action="randomize-avatar">🎲 Random</button>
+          <button type="button" class="secondary-btn" data-action="pick-avatar">Browse</button>
+        </div>
+      </div>
       <label>
         <span>COMPUTER <span class="required">*</span></span>
         <select name="computerId">
@@ -1096,6 +1132,21 @@ function renderAgentModal() {
   `;
 }
 
+function renderAvatarPickerModal() {
+  let html = `${modalHeader('SELECT AVATAR', 'Choose an avatar for your agent')}
+    <div class="avatar-grid">`;
+  for (let i = 1; i <= AVATAR_COUNT; i++) {
+    const src = `/avatars/avatar_${String(i).padStart(3, '0')}.svg`;
+    const selected = agentFormState.avatar === src ? 'selected' : '';
+    html += `<img src="${src}" class="avatar-option ${selected}" data-avatar="${src}" />`;
+  }
+  html += `</div>
+    <div class="modal-actions">
+      <button type="button" class="secondary-btn" data-action="back-to-agent-modal">Back</button>
+    </div>`;
+  return html;
+}
+
 function renderComputerModal() {
   return `
     ${modalHeader('Add Computer', 'Local or remote runner')}
@@ -1142,6 +1193,7 @@ function saveAgentFormState() {
   agentFormState.description = data.get('description') || '';
   agentFormState.model = data.get('model') || '';
   agentFormState.reasoningEffort = data.get('reasoningEffort') || '';
+  agentFormState.avatar = data.get('avatar') || agentFormState.avatar;
 }
 
 function resetAgentFormState() {
@@ -1151,6 +1203,7 @@ function resetAgentFormState() {
     description: '',
     model: '',
     reasoningEffort: '',
+    avatar: '',
     envVars: [],
   };
   selectedRuntimeId = null;
@@ -1308,6 +1361,36 @@ document.addEventListener('click', async (event) => {
       agentFormState.envVars.splice(index, 1);
       const listEl = document.getElementById('env-vars-list');
       if (listEl) listEl.innerHTML = renderEnvVarsList();
+    }
+    return;
+  }
+
+  // Avatar picker actions
+  if (action === 'randomize-avatar') {
+    agentFormState.avatar = getRandomAvatar();
+    const preview = document.querySelector('.avatar-preview');
+    const input = document.querySelector('input[name="avatar"]');
+    if (preview) preview.src = agentFormState.avatar;
+    if (input) input.value = agentFormState.avatar;
+    return;
+  }
+  if (action === 'pick-avatar') {
+    saveAgentFormState();
+    modal = 'avatar-picker';
+    render();
+    return;
+  }
+  if (action === 'back-to-agent-modal') {
+    modal = 'agent';
+    render();
+    return;
+  }
+  if (target.classList.contains('avatar-option')) {
+    const avatarSrc = target.dataset.avatar;
+    if (avatarSrc) {
+      agentFormState.avatar = avatarSrc;
+      document.querySelectorAll('.avatar-option').forEach((el) => el.classList.remove('selected'));
+      target.classList.add('selected');
     }
     return;
   }
@@ -1593,6 +1676,7 @@ document.addEventListener('submit', async (event) => {
           computerId: data.get('computerId'),
           reasoningEffort: data.get('reasoningEffort') || null,
           envVars: envVars.length ? envVars : null,
+          avatar: data.get('avatar') || agentFormState.avatar || getRandomAvatar(),
         }),
       });
       selectedRuntimeId = null;
