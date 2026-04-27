@@ -327,18 +327,18 @@ function generateAvatar(index) {
 const existingFiles = fs.readdirSync(outputDir).filter(f => f.startsWith('avatar_'));
 existingFiles.forEach(f => fs.unlinkSync(path.join(outputDir, f)));
 
-// 生成200个头像
-console.log('Generating 200 unique avatars with component-based design...');
-for (let i = 0; i < 200; i++) {
+// 生成1000个头像
+console.log('Generating 1000 unique avatars with component-based design...');
+for (let i = 0; i < 1000; i++) {
   const svg = generateAvatar(i);
-  const filename = `avatar_${String(i + 1).padStart(3, '0')}.svg`;
+  const filename = `avatar_${String(i + 1).padStart(4, '0')}.svg`;
   fs.writeFileSync(path.join(outputDir, filename), svg);
-  if ((i + 1) % 50 === 0) {
-    console.log(`Generated ${i + 1}/200 avatars`);
+  if ((i + 1) % 100 === 0) {
+    console.log(`Generated ${i + 1}/1000 avatars`);
   }
 }
 
-console.log('Done! 200 unique avatars generated with:');
+console.log('Done! 1000 unique avatars generated with:');
 console.log(`- ${heads.length} head shapes`);
 console.log(`- ${eyes.length} eye styles`);
 console.log(`- ${mouths.length} mouth styles`);

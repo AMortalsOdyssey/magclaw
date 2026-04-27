@@ -27,11 +27,11 @@ let agentFormState = {
   envVars: [], // [{key: '', value: ''}]
 };
 
-// Avatar list (200 avatars)
-const AVATAR_COUNT = 200;
+// Avatar list (1000 avatars)
+const AVATAR_COUNT = 1000;
 function getRandomAvatar() {
   const idx = Math.floor(Math.random() * AVATAR_COUNT) + 1;
-  return `/avatars/avatar_${String(idx).padStart(3, '0')}.svg`;
+  return `/avatars/avatar_${String(idx).padStart(4, '0')}.svg`;
 }
 
 const taskColumns = [
