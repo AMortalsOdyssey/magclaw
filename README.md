@@ -8,7 +8,8 @@ This MVP is intentionally local-first and dependency-free:
 - Static HTML/CSS/JS client
 - File-backed state in `.magclaw/state.json`
 - Local attachments in `.magclaw/attachments`
-- Codex execution through `codex exec --json`
+- Codex agent conversations through `codex app-server --listen stdio://`
+- One-shot Codex mission runs still use `codex exec --json`
 - Server-Sent Events for live run updates
 - Optional cloud control-plane sync with the same Node server
 
@@ -21,8 +22,11 @@ npm run dev
 Open:
 
 ```text
-http://127.0.0.1:4317
+http://127.0.0.1:6543
 ```
+
+Magclaw's default local port is `6543`.
+Set `PORT=...` only when you intentionally need a one-off override.
 
 ## Codex
 
@@ -39,6 +43,24 @@ CODEX_PATH=/path/to/codex npm run dev
 CODEX_MODEL=gpt-5.5 npm run dev
 CODEX_SANDBOX=workspace-write npm run dev
 ```
+
+Magclaw keeps Codex channel/DM agent conversations in a persistent app-server thread. The runner starts `codex app-server --listen stdio://`, records the returned Codex `threadId` in the agent state and `.magclaw/agents/<agentId>/sessions.json`, resumes that session after a restart, and sends steering messages into an active turn instead of starting a fresh `codex exec` for every chat message.
+
+Claude agents currently remain on the legacy `claude --print` one-shot path. TODO: move Claude and future runtimes to the same persistent session contract once their stable resume/steer APIs are available.
+
+## Agent Workspaces
+
+Each agent gets a local read-only workspace surface under:
+
+```text
+.magclaw/agents/<agentId>/
+  MEMORY.md
+  notes/
+  workspace/
+  sessions.json
+```
+
+The app can browse and preview these files from the Agent inspector. TODO: add safe editing, conflict detection, and audit history before allowing browser writes.
 
 ## Local Or Cloud
 
@@ -80,6 +102,10 @@ Cloud sync v1 is intentionally a snapshot protocol. It syncs collaboration state
 
 - Create mission contracts
 - Attach local files/images from the browser
+- Paste screenshots directly into the composer as uploaded attachments
+- Add channel project folders with a native local folder picker
+- Mention project files/folders with `@` without copying them into attachments
+- Browse project folders and preview Markdown/text files in the inspector
 - Run Codex in a selected workspace
 - Stream Codex JSON/stdout/stderr into a timeline
 - Store final Codex answer as evidence
@@ -90,7 +116,9 @@ Cloud sync v1 is intentionally a snapshot protocol. It syncs collaboration state
 - Push/pull collaboration state snapshots between local and cloud
 - Work in local channels and DMs
 - Send messages, save messages, open threads, and reply in threads
-- Create tasks manually or from messages
+- Create tasks manually, from top-level messages, or through agent task tools
+- Represent tasks as top-level chat messages with task metadata
+- Create new top-level task messages from thread context while keeping source message/reply links
 - Claim/unclaim tasks before agent work
 - Move tasks through `todo -> in_progress -> in_review -> done`
 - Require review approval before `done`

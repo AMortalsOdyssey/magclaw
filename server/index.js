@@ -2,16 +2,31 @@ import http from 'node:http';
 import { spawn, execFile } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
 import {
+  lstat,
   mkdir,
+  readdir,
   readFile,
+  readlink,
   rename,
   stat,
+  symlink,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  buildAgentContextPack,
+  renderAgentContextPack,
+} from './agent-context.js';
+import {
+  formatAgentHistory,
+  formatAgentSearchResults,
+  readAgentHistory,
+  searchAgentMessageHistory,
+} from './agent-history.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,11 +35,88 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = path.join(ROOT, '.magclaw');
 const ATTACHMENTS_DIR = path.join(DATA_DIR, 'attachments');
 const RUNS_DIR = path.join(DATA_DIR, 'runs');
+const AGENTS_DIR = path.join(DATA_DIR, 'agents');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
-const PORT = Number(process.env.PORT || 4317);
+const SOURCE_CODEX_HOME = path.resolve(process.env.MAGCLAW_CODEX_HOME_SOURCE || process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
+const DEFAULT_PORT = 6543;
+const PORT = Number(process.env.PORT || DEFAULT_PORT);
 const HOST = process.env.HOST || '127.0.0.1';
 const MAX_JSON_BYTES = 40 * 1024 * 1024;
+const MAX_ATTACHMENT_UPLOADS = 20;
+const MAX_PROJECT_SEARCH_RESULTS = 80;
+const MAX_PROJECT_SCAN_ENTRIES = 4000;
+const MAX_PROJECT_SEARCH_DEPTH = 8;
+const MAX_PROJECT_TREE_ENTRIES = 300;
+const MAX_PROJECT_FILE_PREVIEW_BYTES = 2 * 1024 * 1024;
+const MAX_AGENT_WORKSPACE_TREE_ENTRIES = 300;
+const MAX_AGENT_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_AGENT_RELAY_DEPTH = 2;
+const AGENT_BUSY_DELIVERY_DELAY_MS = Math.max(10, Number(process.env.MAGCLAW_AGENT_BUSY_DELIVERY_DELAY_MS || 160));
 const CLOUD_PROTOCOL_VERSION = 1;
+const CODEX_HOME_CONFIG_VERSION = 2;
+const CODEX_HOME_SHARED_ENTRIES = [
+  'auth.json',
+];
+const CODEX_HOME_STALE_SHARED_ENTRIES = [
+  'config.toml',
+  'AGENTS.md',
+  'agent-rules',
+  'plugins',
+  'skills',
+  'rules',
+  'hooks.json',
+  'hooks',
+  'vendor_imports',
+];
+const PROJECT_SEARCH_EXCLUDES = new Set([
+  '.git',
+  '.hg',
+  '.svn',
+  '.magclaw',
+  'node_modules',
+  '.next',
+  'dist',
+  'build',
+  'target',
+  '.venv',
+  '__pycache__',
+]);
+const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd']);
+const TEXT_PREVIEW_EXTENSIONS = new Set([
+  '.txt',
+  '.md',
+  '.markdown',
+  '.mdown',
+  '.mkd',
+  '.log',
+  '.csv',
+  '.json',
+  '.jsonl',
+  '.js',
+  '.mjs',
+  '.cjs',
+  '.ts',
+  '.tsx',
+  '.jsx',
+  '.css',
+  '.html',
+  '.xml',
+  '.yml',
+  '.yaml',
+  '.toml',
+  '.ini',
+  '.sh',
+  '.zsh',
+  '.bash',
+  '.py',
+  '.go',
+  '.rs',
+  '.java',
+  '.c',
+  '.cpp',
+  '.h',
+  '.hpp',
+]);
 
 const runningProcesses = new Map();
 const agentProcesses = new Map(); // agentId -> { child, sessionId, status, inbox }
@@ -66,7 +158,7 @@ function defaultState() {
   const seededAt = now();
   const hostName = os.hostname();
   return {
-    version: 4,
+    version: 7,
     createdAt: seededAt,
     updatedAt: seededAt,
     settings: {
@@ -131,6 +223,7 @@ function defaultState() {
         id: 'chan_all',
         name: 'all',
         description: 'Default local coordination channel.',
+        ownerId: 'hum_local',
         humanIds: ['hum_local'],
         agentIds: ['agt_codex'],
         memberIds: ['hum_local', 'agt_codex'],
@@ -156,6 +249,9 @@ function defaultState() {
         authorId: 'system',
         body: 'Magclaw local is ready. Create a task, start a Codex mission, or open a thread.',
         attachmentIds: [],
+        mentionedAgentIds: [],
+        mentionedHumanIds: [],
+        readBy: ['hum_local'],
         replyCount: 0,
         savedBy: [],
         createdAt: seededAt,
@@ -167,6 +263,8 @@ function defaultState() {
     missions: [],
     runs: [],
     attachments: [],
+    projects: [],
+    workItems: [],
     events: [],
   };
 }
@@ -174,9 +272,11 @@ function defaultState() {
 async function ensureStorage() {
   await mkdir(ATTACHMENTS_DIR, { recursive: true });
   await mkdir(RUNS_DIR, { recursive: true });
+  await mkdir(AGENTS_DIR, { recursive: true });
 
   if (!existsSync(STATE_FILE)) {
     state = defaultState();
+    await ensureAllAgentWorkspaces();
     await persistState();
     return;
   }
@@ -184,17 +284,19 @@ async function ensureStorage() {
   try {
     state = JSON.parse(await readFile(STATE_FILE, 'utf8'));
     migrateState();
+    await ensureAllAgentWorkspaces();
     await persistState();
   } catch {
     state = defaultState();
     addSystemEvent('state_recovered', 'State file was unreadable, Magclaw started with a clean state.');
+    await ensureAllAgentWorkspaces();
     await persistState();
   }
 }
 
 function migrateState() {
   const fresh = defaultState();
-  state.version = 4;
+  state.version = 7;
   state.settings = { ...fresh.settings, ...(state.settings || {}) };
   state.connection = { ...fresh.connection, ...(state.connection || {}) };
   state.connection.mode = state.connection.mode === 'cloud' ? 'cloud' : 'local';
@@ -202,7 +304,7 @@ function migrateState() {
   state.connection.relayUrl = normalizeCloudUrl(state.connection.relayUrl || '');
   state.connection.cloudToken = String(state.connection.cloudToken || process.env.MAGCLAW_CLOUD_TOKEN || '');
   state.connection.protocolVersion = CLOUD_PROTOCOL_VERSION;
-  for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'events']) {
+  for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'events']) {
     if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
   }
   if (!state.humans.length) state.humans = fresh.humans;
@@ -211,15 +313,139 @@ function migrateState() {
   if (!state.channels.length) state.channels = fresh.channels;
   if (!state.dms.length) state.dms = fresh.dms;
   if (!state.messages.length) state.messages = fresh.messages;
+  for (const channel of state.channels) {
+    channel.ownerId = channel.ownerId || 'hum_local';
+    channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds : ['hum_local'];
+    channel.agentIds = Array.isArray(channel.agentIds) ? channel.agentIds : [];
+    channel.memberIds = Array.isArray(channel.memberIds)
+      ? channel.memberIds
+      : [...channel.humanIds, ...channel.agentIds];
+    if (!channel.humanIds.includes('hum_local')) channel.humanIds.unshift('hum_local');
+    if (!channel.memberIds.includes('hum_local')) channel.memberIds.unshift('hum_local');
+    if (channel.id === 'chan_all') {
+      for (const human of state.humans) {
+        if (!channel.humanIds.includes(human.id)) channel.humanIds.push(human.id);
+        if (!channel.memberIds.includes(human.id)) channel.memberIds.push(human.id);
+      }
+      for (const agent of state.agents) {
+        if (!channel.agentIds.includes(agent.id)) channel.agentIds.push(agent.id);
+        if (!channel.memberIds.includes(agent.id)) channel.memberIds.push(agent.id);
+      }
+    }
+  }
+  for (const message of state.messages) {
+    normalizeConversationRecord(message);
+  }
+  for (const reply of state.replies) {
+    const parent = state.messages.find((message) => message.id === reply.parentMessageId);
+    if (parent) {
+      reply.spaceType = reply.spaceType || parent.spaceType;
+      reply.spaceId = reply.spaceId || parent.spaceId;
+    }
+    normalizeConversationRecord(reply);
+  }
+  for (const item of state.workItems) {
+    item.id = item.id || makeId('wi');
+    item.status = item.status || 'queued';
+    item.createdAt = item.createdAt || now();
+    item.updatedAt = item.updatedAt || item.createdAt;
+    item.parentMessageId = item.parentMessageId || null;
+    item.target = item.target || targetForConversation(item.spaceType, item.spaceId, item.parentMessageId);
+    item.sendCount = Number(item.sendCount || 0);
+  }
+  for (const attachment of state.attachments) {
+    attachment.source = attachment.source || 'upload';
+    attachment.createdAt = attachment.createdAt || now();
+    if (!attachment.url && attachment.id) {
+      attachment.url = `/api/attachments/${attachment.id}/${encodeURIComponent(attachment.name || 'attachment')}`;
+    }
+  }
+  state.projects = state.projects
+    .filter((project) => project && project.path)
+    .map((project) => ({
+      id: project.id || makeId('prj'),
+      name: String(project.name || path.basename(project.path) || 'Project').slice(0, 80),
+      path: path.resolve(String(project.path)),
+      spaceType: project.spaceType === 'dm' ? 'dm' : 'channel',
+      spaceId: String(project.spaceId || 'chan_all'),
+      createdAt: project.createdAt || now(),
+      updatedAt: project.updatedAt || project.createdAt || now(),
+    }));
+  const taskCounters = new Map();
+  const tasksByCreation = [...state.tasks].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
   for (const task of state.tasks) {
     task.history = Array.isArray(task.history) ? task.history : [];
     task.attachmentIds = Array.isArray(task.attachmentIds) ? task.attachmentIds : [];
+    task.assigneeIds = normalizeIds(task.assigneeIds);
+    if (task.assigneeId && !task.assigneeIds.includes(task.assigneeId)) task.assigneeIds.unshift(task.assigneeId);
     task.threadMessageId = task.threadMessageId || task.messageId || null;
+    task.sourceMessageId = task.sourceMessageId || task.messageId || task.threadMessageId || null;
+    task.sourceReplyId = task.sourceReplyId || null;
     task.claimedBy = task.claimedBy || task.assigneeId || null;
     task.claimedAt = task.claimedAt || null;
     task.reviewRequestedAt = task.reviewRequestedAt || null;
     task.completedAt = task.completedAt || null;
+    task.endIntentAt = task.endIntentAt || null;
     task.runIds = Array.isArray(task.runIds) ? task.runIds : [];
+    task.localReferences = Array.isArray(task.localReferences) ? task.localReferences : extractLocalReferences(task.body || '');
+  }
+  for (const task of tasksByCreation) {
+    const key = taskScopeKey(task.spaceType, task.spaceId);
+    const current = taskCounters.get(key) || 0;
+    if (Number.isInteger(task.number) && task.number > 0) {
+      taskCounters.set(key, Math.max(current, task.number));
+    } else {
+      const next = current + 1;
+      task.number = next;
+      taskCounters.set(key, next);
+    }
+  }
+  // Migrate agents to include personality and memory fields
+  for (const agent of state.agents) {
+    if (!agent.personality) {
+      agent.personality = {
+        traits: ['helpful'],
+        interests: [],
+        responseStyle: 'concise',
+        proactivity: 0.3,
+      };
+    }
+    if (!agent.memory) {
+      agent.memory = {
+        conversationSummaries: [],
+        knownTopics: [],
+        userPreferences: {},
+        lastInteraction: null,
+      };
+    }
+    const legacyRuntimeSessionId = agent.runtimeSessionId && !agent.runtimeSessionHome
+      ? agent.runtimeSessionId
+      : null;
+    agent.runtimeSessionId = legacyRuntimeSessionId ? null : agent.runtimeSessionId || null;
+    agent.runtimeSessionHome = agent.runtimeSessionHome || null;
+    agent.runtimeConfigVersion = Number(agent.runtimeConfigVersion || 0);
+    const staleRuntimeConfig = agent.runtimeSessionId && agent.runtimeConfigVersion !== CODEX_HOME_CONFIG_VERSION;
+    if (staleRuntimeConfig) {
+      addSystemEvent('agent_runtime_session_reset', `${agent.name} Codex session was cleared before isolated runtime config start.`, {
+        agentId: agent.id,
+        previousSessionId: agent.runtimeSessionId,
+        previousHome: agent.runtimeSessionHome || SOURCE_CODEX_HOME,
+        previousConfigVersion: agent.runtimeConfigVersion,
+        configVersion: CODEX_HOME_CONFIG_VERSION,
+      });
+      agent.runtimeSessionId = null;
+      agent.runtimeLastTurnAt = null;
+    }
+    agent.runtimeLastStartedAt = agent.runtimeLastStartedAt || null;
+    agent.runtimeLastTurnAt = legacyRuntimeSessionId ? null : agent.runtimeLastTurnAt || null;
+    agent.workspacePath = agent.workspacePath || path.join(AGENTS_DIR, agent.id);
+    if (legacyRuntimeSessionId) {
+      addSystemEvent('agent_runtime_session_reset', `${agent.name} legacy Codex session was cleared before isolated runtime start.`, {
+        agentId: agent.id,
+        previousSessionId: legacyRuntimeSessionId,
+        previousHome: SOURCE_CODEX_HOME,
+      });
+    }
   }
 }
 
@@ -361,10 +587,575 @@ function safeFileName(name) {
     .slice(0, 120);
 }
 
-function safePathWithin(base, target) {
-  const resolved = path.resolve(base, target);
-  if (!resolved.startsWith(base)) return null;
+function safePathWithin(base, target = '.') {
+  const basePath = path.resolve(base);
+  const resolved = path.resolve(basePath, target || '.');
+  const relative = path.relative(basePath, resolved);
+  if (relative && (relative.startsWith('..') || path.isAbsolute(relative))) return null;
   return resolved;
+}
+
+function toPosixPath(value) {
+  return String(value || '').replace(/\\/g, '/').split(path.sep).join('/');
+}
+
+function decodePathSegment(value) {
+  try {
+    return decodeURIComponent(String(value || ''));
+  } catch {
+    return String(value || '');
+  }
+}
+
+function normalizeProjectRelPath(value) {
+  return toPosixPath(decodePathSegment(value))
+    .replace(/^\/+/, '')
+    .replace(/\/+/g, '/')
+    .replace(/^\.\//, '');
+}
+
+function baseNameFromProjectPath(value, fallback = 'project') {
+  const parts = normalizeProjectRelPath(value).split('/').filter(Boolean);
+  return parts.pop() || fallback;
+}
+
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function attachmentPeriod(createdAt = new Date()) {
+  const date = createdAt instanceof Date ? createdAt : new Date(createdAt);
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return { year, month, relativeDir: `${year}/${month}` };
+}
+
+function mimeForPath(filePath, fallback = 'application/octet-stream') {
+  const ext = path.extname(filePath).toLowerCase();
+  if (contentTypes.has(ext)) return contentTypes.get(ext).replace(/;.*$/, '');
+  if (ext === '.txt' || ext === '.md' || ext === '.log') return 'text/plain';
+  if (ext === '.pdf') return 'application/pdf';
+  if (ext === '.csv') return 'text/csv';
+  if (ext === '.json') return 'application/json';
+  if (ext === '.zip') return 'application/zip';
+  return fallback;
+}
+
+async function saveAttachmentBuffer({ name, type, buffer, source = 'upload', extra = {} }) {
+  const id = makeId('att');
+  const createdAt = now();
+  const safeName = safeFileName(name);
+  const period = attachmentPeriod(new Date(createdAt));
+  const diskName = `${id}-${safeName}`;
+  const dir = path.join(ATTACHMENTS_DIR, period.relativeDir);
+  await mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, diskName);
+  await writeFile(filePath, buffer);
+  return {
+    id,
+    name: safeName,
+    type: type || 'application/octet-stream',
+    bytes: buffer.length,
+    path: filePath,
+    relativePath: `${period.relativeDir}/${diskName}`,
+    source,
+    url: `/api/attachments/${id}/${encodeURIComponent(safeName)}`,
+    createdAt,
+    ...extra,
+  };
+}
+
+function findProject(id) {
+  return state.projects.find((project) => project.id === id);
+}
+
+function projectsForSpace(spaceType, spaceId) {
+  return (state.projects || []).filter((project) => (
+    project.spaceType === spaceType && project.spaceId === spaceId
+  ));
+}
+
+function projectRelativePath(project, absolutePath) {
+  return toPosixPath(path.relative(project.path, absolutePath));
+}
+
+function fuzzyIncludes(query, value) {
+  const q = String(query || '').toLowerCase();
+  const target = String(value || '').toLowerCase();
+  if (!q) return true;
+  if (target.includes(q)) return true;
+  let cursor = 0;
+  for (const char of q) {
+    cursor = target.indexOf(char, cursor);
+    if (cursor < 0) return false;
+    cursor += 1;
+  }
+  return true;
+}
+
+function projectSearchScore(query, item) {
+  const q = String(query || '').toLowerCase();
+  const name = item.name.toLowerCase();
+  const rel = item.path.toLowerCase();
+  if (!q) return item.kind === 'folder' ? 1 : 2;
+  if (name === q) return 0;
+  if (name.startsWith(q)) return 1;
+  if (name.includes(q)) return 2;
+  if (rel.includes(q)) return 3;
+  return 4;
+}
+
+async function searchProject(project, query) {
+  const results = [];
+  const queue = [{ dir: project.path, depth: 0 }];
+  let scanned = 0;
+
+  while (queue.length && scanned < MAX_PROJECT_SCAN_ENTRIES && results.length < MAX_PROJECT_SEARCH_RESULTS * 3) {
+    const current = queue.shift();
+    let entries = [];
+    try {
+      entries = await readdir(current.dir, { withFileTypes: true });
+    } catch (error) {
+      addSystemEvent('project_scan_skipped', `Could not scan ${project.name}: ${error.message}`, {
+        projectId: project.id,
+        path: current.dir,
+      });
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (scanned >= MAX_PROJECT_SCAN_ENTRIES) break;
+      if (PROJECT_SEARCH_EXCLUDES.has(entry.name)) continue;
+      scanned += 1;
+
+      const absolutePath = path.join(current.dir, entry.name);
+      const relPath = projectRelativePath(project, absolutePath);
+      const isDirectory = entry.isDirectory();
+      if (fuzzyIncludes(query, `${entry.name} ${relPath}`)) {
+        results.push({
+          id: `${project.id}:${relPath}`,
+          projectId: project.id,
+          projectName: project.name,
+          name: entry.name,
+          path: relPath,
+          absolutePath,
+          kind: isDirectory ? 'folder' : 'file',
+        });
+      }
+      if (isDirectory && current.depth < MAX_PROJECT_SEARCH_DEPTH) {
+        queue.push({ dir: absolutePath, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return results
+    .sort((a, b) => projectSearchScore(query, a) - projectSearchScore(query, b)
+      || (a.kind === b.kind ? a.path.localeCompare(b.path) : a.kind === 'folder' ? -1 : 1))
+    .slice(0, MAX_PROJECT_SEARCH_RESULTS);
+}
+
+async function searchProjectItems(spaceType, spaceId, query) {
+  const projects = projectsForSpace(spaceType, spaceId);
+  const batches = await Promise.all(projects.map((project) => searchProject(project, query)));
+  return batches
+    .flat()
+    .sort((a, b) => projectSearchScore(query, a) - projectSearchScore(query, b)
+      || (a.kind === b.kind ? a.path.localeCompare(b.path) : a.kind === 'folder' ? -1 : 1))
+    .slice(0, MAX_PROJECT_SEARCH_RESULTS);
+}
+
+function projectReferenceFromParts(kind, projectId, rawRelPath) {
+  const project = findProject(String(projectId || ''));
+  if (!project) return null;
+  const referenceKind = kind === 'folder' ? 'folder' : 'file';
+  const relPath = normalizeProjectRelPath(rawRelPath);
+  const absolutePath = safePathWithin(project.path, relPath || '.');
+  if (!absolutePath) return null;
+  return {
+    id: `${referenceKind}:${project.id}:${relPath}`,
+    kind: referenceKind,
+    projectId: project.id,
+    projectName: project.name,
+    name: relPath ? baseNameFromProjectPath(relPath, project.name) : project.name,
+    path: relPath,
+    absolutePath,
+    token: `<#${referenceKind}:${project.id}:${encodeURIComponent(relPath)}>`,
+  };
+}
+
+function extractLocalReferences(text) {
+  const refs = [];
+  const seen = new Set();
+  const matches = String(text || '').matchAll(/<#(file|folder):([^:>]+):([^>]*)>/g);
+  for (const match of matches) {
+    const ref = projectReferenceFromParts(match[1], match[2], match[3]);
+    if (!ref || seen.has(ref.id)) continue;
+    seen.add(ref.id);
+    refs.push(ref);
+  }
+  return refs;
+}
+
+function localReferenceLines(refs = []) {
+  return refs.length
+    ? refs.map((ref) => `- ${ref.kind} ${ref.name}: ${ref.absolutePath}`).join('\n')
+    : '';
+}
+
+function projectEntry(project, relPath, info) {
+  const isDirectory = info.isDirectory();
+  return {
+    id: `${project.id}:${relPath}`,
+    projectId: project.id,
+    projectName: project.name,
+    name: baseNameFromProjectPath(relPath, project.name),
+    path: relPath,
+    kind: isDirectory ? 'folder' : 'file',
+    type: isDirectory ? 'folder' : mimeForPath(relPath),
+    bytes: isDirectory ? 0 : info.size,
+    updatedAt: info.mtime.toISOString(),
+  };
+}
+
+async function listProjectTree(project, rawRelPath = '') {
+  const relPath = normalizeProjectRelPath(rawRelPath);
+  const dirPath = safePathWithin(project.path, relPath || '.');
+  if (!dirPath) throw httpError(400, 'Project tree path must stay inside the project folder.');
+  const info = await stat(dirPath).catch(() => null);
+  if (!info) throw httpError(404, 'Project tree path was not found.');
+  if (!info.isDirectory()) throw httpError(400, 'Project tree path must be a directory.');
+
+  const dirEntries = (await readdir(dirPath, { withFileTypes: true }))
+    .filter((entry) => !PROJECT_SEARCH_EXCLUDES.has(entry.name))
+    .sort((a, b) => (a.isDirectory() === b.isDirectory()
+      ? a.name.localeCompare(b.name)
+      : a.isDirectory() ? -1 : 1))
+    .slice(0, MAX_PROJECT_TREE_ENTRIES);
+
+  const entries = [];
+  for (const entry of dirEntries) {
+    const childRelPath = toPosixPath(path.join(relPath, entry.name)).replace(/^\/+/, '');
+    const childPath = safePathWithin(project.path, childRelPath);
+    if (!childPath) continue;
+    try {
+      entries.push(projectEntry(project, childRelPath, await stat(childPath)));
+    } catch (error) {
+      addSystemEvent('project_tree_entry_skipped', `Could not inspect ${entry.name}: ${error.message}`, {
+        projectId: project.id,
+        path: childRelPath,
+      });
+    }
+  }
+
+  return {
+    project: {
+      id: project.id,
+      name: project.name,
+      path: project.path,
+    },
+    path: relPath,
+    entries,
+    truncated: dirEntries.length >= MAX_PROJECT_TREE_ENTRIES,
+  };
+}
+
+function projectFilePreviewKind(filePath, buffer) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (MARKDOWN_EXTENSIONS.has(ext)) return 'markdown';
+  if (TEXT_PREVIEW_EXTENSIONS.has(ext)) return 'text';
+  if (buffer.includes(0)) return 'binary';
+  const sample = buffer.subarray(0, Math.min(buffer.length, 2048)).toString('utf8');
+  return sample.includes('\uFFFD') ? 'binary' : 'text';
+}
+
+async function readProjectFilePreview(project, rawRelPath = '') {
+  const relPath = normalizeProjectRelPath(rawRelPath);
+  const filePath = safePathWithin(project.path, relPath);
+  if (!filePath) throw httpError(400, 'Project file path must stay inside the project folder.');
+  const info = await stat(filePath).catch(() => null);
+  if (!info) throw httpError(404, 'Project file was not found.');
+  if (!info.isFile()) throw httpError(400, 'Project preview path must be a file.');
+  if (info.size > MAX_PROJECT_FILE_PREVIEW_BYTES) {
+    throw httpError(413, `File preview is limited to ${MAX_PROJECT_FILE_PREVIEW_BYTES} bytes.`);
+  }
+
+  const buffer = await readFile(filePath);
+  const previewKind = projectFilePreviewKind(filePath, buffer);
+  return {
+    file: {
+      id: `file:${project.id}:${relPath}`,
+      projectId: project.id,
+      projectName: project.name,
+      name: baseNameFromProjectPath(relPath, project.name),
+      path: relPath,
+      absolutePath: filePath,
+      type: mimeForPath(filePath),
+      bytes: info.size,
+      updatedAt: info.mtime.toISOString(),
+      previewKind,
+      content: previewKind === 'binary' ? '' : buffer.toString('utf8'),
+    },
+  };
+}
+
+function agentDataDir(agent) {
+  return path.join(AGENTS_DIR, String(agent?.id || 'unknown'));
+}
+
+function agentCodexHomeDir(agent) {
+  return path.join(agentDataDir(agent), 'codex-home');
+}
+
+async function ensureSymlinkedCodexHomeEntry(codexHome, entryName) {
+  const source = path.join(SOURCE_CODEX_HOME, entryName);
+  if (!existsSync(source)) return;
+  const target = path.join(codexHome, entryName);
+  try {
+    const existing = await lstat(target);
+    if (existing.isSymbolicLink()) {
+      const current = await readlink(target);
+      const resolved = path.resolve(path.dirname(target), current);
+      if (resolved === source) return;
+      await unlink(target);
+    } else {
+      // Do not overwrite agent-local files. This keeps the isolated home safe if
+      // Codex creates local state with the same name in a later release.
+      return;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const sourceStat = await stat(source);
+  await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
+}
+
+async function removeStaleCodexHomeEntry(codexHome, entryName) {
+  const target = path.join(codexHome, entryName);
+  try {
+    const existing = await lstat(target);
+    if (existing.isSymbolicLink()) {
+      await unlink(target);
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
+async function writeAgentCodexConfig(codexHome) {
+  await writeFile(path.join(codexHome, 'config.toml'), [
+    '# Generated by MagClaw. Keep chat agents isolated from the user Codex app.',
+    '',
+    '[features]',
+    'memories = false',
+    '',
+  ].join('\n'), 'utf8');
+}
+
+async function writeAgentCodexAgentsFile(codexHome) {
+  await writeFile(path.join(codexHome, 'AGENTS.md'), [
+    '# MagClaw Agent Runtime',
+    '',
+    '- This Codex home is managed by MagClaw for chat-agent turns.',
+    '- Do not run Codex memory-writing or consolidation workflows inside MagClaw chat turns.',
+    '- Follow the MagClaw prompt for the current channel, thread, or task.',
+    '',
+  ].join('\n'), 'utf8');
+}
+
+async function prepareAgentCodexHome(agent) {
+  const codexHome = agentCodexHomeDir(agent);
+  await mkdir(codexHome, { recursive: true });
+  await Promise.all(CODEX_HOME_STALE_SHARED_ENTRIES.map((entry) => removeStaleCodexHomeEntry(codexHome, entry).catch((error) => {
+    addSystemEvent('agent_codex_home_cleanup_skipped', `Could not clean Codex home entry ${entry}: ${error.message}`, {
+      agentId: agent?.id,
+      codexHome,
+      entry,
+    });
+  })));
+  await Promise.all(CODEX_HOME_SHARED_ENTRIES.map((entry) => ensureSymlinkedCodexHomeEntry(codexHome, entry).catch((error) => {
+    addSystemEvent('agent_codex_home_link_skipped', `Could not link Codex home entry ${entry}: ${error.message}`, {
+      agentId: agent?.id,
+      source: path.join(SOURCE_CODEX_HOME, entry),
+      codexHome,
+    });
+  })));
+  await writeAgentCodexConfig(codexHome);
+  await writeAgentCodexAgentsFile(codexHome);
+  if (agent.runtimeSessionId && (agent.runtimeSessionHome !== codexHome || Number(agent.runtimeConfigVersion || 0) !== CODEX_HOME_CONFIG_VERSION)) {
+    addSystemEvent('agent_runtime_session_reset', `${agent.name} runtime session reset for isolated Codex home config.`, {
+      agentId: agent.id,
+      previousSessionId: agent.runtimeSessionId,
+      previousHome: agent.runtimeSessionHome || SOURCE_CODEX_HOME,
+      codexHome,
+      previousConfigVersion: Number(agent.runtimeConfigVersion || 0),
+      configVersion: CODEX_HOME_CONFIG_VERSION,
+    });
+    agent.runtimeSessionId = null;
+    agent.runtimeLastTurnAt = null;
+  }
+  agent.runtimeSessionHome = codexHome;
+  agent.runtimeConfigVersion = CODEX_HOME_CONFIG_VERSION;
+  return codexHome;
+}
+
+function defaultAgentMemory(agent) {
+  const role = String(agent?.description || 'General-purpose MagClaw teammate.').trim();
+  return [
+    `# ${agent?.name || 'Agent'}`,
+    '',
+    '## Role',
+    `You are ${agent?.name || 'this agent'}, ${role}`,
+    '',
+    '## Collaboration Principles',
+    '- Work in shared channels and task threads.',
+    '- Claim concrete work before doing it when a task exists.',
+    '- Use history/search tools when recent context is insufficient.',
+    '- Keep replies concise and post progress in the relevant thread.',
+    '',
+    '## Knowledge Index',
+    '- Add durable notes under `notes/`.',
+    '',
+    '## Active Tasks',
+    '- No active task has been recorded yet.',
+    '',
+    '## Channel Context',
+    '- No channel-specific context has been recorded yet.',
+    '',
+    '## Work Log',
+    '- No durable work log has been recorded yet.',
+    '',
+  ].join('\n');
+}
+
+async function ensureAgentWorkspace(agent) {
+  if (!agent?.id) return null;
+  const dir = agentDataDir(agent);
+  agent.workspacePath = dir;
+  await mkdir(path.join(dir, 'notes'), { recursive: true });
+  await mkdir(path.join(dir, 'workspace'), { recursive: true });
+  const memoryPath = path.join(dir, 'MEMORY.md');
+  if (!existsSync(memoryPath)) {
+    await writeFile(memoryPath, defaultAgentMemory(agent));
+  }
+  const sessionsPath = path.join(dir, 'sessions.json');
+  if (!existsSync(sessionsPath)) {
+    await writeFile(sessionsPath, JSON.stringify({
+      agentId: agent.id,
+      runtime: agent.runtime || 'Codex CLI',
+      runtimeSessionId: agent.runtimeSessionId || null,
+      runtimeSessionHome: agent.runtimeSessionHome || null,
+      runtimeConfigVersion: agent.runtimeConfigVersion || CODEX_HOME_CONFIG_VERSION,
+      updatedAt: now(),
+    }, null, 2));
+  }
+  await prepareAgentCodexHome(agent);
+  return dir;
+}
+
+async function ensureAllAgentWorkspaces() {
+  for (const agent of state?.agents || []) {
+    await ensureAgentWorkspace(agent);
+  }
+}
+
+async function writeAgentSessionFile(agent) {
+  const dir = await ensureAgentWorkspace(agent);
+  if (!dir) return;
+  await writeFile(path.join(dir, 'sessions.json'), JSON.stringify({
+    agentId: agent.id,
+    runtime: agent.runtime || 'Codex CLI',
+    runtimeSessionId: agent.runtimeSessionId || null,
+    runtimeSessionHome: agent.runtimeSessionHome || null,
+    runtimeConfigVersion: agent.runtimeConfigVersion || CODEX_HOME_CONFIG_VERSION,
+    runtimeLastStartedAt: agent.runtimeLastStartedAt || null,
+    runtimeLastTurnAt: agent.runtimeLastTurnAt || null,
+    updatedAt: now(),
+    todo: [
+      'Persist non-Codex runtime sessions once Claude/other runtimes expose stable resume APIs.',
+      'Add editable workspace files with conflict detection and audit history.',
+    ],
+  }, null, 2));
+}
+
+function agentWorkspacePreviewKind(filePath, buffer) {
+  return projectFilePreviewKind(filePath, buffer);
+}
+
+async function listAgentWorkspace(agent, rawRelPath = '') {
+  const root = await ensureAgentWorkspace(agent);
+  const relPath = normalizeProjectRelPath(rawRelPath);
+  const dirPath = safePathWithin(root, relPath || '.');
+  if (!dirPath) throw httpError(400, 'Agent workspace path must stay inside the agent workspace.');
+  const info = await stat(dirPath).catch(() => null);
+  if (!info) throw httpError(404, 'Agent workspace path was not found.');
+  if (!info.isDirectory()) throw httpError(400, 'Agent workspace path must be a directory.');
+  const dirEntries = (await readdir(dirPath, { withFileTypes: true }))
+    .filter((entry) => !entry.name.startsWith('.'))
+    .sort((a, b) => (a.isDirectory() === b.isDirectory()
+      ? a.name.localeCompare(b.name)
+      : a.isDirectory() ? -1 : 1))
+    .slice(0, MAX_AGENT_WORKSPACE_TREE_ENTRIES);
+
+  const entries = [];
+  for (const entry of dirEntries) {
+    const childRelPath = toPosixPath(path.join(relPath, entry.name)).replace(/^\/+/, '');
+    const childPath = safePathWithin(root, childRelPath);
+    if (!childPath) continue;
+    const childInfo = await stat(childPath).catch(() => null);
+    if (!childInfo) continue;
+    entries.push({
+      id: `${agent.id}:${childRelPath}`,
+      name: entry.name,
+      path: childRelPath,
+      kind: entry.isDirectory() ? 'folder' : 'file',
+      type: entry.isDirectory() ? 'folder' : mimeForPath(childPath),
+      bytes: entry.isDirectory() ? 0 : childInfo.size,
+      updatedAt: childInfo.mtime.toISOString(),
+    });
+  }
+
+  return {
+    agent: {
+      id: agent.id,
+      name: agent.name,
+      workspacePath: root,
+    },
+    path: relPath,
+    entries,
+    truncated: dirEntries.length >= MAX_AGENT_WORKSPACE_TREE_ENTRIES,
+  };
+}
+
+async function readAgentWorkspaceFile(agent, rawRelPath = '') {
+  const root = await ensureAgentWorkspace(agent);
+  const relPath = normalizeProjectRelPath(rawRelPath);
+  const filePath = safePathWithin(root, relPath);
+  if (!filePath) throw httpError(400, 'Agent workspace file path must stay inside the agent workspace.');
+  const info = await stat(filePath).catch(() => null);
+  if (!info) throw httpError(404, 'Agent workspace file was not found.');
+  if (!info.isFile()) throw httpError(400, 'Agent workspace preview path must be a file.');
+  if (info.size > MAX_AGENT_WORKSPACE_FILE_BYTES) {
+    throw httpError(413, `Agent workspace preview is limited to ${MAX_AGENT_WORKSPACE_FILE_BYTES} bytes.`);
+  }
+  const buffer = await readFile(filePath);
+  const previewKind = agentWorkspacePreviewKind(filePath, buffer);
+  return {
+    file: {
+      id: `${agent.id}:${relPath}`,
+      agentId: agent.id,
+      agentName: agent.name,
+      name: baseNameFromProjectPath(relPath, agent.name),
+      path: relPath,
+      absolutePath: filePath,
+      type: mimeForPath(filePath),
+      bytes: info.size,
+      updatedAt: info.mtime.toISOString(),
+      previewKind,
+      content: previewKind === 'binary' ? '' : buffer.toString('utf8'),
+    },
+  };
 }
 
 function findMission(id) {
@@ -379,12 +1170,127 @@ function findChannel(id) {
   return state.channels.find((channel) => channel.id === id);
 }
 
+function selectedDefaultSpaceId(spaceType) {
+  if (spaceType === 'dm') return state.dms?.[0]?.id || '';
+  return state.channels?.[0]?.id || 'chan_all';
+}
+
 function findMessage(id) {
   return state.messages.find((message) => message.id === id);
 }
 
+function findReply(id) {
+  return state.replies.find((reply) => reply.id === id);
+}
+
+function findConversationRecord(id) {
+  return findMessage(id) || findReply(id);
+}
+
+function findWorkItem(id) {
+  return state.workItems?.find((item) => item.id === id);
+}
+
+function findChannelByRef(ref) {
+  const raw = String(ref || '').trim().replace(/^#/, '');
+  if (!raw) return null;
+  return state.channels.find((channel) => (
+    channel.id === raw
+    || channel.name === raw
+    || channel.id.startsWith(raw)
+    || channel.name.startsWith(raw)
+  )) || null;
+}
+
+function findDmByRef(ref) {
+  const raw = String(ref || '').trim().replace(/^dm:/, '');
+  if (!raw) return null;
+  return state.dms.find((dm) => dm.id === raw || dm.id.startsWith(raw) || dm.name === raw) || null;
+}
+
+function findMessageByRef(ref) {
+  const raw = String(ref || '').trim();
+  if (!raw) return null;
+  return state.messages.find((message) => (
+    message.id === raw
+    || message.id.startsWith(raw)
+  )) || null;
+}
+
+function targetForConversation(spaceType, spaceId, parentMessageId = null) {
+  if (spaceType === 'channel') {
+    const channel = findChannel(spaceId);
+    const base = `#${channel?.name || spaceId}`;
+    return parentMessageId ? `${base}:${parentMessageId}` : base;
+  }
+  if (spaceType === 'dm') {
+    const base = `dm:${spaceId}`;
+    return parentMessageId ? `${base}:${parentMessageId}` : base;
+  }
+  return `${spaceType}:${spaceId}${parentMessageId ? `:${parentMessageId}` : ''}`;
+}
+
+function resolveMessageTarget(target) {
+  const raw = String(target || '').trim();
+  if (!raw) throw httpError(400, 'Target is required.');
+  if (raw.startsWith('#')) {
+    const withoutHash = raw.slice(1);
+    const separator = withoutHash.indexOf(':');
+    const channelRef = separator >= 0 ? withoutHash.slice(0, separator) : withoutHash;
+    const parentRef = separator >= 0 ? withoutHash.slice(separator + 1) : '';
+    const channel = findChannelByRef(channelRef);
+    if (!channel) throw httpError(404, `Channel not found: #${channelRef}`);
+    let parentMessageId = null;
+    if (parentRef) {
+      const parent = findMessageByRef(parentRef);
+      if (!parent) throw httpError(404, `Thread message not found: ${parentRef}`);
+      if (parent.spaceType !== 'channel' || parent.spaceId !== channel.id) {
+        throw httpError(409, 'Thread target does not belong to the target channel.');
+      }
+      parentMessageId = parent.id;
+    }
+    return {
+      spaceType: 'channel',
+      spaceId: channel.id,
+      parentMessageId,
+      label: targetForConversation('channel', channel.id, parentMessageId),
+    };
+  }
+  if (raw.startsWith('dm:')) {
+    const parts = raw.split(':');
+    const dmRef = parts[1] || '';
+    const parentRef = parts.slice(2).join(':');
+    const dm = findDmByRef(dmRef);
+    if (!dm) throw httpError(404, `DM not found: ${dmRef}`);
+    let parentMessageId = null;
+    if (parentRef) {
+      const parent = findMessageByRef(parentRef);
+      if (!parent) throw httpError(404, `Thread message not found: ${parentRef}`);
+      if (parent.spaceType !== 'dm' || parent.spaceId !== dm.id) {
+        throw httpError(409, 'Thread target does not belong to the target DM.');
+      }
+      parentMessageId = parent.id;
+    }
+    return {
+      spaceType: 'dm',
+      spaceId: dm.id,
+      parentMessageId,
+      label: targetForConversation('dm', dm.id, parentMessageId),
+    };
+  }
+  throw httpError(400, 'Target must start with #channel or dm:.');
+}
+
 function findAgent(id) {
   return state.agents.find((agent) => agent.id === id);
+}
+
+function findHuman(id) {
+  return state.humans.find((human) => human.id === id);
+}
+
+function findActor(id) {
+  return findAgent(id) || findHuman(id) || null;
 }
 
 function findComputer(id) {
@@ -393,6 +1299,598 @@ function findComputer(id) {
 
 function findTask(id) {
   return state.tasks.find((task) => task.id === id);
+}
+
+function normalizeIds(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .map(String)
+    .map((id) => id.trim())
+    .filter(Boolean))];
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function mentionTokenForId(id) {
+  return String(id).startsWith('!') ? `<!${String(id).replace(/^!/, '')}>` : `<@${id}>`;
+}
+
+function isAsciiMentionWordChar(char) {
+  return /[A-Za-z0-9_.-]/.test(char);
+}
+
+function isMentionBoundaryChar(char) {
+  if (!char) return true;
+  if (/\s/.test(char)) return true;
+  if (/[，。！？；：、,.!?;:()[\]{}「」『』《》【】"'`“”‘’]/.test(char)) return true;
+  return !isAsciiMentionWordChar(char);
+}
+
+function visibleMentionLabel(actor) {
+  return actor?.name ? `@${actor.name}` : '';
+}
+
+function renderMentionsForAgent(text) {
+  return String(text || '')
+    .replace(/<@(agt_\w+|hum_\w+)>/g, (match, id) => {
+      const actor = findActor(id);
+      return actor ? visibleMentionLabel(actor) : match;
+    })
+    .replace(/<!(all|here|channel|everyone)>/g, (_, type) => `@${type}`)
+    .replace(/<#(file|folder):([^:>]+):([^>]*)>/g, (match, kind, projectId, rawRelPath) => {
+      const ref = projectReferenceFromParts(kind, projectId, rawRelPath);
+      return ref ? `@${ref.name} (${ref.kind}: ${ref.absolutePath})` : match;
+    });
+}
+
+function knownMentionEntries() {
+  const entries = [];
+  for (const agent of state.agents || []) {
+    entries.push([visibleMentionLabel(agent), agent.id]);
+  }
+  for (const human of state.humans || []) {
+    entries.push([visibleMentionLabel(human), human.id]);
+    if (human.email) entries.push([`@${human.email.split('@')[0]}`, human.id]);
+  }
+  for (const special of ['all', 'here', 'channel', 'everyone']) {
+    entries.push([`@${special}`, `!${special}`]);
+  }
+  return entries
+    .filter(([label]) => label)
+    .sort((a, b) => b[0].length - a[0].length);
+}
+
+function encodeVisibleMentions(text) {
+  let result = String(text || '');
+  for (const [label, id] of knownMentionEntries()) {
+    const pattern = new RegExp(escapeRegExp(label), 'g');
+    result = result.replace(pattern, (match, offset, fullText) => {
+      const before = offset > 0 ? fullText[offset - 1] : '';
+      const after = fullText[offset + match.length] || '';
+      if (!isMentionBoundaryChar(before) || !isMentionBoundaryChar(after)) return match;
+      return mentionTokenForId(id);
+    });
+  }
+  return result;
+}
+
+function replaceBareActorIds(text) {
+  return String(text || '').replace(/\b(agt_\w+|hum_\w+)\b/g, (match, id, offset, fullText) => {
+    if (offset >= 2 && fullText.slice(offset - 2, offset) === '<@') return match;
+    const actor = findActor(id);
+    return actor?.name || match;
+  });
+}
+
+function prepareAgentResponseBody(text) {
+  return encodeVisibleMentions(replaceBareActorIds(String(text || '').trim()));
+}
+
+function defaultReadBy(record) {
+  if (record.authorType === 'human' && record.authorId === 'hum_local') return ['hum_local'];
+  if (record.authorType === 'system') return ['hum_local'];
+  return [];
+}
+
+function normalizeConversationRecord(record) {
+  const mentions = extractMentions(record.body || '');
+  record.attachmentIds = normalizeIds(record.attachmentIds);
+  record.localReferences = extractLocalReferences(record.body || '');
+  record.mentionedAgentIds = normalizeIds(record.mentionedAgentIds?.length ? record.mentionedAgentIds : mentions.agents);
+  record.mentionedHumanIds = normalizeIds(record.mentionedHumanIds?.length ? record.mentionedHumanIds : mentions.humans);
+  record.readBy = normalizeIds(record.readBy?.length ? record.readBy : defaultReadBy(record));
+  return record;
+}
+
+// Extract mentions from message text
+// Parses <@agent_id>, <@human_id>, and <!special> patterns
+function extractMentions(text) {
+  const mentions = {
+    agents: [],
+    humans: [],
+    special: [],
+  };
+  // Extract <@agt_xxx> agent mentions
+  const agentMatches = text.matchAll(/<@(agt_\w+)>/g);
+  for (const match of agentMatches) {
+    const agent = findAgent(match[1]);
+    if (agent && !mentions.agents.includes(agent.id)) {
+      mentions.agents.push(agent.id);
+    }
+  }
+  // Extract <@hum_xxx> human mentions
+  const humanMatches = text.matchAll(/<@(hum_\w+)>/g);
+  for (const match of humanMatches) {
+    const human = findHuman(match[1]);
+    if (human && !mentions.humans.includes(match[1])) {
+      mentions.humans.push(match[1]);
+    }
+  }
+  // Extract <!special> mentions (all, here, channel, everyone)
+  const specialMatches = text.matchAll(/<!(all|here|channel|everyone)>/g);
+  for (const match of specialMatches) {
+    if (!mentions.special.includes(match[1])) {
+      mentions.special.push(match[1]);
+    }
+  }
+  return mentions;
+}
+
+function applyMentions(record, mentions = extractMentions(record.body || '')) {
+  record.mentionedAgentIds = normalizeIds(mentions.agents);
+  record.mentionedHumanIds = normalizeIds(mentions.humans);
+  return record;
+}
+
+function taskScopeKey(spaceType, spaceId) {
+  return `${spaceType || 'channel'}:${spaceId || 'chan_all'}`;
+}
+
+function nextTaskNumber(spaceType, spaceId) {
+  const key = taskScopeKey(spaceType, spaceId);
+  return state.tasks
+    .filter((task) => taskScopeKey(task.spaceType, task.spaceId) === key)
+    .reduce((max, task) => Math.max(max, Number(task.number) || 0), 0) + 1;
+}
+
+function taskLabel(task) {
+  return `#${Number(task.number) || shortTaskId(task.id)}`;
+}
+
+function spaceDisplayName(spaceType, spaceId) {
+  if (spaceType === 'channel') return `#${findChannel(spaceId)?.name || spaceId || 'channel'}`;
+  if (spaceType === 'dm') return `dm:${spaceId || 'unknown'}`;
+  return `${spaceType || 'space'}:${spaceId || ''}`;
+}
+
+function resolveConversationSpace(input = {}) {
+  if (input.target) {
+    const target = resolveMessageTarget(input.target);
+    return { spaceType: target.spaceType, spaceId: target.spaceId, label: spaceDisplayName(target.spaceType, target.spaceId) };
+  }
+  const rawChannel = String(input.channel || '').trim();
+  if (rawChannel) {
+    if (rawChannel.startsWith('#')) {
+      const name = rawChannel.slice(1);
+      const channel = state.channels.find((item) => item.name === name || item.id === name || item.id.startsWith(name));
+      if (!channel) throw httpError(404, `Channel not found: ${rawChannel}`);
+      return { spaceType: 'channel', spaceId: channel.id, label: `#${channel.name}` };
+    }
+    if (rawChannel.toLowerCase().startsWith('dm:')) {
+      const dmRef = rawChannel.slice(3);
+      const dm = state.dms.find((item) => item.id === dmRef || item.id.startsWith(dmRef));
+      if (!dm) throw httpError(404, `DM not found: ${rawChannel}`);
+      return { spaceType: 'dm', spaceId: dm.id, label: `dm:${dm.id}` };
+    }
+  }
+  const spaceType = input.spaceType === 'dm' ? 'dm' : 'channel';
+  const spaceId = String(input.spaceId || selectedDefaultSpaceId(spaceType));
+  const exists = spaceType === 'channel' ? findChannel(spaceId) : state.dms.some((item) => item.id === spaceId);
+  if (!exists) throw httpError(404, 'Conversation not found.');
+  return { spaceType, spaceId, label: spaceDisplayName(spaceType, spaceId) };
+}
+
+function stopScopeFromBody(body = {}) {
+  const hasScope = body.spaceType !== undefined || body.spaceId !== undefined || body.channel !== undefined || body.target !== undefined;
+  return hasScope ? resolveConversationSpace(body) : null;
+}
+
+function spaceMatchesScope(record, scope) {
+  if (!scope) return true;
+  return record?.spaceType === scope.spaceType && record?.spaceId === scope.spaceId;
+}
+
+function taskMatchesScope(task, scope) {
+  return Boolean(task && spaceMatchesScope(task, scope));
+}
+
+function messageMatchesScope(message, scope) {
+  if (!message) return false;
+  if (spaceMatchesScope(message, scope)) return true;
+  if (message.parentMessageId) return messageMatchesScope(findMessage(message.parentMessageId), scope);
+  return false;
+}
+
+function workItemMatchesScope(item, scope) {
+  if (!item) return false;
+  if (spaceMatchesScope(item, scope)) return true;
+  return messageMatchesScope(findConversationRecord(item.sourceMessageId), scope);
+}
+
+function deliveryMessageMatchesScope(message, scope) {
+  if (!message) return false;
+  if (spaceMatchesScope(message, scope)) return true;
+  const workItem = message.workItemId ? findWorkItem(message.workItemId) : null;
+  if (workItemMatchesScope(workItem, scope)) return true;
+  return messageMatchesScope(findConversationRecord(message.id), scope);
+}
+
+function runMatchesScope(run, scope) {
+  if (!run) return false;
+  const task = findTask(run.taskId || findMission(run.missionId)?.taskId);
+  if (task) return taskMatchesScope(task, scope);
+  const mission = findMission(run.missionId);
+  if (mission?.spaceType || mission?.spaceId) return spaceMatchesScope(mission, scope);
+  return false;
+}
+
+function workItemIsCancelled(workItemId) {
+  return Boolean(workItemId && findWorkItem(workItemId)?.status === 'cancelled');
+}
+
+function turnMetaHasCancelledWork(turnMeta) {
+  return normalizeIds(turnMeta?.workItemIds || []).some(workItemIsCancelled);
+}
+
+function turnMetaAllWorkCancelled(turnMeta) {
+  const ids = normalizeIds(turnMeta?.workItemIds || []);
+  return ids.length > 0 && ids.every(workItemIsCancelled);
+}
+
+function turnMetaMatchesScope(turnMeta, scope) {
+  if (!turnMeta) return false;
+  if (spaceMatchesScope(turnMeta, scope)) return true;
+  if (messageMatchesScope(turnMeta.sourceMessage, scope)) return true;
+  return normalizeIds(turnMeta.workItemIds || []).some((id) => workItemMatchesScope(findWorkItem(id), scope));
+}
+
+function turnMetaHasWorkOutsideScope(turnMeta, scope) {
+  const ids = normalizeIds(turnMeta?.workItemIds || []);
+  if (!ids.length) return !turnMetaMatchesScope(turnMeta, scope);
+  return ids.some((id) => {
+    const item = findWorkItem(id);
+    return item && !workItemMatchesScope(item, scope);
+  });
+}
+
+function shortTaskId(id) {
+  return String(id || '').split('_').pop()?.slice(0, 6) || 'task';
+}
+
+function findTaskForThreadMessage(message) {
+  if (!message) return null;
+  if (message.taskId) {
+    const direct = findTask(message.taskId);
+    if (direct) return direct;
+  }
+  return state.tasks.find((task) => task.threadMessageId === message.id || task.messageId === message.id || task.sourceMessageId === message.id) || null;
+}
+
+function addSystemMessage(spaceType, spaceId, body, extra = {}) {
+  const message = normalizeConversationRecord({
+    id: makeId('msg'),
+    spaceType,
+    spaceId,
+    authorType: 'system',
+    authorId: 'system',
+    body,
+    attachmentIds: [],
+    replyCount: 0,
+    savedBy: [],
+    createdAt: now(),
+    updatedAt: now(),
+    ...extra,
+  });
+  state.messages.push(message);
+  return message;
+}
+
+function addTaskTimelineMessage(task, body, eventType) {
+  return addSystemMessage(task.spaceType, task.spaceId, body, {
+    eventType: eventType || 'task_event',
+    taskId: task.id,
+  });
+}
+
+function taskEndIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /把这个(任务|会话|thread|对话)结束/,
+    /结束这个(任务|会话|thread|对话)/,
+    /这个(任务|会话|thread|对话).*(结束|完成)/,
+    /(mark|move).*(task|thread).*(done|complete)/,
+    /\b(done|complete|completed)\b/,
+  ].some((pattern) => pattern.test(value));
+}
+
+function taskCreationIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /(创建|新建|开启|开|建)(一个|个)?\s*(task|任务)/,
+    /(把|将).*(变成|作为|转成|创建成|提升成).*(task|任务)/,
+    /(create|make|open|start).*(task)/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function quickAnswerIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  const asksForSimpleLookup = [
+    /(查一下|查询|搜索|找一下|看一下|告诉我|问一下|是什么|为什么|怎么|多少|天气|预报)/,
+    /\b(search|lookup|find|what|why|how|weather|forecast)\b/i,
+  ].some((pattern) => pattern.test(value));
+  if (!asksForSimpleLookup) return false;
+  return ![
+    /(写成|整理成|生成|落地|实现|修复|修改|部署|接入|迁移|重构|监控|报告|文档|方案|测试|验证|长期|持续|任务|task|pr|代码)/,
+    /\b(report|doc|document|plan|proposal|implement|fix|deploy|migrate|refactor|monitor|test|verify|task|pr|code)\b/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function autoTaskMessageIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  if (taskCreationIntent(value)) return true;
+  if (quickAnswerIntent(value)) return false;
+  if (value.length > 240) return true;
+  return [
+    /(谁去|谁能|有没有人|请|帮我|帮忙|麻烦|需要|去|把|给我).*(修复|修一下|修改|改一下|实现|做一版|做一下|处理|解决|调研并|测试|验证|检查代码|写|总结成|整理成|生成|规划|设计|接入|部署|运行|迁移|重构|落地)/,
+    /(修复|修一下|修改|改一下|实现|做一版|处理|解决|测试|验证|写文档|生成报告|整理方案|落地方案|接入|部署|迁移|重构)/,
+    /(fix|implement|debug|test|write|create|build|deploy|review|investigate|summarize into|turn into|migrate|refactor)\b/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function agentResponseIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  if (autoTaskMessageIntent(value) || quickAnswerIntent(value)) return true;
+  return [
+    /(谁去|谁能|有没有人|请|帮我|帮忙|麻烦|需要|去|给我|帮我看看|看一下|查一下|查询|搜索|找一下|天气|预报|分析|总结|整理|规划|设计)/,
+    /\b(help|search|lookup|find|analyze|summarize|weather|forecast|question)\b/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function workLikeMessageIntent(text) {
+  return agentResponseIntent(text);
+}
+
+function agentAvailableForAutoWork(agent) {
+  if (!agent) return false;
+  if (['offline', 'error'].includes(String(agent.status || '').toLowerCase())) return false;
+  return true;
+}
+
+function pickAvailableAgent(channelAgents, preferredIds = []) {
+  const candidates = (channelAgents || []).filter(agentAvailableForAutoWork);
+  if (!candidates.length) return null;
+  for (const id of normalizeIds(preferredIds)) {
+    const preferred = candidates.find((agent) => agent.id === id);
+    if (preferred) return preferred;
+  }
+  return candidates.find((agent) => ['idle', 'online'].includes(String(agent.status || '').toLowerCase()))
+    || candidates[0]
+    || null;
+}
+
+function cleanTaskTitle(text, fallback = 'Follow-up task') {
+  const cleaned = String(text || '')
+    .replace(/<[@!#][^>]+>/g, ' ')
+    .replace(/(创建|新建|开启|开|建)(一个|个)?\s*(task|任务)/gi, ' ')
+    .replace(/\b(create|make|open|start)\s+(a\s+)?task\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (cleaned || fallback).slice(0, 120);
+}
+
+function titleFromThreadTaskIntent(parent, reply) {
+  const parentTitle = cleanTaskTitle(parent?.body || '', '');
+  if (parentTitle) return parentTitle;
+  return cleanTaskTitle(reply?.body || '', 'Thread follow-up task');
+}
+
+function createOrClaimTaskForMessage(message, agent, options = {}) {
+  if (!message || !agent) return null;
+  const task = createTaskFromMessage(message, options.title || message.body, {
+    assigneeIds: [agent.id],
+    createdBy: options.createdBy || message.authorId,
+  });
+  if (!task.claimedBy) claimTask(task, agent.id, { force: false });
+  return task;
+}
+
+function createTaskFromThreadIntent(parent, reply, agent) {
+  const title = titleFromThreadTaskIntent(parent, reply);
+  const body = [
+    `Created from thread in ${spaceDisplayName(parent.spaceType, parent.spaceId)}.`,
+    '',
+    `Parent: ${renderMentionsForAgent(parent.body || '')}`,
+    `Trigger: ${renderMentionsForAgent(reply.body || '')}`,
+  ].join('\n');
+  const result = createTaskMessage({
+    title,
+    body,
+    spaceType: parent.spaceType,
+    spaceId: parent.spaceId,
+    authorType: 'agent',
+    authorId: agent.id,
+    assigneeIds: [agent.id],
+    sourceMessageId: parent.id,
+    sourceReplyId: reply.id,
+  });
+  claimTask(result.task, agent.id, { force: true });
+  const ack = normalizeConversationRecord({
+    id: makeId('rep'),
+    parentMessageId: parent.id,
+    spaceType: parent.spaceType,
+    spaceId: parent.spaceId,
+    authorType: 'agent',
+    authorId: agent.id,
+    body: `已创建并 claim ${taskLabel(result.task)}：${result.task.title}。我会在新的 task thread 里继续推进。`,
+    attachmentIds: [],
+    createdAt: now(),
+    updatedAt: now(),
+  });
+  state.replies.push(ack);
+  parent.replyCount = state.replies.filter((item) => item.parentMessageId === parent.id).length;
+  parent.updatedAt = now();
+  addCollabEvent('thread_task_created', `${agent.name} created ${taskLabel(result.task)} from a thread reply.`, {
+    agentId: agent.id,
+    taskId: result.task.id,
+    sourceMessageId: parent.id,
+    sourceReplyId: reply.id,
+  });
+  return { ...result, ackReply: ack };
+}
+
+function shouldStartThreadForAgentDelivery(message) {
+  if (!message || message.parentMessageId) return false;
+  if (message.authorType !== 'human') return false;
+  if (!message.id || !String(message.id).startsWith('msg_')) return false;
+  if (message.taskId) return true;
+  if (Array.isArray(message.attachmentIds) && message.attachmentIds.length > 0) return true;
+  if (agentResponseIntent(message.body)) return true;
+  return Array.isArray(message.mentionedAgentIds) && message.mentionedAgentIds.length > 0;
+}
+
+function finishTaskFromThread(task, actorId, replyId) {
+  if (!task || task.status === 'done') return false;
+  task.status = 'done';
+  task.completedAt = now();
+  task.endIntentAt = task.endIntentAt || task.completedAt;
+  task.claimedBy = task.claimedBy || actorId || null;
+  if (task.claimedBy && task.claimedBy.startsWith('agt_')) {
+    task.assigneeIds = normalizeIds([...(task.assigneeIds || []), task.claimedBy]);
+    task.assigneeId = task.assigneeId || task.claimedBy;
+  }
+  addTaskHistory(task, 'ended_from_thread', 'Task ended from thread intent.', actorId || 'hum_local', { replyId });
+  addTaskTimelineMessage(task, `✅ ${displayActor(actorId)} moved ${taskLabel(task)} to Done`, 'task_done');
+  return true;
+}
+
+function displayActor(id) {
+  if (id === 'system') return 'Magclaw';
+  const human = findHuman(id);
+  if (human) return human.name;
+  const agent = findAgent(id);
+  if (agent) return agent.name;
+  return id || 'Someone';
+}
+
+function channelAgentIds(channel) {
+  if (!channel) return [];
+  if (channel.id === 'chan_all') return state.agents.map((agent) => agent.id);
+  return normalizeIds([...(channel.agentIds || []), ...(channel.memberIds || []).filter((id) => id.startsWith('agt_'))]);
+}
+
+function channelHumanIds(channel) {
+  if (!channel) return [];
+  if (channel.id === 'chan_all') return state.humans.map((human) => human.id);
+  return normalizeIds([...(channel.humanIds || []), ...(channel.memberIds || []).filter((id) => id.startsWith('hum_'))]);
+}
+
+function directedPrimaryAgentId(mentions, message) {
+  if (!Array.isArray(mentions?.agents) || mentions.agents.length < 2) return null;
+  const visibleText = renderMentionsForAgent(message?.body || '').replace(/\s+/g, '');
+  const ordered = mentions.agents
+    .map((id) => {
+      const actor = findAgent(id);
+      const label = actor ? visibleMentionLabel(actor).replace(/\s+/g, '') : '';
+      return { id, label, index: label ? visibleText.indexOf(label) : -1 };
+    })
+    .filter((item) => item.index >= 0)
+    .sort((a, b) => a.index - b.index);
+  if (ordered.length < 2) return null;
+
+  const [first, second] = ordered;
+  const bridge = visibleText.slice(first.index + first.label.length, second.index);
+  if (/(你|请你|麻烦你|帮我|去)?(找|叫|问|联系|拉|邀请|带|和|跟)$/.test(bridge)) return first.id;
+  if (/(你|请你|麻烦你|帮我).*(找|叫|问|联系|拉|邀请|带|和|跟)/.test(bridge)) return first.id;
+  return null;
+}
+
+// Determine which agents should respond based on mentions and personality
+function determineRespondingAgents(channelAgents, mentions, message, spaceId) {
+  const respondingAgents = [];
+
+  // Case 1: Specific agent(s) mentioned via <@agt_xxx>
+  if (mentions.agents.length > 0) {
+    const directedPrimary = message?.authorType === 'human' ? directedPrimaryAgentId(mentions, message) : null;
+    if (directedPrimary) {
+      const agent = channelAgents.find(a => a.id === directedPrimary);
+      return agent ? [agent] : [];
+    }
+    for (const agentId of mentions.agents) {
+      const agent = channelAgents.find(a => a.id === agentId);
+      if (agent) respondingAgents.push(agent);
+    }
+    return respondingAgents;
+  }
+
+  // Case 2: @all or @everyone - all agents respond
+  if (mentions.special.includes('all') || mentions.special.includes('everyone')) {
+    return channelAgents;
+  }
+
+  // Case 3: @here - only online/idle agents respond
+  if (mentions.special.includes('here') || mentions.special.includes('channel')) {
+    return channelAgents.filter(a => a.status === 'idle' || a.status === 'online');
+  }
+
+  // Case 4: Actionable channel work without a direct mention - assign one available agent.
+  if (message?.authorType === 'human' && agentResponseIntent(message.body)) {
+    const agent = pickAvailableAgent(channelAgents);
+    return agent ? [agent] : [];
+  }
+
+  // Case 5: No mention - agents decide based on personality
+  for (const agent of channelAgents) {
+    if (shouldAgentRespond(agent, message, spaceId)) {
+      respondingAgents.push(agent);
+    }
+  }
+
+  return respondingAgents;
+}
+
+// Personality-based decision: should this agent respond without direct mention?
+function shouldAgentRespond(agent, message, spaceId) {
+  const personality = agent.personality || {};
+  const memory = agent.memory || {};
+  const proactivity = typeof personality.proactivity === 'number' ? personality.proactivity : 0.3;
+
+  // Base score starts at proactivity level
+  let score = proactivity;
+
+  // Factor 1: Message mentions topics in agent's interests
+  const interests = personality.interests || [];
+  const messageText = (message.body || '').toLowerCase();
+  const topicMatch = interests.some(topic => messageText.includes(topic.toLowerCase()));
+  if (topicMatch) score += 0.3;
+
+  // Factor 2: Agent has recent context in this space (within 30 minutes)
+  const recentThreshold = 30 * 60 * 1000;
+  const hasRecentContext = (memory.conversationSummaries || []).some(
+    s => s.spaceId === spaceId && Date.now() - new Date(s.updatedAt).getTime() < recentThreshold
+  );
+  if (hasRecentContext) score += 0.2;
+
+  // Factor 3: Random factor for natural variation
+  const randomFactor = Math.random() * 0.3;
+
+  // Decision: respond if combined score exceeds threshold
+  return (score + randomFactor) > 0.6;
 }
 
 function normalizeName(value, fallback) {
@@ -426,16 +1924,18 @@ function addTaskHistory(task, type, message, actorId = 'hum_local', extra = {}) 
 function addSystemReply(parentMessageId, body) {
   const parent = findMessage(parentMessageId);
   if (!parent) return null;
-  const reply = {
+  const reply = normalizeConversationRecord({
     id: makeId('rep'),
     parentMessageId,
+    spaceType: parent.spaceType,
+    spaceId: parent.spaceId,
     authorType: 'system',
     authorId: 'system',
     body,
     attachmentIds: [],
     createdAt: now(),
     updatedAt: now(),
-  };
+  });
   state.replies.push(reply);
   parent.replyCount = state.replies.filter((item) => item.parentMessageId === parentMessageId).length;
   parent.updatedAt = now();
@@ -443,7 +1943,7 @@ function addSystemReply(parentMessageId, body) {
 }
 
 function cloudSnapshot() {
-  const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'events'];
+  const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'events'];
   const snapshot = {
     version: state.version,
     exportedAt: now(),
@@ -457,7 +1957,7 @@ function cloudSnapshot() {
 }
 
 function applyCloudSnapshot(snapshot) {
-  const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'events'];
+  const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'events'];
   for (const key of allowedKeys) {
     if (Array.isArray(snapshot?.[key])) state[key] = snapshot[key];
   }
@@ -562,20 +2062,20 @@ function ensureTaskThread(task) {
     return findMessage(task.messageId);
   }
 
-  const message = {
+  const message = normalizeConversationRecord({
     id: makeId('msg'),
     spaceType: task.spaceType,
     spaceId: task.spaceId,
-    authorType: 'human',
+    authorType: String(task.createdBy || '').startsWith('agt_') ? 'agent' : 'human',
     authorId: task.createdBy || 'hum_local',
-    body: `Task: ${task.title}${task.body ? `\n\n${task.body}` : ''}`,
+    body: task.title || 'Untitled task',
     attachmentIds: Array.isArray(task.attachmentIds) ? task.attachmentIds : [],
     replyCount: 0,
     savedBy: [],
     taskId: task.id,
     createdAt: task.createdAt || now(),
     updatedAt: now(),
-  };
+  });
   state.messages.push(message);
   task.messageId = message.id;
   task.threadMessageId = message.id;
@@ -754,6 +2254,102 @@ function execText(command, args) {
   });
 }
 
+function execFileResult(command, args, options = {}) {
+  return new Promise((resolve) => {
+    execFile(command, args, options, (error, stdout, stderr) => {
+      resolve({
+        code: typeof error?.code === 'number' ? error.code : 0,
+        signal: error?.signal || null,
+        stdout: String(stdout || ''),
+        stderr: String(stderr || ''),
+        error,
+      });
+    });
+  });
+}
+
+function appleScriptString(value) {
+  return `"${String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+async function pickFolderPath(defaultPath = '') {
+  if (Object.prototype.hasOwnProperty.call(process.env, 'MAGCLAW_PICK_FOLDER_PATH')) {
+    const picked = String(process.env.MAGCLAW_PICK_FOLDER_PATH || '').trim();
+    return picked ? path.resolve(picked) : null;
+  }
+  if (process.platform !== 'darwin') {
+    throw httpError(501, 'Native folder picker is currently available on macOS only.');
+  }
+
+  let defaultLocation = '';
+  const candidate = path.resolve(String(defaultPath || state.settings?.defaultWorkspace || ROOT));
+  try {
+    const info = await stat(candidate);
+    defaultLocation = info.isDirectory() ? candidate : path.dirname(candidate);
+  } catch {
+    defaultLocation = ROOT;
+  }
+
+  const args = [
+    '-e', `set defaultFolder to POSIX file ${appleScriptString(defaultLocation)} as alias`,
+    '-e', 'try',
+    '-e', '  set pickedFolder to choose folder with prompt "Open Project Folder" default location defaultFolder',
+    '-e', '  POSIX path of pickedFolder',
+    '-e', 'on error number -128',
+    '-e', '  return ""',
+    '-e', 'end try',
+  ];
+  const result = await execFileResult('osascript', args);
+  if (result.error && result.code !== 0) {
+    throw httpError(500, result.stderr.trim() || result.error.message || 'Folder picker failed.');
+  }
+  const picked = result.stdout.trim();
+  return picked ? path.resolve(picked) : null;
+}
+
+async function addProjectFolder({ rawPath, name = '', spaceType = 'channel', spaceId = '' }) {
+  const normalizedSpaceType = spaceType === 'dm' ? 'dm' : 'channel';
+  const normalizedSpaceId = String(spaceId || selectedDefaultSpaceId(normalizedSpaceType));
+  const cleanPath = String(rawPath || '').trim();
+  if (!cleanPath) throw httpError(400, 'Project folder path is required.');
+  const projectPath = path.resolve(cleanPath);
+
+  let info;
+  try {
+    info = await stat(projectPath);
+  } catch (error) {
+    addSystemEvent('project_add_failed', `Project folder not found: ${projectPath}`, { error: error.message });
+    throw httpError(404, 'Project folder was not found on the Magclaw server.');
+  }
+  if (!info.isDirectory()) throw httpError(400, 'Project path must be a directory.');
+
+  const existing = state.projects.find((project) => (
+    project.spaceType === normalizedSpaceType && project.spaceId === normalizedSpaceId && project.path === projectPath
+  ));
+  if (existing) {
+    return { project: existing, projects: projectsForSpace(normalizedSpaceType, normalizedSpaceId), created: false };
+  }
+
+  const project = {
+    id: makeId('prj'),
+    name: String(name || path.basename(projectPath) || 'Project').trim().slice(0, 80),
+    path: projectPath,
+    spaceType: normalizedSpaceType,
+    spaceId: normalizedSpaceId,
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  state.projects.push(project);
+  addSystemEvent('project_added', `Project folder added: ${project.name}`, {
+    projectId: project.id,
+    spaceType: normalizedSpaceType,
+    spaceId: normalizedSpaceId,
+  });
+  await persistState();
+  broadcastState();
+  return { project, projects: projectsForSpace(normalizedSpaceType, normalizedSpaceId), created: true };
+}
+
 function createPrompt(mission, run, attachments) {
   const contract = {
     goal: mission.goal,
@@ -763,6 +2359,7 @@ function createPrompt(mission, run, attachments) {
     gates: mission.gates,
     evidenceRequired: mission.evidenceRequired,
     humanCheckpoints: mission.humanCheckpoints,
+    localReferences: mission.localReferences || [],
   };
 
   const attachmentLines = attachments.length
@@ -787,6 +2384,9 @@ function createPrompt(mission, run, attachments) {
     '',
     'Attachments saved locally:',
     attachmentLines,
+    '',
+    'Local project references are original files/folders, not attachment copies:',
+    localReferenceLines(mission.localReferences || []) || '- none',
     '',
     'User request:',
     mission.goal,
@@ -920,6 +2520,7 @@ function startCodexRun(mission, run) {
           task.reviewRequestedAt = now();
           addTaskHistory(task, 'review_requested', `Codex run ${run.id} succeeded; moved to review.`, task.claimedBy || 'agt_codex', { runId: run.id });
           addSystemReply(ensureTaskThread(task).id, `Codex run ${run.id} finished. Review requested.`);
+          addTaskTimelineMessage(task, `👀 ${displayActor(task.claimedBy || 'agt_codex')} moved ${taskLabel(task)} to In Review`, 'task_review');
         } else if (run.status === 'failed') {
           addTaskHistory(task, 'run_failed', `Codex run ${run.id} failed.`, task.claimedBy || 'agt_codex', { runId: run.id });
           addSystemReply(ensureTaskThread(task).id, `Codex run ${run.id} failed. Check evidence.`);
@@ -948,9 +2549,18 @@ function getAgentRuntime(agent) {
 }
 
 function createAgentStandingPrompt(agent, spaceType, spaceId) {
+  const channel = spaceType === 'channel' ? findChannel(spaceId) : null;
   const spaceName = spaceType === 'dm'
     ? `DM with ${agent.name}`
-    : `#${findChannel(spaceId)?.name || 'channel'}`;
+    : `#${channel?.name || 'channel'}`;
+  const toolTarget = spaceType === 'dm' ? `dm:${spaceId}` : `#${channel?.name || 'channel'}`;
+  const agentsInSpace = spaceType === 'channel'
+    ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
+    : state.agents.filter((item) => item.id === agent.id);
+  const humansInSpace = spaceType === 'channel'
+    ? channelHumanIds(channel).map(id => findHuman(id)).filter(Boolean)
+    : state.humans.filter((item) => item.id === 'hum_local');
+  const projectsInSpace = projectsForSpace(spaceType, spaceId);
 
   return [
     `You are ${agent.name}, an AI agent running in Magclaw.`,
@@ -959,20 +2569,51 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     'Context:',
     `- You are in: ${spaceName}`,
     `- Your workspace: ${agent.workspace || state.settings.defaultWorkspace || ROOT}`,
+    agentsInSpace.length ? `- Agents in this conversation: ${agentsInSpace.map((item) => item.id === agent.id ? `${item.name} (you)` : item.name).join(', ')}` : '',
+    humansInSpace.length ? `- Humans in this conversation: ${humansInSpace.map((item) => item.name).join(', ')}` : '',
+    projectsInSpace.length ? `- Project folders in this conversation: ${projectsInSpace.map((item) => `${item.name}: ${item.path}`).join('; ')}` : '',
     '',
     'Guidelines:',
     '- Respond helpfully and concisely to the user.',
-    '- If asked to perform coding tasks, do them in your workspace.',
+    '- For ordinary chat or coordination, just answer in natural language. Do not run shell commands.',
+    '- Do not run Codex memory-writing, memory consolidation, or profile-update workflows inside MagClaw chat turns.',
+    '- For simple Q&A, greetings, role questions, one-off lookups, weather/forecast requests, or lightweight coordination, answer in the current thread and do not create a task.',
+    '- For simple lookup/weather requests, use at most one or two authoritative lookups, then reply with a compact answer. Do not inspect local files or run project/memory workflows unless the user explicitly asks.',
+    '- Each delivered message includes a bracket header such as `[target=#all:msg_xxx workItem=wi_xxx msg=msg_xxx task=task_xxx ...]`. Treat target and workItem as routing authority.',
+    '- For multi-channel, multi-task, or thread/task work, reply with the controlled send_message API: POST /api/agent-tools/messages/send using the exact target and workItemId from the current header.',
+    '- If you call send_message for a work item, Magclaw will not duplicate your final stdout for that same turn. If you do not call send_message, Magclaw will post your final stdout back to the source thread as a compatibility fallback.',
+    '- Never guess a channel or thread target. Use the exact target from the header or read/search history first.',
+    '- If the current prompt includes Magclaw history tools, you may use them to read or search conversation history when the compact snapshot is insufficient.',
+    '- You may call the controlled Magclaw agent tool APIs when needed: GET /api/agent-tools/history, GET /api/agent-tools/search, POST /api/agent-tools/messages/send, POST /api/agent-tools/tasks, POST /api/agent-tools/tasks/claim, and POST /api/agent-tools/tasks/update.',
+    `- Create a new task with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/tasks -H 'content-type: application/json' -d '{"agentId":"${agent.id}","channel":"${toolTarget}","claim":true,"tasks":[{"title":"Task title"}]}'`,
+    `- Update a claimed task with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/tasks/update -H 'content-type: application/json' -d '{"agentId":"${agent.id}","taskId":"task_xxx","status":"in_review"}'`,
+    '- Create or claim tasks only for durable work with progress/state: coding changes, debugging, deployment, docs/report deliverables, multi-step research, migrations, reviews, or when the user explicitly says task/as task/创建任务.',
+    '- When a user asks for actionable durable work, claim the existing task if Magclaw already created one for you, then continue the work in the task thread.',
+    '- Thread replies cannot become tasks directly. If new work emerges in a thread, create a new top-level task-message with sourceMessageId/sourceReplyId instead of claiming the reply.',
+    '- If work already exists as a task, claim it instead of creating a duplicate.',
+    '- After important task progress or completion, update your MEMORY.md with structured notes under Active Tasks, Channel Context, and Work Log. Keep it concise and progressively disclosed; put detail notes under notes/ when needed.',
+    '- Mention another participant with their visible name, for example @Alice. Do not expose internal ids like agt_xxx, hum_xxx, or raw <@...> tokens.',
+    '- If a user references a local file or folder with @, treat the shown path as the original project file/folder, not as an uploaded attachment copy.',
+    '- If asked to perform coding tasks, do them in your workspace and summarize the result.',
     '- Be conversational but professional.',
     '',
     'The user will send you messages. Respond naturally.',
   ].filter(Boolean).join('\n');
 }
 
-function createAgentTurnPrompt(messages) {
+function messageAddressingHint(message, agent) {
+  if (message.mentionedAgentIds?.includes(agent.id)) return ' mentioned you';
+  return '';
+}
+
+function createAgentTurnPrompt(messages, agent) {
   return messages.map(m => {
-    const author = m.authorType === 'human' ? 'Human' : m.authorId;
-    return `[${author}]: ${m.body}`;
+    if (m.contextPack) {
+      return renderAgentContextPack(m.contextPack, { state, targetAgentId: agent.id });
+    }
+    const author = displayActor(m.authorId);
+    const refs = localReferenceLines(m.localReferences?.length ? m.localReferences : extractLocalReferences(m.body || ''));
+    return `[${author}${messageAddressingHint(m, agent)}]: ${renderMentionsForAgent(m.body)}${refs ? `\nLocal project references:\n${refs}` : ''}`;
   }).join('\n\n');
 }
 
@@ -980,13 +2621,16 @@ async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
   const agentId = agent.id;
   const runtime = getAgentRuntime(agent);
   const workspace = path.resolve(agent.workspace || state.settings.defaultWorkspace || ROOT);
+  const initialMessages = Array.isArray(initialMessage)
+    ? initialMessage.filter(Boolean)
+    : (initialMessage ? [initialMessage] : []);
 
   // Check if agent already has a running process
   if (agentProcesses.has(agentId)) {
     const proc = agentProcesses.get(agentId);
     if (proc.status === 'running' || proc.status === 'starting') {
       // Queue the message for delivery
-      proc.inbox.push(initialMessage);
+      proc.inbox.push(...initialMessages);
       return proc;
     }
   }
@@ -999,15 +2643,19 @@ async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
     spaceType,
     spaceId,
     status: 'starting',
-    inbox: initialMessage ? [initialMessage] : [],
+    inbox: initialMessages,
+    pendingDeliveryMessages: [],
+    busyDeliveryTimer: null,
+    promptMessageCount: 0,
     child: null,
     runtime,
+    parentMessageId: initialMessages[0]?.parentMessageId || null,
     startedAt: now(),
   };
   agentProcesses.set(agentId, proc);
 
   // Update agent status
-  agent.status = 'working';
+  agent.status = 'starting';
   await persistState();
   broadcastState();
 
@@ -1023,8 +2671,12 @@ async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
 }
 
 async function startClaudeAgent(agent, proc, workspace) {
+  // TODO: Move Claude to the same persistent resume/steer contract once its CLI exposes a stable app-server style API.
   const standingPrompt = createAgentStandingPrompt(agent, proc.spaceType, proc.spaceId);
-  const turnPrompt = createAgentTurnPrompt(proc.inbox);
+  const promptMessages = proc.inbox.slice();
+  proc.promptMessageCount = promptMessages.length;
+  proc.lastSourceMessage = promptMessages[promptMessages.length - 1] || null;
+  const turnPrompt = createAgentTurnPrompt(promptMessages, agent);
   const fullPrompt = `${standingPrompt}\n\n---\n\n${turnPrompt}`;
 
   // Claude Code headless mode using --print for simple response
@@ -1071,26 +2723,527 @@ async function startClaudeAgent(agent, proc, workspace) {
   });
 
   child.on('close', async (code) => {
+    const queuedMessages = proc.stopRequested ? (proc.restartMessagesAfterStop || []) : proc.inbox.slice(proc.promptMessageCount);
+    const sourceMessage = proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
     proc.status = 'idle';
     agent.status = 'idle';
 
-    // Post the response back to the conversation
-    const responseText = stdout.trim() || stderr.trim() || '(No response)';
-    if (responseText && responseText !== '(No response)') {
-      await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText);
+	    // Post the response back to the conversation
+	    const responseText = stdout.trim() || stderr.trim() || '(No response)';
+	    const fallbackGuard = { workItemIds: [sourceMessage?.workItemId].filter(Boolean) };
+	    if (responseText && responseText !== '(No response)' && proc.suppressOutput) {
+	      addSystemEvent('agent_stdout_suppressed', `${agent.name} stopped before posting final stdout.`, {
+	        agentId: agent.id,
+	        workItemId: sourceMessage?.workItemId || null,
+	      });
+	    } else if (responseText && responseText !== '(No response)' && turnMetaAllWorkCancelled(fallbackGuard)) {
+	      addSystemEvent('agent_stdout_suppressed', `${agent.name} output was suppressed for stopped work.`, {
+	        agentId: agent.id,
+	        workItemId: sourceMessage?.workItemId || null,
+	      });
+	    } else if (responseText && responseText !== '(No response)' && !turnMetaHasExplicitSend(fallbackGuard)) {
+	      const posted = await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText, proc.parentMessageId, { sourceMessage });
+	      markFallbackResponseWorkItem(sourceMessage, posted);
+	    } else if (responseText && responseText !== '(No response)') {
+      addSystemEvent('agent_stdout_suppressed', `${agent.name} used send_message; final stdout fallback was suppressed.`, {
+        agentId: agent.id,
+        workItemId: sourceMessage?.workItemId || null,
+      });
     }
 
-    addSystemEvent('agent_completed', `${agent.name} finished (code ${code})`, { agentId: agent.id });
+    addSystemEvent(proc.stopRequested ? 'agent_stopped' : 'agent_completed', `${agent.name} ${proc.stopRequested ? 'stopped' : 'finished'} (code ${code})`, { agentId: agent.id });
     await persistState();
     broadcastState();
     agentProcesses.delete(agent.id);
+    restartAgentWithQueuedMessages(agent, proc, queuedMessages);
   });
 }
 
 async function startCodexAgent(agent, proc, workspace) {
   const standingPrompt = createAgentStandingPrompt(agent, proc.spaceType, proc.spaceId);
-  const turnPrompt = createAgentTurnPrompt(proc.inbox);
+  const promptMessages = proc.inbox.slice();
+  proc.promptMessageCount = promptMessages.length;
+  const turnPrompt = createAgentTurnPrompt(promptMessages, agent);
+  const args = ['app-server', '--listen', 'stdio://'];
+  const codexHome = await prepareAgentCodexHome(agent);
+
+  proc.requestId = 0;
+  proc.stdoutBuffer = '';
+	  proc.responseBuffer = '';
+	  proc.activeTurnId = null;
+	  proc.activeTurnIds = new Set();
+	  proc.activeTurnTargets = new Set();
+	  proc.pendingTurnRequests = new Map();
+  proc.turnMeta = new Map();
+  proc.pendingInitialPrompt = turnPrompt;
+  proc.pendingInitialMessages = promptMessages;
+  proc.pendingDeliveryMessages = Array.isArray(proc.pendingDeliveryMessages) ? proc.pendingDeliveryMessages : [];
+  proc.busyDeliveryTimer = proc.busyDeliveryTimer || null;
+  proc.pendingThreadRequest = null;
+  proc.initializeRequestId = null;
+  proc.threadReady = false;
+  proc.usedLegacyFallback = false;
+  proc.status = 'starting';
+  agent.status = 'starting';
+  agent.runtimeLastStartedAt = now();
+  await writeAgentSessionFile(agent).catch(() => {});
+
+  addSystemEvent('agent_started', `${agent.name} starting with Codex app-server`, { agentId: agent.id });
+
+  const child = spawn(state.settings.codexPath || 'codex', args, {
+    cwd: workspace,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      NO_COLOR: '1',
+      ...(agent.envVars ? Object.fromEntries(agent.envVars.map(e => [e.key, e.value])) : {}),
+      CODEX_HOME: codexHome,
+    },
+  });
+
+  proc.child = child;
+
+  child.stdout.on('data', (chunk) => {
+    proc.stdoutBuffer += chunk.toString();
+    const lines = proc.stdoutBuffer.split(/\r?\n/);
+    proc.stdoutBuffer = lines.pop() || '';
+    for (const line of lines) {
+      handleCodexAppServerLine(agent, proc, line).catch((error) => {
+        addSystemEvent('agent_error', `${agent.name} app-server event error: ${error.message}`, { agentId: agent.id });
+      });
+    }
+  });
+
+  child.stderr.on('data', (chunk) => {
+    const msg = chunk.toString().trim();
+    if (msg) addSystemEvent('agent_stderr', msg, { agentId: agent.id });
+  });
+
+  child.on('error', async (error) => {
+    clearAgentBusyDeliveryTimer(proc);
+    if (!proc.threadReady && !proc.usedLegacyFallback) {
+      await fallbackToCodexExec(agent, proc, workspace, error);
+      return;
+    }
+    proc.status = 'error';
+    agent.status = 'error';
+    addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
+    await persistState();
+    broadcastState();
+    agentProcesses.delete(agent.id);
+  });
+
+  child.on('close', async (code) => {
+    clearAgentBusyDeliveryTimer(proc);
+    if (!proc.threadReady && !proc.usedLegacyFallback) {
+      if (proc.stopRequested) {
+        proc.status = 'idle';
+        agent.status = proc.restartMessagesAfterStop?.length ? 'queued' : 'idle';
+        addSystemEvent('agent_stopped', `${agent.name} stopped before Codex session was ready`, { agentId: agent.id });
+        await persistState();
+        broadcastState();
+        agentProcesses.delete(agent.id);
+        restartAgentWithQueuedMessages(agent, proc, proc.restartMessagesAfterStop || []);
+        return;
+      }
+      await fallbackToCodexExec(agent, proc, workspace, new Error(`Codex app-server exited before thread start (code ${code ?? 'unknown'}).`));
+      return;
+    }
+    if (!proc.suppressOutput && proc.responseBuffer.trim()) {
+      const sourceMessage = proc.lastSourceMessage || proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
+      if (turnMetaHasExplicitSend({ workItemIds: [sourceMessage?.workItemId].filter(Boolean) })) {
+        addSystemEvent('agent_stdout_suppressed', `${agent.name} used send_message; final stdout fallback was suppressed.`, {
+          agentId: agent.id,
+          workItemId: sourceMessage?.workItemId || null,
+        });
+	      } else {
+	        const posted = await postAgentResponse(agent, proc.spaceType, proc.spaceId, proc.responseBuffer.trim(), proc.parentMessageId, { sourceMessage });
+	        markFallbackResponseWorkItem(sourceMessage, posted);
+	      }
+      proc.responseBuffer = '';
+    } else if (proc.suppressOutput && proc.responseBuffer.trim()) {
+      proc.responseBuffer = '';
+      addSystemEvent('agent_stdout_suppressed', `${agent.name} stopped before posting buffered output.`, { agentId: agent.id });
+    }
+    proc.status = proc.stopRequested || code === 0 ? 'idle' : 'error';
+    agent.status = proc.stopRequested
+      ? (proc.restartMessagesAfterStop?.length ? 'queued' : 'idle')
+      : (code === 0 ? 'idle' : 'error');
+    addSystemEvent(proc.stopRequested ? 'agent_stopped' : (code === 0 ? 'agent_app_server_closed' : 'agent_error'), `${agent.name} Codex app-server ${proc.stopRequested ? 'stopped' : 'exited'} (code ${code ?? 'unknown'})`, { agentId: agent.id });
+    await writeAgentSessionFile(agent).catch(() => {});
+    await persistState();
+    broadcastState();
+    agentProcesses.delete(agent.id);
+    restartAgentWithQueuedMessages(agent, proc, proc.restartMessagesAfterStop || []);
+  });
+
+  proc.initializeRequestId = sendCodexAppServerRequest(proc, 'initialize', {
+    clientInfo: { name: 'magclaw', version: '0.1.0' },
+    capabilities: { experimentalApi: true },
+  });
+  proc.pendingThreadRequest = {
+    method: agent.runtimeSessionId ? 'thread/resume' : 'thread/start',
+    params: {
+      ...(agent.runtimeSessionId ? { threadId: agent.runtimeSessionId } : {}),
+      cwd: workspace,
+      approvalPolicy: 'never',
+      sandbox: state.settings.sandbox || 'workspace-write',
+      developerInstructions: standingPrompt,
+      ...(agent.model ? { model: agent.model } : {}),
+      ...(agent.reasoningEffort ? { config: { model_reasoning_effort: agent.reasoningEffort } } : {}),
+    },
+  };
+  await persistState();
+  broadcastState();
+}
+
+function nextCodexRequestId(proc) {
+  proc.requestId = Number(proc.requestId || 0) + 1;
+  return proc.requestId;
+}
+
+function sendCodexAppServerRequest(proc, method, params = {}) {
+  if (!proc.child?.stdin?.writable) return null;
+  const id = nextCodexRequestId(proc);
+  proc.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+  return id;
+}
+
+function sendCodexAppServerNotification(proc, method, params = {}) {
+  if (!proc.child?.stdin?.writable) return;
+  proc.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
+}
+
+async function handleCodexThreadReady(agent, proc, threadId) {
+  proc.threadId = threadId;
+  proc.threadReady = true;
+  agent.runtimeSessionId = threadId;
+  await writeAgentSessionFile(agent).catch(() => {});
+  addSystemEvent('agent_session_ready', `${agent.name} Codex session ready`, { agentId: agent.id, sessionId: threadId });
+  if (proc.pendingInitialPrompt) {
+    const prompt = proc.pendingInitialPrompt;
+    const messages = proc.pendingInitialMessages || [];
+    proc.pendingInitialPrompt = null;
+    proc.pendingInitialMessages = [];
+    if (startCodexAppServerTurn(agent, proc, prompt, { mode: 'turn', messages })) {
+      proc.lastSourceMessage = messages[messages.length - 1] || proc.lastSourceMessage || null;
+      markWorkItemsDelivered(messages, 'turn');
+    }
+  }
+  await persistState();
+  broadcastState();
+}
+
+function deliveryTargetKey(message) {
+  if (!message) return '';
+  const taskSuffix = message.taskId ? ` task=${message.taskId}` : '';
+  if (message.target) return `${String(message.target)}${taskSuffix}`;
+  if (message.spaceType && message.spaceId) {
+    return `${targetForConversation(message.spaceType, message.spaceId, message.parentMessageId || null)}${taskSuffix}`;
+  }
+  return taskSuffix.trim();
+}
+
+function deliveryTargetKeys(messages) {
+  return [...new Set((Array.isArray(messages) ? messages : [messages])
+    .map(deliveryTargetKey)
+    .filter(Boolean))];
+}
+
+function rememberActiveTurnTargets(proc, mode, targetKeys = []) {
+  const keys = Array.isArray(targetKeys) ? targetKeys.filter(Boolean) : [];
+  if (!keys.length) return;
+  if (mode === 'steer') {
+    proc.activeTurnTargets = proc.activeTurnTargets instanceof Set ? proc.activeTurnTargets : new Set();
+    for (const key of keys) proc.activeTurnTargets.add(key);
+    return;
+  }
+  proc.activeTurnTargets = new Set(keys);
+}
+
+function pendingMatchesActiveTurnTargets(proc, pendingMessages) {
+  const activeTargets = proc?.activeTurnTargets instanceof Set ? proc.activeTurnTargets : new Set();
+  if (!activeTargets.size) return false;
+  const pendingKeys = deliveryTargetKeys(pendingMessages);
+  if (!pendingKeys.length) return false;
+  return pendingKeys.every((key) => activeTargets.has(key));
+}
+
+function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages = [] } = {}) {
+  if (!proc.threadId) return false;
+  const input = [{ type: 'text', text: prompt }];
+  let requestId = null;
+  if (mode === 'steer' && proc.activeTurnId) {
+    requestId = sendCodexAppServerRequest(proc, 'turn/steer', {
+      threadId: proc.threadId,
+      expectedTurnId: proc.activeTurnId,
+      input,
+    });
+  } else {
+    requestId = sendCodexAppServerRequest(proc, 'turn/start', {
+      threadId: proc.threadId,
+      input,
+    });
+  }
+  if (!requestId) return false;
+  const promptMessages = Array.isArray(messages) ? messages.filter(Boolean) : [];
+  const sourceMessage = promptMessages[promptMessages.length - 1] || null;
+  const targetKeys = deliveryTargetKeys(promptMessages);
+  proc.pendingTurnRequests = proc.pendingTurnRequests || new Map();
+  proc.pendingTurnRequests.set(requestId, {
+    parentMessageId: sourceMessage?.parentMessageId || proc.parentMessageId || null,
+    sourceMessage,
+    spaceType: sourceMessage?.spaceType || proc.spaceType,
+    spaceId: sourceMessage?.spaceId || proc.spaceId,
+    workItemIds: normalizeIds(promptMessages.map((message) => message?.workItemId)),
+    targetKeys,
+  });
+  rememberActiveTurnTargets(proc, mode, targetKeys);
+  proc.status = 'running';
+  agent.status = mode === 'steer' ? 'working' : 'thinking';
+  agent.runtimeLastTurnAt = now();
+  addSystemEvent(mode === 'steer' ? 'agent_steered' : 'agent_turn_started', `${agent.name} ${mode === 'steer' ? 'received a steering message' : 'started a turn'}`, { agentId: agent.id, sessionId: proc.threadId });
+  persistState().then(broadcastState);
+  return true;
+}
+
+async function sendCodexAppServerMessages(agent, proc, messages, { mode = 'turn' } = {}) {
+  const promptMessages = Array.isArray(messages) ? messages.filter(Boolean) : [messages].filter(Boolean);
+  if (!promptMessages.length) return false;
+  const prompt = createAgentTurnPrompt(promptMessages, agent);
+  const sent = mode === 'steer'
+    ? startCodexAppServerTurn(agent, proc, prompt, { mode: 'steer', messages: promptMessages })
+    : (proc.status === 'idle' && startCodexAppServerTurn(agent, proc, prompt, { mode: 'turn', messages: promptMessages }));
+  if (!sent) return false;
+  proc.inbox.push(...promptMessages);
+  proc.promptMessageCount = proc.inbox.length;
+  proc.lastSourceMessage = promptMessages[promptMessages.length - 1] || proc.lastSourceMessage || null;
+  markWorkItemsDelivered(promptMessages, mode);
+  return true;
+}
+
+function clearAgentBusyDeliveryTimer(proc) {
+  if (!proc?.busyDeliveryTimer) return;
+  clearTimeout(proc.busyDeliveryTimer);
+  proc.busyDeliveryTimer = null;
+}
+
+function queueCodexBusyDelivery(agent, proc, deliveryMessage) {
+  proc.pendingDeliveryMessages = Array.isArray(proc.pendingDeliveryMessages) ? proc.pendingDeliveryMessages : [];
+  proc.pendingDeliveryMessages.push(deliveryMessage);
+  addSystemEvent('message_queued', `Message queued for busy agent ${agent.name}`, {
+    agentId: agent.id,
+    messageId: deliveryMessage.id,
+    parentMessageId: deliveryMessage.parentMessageId || null,
+    workItemId: deliveryMessage.workItemId || null,
+  });
+  scheduleCodexBusyDelivery(agent, proc);
+}
+
+function scheduleCodexBusyDelivery(agent, proc) {
+  if (!proc || proc.busyDeliveryTimer) return;
+  proc.busyDeliveryTimer = setTimeout(() => {
+    proc.busyDeliveryTimer = null;
+    flushCodexPendingDeliveries(agent, proc).catch((error) => {
+      addSystemEvent('delivery_error', `Failed to steer queued messages to ${agent.name}: ${error.message}`, {
+        agentId: agent.id,
+      });
+    });
+  }, AGENT_BUSY_DELIVERY_DELAY_MS);
+}
+
+async function flushCodexPendingDeliveries(agent, proc) {
+  const pending = Array.isArray(proc?.pendingDeliveryMessages) ? proc.pendingDeliveryMessages : [];
+  if (!pending.length) return false;
+  if (!proc.child || proc.child.killed || !proc.threadId) {
+    scheduleCodexBusyDelivery(agent, proc);
+    return false;
+  }
+  const wantsSteer = proc.status === 'running' || proc.status === 'starting';
+  if (wantsSteer && !proc.activeTurnId) {
+    scheduleCodexBusyDelivery(agent, proc);
+    return false;
+  }
+  if (wantsSteer && !pendingMatchesActiveTurnTargets(proc, pending)) {
+    scheduleCodexBusyDelivery(agent, proc);
+    return false;
+  }
+  const batch = pending.splice(0, pending.length);
+  const mode = wantsSteer ? 'steer' : 'turn';
+  const sent = await sendCodexAppServerMessages(agent, proc, batch, { mode });
+  if (!sent) {
+    proc.pendingDeliveryMessages = [...batch, ...(proc.pendingDeliveryMessages || [])];
+    scheduleCodexBusyDelivery(agent, proc);
+    return false;
+  }
+  addSystemEvent(mode === 'steer' ? 'agent_busy_batch_delivered' : 'agent_queue_turn_delivered', `${agent.name} received ${batch.length} queued message(s).`, {
+    agentId: agent.id,
+    count: batch.length,
+    mode,
+  });
+  return true;
+}
+
+async function handleCodexTurnCompleted(agent, proc, turn) {
+  const turnId = turn?.id || proc.activeTurnId;
+  if (turnId) proc.activeTurnIds?.delete(turnId);
+  if (turn?.status === 'failed' && turn?.error?.message) {
+    addSystemEvent('agent_error', `${agent.name} turn failed: ${turn.error.message}`, { agentId: agent.id, sessionId: proc.threadId });
+  }
+  const turnMeta = turnId ? proc.turnMeta?.get(turnId) : null;
+  if (turnId) proc.turnMeta?.delete(turnId);
+  if (proc.responseBuffer.trim()) {
+    const responseText = proc.responseBuffer.trim();
+    proc.responseBuffer = '';
+    if (turnMeta && turnMetaAllWorkCancelled(turnMeta)) {
+      addSystemEvent('agent_stdout_suppressed', `${agent.name} output was suppressed for stopped work.`, {
+        agentId: agent.id,
+        sessionId: proc.threadId,
+        turnId,
+        workItemIds: turnMeta.workItemIds || [],
+      });
+    } else if (turnMeta && turnMetaHasExplicitSend(turnMeta)) {
+      addSystemEvent('agent_stdout_suppressed', `${agent.name} used send_message; final stdout fallback was suppressed.`, {
+        agentId: agent.id,
+        sessionId: proc.threadId,
+        turnId,
+        workItemIds: turnMeta.workItemIds || [],
+      });
+    } else if (turnMeta) {
+      const sourceMessage = turnMeta.sourceMessage || proc.lastSourceMessage || proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
+      const posted = await postAgentResponse(agent, turnMeta.spaceType || proc.spaceType, turnMeta.spaceId || proc.spaceId, responseText, turnMeta.parentMessageId || proc.parentMessageId, { sourceMessage });
+      markFallbackResponseWorkItem(sourceMessage, posted);
+    } else {
+      addSystemEvent('agent_unsolicited_turn_suppressed', `${agent.name} produced output for an untracked Codex turn; output was not posted.`, {
+        agentId: agent.id,
+        sessionId: proc.threadId,
+        turnId,
+      });
+    }
+  }
+  if (!proc.activeTurnIds?.size) {
+    proc.activeTurnId = null;
+    proc.activeTurnTargets = new Set();
+    proc.status = 'idle';
+    agent.status = 'idle';
+  }
+  if (!proc.activeTurnIds?.size && proc.pendingDeliveryMessages?.length) {
+    clearAgentBusyDeliveryTimer(proc);
+    await flushCodexPendingDeliveries(agent, proc);
+  }
+  await writeAgentSessionFile(agent).catch(() => {});
+  await persistState();
+  broadcastState();
+}
+
+async function handleCodexAppServerLine(agent, proc, line) {
+  if (!line.trim()) return;
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    addSystemEvent('agent_stdout', line.slice(0, 600), { agentId: agent.id });
+    return;
+  }
+
+  if (message.result) {
+    if (message.id === proc.initializeRequestId) {
+      proc.initializeRequestId = null;
+      sendCodexAppServerNotification(proc, 'initialized', {});
+      if (proc.pendingThreadRequest) {
+        sendCodexAppServerRequest(proc, proc.pendingThreadRequest.method, proc.pendingThreadRequest.params);
+        proc.pendingThreadRequest = null;
+      }
+      return;
+    }
+    const threadId = message.result.thread?.id;
+    if (typeof threadId === 'string') {
+      await handleCodexThreadReady(agent, proc, threadId);
+      return;
+    }
+    const turnId = message.result.turn?.id || message.result.turnId;
+    if (typeof turnId === 'string') {
+      proc.activeTurnId = turnId;
+      proc.activeTurnIds = proc.activeTurnIds || new Set();
+      proc.activeTurnIds.add(turnId);
+      const meta = proc.pendingTurnRequests?.get(message.id);
+      if (meta) {
+        proc.turnMeta = proc.turnMeta || new Map();
+        proc.turnMeta.set(turnId, meta);
+        proc.pendingTurnRequests.delete(message.id);
+      }
+      return;
+    }
+  }
+
+  if (message.error) {
+    addSystemEvent('agent_error', `${agent.name} app-server request failed: ${message.error.message || 'unknown error'}`, { agentId: agent.id, raw: message.error });
+    return;
+  }
+
+  switch (message.method) {
+    case 'thread/started': {
+      const threadId = message.params?.thread?.id;
+      if (typeof threadId === 'string') await handleCodexThreadReady(agent, proc, threadId);
+      break;
+    }
+    case 'turn/started': {
+      const turnId = message.params?.turn?.id;
+      if (typeof turnId === 'string') {
+        proc.activeTurnId = turnId;
+        proc.activeTurnIds = proc.activeTurnIds || new Set();
+        proc.activeTurnIds.add(turnId);
+      }
+      proc.status = 'running';
+      agent.status = 'thinking';
+      await persistState();
+      broadcastState();
+      break;
+    }
+    case 'item/agentMessage/delta': {
+      const delta = message.params?.delta;
+      if (typeof delta === 'string') proc.responseBuffer += delta;
+      break;
+    }
+    case 'item/completed': {
+      const item = message.params?.item;
+      if (item?.type === 'agentMessage' && typeof item.text === 'string' && item.text && !proc.responseBuffer.includes(item.text)) {
+        proc.responseBuffer += item.text;
+      }
+      if (item?.type === 'commandExecution' || item?.type === 'mcpToolCall' || item?.type === 'collabAgentToolCall') {
+        addSystemEvent('agent_activity', summarizeCodexEvent(item), { agentId: agent.id, raw: item });
+      }
+      break;
+    }
+    case 'item/started': {
+      const item = message.params?.item;
+      if (item?.type) addSystemEvent('agent_activity', `${agent.name}: ${item.type}`, { agentId: agent.id, raw: item });
+      break;
+    }
+    case 'turn/completed': {
+      await handleCodexTurnCompleted(agent, proc, message.params?.turn || {});
+      break;
+    }
+    case 'error':
+      addSystemEvent('agent_error', `${agent.name} app-server error`, { agentId: agent.id, raw: message.params });
+      break;
+  }
+}
+
+async function fallbackToCodexExec(agent, proc, workspace, error) {
+  proc.usedLegacyFallback = true;
+  addSystemEvent('agent_runtime_fallback', `${agent.name} falling back to legacy codex exec: ${error.message}`, { agentId: agent.id });
+  if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');
+  await startCodexAgentLegacy(agent, proc, workspace);
+}
+
+async function startCodexAgentLegacy(agent, proc, workspace) {
+  const standingPrompt = createAgentStandingPrompt(agent, proc.spaceType, proc.spaceId);
+  const promptMessages = proc.inbox.slice();
+  proc.promptMessageCount = promptMessages.length;
+  const turnPrompt = createAgentTurnPrompt(promptMessages, agent);
   const fullPrompt = `${standingPrompt}\n\n---\n\n${turnPrompt}`;
+  const codexHome = await prepareAgentCodexHome(agent);
 
   const outputFile = path.join(RUNS_DIR, `${proc.sessionId}-agent-response.txt`);
 
@@ -1109,7 +3262,7 @@ async function startCodexAgent(agent, proc, workspace) {
   }
 
   if (agent.reasoningEffort) {
-    args.push('--reasoning-effort', agent.reasoningEffort);
+    args.push('-c', `model_reasoning_effort=${JSON.stringify(agent.reasoningEffort)}`);
   }
 
   args.push('-');
@@ -1123,6 +3276,7 @@ async function startCodexAgent(agent, proc, workspace) {
     env: {
       ...process.env,
       ...(agent.envVars ? Object.fromEntries(agent.envVars.map(e => [e.key, e.value])) : {}),
+      CODEX_HOME: codexHome,
     },
   });
 
@@ -1162,6 +3316,8 @@ async function startCodexAgent(agent, proc, workspace) {
   });
 
   child.on('close', async (code) => {
+    const queuedMessages = proc.stopRequested ? (proc.restartMessagesAfterStop || []) : proc.inbox.slice(proc.promptMessageCount);
+    const sourceMessage = proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
     proc.status = 'idle';
     agent.status = 'idle';
 
@@ -1173,14 +3329,31 @@ async function startCodexAgent(agent, proc, workspace) {
       responseText = '';
     }
 
-    if (responseText) {
-      await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText);
+    const fallbackGuard = { workItemIds: [sourceMessage?.workItemId].filter(Boolean) };
+    if (responseText && proc.suppressOutput) {
+      addSystemEvent('agent_stdout_suppressed', `${agent.name} stopped before posting final stdout.`, {
+        agentId: agent.id,
+        workItemId: sourceMessage?.workItemId || null,
+      });
+    } else if (responseText && turnMetaAllWorkCancelled(fallbackGuard)) {
+      addSystemEvent('agent_stdout_suppressed', `${agent.name} output was suppressed for stopped work.`, {
+        agentId: agent.id,
+        workItemId: sourceMessage?.workItemId || null,
+      });
+    } else if (responseText && !turnMetaHasExplicitSend(fallbackGuard)) {
+      await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText, proc.parentMessageId, { sourceMessage });
+    } else if (responseText) {
+      addSystemEvent('agent_stdout_suppressed', `${agent.name} used send_message; final stdout fallback was suppressed.`, {
+        agentId: agent.id,
+        workItemId: sourceMessage?.workItemId || null,
+      });
     }
 
-    addSystemEvent('agent_completed', `${agent.name} finished (code ${code})`, { agentId: agent.id });
+    addSystemEvent(proc.stopRequested ? 'agent_stopped' : 'agent_completed', `${agent.name} ${proc.stopRequested ? 'stopped' : 'finished'} (code ${code})`, { agentId: agent.id });
     await persistState();
     broadcastState();
     agentProcesses.delete(agent.id);
+    restartAgentWithQueuedMessages(agent, proc, queuedMessages);
   });
 
   // Write the prompt to stdin
@@ -1188,73 +3361,537 @@ async function startCodexAgent(agent, proc, workspace) {
   child.stdin.end();
 }
 
-async function postAgentResponse(agent, spaceType, spaceId, body) {
-  const message = {
+function restartAgentWithQueuedMessages(agent, proc, queuedMessages = []) {
+  if (!queuedMessages.length) return;
+  const firstQueued = queuedMessages[0];
+  const nextSpaceType = firstQueued.spaceType || proc.spaceType;
+  const nextSpaceId = firstQueued.spaceId || proc.spaceId;
+  addSystemEvent('agent_queue_drained', `${agent.name} has ${queuedMessages.length} queued message(s)`, {
+    agentId: agent.id,
+    count: queuedMessages.length,
+    spaceType: nextSpaceType,
+    spaceId: nextSpaceId,
+  });
+  startAgentProcess(agent, nextSpaceType, nextSpaceId, queuedMessages).catch((error) => {
+    addSystemEvent('agent_error', `${agent.name} queue restart failed: ${error.message}`, { agentId: agent.id });
+  });
+}
+
+function partitionMessagesByScope(messages, scope) {
+  const scoped = [];
+  const other = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    (deliveryMessageMatchesScope(message, scope) ? scoped : other).push(message);
+  }
+  return { scoped, other };
+}
+
+function cancelWorkItemsForScope(scope, agentId = null) {
+  const cancelled = [];
+  state.workItems = Array.isArray(state.workItems) ? state.workItems : [];
+  for (const item of state.workItems) {
+    if (agentId && item.agentId !== agentId) continue;
+    if (!workItemMatchesScope(item, scope)) continue;
+    if (item.status === 'responded' || item.status === 'cancelled') continue;
+    item.status = 'cancelled';
+    item.cancelledAt = item.cancelledAt || now();
+    item.updatedAt = now();
+    item.cancelScope = scope ? { spaceType: scope.spaceType, spaceId: scope.spaceId } : null;
+    cancelled.push(item.id);
+  }
+  return cancelled;
+}
+
+function activeTurnMetas(proc) {
+  const ids = proc?.activeTurnIds instanceof Set
+    ? [...proc.activeTurnIds]
+    : (proc?.activeTurnId ? [proc.activeTurnId] : []);
+  return ids.map((id) => proc.turnMeta?.get(id)).filter(Boolean);
+}
+
+function processHasOnlyScopedActiveWork(proc, scope) {
+  const metas = activeTurnMetas(proc);
+  if (metas.length) {
+    return metas.every((meta) => turnMetaMatchesScope(meta, scope) && !turnMetaHasWorkOutsideScope(meta, scope));
+  }
+  return spaceMatchesScope(proc, scope);
+}
+
+function stopAgentProcessForScope(agent, proc, scope, restartMessages = []) {
+  clearAgentBusyDeliveryTimer(proc);
+  proc.stopRequested = true;
+  proc.suppressOutput = true;
+  proc.stoppedAt = now();
+  proc.stoppedScope = scope ? { spaceType: scope.spaceType, spaceId: scope.spaceId } : null;
+  proc.restartMessagesAfterStop = restartMessages.filter(Boolean);
+  proc.pendingDeliveryMessages = [];
+  proc.pendingInitialMessages = [];
+  proc.pendingInitialPrompt = null;
+  agent.status = proc.restartMessagesAfterStop.length ? 'queued' : 'idle';
+  if (proc.child && !proc.child.killed) {
+    proc.child.kill('SIGTERM');
+    return true;
+  }
+  agentProcesses.delete(agent.id);
+  if (proc.restartMessagesAfterStop.length) restartAgentWithQueuedMessages(agent, proc, proc.restartMessagesAfterStop);
+  return false;
+}
+
+function stopAgentProcesses(scope = null) {
+  const stoppedAgents = [];
+  const cancelledWorkItems = [];
+  for (const [agentId, proc] of agentProcesses.entries()) {
+    const agent = findAgent(agentId);
+    if (!agent) continue;
+    const cancelledForAgent = cancelWorkItemsForScope(scope, agentId);
+    cancelledWorkItems.push(...cancelledForAgent);
+
+    const inbox = partitionMessagesByScope(proc.inbox, scope);
+    const pending = partitionMessagesByScope(proc.pendingDeliveryMessages, scope);
+    const initial = partitionMessagesByScope(proc.pendingInitialMessages, scope);
+    proc.inbox = inbox.other;
+    proc.pendingDeliveryMessages = pending.other;
+    proc.pendingInitialMessages = initial.other;
+
+    const restartMessages = [...inbox.other, ...pending.other, ...initial.other];
+    const removedMessages = inbox.scoped.length + pending.scoped.length + initial.scoped.length;
+    const activeScopedOnly = processHasOnlyScopedActiveWork(proc, scope);
+    const shouldStop = !scope || activeScopedOnly || (removedMessages > 0 && !activeTurnMetas(proc).length && spaceMatchesScope(proc, scope));
+
+    if (shouldStop) {
+      stopAgentProcessForScope(agent, proc, scope, restartMessages);
+      stoppedAgents.push(agentId);
+    } else if (removedMessages > 0 || cancelledForAgent.length) {
+      clearAgentBusyDeliveryTimer(proc);
+      if (!restartMessages.length && !activeTurnMetas(proc).length) agent.status = 'idle';
+    }
+  }
+  return {
+    stoppedAgents: normalizeIds(stoppedAgents),
+    cancelledWorkItems: normalizeIds(cancelledWorkItems),
+  };
+}
+
+function stopRunsForScope(scope = null) {
+  const stoppedRuns = [];
+  for (const [runId, child] of runningProcesses.entries()) {
+    const run = findRun(runId);
+    if (!run || (scope && !runMatchesScope(run, scope))) continue;
+    run.cancelRequested = true;
+    child.kill('SIGTERM');
+    stoppedRuns.push(runId);
+  }
+  return normalizeIds(stoppedRuns);
+}
+
+async function relayAgentMentions(record, { parentMessageId = null } = {}) {
+  if (record.authorType !== 'agent') return;
+  const relayDepth = Number(record.agentRelayDepth || 0);
+  const mentions = extractMentions(record.body || '');
+  const targetIds = mentions.agents.filter((id) => id !== record.authorId);
+  if (!targetIds.length) return;
+  if (relayDepth >= MAX_AGENT_RELAY_DEPTH) {
+    addSystemEvent('agent_relay_capped', 'Agent mention relay depth reached.', {
+      messageId: record.id,
+      agentId: record.authorId,
+      relayDepth,
+      targetIds,
+    });
+    return;
+  }
+
+  const channel = record.spaceType === 'channel' ? findChannel(record.spaceId) : null;
+  const allowedIds = new Set(channel ? channelAgentIds(channel) : targetIds);
+  for (const targetId of targetIds) {
+    if (!allowedIds.has(targetId)) continue;
+    const targetAgent = findAgent(targetId);
+    if (!targetAgent) continue;
+    addSystemEvent('agent_message_relay', `${displayActor(record.authorId)} mentioned ${targetAgent.name}`, {
+      fromAgentId: record.authorId,
+      toAgentId: targetAgent.id,
+      messageId: record.id,
+      relayDepth,
+      parentMessageId,
+    });
+    deliverMessageToAgent(targetAgent, record.spaceType, record.spaceId, record, { parentMessageId }).catch(err => {
+      addSystemEvent('delivery_error', `Failed to relay message to ${targetAgent.name}: ${err.message}`, {
+        agentId: targetAgent.id,
+        messageId: record.id,
+        parentMessageId,
+      });
+    });
+  }
+}
+
+function inferTaskIdForDelivery(message, parentMessageId) {
+  if (message?.taskId) return message.taskId;
+  const parent = parentMessageId ? findMessage(parentMessageId) : null;
+  const task = findTaskForThreadMessage(parent || message);
+  return task?.id || null;
+}
+
+function createWorkItemForDelivery(agent, message, { spaceType, spaceId, parentMessageId = null } = {}) {
+  state.workItems = Array.isArray(state.workItems) ? state.workItems : [];
+  const target = targetForConversation(spaceType, spaceId, parentMessageId);
+  const item = {
+    id: makeId('wi'),
+    agentId: agent.id,
+    sourceMessageId: message.id,
+    parentMessageId: parentMessageId || null,
+    spaceType,
+    spaceId,
+    target,
+    taskId: inferTaskIdForDelivery(message, parentMessageId),
+    status: 'queued',
+    createdAt: now(),
+    updatedAt: now(),
+    deliveredAt: null,
+    respondedAt: null,
+    sendCount: 0,
+  };
+  state.workItems.push(item);
+  addSystemEvent('work_item_created', `${agent.name} received ${target}`, {
+    agentId: agent.id,
+    workItemId: item.id,
+    messageId: message.id,
+    target,
+  });
+  return item;
+}
+
+function markWorkItemsDelivered(messages, deliveryMode) {
+  const ids = normalizeIds((Array.isArray(messages) ? messages : [messages])
+    .map((message) => message?.workItemId));
+  for (const id of ids) {
+    const item = findWorkItem(id);
+    if (!item) continue;
+    if (item.status === 'cancelled') continue;
+    item.status = item.status === 'responded' ? item.status : 'delivered';
+    item.deliveryMode = deliveryMode;
+    item.deliveredAt = item.deliveredAt || now();
+    item.updatedAt = now();
+  }
+  return ids;
+}
+
+function turnMetaHasExplicitSend(turnMeta) {
+  const ids = normalizeIds(turnMeta?.workItemIds || []);
+  return ids.some((id) => {
+    const item = findWorkItem(id);
+    return item?.respondedAt || item?.status === 'responded' || item?.status === 'cancelled' || Number(item?.sendCount || 0) > 0;
+  });
+}
+
+function workItemTargetMatches(item, resolvedTarget) {
+  if (!item || !resolvedTarget) return false;
+  return (
+    item.spaceType === resolvedTarget.spaceType
+    && item.spaceId === resolvedTarget.spaceId
+    && String(item.parentMessageId || '') === String(resolvedTarget.parentMessageId || '')
+  );
+}
+
+function markWorkItemResponded(item, target, record) {
+  item.status = 'responded';
+  item.respondedAt = item.respondedAt || now();
+  item.updatedAt = now();
+  item.sendCount = Number(item.sendCount || 0) + 1;
+  item.lastSentTarget = target;
+  item.lastResponseId = record?.id || null;
+}
+
+function markFallbackResponseWorkItem(sourceMessage, record) {
+  const workItemId = sourceMessage?.workItemId;
+  if (!workItemId) return false;
+  const item = findWorkItem(workItemId);
+  if (!item || item.status === 'responded' || item.status === 'cancelled') return false;
+  markWorkItemResponded(item, sourceMessage?.target || item.target || null, record);
+  return true;
+}
+
+async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageId = null, options = {}) {
+  const responseBody = prepareAgentResponseBody(body);
+  const sourceDepth = Number(options.sourceMessage?.agentRelayDepth || 0);
+  const agentRelayDepth = sourceDepth + 1;
+  if (parentMessageId && findMessage(parentMessageId)) {
+    const parent = findMessage(parentMessageId);
+    const reply = normalizeConversationRecord({
+      id: makeId('rep'),
+      parentMessageId,
+      spaceType: parent.spaceType || spaceType,
+      spaceId: parent.spaceId || spaceId,
+      authorType: 'agent',
+      authorId: agent.id,
+      body: responseBody,
+      attachmentIds: [],
+      agentRelayDepth,
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    state.replies.push(reply);
+    parent.replyCount = state.replies.filter((item) => item.parentMessageId === parentMessageId).length;
+    parent.updatedAt = now();
+    addCollabEvent('agent_thread_response', `${agent.name} responded in thread`, { replyId: reply.id, messageId: parentMessageId, agentId: agent.id });
+    await persistState();
+    broadcastState();
+    await relayAgentMentions(reply, { parentMessageId });
+    return reply;
+  }
+
+  const message = normalizeConversationRecord({
     id: makeId('msg'),
     spaceType,
     spaceId,
     authorType: 'agent',
     authorId: agent.id,
-    body,
+    body: responseBody,
     attachmentIds: [],
+    agentRelayDepth,
     replyCount: 0,
     savedBy: [],
     createdAt: now(),
     updatedAt: now(),
-  };
+  });
   state.messages.push(message);
   addCollabEvent('agent_response', `${agent.name} responded`, { messageId: message.id, agentId: agent.id });
   await persistState();
   broadcastState();
+  await relayAgentMentions(message);
   return message;
 }
 
-async function deliverMessageToAgent(agent, spaceType, spaceId, message) {
+async function deliverMessageToAgent(agent, spaceType, spaceId, message, options = {}) {
+  const parentMessageId = options.parentMessageId || message.parentMessageId || (shouldStartThreadForAgentDelivery(message) ? message.id : null);
+  const workItem = createWorkItemForDelivery(agent, message, { spaceType, spaceId, parentMessageId });
+  const routedMessage = {
+    ...message,
+    target: workItem.target,
+    workItemId: workItem.id,
+    taskId: message.taskId || workItem.taskId || null,
+  };
+  const contextPack = buildAgentContextPack({
+    state,
+    agentId: agent.id,
+    spaceType,
+    spaceId,
+    currentMessage: routedMessage,
+    parentMessageId,
+    workItem,
+    toolBaseUrl: `http://${HOST}:${PORT}`,
+  });
+  const deliveryMessage = {
+    ...routedMessage,
+    spaceType,
+    spaceId,
+    agentRelayDepth: Number(message.agentRelayDepth || 0),
+    contextPack,
+    ...(parentMessageId ? { parentMessageId } : {}),
+  };
+  await persistState();
+  broadcastState();
   // Check if agent has a running process
   const proc = agentProcesses.get(agent.id);
 
-  if (proc && (proc.status === 'running' || proc.status === 'starting')) {
-    // Agent is busy - queue the message
-    proc.inbox.push(message);
-    addSystemEvent('message_queued', `Message queued for busy agent ${agent.name}`, { agentId: agent.id, messageId: message.id });
+  if (proc && getAgentRuntime(agent) === 'codex' && proc.child && !proc.child.killed) {
+    proc.spaceType = spaceType;
+    proc.spaceId = spaceId;
+    proc.parentMessageId = parentMessageId || proc.parentMessageId || null;
+    if (proc.status === 'running' || proc.status === 'starting') {
+      queueCodexBusyDelivery(agent, proc, deliveryMessage);
+      return;
+    }
+    if (proc.status === 'idle' && proc.threadId) {
+      if (await sendCodexAppServerMessages(agent, proc, [deliveryMessage], { mode: 'turn' })) return;
+    }
+  } else if (proc && (proc.status === 'running' || proc.status === 'starting')) {
+    // Non-Codex runtimes still queue until their one-shot process exits.
+    proc.inbox.push(deliveryMessage);
+    if (!proc.parentMessageId && parentMessageId) proc.parentMessageId = parentMessageId;
+    addSystemEvent('message_queued', `Message queued for busy agent ${agent.name}`, { agentId: agent.id, messageId: message.id, parentMessageId });
     return;
   }
 
   // Start the agent process with this message
-  await startAgentProcess(agent, spaceType, spaceId, message);
+  await startAgentProcess(agent, spaceType, spaceId, deliveryMessage);
 }
 
-function createTaskFromMessage(message, title) {
+function createTaskFromMessage(message, title, options = {}) {
   if (message.taskId) {
     const existing = findTask(message.taskId);
     if (existing) return existing;
   }
+  const assigneeIds = normalizeIds(options.assigneeIds?.length ? options.assigneeIds : (message.mentionedAgentIds || []));
+  const createdBy = String(options.createdBy || message.authorId || 'hum_local');
 
   const task = {
     id: makeId('task'),
+    number: nextTaskNumber(message.spaceType, message.spaceId),
     title: String(title || message.body || 'Untitled task').trim().slice(0, 180),
-    body: message.body,
-    status: 'todo',
+    body: String(options.body ?? message.body ?? '').trim(),
+    status: String(options.status || 'todo'),
     spaceType: message.spaceType,
     spaceId: message.spaceId,
     messageId: message.id,
     threadMessageId: message.id,
-    assigneeId: null,
+    sourceMessageId: options.sourceMessageId ? String(options.sourceMessageId) : message.id,
+    sourceReplyId: options.sourceReplyId ? String(options.sourceReplyId) : null,
+    assigneeId: assigneeIds[0] || null,
+    assigneeIds,
     claimedBy: null,
     claimedAt: null,
     reviewRequestedAt: null,
     completedAt: null,
+    endIntentAt: null,
     runIds: [],
     attachmentIds: Array.isArray(message.attachmentIds) ? message.attachmentIds : [],
-    createdBy: 'hum_local',
+    localReferences: Array.isArray(options.localReferences) ? options.localReferences : (Array.isArray(message.localReferences) ? message.localReferences : []),
+    createdBy,
     createdAt: now(),
     updatedAt: now(),
     history: [],
   };
-  addTaskHistory(task, 'created', 'Task created from message.');
+  addTaskHistory(task, 'created', `Task ${taskLabel(task)} created from message.`);
   state.tasks.unshift(task);
   message.taskId = task.id;
-  addCollabEvent('task_created', `Task created: ${task.title}`, { taskId: task.id, messageId: message.id });
+  addTaskTimelineMessage(task, `📋 1 new task created: ${taskLabel(task)} ${task.title}`, 'task_created');
+  addCollabEvent('task_created', `Task created: ${task.title}`, { taskId: task.id, messageId: message.id, number: task.number });
+  return task;
+}
+
+function createTaskMessage({ title, body = '', spaceType, spaceId, authorType = 'human', authorId = 'hum_local', assigneeIds = [], attachmentIds = [], sourceMessageId = null, sourceReplyId = null, status = 'todo' }) {
+  const taskTitle = String(title || '').trim().slice(0, 180);
+  if (!taskTitle) throw httpError(400, 'Task title is required.');
+  const message = normalizeConversationRecord({
+    id: makeId('msg'),
+    spaceType,
+    spaceId,
+    authorType,
+    authorId,
+    body: taskTitle,
+    attachmentIds: normalizeIds(attachmentIds),
+    mentionedAgentIds: normalizeIds(assigneeIds),
+    mentionedHumanIds: [],
+    readBy: authorType === 'human' ? ['hum_local'] : [],
+    replyCount: 0,
+    savedBy: [],
+    createdAt: now(),
+    updatedAt: now(),
+  });
+  state.messages.push(message);
+  const task = createTaskFromMessage(message, taskTitle, {
+    body,
+    status,
+    assigneeIds,
+    sourceMessageId: sourceMessageId || message.id,
+    sourceReplyId,
+    createdBy: authorId,
+    localReferences: extractLocalReferences(body || taskTitle),
+  });
+  message.taskId = task.id;
+  return { message, task };
+}
+
+function claimTask(task, actorId, options = {}) {
+  if (!task) throw httpError(404, 'Task not found.');
+  if (task.status === 'done') throw httpError(409, 'Done task cannot be claimed.');
+  const claimant = String(actorId || 'agt_codex');
+  if (task.claimedBy && task.claimedBy !== claimant && !options.force) {
+    throw httpError(409, `Task is already claimed by ${task.claimedBy}.`);
+  }
+  if (task.claimedBy === claimant && task.status === 'in_progress') {
+    return task;
+  }
+  task.claimedBy = claimant;
+  task.assigneeId = claimant;
+  task.assigneeIds = normalizeIds([...(task.assigneeIds || []), claimant]);
+  task.claimedAt = task.claimedAt || now();
+  task.status = 'in_progress';
+  task.updatedAt = now();
+  addTaskHistory(task, 'claimed', `Claimed by ${displayActor(claimant)}.`, claimant);
+  const thread = ensureTaskThread(task);
+  addSystemReply(thread.id, `Task claimed by ${displayActor(claimant)}.`);
+  addTaskTimelineMessage(task, `📌 ${displayActor(claimant)} claimed ${taskLabel(task)}`, 'task_claimed');
+  addCollabEvent('task_claimed', `Task claimed: ${task.title}`, { taskId: task.id, actorId: claimant, number: task.number });
+  return task;
+}
+
+function findTaskForAgentTool(body, space = null) {
+  const taskId = String(body.taskId || body.task_id || '').trim();
+  if (taskId) {
+    const exact = findTask(taskId) || state.tasks.find((task) => task.id.startsWith(taskId));
+    if (exact) return exact;
+    throw httpError(404, `Task not found: ${taskId}`);
+  }
+  const taskNumber = body.taskNumber ?? body.task_number ?? body.number;
+  if (taskNumber !== undefined && taskNumber !== null && taskNumber !== '') {
+    const scoped = space || resolveConversationSpace(body);
+    const task = state.tasks.find((item) => (
+      item.spaceType === scoped.spaceType
+      && item.spaceId === scoped.spaceId
+      && Number(item.number) === Number(taskNumber)
+    ));
+    if (task) return task;
+    throw httpError(404, `Task not found: #${taskNumber}`);
+  }
+  const messageId = String(body.messageId || body.message_id || '').trim();
+  if (messageId) {
+    const message = findMessage(messageId) || state.messages.find((item) => item.id.startsWith(messageId));
+    const task = findTaskForThreadMessage(message);
+    if (task) return task;
+    throw httpError(404, `Task not found for message: ${messageId}`);
+  }
+  throw httpError(400, 'taskId, taskNumber, or messageId is required.');
+}
+
+function updateTaskForAgent(task, agent, nextStatus, options = {}) {
+  const status = String(nextStatus || '').trim();
+  if (!['todo', 'in_progress', 'in_review', 'done'].includes(status)) {
+    throw httpError(400, 'Unsupported task status.');
+  }
+  if (task.claimedBy && task.claimedBy !== agent.id && !options.force) {
+    throw httpError(409, `Task is already claimed by ${task.claimedBy}.`);
+  }
+  if (!task.claimedBy && !options.force) {
+    throw httpError(409, 'Task must be claimed before agent status updates.');
+  }
+  if (!task.claimedBy) {
+    task.claimedBy = agent.id;
+    task.claimedAt = now();
+    task.assigneeId = agent.id;
+    task.assigneeIds = normalizeIds([...(task.assigneeIds || []), agent.id]);
+  }
+  const previousStatus = task.status;
+  task.status = status;
+  task.updatedAt = now();
+  if (status === 'in_progress') {
+    task.reviewRequestedAt = null;
+    task.completedAt = null;
+    addTaskHistory(task, 'agent_in_progress', 'Agent moved task to In Progress.', agent.id);
+    addSystemReply(ensureTaskThread(task).id, `${agent.name} moved this task to In Progress.`);
+    addTaskTimelineMessage(task, `📌 ${displayActor(agent.id)} moved ${taskLabel(task)} to In Progress`, 'task_claimed');
+  } else if (status === 'in_review') {
+    task.reviewRequestedAt = task.reviewRequestedAt || now();
+    task.completedAt = null;
+    addTaskHistory(task, 'agent_review_requested', 'Agent requested review.', agent.id);
+    addSystemReply(ensureTaskThread(task).id, `${agent.name} requested review.`);
+    addTaskTimelineMessage(task, `👀 ${displayActor(agent.id)} moved ${taskLabel(task)} to In Review`, 'task_review');
+  } else if (status === 'done') {
+    task.completedAt = task.completedAt || now();
+    addTaskHistory(task, 'agent_done', 'Agent marked task done.', agent.id);
+    addSystemReply(ensureTaskThread(task).id, `${agent.name} marked this task done.`);
+    addTaskTimelineMessage(task, `✅ ${displayActor(agent.id)} moved ${taskLabel(task)} to Done`, 'task_done');
+  } else if (status === 'todo') {
+    task.reviewRequestedAt = null;
+    task.completedAt = null;
+    addTaskHistory(task, 'agent_todo', 'Agent moved task back to Todo.', agent.id);
+    addSystemReply(ensureTaskThread(task).id, `${agent.name} moved this task back to Todo.`);
+  }
+  addCollabEvent('agent_task_updated', `${agent.name} moved ${taskLabel(task)} from ${previousStatus || 'unknown'} to ${status}`, {
+    agentId: agent.id,
+    taskId: task.id,
+    previousStatus,
+    status,
+  });
   return task;
 }
 
@@ -1263,6 +3900,254 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'GET' && url.pathname === '/api/state') {
     sendJson(res, 200, publicState());
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/history') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const history = readAgentHistory(state, {
+      target: url.searchParams.get('target') || url.searchParams.get('channel') || '#all',
+      limit: url.searchParams.get('limit') || undefined,
+      around: url.searchParams.get('around') || undefined,
+      before: url.searchParams.get('before') || undefined,
+      after: url.searchParams.get('after') || undefined,
+    });
+    addSystemEvent('agent_history_read', `${displayActor(agentId) || 'Agent'} read ${history.target || 'history'}.`, {
+      agentId,
+      target: history.target || url.searchParams.get('target') || '#all',
+      ok: Boolean(history.ok),
+    });
+    sendJson(res, history.ok ? 200 : 404, {
+      ...history,
+      text: formatAgentHistory(history, { state, targetAgentId: agentId }),
+    });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/search') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const search = searchAgentMessageHistory(state, {
+      query: url.searchParams.get('q') || url.searchParams.get('query') || '',
+      target: url.searchParams.get('target') || url.searchParams.get('channel') || '#all',
+      limit: url.searchParams.get('limit') || undefined,
+    });
+    addSystemEvent('agent_history_search', `${displayActor(agentId) || 'Agent'} searched message history.`, {
+      agentId,
+      query: url.searchParams.get('q') || url.searchParams.get('query') || '',
+      target: url.searchParams.get('target') || '#all',
+      ok: Boolean(search.ok),
+    });
+    sendJson(res, search.ok ? 200 : 400, {
+      ...search,
+      text: formatAgentSearchResults(search, { state, targetAgentId: agentId }),
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agent-tools/messages/send') {
+    const body = await readJson(req);
+    const agent = findAgent(String(body.agentId || ''));
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    const workItem = findWorkItem(String(body.workItemId || body.work_item_id || ''));
+    if (!workItem) {
+      sendError(res, 404, 'Work item not found.');
+      return true;
+    }
+    if (workItem.agentId !== agent.id) {
+      sendError(res, 403, 'Work item belongs to a different agent.');
+      return true;
+    }
+    if (workItem.status === 'cancelled') {
+      sendError(res, 409, 'Work item was stopped by the user.');
+      return true;
+    }
+    const content = String(body.content || '').trim();
+    if (!content) {
+      sendError(res, 400, 'Message content is required.');
+      return true;
+    }
+    let target;
+    try {
+      target = resolveMessageTarget(body.target || workItem.target);
+      if (!workItemTargetMatches(workItem, target)) {
+        throw httpError(409, 'Target does not match the work item conversation.');
+      }
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+      return true;
+    }
+    const sourceMessage = findConversationRecord(workItem.sourceMessageId);
+    const posted = await postAgentResponse(agent, target.spaceType, target.spaceId, content, target.parentMessageId || null, {
+      sourceMessage,
+    });
+    markWorkItemResponded(workItem, target.label, posted);
+    addSystemEvent('agent_tool_send_message', `${agent.name} sent a routed message to ${target.label}.`, {
+      agentId: agent.id,
+      workItemId: workItem.id,
+      target: target.label,
+      responseId: posted?.id || null,
+    });
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, {
+      ok: true,
+      target: target.label,
+      workItemId: workItem.id,
+      workItem,
+      message: posted,
+      text: `Message sent to ${target.label}.`,
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agent-tools/tasks/update') {
+    const body = await readJson(req);
+    const agent = findAgent(String(body.agentId || ''));
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    let task;
+    try {
+      task = findTaskForAgentTool(body);
+      updateTaskForAgent(task, agent, body.status || body.nextStatus, { force: body.force === true || body.allowUnclaimed === true });
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+      return true;
+    }
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, {
+      ok: true,
+      task,
+      text: `${taskLabel(task)} is now ${task.status}.`,
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agent-tools/tasks') {
+    const body = await readJson(req);
+    const agent = findAgent(String(body.agentId || ''));
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    let space;
+    try {
+      space = resolveConversationSpace(body);
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+      return true;
+    }
+    const taskInputs = Array.isArray(body.tasks) && body.tasks.length
+      ? body.tasks
+      : [{ title: body.title, body: body.body }];
+    const created = [];
+    try {
+      for (const input of taskInputs) {
+        const assigneeIds = normalizeIds([
+          ...(Array.isArray(input.assigneeIds) ? input.assigneeIds : []),
+          ...(input.assigneeId ? [input.assigneeId] : []),
+          ...(Array.isArray(body.assigneeIds) ? body.assigneeIds : []),
+          ...(body.assigneeId ? [body.assigneeId] : []),
+          ...(body.claim ? [agent.id] : []),
+        ]);
+        const { message, task } = createTaskMessage({
+          title: input.title,
+          body: String(input.body ?? body.body ?? '').trim(),
+          ...space,
+          authorType: 'agent',
+          authorId: agent.id,
+          assigneeIds,
+          attachmentIds: Array.isArray(input.attachmentIds) ? input.attachmentIds : (Array.isArray(body.attachmentIds) ? body.attachmentIds : []),
+          sourceMessageId: input.sourceMessageId || body.sourceMessageId || null,
+          sourceReplyId: input.sourceReplyId || body.sourceReplyId || null,
+        });
+        if (body.claim) claimTask(task, agent.id, { force: body.force });
+        created.push({
+          task,
+          message,
+          taskNumber: task.number,
+          messageId: message.id,
+          title: task.title,
+          threadTarget: `${space.label}:${message.id}`,
+        });
+      }
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+      return true;
+    }
+    addSystemEvent('agent_tool_create_tasks', `${agent.name} created ${created.length} task(s).`, {
+      agentId: agent.id,
+      taskIds: created.map((item) => item.task.id),
+      spaceType: space.spaceType,
+      spaceId: space.spaceId,
+    });
+    await persistState();
+    broadcastState();
+    sendJson(res, 201, {
+      ok: true,
+      tasks: created,
+      text: [
+        `Created ${created.length} task(s) in ${space.label}:`,
+        ...created.map((item) => `${taskLabel(item.task)} msg=${item.messageId} "${item.title}"`),
+        '',
+        'To follow up, reply in:',
+        ...created.map((item) => `${taskLabel(item.task)} -> ${item.threadTarget}`),
+      ].join('\n'),
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agent-tools/tasks/claim') {
+    const body = await readJson(req);
+    const agent = findAgent(String(body.agentId || ''));
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    let space;
+    try {
+      space = resolveConversationSpace(body);
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+      return true;
+    }
+    const claimed = [];
+    const numbers = Array.isArray(body.taskNumbers) ? body.taskNumbers : (Array.isArray(body.task_numbers) ? body.task_numbers : []);
+    const messageIds = Array.isArray(body.messageIds) ? body.messageIds : (Array.isArray(body.message_ids) ? body.message_ids : []);
+    try {
+      for (const number of numbers) {
+        const task = state.tasks.find((item) => (
+          item.spaceType === space.spaceType
+          && item.spaceId === space.spaceId
+          && Number(item.number) === Number(number)
+        ));
+        if (!task) throw httpError(404, `Task not found: #${number}`);
+        claimed.push(claimTask(task, agent.id, { force: body.force }));
+      }
+      for (const messageId of messageIds) {
+        const message = findMessage(String(messageId)) || state.messages.find((item) => item.id.startsWith(String(messageId)));
+        if (!message || message.authorType === 'system' || message.parentMessageId) {
+          throw httpError(400, 'Only regular top-level messages can be claimed as tasks.');
+        }
+        const task = createTaskFromMessage(message, body.title || message.body, { createdBy: message.authorId });
+        claimed.push(claimTask(task, agent.id, { force: body.force }));
+      }
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+      return true;
+    }
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, {
+      ok: true,
+      tasks: claimed,
+      text: claimed.map((task) => `Claimed ${taskLabel(task)} "${task.title}"`).join('\n'),
+    });
     return true;
   }
 
@@ -1439,30 +4324,126 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/projects') {
+    const body = await readJson(req);
+    try {
+      const result = await addProjectFolder({
+        rawPath: body.path,
+        name: body.name,
+        spaceType: body.spaceType,
+        spaceId: body.spaceId,
+      });
+      sendJson(res, result.created ? 201 : 200, result);
+    } catch (error) {
+      sendError(res, error.status || 500, error.message);
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/projects/pick-folder') {
+    const body = await readJson(req);
+    try {
+      const pickedPath = await pickFolderPath(body.defaultPath || state.settings?.defaultWorkspace || ROOT);
+      if (!pickedPath) {
+        sendJson(res, 200, { canceled: true });
+        return true;
+      }
+      const result = await addProjectFolder({
+        rawPath: pickedPath,
+        name: body.name,
+        spaceType: body.spaceType,
+        spaceId: body.spaceId,
+      });
+      sendJson(res, result.created ? 201 : 200, { canceled: false, ...result });
+    } catch (error) {
+      addSystemEvent('project_picker_failed', `Project folder picker failed: ${error.message}`);
+      sendError(res, error.status || 500, error.message);
+    }
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/projects/search') {
+    const spaceType = url.searchParams.get('spaceType') === 'dm' ? 'dm' : 'channel';
+    const spaceId = url.searchParams.get('spaceId') || selectedDefaultSpaceId(spaceType);
+    const query = url.searchParams.get('q') || '';
+    const items = await searchProjectItems(spaceType, spaceId, query);
+    sendJson(res, 200, { items });
+    return true;
+  }
+
+  const projectTreeMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/tree$/);
+  if (req.method === 'GET' && projectTreeMatch) {
+    const project = findProject(decodePathSegment(projectTreeMatch[1]));
+    if (!project) {
+      sendError(res, 404, 'Project not found.');
+      return true;
+    }
+    try {
+      sendJson(res, 200, await listProjectTree(project, url.searchParams.get('path') || ''));
+    } catch (error) {
+      addSystemEvent('project_tree_failed', `Project tree failed: ${error.message}`, {
+        projectId: project.id,
+        path: url.searchParams.get('path') || '',
+      });
+      sendError(res, error.status || 500, error.message);
+    }
+    return true;
+  }
+
+  const projectFileMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/file$/);
+  if (req.method === 'GET' && projectFileMatch) {
+    const project = findProject(decodePathSegment(projectFileMatch[1]));
+    if (!project) {
+      sendError(res, 404, 'Project not found.');
+      return true;
+    }
+    try {
+      sendJson(res, 200, await readProjectFilePreview(project, url.searchParams.get('path') || ''));
+    } catch (error) {
+      addSystemEvent('project_file_preview_failed', `Project file preview failed: ${error.message}`, {
+        projectId: project.id,
+        path: url.searchParams.get('path') || '',
+      });
+      sendError(res, error.status || 500, error.message);
+    }
+    return true;
+  }
+
+  if (req.method === 'DELETE' && url.pathname.startsWith('/api/projects/')) {
+    const [, , , id] = url.pathname.split('/');
+    const project = findProject(id);
+    if (!project) {
+      sendError(res, 404, 'Project not found.');
+      return true;
+    }
+    state.projects = state.projects.filter((item) => item.id !== id);
+    addSystemEvent('project_removed', `Project folder removed: ${project.name}`, { projectId: project.id });
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/attachments') {
     const body = await readJson(req);
     const files = Array.isArray(body.files) ? body.files : [];
+    if (files.length > MAX_ATTACHMENT_UPLOADS) {
+      sendError(res, 400, `A single upload can include at most ${MAX_ATTACHMENT_UPLOADS} files.`);
+      return true;
+    }
     const created = [];
 
     for (const file of files) {
       const match = String(file.dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
       if (!match) continue;
-      const id = makeId('att');
-      const name = safeFileName(file.name);
       const type = match[1];
       const buffer = Buffer.from(match[2], 'base64');
-      const diskName = `${id}-${name}`;
-      const filePath = path.join(ATTACHMENTS_DIR, diskName);
-      await writeFile(filePath, buffer);
-      const attachment = {
-        id,
-        name,
+      const attachment = await saveAttachmentBuffer({
+        name: file.name,
         type,
-        bytes: buffer.length,
-        path: filePath,
-        url: `/api/attachments/${id}/${encodeURIComponent(name)}`,
-        createdAt: now(),
-      };
+        buffer,
+        source: file.source === 'clipboard' ? 'clipboard' : 'upload',
+      });
       state.attachments.push(attachment);
       created.push(attachment);
     }
@@ -1471,6 +4452,12 @@ async function handleApi(req, res, url) {
     await persistState();
     broadcastState();
     sendJson(res, 201, { attachments: created });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/attachments/reference') {
+    addSystemEvent('attachment_reference_rejected', 'Project file references stay local and are not copied into attachments.');
+    sendError(res, 410, 'Project file references stay local. Use @ file/folder tokens instead of creating attachment copies.');
     return true;
   }
 
@@ -1492,6 +4479,7 @@ async function handleApi(req, res, url) {
       id: makeId('chan'),
       name,
       description: String(body.description || '').trim(),
+      ownerId: String(body.ownerId || 'hum_local'),
       humanIds,
       agentIds,
       memberIds,
@@ -1500,7 +4488,7 @@ async function handleApi(req, res, url) {
       updatedAt: now(),
     };
     state.channels.push(channel);
-    state.messages.push({
+    state.messages.push(normalizeConversationRecord({
       id: makeId('msg'),
       spaceType: 'channel',
       spaceId: channel.id,
@@ -1512,7 +4500,7 @@ async function handleApi(req, res, url) {
       savedBy: [],
       createdAt: now(),
       updatedAt: now(),
-    });
+    }));
     addCollabEvent('channel_created', `Channel #${channel.name} created.`, { channelId: channel.id });
     await persistState();
     broadcastState();
@@ -1530,6 +4518,7 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     if (body.name !== undefined) channel.name = normalizeName(body.name, channel.name);
     if (body.description !== undefined) channel.description = String(body.description || '').trim();
+    if (body.ownerId !== undefined) channel.ownerId = String(body.ownerId || channel.ownerId || 'hum_local');
     if (Array.isArray(body.agentIds)) channel.agentIds = body.agentIds.map(String);
     if (Array.isArray(body.humanIds)) channel.humanIds = body.humanIds.map(String);
     if (Array.isArray(body.memberIds)) channel.memberIds = body.memberIds.map(String);
@@ -1659,7 +4648,8 @@ async function handleApi(req, res, url) {
       sendError(res, 400, 'Message body or attachment is required.');
       return true;
     }
-    const message = {
+    const mentions = extractMentions(text);
+    const message = normalizeConversationRecord({
       id: makeId('msg'),
       spaceType,
       spaceId,
@@ -1667,17 +4657,51 @@ async function handleApi(req, res, url) {
       authorId: String(body.authorId || 'hum_local'),
       body: text,
       attachmentIds,
+      mentionedAgentIds: mentions.agents,
+      mentionedHumanIds: mentions.humans,
+      readBy: body.authorType === 'agent' ? [] : ['hum_local'],
       replyCount: 0,
       savedBy: [],
       createdAt: now(),
       updatedAt: now(),
-    };
+    });
+    applyMentions(message, mentions);
     state.messages.push(message);
 
     let task = null;
     if (body.asTask) {
       task = createTaskFromMessage(message, body.taskTitle || text);
       message.taskId = task.id;
+    }
+
+    let respondingAgents = [];
+    if (message.authorType === 'human' && spaceType === 'channel') {
+      const channel = findChannel(spaceId);
+      if (channel) {
+        const channelAgents = channelAgentIds(channel)
+          .map(id => findAgent(id))
+          .filter(Boolean);
+        respondingAgents = determineRespondingAgents(
+          channelAgents,
+          mentions,
+          message,
+          spaceId
+        );
+        const claimant = pickAvailableAgent(
+          channelAgents,
+          [
+            ...(respondingAgents.map((agent) => agent.id)),
+            ...(mentions.agents || []),
+          ],
+        );
+        if (claimant && autoTaskMessageIntent(text)) {
+          task = createOrClaimTaskForMessage(message, claimant, {
+            title: body.taskTitle || text,
+            createdBy: message.authorId,
+          });
+          message.taskId = task.id;
+        }
+      }
     }
 
     addCollabEvent('message_sent', 'Message sent.', { messageId: message.id, spaceType, spaceId });
@@ -1700,22 +4724,11 @@ async function handleApi(req, res, url) {
           }
         }
       } else if (spaceType === 'channel') {
-        // In a channel, check for @mentions or deliver to all agents
-        const channel = findChannel(spaceId);
-        if (channel && Array.isArray(channel.agentIds)) {
-          // Check for @mentions
-          const mentionedAgents = channel.agentIds
-            .map(id => findAgent(id))
-            .filter(agent => agent && text.includes(`@${agent.name}`));
-
-          if (mentionedAgents.length > 0) {
-            // Deliver only to mentioned agents
-            for (const agent of mentionedAgents) {
-              deliverMessageToAgent(agent, spaceType, spaceId, message).catch(err => {
-                addSystemEvent('delivery_error', `Failed to deliver to ${agent.name}: ${err.message}`, { agentId: agent.id });
-              });
-            }
-          }
+        // In a channel, use intelligent dispatch based on mentions, work intent, and personality.
+        for (const agent of respondingAgents) {
+          deliverMessageToAgent(agent, spaceType, spaceId, message).catch(err => {
+            addSystemEvent('delivery_error', `Failed to deliver to ${agent.name}: ${err.message}`, { agentId: agent.id });
+          });
         }
       }
     }
@@ -1732,28 +4745,81 @@ async function handleApi(req, res, url) {
       return true;
     }
     const body = await readJson(req);
-    const text = String(body.body || '').trim();
-    if (!text) {
-      sendError(res, 400, 'Reply body is required.');
+    if (body.asTask) {
+      sendError(res, 400, 'Thread replies cannot become tasks. Create a new top-level task message instead.');
       return true;
     }
-    const reply = {
+    const text = String(body.body || '').trim();
+    const attachmentIds = Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [];
+    if (!text && !attachmentIds.length) {
+      sendError(res, 400, 'Reply body or attachment is required.');
+      return true;
+    }
+    const mentions = extractMentions(text);
+    const reply = normalizeConversationRecord({
       id: makeId('rep'),
       parentMessageId: message.id,
+      spaceType: message.spaceType,
+      spaceId: message.spaceId,
       authorType: body.authorType === 'agent' ? 'agent' : 'human',
       authorId: String(body.authorId || 'hum_local'),
       body: text,
-      attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [],
+      attachmentIds,
+      mentionedAgentIds: mentions.agents,
+      mentionedHumanIds: mentions.humans,
+      readBy: body.authorType === 'agent' ? [] : ['hum_local'],
       createdAt: now(),
       updatedAt: now(),
-    };
+    });
+    applyMentions(reply, mentions);
     state.replies.push(reply);
     message.replyCount = state.replies.filter((item) => item.parentMessageId === message.id).length;
     message.updatedAt = now();
     addCollabEvent('thread_reply', 'Thread reply added.', { messageId: message.id, replyId: reply.id });
+    const linkedTask = findTaskForThreadMessage(message);
+    let createdThreadTask = null;
+    let createdThreadTaskMessage = null;
+    if (reply.authorType === 'human' && linkedTask && taskEndIntent(text)) {
+      finishTaskFromThread(linkedTask, reply.authorId, reply.id);
+      addSystemReply(message.id, 'Task marked done from thread request.');
+    }
+    if (reply.authorType === 'human' && message.spaceType === 'channel' && taskCreationIntent(text)) {
+      const channel = findChannel(message.spaceId);
+      const channelAgents = channel
+        ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
+        : [];
+      const preferredAgentIds = [
+        ...(mentions.agents || []),
+        ...(linkedTask?.claimedBy ? [linkedTask.claimedBy] : []),
+        ...(linkedTask?.assigneeIds || []),
+        ...(message.mentionedAgentIds || []),
+      ];
+      const agent = pickAvailableAgent(channelAgents, preferredAgentIds);
+      if (agent) {
+        const created = createTaskFromThreadIntent(message, reply, agent);
+        createdThreadTask = created.task;
+        createdThreadTaskMessage = created.message;
+      }
+    }
     await persistState();
     broadcastState();
-    sendJson(res, 201, { reply });
+
+    if (reply.authorType === 'human' && !createdThreadTask) {
+      const channel = message.spaceType === 'channel' ? findChannel(message.spaceId) : null;
+      const channelAgents = channel
+        ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
+        : [];
+      const respondingAgents = message.spaceType === 'channel'
+        ? determineRespondingAgents(channelAgents, mentions, reply, message.spaceId)
+        : [];
+      for (const agent of respondingAgents) {
+        deliverMessageToAgent(agent, message.spaceType, message.spaceId, reply, { parentMessageId: message.id }).catch(err => {
+          addSystemEvent('delivery_error', `Failed to deliver thread reply to ${agent.name}: ${err.message}`, { agentId: agent.id, replyId: reply.id, parentMessageId: message.id });
+        });
+      }
+    }
+
+    sendJson(res, 201, { reply, createdTask: createdThreadTask, createdTaskMessage: createdThreadTaskMessage });
     return true;
   }
 
@@ -1786,6 +4852,7 @@ async function handleApi(req, res, url) {
       return true;
     }
     const body = await readJson(req);
+    normalizeConversationRecord(message);
     const task = createTaskFromMessage(message, body.title || message.body);
     message.taskId = task.id;
     await persistState();
@@ -1801,35 +4868,32 @@ async function handleApi(req, res, url) {
       sendError(res, 400, 'Task title is required.');
       return true;
     }
-    const task = {
-      id: makeId('task'),
+    let space;
+    try {
+      space = resolveConversationSpace(body);
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+      return true;
+    }
+    const assigneeIds = normalizeIds([
+      ...(Array.isArray(body.assigneeIds) ? body.assigneeIds : []),
+      ...(body.assigneeId ? [body.assigneeId] : []),
+    ]);
+    const { message, task } = createTaskMessage({
       title,
       body: String(body.body || '').trim(),
-      status: body.status || 'todo',
-      spaceType: body.spaceType === 'dm' ? 'dm' : 'channel',
-      spaceId: String(body.spaceId || 'chan_all'),
-      messageId: body.messageId ? String(body.messageId) : null,
-      threadMessageId: body.messageId ? String(body.messageId) : null,
-      assigneeId: body.assigneeId ? String(body.assigneeId) : null,
-      claimedBy: null,
-      claimedAt: null,
-      reviewRequestedAt: null,
-      completedAt: null,
-      runIds: [],
+      ...space,
+      authorType: body.authorType === 'agent' ? 'agent' : 'human',
+      authorId: String(body.authorId || 'hum_local'),
+      assigneeIds,
       attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [],
-      createdBy: 'hum_local',
-      createdAt: now(),
-      updatedAt: now(),
-      history: [],
-    };
-    addTaskHistory(task, 'created', 'Task created manually.');
-    state.tasks.unshift(task);
-    const thread = ensureTaskThread(task);
-    thread.taskId = task.id;
-    addCollabEvent('task_created', `Task created: ${task.title}`, { taskId: task.id });
+      sourceMessageId: body.sourceMessageId || body.messageId || null,
+      sourceReplyId: body.sourceReplyId || null,
+      status: body.status || 'todo',
+    });
     await persistState();
     broadcastState();
-    sendJson(res, 201, { task });
+    sendJson(res, 201, { message, task });
     return true;
   }
 
@@ -1840,24 +4904,14 @@ async function handleApi(req, res, url) {
       sendError(res, 404, 'Task not found.');
       return true;
     }
-    if (task.status === 'done') {
-      sendError(res, 409, 'Done task cannot be claimed.');
-      return true;
-    }
     const body = await readJson(req);
     const actorId = String(body.actorId || body.assigneeId || 'agt_codex');
-    if (task.claimedBy && task.claimedBy !== actorId && !body.force) {
-      sendError(res, 409, `Task is already claimed by ${task.claimedBy}.`);
+    try {
+      claimTask(task, actorId, { force: body.force });
+    } catch (error) {
+      sendError(res, error.status || 409, error.message);
       return true;
     }
-    task.claimedBy = actorId;
-    task.assigneeId = actorId;
-    task.claimedAt = task.claimedAt || now();
-    task.status = 'in_progress';
-    addTaskHistory(task, 'claimed', `Claimed by ${actorId}.`, actorId);
-    const thread = ensureTaskThread(task);
-    addSystemReply(thread.id, `Task claimed by ${actorId}.`);
-    addCollabEvent('task_claimed', `Task claimed: ${task.title}`, { taskId: task.id, actorId });
     await persistState();
     broadcastState();
     sendJson(res, 200, { task });
@@ -1877,13 +4931,14 @@ async function handleApi(req, res, url) {
     }
     const actorId = task.claimedBy || 'hum_local';
     task.claimedBy = null;
-    task.assigneeId = null;
+    task.assigneeId = task.assigneeIds?.[0] || null;
     task.claimedAt = null;
     task.status = 'todo';
     task.reviewRequestedAt = null;
     addTaskHistory(task, 'unclaimed', 'Claim released.', actorId);
     const thread = ensureTaskThread(task);
     addSystemReply(thread.id, 'Task claim released.');
+    addTaskTimelineMessage(task, `🔓 ${displayActor(actorId)} released ${taskLabel(task)}`, 'task_unclaimed');
     await persistState();
     broadcastState();
     sendJson(res, 200, { task });
@@ -1906,6 +4961,7 @@ async function handleApi(req, res, url) {
     addTaskHistory(task, 'review_requested', 'Review requested.', task.claimedBy);
     const thread = ensureTaskThread(task);
     addSystemReply(thread.id, 'Review requested. Waiting for human approval.');
+    addTaskTimelineMessage(task, `👀 ${displayActor(task.claimedBy)} moved ${taskLabel(task)} to In Review`, 'task_review');
     await persistState();
     broadcastState();
     sendJson(res, 200, { task });
@@ -1928,6 +4984,7 @@ async function handleApi(req, res, url) {
     addTaskHistory(task, 'approved', 'Human review approved; task marked done.');
     const thread = ensureTaskThread(task);
     addSystemReply(thread.id, 'Human review approved. Task marked done.');
+    addTaskTimelineMessage(task, `✅ ${displayActor('hum_local')} moved ${taskLabel(task)} to Done`, 'task_done');
     await persistState();
     broadcastState();
     sendJson(res, 200, { task });
@@ -1943,13 +5000,15 @@ async function handleApi(req, res, url) {
     }
     task.status = 'todo';
     task.claimedBy = null;
-    task.assigneeId = null;
+    task.assigneeId = task.assigneeIds?.[0] || null;
     task.claimedAt = null;
     task.reviewRequestedAt = null;
     task.completedAt = null;
+    task.endIntentAt = null;
     addTaskHistory(task, 'reopened', 'Task reopened by human.');
     const thread = ensureTaskThread(task);
     addSystemReply(thread.id, 'Task reopened.');
+    addTaskTimelineMessage(task, `↩ ${displayActor('hum_local')} reopened ${taskLabel(task)}`, 'task_reopened');
     await persistState();
     broadcastState();
     sendJson(res, 200, { task });
@@ -1975,10 +5034,12 @@ async function handleApi(req, res, url) {
     if (!task.claimedBy) {
       task.claimedBy = actorId;
       task.assigneeId = actorId;
+      task.assigneeIds = normalizeIds([...(task.assigneeIds || []), actorId]);
       task.claimedAt = now();
       task.status = 'in_progress';
       addTaskHistory(task, 'claimed', 'Auto-claimed before Codex run.', actorId);
       addSystemReply(ensureTaskThread(task).id, 'Task auto-claimed by Codex before run.');
+      addTaskTimelineMessage(task, `📌 ${displayActor(actorId)} claimed ${taskLabel(task)}`, 'task_claimed');
     }
 
     const mission = {
@@ -1994,6 +5055,7 @@ async function handleApi(req, res, url) {
       evidenceRequired: ['diff summary', 'test output', 'risk notes'],
       humanCheckpoints: ['before dangerous command', 'before deploy'],
       attachmentIds: Array.isArray(task.attachmentIds) ? task.attachmentIds : [],
+      localReferences: Array.isArray(task.localReferences) ? task.localReferences : [],
       taskId: task.id,
       createdAt: now(),
       updatedAt: now(),
@@ -2043,10 +5105,18 @@ async function handleApi(req, res, url) {
       if (nextStatus === 'in_review') task.reviewRequestedAt = now();
       if (nextStatus === 'done') task.completedAt = now();
       addTaskHistory(task, 'status_changed', `Status changed to ${nextStatus}.`);
+      if (nextStatus === 'in_review') addTaskTimelineMessage(task, `👀 ${displayActor('hum_local')} moved ${taskLabel(task)} to In Review`, 'task_review');
+      if (nextStatus === 'done') addTaskTimelineMessage(task, `✅ ${displayActor('hum_local')} moved ${taskLabel(task)} to Done`, 'task_done');
     }
     if (body.assigneeId !== undefined) {
       task.assigneeId = body.assigneeId ? String(body.assigneeId) : null;
-      addTaskHistory(task, 'assigned', task.assigneeId ? `Assigned to ${task.assigneeId}.` : 'Assignee cleared.');
+      task.assigneeIds = task.assigneeId ? normalizeIds([...(task.assigneeIds || []), task.assigneeId]) : [];
+      addTaskHistory(task, 'assigned', task.assigneeId ? `Assigned to ${displayActor(task.assigneeId)}.` : 'Assignee cleared.');
+    }
+    if (body.assigneeIds !== undefined) {
+      task.assigneeIds = normalizeIds(body.assigneeIds);
+      task.assigneeId = task.assigneeIds[0] || null;
+      addTaskHistory(task, 'assigned', task.assigneeIds.length ? `Assigned to ${task.assigneeIds.map((id) => displayActor(id)).join(', ')}.` : 'Assignees cleared.');
     }
     task.updatedAt = now();
     addCollabEvent('task_updated', `Task updated: ${task.title}`, { taskId: task.id });
@@ -2087,18 +5157,13 @@ async function handleApi(req, res, url) {
       createdAt: now(),
     };
     state.agents.push(agent);
+    await ensureAgentWorkspace(agent);
 
     // Auto-add to #all channel
     const allChannel = findChannel('chan_all');
     if (allChannel) {
-      allChannel.agentIds = Array.isArray(allChannel.agentIds) ? allChannel.agentIds : [];
-      if (!allChannel.agentIds.includes(agent.id)) {
-        allChannel.agentIds.push(agent.id);
-      }
-      allChannel.memberIds = Array.isArray(allChannel.memberIds) ? allChannel.memberIds : [];
-      if (!allChannel.memberIds.includes(agent.id)) {
-        allChannel.memberIds.push(agent.id);
-      }
+      allChannel.agentIds = normalizeIds([...(allChannel.agentIds || []), agent.id]);
+      allChannel.memberIds = normalizeIds([...(allChannel.memberIds || []), agent.id]);
       allChannel.updatedAt = now();
     }
 
@@ -2110,16 +5175,68 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/agents/stop-all') {
-    for (const agent of state.agents) agent.status = 'idle';
-    for (const [runId, child] of runningProcesses.entries()) {
-      const run = findRun(runId);
-      if (run) run.cancelRequested = true;
-      child.kill('SIGTERM');
+    const body = await readJson(req);
+    let scope = null;
+    try {
+      scope = stopScopeFromBody(body);
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+      return true;
     }
-    addCollabEvent('agents_stopped', 'Stop all agents requested.');
+    const stoppedRuns = stopRunsForScope(scope);
+    const stopped = stopAgentProcesses(scope);
+    if (!scope) {
+      for (const agent of state.agents) agent.status = 'idle';
+      agentProcesses.clear();
+    }
+    const label = scope?.label || 'all channels';
+    addCollabEvent('agents_stopped', `Stop all agents requested in ${label}.`, {
+      scope: scope ? { spaceType: scope.spaceType, spaceId: scope.spaceId } : null,
+      stoppedRuns,
+      stoppedAgents: stopped.stoppedAgents,
+      cancelledWorkItems: stopped.cancelledWorkItems,
+    });
     await persistState();
     broadcastState();
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, {
+      ok: true,
+      scope,
+      stoppedRuns,
+      stoppedAgents: stopped.stoppedAgents,
+      cancelledWorkItems: stopped.cancelledWorkItems,
+    });
+    return true;
+  }
+
+  const agentWorkspaceMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/workspace$/);
+  if (req.method === 'GET' && agentWorkspaceMatch) {
+    const agent = findAgent(agentWorkspaceMatch[1]);
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    try {
+      const tree = await listAgentWorkspace(agent, url.searchParams.get('path') || '');
+      sendJson(res, 200, tree);
+    } catch (error) {
+      sendError(res, error.status || 500, error.message);
+    }
+    return true;
+  }
+
+  const agentWorkspaceFileMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/workspace\/file$/);
+  if (req.method === 'GET' && agentWorkspaceFileMatch) {
+    const agent = findAgent(agentWorkspaceFileMatch[1]);
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    try {
+      const file = await readAgentWorkspaceFile(agent, url.searchParams.get('path') || 'MEMORY.md');
+      sendJson(res, 200, file);
+    } catch (error) {
+      sendError(res, error.status || 500, error.message);
+    }
     return true;
   }
 
@@ -2210,6 +5327,12 @@ async function handleApi(req, res, url) {
       createdAt: now(),
     };
     state.humans.push(human);
+    const allChannel = findChannel('chan_all');
+    if (allChannel) {
+      allChannel.humanIds = normalizeIds([...(allChannel.humanIds || []), human.id]);
+      allChannel.memberIds = normalizeIds([...(allChannel.memberIds || []), human.id]);
+      allChannel.updatedAt = now();
+    }
     addCollabEvent('human_invited', `Human invited: ${human.email || human.name}`, { humanId: human.id });
     await persistState();
     broadcastState();
@@ -2248,6 +5371,7 @@ async function handleApi(req, res, url) {
       evidenceRequired: splitLines(body.evidenceRequired || 'diff summary\ntest output\nrisk notes'),
       humanCheckpoints: splitLines(body.humanCheckpoints || 'before dangerous command\nbefore deploy'),
       attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [],
+      localReferences: Array.isArray(body.localReferences) ? body.localReferences : [],
       createdAt: now(),
       updatedAt: now(),
     };
@@ -2363,5 +5487,8 @@ server.listen(PORT, HOST, () => {
 
 process.on('SIGINT', () => {
   for (const child of runningProcesses.values()) child.kill('SIGTERM');
+  for (const proc of agentProcesses.values()) {
+    if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');
+  }
   server.close(() => process.exit(0));
 });

@@ -1,20 +1,57 @@
 const root = document.querySelector('#root');
+const TASK_COLUMN_COLLAPSE_KEY = 'magclawTaskColumnCollapse';
 
 let appState = null;
 let selectedSpaceType = 'channel';
 let selectedSpaceId = 'chan_all';
 let activeView = 'space';
 let activeTab = 'chat';
-let railTab = 'spaces'; // 'spaces' or 'members'
+let railTab = localStorage.getItem('railTab') || 'spaces'; // 'spaces' or 'members'
 let threadMessageId = null;
 let selectedAgentId = null; // selected agent for detail panel
 let modal = null;
 let searchQuery = '';
+let addMemberSearchQuery = '';
 let taskFilter = 'all';
-let stagedAttachments = [];
-let stagedAttachmentIds = [];
+let collapsedTaskColumns = readCollapsedTaskColumns();
+let stagedByComposer = {};
+let composerDrafts = {};
+let composerTaskFlags = {};
+let composerMentionMaps = {};
 let installedRuntimes = [];
 let selectedRuntimeId = null;
+let backBottomVisible = { main: false, thread: false };
+let pendingBottomScroll = { main: false, thread: false };
+let mentionLookupSeq = 0;
+let expandedProjectTrees = {};
+let projectTreeCache = {};
+let projectFilePreviews = {};
+let selectedProjectFile = null;
+let expandedAgentWorkspaceTrees = {};
+let agentWorkspaceTreeCache = {};
+let agentWorkspaceFilePreviews = {};
+let selectedAgentWorkspaceFile = null;
+
+const BOTTOM_THRESHOLD = 72;
+const MAX_ATTACHMENTS_PER_COMPOSER = 20;
+const RAIL_WIDTH_KEY = 'magclawRailWidth';
+const RAIL_MIN_WIDTH = 176;
+const RAIL_MAX_WIDTH = 360;
+const INSPECTOR_WIDTH_KEY = 'magclawInspectorWidth';
+const INSPECTOR_MIN_WIDTH = 260;
+const INSPECTOR_MAX_WIDTH = 620;
+let railWidth = readStoredRailWidth();
+let inspectorWidth = readStoredInspectorWidth();
+
+// @ mention autocomplete state
+let mentionPopup = {
+  active: false,
+  query: '',
+  items: [],
+  selectedIndex: 0,
+  triggerPosition: null,
+  composerId: null,
+};
 
 // Agent modal form state
 let agentFormState = {
@@ -27,11 +64,35 @@ let agentFormState = {
   envVars: [], // [{key: '', value: ''}]
 };
 
-// Avatar list (1000 avatars)
-const AVATAR_COUNT = 1000;
+// Avatar list (2000 avatars: 1-1000 faces, 1001-2000 objects)
+const AVATAR_COUNT = 2000;
 function getRandomAvatar() {
   const idx = Math.floor(Math.random() * AVATAR_COUNT) + 1;
   return `/avatars/avatar_${String(idx).padStart(4, '0')}.svg`;
+}
+
+function trashIcon() {
+  return '<svg class="project-remove-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 15h10l1-15"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+}
+
+function folderIcon() {
+  return '<svg class="project-folder-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 6h7l2 3h9v10H3z"/><path d="M3 9h18"/></svg>';
+}
+
+function treeIcon() {
+  return '<svg class="project-tree-icon-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M6 3v18"/><path d="M6 7h8"/><path d="M6 17h8"/><path d="M14 5h6v4h-6z"/><path d="M14 15h6v4h-6z"/></svg>';
+}
+
+function channelActionIcon(name) {
+  const icons = {
+    stop: '<rect x="7" y="7" width="10" height="10" />',
+    settings: '<circle cx="12" cy="12" r="3" /><path d="M12 3v3" /><path d="M12 18v3" /><path d="M3 12h3" /><path d="M18 12h3" /><path d="M5.6 5.6l2.1 2.1" /><path d="M16.3 16.3l2.1 2.1" /><path d="M18.4 5.6l-2.1 2.1" /><path d="M7.7 16.3l-2.1 2.1" />',
+    leave: '<path d="M10 6H5v12h5" /><path d="M13 8l4 4-4 4" /><path d="M8 12h9" />',
+    members: '<circle cx="9" cy="8" r="3" /><path d="M3 19c.8-3 2.7-5 6-5s5.2 2 6 5" /><circle cx="17" cy="10" r="2" /><path d="M15.5 15.5c2.4.3 4 1.7 4.5 3.5" />',
+    folder: '<path d="M3 7h7l2 3h9v9H3z" /><path d="M3 10h18" />',
+    task: '<path d="M6 4h12v16H6z" /><path d="M9 9h6" /><path d="M9 13h6" /><path d="M9 17h4" />',
+  };
+  return `<svg class="channel-action-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">${icons[name] || ''}</svg>`;
 }
 
 const taskColumns = [
@@ -48,6 +109,242 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+function safeMarkdownHref(value) {
+  const href = String(value || '').trim();
+  if (/^(https?:|mailto:|#)/i.test(href)) return href;
+  return '#';
+}
+
+function renderMarkdownInline(value) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => `<a href="${escapeHtml(safeMarkdownHref(href))}" target="_blank" rel="noreferrer">${label}</a>`);
+}
+
+function renderMarkdown(content) {
+  const lines = String(content || '').split(/\r?\n/);
+  const blocks = [];
+  let paragraph = [];
+  let list = [];
+  let tableRows = [];
+  let inCode = false;
+  let codeLines = [];
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push(`<p>${renderMarkdownInline(paragraph.join(' '))}</p>`);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    blocks.push(`<ul>${list.map((item) => `<li>${renderMarkdownInline(item)}</li>`).join('')}</ul>`);
+    list = [];
+  };
+  const isTableRow = (line) => {
+    const trimmed = line.trim();
+    return trimmed.startsWith('|') && trimmed.endsWith('|') && trimmed.slice(1, -1).includes('|');
+  };
+  const isTableSeparator = (line) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+  const splitTableCells = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
+  const flushTable = () => {
+    if (!tableRows.length) return;
+    const [header, separator, ...body] = tableRows;
+    if (tableRows.length >= 2 && isTableSeparator(separator)) {
+      const headers = splitTableCells(header);
+      const rows = body.map(splitTableCells);
+      blocks.push(`
+        <div class="message-table-wrap">
+          <table class="message-table">
+            <thead><tr>${headers.map((cell) => `<th>${renderMarkdownInline(cell)}</th>`).join('')}</tr></thead>
+            <tbody>${rows.map((row) => `<tr>${headers.map((_, index) => `<td>${renderMarkdownInline(row[index] || '')}</td>`).join('')}</tr>`).join('')}</tbody>
+          </table>
+        </div>
+      `);
+    } else {
+      paragraph.push(...tableRows.map((line) => line.trim()));
+    }
+    tableRows = [];
+  };
+
+  for (const line of lines) {
+    const fence = line.match(/^```/);
+    if (fence) {
+      if (inCode) {
+        blocks.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+        codeLines = [];
+        inCode = false;
+      } else {
+        flushParagraph();
+        flushList();
+        flushTable();
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      flushTable();
+      continue;
+    }
+    if (isTableRow(line) || (tableRows.length && isTableSeparator(line))) {
+      flushParagraph();
+      flushList();
+      tableRows.push(line);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      flushTable();
+      const level = Math.min(6, heading[1].length);
+      blocks.push(`<h${level}>${renderMarkdownInline(heading[2])}</h${level}>`);
+      continue;
+    }
+    const listItem = line.match(/^\s*(?:[-*+]|\d+\.)\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      flushTable();
+      list.push(listItem[1]);
+      continue;
+    }
+    const quote = line.match(/^>\s?(.+)$/);
+    if (quote) {
+      flushParagraph();
+      flushList();
+      flushTable();
+      blocks.push(`<blockquote>${renderMarkdownInline(quote[1])}</blockquote>`);
+      continue;
+    }
+    if (/^---+$/.test(line.trim())) {
+      flushParagraph();
+      flushList();
+      flushTable();
+      blocks.push('<hr />');
+      continue;
+    }
+    flushTable();
+    paragraph.push(line.trim());
+  }
+  if (inCode) blocks.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+  flushParagraph();
+  flushList();
+  flushTable();
+  return blocks.join('');
+}
+
+function renderMarkdownWithMentions(content) {
+  const tokens = [];
+  const markerPrefix = 'MAGCLAWMENTION';
+  const marked = String(content || '').replace(/<(@|!|#)[^>]+>/g, (token) => {
+    const marker = `${markerPrefix}${tokens.length}TOKEN`;
+    tokens.push(token);
+    return marker;
+  });
+  let html = renderMarkdown(marked);
+  tokens.forEach((token, index) => {
+    const marker = `${markerPrefix}${index}TOKEN`;
+    html = html.replaceAll(marker, parseMentions(token));
+  });
+  return html;
+}
+
+function readCollapsedTaskColumns() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TASK_COLUMN_COLLAPSE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function toggleTaskColumn(status) {
+  collapsedTaskColumns = {
+    ...collapsedTaskColumns,
+    [status]: !collapsedTaskColumns[status],
+  };
+  localStorage.setItem(TASK_COLUMN_COLLAPSE_KEY, JSON.stringify(collapsedTaskColumns));
+}
+
+function readStoredInspectorWidth() {
+  const raw = localStorage.getItem(INSPECTOR_WIDTH_KEY);
+  if (raw === null) return 360;
+  const saved = Number(raw);
+  if (!Number.isFinite(saved)) return 360;
+  return Math.min(INSPECTOR_MAX_WIDTH, Math.max(INSPECTOR_MIN_WIDTH, saved));
+}
+
+function readStoredRailWidth() {
+  const raw = localStorage.getItem(RAIL_WIDTH_KEY);
+  if (raw === null) return 236;
+  const saved = Number(raw);
+  if (!Number.isFinite(saved)) return 236;
+  return Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, saved));
+}
+
+function workspaceMinWidth() {
+  return window.matchMedia('(max-width: 1200px)').matches ? 300 : 360;
+}
+
+function railWidthMax(frame) {
+  if (!frame) return RAIL_MAX_WIDTH;
+  const frameWidth = frame.getBoundingClientRect().width;
+  if (!frameWidth) return RAIL_MAX_WIDTH;
+  const inspectorActualWidth = frame?.querySelector('.inspector')?.getBoundingClientRect().width || inspectorWidth;
+  const railSplitterWidth = frame?.querySelector('.rail-resizer')?.getBoundingClientRect().width || 8;
+  const inspectorSplitterWidth = frame?.querySelector('.inspector-resizer')?.getBoundingClientRect().width || 8;
+  return Math.max(
+    RAIL_MIN_WIDTH,
+    Math.min(RAIL_MAX_WIDTH, frameWidth - inspectorActualWidth - railSplitterWidth - inspectorSplitterWidth - workspaceMinWidth()),
+  );
+}
+
+function clampRailWidth(width, frame = document.querySelector('.app-frame')) {
+  const maxWidth = railWidthMax(frame);
+  return Math.round(Math.min(maxWidth, Math.max(RAIL_MIN_WIDTH, Number(width) || 236)));
+}
+
+function setRailWidth(width, { persist = false, frame = document.querySelector('.app-frame') } = {}) {
+  railWidth = clampRailWidth(width, frame);
+  frame?.style.setProperty('--rail-width', `${railWidth}px`);
+  if (persist) localStorage.setItem(RAIL_WIDTH_KEY, String(railWidth));
+}
+
+function inspectorWidthMax(frame) {
+  if (!frame) return INSPECTOR_MAX_WIDTH;
+  const frameWidth = frame.getBoundingClientRect().width;
+  if (!frameWidth) return INSPECTOR_MAX_WIDTH;
+  const railActualWidth = frame?.querySelector('.rail')?.getBoundingClientRect().width || railWidth;
+  const railSplitterWidth = frame?.querySelector('.rail-resizer')?.getBoundingClientRect().width || 8;
+  const inspectorSplitterWidth = frame?.querySelector('.inspector-resizer')?.getBoundingClientRect().width || 8;
+  return Math.max(
+    INSPECTOR_MIN_WIDTH,
+    Math.min(INSPECTOR_MAX_WIDTH, frameWidth - railActualWidth - railSplitterWidth - inspectorSplitterWidth - workspaceMinWidth()),
+  );
+}
+
+function clampInspectorWidth(width, frame = document.querySelector('.app-frame')) {
+  const maxWidth = inspectorWidthMax(frame);
+  return Math.round(Math.min(maxWidth, Math.max(INSPECTOR_MIN_WIDTH, Number(width) || 360)));
+}
+
+function setInspectorWidth(width, { persist = false, frame = document.querySelector('.app-frame') } = {}) {
+  inspectorWidth = clampInspectorWidth(width, frame);
+  frame?.style.setProperty('--inspector-width', `${inspectorWidth}px`);
+  if (persist) localStorage.setItem(INSPECTOR_WIDTH_KEY, String(inspectorWidth));
+}
+
+function appFrameStyle() {
+  return `--rail-width: ${railWidth}px; --inspector-width: ${inspectorWidth}px;`;
 }
 
 function api(path, options = {}) {
@@ -112,6 +409,272 @@ function getAvatarHtml(id, type, cssClass = '') {
   return `<span class="${cssClass}">${escapeHtml(initials)}</span>`;
 }
 
+// Parse <@id> and <!special> mentions into styled spans for display
+function parseMentions(text) {
+  if (!text) return '';
+  let result = escapeHtml(text);
+  // Replace agent mentions: <@agt_xxx> -> styled span
+  result = result.replace(/&lt;@(agt_\w+)&gt;/g, (match, id) => {
+    const agent = byId(appState?.agents, id);
+    return agent
+      ? `<span class="mention-tag mention-identity" data-mention-id="${id}">@${escapeHtml(agent.name)}</span>`
+      : match;
+  });
+  // Replace human mentions: <@hum_xxx> -> styled span
+  result = result.replace(/&lt;@(hum_\w+)&gt;/g, (match, id) => {
+    const human = byId(appState?.humans, id);
+    return human
+      ? `<span class="mention-tag mention-identity" data-mention-id="${id}">@${escapeHtml(human.name)}</span>`
+      : match;
+  });
+  // Replace special mentions: <!all>, <!here> -> styled span
+  result = result.replace(/&lt;!(all|here|channel|everyone)&gt;/g, (match, type) => {
+    return `<span class="mention-tag mention-special" data-mention-type="${type}">@${type}</span>`;
+  });
+  result = result.replace(/&lt;#(file|folder):([^:]+):([^&]*)&gt;/g, (match, kind, projectId, encodedPath) => {
+    const relPath = decodeReferencePath(encodedPath);
+    const name = referenceDisplayName(projectId, relPath, kind);
+    return `<span class="mention-tag mention-${kind}" data-reference-kind="${kind}" data-project-id="${escapeHtml(projectId)}">@${escapeHtml(name)}</span>`;
+  });
+  return result;
+}
+
+function plainMentionText(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/<@(agt_\w+|hum_\w+)>/g, (_, id) => `@${displayName(id)}`)
+    .replace(/<!(all|here|channel|everyone)>/g, (_, type) => `@${type}`)
+    .replace(/<#(file|folder):([^:]+):([^>]*)>/g, (_, kind, projectId, encodedPath) => `@${referenceDisplayName(projectId, decodeReferencePath(encodedPath), kind)}`)
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function plainActorText(text) {
+  return String(text || '').replace(/\b(agt_\w+|hum_\w+)\b/g, (_, id) => displayName(id));
+}
+
+function mentionAvatar(item) {
+  if (item.type === 'agent' && item.avatar) return `<img src="${escapeHtml(item.avatar)}" class="mention-avatar" alt="" />`;
+  if (item.type === 'file') return '<span class="mention-avatar-text mention-file-avatar">FILE</span>';
+  if (item.type === 'folder') return '<span class="mention-avatar-text mention-folder-avatar">DIR</span>';
+  return `<span class="mention-avatar-text">${escapeHtml(item.name.slice(0, 2).toUpperCase())}</span>`;
+}
+
+function mentionHandle(item) {
+  if (item.type === 'human') return `@${item.handle || item.id}`;
+  if (item.type === 'file' || item.type === 'folder') return item.absolutePath || item.path || item.projectName || item.name;
+  return `@${item.name}`;
+}
+
+function mentionDisplay(item) {
+  return `@${item.name}`;
+}
+
+function decodeReferencePath(value) {
+  try {
+    return decodeURIComponent(String(value || ''));
+  } catch {
+    return String(value || '');
+  }
+}
+
+function baseNameFromPath(value, fallback) {
+  const clean = String(value || '').split(/[\\/]/).filter(Boolean).pop();
+  return clean || fallback || 'reference';
+}
+
+function referenceDisplayName(projectId, relPath, kind) {
+  const project = byId(appState?.projects, projectId);
+  if (relPath) return baseNameFromPath(relPath, kind);
+  return project?.name || kind;
+}
+
+function contextTokenForItem(item) {
+  if (item.token) return item.token;
+  if (item.type === 'file' || item.type === 'folder') {
+    return `<#${item.type}:${item.projectId}:${encodeURIComponent(item.path || '')}>`;
+  }
+  return mentionTokenForId(item.id);
+}
+
+function rememberComposerMention(composerId, item) {
+  if (!composerId || !item) return;
+  composerMentionMaps[composerId] = composerMentionMaps[composerId] || {};
+  composerMentionMaps[composerId][mentionDisplay(item)] = contextTokenForItem(item);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function mentionTokenForId(id) {
+  return String(id).startsWith('!') ? `<!${String(id).replace(/^!/, '')}>` : `<@${id}>`;
+}
+
+function isAsciiMentionWordChar(char) {
+  return /[A-Za-z0-9_.-]/.test(char);
+}
+
+function isMentionBoundaryChar(char) {
+  if (!char) return true;
+  if (/\s/.test(char)) return true;
+  if (/[，。！？；：、,.!?;:()[\]{}「」『』《》【】"'`“”‘’]/.test(char)) return true;
+  return !isAsciiMentionWordChar(char);
+}
+
+function mentionCandidatesForComposer(composerId) {
+  const isThread = String(composerId || '').startsWith('thread:');
+  const threadRoot = isThread ? byId(appState.messages, threadMessageId) : null;
+  return getMentionCandidates('', threadRoot?.spaceType || selectedSpaceType, threadRoot?.spaceId || selectedSpaceId);
+}
+
+function encodeComposerMentions(text, composerId) {
+  let result = String(text || '');
+  const mapped = composerMentionMaps[composerId] || {};
+  const known = new Map();
+  for (const item of mentionCandidatesForComposer(composerId)) {
+    known.set(mentionDisplay(item), contextTokenForItem(item));
+  }
+  for (const [label, token] of Object.entries(mapped)) known.set(label, token);
+  const entries = [...known.entries()].sort((a, b) => b[0].length - a[0].length);
+  for (const [label, token] of entries) {
+    const pattern = new RegExp(escapeRegExp(label), 'g');
+    result = result.replace(pattern, (match, offset, fullText) => {
+      const before = offset > 0 ? fullText[offset - 1] : '';
+      const after = fullText[offset + match.length] || '';
+      if (!isMentionBoundaryChar(before) || !isMentionBoundaryChar(after)) return match;
+      return token;
+    });
+  }
+  return result;
+}
+
+function getMentionCandidates(query, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  const inMembers = spaceType === 'channel'
+    ? getChannelMembers(spaceId)
+    : {
+      agents: (appState.agents || []).filter((agent) => byId(appState.dms, spaceId)?.participantIds?.includes(agent.id)),
+      humans: (appState.humans || []).filter((human) => byId(appState.dms, spaceId)?.participantIds?.includes(human.id)),
+    };
+  const inIds = new Set([...inMembers.agents.map((a) => a.id), ...inMembers.humans.map((h) => h.id)]);
+  const allItems = [
+    ...(appState.agents || []).map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      type: 'agent',
+      avatar: agent.avatar,
+      status: agent.status || 'offline',
+      description: agent.description || agent.runtime || 'Agent',
+      group: inIds.has(agent.id) ? 'in' : 'out',
+    })),
+    ...(appState.humans || []).map((human) => ({
+      id: human.id,
+      name: human.name,
+      type: 'human',
+      avatar: human.avatar,
+      status: human.status || 'offline',
+      handle: human.email ? human.email.split('@')[0] : human.id.replace(/^hum_/, ''),
+      description: human.role || 'Human',
+      group: inIds.has(human.id) ? 'in' : 'out',
+    })),
+  ];
+  const q = String(query || '').toLowerCase();
+  return allItems
+    .filter((item) => !q || item.name.toLowerCase().includes(q) || mentionHandle(item).toLowerCase().includes(q))
+    .sort((a, b) => (a.group === b.group ? a.name.localeCompare(b.name) : a.group === 'in' ? -1 : 1));
+}
+
+async function getProjectMentionCandidates(query, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  if (!(appState?.projects || []).some((project) => project.spaceType === spaceType && project.spaceId === spaceId)) return [];
+  const params = new URLSearchParams({ spaceType, spaceId, q: query || '' });
+  const result = await api(`/api/projects/search?${params.toString()}`);
+  return (result.items || []).map((item) => ({
+    id: `${item.kind}:${item.projectId}:${item.path}`,
+    name: item.name,
+    type: item.kind,
+    projectId: item.projectId,
+    projectName: item.projectName,
+    path: item.path,
+    absolutePath: item.absolutePath,
+    group: item.kind === 'folder' ? 'folders' : 'files',
+    status: item.kind,
+    description: item.projectName,
+    token: `<#${item.kind}:${item.projectId}:${encodeURIComponent(item.path || '')}>`,
+  }));
+}
+
+function findMentionTrigger(value, caretPosition) {
+  const textBefore = String(value || '').substring(0, caretPosition);
+  const triggerPosition = textBefore.lastIndexOf('@');
+  if (triggerPosition < 0) return null;
+
+  const query = textBefore.substring(triggerPosition + 1);
+  if (/[\s@<>]/.test(query)) return null;
+
+  const previousChar = triggerPosition > 0 ? textBefore[triggerPosition - 1] : '';
+  if (previousChar && !isMentionBoundaryChar(previousChar)) return null;
+
+  return { query, triggerPosition };
+}
+
+function renderMentionPopup() {
+  if (!mentionPopup.active || !mentionPopup.items.length) return '';
+  const groups = [
+    ['in', 'PEOPLE IN THIS CHANNEL'],
+    ['folders', 'FOLDERS'],
+    ['files', 'FILES'],
+    ['out', 'OTHER PEOPLE'],
+  ];
+  let cursor = 0;
+  return `
+    <div class="mention-popup" id="mention-popup" data-composer-id="${escapeHtml(mentionPopup.composerId || '')}">
+      ${groups.map(([group, label]) => {
+        const items = mentionPopup.items.filter((item) => item.group === group);
+        if (!items.length) return '';
+        const section = `
+          <div class="mention-section-title">${escapeHtml(label)}</div>
+          ${items.map((item) => {
+            const idx = cursor;
+            const handle = mentionHandle(item);
+            cursor += 1;
+            return `
+              <div class="mention-item mention-type-${escapeHtml(item.type)} ${idx === mentionPopup.selectedIndex ? 'selected' : ''}" data-mention-idx="${idx}">
+                ${mentionAvatar(item)}
+                <span class="mention-status ${item.type === 'file' ? 'mention-status-file' : item.type === 'folder' ? 'mention-status-folder' : presenceClass(item.status)}"></span>
+                <span class="mention-name">${escapeHtml(item.name)}</span>
+                <span class="mention-handle" title="${escapeHtml(handle)}">${escapeHtml(handle)}</span>
+              </div>
+            `;
+          }).join('')}
+        `;
+        return section;
+      }).join('')}
+    </div>
+  `;
+}
+
+// Insert mention token into textarea
+async function insertMention(textarea, item) {
+  const { value, selectionStart } = textarea;
+  const beforeTrigger = value.substring(0, mentionPopup.triggerPosition);
+  const afterCursor = value.substring(selectionStart);
+  const mentionToken = mentionDisplay(item);
+  textarea.value = beforeTrigger + mentionToken + ' ' + afterCursor;
+  const newPosition = beforeTrigger.length + mentionToken.length + 1;
+  textarea.setSelectionRange(newPosition, newPosition);
+  if (textarea.dataset.composerId) {
+    composerDrafts[textarea.dataset.composerId] = textarea.value;
+    rememberComposerMention(textarea.dataset.composerId, item);
+    if (item.type === 'file' || item.type === 'folder') {
+      toast(`${item.type === 'file' ? 'File' : 'Folder'} referenced from project`);
+    }
+  }
+  mentionPopup.active = false;
+  mentionPopup.items = [];
+  mentionPopup.selectedIndex = 0;
+  mentionPopup.composerId = null;
+}
+
 function currentSpace() {
   const list = selectedSpaceType === 'channel' ? appState?.channels : appState?.dms;
   return byId(list, selectedSpaceId) || appState?.channels?.[0] || null;
@@ -130,6 +693,140 @@ function spaceMessages(spaceType = selectedSpaceType, spaceId = selectedSpaceId)
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 }
 
+function projectsForSpace(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  return (appState?.projects || []).filter((project) => project.spaceType === spaceType && project.spaceId === spaceId);
+}
+
+function projectTreeKey(projectId, relPath = '') {
+  return `${projectId}:${relPath || ''}`;
+}
+
+function projectPreviewKey(projectId, relPath = '') {
+  return `${projectId}:${relPath || ''}`;
+}
+
+function projectTreeIsExpanded(projectId, relPath = '') {
+  return Boolean(expandedProjectTrees[projectTreeKey(projectId, relPath)]);
+}
+
+async function loadProjectTree(projectId, relPath = '') {
+  const key = projectTreeKey(projectId, relPath);
+  projectTreeCache[key] = { loading: true, entries: [], error: '' };
+  render();
+  try {
+    const params = new URLSearchParams();
+    if (relPath) params.set('path', relPath);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    projectTreeCache[key] = await api(`/api/projects/${encodeURIComponent(projectId)}/tree${suffix}`);
+  } catch (error) {
+    projectTreeCache[key] = { loading: false, entries: [], error: error.message };
+  }
+  render();
+}
+
+async function toggleProjectTree(projectId, relPath = '') {
+  const key = projectTreeKey(projectId, relPath);
+  if (expandedProjectTrees[key]) {
+    delete expandedProjectTrees[key];
+    render();
+    return;
+  }
+  expandedProjectTrees[key] = true;
+  if (!projectTreeCache[key]) await loadProjectTree(projectId, relPath);
+  else render();
+}
+
+async function openProjectFile(projectId, relPath = '') {
+  const key = projectPreviewKey(projectId, relPath);
+  selectedProjectFile = { projectId, path: relPath };
+  threadMessageId = null;
+  selectedAgentId = null;
+  projectFilePreviews[key] = projectFilePreviews[key] || { loading: true, file: null, error: '' };
+  render();
+  try {
+    const params = new URLSearchParams({ path: relPath });
+    projectFilePreviews[key] = await api(`/api/projects/${encodeURIComponent(projectId)}/file?${params.toString()}`);
+  } catch (error) {
+    projectFilePreviews[key] = { loading: false, file: null, error: error.message };
+  }
+  render();
+}
+
+function clearProjectCaches(projectId) {
+  for (const key of Object.keys(expandedProjectTrees)) {
+    if (key.startsWith(`${projectId}:`)) delete expandedProjectTrees[key];
+  }
+  for (const key of Object.keys(projectTreeCache)) {
+    if (key.startsWith(`${projectId}:`)) delete projectTreeCache[key];
+  }
+  for (const key of Object.keys(projectFilePreviews)) {
+    if (key.startsWith(`${projectId}:`)) delete projectFilePreviews[key];
+  }
+  if (selectedProjectFile?.projectId === projectId) selectedProjectFile = null;
+}
+
+function agentWorkspaceKey(agentId, relPath = '') {
+  return `${agentId}:${relPath || ''}`;
+}
+
+function agentWorkspaceIsExpanded(agentId, relPath = '') {
+  return Boolean(expandedAgentWorkspaceTrees[agentWorkspaceKey(agentId, relPath)]);
+}
+
+async function loadAgentWorkspace(agentId, relPath = '') {
+  const key = agentWorkspaceKey(agentId, relPath);
+  agentWorkspaceTreeCache[key] = { loading: true, entries: [], error: '' };
+  render();
+  try {
+    const params = new URLSearchParams();
+    if (relPath) params.set('path', relPath);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    agentWorkspaceTreeCache[key] = await api(`/api/agents/${encodeURIComponent(agentId)}/workspace${suffix}`);
+  } catch (error) {
+    agentWorkspaceTreeCache[key] = { loading: false, entries: [], error: error.message };
+  }
+  render();
+}
+
+async function toggleAgentWorkspace(agentId, relPath = '') {
+  const key = agentWorkspaceKey(agentId, relPath);
+  if (expandedAgentWorkspaceTrees[key]) {
+    delete expandedAgentWorkspaceTrees[key];
+    render();
+    return;
+  }
+  expandedAgentWorkspaceTrees[key] = true;
+  if (!agentWorkspaceTreeCache[key]) await loadAgentWorkspace(agentId, relPath);
+  else render();
+}
+
+async function openAgentWorkspaceFile(agentId, relPath = '') {
+  const key = agentWorkspaceKey(agentId, relPath);
+  selectedAgentWorkspaceFile = { agentId, path: relPath };
+  agentWorkspaceFilePreviews[key] = agentWorkspaceFilePreviews[key] || { loading: true, file: null, error: '' };
+  render();
+  try {
+    const params = new URLSearchParams({ path: relPath });
+    agentWorkspaceFilePreviews[key] = await api(`/api/agents/${encodeURIComponent(agentId)}/workspace/file?${params.toString()}`);
+  } catch (error) {
+    agentWorkspaceFilePreviews[key] = { loading: false, file: null, error: error.message };
+  }
+  render();
+}
+
+function clearAgentWorkspaceCaches(agentId) {
+  for (const key of Object.keys(expandedAgentWorkspaceTrees)) {
+    if (key.startsWith(`${agentId}:`)) delete expandedAgentWorkspaceTrees[key];
+  }
+  for (const key of Object.keys(agentWorkspaceTreeCache)) {
+    if (key.startsWith(`${agentId}:`)) delete agentWorkspaceTreeCache[key];
+  }
+  for (const key of Object.keys(agentWorkspaceFilePreviews)) {
+    if (key.startsWith(`${agentId}:`)) delete agentWorkspaceFilePreviews[key];
+  }
+  if (selectedAgentWorkspaceFile?.agentId === agentId) selectedAgentWorkspaceFile = null;
+}
+
 function spaceTasks(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
   return (appState?.tasks || [])
     .filter((task) => task.spaceType === spaceType && task.spaceId === spaceId)
@@ -140,6 +837,12 @@ function threadReplies(messageId) {
   return (appState?.replies || [])
     .filter((reply) => reply.parentMessageId === messageId)
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+}
+
+function threadUpdatedAt(message) {
+  const replies = threadReplies(message.id);
+  const lastReply = replies.at(-1);
+  return new Date(lastReply?.createdAt || message.updatedAt || message.createdAt || 0).getTime();
 }
 
 function taskThreadMessage(task) {
@@ -153,12 +856,195 @@ function taskTone(status) {
   return 'blue';
 }
 
+function presenceTone(status) {
+  const value = String(status || '').toLowerCase();
+  if (['working', 'running', 'starting', 'thinking', 'busy'].includes(value)) return 'busy';
+  if (['queued', 'pending'].includes(value)) return 'queued';
+  if (['error', 'failed'].includes(value)) return 'error';
+  if (['online', 'idle', 'connected'].includes(value)) return 'online';
+  return 'offline';
+}
+
+function presenceClass(status) {
+  return `status-${presenceTone(status)}`;
+}
+
 function attachmentLinks(ids = []) {
   return ids
     .map((id) => byId(appState?.attachments, id))
     .filter(Boolean)
-    .map((item) => `<a class="mini-attachment" href="${item.url}" target="_blank" rel="noreferrer">${escapeHtml(item.name)} <small>${bytes(item.bytes)}</small></a>`)
+    .map((item) => `
+      <a class="mini-attachment ${String(item.type || '').startsWith('image/') ? 'image-attachment' : ''}" href="${item.url}" target="_blank" rel="noreferrer">
+        ${String(item.type || '').startsWith('image/') ? `<img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}" />` : '<span class="file-glyph">□</span>'}
+        <span>${escapeHtml(item.name)}</span>
+        <small>${bytes(item.bytes)}</small>
+      </a>
+    `)
     .join('');
+}
+
+function composerIdFor(kind, id = '') {
+  if (kind === 'thread') return `thread:${id || threadMessageId || 'none'}`;
+  return `message:${selectedSpaceType}:${selectedSpaceId}`;
+}
+
+function stagedFor(composerId) {
+  return stagedByComposer[composerId] || { attachments: [], ids: [] };
+}
+
+function setStagedFor(composerId, attachments) {
+  const unique = [];
+  const seen = new Set();
+  for (const item of attachments) {
+    if (!item?.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    unique.push(item);
+  }
+  stagedByComposer[composerId] = {
+    attachments: unique,
+    ids: unique.map((item) => item.id),
+  };
+}
+
+function clearStagedFor(composerId) {
+  delete stagedByComposer[composerId];
+}
+
+function renderAttachmentStrip(composerId) {
+  const staged = stagedFor(composerId).attachments;
+  return staged.map((item) => {
+    const isImage = String(item.type || '').startsWith('image/');
+    return `
+      <span class="composer-attachment-chip ${isImage ? 'is-image' : ''}" data-attachment-id="${escapeHtml(item.id)}">
+        ${isImage
+          ? `<img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}" />`
+          : '<span class="composer-file-icon">FILE</span>'}
+        <span class="composer-attachment-meta">
+          <strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong>
+          <small>${escapeHtml(item.type || 'file')} · ${bytes(item.bytes)}</small>
+        </span>
+        <button type="button" data-action="remove-staged-attachment" data-composer-id="${escapeHtml(composerId)}" data-id="${escapeHtml(item.id)}" title="Remove attachment" aria-label="Remove ${escapeHtml(item.name)}">&times;</button>
+      </span>
+    `;
+  }).join('');
+}
+
+function updateComposerAttachmentStrip(composerId) {
+  const strip = document.querySelector(`[data-attachment-strip="${CSS.escape(composerId)}"]`);
+  if (!strip) return;
+  const hasAttachments = stagedFor(composerId).attachments.length > 0;
+  strip.innerHTML = renderAttachmentStrip(composerId);
+  strip.classList.toggle('hidden', !hasAttachments);
+}
+
+function removeStagedAttachment(composerId, attachmentId) {
+  const next = stagedFor(composerId).attachments.filter((item) => item.id !== attachmentId);
+  setStagedFor(composerId, next);
+  updateComposerAttachmentStrip(composerId);
+}
+
+function paneSelector(targetName) {
+  return targetName === 'thread' ? '#thread-context' : '#message-list';
+}
+
+function paneKey(targetName) {
+  if (targetName === 'thread') return threadMessageId ? `thread:${threadMessageId}` : '';
+  return `main:${activeView}:${activeTab}:${selectedSpaceType}:${selectedSpaceId}`;
+}
+
+function paneIsAtBottom(node) {
+  if (!node) return true;
+  return node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_THRESHOLD;
+}
+
+function paneScrollSnapshot(targetName) {
+  const node = document.querySelector(paneSelector(targetName));
+  return {
+    key: paneKey(targetName),
+    top: node?.scrollTop || 0,
+    atBottom: paneIsAtBottom(node),
+  };
+}
+
+function rememberPinnedBottomBeforeStateChange() {
+  for (const targetName of ['main', 'thread']) {
+    const node = document.querySelector(paneSelector(targetName));
+    if (node && paneIsAtBottom(node)) requestPaneBottomScroll(targetName);
+  }
+}
+
+function setBackBottomVisible(targetName, visible) {
+  backBottomVisible[targetName] = Boolean(visible);
+  const button = document.querySelector(`.back-bottom[data-target="${targetName}"]`);
+  if (button) button.classList.toggle('hidden', !backBottomVisible[targetName]);
+}
+
+function updateBackBottomVisibility(targetName) {
+  const node = document.querySelector(paneSelector(targetName));
+  const canScroll = Boolean(node && node.scrollHeight > node.clientHeight + BOTTOM_THRESHOLD);
+  setBackBottomVisible(targetName, canScroll && !paneIsAtBottom(node));
+}
+
+function restorePaneScroll(targetName, snapshot) {
+  const node = document.querySelector(paneSelector(targetName));
+  if (!node) return;
+  const forceBottom = pendingBottomScroll[targetName];
+  pendingBottomScroll[targetName] = false;
+  const shouldFollowBottom = forceBottom || snapshot?.atBottom;
+  if (!shouldFollowBottom && snapshot?.key === paneKey(targetName)) {
+    node.scrollTop = snapshot.top;
+  } else {
+    node.scrollTop = node.scrollHeight;
+    window.setTimeout(() => {
+      const current = document.querySelector(paneSelector(targetName));
+      if (!current) return;
+      current.scrollTop = current.scrollHeight;
+      updateBackBottomVisibility(targetName);
+    }, 40);
+    window.setTimeout(() => {
+      const current = document.querySelector(paneSelector(targetName));
+      if (!current) return;
+      current.scrollTop = current.scrollHeight;
+      updateBackBottomVisibility(targetName);
+    }, 160);
+  }
+  updateBackBottomVisibility(targetName);
+}
+
+function restorePaneScrolls(snapshot) {
+  restorePaneScroll('main', snapshot.main);
+  restorePaneScroll('thread', snapshot.thread);
+}
+
+function requestPaneBottomScroll(targetName) {
+  pendingBottomScroll[targetName] = true;
+}
+
+function scrollToMessage(messageId) {
+  window.setTimeout(() => {
+    const node = document.querySelector(`#message-list #message-${CSS.escape(messageId)}`);
+    const pane = document.querySelector('#message-list');
+    if (node && pane) {
+      const targetTop = node.offsetTop - (pane.clientHeight / 2) + (node.offsetHeight / 2);
+      pane.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+      updateBackBottomVisibility('main');
+      node.classList.add('focus-pulse');
+      window.setTimeout(() => node.classList.remove('focus-pulse'), 1200);
+    }
+  }, 40);
+}
+
+function scrollPaneToBottom(selector, behavior = 'smooth') {
+  const targetName = selector === '#thread-context' ? 'thread' : 'main';
+  const scroll = () => {
+    const node = document.querySelector(selector);
+    if (node) {
+      node.scrollTo({ top: node.scrollHeight, behavior });
+      window.setTimeout(() => updateBackBottomVisibility(targetName), behavior === 'smooth' ? 260 : 20);
+    }
+  };
+  window.setTimeout(scroll, 20);
+  if (behavior !== 'smooth') window.setTimeout(scroll, 120);
 }
 
 function pill(value, tone = 'blue') {
@@ -193,25 +1079,32 @@ function render() {
     root.innerHTML = '<div class="boot">MAGCLAW LOCAL / BOOTING</div>';
     return;
   }
+  const scrollSnapshot = {
+    main: paneScrollSnapshot('main'),
+    thread: paneScrollSnapshot('thread'),
+  };
   ensureSelection();
   root.innerHTML = `
-    <div class="app-frame collab-frame">
+    <div class="app-frame collab-frame" style="${appFrameStyle()}">
       ${renderRail()}
+      <div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>
       <main class="workspace collab-main">
         ${renderMain()}
       </main>
+      <div class="inspector-resizer" data-action="none" role="separator" aria-label="Resize thread panel" aria-orientation="vertical" tabindex="0"></div>
       <aside class="inspector collab-inspector">
         ${renderInspector()}
       </aside>
     </div>
     ${modal ? renderModal() : ''}
   `;
+  window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
 }
 
 function renderRail() {
   const channels = appState.channels || [];
   const dms = appState.dms || [];
-  const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0).length;
+  const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0 || message.taskId).length;
   const openTasks = (appState.tasks || []).filter((task) => task.status !== 'done').length;
   const saved = (appState.messages || []).filter((message) => message.savedBy?.includes('hum_local')).length;
 
@@ -321,13 +1214,12 @@ function renderChannelItem(channel) {
 
 function renderDmItem(id, name, status, avatar) {
   const active = activeView === 'space' && selectedSpaceType === 'dm' && selectedSpaceId === id ? ' active' : '';
-  const statusClass = status === 'online' || status === 'idle' ? 'online' : '';
   const initials = name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
   return `
     <button class="space-btn dm-btn${active}" type="button" data-action="select-space" data-type="dm" data-id="${id}">
       <span class="dm-avatar">${avatar ? `<img src="${avatar}" alt="">` : initials}</span>
       <span class="dm-name">${escapeHtml(name)}</span>
-      <span class="dm-status ${statusClass}"></span>
+      <span class="dm-status ${presenceClass(status)}"></span>
     </button>
   `;
 }
@@ -377,6 +1269,13 @@ function renderHeader(title, subtitle, actions = '') {
 function getChannelMembers(channelId) {
   const channel = byId(appState?.channels, channelId);
   if (!channel) return { agents: [], humans: [] };
+  // "All" channel always includes all agents and humans
+  if (channelId === 'chan_all') {
+    return {
+      agents: appState.agents || [],
+      humans: appState.humans || [],
+    };
+  }
   const memberIds = channel.memberIds || [];
   const agents = (appState.agents || []).filter((a) => memberIds.includes(a.id));
   const humans = (appState.humans || []).filter((h) => memberIds.includes(h.id));
@@ -389,11 +1288,17 @@ function renderSpace() {
   const title = spaceName(selectedSpaceType, selectedSpaceId);
   const members = selectedSpaceType === 'channel' ? getChannelMembers(selectedSpaceId) : null;
   const memberCount = members ? members.agents.length + members.humans.length : 0;
-  const actions = `
-    ${selectedSpaceType === 'channel' ? `<button class="secondary-btn" type="button" data-action="open-modal" data-modal="channel-members">MEMBERS <strong>${memberCount}</strong></button>` : ''}
-    <button class="secondary-btn" type="button" data-action="open-modal" data-modal="task">New Task</button>
-    ${selectedSpaceType === 'channel' ? '<button class="secondary-btn" type="button" data-action="open-modal" data-modal="edit-channel">Edit</button>' : ''}
-    <button class="danger-btn" type="button" data-action="stop-all">Stop Agents</button>
+  const isAllChannel = selectedSpaceType === 'channel' && selectedSpaceId === 'chan_all';
+  const actions = selectedSpaceType === 'channel' ? `
+    <button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>
+    <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
+    <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
+    ${isAllChannel ? '' : `<button class="channel-action channel-action-leave" type="button" data-action="leave-channel" data-tooltip="Leave channel" aria-label="Leave channel">${channelActionIcon('leave')}<span>Leave</span></button>`}
+    <button class="channel-action channel-action-members" type="button" data-action="open-modal" data-modal="channel-members" data-tooltip="Members" aria-label="View ${memberCount} participants">${channelActionIcon('members')}<strong>${memberCount}</strong></button>
+    <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop agents in this channel" aria-label="Stop agents in this channel">${channelActionIcon('stop')}</button>
+  ` : `
+    <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
+    <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop agents in this DM" aria-label="Stop agents in this DM">${channelActionIcon('stop')}</button>
   `;
 
   return `
@@ -402,38 +1307,169 @@ function renderSpace() {
       <button class="${activeTab === 'chat' ? 'active' : ''}" type="button" data-action="set-tab" data-tab="chat">CHAT</button>
       <button class="${activeTab === 'tasks' ? 'active' : ''}" type="button" data-action="set-tab" data-tab="tasks">TASKS</button>
     </div>
+    ${selectedSpaceType === 'channel' ? renderProjectStrip() : ''}
     ${activeTab === 'tasks' ? renderTaskBoard(spaceTasks()) : renderChat()}
+  `;
+}
+
+function renderProjectStrip() {
+  const projects = projectsForSpace();
+  return `
+    <section class="project-strip pixel-panel">
+      <div class="project-strip-title">
+        <span>Projects</span>
+        <button type="button" data-action="open-modal" data-modal="project">Add Folder</button>
+      </div>
+      <div class="project-chip-row">
+        ${projects.length ? projects.map((project) => `
+          <span class="project-chip" title="${escapeHtml(project.path)}">
+            <span class="project-chip-main">
+              <span class="project-folder-badge">${folderIcon()}</span>
+              <span class="project-chip-text">
+                <strong class="project-chip-name">${escapeHtml(project.name)}</strong>
+                <small class="project-chip-path" title="${escapeHtml(project.path)}">${escapeHtml(project.path)}</small>
+              </span>
+            </span>
+            <button class="project-tree-btn" type="button" data-action="toggle-project-tree" data-project-id="${escapeHtml(project.id)}" data-path="" title="Browse ${escapeHtml(project.name)}" aria-label="Browse ${escapeHtml(project.name)}">${treeIcon()}</button>
+            <button class="project-icon-btn danger-icon" type="button" data-action="remove-project" data-id="${escapeHtml(project.id)}" title="Remove ${escapeHtml(project.name)}" aria-label="Remove ${escapeHtml(project.name)}">${trashIcon()}</button>
+          </span>
+        `).join('') : '<span class="project-empty">No project folders linked to this channel.</span>'}
+      </div>
+      ${projects.length ? `<div class="project-tree-shell">${projects.map(renderProjectTreeRoot).join('')}</div>` : ''}
+    </section>
+  `;
+}
+
+function renderProjectTreeRoot(project) {
+  if (!projectTreeIsExpanded(project.id)) return '';
+  return `
+    <div class="project-tree-block">
+      <div class="project-tree-heading">
+        <strong>${escapeHtml(project.name)}</strong>
+        <small>${escapeHtml(project.path)}</small>
+      </div>
+      ${renderProjectTree(project, '', 0)}
+    </div>
+  `;
+}
+
+function renderProjectTree(project, relPath = '', depth = 0) {
+  const key = projectTreeKey(project.id, relPath);
+  const tree = projectTreeCache[key];
+  if (!tree || tree.loading) {
+    return '<div class="project-tree-note">Loading files...</div>';
+  }
+  if (tree.error) {
+    return `<div class="project-tree-note error">${escapeHtml(tree.error)}</div>`;
+  }
+  if (!tree.entries?.length) {
+    return '<div class="project-tree-note">Empty folder.</div>';
+  }
+  return `
+    <div class="project-tree-list">
+      ${tree.entries.map((entry) => {
+        const isFolder = entry.kind === 'folder';
+        const expanded = isFolder && projectTreeIsExpanded(project.id, entry.path);
+        return `
+          <div class="project-tree-node">
+            <button
+              type="button"
+              class="project-tree-row ${isFolder ? 'is-folder' : 'is-file'} ${selectedProjectFile?.projectId === project.id && selectedProjectFile?.path === entry.path ? 'active' : ''}"
+              style="--depth: ${depth}"
+              data-action="${isFolder ? 'toggle-project-tree' : 'open-project-file'}"
+              data-project-id="${escapeHtml(project.id)}"
+              data-path="${escapeHtml(entry.path)}"
+              title="${escapeHtml(entry.path)}"
+            >
+              <span class="project-tree-caret">${isFolder ? (expanded ? '▾' : '▸') : '·'}</span>
+              <span class="project-tree-icon">${isFolder ? 'DIR' : 'FILE'}</span>
+              <span class="project-tree-name">${escapeHtml(entry.name)}</span>
+              ${!isFolder ? `<small>${bytes(entry.bytes || 0)}</small>` : ''}
+            </button>
+            ${isFolder && expanded ? renderProjectTree(project, entry.path, depth + 1) : ''}
+          </div>
+        `;
+      }).join('')}
+    </div>
   `;
 }
 
 function renderChat() {
   const messages = spaceMessages();
+  const composerId = composerIdFor('message');
   return `
     <section class="chat-panel pixel-panel">
-      <div class="message-list">
-        ${messages.length ? messages.map(renderMessage).join('') : '<div class="empty-box">No messages here yet.</div>'}
+      <div class="message-area">
+        <div class="message-list" id="message-list">
+          ${messages.length ? messages.map(renderMessage).join('') : '<div class="empty-box">No messages here yet.</div>'}
+        </div>
+        <button class="back-bottom main-back-bottom${backBottomVisible.main ? '' : ' hidden'}" type="button" data-action="back-to-bottom" data-target="main">Back to Bottom</button>
       </div>
-      ${renderComposer()}
+      ${renderComposer({ id: composerId, kind: 'message', placeholder: `Message ${spaceName(selectedSpaceType, selectedSpaceId)}`, showTaskToggle: true })}
     </section>
   `;
 }
 
-function renderMessage(message) {
-  const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
-  const saved = message.savedBy?.includes('hum_local');
+function actorSubtitle(authorId, authorType, message) {
+  if (authorType === 'agent') {
+    const agent = byId(appState.agents, authorId);
+    return agent?.description || agent?.runtime || 'Agent';
+  }
+  if (authorType === 'human') {
+    const human = byId(appState.humans, authorId);
+    const owner = message?.spaceType === 'channel' ? byId(appState.channels, message.spaceId)?.ownerId : null;
+    return human?.id === owner ? 'owner' : human?.role || 'human';
+  }
+  return 'system';
+}
+
+function renderMentionChips(record) {
+  const ids = [...(record.mentionedAgentIds || []), ...(record.mentionedHumanIds || [])];
+  if (!ids.length) return '';
   return `
-    <article class="message-card">
+    <div class="mention-chip-row">
+      ${ids.map((id) => {
+        const item = byId(appState.agents, id) || byId(appState.humans, id);
+        return item ? `<span class="mention-chip">@${escapeHtml(item.name)}</span>` : '';
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderSystemEvent(message) {
+  return `
+    <div class="system-event-row" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}">
+      <span>${parseMentions(message.body || '')}</span>
+      <time>${fmtTime(message.createdAt)}</time>
+    </div>
+  `;
+}
+
+function renderMessage(message, options = {}) {
+  if (message.authorType === 'system' && message.eventType) return renderSystemEvent(message);
+  const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
+  const taskAssigneeIds = task ? (task.assigneeIds?.length ? task.assigneeIds : (task.assigneeId ? [task.assigneeId] : [])) : [];
+  const taskBadgeName = taskAssigneeIds[0] ? ` @${displayName(taskAssigneeIds[0])}` : '';
+  const saved = message.savedBy?.includes('hum_local');
+  const replyCount = Number(message.replyCount || 0);
+  const highlighted = threadMessageId === message.id ? ' highlighted' : '';
+  const compact = options.compact ? ' compact' : '';
+  const authorClass = ['agent', 'human', 'system'].includes(message.authorType) ? message.authorType : 'unknown';
+  const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
+  return `
+    <article class="message-card slock-message author-${authorClass}${highlighted}${compact}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}">
       <div class="avatar">${getAvatarHtml(message.authorId, message.authorType, 'avatar-inner')}</div>
       <div class="message-body">
         <div class="message-meta">
           <strong>${escapeHtml(displayName(message.authorId))}</strong>
+          <span class="sender-role">${escapeHtml(actorSubtitle(message.authorId, message.authorType, message))}</span>
           <time>${fmtTime(message.createdAt)}</time>
-          ${task ? pill(task.status, task.status === 'done' ? 'green' : 'amber') : ''}
+          ${task ? `<span class="task-number">#${escapeHtml(task.number || shortId(task.id))}${escapeHtml(taskBadgeName)}</span>${pill(task.status, taskTone(task.status))}` : ''}
         </div>
-        <p>${escapeHtml(message.body || '(attachment)')}</p>
+        <div class="message-markdown">${renderMarkdownWithMentions(message.body || '(attachment)')}</div>
         <div class="message-attachments">${attachmentLinks(message.attachmentIds)}</div>
-        <div class="message-actions">
-          <button type="button" data-action="open-thread" data-id="${message.id}">Thread ${message.replyCount ? `(${message.replyCount})` : ''}</button>
+        <div class="message-actions${replyCount ? ' has-replies' : ''}">
+          <button class="reply-action${replyCount ? ' has-replies' : ''}" type="button" data-action="open-thread" data-id="${message.id}">${replyActionLabel}</button>
           <button type="button" data-action="save-message" data-id="${message.id}">${saved ? 'Unsave' : 'Save'}</button>
           ${task ? '' : `<button type="button" data-action="message-task" data-id="${message.id}">As Task</button>`}
         </div>
@@ -442,19 +1478,23 @@ function renderMessage(message) {
   `;
 }
 
-function renderComposer() {
+function renderComposer({ id, kind, placeholder, showTaskToggle = false }) {
+  const hasAttachments = stagedFor(id).attachments.length > 0;
   return `
-    <form id="message-form" class="chat-composer">
-      <textarea name="body" rows="3" placeholder="Message ${escapeHtml(spaceName(selectedSpaceType, selectedSpaceId))}"></textarea>
+    <form id="${kind === 'thread' ? 'reply-form' : 'message-form'}" class="chat-composer ${kind === 'thread' ? 'thread-composer' : ''}" data-composer-id="${escapeHtml(id)}">
+      <div class="composer-attachments ${hasAttachments ? '' : 'hidden'}" data-attachment-strip="${escapeHtml(id)}">
+        ${renderAttachmentStrip(id)}
+      </div>
+      <div class="composer-input-wrapper">
+        <textarea name="body" rows="3" placeholder="${escapeHtml(placeholder)}" data-mention-input data-composer-id="${escapeHtml(id)}">${escapeHtml(composerDrafts[id] || '')}</textarea>
+        ${mentionPopup.composerId === id ? renderMentionPopup() : ''}
+      </div>
       <div class="composer-row">
-        <label class="file-btn small">
-          <input id="chat-attachment-input" type="file" multiple />
-          Attach
+        <label class="file-btn icon-btn small" title="Add attachment">
+          <input class="composer-attachment-input" data-composer-id="${escapeHtml(id)}" type="file" multiple />
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="m21.4 11.6-8.5 8.5a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
         </label>
-        <label class="checkline"><input type="checkbox" name="asTask" /> As Task</label>
-        <div class="attachment-strip compact">
-          ${stagedAttachments.length ? stagedAttachments.map((item) => `<span>${escapeHtml(item.name)} <small>${bytes(item.bytes)}</small></span>`).join('') : '<span class="muted">No attachments</span>'}
-        </div>
+        ${showTaskToggle ? `<label class="checkline"><input type="checkbox" name="asTask" ${composerTaskFlags[id] ? 'checked' : ''} /> As Task</label>` : '<span></span>'}
         <button class="primary-btn" type="submit">Send</button>
       </div>
     </form>
@@ -478,19 +1518,29 @@ function renderTaskBoard(tasks) {
       `).join('')}
     </div>
     <section class="task-board">
-      ${visibleColumns.map(([status, label]) => `
-        <div class="task-column pixel-panel">
-          <div class="panel-title"><span>${label}</span><span>${filteredTasks.filter((task) => task.status === status).length}</span></div>
-          ${filteredTasks.filter((task) => task.status === status).map(renderTaskCard).join('') || '<div class="empty-box small">Empty</div>'}
+      ${visibleColumns.map(([status, label]) => {
+        const columnTasks = filteredTasks.filter((task) => task.status === status);
+        const collapsed = Boolean(collapsedTaskColumns[status]);
+        return `
+        <div class="task-column pixel-panel ${collapsed ? 'collapsed' : ''}">
+          <div class="panel-title task-column-title">
+            <button class="column-toggle" type="button" data-action="toggle-task-column" data-status="${status}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(label)}">${collapsed ? '▸' : '▾'}</button>
+            <span>${label}</span>
+            <strong>${columnTasks.length}</strong>
+          </div>
+          ${collapsed ? '' : (columnTasks.map(renderTaskCard).join('') || '<div class="empty-box small">Empty</div>')}
         </div>
-      `).join('')}
+      `;
+      }).join('')}
     </section>
   `;
 }
 
 function renderTaskCard(task) {
-  const assignee = task.assigneeId ? displayName(task.assigneeId) : 'unassigned';
+  const assigneeIds = task.assigneeIds?.length ? task.assigneeIds : (task.assigneeId ? [task.assigneeId] : []);
+  const assignee = assigneeIds.length ? assigneeIds.map(displayName).join(', ') : 'unassigned';
   const claimed = task.claimedBy ? displayName(task.claimedBy) : 'unclaimed';
+  const creator = task.createdBy ? displayName(task.createdBy) : 'Unknown';
   const history = Array.isArray(task.history) ? task.history.slice(-3).reverse() : [];
   const thread = taskThreadMessage(task);
   const canClaim = task.status !== 'done' && !task.claimedBy;
@@ -501,11 +1551,11 @@ function renderTaskCard(task) {
   return `
     <article class="task-card">
       <div class="task-card-head">
-        <strong>${escapeHtml(task.title)}</strong>
+        <strong><span class="task-number">#${escapeHtml(task.number || shortId(task.id))}</span> ${escapeHtml(plainMentionText(task.title || 'Untitled task'))}</strong>
         ${pill(task.status, taskTone(task.status))}
       </div>
-      <p>${escapeHtml(task.body || '')}</p>
-      <small>${escapeHtml(spaceName(task.spaceType, task.spaceId))} / assignee ${escapeHtml(assignee)} / claim ${escapeHtml(claimed)}</small>
+      <div class="message-markdown">${renderMarkdownWithMentions(task.body || '')}</div>
+      <small>${escapeHtml(spaceName(task.spaceType, task.spaceId))} #${escapeHtml(task.number || shortId(task.id))} / creator @${escapeHtml(creator)} / assignee @${escapeHtml(assignee)} / claim ${escapeHtml(claimed)}</small>
       <div class="task-proof">
         <span>thread ${thread ? `#${shortId(thread.id)}` : 'missing'}</span>
         <span>${task.runIds?.length || 0} runs</span>
@@ -536,16 +1586,31 @@ function renderGlobalTasks() {
 }
 
 function renderThreads() {
-  const threaded = (appState.messages || []).filter((message) => message.replyCount > 0);
+  const threaded = (appState.messages || [])
+    .filter((message) => message.replyCount > 0 || message.taskId)
+    .sort((a, b) => threadUpdatedAt(b) - threadUpdatedAt(a));
   return `
     ${renderHeader('Threads', 'Active reply trails', '')}
-    <section class="list-panel pixel-panel">
-      ${threaded.length ? threaded.map((message) => `
+    <section class="list-panel pixel-panel thread-list-panel">
+      ${threaded.length ? threaded.map((message) => {
+        const replies = threadReplies(message.id);
+        const lastReply = replies.at(-1);
+        const author = displayName(message.authorId);
+        const lastReplyAuthor = lastReply ? displayName(lastReply.authorId) : author;
+        const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
+        return `
         <button class="thread-row" type="button" data-action="open-thread" data-id="${message.id}">
-          <strong>${escapeHtml(message.body.slice(0, 110) || '(attachment)')}</strong>
-          <span>${escapeHtml(spaceName(message.spaceType, message.spaceId))} / ${message.replyCount} replies</span>
+          <span class="thread-row-main">
+            <strong>${escapeHtml(plainMentionText(message.body).slice(0, 120) || '(attachment)')}</strong>
+            <small>${escapeHtml(spaceName(message.spaceType, message.spaceId))} · ${escapeHtml(author)} · latest ${escapeHtml(lastReplyAuthor)} · ${fmtTime(lastReply?.createdAt || message.updatedAt || message.createdAt)}</small>
+          </span>
+          <span class="thread-row-meta">
+            ${task ? `<span class="task-number">#${escapeHtml(task.number || shortId(task.id))}</span>` : ''}
+            <span>${message.replyCount || 0} ${(message.replyCount || 0) === 1 ? 'reply' : 'replies'}</span>
+          </span>
         </button>
-      `).join('') : '<div class="empty-box">No active threads.</div>'}
+      `;
+      }).join('') : '<div class="empty-box">No active threads.</div>'}
     </section>
   `;
 }
@@ -630,7 +1695,7 @@ function renderCloud() {
         <form id="cloud-config-form" class="modal-form">
           <div class="panel-title"><span>Control Plane</span><span>${escapeHtml(c.mode || 'local')}</span></div>
           <label><span>Mode</span><select name="mode"><option value="local" ${c.mode !== 'cloud' ? 'selected' : ''}>local</option><option value="cloud" ${c.mode === 'cloud' ? 'selected' : ''}>cloud</option></select></label>
-          <label><span>Control Plane URL</span><input name="controlPlaneUrl" value="${escapeHtml(c.controlPlaneUrl || '')}" placeholder="https://app.magclaw.ai or http://127.0.0.1:4317" /></label>
+          <label><span>Control Plane URL</span><input name="controlPlaneUrl" value="${escapeHtml(c.controlPlaneUrl || '')}" placeholder="https://app.magclaw.ai or http://127.0.0.1:6543" /></label>
           <label><span>Relay URL</span><input name="relayUrl" value="${escapeHtml(c.relayUrl || '')}" placeholder="wss://relay.magclaw.ai" /></label>
           <label><span>Access Token</span><input name="cloudToken" type="password" autocomplete="off" placeholder="${escapeHtml(c.hasCloudToken ? 'configured - leave blank to keep' : 'optional bearer token')}" /></label>
           <div class="form-grid">
@@ -664,6 +1729,8 @@ function renderInspector() {
   const thread = threadMessageId ? byId(appState.messages, threadMessageId) : null;
   if (thread) return renderThreadDrawer(thread);
 
+  if (selectedProjectFile) return renderProjectFilePreview();
+
   // If in members tab with agent selected, show agent detail
   if (railTab === 'members' && selectedAgentId) {
     const agent = byId(appState.agents, selectedAgentId);
@@ -683,6 +1750,118 @@ function renderInspector() {
   `;
 }
 
+function renderProjectFilePreview() {
+  const key = projectPreviewKey(selectedProjectFile.projectId, selectedProjectFile.path);
+  const preview = projectFilePreviews[key] || { loading: true };
+  const file = preview.file;
+  return `
+    <section class="pixel-panel inspector-panel file-preview-panel">
+      <div class="panel-title file-preview-title">
+        <span>File Preview</span>
+        <button type="button" data-action="close-project-preview">×</button>
+      </div>
+      ${preview.loading ? '<div class="empty-box small">Loading file...</div>' : ''}
+      ${preview.error ? `<div class="empty-box small error">${escapeHtml(preview.error)}</div>` : ''}
+      ${file ? `
+        <div class="file-preview-meta">
+          <strong title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</strong>
+          <small>${escapeHtml(file.projectName)} / ${escapeHtml(file.path)} / ${bytes(file.bytes)}</small>
+        </div>
+        ${file.previewKind === 'markdown'
+          ? `<div class="markdown-preview">${renderMarkdown(file.content || '')}</div>`
+          : file.previewKind === 'text'
+            ? `<pre class="text-file-preview"><code>${escapeHtml(file.content || '')}</code></pre>`
+            : '<div class="empty-box small">This file type cannot be previewed as text yet.</div>'}
+      ` : ''}
+    </section>
+  `;
+}
+
+function renderAgentWorkspaceTree(agent, relPath = '', depth = 0) {
+  const key = agentWorkspaceKey(agent.id, relPath);
+  const tree = agentWorkspaceTreeCache[key];
+  if (!tree || tree.loading) return '<div class="project-tree-note">Loading workspace...</div>';
+  if (tree.error) return `<div class="project-tree-note error">${escapeHtml(tree.error)}</div>`;
+  if (!tree.entries?.length) return '<div class="project-tree-note">Empty folder.</div>';
+  return `
+    <div class="project-tree-list agent-workspace-tree">
+      ${tree.entries.map((entry) => {
+        const isFolder = entry.kind === 'folder';
+        const expanded = isFolder && agentWorkspaceIsExpanded(agent.id, entry.path);
+        const active = selectedAgentWorkspaceFile?.agentId === agent.id && selectedAgentWorkspaceFile?.path === entry.path;
+        return `
+          <div class="project-tree-node">
+            <button
+              type="button"
+              class="project-tree-row ${isFolder ? 'is-folder' : 'is-file'} ${active ? 'active' : ''}"
+              style="--depth: ${depth}"
+              data-action="${isFolder ? 'toggle-agent-workspace' : 'open-agent-workspace-file'}"
+              data-agent-id="${escapeHtml(agent.id)}"
+              data-path="${escapeHtml(entry.path)}"
+              title="${escapeHtml(entry.path)}"
+            >
+              <span class="project-tree-caret">${isFolder ? (expanded ? '▾' : '▸') : '·'}</span>
+              <span class="project-tree-icon">${isFolder ? 'DIR' : 'FILE'}</span>
+              <span class="project-tree-name">${escapeHtml(entry.name)}</span>
+              ${!isFolder ? `<small>${bytes(entry.bytes || 0)}</small>` : ''}
+            </button>
+            ${isFolder && expanded ? renderAgentWorkspaceTree(agent, entry.path, depth + 1) : ''}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderAgentWorkspacePreview(agent) {
+  if (!selectedAgentWorkspaceFile || selectedAgentWorkspaceFile.agentId !== agent.id) return '';
+  const key = agentWorkspaceKey(agent.id, selectedAgentWorkspaceFile.path);
+  const preview = agentWorkspaceFilePreviews[key] || { loading: true };
+  const file = preview.file;
+  return `
+    <div class="agent-workspace-preview">
+      <div class="file-preview-title inline-title">
+        <span>${file ? escapeHtml(file.path) : 'File Preview'}</span>
+        <button type="button" data-action="close-agent-workspace-file">×</button>
+      </div>
+      ${preview.loading ? '<div class="empty-box small">Loading file...</div>' : ''}
+      ${preview.error ? `<div class="empty-box small error">${escapeHtml(preview.error)}</div>` : ''}
+      ${file ? `
+        <div class="file-preview-meta">
+          <strong title="${escapeHtml(file.absolutePath)}">${escapeHtml(file.name)}</strong>
+          <small>${escapeHtml(file.absolutePath)} / ${bytes(file.bytes)}</small>
+        </div>
+        ${file.previewKind === 'markdown'
+          ? `<div class="markdown-preview">${renderMarkdown(file.content || '')}</div>`
+          : file.previewKind === 'text'
+            ? `<pre class="text-file-preview"><code>${escapeHtml(file.content || '')}</code></pre>`
+            : '<div class="empty-box small">This file type cannot be previewed as text yet.</div>'}
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderAgentWorkspaceSection(agent) {
+  const rootKey = agentWorkspaceKey(agent.id, '');
+  const expanded = agentWorkspaceIsExpanded(agent.id, '');
+  const tree = agentWorkspaceTreeCache[rootKey];
+  return `
+    <div class="agent-detail-section agent-workspace-section">
+      <div class="detail-label">Workspace</div>
+      <div class="agent-workspace-head">
+        <code>${escapeHtml(agent.workspacePath || '--')}</code>
+        <button type="button" data-action="toggle-agent-workspace" data-agent-id="${escapeHtml(agent.id)}" data-path="">${expanded ? 'Hide' : 'Open'}</button>
+      </div>
+      ${expanded ? `
+        <div class="agent-workspace-browser">
+          ${tree ? renderAgentWorkspaceTree(agent, '', 0) : '<div class="project-tree-note">Loading workspace...</div>'}
+          ${renderAgentWorkspacePreview(agent)}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
 function renderAgentDetail(agent) {
   const computer = byId(appState.computers, agent.computerId);
   const envVars = agent.envVars || [];
@@ -698,7 +1877,7 @@ function renderAgentDetail(agent) {
         ${getAvatarHtml(agent.id, 'agent', 'avatar')}
         <div class="agent-profile-info">
           <strong>${escapeHtml(agent.name)}</strong>
-          <span class="agent-status ${agent.status === 'idle' || agent.status === 'online' ? 'online' : ''}">${escapeHtml(agent.status)}</span>
+          <span class="agent-status ${presenceClass(agent.status)}">${escapeHtml(agent.status)}</span>
         </div>
       </div>
 
@@ -710,6 +1889,11 @@ function renderAgentDetail(agent) {
       <div class="agent-detail-section">
         <div class="detail-label">Runtime</div>
         <div class="detail-value">${escapeHtml(agent.runtime || '--')}</div>
+      </div>
+
+      <div class="agent-detail-section">
+        <div class="detail-label">Runtime Session</div>
+        <div class="detail-value"><code>${escapeHtml(agent.runtimeSessionId || '--')}</code></div>
       </div>
 
       <div class="agent-detail-section">
@@ -730,9 +1914,11 @@ function renderAgentDetail(agent) {
       </div>
 
       <div class="agent-detail-section">
-        <div class="detail-label">Workspace</div>
+        <div class="detail-label">Runtime Workspace</div>
         <div class="detail-value">${escapeHtml(agent.workspace || '--')}</div>
       </div>
+
+      ${renderAgentWorkspaceSection(agent)}
 
       ${envVars.length ? `
       <div class="agent-detail-section">
@@ -772,62 +1958,95 @@ function renderAgent(agent) {
 
 function renderAgentListItem(agent) {
   const active = selectedAgentId === agent.id ? ' active' : '';
-  const statusClass = agent.status === 'online' || agent.status === 'idle' ? 'online' : '';
+  const desc = agent.description ? `<span class="agent-desc">${escapeHtml(agent.description)}</span>` : '';
   return `
     <button class="space-btn member-btn${active}" type="button" data-action="select-agent" data-id="${agent.id}">
       ${getAvatarHtml(agent.id, 'agent', 'dm-avatar')}
-      <span class="dm-name">${escapeHtml(agent.name)}</span>
-      <span class="dm-status ${statusClass}"></span>
+      <div class="member-info">
+        <span class="dm-name">${escapeHtml(agent.name)}</span>
+        ${desc}
+      </div>
+      <span class="dm-status ${presenceClass(agent.status)}"></span>
     </button>
   `;
 }
 
 function renderHumanListItem(human) {
-  const statusClass = human.status === 'online' || human.status === 'idle' ? 'online' : '';
   return `
     <div class="space-btn member-btn">
       <span class="dm-avatar">${escapeHtml(displayAvatar(human.id, 'human'))}</span>
       <span class="dm-name">${escapeHtml(human.name)}</span>
-      <span class="dm-status ${statusClass}"></span>
+      <span class="dm-status ${presenceClass(human.status)}"></span>
     </div>
   `;
 }
 
 function renderComputerListItem(computer) {
-  const statusClass = computer.status === 'connected' ? 'online' : '';
   return `
     <div class="space-btn member-btn">
       <span class="dm-avatar">💻</span>
       <span class="dm-name">${escapeHtml(computer.name)}</span>
-      <span class="dm-status ${statusClass}"></span>
+      <span class="dm-status ${presenceClass(computer.status)}"></span>
     </div>
+  `;
+}
+
+function renderReply(reply) {
+  const authorClass = ['agent', 'human', 'system'].includes(reply.authorType) ? reply.authorType : 'unknown';
+  return `
+    <article class="message-card slock-message reply-card author-${authorClass}">
+      <div class="avatar">${getAvatarHtml(reply.authorId, reply.authorType, 'avatar-inner')}</div>
+      <div class="message-body">
+        <div class="message-meta">
+          <strong>${escapeHtml(displayName(reply.authorId))}</strong>
+          <span class="sender-role">${escapeHtml(actorSubtitle(reply.authorId, reply.authorType, reply))}</span>
+          <time>${fmtTime(reply.createdAt)}</time>
+        </div>
+        <div class="message-markdown">${renderMarkdownWithMentions(reply.body || '(attachment)')}</div>
+        <div class="message-attachments">${attachmentLinks(reply.attachmentIds)}</div>
+      </div>
+    </article>
   `;
 }
 
 function renderThreadDrawer(message) {
   const replies = threadReplies(message.id);
   const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
+  const composerId = composerIdFor('thread', message.id);
+  const replyWord = replies.length === 1 ? 'reply' : 'replies';
   return `
     <section class="pixel-panel inspector-panel thread-drawer">
-      <div class="panel-title">
-        <span>Thread</span>
-        <button type="button" data-action="close-thread">x</button>
+      <div class="thread-head">
+        <div>
+          <strong>Thread</strong>
+          <span>${escapeHtml(spaceName(message.spaceType, message.spaceId))}</span>
+        </div>
+        <div class="thread-head-actions">
+          <button type="button" data-action="view-in-channel" data-id="${message.id}">View in channel</button>
+          <button class="icon-btn small" type="button" data-action="close-thread" aria-label="Close thread">×</button>
+        </div>
       </div>
-      ${renderMessage(message)}
-      ${task ? renderTaskLifecycle(task) : ''}
-      <div class="reply-list">
-        ${replies.length ? replies.map((reply) => `
-          <article class="reply-card">
-            <strong>${escapeHtml(displayName(reply.authorId))}</strong>
-            <time>${fmtTime(reply.createdAt)}</time>
-            <p>${escapeHtml(reply.body)}</p>
-          </article>
-        `).join('') : '<div class="empty-box small">No replies yet.</div>'}
+      <div class="thread-context-wrap">
+        <div class="thread-context" id="thread-context">
+          <div class="thread-parent-card">
+            ${renderMessage(message, { compact: true })}
+          </div>
+          ${task ? renderTaskLifecycle(task) : ''}
+          <div class="thread-reply-divider">
+            <span>Beginning of replies</span>
+            <strong>${replies.length} ${replyWord}</strong>
+          </div>
+          <div class="reply-list">
+            ${replies.length ? replies.map(renderReply).join('') : '<div class="empty-box small">No replies yet.</div>'}
+          </div>
+        </div>
+        <button class="back-bottom thread-back-bottom${backBottomVisible.thread ? '' : ' hidden'}" type="button" data-action="back-to-bottom" data-target="thread">Back to Bottom</button>
       </div>
-      <form id="reply-form" class="reply-form">
-        <textarea name="body" rows="3" placeholder="Reply in thread"></textarea>
-        <button class="primary-btn" type="submit">Reply</button>
-      </form>
+      <div class="thread-tools">
+        <span>${replies.length} ${replyWord}</span>
+        ${task ? `<span class="task-number">#${escapeHtml(task.number || shortId(task.id))} ${escapeHtml(task.status)}</span>` : ''}
+      </div>
+      ${renderComposer({ id: composerId, kind: 'thread', placeholder: 'Message thread' })}
     </section>
   `;
 }
@@ -852,7 +2071,7 @@ function renderTaskLifecycle(task) {
           <div class="history-item">
             <strong>${escapeHtml(item.type)}</strong>
             <small>${fmtTime(item.createdAt)} / ${escapeHtml(displayName(item.actorId))}</small>
-            <p>${escapeHtml(item.message)}</p>
+            <p>${escapeHtml(plainActorText(item.message))}</p>
           </div>
         `).join('') : '<div class="empty-box small">No task history.</div>'}
       </div>
@@ -866,6 +2085,8 @@ function renderModal() {
     'edit-channel': renderEditChannelModal,
     'channel-members': renderChannelMembersModal,
     'add-channel-member': renderAddChannelMemberModal,
+    'confirm-stop-all': renderStopAllConfirmModal,
+    project: renderProjectModal,
     dm: renderDmModal,
     task: renderTaskModal,
     agent: renderAgentModal,
@@ -875,9 +2096,10 @@ function renderModal() {
   };
   const content = map[modal]?.() || '';
   const isAvatarPicker = modal === 'avatar-picker';
+  const modalClass = `modal-${String(modal || '').replace(/[^a-z0-9-]/gi, '-')}`;
   return `
-    <div class="modal-backdrop" data-action="close-modal">
-      <div class="modal-card pixel-panel ${isAvatarPicker ? 'modal-wide' : ''}" data-action="none">
+    <div class="modal-backdrop ${modalClass}-backdrop" data-action="close-modal">
+      <div class="modal-card pixel-panel ${modalClass} ${isAvatarPicker ? 'modal-wide' : ''}" data-action="none">
         ${content}
       </div>
     </div>
@@ -885,7 +2107,72 @@ function renderModal() {
 }
 
 function modalHeader(title, subtitle) {
-  return `<div class="modal-head"><div><p class="eyebrow">${escapeHtml(subtitle)}</p><h3>${escapeHtml(title)}</h3></div><button type="button" data-action="close-modal">x</button></div>`;
+  return `<div class="modal-head"><div>${subtitle ? `<p class="eyebrow">${escapeHtml(subtitle)}</p>` : ''}<h3>${escapeHtml(title)}</h3></div><button type="button" data-action="close-modal" aria-label="Close">×</button></div>`;
+}
+
+function renderStopAllConfirmModal() {
+  const activeStatuses = new Set(['busy', 'queued', 'running', 'starting', 'thinking', 'working']);
+  const memberAgentIds = selectedSpaceType === 'channel'
+    ? getChannelMembers(selectedSpaceId).agents.map((agent) => agent.id)
+    : (byId(appState?.dms, selectedSpaceId)?.participantIds || []).filter((id) => byId(appState?.agents, id));
+  const activeAgents = (appState?.agents || []).filter((agent) => memberAgentIds.includes(agent.id) && activeStatuses.has(agent.status));
+  const targetName = spaceName(selectedSpaceType, selectedSpaceId);
+  const activeCopy = activeAgents.length
+    ? `${activeAgents.length} active Agent${activeAgents.length === 1 ? '' : 's'} in ${targetName} will receive a stop request.`
+    : `No active Agent is reported in ${targetName} right now, but queued work in this space will still be cleared.`;
+  return `
+    ${modalHeader('STOP ALL AGENTS')}
+    <div class="confirm-stop-modal">
+      <div class="confirm-stop-icon">${channelActionIcon('stop')}</div>
+      <div class="confirm-stop-copy">
+        <strong>Stop Agent work in ${escapeHtml(targetName)}?</strong>
+        <p>This immediately stops running and queued Agent actions in this space. The same Agent's work in other channels is left alone.</p>
+        <small>${escapeHtml(activeCopy)}</small>
+      </div>
+    </div>
+    <div class="modal-actions confirm-stop-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+      <button type="button" class="danger-btn confirm-stop-btn" data-action="confirm-stop-all">Stop all agents</button>
+    </div>
+  `;
+}
+
+function renderProjectModal() {
+  const channel = selectedSpaceType === 'channel' ? currentSpace() : null;
+  const projects = projectsForSpace();
+  return `
+    ${modalHeader('Open Project', channel ? `#${channel.name}` : 'Channel project')}
+    <div class="folder-picker-panel">
+      <button class="primary-btn" type="button" data-action="pick-project-folder">Open Local Folder</button>
+    </div>
+    <details class="manual-project-path">
+      <summary>Path</summary>
+      <form id="project-form" class="modal-form">
+        <label>
+          <span>Folder path</span>
+          <input name="path" placeholder="/Users/tt/code/myproject/magclaw" required />
+        </label>
+        <label><span>Name</span><input name="name" placeholder="Optional display name" /></label>
+        <div class="modal-actions">
+          <button class="primary-btn" type="submit">Add Path</button>
+        </div>
+      </form>
+    </details>
+    <div class="project-modal-list">
+      ${projects.length ? projects.map((project) => `
+        <div class="project-modal-item">
+          <div class="project-modal-info">
+            <span class="project-folder-badge">${folderIcon()}</span>
+            <div>
+              <strong>${escapeHtml(project.name)}</strong>
+              <small>${escapeHtml(project.path)}</small>
+            </div>
+          </div>
+          <button type="button" class="project-icon-btn danger-icon" data-action="remove-project" data-id="${escapeHtml(project.id)}" title="Remove ${escapeHtml(project.name)}" aria-label="Remove ${escapeHtml(project.name)}">${trashIcon()}</button>
+        </div>
+      `).join('') : '<div class="empty-box small">No folders added yet.</div>'}
+    </div>
+  `;
 }
 
 function renderChannelModal() {
@@ -925,45 +2212,68 @@ function renderEditChannelModal() {
   `;
 }
 
+function renderChannelMemberRow(member, type, isAllChannel) {
+  const status = member.status || 'offline';
+  const avatar = type === 'agent'
+    ? getAvatarHtml(member.id, 'agent', 'dm-avatar member-avatar')
+    : `<span class="dm-avatar member-avatar">${escapeHtml(displayAvatar(member.id, 'human'))}</span>`;
+  const canRemove = !isAllChannel && (type === 'agent' || member.id !== 'hum_local');
+  return `
+    <div class="member-list-item member-list-item-${type}">
+      ${avatar}
+      <span class="member-main">
+        <strong class="member-name">${escapeHtml(member.name)}</strong>
+        ${type === 'agent' ? `<span class="member-status ${presenceClass(status)}">${escapeHtml(status)}</span>` : ''}
+      </span>
+      ${canRemove ? `<button class="member-remove-btn" type="button" data-action="remove-channel-member" data-member-id="${member.id}" title="Remove ${escapeHtml(member.name)}" aria-label="Remove ${escapeHtml(member.name)}">×</button>` : ''}
+    </div>
+  `;
+}
+
+function renderAddMemberCandidateGroup(title, items, type) {
+  if (!items.length) return '';
+  return `
+    <div class="add-member-group">
+      <div class="add-member-group-title">${escapeHtml(title)}</div>
+      ${items.map((item) => `
+        <button class="add-member-candidate" type="button" data-action="add-channel-member" data-member-id="${escapeHtml(item.id)}">
+          ${type === 'agent' ? getAvatarHtml(item.id, 'agent', 'dm-avatar member-avatar') : `<span class="dm-avatar member-avatar">${escapeHtml(displayAvatar(item.id, 'human'))}</span>`}
+          <span class="add-member-candidate-main">
+            <strong>${escapeHtml(item.name)}</strong>
+            ${type === 'human' && item.email ? `<small>${escapeHtml(item.email)}</small>` : ''}
+          </span>
+          ${type === 'agent' ? `<span class="add-member-status-dot ${presenceClass(item.status)}" title="${escapeHtml(item.status || 'offline')}"></span>` : ''}
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
 function renderChannelMembersModal() {
   const channel = selectedSpaceType === 'channel' ? currentSpace() : null;
   const members = getChannelMembers(selectedSpaceId);
   const isAllChannel = channel?.id === 'chan_all';
+  const total = members.agents.length + members.humans.length;
 
   return `
-    ${modalHeader('Channel Members', channel ? `#${channel.name}` : 'No channel')}
+    ${modalHeader(`MEMBERS (${total})`)}
     <div class="members-modal-content">
       <div class="members-section">
-        <div class="members-section-title">Agents <em>${members.agents.length}</em></div>
+        <div class="members-section-title">Agents</div>
         <div class="members-list">
-          ${members.agents.length ? members.agents.map((agent) => `
-            <div class="member-list-item">
-              ${getAvatarHtml(agent.id, 'agent', 'dm-avatar')}
-              <span class="member-name">${escapeHtml(agent.name)}</span>
-              <span class="member-status ${agent.status === 'online' || agent.status === 'idle' ? 'online' : ''}">${escapeHtml(agent.status || 'offline')}</span>
-              ${!isAllChannel ? `<button class="member-remove-btn" type="button" data-action="remove-channel-member" data-member-id="${agent.id}">×</button>` : ''}
-            </div>
-          `).join('') : '<div class="empty-box small">No agents in this channel</div>'}
+          ${members.agents.length ? members.agents.map((agent) => renderChannelMemberRow(agent, 'agent', isAllChannel)).join('') : '<div class="empty-box small">No agents in this channel</div>'}
         </div>
       </div>
 
       <div class="members-section">
-        <div class="members-section-title">Humans <em>${members.humans.length}</em></div>
+        <div class="members-section-title">Humans</div>
         <div class="members-list">
-          ${members.humans.length ? members.humans.map((human) => `
-            <div class="member-list-item">
-              <span class="dm-avatar">${escapeHtml(displayAvatar(human.id, 'human'))}</span>
-              <span class="member-name">${escapeHtml(human.name)}</span>
-              <span class="member-status ${human.status === 'online' || human.status === 'idle' ? 'online' : ''}">${escapeHtml(human.status || 'offline')}</span>
-              ${!isAllChannel && human.id !== 'hum_local' ? `<button class="member-remove-btn" type="button" data-action="remove-channel-member" data-member-id="${human.id}">×</button>` : ''}
-            </div>
-          `).join('') : '<div class="empty-box small">No humans in this channel</div>'}
+          ${members.humans.length ? members.humans.map((human) => renderChannelMemberRow(human, 'human', isAllChannel)).join('') : '<div class="empty-box small">No humans in this channel</div>'}
         </div>
       </div>
 
       <div class="members-actions">
-        <button class="secondary-btn" type="button" data-action="open-modal" data-modal="add-channel-member">Add Member</button>
-        ${!isAllChannel ? `<button class="danger-btn" type="button" data-action="leave-channel">Leave Channel</button>` : ''}
+        ${!isAllChannel ? `<button class="member-add-btn" type="button" data-action="open-modal" data-modal="add-channel-member">+ Add Member</button>` : ''}
       </div>
     </div>
   `;
@@ -973,28 +2283,32 @@ function renderAddChannelMemberModal() {
   const channel = selectedSpaceType === 'channel' ? currentSpace() : null;
   const members = getChannelMembers(selectedSpaceId);
   const memberIds = [...members.agents.map((a) => a.id), ...members.humans.map((h) => h.id)];
-  const availableAgents = (appState.agents || []).filter((a) => !memberIds.includes(a.id));
-  const availableHumans = (appState.humans || []).filter((h) => !memberIds.includes(h.id) && h.id !== 'hum_local');
+  const q = addMemberSearchQuery.trim().toLowerCase();
+  const matches = (item) => {
+    const haystack = `${item.name || ''} ${item.email || ''} ${item.status || ''}`.toLowerCase();
+    return !q || haystack.includes(q);
+  };
+  const availableAgents = (appState.agents || []).filter((a) => !memberIds.includes(a.id) && matches(a));
+  const availableHumans = (appState.humans || []).filter((h) => !memberIds.includes(h.id) && h.id !== 'hum_local' && matches(h));
+  const hasCandidates = availableAgents.length || availableHumans.length;
 
   return `
-    ${modalHeader('Add Member', channel ? `#${channel.name}` : 'No channel')}
-    <form id="add-member-form" class="modal-form">
-      <label>
-        <span>Select Member</span>
-        <select name="memberId">
-          <optgroup label="Agents">
-            ${availableAgents.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}
-          </optgroup>
-          <optgroup label="Humans">
-            ${availableHumans.map((h) => `<option value="${h.id}">${escapeHtml(h.name)}</option>`).join('')}
-          </optgroup>
-        </select>
+    ${modalHeader('ADD MEMBER')}
+    <div class="add-member-modal">
+      <label class="add-member-search-label">
+        <span>Search</span>
+        <span class="add-member-search-wrap">
+          <svg class="add-member-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5" /><path d="M15 15l5 5" /></svg>
+          <input id="add-member-search" value="${escapeHtml(addMemberSearchQuery)}" placeholder="Name" autocomplete="off" autofocus />
+        </span>
       </label>
-      <div class="modal-actions">
-        <button type="button" class="secondary-btn" data-action="open-modal" data-modal="channel-members">Back</button>
-        <button class="primary-btn" type="submit">Add</button>
+      <div class="add-member-candidates" role="listbox" aria-label="Available members for ${escapeHtml(channel?.name || 'channel')}">
+        ${hasCandidates ? [
+          renderAddMemberCandidateGroup('Agents', availableAgents, 'agent'),
+          renderAddMemberCandidateGroup('Humans', availableHumans, 'human'),
+        ].join('') : '<div class="empty-box small">No available members</div>'}
       </div>
-    </form>
+    </div>
   `;
 }
 
@@ -1020,7 +2334,7 @@ function renderTaskModal() {
     <form id="task-form" class="modal-form">
       <label><span>Title</span><input name="title" required /></label>
       <label><span>Body</span><textarea name="body" rows="4"></textarea></label>
-      <label><span>Assignee</span><select name="assigneeId"><option value="">Unassigned</option>${(appState.agents || []).map((agent) => `<option value="${agent.id}">${escapeHtml(agent.name)}</option>`).join('')}</select></label>
+      <label><span>Assignees</span><select name="assigneeIds" multiple size="4">${(appState.agents || []).map((agent) => `<option value="${agent.id}">${escapeHtml(agent.name)}</option>`).join('')}</select></label>
       <label class="checkline"><input type="checkbox" name="addAnother" /> Add another after create</label>
       <button class="primary-btn" type="submit">Create Task</button>
     </form>
@@ -1136,13 +2450,14 @@ function renderAvatarPickerModal() {
   let html = `${modalHeader('SELECT AVATAR', 'Choose an avatar for your agent')}
     <div class="avatar-grid">`;
   for (let i = 1; i <= AVATAR_COUNT; i++) {
-    const src = `/avatars/avatar_${String(i).padStart(3, '0')}.svg`;
+    const src = `/avatars/avatar_${String(i).padStart(4, '0')}.svg`;
     const selected = agentFormState.avatar === src ? 'selected' : '';
     html += `<img src="${src}" class="avatar-option ${selected}" data-avatar="${src}" />`;
   }
   html += `</div>
     <div class="modal-actions">
       <button type="button" class="secondary-btn" data-action="back-to-agent-modal">Back</button>
+      <button type="button" class="primary-btn" data-action="confirm-avatar">Select</button>
     </div>`;
   return html;
 }
@@ -1209,29 +2524,68 @@ function resetAgentFormState() {
   selectedRuntimeId = null;
 }
 
-function readFileAsDataUrl(file) {
+function readFileAsDataUrl(file, source = 'upload') {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve({
       name: file.name,
       type: file.type || 'application/octet-stream',
       dataUrl: reader.result,
+      source,
     });
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
 }
 
-async function uploadFiles(files) {
-  const payload = await Promise.all([...files].map(readFileAsDataUrl));
+async function uploadFiles(files, composerId, source = 'upload') {
+  const currentCount = stagedFor(composerId).attachments.length;
+  const remaining = MAX_ATTACHMENTS_PER_COMPOSER - currentCount;
+  if (remaining <= 0) {
+    toast(`最多只能暂存 ${MAX_ATTACHMENTS_PER_COMPOSER} 个附件`);
+    return;
+  }
+  const selectedFiles = [...files].slice(0, remaining);
+  if (files.length > remaining) {
+    toast(`最多只能暂存 ${MAX_ATTACHMENTS_PER_COMPOSER} 个附件，已添加前 ${remaining} 个`);
+  }
+  const payload = await Promise.all(selectedFiles.map((file) => readFileAsDataUrl(file, source)));
   const result = await api('/api/attachments', {
     method: 'POST',
     body: JSON.stringify({ files: payload }),
   });
-  stagedAttachments = result.attachments || [];
-  stagedAttachmentIds = stagedAttachments.map((item) => item.id);
-  toast(`${stagedAttachments.length} attachment(s) staged`);
-  await refreshState();
+  const next = [...stagedFor(composerId).attachments, ...(result.attachments || [])];
+  setStagedFor(composerId, next);
+  const known = new Set((appState.attachments || []).map((item) => item.id));
+  appState.attachments = [
+    ...(appState.attachments || []),
+    ...(result.attachments || []).filter((item) => !known.has(item.id)),
+  ];
+  updateComposerAttachmentStrip(composerId);
+  toast(`${(result.attachments || []).length} attachment(s) staged`);
+}
+
+function clipboardScreenshotName(index = 0, type = 'image/png') {
+  const ext = type.includes('jpeg') ? 'jpg' : type.includes('webp') ? 'webp' : 'png';
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\..+$/, '')
+    .replace('T', '-');
+  return `screenshot-${stamp}${index ? `-${index + 1}` : ''}.${ext}`;
+}
+
+function normalizeClipboardFile(file, index) {
+  if (!String(file.type || '').startsWith('image/')) return file;
+  if (file.name && !/^image\.(png|jpg|jpeg|webp)$/i.test(file.name)) return file;
+  try {
+    return new File([file], clipboardScreenshotName(index, file.type), {
+      type: file.type || 'image/png',
+      lastModified: file.lastModified || Date.now(),
+    });
+  } catch {
+    return file;
+  }
 }
 
 function cloudFormPayload(forcedMode) {
@@ -1252,6 +2606,7 @@ function cloudFormPayload(forcedMode) {
 }
 
 async function refreshState() {
+  rememberPinnedBottomBeforeStateChange();
   appState = await api('/api/state');
   render();
 }
@@ -1259,6 +2614,7 @@ async function refreshState() {
 function connectEvents() {
   const source = new EventSource('/api/events');
   source.addEventListener('state', (event) => {
+    rememberPinnedBottomBeforeStateChange();
     appState = JSON.parse(event.data);
     // When modal is open, don't re-render to avoid interrupting form input
     if (!modal) {
@@ -1268,6 +2624,7 @@ function connectEvents() {
   source.addEventListener('run-event', (event) => {
     const incoming = JSON.parse(event.data);
     if (!appState.events.some((item) => item.id === incoming.id)) {
+      rememberPinnedBottomBeforeStateChange();
       appState.events.push(incoming);
       // When modal is open, don't re-render
       if (!modal) {
@@ -1277,16 +2634,167 @@ function connectEvents() {
   });
 }
 
-document.addEventListener('keydown', (event) => {
-  const textarea = event.target.closest('#message-form textarea[name="body"]');
+document.addEventListener('scroll', (event) => {
+  if (event.target?.id === 'message-list') updateBackBottomVisibility('main');
+  if (event.target?.id === 'thread-context') updateBackBottomVisibility('thread');
+}, true);
+
+document.addEventListener('keydown', async (event) => {
+  const railResizer = event.target.closest?.('.rail-resizer');
+  if (railResizer && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+    event.preventDefault();
+    const delta = event.key === 'ArrowRight' ? 24 : -24;
+    setRailWidth(railWidth + delta, { persist: true, frame: railResizer.closest('.app-frame') });
+    return;
+  }
+
+  const inspectorResizer = event.target.closest?.('.inspector-resizer');
+  if (inspectorResizer && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+    event.preventDefault();
+    const delta = event.key === 'ArrowLeft' ? 24 : -24;
+    setInspectorWidth(inspectorWidth + delta, { persist: true, frame: inspectorResizer.closest('.app-frame') });
+    return;
+  }
+
+  const textarea = event.target.closest('textarea[data-mention-input]');
+
+  // Handle mention popup keyboard navigation
+  if (textarea && mentionPopup.active && mentionPopup.composerId === textarea.dataset.composerId) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      mentionPopup.selectedIndex = Math.min(mentionPopup.selectedIndex + 1, mentionPopup.items.length - 1);
+      updateMentionPopupSelection();
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      mentionPopup.selectedIndex = Math.max(mentionPopup.selectedIndex - 1, 0);
+      updateMentionPopupSelection();
+      return;
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault();
+      const item = mentionPopup.items[mentionPopup.selectedIndex];
+      if (item) {
+        await insertMention(textarea, item);
+        const existingPopup = document.getElementById('mention-popup');
+        if (existingPopup) existingPopup.remove();
+      }
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      mentionPopup.active = false;
+      mentionPopup.items = [];
+      const existingPopup = document.getElementById('mention-popup');
+      if (existingPopup) existingPopup.remove();
+      return;
+    }
+  }
+
+  // Regular Enter to submit message (only when popup not active)
   if (textarea && event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
-    const form = document.getElementById('message-form');
+    const form = textarea.closest('form');
     if (form) form.requestSubmit();
   }
 });
 
-document.addEventListener('input', (event) => {
+document.addEventListener('pointerdown', (event) => {
+  const resizer = event.target.closest('.rail-resizer, .inspector-resizer');
+  if (!resizer) return;
+
+  event.preventDefault();
+  const frame = resizer.closest('.app-frame');
+  const isRail = resizer.classList.contains('rail-resizer');
+  document.body.classList.add(isRail ? 'is-resizing-rail' : 'is-resizing-inspector');
+  resizer.setPointerCapture?.(event.pointerId);
+
+  const updateWidth = (clientX) => {
+    const rect = frame?.getBoundingClientRect();
+    if (isRail) {
+      setRailWidth(clientX - (rect?.left || 0), { frame });
+      return;
+    }
+    const frameRight = rect?.right || window.innerWidth;
+    setInspectorWidth(frameRight - clientX, { frame });
+  };
+  const onPointerMove = (moveEvent) => updateWidth(moveEvent.clientX);
+  const finish = () => {
+    document.removeEventListener('pointermove', onPointerMove);
+    document.removeEventListener('pointerup', finish);
+    document.removeEventListener('pointercancel', finish);
+    document.body.classList.remove(isRail ? 'is-resizing-rail' : 'is-resizing-inspector');
+    localStorage.setItem(isRail ? RAIL_WIDTH_KEY : INSPECTOR_WIDTH_KEY, String(isRail ? railWidth : inspectorWidth));
+  };
+
+  updateWidth(event.clientX);
+  document.addEventListener('pointermove', onPointerMove);
+  document.addEventListener('pointerup', finish);
+  document.addEventListener('pointercancel', finish);
+});
+
+// Update mention popup selection highlight without full re-render
+function updateMentionPopupSelection() {
+  const popup = document.getElementById('mention-popup');
+  if (!popup) return;
+  popup.querySelectorAll('.mention-item').forEach((el, idx) => {
+    el.classList.toggle('selected', idx === mentionPopup.selectedIndex);
+  });
+}
+
+document.addEventListener('input', async (event) => {
+  // Handle @ mention autocomplete in message textarea
+  const messageTextarea = event.target.closest('textarea[data-mention-input]');
+  if (messageTextarea) {
+    const { selectionStart, value } = messageTextarea;
+    if (messageTextarea.dataset.composerId) composerDrafts[messageTextarea.dataset.composerId] = value;
+    const atMatch = findMentionTrigger(value, selectionStart);
+    if (atMatch) {
+      const lookupSeq = ++mentionLookupSeq;
+      const { query, triggerPosition } = atMatch;
+      const form = messageTextarea.closest('form');
+      const isThread = form?.id === 'reply-form';
+      const threadRoot = isThread ? byId(appState.messages, threadMessageId) : null;
+      const spaceType = threadRoot?.spaceType || selectedSpaceType;
+      const spaceId = threadRoot?.spaceId || selectedSpaceId;
+      const peopleItems = getMentionCandidates(query, spaceType, spaceId);
+      let projectItems = [];
+      try {
+        projectItems = await getProjectMentionCandidates(query, spaceType, spaceId);
+      } catch (error) {
+        console.warn('Project mention search failed', error);
+      }
+      if (lookupSeq !== mentionLookupSeq) return;
+      const items = [...peopleItems, ...projectItems];
+      mentionPopup = {
+        active: items.length > 0,
+        query,
+        items,
+        selectedIndex: 0,
+        triggerPosition,
+        composerId: messageTextarea.dataset.composerId,
+      };
+      // Re-render just the popup without full render to keep focus
+      const popupContainer = messageTextarea.closest('.composer-input-wrapper');
+      if (popupContainer) {
+        const existingPopup = document.getElementById('mention-popup');
+        if (existingPopup) existingPopup.remove();
+        if (mentionPopup.active) {
+          popupContainer.insertAdjacentHTML('beforeend', renderMentionPopup());
+        }
+      }
+    } else if (mentionPopup.active) {
+      mentionLookupSeq += 1;
+      mentionPopup.active = false;
+      mentionPopup.items = [];
+      mentionPopup.composerId = null;
+      const existingPopup = document.getElementById('mention-popup');
+      if (existingPopup) existingPopup.remove();
+    }
+    return;
+  }
+
   if (event.target.id === 'search-input') {
     searchQuery = event.target.value;
     render();
@@ -1295,6 +2803,16 @@ document.addEventListener('input', (event) => {
     input?.setSelectionRange(searchQuery.length, searchQuery.length);
     return;
   }
+
+  if (event.target.id === 'add-member-search') {
+    addMemberSearchQuery = event.target.value;
+    render();
+    const input = document.querySelector('#add-member-search');
+    input?.focus();
+    input?.setSelectionRange(addMemberSearchQuery.length, addMemberSearchQuery.length);
+    return;
+  }
+
   // Save agent form state
   const form = event.target.closest('#agent-form');
   if (form) {
@@ -1333,20 +2851,92 @@ document.addEventListener('change', async (event) => {
     render();
     return;
   }
-  if (event.target.id !== 'chat-attachment-input') return;
-  if (!event.target.files?.length) return;
+  if (event.target.name === 'asTask') {
+    const composerId = event.target.closest('form')?.dataset.composerId;
+    if (composerId) composerTaskFlags[composerId] = event.target.checked;
+  }
+  const attachmentInput = event.target.closest('.composer-attachment-input');
+  if (!attachmentInput) return;
+  if (!attachmentInput.files?.length) return;
   try {
-    await uploadFiles(event.target.files);
+    await uploadFiles(attachmentInput.files, attachmentInput.dataset.composerId, 'upload');
+    attachmentInput.value = '';
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+document.addEventListener('paste', async (event) => {
+  const textarea = event.target.closest?.('textarea[data-mention-input]');
+  if (!textarea) return;
+  const files = [...(event.clipboardData?.files || [])]
+    .filter((file) => String(file.type || '').startsWith('image/'))
+    .map(normalizeClipboardFile);
+  if (!files.length) return;
+  event.preventDefault();
+  try {
+    await uploadFiles(files, textarea.dataset.composerId, 'clipboard');
   } catch (error) {
     toast(error.message);
   }
 });
 
 document.addEventListener('click', async (event) => {
+  // Handle mention item clicks
+  const mentionItem = event.target.closest('.mention-item');
+  if (mentionItem) {
+    const idx = parseInt(mentionItem.dataset.mentionIdx, 10);
+    if (!Number.isNaN(idx) && mentionPopup.items[idx]) {
+      const textarea = document.querySelector(`textarea[data-composer-id="${CSS.escape(mentionPopup.composerId || '')}"]`);
+      if (textarea) {
+        await insertMention(textarea, mentionPopup.items[idx]);
+        const existingPopup = document.getElementById('mention-popup');
+        if (existingPopup) existingPopup.remove();
+        textarea.focus();
+      }
+    }
+    return;
+  }
+
+  // Handle avatar option clicks separately (no data-action attribute)
+  const avatarOption = event.target.closest('.avatar-option');
+  if (avatarOption) {
+    const avatarSrc = avatarOption.dataset.avatar;
+    if (avatarSrc) {
+      agentFormState.avatar = avatarSrc;
+      document.querySelectorAll('.avatar-option').forEach((el) => el.classList.remove('selected'));
+      avatarOption.classList.add('selected');
+    }
+    return;
+  }
+
   const target = event.target.closest('[data-action]');
   if (!target) return;
   const action = target.dataset.action;
   if (action === 'none') return;
+  const localOnlyActions = new Set([
+    'set-view',
+    'set-rail-tab',
+    'select-agent',
+    'close-agent-detail',
+    'select-space',
+    'set-tab',
+    'task-filter',
+    'toggle-task-column',
+    'open-modal',
+    'close-modal',
+    'open-thread',
+    'close-thread',
+    'view-in-channel',
+    'back-to-bottom',
+    'remove-staged-attachment',
+    'toggle-project-tree',
+    'open-project-file',
+    'close-project-preview',
+    'toggle-agent-workspace',
+    'open-agent-workspace-file',
+    'close-agent-workspace-file',
+  ]);
 
   // Environment variable actions: don't trigger refreshState
   if (action === 'add-env-var') {
@@ -1380,29 +2970,21 @@ document.addEventListener('click', async (event) => {
     render();
     return;
   }
-  if (action === 'back-to-agent-modal') {
+  if (action === 'back-to-agent-modal' || action === 'confirm-avatar') {
     modal = 'agent';
     render();
     return;
   }
-  if (target.classList.contains('avatar-option')) {
-    const avatarSrc = target.dataset.avatar;
-    if (avatarSrc) {
-      agentFormState.avatar = avatarSrc;
-      document.querySelectorAll('.avatar-option').forEach((el) => el.classList.remove('selected'));
-      target.classList.add('selected');
-    }
-    return;
-  }
-
   try {
     if (action === 'set-view') {
       activeView = target.dataset.view;
       threadMessageId = null;
+      selectedProjectFile = null;
       render();
     }
     if (action === 'set-rail-tab') {
       railTab = target.dataset.railTab;
+      localStorage.setItem('railTab', railTab);
       if (railTab === 'spaces') {
         selectedAgentId = null;
       }
@@ -1410,6 +2992,8 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'select-agent') {
       selectedAgentId = target.dataset.id;
+      selectedProjectFile = null;
+      selectedAgentWorkspaceFile = null;
       render();
     }
     if (action === 'close-agent-detail') {
@@ -1440,6 +3024,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'delete-agent') {
       if (!window.confirm('Delete this agent?')) return;
+      clearAgentWorkspaceCaches(target.dataset.id);
       await api(`/api/agents/${target.dataset.id}`, { method: 'DELETE' });
       selectedAgentId = null;
       toast('Agent deleted');
@@ -1450,6 +3035,8 @@ document.addEventListener('click', async (event) => {
       activeView = 'space';
       activeTab = 'chat';
       threadMessageId = null;
+      selectedProjectFile = null;
+      selectedAgentWorkspaceFile = null;
       render();
     }
     if (action === 'set-tab') {
@@ -1460,8 +3047,15 @@ document.addEventListener('click', async (event) => {
       taskFilter = target.dataset.status;
       render();
     }
+    if (action === 'toggle-task-column') {
+      toggleTaskColumn(target.dataset.status);
+      render();
+    }
     if (action === 'open-modal') {
       modal = target.dataset.modal;
+      if (modal === 'add-channel-member' || modal === 'channel-members') {
+        addMemberSearchQuery = '';
+      }
       if (modal === 'agent') {
         await loadInstalledRuntimes();
       }
@@ -1475,17 +3069,82 @@ document.addEventListener('click', async (event) => {
         if (modal === 'agent') {
           resetAgentFormState();
         }
+        if (modal === 'add-channel-member' || modal === 'channel-members') {
+          addMemberSearchQuery = '';
+        }
         modal = null;
         render();
       }
     }
     if (action === 'open-thread') {
       threadMessageId = target.dataset.id;
+      selectedProjectFile = null;
       render();
+      scrollToMessage(threadMessageId);
     }
     if (action === 'close-thread') {
       threadMessageId = null;
       render();
+    }
+    if (action === 'view-in-channel') {
+      const message = byId(appState.messages, target.dataset.id);
+      if (message) {
+        selectedSpaceType = message.spaceType;
+        selectedSpaceId = message.spaceId;
+        activeView = 'space';
+        activeTab = 'chat';
+        threadMessageId = message.id;
+        render();
+        scrollToMessage(message.id);
+      }
+    }
+    if (action === 'back-to-bottom') {
+      const targetPane = target.dataset.target === 'thread' ? '#thread-context' : '#message-list';
+      scrollPaneToBottom(targetPane);
+    }
+    if (action === 'remove-staged-attachment') {
+      removeStagedAttachment(target.dataset.composerId, target.dataset.id);
+    }
+    if (action === 'pick-project-folder') {
+      const result = await api('/api/projects/pick-folder', {
+        method: 'POST',
+        body: JSON.stringify({
+          spaceType: selectedSpaceType,
+          spaceId: selectedSpaceId,
+          defaultPath: appState.settings?.defaultWorkspace || '',
+        }),
+      });
+      if (result.canceled) {
+        toast('Folder picker canceled');
+        return;
+      }
+      modal = null;
+      toast('Project folder added');
+    }
+    if (action === 'toggle-project-tree') {
+      await toggleProjectTree(target.dataset.projectId, target.dataset.path || '');
+    }
+    if (action === 'open-project-file') {
+      await openProjectFile(target.dataset.projectId, target.dataset.path || '');
+    }
+    if (action === 'close-project-preview') {
+      selectedProjectFile = null;
+      render();
+    }
+    if (action === 'toggle-agent-workspace') {
+      await toggleAgentWorkspace(target.dataset.agentId, target.dataset.path || '');
+    }
+    if (action === 'open-agent-workspace-file') {
+      await openAgentWorkspaceFile(target.dataset.agentId, target.dataset.path || '');
+    }
+    if (action === 'close-agent-workspace-file') {
+      selectedAgentWorkspaceFile = null;
+      render();
+    }
+    if (action === 'remove-project') {
+      clearProjectCaches(target.dataset.id);
+      await api(`/api/projects/${target.dataset.id}`, { method: 'DELETE' });
+      toast('Project folder removed');
     }
     if (action === 'save-message') {
       await api(`/api/messages/${target.dataset.id}/save`, { method: 'POST', body: '{}' });
@@ -1523,9 +3182,13 @@ document.addEventListener('click', async (event) => {
       activeView = 'missions';
       toast('Codex mission started');
     }
-    if (action === 'stop-all') {
-      await api('/api/agents/stop-all', { method: 'POST', body: '{}' });
-      toast('Stop all requested');
+    if (action === 'confirm-stop-all') {
+      await api('/api/agents/stop-all', {
+        method: 'POST',
+        body: JSON.stringify({ spaceType: selectedSpaceType, spaceId: selectedSpaceId }),
+      });
+      modal = null;
+      toast(`Stop requested in ${spaceName(selectedSpaceType, selectedSpaceId)}`);
     }
     if (action === 'cloud-local' || action === 'cloud-disconnect') {
       await api('/api/cloud/disconnect', { method: 'POST', body: '{}' });
@@ -1566,10 +3229,34 @@ document.addEventListener('click', async (event) => {
       await api(`/api/channels/${selectedSpaceId}/members/${memberId}`, { method: 'DELETE' });
       toast('Member removed');
     }
+    if (action === 'add-channel-member') {
+      const memberId = target.dataset.memberId;
+      if (memberId) {
+        await api(`/api/channels/${selectedSpaceId}/members`, {
+          method: 'POST',
+          body: JSON.stringify({ memberId }),
+        });
+        modal = 'add-channel-member';
+        toast('Member added');
+      }
+    }
   } catch (error) {
     toast(error.message);
   } finally {
-    await refreshState().catch(() => {});
+    if (!localOnlyActions.has(action)) {
+      await refreshState().catch(() => {});
+    }
+    if (action === 'open-thread') scrollToMessage(threadMessageId);
+    if (action === 'view-in-channel') scrollToMessage(target.dataset.id);
+    if (action === 'back-to-bottom') {
+      const targetPane = target.dataset.target === 'thread' ? '#thread-context' : '#message-list';
+      scrollPaneToBottom(targetPane);
+    }
+    if (action === 'add-channel-member') {
+      const input = document.querySelector('#add-member-search');
+      input?.focus();
+      input?.setSelectionRange(addMemberSearchQuery.length, addMemberSearchQuery.length);
+    }
   }
 });
 
@@ -1577,27 +3264,43 @@ document.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
   const data = new FormData(form);
+  let submittedBottomTarget = null;
 
   try {
     if (form.id === 'message-form') {
-      await api(`/api/spaces/${selectedSpaceType}/${selectedSpaceId}/messages`, {
+      const composerId = form.dataset.composerId || composerIdFor('message');
+      const rawBody = composerDrafts[composerId] ?? data.get('body');
+      const shouldOpenTaskThread = Boolean(composerTaskFlags[composerId] ?? data.get('asTask'));
+      const result = await api(`/api/spaces/${selectedSpaceType}/${selectedSpaceId}/messages`, {
         method: 'POST',
         body: JSON.stringify({
-          body: data.get('body'),
-          asTask: Boolean(data.get('asTask')),
-          attachmentIds: stagedAttachmentIds,
+          body: encodeComposerMentions(rawBody, composerId),
+          asTask: shouldOpenTaskThread,
+          attachmentIds: stagedFor(composerId).ids,
         }),
       });
-      stagedAttachments = [];
-      stagedAttachmentIds = [];
+      if (shouldOpenTaskThread && result.message?.id) threadMessageId = result.message.id;
+      clearStagedFor(composerId);
+      delete composerDrafts[composerId];
+      delete composerTaskFlags[composerId];
+      delete composerMentionMaps[composerId];
+      requestPaneBottomScroll('main');
+      submittedBottomTarget = '#message-list';
       form.reset();
       toast('Message sent');
     }
     if (form.id === 'reply-form') {
+      const composerId = form.dataset.composerId || composerIdFor('thread', threadMessageId);
+      const rawBody = composerDrafts[composerId] ?? data.get('body');
       await api(`/api/messages/${threadMessageId}/replies`, {
         method: 'POST',
-        body: JSON.stringify({ body: data.get('body') }),
+        body: JSON.stringify({ body: encodeComposerMentions(rawBody, composerId), attachmentIds: stagedFor(composerId).ids }),
       });
+      clearStagedFor(composerId);
+      delete composerDrafts[composerId];
+      delete composerMentionMaps[composerId];
+      requestPaneBottomScroll('thread');
+      submittedBottomTarget = '#thread-context';
       form.reset();
       toast('Reply added');
     }
@@ -1615,6 +3318,19 @@ document.addEventListener('submit', async (event) => {
       selectedSpaceId = result.channel.id;
       activeView = 'space';
       modal = null;
+    }
+    if (form.id === 'project-form') {
+      await api('/api/projects', {
+        method: 'POST',
+        body: JSON.stringify({
+          path: data.get('path'),
+          name: data.get('name'),
+          spaceType: selectedSpaceType,
+          spaceId: selectedSpaceId,
+        }),
+      });
+      modal = null;
+      toast('Project folder added');
     }
     if (form.id === 'edit-channel-form') {
       await api(`/api/channels/${selectedSpaceId}`, {
@@ -1650,7 +3366,7 @@ document.addEventListener('submit', async (event) => {
         body: JSON.stringify({
           title: data.get('title'),
           body: data.get('body'),
-          assigneeId: data.get('assigneeId'),
+          assigneeIds: [...form.querySelectorAll('select[name="assigneeIds"] option:checked')].map((option) => option.value),
           spaceType: selectedSpaceType,
           spaceId: selectedSpaceId,
         }),
@@ -1707,6 +3423,7 @@ document.addEventListener('submit', async (event) => {
     toast(error.message);
   } finally {
     await refreshState().catch(() => {});
+    if (submittedBottomTarget) scrollPaneToBottom(submittedBottomTarget, 'auto');
   }
 });
 
