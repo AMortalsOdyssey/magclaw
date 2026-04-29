@@ -2669,6 +2669,8 @@ function renderSearchResults() {
 }
 
 function updateSearchResults() {
+  const input = document.getElementById('search-input');
+  if (input && input.value !== searchQuery && !searchIsComposing) input.value = searchQuery;
   const container = document.querySelector('[data-search-results]');
   if (container) container.innerHTML = renderSearchResults();
   const filters = document.querySelector('[data-search-filters]');
