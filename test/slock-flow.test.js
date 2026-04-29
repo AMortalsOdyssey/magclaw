@@ -83,6 +83,32 @@ test('project folder picker adds the selected local folder without typing a path
   }
 });
 
+test('save endpoint toggles both channel messages and thread replies', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: 'Saveable parent message' }),
+    });
+    const replied = await request(server.baseUrl, `/api/messages/${created.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({ body: 'Saveable thread reply' }),
+    });
+
+    const savedParent = await request(server.baseUrl, `/api/messages/${created.message.id}/save`, { method: 'POST', body: '{}' });
+    const savedReply = await request(server.baseUrl, `/api/messages/${replied.reply.id}/save`, { method: 'POST', body: '{}' });
+
+    assert.ok(savedParent.message.savedBy.includes('hum_local'));
+    assert.ok(savedReply.message.savedBy.includes('hum_local'));
+
+    const state = await request(server.baseUrl, '/api/state');
+    assert.ok(state.messages.find((message) => message.id === created.message.id)?.savedBy.includes('hum_local'));
+    assert.ok(state.replies.find((reply) => reply.id === replied.reply.id)?.savedBy.includes('hum_local'));
+  } finally {
+    await server.stop();
+  }
+});
+
 async function request(baseUrl, pathname, options = {}) {
   const response = await fetch(`${baseUrl}${pathname}`, {
     ...options,
@@ -172,7 +198,7 @@ test('Slock-style message task stores mentions, channel task number, assignees, 
   }
 });
 
-test('thread stop intent cancels only that task work and lets other queued work continue', async () => {
+test('thread stop intent marks that task done and lets other queued work continue', async () => {
   const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-thread-stop-'));
   const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
   const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
@@ -184,6 +210,10 @@ let turnCount = 0;
 function log(value) {
   if (logPath) fs.appendFileSync(logPath, JSON.stringify({ pid: process.pid, ...value }) + '\\n');
 }
+process.on('SIGTERM', () => {
+  log({ signal: 'SIGTERM' });
+  process.exit(143);
+});
 function send(value) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
 }
@@ -268,7 +298,7 @@ process.stdin.on('data', (chunk) => {
         attachmentIds: [],
       }),
     });
-    assert.equal(stopped.stoppedTask.status, 'cancelled');
+    assert.equal(stopped.stoppedTask.status, 'done');
 
     const finalState = await waitFor(async () => {
       const snapshot = await request(server.baseUrl, '/api/state');
@@ -284,18 +314,96 @@ process.stdin.on('data', (chunk) => {
 
     assert.ok(finalState);
     const task = finalState.tasks.find((item) => item.id === taskMessage.task.id);
-    assert.equal(task.status, 'cancelled');
-    assert.match(task.cancelledAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.ok(task.history.some((item) => item.type === 'cancelled_from_thread'));
+    assert.equal(task.status, 'done');
+    assert.match(task.completedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.ok(task.history.some((item) => item.type === 'stopped_done_from_thread'));
     const taskReplies = finalState.replies.filter((reply) => reply.parentMessageId === taskMessage.message.id);
-    assert.ok(taskReplies.some((reply) => reply.body === 'Task stopped from thread request.'));
+    assert.ok(taskReplies.some((reply) => reply.body === 'Task marked done from thread stop request.'));
     const stoppedItem = finalState.workItems.find((item) => item.sourceMessageId === taskMessage.message.id);
     const otherItem = finalState.workItems.find((item) => item.sourceMessageId === otherMessage.message.id);
     assert.equal(stoppedItem?.status, 'cancelled');
     assert.equal(otherItem?.status, 'responded');
+    const entries = await readJsonLines(logPath);
+    assert.equal(entries.some((item) => item.signal === 'SIGTERM'), false);
+    assert.equal(entries.some((item) => item.method === 'turn/steer'), true);
+    const pids = new Set(entries
+      .filter((item) => item.method === 'turn/start' || item.method === 'turn/steer')
+      .map((item) => item.pid));
+    assert.equal(pids.size, 1);
   } finally {
     await server.stop();
     await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('thread replies route to participant agents and natural names select one agent', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: cindy } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Cindy', description: 'Onboarding Assistant', runtime: 'Codex CLI' }),
+    });
+    const { agent: cc } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'cc', description: 'Helper', runtime: 'Codex CLI' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'multi-agent-thread', description: 'thread routing', agentIds: [cindy.id, cc.id] }),
+    });
+    const parent = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '我有一个想法，帮我一起看看',
+        attachmentIds: [],
+      }),
+    });
+
+    await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        authorType: 'agent',
+        authorId: cindy.id,
+        body: '我可以先判断这个想法适合什么工作流。',
+        attachmentIds: [],
+      }),
+    });
+    await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        authorType: 'agent',
+        authorId: cc.id,
+        body: '我也可以帮你拆一下。',
+        attachmentIds: [],
+      }),
+    });
+
+    const named = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: 'Cindy，你说的对',
+        attachmentIds: [],
+      }),
+    });
+    const namedState = await request(server.baseUrl, '/api/state');
+    const namedWork = namedState.workItems.filter((item) => item.sourceMessageId === named.reply.id);
+    assert.deepEqual(namedWork.map((item) => item.agentId), [cindy.id]);
+
+    const broad = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '继续这个任务',
+        attachmentIds: [],
+      }),
+    });
+    const broadState = await request(server.baseUrl, '/api/state');
+    const broadAgentIds = broadState.workItems
+      .filter((item) => item.sourceMessageId === broad.reply.id)
+      .map((item) => item.agentId)
+      .sort();
+    assert.deepEqual(broadAgentIds, [cc.id, cindy.id].sort());
+  } finally {
+    await server.stop();
   }
 });
 
@@ -473,6 +581,49 @@ test('thread task intent creates an agent-authored top-level task message linked
     assert.ok(finalState.replies.some((item) => item.parentMessageId === parent.message.id && item.authorId === 'agt_codex' && item.body.includes(`#${task.number}`)));
     assert.ok(finalState.messages.some((item) => item.eventType === 'task_created' && item.body.includes(`1 new task created: #${task.number}`)));
     assert.ok(finalState.messages.some((item) => item.eventType === 'task_claimed' && item.body.includes(`Codex Local claimed #${task.number}`)));
+  } finally {
+    await server.stop();
+  }
+});
+
+test('top-level channel messages fan out to every available channel agent', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: cindy } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Cindy', description: 'Onboarding Assistant', runtime: 'Codex CLI' }),
+    });
+    const { agent: cc } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'cc', description: 'Helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: sleeper } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'sleepy', description: 'Offline helper', runtime: 'Codex CLI' }),
+    });
+    await request(server.baseUrl, `/api/agents/${sleeper.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'offline' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'fanout', description: 'broadcast routing', agentIds: [cindy.id, cc.id, sleeper.id] }),
+    });
+
+    const created = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '我想找一些资料',
+        attachmentIds: [],
+      }),
+    });
+
+    const finalState = await request(server.baseUrl, '/api/state');
+    const deliveredAgentIds = finalState.workItems
+      .filter((item) => item.sourceMessageId === created.message.id)
+      .map((item) => item.agentId)
+      .sort();
+    assert.deepEqual(deliveredAgentIds, [cc.id, cindy.id].sort());
   } finally {
     await server.stop();
   }

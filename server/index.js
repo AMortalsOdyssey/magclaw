@@ -386,6 +386,15 @@ function migrateState() {
     task.claimedAt = task.claimedAt || null;
     task.reviewRequestedAt = task.reviewRequestedAt || null;
     task.completedAt = task.completedAt || null;
+    task.cancelledAt = task.cancelledAt || null;
+    task.stoppedAt = task.stoppedAt || null;
+    if (task.status === 'cancelled') {
+      const closedAt = task.completedAt || task.cancelledAt || task.stoppedAt || task.updatedAt || task.createdAt || now();
+      task.status = 'done';
+      task.completedAt = closedAt;
+      task.endIntentAt = task.endIntentAt || closedAt;
+      task.reviewRequestedAt = null;
+    }
     task.endIntentAt = task.endIntentAt || null;
     task.runIds = Array.isArray(task.runIds) ? task.runIds : [];
     task.localReferences = Array.isArray(task.localReferences) ? task.localReferences : extractLocalReferences(task.body || '');
@@ -1401,6 +1410,7 @@ function normalizeConversationRecord(record) {
   record.mentionedAgentIds = normalizeIds(record.mentionedAgentIds?.length ? record.mentionedAgentIds : mentions.agents);
   record.mentionedHumanIds = normalizeIds(record.mentionedHumanIds?.length ? record.mentionedHumanIds : mentions.humans);
   record.readBy = normalizeIds(record.readBy?.length ? record.readBy : defaultReadBy(record));
+  record.savedBy = normalizeIds(record.savedBy);
   return record;
 }
 
@@ -1566,7 +1576,7 @@ function turnMetaHasWorkOutsideScope(turnMeta, scope) {
 }
 
 function taskIsClosed(task) {
-  return ['done', 'cancelled'].includes(task?.status);
+  return task?.status === 'done';
 }
 
 function taskThreadRecordIds(task) {
@@ -1848,36 +1858,39 @@ function finishTaskFromThread(task, actorId, replyId) {
   return true;
 }
 
-function cancelTaskFromThread(task, actorId, replyId) {
+function stopTaskFromThread(task, actorId, replyId) {
   if (!task || taskIsClosed(task)) {
     return { changed: false, stoppedRuns: [], stoppedAgents: [], cancelledWorkItems: [] };
   }
-  task.status = 'cancelled';
-  task.cancelledAt = task.cancelledAt || now();
-  task.stoppedAt = task.stoppedAt || task.cancelledAt;
-  task.completedAt = null;
+  const stoppedAt = now();
+  task.status = 'done';
+  task.completedAt = task.completedAt || stoppedAt;
+  task.endIntentAt = task.endIntentAt || stoppedAt;
+  task.stoppedAt = task.stoppedAt || stoppedAt;
   task.reviewRequestedAt = null;
   task.updatedAt = now();
-  addTaskHistory(task, 'cancelled_from_thread', 'Task stopped from thread intent.', actorId || 'hum_local', { replyId });
-  addTaskTimelineMessage(task, `⏹ ${displayActor(actorId)} stopped ${taskLabel(task)}`, 'task_cancelled');
-  addCollabEvent('task_cancelled_from_thread', `${displayActor(actorId)} stopped ${taskLabel(task)} from its thread.`, {
+  addTaskHistory(task, 'stopped_done_from_thread', 'Task stopped from thread intent and marked Done.', actorId || 'hum_local', { replyId });
+  addTaskTimelineMessage(task, `✓ ${displayActor(actorId)} stopped ${taskLabel(task)} and moved it to Done`, 'task_done');
+  addCollabEvent('task_stopped_done_from_thread', `${displayActor(actorId)} stopped ${taskLabel(task)} from its thread and marked it Done.`, {
     taskId: task.id,
     actorId: actorId || 'hum_local',
     replyId,
   });
   const directlyCancelledWorkItems = cancelWorkItemsForTask(task);
   const stoppedRuns = stopRunsForTask(task);
-  const stopped = stopAgentProcessesForTask(task);
+  const steered = steerAgentProcessesForTaskStop(task, actorId, replyId);
   return {
     changed: true,
     stoppedRuns,
-    stoppedAgents: stopped.stoppedAgents,
-    cancelledWorkItems: normalizeIds([...directlyCancelledWorkItems, ...stopped.cancelledWorkItems]),
+    stoppedAgents: [],
+    steeredAgents: steered.steeredAgents,
+    cancelledWorkItems: normalizeIds([...directlyCancelledWorkItems, ...steered.cancelledWorkItems]),
   };
 }
 
 function displayActor(id) {
   if (id === 'system') return 'Magclaw';
+  if (id === 'agt_codex') return 'Codex Local';
   const human = findHuman(id);
   if (human) return human.name;
   const agent = findAgent(id);
@@ -1917,6 +1930,54 @@ function directedPrimaryAgentId(mentions, message) {
   return null;
 }
 
+function textAddressesAgent(agent, text) {
+  const raw = String(text || '');
+  const aliases = normalizeIds([agent?.name, agent?.displayName]);
+  for (const alias of aliases) {
+    const value = String(alias || '').trim();
+    if (!value) continue;
+    if (/^[A-Za-z0-9_.-]+$/.test(value)) {
+      const pattern = new RegExp(`(^|[^A-Za-z0-9_.-])@?${escapeRegExp(value)}(?=$|[^A-Za-z0-9_.-])`, 'i');
+      if (pattern.test(raw)) return true;
+    } else if (raw.toLowerCase().includes(value.toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function threadParticipantAgentIds(message, linkedTask = null) {
+  const ids = [];
+  if (message?.authorType === 'agent') ids.push(message.authorId);
+  ids.push(...(message?.mentionedAgentIds || []));
+  if (linkedTask?.claimedBy) ids.push(linkedTask.claimedBy);
+  ids.push(...(linkedTask?.assigneeIds || []));
+  ids.push(...state.replies
+    .filter((reply) => reply.parentMessageId === message?.id && reply.authorType === 'agent')
+    .map((reply) => reply.authorId));
+  return normalizeIds(ids);
+}
+
+function determineThreadRespondingAgents(message, reply, channelAgents, mentions, linkedTask = null) {
+  if (mentions.agents.length || mentions.special.length) {
+    return determineRespondingAgents(channelAgents, mentions, reply, message.spaceId);
+  }
+  const named = channelAgents.filter((agent) => textAddressesAgent(agent, reply.body));
+  if (named.length) return named;
+  const participantIds = threadParticipantAgentIds(message, linkedTask);
+  const participants = participantIds
+    .map((id) => channelAgents.find((agent) => agent.id === id))
+    .filter(Boolean);
+  if (participants.length) return normalizeIds(participants.map((agent) => agent.id))
+    .map((id) => participants.find((agent) => agent.id === id))
+    .filter(Boolean);
+  if (reply?.authorType === 'human' && agentResponseIntent(reply.body)) {
+    const agent = pickAvailableAgent(channelAgents);
+    return agent ? [agent] : [];
+  }
+  return [];
+}
+
 // Determine which agents should respond based on mentions and personality
 function determineRespondingAgents(channelAgents, mentions, message, spaceId) {
   const respondingAgents = [];
@@ -1945,13 +2006,12 @@ function determineRespondingAgents(channelAgents, mentions, message, spaceId) {
     return channelAgents.filter(a => a.status === 'idle' || a.status === 'online');
   }
 
-  // Case 4: Actionable channel work without a direct mention - assign one available agent.
-  if (message?.authorType === 'human' && agentResponseIntent(message.body)) {
-    const agent = pickAvailableAgent(channelAgents);
-    return agent ? [agent] : [];
+  // Case 4: Top-level human channel messages follow Slock-style fan-out.
+  if (message?.authorType === 'human') {
+    return channelAgents.filter(agentAvailableForAutoWork);
   }
 
-  // Case 5: No mention - agents decide based on personality
+  // Case 5: Non-human messages without mentions can still use personality-based routing.
   for (const agent of channelAgents) {
     if (shouldAgentRespond(agent, message, spaceId)) {
       respondingAgents.push(agent);
@@ -3692,6 +3752,78 @@ function stopAgentProcessesForTask(task) {
   };
 }
 
+function steerAgentProcessesForTaskStop(task, actorId = 'hum_local', replyId = null) {
+  const steeredAgents = [];
+  const cancelledWorkItems = [];
+  for (const [agentId, proc] of agentProcesses.entries()) {
+    const agent = findAgent(agentId);
+    if (!agent) continue;
+    const activeTurnIds = proc.activeTurnIds instanceof Set
+      ? [...proc.activeTurnIds]
+      : (proc.activeTurnId ? [proc.activeTurnId] : []);
+    const taskTurnIds = activeTurnIds.filter((turnId) => turnMetaMatchesTask(proc.turnMeta?.get(turnId), task));
+    const inbox = partitionMessagesByTask(proc.inbox, task);
+    const pending = partitionMessagesByTask(proc.pendingDeliveryMessages, task);
+    const initial = partitionMessagesByTask(proc.pendingInitialMessages, task);
+    proc.inbox = inbox.other;
+    proc.pendingDeliveryMessages = pending.other;
+    proc.pendingInitialMessages = initial.other;
+    const removedMessages = inbox.scoped.length + pending.scoped.length + initial.scoped.length;
+    const taskWorkIds = normalizeIds([
+      ...taskTurnIds.flatMap((turnId) => proc.turnMeta?.get(turnId)?.workItemIds || []),
+      ...inbox.scoped.map((message) => message?.workItemId),
+      ...pending.scoped.map((message) => message?.workItemId),
+      ...initial.scoped.map((message) => message?.workItemId),
+    ]);
+    cancelledWorkItems.push(...taskWorkIds);
+
+    if (!taskTurnIds.length) {
+      if (removedMessages > 0 || taskWorkIds.length) {
+        clearAgentBusyDeliveryTimer(proc);
+        if (!activeTurnMetas(proc).length && !proc.pendingDeliveryMessages?.length) agent.status = 'idle';
+      }
+      continue;
+    }
+
+    if (!proc.threadId || !proc.child || proc.child.killed) continue;
+    proc.pendingTurnRequests = proc.pendingTurnRequests || new Map();
+    for (const turnId of taskTurnIds) {
+      const meta = proc.turnMeta?.get(turnId);
+      const workItemIds = normalizeIds(meta?.workItemIds || taskWorkIds);
+      const requestId = sendCodexAppServerRequest(proc, 'turn/steer', {
+        threadId: proc.threadId,
+        expectedTurnId: turnId,
+        input: [{
+          type: 'text',
+          text: `System: The user stopped ${taskLabel(task)} in this thread. Stop work for that task, do not send a final answer for it, keep this agent session alive, and wait for new messages.`,
+        }],
+      });
+      if (!requestId) continue;
+      proc.pendingTurnRequests.set(requestId, {
+        parentMessageId: meta?.parentMessageId || null,
+        sourceMessage: meta?.sourceMessage || null,
+        spaceType: meta?.spaceType || task.spaceType,
+        spaceId: meta?.spaceId || task.spaceId,
+        workItemIds,
+        targetKeys: meta?.targetKeys || [],
+      });
+    }
+    if (taskTurnIds.length) {
+      steeredAgents.push(agentId);
+      addSystemEvent('agent_task_stop_steered', `${agent.name} was asked to stop ${taskLabel(task)} without closing its Codex session.`, {
+        agentId,
+        taskId: task.id,
+        actorId,
+        replyId,
+      });
+    }
+  }
+  return {
+    steeredAgents: normalizeIds(steeredAgents),
+    cancelledWorkItems: normalizeIds(cancelledWorkItems),
+  };
+}
+
 function stopRunsForScope(scope = null) {
   const stoppedRuns = [];
   for (const [runId, child] of runningProcesses.entries()) {
@@ -5093,9 +5225,9 @@ async function handleApi(req, res, url) {
     let stoppedThreadTask = null;
     let stopResult = null;
     if (reply.authorType === 'human' && linkedTask && taskStopIntent(text)) {
-      stopResult = cancelTaskFromThread(linkedTask, reply.authorId, reply.id);
+      stopResult = stopTaskFromThread(linkedTask, reply.authorId, reply.id);
       stoppedThreadTask = linkedTask;
-      addSystemReply(message.id, 'Task stopped from thread request.');
+      addSystemReply(message.id, 'Task marked done from thread stop request.');
     } else if (reply.authorType === 'human' && linkedTask && taskEndIntent(text)) {
       finishTaskFromThread(linkedTask, reply.authorId, reply.id);
       endedThreadTask = linkedTask;
@@ -5128,7 +5260,7 @@ async function handleApi(req, res, url) {
         ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
         : [];
       const respondingAgents = message.spaceType === 'channel'
-        ? determineRespondingAgents(channelAgents, mentions, reply, message.spaceId)
+        ? determineThreadRespondingAgents(message, reply, channelAgents, mentions, linkedTask)
         : [];
       for (const agent of respondingAgents) {
         deliverMessageToAgent(agent, message.spaceType, message.spaceId, reply, { parentMessageId: message.id }).catch(err => {
@@ -5150,7 +5282,7 @@ async function handleApi(req, res, url) {
 
   const saveMatch = url.pathname.match(/^\/api\/messages\/([^/]+)\/save$/);
   if (req.method === 'POST' && saveMatch) {
-    const message = findMessage(saveMatch[1]);
+    const message = findConversationRecord(saveMatch[1]);
     if (!message) {
       sendError(res, 404, 'Message not found.');
       return true;

@@ -9,12 +9,19 @@ let activeView = 'space';
 let activeTab = 'chat';
 let railTab = localStorage.getItem('railTab') || 'spaces'; // 'spaces' or 'members'
 let threadMessageId = null;
+let inspectorReturnThreadId = null;
 let selectedAgentId = null; // selected agent for detail panel
 let selectedTaskId = null;
+let selectedSavedRecordId = null;
 let modal = null;
 let agentStartState = { agentId: null };
 let agentRestartState = { agentId: null, mode: 'restart' };
 let searchQuery = '';
+let searchIsComposing = false;
+let searchMineOnly = false;
+let searchTimeRange = 'any';
+let searchTimeMenuOpen = false;
+let searchVisibleCount = 20;
 let addMemberSearchQuery = '';
 let taskFilter = 'all';
 let taskViewMode = 'board';
@@ -48,6 +55,9 @@ const BOTTOM_THRESHOLD = 72;
 const MAX_ATTACHMENTS_PER_COMPOSER = 20;
 const AGENT_AVATAR_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 const AGENT_ACTIVITY_EVENT_LIMIT = 5000;
+const SEARCH_PAGE_SIZE = 20;
+const SEARCH_RESULT_LIMIT = 200;
+const SEARCH_SNIPPET_RADIUS = 88;
 const AVATAR_CROP_SIZE = 256;
 const AVATAR_CROP_STAGE_SIZE = 320;
 const AVATAR_CROP_VIEW_SIZE = 220;
@@ -124,7 +134,127 @@ const taskColumns = [
 ];
 
 function taskIsClosedStatus(status) {
-  return ['done', 'cancelled'].includes(status);
+  return status === 'done';
+}
+
+const taskStatusMeta = {
+  todo: { label: 'Todo', icon: '□', tone: 'todo' },
+  in_progress: { label: 'In Progress', icon: '↻', tone: 'in_progress' },
+  in_review: { label: 'In Review', icon: '👀', tone: 'in_review' },
+  done: { label: 'Done', icon: '✓', tone: 'done' },
+};
+
+function taskStatusInfo(status) {
+  return taskStatusMeta[status] || taskStatusMeta.todo;
+}
+
+function taskStatusClass(status) {
+  return String(taskStatusMeta[status] ? status : 'todo').replace(/[^a-z0-9_-]/gi, '_');
+}
+
+function taskStatusIcon(status) {
+  return taskStatusInfo(status).icon;
+}
+
+function taskStatusLabel(status) {
+  return taskStatusInfo(status).label;
+}
+
+function renderTaskStatusBadge(status, options = {}) {
+  const info = taskStatusInfo(status);
+  const compact = options.compact ? ' compact' : '';
+  return `
+    <span class="task-status-icon-badge task-status-${escapeHtml(taskStatusClass(status))}${compact}" title="${escapeHtml(info.label)}" aria-label="${escapeHtml(info.label)}">
+      <span class="task-status-symbol">${escapeHtml(taskStatusIcon(status))}</span>
+      ${options.compact ? '' : `<span>${escapeHtml(info.label)}</span>`}
+    </span>
+  `;
+}
+
+function renderTaskColumnChip(status, label) {
+  const info = taskStatusInfo(status);
+  return `
+    <span class="task-status-chip task-status-${escapeHtml(taskStatusClass(status))}" title="${escapeHtml(info.label)}">
+      <span class="task-status-symbol">${escapeHtml(taskStatusIcon(status))}</span>
+      <span>${escapeHtml(label || info.label)}</span>
+    </span>
+  `;
+}
+
+function taskAssigneeLabel(task) {
+  const assigneeIds = task?.assigneeIds?.length ? task.assigneeIds : (task?.assigneeId ? [task.assigneeId] : []);
+  return assigneeIds[0] ? displayName(assigneeIds[0]) : '';
+}
+
+function renderTaskHoverCard(task) {
+  if (!task) return '';
+  const number = task.number || shortId(task.id);
+  const assigneeIds = task.assigneeIds?.length ? task.assigneeIds : (task.assigneeId ? [task.assigneeId] : []);
+  const assignees = assigneeIds.length ? assigneeIds.map(displayName).join(', ') : 'unassigned';
+  const creator = task.createdBy ? displayName(task.createdBy) : 'Unknown';
+  return `
+    <span class="task-hover-card" role="tooltip">
+      <strong>#${escapeHtml(number)} ${escapeHtml(taskStatusLabel(task.status))}</strong>
+      <span>${escapeHtml(plainMentionText(task.title || 'Untitled task')).slice(0, 92)}</span>
+      <small>${escapeHtml(spaceName(task.spaceType, task.spaceId))} · ${fmtTime(task.updatedAt || task.createdAt)}</small>
+      <small>creator @${escapeHtml(creator)} · assignee @${escapeHtml(assignees)}</small>
+    </span>
+  `;
+}
+
+function renderTaskInlineBadge(task, options = {}) {
+  if (!task) return '';
+  const number = task.number || shortId(task.id);
+  const assignee = taskAssigneeLabel(task);
+  const showAssignee = options.showAssignee !== false && assignee;
+  const showHover = options.hover !== false;
+  const label = `Task #${number} · ${taskStatusLabel(task.status)}${assignee ? ` · @${assignee}` : ''}`;
+  return `
+    <span class="task-inline-badge task-status-${escapeHtml(taskStatusClass(task.status))}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
+      ${renderTaskStatusBadge(task.status, { compact: true })}
+      <span>#${escapeHtml(number)}</span>
+      ${showAssignee ? `<span>@${escapeHtml(assignee)}</span>` : ''}
+      ${showHover ? renderTaskHoverCard(task) : ''}
+    </span>
+  `;
+}
+
+function renderThreadKindBadge(message, task) {
+  if (task) return renderTaskInlineBadge(task);
+  return `
+    <span class="thread-kind-badge" title="Channel thread" aria-label="Channel thread">
+      <span>↩</span>
+      <span>Thread</span>
+    </span>
+  `;
+}
+
+function renderThreadRowAvatar(message) {
+  return `
+    <span class="avatar thread-list-avatar" aria-hidden="true">
+      ${getAvatarHtml(message.authorId, message.authorType, 'avatar-inner')}
+      ${agentStatusDot(message.authorId, message.authorType)}
+    </span>
+  `;
+}
+
+function renderTaskStateFlow(task) {
+  const status = taskStatusMeta[task?.status] ? task.status : 'todo';
+  const currentIndex = Math.max(0, taskColumns.findIndex(([value]) => value === status));
+  return `
+    <div class="task-state-flow" aria-label="Task status: ${escapeHtml(taskStatusLabel(status))}">
+      ${taskColumns.map(([value]) => {
+        const index = taskColumns.findIndex(([item]) => item === value);
+        const state = index < currentIndex ? 'complete' : (index === currentIndex ? 'current' : 'pending');
+        return `
+          <span class="task-state-node ${state} task-status-${escapeHtml(taskStatusClass(value))}" title="${escapeHtml(taskStatusLabel(value))}">
+            <span>${escapeHtml(taskStatusIcon(value))}</span>
+            <em>${escapeHtml(taskStatusLabel(value))}</em>
+          </span>
+        `;
+      }).join('<span class="task-state-link" aria-hidden="true"></span>')}
+    </div>
+  `;
 }
 
 function escapeHtml(value) {
@@ -510,6 +640,10 @@ function byId(list, id) {
   return (list || []).find((item) => item.id === id) || null;
 }
 
+function conversationRecord(id) {
+  return byId(appState?.messages, id) || byId(appState?.replies, id);
+}
+
 function fmtTime(value) {
   if (!value) return '--';
   const date = new Date(value);
@@ -536,6 +670,7 @@ function shortId(id) {
 }
 
 function displayName(id) {
+  if (id === 'agt_codex') return 'Codex Local';
   const human = byId(appState?.humans, id);
   if (human) return human.name;
   const agent = byId(appState?.agents, id);
@@ -620,8 +755,9 @@ function parseMentions(text) {
   // Replace agent mentions: <@agt_xxx> -> styled span
   result = result.replace(/&lt;@(agt_\w+)&gt;/g, (match, id) => {
     const agent = byId(appState?.agents, id);
-    return agent
-      ? `<span class="mention-tag mention-identity" data-mention-id="${id}">@${escapeHtml(agent.name)}</span>`
+    const name = agent?.name || (id === 'agt_codex' ? displayName(id) : '');
+    return name
+      ? `<span class="mention-tag mention-identity" data-mention-id="${id}">@${escapeHtml(name)}</span>`
       : match;
   });
   // Replace human mentions: <@hum_xxx> -> styled span
@@ -649,12 +785,240 @@ function plainMentionText(text) {
     .replace(/<@(agt_\w+|hum_\w+)>/g, (_, id) => `@${displayName(id)}`)
     .replace(/<!(all|here|channel|everyone)>/g, (_, type) => `@${type}`)
     .replace(/<#(file|folder):([^:]+):([^>]*)>/g, (_, kind, projectId, encodedPath) => `@${referenceDisplayName(projectId, decodeReferencePath(encodedPath), kind)}`)
+    .replace(/\b(agt_\w+|hum_\w+)\b/g, (_, id) => displayName(id))
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function plainActorText(text) {
   return String(text || '').replace(/\b(agt_\w+|hum_\w+)\b/g, (_, id) => displayName(id));
+}
+
+function normalizeSearchText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function searchTerms(query) {
+  const normalized = normalizeSearchText(query);
+  if (!normalized) return [];
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  return parts.length > 1 ? parts : [normalized];
+}
+
+function countSearchOccurrences(haystack, needle) {
+  if (!haystack || !needle) return 0;
+  let count = 0;
+  let index = haystack.indexOf(needle);
+  while (index !== -1) {
+    count += 1;
+    index = haystack.indexOf(needle, index + Math.max(1, needle.length));
+  }
+  return count;
+}
+
+function searchRecordBody(record) {
+  return plainMentionText(record?.body || '');
+}
+
+function searchRecordText(record) {
+  const parent = record?.parentMessageId ? byId(appState?.messages, record.parentMessageId) : null;
+  const task = byId(appState?.tasks, record?.taskId || parent?.taskId);
+  return [
+    searchRecordBody(record),
+    displayName(record?.authorId),
+    actorSubtitle(record?.authorId, record?.authorType, record),
+    recordSpaceName(record),
+    parent ? searchRecordBody(parent) : '',
+    task?.title || '',
+    task?.body || '',
+  ].filter(Boolean).join(' ');
+}
+
+function searchScore(record, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  const terms = searchTerms(query);
+  if (!normalizedQuery || !terms.length) return null;
+
+  const body = normalizeSearchText(searchRecordBody(record));
+  const fullText = normalizeSearchText(searchRecordText(record));
+  const phraseInBody = body.indexOf(normalizedQuery);
+  const phraseInText = fullText.indexOf(normalizedQuery);
+  const termsMatch = terms.every((term) => fullText.includes(term));
+  if (phraseInBody < 0 && phraseInText < 0 && !termsMatch) return null;
+
+  let score = 0;
+  if (phraseInBody >= 0) score += 120;
+  else if (phraseInText >= 0) score += 70;
+  if (body.startsWith(normalizedQuery)) score += 40;
+  if (record?.parentMessageId) score -= 4;
+
+  for (const term of terms) {
+    score += countSearchOccurrences(body, term) * 14;
+    if (fullText.includes(term)) score += 6;
+  }
+
+  const created = new Date(record?.updatedAt || record?.createdAt || 0).getTime();
+  return { score, created: Number.isNaN(created) ? 0 : created };
+}
+
+function searchRecords(query) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return [];
+  return [...(appState?.messages || []), ...(appState?.replies || [])]
+    .map((record) => ({ record, match: searchScore(record, query) }))
+    .filter((item) => item.match)
+    .sort((a, b) => b.match.score - a.match.score || b.match.created - a.match.created)
+    .slice(0, SEARCH_RESULT_LIMIT)
+    .map((item) => item.record);
+}
+
+function searchRangeBounds(range) {
+  if (range === 'today') {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return { after: start.getTime() };
+  }
+  if (range === '7d' || range === '30d') {
+    const days = range === '7d' ? 7 : 30;
+    return { after: Date.now() - days * 24 * 60 * 60 * 1000 };
+  }
+  return {};
+}
+
+function searchRecordMatchesFilters(record) {
+  if (searchMineOnly && record?.authorId !== 'hum_local') return false;
+  const bounds = searchRangeBounds(searchTimeRange);
+  if (bounds.after) {
+    const created = new Date(record?.createdAt || 0).getTime();
+    if (!created || created < bounds.after) return false;
+  }
+  return true;
+}
+
+function currentSearchMessageResults() {
+  return searchRecords(searchQuery).filter(searchRecordMatchesFilters);
+}
+
+function searchEntityScore(text, query) {
+  const normalizedText = normalizeSearchText(text);
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedText || !normalizedQuery || !normalizedText.includes(normalizedQuery)) return 0;
+  return normalizedText.startsWith(normalizedQuery) ? 2 : 1;
+}
+
+function searchEntityResults(query) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return [];
+  const results = [];
+  for (const channel of appState?.channels || []) {
+    const score = searchEntityScore(`#${channel.name} ${channel.description || ''}`, query);
+    if (score) {
+      results.push({
+        id: `channel:${channel.id}`,
+        type: 'channel',
+        label: `#${channel.name}`,
+        meta: 'Channel',
+        body: channel.description || 'Channel conversation',
+        targetType: 'channel',
+        targetId: channel.id,
+        score,
+      });
+    }
+  }
+  for (const dm of appState?.dms || []) {
+    const peerId = (dm.participantIds || []).find((id) => id !== 'hum_local') || dm.participantIds?.[0];
+    const label = displayName(peerId);
+    const score = searchEntityScore(`${label} dm direct message`, query);
+    if (score) {
+      results.push({
+        id: `dm:${dm.id}`,
+        type: 'dm',
+        label,
+        meta: 'Direct Message',
+        body: 'Direct message',
+        targetType: 'dm',
+        targetId: dm.id,
+        score,
+      });
+    }
+  }
+  for (const agent of appState?.agents || []) {
+    const score = searchEntityScore(`${agent.name} ${agent.description || ''}`, query);
+    if (score) {
+      results.push({
+        id: `agent:${agent.id}`,
+        type: 'agent',
+        label: agent.name,
+        meta: 'Agent',
+        body: agent.description || agent.runtime || 'Agent',
+        targetType: 'agent',
+        targetId: agent.id,
+        score,
+      });
+    }
+  }
+  return results
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label))
+    .slice(0, 8);
+}
+
+function searchSnippet(text, query) {
+  const body = String(text || '');
+  if (body.length <= SEARCH_SNIPPET_RADIUS * 2) return body;
+  const lowered = body.toLocaleLowerCase();
+  const candidates = [normalizeSearchText(query), ...searchTerms(query)].filter(Boolean);
+  const hit = candidates
+    .map((term) => lowered.indexOf(term.toLocaleLowerCase()))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0] ?? 0;
+  const start = Math.max(0, hit - SEARCH_SNIPPET_RADIUS);
+  const end = Math.min(body.length, hit + SEARCH_SNIPPET_RADIUS);
+  return `${start > 0 ? '...' : ''}${body.slice(start, end)}${end < body.length ? '...' : ''}`;
+}
+
+function highlightSearchText(text, query) {
+  const raw = String(text || '');
+  const terms = [...new Set(searchTerms(query))]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  if (!terms.length) return escapeHtml(raw);
+
+  const lower = raw.toLocaleLowerCase();
+  const ranges = [];
+  for (const term of terms) {
+    const needle = term.toLocaleLowerCase();
+    let index = lower.indexOf(needle);
+    while (index !== -1) {
+      ranges.push([index, index + needle.length]);
+      index = lower.indexOf(needle, index + Math.max(1, needle.length));
+    }
+  }
+  if (!ranges.length) return escapeHtml(raw);
+
+  ranges.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  const merged = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && range[0] <= last[1]) {
+      last[1] = Math.max(last[1], range[1]);
+    } else {
+      merged.push([...range]);
+    }
+  }
+
+  let html = '';
+  let cursor = 0;
+  for (const [start, end] of merged) {
+    html += escapeHtml(raw.slice(cursor, start));
+    html += `<mark class="search-highlight">${escapeHtml(raw.slice(start, end))}</mark>`;
+    cursor = end;
+  }
+  html += escapeHtml(raw.slice(cursor));
+  return html;
 }
 
 function mentionAvatar(item) {
@@ -891,6 +1255,24 @@ function spaceName(spaceType, spaceId) {
   return `@${displayName(other || 'unknown')}`;
 }
 
+function recordSpaceName(record) {
+  const source = record?.parentMessageId ? byId(appState?.messages, record.parentMessageId) : record;
+  return spaceName(source?.spaceType || record?.spaceType, source?.spaceId || record?.spaceId);
+}
+
+function savedRecords() {
+  return [...(appState?.messages || []), ...(appState?.replies || [])]
+    .filter((record) => record.savedBy?.includes('hum_local'))
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt));
+}
+
+function savedRecordThreadRoot(record) {
+  if (!record) return null;
+  if (record.parentMessageId) return byId(appState?.messages, record.parentMessageId);
+  if (record.replyCount > 0 || record.taskId) return record;
+  return null;
+}
+
 function spaceMessages(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
   return (appState?.messages || [])
     .filter((message) => message.spaceType === spaceType && message.spaceId === spaceId)
@@ -1053,12 +1435,12 @@ function clearAgentWorkspaceCaches(agentId) {
 
 function spaceTasks(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
   return (appState?.tasks || [])
-    .filter((task) => task.spaceType === spaceType && task.spaceId === spaceId && task.status !== 'cancelled')
+    .filter((task) => task.spaceType === spaceType && task.spaceId === spaceId)
     .sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt));
 }
 
 function isVisibleChannelTask(task) {
-  return task?.spaceType === 'channel' && task.status !== 'cancelled';
+  return task?.spaceType === 'channel';
 }
 
 function taskMatchesChannelFilter(task) {
@@ -1285,6 +1667,20 @@ function scrollToMessage(messageId) {
   }, 40);
 }
 
+function scrollToReply(replyId) {
+  window.setTimeout(() => {
+    const node = document.querySelector(`#thread-context #reply-${CSS.escape(replyId)}`);
+    const pane = document.querySelector('#thread-context');
+    if (node && pane) {
+      const targetTop = node.offsetTop - (pane.clientHeight / 2) + (node.offsetHeight / 2);
+      pane.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+      updateBackBottomVisibility('thread');
+      node.classList.add('focus-pulse');
+      window.setTimeout(() => node.classList.remove('focus-pulse'), 1200);
+    }
+  }, 80);
+}
+
 function scrollPaneToBottom(selector, behavior = 'smooth') {
   const targetName = selector === '#thread-context' ? 'thread' : 'main';
   const scroll = () => {
@@ -1363,7 +1759,7 @@ function renderRail() {
   const dms = appState.dms || [];
   const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0 || message.taskId).length;
   const openTasks = (appState.tasks || []).filter((task) => !taskIsClosedStatus(task.status)).length;
-  const saved = (appState.messages || []).filter((message) => message.savedBy?.includes('hum_local')).length;
+  const saved = savedRecords().length;
 
   return `
     <aside class="rail collab-rail">
@@ -1778,8 +2174,34 @@ function renderMentionChips(record) {
 function renderSystemEvent(message) {
   return `
     <div class="system-event-row" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}">
-      <span>${parseMentions(message.body || '')}</span>
+      <span>${parseMentions(plainActorText(message.body || ''))}</span>
       <time>${fmtTime(message.createdAt)}</time>
+    </div>
+  `;
+}
+
+function replyThreadIcon() {
+  return '<svg class="message-action-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M21 15a3 3 0 0 1-3 3H8l-5 4V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3z"/></svg>';
+}
+
+function saveMessageIcon(saved = false) {
+  return `<svg class="message-action-icon" width="14" height="14" viewBox="0 0 24 24" fill="${saved ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M6 4h12v17l-6-4-6 4z"/></svg>`;
+}
+
+function renderMessageActions(record, options = {}) {
+  const saved = record.savedBy?.includes('hum_local');
+  const threadContext = Boolean(options.threadContext || options.compact || record.parentMessageId);
+  const saveLabel = saved ? 'Remove from saved' : 'Save message';
+  return `
+    <div class="message-hover-actions${threadContext ? ' thread-only' : ''}">
+      ${threadContext ? '' : `
+        <button class="message-icon-action" type="button" data-action="open-thread" data-id="${escapeHtml(record.id)}" title="Reply in thread" aria-label="Reply in thread">
+          ${replyThreadIcon()}
+        </button>
+      `}
+      <button class="message-icon-action${saved ? ' saved' : ''}" type="button" data-action="save-message" data-id="${escapeHtml(record.id)}" title="${escapeHtml(saveLabel)}" aria-label="${escapeHtml(saveLabel)}">
+        ${saveMessageIcon(saved)}
+      </button>
     </div>
   `;
 }
@@ -1787,11 +2209,8 @@ function renderSystemEvent(message) {
 function renderMessage(message, options = {}) {
   if (message.authorType === 'system' && message.eventType) return renderSystemEvent(message);
   const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
-  const taskAssigneeIds = task ? (task.assigneeIds?.length ? task.assigneeIds : (task.assigneeId ? [task.assigneeId] : [])) : [];
-  const taskBadgeName = taskAssigneeIds[0] ? ` @${displayName(taskAssigneeIds[0])}` : '';
-  const saved = message.savedBy?.includes('hum_local');
   const replyCount = Number(message.replyCount || 0);
-  const highlighted = threadMessageId === message.id ? ' highlighted' : '';
+  const highlighted = threadMessageId === message.id || selectedSavedRecordId === message.id ? ' highlighted' : '';
   const compact = options.compact ? ' compact' : '';
   const authorClass = ['agent', 'human', 'system'].includes(message.authorType) ? message.authorType : 'unknown';
   const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
@@ -1804,15 +2223,12 @@ function renderMessage(message, options = {}) {
           ${renderActorName(message.authorId, message.authorType)}
           <span class="sender-role">${escapeHtml(actorSubtitle(message.authorId, message.authorType, message))}</span>
           <time>${fmtTime(message.createdAt)}</time>
-          ${task ? `<span class="task-number">#${escapeHtml(task.number || shortId(task.id))}${escapeHtml(taskBadgeName)}</span>${pill(task.status, taskTone(task.status))}` : ''}
+          ${task ? renderTaskInlineBadge(task) : ''}
         </div>
         <div class="message-markdown">${renderMarkdownWithMentions(message.body || '(attachment)')}</div>
         <div class="message-attachments">${attachmentLinks(message.attachmentIds)}</div>
-        <div class="message-actions${replyCount ? ' has-replies' : ''}">
-          <button class="reply-action${replyCount ? ' has-replies' : ''}" type="button" data-action="open-thread" data-id="${message.id}">${replyActionLabel}</button>
-          <button type="button" data-action="save-message" data-id="${message.id}">${saved ? 'Unsave' : 'Save'}</button>
-          ${task ? '' : `<button type="button" data-action="message-task" data-id="${message.id}">As Task</button>`}
-        </div>
+        ${renderMessageActions(message, options)}
+        ${!options.compact && replyCount ? `<button class="reply-count-chip" type="button" data-action="open-thread" data-id="${escapeHtml(message.id)}">${replyActionLabel}</button>` : ''}
       </div>
     </article>
   `;
@@ -1850,7 +2266,7 @@ function renderTaskBoard(tasks) {
         return `
         <div class="task-column pixel-panel ${collapsed ? 'collapsed' : ''}">
           <div class="task-column-title">
-            <span class="task-status-chip task-status-${escapeHtml(status)}">${escapeHtml(label)}</span>
+            ${renderTaskColumnChip(status, label)}
             <strong>${columnTasks.length}</strong>
             <button class="column-toggle" type="button" data-action="toggle-task-column" data-status="${status}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(label)}">${collapsed ? '›' : '⌄'}</button>
           </div>
@@ -1871,7 +2287,7 @@ function renderTaskListView(tasks) {
         return `
           <div class="task-list-section ${collapsed ? 'collapsed' : ''}">
             <div class="task-column-title task-list-title">
-              <span class="task-status-chip task-status-${escapeHtml(status)}">${escapeHtml(label)}</span>
+              ${renderTaskColumnChip(status, label)}
               <strong>${sectionTasks.length}</strong>
               <button class="column-toggle" type="button" data-action="toggle-task-column" data-status="${status}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(label)}">${collapsed ? '›' : '⌄'}</button>
             </div>
@@ -1938,11 +2354,13 @@ function renderTaskCard(task) {
   const assigneeIds = task.assigneeIds?.length ? task.assigneeIds : (task.assigneeId ? [task.assigneeId] : []);
   const assignee = assigneeIds.length ? assigneeIds.map(displayName).join(', ') : 'unassigned';
   const creator = task.createdBy ? displayName(task.createdBy) : 'Unknown';
+  const thread = taskThreadMessage(task);
+  const active = threadMessageId === thread?.id ? ' active' : '';
   return `
-    <button class="task-card compact-task-card${selectedTaskId === task.id ? ' active' : ''}" type="button" data-action="select-task" data-id="${escapeHtml(task.id)}">
+    <button class="task-card compact-task-card${active}" type="button" data-action="select-task" data-id="${escapeHtml(task.id)}">
       <div class="task-card-head">
         <span>${escapeHtml(spaceName(task.spaceType, task.spaceId))}</span>
-        <span class="task-number">#${escapeHtml(task.number || shortId(task.id))}</span>
+        ${renderTaskInlineBadge(task, { showAssignee: false, hover: false })}
       </div>
       <strong class="task-card-title">${escapeHtml(plainMentionText(task.title || 'Untitled task'))}</strong>
       <div class="task-card-foot">
@@ -1953,21 +2371,22 @@ function renderTaskCard(task) {
   `;
 }
 
-function renderTaskActionButtons(task) {
+function renderTaskActionButtons(task, options = {}) {
   const canClaim = !taskIsClosedStatus(task.status) && !task.claimedBy;
   const canUnclaim = !taskIsClosedStatus(task.status) && Boolean(task.claimedBy);
   const canReview = task.status === 'in_progress' && Boolean(task.claimedBy);
   const canApprove = task.status === 'in_review';
   const canRun = !taskIsClosedStatus(task.status) && (!task.claimedBy || task.claimedBy === 'agt_codex');
+  const includeThread = options.includeThread !== false;
   const thread = taskThreadMessage(task);
   return `
-    ${canClaim ? `<button type="button" data-action="task-claim" data-id="${task.id}">Claim Codex</button>` : ''}
-    ${canUnclaim ? `<button type="button" data-action="task-unclaim" data-id="${task.id}">Unclaim</button>` : ''}
-    ${canRun ? `<button type="button" data-action="run-task-codex" data-id="${task.id}">Run Codex</button>` : ''}
-    ${canReview ? `<button type="button" data-action="task-review" data-id="${task.id}">Request Review</button>` : ''}
-    ${canApprove ? `<button type="button" data-action="task-approve" data-id="${task.id}">Approve Done</button>` : ''}
-    ${taskIsClosedStatus(task.status) ? `<button type="button" data-action="task-reopen" data-id="${task.id}">Reopen</button>` : ''}
-    ${thread ? `<button type="button" data-action="open-thread" data-id="${thread.id}">Thread</button>` : ''}
+    ${canClaim ? `<button class="task-action-btn tone-claim" type="button" data-action="task-claim" data-id="${escapeHtml(task.id)}">Claim</button>` : ''}
+    ${canUnclaim ? `<button class="task-action-btn tone-neutral" type="button" data-action="task-unclaim" data-id="${escapeHtml(task.id)}">Unclaim</button>` : ''}
+    ${canRun ? `<button class="task-action-btn tone-run" type="button" data-action="run-task-codex" data-id="${escapeHtml(task.id)}">Run Codex</button>` : ''}
+    ${canReview ? `<button class="task-action-btn tone-review" type="button" data-action="task-review" data-id="${escapeHtml(task.id)}">Review</button>` : ''}
+    ${canApprove ? `<button class="task-action-btn tone-done" type="button" data-action="task-approve" data-id="${escapeHtml(task.id)}">Done</button>` : ''}
+    ${taskIsClosedStatus(task.status) ? `<button class="task-action-btn tone-reopen" type="button" data-action="task-reopen" data-id="${escapeHtml(task.id)}">Reopen</button>` : ''}
+    ${includeThread && thread ? `<button class="task-action-btn tone-thread" type="button" data-action="open-thread" data-id="${escapeHtml(thread.id)}">Thread</button>` : ''}
   `;
 }
 
@@ -1986,9 +2405,10 @@ function renderTaskDetail(task) {
       </div>
       <div class="task-detail-body">
         <div class="task-detail-status">
-          ${pill(task.status, taskTone(task.status))}
+          ${renderTaskStatusBadge(task.status)}
           <span>${escapeHtml(task.claimedBy ? `claimed by ${displayName(task.claimedBy)}` : 'unclaimed')}</span>
         </div>
+        ${renderTaskStateFlow(task)}
         <h3>${escapeHtml(plainMentionText(task.title || 'Untitled task'))}</h3>
         ${task.body ? `<div class="message-markdown task-detail-markdown">${renderMarkdownWithMentions(task.body)}</div>` : ''}
         <dl class="task-detail-meta">
@@ -2042,7 +2462,7 @@ function renderThreads() {
     .sort((a, b) => threadUpdatedAt(b) - threadUpdatedAt(a));
   return `
     ${renderHeader('Threads', 'Active reply trails', '')}
-    <section class="list-panel pixel-panel thread-list-panel">
+    <section class="list-panel thread-list-panel slock-thread-list">
       ${threaded.length ? threaded.map((message) => {
         const replies = threadReplies(message.id);
         const lastReply = replies.at(-1);
@@ -2051,14 +2471,23 @@ function renderThreads() {
         const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
         const active = threadMessageId === message.id ? ' active' : '';
         return `
-        <button class="thread-row${active}" type="button" data-action="open-thread" data-id="${message.id}">
-          <span class="thread-row-main">
-            <strong>${escapeHtml(plainMentionText(message.body).slice(0, 120) || '(attachment)')}</strong>
-            <small>${escapeHtml(spaceName(message.spaceType, message.spaceId))} · ${escapeHtml(author)} · latest ${escapeHtml(lastReplyAuthor)} · ${fmtTime(lastReply?.createdAt || message.updatedAt || message.createdAt)}</small>
+        <button class="thread-row slock-thread-row${active}" type="button" data-action="open-thread" data-id="${message.id}">
+          <span class="thread-row-avatar">
+            ${renderThreadRowAvatar(message)}
           </span>
-          <span class="thread-row-meta">
-            ${task ? `<span class="task-number">#${escapeHtml(task.number || shortId(task.id))}</span>` : ''}
-            <span>${message.replyCount || 0} ${(message.replyCount || 0) === 1 ? 'reply' : 'replies'}</span>
+          <span class="thread-row-main">
+            <span class="thread-row-meta-line">
+              <span>${escapeHtml(spaceName(message.spaceType, message.spaceId))}</span>
+              ${renderThreadKindBadge(message, task)}
+              <span>${escapeHtml(author)}</span>
+              <time>${fmtTime(lastReply?.createdAt || message.updatedAt || message.createdAt)}</time>
+            </span>
+            <strong>${escapeHtml(plainMentionText(message.body).slice(0, 120) || '(attachment)')}</strong>
+            <small>latest ${escapeHtml(lastReplyAuthor)} · ${message.replyCount || 0} ${(message.replyCount || 0) === 1 ? 'reply' : 'replies'}</small>
+          </span>
+          <span class="thread-row-side">
+            <span>${message.replyCount || 0}</span>
+            <span class="thread-row-check" title="Open thread">✓</span>
           </span>
         </button>
       `;
@@ -2068,26 +2497,268 @@ function renderThreads() {
 }
 
 function renderSaved() {
-  const saved = (appState.messages || []).filter((message) => message.savedBy?.includes('hum_local'));
+  const saved = savedRecords();
   return `
-    ${renderHeader('Saved', 'Pinned local references', '')}
-    <section class="list-panel pixel-panel">
-      ${saved.length ? saved.map(renderMessage).join('') : '<div class="empty-box">No saved messages.</div>'}
+    <section class="saved-page">
+      <header class="task-page-header saved-page-header pixel-panel">
+        <div class="task-page-title">
+          <span class="task-page-icon">${saveMessageIcon(true)}</span>
+          <div>
+            <h2>Saved</h2>
+            <small>${saved.length} saved</small>
+          </div>
+        </div>
+      </header>
+      <section class="saved-list-panel pixel-panel">
+        ${saved.length ? saved.map(renderSavedRecord).join('') : '<div class="empty-box">No saved messages.</div>'}
+      </section>
     </section>
   `;
 }
 
-function renderSearch() {
-  const q = searchQuery.trim().toLowerCase();
-  const results = q
-    ? (appState.messages || []).filter((message) => message.body.toLowerCase().includes(q))
-    : [];
+function renderSavedRecord(record) {
+  const root = savedRecordThreadRoot(record);
+  const isThreadRecord = Boolean(root);
+  const task = (root?.taskId ? byId(appState.tasks, root.taskId) : null) || (record?.taskId ? byId(appState.tasks, record.taskId) : null);
+  const active = selectedSavedRecordId === record.id ? ' active' : '';
   return `
-    ${renderHeader('Search', 'Messages, tasks, DMs', '')}
-    <section class="search-panel pixel-panel">
-      <input id="search-input" value="${escapeHtml(searchQuery)}" placeholder="Search messages..." autofocus />
-      <div class="search-results">
-        ${results.length ? results.map(renderMessage).join('') : '<div class="empty-box">Type to search local messages.</div>'}
+    <div class="saved-row${active}">
+      <button class="saved-row-open" type="button" data-action="open-saved-message" data-id="${escapeHtml(record.id)}">
+        <span class="saved-avatar">${getAvatarHtml(record.authorId, record.authorType, 'avatar-inner')}</span>
+        <span class="saved-row-body">
+          <span class="saved-row-meta">
+            <strong>${escapeHtml(recordSpaceName(record))}</strong>
+            ${task ? renderTaskInlineBadge(task, { showAssignee: false }) : (isThreadRecord ? '<em>thread</em>' : '')}
+            <span>${escapeHtml(displayName(record.authorId))}</span>
+            <time>${fmtTime(record.createdAt)}</time>
+          </span>
+          <span class="saved-row-text">${escapeHtml(plainMentionText(record.body || '(attachment)'))}</span>
+        </span>
+      </button>
+      <button class="saved-remove" type="button" data-action="remove-saved-message" data-id="${escapeHtml(record.id)}" title="Remove from saved" aria-label="Remove from saved">
+        ${saveMessageIcon(true)}
+      </button>
+    </div>
+  `;
+}
+
+const searchTimeRangeOptions = [
+  ['any', 'Any Time'],
+  ['today', 'Today'],
+  ['7d', 'Last 7 Days'],
+  ['30d', 'Last 30 Days'],
+];
+
+function searchTimeRangeLabel() {
+  return searchTimeRangeOptions.find(([value]) => value === searchTimeRange)?.[1] || 'Any Time';
+}
+
+function renderSearchLensIcon(size = 18) {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>`;
+}
+
+function renderSearchEntityResult(item, activeKey) {
+  const active = activeKey === item.id ? ' active' : '';
+  return `
+    <button class="search-result-card search-entity-card${active}" type="button" data-action="open-search-entity" data-target-type="${escapeHtml(item.targetType)}" data-target-id="${escapeHtml(item.targetId)}">
+      <span class="search-entity-icon">${item.type === 'channel' ? '#' : item.type === 'dm' ? '@' : 'AG'}</span>
+      <span class="search-entity-copy">
+        <span class="search-result-meta">
+          <strong>${escapeHtml(item.label)}</strong>
+          <em>${escapeHtml(item.meta)}</em>
+        </span>
+        <span class="search-result-snippet">${highlightSearchText(item.body, searchQuery)}</span>
+      </span>
+    </button>
+  `;
+}
+
+function renderSearchResult(record) {
+  const parent = record.parentMessageId ? byId(appState?.messages, record.parentMessageId) : null;
+  const task = byId(appState?.tasks, record.taskId || parent?.taskId);
+  const isReply = Boolean(parent);
+  const snippet = searchSnippet(searchRecordBody(record) || '(attachment)', searchQuery);
+  const active = selectedSavedRecordId === record.id ? ' active' : '';
+  return `
+    <button class="search-result-card${active}" type="button" data-action="open-search-result" data-id="${escapeHtml(record.id)}">
+      <span class="search-result-meta">
+        <strong>${escapeHtml(recordSpaceName(record))}</strong>
+        ${isReply ? '<em>thread</em>' : ''}
+        ${task ? renderTaskInlineBadge(task, { showAssignee: false }) : ''}
+        <span>${escapeHtml(displayName(record.authorId))}</span>
+        <time>${fmtTime(record.createdAt)}</time>
+      </span>
+      <span class="search-result-snippet">${highlightSearchText(snippet, searchQuery)}</span>
+    </button>
+  `;
+}
+
+function renderSearchEmptyState(kind, query = '') {
+  if (kind === 'empty') {
+    return `
+      <div class="search-center-state">
+        <span class="search-center-icon">${renderSearchLensIcon(58)}</span>
+        <strong>Search everything</strong>
+        <span>Search channels, DMs, people, agents, and message history.</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="search-center-state search-no-results">
+      <span class="search-center-icon">${renderSearchLensIcon(58)}</span>
+      <strong>No results for "${escapeHtml(query)}"</strong>
+      <span>Try different keywords or a shorter phrase.</span>
+    </div>
+  `;
+}
+
+function renderSearchFilters() {
+  const filtersActive = searchMineOnly || searchTimeRange !== 'any';
+  return `
+    <div class="search-filter-row" data-search-filters>
+      <button class="search-filter-btn${searchMineOnly ? ' active' : ''}" type="button" data-action="toggle-search-mine">My Messages</button>
+      <div class="search-time-filter${searchTimeMenuOpen ? ' open' : ''}">
+        <button class="search-filter-btn search-time-btn${searchTimeRange !== 'any' ? ' active cyan' : ''}" type="button" data-action="toggle-search-range-menu" aria-expanded="${searchTimeMenuOpen ? 'true' : 'false'}">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/></svg>
+          <span>${escapeHtml(searchTimeRangeLabel())}</span>
+          <span aria-hidden="true">⌄</span>
+        </button>
+        ${searchTimeMenuOpen ? `
+          <div class="search-time-menu" role="menu">
+            ${searchTimeRangeOptions.map(([value, label]) => `
+              <button class="${searchTimeRange === value ? 'active' : ''}" type="button" data-action="set-search-range" data-range="${escapeHtml(value)}" role="menuitem">${escapeHtml(label)}</button>
+            `).join('')}
+          </div>
+        ` : ''}
+      </div>
+      ${filtersActive || searchQuery.trim() ? '<button class="search-clear-all" type="button" data-action="clear-search-all">Clear All</button>' : ''}
+    </div>
+  `;
+}
+
+function renderSearchResults() {
+  const query = searchQuery.trim();
+  if (!query) return renderSearchEmptyState('empty');
+
+  const entities = searchMineOnly || searchTimeRange !== 'any' ? [] : searchEntityResults(query);
+  const messageResults = currentSearchMessageResults();
+  const visibleMessages = messageResults.slice(0, searchVisibleCount);
+  const total = entities.length + messageResults.length;
+  if (!total) {
+    return `
+      <div class="search-summary">0 results</div>
+      ${renderSearchEmptyState('none', query)}
+    `;
+  }
+  return `
+    <div class="search-summary">${total} ${total === 1 ? 'result' : 'results'}</div>
+    ${entities.length ? `
+      <div class="search-section-label">People & Places</div>
+      ${entities.map(renderSearchEntityResult).join('')}
+    ` : ''}
+    ${messageResults.length ? `
+      <div class="search-section-label">Messages</div>
+      ${visibleMessages.map(renderSearchResult).join('')}
+      ${visibleMessages.length < messageResults.length ? `
+        <div class="search-load-row">
+          <button class="search-load-more" type="button" data-action="load-more-search">Load More</button>
+        </div>
+      ` : ''}
+    ` : ''}
+  `;
+}
+
+function updateSearchResults() {
+  const container = document.querySelector('[data-search-results]');
+  if (container) container.innerHTML = renderSearchResults();
+  const filters = document.querySelector('[data-search-filters]');
+  if (filters) filters.outerHTML = renderSearchFilters();
+  const clearButton = document.querySelector('[data-search-clear]');
+  if (clearButton) clearButton.hidden = !searchQuery.trim();
+}
+
+function openSearchResult(record) {
+  const parent = record.parentMessageId ? byId(appState?.messages, record.parentMessageId) : null;
+  const root = parent || record;
+  selectedSavedRecordId = record.id;
+  selectedAgentId = null;
+  selectedTaskId = null;
+  selectedProjectFile = null;
+  inspectorReturnThreadId = null;
+  const opensThread = Boolean(parent || root.replyCount > 0 || root.taskId);
+  if (activeView === 'search' && opensThread) {
+    threadMessageId = root.id;
+    render();
+    if (record.parentMessageId) scrollToReply(record.id);
+    focusSearchInputEnd();
+    return;
+  }
+  selectedSpaceType = root.spaceType;
+  selectedSpaceId = root.spaceId;
+  activeView = 'space';
+  activeTab = 'chat';
+  threadMessageId = opensThread ? root.id : null;
+  render();
+  scrollToMessage(root.id);
+  if (record.parentMessageId) scrollToReply(record.id);
+}
+
+function openSearchEntity(targetType, targetId) {
+  if (targetType === 'channel' || targetType === 'dm') {
+    selectedSpaceType = targetType;
+    selectedSpaceId = targetId;
+    activeView = 'space';
+    activeTab = 'chat';
+    threadMessageId = null;
+    selectedSavedRecordId = null;
+    render();
+    scrollPaneToBottom('#message-list', 'auto');
+    return;
+  }
+  if (targetType === 'agent') {
+    selectedAgentId = targetId;
+    selectedTaskId = null;
+    selectedProjectFile = null;
+    threadMessageId = null;
+    render();
+  }
+}
+
+function focusSearchInputEnd() {
+  window.requestAnimationFrame(() => {
+    const input = document.getElementById('search-input');
+    if (!input) return;
+    input.focus({ preventScroll: true });
+    const end = input.value.length;
+    input.setSelectionRange(end, end);
+  });
+}
+
+function openSearchView() {
+  activeView = 'search';
+  activeTab = 'chat';
+  threadMessageId = null;
+  inspectorReturnThreadId = null;
+  selectedProjectFile = null;
+  selectedAgentId = null;
+  selectedTaskId = null;
+  render();
+  focusSearchInputEnd();
+}
+
+function renderSearch() {
+  return `
+    <section class="search-page">
+      <div class="search-topbar">
+        <button class="search-top-icon" type="button" aria-label="Search">${renderSearchLensIcon(18)}</button>
+        <div class="search-input-shell">
+          <input id="search-input" value="${escapeHtml(searchQuery)}" placeholder="Search channels, DMs, messages..." autocomplete="off" autofocus />
+          <button class="search-clear-btn" type="button" data-action="clear-search-query" data-search-clear aria-label="Clear search" ${searchQuery.trim() ? '' : 'hidden'}>×</button>
+        </div>
+      </div>
+      ${renderSearchFilters()}
+      <div class="search-results" data-search-results>
+        ${renderSearchResults()}
       </div>
     </section>
   `;
@@ -2367,11 +3038,28 @@ function agentStatusLabel(agent) {
   return `${status.charAt(0).toUpperCase()}${status.slice(1)}`;
 }
 
+function shouldCelebrateAgentBorn(value, today = new Date()) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf()) || Number.isNaN(today.valueOf())) return false;
+  return date.getMonth() === today.getMonth()
+    && date.getDate() === today.getDate()
+    && date.getFullYear() !== today.getFullYear();
+}
+
 function formatAgentBorn(value) {
   if (!value) return '--';
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return '--';
-  return date.toLocaleDateString([], { year: 'numeric', month: 'short', day: '2-digit' });
+  const formatted = date.toLocaleString([], {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  return `${shouldCelebrateAgentBorn(date) ? '🎂 ' : ''}${formatted}`;
 }
 
 function renderAgentDetailTabs() {
@@ -2735,8 +3423,9 @@ function renderComputerListItem(computer) {
 function renderReply(reply) {
   const authorClass = ['agent', 'human', 'system'].includes(reply.authorType) ? reply.authorType : 'unknown';
   const agentAuthorAttr = reply.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(reply.authorId)}"` : '';
+  const highlighted = selectedSavedRecordId === reply.id ? ' highlighted' : '';
   return `
-    <article class="message-card slock-message reply-card author-${authorClass}"${agentAuthorAttr}>
+    <article class="message-card slock-message reply-card author-${authorClass}${highlighted}" id="reply-${escapeHtml(reply.id)}"${agentAuthorAttr}>
       ${renderActorAvatar(reply.authorId, reply.authorType)}
       <div class="message-body">
         <div class="message-meta">
@@ -2746,6 +3435,7 @@ function renderReply(reply) {
         </div>
         <div class="message-markdown">${renderMarkdownWithMentions(reply.body || '(attachment)')}</div>
         <div class="message-attachments">${attachmentLinks(reply.attachmentIds)}</div>
+        ${renderMessageActions(reply, { threadContext: true })}
       </div>
     </article>
   `;
@@ -2788,7 +3478,7 @@ function renderThreadDrawer(message) {
       </div>
       <div class="thread-tools">
         <span>${replies.length} ${replyWord}</span>
-        ${task ? `<span class="task-number">#${escapeHtml(task.number || shortId(task.id))} ${escapeHtml(task.status)}</span>` : ''}
+        ${task ? renderTaskInlineBadge(task, { showAssignee: false }) : ''}
       </div>
       ${renderComposer({ id: composerId, kind: 'thread', placeholder: 'Message thread' })}
     </section>
@@ -2796,29 +3486,52 @@ function renderThreadDrawer(message) {
 }
 
 function renderTaskLifecycle(task) {
-  const history = Array.isArray(task.history) ? task.history.slice().reverse() : [];
   return `
     <div class="task-lifecycle">
-      <div class="panel-title mini-title">
-        <span>Task Lifecycle</span>
-        <span>${escapeHtml(task.status)}</span>
+      <div class="task-lifecycle-top">
+        <div>
+          <span class="eyebrow">Task</span>
+          <strong>#${escapeHtml(task.number || shortId(task.id))}</strong>
+        </div>
+        ${renderTaskStatusBadge(task.status)}
       </div>
-      <div class="task-actions">
-        ${!task.claimedBy && !taskIsClosedStatus(task.status) ? `<button type="button" data-action="task-claim" data-id="${task.id}">Claim Codex</button>` : ''}
-        ${task.claimedBy && !taskIsClosedStatus(task.status) ? `<button type="button" data-action="task-unclaim" data-id="${task.id}">Unclaim</button>` : ''}
-        ${task.status === 'in_progress' ? `<button type="button" data-action="task-review" data-id="${task.id}">Request Review</button>` : ''}
-        ${task.status === 'in_review' ? `<button type="button" data-action="task-approve" data-id="${task.id}">Approve Done</button>` : ''}
-        ${taskIsClosedStatus(task.status) ? `<button type="button" data-action="task-reopen" data-id="${task.id}">Reopen</button>` : ''}
+      ${renderTaskStateFlow(task)}
+      <div class="task-actions task-lifecycle-actions">
+        ${renderTaskActionButtons(task, { includeThread: false })}
       </div>
-      <div class="history-list">
-        ${history.length ? history.map((item) => `
-          <div class="history-item">
-            <strong>${escapeHtml(item.type)}</strong>
-            <small>${fmtTime(item.createdAt)} / ${escapeHtml(displayName(item.actorId))}</small>
-            <p>${escapeHtml(plainActorText(item.message))}</p>
-          </div>
-        `).join('') : '<div class="empty-box small">No task history.</div>'}
-      </div>
+      ${renderTaskHistoryCompact(task)}
+    </div>
+  `;
+}
+
+function taskHistoryIcon(type) {
+  const value = String(type || '');
+  if (value.includes('done') || value.includes('ended') || value.includes('approve')) return '✓';
+  if (value.includes('review')) return '👀';
+  if (value.includes('claim')) return '↗';
+  if (value.includes('stop')) return '■';
+  if (value.includes('create')) return '+';
+  return '•';
+}
+
+function taskHistoryLabel(type) {
+  const value = String(type || '').replace(/^agent_/, '').replace(/_/g, ' ');
+  return value || 'updated';
+}
+
+function renderTaskHistoryCompact(task) {
+  const history = Array.isArray(task.history) ? task.history.slice().reverse().slice(0, 4) : [];
+  if (!history.length) return '<div class="empty-box small task-history-empty">No task history.</div>';
+  return `
+    <div class="task-lifecycle-events" aria-label="Task timeline">
+      ${history.map((item) => `
+        <div class="task-event-chip">
+          <span class="task-event-icon">${escapeHtml(taskHistoryIcon(item.type))}</span>
+          <span>${escapeHtml(taskHistoryLabel(item.type))}</span>
+          <time>${fmtTime(item.createdAt)}</time>
+          <strong>@${escapeHtml(displayName(item.actorId))}</strong>
+        </div>
+      `).join('')}
     </div>
   `;
 }
@@ -3485,7 +4198,28 @@ document.addEventListener('scroll', (event) => {
   if (event.target?.id === 'thread-context') updateBackBottomVisibility('thread');
 }, true);
 
+document.addEventListener('compositionstart', (event) => {
+  if (event.target?.id === 'search-input') {
+    searchIsComposing = true;
+  }
+});
+
+document.addEventListener('compositionend', (event) => {
+  if (event.target?.id === 'search-input') {
+    searchIsComposing = false;
+    searchQuery = event.target.value;
+    searchVisibleCount = SEARCH_PAGE_SIZE;
+    updateSearchResults();
+  }
+});
+
 document.addEventListener('keydown', async (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key?.toLowerCase() === 'k') {
+    event.preventDefault();
+    openSearchView();
+    return;
+  }
+
   const railResizer = event.target.closest?.('.rail-resizer');
   if (railResizer && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
     event.preventDefault();
@@ -3691,10 +4425,10 @@ document.addEventListener('input', async (event) => {
 
   if (event.target.id === 'search-input') {
     searchQuery = event.target.value;
-    render();
-    const input = document.querySelector('#search-input');
-    input?.focus();
-    input?.setSelectionRange(searchQuery.length, searchQuery.length);
+    searchVisibleCount = SEARCH_PAGE_SIZE;
+    if (!searchIsComposing && !event.isComposing && event.inputType !== 'insertCompositionText') {
+      updateSearchResults();
+    }
     return;
   }
 
@@ -3828,7 +4562,23 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  const clickedTaskChannelFilter = event.target.closest('.task-channel-filter');
+  const clickedSearchFilter = event.target.closest('.search-time-filter');
   const target = event.target.closest('[data-action]');
+  if (taskChannelMenuOpen && !clickedTaskChannelFilter) {
+    taskChannelMenuOpen = false;
+    if (!target) {
+      render();
+      return;
+    }
+  }
+  if (searchTimeMenuOpen && !clickedSearchFilter) {
+    searchTimeMenuOpen = false;
+    if (activeView === 'search') {
+      updateSearchResults();
+      if (!target) return;
+    }
+  }
   if (!target) return;
   const action = target.dataset.action;
   if (action === 'none') return;
@@ -3854,6 +4604,12 @@ document.addEventListener('click', async (event) => {
     'set-tab',
     'task-filter',
     'set-task-view',
+    'toggle-search-mine',
+    'toggle-search-range-menu',
+    'set-search-range',
+    'clear-search-query',
+    'clear-search-all',
+    'load-more-search',
     'toggle-task-channel-menu',
     'toggle-task-channel-filter',
     'clear-task-channel-filters',
@@ -3863,6 +4619,9 @@ document.addEventListener('click', async (event) => {
     'open-modal',
     'close-modal',
     'open-thread',
+    'open-search-result',
+    'open-search-entity',
+    'open-saved-message',
     'close-thread',
     'view-in-channel',
     'back-to-bottom',
@@ -3955,10 +4714,51 @@ document.addEventListener('click', async (event) => {
     if (action === 'set-view') {
       activeView = target.dataset.view;
       threadMessageId = null;
+      inspectorReturnThreadId = null;
       selectedProjectFile = null;
       selectedAgentId = null;
       selectedTaskId = null;
+      selectedSavedRecordId = null;
       render();
+      if (activeView === 'search') focusSearchInputEnd();
+    }
+    if (action === 'toggle-search-mine') {
+      searchMineOnly = !searchMineOnly;
+      searchVisibleCount = SEARCH_PAGE_SIZE;
+      updateSearchResults();
+      focusSearchInputEnd();
+    }
+    if (action === 'toggle-search-range-menu') {
+      searchTimeMenuOpen = !searchTimeMenuOpen;
+      updateSearchResults();
+      focusSearchInputEnd();
+    }
+    if (action === 'set-search-range') {
+      searchTimeRange = target.dataset.range || 'any';
+      searchTimeMenuOpen = false;
+      searchVisibleCount = SEARCH_PAGE_SIZE;
+      updateSearchResults();
+      focusSearchInputEnd();
+    }
+    if (action === 'clear-search-query') {
+      searchQuery = '';
+      searchVisibleCount = SEARCH_PAGE_SIZE;
+      updateSearchResults();
+      focusSearchInputEnd();
+    }
+    if (action === 'clear-search-all') {
+      searchQuery = '';
+      searchMineOnly = false;
+      searchTimeRange = 'any';
+      searchTimeMenuOpen = false;
+      searchVisibleCount = SEARCH_PAGE_SIZE;
+      updateSearchResults();
+      focusSearchInputEnd();
+    }
+    if (action === 'load-more-search') {
+      searchVisibleCount += SEARCH_PAGE_SIZE;
+      updateSearchResults();
+      focusSearchInputEnd();
     }
     if (action === 'set-rail-tab') {
       railTab = target.dataset.railTab;
@@ -3971,6 +4771,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'select-agent') {
       if (!installedRuntimes.length) await loadInstalledRuntimes();
+      if (threadMessageId) inspectorReturnThreadId = threadMessageId;
       selectedAgentId = target.dataset.id;
       agentDetailTab = 'profile';
       agentDetailEditState = { field: null };
@@ -3983,6 +4784,10 @@ document.addEventListener('click', async (event) => {
       render();
     }
     if (action === 'close-agent-detail') {
+      if (inspectorReturnThreadId && byId(appState.messages, inspectorReturnThreadId)) {
+        threadMessageId = inspectorReturnThreadId;
+      }
+      inspectorReturnThreadId = null;
       selectedAgentId = null;
       agentDetailEditState = { field: null };
       agentEnvEditState = null;
@@ -4096,6 +4901,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'select-space') {
       selectedAgentId = null;
       selectedTaskId = null;
+      inspectorReturnThreadId = null;
       agentDetailEditState = { field: null };
       agentEnvEditState = null;
       selectedSpaceType = target.dataset.type;
@@ -4103,6 +4909,7 @@ document.addEventListener('click', async (event) => {
       activeView = 'space';
       activeTab = 'chat';
       threadMessageId = null;
+      selectedSavedRecordId = null;
       selectedProjectFile = null;
       selectedAgentWorkspaceFile = null;
       render();
@@ -4145,10 +4952,19 @@ document.addEventListener('click', async (event) => {
       render();
     }
     if (action === 'select-task') {
-      selectedTaskId = target.dataset.id;
-      threadMessageId = null;
+      const task = byId(appState.tasks, target.dataset.id);
+      const thread = task ? taskThreadMessage(task) : null;
+      if (thread) {
+        selectedTaskId = null;
+        threadMessageId = thread.id;
+      } else {
+        selectedTaskId = target.dataset.id;
+        threadMessageId = null;
+      }
+      inspectorReturnThreadId = null;
       selectedAgentId = null;
       selectedProjectFile = null;
+      selectedSavedRecordId = null;
       render();
     }
     if (action === 'close-task-detail') {
@@ -4227,14 +5043,24 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'open-thread') {
       threadMessageId = target.dataset.id;
+      inspectorReturnThreadId = null;
+      selectedSavedRecordId = null;
       selectedAgentId = null;
       selectedTaskId = null;
       selectedProjectFile = null;
       render();
       scrollToMessage(threadMessageId);
     }
+    if (action === 'open-search-result') {
+      const record = conversationRecord(target.dataset.id);
+      if (record) openSearchResult(record);
+    }
+    if (action === 'open-search-entity') {
+      openSearchEntity(target.dataset.targetType, target.dataset.targetId);
+    }
     if (action === 'close-thread') {
       threadMessageId = null;
+      selectedSavedRecordId = null;
       render();
     }
     if (action === 'view-in-channel') {
@@ -4320,6 +5146,37 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'save-message') {
       await api(`/api/messages/${target.dataset.id}/save`, { method: 'POST', body: '{}' });
+    }
+    if (action === 'remove-saved-message') {
+      await api(`/api/messages/${target.dataset.id}/save`, { method: 'POST', body: '{}' });
+      if (selectedSavedRecordId === target.dataset.id) {
+        selectedSavedRecordId = null;
+        threadMessageId = null;
+      }
+      toast('Removed from saved');
+    }
+    if (action === 'open-saved-message') {
+      const record = conversationRecord(target.dataset.id);
+      if (record) {
+        const threadRoot = savedRecordThreadRoot(record);
+        selectedSavedRecordId = record.id;
+        selectedAgentId = null;
+        selectedTaskId = null;
+        selectedProjectFile = null;
+        inspectorReturnThreadId = null;
+        if (threadRoot) {
+          threadMessageId = threadRoot.id;
+          render();
+        } else {
+          selectedSpaceType = record.spaceType;
+          selectedSpaceId = record.spaceId;
+          activeView = 'space';
+          activeTab = 'chat';
+          threadMessageId = null;
+          render();
+          scrollToMessage(record.id);
+        }
+      }
     }
     if (action === 'message-task') {
       await api(`/api/messages/${target.dataset.id}/task`, { method: 'POST', body: '{}' });

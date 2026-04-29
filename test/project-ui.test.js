@@ -99,6 +99,16 @@ test('all visible frontend timestamps include seconds', async () => {
   assert.match(app, /hour12: false/);
 });
 
+test('agent born date shows a cake on same-month-day anniversaries only', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  assert.match(app, /function shouldCelebrateAgentBorn\(value, today = new Date\(\)\)/);
+  assert.match(app, /date\.getMonth\(\) === today\.getMonth\(\)/);
+  assert.match(app, /date\.getDate\(\) === today\.getDate\(\)/);
+  assert.match(app, /date\.getFullYear\(\) !== today\.getFullYear\(\)/);
+  assert.match(app, /shouldCelebrateAgentBorn\(date\) \? '🎂 ' : ''/);
+});
+
 test('agent messages and thread replies render live status dots on avatar corners', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
@@ -148,14 +158,19 @@ test('dm chat and task empty states use Slock-style simple surfaces', async () =
   assert.match(styles, /\.dm-peer-button/);
 });
 
-test('task cards are compact selectable blocks with detail inspector and no delete action', async () => {
+test('task cards open their thread conversation and keep compact blocks without delete action', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const cardSource = app.slice(app.indexOf('function renderTaskCard'), app.indexOf('function renderTaskActionButtons'));
+  const selectTaskSource = app.slice(app.indexOf("if (action === 'select-task')"), app.indexOf("if (action === 'close-task-detail')"));
 
   assert.match(app, /function renderTaskDetail\(task\)/);
   assert.match(app, /data-action="select-task" data-id="\$\{escapeHtml\(task\.id\)\}"/);
-  assert.match(app, /class="task-card compact-task-card\$\{selectedTaskId === task\.id \? ' active' : ''\}"/);
+  assert.match(app, /const thread = taskThreadMessage\(task\)/);
+  assert.match(app, /const active = threadMessageId === thread\?\.id \? ' active' : ''/);
+  assert.match(selectTaskSource, /const task = byId\(appState\.tasks, target\.dataset\.id\)/);
+  assert.match(selectTaskSource, /const thread = task \? taskThreadMessage\(task\) : null/);
+  assert.match(selectTaskSource, /threadMessageId = thread\.id/);
   assert.match(app, /if \(selectedTaskId\)[\s\S]*renderTaskDetail\(task\)/);
   assert.equal(app.includes('data-action="delete-task"'), false);
   assert.equal(cardSource.includes('pill(task.status'), false);
@@ -166,8 +181,13 @@ test('task cards are compact selectable blocks with detail inspector and no dele
 test('global task board follows Slock board list channel filtering without cancelled task state', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const server = await readFile(new URL('../server/index.js', import.meta.url), 'utf8');
 
   assert.equal(app.includes("['cancelled', 'Cancelled']"), false);
+  assert.equal(app.includes("task.status !== 'cancelled'"), false);
+  assert.equal(app.includes("['done', 'cancelled']"), false);
+  assert.equal(server.includes("task.status = 'cancelled'"), false);
+  assert.equal(server.includes('cancelled_from_thread'), false);
   assert.match(app, /let taskViewMode = 'board'/);
   assert.match(app, /let taskChannelFilterIds = \[\]/);
   assert.match(app, /function renderTaskToolbar\(tasks, filteredTasks\)/);
@@ -175,12 +195,99 @@ test('global task board follows Slock board list channel filtering without cance
   assert.match(app, /function renderTaskChannelFilter\(\)/);
   assert.match(app, /function renderTaskListView\(tasks\)/);
   assert.match(app, /const channelTasks = \(appState\.tasks \|\| \[\]\)\.filter\(isVisibleChannelTask\)/);
-  assert.match(app, /task\.status !== 'cancelled'/);
   assert.match(app, /taskViewMode === 'list' \? renderTaskListView\(filteredTasks\) : renderTaskBoard\(filteredTasks\)/);
   assert.match(styles, /\.task-page-header/);
   assert.match(styles, /\.task-view-toggle/);
   assert.match(styles, /\.task-channel-menu/);
   assert.match(styles, /\.task-list-view/);
+});
+
+test('task status icons sync across messages threads saved and task detail', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const messageSource = app.slice(app.indexOf('function renderMessage'), app.indexOf('function renderComposer'));
+  const threadsSource = app.slice(app.indexOf('function renderThreads'), app.indexOf('function renderSaved'));
+  const savedSource = app.slice(app.indexOf('function renderSavedRecord'), app.indexOf('function renderSearch'));
+  const taskCardSource = app.slice(app.indexOf('function renderTaskCard'), app.indexOf('function renderTaskActionButtons'));
+  const lifecycleSource = app.slice(app.indexOf('function renderTaskLifecycle'), app.indexOf('function renderModal'));
+
+  assert.match(app, /function taskStatusIcon\(status\)/);
+  assert.match(app, /function renderTaskStatusBadge\(status, options = \{\}\)/);
+  assert.match(app, /function renderTaskInlineBadge\(task, options = \{\}\)/);
+  assert.match(app, /function renderTaskHoverCard\(task\)/);
+  assert.match(app, /function renderTaskStateFlow\(task\)/);
+  assert.match(app, /function renderTaskHistoryCompact\(task\)/);
+  assert.match(messageSource, /renderTaskInlineBadge\(task/);
+  assert.equal(messageSource.includes('pill(task.status'), false);
+  assert.match(threadsSource, /renderThreadKindBadge\(message, task\)/);
+  assert.match(savedSource, /renderTaskInlineBadge\(task/);
+  assert.match(taskCardSource, /renderTaskInlineBadge\(task, \{ showAssignee: false, hover: false \}\)/);
+  assert.match(lifecycleSource, /renderTaskStateFlow\(task\)/);
+  assert.match(lifecycleSource, /renderTaskHistoryCompact\(task\)/);
+  assert.equal(lifecycleSource.includes('<span>${escapeHtml(task.status)}</span>'), false);
+  assert.equal(lifecycleSource.includes('<p>${escapeHtml(plainActorText(item.message))}</p>'), false);
+  assert.match(styles, /\.task-status-icon-badge/);
+  assert.match(styles, /\.task-inline-badge/);
+  assert.match(styles, /\.task-hover-card/);
+  assert.match(styles, /\.task-inline-badge:hover \.task-hover-card/);
+  assert.match(styles, /\.task-state-flow/);
+  assert.match(styles, /\.task-state-node\.current > span::before/);
+  assert.match(styles, /@keyframes taskAutocastSpin/);
+  assert.match(styles, /\.task-lifecycle-events/);
+  assert.match(styles, /\.task-action-btn/);
+  assert.match(styles, /\.thread-kind-badge/);
+});
+
+test('search input preserves IME composition and updates results without full rerender', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const searchInputSource = app.slice(app.indexOf("if (event.target.id === 'search-input')"), app.indexOf("if (event.target.id === 'add-member-search')"));
+
+  assert.match(app, /let searchIsComposing = false/);
+  assert.match(app, /document\.addEventListener\('compositionstart'/);
+  assert.match(app, /document\.addEventListener\('compositionend'/);
+  assert.match(searchInputSource, /updateSearchResults\(\)/);
+  assert.equal(searchInputSource.includes('render();'), false);
+  assert.match(app, /data-search-results/);
+  assert.match(styles, /\.search-result-card/);
+  assert.match(styles, /\.search-highlight/);
+});
+
+test('search covers messages and replies with local ranking helpers', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  assert.match(app, /function searchRecords\(query\)/);
+  assert.match(app, /\.\.\.\(appState\?\.messages \|\| \[\]\), \.\.\.\(appState\?\.replies \|\| \[\]\)/);
+  assert.match(app, /function searchScore\(record, query\)/);
+  assert.match(app, /function highlightSearchText\(text, query\)/);
+  assert.match(app, /data-action="open-search-result"/);
+  assert.match(app, /function openSearchResult\(record\)/);
+  assert.match(app, /function scrollToReply\(replyId\)/);
+});
+
+test('thread list rows keep the top-message avatar at the far left', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const threadsSource = app.slice(app.indexOf('function renderThreads'), app.indexOf('function renderSaved'));
+
+  assert.match(threadsSource, /class="thread-row-avatar"/);
+  assert.match(app, /function renderThreadRowAvatar\(message\)/);
+  assert.match(threadsSource, /renderThreadRowAvatar\(message\)/);
+  assert.match(styles, /\.thread-row \{[\s\S]*grid-template-columns: 32px minmax\(0, 1fr\) auto/);
+  assert.match(styles, /\.thread-row-avatar/);
+  assert.match(styles, /\.thread-list-avatar/);
+});
+
+test('task filter popover closes on outside clicks and list cards fit their content', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /const clickedTaskChannelFilter = event\.target\.closest\('\.task-channel-filter'\)/);
+  assert.match(app, /taskChannelMenuOpen && !clickedTaskChannelFilter/);
+  assert.match(app, /taskChannelMenuOpen = false;[\s\S]*if \(!target\) \{[\s\S]*render\(\);[\s\S]*return;/);
+  assert.match(styles, /\.task-list-body \.compact-task-card \{[\s\S]*max-height: none/);
+  assert.match(styles, /\.task-list-body \.task-card-title \{[\s\S]*min-height: auto/);
+  assert.match(styles, /\.task-list-body \.task-card-foot \{[\s\S]*line-height: 1\.15/);
 });
 
 test('member rail lists keep status dots on the far right only in the agent tab', async () => {
@@ -199,13 +306,44 @@ test('member rail lists keep status dots on the far right only in the agent tab'
   assert.match(styles, /\.message-card \.avatar-status-dot/);
 });
 
+test('agent detail opened from a thread returns to that thread when closed', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  assert.match(app, /let inspectorReturnThreadId = null/);
+  assert.match(app, /if \(threadMessageId\) inspectorReturnThreadId = threadMessageId/);
+  assert.match(app, /if \(inspectorReturnThreadId && byId\(appState\.messages, inspectorReturnThreadId\)\) \{[\s\S]*threadMessageId = inspectorReturnThreadId/);
+  assert.match(app, /inspectorReturnThreadId = null;[\s\S]*render\(\);/);
+});
+
 test('selected thread rows keep the active highlight while the drawer is open', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /const active = threadMessageId === message\.id \? ' active' : ''/);
-  assert.match(app, /class="thread-row\$\{active\}"/);
+  assert.match(app, /class="thread-row slock-thread-row\$\{active\}"/);
   assert.match(styles, /\.thread-row\.active/);
+  assert.match(styles, /\.thread-list-panel/);
+  assert.match(styles, /border: 1px solid #d4d1c8/);
+});
+
+test('messages use Slock-style hover save actions and saved messages open context', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /function renderMessageActions\(record, options = \{\}\)/);
+  assert.match(app, /Reply in thread/);
+  assert.match(app, /Save message/);
+  assert.match(app, /Remove from saved/);
+  assert.match(app, /function renderSavedRecord\(record\)/);
+  assert.match(app, /function savedRecords\(\)/);
+  assert.match(app, /data-action="open-saved-message"/);
+  assert.match(app, /data-action="remove-saved-message"/);
+  assert.match(app, /if \(action === 'open-saved-message'\)/);
+  assert.equal(app.includes('Unsave'), false);
+  assert.match(styles, /\.message-hover-actions/);
+  assert.match(styles, /\.saved-list-panel/);
+  assert.match(styles, /\.saved-row/);
+  assert.match(styles, /\.saved-remove/);
 });
 
 test('agent identities are clickable and expose Slock-style hover summaries', async () => {
