@@ -10,6 +10,7 @@ let railTab = localStorage.getItem('railTab') || 'spaces'; // 'spaces' or 'membe
 let threadMessageId = null;
 let selectedAgentId = null; // selected agent for detail panel
 let modal = null;
+let agentRestartState = { agentId: null, mode: 'restart' };
 let searchQuery = '';
 let addMemberSearchQuery = '';
 let taskFilter = 'all';
@@ -34,6 +35,7 @@ let selectedAgentWorkspaceFile = null;
 
 const BOTTOM_THRESHOLD = 72;
 const MAX_ATTACHMENTS_PER_COMPOSER = 20;
+const AGENT_AVATAR_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const RAIL_WIDTH_KEY = 'magclawRailWidth';
 const RAIL_MIN_WIDTH = 176;
 const RAIL_MAX_WIDTH = 360;
@@ -100,7 +102,12 @@ const taskColumns = [
   ['in_progress', 'In Progress'],
   ['in_review', 'In Review'],
   ['done', 'Done'],
+  ['cancelled', 'Cancelled'],
 ];
+
+function taskIsClosedStatus(status) {
+  return ['done', 'cancelled'].includes(status);
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -361,6 +368,38 @@ function api(path, options = {}) {
   });
 }
 
+function readAvatarFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Could not read avatar file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadAgentAvatar(input) {
+  const agentId = input?.dataset?.id || selectedAgentId;
+  const file = input?.files?.[0];
+  if (!agentId || !file) return;
+  if (file.size > AGENT_AVATAR_UPLOAD_MAX_BYTES) {
+    toast('Avatar must be 2 MB or smaller');
+    input.value = '';
+    return;
+  }
+  const avatar = await readAvatarFileAsDataUrl(file);
+  await api(`/api/agents/${encodeURIComponent(agentId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ avatar }),
+  });
+  const form = input.closest('#agent-detail-form');
+  const preview = form?.querySelector('.agent-detail-avatar-preview');
+  const hidden = form?.querySelector('input[name="avatar"]');
+  if (preview) preview.src = avatar;
+  if (hidden) hidden.value = avatar;
+  toast('Avatar updated');
+  await refreshState().catch(() => {});
+}
+
 function byId(list, id) {
   return (list || []).find((item) => item.id === id) || null;
 }
@@ -369,7 +408,14 @@ function fmtTime(value) {
   if (!value) return '--';
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return '--';
-  return date.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleString([], {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
 }
 
 function bytes(value) {
@@ -407,6 +453,58 @@ function getAvatarHtml(id, type, cssClass = '') {
   }
   const initials = displayAvatar(id, type);
   return `<span class="${cssClass}">${escapeHtml(initials)}</span>`;
+}
+
+function agentHandle(agent) {
+  return `@${String(agent?.name || 'agent').replace(/\s+/g, '')}`;
+}
+
+function renderAgentHoverCard(agent) {
+  const status = agent?.status || 'offline';
+  const description = agent?.description || agent?.runtime || 'Agent';
+  return `
+    <span class="agent-hover-card" role="tooltip">
+      <span class="agent-hover-head">
+        ${getAvatarHtml(agent.id, 'agent', 'dm-avatar member-avatar')}
+        <span class="agent-hover-title">
+          <strong>${escapeHtml(agent.name)}</strong>
+          <span><span class="agent-hover-status-dot ${presenceClass(status)}"></span>${escapeHtml(status)}</span>
+          <small>${escapeHtml(agentHandle(agent))}</small>
+        </span>
+      </span>
+      <span class="agent-hover-description">${escapeHtml(description)}</span>
+    </span>
+  `;
+}
+
+function renderAgentIdentityButton(agentId, className = '') {
+  const agent = byId(appState?.agents, agentId);
+  if (!agent) return '';
+  return `
+    <button class="agent-identity-button ${className}" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}" aria-label="View ${escapeHtml(agent.name)}">
+      ${getAvatarHtml(agent.id, 'agent', 'avatar-inner')}
+      ${renderAgentHoverCard(agent)}
+    </button>
+  `;
+}
+
+function renderActorAvatar(authorId, authorType) {
+  if (authorType === 'agent') {
+    return `<div class="avatar agent-avatar-cell">${renderAgentIdentityButton(authorId, 'agent-avatar-button')}</div>`;
+  }
+  return `<div class="avatar">${getAvatarHtml(authorId, authorType, 'avatar-inner')}</div>`;
+}
+
+function renderActorName(authorId, authorType) {
+  if (authorType !== 'agent') return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
+  const agent = byId(appState?.agents, authorId);
+  if (!agent) return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
+  return `
+    <button class="agent-author-name" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}">
+      <strong>${escapeHtml(agent.name)}</strong>
+      ${renderAgentHoverCard(agent)}
+    </button>
+  `;
 }
 
 // Parse <@id> and <!special> mentions into styled spans for display
@@ -850,6 +948,7 @@ function taskThreadMessage(task) {
 }
 
 function taskTone(status) {
+  if (status === 'cancelled') return 'red';
   if (status === 'done') return 'green';
   if (status === 'in_review') return 'amber';
   if (status === 'in_progress') return 'cyan';
@@ -867,6 +966,13 @@ function presenceTone(status) {
 
 function presenceClass(status) {
   return `status-${presenceTone(status)}`;
+}
+
+function agentStatusDot(authorId, authorType) {
+  if (authorType !== 'agent') return '';
+  const agent = byId(appState?.agents, authorId);
+  const status = agent?.status || 'offline';
+  return `<span class="message-author-status ${presenceClass(status)}" title="${escapeHtml(status)}" aria-label="Agent status: ${escapeHtml(status)}"></span>`;
 }
 
 function attachmentLinks(ids = []) {
@@ -1084,17 +1190,20 @@ function render() {
     thread: paneScrollSnapshot('thread'),
   };
   ensureSelection();
+  const inspectorHtml = renderInspector();
   root.innerHTML = `
-    <div class="app-frame collab-frame" style="${appFrameStyle()}">
+    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}" style="${appFrameStyle()}">
       ${renderRail()}
       <div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>
       <main class="workspace collab-main">
         ${renderMain()}
       </main>
-      <div class="inspector-resizer" data-action="none" role="separator" aria-label="Resize thread panel" aria-orientation="vertical" tabindex="0"></div>
-      <aside class="inspector collab-inspector">
-        ${renderInspector()}
-      </aside>
+      ${inspectorHtml ? `
+        <div class="inspector-resizer" data-action="none" role="separator" aria-label="Resize inspector panel" aria-orientation="vertical" tabindex="0"></div>
+        <aside class="inspector collab-inspector">
+          ${inspectorHtml}
+        </aside>
+      ` : ''}
     </div>
     ${modal ? renderModal() : ''}
   `;
@@ -1105,7 +1214,7 @@ function renderRail() {
   const channels = appState.channels || [];
   const dms = appState.dms || [];
   const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0 || message.taskId).length;
-  const openTasks = (appState.tasks || []).filter((task) => task.status !== 'done').length;
+  const openTasks = (appState.tasks || []).filter((task) => !taskIsClosedStatus(task.status)).length;
   const saved = (appState.messages || []).filter((message) => message.savedBy?.includes('hum_local')).length;
 
   return `
@@ -1295,10 +1404,10 @@ function renderSpace() {
     <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
     ${isAllChannel ? '' : `<button class="channel-action channel-action-leave" type="button" data-action="leave-channel" data-tooltip="Leave channel" aria-label="Leave channel">${channelActionIcon('leave')}<span>Leave</span></button>`}
     <button class="channel-action channel-action-members" type="button" data-action="open-modal" data-modal="channel-members" data-tooltip="Members" aria-label="View ${memberCount} participants">${channelActionIcon('members')}<strong>${memberCount}</strong></button>
-    <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop agents in this channel" aria-label="Stop agents in this channel">${channelActionIcon('stop')}</button>
+    <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" title="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" aria-label="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)">${channelActionIcon('stop')}</button>
   ` : `
     <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
-    <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop agents in this DM" aria-label="Stop agents in this DM">${channelActionIcon('stop')}</button>
+    <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)" title="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)" aria-label="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)">${channelActionIcon('stop')}</button>
   `;
 
   return `
@@ -1456,12 +1565,13 @@ function renderMessage(message, options = {}) {
   const compact = options.compact ? ' compact' : '';
   const authorClass = ['agent', 'human', 'system'].includes(message.authorType) ? message.authorType : 'unknown';
   const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
+  const agentAuthorAttr = message.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(message.authorId)}"` : '';
   return `
-    <article class="message-card slock-message author-${authorClass}${highlighted}${compact}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}">
-      <div class="avatar">${getAvatarHtml(message.authorId, message.authorType, 'avatar-inner')}</div>
+    <article class="message-card slock-message author-${authorClass}${highlighted}${compact}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}"${agentAuthorAttr}>
+      ${renderActorAvatar(message.authorId, message.authorType)}
       <div class="message-body">
         <div class="message-meta">
-          <strong>${escapeHtml(displayName(message.authorId))}</strong>
+          ${renderActorName(message.authorId, message.authorType)}${agentStatusDot(message.authorId, message.authorType)}
           <span class="sender-role">${escapeHtml(actorSubtitle(message.authorId, message.authorType, message))}</span>
           <time>${fmtTime(message.createdAt)}</time>
           ${task ? `<span class="task-number">#${escapeHtml(task.number || shortId(task.id))}${escapeHtml(taskBadgeName)}</span>${pill(task.status, taskTone(task.status))}` : ''}
@@ -1543,11 +1653,11 @@ function renderTaskCard(task) {
   const creator = task.createdBy ? displayName(task.createdBy) : 'Unknown';
   const history = Array.isArray(task.history) ? task.history.slice(-3).reverse() : [];
   const thread = taskThreadMessage(task);
-  const canClaim = task.status !== 'done' && !task.claimedBy;
-  const canUnclaim = task.status !== 'done' && Boolean(task.claimedBy);
+  const canClaim = !taskIsClosedStatus(task.status) && !task.claimedBy;
+  const canUnclaim = !taskIsClosedStatus(task.status) && Boolean(task.claimedBy);
   const canReview = task.status === 'in_progress' && Boolean(task.claimedBy);
   const canApprove = task.status === 'in_review';
-  const canRun = task.status !== 'done' && (!task.claimedBy || task.claimedBy === 'agt_codex');
+  const canRun = !taskIsClosedStatus(task.status) && (!task.claimedBy || task.claimedBy === 'agt_codex');
   return `
     <article class="task-card">
       <div class="task-card-head">
@@ -1567,7 +1677,7 @@ function renderTaskCard(task) {
         ${canRun ? `<button type="button" data-action="run-task-codex" data-id="${task.id}">Run Codex</button>` : ''}
         ${canReview ? `<button type="button" data-action="task-review" data-id="${task.id}">Request Review</button>` : ''}
         ${canApprove ? `<button type="button" data-action="task-approve" data-id="${task.id}">Approve Done</button>` : ''}
-        ${task.status === 'done' ? `<button type="button" data-action="task-reopen" data-id="${task.id}">Reopen</button>` : ''}
+        ${taskIsClosedStatus(task.status) ? `<button type="button" data-action="task-reopen" data-id="${task.id}">Reopen</button>` : ''}
         ${thread ? `<button type="button" data-action="open-thread" data-id="${thread.id}">Thread</button>` : ''}
         <button type="button" data-action="delete-task" data-id="${task.id}">Delete</button>
       </div>
@@ -1731,23 +1841,12 @@ function renderInspector() {
 
   if (selectedProjectFile) return renderProjectFilePreview();
 
-  // If in members tab with agent selected, show agent detail
-  if (railTab === 'members' && selectedAgentId) {
+  if (selectedAgentId) {
     const agent = byId(appState.agents, selectedAgentId);
     if (agent) return renderAgentDetail(agent);
   }
 
-  // Default empty state
-  return `
-    <section class="pixel-panel inspector-panel">
-      <div class="panel-title">
-        <span>Inspector</span>
-      </div>
-      <div class="empty-box">
-        <p>Select an agent to view details</p>
-      </div>
-    </section>
-  `;
+  return '';
 }
 
 function renderProjectFilePreview() {
@@ -1862,14 +1961,52 @@ function renderAgentWorkspaceSection(agent) {
   `;
 }
 
+function runtimeForAgent(agent) {
+  const runtime = String(agent?.runtime || '').toLowerCase();
+  return installedRuntimes.find((rt) => (
+    String(rt.id || '').toLowerCase() === runtime
+    || String(rt.name || '').toLowerCase() === runtime
+    || String(rt.name || '').toLowerCase().includes(runtime)
+  )) || installedRuntimes.find((rt) => rt.installed) || null;
+}
+
+function agentModelOptions(agent) {
+  const runtime = runtimeForAgent(agent);
+  const modelNames = runtime?.modelNames || (runtime?.models || []).map((model) => ({ slug: model, name: model }));
+  const current = agent?.model || runtime?.defaultModel || '';
+  const options = [...modelNames];
+  if (current && !options.some((model) => (typeof model === 'string' ? model : model.slug) === current)) {
+    options.unshift({ slug: current, name: current });
+  }
+  return options.map((model) => {
+    const slug = typeof model === 'string' ? model : model.slug;
+    const name = typeof model === 'string' ? model : model.name;
+    return `<option value="${escapeHtml(slug)}" ${slug === current ? 'selected' : ''}>${escapeHtml(name)}</option>`;
+  }).join('');
+}
+
+function agentReasoningOptions(agent) {
+  const runtime = runtimeForAgent(agent);
+  const efforts = runtime?.reasoningEffort || [];
+  const current = agent?.reasoningEffort || runtime?.defaultReasoningEffort || '';
+  const options = current && !efforts.includes(current) ? [current, ...efforts] : efforts;
+  return options.map((effort) => `<option value="${escapeHtml(effort)}" ${effort === current ? 'selected' : ''}>${escapeHtml(effort.charAt(0).toUpperCase() + effort.slice(1))}</option>`).join('');
+}
+
+function agentIsRunning(agent) {
+  return ['starting', 'thinking', 'working', 'running', 'busy', 'queued'].includes(String(agent?.status || '').toLowerCase());
+}
+
 function renderAgentDetail(agent) {
   const computer = byId(appState.computers, agent.computerId);
   const envVars = agent.envVars || [];
+  const reasoningOptions = agentReasoningOptions(agent);
+  const running = agentIsRunning(agent);
 
   return `
     <section class="pixel-panel inspector-panel agent-detail">
       <div class="panel-title">
-        <span>Agent Profile</span>
+        <span>${escapeHtml(agent.name)}</span>
         <button type="button" data-action="close-agent-detail">×</button>
       </div>
 
@@ -1879,34 +2016,65 @@ function renderAgentDetail(agent) {
           <strong>${escapeHtml(agent.name)}</strong>
           <span class="agent-status ${presenceClass(agent.status)}">${escapeHtml(agent.status)}</span>
         </div>
+        <div class="agent-header-actions">
+          <button class="secondary-btn" type="button" data-action="open-dm-with-agent" data-id="${escapeHtml(agent.id)}">Message</button>
+          <button class="secondary-btn disabled-action" type="button" data-action="agent-stop-unavailable" data-id="${escapeHtml(agent.id)}" aria-disabled="true">Stop Agent</button>
+          ${running
+            ? `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Restart</button>`
+            : `<button class="secondary-btn" type="button" data-action="start-agent" data-id="${escapeHtml(agent.id)}">Start</button>`}
+        </div>
       </div>
 
-      <div class="agent-detail-section">
-        <div class="detail-label">Description</div>
-        <p class="detail-value">${escapeHtml(agent.description || 'No description')}</p>
-      </div>
+      <form id="agent-detail-form" class="agent-profile-form" data-id="${escapeHtml(agent.id)}">
+        <div class="agent-detail-section agent-avatar-edit">
+          <div class="detail-label">Avatar</div>
+          <div class="agent-avatar-edit-row">
+            <img class="avatar-preview agent-detail-avatar-preview" src="${escapeHtml(agent.avatar || getRandomAvatar())}" alt="${escapeHtml(agent.name)} avatar" />
+            <input type="hidden" name="avatar" value="${escapeHtml(agent.avatar || '')}" />
+            <button class="secondary-btn" type="button" data-action="randomize-agent-detail-avatar">Random</button>
+            <label class="secondary-btn file-btn">
+              Upload
+              <input class="visually-hidden agent-avatar-upload" type="file" accept="image/*" data-action="upload-agent-avatar" data-id="${escapeHtml(agent.id)}" />
+            </label>
+          </div>
+        </div>
 
-      <div class="agent-detail-section">
-        <div class="detail-label">Runtime</div>
-        <div class="detail-value">${escapeHtml(agent.runtime || '--')}</div>
-      </div>
+        <label class="agent-detail-section">
+          <span class="detail-label">Display Name</span>
+          <input name="name" value="${escapeHtml(agent.name)}" required />
+        </label>
+
+        <label class="agent-detail-section">
+          <span class="detail-label">Description</span>
+          <textarea name="description" rows="3">${escapeHtml(agent.description || '')}</textarea>
+        </label>
+
+        <div class="agent-detail-grid">
+          <div class="agent-detail-section">
+            <div class="detail-label">Runtime</div>
+            <div class="detail-value runtime-badge">${escapeHtml(agent.runtime || '--')}</div>
+          </div>
+          <label class="agent-detail-section">
+            <span class="detail-label">Model</span>
+            <select name="model">${agentModelOptions(agent)}</select>
+          </label>
+          ${reasoningOptions ? `
+          <label class="agent-detail-section">
+            <span class="detail-label">Thinking</span>
+            <select name="reasoningEffort">${agentReasoningOptions(agent)}</select>
+          </label>
+          ` : ''}
+        </div>
+
+        <div class="agent-detail-actions form-actions">
+          <button class="primary-btn" type="submit">Save Profile</button>
+        </div>
+      </form>
 
       <div class="agent-detail-section">
         <div class="detail-label">Runtime Session</div>
         <div class="detail-value"><code>${escapeHtml(agent.runtimeSessionId || '--')}</code></div>
       </div>
-
-      <div class="agent-detail-section">
-        <div class="detail-label">Model</div>
-        <div class="detail-value">${escapeHtml(agent.model || '--')}</div>
-      </div>
-
-      ${agent.reasoningEffort ? `
-      <div class="agent-detail-section">
-        <div class="detail-label">Reasoning Effort</div>
-        <div class="detail-value">${escapeHtml(agent.reasoningEffort)}</div>
-      </div>
-      ` : ''}
 
       <div class="agent-detail-section">
         <div class="detail-label">Computer</div>
@@ -1936,8 +2104,7 @@ function renderAgentDetail(agent) {
       ` : ''}
 
       <div class="agent-detail-actions">
-        <button class="secondary-btn" type="button" data-action="open-dm-with-agent" data-id="${agent.id}">Message</button>
-        <button class="danger-btn" type="button" data-action="delete-agent" data-id="${agent.id}">Delete</button>
+        <button class="danger-btn" type="button" data-action="delete-agent" data-id="${escapeHtml(agent.id)}">Delete</button>
       </div>
     </section>
   `;
@@ -1960,13 +2127,14 @@ function renderAgentListItem(agent) {
   const active = selectedAgentId === agent.id ? ' active' : '';
   const desc = agent.description ? `<span class="agent-desc">${escapeHtml(agent.description)}</span>` : '';
   return `
-    <button class="space-btn member-btn${active}" type="button" data-action="select-agent" data-id="${agent.id}">
+    <button class="space-btn member-btn${active}" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}">
       ${getAvatarHtml(agent.id, 'agent', 'dm-avatar')}
       <div class="member-info">
         <span class="dm-name">${escapeHtml(agent.name)}</span>
         ${desc}
       </div>
       <span class="dm-status ${presenceClass(agent.status)}"></span>
+      ${renderAgentHoverCard(agent)}
     </button>
   `;
 }
@@ -1993,12 +2161,13 @@ function renderComputerListItem(computer) {
 
 function renderReply(reply) {
   const authorClass = ['agent', 'human', 'system'].includes(reply.authorType) ? reply.authorType : 'unknown';
+  const agentAuthorAttr = reply.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(reply.authorId)}"` : '';
   return `
-    <article class="message-card slock-message reply-card author-${authorClass}">
-      <div class="avatar">${getAvatarHtml(reply.authorId, reply.authorType, 'avatar-inner')}</div>
+    <article class="message-card slock-message reply-card author-${authorClass}"${agentAuthorAttr}>
+      ${renderActorAvatar(reply.authorId, reply.authorType)}
       <div class="message-body">
         <div class="message-meta">
-          <strong>${escapeHtml(displayName(reply.authorId))}</strong>
+          ${renderActorName(reply.authorId, reply.authorType)}${agentStatusDot(reply.authorId, reply.authorType)}
           <span class="sender-role">${escapeHtml(actorSubtitle(reply.authorId, reply.authorType, reply))}</span>
           <time>${fmtTime(reply.createdAt)}</time>
         </div>
@@ -2036,9 +2205,11 @@ function renderThreadDrawer(message) {
             <span>Beginning of replies</span>
             <strong>${replies.length} ${replyWord}</strong>
           </div>
-          <div class="reply-list">
-            ${replies.length ? replies.map(renderReply).join('') : '<div class="empty-box small">No replies yet.</div>'}
-          </div>
+          ${replies.length ? `
+            <div class="reply-list">
+              ${replies.map(renderReply).join('')}
+            </div>
+          ` : ''}
         </div>
         <button class="back-bottom thread-back-bottom${backBottomVisible.thread ? '' : ' hidden'}" type="button" data-action="back-to-bottom" data-target="thread">Back to Bottom</button>
       </div>
@@ -2060,11 +2231,11 @@ function renderTaskLifecycle(task) {
         <span>${escapeHtml(task.status)}</span>
       </div>
       <div class="task-actions">
-        ${!task.claimedBy && task.status !== 'done' ? `<button type="button" data-action="task-claim" data-id="${task.id}">Claim Codex</button>` : ''}
-        ${task.claimedBy && task.status !== 'done' ? `<button type="button" data-action="task-unclaim" data-id="${task.id}">Unclaim</button>` : ''}
+        ${!task.claimedBy && !taskIsClosedStatus(task.status) ? `<button type="button" data-action="task-claim" data-id="${task.id}">Claim Codex</button>` : ''}
+        ${task.claimedBy && !taskIsClosedStatus(task.status) ? `<button type="button" data-action="task-unclaim" data-id="${task.id}">Unclaim</button>` : ''}
         ${task.status === 'in_progress' ? `<button type="button" data-action="task-review" data-id="${task.id}">Request Review</button>` : ''}
         ${task.status === 'in_review' ? `<button type="button" data-action="task-approve" data-id="${task.id}">Approve Done</button>` : ''}
-        ${task.status === 'done' ? `<button type="button" data-action="task-reopen" data-id="${task.id}">Reopen</button>` : ''}
+        ${taskIsClosedStatus(task.status) ? `<button type="button" data-action="task-reopen" data-id="${task.id}">Reopen</button>` : ''}
       </div>
       <div class="history-list">
         ${history.length ? history.map((item) => `
@@ -2091,6 +2262,7 @@ function renderModal() {
     task: renderTaskModal,
     agent: renderAgentModal,
     'avatar-picker': renderAvatarPickerModal,
+    'agent-restart': renderAgentRestartModal,
     computer: renderComputerModal,
     human: renderHumanModal,
   };
@@ -2111,28 +2283,65 @@ function modalHeader(title, subtitle) {
 }
 
 function renderStopAllConfirmModal() {
-  const activeStatuses = new Set(['busy', 'queued', 'running', 'starting', 'thinking', 'working']);
-  const memberAgentIds = selectedSpaceType === 'channel'
-    ? getChannelMembers(selectedSpaceId).agents.map((agent) => agent.id)
-    : (byId(appState?.dms, selectedSpaceId)?.participantIds || []).filter((id) => byId(appState?.agents, id));
-  const activeAgents = (appState?.agents || []).filter((agent) => memberAgentIds.includes(agent.id) && activeStatuses.has(agent.status));
   const targetName = spaceName(selectedSpaceType, selectedSpaceId);
-  const activeCopy = activeAgents.length
-    ? `${activeAgents.length} active Agent${activeAgents.length === 1 ? '' : 's'} in ${targetName} will receive a stop request.`
-    : `No active Agent is reported in ${targetName} right now, but queued work in this space will still be cleared.`;
   return `
     ${modalHeader('STOP ALL AGENTS')}
-    <div class="confirm-stop-modal">
+    <div class="confirm-stop-modal stop-unavailable-modal">
       <div class="confirm-stop-icon">${channelActionIcon('stop')}</div>
       <div class="confirm-stop-copy">
-        <strong>Stop Agent work in ${escapeHtml(targetName)}?</strong>
-        <p>This immediately stops running and queued Agent actions in this space. The same Agent's work in other channels is left alone.</p>
-        <small>${escapeHtml(activeCopy)}</small>
+        <strong>该功能暂时不可用</strong>
+        <p>Stop All Agents in ${escapeHtml(targetName)} is currently disabled.</p>
       </div>
     </div>
     <div class="modal-actions confirm-stop-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">OK</button>
+    </div>
+  `;
+}
+
+function renderAgentRestartModal() {
+  const agent = byId(appState?.agents, agentRestartState.agentId);
+  const mode = agentRestartState.mode || 'restart';
+  const options = [
+    {
+      id: 'restart',
+      title: 'Restart',
+      body: 'Stop and restart the agent process. Keeps conversation history and workspace files.',
+      tone: 'info',
+    },
+    {
+      id: 'reset-session',
+      title: 'Reset Session & Restart',
+      body: 'Clear conversation history and restart. Workspace files (MEMORY.md, notes/) are preserved.',
+      tone: 'warning',
+    },
+    {
+      id: 'full-reset',
+      title: 'Full Reset & Restart',
+      body: 'Clear conversation history, delete all workspace files, and restart from scratch.',
+      tone: 'danger',
+    },
+  ];
+  const active = options.find((item) => item.id === mode) || options[0];
+  return `
+    ${modalHeader(`RESTART ${agent ? agent.name : 'AGENT'}`)}
+    <div class="agent-restart-options">
+      ${options.map((option) => `
+        <button class="agent-restart-option ${option.id === mode ? `selected ${option.tone}` : ''}" type="button" data-action="select-agent-restart-mode" data-mode="${option.id}">
+          <strong>${escapeHtml(option.title)}</strong>
+          <span>${escapeHtml(option.body)}</span>
+        </button>
+      `).join('')}
+    </div>
+    ${mode === 'full-reset' ? `
+      <div class="agent-restart-warning">
+        <strong>This will permanently delete all workspace files including MEMORY.md and notes/.</strong>
+        <span>This cannot be undone.</span>
+      </div>
+    ` : ''}
+    <div class="modal-actions confirm-stop-actions">
       <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
-      <button type="button" class="danger-btn confirm-stop-btn" data-action="confirm-stop-all">Stop all agents</button>
+      <button type="button" class="primary-btn ${active.tone === 'danger' ? 'danger-btn' : ''}" data-action="confirm-agent-restart">${escapeHtml(active.title)}</button>
     </div>
   `;
 }
@@ -2218,13 +2427,24 @@ function renderChannelMemberRow(member, type, isAllChannel) {
     ? getAvatarHtml(member.id, 'agent', 'dm-avatar member-avatar')
     : `<span class="dm-avatar member-avatar">${escapeHtml(displayAvatar(member.id, 'human'))}</span>`;
   const canRemove = !isAllChannel && (type === 'agent' || member.id !== 'hum_local');
-  return `
-    <div class="member-list-item member-list-item-${type}">
+  const profile = type === 'agent' ? `
+    <button class="member-profile-btn" type="button" data-action="select-agent" data-id="${escapeHtml(member.id)}">
       ${avatar}
       <span class="member-main">
         <strong class="member-name">${escapeHtml(member.name)}</strong>
-        ${type === 'agent' ? `<span class="member-status ${presenceClass(status)}">${escapeHtml(status)}</span>` : ''}
+        <span class="member-status ${presenceClass(status)}">${escapeHtml(status)}</span>
       </span>
+      ${renderAgentHoverCard(member)}
+    </button>
+  ` : `
+    ${avatar}
+    <span class="member-main">
+      <strong class="member-name">${escapeHtml(member.name)}</strong>
+    </span>
+  `;
+  return `
+    <div class="member-list-item member-list-item-${type}">
+      ${profile}
       ${canRemove ? `<button class="member-remove-btn" type="button" data-action="remove-channel-member" data-member-id="${member.id}" title="Remove ${escapeHtml(member.name)}" aria-label="Remove ${escapeHtml(member.name)}">×</button>` : ''}
     </div>
   `;
@@ -2832,6 +3052,11 @@ document.addEventListener('input', async (event) => {
 });
 
 document.addEventListener('change', async (event) => {
+  if (event.target.matches?.('.agent-avatar-upload')) {
+    await uploadAgentAvatar(event.target).catch((error) => toast(error.message));
+    return;
+  }
+
   // Save agent form select state
   const form = event.target.closest('#agent-form');
   if (form) {
@@ -2936,6 +3161,11 @@ document.addEventListener('click', async (event) => {
     'toggle-agent-workspace',
     'open-agent-workspace-file',
     'close-agent-workspace-file',
+    'agent-stop-unavailable',
+    'open-agent-restart',
+    'select-agent-restart-mode',
+    'randomize-agent-detail-avatar',
+    'upload-agent-avatar',
   ]);
 
   // Environment variable actions: don't trigger refreshState
@@ -2975,11 +3205,21 @@ document.addEventListener('click', async (event) => {
     render();
     return;
   }
+  if (action === 'randomize-agent-detail-avatar') {
+    const avatar = getRandomAvatar();
+    const form = target.closest('#agent-detail-form');
+    const preview = form?.querySelector('.agent-detail-avatar-preview');
+    const input = form?.querySelector('input[name="avatar"]');
+    if (preview) preview.src = avatar;
+    if (input) input.value = avatar;
+    return;
+  }
   try {
     if (action === 'set-view') {
       activeView = target.dataset.view;
       threadMessageId = null;
       selectedProjectFile = null;
+      selectedAgentId = null;
       render();
     }
     if (action === 'set-rail-tab') {
@@ -2991,9 +3231,12 @@ document.addEventListener('click', async (event) => {
       render();
     }
     if (action === 'select-agent') {
+      if (!installedRuntimes.length) await loadInstalledRuntimes();
       selectedAgentId = target.dataset.id;
+      threadMessageId = null;
       selectedProjectFile = null;
       selectedAgentWorkspaceFile = null;
+      modal = null;
       render();
     }
     if (action === 'close-agent-detail') {
@@ -3030,6 +3273,7 @@ document.addEventListener('click', async (event) => {
       toast('Agent deleted');
     }
     if (action === 'select-space') {
+      selectedAgentId = null;
       selectedSpaceType = target.dataset.type;
       selectedSpaceId = target.dataset.id;
       activeView = 'space';
@@ -3061,6 +3305,34 @@ document.addEventListener('click', async (event) => {
       }
       render();
     }
+    if (action === 'agent-stop-unavailable') {
+      toast('暂时不可用');
+    }
+    if (action === 'open-agent-restart') {
+      agentRestartState = { agentId: target.dataset.id, mode: 'restart' };
+      modal = 'agent-restart';
+      render();
+    }
+    if (action === 'select-agent-restart-mode') {
+      agentRestartState = {
+        ...agentRestartState,
+        mode: target.dataset.mode || 'restart',
+      };
+      render();
+    }
+    if (action === 'start-agent') {
+      await api(`/api/agents/${target.dataset.id}/start`, { method: 'POST', body: '{}' });
+      toast('Agent starting');
+    }
+    if (action === 'confirm-agent-restart') {
+      if (!agentRestartState.agentId) return;
+      await api(`/api/agents/${agentRestartState.agentId}/restart`, {
+        method: 'POST',
+        body: JSON.stringify({ mode: agentRestartState.mode || 'restart' }),
+      });
+      modal = null;
+      toast('Agent restart requested');
+    }
     if (action === 'close-modal') {
       const isBackdrop = event.target.classList.contains('modal-backdrop');
       const isCloseBtn = event.target.closest('.modal-head button[data-action="close-modal"]');
@@ -3072,12 +3344,16 @@ document.addEventListener('click', async (event) => {
         if (modal === 'add-channel-member' || modal === 'channel-members') {
           addMemberSearchQuery = '';
         }
+        if (modal === 'agent-restart') {
+          agentRestartState = { agentId: null, mode: 'restart' };
+        }
         modal = null;
         render();
       }
     }
     if (action === 'open-thread') {
       threadMessageId = target.dataset.id;
+      selectedAgentId = null;
       selectedProjectFile = null;
       render();
       scrollToMessage(threadMessageId);
@@ -3181,14 +3457,6 @@ document.addEventListener('click', async (event) => {
       await api(`/api/tasks/${target.dataset.id}/run-codex`, { method: 'POST', body: '{}' });
       activeView = 'missions';
       toast('Codex mission started');
-    }
-    if (action === 'confirm-stop-all') {
-      await api('/api/agents/stop-all', {
-        method: 'POST',
-        body: JSON.stringify({ spaceType: selectedSpaceType, spaceId: selectedSpaceId }),
-      });
-      modal = null;
-      toast(`Stop requested in ${spaceName(selectedSpaceType, selectedSpaceId)}`);
     }
     if (action === 'cloud-local' || action === 'cloud-disconnect') {
       await api('/api/cloud/disconnect', { method: 'POST', body: '{}' });
@@ -3377,6 +3645,20 @@ document.addEventListener('submit', async (event) => {
         modal = null;
       }
       activeTab = 'tasks';
+    }
+    if (form.id === 'agent-detail-form') {
+      const agentId = form.dataset.id;
+      await api(`/api/agents/${agentId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: data.get('name'),
+          description: data.get('description'),
+          model: data.get('model'),
+          reasoningEffort: data.get('reasoningEffort') || null,
+          avatar: data.get('avatar') || null,
+        }),
+      });
+      toast('Agent updated');
     }
     if (form.id === 'agent-form') {
       const selectedRuntime = installedRuntimes.find((rt) => rt.id === data.get('runtime'));

@@ -172,6 +172,133 @@ test('Slock-style message task stores mentions, channel task number, assignees, 
   }
 });
 
+test('thread stop intent cancels only that task work and lets other queued work continue', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-thread-stop-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const logPath = process.env.FAKE_CODEX_LOG;
+let buffer = '';
+let turnCount = 0;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify({ pid: process.pid, ...value }) + '\\n');
+}
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+function completeTurn(turnId, text) {
+  send({ method: 'turn/started', params: { turn: { id: turnId } } });
+  send({ method: 'item/agentMessage/delta', params: { itemId: 'item_' + turnId, delta: text } });
+  send({ method: 'turn/completed', params: { turn: { id: turnId, status: 'completed' } } });
+}
+function handle(message) {
+  log({ method: message.method, params: message.params });
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'initialized') return;
+  if (message.method === 'thread/start') {
+    send({ id: message.id, result: { thread: { id: 'thread_fake_thread_stop_' + process.pid } } });
+    return;
+  }
+  if (message.method === 'thread/resume') {
+    send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    return;
+  }
+  if (message.method === 'turn/start' || message.method === 'turn/steer') {
+    const turnId = 'turn_' + (++turnCount);
+    const prompt = message.params?.input?.[0]?.text || '';
+    send({ id: message.id, result: { turn: { id: turnId } } });
+    const isOtherWork = prompt.includes('other task must continue');
+    setTimeout(() => {
+      completeTurn(turnId, isOtherWork ? 'other task survived thread stop' : 'stopped task should not reply');
+    }, isOtherWork ? 30 : 2000);
+  }
+}
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (line.trim()) handle(JSON.parse(line));
+  }
+});
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+    MAGCLAW_AGENT_BUSY_DELIVERY_DELAY_MS: '60',
+  });
+  try {
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'thread-stop-other', description: 'surviving work channel', agentIds: ['agt_codex'] }),
+    });
+
+    const taskMessage = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '<@agt_codex> 请做一个长任务',
+        asTask: true,
+        attachmentIds: [],
+      }),
+    });
+    assert.ok(taskMessage.task?.id);
+
+    await waitFor(async () => {
+      const entries = await readJsonLines(logPath);
+      return entries.some((item) => item.method === 'turn/start');
+    }, 3000);
+
+    const otherMessage = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '<@agt_codex> other task must continue',
+        attachmentIds: [],
+      }),
+    });
+
+    const stopped = await request(server.baseUrl, `/api/messages/${taskMessage.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '停掉这个任务',
+        attachmentIds: [],
+      }),
+    });
+    assert.equal(stopped.stoppedTask.status, 'cancelled');
+
+    const finalState = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const taskReplies = snapshot.replies.filter((reply) => reply.parentMessageId === taskMessage.message.id);
+      const otherReplies = snapshot.replies.filter((reply) => reply.parentMessageId === otherMessage.message.id);
+      const agent = snapshot.agents.find((item) => item.id === 'agt_codex');
+      return otherReplies.some((reply) => reply.body.includes('other task survived thread stop'))
+        && !taskReplies.some((reply) => reply.body.includes('stopped task should not reply'))
+        && agent?.status === 'idle'
+        ? snapshot
+        : null;
+    }, 8000);
+
+    assert.ok(finalState);
+    const task = finalState.tasks.find((item) => item.id === taskMessage.task.id);
+    assert.equal(task.status, 'cancelled');
+    assert.match(task.cancelledAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.ok(task.history.some((item) => item.type === 'cancelled_from_thread'));
+    const taskReplies = finalState.replies.filter((reply) => reply.parentMessageId === taskMessage.message.id);
+    assert.ok(taskReplies.some((reply) => reply.body === 'Task stopped from thread request.'));
+    const stoppedItem = finalState.workItems.find((item) => item.sourceMessageId === taskMessage.message.id);
+    const otherItem = finalState.workItems.find((item) => item.sourceMessageId === otherMessage.message.id);
+    assert.equal(stoppedItem?.status, 'cancelled');
+    assert.equal(otherItem?.status, 'responded');
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
 test('task APIs create top-level task messages and reject direct reply-as-task payloads', async () => {
   const server = await startIsolatedServer();
   try {
@@ -718,6 +845,153 @@ test('agent tool task update enforces claimed ownership and status transitions',
     assert.ok(task.history.some((item) => item.type === 'agent_done'));
   } finally {
     await server.stop();
+  }
+});
+
+test('agent profile update persists editable detail fields', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const created = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Profile Editable',
+        description: 'before',
+        runtime: 'Codex CLI',
+        model: 'gpt-5.4',
+        reasoningEffort: 'medium',
+        avatar: '/avatars/avatar_0001.svg',
+      }),
+    });
+
+    const updated = await request(server.baseUrl, `/api/agents/${created.agent.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: 'Profile Updated',
+        description: 'after',
+        model: 'gpt-5.5',
+        reasoningEffort: 'high',
+        avatar: 'data:image/png;base64,AAAA',
+      }),
+    });
+
+    assert.equal(updated.agent.name, 'Profile Updated');
+    assert.equal(updated.agent.description, 'after');
+    assert.equal(updated.agent.model, 'gpt-5.5');
+    assert.equal(updated.agent.reasoningEffort, 'high');
+    assert.equal(updated.agent.avatar, 'data:image/png;base64,AAAA');
+    const state = await request(server.baseUrl, '/api/state');
+    const agent = state.agents.find((item) => item.id === created.agent.id);
+    assert.equal(agent.name, 'Profile Updated');
+    assert.equal(agent.reasoningEffort, 'high');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('agent start and restart modes follow Slock-style session and workspace rules', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-restart-codex-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.cjs');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes('--version')) {
+  console.log('codex-cli fake-restart');
+  process.exit(0);
+}
+if (args[0] === 'debug' && args[1] === 'models') {
+  console.log(JSON.stringify({ models: [{ slug: 'gpt-5.5', display_name: 'GPT-5.5', visibility: 'list', supported_reasoning_levels: [{ effort: 'medium' }, { effort: 'high' }] }] }));
+  process.exit(0);
+}
+let requestCount = 0;
+let buffer = '';
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+function handle(message) {
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'initialized') return;
+  if (message.method === 'thread/resume') {
+    send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    return;
+  }
+  if (message.method === 'thread/start') {
+    requestCount += 1;
+    send({ id: message.id, result: { thread: { id: 'thread_' + process.pid + '_' + requestCount } } });
+  }
+}
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (line.trim()) handle(JSON.parse(line));
+  }
+});
+process.on('SIGTERM', () => process.exit(0));
+`);
+  await chmod(fakeCodexPath, 0o755);
+
+  const server = await startIsolatedServer({ CODEX_PATH: fakeCodexPath });
+  const agentDir = path.join(server.tmp, '.magclaw', 'agents', 'agt_codex');
+  const notePath = path.join(agentDir, 'notes', 'keep.md');
+  const workspacePath = path.join(agentDir, 'workspace', 'scratch.txt');
+  try {
+    await request(server.baseUrl, '/api/agents/agt_codex/start', {
+      method: 'POST',
+      body: '{}',
+    });
+    const firstRunAgent = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return agent?.runtimeSessionId && agent.status === 'idle' ? agent : null;
+    });
+    assert.ok(firstRunAgent.runtimeSessionId);
+
+    await writeFile(notePath, 'preserve me');
+    await writeFile(workspacePath, 'delete me later');
+
+    await request(server.baseUrl, '/api/agents/agt_codex/restart', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'restart' }),
+    });
+    const restartedAgent = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return agent?.status === 'idle' ? agent : null;
+    });
+    assert.equal(restartedAgent.runtimeSessionId, firstRunAgent.runtimeSessionId);
+    assert.equal(await readFile(notePath, 'utf8'), 'preserve me');
+
+    await request(server.baseUrl, '/api/agents/agt_codex/restart', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'reset-session' }),
+    });
+    const resetSessionAgent = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return agent?.runtimeSessionId && agent.status === 'idle' && agent.runtimeSessionId !== firstRunAgent.runtimeSessionId ? agent : null;
+    });
+    assert.ok(resetSessionAgent.runtimeSessionId);
+    assert.equal(await readFile(notePath, 'utf8'), 'preserve me');
+
+    await request(server.baseUrl, '/api/agents/agt_codex/restart', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'full-reset' }),
+    });
+    const fullResetAgent = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return agent?.runtimeSessionId && agent.status === 'idle' && agent.runtimeSessionId !== resetSessionAgent.runtimeSessionId ? agent : null;
+    });
+    assert.ok(fullResetAgent.runtimeSessionId);
+    await assert.rejects(readFile(notePath, 'utf8'), { code: 'ENOENT' });
+    await assert.rejects(readFile(workspacePath, 'utf8'), { code: 'ENOENT' });
+    assert.ok(await readFile(path.join(agentDir, 'MEMORY.md'), 'utf8'));
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
   }
 });
 

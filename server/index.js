@@ -8,6 +8,7 @@ import {
   readFile,
   readlink,
   rename,
+  rm,
   stat,
   symlink,
   unlink,
@@ -1564,6 +1565,61 @@ function turnMetaHasWorkOutsideScope(turnMeta, scope) {
   });
 }
 
+function taskIsClosed(task) {
+  return ['done', 'cancelled'].includes(task?.status);
+}
+
+function taskThreadRecordIds(task) {
+  return normalizeIds([
+    task?.messageId,
+    task?.threadMessageId,
+    task?.sourceMessageId,
+  ]);
+}
+
+function messageMatchesTask(message, task) {
+  if (!message || !task) return false;
+  const threadIds = taskThreadRecordIds(task);
+  if (message.taskId === task.id) return true;
+  if (threadIds.includes(message.id)) return true;
+  if (message.parentMessageId && threadIds.includes(message.parentMessageId)) return true;
+  if (message.parentMessageId) return messageMatchesTask(findMessage(message.parentMessageId), task);
+  return false;
+}
+
+function workItemMatchesTask(item, task) {
+  if (!item || !task) return false;
+  const threadIds = taskThreadRecordIds(task);
+  if (item.taskId === task.id) return true;
+  if (threadIds.includes(item.sourceMessageId) || threadIds.includes(item.parentMessageId)) return true;
+  if (messageMatchesTask(findConversationRecord(item.sourceMessageId), task)) return true;
+  if (item.parentMessageId && messageMatchesTask(findMessage(item.parentMessageId), task)) return true;
+  return false;
+}
+
+function deliveryMessageMatchesTask(message, task) {
+  if (!message || !task) return false;
+  if (message.taskId === task.id) return true;
+  const workItem = message.workItemId ? findWorkItem(message.workItemId) : null;
+  if (workItemMatchesTask(workItem, task)) return true;
+  if (messageMatchesTask(findConversationRecord(message.id), task)) return true;
+  if (message.parentMessageId && messageMatchesTask(findMessage(message.parentMessageId), task)) return true;
+  return false;
+}
+
+function runMatchesTask(run, task) {
+  if (!run || !task) return false;
+  if (run.taskId === task.id) return true;
+  const mission = findMission(run.missionId);
+  return mission?.taskId === task.id;
+}
+
+function turnMetaMatchesTask(turnMeta, task) {
+  if (!turnMeta || !task) return false;
+  if (messageMatchesTask(turnMeta.sourceMessage, task)) return true;
+  return normalizeIds(turnMeta.workItemIds || []).some((id) => workItemMatchesTask(findWorkItem(id), task));
+}
+
 function shortTaskId(id) {
   return String(id || '').split('_').pop()?.slice(0, 6) || 'task';
 }
@@ -1601,6 +1657,19 @@ function addTaskTimelineMessage(task, body, eventType) {
     eventType: eventType || 'task_event',
     taskId: task.id,
   });
+}
+
+function taskStopIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /停(掉|止|下|一下)?这个(任务|会话|thread|对话)/,
+    /这个(任务|会话|thread|对话).*(停掉|停止|暂停|取消|不要继续|别继续)/,
+    /取消这个(任务|会话|thread|对话)/,
+    /不要继续.*(这个|这条)?.*(任务|会话|thread|对话)/,
+    /别(做|继续).*(这个|这条)?.*(任务|会话|thread|对话)/,
+    /\b(stop|cancel|abort)\b.*\b(task|thread|work)\b/i,
+  ].some((pattern) => pattern.test(value));
 }
 
 function taskEndIntent(text) {
@@ -1765,7 +1834,7 @@ function shouldStartThreadForAgentDelivery(message) {
 }
 
 function finishTaskFromThread(task, actorId, replyId) {
-  if (!task || task.status === 'done') return false;
+  if (!task || taskIsClosed(task)) return false;
   task.status = 'done';
   task.completedAt = now();
   task.endIntentAt = task.endIntentAt || task.completedAt;
@@ -1777,6 +1846,34 @@ function finishTaskFromThread(task, actorId, replyId) {
   addTaskHistory(task, 'ended_from_thread', 'Task ended from thread intent.', actorId || 'hum_local', { replyId });
   addTaskTimelineMessage(task, `✅ ${displayActor(actorId)} moved ${taskLabel(task)} to Done`, 'task_done');
   return true;
+}
+
+function cancelTaskFromThread(task, actorId, replyId) {
+  if (!task || taskIsClosed(task)) {
+    return { changed: false, stoppedRuns: [], stoppedAgents: [], cancelledWorkItems: [] };
+  }
+  task.status = 'cancelled';
+  task.cancelledAt = task.cancelledAt || now();
+  task.stoppedAt = task.stoppedAt || task.cancelledAt;
+  task.completedAt = null;
+  task.reviewRequestedAt = null;
+  task.updatedAt = now();
+  addTaskHistory(task, 'cancelled_from_thread', 'Task stopped from thread intent.', actorId || 'hum_local', { replyId });
+  addTaskTimelineMessage(task, `⏹ ${displayActor(actorId)} stopped ${taskLabel(task)}`, 'task_cancelled');
+  addCollabEvent('task_cancelled_from_thread', `${displayActor(actorId)} stopped ${taskLabel(task)} from its thread.`, {
+    taskId: task.id,
+    actorId: actorId || 'hum_local',
+    replyId,
+  });
+  const directlyCancelledWorkItems = cancelWorkItemsForTask(task);
+  const stoppedRuns = stopRunsForTask(task);
+  const stopped = stopAgentProcessesForTask(task);
+  return {
+    changed: true,
+    stoppedRuns,
+    stoppedAgents: stopped.stoppedAgents,
+    cancelledWorkItems: normalizeIds([...directlyCancelledWorkItems, ...stopped.cancelledWorkItems]),
+  };
 }
 
 function displayActor(id) {
@@ -2775,7 +2872,7 @@ async function startCodexAgent(agent, proc, workspace) {
 	  proc.activeTurnTargets = new Set();
 	  proc.pendingTurnRequests = new Map();
   proc.turnMeta = new Map();
-  proc.pendingInitialPrompt = turnPrompt;
+  proc.pendingInitialPrompt = promptMessages.length ? turnPrompt : null;
   proc.pendingInitialMessages = promptMessages;
   proc.pendingDeliveryMessages = Array.isArray(proc.pendingDeliveryMessages) ? proc.pendingDeliveryMessages : [];
   proc.busyDeliveryTimer = proc.busyDeliveryTimer || null;
@@ -2929,6 +3026,10 @@ async function handleCodexThreadReady(agent, proc, threadId) {
       proc.lastSourceMessage = messages[messages.length - 1] || proc.lastSourceMessage || null;
       markWorkItemsDelivered(messages, 'turn');
     }
+  } else {
+    proc.status = 'idle';
+    agent.status = 'idle';
+    addSystemEvent('agent_process_ready', `${agent.name} is ready and waiting for messages.`, { agentId: agent.id, sessionId: threadId });
   }
   await persistState();
   broadcastState();
@@ -3386,6 +3487,15 @@ function partitionMessagesByScope(messages, scope) {
   return { scoped, other };
 }
 
+function partitionMessagesByTask(messages, task) {
+  const scoped = [];
+  const other = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    (deliveryMessageMatchesTask(message, task) ? scoped : other).push(message);
+  }
+  return { scoped, other };
+}
+
 function cancelWorkItemsForScope(scope, agentId = null) {
   const cancelled = [];
   state.workItems = Array.isArray(state.workItems) ? state.workItems : [];
@@ -3402,11 +3512,56 @@ function cancelWorkItemsForScope(scope, agentId = null) {
   return cancelled;
 }
 
+function cancelWorkItemsForTask(task, agentId = null) {
+  const cancelled = [];
+  state.workItems = Array.isArray(state.workItems) ? state.workItems : [];
+  for (const item of state.workItems) {
+    if (agentId && item.agentId !== agentId) continue;
+    if (!workItemMatchesTask(item, task)) continue;
+    if (item.status === 'responded' || item.status === 'cancelled') continue;
+    item.status = 'cancelled';
+    item.cancelledAt = item.cancelledAt || now();
+    item.updatedAt = now();
+    item.cancelTaskId = task.id;
+    cancelled.push(item.id);
+  }
+  return cancelled;
+}
+
 function activeTurnMetas(proc) {
   const ids = proc?.activeTurnIds instanceof Set
     ? [...proc.activeTurnIds]
     : (proc?.activeTurnId ? [proc.activeTurnId] : []);
   return ids.map((id) => proc.turnMeta?.get(id)).filter(Boolean);
+}
+
+function activeDeliveryMessagesOutsideTask(proc, task) {
+  const outsideWorkItemIds = new Set();
+  for (const meta of activeTurnMetas(proc)) {
+    if (!turnMetaMatchesTask(meta, task)) continue;
+    for (const id of normalizeIds(meta.workItemIds || [])) {
+      const item = findWorkItem(id);
+      if (item && !workItemMatchesTask(item, task) && item.status !== 'responded' && item.status !== 'cancelled') {
+        outsideWorkItemIds.add(id);
+      }
+    }
+  }
+  if (!outsideWorkItemIds.size) return [];
+  return (Array.isArray(proc?.inbox) ? proc.inbox : [])
+    .filter((message) => message?.workItemId && outsideWorkItemIds.has(message.workItemId));
+}
+
+function uniqueDeliveryMessages(messages) {
+  const seen = new Set();
+  const result = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message) continue;
+    const key = message.workItemId || message.id;
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    result.push(message);
+  }
+  return result;
 }
 
 function processHasOnlyScopedActiveWork(proc, scope) {
@@ -3417,6 +3572,10 @@ function processHasOnlyScopedActiveWork(proc, scope) {
   return spaceMatchesScope(proc, scope);
 }
 
+function processHasActiveTaskWork(proc, task) {
+  return activeTurnMetas(proc).some((meta) => turnMetaMatchesTask(meta, task));
+}
+
 function stopAgentProcessForScope(agent, proc, scope, restartMessages = []) {
   clearAgentBusyDeliveryTimer(proc);
   proc.stopRequested = true;
@@ -3424,6 +3583,26 @@ function stopAgentProcessForScope(agent, proc, scope, restartMessages = []) {
   proc.stoppedAt = now();
   proc.stoppedScope = scope ? { spaceType: scope.spaceType, spaceId: scope.spaceId } : null;
   proc.restartMessagesAfterStop = restartMessages.filter(Boolean);
+  proc.pendingDeliveryMessages = [];
+  proc.pendingInitialMessages = [];
+  proc.pendingInitialPrompt = null;
+  agent.status = proc.restartMessagesAfterStop.length ? 'queued' : 'idle';
+  if (proc.child && !proc.child.killed) {
+    proc.child.kill('SIGTERM');
+    return true;
+  }
+  agentProcesses.delete(agent.id);
+  if (proc.restartMessagesAfterStop.length) restartAgentWithQueuedMessages(agent, proc, proc.restartMessagesAfterStop);
+  return false;
+}
+
+function stopAgentProcessForTask(agent, proc, task, restartMessages = []) {
+  clearAgentBusyDeliveryTimer(proc);
+  proc.stopRequested = true;
+  proc.suppressOutput = true;
+  proc.stoppedAt = now();
+  proc.stoppedTaskId = task.id;
+  proc.restartMessagesAfterStop = uniqueDeliveryMessages(restartMessages);
   proc.pendingDeliveryMessages = [];
   proc.pendingInitialMessages = [];
   proc.pendingInitialPrompt = null;
@@ -3472,6 +3651,47 @@ function stopAgentProcesses(scope = null) {
   };
 }
 
+function stopAgentProcessesForTask(task) {
+  const stoppedAgents = [];
+  const cancelledWorkItems = [];
+  for (const [agentId, proc] of agentProcesses.entries()) {
+    const agent = findAgent(agentId);
+    if (!agent) continue;
+    const activeTask = processHasActiveTaskWork(proc, task);
+    const restartActiveMessages = activeTask ? activeDeliveryMessagesOutsideTask(proc, task) : [];
+    const cancelledForAgent = cancelWorkItemsForTask(task, agentId);
+    cancelledWorkItems.push(...cancelledForAgent);
+
+    const inbox = partitionMessagesByTask(proc.inbox, task);
+    const pending = partitionMessagesByTask(proc.pendingDeliveryMessages, task);
+    const initial = partitionMessagesByTask(proc.pendingInitialMessages, task);
+    proc.inbox = inbox.other;
+    proc.pendingDeliveryMessages = pending.other;
+    proc.pendingInitialMessages = initial.other;
+
+    const restartMessages = uniqueDeliveryMessages([
+      ...restartActiveMessages,
+      ...inbox.other,
+      ...pending.other,
+      ...initial.other,
+    ]);
+    const removedMessages = inbox.scoped.length + pending.scoped.length + initial.scoped.length;
+    const shouldStop = activeTask || (removedMessages > 0 && !activeTurnMetas(proc).length);
+
+    if (shouldStop) {
+      stopAgentProcessForTask(agent, proc, task, restartMessages);
+      stoppedAgents.push(agentId);
+    } else if (removedMessages > 0 || cancelledForAgent.length) {
+      clearAgentBusyDeliveryTimer(proc);
+      if (!restartMessages.length && !activeTurnMetas(proc).length) agent.status = 'idle';
+    }
+  }
+  return {
+    stoppedAgents: normalizeIds(stoppedAgents),
+    cancelledWorkItems: normalizeIds(cancelledWorkItems),
+  };
+}
+
 function stopRunsForScope(scope = null) {
   const stoppedRuns = [];
   for (const [runId, child] of runningProcesses.entries()) {
@@ -3482,6 +3702,96 @@ function stopRunsForScope(scope = null) {
     stoppedRuns.push(runId);
   }
   return normalizeIds(stoppedRuns);
+}
+
+function stopRunsForTask(task) {
+  const stoppedRuns = [];
+  for (const [runId, child] of runningProcesses.entries()) {
+    const run = findRun(runId);
+    if (!run || !runMatchesTask(run, task)) continue;
+    run.cancelRequested = true;
+    child.kill('SIGTERM');
+    stoppedRuns.push(runId);
+  }
+  return normalizeIds(stoppedRuns);
+}
+
+function waitForAgentProcessExit(proc, timeoutMs = 5000) {
+  if (!proc?.child) return Promise.resolve();
+  if (proc.child.exitCode !== null || proc.child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      try {
+        proc.child.kill('SIGKILL');
+      } catch {
+        // Process already ended.
+      }
+      resolve();
+    }, timeoutMs);
+    proc.child.once('close', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+async function stopAgentProcessForControl(agent) {
+  const proc = agentProcesses.get(agent.id);
+  if (!proc) return false;
+  clearAgentBusyDeliveryTimer(proc);
+  proc.stopRequested = true;
+  proc.suppressOutput = true;
+  proc.restartMessagesAfterStop = [];
+  proc.pendingDeliveryMessages = [];
+  proc.pendingInitialMessages = [];
+  proc.pendingInitialPrompt = null;
+  if (proc.child && !proc.child.killed) {
+    proc.child.kill('SIGTERM');
+    await waitForAgentProcessExit(proc);
+  } else {
+    agentProcesses.delete(agent.id);
+  }
+  return true;
+}
+
+async function resetAgentRuntimeSession(agent) {
+  agent.runtimeSessionId = null;
+  agent.runtimeLastTurnAt = null;
+  await writeAgentSessionFile(agent).catch(() => {});
+}
+
+async function resetAgentWorkspaceFiles(agent) {
+  await rm(agentDataDir(agent), { recursive: true, force: true, maxRetries: 5, retryDelay: 80 });
+  agent.runtimeSessionId = null;
+  agent.runtimeSessionHome = null;
+  agent.runtimeConfigVersion = 0;
+  agent.runtimeLastStartedAt = null;
+  agent.runtimeLastTurnAt = null;
+  agent.workspacePath = null;
+  await ensureAgentWorkspace(agent);
+}
+
+async function startAgentFromControl(agent) {
+  return startAgentProcess(agent, 'channel', 'chan_all', []);
+}
+
+async function restartAgentFromControl(agent, mode = 'restart') {
+  const normalizedMode = ['restart', 'reset-session', 'full-reset'].includes(mode) ? mode : 'restart';
+  const stopped = await stopAgentProcessForControl(agent);
+  if (normalizedMode === 'full-reset') {
+    await resetAgentWorkspaceFiles(agent);
+  } else if (normalizedMode === 'reset-session') {
+    await resetAgentRuntimeSession(agent);
+  }
+  addCollabEvent('agent_restart_requested', `${agent.name} restart requested (${normalizedMode}).`, {
+    agentId: agent.id,
+    mode: normalizedMode,
+    stopped,
+  });
+  await persistState();
+  broadcastState();
+  await startAgentFromControl(agent);
+  return { mode: normalizedMode, stopped };
 }
 
 async function relayAgentMentions(record, { parentMessageId = null } = {}) {
@@ -3793,7 +4103,7 @@ function createTaskMessage({ title, body = '', spaceType, spaceId, authorType = 
 
 function claimTask(task, actorId, options = {}) {
   if (!task) throw httpError(404, 'Task not found.');
-  if (task.status === 'done') throw httpError(409, 'Done task cannot be claimed.');
+  if (taskIsClosed(task)) throw httpError(409, 'Closed task cannot be claimed.');
   const claimant = String(actorId || 'agt_codex');
   if (task.claimedBy && task.claimedBy !== claimant && !options.force) {
     throw httpError(409, `Task is already claimed by ${task.claimedBy}.`);
@@ -4779,8 +5089,16 @@ async function handleApi(req, res, url) {
     const linkedTask = findTaskForThreadMessage(message);
     let createdThreadTask = null;
     let createdThreadTaskMessage = null;
-    if (reply.authorType === 'human' && linkedTask && taskEndIntent(text)) {
+    let endedThreadTask = null;
+    let stoppedThreadTask = null;
+    let stopResult = null;
+    if (reply.authorType === 'human' && linkedTask && taskStopIntent(text)) {
+      stopResult = cancelTaskFromThread(linkedTask, reply.authorId, reply.id);
+      stoppedThreadTask = linkedTask;
+      addSystemReply(message.id, 'Task stopped from thread request.');
+    } else if (reply.authorType === 'human' && linkedTask && taskEndIntent(text)) {
       finishTaskFromThread(linkedTask, reply.authorId, reply.id);
+      endedThreadTask = linkedTask;
       addSystemReply(message.id, 'Task marked done from thread request.');
     }
     if (reply.authorType === 'human' && message.spaceType === 'channel' && taskCreationIntent(text)) {
@@ -4804,7 +5122,7 @@ async function handleApi(req, res, url) {
     await persistState();
     broadcastState();
 
-    if (reply.authorType === 'human' && !createdThreadTask) {
+    if (reply.authorType === 'human' && !createdThreadTask && !endedThreadTask && !stoppedThreadTask) {
       const channel = message.spaceType === 'channel' ? findChannel(message.spaceId) : null;
       const channelAgents = channel
         ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
@@ -4819,7 +5137,14 @@ async function handleApi(req, res, url) {
       }
     }
 
-    sendJson(res, 201, { reply, createdTask: createdThreadTask, createdTaskMessage: createdThreadTaskMessage });
+    sendJson(res, 201, {
+      reply,
+      createdTask: createdThreadTask,
+      createdTaskMessage: createdThreadTaskMessage,
+      endedTask: endedThreadTask,
+      stoppedTask: stoppedThreadTask,
+      stopResult,
+    });
     return true;
   }
 
@@ -4925,8 +5250,8 @@ async function handleApi(req, res, url) {
       sendError(res, 404, 'Task not found.');
       return true;
     }
-    if (task.status === 'done') {
-      sendError(res, 409, 'Done task cannot be unclaimed.');
+    if (taskIsClosed(task)) {
+      sendError(res, 409, 'Closed task cannot be unclaimed.');
       return true;
     }
     const actorId = task.claimedBy || 'hum_local';
@@ -4950,6 +5275,10 @@ async function handleApi(req, res, url) {
     const task = findTask(reviewMatch[1]);
     if (!task) {
       sendError(res, 404, 'Task not found.');
+      return true;
+    }
+    if (taskIsClosed(task)) {
+      sendError(res, 409, 'Closed task cannot request review.');
       return true;
     }
     if (!task.claimedBy) {
@@ -5005,6 +5334,8 @@ async function handleApi(req, res, url) {
     task.reviewRequestedAt = null;
     task.completedAt = null;
     task.endIntentAt = null;
+    task.cancelledAt = null;
+    task.stoppedAt = null;
     addTaskHistory(task, 'reopened', 'Task reopened by human.');
     const thread = ensureTaskThread(task);
     addSystemReply(thread.id, 'Task reopened.');
@@ -5022,8 +5353,8 @@ async function handleApi(req, res, url) {
       sendError(res, 404, 'Task not found.');
       return true;
     }
-    if (task.status === 'done') {
-      sendError(res, 409, 'Done task cannot start a Codex run.');
+    if (taskIsClosed(task)) {
+      sendError(res, 409, 'Closed task cannot start a Codex run.');
       return true;
     }
     const actorId = 'agt_codex';
@@ -5208,6 +5539,36 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  const agentStartMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/start$/);
+  if (req.method === 'POST' && agentStartMatch) {
+    const agent = findAgent(agentStartMatch[1]);
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    if (!agentProcesses.has(agent.id)) {
+      await startAgentFromControl(agent);
+      addCollabEvent('agent_start_requested', `Agent start requested: ${agent.name}`, { agentId: agent.id });
+      await persistState();
+      broadcastState();
+    }
+    sendJson(res, 202, { agent, running: true });
+    return true;
+  }
+
+  const agentRestartMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/restart$/);
+  if (req.method === 'POST' && agentRestartMatch) {
+    const agent = findAgent(agentRestartMatch[1]);
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await restartAgentFromControl(agent, String(body.mode || 'restart'));
+    sendJson(res, 202, { agent, ...result });
+    return true;
+  }
+
   const agentWorkspaceMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/workspace$/);
   if (req.method === 'GET' && agentWorkspaceMatch) {
     const agent = findAgent(agentWorkspaceMatch[1]);
@@ -5248,9 +5609,11 @@ async function handleApi(req, res, url) {
       return true;
     }
     const body = await readJson(req);
-    for (const key of ['name', 'description', 'runtime', 'model', 'status', 'computerId', 'workspace']) {
+    for (const key of ['name', 'description', 'runtime', 'model', 'status', 'computerId', 'workspace', 'reasoningEffort', 'avatar']) {
       if (body[key] !== undefined) agent[key] = String(body[key] || '').trim();
     }
+    if (body.reasoningEffort === null) agent.reasoningEffort = null;
+    if (Array.isArray(body.envVars)) agent.envVars = body.envVars;
     addCollabEvent('agent_updated', `Agent updated: ${agent.name}`, { agentId: agent.id });
     await persistState();
     broadcastState();
