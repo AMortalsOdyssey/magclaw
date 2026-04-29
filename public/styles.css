@@ -551,6 +551,20 @@ p {
   gap: 12px;
 }
 
+.dm-peer-button {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.dm-peer-button:hover strong,
+.dm-peer-button:focus-visible strong {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .dm-header-avatar .dm-avatar {
   width: 34px;
   height: 34px;
@@ -1132,11 +1146,7 @@ button:disabled {
 .agent-identity-button:hover .agent-hover-card,
 .agent-identity-button:focus-visible .agent-hover-card,
 .agent-author-name:hover .agent-hover-card,
-.agent-author-name:focus-visible .agent-hover-card,
-.member-btn:hover .agent-hover-card,
-.member-btn:focus-visible .agent-hover-card,
-.member-profile-btn:hover .agent-hover-card,
-.member-profile-btn:focus-visible .agent-hover-card {
+.agent-author-name:focus-visible .agent-hover-card {
   display: grid;
   gap: 7px;
 }
@@ -4202,25 +4212,27 @@ code {
 }
 
 .agent-edit-pencil {
-  min-height: 18px;
-  padding: 0 4px;
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  place-items: center;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--text-muted);
   box-shadow: none;
-  font-size: 11px;
+  cursor: pointer;
 }
 
-.agent-edit-pencil::before {
-  content: "edit";
+.agent-edit-pencil:hover,
+.agent-edit-pencil:focus-visible {
+  color: var(--text-primary);
+  background: var(--slock-cream);
 }
 
-.agent-edit-pencil {
-  font-size: 0;
-}
-
-.agent-edit-pencil::before {
-  font-size: 11px;
+.agent-edit-icon {
+  display: block;
 }
 
 .agent-field-value {

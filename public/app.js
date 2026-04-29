@@ -12,6 +12,7 @@ let threadMessageId = null;
 let selectedAgentId = null; // selected agent for detail panel
 let selectedTaskId = null;
 let modal = null;
+let agentStartState = { agentId: null };
 let agentRestartState = { agentId: null, mode: 'restart' };
 let searchQuery = '';
 let addMemberSearchQuery = '';
@@ -45,7 +46,8 @@ let avatarCropState = null;
 
 const BOTTOM_THRESHOLD = 72;
 const MAX_ATTACHMENTS_PER_COMPOSER = 20;
-const AGENT_AVATAR_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
+const AGENT_AVATAR_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+const AGENT_ACTIVITY_EVENT_LIMIT = 5000;
 const AVATAR_CROP_SIZE = 256;
 const AVATAR_CROP_STAGE_SIZE = 320;
 const AVATAR_CROP_VIEW_SIZE = 220;
@@ -88,6 +90,10 @@ function getRandomAvatar() {
 
 function trashIcon() {
   return '<svg class="project-remove-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 15h10l1-15"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+}
+
+function editPencilIcon() {
+  return '<svg class="agent-edit-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16z"/><path d="M13 7l4 4"/></svg>';
 }
 
 function folderIcon() {
@@ -491,7 +497,7 @@ async function uploadAgentAvatar(input) {
   const file = input?.files?.[0];
   if (!agentId || !file) return;
   if (file.size > AGENT_AVATAR_UPLOAD_MAX_BYTES) {
-    toast('Avatar must be 2 MB or smaller');
+    toast('Avatar must be 10 MB or smaller');
     input.value = '';
     return;
   }
@@ -1590,18 +1596,24 @@ function renderDmHeader() {
   const peer = currentDmPeer();
   const name = peer?.item?.name || spaceName(selectedSpaceType, selectedSpaceId);
   const status = peer?.status || 'offline';
+  const avatar = `
+    <span class="dm-avatar-wrap dm-header-avatar">
+      <span class="dm-avatar">${peer?.avatar ? `<img src="${escapeHtml(peer.avatar)}" alt="">` : escapeHtml(displayAvatar(peer?.item?.id || name, peer?.type || 'human'))}</span>
+      ${avatarStatusDot(status, 'DM status')}
+    </span>
+  `;
+  const copy = `
+    <span class="dm-peer-copy">
+      <strong>${escapeHtml(name)}</strong>
+      <small>${escapeHtml(status)}</small>
+    </span>
+  `;
+  const head = peer?.type === 'agent'
+    ? `<button class="dm-peer-head dm-peer-button" type="button" data-action="select-agent" data-id="${escapeHtml(peer.item.id)}">${avatar}${copy}</button>`
+    : `<div class="dm-peer-head">${avatar}${copy}</div>`;
   return `
     <header class="dm-space-header pixel-panel">
-      <div class="dm-peer-head">
-        <span class="dm-avatar-wrap dm-header-avatar">
-          <span class="dm-avatar">${peer?.avatar ? `<img src="${escapeHtml(peer.avatar)}" alt="">` : escapeHtml(displayAvatar(peer?.item?.id || name, peer?.type || 'human'))}</span>
-          ${avatarStatusDot(status, 'DM status')}
-        </span>
-        <span class="dm-peer-copy">
-          <strong>${escapeHtml(name)}</strong>
-          <small>${escapeHtml(status)}</small>
-        </span>
-      </div>
+      ${head}
     </header>
   `;
 }
@@ -2388,7 +2400,7 @@ function renderAgentInlineField(agent, field, label, { multiline = false, placeh
       <section class="agent-profile-field">
         <div class="agent-field-head">
           <span class="detail-label">${escapeHtml(label)}</span>
-          <button class="agent-edit-pencil" type="button" data-action="edit-agent-field" data-field="${escapeHtml(field)}" aria-label="Edit ${escapeHtml(label)}">Edit</button>
+          <button class="agent-edit-pencil" type="button" data-action="edit-agent-field" data-field="${escapeHtml(field)}" aria-label="Edit ${escapeHtml(label)}" title="Edit ${escapeHtml(label)}">${editPencilIcon()}</button>
         </div>
         <div class="agent-field-value ${value ? '' : 'muted'}">${escapeHtml(displayValue)}</div>
       </section>
@@ -2506,7 +2518,7 @@ function renderAgentEnvVarsSection(agent) {
     <section class="agent-profile-field agent-env-section">
       <div class="agent-field-head">
         <span class="detail-label">Environment Variables</span>
-        <button class="agent-edit-pencil" type="button" data-action="edit-agent-env" data-agent-id="${escapeHtml(agent.id)}" aria-label="Edit environment variables">Edit</button>
+        <button class="agent-edit-pencil" type="button" data-action="edit-agent-env" data-agent-id="${escapeHtml(agent.id)}" aria-label="Edit environment variables" title="Edit environment variables">${editPencilIcon()}</button>
       </div>
       ${envVars.length ? `
         <div class="env-vars-display">
@@ -2544,7 +2556,7 @@ function renderAgentProfileTab(agent) {
           <button class="secondary-btn disabled-action" type="button" data-action="agent-stop-unavailable" data-id="${escapeHtml(agent.id)}" aria-disabled="true">Stop Agent</button>
           ${agentIsRunning(agent)
             ? `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Restart / Reset</button>`
-            : `<button class="secondary-btn" type="button" data-action="start-agent" data-id="${escapeHtml(agent.id)}">Start</button>`}
+            : `<button class="secondary-btn" type="button" data-action="start-agent" data-id="${escapeHtml(agent.id)}">Start Agent</button>`}
           <button class="danger-btn" type="button" data-action="delete-agent" data-id="${escapeHtml(agent.id)}">Delete Agent</button>
         </div>
       </section>
@@ -2581,7 +2593,7 @@ function agentActivityEvents(agent) {
   return (appState?.events || [])
     .filter((event) => event.agentId === agent.id || event.meta?.agentId === agent.id || event.raw?.agentId === agent.id)
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .slice(0, 1000);
+    .slice(0, AGENT_ACTIVITY_EVENT_LIMIT);
 }
 
 function agentActivityLabel(event) {
@@ -2649,7 +2661,7 @@ function renderAgentDetail(agent) {
           <button class="secondary-btn disabled-action" type="button" data-action="agent-stop-unavailable" data-id="${escapeHtml(agent.id)}" aria-disabled="true">Stop Agent</button>
           ${running
               ? `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Restart</button>`
-              : `<button class="secondary-btn" type="button" data-action="start-agent" data-id="${escapeHtml(agent.id)}">Start</button>`}
+              : `<button class="secondary-btn" type="button" data-action="start-agent" data-id="${escapeHtml(agent.id)}">Start Agent</button>`}
           <button class="icon-btn small" type="button" data-action="close-agent-detail" aria-label="Close agent detail">×</button>
         </div>
       </div>
@@ -2688,7 +2700,6 @@ function renderAgentListItem(agent) {
         ${desc}
       </div>
       <span class="member-status-side">${avatarStatusDot(status, 'Agent status')}</span>
-      ${renderAgentHoverCard(agent)}
     </button>
   `;
 }
@@ -2825,6 +2836,7 @@ function renderModal() {
     agent: renderAgentModal,
     'avatar-picker': renderAvatarPickerModal,
     'avatar-crop': renderAvatarCropModal,
+    'agent-start': renderAgentStartModal,
     'agent-restart': renderAgentRestartModal,
     computer: renderComputerModal,
     human: renderHumanModal,
@@ -2858,6 +2870,23 @@ function renderStopAllConfirmModal() {
     </div>
     <div class="modal-actions confirm-stop-actions">
       <button type="button" class="secondary-btn" data-action="close-modal">OK</button>
+    </div>
+  `;
+}
+
+function renderAgentStartModal() {
+  const agent = byId(appState?.agents, agentStartState.agentId);
+  return `
+    ${modalHeader(`START ${agent ? agent.name : 'AGENT'}`)}
+    <div class="agent-restart-options">
+      <div class="agent-restart-option selected info">
+        <strong>Start Agent</strong>
+        <span>Start the agent process. Keeps conversation history and workspace files.</span>
+      </div>
+    </div>
+    <div class="modal-actions confirm-stop-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+      <button type="button" class="primary-btn" data-action="confirm-agent-start">Start Agent</button>
     </div>
   `;
 }
@@ -3845,6 +3874,7 @@ document.addEventListener('click', async (event) => {
     'open-agent-workspace-file',
     'close-agent-workspace-file',
     'agent-stop-unavailable',
+    'start-agent',
     'open-agent-restart',
     'select-agent-restart-mode',
     'upload-agent-avatar',
@@ -4151,8 +4181,16 @@ document.addEventListener('click', async (event) => {
       render();
     }
     if (action === 'start-agent') {
-      await api(`/api/agents/${target.dataset.id}/start`, { method: 'POST', body: '{}' });
-      toast('Agent starting');
+      agentStartState = { agentId: target.dataset.id };
+      modal = 'agent-start';
+      render();
+    }
+    if (action === 'confirm-agent-start') {
+      if (!agentStartState.agentId) return;
+      await api(`/api/agents/${agentStartState.agentId}/start`, { method: 'POST', body: '{}' });
+      agentStartState = { agentId: null };
+      modal = null;
+      toast('Agent start requested');
     }
     if (action === 'confirm-agent-restart') {
       if (!agentRestartState.agentId) return;
@@ -4173,6 +4211,9 @@ document.addEventListener('click', async (event) => {
         }
         if (modal === 'add-channel-member' || modal === 'channel-members') {
           addMemberSearchQuery = '';
+        }
+        if (modal === 'agent-start') {
+          agentStartState = { agentId: null };
         }
         if (modal === 'agent-restart') {
           agentRestartState = { agentId: null, mode: 'restart' };

@@ -137,12 +137,15 @@ test('dm chat and task empty states use Slock-style simple surfaces', async () =
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /function renderDmHeader\(\)/);
+  assert.match(app, /data-action="select-agent" data-id="\$\{escapeHtml\(peer\.item\.id\)\}"/);
+  assert.match(app, /class="dm-peer-head dm-peer-button"/);
   assert.match(app, /function renderDmChat\(\)/);
   assert.match(app, /function renderDmTasks\(tasks\)/);
   assert.match(app, /No messages yet\. Start the conversation!/);
   assert.match(app, /No tasks yet\. Create one to get started!/);
   assert.match(styles, /\.dm-empty-state/);
   assert.match(styles, /\.dm-task-empty/);
+  assert.match(styles, /\.dm-peer-button/);
 });
 
 test('task cards are compact selectable blocks with detail inspector and no delete action', async () => {
@@ -208,14 +211,17 @@ test('selected thread rows keep the active highlight while the drawer is open', 
 test('agent identities are clickable and expose Slock-style hover summaries', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderHumanListItem'));
 
   assert.match(app, /function renderAgentHoverCard\(agent\)/);
   assert.match(app, /function renderAgentIdentityButton\(agentId, className = ''\)/);
   assert.match(app, /data-action="select-agent" data-id="\$\{escapeHtml\(agent\.id\)\}"/);
   assert.match(app, /data-agent-author-id="\$\{escapeHtml\(message\.authorId\)\}"/);
   assert.match(app, /data-agent-author-id="\$\{escapeHtml\(reply\.authorId\)\}"/);
+  assert.equal(agentListSource.includes('renderAgentHoverCard'), false);
   assert.match(styles, /\.agent-hover-card/);
   assert.match(styles, /\.agent-hover-status-dot/);
+  assert.equal(styles.includes('.member-btn:hover .agent-hover-card'), false);
 });
 
 test('agent detail uses Slock-style tabs with inline profile editing and autosaved model controls', async () => {
@@ -230,8 +236,11 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.match(app, /data-action="set-agent-detail-tab" data-tab="\$\{id\}"/);
   assert.match(app, /renderAgentInlineField\(agent, 'name'/);
   assert.match(app, /renderAgentInlineField\(agent, 'description'/);
+  assert.match(app, /function editPencilIcon\(\)/);
+  assert.match(app, /class="agent-edit-icon"/);
   assert.match(app, /data-action="edit-agent-field" data-field="\$\{escapeHtml\(field\)\}"/);
   assert.match(app, /data-action="save-agent-field" data-field="\$\{escapeHtml\(field\)\}"/);
+  assert.equal(app.includes('>Edit</button>'), false);
   assert.match(app, /maxlength="3000"[\s\S]*\$\{descriptionValue\.length\}\/3000/);
   assert.match(app, /data-action="update-agent-model"/);
   assert.match(app, /data-action="update-agent-reasoning"/);
@@ -241,6 +250,8 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.equal(app.includes('>Thinking</span>'), false);
   assert.match(app, /type="file"[\s\S]*data-action="upload-agent-avatar"/);
   assert.match(app, /data-action="start-agent"/);
+  assert.match(app, /function renderAgentStartModal\(\)/);
+  assert.match(app, /data-action="confirm-agent-start"/);
   assert.match(app, /data-action="open-agent-restart"/);
   assert.match(app, /data-action="agent-stop-unavailable"/);
   assert.match(app, /function renderAgentRestartModal\(\)/);
@@ -254,6 +265,8 @@ test('agent avatar uploads open a square crop modal and persist a cropped image'
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /const AVATAR_CROP_SIZE = 256/);
+  assert.match(app, /const AGENT_AVATAR_UPLOAD_MAX_BYTES = 10 \* 1024 \* 1024/);
+  assert.match(app, /Avatar must be 10 MB or smaller/);
   assert.match(app, /let avatarCropState = null/);
   assert.match(app, /function openAvatarCropModal/);
   assert.match(app, /function renderAvatarCropModal\(\)/);
@@ -286,13 +299,14 @@ test('agent workspace tab has split tree and raw/preview markdown controls', asy
   assert.match(styles, /\.agent-workspace-viewer/);
 });
 
-test('agent activity tab renders newest first with second-level timestamps and a 1000 item cap', async () => {
+test('agent activity tab renders newest first with second-level timestamps and a 5000 item cap', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
+  assert.match(app, /const AGENT_ACTIVITY_EVENT_LIMIT = 5000/);
   assert.match(app, /function agentActivityEvents\(agent\)/);
   assert.match(app, /\.sort\(\(a, b\) => new Date\(b\.createdAt\) - new Date\(a\.createdAt\)\)/);
-  assert.match(app, /\.slice\(0, 1000\)/);
+  assert.match(app, /\.slice\(0, AGENT_ACTIVITY_EVENT_LIMIT\)/);
   assert.match(app, /fmtTime\(event\.createdAt\)/);
   assert.match(app, /function renderAgentActivityTab\(agent\)/);
   assert.match(styles, /\.agent-activity-list/);
