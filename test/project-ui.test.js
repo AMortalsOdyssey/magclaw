@@ -249,6 +249,7 @@ test('search input preserves IME composition and updates results without full re
   assert.match(searchInputSource, /updateSearchResults\(\)/);
   assert.equal(searchInputSource.includes('render();'), false);
   assert.match(app, /data-search-results/);
+  assert.match(app, /searchVisibleCount = SEARCH_PAGE_SIZE/);
   assert.match(styles, /\.search-result-card/);
   assert.match(styles, /\.search-highlight/);
 });
@@ -263,6 +264,31 @@ test('search covers messages and replies with local ranking helpers', async () =
   assert.match(app, /data-action="open-search-result"/);
   assert.match(app, /function openSearchResult\(record\)/);
   assert.match(app, /function scrollToReply\(replyId\)/);
+});
+
+test('search page matches Slock shortcuts filters persistence and thread drawer behavior', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const keydownSource = app.slice(app.indexOf("document.addEventListener('keydown'"), app.indexOf("document.addEventListener('pointerdown'"));
+  const setViewSource = app.slice(app.indexOf("if (action === 'set-view')"), app.indexOf("if (action === 'set-rail-tab')"));
+  const searchResultSource = app.slice(app.indexOf('function openSearchResult'), app.indexOf('function openSearchEntity'));
+
+  assert.match(keydownSource, /event\.key\?\.toLowerCase\(\) === 'k'/);
+  assert.match(keydownSource, /openSearchView\(\)/);
+  assert.match(app, /function focusSearchInputEnd\(\)/);
+  assert.match(setViewSource, /if \(activeView === 'search'\) focusSearchInputEnd\(\)/);
+  assert.match(app, /data-action="toggle-search-mine"/);
+  assert.match(app, /data-action="toggle-search-range-menu"/);
+  assert.match(app, /data-action="clear-search-all"/);
+  assert.match(app, /data-action="load-more-search"/);
+  assert.match(app, /placeholder="Search channels, DMs, messages\.\.\."/);
+  assert.match(searchResultSource, /activeView === 'search' && opensThread/);
+  assert.match(searchResultSource, /threadMessageId = root\.id/);
+  assert.equal(searchResultSource.includes("activeView = 'space';\n  activeTab = 'chat';\n  threadMessageId = opensThread"), true);
+  assert.match(styles, /\.search-topbar/);
+  assert.match(styles, /\.search-filter-row/);
+  assert.match(styles, /\.search-center-state/);
+  assert.match(styles, /\.search-time-menu/);
 });
 
 test('thread list rows keep the top-message avatar at the far left', async () => {
