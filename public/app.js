@@ -2727,13 +2727,19 @@ function openSearchEntity(targetType, targetId) {
 }
 
 function focusSearchInputEnd() {
-  window.requestAnimationFrame(() => {
+  const focusInput = () => {
     const input = document.getElementById('search-input');
-    if (!input) return;
+    if (!input) return false;
     input.focus({ preventScroll: true });
     const end = input.value.length;
     input.setSelectionRange(end, end);
-  });
+    return true;
+  };
+
+  focusInput();
+  window.requestAnimationFrame(focusInput);
+  window.setTimeout(focusInput, 40);
+  window.setTimeout(focusInput, 120);
 }
 
 function openSearchView() {
