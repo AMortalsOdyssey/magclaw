@@ -38,6 +38,7 @@ const ATTACHMENTS_DIR = path.join(DATA_DIR, 'attachments');
 const RUNS_DIR = path.join(DATA_DIR, 'runs');
 const AGENTS_DIR = path.join(DATA_DIR, 'agents');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const STATE_DB_FILE = path.join(DATA_DIR, 'state.sqlite');
 const SOURCE_CODEX_HOME = path.resolve(process.env.MAGCLAW_CODEX_HOME_SOURCE || process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
 const DEFAULT_PORT = 6543;
 const PORT = Number(process.env.PORT || DEFAULT_PORT);
@@ -53,8 +54,16 @@ const MAX_AGENT_WORKSPACE_TREE_ENTRIES = 300;
 const MAX_AGENT_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_AGENT_RELAY_DEPTH = 2;
 const AGENT_BUSY_DELIVERY_DELAY_MS = Math.max(10, Number(process.env.MAGCLAW_AGENT_BUSY_DELIVERY_DELAY_MS || 160));
+const STATE_HEARTBEAT_MS = Math.max(25, Number(process.env.MAGCLAW_STATE_HEARTBEAT_MS || 1000));
+const AGENT_STATUS_STALE_MS = Math.max(1000, Number(process.env.MAGCLAW_AGENT_STATUS_STALE_MS || 45_000));
+const ROUTE_EVENTS_LIMIT = Math.max(50, Number(process.env.MAGCLAW_ROUTE_EVENTS_LIMIT || 500));
+const AGENT_CARD_TEXT_LIMIT = 5000;
+const BRAIN_AGENT_ID = 'agt_magclaw_brain';
 const CLOUD_PROTOCOL_VERSION = 1;
 const CODEX_HOME_CONFIG_VERSION = 2;
+const CODEX_FALLBACK_MODEL = 'gpt-5.5';
+const SQLITE_BACKED_STATE_KEYS = ['messages', 'replies', 'tasks', 'workItems', 'events'];
+const AGENT_BOOT_RESET_STATUSES = new Set(['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'error']);
 const CODEX_HOME_SHARED_ENTRIES = [
   'auth.json',
 ];
@@ -140,6 +149,8 @@ const contentTypes = new Map([
 
 let state = null;
 let saveChain = Promise.resolve();
+let stateDb = null;
+const agentCardCache = new Map();
 
 function now() {
   return new Date().toISOString();
@@ -185,6 +196,17 @@ function defaultState() {
       autoSync: process.env.MAGCLAW_AUTO_SYNC === '1',
       protocolVersion: CLOUD_PROTOCOL_VERSION,
     },
+    storage: {
+      schemaVersion: 1,
+      sqliteFile: 'state.sqlite',
+      sqliteBackedKeys: SQLITE_BACKED_STATE_KEYS,
+    },
+    router: {
+      mode: 'brain_agent',
+      brainAgentId: BRAIN_AGENT_ID,
+      fallback: 'rules',
+      cardSource: 'workspace_markdown',
+    },
     humans: [
       {
         id: 'hum_local',
@@ -207,6 +229,19 @@ function defaultState() {
       },
     ],
     agents: [
+      {
+        id: BRAIN_AGENT_ID,
+        name: 'MagClaw Brain',
+        description: 'Internal routing brain for channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.',
+        runtime: 'Router Brain',
+        model: 'agent-card-router',
+        status: 'idle',
+        computerId: 'cmp_local',
+        workspace: ROOT,
+        systemRole: 'brain',
+        isBrain: true,
+        createdAt: seededAt,
+      },
       {
         id: 'agt_codex',
         name: 'Codex Local',
@@ -266,6 +301,7 @@ function defaultState() {
     attachments: [],
     projects: [],
     workItems: [],
+    routeEvents: [],
     events: [],
   };
 }
@@ -274,9 +310,11 @@ async function ensureStorage() {
   await mkdir(ATTACHMENTS_DIR, { recursive: true });
   await mkdir(RUNS_DIR, { recursive: true });
   await mkdir(AGENTS_DIR, { recursive: true });
+  await initializeStateDatabase();
 
   if (!existsSync(STATE_FILE)) {
     state = defaultState();
+    migrateState();
     await ensureAllAgentWorkspaces();
     await persistState();
     return;
@@ -285,14 +323,169 @@ async function ensureStorage() {
   try {
     state = JSON.parse(await readFile(STATE_FILE, 'utf8'));
     migrateState();
+    migrateJsonBackedStateToSqlite();
+    hydrateSqliteBackedState();
+    migrateState();
     await ensureAllAgentWorkspaces();
     await persistState();
   } catch {
     state = defaultState();
+    migrateState();
     addSystemEvent('state_recovered', 'State file was unreadable, Magclaw started with a clean state.');
     await ensureAllAgentWorkspaces();
     await persistState();
   }
+}
+
+async function initializeStateDatabase() {
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(STATE_DB_FILE);
+    db.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+      CREATE TABLE IF NOT EXISTS state_records (
+        kind TEXT NOT NULL,
+        id TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (kind, id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_state_records_kind_position ON state_records(kind, position);
+      CREATE INDEX IF NOT EXISTS idx_state_records_kind_created ON state_records(kind, created_at);
+    `);
+    stateDb = db;
+  } catch (error) {
+    stateDb = null;
+    console.warn(`SQLite state store unavailable; falling back to state.json arrays: ${error.message}`);
+  }
+}
+
+function sqliteBackedStateEnabled() {
+  return Boolean(stateDb);
+}
+
+function sqliteRecordCount() {
+  if (!sqliteBackedStateEnabled()) return 0;
+  const row = stateDb.prepare('SELECT COUNT(*) AS count FROM state_records').get();
+  return Number(row?.count || 0);
+}
+
+function hasJsonBackedRecords(sourceState = state) {
+  return SQLITE_BACKED_STATE_KEYS.some((key) => Array.isArray(sourceState?.[key]) && sourceState[key].length);
+}
+
+function migrateJsonBackedStateToSqlite() {
+  if (!sqliteBackedStateEnabled() || !state || sqliteRecordCount() > 0 || !hasJsonBackedRecords(state)) return;
+  syncSqliteBackedState();
+}
+
+function hydrateSqliteBackedState() {
+  if (!sqliteBackedStateEnabled() || !state || sqliteRecordCount() === 0) return;
+  const select = stateDb.prepare('SELECT payload FROM state_records WHERE kind = ? ORDER BY position ASC, created_at ASC, id ASC');
+  for (const key of SQLITE_BACKED_STATE_KEYS) {
+    const rows = select.all(key);
+    state[key] = rows
+      .map((row) => {
+        try {
+          return JSON.parse(row.payload);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  }
+}
+
+function syncSqliteBackedState() {
+  if (!sqliteBackedStateEnabled() || !state) return;
+  const removeKind = stateDb.prepare('DELETE FROM state_records WHERE kind = ?');
+  const insert = stateDb.prepare(`
+    INSERT INTO state_records (kind, id, position, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  stateDb.exec('BEGIN IMMEDIATE');
+  try {
+    for (const key of SQLITE_BACKED_STATE_KEYS) {
+      removeKind.run(key);
+      const records = Array.isArray(state[key]) ? state[key] : [];
+      records.forEach((record, index) => {
+        const id = String(record?.id || `${key}_${index}`);
+        insert.run(
+          key,
+          id,
+          index,
+          record?.createdAt || null,
+          record?.updatedAt || record?.createdAt || null,
+          JSON.stringify(record),
+        );
+      });
+    }
+    stateDb.exec('COMMIT');
+  } catch (error) {
+    stateDb.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function normalizeCodexModelName(model, fallback = '') {
+  const value = String(model || '').trim();
+  if (value && value.toLowerCase() !== 'default') return value;
+  const fallbackValue = String(fallback || process.env.CODEX_MODEL || '').trim();
+  if (fallbackValue && fallbackValue.toLowerCase() !== 'default') return fallbackValue;
+  return CODEX_FALLBACK_MODEL;
+}
+
+function isBrainAgent(agent) {
+  if (!agent) return false;
+  return agent.isBrain === true || String(agent.systemRole || '').toLowerCase() === 'brain';
+}
+
+function agentParticipatesInChannels(agent) {
+  return Boolean(agent && !isBrainAgent(agent));
+}
+
+function defaultBrainAgent() {
+  const seededAt = now();
+  return {
+    id: BRAIN_AGENT_ID,
+    name: 'MagClaw Brain',
+    description: 'Internal routing brain for channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.',
+    runtime: 'Router Brain',
+    model: 'agent-card-router',
+    status: 'idle',
+    computerId: 'cmp_local',
+    workspace: ROOT,
+    systemRole: 'brain',
+    isBrain: true,
+    createdAt: seededAt,
+  };
+}
+
+function ensureBrainAgentConfigured() {
+  state.router = {
+    mode: 'brain_agent',
+    brainAgentId: BRAIN_AGENT_ID,
+    fallback: 'rules',
+    cardSource: 'workspace_markdown',
+    ...(state.router || {}),
+  };
+  let brain = findAgent(state.router.brainAgentId) || state.agents.find(isBrainAgent);
+  if (!brain) {
+    brain = defaultBrainAgent();
+    state.agents.unshift(brain);
+  }
+  brain.systemRole = 'brain';
+  brain.isBrain = true;
+  brain.runtime = brain.runtime || 'Router Brain';
+  brain.model = brain.model || 'agent-card-router';
+  brain.status = ['starting', 'thinking', 'working', 'running', 'busy', 'queued'].includes(String(brain.status || '').toLowerCase())
+    ? 'idle'
+    : (brain.status || 'idle');
+  state.router.brainAgentId = brain.id;
+  return brain;
 }
 
 function migrateState() {
@@ -300,17 +493,20 @@ function migrateState() {
   state.version = 7;
   state.settings = { ...fresh.settings, ...(state.settings || {}) };
   state.connection = { ...fresh.connection, ...(state.connection || {}) };
+  state.storage = { ...fresh.storage, ...(state.storage || {}), sqliteBackedKeys: SQLITE_BACKED_STATE_KEYS };
+  state.router = { ...fresh.router, ...(state.router || {}) };
   state.connection.mode = state.connection.mode === 'cloud' ? 'cloud' : 'local';
   state.connection.controlPlaneUrl = normalizeCloudUrl(state.connection.controlPlaneUrl || '');
   state.connection.relayUrl = normalizeCloudUrl(state.connection.relayUrl || '');
   state.connection.cloudToken = String(state.connection.cloudToken || process.env.MAGCLAW_CLOUD_TOKEN || '');
   state.connection.protocolVersion = CLOUD_PROTOCOL_VERSION;
-  for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'events']) {
+  for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events']) {
     if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
   }
   if (!state.humans.length) state.humans = fresh.humans;
   if (!state.computers.length) state.computers = fresh.computers;
   if (!state.agents.length) state.agents = fresh.agents;
+  ensureBrainAgentConfigured();
   if (!state.channels.length) state.channels = fresh.channels;
   if (!state.dms.length) state.dms = fresh.dms;
   if (!state.messages.length) state.messages = fresh.messages;
@@ -328,11 +524,13 @@ function migrateState() {
         if (!channel.humanIds.includes(human.id)) channel.humanIds.push(human.id);
         if (!channel.memberIds.includes(human.id)) channel.memberIds.push(human.id);
       }
-      for (const agent of state.agents) {
+      for (const agent of state.agents.filter(agentParticipatesInChannels)) {
         if (!channel.agentIds.includes(agent.id)) channel.agentIds.push(agent.id);
         if (!channel.memberIds.includes(agent.id)) channel.memberIds.push(agent.id);
       }
     }
+    channel.agentIds = normalizeIds(channel.agentIds).filter((id) => agentParticipatesInChannels(findAgent(id)));
+    channel.memberIds = normalizeIds(channel.memberIds).filter((id) => !id.startsWith('agt_') || agentParticipatesInChannels(findAgent(id)));
   }
   for (const message of state.messages) {
     normalizeConversationRecord(message);
@@ -449,6 +647,13 @@ function migrateState() {
     agent.runtimeLastStartedAt = agent.runtimeLastStartedAt || null;
     agent.runtimeLastTurnAt = legacyRuntimeSessionId ? null : agent.runtimeLastTurnAt || null;
     agent.workspacePath = agent.workspacePath || path.join(AGENTS_DIR, agent.id);
+    agent.statusUpdatedAt = agent.statusUpdatedAt || agent.updatedAt || agent.createdAt || now();
+    agent.heartbeatAt = agent.heartbeatAt || agent.statusUpdatedAt;
+    agent.activeWorkItemIds = normalizeIds(agent.activeWorkItemIds || []);
+    agent.model = isBrainAgent(agent) ? (agent.model || 'agent-card-router') : normalizeCodexModelName(agent.model, state.settings?.model);
+    if (!isBrainAgent(agent) && AGENT_BOOT_RESET_STATUSES.has(String(agent.status || '').toLowerCase())) {
+      agent.status = 'idle';
+    }
     if (legacyRuntimeSessionId) {
       addSystemEvent('agent_runtime_session_reset', `${agent.name} legacy Codex session was cleared before isolated runtime start.`, {
         agentId: agent.id,
@@ -462,13 +667,30 @@ function migrateState() {
 function persistState() {
   if (!state) return Promise.resolve();
   state.updatedAt = now();
-  const payload = JSON.stringify(state, null, 2);
+  const payload = JSON.stringify(stateJsonSnapshot(), null, 2);
   saveChain = saveChain.then(async () => {
+    syncSqliteBackedState();
     const tmp = `${STATE_FILE}.tmp`;
     await writeFile(tmp, payload);
     await rename(tmp, STATE_FILE);
   });
   return saveChain;
+}
+
+function stateJsonSnapshot() {
+  const snapshot = {
+    ...state,
+    storage: {
+      ...(state.storage || {}),
+      sqliteEnabled: sqliteBackedStateEnabled(),
+      sqliteFile: path.basename(STATE_DB_FILE),
+      sqliteBackedKeys: SQLITE_BACKED_STATE_KEYS,
+    },
+  };
+  if (sqliteBackedStateEnabled()) {
+    for (const key of SQLITE_BACKED_STATE_KEYS) snapshot[key] = [];
+  }
+  return snapshot;
 }
 
 function addSystemEvent(type, message, extra = {}) {
@@ -513,7 +735,27 @@ function broadcast(type, payload) {
 
 function broadcastState() {
   broadcast('state', publicState());
+  broadcastHeartbeat();
   queueCloudPush('state_changed');
+}
+
+function presenceHeartbeat() {
+  return {
+    createdAt: now(),
+    updatedAt: state?.updatedAt || null,
+    agents: (state?.agents || []).map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status || 'offline',
+      runtime: agent.runtime || '',
+      runtimeLastStartedAt: agent.runtimeLastStartedAt || null,
+      runtimeLastTurnAt: agent.runtimeLastTurnAt || null,
+    })),
+  };
+}
+
+function broadcastHeartbeat() {
+  broadcast('heartbeat', presenceHeartbeat());
 }
 
 function sendJson(res, statusCode, data) {
@@ -1011,6 +1253,36 @@ async function prepareAgentCodexHome(agent) {
 }
 
 function defaultAgentMemory(agent) {
+  if (isBrainAgent(agent)) {
+    return [
+      `# ${agent?.name || 'MagClaw Brain'}`,
+      '',
+      '## Role',
+      'You are the internal routing brain for MagClaw. Your job is to decide which channel agents should be awakened, which agent should claim durable work, and when memory writeback should be triggered.',
+      '',
+      '## Routing Principles',
+      '- Hard rules first: explicit mentions, channel membership, thread ownership, and claimed tasks override semantic guesses.',
+      '- Use Agent Cards as the compact progressive-disclosure layer. Do not read every note for every message unless a later implementation explicitly asks you to.',
+      '- Prefer all member agents for ordinary open channel chat and availability checks.',
+      '- Prefer a single best-fit claimant for concrete durable work, then rely on the task claim lock.',
+      '- If routing fails, let the rule fallback handle the message instead of dropping it.',
+      '',
+      '## Key Knowledge',
+      '- `notes/profile.md` - router capability, fallback policy, and scoring priorities.',
+      '- `notes/channels.md` - channel membership and dispatch norms.',
+      '- `notes/agents.md` - agent cards and observed specialties.',
+      '- `notes/work-log.md` - route tuning decisions and memory writeback changes.',
+      '',
+      '## Active Context',
+      '- Router v2 uses structured route events, agent cards, and rules fallback.',
+      '- Future upgrades may replace the deterministic evaluator with an LLM or embedding-based router while preserving the same RouteDecision shape.',
+      '',
+      '## Memory Maintenance',
+      '- Record high-signal routing failures, new dispatch rules, and agent specialty changes in notes/work-log.md or notes/agents.md.',
+      '- Keep this entrypoint short; link to detailed notes instead of expanding everything here.',
+      '',
+    ].join('\n');
+  }
   const role = String(agent?.description || 'General-purpose MagClaw teammate.').trim();
   return [
     `# ${agent?.name || 'Agent'}`,
@@ -1018,25 +1290,120 @@ function defaultAgentMemory(agent) {
     '## Role',
     `You are ${agent?.name || 'this agent'}, ${role}`,
     '',
-    '## Collaboration Principles',
-    '- Work in shared channels and task threads.',
-    '- Claim concrete work before doing it when a task exists.',
-    '- Use history/search tools when recent context is insufficient.',
-    '- Keep replies concise and post progress in the relevant thread.',
+    '## Key Knowledge',
+    '- `notes/profile.md` - your role, strengths, skills, and response boundaries.',
+    '- `notes/channels.md` - channel membership and collaboration context.',
+    '- `notes/agents.md` - other agents, their specialties, and handoff cues.',
+    '- `notes/work-log.md` - durable work history, decisions, and completed artifacts.',
     '',
-    '## Knowledge Index',
-    '- Add durable notes under `notes/`.',
-    '',
-    '## Active Tasks',
+    '## Active Context',
     '- No active task has been recorded yet.',
+    '- Before a long task or context-heavy handoff, summarize the current task, target thread, owner, and next step here.',
     '',
-    '## Channel Context',
-    '- No channel-specific context has been recorded yet.',
-    '',
-    '## Work Log',
-    '- No durable work log has been recorded yet.',
+    '## Collaboration Rules',
+    '- Treat `MEMORY.md` as a concise entry point, not the full notebook.',
+    '- Put durable detail in `notes/` and add or update the index above when a new note matters.',
+    '- Record high-value preferences, specialties, work logs, and handoff facts as part of task progress; the user should not need to ask every time.',
+    '- Claim concrete work before doing it when a task exists, then post progress in the task thread.',
+    '- In shared channels, member agents may all receive open human messages. Reply briefly when you can add useful perspective; respect directed conversations when another agent is named or assigned.',
+    '- Keep replies concise and use history/search tools when recent context is insufficient.',
     '',
   ].join('\n');
+}
+
+function defaultAgentProfileNote(agent) {
+  const role = String(agent?.description || 'General-purpose MagClaw teammate.').trim();
+  return [
+    `# ${agent?.name || 'Agent'} Profile`,
+    '',
+    '## Role',
+    role,
+    '',
+    '## Strengths And Skills',
+    '- Add concrete specialties as they become clear from real work.',
+    '- Keep this list practical: tools, domains, repositories, workflows, and review strengths.',
+    '',
+    '## Response Boundaries',
+    '- In shared channels, open human messages may be delivered to every member agent. Reply briefly if you can help, and stay especially concise when several agents may answer.',
+    '- For directed messages, assignments, and existing task ownership, let the named or assigned agent take the lead.',
+    '- For broad availability checks, state availability briefly and wait for a task or follow-up.',
+    '- Avoid joining a conversation already owned by another agent unless invited.',
+    '- Maintain `MEMORY.md` and `notes/` after meaningful work so future handoffs can rely on them.',
+    '',
+  ].join('\n');
+}
+
+function defaultAgentChannelsNote(agent) {
+  const memberships = (state?.channels || [])
+    .filter((channel) => channelAgentIds(channel).includes(agent.id))
+    .map((channel) => `- #${channel.name}: ${channel.description || 'No description yet.'}`);
+  return [
+    `# ${agent?.name || 'Agent'} Channels`,
+    '',
+    '## Membership',
+    ...(memberships.length ? memberships : ['- No channel membership has been recorded yet.']),
+    '',
+    '## Channel Memory',
+    '- Record channel-specific norms, standing workstreams, and user preferences here.',
+    '- Keep private thread/task details in `notes/work-log.md` unless they become channel-level context.',
+    '',
+  ].join('\n');
+}
+
+function defaultAgentPeersNote(agent) {
+  const peers = (state?.agents || [])
+    .filter((item) => item.id !== agent.id)
+    .map((item) => `- ${item.name}: ${item.description || item.runtime || 'No specialty recorded yet.'}`);
+  return [
+    `# ${agent?.name || 'Agent'} Peer Map`,
+    '',
+    '## Other Agents',
+    ...(peers.length ? peers : ['- No other agents have been recorded yet.']),
+    '',
+    '## Handoff Cues',
+    '- Update this file when another agent demonstrates a reliable specialty.',
+    '- Mention the likely owner when a request clearly belongs to another agent.',
+    '',
+  ].join('\n');
+}
+
+function defaultAgentWorkLogNote(agent) {
+  return [
+    `# ${agent?.name || 'Agent'} Work Log`,
+    '',
+    '## Open Work',
+    '- No open work has been recorded yet.',
+    '',
+    '## Completed Work',
+    '- No completed work has been recorded yet.',
+    '',
+    '## Durable Decisions',
+    '- No durable decisions have been recorded yet.',
+    '',
+  ].join('\n');
+}
+
+function defaultAgentWorkspaceReadme(agent) {
+  return [
+    `# ${agent?.name || 'Agent'} Workspace`,
+    '',
+    'Use this folder for scratch files, generated artifacts, downloaded references, and deliverables that belong to this agent.',
+    '',
+    '- Keep long-lived knowledge in `../MEMORY.md` and `../notes/`.',
+    '- Keep task-specific files grouped by project or task when possible.',
+    '',
+  ].join('\n');
+}
+
+async function writeFileIfMissing(filePath, content) {
+  if (!existsSync(filePath)) await writeFile(filePath, content);
+}
+
+function shouldUpgradeSeededAgentMemory(content) {
+  return content.includes('## Collaboration Principles')
+    && content.includes('## Knowledge Index')
+    && content.includes('No durable work log has been recorded yet.')
+    && !content.includes('notes/profile.md');
 }
 
 async function ensureAgentWorkspace(agent) {
@@ -1048,7 +1415,17 @@ async function ensureAgentWorkspace(agent) {
   const memoryPath = path.join(dir, 'MEMORY.md');
   if (!existsSync(memoryPath)) {
     await writeFile(memoryPath, defaultAgentMemory(agent));
+  } else {
+    const content = await readFile(memoryPath, 'utf8').catch(() => '');
+    if (shouldUpgradeSeededAgentMemory(content)) {
+      await writeFile(memoryPath, defaultAgentMemory(agent));
+    }
   }
+  await writeFileIfMissing(path.join(dir, 'notes', 'profile.md'), defaultAgentProfileNote(agent));
+  await writeFileIfMissing(path.join(dir, 'notes', 'channels.md'), defaultAgentChannelsNote(agent));
+  await writeFileIfMissing(path.join(dir, 'notes', 'agents.md'), defaultAgentPeersNote(agent));
+  await writeFileIfMissing(path.join(dir, 'notes', 'work-log.md'), defaultAgentWorkLogNote(agent));
+  await writeFileIfMissing(path.join(dir, 'workspace', 'README.md'), defaultAgentWorkspaceReadme(agent));
   const sessionsPath = path.join(dir, 'sessions.json');
   if (!existsSync(sessionsPath)) {
     await writeFile(sessionsPath, JSON.stringify({
@@ -1708,7 +2085,7 @@ function quickAnswerIntent(text) {
   const value = String(text || '').trim().toLowerCase();
   if (!value) return false;
   const asksForSimpleLookup = [
-    /(查一下|查询|搜索|找一下|看一下|告诉我|问一下|是什么|为什么|怎么|多少|天气|预报)/,
+    /(查一下|查询|搜索|找一下|看一下|告诉我|问一下|是什么|为什么|怎么|多少|天气|预报|知道.*吗)/,
     /\b(search|lookup|find|what|why|how|weather|forecast)\b/i,
   ].some((pattern) => pattern.test(value));
   if (!asksForSimpleLookup) return false;
@@ -1751,6 +2128,142 @@ function agentAvailableForAutoWork(agent) {
   return true;
 }
 
+function agentIdleForAvailability(agent) {
+  if (!agentAvailableForAutoWork(agent)) return false;
+  return ['idle', 'online', 'connected'].includes(String(agent.status || '').toLowerCase());
+}
+
+function availabilityBroadcastIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /(大家|各位|all|team)?.*(谁|哪位|有没有人).*(有空|空闲|能帮|可以帮|available|free)/i,
+    /(大家|各位|all|team).*(有空|空闲|在吗|available|free|around)/i,
+    /(谁|哪位).*(今天|现在|这会儿|目前)?.*(有空|空闲)/,
+    /(anyone|who).*(available|free)/i,
+    /\b(is anyone around|who can help)\b/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function channelGreetingIntent(text) {
+  const value = String(text || '')
+    .replace(/<[@!#][^>]+>/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (!value) return false;
+  return [
+    /^(大家|各位|team|all)?\s*(早上好|上午好|中午好|下午好|晚上好|晚安|你好|你们好|hi|hello|hey)[!！。.\s]*$/i,
+    /^(大家|各位|各位朋友|朋友们|team|all|everyone)\s*好[!！。.\s]*$/i,
+    /^(hi|hello|hey)\s+(team|all|everyone)[!！。.\s]*$/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function directAvailabilityIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /(有空|空闲|有时间|在吗|忙吗|能接|可以接|能帮|可以帮)/,
+    /\b(available|free|around|can help|can take)\b/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function availabilityFollowupIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /(其他|其它|其余|剩下|别的|另外).*(人|agent|几个|几位|一位|两位|二位|三位|四位|五位|六位|七位|八位|九位|十位|一个|两个|二个|三个|四个|五个|六个|七个|八个|九个|十个|呢|有空|空闲|在吗|能接|可以接)/,
+    /^(那|那么|还有)?\s*(其他|其它|其余|剩下|别的|另外)\s*([一二两三四五六七八九十0-9]+)?\s*(个|位)?\s*(人|agent)?\s*(呢|吗|嘛|啊|？|\?)?$/i,
+    /\b(what about|how about).*(others|the rest|everyone else)\b/i,
+    /\b(others|the rest|everyone else)\??$/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function messageTimeMs(record) {
+  const time = Date.parse(record?.createdAt || '');
+  return Number.isFinite(time) ? time : 0;
+}
+
+function availabilityTargetAgentIds(channelAgents, record) {
+  if (!record || record.authorType !== 'human') return [];
+  if (!directAvailabilityIntent(record.body) && !availabilityBroadcastIntent(record.body)) return [];
+  const channelIds = new Set((channelAgents || []).map((agent) => agent.id));
+  const namedIds = (channelAgents || [])
+    .filter((agent) => textAddressesAgent(agent, record.body))
+    .map((agent) => agent.id);
+  return normalizeIds([...(record.mentionedAgentIds || []), ...namedIds])
+    .filter((id) => channelIds.has(id));
+}
+
+function recentAvailabilityContextAgentIds(channelAgents, message, spaceId) {
+  const currentMs = messageTimeMs(message) || Date.now();
+  const contextWindowMs = 30 * 60 * 1000;
+  return [...(state.messages || [])]
+    .filter((record) => record.id !== message?.id
+      && record.spaceType === 'channel'
+      && record.spaceId === spaceId
+      && record.authorType === 'human')
+    .sort((a, b) => messageTimeMs(b) - messageTimeMs(a))
+    .map((record) => {
+      const recordMs = messageTimeMs(record);
+      if (recordMs && currentMs && currentMs - recordMs > contextWindowMs) return [];
+      return availabilityTargetAgentIds(channelAgents, record);
+    })
+    .find((ids) => ids.length)
+    || [];
+}
+
+function availabilityFollowupAgents(channelAgents, message, spaceId) {
+  if (!availabilityFollowupIntent(message?.body)) return [];
+  const previouslyAskedIds = new Set(recentAvailabilityContextAgentIds(channelAgents, message, spaceId));
+  if (!previouslyAskedIds.size) return [];
+  return uniqueAgents((channelAgents || [])
+    .filter(agentIdleForAvailability)
+    .filter((agent) => !previouslyAskedIds.has(agent.id)));
+}
+
+function dispatchSearchTerms(text) {
+  const value = String(text || '')
+    .toLowerCase()
+    .replace(/<[@!#][^>]+>/g, ' ');
+  const stopwords = new Set([
+    'the', 'and', 'for', 'you', 'can', 'help', 'please', 'with', 'this', 'that',
+    '知道', '帮忙', '帮我', '一下', '大家', '今天', '有空', '谁去', '谁能',
+  ]);
+  return value
+    .split(/[^a-z0-9_.\-\u4e00-\u9fa5]+/i)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2 && !stopwords.has(term))
+    .slice(0, 24);
+}
+
+function agentDispatchHaystack(agent) {
+  const personality = agent?.personality || {};
+  const memory = agent?.memory || {};
+  return [
+    agent?.name,
+    agent?.displayName,
+    agent?.description,
+    agent?.runtime,
+    ...(Array.isArray(personality.interests) ? personality.interests : []),
+    ...(Array.isArray(personality.traits) ? personality.traits : []),
+    ...(Array.isArray(memory.knownTopics) ? memory.knownTopics : []),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function agentDispatchScore(agent, text) {
+  if (!agentAvailableForAutoWork(agent)) return -Infinity;
+  let score = 0;
+  if (textAddressesAgent(agent, text)) score += 100;
+  const haystack = agentDispatchHaystack(agent);
+  for (const term of dispatchSearchTerms(text)) {
+    if (haystack.includes(term)) score += Math.min(24, term.length * 3);
+  }
+  if (agentIdleForAvailability(agent)) score += 4;
+  if (String(agent.status || '').toLowerCase() === 'working') score -= 2;
+  if (agent.id === 'agt_codex') score += 0.1;
+  return score;
+}
+
 function pickAvailableAgent(channelAgents, preferredIds = []) {
   const candidates = (channelAgents || []).filter(agentAvailableForAutoWork);
   if (!candidates.length) return null;
@@ -1763,20 +2276,41 @@ function pickAvailableAgent(channelAgents, preferredIds = []) {
     || null;
 }
 
+function pickBestFitAgent(channelAgents, message, preferredIds = []) {
+  const preferred = pickAvailableAgent(channelAgents, preferredIds);
+  if (preferred && preferredIds.length) return preferred;
+  const candidates = (channelAgents || []).filter(agentAvailableForAutoWork);
+  if (!candidates.length) return null;
+  const text = String(message?.body || '');
+  const ranked = candidates
+    .map((agent, index) => ({ agent, index, score: agentDispatchScore(agent, text) }))
+    .sort((a, b) => b.score - a.score
+      || (agentIdleForAvailability(b.agent) ? 1 : 0) - (agentIdleForAvailability(a.agent) ? 1 : 0)
+      || a.index - b.index);
+  return ranked[0]?.agent || null;
+}
+
+function uniqueAgents(agents) {
+  return normalizeIds((agents || []).map((agent) => agent?.id))
+    .map((id) => (agents || []).find((agent) => agent?.id === id))
+    .filter(Boolean);
+}
+
 function cleanTaskTitle(text, fallback = 'Follow-up task') {
   const cleaned = String(text || '')
     .replace(/<[@!#][^>]+>/g, ' ')
     .replace(/(创建|新建|开启|开|建)(一个|个)?\s*(task|任务)/gi, ' ')
     .replace(/\b(create|make|open|start)\s+(a\s+)?task\b/gi, ' ')
+    .replace(/^[\s，。！？；：、,.!?;:\-]+/, '')
     .replace(/\s+/g, ' ')
     .trim();
   return (cleaned || fallback).slice(0, 120);
 }
 
 function titleFromThreadTaskIntent(parent, reply) {
-  const parentTitle = cleanTaskTitle(parent?.body || '', '');
-  if (parentTitle) return parentTitle;
-  return cleanTaskTitle(reply?.body || '', 'Thread follow-up task');
+  const replyTitle = cleanTaskTitle(reply?.body || '', '');
+  if (replyTitle) return replyTitle;
+  return cleanTaskTitle(parent?.body || '', 'Thread follow-up task');
 }
 
 function createOrClaimTaskForMessage(message, agent, options = {}) {
@@ -1831,6 +2365,26 @@ function createTaskFromThreadIntent(parent, reply, agent) {
     sourceReplyId: reply.id,
   });
   return { ...result, ackReply: ack };
+}
+
+function taskThreadDeliveryMessage(task, message, triggerReply, agent) {
+  const trigger = renderMentionsForAgent(triggerReply?.body || '').trim();
+  const details = String(task?.body || '').trim();
+  const body = [
+    `Task ${taskLabel(task)} has been created and claimed for you.`,
+    `Title: ${task?.title || message?.body || 'Untitled task'}`,
+    details ? `Context:\n${details}` : '',
+    trigger ? `Trigger reply:\n${trigger}` : '',
+    'Continue the work in this task thread. Reply with findings or results here, and move the task to in_review when ready for human validation.',
+  ].filter(Boolean).join('\n\n');
+  return {
+    ...message,
+    authorType: triggerReply?.authorType || 'human',
+    authorId: triggerReply?.authorId || 'hum_local',
+    body,
+    mentionedAgentIds: normalizeIds([...(message?.mentionedAgentIds || []), agent?.id]),
+    taskId: task?.id || message?.taskId || null,
+  };
 }
 
 function shouldStartThreadForAgentDelivery(message) {
@@ -1900,8 +2454,9 @@ function displayActor(id) {
 
 function channelAgentIds(channel) {
   if (!channel) return [];
-  if (channel.id === 'chan_all') return state.agents.map((agent) => agent.id);
-  return normalizeIds([...(channel.agentIds || []), ...(channel.memberIds || []).filter((id) => id.startsWith('agt_'))]);
+  if (channel.id === 'chan_all') return state.agents.filter(agentParticipatesInChannels).map((agent) => agent.id);
+  return normalizeIds([...(channel.agentIds || []), ...(channel.memberIds || []).filter((id) => id.startsWith('agt_'))])
+    .filter((id) => agentParticipatesInChannels(findAgent(id)));
 }
 
 function channelHumanIds(channel) {
@@ -1946,6 +2501,144 @@ function textAddressesAgent(agent, text) {
   return false;
 }
 
+function markdownSection(content, heading) {
+  const lines = String(content || '').split(/\r?\n/);
+  const target = String(heading || '').trim().toLowerCase();
+  let start = -1;
+  let level = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (!match) continue;
+    if (match[2].trim().toLowerCase() === target) {
+      start = index + 1;
+      level = match[1].length;
+      break;
+    }
+  }
+  if (start === -1) return '';
+  const collected = [];
+  for (let index = start; index < lines.length; index += 1) {
+    const match = lines[index].match(/^(#{1,6})\s+/);
+    if (match && match[1].length <= level) break;
+    collected.push(lines[index]);
+  }
+  return collected.join('\n').trim();
+}
+
+function compactMarkdownText(value, limit = AGENT_CARD_TEXT_LIMIT) {
+  return String(value || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*]\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]+]\(([^)]+)\)/g, ' $1 ')
+    .replace(/[#>*_\-[\]]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit);
+}
+
+async function fileSignature(filePath) {
+  const info = await stat(filePath).catch(() => null);
+  if (!info?.isFile()) return 'missing';
+  return `${info.size}:${Number(info.mtimeMs || 0).toFixed(0)}`;
+}
+
+async function readAgentCardFile(root, relPath, maxChars = AGENT_CARD_TEXT_LIMIT) {
+  const filePath = safePathWithin(root, relPath);
+  if (!filePath) return '';
+  const content = await readFile(filePath, 'utf8').catch(() => '');
+  return content.slice(0, maxChars);
+}
+
+function recentAgentTasks(agent) {
+  return [...(state.tasks || [])]
+    .filter((task) => task.claimedBy === agent.id || (task.assigneeIds || []).includes(agent.id))
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0))
+    .slice(0, 6)
+    .map((task) => `#${task.number || '?'} ${task.status || 'todo'} ${task.title || ''}`.trim());
+}
+
+function agentChannelNames(agent) {
+  return (state.channels || [])
+    .filter((channel) => !channel.archived && channelAgentIds(channel).includes(agent.id))
+    .map((channel) => `#${channel.name}`);
+}
+
+async function buildAgentCard(agent) {
+  if (!agent) return null;
+  const root = agentDataDir(agent);
+  const files = ['MEMORY.md', 'notes/profile.md', 'notes/agents.md', 'notes/work-log.md'];
+  const signatureParts = await Promise.all(files.map((relPath) => fileSignature(path.join(root, relPath))));
+  const signature = [
+    agent.id,
+    agent.name,
+    agent.description,
+    agent.status,
+    agent.runtime,
+    signatureParts.join('|'),
+    (state.tasks || []).length,
+  ].join('::');
+  const cached = agentCardCache.get(agent.id);
+  if (cached?.signature === signature) return cached.card;
+
+  const [memory, profile, peers, workLog] = await Promise.all(files.map((relPath) => readAgentCardFile(root, relPath)));
+  const role = markdownSection(memory, 'Role') || markdownSection(profile, 'Role') || agent.description || '';
+  const capabilities = [
+    markdownSection(memory, 'Capabilities'),
+    markdownSection(profile, 'Strengths And Skills'),
+    markdownSection(profile, 'Skills'),
+    markdownSection(memory, 'Key Knowledge'),
+  ].filter(Boolean).join('\n');
+  const activeContext = markdownSection(memory, 'Active Context');
+  const collaboration = [
+    markdownSection(memory, 'Collaboration Rules'),
+    markdownSection(profile, 'Response Boundaries'),
+  ].filter(Boolean).join('\n');
+  const recentTasks = recentAgentTasks(agent);
+  const card = {
+    id: agent.id,
+    name: agent.name,
+    description: agent.description || '',
+    runtime: agent.runtime || '',
+    status: agent.status || 'offline',
+    systemRole: agent.systemRole || '',
+    isBrain: isBrainAgent(agent),
+    channels: agentChannelNames(agent),
+    role: compactMarkdownText(role, 1600),
+    capabilities: compactMarkdownText(capabilities || profile, 2200),
+    collaboration: compactMarkdownText(collaboration, 1600),
+    activeContext: compactMarkdownText(activeContext, 1400),
+    peers: compactMarkdownText(peers, 1800),
+    workLog: compactMarkdownText(workLog, 2200),
+    recentTasks,
+    haystack: compactMarkdownText([
+      agent.name,
+      agent.displayName,
+      agent.description,
+      agent.runtime,
+      role,
+      capabilities,
+      activeContext,
+      peers,
+      workLog,
+      recentTasks.join(' '),
+    ].filter(Boolean).join('\n'), 9000).toLowerCase(),
+    sourceFiles: files,
+  };
+  agentCardCache.set(agent.id, { signature, card });
+  return card;
+}
+
+async function buildAgentCards(agents) {
+  const cards = await Promise.all((agents || []).map((agent) => buildAgentCard(agent).catch((error) => {
+    addSystemEvent('agent_card_error', `Could not build agent card for ${agent?.name || 'agent'}: ${error.message}`, {
+      agentId: agent?.id || null,
+    });
+    return null;
+  })));
+  return new Map(cards.filter(Boolean).map((card) => [card.id, card]));
+}
+
 function threadParticipantAgentIds(message, linkedTask = null) {
   const ids = [];
   if (message?.authorType === 'agent') ids.push(message.authorId);
@@ -1978,6 +2671,298 @@ function determineThreadRespondingAgents(message, reply, channelAgents, mentions
   return [];
 }
 
+function agentCapabilityQuestionIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /(谁|哪位|哪个|哪些).*(学历|能力|技能|skill|专长|擅长|会|知道|熟悉|更适合|适合|最适合|靠谱|厉害)/i,
+    /(比较|介绍|说说).*(agent|成员|大家|每个人|各自).*(能力|技能|专长|职责|擅长)/i,
+    /\b(who|which agent).*(best|better|skill|capability|expert|knows|can)\b/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function routeEvidence(type, value) {
+  return { type, value: String(value || '').slice(0, 240) };
+}
+
+function selectBrainAgent() {
+  return findAgent(state.router?.brainAgentId) || (state.agents || []).find(isBrainAgent) || null;
+}
+
+function availableChannelAgents(channelAgents) {
+  return (channelAgents || [])
+    .filter(agentParticipatesInChannels)
+    .filter(agentAvailableForAutoWork);
+}
+
+function idleChannelAgents(channelAgents) {
+  return availableChannelAgents(channelAgents).filter(agentIdleForAvailability);
+}
+
+function agentDispatchScoreFromCard(agent, card, text) {
+  if (!agentAvailableForAutoWork(agent)) return -Infinity;
+  let score = agentDispatchScore(agent, text);
+  const haystack = String(card?.haystack || agentDispatchHaystack(agent));
+  for (const term of dispatchSearchTerms(text)) {
+    if (haystack.includes(term)) score += Math.min(36, term.length * 4);
+  }
+  if (card?.recentTasks?.length) score += Math.min(3, card.recentTasks.length * 0.4);
+  if (String(agent.status || '').toLowerCase() === 'idle') score += 3;
+  return score;
+}
+
+function pickBestFitAgentWithCards(channelAgents, message, cards, preferredIds = []) {
+  const preferred = pickAvailableAgent(channelAgents, preferredIds);
+  if (preferred && preferredIds.length) return { agent: preferred, score: 999 };
+  const candidates = availableChannelAgents(channelAgents);
+  if (!candidates.length) return { agent: null, score: -Infinity };
+  const text = String(message?.body || '');
+  const ranked = candidates
+    .map((agent, index) => ({
+      agent,
+      index,
+      score: agentDispatchScoreFromCard(agent, cards?.get(agent.id), text),
+    }))
+    .sort((a, b) => b.score - a.score
+      || (agentIdleForAvailability(b.agent) ? 1 : 0) - (agentIdleForAvailability(a.agent) ? 1 : 0)
+      || a.index - b.index);
+  return ranked[0] || { agent: null, score: -Infinity };
+}
+
+function normalizeRouteDecision(decision, channelAgents) {
+  const allowed = new Set((channelAgents || []).map((agent) => agent.id));
+  const targetAgentIds = normalizeIds(decision?.targetAgentIds || []).filter((id) => allowed.has(id));
+  const claimantAgentId = targetAgentIds.includes(decision?.claimantAgentId)
+    ? decision.claimantAgentId
+    : null;
+  return {
+    mode: decision?.mode || 'passive_awareness',
+    targetAgentIds,
+    claimantAgentId,
+    confidence: Number.isFinite(Number(decision?.confidence)) ? Number(decision.confidence) : 0.5,
+    reason: String(decision?.reason || 'Router selected agents.'),
+    evidence: Array.isArray(decision?.evidence) ? decision.evidence : [],
+    taskIntent: decision?.taskIntent || null,
+    brainAgentId: decision?.brainAgentId || null,
+    fallbackUsed: Boolean(decision?.fallbackUsed),
+  };
+}
+
+function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId, cards, brainAgent }) {
+  const available = availableChannelAgents(channelAgents);
+  const idle = idleChannelAgents(channelAgents);
+  const text = String(message?.body || '');
+  const evidence = [
+    routeEvidence('brain_agent', brainAgent?.name || 'rules fallback'),
+    routeEvidence('channel_member', `${available.length}/${channelAgents.length} available member agents`),
+  ];
+
+  if (mentions.agents.length > 0) {
+    const directedPrimary = message?.authorType === 'human' ? directedPrimaryAgentId(mentions, message) : null;
+    const targetAgentIds = directedPrimary
+      ? [directedPrimary]
+      : mentions.agents.filter((id) => available.some((agent) => agent.id === id));
+    return normalizeRouteDecision({
+      mode: 'directed',
+      targetAgentIds,
+      confidence: 0.98,
+      reason: directedPrimary
+        ? 'Explicit multi-agent mention looked like a request for the first named agent to coordinate.'
+        : 'Explicit agent mention routes to the mentioned agent(s).',
+      evidence: [...evidence, routeEvidence('mention', mentions.agents.join(', '))],
+      brainAgentId: brainAgent?.id || null,
+    }, channelAgents);
+  }
+
+  if (mentions.special.includes('all') || mentions.special.includes('everyone')) {
+    return normalizeRouteDecision({
+      mode: 'broadcast',
+      targetAgentIds: available.map((agent) => agent.id),
+      confidence: 0.95,
+      reason: '@all/@everyone wakes every available channel agent.',
+      evidence: [...evidence, routeEvidence('mention', '@all')],
+      brainAgentId: brainAgent?.id || null,
+    }, channelAgents);
+  }
+
+  if (mentions.special.includes('here') || mentions.special.includes('channel')) {
+    return normalizeRouteDecision({
+      mode: 'availability',
+      targetAgentIds: idle.map((agent) => agent.id),
+      confidence: 0.92,
+      reason: '@here/@channel wakes idle/online channel agents.',
+      evidence: [...evidence, routeEvidence('status', `${idle.length} idle/online agents`)],
+      brainAgentId: brainAgent?.id || null,
+    }, channelAgents);
+  }
+
+  if (message?.authorType === 'human') {
+    const named = available.filter((agent) => textAddressesAgent(agent, text));
+    if (named.length) {
+      return normalizeRouteDecision({
+        mode: directAvailabilityIntent(text) ? 'availability' : 'directed',
+        targetAgentIds: named.map((agent) => agent.id),
+        confidence: 0.93,
+        reason: 'Natural-language agent name matched a channel member.',
+        evidence: [...evidence, routeEvidence('mention', named.map((agent) => agent.name).join(', '))],
+        brainAgentId: brainAgent?.id || null,
+      }, channelAgents);
+    }
+
+    const followupAgents = availabilityFollowupAgents(channelAgents, message, spaceId);
+    if (followupAgents.length) {
+      return normalizeRouteDecision({
+        mode: 'follow_up',
+        targetAgentIds: followupAgents.map((agent) => agent.id),
+        confidence: 0.88,
+        reason: 'Availability follow-up targets remaining idle agents from recent channel context.',
+        evidence: [...evidence, routeEvidence('recent_context', 'availability follow-up')],
+        brainAgentId: brainAgent?.id || null,
+      }, channelAgents);
+    }
+
+    if (availabilityBroadcastIntent(text)) {
+      return normalizeRouteDecision({
+        mode: 'availability',
+        targetAgentIds: idle.map((agent) => agent.id),
+        confidence: 0.9,
+        reason: 'Availability check should let available channel agents answer for themselves.',
+        evidence: [...evidence, routeEvidence('status', `${idle.length} idle/online agents`)],
+        brainAgentId: brainAgent?.id || null,
+      }, channelAgents);
+    }
+
+    if (agentCapabilityQuestionIntent(text)) {
+      return normalizeRouteDecision({
+        mode: 'broadcast',
+        targetAgentIds: available.map((agent) => agent.id),
+        confidence: 0.86,
+        reason: 'Capability or identity comparison needs agents to self-report and sense each other.',
+        evidence: [...evidence, routeEvidence('agent_card', 'capability comparison')],
+        brainAgentId: brainAgent?.id || null,
+      }, channelAgents);
+    }
+
+    if (autoTaskMessageIntent(text)) {
+      const best = pickBestFitAgentWithCards(channelAgents, message, cards, mentions.agents || []);
+      return normalizeRouteDecision({
+        mode: 'task_claim',
+        targetAgentIds: best.agent ? [best.agent.id] : [],
+        claimantAgentId: best.agent?.id || null,
+        confidence: best.agent ? Math.min(0.94, Math.max(0.66, 0.62 + (best.score / 200))) : 0.2,
+        reason: best.agent
+          ? `Concrete work detected; ${best.agent.name} is the best-fit claimant from agent card scoring.`
+          : 'Concrete work detected but no available channel agent could claim it.',
+        evidence: [
+          ...evidence,
+          routeEvidence('agent_card', best.agent ? `${best.agent.name} score=${Number(best.score || 0).toFixed(1)}` : 'none'),
+          routeEvidence('task_lock', 'claim before execution'),
+        ],
+        taskIntent: best.agent ? {
+          title: cleanTaskTitle(text),
+          kind: inferTaskIntentKind(text),
+        } : null,
+        brainAgentId: brainAgent?.id || null,
+      }, channelAgents);
+    }
+
+    return normalizeRouteDecision({
+      mode: channelGreetingIntent(text) ? 'broadcast' : 'broadcast',
+      targetAgentIds: available.map((agent) => agent.id),
+      confidence: channelGreetingIntent(text) ? 0.82 : 0.74,
+      reason: 'Open human channel message fans out to available member agents.',
+      evidence,
+      brainAgentId: brainAgent?.id || null,
+    }, channelAgents);
+  }
+
+  const targetAgentIds = available
+    .filter((agent) => shouldAgentRespond(agent, message, spaceId))
+    .map((agent) => agent.id);
+  return normalizeRouteDecision({
+    mode: 'passive_awareness',
+    targetAgentIds,
+    confidence: 0.5,
+    reason: 'Non-human message used passive awareness fallback.',
+    evidence,
+    brainAgentId: brainAgent?.id || null,
+  }, channelAgents);
+}
+
+function inferTaskIntentKind(text) {
+  const value = String(text || '').toLowerCase();
+  if (/(代码|实现|修复|debug|bug|pr|github|repo|ci|deploy|部署|迁移|重构|code|fix|implement|refactor)/i.test(value)) return 'coding';
+  if (/(调研|研究|搜索|资料|竞品|research|lookup|search)/i.test(value)) return 'research';
+  if (/(文档|报告|总结|方案|docs?|document|report|plan)/i.test(value)) return 'docs';
+  if (/(运行|监控|状态|日志|server|ops|deploy|部署)/i.test(value)) return 'ops';
+  if (/(规划|计划|设计|拆分|路线|roadmap|plan|design)/i.test(value)) return 'planning';
+  return 'unknown';
+}
+
+function legacyRouteDecision(channelAgents, mentions, message, spaceId, error = null) {
+  const agents = determineRespondingAgents(channelAgents, mentions, message, spaceId);
+  const claimant = message?.authorType === 'human' && autoTaskMessageIntent(message.body)
+    ? pickBestFitAgent(channelAgents, message)
+    : null;
+  return normalizeRouteDecision({
+    mode: claimant ? 'task_claim' : 'broadcast',
+    targetAgentIds: agents.map((agent) => agent.id),
+    claimantAgentId: claimant?.id || null,
+    confidence: 0.45,
+    reason: error ? `Brain router failed; rules fallback used: ${error.message}` : 'Rules fallback selected agents.',
+    evidence: [routeEvidence('fallback', error?.message || 'legacy rules')],
+    taskIntent: claimant ? { title: cleanTaskTitle(message?.body || ''), kind: inferTaskIntentKind(message?.body || '') } : null,
+    brainAgentId: selectBrainAgent()?.id || null,
+    fallbackUsed: true,
+  }, channelAgents);
+}
+
+function addRouteEvent(decision, { message, spaceType = 'channel', spaceId = null } = {}) {
+  state.routeEvents = Array.isArray(state.routeEvents) ? state.routeEvents : [];
+  const event = {
+    id: makeId('route'),
+    messageId: message?.id || null,
+    spaceType,
+    spaceId,
+    mode: decision.mode,
+    targetAgentIds: decision.targetAgentIds,
+    claimantAgentId: decision.claimantAgentId || null,
+    confidence: decision.confidence,
+    reason: decision.reason,
+    evidence: decision.evidence || [],
+    taskIntent: decision.taskIntent || null,
+    brainAgentId: decision.brainAgentId || null,
+    fallbackUsed: Boolean(decision.fallbackUsed),
+    createdAt: now(),
+  };
+  state.routeEvents.push(event);
+  if (state.routeEvents.length > ROUTE_EVENTS_LIMIT) {
+    state.routeEvents = state.routeEvents.slice(state.routeEvents.length - ROUTE_EVENTS_LIMIT);
+  }
+  addSystemEvent('route_decision', `Route ${event.mode}: ${event.targetAgentIds.length} agent(s) selected.`, {
+    routeEventId: event.id,
+    messageId: event.messageId,
+    targetAgentIds: event.targetAgentIds,
+    claimantAgentId: event.claimantAgentId,
+    fallbackUsed: event.fallbackUsed,
+  });
+  return event;
+}
+
+async function routeMessageForChannel({ channelAgents, mentions, message, spaceId }) {
+  const brainAgent = selectBrainAgent();
+  try {
+    const cards = await buildAgentCards(channelAgents);
+    const decision = evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId, cards, brainAgent });
+    const routeEvent = addRouteEvent(decision, { message, spaceId });
+    return { ...decision, routeEvent };
+  } catch (error) {
+    const decision = legacyRouteDecision(channelAgents, mentions, message, spaceId, error);
+    const routeEvent = addRouteEvent(decision, { message, spaceId });
+    return { ...decision, routeEvent };
+  }
+}
+
 // Determine which agents should respond based on mentions and personality
 function determineRespondingAgents(channelAgents, mentions, message, spaceId) {
   const respondingAgents = [];
@@ -1996,18 +2981,26 @@ function determineRespondingAgents(channelAgents, mentions, message, spaceId) {
     return respondingAgents;
   }
 
-  // Case 2: @all or @everyone - all agents respond
+  // Case 2: @all or @everyone - all available agents respond
   if (mentions.special.includes('all') || mentions.special.includes('everyone')) {
-    return channelAgents;
+    return channelAgents.filter(agentAvailableForAutoWork);
   }
 
   // Case 3: @here - only online/idle agents respond
   if (mentions.special.includes('here') || mentions.special.includes('channel')) {
-    return channelAgents.filter(a => a.status === 'idle' || a.status === 'online');
+    return channelAgents.filter(agentIdleForAvailability);
   }
 
-  // Case 4: Top-level human channel messages follow Slock-style fan-out.
+  // Case 4: Top-level human channel messages follow Slock-style channel membership.
   if (message?.authorType === 'human') {
+    const named = channelAgents.filter((agent) => textAddressesAgent(agent, message.body));
+    if (named.length) return uniqueAgents(named.filter(agentAvailableForAutoWork));
+    const followupAgents = availabilityFollowupAgents(channelAgents, message, spaceId);
+    if (followupAgents.length) return followupAgents;
+    if (autoTaskMessageIntent(message.body)) {
+      const agent = pickBestFitAgent(channelAgents, message);
+      return agent ? [agent] : [];
+    }
     return channelAgents.filter(agentAvailableForAutoWork);
   }
 
@@ -2100,7 +3093,7 @@ function addSystemReply(parentMessageId, body) {
 }
 
 function cloudSnapshot() {
-  const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'events'];
+  const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
   const snapshot = {
     version: state.version,
     exportedAt: now(),
@@ -2114,7 +3107,7 @@ function cloudSnapshot() {
 }
 
 function applyCloudSnapshot(snapshot) {
-  const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'events'];
+  const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
   for (const key of allowedKeys) {
     if (Array.isArray(snapshot?.[key])) state[key] = snapshot[key];
   }
@@ -2242,6 +3235,7 @@ function ensureTaskThread(task) {
 function publicState() {
   return {
     ...state,
+    channels: (state.channels || []).filter((channel) => !channel.archived),
     connection: publicConnection(),
     runtime: runtimeSnapshot(),
     runningRunIds: [...runningProcesses.keys()],
@@ -2732,6 +3726,8 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     '',
     'Guidelines:',
     '- Respond helpfully and concisely to the user.',
+    '- In a channel, Magclaw may deliver the same open human message to every member agent, similar to a team chat. If the message is not directed at one specific agent and you have useful context, answer briefly from your role.',
+    '- If the user names or @mentions another agent, respect that routing and avoid taking over unless you were also named or can add a small coordination note.',
     '- For ordinary chat or coordination, just answer in natural language. Do not run shell commands.',
     '- Do not run Codex memory-writing, memory consolidation, or profile-update workflows inside MagClaw chat turns.',
     '- For simple Q&A, greetings, role questions, one-off lookups, weather/forecast requests, or lightweight coordination, answer in the current thread and do not create a task.',
@@ -2748,6 +3744,7 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     '- When a user asks for actionable durable work, claim the existing task if Magclaw already created one for you, then continue the work in the task thread.',
     '- Thread replies cannot become tasks directly. If new work emerges in a thread, create a new top-level task-message with sourceMessageId/sourceReplyId instead of claiming the reply.',
     '- If work already exists as a task, claim it instead of creating a duplicate.',
+    '- Maintain your own workspace memory by default: write high-value preferences, specialties, work logs, and durable handoff facts to MEMORY.md or notes/ during important task progress.',
     '- After important task progress or completion, update your MEMORY.md with structured notes under Active Tasks, Channel Context, and Work Log. Keep it concise and progressively disclosed; put detail notes under notes/ when needed.',
     '- Mention another participant with their visible name, for example @Alice. Do not expose internal ids like agt_xxx, hum_xxx, or raw <@...> tokens.',
     '- If a user references a local file or folder with @, treat the shown path as the original project file/folder, not as an uploaded attachment copy.',
@@ -2848,6 +3845,9 @@ async function startClaudeAgent(agent, proc, workspace) {
 
   proc.status = 'running';
   addSystemEvent('agent_started', `${agent.name} started with Claude Code`, { agentId: agent.id });
+  markWorkItemsDelivered(promptMessages, 'turn');
+  await persistState();
+  broadcastState();
 
   const child = spawn('claude', args, {
     cwd: workspace,
@@ -3013,10 +4013,10 @@ async function startCodexAgent(agent, proc, workspace) {
           agentId: agent.id,
           workItemId: sourceMessage?.workItemId || null,
         });
-	      } else {
-	        const posted = await postAgentResponse(agent, proc.spaceType, proc.spaceId, proc.responseBuffer.trim(), proc.parentMessageId, { sourceMessage });
-	        markFallbackResponseWorkItem(sourceMessage, posted);
-	      }
+		      } else {
+		        const posted = await postAgentResponse(agent, proc.spaceType, proc.spaceId, proc.responseBuffer.trim(), deliveryParentMessageId(sourceMessage, proc.parentMessageId), { sourceMessage });
+		        markFallbackResponseWorkItem(sourceMessage, posted);
+		      }
       proc.responseBuffer = '';
     } else if (proc.suppressOutput && proc.responseBuffer.trim()) {
       proc.responseBuffer = '';
@@ -3046,7 +4046,7 @@ async function startCodexAgent(agent, proc, workspace) {
       approvalPolicy: 'never',
       sandbox: state.settings.sandbox || 'workspace-write',
       developerInstructions: standingPrompt,
-      ...(agent.model ? { model: agent.model } : {}),
+      model: normalizeCodexModelName(agent.model, state.settings?.model),
       ...(agent.reasoningEffort ? { config: { model_reasoning_effort: agent.reasoningEffort } } : {}),
     },
   };
@@ -3130,6 +4130,18 @@ function pendingMatchesActiveTurnTargets(proc, pendingMessages) {
   return pendingKeys.every((key) => activeTargets.has(key));
 }
 
+function deliveryParentMessageId(sourceMessage, fallbackParentMessageId = null) {
+  if (sourceMessage) return sourceMessage.parentMessageId || null;
+  return fallbackParentMessageId || null;
+}
+
+function applyAgentProcessDeliveryScope(proc, spaceType, spaceId, parentMessageId = null) {
+  if (!proc) return;
+  proc.spaceType = spaceType;
+  proc.spaceId = spaceId;
+  proc.parentMessageId = parentMessageId || null;
+}
+
 function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages = [] } = {}) {
   if (!proc.threadId) return false;
   const input = [{ type: 'text', text: prompt }];
@@ -3152,7 +4164,7 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
   const targetKeys = deliveryTargetKeys(promptMessages);
   proc.pendingTurnRequests = proc.pendingTurnRequests || new Map();
   proc.pendingTurnRequests.set(requestId, {
-    parentMessageId: sourceMessage?.parentMessageId || proc.parentMessageId || null,
+    parentMessageId: deliveryParentMessageId(sourceMessage, proc.parentMessageId),
     sourceMessage,
     spaceType: sourceMessage?.spaceType || proc.spaceType,
     spaceId: sourceMessage?.spaceId || proc.spaceId,
@@ -3272,8 +4284,8 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
       });
     } else if (turnMeta) {
       const sourceMessage = turnMeta.sourceMessage || proc.lastSourceMessage || proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
-      const posted = await postAgentResponse(agent, turnMeta.spaceType || proc.spaceType, turnMeta.spaceId || proc.spaceId, responseText, turnMeta.parentMessageId || proc.parentMessageId, { sourceMessage });
-      markFallbackResponseWorkItem(sourceMessage, posted);
+      const posted = await postAgentResponse(agent, turnMeta.spaceType || proc.spaceType, turnMeta.spaceId || proc.spaceId, responseText, deliveryParentMessageId(sourceMessage, turnMeta.parentMessageId), { sourceMessage });
+      markFallbackResponseWorkItems(sourceMessage, posted, turnMeta.workItemIds || []);
     } else {
       addSystemEvent('agent_unsolicited_turn_suppressed', `${agent.name} produced output for an untracked Codex turn; output was not posted.`, {
         agentId: agent.id,
@@ -3418,8 +4430,9 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
     '-o', outputFile,
   ];
 
-  if (agent.model) {
-    args.push('-m', agent.model);
+  const model = normalizeCodexModelName(agent.model, state.settings?.model);
+  if (model) {
+    args.push('-m', model);
   }
 
   if (agent.reasoningEffort) {
@@ -3430,6 +4443,9 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
 
   proc.status = 'running';
   addSystemEvent('agent_started', `${agent.name} started with Codex`, { agentId: agent.id });
+  markWorkItemsDelivered(promptMessages, 'turn');
+  await persistState();
+  broadcastState();
 
   const child = spawn(state.settings.codexPath || 'codex', args, {
     cwd: workspace,
@@ -3688,21 +4704,23 @@ function stopAgentProcesses(scope = null) {
     const inbox = partitionMessagesByScope(proc.inbox, scope);
     const pending = partitionMessagesByScope(proc.pendingDeliveryMessages, scope);
     const initial = partitionMessagesByScope(proc.pendingInitialMessages, scope);
+    const activeMetas = activeTurnMetas(proc);
+    const pendingActiveScoped = !activeMetas.length && deliveryMessageMatchesScope(proc.lastSourceMessage, scope);
     proc.inbox = inbox.other;
     proc.pendingDeliveryMessages = pending.other;
     proc.pendingInitialMessages = initial.other;
 
     const restartMessages = [...inbox.other, ...pending.other, ...initial.other];
     const removedMessages = inbox.scoped.length + pending.scoped.length + initial.scoped.length;
-    const activeScopedOnly = processHasOnlyScopedActiveWork(proc, scope);
-    const shouldStop = !scope || activeScopedOnly || (removedMessages > 0 && !activeTurnMetas(proc).length && spaceMatchesScope(proc, scope));
+    const activeScopedOnly = processHasOnlyScopedActiveWork(proc, scope) || pendingActiveScoped;
+    const shouldStop = !scope || activeScopedOnly || (removedMessages > 0 && !activeMetas.length && (spaceMatchesScope(proc, scope) || pendingActiveScoped));
 
     if (shouldStop) {
       stopAgentProcessForScope(agent, proc, scope, restartMessages);
       stoppedAgents.push(agentId);
     } else if (removedMessages > 0 || cancelledForAgent.length) {
       clearAgentBusyDeliveryTimer(proc);
-      if (!restartMessages.length && !activeTurnMetas(proc).length) agent.status = 'idle';
+      if (!restartMessages.length && !activeMetas.length) agent.status = 'idle';
     }
   }
   return {
@@ -3928,6 +4946,7 @@ async function restartAgentFromControl(agent, mode = 'restart') {
 
 async function relayAgentMentions(record, { parentMessageId = null } = {}) {
   if (record.authorType !== 'agent') return;
+  if (!parentMessageId && !record.taskId) return;
   const relayDepth = Number(record.agentRelayDepth || 0);
   const mentions = extractMentions(record.body || '');
   const targetIds = mentions.agents.filter((id) => id !== record.authorId);
@@ -4043,12 +5062,20 @@ function markWorkItemResponded(item, target, record) {
 }
 
 function markFallbackResponseWorkItem(sourceMessage, record) {
+  return markFallbackResponseWorkItems(sourceMessage, record);
+}
+
+function markFallbackResponseWorkItems(sourceMessage, record, workItemIds = []) {
   const workItemId = sourceMessage?.workItemId;
-  if (!workItemId) return false;
-  const item = findWorkItem(workItemId);
-  if (!item || item.status === 'responded' || item.status === 'cancelled') return false;
-  markWorkItemResponded(item, sourceMessage?.target || item.target || null, record);
-  return true;
+  const ids = normalizeIds([...workItemIds, workItemId].filter(Boolean));
+  let marked = false;
+  for (const id of ids) {
+    const item = findWorkItem(id);
+    if (!item || item.status === 'responded' || item.status === 'cancelled') continue;
+    markWorkItemResponded(item, sourceMessage?.target || item.target || null, record);
+    marked = true;
+  }
+  return marked;
 }
 
 async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageId = null, options = {}) {
@@ -4129,27 +5156,32 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
     contextPack,
     ...(parentMessageId ? { parentMessageId } : {}),
   };
-  await persistState();
-  broadcastState();
   // Check if agent has a running process
   const proc = agentProcesses.get(agent.id);
 
-  if (proc && getAgentRuntime(agent) === 'codex' && proc.child && !proc.child.killed) {
-    proc.spaceType = spaceType;
-    proc.spaceId = spaceId;
-    proc.parentMessageId = parentMessageId || proc.parentMessageId || null;
-    if (proc.status === 'running' || proc.status === 'starting') {
+  if (proc && getAgentRuntime(agent) === 'codex') {
+    const codexProcessAliveOrBooting = !proc.child || !proc.child.killed;
+    if (codexProcessAliveOrBooting && (proc.status === 'running' || proc.status === 'starting')) {
       queueCodexBusyDelivery(agent, proc, deliveryMessage);
+      await persistState();
+      broadcastState();
       return;
     }
-    if (proc.status === 'idle' && proc.threadId) {
-      if (await sendCodexAppServerMessages(agent, proc, [deliveryMessage], { mode: 'turn' })) return;
+    if (proc.child && !proc.child.killed && proc.status === 'idle' && proc.threadId) {
+      applyAgentProcessDeliveryScope(proc, spaceType, spaceId, parentMessageId);
+      if (await sendCodexAppServerMessages(agent, proc, [deliveryMessage], { mode: 'turn' })) {
+        await persistState();
+        broadcastState();
+        return;
+      }
     }
   } else if (proc && (proc.status === 'running' || proc.status === 'starting')) {
     // Non-Codex runtimes still queue until their one-shot process exits.
     proc.inbox.push(deliveryMessage);
     if (!proc.parentMessageId && parentMessageId) proc.parentMessageId = parentMessageId;
     addSystemEvent('message_queued', `Message queued for busy agent ${agent.name}`, { agentId: agent.id, messageId: message.id, parentMessageId });
+    await persistState();
+    broadcastState();
     return;
   }
 
@@ -4743,6 +5775,7 @@ async function handleApi(req, res, url) {
       'x-accel-buffering': 'no',
     });
     res.write(`event: state\ndata: ${JSON.stringify(publicState())}\n\n`);
+    res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat())}\n\n`);
     sseClients.add(res);
     req.on('close', () => sseClients.delete(res));
     return true;
@@ -5254,14 +6287,34 @@ async function handleApi(req, res, url) {
     await persistState();
     broadcastState();
 
+    if (createdThreadTask && createdThreadTaskMessage) {
+      const taskAgent = findAgent(createdThreadTask.claimedBy || createdThreadTask.assigneeId);
+      if (taskAgent) {
+        const taskDeliveryMessage = taskThreadDeliveryMessage(createdThreadTask, createdThreadTaskMessage, reply, taskAgent);
+        deliverMessageToAgent(taskAgent, message.spaceType, message.spaceId, taskDeliveryMessage, { parentMessageId: createdThreadTaskMessage.id }).catch(err => {
+          addSystemEvent('delivery_error', `Failed to deliver created task to ${taskAgent.name}: ${err.message}`, {
+            agentId: taskAgent.id,
+            taskId: createdThreadTask.id,
+            messageId: createdThreadTaskMessage.id,
+          });
+        });
+      }
+    }
+
     if (reply.authorType === 'human' && !createdThreadTask && !endedThreadTask && !stoppedThreadTask) {
       const channel = message.spaceType === 'channel' ? findChannel(message.spaceId) : null;
       const channelAgents = channel
         ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
         : [];
-      const respondingAgents = message.spaceType === 'channel'
+      let respondingAgents = message.spaceType === 'channel'
         ? determineThreadRespondingAgents(message, reply, channelAgents, mentions, linkedTask)
         : [];
+      if (message.spaceType === 'dm') {
+        const dm = state.dms.find((item) => item.id === message.spaceId);
+        const agentId = dm?.participantIds?.find((id) => id.startsWith('agt_'));
+        const agent = agentId ? findAgent(agentId) : null;
+        respondingAgents = agent && agentAvailableForAutoWork(agent) ? [agent] : [];
+      }
       for (const agent of respondingAgents) {
         deliverMessageToAgent(agent, message.spaceType, message.spaceId, reply, { parentMessageId: message.id }).catch(err => {
           addSystemEvent('delivery_error', `Failed to deliver thread reply to ${agent.name}: ${err.message}`, { agentId: agent.id, replyId: reply.id, parentMessageId: message.id });
@@ -5610,7 +6663,7 @@ async function handleApi(req, res, url) {
       name: String(body.name || 'New Agent').trim().slice(0, 80),
       description: String(body.description || '').trim(),
       runtime: String(body.runtime || 'Codex CLI'),
-      model: String(body.model || state.settings.model || 'default'),
+      model: normalizeCodexModelName(body.model, state.settings?.model),
       status: 'idle',
       computerId: String(body.computerId || 'cmp_local'),
       workspace: path.resolve(String(body.workspace || state.settings.defaultWorkspace || ROOT)),
@@ -5744,6 +6797,7 @@ async function handleApi(req, res, url) {
     for (const key of ['name', 'description', 'runtime', 'model', 'status', 'computerId', 'workspace', 'reasoningEffort', 'avatar']) {
       if (body[key] !== undefined) agent[key] = String(body[key] || '').trim();
     }
+    if (body.model !== undefined) agent.model = normalizeCodexModelName(body.model, state.settings?.model);
     if (body.reasoningEffort === null) agent.reasoningEffort = null;
     if (Array.isArray(body.envVars)) agent.envVars = body.envVars;
     addCollabEvent('agent_updated', `Agent updated: ${agent.name}`, { agentId: agent.id });
@@ -5973,6 +7027,11 @@ async function handleRequest(req, res) {
 await ensureStorage();
 
 const server = http.createServer(handleRequest);
+const heartbeatTimer = setInterval(() => {
+  if (sseClients.size) broadcastHeartbeat();
+}, STATE_HEARTBEAT_MS);
+heartbeatTimer.unref?.();
+
 server.listen(PORT, HOST, () => {
   addSystemEvent('server_started', `Magclaw local server started at http://${HOST}:${PORT}`);
   persistState().then(broadcastState);
@@ -5981,6 +7040,7 @@ server.listen(PORT, HOST, () => {
 });
 
 process.on('SIGINT', () => {
+  clearInterval(heartbeatTimer);
   for (const child of runningProcesses.values()) child.kill('SIGTERM');
   for (const proc of agentProcesses.values()) {
     if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');

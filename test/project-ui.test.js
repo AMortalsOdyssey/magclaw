@@ -68,6 +68,26 @@ test('messages and replies render markdown while preserving mention chips', asyn
   assert.match(styles, /\.message-table-wrap/);
 });
 
+test('human messages and thread replies render agent pickup avatars from work items', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /const AGENT_RECEIPT_VISIBLE_LIMIT = 10/);
+  assert.match(app, /function deliveryReceiptItemsForRecord\(record\)/);
+  assert.match(app, /item\?\.sourceMessageId === record\.id/);
+  assert.match(app, /function renderAgentReceiptTray\(record\)/);
+  assert.match(app, /function renderMessageFooter\(\{ replyCountChip = '', receiptTray = '' \} = \{\}\)/);
+  assert.match(app, /renderAgentReceiptTray\(message\)/);
+  assert.match(app, /renderAgentReceiptTray\(reply\)/);
+  assert.match(app, /renderMessageFooter\(\{ replyCountChip, receiptTray \}\)/);
+  assert.match(app, /agent-receipt-overflow/);
+  assert.match(app, /receipts: deliveryReceiptSignature\(record\)/);
+  assert.match(styles, /\.message-footer/);
+  assert.match(styles, /\.agent-receipt-tray/);
+  assert.match(styles, /\.agent-receipt-trigger:hover \.agent-receipt-popover/);
+  assert.match(styles, /@keyframes agent-receipt-pop/);
+});
+
 test('task columns can be collapsed from the board header', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
@@ -156,6 +176,53 @@ test('dm chat and task empty states use Slock-style simple surfaces', async () =
   assert.match(styles, /\.dm-empty-state/);
   assert.match(styles, /\.dm-task-empty/);
   assert.match(styles, /\.dm-peer-button/);
+});
+
+test('create channel keeps agent members optional and manually selected', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const channelModalSource = app.slice(app.indexOf('function renderChannelModal'), app.indexOf('function renderEditChannelModal'));
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /function agentCanJoinNewChannel\(agent\)/);
+  assert.match(channelModalSource, /Members <small>\(optional\)<\/small>/);
+  assert.match(channelModalSource, /id="create-channel-member-search"/);
+  assert.doesNotMatch(channelModalSource, /checked/);
+  assert.match(styles, /\.create-channel-member-row:has\(input\[type="checkbox"\]:checked\)/);
+});
+
+test('message composers refocus after enter-submit sends', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
+  const submitSource = app.slice(app.indexOf("document.addEventListener('submit'"), app.indexOf('refreshState().then'));
+
+  assert.match(app, /let pendingComposerFocusId = null/);
+  assert.match(app, /function focusComposerTextarea\(composerId\)/);
+  assert.match(app, /function requestComposerFocus\(composerId\)/);
+  assert.match(app, /function restorePendingComposerFocus\(\)/);
+  assert.match(renderSource, /restorePendingComposerFocus\(\)/);
+  assert.match(submitSource, /let focusComposerId = null/);
+  assert.match(submitSource, /focusComposerId = shouldOpenTaskThread && result\.message\?\.id \? composerIdFor\('thread', result\.message\.id\) : composerId/);
+  assert.match(submitSource, /focusComposerId = composerId/);
+  assert.match(submitSource, /if \(focusComposerId\) requestComposerFocus\(focusComposerId\)/);
+});
+
+test('workspace location and scroll position survive refreshes', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
+  const scrollListenerSource = app.slice(
+    app.indexOf("document.addEventListener('scroll'"),
+    app.indexOf("document.addEventListener('compositionstart'"),
+  );
+
+  assert.match(app, /const UI_STATE_KEY = 'magclawUiState'/);
+  assert.match(app, /const PANE_SCROLL_KEY = 'magclawPaneScroll'/);
+  assert.match(app, /function readStoredUiState\(\)/);
+  assert.match(app, /function persistUiState\(\)/);
+  assert.match(app, /function readStoredPaneScrolls\(\)/);
+  assert.match(app, /function persistPaneScroll\(targetName, node\)/);
+  assert.match(renderSource, /persistUiState\(\)/);
+  assert.match(scrollListenerSource, /persistPaneScroll\('main', event\.target\)/);
+  assert.match(scrollListenerSource, /persistPaneScroll\('thread', event\.target\)/);
 });
 
 test('task cards open their thread conversation and keep compact blocks without delete action', async () => {
@@ -281,7 +348,7 @@ test('search page matches Slock shortcuts filters persistence and thread drawer 
   assert.match(app, /data-action="toggle-search-range-menu"/);
   assert.match(app, /data-action="clear-search-all"/);
   assert.match(app, /data-action="load-more-search"/);
-  assert.match(app, /placeholder="Search channels, DMs, messages\.\.\."/);
+  assert.match(app, /placeholder="Search channels, DIRECT MESSAGES, messages\.\.\."/);
   assert.match(searchResultSource, /activeView === 'search' && opensThread/);
   assert.match(searchResultSource, /threadMessageId = root\.id/);
   assert.equal(searchResultSource.includes("activeView = 'space';\n  activeTab = 'chat';\n  threadMessageId = opensThread"), true);
@@ -330,6 +397,15 @@ test('member rail lists keep status dots on the far right only in the agent tab'
   assert.match(styles, /\.member-status-side/);
   assert.match(styles, /\.member-btn \.dm-avatar-wrap \.avatar-status-dot/);
   assert.match(styles, /\.message-card \.avatar-status-dot/);
+});
+
+test('message rows re-render when author presence changes from heartbeat', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const renderKeySource = app.slice(app.indexOf('function renderRecordKey'), app.indexOf('function renderSystemEvent'));
+
+  assert.match(renderKeySource, /authorStatus: author\?\.status \|\| ''/);
+  assert.match(renderKeySource, /record\?\.authorType === 'agent'/);
+  assert.match(app, /function applyPresenceHeartbeat\(heartbeat\)/);
 });
 
 test('agent detail opened from a thread returns to that thread when closed', async () => {
@@ -436,6 +512,10 @@ test('agent avatar uploads open a square crop modal and persist a cropped image'
   assert.match(app, /function renderAvatarCropModal\(\)/);
   assert.match(app, /function drawCroppedAvatarToDataUrl/);
   assert.match(app, /modal = 'avatar-crop'/);
+  assert.match(app, /data-target="agent-create"/);
+  assert.match(app, /target === 'agent-create'/);
+  assert.match(app, /agentFormState\.avatar = avatar/);
+  assert.match(app, /modal = crop\?\.target === 'agent-create' \? 'agent' : null/);
   assert.match(app, /data-action="avatar-crop-zoom-in"/);
   assert.match(app, /data-action="avatar-crop-zoom-out"/);
   assert.match(app, /data-action="confirm-avatar-crop"/);
@@ -445,6 +525,14 @@ test('agent avatar uploads open a square crop modal and persist a cropped image'
   assert.match(styles, /aspect-ratio: 1 \/ 1/);
   assert.match(styles, /\.avatar-preview[\s\S]*object-fit: cover/);
   assert.match(styles, /\.avatar-option[\s\S]*object-fit: cover/);
+});
+
+test('create agent opens with a fresh form state every time', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  assert.match(app, /function resetAgentFormState\(\)/);
+  assert.match(app, /if \(modal === 'agent'\) \{\s*resetAgentFormState\(\);\s*await loadInstalledRuntimes\(\);/);
+  assert.match(app, /if \(form\.id === 'agent-form'\)[\s\S]*resetAgentFormState\(\);\s*modal = null/);
 });
 
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {

@@ -6,13 +6,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
-let nextTestPort = 5600 + Math.floor(Math.random() * 1000);
+let nextTestPort = 6200 + Math.floor(Math.random() * 300);
 
-async function startIsolatedServer(extraEnv = {}) {
-  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-slock-flow-'));
-  await mkdir(path.join(tmp, 'public'), { recursive: true });
-  await cp(path.join(ROOT, 'server'), path.join(tmp, 'server'), { recursive: true });
-  await cp(path.join(ROOT, 'public', 'index.html'), path.join(tmp, 'public', 'index.html'));
+async function launchIsolatedServer(tmp, extraEnv = {}) {
   const port = nextTestPort++;
   const child = spawn(process.execPath, ['server/index.js'], {
     cwd: tmp,
@@ -34,6 +30,7 @@ async function startIsolatedServer(extraEnv = {}) {
   child.stderr.on('data', (chunk) => {
     output += chunk.toString();
   });
+  let stopped = false;
 
   for (let attempt = 0; attempt < 80; attempt += 1) {
     try {
@@ -42,10 +39,13 @@ async function startIsolatedServer(extraEnv = {}) {
         return {
           baseUrl,
           tmp,
-          async stop() {
-            child.kill('SIGINT');
-            await new Promise((resolve) => child.once('exit', resolve));
-            await rm(tmp, { recursive: true, force: true });
+          async stop(options = {}) {
+            if (!stopped) {
+              stopped = true;
+              child.kill('SIGINT');
+              await new Promise((resolve) => child.once('exit', resolve));
+            }
+            if (!options.keepTmp) await rm(tmp, { recursive: true, force: true });
           },
         };
       }
@@ -57,6 +57,14 @@ async function startIsolatedServer(extraEnv = {}) {
   child.kill('SIGINT');
   await rm(tmp, { recursive: true, force: true });
   throw new Error(`server did not start: ${output}`);
+}
+
+async function startIsolatedServer(extraEnv = {}) {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-slock-flow-'));
+  await mkdir(path.join(tmp, 'public'), { recursive: true });
+  await cp(path.join(ROOT, 'server'), path.join(tmp, 'server'), { recursive: true });
+  await cp(path.join(ROOT, 'public', 'index.html'), path.join(tmp, 'public', 'index.html'));
+  return launchIsolatedServer(tmp, extraEnv);
 }
 
 test('project folder picker adds the selected local folder without typing a path', async () => {
@@ -109,6 +117,98 @@ test('save endpoint toggles both channel messages and thread replies', async () 
   }
 });
 
+test('dm thread replies dispatch to the private agent for pickup receipts', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { dm } = await request(server.baseUrl, '/api/dms', {
+      method: 'POST',
+      body: JSON.stringify({ participantId: 'agt_codex' }),
+    });
+    const parent = await request(server.baseUrl, `/api/spaces/dm/${dm.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        authorType: 'agent',
+        authorId: 'agt_codex',
+        body: 'Private parent from the agent',
+        attachmentIds: [],
+      }),
+    });
+    const reply = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '继续看一下这个私聊 thread',
+        attachmentIds: [],
+      }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const workItem = snapshot.workItems.find((item) => (
+        item.sourceMessageId === reply.reply.id
+        && item.parentMessageId === parent.message.id
+        && item.spaceType === 'dm'
+        && item.spaceId === dm.id
+        && item.agentId === 'agt_codex'
+      ));
+      return workItem ? snapshot : null;
+    }, 4000);
+
+    const workItem = finalState.workItems.find((item) => item.sourceMessageId === reply.reply.id);
+    assert.equal(workItem.agentId, 'agt_codex');
+    assert.equal(workItem.target, `dm:${dm.id}:${parent.message.id}`);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('chat and task records are persisted in SQLite instead of the JSON state file', async (t) => {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import('node:sqlite'));
+  } catch {
+    t.skip('Node built-in SQLite is unavailable in this runtime');
+    return;
+  }
+
+  const server = await startIsolatedServer();
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '<@agt_codex> 请把这个保存成任务',
+        attachmentIds: [],
+        asTask: true,
+      }),
+    });
+    await request(server.baseUrl, `/api/messages/${created.message.id}/save`, { method: 'POST', body: '{}' });
+
+    const apiState = await request(server.baseUrl, '/api/state');
+    assert.ok(apiState.messages.some((message) => message.id === created.message.id));
+    assert.ok(apiState.tasks.some((task) => task.id === created.task.id));
+    assert.ok(apiState.messages.find((message) => message.id === created.message.id)?.savedBy.includes('hum_local'));
+
+    const stateFile = JSON.parse(await readFile(path.join(server.tmp, '.magclaw', 'state.json'), 'utf8'));
+    assert.deepEqual(stateFile.messages, []);
+    assert.deepEqual(stateFile.replies, []);
+    assert.deepEqual(stateFile.tasks, []);
+    assert.deepEqual(stateFile.workItems, []);
+    assert.deepEqual(stateFile.events, []);
+
+    await lstat(path.join(server.tmp, '.magclaw', 'state.sqlite'));
+    const db = new DatabaseSync(path.join(server.tmp, '.magclaw', 'state.sqlite'));
+    try {
+      const messages = db.prepare("SELECT COUNT(*) AS count FROM state_records WHERE kind = 'messages'").get();
+      const tasks = db.prepare("SELECT COUNT(*) AS count FROM state_records WHERE kind = 'tasks'").get();
+      assert.ok(Number(messages.count) >= 2);
+      assert.ok(Number(tasks.count) >= 1);
+    } finally {
+      db.close();
+    }
+  } finally {
+    await server.stop();
+  }
+});
+
 async function request(baseUrl, pathname, options = {}) {
   const response = await fetch(`${baseUrl}${pathname}`, {
     ...options,
@@ -142,6 +242,195 @@ async function waitFor(predicate, timeoutMs = 4000) {
   }
   return lastValue;
 }
+
+async function readSseEvent(baseUrl, expectedEvent, timeoutMs = 1500) {
+  const controller = new AbortController();
+  const response = await fetch(`${baseUrl}/api/events`, { signal: controller.signal });
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const remaining = Math.max(1, deadline - Date.now());
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`Timed out waiting for ${expectedEvent}`)), remaining)),
+      ]);
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      const records = buffer.split(/\n\n/);
+      buffer = records.pop() || '';
+      for (const record of records) {
+        const lines = record.split(/\n/);
+        const eventLine = lines.find((line) => line.startsWith('event: '));
+        const dataLine = lines.find((line) => line.startsWith('data: '));
+        const event = eventLine?.slice('event: '.length);
+        if (event === expectedEvent) return JSON.parse(dataLine?.slice('data: '.length) || '{}');
+      }
+    }
+  } finally {
+    controller.abort();
+    await reader.cancel().catch(() => {});
+  }
+  throw new Error(`Timed out waiting for ${expectedEvent}`);
+}
+
+async function readSseEventFromReader(reader, decoder, expectedEvent, timeoutMs = 1500) {
+  let buffer = '';
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remaining = Math.max(1, deadline - Date.now());
+    const chunk = await Promise.race([
+      reader.read(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`Timed out waiting for ${expectedEvent}`)), remaining)),
+    ]);
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const records = buffer.split(/\n\n/);
+    buffer = records.pop() || '';
+    for (const record of records) {
+      const lines = record.split(/\n/);
+      const eventLine = lines.find((line) => line.startsWith('event: '));
+      const dataLine = lines.find((line) => line.startsWith('data: '));
+      const event = eventLine?.slice('event: '.length);
+      if (event === expectedEvent) return JSON.parse(dataLine?.slice('data: '.length) || '{}');
+    }
+  }
+  throw new Error(`Timed out waiting for ${expectedEvent}`);
+}
+
+test('new channels leave agent members optional and selected members fan out like Slock', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: alice } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Alice', description: 'Knowledge system helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: cindy } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Cindy', description: 'Onboarding helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: offline } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'OfflineAgent', description: 'Unavailable helper', runtime: 'Codex CLI' }),
+    });
+    await request(server.baseUrl, `/api/agents/${offline.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'offline' }),
+    });
+
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'hello-room', description: 'casual room' }),
+    });
+    assert.deepEqual(channel.agentIds, []);
+
+    const explicitEmpty = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'manual-empty', description: 'explicit empty channel', agentIds: [] }),
+    });
+    assert.deepEqual(explicitEmpty.channel.agentIds, []);
+
+    const selected = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'selected-hello-room',
+        description: 'manual member channel',
+        agentIds: [alice.id, cindy.id, offline.id],
+      }),
+    });
+    assert.deepEqual(selected.channel.agentIds.sort(), [alice.id, cindy.id, offline.id].sort());
+
+    const created = await request(server.baseUrl, `/api/spaces/channel/${selected.channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '大家好', attachmentIds: [] }),
+    });
+    const deliveredAgentIds = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const ids = snapshot.workItems
+        .filter((item) => item.sourceMessageId === created.message.id)
+        .map((item) => item.agentId)
+        .sort();
+      return ids.length >= 2 ? ids : null;
+    });
+    assert.deepEqual(deliveredAgentIds, [alice.id, cindy.id].sort());
+  } finally {
+    await server.stop();
+  }
+});
+
+test('Codex agents never persist the unsupported default model sentinel', async () => {
+  const server = await startIsolatedServer({ CODEX_MODEL: '' });
+  try {
+    const { agent } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ModelSafe', runtime: 'Codex CLI' }),
+    });
+    assert.notEqual(agent.model.toLowerCase(), 'default');
+
+    const patched = await request(server.baseUrl, `/api/agents/${agent.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ model: 'default' }),
+    });
+    assert.notEqual(patched.agent.model.toLowerCase(), 'default');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('stale runtime statuses reset to idle when the local server restarts', async () => {
+  let server = await startIsolatedServer();
+  const tmp = server.tmp;
+  let cleaned = false;
+  try {
+    const patched = await request(server.baseUrl, '/api/agents/agt_codex', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'error' }),
+    });
+    assert.equal(patched.agent.status, 'error');
+
+    await server.stop({ keepTmp: true });
+    server = await launchIsolatedServer(tmp);
+
+    const state = await request(server.baseUrl, '/api/state');
+    assert.equal(state.agents.find((agent) => agent.id === 'agt_codex')?.status, 'idle');
+    await server.stop();
+    cleaned = true;
+  } finally {
+    if (!cleaned) {
+      try {
+        await server?.stop?.({ keepTmp: true });
+      } catch {
+        // ignore cleanup races in failed restart assertions
+      }
+      await rm(tmp, { recursive: true, force: true });
+    }
+  }
+});
+
+test('status changes publish an immediate heartbeat without waiting for the interval', async () => {
+  const server = await startIsolatedServer({ MAGCLAW_STATE_HEARTBEAT_MS: '10000' });
+  const controller = new AbortController();
+  const response = await fetch(`${server.baseUrl}/api/events`, { signal: controller.signal });
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  try {
+    await readSseEventFromReader(reader, decoder, 'heartbeat');
+    await request(server.baseUrl, '/api/agents/agt_codex', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'working' }),
+    });
+    const heartbeat = await readSseEventFromReader(reader, decoder, 'heartbeat', 600);
+    assert.equal(heartbeat.agents.find((agent) => agent.id === 'agt_codex')?.status, 'working');
+  } finally {
+    controller.abort();
+    await reader.cancel().catch(() => {});
+    await server.stop();
+  }
+});
 
 test('Slock-style message task stores mentions, channel task number, assignees, and thread end intent', async () => {
   const server = await startIsolatedServer();
@@ -195,6 +484,116 @@ test('Slock-style message task stores mentions, channel task number, assignees, 
     assert.ok(task.history.some((item) => item.type === 'ended_from_thread'));
   } finally {
     await server.stop();
+  }
+});
+
+test('thread task creation immediately dispatches the claimed task thread to the agent', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-thread-task-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const logPath = process.env.FAKE_CODEX_LOG;
+let buffer = '';
+let turnCount = 0;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify({ ...value }) + '\\n');
+}
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+function completeTurn(turnId, text) {
+  send({ method: 'turn/started', params: { turn: { id: turnId } } });
+  send({ method: 'item/agentMessage/delta', params: { itemId: 'item_' + turnId, delta: text } });
+  send({ method: 'turn/completed', params: { turn: { id: turnId, status: 'completed' } } });
+}
+function handle(message) {
+  log({ method: message.method, params: message.params });
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'initialized') return;
+  if (message.method === 'thread/start') {
+    send({ id: message.id, result: { thread: { id: 'thread_fake_task_dispatch' } } });
+    return;
+  }
+  if (message.method === 'thread/resume') {
+    send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    return;
+  }
+  if (message.method === 'turn/start' || message.method === 'turn/steer') {
+    const turnId = 'turn_' + (++turnCount);
+    const prompt = message.params?.input?.[0]?.text || '';
+    log({ prompt });
+    send({ id: message.id, result: { turn: { id: turnId } } });
+    setTimeout(() => completeTurn(turnId, '广州出发建议优先选高铁可达的近郊或错峰路线，避开热门高速。'), 30);
+  }
+}
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (line.trim()) handle(JSON.parse(line));
+  }
+});
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+  });
+  try {
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'thread-task-dispatch', description: 'task dispatch', agentIds: ['agt_codex'] }),
+    });
+    const parent = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '五一出行讨论背景',
+        attachmentIds: [],
+      }),
+    });
+
+    const created = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '开启一个 task，调研下从广州出发，走哪里不会堵车<@agt_codex>',
+        attachmentIds: [],
+      }),
+    });
+    assert.equal(created.createdTask.title, '调研下从广州出发，走哪里不会堵车');
+    assert.equal(created.createdTask.status, 'in_progress');
+    assert.equal(created.createdTask.claimedBy, 'agt_codex');
+
+    const finalState = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const replies = snapshot.replies.filter((reply) => reply.parentMessageId === created.createdTaskMessage.id);
+      const workItem = snapshot.workItems.find((item) => (
+        item.agentId === 'agt_codex'
+        && item.sourceMessageId === created.createdTaskMessage.id
+        && item.parentMessageId === created.createdTaskMessage.id
+      ));
+      return workItem?.status === 'responded'
+        && replies.some((reply) => reply.body.includes('广州出发建议'))
+        ? snapshot
+        : null;
+    }, 8000);
+
+    assert.ok(finalState);
+    const workItem = finalState.workItems.find((item) => item.sourceMessageId === created.createdTaskMessage.id);
+    assert.equal(workItem.target, `#${channel.name}:${created.createdTaskMessage.id}`);
+    assert.equal(workItem.taskId, created.createdTask.id);
+    const entries = await readJsonLines(logPath);
+    const promptEntry = entries.find((item) => item.prompt?.includes('Task #1 has been created and claimed for you.'));
+    assert.ok(promptEntry);
+    assert.match(promptEntry.prompt, /Title: 调研下从广州出发，走哪里不会堵车/);
+    assert.match(promptEntry.prompt, /Trigger reply:/);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
   }
 });
 
@@ -586,16 +985,16 @@ test('thread task intent creates an agent-authored top-level task message linked
   }
 });
 
-test('top-level channel messages fan out to every available channel agent', async () => {
+test('top-level channel messages fan out to members unless directed or task-like', async () => {
   const server = await startIsolatedServer();
   try {
-    const { agent: cindy } = await request(server.baseUrl, '/api/agents', {
+    const { agent: github } = await request(server.baseUrl, '/api/agents', {
       method: 'POST',
-      body: JSON.stringify({ name: 'Cindy', description: 'Onboarding Assistant', runtime: 'Codex CLI' }),
+      body: JSON.stringify({ name: 'CCC', description: 'GitHub repo, issue, pull request, CI/CD helper', runtime: 'Codex CLI' }),
     });
-    const { agent: cc } = await request(server.baseUrl, '/api/agents', {
+    const { agent: design } = await request(server.baseUrl, '/api/agents', {
       method: 'POST',
-      body: JSON.stringify({ name: 'cc', description: 'Helper', runtime: 'Codex CLI' }),
+      body: JSON.stringify({ name: 'Ziling', description: 'Visual design and writing helper', runtime: 'Codex CLI' }),
     });
     const { agent: sleeper } = await request(server.baseUrl, '/api/agents', {
       method: 'POST',
@@ -607,23 +1006,207 @@ test('top-level channel messages fan out to every available channel agent', asyn
     });
     const { channel } = await request(server.baseUrl, '/api/channels', {
       method: 'POST',
-      body: JSON.stringify({ name: 'fanout', description: 'broadcast routing', agentIds: [cindy.id, cc.id, sleeper.id] }),
+      body: JSON.stringify({ name: 'dispatch', description: 'targeted routing', agentIds: [github.id, design.id, sleeper.id] }),
     });
 
     const created = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
       method: 'POST',
       body: JSON.stringify({
-        body: '我想找一些资料',
+        body: '谁的学历高？',
         attachmentIds: [],
       }),
     });
 
+    const deliveredAgentIds = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const ids = snapshot.workItems
+        .filter((item) => item.sourceMessageId === created.message.id)
+        .map((item) => item.agentId)
+        .sort();
+      return ids.length >= 2 ? ids : null;
+    });
+    assert.deepEqual(deliveredAgentIds, [github.id, design.id].sort());
+
+    const directed = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: 'CCC 你知道 GitHub 吗',
+        attachmentIds: [],
+      }),
+    });
+    const directedDeliveredAgentIds = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const ids = snapshot.workItems
+        .filter((item) => item.sourceMessageId === directed.message.id)
+        .map((item) => item.agentId)
+        .sort();
+      return ids.length >= 1 ? ids : null;
+    });
+    assert.deepEqual(directedDeliveredAgentIds, [github.id]);
+
+    const { agent: availableA } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Available A', description: 'Idle helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: availableB } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Available B', description: 'Idle helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: offlineAvailable } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Offline Available', description: 'Not available', runtime: 'Codex CLI' }),
+    });
+    await request(server.baseUrl, `/api/agents/${offlineAvailable.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'offline' }),
+    });
+    const { channel: availabilityChannel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'availability', description: 'availability routing', agentIds: [availableA.id, availableB.id, offlineAvailable.id] }),
+    });
+    const available = await request(server.baseUrl, `/api/spaces/channel/${availabilityChannel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '大家谁今天有空',
+        attachmentIds: [],
+      }),
+    });
+    const availabilityDeliveredAgentIds = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const ids = snapshot.workItems
+        .filter((item) => item.sourceMessageId === available.message.id)
+        .map((item) => item.agentId)
+        .sort();
+      return ids.length >= 2 ? ids : null;
+    });
+    assert.deepEqual(availabilityDeliveredAgentIds, [availableA.id, availableB.id].sort());
+    const availabilityState = await request(server.baseUrl, '/api/state');
+    assert.equal(availabilityState.tasks.some((task) => task.messageId === available.message.id), false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('top-level agent replies do not relay mentions as new channel deliveries', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: cindy } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Cindy', description: 'Coordination helper', runtime: 'Codex CLI' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'no-relay', description: 'ordinary channel chat', agentIds: ['agt_codex', cindy.id] }),
+    });
+
+    const created = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '谁的学历高？',
+        attachmentIds: [],
+      }),
+    });
+
+    const workItem = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      return snapshot.workItems.find((item) => item.sourceMessageId === created.message.id && item.agentId === 'agt_codex');
+    });
+    assert.ok(workItem);
+    assert.equal(workItem.parentMessageId, null);
+
+    const sent = await request(server.baseUrl, '/api/agent-tools/messages/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: 'agt_codex',
+        workItemId: workItem.id,
+        target: workItem.target,
+        content: `我看到了，<@${cindy.id}> 这只是普通群聊引用。`,
+      }),
+    });
+    assert.equal(sent.ok, true);
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
     const finalState = await request(server.baseUrl, '/api/state');
-    const deliveredAgentIds = finalState.workItems
-      .filter((item) => item.sourceMessageId === created.message.id)
-      .map((item) => item.agentId)
-      .sort();
-    assert.deepEqual(deliveredAgentIds, [cc.id, cindy.id].sort());
+    assert.equal(finalState.messages.some((message) => message.id === sent.message.id && message.spaceId === channel.id), true);
+    assert.equal(finalState.workItems.some((item) => item.sourceMessageId === sent.message.id && item.agentId === cindy.id), false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('availability follow-up routes to remaining idle agents from recent context', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: ziling } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Ziling', description: 'Visual design and writing helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: alice } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Alice', description: 'Knowledge system helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: musk } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ElonMusk', description: 'Coding and operations helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: cindy } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Cindy', description: 'Onboarding and coordination helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: offline } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'OfflineAgent', description: 'Unavailable helper', runtime: 'Codex CLI' }),
+    });
+    await request(server.baseUrl, `/api/agents/${offline.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'offline' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'availability-followup',
+        description: 'availability context',
+        agentIds: [ziling.id, alice.id, musk.id, cindy.id, offline.id],
+      }),
+    });
+
+    const first = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: 'Ziling 你有空吗',
+        attachmentIds: [],
+      }),
+    });
+
+    const firstDeliveredAgentIds = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const ids = snapshot.workItems
+        .filter((item) => item.sourceMessageId === first.message.id)
+        .map((item) => item.agentId)
+        .sort();
+      return ids.length >= 1 ? ids : null;
+    });
+    assert.deepEqual(firstDeliveredAgentIds, [ziling.id]);
+
+    const followup = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '其他三个人呢',
+        attachmentIds: [],
+      }),
+    });
+
+    const followupDeliveredAgentIds = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const ids = snapshot.workItems
+        .filter((item) => item.sourceMessageId === followup.message.id)
+        .map((item) => item.agentId)
+        .sort();
+      return ids.length >= 3 ? ids : null;
+    });
+    assert.deepEqual(followupDeliveredAgentIds, [alice.id, cindy.id, musk.id].sort());
+    const finalState = await request(server.baseUrl, '/api/state');
+    assert.equal(finalState.tasks.some((task) => task.messageId === followup.message.id), false);
   } finally {
     await server.stop();
   }
@@ -642,7 +1225,28 @@ test('agent workspace is seeded and exposed as a read-only file tree', async () 
     const memory = await request(server.baseUrl, '/api/agents/agt_codex/workspace/file?path=MEMORY.md');
     assert.equal(memory.file.previewKind, 'markdown');
     assert.match(memory.file.content, /# Codex Local/);
+    assert.match(memory.file.content, /## Key Knowledge/);
+    assert.match(memory.file.content, /notes\/profile\.md/);
+    assert.match(memory.file.content, /notes\/work-log\.md/);
+    assert.match(memory.file.content, /## Active Context/);
     assert.match(memory.file.absolutePath, /\.magclaw\/agents\/agt_codex\/MEMORY\.md$/);
+
+    const notes = await request(server.baseUrl, '/api/agents/agt_codex/workspace?path=notes');
+    assert.ok(notes.entries.some((item) => item.path === 'notes/profile.md'));
+    assert.ok(notes.entries.some((item) => item.path === 'notes/channels.md'));
+    assert.ok(notes.entries.some((item) => item.path === 'notes/agents.md'));
+    assert.ok(notes.entries.some((item) => item.path === 'notes/work-log.md'));
+  } finally {
+    await server.stop();
+  }
+});
+
+test('SSE publishes heartbeat presence snapshots for live agent status sync', async () => {
+  const server = await startIsolatedServer({ MAGCLAW_STATE_HEARTBEAT_MS: '60' });
+  try {
+    const heartbeat = await readSseEvent(server.baseUrl, 'heartbeat');
+    assert.match(heartbeat.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.ok(heartbeat.agents.some((agent) => agent.id === 'agt_codex' && agent.status));
   } finally {
     await server.stop();
   }
@@ -1479,19 +2083,28 @@ process.stdin.on('data', (chunk) => {
     });
     assert.deepEqual(stopped.scope, { spaceType: 'channel', spaceId: 'chan_all', label: '#all' });
 
+    let lastScopedStopSnapshot = null;
     const finalState = await waitFor(async () => {
       const snapshot = await request(server.baseUrl, '/api/state');
       const stoppedReplies = snapshot.replies.filter((reply) => reply.parentMessageId === stoppedChannel.message.id);
       const otherReplies = snapshot.replies.filter((reply) => reply.parentMessageId === otherChannel.message.id);
-      const agent = snapshot.agents.find((item) => item.id === 'agt_codex');
+      const stoppedItem = snapshot.workItems.find((item) => item.sourceMessageId === stoppedChannel.message.id);
+      const otherItem = snapshot.workItems.find((item) => item.sourceMessageId === otherChannel.message.id);
+      lastScopedStopSnapshot = {
+        stoppedReplies: stoppedReplies.map((reply) => reply.body),
+        otherReplies: otherReplies.map((reply) => reply.body),
+        stoppedItemStatus: stoppedItem?.status,
+        otherItemStatus: otherItem?.status,
+      };
       return otherReplies.some((reply) => reply.body.includes('other channel survived scoped stop'))
         && !stoppedReplies.some((reply) => reply.body.includes('stopped channel should not reply'))
-        && agent?.status === 'idle'
+        && stoppedItem?.status === 'cancelled'
+        && otherItem?.status === 'responded'
         ? snapshot
         : null;
     }, 8000);
 
-    assert.ok(finalState);
+    assert.ok(finalState, JSON.stringify(lastScopedStopSnapshot));
     const stoppedItem = finalState.workItems.find((item) => item.sourceMessageId === stoppedChannel.message.id);
     const otherItem = finalState.workItems.find((item) => item.sourceMessageId === otherChannel.message.id);
     assert.equal(stoppedItem?.status, 'cancelled');

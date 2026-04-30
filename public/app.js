@@ -1,14 +1,17 @@
 const root = document.querySelector('#root');
+const UI_STATE_KEY = 'magclawUiState';
+const PANE_SCROLL_KEY = 'magclawPaneScroll';
 const TASK_COLUMN_COLLAPSE_KEY = 'magclawTaskColumnCollapse';
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
+const initialUiState = readStoredUiState();
 
 let appState = null;
-let selectedSpaceType = 'channel';
-let selectedSpaceId = 'chan_all';
-let activeView = 'space';
-let activeTab = 'chat';
-let railTab = localStorage.getItem('railTab') || 'spaces'; // 'spaces' or 'members'
-let threadMessageId = null;
+let selectedSpaceType = initialUiState.selectedSpaceType || 'channel';
+let selectedSpaceId = initialUiState.selectedSpaceId || 'chan_all';
+let activeView = initialUiState.activeView || 'space';
+let activeTab = initialUiState.activeTab || 'chat';
+let railTab = initialUiState.railTab || localStorage.getItem('railTab') || 'spaces'; // 'spaces' or 'members'
+let threadMessageId = initialUiState.threadMessageId || null;
 let inspectorReturnThreadId = null;
 let selectedAgentId = null; // selected agent for detail panel
 let selectedTaskId = null;
@@ -23,6 +26,7 @@ let searchTimeRange = 'any';
 let searchTimeMenuOpen = false;
 let searchVisibleCount = 20;
 let addMemberSearchQuery = '';
+let createChannelMemberSearchQuery = '';
 let taskFilter = 'all';
 let taskViewMode = 'board';
 let taskChannelFilterIds = [];
@@ -36,6 +40,8 @@ let installedRuntimes = [];
 let selectedRuntimeId = null;
 let backBottomVisible = { main: false, thread: false };
 let pendingBottomScroll = { main: false, thread: false };
+let pendingComposerFocusId = null;
+let paneScrollPositions = readStoredPaneScrolls();
 let mentionLookupSeq = 0;
 let expandedProjectTrees = {};
 let projectTreeCache = {};
@@ -61,6 +67,12 @@ const SEARCH_SNIPPET_RADIUS = 88;
 const AVATAR_CROP_SIZE = 256;
 const AVATAR_CROP_STAGE_SIZE = 320;
 const AVATAR_CROP_VIEW_SIZE = 220;
+const AGENT_RECEIPT_VISIBLE_LIMIT = 10;
+
+// Track known agent receipts per message to only animate new arrivals
+const knownMessageReceipts = new Map(); // messageId -> Set of agentIds
+let activeReceiptPopover = null; // currently open receipt popover trigger element
+let initialLoadComplete = false; // Skip animation on initial page load
 const RAIL_WIDTH_KEY = 'magclawRailWidth';
 const RAIL_MIN_WIDTH = 176;
 const RAIL_MAX_WIDTH = 360;
@@ -413,6 +425,76 @@ function renderMarkdownWithMentions(content) {
   return html;
 }
 
+function readJsonStorage(key, fallback) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || 'null');
+    return parsed && typeof parsed === 'object' ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Browser storage can be disabled; keep the live UI working without persistence.
+  }
+}
+
+function readStoredUiState() {
+  const parsed = readJsonStorage(UI_STATE_KEY, {});
+  const validSpaceType = ['channel', 'dm'].includes(parsed.selectedSpaceType) ? parsed.selectedSpaceType : 'channel';
+  const validView = ['space', 'tasks', 'threads', 'saved', 'search', 'missions', 'cloud'].includes(parsed.activeView)
+    ? parsed.activeView
+    : 'space';
+  const validTab = ['chat', 'tasks'].includes(parsed.activeTab) ? parsed.activeTab : 'chat';
+  const validRailTab = ['spaces', 'members'].includes(parsed.railTab) ? parsed.railTab : '';
+  return {
+    selectedSpaceType: validSpaceType,
+    selectedSpaceId: String(parsed.selectedSpaceId || ''),
+    activeView: validView,
+    activeTab: validTab,
+    railTab: validRailTab,
+    threadMessageId: parsed.threadMessageId ? String(parsed.threadMessageId) : null,
+  };
+}
+
+function persistUiState() {
+  const payload = {
+    selectedSpaceType,
+    selectedSpaceId,
+    activeView,
+    activeTab,
+    railTab,
+    threadMessageId,
+  };
+  writeJsonStorage(UI_STATE_KEY, payload);
+  try {
+    localStorage.setItem('railTab', railTab);
+  } catch {
+    // Non-critical compatibility write for older saved sessions.
+  }
+}
+
+function readStoredPaneScrolls() {
+  const parsed = readJsonStorage(PANE_SCROLL_KEY, {});
+  return Object.fromEntries(Object.entries(parsed)
+    .map(([key, value]) => [key, Number(value)])
+    .filter(([key, value]) => key && Number.isFinite(value) && value >= 0));
+}
+
+function persistPaneScroll(targetName, node) {
+  const key = paneKey(targetName);
+  if (!key || !node) return;
+  paneScrollPositions[key] = Math.max(0, Math.round(node.scrollTop || 0));
+  const entries = Object.entries(paneScrollPositions);
+  if (entries.length > 120) {
+    paneScrollPositions = Object.fromEntries(entries.slice(entries.length - 120));
+  }
+  writeJsonStorage(PANE_SCROLL_KEY, paneScrollPositions);
+}
+
 function readCollapsedTaskColumns() {
   try {
     const parsed = JSON.parse(localStorage.getItem(TASK_COLUMN_COLLAPSE_KEY) || '{}');
@@ -623,17 +705,24 @@ async function drawCroppedAvatarToDataUrl(state = avatarCropState) {
 }
 
 async function uploadAgentAvatar(input) {
+  const target = input?.dataset?.target || 'agent-detail';
   const agentId = input?.dataset?.id || selectedAgentId;
   const file = input?.files?.[0];
-  if (!agentId || !file) return;
+  if (!file) return;
   if (file.size > AGENT_AVATAR_UPLOAD_MAX_BYTES) {
     toast('Avatar must be 10 MB or smaller');
     input.value = '';
     return;
   }
+  if (target === 'agent-create') {
+    saveAgentFormState();
+  } else if (!agentId) {
+    input.value = '';
+    return;
+  }
   const avatar = await readAvatarFileAsDataUrl(file);
   input.value = '';
-  await openAvatarCropModal({ agentId, source: avatar, target: 'agent-detail' });
+  await openAvatarCropModal({ agentId, source: avatar, target });
 }
 
 function byId(list, id) {
@@ -1592,9 +1681,18 @@ function paneIsAtBottom(node) {
 
 function paneScrollSnapshot(targetName) {
   const node = document.querySelector(paneSelector(targetName));
+  const key = paneKey(targetName);
+  const storedTop = paneScrollPositions[key];
+  if (!node) {
+    return {
+      key,
+      top: Number.isFinite(storedTop) ? storedTop : 0,
+      atBottom: !Number.isFinite(storedTop),
+    };
+  }
   return {
-    key: paneKey(targetName),
-    top: node?.scrollTop || 0,
+    key,
+    top: node.scrollTop || 0,
     atBottom: paneIsAtBottom(node),
   };
 }
@@ -1626,18 +1724,22 @@ function restorePaneScroll(targetName, snapshot) {
   const shouldFollowBottom = forceBottom || snapshot?.atBottom;
   if (!shouldFollowBottom && snapshot?.key === paneKey(targetName)) {
     node.scrollTop = snapshot.top;
+    persistPaneScroll(targetName, node);
   } else {
     node.scrollTop = node.scrollHeight;
+    persistPaneScroll(targetName, node);
     window.setTimeout(() => {
       const current = document.querySelector(paneSelector(targetName));
       if (!current) return;
       current.scrollTop = current.scrollHeight;
+      persistPaneScroll(targetName, current);
       updateBackBottomVisibility(targetName);
     }, 40);
     window.setTimeout(() => {
       const current = document.querySelector(paneSelector(targetName));
       if (!current) return;
       current.scrollTop = current.scrollHeight;
+      persistPaneScroll(targetName, current);
       updateBackBottomVisibility(targetName);
     }, 160);
   }
@@ -1694,6 +1796,31 @@ function scrollPaneToBottom(selector, behavior = 'smooth') {
   if (behavior !== 'smooth') window.setTimeout(scroll, 120);
 }
 
+function focusComposerTextarea(composerId) {
+  if (!composerId) return false;
+  const textarea = document.querySelector(`textarea[data-composer-id="${CSS.escape(composerId)}"]`);
+  if (!textarea) return false;
+  try {
+    textarea.focus({ preventScroll: true });
+  } catch {
+    textarea.focus();
+  }
+  const end = textarea.value.length;
+  textarea.setSelectionRange(end, end);
+  return document.activeElement === textarea;
+}
+
+function requestComposerFocus(composerId) {
+  pendingComposerFocusId = composerId || null;
+}
+
+function restorePendingComposerFocus() {
+  if (!pendingComposerFocusId) return;
+  const composerId = pendingComposerFocusId;
+  pendingComposerFocusId = null;
+  focusComposerTextarea(composerId);
+}
+
 function pill(value, tone = 'blue') {
   return `<span class="pill tone-${tone}">${escapeHtml(value)}</span>`;
 }
@@ -1722,6 +1849,9 @@ function ensureSelection() {
   if (selectedTaskId && !byId(appState.tasks, selectedTaskId)) {
     selectedTaskId = null;
   }
+  if (threadMessageId && !byId(appState.messages, threadMessageId)) {
+    threadMessageId = null;
+  }
 }
 
 function render() {
@@ -1734,6 +1864,7 @@ function render() {
     thread: paneScrollSnapshot('thread'),
   };
   ensureSelection();
+  persistUiState();
   const inspectorHtml = renderInspector();
   root.innerHTML = `
     <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}" style="${appFrameStyle()}">
@@ -1751,7 +1882,10 @@ function render() {
     </div>
     ${modal ? renderModal() : ''}
   `;
-  window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
+  window.requestAnimationFrame(() => {
+    restorePaneScrolls(scrollSnapshot);
+    restorePendingComposerFocus();
+  });
 }
 
 function renderRail() {
@@ -1764,7 +1898,7 @@ function renderRail() {
   return `
     <aside class="rail collab-rail">
       <div class="view-switcher">
-        <button class="view-tab${railTab === 'spaces' ? ' active' : ''}" type="button" data-action="set-rail-tab" data-rail-tab="spaces" title="Channels & DMs">
+        <button class="view-tab${railTab === 'spaces' ? ' active' : ''}" type="button" data-action="set-rail-tab" data-rail-tab="spaces" title="Channels & DIRECT MESSAGES">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         </button>
         <button class="view-tab${railTab === 'members' ? ' active' : ''}" type="button" data-action="set-rail-tab" data-rail-tab="members" title="Members">
@@ -1790,7 +1924,7 @@ function renderRail() {
 
       <div class="rail-section">
         <div class="rail-title">
-          <span>DMs <em>${dms.length}</em></span>
+          <span>DIRECT MESSAGES <em>${dms.length}</em></span>
           <button type="button" data-action="open-modal" data-modal="dm">+</button>
         </div>
         ${dms.map((dm) => {
@@ -2171,9 +2305,196 @@ function renderMentionChips(record) {
   `;
 }
 
+function agentReceiptStatus(item) {
+  if (item?.status === 'cancelled') return 'cancelled';
+  if (item?.respondedAt || item?.status === 'responded' || Number(item?.sendCount || 0) > 0) return 'responded';
+  if (item?.deliveredAt || item?.status === 'delivered') return 'delivered';
+  return 'queued';
+}
+
+function agentReceiptRank(status) {
+  return { responded: 4, delivered: 3, queued: 2, cancelled: 1 }[status] || 0;
+}
+
+function agentReceiptTime(item) {
+  const parsed = Date.parse(item?.deliveredAt || item?.respondedAt || item?.updatedAt || item?.createdAt || '');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function deliveryReceiptItemsForRecord(record) {
+  if (!record?.id || record.authorType !== 'human' || record.authorId !== 'hum_local') return [];
+  const firstOrder = new Map();
+  const byAgent = new Map();
+  (appState?.workItems || [])
+    .filter((item) => item?.sourceMessageId === record.id && item.agentId)
+    .forEach((item, index) => {
+      const agent = byId(appState?.agents, item.agentId);
+      if (!agent) return;
+      if (!firstOrder.has(item.agentId)) firstOrder.set(item.agentId, index);
+      const status = agentReceiptStatus(item);
+      const current = byAgent.get(item.agentId);
+      const next = {
+        agent,
+        item,
+        status,
+        order: firstOrder.get(item.agentId),
+      };
+      if (!current) {
+        byAgent.set(item.agentId, next);
+        return;
+      }
+      const nextRank = agentReceiptRank(status);
+      const currentRank = agentReceiptRank(current.status);
+      if (nextRank > currentRank || (nextRank === currentRank && agentReceiptTime(item) >= agentReceiptTime(current.item))) {
+        byAgent.set(item.agentId, { ...next, order: current.order });
+      }
+    });
+  return [...byAgent.values()].sort((a, b) => a.order - b.order);
+}
+
+function deliveryReceiptSignature(record) {
+  return deliveryReceiptItemsForRecord(record)
+    .map((receipt) => [
+      receipt.agent.id,
+      receipt.agent.avatar || '',
+      receipt.agent.status || '',
+      receipt.status,
+      receipt.item.deliveredAt || '',
+      receipt.item.respondedAt || '',
+      receipt.item.updatedAt || '',
+      receipt.item.sendCount || 0,
+    ].join(':'))
+    .join('|');
+}
+
+function agentReceiptLabel(status) {
+  return {
+    responded: 'Responded',
+    delivered: 'Received',
+    queued: 'Pending',
+    cancelled: 'Stopped',
+  }[status] || 'Pending';
+}
+
+function agentReceiptMeta(receipt) {
+  if (receipt.status === 'responded') return receipt.item.respondedAt || receipt.item.updatedAt || receipt.item.deliveredAt || receipt.item.createdAt;
+  if (receipt.status === 'delivered') return receipt.item.deliveredAt || receipt.item.updatedAt || receipt.item.createdAt;
+  return receipt.item.updatedAt || receipt.item.createdAt;
+}
+
+function renderAgentReceiptAvatar(receipt, index, messageId) {
+  const name = receipt.agent.name || displayName(receipt.agent.id);
+  const label = `${name} / ${agentReceiptLabel(receipt.status)}`;
+  const knownAgents = knownMessageReceipts.get(messageId) || new Set();
+  const isNewAgent = initialLoadComplete && !knownAgents.has(receipt.agent.id);
+  const animateClass = isNewAgent ? ' animate-in' : '';
+  return `
+    <span class="agent-receipt-avatar receipt-${escapeHtml(receipt.status)}${animateClass}" style="--receipt-index: ${index}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" data-agent-id="${escapeHtml(receipt.agent.id)}">
+      ${getAvatarHtml(receipt.agent.id, 'agent', 'agent-receipt-avatar-inner')}
+    </span>
+  `;
+}
+
+function renderAgentReceiptColumn(title, receipts) {
+  return `
+    <span class="agent-receipt-column">
+      <strong>${escapeHtml(title)} <em>${receipts.length}</em></strong>
+      <span class="agent-receipt-list">
+        ${receipts.length ? receipts.map((receipt) => `
+          <span class="agent-receipt-row receipt-${escapeHtml(receipt.status)}">
+            ${getAvatarHtml(receipt.agent.id, 'agent', 'agent-receipt-row-avatar')}
+            <span class="agent-receipt-row-main">
+              <span>${escapeHtml(receipt.agent.name || displayName(receipt.agent.id))}</span>
+              <small>${escapeHtml(agentReceiptLabel(receipt.status))} / ${escapeHtml(fmtTime(agentReceiptMeta(receipt)))}</small>
+            </span>
+          </span>
+        `).join('') : '<span class="agent-receipt-empty">None</span>'}
+      </span>
+    </span>
+  `;
+}
+
+function renderAgentReceiptPopover(receipts) {
+  const received = receipts.filter((receipt) => receipt.status === 'delivered' || receipt.status === 'responded');
+  const pending = receipts.filter((receipt) => receipt.status !== 'delivered' && receipt.status !== 'responded');
+  return `
+    <span class="agent-receipt-popover" role="tooltip">
+      <span class="agent-receipt-popover-head">
+        <span>Agent pickup</span>
+        <strong>${received.length}/${receipts.length}</strong>
+      </span>
+      <span class="agent-receipt-columns">
+        ${renderAgentReceiptColumn('Received', received)}
+        ${renderAgentReceiptColumn('Pending', pending)}
+      </span>
+    </span>
+  `;
+}
+
+function renderAgentReceiptTray(record) {
+  const receipts = deliveryReceiptItemsForRecord(record);
+  if (!receipts.length) return '';
+  const hasOverflow = receipts.length > AGENT_RECEIPT_VISIBLE_LIMIT;
+  const visibleLimit = hasOverflow ? AGENT_RECEIPT_VISIBLE_LIMIT - 1 : AGENT_RECEIPT_VISIBLE_LIMIT;
+  const visible = receipts.slice(0, visibleLimit);
+  const receivedCount = receipts.filter((receipt) => receipt.status === 'delivered' || receipt.status === 'responded').length;
+  const label = `${receivedCount} of ${receipts.length} agents received this message`;
+
+  // Determine which agents are new (for animation)
+  const knownAgents = knownMessageReceipts.get(record.id) || new Set();
+  const currentAgentIds = new Set(receipts.map((r) => r.agent.id));
+  const hasNewAgents = receipts.some((r) => !knownAgents.has(r.agent.id));
+  const overflowAnimateClass = hasNewAgents && !knownAgents.size ? ' animate-in' : '';
+
+  // Update known agents after render
+  setTimeout(() => {
+    knownMessageReceipts.set(record.id, currentAgentIds);
+  }, 0);
+
+  return `
+    <div class="agent-receipt-tray" data-message-id="${escapeHtml(record.id)}">
+      <span class="agent-receipt-trigger">
+        <button class="agent-receipt-button" type="button" aria-label="${escapeHtml(label)}" data-action="toggle-receipt-popover">
+          <span class="agent-receipt-stack">
+            ${visible.map((receipt, index) => renderAgentReceiptAvatar(receipt, index, record.id)).join('')}
+            ${hasOverflow ? `<span class="agent-receipt-overflow${overflowAnimateClass}" style="--receipt-index: ${visible.length}" title="${escapeHtml(`${receipts.length - visible.length} more agents`)}" aria-label="${escapeHtml(`${receipts.length - visible.length} more agents`)}">...</span>` : ''}
+          </span>
+        </button>
+        ${renderAgentReceiptPopover(receipts)}
+      </span>
+    </div>
+  `;
+}
+
+function renderRecordKey(record) {
+  const task = record?.taskId ? byId(appState?.tasks, record.taskId) : null;
+  const author = record?.authorType === 'agent'
+    ? byId(appState?.agents, record.authorId)
+    : record?.authorType === 'human'
+      ? byId(appState?.humans, record.authorId)
+      : null;
+  return JSON.stringify({
+    id: record?.id || '',
+    authorId: record?.authorId || '',
+    authorType: record?.authorType || '',
+    authorStatus: author?.status || '',
+    body: record?.body || '',
+    createdAt: record?.createdAt || '',
+    updatedAt: record?.updatedAt || '',
+    replyCount: record?.replyCount || 0,
+    taskId: record?.taskId || '',
+    taskStatus: task?.status || '',
+    taskUpdatedAt: task?.updatedAt || '',
+    attachmentIds: record?.attachmentIds || [],
+    savedBy: record?.savedBy || [],
+    receipts: deliveryReceiptSignature(record),
+    highlighted: threadMessageId === record?.id || selectedSavedRecordId === record?.id,
+  });
+}
+
 function renderSystemEvent(message) {
   return `
-    <div class="system-event-row" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}">
+    <div class="system-event-row" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-render-key="${escapeHtml(renderRecordKey(message))}">
       <span>${parseMentions(plainActorText(message.body || ''))}</span>
       <time>${fmtTime(message.createdAt)}</time>
     </div>
@@ -2206,6 +2527,17 @@ function renderMessageActions(record, options = {}) {
   `;
 }
 
+function renderMessageFooter({ replyCountChip = '', receiptTray = '' } = {}) {
+  if (!replyCountChip && !receiptTray) return '';
+  return `
+    <div class="message-footer${replyCountChip ? ' has-reply-chip' : ''}${receiptTray ? ' has-agent-receipt-tray' : ''}">
+      ${replyCountChip}
+      <span class="message-footer-fill"></span>
+      ${receiptTray}
+    </div>
+  `;
+}
+
 function renderMessage(message, options = {}) {
   if (message.authorType === 'system' && message.eventType) return renderSystemEvent(message);
   const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
@@ -2215,8 +2547,11 @@ function renderMessage(message, options = {}) {
   const authorClass = ['agent', 'human', 'system'].includes(message.authorType) ? message.authorType : 'unknown';
   const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
   const agentAuthorAttr = message.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(message.authorId)}"` : '';
+  const receiptTray = renderAgentReceiptTray(message);
+  const replyCountChip = !options.compact && replyCount ? `<button class="reply-count-chip" type="button" data-action="open-thread" data-id="${escapeHtml(message.id)}">${replyActionLabel}</button>` : '';
+  const footer = renderMessageFooter({ replyCountChip, receiptTray });
   return `
-    <article class="message-card slock-message author-${authorClass}${highlighted}${compact}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}"${agentAuthorAttr}>
+    <article class="message-card slock-message author-${authorClass}${highlighted}${compact}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
       ${renderActorAvatar(message.authorId, message.authorType)}
       <div class="message-body">
         <div class="message-meta">
@@ -2228,7 +2563,7 @@ function renderMessage(message, options = {}) {
         <div class="message-markdown">${renderMarkdownWithMentions(message.body || '(attachment)')}</div>
         <div class="message-attachments">${attachmentLinks(message.attachmentIds)}</div>
         ${renderMessageActions(message, options)}
-        ${!options.compact && replyCount ? `<button class="reply-count-chip" type="button" data-action="open-thread" data-id="${escapeHtml(message.id)}">${replyActionLabel}</button>` : ''}
+        ${footer}
       </div>
     </article>
   `;
@@ -2599,7 +2934,7 @@ function renderSearchEmptyState(kind, query = '') {
       <div class="search-center-state">
         <span class="search-center-icon">${renderSearchLensIcon(58)}</span>
         <strong>Search everything</strong>
-        <span>Search channels, DMs, people, agents, and message history.</span>
+        <span>Search channels, DIRECT MESSAGES, people, agents, and message history.</span>
       </div>
     `;
   }
@@ -2760,7 +3095,7 @@ function renderSearch() {
       <div class="search-topbar">
         <button class="search-top-icon" type="button" aria-label="Search">${renderSearchLensIcon(18)}</button>
         <div class="search-input-shell">
-          <input id="search-input" value="${escapeHtml(searchQuery)}" placeholder="Search channels, DMs, messages..." autocomplete="off" autofocus />
+          <input id="search-input" value="${escapeHtml(searchQuery)}" placeholder="Search channels, DIRECT MESSAGES, messages..." autocomplete="off" autofocus />
           <button class="search-clear-btn" type="button" data-action="clear-search-query" data-search-clear aria-label="Clear search" ${searchQuery.trim() ? '' : 'hidden'}>×</button>
         </div>
       </div>
@@ -2847,7 +3182,7 @@ function renderCloud() {
       <div class="pixel-panel cloud-card wide">
         <div class="panel-title"><span>Sync Boundary</span><span>v1</span></div>
         <div class="boundary-grid">
-          <div><strong>Synced</strong><p>channels, DMs, messages, replies, tasks, task history, agents, humans, computers, missions, run metadata and attachment metadata.</p></div>
+          <div><strong>Synced</strong><p>channels, DIRECT MESSAGES, messages, replies, tasks, task history, agents, humans, computers, missions, run metadata and attachment metadata.</p></div>
           <div><strong>Local only</strong><p>Codex execution, local filesystem access, attachment binary files, shell environment, secrets and process control.</p></div>
           <div><strong>Next cloud step</strong><p>Replace manual snapshot sync with authenticated account login, cloud database, relay envelopes and object storage for attachments.</p></div>
         </div>
@@ -3073,7 +3408,7 @@ function formatAgentBorn(value) {
 function renderAgentDetailTabs() {
   const tabs = [
     ['profile', 'Profile'],
-    ['dms', 'Agent DMs'],
+    ['dms', 'Agent DIRECT MESSAGES'],
     ['reminders', 'Reminders'],
     ['workspace', 'Workspace'],
     ['activity', 'Activity'],
@@ -3276,7 +3611,7 @@ function renderAgentDmsTab(agent) {
           <strong>${escapeHtml(displayName(message.authorId))}</strong>
           <div class="message-markdown">${renderMarkdownWithMentions(message.body || '')}</div>
         </article>
-      `).join('') : '<div class="empty-box small">No direct messages yet.</div>'}
+      `).join('') : '<div class="empty-box small">No DIRECT MESSAGES yet.</div>'}
     </div>
   `;
 }
@@ -3432,8 +3767,10 @@ function renderReply(reply) {
   const authorClass = ['agent', 'human', 'system'].includes(reply.authorType) ? reply.authorType : 'unknown';
   const agentAuthorAttr = reply.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(reply.authorId)}"` : '';
   const highlighted = selectedSavedRecordId === reply.id ? ' highlighted' : '';
+  const receiptTray = renderAgentReceiptTray(reply);
+  const footer = renderMessageFooter({ receiptTray });
   return `
-    <article class="message-card slock-message reply-card author-${authorClass}${highlighted}" id="reply-${escapeHtml(reply.id)}"${agentAuthorAttr}>
+    <article class="message-card slock-message reply-card author-${authorClass}${highlighted}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
       ${renderActorAvatar(reply.authorId, reply.authorType)}
       <div class="message-body">
         <div class="message-meta">
@@ -3444,6 +3781,7 @@ function renderReply(reply) {
         <div class="message-markdown">${renderMarkdownWithMentions(reply.body || '(attachment)')}</div>
         <div class="message-attachments">${attachmentLinks(reply.attachmentIds)}</div>
         ${renderMessageActions(reply, { threadContext: true })}
+        ${footer}
       </div>
     </article>
   `;
@@ -3697,27 +4035,49 @@ function renderProjectModal() {
   `;
 }
 
+function agentCanJoinNewChannel(agent) {
+  return !['offline', 'error'].includes(String(agent?.status || '').toLowerCase());
+}
+
 function renderChannelModal() {
   const agents = appState.agents || [];
+  const query = createChannelMemberSearchQuery.trim().toLowerCase();
+  const visibleAgents = agents.filter((agent) => {
+    if (!query) return true;
+    return `${agent.name || ''} ${agent.description || ''} ${agent.runtime || ''}`.toLowerCase().includes(query);
+  });
   return `
     ${modalHeader('Create Channel', 'Local collaboration')}
     <form id="channel-form" class="modal-form">
       <label><span>Name</span><input name="name" placeholder="frontend-war-room" required /></label>
       <label><span>Description</span><textarea name="description" rows="3"></textarea></label>
-      <div class="form-field">
-        <span>Add Agents</span>
-        <div class="agent-checkboxes">
-          ${agents.map((agent) => `
-            <label class="checkbox-item">
-              <input type="checkbox" name="agentIds" value="${agent.id}" />
+      <div class="form-field create-channel-members-field">
+        <span>Members <small>(optional)</small></span>
+        <label class="create-channel-search-wrap" aria-label="Search members by name">
+          <svg class="create-channel-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5" /><path d="M15 15l5 5" /></svg>
+          <input id="create-channel-member-search" value="${escapeHtml(createChannelMemberSearchQuery)}" placeholder="Search members by name" autocomplete="off" />
+        </label>
+        <div class="agent-checkboxes create-channel-member-list">
+          <div class="create-channel-member-group-title">AGENTS</div>
+          ${visibleAgents.map((agent) => {
+            const canJoin = agentCanJoinNewChannel(agent);
+            return `
+            <label class="checkbox-item create-channel-member-row${canJoin ? '' : ' disabled'}">
+              <input type="checkbox" name="agentIds" value="${agent.id}"${canJoin ? '' : ' disabled'} />
               ${getAvatarHtml(agent.id, 'agent', 'dm-avatar')}
-              <span>${escapeHtml(agent.name)}</span>
+              <span class="create-channel-member-name">${escapeHtml(agent.name)}</span>
+              <span class="create-channel-member-check">✓</span>
             </label>
-          `).join('')}
+          `;
+          }).join('')}
+          ${!visibleAgents.length ? '<div class="empty-box small">No matching agents</div>' : ''}
           ${!agents.length ? '<div class="empty-box small">No agents available</div>' : ''}
         </div>
       </div>
-      <button class="primary-btn" type="submit">Create</button>
+      <div class="modal-actions">
+        <button class="secondary-btn" type="button" data-action="close-modal">Cancel</button>
+        <button class="primary-btn" type="submit">Create Channel</button>
+      </div>
     </form>
   `;
 }
@@ -3914,6 +4274,10 @@ function renderAgentModal() {
           <input type="hidden" name="avatar" value="${agentFormState.avatar}" />
           <button type="button" class="secondary-btn" data-action="randomize-avatar">🎲 Random</button>
           <button type="button" class="secondary-btn" data-action="pick-avatar">Browse</button>
+          <label class="secondary-btn file-btn">
+            Upload
+            <input class="visually-hidden agent-avatar-upload" type="file" accept="image/*" data-action="upload-agent-avatar" data-target="agent-create" />
+          </label>
         </div>
       </div>
       <label>
@@ -4178,32 +4542,238 @@ async function refreshState() {
   render();
 }
 
+function htmlToElement(html) {
+  const template = document.createElement('template');
+  template.innerHTML = html.trim();
+  return template.content.firstElementChild;
+}
+
+function syncRecordList(container, records, renderRecord, datasetName, emptyHtml) {
+  if (!container) return false;
+  if (!records.length) {
+    if (container.innerHTML.trim() !== emptyHtml.trim()) {
+      container.innerHTML = emptyHtml;
+    }
+    return true;
+  }
+
+  const wantedIds = new Set(records.map((record) => record.id));
+  for (const child of [...container.children]) {
+    const id = child.dataset?.[datasetName];
+    if (!id || !wantedIds.has(id)) child.remove();
+  }
+
+  records.forEach((record, index) => {
+    let node = [...container.children].find((child) => child.dataset?.[datasetName] === record.id);
+    const key = renderRecordKey(record);
+    if (!node || node.dataset.renderKey !== key) {
+      const next = htmlToElement(renderRecord(record));
+      if (!next) return;
+      if (node) {
+        node.replaceWith(next);
+      } else {
+        container.insertBefore(next, container.children[index] || null);
+      }
+      node = next;
+    }
+    if (container.children[index] !== node) {
+      container.insertBefore(node, container.children[index] || null);
+    }
+  });
+  return true;
+}
+
+function patchRailSurface() {
+  const rail = document.querySelector('.collab-rail');
+  if (rail) rail.replaceWith(htmlToElement(renderRail()));
+}
+
+function patchThreadParentCard(message) {
+  const card = document.querySelector('.thread-parent-card');
+  const current = card?.firstElementChild;
+  if (!card || !message) return false;
+  const key = renderRecordKey(message);
+  if (!current || current.dataset.renderKey !== key) {
+    const next = htmlToElement(renderMessage(message, { compact: true }));
+    if (next) card.replaceChildren(next);
+  }
+  return true;
+}
+
+function patchThreadTaskLifecycle(card, task) {
+  const current = document.querySelector('.thread-context .task-lifecycle');
+  if (!task) {
+    if (current) current.remove();
+    return true;
+  }
+  const next = htmlToElement(renderTaskLifecycle(task));
+  if (!next) return false;
+  if (current) {
+    if (current.outerHTML !== next.outerHTML) current.replaceWith(next);
+    return true;
+  }
+  if (card) card.insertAdjacentElement('afterend', next);
+  return true;
+}
+
+function patchThreadReplyList(context, replies) {
+  let list = context.querySelector('.reply-list');
+  if (!replies.length) {
+    if (list) list.remove();
+    return true;
+  }
+  if (!list) {
+    const divider = context.querySelector('.thread-reply-divider');
+    list = document.createElement('div');
+    list.className = 'reply-list';
+    divider?.insertAdjacentElement('afterend', list);
+  }
+  return syncRecordList(list, replies, renderReply, 'replyId', '');
+}
+
+function patchActiveThreadSurface(scrollSnapshot) {
+  if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
+  if (!threadMessageId || selectedProjectFile || selectedAgentId || selectedTaskId) return false;
+  const message = byId(appState.messages, threadMessageId);
+  const context = document.querySelector('#thread-context');
+  const panel = document.querySelector('.thread-drawer');
+  if (!message || !context || !panel) return false;
+
+  const replies = threadReplies(message.id);
+  const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
+  const replyWord = replies.length === 1 ? 'reply' : 'replies';
+  const replyCountText = `${replies.length} ${replyWord}`;
+  const card = context.querySelector('.thread-parent-card');
+
+  patchThreadParentCard(message);
+  patchThreadTaskLifecycle(card, task);
+  const dividerCount = context.querySelector('.thread-reply-divider strong');
+  if (dividerCount) dividerCount.textContent = replyCountText;
+  patchThreadReplyList(context, replies);
+
+  const tools = panel.querySelector('.thread-tools');
+  if (tools) {
+    tools.innerHTML = `
+      <span>${escapeHtml(replyCountText)}</span>
+      ${task ? renderTaskInlineBadge(task, { showAssignee: false }) : ''}
+    `;
+  }
+
+  const list = document.querySelector('#message-list');
+  if (list) {
+    const emptyHtml = selectedSpaceType === 'dm'
+      ? '<div class="dm-empty-state">No messages yet. Start the conversation!</div>'
+      : '<div class="empty-box">No messages here yet.</div>';
+    syncRecordList(list, spaceMessages(), renderMessage, 'messageId', emptyHtml);
+  }
+  patchRailSurface();
+  window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
+  return true;
+}
+
+function patchActiveConversationSurface(scrollSnapshot) {
+  if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
+  if (threadMessageId || selectedProjectFile || selectedAgentId || selectedTaskId) return false;
+  const list = document.querySelector('#message-list');
+  const panel = document.querySelector('.chat-panel');
+  if (!list || !panel) return false;
+
+  const emptyHtml = selectedSpaceType === 'dm'
+    ? '<div class="dm-empty-state">No messages yet. Start the conversation!</div>'
+    : '<div class="empty-box">No messages here yet.</div>';
+  syncRecordList(list, spaceMessages(), renderMessage, 'messageId', emptyHtml);
+  patchRailSurface();
+  window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
+  return true;
+}
+
+function applyStateUpdate(nextState) {
+  const scrollSnapshot = {
+    main: paneScrollSnapshot('main'),
+    thread: paneScrollSnapshot('thread'),
+  };
+  const selectionBefore = `${selectedSpaceType}:${selectedSpaceId}`;
+  rememberPinnedBottomBeforeStateChange();
+  appState = nextState;
+  if (modal) return;
+  ensureSelection();
+  const selectionChanged = selectionBefore !== `${selectedSpaceType}:${selectedSpaceId}`;
+  if (selectionChanged) {
+    render();
+    return;
+  }
+  if (patchActiveThreadSurface(scrollSnapshot)) return;
+  if (patchActiveConversationSurface(scrollSnapshot)) return;
+  render();
+}
+
+function applyRunEventUpdate(incoming) {
+  if (!appState || appState.events.some((item) => item.id === incoming.id)) return;
+  const scrollSnapshot = {
+    main: paneScrollSnapshot('main'),
+    thread: paneScrollSnapshot('thread'),
+  };
+  rememberPinnedBottomBeforeStateChange();
+  appState.events.push(incoming);
+  if (modal) return;
+  if (patchActiveThreadSurface(scrollSnapshot)) return;
+  if (patchActiveConversationSurface(scrollSnapshot)) return;
+  render();
+}
+
+function applyPresenceHeartbeat(heartbeat) {
+  if (!appState || !Array.isArray(heartbeat?.agents)) return;
+  const incomingById = new Map(heartbeat.agents.map((agent) => [agent.id, agent]));
+  let changed = false;
+  const agents = (appState.agents || []).map((agent) => {
+    const incoming = incomingById.get(agent.id);
+    if (!incoming) return agent;
+    const next = {
+      ...agent,
+      status: incoming.status || agent.status,
+      runtimeLastStartedAt: incoming.runtimeLastStartedAt || agent.runtimeLastStartedAt || null,
+      runtimeLastTurnAt: incoming.runtimeLastTurnAt || agent.runtimeLastTurnAt || null,
+    };
+    if (
+      next.status !== agent.status
+      || next.runtimeLastStartedAt !== agent.runtimeLastStartedAt
+      || next.runtimeLastTurnAt !== agent.runtimeLastTurnAt
+    ) {
+      changed = true;
+    }
+    return next;
+  });
+  if (!changed) return;
+  applyStateUpdate({
+    ...appState,
+    agents,
+    updatedAt: heartbeat.updatedAt || appState.updatedAt,
+  });
+}
+
 function connectEvents() {
   const source = new EventSource('/api/events');
   source.addEventListener('state', (event) => {
-    rememberPinnedBottomBeforeStateChange();
-    appState = JSON.parse(event.data);
-    // When modal is open, don't re-render to avoid interrupting form input
-    if (!modal) {
-      render();
-    }
+    applyStateUpdate(JSON.parse(event.data));
   });
   source.addEventListener('run-event', (event) => {
     const incoming = JSON.parse(event.data);
-    if (!appState.events.some((item) => item.id === incoming.id)) {
-      rememberPinnedBottomBeforeStateChange();
-      appState.events.push(incoming);
-      // When modal is open, don't re-render
-      if (!modal) {
-        render();
-      }
-    }
+    applyRunEventUpdate(incoming);
+  });
+  source.addEventListener('heartbeat', (event) => {
+    applyPresenceHeartbeat(JSON.parse(event.data));
   });
 }
 
 document.addEventListener('scroll', (event) => {
-  if (event.target?.id === 'message-list') updateBackBottomVisibility('main');
-  if (event.target?.id === 'thread-context') updateBackBottomVisibility('thread');
+  if (event.target?.id === 'message-list') {
+    updateBackBottomVisibility('main');
+    persistPaneScroll('main', event.target);
+  }
+  if (event.target?.id === 'thread-context') {
+    updateBackBottomVisibility('thread');
+    persistPaneScroll('thread', event.target);
+  }
 }, true);
 
 document.addEventListener('compositionstart', (event) => {
@@ -4449,6 +5019,15 @@ document.addEventListener('input', async (event) => {
     return;
   }
 
+  if (event.target.id === 'create-channel-member-search') {
+    createChannelMemberSearchQuery = event.target.value;
+    render();
+    const input = document.querySelector('#create-channel-member-search');
+    input?.focus();
+    input?.setSelectionRange(createChannelMemberSearchQuery.length, createChannelMemberSearchQuery.length);
+    return;
+  }
+
   // Save agent form state
   const form = event.target.closest('#agent-form');
   if (form) {
@@ -4542,6 +5121,44 @@ document.addEventListener('paste', async (event) => {
 });
 
 document.addEventListener('click', async (event) => {
+  // Handle agent receipt popover toggle (Feishu-style click to open/close)
+  const receiptButton = event.target.closest('[data-action="toggle-receipt-popover"]');
+  const receiptTrigger = event.target.closest('.agent-receipt-trigger');
+  const receiptPopover = event.target.closest('.agent-receipt-popover');
+
+  if (receiptButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    const trigger = receiptButton.closest('.agent-receipt-trigger');
+    if (trigger) {
+      const isOpen = trigger.classList.contains('popover-open');
+      // Close any other open popovers
+      document.querySelectorAll('.agent-receipt-trigger.popover-open').forEach((el) => {
+        el.classList.remove('popover-open');
+      });
+      // Toggle this one
+      if (!isOpen) {
+        trigger.classList.add('popover-open');
+        activeReceiptPopover = trigger;
+      } else {
+        activeReceiptPopover = null;
+      }
+    }
+    return;
+  }
+
+  // Click inside popover - keep it open but allow clicking items
+  if (receiptPopover) {
+    // Don't close on clicks inside the popover content
+    return;
+  }
+
+  // Click outside any receipt trigger/popover - close active popover
+  if (activeReceiptPopover && !receiptTrigger) {
+    activeReceiptPopover.classList.remove('popover-open');
+    activeReceiptPopover = null;
+  }
+
   // Handle mention item clicks
   const mentionItem = event.target.closest('.mention-item');
   if (mentionItem) {
@@ -4645,6 +5262,7 @@ document.addEventListener('click', async (event) => {
     'open-agent-restart',
     'select-agent-restart-mode',
     'upload-agent-avatar',
+    'toggle-receipt-popover',
   ]);
 
   // Environment variable actions: don't trigger refreshState
@@ -4981,10 +5599,14 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'open-modal') {
       modal = target.dataset.modal;
+      if (modal === 'channel') {
+        createChannelMemberSearchQuery = '';
+      }
       if (modal === 'add-channel-member' || modal === 'channel-members') {
         addMemberSearchQuery = '';
       }
       if (modal === 'agent') {
+        resetAgentFormState();
         await loadInstalledRuntimes();
       }
       render();
@@ -5036,16 +5658,21 @@ document.addEventListener('click', async (event) => {
         if (modal === 'add-channel-member' || modal === 'channel-members') {
           addMemberSearchQuery = '';
         }
+        if (modal === 'channel') {
+          createChannelMemberSearchQuery = '';
+        }
         if (modal === 'agent-start') {
           agentStartState = { agentId: null };
         }
         if (modal === 'agent-restart') {
           agentRestartState = { agentId: null, mode: 'restart' };
         }
+        let nextModal = null;
         if (modal === 'avatar-crop') {
+          if (avatarCropState?.target === 'agent-create') nextModal = 'agent';
           avatarCropState = null;
         }
-        modal = null;
+        modal = nextModal;
         render();
       }
     }
@@ -5144,8 +5771,12 @@ document.addEventListener('click', async (event) => {
         });
         toast('Avatar updated');
       }
+      if (crop?.target === 'agent-create') {
+        agentFormState.avatar = avatar;
+        toast('Avatar selected');
+      }
       avatarCropState = null;
-      modal = null;
+      modal = crop?.target === 'agent-create' ? 'agent' : null;
     }
     if (action === 'remove-project') {
       clearProjectCaches(target.dataset.id);
@@ -5290,6 +5921,7 @@ document.addEventListener('submit', async (event) => {
   const form = event.target;
   const data = new FormData(form);
   let submittedBottomTarget = null;
+  let focusComposerId = null;
 
   try {
     if (form.id === 'message-form') {
@@ -5311,6 +5943,7 @@ document.addEventListener('submit', async (event) => {
       delete composerMentionMaps[composerId];
       requestPaneBottomScroll('main');
       submittedBottomTarget = '#message-list';
+      focusComposerId = shouldOpenTaskThread && result.message?.id ? composerIdFor('thread', result.message.id) : composerId;
       form.reset();
       toast('Message sent');
     }
@@ -5326,6 +5959,7 @@ document.addEventListener('submit', async (event) => {
       delete composerMentionMaps[composerId];
       requestPaneBottomScroll('thread');
       submittedBottomTarget = '#thread-context';
+      focusComposerId = composerId;
       form.reset();
       toast('Reply added');
     }
@@ -5343,6 +5977,7 @@ document.addEventListener('submit', async (event) => {
       selectedSpaceId = result.channel.id;
       activeView = 'space';
       modal = null;
+      createChannelMemberSearchQuery = '';
     }
     if (form.id === 'project-form') {
       await api('/api/projects', {
@@ -5420,7 +6055,7 @@ document.addEventListener('submit', async (event) => {
           avatar: data.get('avatar') || agentFormState.avatar || getRandomAvatar(),
         }),
       });
-      selectedRuntimeId = null;
+      resetAgentFormState();
       modal = null;
     }
     if (form.id === 'computer-form') {
@@ -5447,12 +6082,16 @@ document.addEventListener('submit', async (event) => {
   } catch (error) {
     toast(error.message);
   } finally {
+    if (focusComposerId) requestComposerFocus(focusComposerId);
     await refreshState().catch(() => {});
     if (submittedBottomTarget) scrollPaneToBottom(submittedBottomTarget, 'auto');
   }
 });
 
 render();
-refreshState().then(connectEvents).catch((error) => {
+refreshState().then(() => {
+  initialLoadComplete = true;
+  return connectEvents();
+}).catch((error) => {
   root.innerHTML = `<div class="boot">MAGCLAW LOCAL / ${escapeHtml(error.message)}</div>`;
 });

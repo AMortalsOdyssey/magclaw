@@ -6,7 +6,8 @@ This MVP is intentionally local-first and dependency-free:
 
 - Node built-in HTTP server
 - Static HTML/CSS/JS client
-- File-backed state in `.magclaw/state.json`
+- Lightweight state in `.magclaw/state.json`
+- Chat, thread, task, work-item, and event records in `.magclaw/state.sqlite` when Node's built-in SQLite is available
 - Local attachments in `.magclaw/attachments`
 - Codex agent conversations through `codex app-server --listen stdio://`
 - One-shot Codex mission runs still use `codex exec --json`
@@ -114,7 +115,7 @@ Cloud sync v1 is intentionally a snapshot protocol. It syncs collaboration state
 - Switch between local-only and cloud-connected mode
 - Pair with a Magclaw control-plane URL using an optional bearer token
 - Push/pull collaboration state snapshots between local and cloud
-- Work in local channels and DMs
+- Work in local channels and DIRECT MESSAGES
 - Send messages, save messages, open threads, and reply in threads
 - Create tasks manually, from top-level messages, or through agent task tools
 - Represent tasks as top-level chat messages with task metadata
