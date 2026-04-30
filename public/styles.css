@@ -4784,6 +4784,81 @@ code {
   transform: translateY(0);
 }
 
+.brain-toast-stack {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(380px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.brain-toast-card {
+  border: 2px solid var(--border);
+  background: var(--slock-cream);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-pixel);
+  padding: 10px 12px;
+  pointer-events: auto;
+  animation: brainToastIn 180ms ease-out both;
+}
+
+.brain-toast-title {
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.brain-toast-body {
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.brain-toast-meta {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.brain-toast-decision {
+  background: var(--accent-soft);
+}
+
+.brain-toast-reflection {
+  background: var(--bg-card);
+}
+
+.brain-toast-card.exiting {
+  animation: brainToastOut 220ms ease-in both;
+}
+
+@keyframes brainToastIn {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes brainToastOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+}
+
 /* ===== Modal ===== */
 .modal-backdrop {
   position: fixed;
@@ -4819,6 +4894,16 @@ code {
 .modal-form {
   display: grid;
   gap: 12px;
+}
+
+.modal-form .checkbox-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-form .checkbox-line input {
+  width: auto;
 }
 
 .modal-form label span.required {
@@ -5715,6 +5800,42 @@ code {
 
 .member-btn .dm-avatar-wrap .avatar-status-dot {
   display: none;
+}
+
+.brain-agent-row {
+  min-height: 42px;
+  grid-template-columns: 24px minmax(0, 1fr) 14px auto;
+}
+
+.brain-agent-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 0;
+}
+
+.brain-agent-use-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 5px;
+}
+
+.brain-agent-empty {
+  min-height: 42px;
+}
+
+.brain-agent-row .agent-desc,
+.brain-agent-empty .agent-desc {
+  margin-bottom: 0;
 }
 
 .member-info .dm-name {

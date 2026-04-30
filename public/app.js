@@ -73,6 +73,8 @@ const AGENT_RECEIPT_VISIBLE_LIMIT = 10;
 const knownMessageReceipts = new Map(); // messageId -> Set of agentIds
 let activeReceiptPopover = null; // currently open receipt popover trigger element
 let initialLoadComplete = false; // Skip animation on initial page load
+let brainDecisionCards = [];
+const seenBrainRouteEventIds = new Set();
 const RAIL_WIDTH_KEY = 'magclawRailWidth';
 const RAIL_MIN_WIDTH = 176;
 const RAIL_MAX_WIDTH = 360;
@@ -101,6 +103,13 @@ let agentFormState = {
   reasoningEffort: '',
   avatar: '',
   envVars: [], // [{key: '', value: ''}]
+};
+
+let brainAgentFormState = {
+  id: null,
+  model: '',
+  reasoningEffort: '',
+  active: true,
 };
 
 // Avatar list (2000 avatars: 1-1000 faces, 1001-2000 objects)
@@ -1837,6 +1846,133 @@ function toast(message) {
   window.setTimeout(() => node.classList.remove('show'), 2600);
 }
 
+function routeAgentNames(routeEvent, stateSnapshot = appState) {
+  const agents = stateSnapshot?.agents || [];
+  const names = (routeEvent?.targetAgentIds || [])
+    .map((id) => byId(agents, id)?.name || id)
+    .filter(Boolean);
+  return names.length ? names.join(', ') : 'No agent selected';
+}
+
+function routeRouterName(routeEvent, stateSnapshot = appState) {
+  if (routeEvent?.fallbackUsed) return 'Rules fallback';
+  const brain = (stateSnapshot?.brainAgents || []).find((item) => item.id === routeEvent?.brainAgentId);
+  return brain?.name || 'Brain Agent';
+}
+
+function routeEvidenceSummary(routeEvent) {
+  const evidence = (routeEvent?.evidence || [])
+    .filter((item) => item?.value)
+    .map((item) => `${item.type}: ${item.value}`)
+    .slice(0, 2)
+    .join(' / ');
+  return evidence || 'No extra evidence recorded';
+}
+
+function routeReflectionText(routeEvent) {
+  if (routeEvent?.mode === 'contextual_follow_up') {
+    return '检测到单 Agent 连续上下文，其他 Agent 保持旁听。';
+  }
+  if (routeEvent?.mode === 'task_claim') {
+    return '已进入 claim/任务锁路径，避免多个 Agent 重复执行。';
+  }
+  if (routeEvent?.fallbackUsed) {
+    return '当前没有可用 Brain Agent，已使用规则兜底；可从卡片和日志继续调参。';
+  }
+  if ((routeEvent?.targetAgentIds || []).length > 1) {
+    return '这是开放群聊路由，多 Agent 可以各自补充视角。';
+  }
+  return '已完成上下文、显式指向和 Agent card 检查。';
+}
+
+function buildBrainDecisionCards(routeEvent, stateSnapshot = appState) {
+  const confidence = Math.round(Number(routeEvent?.confidence || 0) * 100);
+  const routerName = routeRouterName(routeEvent, stateSnapshot);
+  const mode = routeEvent?.mode || 'unknown';
+  return [
+    {
+      id: `${routeEvent.id}:thought`,
+      phase: 'thought',
+      title: 'Brain Agent / 思考过程',
+      body: routeEvent?.reason || 'Router evaluated the channel message.',
+      meta: `${routerName} / ${mode}`,
+    },
+    {
+      id: `${routeEvent.id}:decision`,
+      phase: 'decision',
+      title: 'Brain Agent / 决策结果',
+      body: `Selected: ${routeAgentNames(routeEvent, stateSnapshot)}`,
+      meta: `confidence ${confidence}%`,
+    },
+    {
+      id: `${routeEvent.id}:reflection`,
+      phase: 'reflection',
+      title: 'Brain Agent / 反思过程',
+      body: routeReflectionText(routeEvent),
+      meta: routeEvidenceSummary(routeEvent),
+    },
+  ];
+}
+
+function renderBrainDecisionToasts() {
+  return `
+    <div class="brain-toast-stack" aria-live="polite" aria-atomic="false">
+      ${brainDecisionCards.map((card) => `
+        <article class="brain-toast-card brain-toast-${escapeHtml(card.phase)}${card.exiting ? ' exiting' : ''}">
+          <div class="brain-toast-title">${escapeHtml(card.title)}</div>
+          <div class="brain-toast-body">${escapeHtml(card.body)}</div>
+          <div class="brain-toast-meta">${escapeHtml(card.meta || '')}</div>
+        </article>
+      `).join('')}
+    </div>
+  `;
+}
+
+function patchBrainDecisionToasts() {
+  const next = htmlToElement(renderBrainDecisionToasts());
+  const current = document.querySelector('.brain-toast-stack');
+  if (current && next) {
+    current.replaceWith(next);
+    return;
+  }
+  if (next) root.appendChild(next);
+}
+
+function removeBrainDecisionCard(id) {
+  brainDecisionCards = brainDecisionCards.filter((card) => card.id !== id);
+  patchBrainDecisionToasts();
+}
+
+function dismissBrainDecisionCard(id) {
+  brainDecisionCards = brainDecisionCards.map((card) => (
+    card.id === id ? { ...card, exiting: true } : card
+  ));
+  patchBrainDecisionToasts();
+  window.setTimeout(() => removeBrainDecisionCard(id), 220);
+}
+
+function addBrainDecisionCard(card) {
+  brainDecisionCards = [...brainDecisionCards.filter((item) => item.id !== card.id), card].slice(-9);
+  patchBrainDecisionToasts();
+  window.setTimeout(() => dismissBrainDecisionCard(card.id), 5000);
+}
+
+function enqueueBrainDecisionCards(routeEvent, stateSnapshot = appState) {
+  if (!routeEvent?.id) return;
+  buildBrainDecisionCards(routeEvent, stateSnapshot)
+    .forEach((card, index) => {
+      window.setTimeout(() => addBrainDecisionCard(card), index * 240);
+    });
+}
+
+function trackBrainRouteEvents(nextState, { silent = false } = {}) {
+  for (const event of nextState?.routeEvents || []) {
+    if (!event?.id || seenBrainRouteEventIds.has(event.id)) continue;
+    seenBrainRouteEventIds.add(event.id);
+    if (!silent && initialLoadComplete) enqueueBrainDecisionCards(event, nextState);
+  }
+}
+
 function ensureSelection() {
   if (!appState) return;
   if (!byId(appState.channels, selectedSpaceId) && selectedSpaceType === 'channel') {
@@ -1881,6 +2017,7 @@ function render() {
       ` : ''}
     </div>
     ${modal ? renderModal() : ''}
+    ${renderBrainDecisionToasts()}
   `;
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);
@@ -1894,6 +2031,7 @@ function renderRail() {
   const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0 || message.taskId).length;
   const openTasks = (appState.tasks || []).filter((task) => !taskIsClosedStatus(task.status)).length;
   const saved = savedRecords().length;
+  const normalAgents = channelAssignableAgents();
 
   return `
     <aside class="rail collab-rail">
@@ -1936,12 +2074,14 @@ function renderRail() {
         }).join('')}
       </div>
       ` : `
+      ${renderBrainAgentPanel()}
+
       <div class="rail-section">
         <div class="rail-title">
-          <span>Agents <em>${(appState.agents || []).length}</em></span>
+          <span>Agents <em>${normalAgents.length}</em></span>
           <button type="button" data-action="open-modal" data-modal="agent">+</button>
         </div>
-        ${(appState.agents || []).map((agent) => renderAgentListItem(agent)).join('')}
+        ${normalAgents.map((agent) => renderAgentListItem(agent)).join('')}
       </div>
 
       <div class="rail-section">
@@ -3717,6 +3857,51 @@ function renderAgent(agent) {
   `;
 }
 
+function brainAgents() {
+  return appState?.brainAgents || [];
+}
+
+function activeBrainAgent() {
+  const activeId = appState?.router?.brainAgentId || null;
+  return brainAgents().find((brain) => brain.id === activeId) || brainAgents().find((brain) => brain.active) || null;
+}
+
+function renderBrainAgentPanel() {
+  const brains = brainAgents();
+  const active = activeBrainAgent();
+  return `
+    <div class="rail-section brain-agent-section">
+      <div class="rail-title">
+        <span>Brain Agent <em>${active ? 'active' : 'fallback'}</em></span>
+        <button type="button" data-action="open-modal" data-modal="brain-agent">+</button>
+      </div>
+      ${brains.length ? brains.map((brain) => {
+        const isActive = active?.id === brain.id;
+        return `
+          <div class="space-btn member-btn brain-agent-row${isActive ? ' active' : ''}">
+            <span class="dm-avatar-wrap"><span class="dm-avatar">MB</span></span>
+            <button class="brain-agent-main" type="button" data-action="open-brain-agent" data-id="${escapeHtml(brain.id)}">
+              <span class="dm-name">${escapeHtml(brain.name || 'MagClaw Brain')}</span>
+              <span class="agent-desc">${escapeHtml(brain.runtime || 'offline')} / ${escapeHtml(brain.model || '')}</span>
+            </button>
+            <span class="member-status-side">${avatarStatusDot(isActive ? 'idle' : 'offline', isActive ? 'Active Brain Agent' : 'Inactive Brain Agent')}</span>
+            ${isActive ? '' : `<button class="brain-agent-use-btn" type="button" data-action="activate-brain-agent" data-id="${escapeHtml(brain.id)}" title="Use Brain Agent" aria-label="Use ${escapeHtml(brain.name || 'MagClaw Brain')}">Use</button>`}
+          </div>
+        `;
+      }).join('') : `
+        <button class="space-btn member-btn brain-agent-empty" type="button" data-action="open-modal" data-modal="brain-agent">
+          <span class="dm-avatar-wrap"><span class="dm-avatar">MB</span></span>
+          <div class="member-info">
+            <span class="dm-name">MagClaw Brain</span>
+            <span class="agent-desc">Rules fallback</span>
+          </div>
+          <span class="member-status-side">${avatarStatusDot('offline', 'Brain Agent offline')}</span>
+        </button>
+      `}
+    </div>
+  `;
+}
+
 function renderAgentListItem(agent) {
   const active = selectedAgentId === agent.id ? ' active' : '';
   const desc = agent.description ? `<span class="agent-desc">${escapeHtml(agent.description)}</span>` : '';
@@ -3893,6 +4078,7 @@ function renderModal() {
     dm: renderDmModal,
     task: renderTaskModal,
     agent: renderAgentModal,
+    'brain-agent': renderBrainAgentModal,
     'avatar-picker': renderAvatarPickerModal,
     'avatar-crop': renderAvatarCropModal,
     'agent-start': renderAgentStartModal,
@@ -4036,11 +4222,19 @@ function renderProjectModal() {
 }
 
 function agentCanJoinNewChannel(agent) {
-  return !['offline', 'error'].includes(String(agent?.status || '').toLowerCase());
+  return !isBrainAgent(agent) && !['offline', 'error'].includes(String(agent?.status || '').toLowerCase());
+}
+
+function isBrainAgent(agent) {
+  return Boolean(agent?.isBrain || String(agent?.systemRole || '').toLowerCase() === 'brain');
+}
+
+function channelAssignableAgents() {
+  return (appState.agents || []).filter((agent) => !isBrainAgent(agent));
 }
 
 function renderChannelModal() {
-  const agents = appState.agents || [];
+  const agents = channelAssignableAgents();
   const query = createChannelMemberSearchQuery.trim().toLowerCase();
   const visibleAgents = agents.filter((agent) => {
     if (!query) return true;
@@ -4181,7 +4375,7 @@ function renderAddChannelMemberModal() {
     const haystack = `${item.name || ''} ${item.email || ''} ${item.status || ''}`.toLowerCase();
     return !q || haystack.includes(q);
   };
-  const availableAgents = (appState.agents || []).filter((a) => !memberIds.includes(a.id) && matches(a));
+  const availableAgents = channelAssignableAgents().filter((a) => !memberIds.includes(a.id) && matches(a));
   const availableHumans = (appState.humans || []).filter((h) => !memberIds.includes(h.id) && h.id !== 'hum_local' && matches(h));
   const hasCandidates = availableAgents.length || availableHumans.length;
 
@@ -4206,7 +4400,7 @@ function renderAddChannelMemberModal() {
 }
 
 function renderDmModal() {
-  const options = [...(appState.agents || []), ...(appState.humans || []).filter((human) => human.id !== 'hum_local')];
+  const options = [...channelAssignableAgents(), ...(appState.humans || []).filter((human) => human.id !== 'hum_local')];
   return `
     ${modalHeader('Open DM', 'Direct control line')}
     <form id="dm-form" class="modal-form">
@@ -4227,7 +4421,7 @@ function renderTaskModal() {
     <form id="task-form" class="modal-form">
       <label><span>Title</span><input name="title" required /></label>
       <label><span>Body</span><textarea name="body" rows="4"></textarea></label>
-      <label><span>Assignees</span><select name="assigneeIds" multiple size="4">${(appState.agents || []).map((agent) => `<option value="${agent.id}">${escapeHtml(agent.name)}</option>`).join('')}</select></label>
+      <label><span>Assignees</span><select name="assigneeIds" multiple size="4">${channelAssignableAgents().map((agent) => `<option value="${agent.id}">${escapeHtml(agent.name)}</option>`).join('')}</select></label>
       <label class="checkline"><input type="checkbox" name="addAnother" /> Add another after create</label>
       <button class="primary-btn" type="submit">Create Task</button>
     </form>
@@ -4338,6 +4532,69 @@ function renderAgentModal() {
       <div class="modal-actions">
         <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
         <button class="primary-btn" type="submit">Create Agent</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderBrainAgentModal() {
+  const availableRuntimes = installedRuntimes.filter((rt) => rt.installed);
+  const editingBrain = brainAgentFormState.id ? brainAgents().find((brain) => brain.id === brainAgentFormState.id) : null;
+  const currentRuntime = availableRuntimes.find((rt) => rt.id === selectedRuntimeId) || runtimeForAgent(editingBrain) || availableRuntimes[0];
+  const models = currentRuntime?.models || [];
+  const modelNames = currentRuntime?.modelNames || models.map(m => ({ slug: m, name: m }));
+  const defaultModel = brainAgentFormState.model || editingBrain?.model || currentRuntime?.defaultModel || '';
+  const hasReasoningEffort = Boolean(currentRuntime?.reasoningEffort?.length);
+  const reasoningEfforts = currentRuntime?.reasoningEffort || [];
+  const defaultReasoningEffort = brainAgentFormState.reasoningEffort || editingBrain?.reasoningEffort || currentRuntime?.defaultReasoningEffort || 'medium';
+  const submitLabel = editingBrain ? 'Save Brain Agent' : 'Create Brain Agent';
+  return `
+    ${modalHeader(submitLabel, 'Routing')}
+    <form id="brain-agent-form" class="modal-form">
+      <label>
+        <span>NAME</span>
+        <input name="name" value="MagClaw Brain" readonly />
+      </label>
+      <label>
+        <span>DESCRIPTION</span>
+        <textarea name="description" rows="3" readonly>Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.</textarea>
+      </label>
+      <div class="form-field">
+        <span>RUNTIME <span class="required">*</span></span>
+        <select name="runtime" id="brain-runtime-select" required>
+          ${installedRuntimes.map((rt) => {
+            const label = rt.installed
+              ? `${rt.name}${rt.version ? ` (${rt.version})` : ''}`
+              : `${rt.name} (not installed)`;
+            return `<option value="${rt.id}" ${!rt.installed ? 'disabled' : ''} ${rt.id === currentRuntime?.id ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+          }).join('')}
+        </select>
+      </div>
+      <div class="form-field">
+        <span>MODEL</span>
+        <select name="model" id="brain-model-select">
+          ${modelNames.map((m) => {
+            const slug = typeof m === 'string' ? m : m.slug;
+            const name = typeof m === 'string' ? m : m.name;
+            return `<option value="${slug}" ${slug === defaultModel ? 'selected' : ''}>${escapeHtml(name)}</option>`;
+          }).join('')}
+        </select>
+      </div>
+      ${hasReasoningEffort ? `
+      <div class="form-field">
+        <span>REASONING EFFORT</span>
+        <select name="reasoningEffort" id="brain-reasoning-select">
+          ${reasoningEfforts.map((e) => `<option value="${e}" ${e === defaultReasoningEffort ? 'selected' : ''}>${escapeHtml(e.charAt(0).toUpperCase() + e.slice(1))}</option>`).join('')}
+        </select>
+      </div>
+      ` : ''}
+      <label class="checkbox-line">
+        <input type="checkbox" name="active" ${brainAgentFormState.active ? 'checked' : ''} />
+        <span>ACTIVE</span>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+        <button class="primary-btn" type="submit">${submitLabel}</button>
       </div>
     </form>
   `;
@@ -4455,6 +4712,26 @@ function resetAgentFormState() {
   selectedRuntimeId = null;
 }
 
+function resetBrainAgentFormState(brain = null) {
+  const runtime = brain ? runtimeForAgent(brain) : installedRuntimes.find((rt) => rt.installed);
+  selectedRuntimeId = runtime?.id || null;
+  brainAgentFormState = {
+    id: brain?.id || null,
+    model: brain?.model || runtime?.defaultModel || '',
+    reasoningEffort: brain?.reasoningEffort || runtime?.defaultReasoningEffort || 'medium',
+    active: brain ? Boolean(brain.active || appState?.router?.brainAgentId === brain.id) : true,
+  };
+}
+
+function saveBrainAgentFormState() {
+  const form = document.getElementById('brain-agent-form');
+  if (!form) return;
+  const data = new FormData(form);
+  brainAgentFormState.model = data.get('model') || '';
+  brainAgentFormState.reasoningEffort = data.get('reasoningEffort') || '';
+  brainAgentFormState.active = Boolean(data.get('active'));
+}
+
 function readFileAsDataUrl(file, source = 'upload') {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -4538,7 +4815,9 @@ function cloudFormPayload(forcedMode) {
 
 async function refreshState() {
   rememberPinnedBottomBeforeStateChange();
-  appState = await api('/api/state');
+  const nextState = await api('/api/state');
+  trackBrainRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
+  appState = nextState;
   render();
 }
 
@@ -4688,6 +4967,7 @@ function patchActiveConversationSurface(scrollSnapshot) {
 }
 
 function applyStateUpdate(nextState) {
+  trackBrainRouteEvents(nextState, { silent: !initialLoadComplete });
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
@@ -5035,6 +5315,10 @@ document.addEventListener('input', async (event) => {
     if (name === 'name') agentFormState.name = event.target.value;
     if (name === 'description') agentFormState.description = event.target.value;
   }
+  const brainForm = event.target.closest('#brain-agent-form');
+  if (brainForm && event.target.name === 'model') {
+    brainAgentFormState.model = event.target.value;
+  }
   // Environment variable input
   const envIndex = event.target.dataset.envIndex;
   const envField = event.target.dataset.envField;
@@ -5089,6 +5373,21 @@ document.addEventListener('change', async (event) => {
     agentFormState.reasoningEffort = '';
     render();
     return;
+  }
+  if (event.target.id === 'brain-runtime-select') {
+    saveBrainAgentFormState();
+    selectedRuntimeId = event.target.value;
+    brainAgentFormState.model = '';
+    brainAgentFormState.reasoningEffort = '';
+    render();
+    return;
+  }
+  const brainForm = event.target.closest('#brain-agent-form');
+  if (brainForm) {
+    const name = event.target.name;
+    if (name === 'model') brainAgentFormState.model = event.target.value;
+    if (name === 'reasoningEffort') brainAgentFormState.reasoningEffort = event.target.value;
+    if (name === 'active') brainAgentFormState.active = event.target.checked;
   }
   if (event.target.name === 'asTask') {
     const composerId = event.target.closest('form')?.dataset.composerId;
@@ -5609,7 +5908,26 @@ document.addEventListener('click', async (event) => {
         resetAgentFormState();
         await loadInstalledRuntimes();
       }
+      if (modal === 'brain-agent') {
+        await loadInstalledRuntimes();
+        resetBrainAgentFormState();
+      }
       render();
+    }
+    if (action === 'open-brain-agent') {
+      const brain = brainAgents().find((item) => item.id === target.dataset.id);
+      await loadInstalledRuntimes();
+      resetBrainAgentFormState(brain);
+      modal = 'brain-agent';
+      render();
+    }
+    if (action === 'activate-brain-agent') {
+      await api(`/api/brain-agents/${encodeURIComponent(target.dataset.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: true }),
+      });
+      toast('Brain Agent activated');
+      await refreshState().catch(() => {});
     }
     if (action === 'agent-stop-unavailable') {
       toast('暂时不可用');
@@ -5654,6 +5972,9 @@ document.addEventListener('click', async (event) => {
       if (isBackdrop || isCloseBtn || isCancelBtn) {
         if (modal === 'agent') {
           resetAgentFormState();
+        }
+        if (modal === 'brain-agent') {
+          resetBrainAgentFormState();
         }
         if (modal === 'add-channel-member' || modal === 'channel-members') {
           addMemberSearchQuery = '';
@@ -6056,6 +6377,28 @@ document.addEventListener('submit', async (event) => {
         }),
       });
       resetAgentFormState();
+      modal = null;
+    }
+    if (form.id === 'brain-agent-form') {
+      const selectedRuntime = installedRuntimes.find((rt) => rt.id === data.get('runtime'));
+      const payload = {
+        runtime: selectedRuntime?.name || data.get('runtime'),
+        model: data.get('model'),
+        reasoningEffort: data.get('reasoningEffort') || null,
+        active: Boolean(data.get('active')),
+      };
+      if (brainAgentFormState.id) {
+        await api(`/api/brain-agents/${encodeURIComponent(brainAgentFormState.id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await api('/api/brain-agents', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+      }
+      resetBrainAgentFormState();
       modal = null;
     }
     if (form.id === 'computer-form') {

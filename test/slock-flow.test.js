@@ -1087,6 +1087,313 @@ test('top-level channel messages fan out to members unless directed or task-like
   }
 });
 
+test('contextual human follow-up stays with the recently focused agent', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: ziling } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: '紫灵', description: '广州本地美食、生活方式和路线建议', runtime: 'Codex CLI' }),
+    });
+    const { agent: ccc } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'CCC', description: '资料检索、工程和文档整理', runtime: 'Codex CLI' }),
+    });
+    const { agent: yun } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: '云道友', description: '文化、旅行和轻松闲聊', runtime: 'Codex CLI' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: '行吧-test', description: 'contextual routing', agentIds: [ziling.id, ccc.id, yun.id] }),
+    });
+
+    const open = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '大家对广州的美食了解吗', attachmentIds: [] }),
+    });
+    assert.equal(open.route.mode, 'broadcast');
+    assert.deepEqual(open.route.targetAgentIds.slice().sort(), [ziling.id, ccc.id, yun.id].sort());
+
+    const directed = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '哈哈哈，还是紫灵会吃', attachmentIds: [] }),
+    });
+    assert.equal(directed.route.mode, 'directed');
+    assert.deepEqual(directed.route.targetAgentIds, [ziling.id]);
+
+    await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        authorType: 'agent',
+        authorId: ziling.id,
+        body: '广州这题我熟，早茶、烧腊、糖水和本地小店都能聊。',
+        attachmentIds: [],
+      }),
+    });
+
+    const followup = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '嗯，那为啥你心里的吃饭没有包含牛肉火锅呢？', attachmentIds: [] }),
+    });
+    assert.equal(followup.route.mode, 'contextual_follow_up');
+    assert.deepEqual(followup.route.targetAgentIds, [ziling.id]);
+
+    const finalState = await request(server.baseUrl, '/api/state');
+    const routeEvent = finalState.routeEvents.find((event) => event.messageId === followup.message.id);
+    assert.equal(routeEvent.mode, 'contextual_follow_up');
+    assert.equal(routeEvent.fallbackUsed, true);
+    assert.match(routeEvent.reason, /recent focused conversation|single-agent context/i);
+    assert.deepEqual(
+      finalState.workItems
+        .filter((item) => item.sourceMessageId === followup.message.id)
+        .map((item) => item.agentId),
+      [ziling.id],
+    );
+
+    await request(server.baseUrl, `/api/agents/${ziling.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'idle' }),
+    });
+    await request(server.baseUrl, `/api/agents/${ccc.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'idle' }),
+    });
+    await request(server.baseUrl, `/api/agents/${yun.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'idle' }),
+    });
+    const capability = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '谁的学历高？', attachmentIds: [] }),
+    });
+    assert.equal(capability.route.mode, 'broadcast');
+    assert.deepEqual(capability.route.targetAgentIds.slice().sort(), [ziling.id, ccc.id, yun.id].sort());
+  } finally {
+    await server.stop();
+  }
+});
+
+test('active Brain Agent also keeps contextual follow-ups with the focused agent', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: ziling } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: '紫灵', description: '广州本地美食、生活方式和路线建议', runtime: 'Codex CLI' }),
+    });
+    const { agent: ccc } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'CCC', description: '资料检索、工程和文档整理', runtime: 'Codex CLI' }),
+    });
+    const { agent: yun } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: '云道友', description: '文化、旅行和轻松闲聊', runtime: 'Codex CLI' }),
+    });
+    const { brainAgent } = await request(server.baseUrl, '/api/brain-agents', {
+      method: 'POST',
+      body: JSON.stringify({ runtime: 'Codex CLI', model: 'gpt-5.5', active: true }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'brain-context', description: 'brain contextual routing', agentIds: [ziling.id, ccc.id, yun.id] }),
+    });
+
+    const open = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '大家对广州的美食了解吗', attachmentIds: [] }),
+    });
+    assert.equal(open.route.brainAgentId, brainAgent.id);
+    assert.equal(open.route.fallbackUsed, false);
+    assert.equal(open.route.mode, 'broadcast');
+
+    const directed = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '哈哈哈，还是紫灵会吃', attachmentIds: [] }),
+    });
+    assert.equal(directed.route.mode, 'directed');
+    assert.deepEqual(directed.route.targetAgentIds, [ziling.id]);
+
+    await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        authorType: 'agent',
+        authorId: ziling.id,
+        body: '我会按本地吃法来讲。',
+        attachmentIds: [],
+      }),
+    });
+
+    const followup = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '嗯，那为啥你心里的吃饭没有包含牛肉火锅呢？', attachmentIds: [] }),
+    });
+    assert.equal(followup.route.brainAgentId, brainAgent.id);
+    assert.equal(followup.route.fallbackUsed, false);
+    assert.equal(followup.route.mode, 'contextual_follow_up');
+    assert.deepEqual(followup.route.targetAgentIds, [ziling.id]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('Brain Agent is configured outside normal agents and drives card-based task routing when active', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const initial = await request(server.baseUrl, '/api/state');
+    assert.deepEqual(initial.brainAgents, []);
+    assert.equal(initial.router.brainAgentId, null);
+    assert.equal(initial.router.mode, 'rules_fallback');
+    assert.equal(initial.agents.some((agent) => agent.id === 'agt_magclaw_brain' || agent.isBrain), false);
+
+    const { channel: fallbackChannel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'brain-fallback', description: 'no brain yet', agentIds: [] }),
+    });
+    const fallbackCreated = await request(server.baseUrl, `/api/spaces/channel/${fallbackChannel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '晚上好', attachmentIds: [] }),
+    });
+    assert.equal(fallbackCreated.route.fallbackUsed, true);
+    assert.equal(fallbackCreated.route.brainAgentId, null);
+
+    const { agent: github } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'GitPilot', description: 'General helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: design } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'DesignPilot', description: 'General helper', runtime: 'Codex CLI' }),
+    });
+    await writeFile(
+      path.join(server.tmp, '.magclaw', 'agents', github.id, 'notes', 'profile.md'),
+      '# GitPilot Profile\n\n## Strengths And Skills\n- GitHub pull requests, repo triage, CI failures, release checks, and code review.\n',
+    );
+    await writeFile(
+      path.join(server.tmp, '.magclaw', 'agents', design.id, 'notes', 'profile.md'),
+      '# DesignPilot Profile\n\n## Strengths And Skills\n- Visual design, layout polish, writing tone, and presentation structure.\n',
+    );
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'brain-route', description: 'router v2', agentIds: [github.id, design.id] }),
+    });
+
+    const { brainAgent } = await request(server.baseUrl, '/api/brain-agents', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Should Not Rename',
+        description: 'Should not replace the fixed description.',
+        runtime: 'Codex CLI',
+        model: 'gpt-5.5',
+        active: true,
+      }),
+    });
+    assert.equal(brainAgent.name, 'MagClaw Brain');
+    assert.equal(brainAgent.description, 'Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.');
+    assert.equal(brainAgent.runtime, 'Codex CLI');
+    assert.equal(brainAgent.active, true);
+
+    const renamed = await request(server.baseUrl, `/api/brain-agents/${brainAgent.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: 'Router Brain', description: 'Mutable?', model: 'gpt-5.4', active: true }),
+    });
+    assert.equal(renamed.brainAgent.name, 'MagClaw Brain');
+    assert.equal(renamed.brainAgent.description, 'Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.');
+    assert.equal(renamed.brainAgent.model, 'gpt-5.4');
+
+    const configured = await request(server.baseUrl, '/api/state');
+    assert.equal(configured.brainAgents.length, 1);
+    assert.equal(configured.router.brainAgentId, brainAgent.id);
+    assert.equal(configured.router.mode, 'brain_agent');
+    assert.equal(configured.agents.some((agent) => agent.id === brainAgent.id || agent.isBrain), false);
+
+    const created = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '帮我修复 GitHub PR 里的 CI 问题并验证一下', attachmentIds: [] }),
+    });
+
+    assert.equal(created.route.mode, 'task_claim');
+    assert.equal(created.route.claimantAgentId, github.id);
+    assert.equal(created.task.claimedBy, github.id);
+
+    const snapshot = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const routeEvent = state.routeEvents.find((event) => event.messageId === created.message.id);
+      const workItems = state.workItems.filter((item) => item.sourceMessageId === created.message.id);
+      return routeEvent && workItems.length ? { routeEvent, workItems, state } : null;
+    });
+    assert.equal(snapshot.routeEvent.brainAgentId, brainAgent.id);
+    assert.equal(snapshot.routeEvent.fallbackUsed, false);
+    assert.equal(snapshot.routeEvent.mode, 'task_claim');
+    assert.deepEqual(snapshot.routeEvent.targetAgentIds, [github.id]);
+    assert.deepEqual(snapshot.workItems.map((item) => item.agentId), [github.id]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('memory writeback hooks update MEMORY and notes for task progress and user preferences', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '帮我写一份测试方案并整理成文档', attachmentIds: [] }),
+    });
+    assert.equal(created.task.claimedBy, 'agt_codex');
+
+    await request(server.baseUrl, '/api/agent-tools/tasks/update', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: 'agt_codex',
+        taskId: created.task.id,
+        status: 'in_review',
+      }),
+    });
+
+    const progressWriteback = await waitFor(async () => {
+      const memory = await readFile(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'MEMORY.md'), 'utf8').catch(() => '');
+      const workLog = await readFile(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'notes', 'work-log.md'), 'utf8').catch(() => '');
+      return memory.includes('Recent Memory Updates') && workLog.includes('task_in_review')
+        ? { memory, workLog }
+        : null;
+    });
+    assert.match(progressWriteback.memory, /task_in_review/);
+    assert.match(progressWriteback.workLog, /测试方案/);
+
+    await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '以后请记住我喜欢简短、直接的进度汇报', attachmentIds: [] }),
+    });
+    const preferenceWriteback = await waitFor(async () => {
+      const workLog = await readFile(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'notes', 'work-log.md'), 'utf8').catch(() => '');
+      return workLog.includes('user_preference') ? workLog : null;
+    });
+    assert.match(preferenceWriteback, /简短/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('busy status heartbeats recover stale agents without a page refresh', async () => {
+  const server = await startIsolatedServer({
+    MAGCLAW_AGENT_STATUS_STALE_MS: '250',
+    MAGCLAW_STATE_HEARTBEAT_MS: '50',
+  });
+  try {
+    await request(server.baseUrl, '/api/agents/agt_codex', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'working' }),
+    });
+    const recovered = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return agent?.status === 'idle' ? agent : null;
+    }, 2500);
+    assert.equal(recovered.status, 'idle');
+    assert.ok(recovered.statusUpdatedAt);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('top-level agent replies do not relay mentions as new channel deliveries', async () => {
   const server = await startIsolatedServer();
   try {

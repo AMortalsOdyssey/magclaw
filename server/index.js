@@ -58,7 +58,9 @@ const STATE_HEARTBEAT_MS = Math.max(25, Number(process.env.MAGCLAW_STATE_HEARTBE
 const AGENT_STATUS_STALE_MS = Math.max(1000, Number(process.env.MAGCLAW_AGENT_STATUS_STALE_MS || 45_000));
 const ROUTE_EVENTS_LIMIT = Math.max(50, Number(process.env.MAGCLAW_ROUTE_EVENTS_LIMIT || 500));
 const AGENT_CARD_TEXT_LIMIT = 5000;
-const BRAIN_AGENT_ID = 'agt_magclaw_brain';
+const LEGACY_BRAIN_AGENT_ID = 'agt_magclaw_brain';
+const BRAIN_AGENT_NAME = 'MagClaw Brain';
+const BRAIN_AGENT_DESCRIPTION = 'Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.';
 const CLOUD_PROTOCOL_VERSION = 1;
 const CODEX_HOME_CONFIG_VERSION = 2;
 const CODEX_FALLBACK_MODEL = 'gpt-5.5';
@@ -202,11 +204,12 @@ function defaultState() {
       sqliteBackedKeys: SQLITE_BACKED_STATE_KEYS,
     },
     router: {
-      mode: 'brain_agent',
-      brainAgentId: BRAIN_AGENT_ID,
+      mode: 'rules_fallback',
+      brainAgentId: null,
       fallback: 'rules',
       cardSource: 'workspace_markdown',
     },
+    brainAgents: [],
     humans: [
       {
         id: 'hum_local',
@@ -229,19 +232,6 @@ function defaultState() {
       },
     ],
     agents: [
-      {
-        id: BRAIN_AGENT_ID,
-        name: 'MagClaw Brain',
-        description: 'Internal routing brain for channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.',
-        runtime: 'Router Brain',
-        model: 'agent-card-router',
-        status: 'idle',
-        computerId: 'cmp_local',
-        workspace: ROOT,
-        systemRole: 'brain',
-        isBrain: true,
-        createdAt: seededAt,
-      },
       {
         id: 'agt_codex',
         name: 'Codex Local',
@@ -447,45 +437,78 @@ function agentParticipatesInChannels(agent) {
   return Boolean(agent && !isBrainAgent(agent));
 }
 
-function defaultBrainAgent() {
-  const seededAt = now();
+function isLegacyBrainRuntime(runtime) {
+  return String(runtime || '').trim().toLowerCase() === 'router brain';
+}
+
+function normalizeBrainAgentConfig(brain = {}, options = {}) {
+  const createdAt = brain.createdAt || now();
+  const runtime = isLegacyBrainRuntime(brain.runtime) ? '' : String(brain.runtime || '').trim();
+  const model = brain.model
+    ? normalizeCodexModelName(brain.model, state.settings?.model)
+    : normalizeCodexModelName(state.settings?.model, CODEX_FALLBACK_MODEL);
+  const active = Boolean(options.active ?? brain.active);
   return {
-    id: BRAIN_AGENT_ID,
-    name: 'MagClaw Brain',
-    description: 'Internal routing brain for channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.',
-    runtime: 'Router Brain',
-    model: 'agent-card-router',
-    status: 'idle',
-    computerId: 'cmp_local',
-    workspace: ROOT,
-    systemRole: 'brain',
-    isBrain: true,
-    createdAt: seededAt,
+    id: String(brain.id || makeId('brain')),
+    name: BRAIN_AGENT_NAME,
+    description: BRAIN_AGENT_DESCRIPTION,
+    runtime,
+    model,
+    status: runtime ? 'configured' : 'offline',
+    active,
+    computerId: String(brain.computerId || 'cmp_local'),
+    workspace: path.resolve(String(brain.workspace || state.settings?.defaultWorkspace || ROOT)),
+    reasoningEffort: brain.reasoningEffort ? String(brain.reasoningEffort) : null,
+    createdAt,
+    updatedAt: brain.updatedAt || createdAt,
   };
 }
 
-function ensureBrainAgentConfigured() {
+function reconcileBrainAgentConfigs() {
+  state.brainAgents = Array.isArray(state.brainAgents) ? state.brainAgents : [];
+  const migrated = [];
+  const currentBrainId = state.router?.brainAgentId || null;
+
+  for (const agent of state.agents || []) {
+    if (!isBrainAgent(agent)) continue;
+    if (agent.id !== LEGACY_BRAIN_AGENT_ID && !isLegacyBrainRuntime(agent.runtime)) {
+      migrated.push(normalizeBrainAgentConfig(agent, { active: agent.id === currentBrainId || Boolean(agent.active) }));
+    }
+  }
+
+  state.agents = (state.agents || []).filter((agent) => !isBrainAgent(agent));
+  state.brainAgents = [...state.brainAgents, ...migrated].map((brain) => normalizeBrainAgentConfig(brain));
+
+  const seen = new Set();
+  state.brainAgents = state.brainAgents.filter((brain) => {
+    if (!brain.id || seen.has(brain.id)) return false;
+    seen.add(brain.id);
+    return true;
+  });
+
+  const configured = state.brainAgents.filter((brain) => brain.runtime);
+  const requestedActive = currentBrainId
+    ? configured.find((brain) => brain.id === currentBrainId)
+    : configured.find((brain) => brain.active);
+  const activeBrain = requestedActive || null;
+
+  for (const brain of state.brainAgents) {
+    brain.active = Boolean(activeBrain && brain.id === activeBrain.id);
+    brain.status = brain.runtime ? 'configured' : 'offline';
+  }
+
   state.router = {
-    mode: 'brain_agent',
-    brainAgentId: BRAIN_AGENT_ID,
+    mode: activeBrain ? 'brain_agent' : 'rules_fallback',
+    brainAgentId: activeBrain?.id || null,
     fallback: 'rules',
     cardSource: 'workspace_markdown',
     ...(state.router || {}),
   };
-  let brain = findAgent(state.router.brainAgentId) || state.agents.find(isBrainAgent);
-  if (!brain) {
-    brain = defaultBrainAgent();
-    state.agents.unshift(brain);
-  }
-  brain.systemRole = 'brain';
-  brain.isBrain = true;
-  brain.runtime = brain.runtime || 'Router Brain';
-  brain.model = brain.model || 'agent-card-router';
-  brain.status = ['starting', 'thinking', 'working', 'running', 'busy', 'queued'].includes(String(brain.status || '').toLowerCase())
-    ? 'idle'
-    : (brain.status || 'idle');
-  state.router.brainAgentId = brain.id;
-  return brain;
+  state.router.mode = activeBrain ? 'brain_agent' : 'rules_fallback';
+  state.router.brainAgentId = activeBrain?.id || null;
+  state.router.fallback = state.router.fallback || 'rules';
+  state.router.cardSource = state.router.cardSource || 'workspace_markdown';
+  return activeBrain;
 }
 
 function migrateState() {
@@ -500,13 +523,14 @@ function migrateState() {
   state.connection.relayUrl = normalizeCloudUrl(state.connection.relayUrl || '');
   state.connection.cloudToken = String(state.connection.cloudToken || process.env.MAGCLAW_CLOUD_TOKEN || '');
   state.connection.protocolVersion = CLOUD_PROTOCOL_VERSION;
-  for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events']) {
+  for (const key of ['humans', 'computers', 'agents', 'brainAgents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events']) {
     if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
   }
   if (!state.humans.length) state.humans = fresh.humans;
   if (!state.computers.length) state.computers = fresh.computers;
   if (!state.agents.length) state.agents = fresh.agents;
-  ensureBrainAgentConfigured();
+  reconcileBrainAgentConfigs();
+  if (!state.agents.length) state.agents = fresh.agents;
   if (!state.channels.length) state.channels = fresh.channels;
   if (!state.dms.length) state.dms = fresh.dms;
   if (!state.messages.length) state.messages = fresh.messages;
@@ -748,6 +772,9 @@ function presenceHeartbeat() {
       name: agent.name,
       status: agent.status || 'offline',
       runtime: agent.runtime || '',
+      statusUpdatedAt: agent.statusUpdatedAt || null,
+      heartbeatAt: agent.heartbeatAt || null,
+      activeWorkItemIds: normalizeIds(agent.activeWorkItemIds || []),
       runtimeLastStartedAt: agent.runtimeLastStartedAt || null,
       runtimeLastTurnAt: agent.runtimeLastTurnAt || null,
     })),
@@ -756,6 +783,55 @@ function presenceHeartbeat() {
 
 function broadcastHeartbeat() {
   broadcast('heartbeat', presenceHeartbeat());
+}
+
+function agentStatusIsBusy(status) {
+  return ['starting', 'thinking', 'working', 'running', 'busy', 'queued'].includes(String(status || '').toLowerCase());
+}
+
+function setAgentStatus(agent, status, reason = 'status_update', extra = {}) {
+  if (!agent) return null;
+  const nextStatus = String(status || 'idle');
+  const previousStatus = agent.status || 'offline';
+  agent.status = nextStatus;
+  agent.statusUpdatedAt = now();
+  agent.heartbeatAt = agent.statusUpdatedAt;
+  if (extra.activeWorkItemIds !== undefined) {
+    agent.activeWorkItemIds = normalizeIds(extra.activeWorkItemIds);
+  }
+  if (previousStatus !== nextStatus || extra.forceEvent) {
+    addSystemEvent('agent_status_changed', `${agent.name} is ${nextStatus}.`, {
+      agentId: agent.id,
+      previousStatus,
+      status: nextStatus,
+      reason,
+      ...(extra.event || {}),
+    });
+  }
+  return agent;
+}
+
+function reconcileAgentStatusHeartbeats() {
+  if (!state?.agents?.length) return false;
+  let changed = false;
+  const activeAgentIds = new Set([...agentProcesses.keys()]);
+  const threshold = Date.now() - AGENT_STATUS_STALE_MS;
+  for (const agent of state.agents) {
+    if (isBrainAgent(agent)) continue;
+    if (activeAgentIds.has(agent.id)) {
+      agent.heartbeatAt = now();
+      continue;
+    }
+    if (agentStatusIsBusy(agent.status)) {
+      const updated = Date.parse(agent.heartbeatAt || agent.statusUpdatedAt || agent.updatedAt || agent.createdAt || '');
+      if (!Number.isFinite(updated) || updated < threshold) {
+        setAgentStatus(agent, 'idle', 'stale_heartbeat_timeout');
+        addSystemEvent('agent_status_recovered', `${agent.name} status reset to idle after missing heartbeat.`, { agentId: agent.id });
+        changed = true;
+      }
+    }
+  }
+  return changed;
 }
 
 function sendJson(res, statusCode, data) {
@@ -2183,6 +2259,103 @@ function messageTimeMs(record) {
   return Number.isFinite(time) ? time : 0;
 }
 
+const CONTEXTUAL_FOLLOWUP_WINDOW_MS = 30 * 60 * 1000;
+
+function contextualAgentFollowupIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  if (
+    availabilityBroadcastIntent(value)
+    || availabilityFollowupIntent(value)
+    || agentCapabilityQuestionIntent(value)
+    || autoTaskMessageIntent(value)
+    || channelGreetingIntent(value)
+  ) {
+    return false;
+  }
+  if (/(大家|各位|你们|所有人|每个人|全员|全部|其他|其它|别人|all|everyone|team|agents?)/i.test(value)) {
+    return false;
+  }
+  return [
+    /(你|你的|你刚才|你心里|你说|你觉得|你那边|你上面|你前面|为什么你|为啥你|那你|所以你)/,
+    /^(嗯|呃|哦|噢|那|所以|为啥|为什么|怎么|然后|继续|再说|展开)[，,。.\s]*/i,
+    /\b(you|your|why did you|why are you|what do you mean|continue|go on|then)\b/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function latestRouteEventForMessage(messageId, spaceId) {
+  return [...(state.routeEvents || [])]
+    .reverse()
+    .find((event) => event.messageId === messageId
+      && event.spaceType === 'channel'
+      && (!spaceId || event.spaceId === spaceId));
+}
+
+function recentChannelMessageEntries(message, spaceId, windowMs = CONTEXTUAL_FOLLOWUP_WINDOW_MS) {
+  const records = state.messages || [];
+  const currentIndex = records.findIndex((record) => record.id === message?.id);
+  const currentMs = messageTimeMs(message) || Date.now();
+  return records
+    .map((record, index) => ({ record, index, ms: messageTimeMs(record) }))
+    .filter((entry) => entry.record.id !== message?.id
+      && entry.record.spaceType === 'channel'
+      && entry.record.spaceId === spaceId
+      && (currentIndex < 0 || entry.index < currentIndex)
+      && (!entry.ms || !currentMs || currentMs - entry.ms <= windowMs))
+    .sort((a, b) => b.ms - a.ms || b.index - a.index);
+}
+
+function focusedRecentAgentForHumanFollowup(channelAgents, message, spaceId) {
+  if (message?.authorType !== 'human') return null;
+  if (!contextualAgentFollowupIntent(message?.body)) return null;
+
+  const channelAgentById = new Map((channelAgents || [])
+    .filter(agentParticipatesInChannels)
+    .map((agent) => [agent.id, agent]));
+  if (!channelAgentById.size) return null;
+
+  const recent = recentChannelMessageEntries(message, spaceId);
+  const lastHuman = recent.find((entry) => entry.record.authorType === 'human');
+  if (lastHuman) {
+    const routeEvent = latestRouteEventForMessage(lastHuman.record.id, spaceId);
+    const routedIds = normalizeIds(routeEvent?.targetAgentIds || [])
+      .filter((id) => channelAgentById.has(id));
+    if (routedIds.length === 1) {
+      return {
+        agent: channelAgentById.get(routedIds[0]),
+        source: 'recent_directed_human_message',
+        referenceMessageId: lastHuman.record.id,
+        routeEventId: routeEvent?.id || null,
+      };
+    }
+
+    const agentIdsAfterLastHuman = normalizeIds(recent
+      .filter((entry) => entry.index > lastHuman.index
+        && entry.record.authorType === 'agent'
+        && channelAgentById.has(entry.record.authorId))
+      .map((entry) => entry.record.authorId));
+    if (agentIdsAfterLastHuman.length === 1) {
+      return {
+        agent: channelAgentById.get(agentIdsAfterLastHuman[0]),
+        source: 'single_recent_agent_reply',
+        referenceMessageId: recent.find((entry) => entry.record.authorId === agentIdsAfterLastHuman[0])?.record.id || null,
+        routeEventId: null,
+      };
+    }
+  }
+
+  const latest = recent[0]?.record || null;
+  if (!lastHuman && latest?.authorType === 'agent' && channelAgentById.has(latest.authorId)) {
+    return {
+      agent: channelAgentById.get(latest.authorId),
+      source: 'latest_agent_message',
+      referenceMessageId: latest.id,
+      routeEventId: null,
+    };
+  }
+  return null;
+}
+
 function availabilityTargetAgentIds(channelAgents, record) {
   if (!record || record.authorType !== 'human') return [];
   if (!directAvailabilityIntent(record.body) && !availabilityBroadcastIntent(record.body)) return [];
@@ -2686,7 +2859,94 @@ function routeEvidence(type, value) {
 }
 
 function selectBrainAgent() {
-  return findAgent(state.router?.brainAgentId) || (state.agents || []).find(isBrainAgent) || null;
+  const activeId = state.router?.brainAgentId || null;
+  const active = activeId
+    ? (state.brainAgents || []).find((brain) => brain.id === activeId && brain.active && brain.runtime)
+    : null;
+  return active || null;
+}
+
+function findBrainAgent(id) {
+  return (state.brainAgents || []).find((brain) => brain.id === id) || null;
+}
+
+function activateBrainAgent(brainId) {
+  const brain = findBrainAgent(brainId);
+  if (!brain) throw httpError(404, 'Brain Agent not found.');
+  if (!brain.runtime) throw httpError(400, 'Brain Agent runtime must be configured before activation.');
+  for (const item of state.brainAgents || []) {
+    item.active = item.id === brain.id;
+    item.status = item.runtime ? 'configured' : 'offline';
+    item.updatedAt = item.id === brain.id ? now() : item.updatedAt;
+  }
+  state.router = {
+    mode: 'brain_agent',
+    brainAgentId: brain.id,
+    fallback: 'rules',
+    cardSource: 'workspace_markdown',
+    ...(state.router || {}),
+  };
+  state.router.mode = 'brain_agent';
+  state.router.brainAgentId = brain.id;
+  return brain;
+}
+
+function deactivateBrainAgent(brainId = null) {
+  for (const item of state.brainAgents || []) {
+    if (!brainId || item.id === brainId) {
+      item.active = false;
+      item.status = item.runtime ? 'configured' : 'offline';
+      item.updatedAt = now();
+    }
+  }
+  if (!brainId || state.router?.brainAgentId === brainId) {
+    state.router = {
+      mode: 'rules_fallback',
+      brainAgentId: null,
+      fallback: 'rules',
+      cardSource: 'workspace_markdown',
+      ...(state.router || {}),
+    };
+    state.router.mode = 'rules_fallback';
+    state.router.brainAgentId = null;
+  }
+}
+
+function createBrainAgentConfig(body = {}) {
+  const runtime = String(body.runtime || '').trim();
+  if (!runtime || isLegacyBrainRuntime(runtime)) throw httpError(400, 'Brain Agent runtime is required.');
+  const brain = normalizeBrainAgentConfig({
+    runtime,
+    model: body.model || state.settings?.model,
+    computerId: body.computerId || 'cmp_local',
+    workspace: body.workspace || state.settings?.defaultWorkspace || ROOT,
+    reasoningEffort: body.reasoningEffort || null,
+    createdAt: now(),
+    updatedAt: now(),
+  });
+  state.brainAgents.push(brain);
+  const shouldActivate = body.active === true || (body.active === undefined && !selectBrainAgent());
+  if (shouldActivate) activateBrainAgent(brain.id);
+  return brain;
+}
+
+function updateBrainAgentConfig(brain, body = {}) {
+  if (!brain) throw httpError(404, 'Brain Agent not found.');
+  const next = {
+    ...brain,
+    runtime: body.runtime !== undefined ? String(body.runtime || '').trim() : brain.runtime,
+    model: body.model !== undefined ? body.model : brain.model,
+    computerId: body.computerId !== undefined ? body.computerId : brain.computerId,
+    workspace: body.workspace !== undefined ? body.workspace : brain.workspace,
+    reasoningEffort: body.reasoningEffort !== undefined ? body.reasoningEffort : brain.reasoningEffort,
+    updatedAt: now(),
+  };
+  const normalized = normalizeBrainAgentConfig(next, { active: brain.active });
+  if (!normalized.runtime) throw httpError(400, 'Brain Agent runtime is required.');
+  Object.assign(brain, normalized);
+  if (body.active === true) activateBrainAgent(brain.id);
+  if (body.active === false) deactivateBrainAgent(brain.id);
+  return brain;
 }
 
 function availableChannelAgents(channelAgents) {
@@ -2702,7 +2962,7 @@ function idleChannelAgents(channelAgents) {
 function agentDispatchScoreFromCard(agent, card, text) {
   if (!agentAvailableForAutoWork(agent)) return -Infinity;
   let score = agentDispatchScore(agent, text);
-  const haystack = String(card?.haystack || agentDispatchHaystack(agent));
+  const haystack = String(card?.haystack || agentDispatchHaystack(agent)).toLowerCase();
   for (const term of dispatchSearchTerms(text)) {
     if (haystack.includes(term)) score += Math.min(36, term.length * 4);
   }
@@ -2821,6 +3081,23 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
       }, channelAgents);
     }
 
+    const focusedFollowup = focusedRecentAgentForHumanFollowup(channelAgents, message, spaceId);
+    if (focusedFollowup?.agent) {
+      return normalizeRouteDecision({
+        mode: 'contextual_follow_up',
+        targetAgentIds: [focusedFollowup.agent.id],
+        confidence: 0.89,
+        reason: `Recent single-agent context indicates this follow-up is for ${focusedFollowup.agent.name}.`,
+        evidence: [
+          ...evidence,
+          routeEvidence('recent_context', focusedFollowup.source),
+          routeEvidence('reference_message', focusedFollowup.referenceMessageId || ''),
+          routeEvidence('reference_route', focusedFollowup.routeEventId || ''),
+        ],
+        brainAgentId: brainAgent?.id || null,
+      }, channelAgents);
+    }
+
     if (availabilityBroadcastIntent(text)) {
       return normalizeRouteDecision({
         mode: 'availability',
@@ -2904,13 +3181,31 @@ function legacyRouteDecision(channelAgents, mentions, message, spaceId, error = 
   const claimant = message?.authorType === 'human' && autoTaskMessageIntent(message.body)
     ? pickBestFitAgent(channelAgents, message)
     : null;
+  const focusedFollowup = focusedRecentAgentForHumanFollowup(channelAgents, message, spaceId);
+  const isContextualFollowup = Boolean(focusedFollowup?.agent
+    && agents.length === 1
+    && agents[0]?.id === focusedFollowup.agent.id);
+  const isDirected = Boolean(!claimant
+    && !isContextualFollowup
+    && message?.authorType === 'human'
+    && agents.length
+    && agents.length < availableChannelAgents(channelAgents).length);
   return normalizeRouteDecision({
-    mode: claimant ? 'task_claim' : 'broadcast',
+    mode: claimant ? 'task_claim' : (isContextualFollowup ? 'contextual_follow_up' : (isDirected ? 'directed' : 'broadcast')),
     targetAgentIds: agents.map((agent) => agent.id),
     claimantAgentId: claimant?.id || null,
-    confidence: 0.45,
-    reason: error ? `Brain router failed; rules fallback used: ${error.message}` : 'Rules fallback selected agents.',
-    evidence: [routeEvidence('fallback', error?.message || 'legacy rules')],
+    confidence: isContextualFollowup ? 0.76 : 0.45,
+    reason: isContextualFollowup
+      ? `Rules fallback kept the recent focused conversation with ${focusedFollowup.agent.name}.`
+      : (error ? `Brain router failed; rules fallback used: ${error.message}` : 'Rules fallback selected agents.'),
+    evidence: [
+      routeEvidence('fallback', error?.message || 'legacy rules'),
+      ...(isContextualFollowup ? [
+        routeEvidence('recent_context', focusedFollowup.source),
+        routeEvidence('reference_message', focusedFollowup.referenceMessageId || ''),
+        routeEvidence('reference_route', focusedFollowup.routeEventId || ''),
+      ] : []),
+    ],
     taskIntent: claimant ? { title: cleanTaskTitle(message?.body || ''), kind: inferTaskIntentKind(message?.body || '') } : null,
     brainAgentId: selectBrainAgent()?.id || null,
     fallbackUsed: true,
@@ -2942,8 +3237,16 @@ function addRouteEvent(decision, { message, spaceType = 'channel', spaceId = nul
   addSystemEvent('route_decision', `Route ${event.mode}: ${event.targetAgentIds.length} agent(s) selected.`, {
     routeEventId: event.id,
     messageId: event.messageId,
+    spaceType: event.spaceType,
+    spaceId: event.spaceId,
+    mode: event.mode,
     targetAgentIds: event.targetAgentIds,
     claimantAgentId: event.claimantAgentId,
+    confidence: event.confidence,
+    reason: event.reason,
+    evidence: event.evidence,
+    taskIntent: event.taskIntent,
+    brainAgentId: event.brainAgentId,
     fallbackUsed: event.fallbackUsed,
   });
   return event;
@@ -2951,6 +3254,11 @@ function addRouteEvent(decision, { message, spaceType = 'channel', spaceId = nul
 
 async function routeMessageForChannel({ channelAgents, mentions, message, spaceId }) {
   const brainAgent = selectBrainAgent();
+  if (!brainAgent) {
+    const decision = legacyRouteDecision(channelAgents, mentions, message, spaceId, null);
+    const routeEvent = addRouteEvent(decision, { message, spaceId });
+    return { ...decision, routeEvent };
+  }
   try {
     const cards = await buildAgentCards(channelAgents);
     const decision = evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId, cards, brainAgent });
@@ -2997,6 +3305,8 @@ function determineRespondingAgents(channelAgents, mentions, message, spaceId) {
     if (named.length) return uniqueAgents(named.filter(agentAvailableForAutoWork));
     const followupAgents = availabilityFollowupAgents(channelAgents, message, spaceId);
     if (followupAgents.length) return followupAgents;
+    const focusedFollowup = focusedRecentAgentForHumanFollowup(channelAgents, message, spaceId);
+    if (focusedFollowup?.agent) return [focusedFollowup.agent];
     if (autoTaskMessageIntent(message.body)) {
       const agent = pickBestFitAgent(channelAgents, message);
       return agent ? [agent] : [];
@@ -3071,6 +3381,125 @@ function addTaskHistory(task, type, message, actorId = 'hum_local', extra = {}) 
   return item;
 }
 
+function userPreferenceIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /(以后|后续|以后都|以后要|请记住|记住|偏好|我喜欢|我希望|不要再|别再|规则|约定|原则)/,
+    /\b(remember|preference|from now on|going forward|always|never)\b/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function memoryEventTitle(trigger, payload = {}) {
+  if (payload.task) return `${trigger}: ${taskLabel(payload.task)} ${payload.task.title || ''}`.trim();
+  if (payload.channel) return `${trigger}: #${payload.channel.name}`;
+  if (payload.message) return `${trigger}: ${String(payload.message.body || '').slice(0, 90)}`;
+  return trigger;
+}
+
+function markdownBulletText(value) {
+  return String(value || '')
+    .replace(/\r?\n+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 260);
+}
+
+function upsertMarkdownBullet(content, heading, bullet, maxItems = 10) {
+  const lines = String(content || '').split(/\r?\n/);
+  const headingLine = `## ${heading}`;
+  let headingIndex = lines.findIndex((line) => line.trim().toLowerCase() === headingLine.toLowerCase());
+  if (headingIndex === -1) {
+    const suffix = lines.length && lines[lines.length - 1].trim() ? ['', headingLine, bullet] : [headingLine, bullet];
+    return [...lines, ...suffix].join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+  }
+  let endIndex = lines.length;
+  for (let index = headingIndex + 1; index < lines.length; index += 1) {
+    if (/^#{1,6}\s+/.test(lines[index])) {
+      endIndex = index;
+      break;
+    }
+  }
+  const before = lines.slice(0, headingIndex + 1);
+  const section = lines.slice(headingIndex + 1, endIndex).filter((line) => line.trim());
+  const after = lines.slice(endIndex);
+  const bullets = [bullet, ...section.filter((line) => line.trim() !== bullet.trim())]
+    .filter((line) => line.trim().startsWith('- '))
+    .slice(0, maxItems);
+  return [...before, ...bullets, '', ...after].join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+}
+
+async function appendAgentMemoryNote(agent, relPath, heading, bullet) {
+  const root = await ensureAgentWorkspace(agent);
+  const filePath = safePathWithin(root, relPath);
+  if (!filePath) return;
+  const existing = await readFile(filePath, 'utf8').catch(() => `# ${agent.name} ${path.basename(relPath, '.md')}\n`);
+  await writeFile(filePath, upsertMarkdownBullet(existing, heading, bullet));
+}
+
+async function updateAgentMemoryEntrypoint(agent, bullet) {
+  const root = await ensureAgentWorkspace(agent);
+  const memoryPath = safePathWithin(root, 'MEMORY.md');
+  if (!memoryPath) return;
+  const existing = await readFile(memoryPath, 'utf8').catch(() => defaultAgentMemory(agent));
+  await writeFile(memoryPath, upsertMarkdownBullet(existing, 'Recent Memory Updates', bullet, 8));
+}
+
+function memoryWritebackBullet(trigger, payload = {}) {
+  const stamp = now();
+  if (payload.task) {
+    const task = payload.task;
+    return `- ${stamp} [${trigger}] ${taskLabel(task)} ${markdownBulletText(task.title)} status=${task.status || 'todo'} channel=${spaceDisplayName(task.spaceType, task.spaceId)}`;
+  }
+  if (payload.channel) {
+    const channel = payload.channel;
+    const members = channelAgentIds(channel).map((id) => displayActor(id)).join(', ') || 'no agent members';
+    return `- ${stamp} [${trigger}] #${channel.name} members=${markdownBulletText(members)} description=${markdownBulletText(channel.description || 'none')}`;
+  }
+  if (payload.message) {
+    return `- ${stamp} [${trigger}] ${spaceDisplayName(payload.spaceType || payload.message.spaceType, payload.spaceId || payload.message.spaceId)} ${markdownBulletText(payload.message.body)}`;
+  }
+  if (payload.routeEvent) {
+    return `- ${stamp} [${trigger}] route=${payload.routeEvent.mode} targets=${payload.routeEvent.targetAgentIds?.map(displayActor).join(', ') || 'none'} reason=${markdownBulletText(payload.routeEvent.reason)}`;
+  }
+  return `- ${stamp} [${trigger}] ${markdownBulletText(memoryEventTitle(trigger, payload))}`;
+}
+
+async function writeAgentMemoryUpdate(agent, trigger, payload = {}) {
+  if (!agent || isBrainAgent(agent)) return false;
+  const bullet = memoryWritebackBullet(trigger, payload);
+  await appendAgentMemoryNote(agent, 'notes/work-log.md', 'Memory Writebacks', bullet);
+  await updateAgentMemoryEntrypoint(agent, bullet);
+  if (payload.channel) {
+    await appendAgentMemoryNote(agent, 'notes/channels.md', 'Channel Memory', bullet);
+  }
+  if (payload.routeEvent || payload.peerAgentIds?.length) {
+    await appendAgentMemoryNote(agent, 'notes/agents.md', 'Observed Collaboration', bullet);
+  }
+  addSystemEvent('agent_memory_writeback', `${agent.name} workspace memory updated for ${trigger}.`, {
+    agentId: agent.id,
+    trigger,
+    taskId: payload.task?.id || null,
+    messageId: payload.message?.id || null,
+    channelId: payload.channel?.id || payload.spaceId || null,
+  });
+  agentCardCache.delete(agent.id);
+  return true;
+}
+
+function scheduleAgentMemoryWriteback(agent, trigger, payload = {}) {
+  if (!agent || isBrainAgent(agent)) return;
+  writeAgentMemoryUpdate(agent, trigger, payload)
+    .then((changed) => (changed ? persistState().then(broadcastState) : null))
+    .catch((error) => {
+      addSystemEvent('agent_memory_writeback_error', `Memory writeback failed for ${agent.name}: ${error.message}`, {
+        agentId: agent.id,
+        trigger,
+      });
+      persistState().then(broadcastState).catch(() => {});
+    });
+}
+
 function addSystemReply(parentMessageId, body) {
   const parent = findMessage(parentMessageId);
   if (!parent) return null;
@@ -3093,12 +3522,13 @@ function addSystemReply(parentMessageId, body) {
 }
 
 function cloudSnapshot() {
-  const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
+  const allowedKeys = ['humans', 'computers', 'agents', 'brainAgents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
   const snapshot = {
     version: state.version,
     exportedAt: now(),
     workspaceId: state.connection?.workspaceId || 'local',
     protocolVersion: CLOUD_PROTOCOL_VERSION,
+    router: state.router || {},
   };
   for (const key of allowedKeys) {
     snapshot[key] = Array.isArray(state[key]) ? state[key] : [];
@@ -3107,10 +3537,11 @@ function cloudSnapshot() {
 }
 
 function applyCloudSnapshot(snapshot) {
-  const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
+  const allowedKeys = ['humans', 'computers', 'agents', 'brainAgents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
   for (const key of allowedKeys) {
     if (Array.isArray(snapshot?.[key])) state[key] = snapshot[key];
   }
+  if (snapshot?.router && typeof snapshot.router === 'object') state.router = snapshot.router;
   migrateState();
 }
 
@@ -3809,7 +4240,7 @@ async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
   agentProcesses.set(agentId, proc);
 
   // Update agent status
-  agent.status = 'starting';
+  setAgentStatus(agent, 'starting', 'delivery_started');
   await persistState();
   broadcastState();
 
@@ -3872,7 +4303,7 @@ async function startClaudeAgent(agent, proc, workspace) {
 
   child.on('error', async (error) => {
     proc.status = 'error';
-    agent.status = 'error';
+    setAgentStatus(agent, 'error', 'claude_error');
     addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
     await persistState();
     broadcastState();
@@ -3883,7 +4314,7 @@ async function startClaudeAgent(agent, proc, workspace) {
     const queuedMessages = proc.stopRequested ? (proc.restartMessagesAfterStop || []) : proc.inbox.slice(proc.promptMessageCount);
     const sourceMessage = proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
     proc.status = 'idle';
-    agent.status = 'idle';
+    setAgentStatus(agent, 'idle', 'claude_turn_closed');
 
 	    // Post the response back to the conversation
 	    const responseText = stdout.trim() || stderr.trim() || '(No response)';
@@ -3941,7 +4372,7 @@ async function startCodexAgent(agent, proc, workspace) {
   proc.threadReady = false;
   proc.usedLegacyFallback = false;
   proc.status = 'starting';
-  agent.status = 'starting';
+  setAgentStatus(agent, 'starting', 'codex_app_server_start');
   agent.runtimeLastStartedAt = now();
   await writeAgentSessionFile(agent).catch(() => {});
 
@@ -3983,7 +4414,7 @@ async function startCodexAgent(agent, proc, workspace) {
       return;
     }
     proc.status = 'error';
-    agent.status = 'error';
+    setAgentStatus(agent, 'error', 'codex_app_server_error');
     addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
     await persistState();
     broadcastState();
@@ -3995,7 +4426,7 @@ async function startCodexAgent(agent, proc, workspace) {
     if (!proc.threadReady && !proc.usedLegacyFallback) {
       if (proc.stopRequested) {
         proc.status = 'idle';
-        agent.status = proc.restartMessagesAfterStop?.length ? 'queued' : 'idle';
+        setAgentStatus(agent, proc.restartMessagesAfterStop?.length ? 'queued' : 'idle', 'codex_stopped_before_ready');
         addSystemEvent('agent_stopped', `${agent.name} stopped before Codex session was ready`, { agentId: agent.id });
         await persistState();
         broadcastState();
@@ -4023,9 +4454,9 @@ async function startCodexAgent(agent, proc, workspace) {
       addSystemEvent('agent_stdout_suppressed', `${agent.name} stopped before posting buffered output.`, { agentId: agent.id });
     }
     proc.status = proc.stopRequested || code === 0 ? 'idle' : 'error';
-    agent.status = proc.stopRequested
+    setAgentStatus(agent, proc.stopRequested
       ? (proc.restartMessagesAfterStop?.length ? 'queued' : 'idle')
-      : (code === 0 ? 'idle' : 'error');
+      : (code === 0 ? 'idle' : 'error'), 'codex_app_server_closed');
     addSystemEvent(proc.stopRequested ? 'agent_stopped' : (code === 0 ? 'agent_app_server_closed' : 'agent_error'), `${agent.name} Codex app-server ${proc.stopRequested ? 'stopped' : 'exited'} (code ${code ?? 'unknown'})`, { agentId: agent.id });
     await writeAgentSessionFile(agent).catch(() => {});
     await persistState();
@@ -4088,7 +4519,7 @@ async function handleCodexThreadReady(agent, proc, threadId) {
     }
   } else {
     proc.status = 'idle';
-    agent.status = 'idle';
+    setAgentStatus(agent, 'idle', 'codex_process_ready');
     addSystemEvent('agent_process_ready', `${agent.name} is ready and waiting for messages.`, { agentId: agent.id, sessionId: threadId });
   }
   await persistState();
@@ -4173,7 +4604,9 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
   });
   rememberActiveTurnTargets(proc, mode, targetKeys);
   proc.status = 'running';
-  agent.status = mode === 'steer' ? 'working' : 'thinking';
+  setAgentStatus(agent, mode === 'steer' ? 'working' : 'thinking', mode === 'steer' ? 'agent_steered' : 'agent_turn_started', {
+    activeWorkItemIds: normalizeIds(promptMessages.map((message) => message?.workItemId)),
+  });
   agent.runtimeLastTurnAt = now();
   addSystemEvent(mode === 'steer' ? 'agent_steered' : 'agent_turn_started', `${agent.name} ${mode === 'steer' ? 'received a steering message' : 'started a turn'}`, { agentId: agent.id, sessionId: proc.threadId });
   persistState().then(broadcastState);
@@ -4298,7 +4731,7 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
     proc.activeTurnId = null;
     proc.activeTurnTargets = new Set();
     proc.status = 'idle';
-    agent.status = 'idle';
+    setAgentStatus(agent, 'idle', 'codex_turn_completed', { activeWorkItemIds: [] });
   }
   if (!proc.activeTurnIds?.size && proc.pendingDeliveryMessages?.length) {
     clearAgentBusyDeliveryTimer(proc);
@@ -4368,7 +4801,7 @@ async function handleCodexAppServerLine(agent, proc, line) {
         proc.activeTurnIds.add(turnId);
       }
       proc.status = 'running';
-      agent.status = 'thinking';
+      setAgentStatus(agent, 'thinking', 'codex_turn_started');
       await persistState();
       broadcastState();
       break;
@@ -4442,6 +4875,9 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
   args.push('-');
 
   proc.status = 'running';
+  setAgentStatus(agent, 'thinking', 'codex_legacy_turn_started', {
+    activeWorkItemIds: normalizeIds(promptMessages.map((message) => message?.workItemId)),
+  });
   addSystemEvent('agent_started', `${agent.name} started with Codex`, { agentId: agent.id });
   markWorkItemsDelivered(promptMessages, 'turn');
   await persistState();
@@ -4485,7 +4921,7 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
 
   child.on('error', async (error) => {
     proc.status = 'error';
-    agent.status = 'error';
+    setAgentStatus(agent, 'error', 'codex_legacy_error');
     addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
     await persistState();
     broadcastState();
@@ -4496,7 +4932,7 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
     const queuedMessages = proc.stopRequested ? (proc.restartMessagesAfterStop || []) : proc.inbox.slice(proc.promptMessageCount);
     const sourceMessage = proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
     proc.status = 'idle';
-    agent.status = 'idle';
+    setAgentStatus(agent, 'idle', 'codex_legacy_closed', { activeWorkItemIds: [] });
 
     // Read the output file for the response
     let responseText = '';
@@ -4662,7 +5098,7 @@ function stopAgentProcessForScope(agent, proc, scope, restartMessages = []) {
   proc.pendingDeliveryMessages = [];
   proc.pendingInitialMessages = [];
   proc.pendingInitialPrompt = null;
-  agent.status = proc.restartMessagesAfterStop.length ? 'queued' : 'idle';
+  setAgentStatus(agent, proc.restartMessagesAfterStop.length ? 'queued' : 'idle', 'agent_stop_scope');
   if (proc.child && !proc.child.killed) {
     proc.child.kill('SIGTERM');
     return true;
@@ -4682,7 +5118,7 @@ function stopAgentProcessForTask(agent, proc, task, restartMessages = []) {
   proc.pendingDeliveryMessages = [];
   proc.pendingInitialMessages = [];
   proc.pendingInitialPrompt = null;
-  agent.status = proc.restartMessagesAfterStop.length ? 'queued' : 'idle';
+  setAgentStatus(agent, proc.restartMessagesAfterStop.length ? 'queued' : 'idle', 'agent_stop_task');
   if (proc.child && !proc.child.killed) {
     proc.child.kill('SIGTERM');
     return true;
@@ -4720,7 +5156,7 @@ function stopAgentProcesses(scope = null) {
       stoppedAgents.push(agentId);
     } else if (removedMessages > 0 || cancelledForAgent.length) {
       clearAgentBusyDeliveryTimer(proc);
-      if (!restartMessages.length && !activeMetas.length) agent.status = 'idle';
+      if (!restartMessages.length && !activeMetas.length) setAgentStatus(agent, 'idle', 'agent_stop_scope_pruned');
     }
   }
   return {
@@ -4761,7 +5197,7 @@ function stopAgentProcessesForTask(task) {
       stoppedAgents.push(agentId);
     } else if (removedMessages > 0 || cancelledForAgent.length) {
       clearAgentBusyDeliveryTimer(proc);
-      if (!restartMessages.length && !activeTurnMetas(proc).length) agent.status = 'idle';
+      if (!restartMessages.length && !activeTurnMetas(proc).length) setAgentStatus(agent, 'idle', 'agent_stop_task_pruned');
     }
   }
   return {
@@ -4798,7 +5234,7 @@ function steerAgentProcessesForTaskStop(task, actorId = 'hum_local', replyId = n
     if (!taskTurnIds.length) {
       if (removedMessages > 0 || taskWorkIds.length) {
         clearAgentBusyDeliveryTimer(proc);
-        if (!activeTurnMetas(proc).length && !proc.pendingDeliveryMessages?.length) agent.status = 'idle';
+        if (!activeTurnMetas(proc).length && !proc.pendingDeliveryMessages?.length) setAgentStatus(agent, 'idle', 'task_stop_pruned');
       }
       continue;
     }
@@ -5286,6 +5722,8 @@ function claimTask(task, actorId, options = {}) {
   addSystemReply(thread.id, `Task claimed by ${displayActor(claimant)}.`);
   addTaskTimelineMessage(task, `📌 ${displayActor(claimant)} claimed ${taskLabel(task)}`, 'task_claimed');
   addCollabEvent('task_claimed', `Task claimed: ${task.title}`, { taskId: task.id, actorId: claimant, number: task.number });
+  const claimantAgent = findAgent(claimant);
+  if (claimantAgent) scheduleAgentMemoryWriteback(claimantAgent, 'task_claimed', { task });
   return task;
 }
 
@@ -5349,11 +5787,13 @@ function updateTaskForAgent(task, agent, nextStatus, options = {}) {
     addTaskHistory(task, 'agent_review_requested', 'Agent requested review.', agent.id);
     addSystemReply(ensureTaskThread(task).id, `${agent.name} requested review.`);
     addTaskTimelineMessage(task, `👀 ${displayActor(agent.id)} moved ${taskLabel(task)} to In Review`, 'task_review');
+    scheduleAgentMemoryWriteback(agent, 'task_in_review', { task });
   } else if (status === 'done') {
     task.completedAt = task.completedAt || now();
     addTaskHistory(task, 'agent_done', 'Agent marked task done.', agent.id);
     addSystemReply(ensureTaskThread(task).id, `${agent.name} marked this task done.`);
     addTaskTimelineMessage(task, `✅ ${displayActor(agent.id)} moved ${taskLabel(task)} to Done`, 'task_done');
+    scheduleAgentMemoryWriteback(agent, 'task_done', { task });
   } else if (status === 'todo') {
     task.reviewRequestedAt = null;
     task.completedAt = null;
@@ -5948,7 +6388,9 @@ async function handleApi(req, res, url) {
       return true;
     }
     const humanIds = Array.isArray(body.humanIds) && body.humanIds.length ? body.humanIds.map(String) : ['hum_local'];
-    const agentIds = Array.isArray(body.agentIds) ? body.agentIds.map(String) : [];
+    const agentIds = Array.isArray(body.agentIds)
+      ? body.agentIds.map(String).filter((id) => agentParticipatesInChannels(findAgent(id)))
+      : [];
     const memberIds = [...new Set([...humanIds, ...agentIds])];
     const channel = {
       id: makeId('chan'),
@@ -5977,6 +6419,10 @@ async function handleApi(req, res, url) {
       updatedAt: now(),
     }));
     addCollabEvent('channel_created', `Channel #${channel.name} created.`, { channelId: channel.id });
+    for (const agentId of agentIds) {
+      const agent = findAgent(agentId);
+      if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
+    }
     await persistState();
     broadcastState();
     sendJson(res, 201, { channel });
@@ -5994,12 +6440,22 @@ async function handleApi(req, res, url) {
     if (body.name !== undefined) channel.name = normalizeName(body.name, channel.name);
     if (body.description !== undefined) channel.description = String(body.description || '').trim();
     if (body.ownerId !== undefined) channel.ownerId = String(body.ownerId || channel.ownerId || 'hum_local');
-    if (Array.isArray(body.agentIds)) channel.agentIds = body.agentIds.map(String);
+    const previousAgentIds = normalizeIds(channel.agentIds);
+    if (Array.isArray(body.agentIds)) {
+      channel.agentIds = body.agentIds.map(String).filter((id) => agentParticipatesInChannels(findAgent(id)));
+    }
     if (Array.isArray(body.humanIds)) channel.humanIds = body.humanIds.map(String);
-    if (Array.isArray(body.memberIds)) channel.memberIds = body.memberIds.map(String);
+    if (Array.isArray(body.memberIds)) {
+      channel.memberIds = body.memberIds.map(String).filter((id) => !id.startsWith('agt_') || agentParticipatesInChannels(findAgent(id)));
+    }
+    const changedAgentIds = normalizeIds([...previousAgentIds, ...(channel.agentIds || [])]);
     if (body.archived !== undefined) channel.archived = Boolean(body.archived);
     channel.updatedAt = now();
     addCollabEvent('channel_updated', `Channel #${channel.name} updated.`, { channelId: channel.id });
+    for (const agentId of changedAgentIds) {
+      const agent = findAgent(agentId);
+      if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
+    }
     await persistState();
     broadcastState();
     sendJson(res, 200, { channel });
@@ -6020,6 +6476,10 @@ async function handleApi(req, res, url) {
       sendError(res, 400, 'Member ID is required.');
       return true;
     }
+    if (memberId.startsWith('agt_') && !agentParticipatesInChannels(findAgent(memberId))) {
+      sendError(res, 400, 'Brain/router agents cannot be added as channel members.');
+      return true;
+    }
     channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds : [];
     if (!channel.memberIds.includes(memberId)) {
       channel.memberIds.push(memberId);
@@ -6033,6 +6493,8 @@ async function handleApi(req, res, url) {
       }
       channel.updatedAt = now();
       addCollabEvent('channel_member_added', `Member added to #${channel.name}`, { channelId: channel.id, memberId });
+      const agent = memberId.startsWith('agt_') ? findAgent(memberId) : null;
+      if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
       await persistState();
       broadcastState();
     }
@@ -6053,6 +6515,8 @@ async function handleApi(req, res, url) {
     channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds.filter(id => id !== memberId) : [];
     channel.updatedAt = now();
     addCollabEvent('channel_member_removed', `Member removed from #${channel.name}`, { channelId: channel.id, memberId });
+    const agent = memberId.startsWith('agt_') ? findAgent(memberId) : null;
+    if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
     await persistState();
     broadcastState();
     sendJson(res, 200, { channel });
@@ -6150,28 +6614,28 @@ async function handleApi(req, res, url) {
     }
 
     let respondingAgents = [];
+    let routeDecision = null;
     if (message.authorType === 'human' && spaceType === 'channel') {
       const channel = findChannel(spaceId);
       if (channel) {
         const channelAgents = channelAgentIds(channel)
           .map(id => findAgent(id))
           .filter(Boolean);
-        respondingAgents = determineRespondingAgents(
+        routeDecision = await routeMessageForChannel({
           channelAgents,
           mentions,
           message,
-          spaceId
-        );
-        const claimant = pickAvailableAgent(
-          channelAgents,
-          [
-            ...(respondingAgents.map((agent) => agent.id)),
-            ...(mentions.agents || []),
-          ],
-        );
-        if (claimant && autoTaskMessageIntent(text)) {
+          spaceId,
+        });
+        respondingAgents = routeDecision.targetAgentIds
+          .map((id) => channelAgents.find((agent) => agent.id === id))
+          .filter(Boolean);
+        const claimant = routeDecision.claimantAgentId
+          ? channelAgents.find((agent) => agent.id === routeDecision.claimantAgentId)
+          : null;
+        if (claimant && routeDecision.mode === 'task_claim' && routeDecision.taskIntent) {
           task = createOrClaimTaskForMessage(message, claimant, {
-            title: body.taskTitle || text,
+            title: body.taskTitle || routeDecision.taskIntent.title || text,
             createdBy: message.authorId,
           });
           message.taskId = task.id;
@@ -6208,7 +6672,29 @@ async function handleApi(req, res, url) {
       }
     }
 
-    sendJson(res, 201, { message, task });
+    if (message.authorType === 'human' && userPreferenceIntent(text)) {
+      const memoryTargets = respondingAgents.length
+        ? respondingAgents
+        : (spaceType === 'channel'
+          ? channelAgentIds(findChannel(spaceId)).map((id) => findAgent(id)).filter(Boolean)
+          : []);
+      for (const agent of memoryTargets) {
+        scheduleAgentMemoryWriteback(agent, 'user_preference', { message, spaceType, spaceId });
+      }
+    }
+    if (routeDecision?.targetAgentIds?.length > 1 && (agentCapabilityQuestionIntent(text) || availabilityFollowupIntent(text))) {
+      for (const agent of respondingAgents) {
+        scheduleAgentMemoryWriteback(agent, 'multi_agent_collaboration', {
+          message,
+          spaceType,
+          spaceId,
+          routeEvent: routeDecision.routeEvent,
+          peerAgentIds: routeDecision.targetAgentIds.filter((id) => id !== agent.id),
+        });
+      }
+    }
+
+    sendJson(res, 201, { message, task, route: routeDecision });
     return true;
   }
 
@@ -6656,6 +7142,59 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/brain-agents') {
+    sendJson(res, 200, {
+      brainAgents: state.brainAgents || [],
+      activeBrainAgentId: state.router?.brainAgentId || null,
+      router: state.router || {},
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/brain-agents') {
+    const body = await readJson(req);
+    try {
+      const brainAgent = createBrainAgentConfig(body);
+      addCollabEvent('brain_agent_created', `Brain Agent configured: ${brainAgent.name}`, { brainAgentId: brainAgent.id });
+      await persistState();
+      broadcastState();
+      sendJson(res, 201, { brainAgent, router: state.router });
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+    }
+    return true;
+  }
+
+  const brainAgentMatch = url.pathname.match(/^\/api\/brain-agents\/([^/]+)$/);
+  if (['PATCH', 'POST'].includes(req.method) && brainAgentMatch) {
+    const body = await readJson(req);
+    try {
+      const brainAgent = updateBrainAgentConfig(findBrainAgent(brainAgentMatch[1]), body);
+      addCollabEvent('brain_agent_updated', `Brain Agent updated: ${brainAgent.name}`, { brainAgentId: brainAgent.id });
+      await persistState();
+      broadcastState();
+      sendJson(res, 200, { brainAgent, router: state.router });
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+    }
+    return true;
+  }
+
+  if (req.method === 'DELETE' && brainAgentMatch) {
+    const brainAgent = findBrainAgent(brainAgentMatch[1]);
+    if (!brainAgent) {
+      sendError(res, 404, 'Brain Agent not found.');
+      return true;
+    }
+    state.brainAgents = (state.brainAgents || []).filter((item) => item.id !== brainAgent.id);
+    if (state.router?.brainAgentId === brainAgent.id) deactivateBrainAgent(brainAgent.id);
+    addCollabEvent('brain_agent_deleted', `Brain Agent removed: ${brainAgent.name}`, { brainAgentId: brainAgent.id });
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, { ok: true, router: state.router });
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/agents') {
     const body = await readJson(req);
     const agent = {
@@ -6670,6 +7209,8 @@ async function handleApi(req, res, url) {
       reasoningEffort: body.reasoningEffort ? String(body.reasoningEffort) : null,
       envVars: Array.isArray(body.envVars) ? body.envVars : null,
       avatar: body.avatar ? String(body.avatar) : null,
+      statusUpdatedAt: now(),
+      heartbeatAt: now(),
       createdAt: now(),
     };
     state.agents.push(agent);
@@ -6677,7 +7218,7 @@ async function handleApi(req, res, url) {
 
     // Auto-add to #all channel
     const allChannel = findChannel('chan_all');
-    if (allChannel) {
+    if (allChannel && agentParticipatesInChannels(agent)) {
       allChannel.agentIds = normalizeIds([...(allChannel.agentIds || []), agent.id]);
       allChannel.memberIds = normalizeIds([...(allChannel.memberIds || []), agent.id]);
       allChannel.updatedAt = now();
@@ -6702,7 +7243,7 @@ async function handleApi(req, res, url) {
     const stoppedRuns = stopRunsForScope(scope);
     const stopped = stopAgentProcesses(scope);
     if (!scope) {
-      for (const agent of state.agents) agent.status = 'idle';
+      for (const agent of state.agents) setAgentStatus(agent, 'idle', 'stop_all');
       agentProcesses.clear();
     }
     const label = scope?.label || 'all channels';
@@ -6794,9 +7335,10 @@ async function handleApi(req, res, url) {
       return true;
     }
     const body = await readJson(req);
-    for (const key of ['name', 'description', 'runtime', 'model', 'status', 'computerId', 'workspace', 'reasoningEffort', 'avatar']) {
+    for (const key of ['name', 'description', 'runtime', 'model', 'computerId', 'workspace', 'reasoningEffort', 'avatar']) {
       if (body[key] !== undefined) agent[key] = String(body[key] || '').trim();
     }
+    if (body.status !== undefined) setAgentStatus(agent, String(body.status || '').trim() || 'idle', 'agent_patch', { forceEvent: true });
     if (body.model !== undefined) agent.model = normalizeCodexModelName(body.model, state.settings?.model);
     if (body.reasoningEffort === null) agent.reasoningEffort = null;
     if (Array.isArray(body.envVars)) agent.envVars = body.envVars;
@@ -7028,6 +7570,10 @@ await ensureStorage();
 
 const server = http.createServer(handleRequest);
 const heartbeatTimer = setInterval(() => {
+  if (reconcileAgentStatusHeartbeats()) {
+    persistState().then(broadcastState).catch(() => {});
+    return;
+  }
   if (sseClients.size) broadcastHeartbeat();
 }, STATE_HEARTBEAT_MS);
 heartbeatTimer.unref?.();

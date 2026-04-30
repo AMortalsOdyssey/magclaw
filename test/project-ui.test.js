@@ -535,6 +535,47 @@ test('create agent opens with a fresh form state every time', async () => {
   assert.match(app, /if \(form\.id === 'agent-form'\)[\s\S]*resetAgentFormState\(\);\s*modal = null/);
 });
 
+test('Brain Agent config is separate from the normal agent list', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const railSource = app.slice(app.indexOf('function renderRail'), app.indexOf('function renderNavItem'));
+  const brainModalSource = app.slice(app.indexOf('function renderBrainAgentModal'), app.indexOf('function renderAvatarPickerModal'));
+  const submitSource = app.slice(app.indexOf("document.addEventListener('submit'"), app.indexOf('refreshState().then'));
+
+  assert.match(app, /function renderBrainAgentPanel\(\)/);
+  assert.match(railSource, /const normalAgents = channelAssignableAgents\(\)/);
+  assert.match(railSource, /renderBrainAgentPanel\(\)/);
+  assert.match(railSource, /normalAgents\.map\(\(agent\) => renderAgentListItem\(agent\)\)/);
+  assert.match(app, /'brain-agent': renderBrainAgentModal/);
+  assert.match(brainModalSource, /<input name="name" value="MagClaw Brain" readonly \/>/);
+  assert.match(brainModalSource, /<textarea name="description" rows="3" readonly>/);
+  assert.match(brainModalSource, /id="brain-runtime-select"/);
+  assert.match(submitSource, /form\.id === 'brain-agent-form'/);
+  assert.match(submitSource, /\/api\/brain-agents/);
+  assert.match(styles, /\.brain-agent-row/);
+  assert.match(styles, /\.brain-agent-use-btn/);
+});
+
+test('Brain route decisions render stacked diagnostic cards', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /let brainDecisionCards = \[\]/);
+  assert.match(app, /const seenBrainRouteEventIds = new Set\(\)/);
+  assert.match(app, /function trackBrainRouteEvents\(nextState/);
+  assert.match(app, /function enqueueBrainDecisionCards\(routeEvent/);
+  assert.match(app, /function renderBrainDecisionToasts\(\)/);
+  assert.match(app, /Brain Agent \/ 思考过程/);
+  assert.match(app, /Brain Agent \/ 决策结果/);
+  assert.match(app, /Brain Agent \/ 反思过程/);
+  assert.match(app, /trackBrainRouteEvents\(nextState, \{ silent: !initialLoadComplete \|\| !appState \}\)/);
+  assert.match(app, /trackBrainRouteEvents\(nextState, \{ silent: !initialLoadComplete \}\)/);
+  assert.match(styles, /\.brain-toast-stack/);
+  assert.match(styles, /\.brain-toast-card/);
+  assert.match(styles, /@keyframes brainToastIn/);
+  assert.match(styles, /@keyframes brainToastOut/);
+});
+
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
