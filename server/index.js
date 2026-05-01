@@ -29,6 +29,13 @@ import {
   searchAgentMessageHistory,
 } from './agent-history.js';
 import {
+  codexRuntimeOverrideForDelivery as codexRuntimeOverrideForDeliveryBase,
+  codexStreamRetryLimit,
+  codexThreadConfig,
+  parseCodexStreamRetry,
+  resolveCodexRuntime as resolveCodexRuntimeBase,
+} from './codex-runtime.js';
+import {
   fanoutApiEndpoint,
   fanoutApiResponseText,
   parseFanoutApiJson,
@@ -47,7 +54,6 @@ import {
   normalizeCloudUrl,
   normalizeCodexModelName as normalizeCodexModelNameBase,
   normalizeFanoutApiConfig as normalizeFanoutApiConfigBase,
-  normalizeReasoningEffort,
   publicApiKeyPreview,
 } from './runtime-config.js';
 
@@ -81,9 +87,7 @@ const AGENT_STATUS_STALE_MS = Math.max(1000, Number(process.env.MAGCLAW_AGENT_ST
 const ROUTE_EVENTS_LIMIT = Math.max(50, Number(process.env.MAGCLAW_ROUTE_EVENTS_LIMIT || 500));
 const AGENT_CARD_TEXT_LIMIT = 5000;
 const FANOUT_API_TIMEOUT_MS = Math.max(500, Number(process.env.MAGCLAW_FANOUT_TIMEOUT_MS || 2500));
-const CODEX_STREAM_RETRY_LIMIT = Number.isFinite(Number(process.env.MAGCLAW_CODEX_STREAM_RETRY_LIMIT))
-  ? Math.max(1, Number(process.env.MAGCLAW_CODEX_STREAM_RETRY_LIMIT))
-  : 2;
+const CODEX_STREAM_RETRY_LIMIT = codexStreamRetryLimit();
 const LEGACY_BRAIN_AGENT_ID = 'agt_magclaw_brain';
 const BRAIN_AGENT_NAME = 'MagClaw Brain';
 const BRAIN_AGENT_DESCRIPTION = 'Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.';
@@ -464,61 +468,18 @@ function normalizeCodexModelName(model, fallback = '') {
   return normalizeCodexModelNameBase(model, fallback, CODEX_FALLBACK_MODEL);
 }
 
-function shouldUseChatFastRuntime(message, workItem = null) {
-  const config = normalizeChatRuntimeConfig(state.settings?.chatRuntime || {});
-  if (!config.enabled) return false;
-  if (!message || message.authorType !== 'human') return false;
-  if (message.taskId || workItem?.taskId) return false;
-  const text = String(message.body || '').trim();
-  if (!text) return false;
-  if (taskCreationIntent(text) || autoTaskMessageIntent(text)) return false;
-  return true;
-}
-
 function codexRuntimeOverrideForDelivery(message, workItem = null) {
-  if (!shouldUseChatFastRuntime(message, workItem)) return null;
-  const config = normalizeChatRuntimeConfig(state.settings?.chatRuntime || {});
-  return {
-    reason: 'chat_fast_path',
-    model: config.model || '',
-    reasoningEffort: config.reasoningEffort || 'low',
-  };
-}
-
-function codexRuntimeOverrideForMessages(messages = []) {
-  const promptMessages = (Array.isArray(messages) ? messages : [messages]).filter(Boolean);
-  if (!promptMessages.length) return null;
-  const overrides = promptMessages.map((message) => message.runtimeOverride || null);
-  if (overrides.some((override) => !override)) return null;
-  const first = overrides[0];
-  if (!overrides.every((override) => override.reason === first.reason
-    && String(override.model || '') === String(first.model || '')
-    && String(override.reasoningEffort || '') === String(first.reasoningEffort || ''))) {
-    return null;
-  }
-  return {
-    reason: first.reason || null,
-    model: String(first.model || '').trim(),
-    reasoningEffort: normalizeReasoningEffort(first.reasoningEffort),
-  };
+  return codexRuntimeOverrideForDeliveryBase(message, workItem, state.settings?.chatRuntime || {}, {
+    taskCreationIntent,
+    autoTaskMessageIntent,
+  });
 }
 
 function resolveCodexRuntime(agent, messages = []) {
-  const override = codexRuntimeOverrideForMessages(messages);
-  const model = normalizeCodexModelName(override?.model || agent.model, state.settings?.model);
-  const reasoningEffort = normalizeReasoningEffort(override?.reasoningEffort, agent.reasoningEffort);
-  return {
-    model,
-    reasoningEffort,
-    overrideReason: override?.reason || null,
-    fastChat: override?.reason === 'chat_fast_path',
-  };
-}
-
-function codexThreadConfig(runtime = {}) {
-  return runtime.reasoningEffort
-    ? { model_reasoning_effort: runtime.reasoningEffort }
-    : null;
+  return resolveCodexRuntimeBase(agent, messages, {
+    settingsModel: state.settings?.model,
+    normalizeModelName: normalizeCodexModelName,
+  });
 }
 
 function isBrainAgent(agent) {
@@ -5020,19 +4981,6 @@ function sendCodexAppServerRequest(proc, method, params = {}) {
 function sendCodexAppServerNotification(proc, method, params = {}) {
   if (!proc.child?.stdin?.writable) return;
   proc.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
-}
-
-function parseCodexStreamRetry(text) {
-  const matches = [...String(text || '').matchAll(/stream disconnected - retrying sampling request \((\d+)\/(\d+)/gi)];
-  if (!matches.length) return null;
-  const parsed = matches
-    .map((match) => ({
-      count: Number(match[1]),
-      total: Number(match[2]),
-    }))
-    .filter((item) => Number.isFinite(item.count) && Number.isFinite(item.total))
-    .sort((a, b) => b.count - a.count);
-  return parsed[0] || null;
 }
 
 async function triggerCodexStreamRetryFallback(agent, proc, workspace, retry) {
