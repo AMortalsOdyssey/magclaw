@@ -1,3 +1,8 @@
+import {
+  buildFanoutDecisionCards,
+  renderFanoutDecisionToasts as renderFanoutDecisionToastsHtml,
+} from './fanout-toast.js';
+
 const root = document.querySelector('#root');
 const UI_STATE_KEY = 'magclawUiState';
 const PANE_SCROLL_KEY = 'magclawPaneScroll';
@@ -1849,54 +1854,8 @@ function toast(message) {
   window.setTimeout(() => node.classList.remove('show'), 2600);
 }
 
-function routeAgentNames(routeEvent, stateSnapshot = appState) {
-  const agents = stateSnapshot?.agents || [];
-  const names = (routeEvent?.targetAgentIds || [])
-    .map((id) => byId(agents, id)?.name || id)
-    .filter(Boolean);
-  return names.length ? names.join(', ') : 'No agent selected';
-}
-
-function routeEvidenceSummary(routeEvent) {
-  const evidence = (routeEvent?.evidence || [])
-    .filter((item) => item?.value)
-    .map((item) => `${item.type}: ${item.value}`)
-    .slice(0, 2)
-    .join(' / ');
-  return evidence || 'No extra evidence recorded';
-}
-
-function compactFanoutReason(routeEvent) {
-  const reason = String(routeEvent?.reason || routeEvidenceSummary(routeEvent) || '需要语义判断。')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return reason.length > 92 ? `${reason.slice(0, 89)}...` : reason;
-}
-
-function buildFanoutDecisionCards(routeEvent, stateSnapshot = appState) {
-  return [
-    {
-      id: routeEvent.id,
-      phase: 'decision',
-      title: 'LLM fan-out',
-      body: `路由到：${routeAgentNames(routeEvent, stateSnapshot)}`,
-      meta: `原因：${compactFanoutReason(routeEvent)}`,
-    },
-  ];
-}
-
 function renderFanoutDecisionToasts() {
-  return `
-    <div class="fanout-toast-stack" aria-live="polite" aria-atomic="false">
-      ${fanoutDecisionCards.map((card) => `
-        <article class="fanout-toast-card fanout-toast-${escapeHtml(card.phase)}${card.exiting ? ' exiting' : ''}">
-          <div class="fanout-toast-title">${escapeHtml(card.title)}</div>
-          <div class="fanout-toast-body">${escapeHtml(card.body)}</div>
-          <div class="fanout-toast-meta">${escapeHtml(card.meta || '')}</div>
-        </article>
-      `).join('')}
-    </div>
-  `;
+  return renderFanoutDecisionToastsHtml(fanoutDecisionCards);
 }
 
 function patchFanoutDecisionToasts() {

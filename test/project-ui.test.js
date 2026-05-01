@@ -582,22 +582,27 @@ test('Fan-out API config replaces the Brain Agent UI module', async () => {
 
 test('LLM fan-out decisions render one concise route toast only when LLM is used', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const fanoutToast = await readFile(new URL('../public/fanout-toast.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
+  assert.match(app, /from '\.\/fanout-toast\.js'/);
   assert.match(app, /let fanoutDecisionCards = \[\]/);
   assert.match(app, /const seenFanoutRouteEventIds = new Set\(\)/);
   assert.match(app, /function trackFanoutRouteEvents\(nextState/);
   assert.match(app, /function enqueueFanoutDecisionCards\(routeEvent/);
   assert.match(app, /function renderFanoutDecisionToasts\(\)/);
-  assert.match(app, /LLM fan-out/);
-  assert.match(app, /路由到：/);
-  assert.match(app, /原因：/);
+  assert.match(app, /renderFanoutDecisionToastsHtml\(fanoutDecisionCards\)/);
+  assert.match(fanoutToast, /LLM fan-out/);
+  assert.match(fanoutToast, /路由到：/);
+  assert.match(fanoutToast, /原因：/);
+  assert.match(fanoutToast, /export function buildFanoutDecisionCards/);
+  assert.match(fanoutToast, /export function renderFanoutDecisionToasts/);
   assert.match(app, /fanoutDecisionCards = \[card\]/);
   assert.match(app, /const newLlmEvents = \[\]/);
   assert.match(app, /enqueueFanoutDecisionCards\(newLlmEvents\.at\(-1\), nextState\)/);
-  assert.doesNotMatch(app, /Fan-out API \/ Trigger/);
-  assert.doesNotMatch(app, /Fan-out API \/ Decision/);
-  assert.doesNotMatch(app, /Fan-out API \/ Validation/);
+  assert.doesNotMatch(fanoutToast, /Fan-out API \/ Trigger/);
+  assert.doesNotMatch(fanoutToast, /Fan-out API \/ Decision/);
+  assert.doesNotMatch(fanoutToast, /Fan-out API \/ Validation/);
   assert.match(app, /if \(!event\.llmUsed\) continue/);
   assert.match(app, /trackFanoutRouteEvents\(nextState, \{ silent: !initialLoadComplete \|\| !appState \}\)/);
   assert.match(app, /trackFanoutRouteEvents\(nextState, \{ silent: !initialLoadComplete \}\)/);
