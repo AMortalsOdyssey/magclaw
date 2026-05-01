@@ -1,0 +1,119 @@
+import path from 'node:path';
+
+// System-level API routes.
+// This group handles public state snapshots, SSE, runtime discovery, global
+// settings, Fan-out API settings, and the deprecated Brain Agent compatibility
+// endpoints. Keeping these routes together makes the main dispatcher easier to
+// scan before deeper Agent/task routing begins.
+
+export async function handleSystemApi(req, res, url, deps) {
+  const {
+    addSystemEvent,
+    broadcastState,
+    defaultWorkspace,
+    detectInstalledRuntimes,
+    fanoutApiConfigured,
+    getRuntimeInfo,
+    getState,
+    persistState,
+    presenceHeartbeat,
+    publicState,
+    readJson,
+    sendError,
+    sendJson,
+    sseClients,
+    updateFanoutApiConfig,
+  } = deps;
+  const state = getState();
+
+  if (req.method === 'GET' && url.pathname === '/api/state') {
+    sendJson(res, 200, publicState());
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/runtime') {
+    sendJson(res, 200, await getRuntimeInfo());
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/runtimes') {
+    sendJson(res, 200, { runtimes: await detectInstalledRuntimes() });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/events') {
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    res.write(`event: state\ndata: ${JSON.stringify(publicState())}\n\n`);
+    res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat())}\n\n`);
+    sseClients.add(res);
+    req.on('close', () => sseClients.delete(res));
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/settings') {
+    const body = await readJson(req);
+    state.settings = {
+      ...state.settings,
+      codexPath: String(body.codexPath || state.settings.codexPath || 'codex'),
+      defaultWorkspace: path.resolve(String(body.defaultWorkspace || state.settings.defaultWorkspace || defaultWorkspace)),
+      model: String(body.model || ''),
+      sandbox: ['read-only', 'workspace-write', 'danger-full-access'].includes(body.sandbox)
+        ? body.sandbox
+        : state.settings.sandbox,
+    };
+    addSystemEvent('settings_updated', 'Runtime settings updated.');
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, publicState());
+    return true;
+  }
+
+  if (['POST', 'PATCH'].includes(req.method) && url.pathname === '/api/settings/fanout') {
+    const body = await readJson(req);
+    updateFanoutApiConfig(body);
+    addSystemEvent('fanout_api_settings_updated', 'Fan-out API settings updated.', {
+      configured: fanoutApiConfigured(),
+      baseUrl: state.settings.fanoutApi.baseUrl,
+      model: state.settings.fanoutApi.model,
+      hasApiKey: Boolean(state.settings.fanoutApi.apiKey),
+    });
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, publicState());
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/brain-agents') {
+    sendJson(res, 200, {
+      brainAgents: [],
+      activeBrainAgentId: null,
+      router: state.router || {},
+      deprecated: true,
+      replacement: '/api/settings/fanout',
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/brain-agents') {
+    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
+    return true;
+  }
+
+  const brainAgentMatch = url.pathname.match(/^\/api\/brain-agents\/([^/]+)$/);
+  if (['PATCH', 'POST'].includes(req.method) && brainAgentMatch) {
+    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
+    return true;
+  }
+
+  if (req.method === 'DELETE' && brainAgentMatch) {
+    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
+    return true;
+  }
+
+  return false;
+}

@@ -92,6 +92,7 @@ import {
 } from './project-files.js';
 import { handleCloudApi } from './api/cloud-routes.js';
 import { handleProjectApi } from './api/project-routes.js';
+import { handleSystemApi } from './api/system-routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -5984,13 +5985,30 @@ function cloudApiDeps() {
   };
 }
 
+function systemApiDeps() {
+  return {
+    addSystemEvent,
+    broadcastState,
+    defaultWorkspace: ROOT,
+    detectInstalledRuntimes,
+    fanoutApiConfigured,
+    getRuntimeInfo,
+    getState: () => state,
+    persistState,
+    presenceHeartbeat,
+    publicState,
+    readJson,
+    sendError,
+    sendJson,
+    sseClients,
+    updateFanoutApiConfig,
+  };
+}
+
 async function handleApi(req, res, url) {
   if (!requireCloudDeploymentApi(req, res, url)) return true;
 
-  if (req.method === 'GET' && url.pathname === '/api/state') {
-    sendJson(res, 200, publicState());
-    return true;
-  }
+  if (await handleSystemApi(req, res, url, systemApiDeps())) return true;
 
   if (req.method === 'GET' && url.pathname === '/api/agent-tools/history') {
     const agentId = url.searchParams.get('agentId') || '';
@@ -6241,63 +6259,6 @@ async function handleApi(req, res, url) {
   }
 
   if (await handleCloudApi(req, res, url, cloudApiDeps())) return true;
-
-  if (req.method === 'GET' && url.pathname === '/api/runtime') {
-    sendJson(res, 200, await getRuntimeInfo());
-    return true;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/runtimes') {
-    sendJson(res, 200, { runtimes: await detectInstalledRuntimes() });
-    return true;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/events') {
-    res.writeHead(200, {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache, no-transform',
-      connection: 'keep-alive',
-      'x-accel-buffering': 'no',
-    });
-    res.write(`event: state\ndata: ${JSON.stringify(publicState())}\n\n`);
-    res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat())}\n\n`);
-    sseClients.add(res);
-    req.on('close', () => sseClients.delete(res));
-    return true;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/settings') {
-    const body = await readJson(req);
-    state.settings = {
-      ...state.settings,
-      codexPath: String(body.codexPath || state.settings.codexPath || 'codex'),
-      defaultWorkspace: path.resolve(String(body.defaultWorkspace || state.settings.defaultWorkspace || ROOT)),
-      model: String(body.model || ''),
-      sandbox: ['read-only', 'workspace-write', 'danger-full-access'].includes(body.sandbox)
-        ? body.sandbox
-        : state.settings.sandbox,
-    };
-    addSystemEvent('settings_updated', 'Runtime settings updated.');
-    await persistState();
-    broadcastState();
-    sendJson(res, 200, publicState());
-    return true;
-  }
-
-  if (['POST', 'PATCH'].includes(req.method) && url.pathname === '/api/settings/fanout') {
-    const body = await readJson(req);
-    updateFanoutApiConfig(body);
-    addSystemEvent('fanout_api_settings_updated', 'Fan-out API settings updated.', {
-      configured: fanoutApiConfigured(),
-      baseUrl: state.settings.fanoutApi.baseUrl,
-      model: state.settings.fanoutApi.model,
-      hasApiKey: Boolean(state.settings.fanoutApi.apiKey),
-    });
-    await persistState();
-    broadcastState();
-    sendJson(res, 200, publicState());
-    return true;
-  }
 
   if (await handleProjectApi(req, res, url, projectApiDeps())) return true;
 
@@ -7082,33 +7043,6 @@ async function handleApi(req, res, url) {
     await persistState();
     broadcastState();
     sendJson(res, 200, { ok: true });
-    return true;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/brain-agents') {
-    sendJson(res, 200, {
-      brainAgents: [],
-      activeBrainAgentId: null,
-      router: state.router || {},
-      deprecated: true,
-      replacement: '/api/settings/fanout',
-    });
-    return true;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/brain-agents') {
-    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
-    return true;
-  }
-
-  const brainAgentMatch = url.pathname.match(/^\/api\/brain-agents\/([^/]+)$/);
-  if (['PATCH', 'POST'].includes(req.method) && brainAgentMatch) {
-    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
-    return true;
-  }
-
-  if (req.method === 'DELETE' && brainAgentMatch) {
-    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
     return true;
   }
 
