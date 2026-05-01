@@ -91,6 +91,7 @@ import {
   sortProjectSearchResults,
 } from './project-files.js';
 import { handleCloudApi } from './api/cloud-routes.js';
+import { handleCollabApi } from './api/collab-routes.js';
 import { handleProjectApi } from './api/project-routes.js';
 import { handleSystemApi } from './api/system-routes.js';
 
@@ -6005,6 +6006,28 @@ function systemApiDeps() {
   };
 }
 
+function collabApiDeps() {
+  return {
+    addCollabEvent,
+    agentParticipatesInChannels,
+    broadcastState,
+    findAgent,
+    findChannel,
+    findComputer,
+    getState: () => state,
+    makeId,
+    normalizeConversationRecord,
+    normalizeIds,
+    normalizeName,
+    now,
+    persistState,
+    readJson,
+    scheduleAgentMemoryWriteback,
+    sendError,
+    sendJson,
+  };
+}
+
 async function handleApi(req, res, url) {
   if (!requireCloudDeploymentApi(req, res, url)) return true;
 
@@ -6262,199 +6285,7 @@ async function handleApi(req, res, url) {
 
   if (await handleProjectApi(req, res, url, projectApiDeps())) return true;
 
-  if (req.method === 'POST' && url.pathname === '/api/channels') {
-    const body = await readJson(req);
-    const name = normalizeName(body.name, 'new-channel');
-    if (!name) {
-      sendError(res, 400, 'Channel name is required.');
-      return true;
-    }
-    if (state.channels.some((channel) => channel.name === name && !channel.archived)) {
-      sendError(res, 409, 'Channel already exists.');
-      return true;
-    }
-    const humanIds = Array.isArray(body.humanIds) && body.humanIds.length ? body.humanIds.map(String) : ['hum_local'];
-    const agentIds = Array.isArray(body.agentIds)
-      ? body.agentIds.map(String).filter((id) => agentParticipatesInChannels(findAgent(id)))
-      : [];
-    const memberIds = [...new Set([...humanIds, ...agentIds])];
-    const channel = {
-      id: makeId('chan'),
-      name,
-      description: String(body.description || '').trim(),
-      ownerId: String(body.ownerId || 'hum_local'),
-      humanIds,
-      agentIds,
-      memberIds,
-      archived: false,
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    state.channels.push(channel);
-    state.messages.push(normalizeConversationRecord({
-      id: makeId('msg'),
-      spaceType: 'channel',
-      spaceId: channel.id,
-      authorType: 'system',
-      authorId: 'system',
-      body: `Channel #${channel.name} created.`,
-      attachmentIds: [],
-      replyCount: 0,
-      savedBy: [],
-      createdAt: now(),
-      updatedAt: now(),
-    }));
-    addCollabEvent('channel_created', `Channel #${channel.name} created.`, { channelId: channel.id });
-    for (const agentId of agentIds) {
-      const agent = findAgent(agentId);
-      if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
-    }
-    await persistState();
-    broadcastState();
-    sendJson(res, 201, { channel });
-    return true;
-  }
-
-  const channelMatch = url.pathname.match(/^\/api\/channels\/([^/]+)$/);
-  if (['PATCH', 'POST'].includes(req.method) && channelMatch) {
-    const channel = findChannel(channelMatch[1]);
-    if (!channel) {
-      sendError(res, 404, 'Channel not found.');
-      return true;
-    }
-    const body = await readJson(req);
-    if (body.name !== undefined) channel.name = normalizeName(body.name, channel.name);
-    if (body.description !== undefined) channel.description = String(body.description || '').trim();
-    if (body.ownerId !== undefined) channel.ownerId = String(body.ownerId || channel.ownerId || 'hum_local');
-    const previousAgentIds = normalizeIds(channel.agentIds);
-    if (Array.isArray(body.agentIds)) {
-      channel.agentIds = body.agentIds.map(String).filter((id) => agentParticipatesInChannels(findAgent(id)));
-    }
-    if (Array.isArray(body.humanIds)) channel.humanIds = body.humanIds.map(String);
-    if (Array.isArray(body.memberIds)) {
-      channel.memberIds = body.memberIds.map(String).filter((id) => !id.startsWith('agt_') || agentParticipatesInChannels(findAgent(id)));
-    }
-    const changedAgentIds = normalizeIds([...previousAgentIds, ...(channel.agentIds || [])]);
-    if (body.archived !== undefined) channel.archived = Boolean(body.archived);
-    channel.updatedAt = now();
-    addCollabEvent('channel_updated', `Channel #${channel.name} updated.`, { channelId: channel.id });
-    for (const agentId of changedAgentIds) {
-      const agent = findAgent(agentId);
-      if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
-    }
-    await persistState();
-    broadcastState();
-    sendJson(res, 200, { channel });
-    return true;
-  }
-
-  // Channel members management
-  const channelMembersMatch = url.pathname.match(/^\/api\/channels\/([^/]+)\/members$/);
-  if (req.method === 'POST' && channelMembersMatch) {
-    const channel = findChannel(channelMembersMatch[1]);
-    if (!channel) {
-      sendError(res, 404, 'Channel not found.');
-      return true;
-    }
-    const body = await readJson(req);
-    const memberId = String(body.memberId || '').trim();
-    if (!memberId) {
-      sendError(res, 400, 'Member ID is required.');
-      return true;
-    }
-    if (memberId.startsWith('agt_') && !agentParticipatesInChannels(findAgent(memberId))) {
-      sendError(res, 400, 'Brain/router agents cannot be added as channel members.');
-      return true;
-    }
-    channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds : [];
-    if (!channel.memberIds.includes(memberId)) {
-      channel.memberIds.push(memberId);
-      // Also update legacy fields
-      if (memberId.startsWith('agt_')) {
-        channel.agentIds = Array.isArray(channel.agentIds) ? channel.agentIds : [];
-        if (!channel.agentIds.includes(memberId)) channel.agentIds.push(memberId);
-      } else if (memberId.startsWith('hum_')) {
-        channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds : [];
-        if (!channel.humanIds.includes(memberId)) channel.humanIds.push(memberId);
-      }
-      channel.updatedAt = now();
-      addCollabEvent('channel_member_added', `Member added to #${channel.name}`, { channelId: channel.id, memberId });
-      const agent = memberId.startsWith('agt_') ? findAgent(memberId) : null;
-      if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
-      await persistState();
-      broadcastState();
-    }
-    sendJson(res, 200, { channel });
-    return true;
-  }
-
-  const channelMemberRemoveMatch = url.pathname.match(/^\/api\/channels\/([^/]+)\/members\/([^/]+)$/);
-  if (req.method === 'DELETE' && channelMemberRemoveMatch) {
-    const channel = findChannel(channelMemberRemoveMatch[1]);
-    if (!channel) {
-      sendError(res, 404, 'Channel not found.');
-      return true;
-    }
-    const memberId = channelMemberRemoveMatch[2];
-    channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds.filter(id => id !== memberId) : [];
-    channel.agentIds = Array.isArray(channel.agentIds) ? channel.agentIds.filter(id => id !== memberId) : [];
-    channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds.filter(id => id !== memberId) : [];
-    channel.updatedAt = now();
-    addCollabEvent('channel_member_removed', `Member removed from #${channel.name}`, { channelId: channel.id, memberId });
-    const agent = memberId.startsWith('agt_') ? findAgent(memberId) : null;
-    if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
-    await persistState();
-    broadcastState();
-    sendJson(res, 200, { channel });
-    return true;
-  }
-
-  // Leave channel
-  const channelLeaveMatch = url.pathname.match(/^\/api\/channels\/([^/]+)\/leave$/);
-  if (req.method === 'POST' && channelLeaveMatch) {
-    const channel = findChannel(channelLeaveMatch[1]);
-    if (!channel) {
-      sendError(res, 404, 'Channel not found.');
-      return true;
-    }
-    if (channel.id === 'chan_all') {
-      sendError(res, 400, 'Cannot leave the #all channel.');
-      return true;
-    }
-    const memberId = 'hum_local';
-    channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds.filter(id => id !== memberId) : [];
-    channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds.filter(id => id !== memberId) : [];
-    channel.updatedAt = now();
-    addCollabEvent('channel_left', `Left #${channel.name}`, { channelId: channel.id, memberId });
-    await persistState();
-    broadcastState();
-    sendJson(res, 200, { channel });
-    return true;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/dms') {
-    const body = await readJson(req);
-    const participantId = String(body.participantId || '').trim();
-    if (!participantId) {
-      sendError(res, 400, 'Participant is required.');
-      return true;
-    }
-    let dm = state.dms.find((item) => item.participantIds.includes(participantId));
-    if (!dm) {
-      dm = {
-        id: makeId('dm'),
-        participantIds: ['hum_local', participantId],
-        createdAt: now(),
-        updatedAt: now(),
-      };
-      state.dms.push(dm);
-    }
-    addCollabEvent('dm_opened', 'DM opened.', { dmId: dm.id });
-    await persistState();
-    broadcastState();
-    sendJson(res, 200, { dm });
-    return true;
-  }
+  if (await handleCollabApi(req, res, url, collabApiDeps())) return true;
 
   const messageMatch = url.pathname.match(/^\/api\/spaces\/(channel|dm)\/([^/]+)\/messages$/);
   if (req.method === 'POST' && messageMatch) {
@@ -7218,67 +7049,6 @@ async function handleApi(req, res, url) {
     await persistState();
     broadcastState();
     sendJson(res, 200, { ok: true });
-    return true;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/computers') {
-    const body = await readJson(req);
-    const computer = {
-      id: makeId('cmp'),
-      name: String(body.name || os.hostname()).trim(),
-      os: String(body.os || `${os.platform()} ${os.arch()}`),
-      daemonVersion: String(body.daemonVersion || 'manual'),
-      status: body.status || 'offline',
-      runtimeIds: Array.isArray(body.runtimeIds) ? body.runtimeIds.map(String) : ['codex'],
-      createdAt: now(),
-    };
-    state.computers.push(computer);
-    addCollabEvent('computer_added', `Computer added: ${computer.name}`, { computerId: computer.id });
-    await persistState();
-    broadcastState();
-    sendJson(res, 201, { computer });
-    return true;
-  }
-
-  const computerMatch = url.pathname.match(/^\/api\/computers\/([^/]+)$/);
-  if (['PATCH', 'POST'].includes(req.method) && computerMatch) {
-    const computer = findComputer(computerMatch[1]);
-    if (!computer) {
-      sendError(res, 404, 'Computer not found.');
-      return true;
-    }
-    const body = await readJson(req);
-    for (const key of ['name', 'os', 'daemonVersion', 'status']) {
-      if (body[key] !== undefined) computer[key] = String(body[key] || '').trim();
-    }
-    await persistState();
-    broadcastState();
-    sendJson(res, 200, { computer });
-    return true;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/humans') {
-    const body = await readJson(req);
-    const email = String(body.email || '').trim();
-    const human = {
-      id: makeId('hum'),
-      name: String(body.name || email.split('@')[0] || 'Human').trim(),
-      email,
-      role: body.role || 'member',
-      status: 'invited',
-      createdAt: now(),
-    };
-    state.humans.push(human);
-    const allChannel = findChannel('chan_all');
-    if (allChannel) {
-      allChannel.humanIds = normalizeIds([...(allChannel.humanIds || []), human.id]);
-      allChannel.memberIds = normalizeIds([...(allChannel.memberIds || []), human.id]);
-      allChannel.updatedAt = now();
-    }
-    addCollabEvent('human_invited', `Human invited: ${human.email || human.name}`, { humanId: human.id });
-    await persistState();
-    broadcastState();
-    sendJson(res, 201, { human });
     return true;
   }
 
