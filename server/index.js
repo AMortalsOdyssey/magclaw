@@ -93,7 +93,11 @@ import {
 import { createAgentRuntimeManager } from './agent-runtime-manager.js';
 import { createAgentWorkspaceManager } from './agent-workspace.js';
 import { createConversationModel } from './conversation-model.js';
+import { createCollabMemoryManager } from './collab-memory.js';
+import { createCloudSync } from './cloud-sync.js';
 import { createRoutingEngine } from './routing-engine.js';
+import { createMissionRunner } from './mission-runner.js';
+import { createSystemServices } from './system-services.js';
 import { handleAgentApi } from './api/agent-routes.js';
 import { handleAgentToolApi } from './api/agent-tool-routes.js';
 import { handleCloudApi } from './api/cloud-routes.js';
@@ -155,9 +159,6 @@ const CODEX_HOME_STALE_SHARED_ENTRIES = [
 const runningProcesses = new Map();
 const agentProcesses = new Map(); // agentId -> { child, sessionId, status, inbox }
 const sseClients = new Set();
-let cloudPushTimer = null;
-let syncInProgress = false;
-
 let state = null;
 let saveChain = Promise.resolve();
 let stateDb = null;
@@ -1309,279 +1310,47 @@ function stopTaskFromThread(task, actorId, replyId) {
   };
 }
 
-function normalizeName(value, fallback) {
-  return String(value || fallback || '')
-    .trim()
-    .replace(/^#/, '')
-    .replace(/\s+/g, '-')
-    .toLowerCase()
-    .slice(0, 48);
-}
+const collabMemory = createCollabMemoryManager({
+  addSystemEvent,
+  agentCardCache,
+  broadcastState,
+  channelAgentIds,
+  defaultAgentMemory: agentWorkspace.defaultAgentMemory,
+  displayActor,
+  ensureAgentWorkspace,
+  findMessage,
+  getState: () => state,
+  isBrainAgent,
+  makeId,
+  normalizeConversationRecord,
+  now,
+  persistState,
+  spaceDisplayName,
+  taskLabel,
+});
+const {
+  addCollabEvent,
+  addSystemReply,
+  addTaskHistory,
+  normalizeName,
+  scheduleAgentMemoryWriteback,
+} = collabMemory;
 
-function addCollabEvent(type, message, extra = {}) {
-  addSystemEvent(type, message, extra);
-}
-
-function addTaskHistory(task, type, message, actorId = 'hum_local', extra = {}) {
-  task.history = Array.isArray(task.history) ? task.history : [];
-  const item = {
-    id: makeId('hist'),
-    type,
-    message,
-    actorId,
-    createdAt: now(),
-    ...extra,
-  };
-  task.history.push(item);
-  task.updatedAt = now();
-  return item;
-}
-
-function memoryEventTitle(trigger, payload = {}) {
-  if (payload.task) return `${trigger}: ${taskLabel(payload.task)} ${payload.task.title || ''}`.trim();
-  if (payload.channel) return `${trigger}: #${payload.channel.name}`;
-  if (payload.message) return `${trigger}: ${String(payload.message.body || '').slice(0, 90)}`;
-  return trigger;
-}
-
-function markdownBulletText(value) {
-  return String(value || '')
-    .replace(/\r?\n+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 260);
-}
-
-function upsertMarkdownBullet(content, heading, bullet, maxItems = 10) {
-  const lines = String(content || '').split(/\r?\n/);
-  const headingLine = `## ${heading}`;
-  let headingIndex = lines.findIndex((line) => line.trim().toLowerCase() === headingLine.toLowerCase());
-  if (headingIndex === -1) {
-    const suffix = lines.length && lines[lines.length - 1].trim() ? ['', headingLine, bullet] : [headingLine, bullet];
-    return [...lines, ...suffix].join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
-  }
-  let endIndex = lines.length;
-  for (let index = headingIndex + 1; index < lines.length; index += 1) {
-    if (/^#{1,6}\s+/.test(lines[index])) {
-      endIndex = index;
-      break;
-    }
-  }
-  const before = lines.slice(0, headingIndex + 1);
-  const section = lines.slice(headingIndex + 1, endIndex).filter((line) => line.trim());
-  const after = lines.slice(endIndex);
-  const bullets = [bullet, ...section.filter((line) => line.trim() !== bullet.trim())]
-    .filter((line) => line.trim().startsWith('- '))
-    .slice(0, maxItems);
-  return [...before, ...bullets, '', ...after].join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
-}
-
-async function appendAgentMemoryNote(agent, relPath, heading, bullet) {
-  const root = await ensureAgentWorkspace(agent);
-  const filePath = safePathWithin(root, relPath);
-  if (!filePath) return;
-  const existing = await readFile(filePath, 'utf8').catch(() => `# ${agent.name} ${path.basename(relPath, '.md')}\n`);
-  await writeFile(filePath, upsertMarkdownBullet(existing, heading, bullet));
-}
-
-async function updateAgentMemoryEntrypoint(agent, bullet) {
-  const root = await ensureAgentWorkspace(agent);
-  const memoryPath = safePathWithin(root, 'MEMORY.md');
-  if (!memoryPath) return;
-  const existing = await readFile(memoryPath, 'utf8').catch(() => defaultAgentMemory(agent));
-  await writeFile(memoryPath, upsertMarkdownBullet(existing, 'Recent Memory Updates', bullet, 8));
-}
-
-function memoryWritebackBullet(trigger, payload = {}) {
-  const stamp = now();
-  if (payload.task) {
-    const task = payload.task;
-    return `- ${stamp} [${trigger}] ${taskLabel(task)} ${markdownBulletText(task.title)} status=${task.status || 'todo'} channel=${spaceDisplayName(task.spaceType, task.spaceId)}`;
-  }
-  if (payload.channel) {
-    const channel = payload.channel;
-    const members = channelAgentIds(channel).map((id) => displayActor(id)).join(', ') || 'no agent members';
-    return `- ${stamp} [${trigger}] #${channel.name} members=${markdownBulletText(members)} description=${markdownBulletText(channel.description || 'none')}`;
-  }
-  if (payload.message) {
-    return `- ${stamp} [${trigger}] ${spaceDisplayName(payload.spaceType || payload.message.spaceType, payload.spaceId || payload.message.spaceId)} ${markdownBulletText(payload.message.body)}`;
-  }
-  if (payload.routeEvent) {
-    return `- ${stamp} [${trigger}] route=${payload.routeEvent.mode} targets=${payload.routeEvent.targetAgentIds?.map(displayActor).join(', ') || 'none'} reason=${markdownBulletText(payload.routeEvent.reason)}`;
-  }
-  return `- ${stamp} [${trigger}] ${markdownBulletText(memoryEventTitle(trigger, payload))}`;
-}
-
-async function writeAgentMemoryUpdate(agent, trigger, payload = {}) {
-  if (!agent || isBrainAgent(agent)) return false;
-  const bullet = memoryWritebackBullet(trigger, payload);
-  await appendAgentMemoryNote(agent, 'notes/work-log.md', 'Memory Writebacks', bullet);
-  await updateAgentMemoryEntrypoint(agent, bullet);
-  if (payload.channel) {
-    await appendAgentMemoryNote(agent, 'notes/channels.md', 'Channel Memory', bullet);
-  }
-  if (payload.routeEvent || payload.peerAgentIds?.length) {
-    await appendAgentMemoryNote(agent, 'notes/agents.md', 'Observed Collaboration', bullet);
-  }
-  addSystemEvent('agent_memory_writeback', `${agent.name} workspace memory updated for ${trigger}.`, {
-    agentId: agent.id,
-    trigger,
-    taskId: payload.task?.id || null,
-    messageId: payload.message?.id || null,
-    channelId: payload.channel?.id || payload.spaceId || null,
-  });
-  agentCardCache.delete(agent.id);
-  return true;
-}
-
-function scheduleAgentMemoryWriteback(agent, trigger, payload = {}) {
-  if (!agent || isBrainAgent(agent)) return;
-  writeAgentMemoryUpdate(agent, trigger, payload)
-    .then((changed) => (changed ? persistState().then(broadcastState) : null))
-    .catch((error) => {
-      addSystemEvent('agent_memory_writeback_error', `Memory writeback failed for ${agent.name}: ${error.message}`, {
-        agentId: agent.id,
-        trigger,
-      });
-      persistState().then(broadcastState).catch(() => {});
-    });
-}
-
-function addSystemReply(parentMessageId, body) {
-  const parent = findMessage(parentMessageId);
-  if (!parent) return null;
-  const reply = normalizeConversationRecord({
-    id: makeId('rep'),
-    parentMessageId,
-    spaceType: parent.spaceType,
-    spaceId: parent.spaceId,
-    authorType: 'system',
-    authorId: 'system',
-    body,
-    attachmentIds: [],
-    createdAt: now(),
-    updatedAt: now(),
-  });
-  state.replies.push(reply);
-  parent.replyCount = state.replies.filter((item) => item.parentMessageId === parentMessageId).length;
-  parent.updatedAt = now();
-  return reply;
-}
-
-function cloudSnapshot() {
-  const allowedKeys = ['humans', 'computers', 'agents', 'brainAgents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
-  const snapshot = {
-    version: state.version,
-    exportedAt: now(),
-    workspaceId: state.connection?.workspaceId || 'local',
-    protocolVersion: CLOUD_PROTOCOL_VERSION,
-    router: state.router || {},
-  };
-  for (const key of allowedKeys) {
-    snapshot[key] = Array.isArray(state[key]) ? state[key] : [];
-  }
-  return snapshot;
-}
-
-function applyCloudSnapshot(snapshot) {
-  const allowedKeys = ['humans', 'computers', 'agents', 'brainAgents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
-  for (const key of allowedKeys) {
-    if (Array.isArray(snapshot?.[key])) state[key] = snapshot[key];
-  }
-  if (snapshot?.router && typeof snapshot.router === 'object') state.router = snapshot.router;
-  migrateState();
-}
-
-function cloudEndpoint(pathname) {
-  const base = normalizeCloudUrl(state.connection?.controlPlaneUrl || '');
-  if (!base) throw new Error('Cloud control plane URL is not configured.');
-  return `${base}${pathname}`;
-}
-
-async function cloudFetch(pathname, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-  const cloudToken = String(state.connection?.cloudToken || process.env.MAGCLAW_CLOUD_TOKEN || '');
-  const headers = {
-    'content-type': 'application/json',
-    'x-magclaw-device-id': state.connection?.deviceId || '',
-    'x-magclaw-workspace-id': state.connection?.workspaceId || '',
-    ...(cloudToken ? { authorization: `Bearer ${cloudToken}` } : {}),
-    ...(options.headers || {}),
-  };
-  try {
-    const response = await fetch(cloudEndpoint(pathname), {
-      ...options,
-      signal: controller.signal,
-      headers,
-    });
-    const text = await response.text();
-    const data = text ? JSON.parse(text) : {};
-    if (!response.ok) throw new Error(data.error || response.statusText);
-    return data;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function pushStateToCloud(reason = 'manual') {
-  if (!state.connection?.controlPlaneUrl) throw new Error('Cloud control plane URL is not configured.');
-  syncInProgress = true;
-  try {
-    const result = await cloudFetch('/api/cloud/import-state', {
-      method: 'POST',
-      body: JSON.stringify({
-        workspaceId: state.connection.workspaceId || 'local',
-        deviceId: state.connection.deviceId,
-        reason,
-        snapshot: cloudSnapshot(),
-      }),
-    });
-    state.connection.lastSyncAt = now();
-    state.connection.lastSyncDirection = 'push';
-    state.connection.lastError = '';
-    await persistState();
-    return result;
-  } catch (error) {
-    state.connection.lastError = error.message;
-    await persistState();
-    throw error;
-  } finally {
-    syncInProgress = false;
-  }
-}
-
-async function pullStateFromCloud() {
-  if (!state.connection?.controlPlaneUrl) throw new Error('Cloud control plane URL is not configured.');
-  syncInProgress = true;
-  try {
-    const result = await cloudFetch(`/api/cloud/export-state?workspaceId=${encodeURIComponent(state.connection.workspaceId || 'local')}`);
-    applyCloudSnapshot(result.snapshot || result);
-    state.connection.lastSyncAt = now();
-    state.connection.lastSyncDirection = 'pull';
-    state.connection.lastError = '';
-    await persistState();
-    return result;
-  } catch (error) {
-    state.connection.lastError = error.message;
-    await persistState();
-    throw error;
-  } finally {
-    syncInProgress = false;
-  }
-}
-
-function queueCloudPush(reason) {
-  if (syncInProgress) return;
-  if (state?.connection?.mode !== 'cloud') return;
-  if (!state.connection.autoSync) return;
-  if (!state.connection.controlPlaneUrl) return;
-  if (!['paired', 'connected'].includes(state.connection.pairingStatus)) return;
-  clearTimeout(cloudPushTimer);
-  cloudPushTimer = setTimeout(() => {
-    pushStateToCloud(reason).catch(() => {});
-  }, 900);
-}
+const cloudSync = createCloudSync({
+  getState: () => state,
+  migrateState,
+  now,
+  persistState,
+  CLOUD_PROTOCOL_VERSION,
+});
+const {
+  applyCloudSnapshot,
+  cloudFetch,
+  cloudSnapshot,
+  pullStateFromCloud,
+  pushStateToCloud,
+  queueCloudPush,
+} = cloudSync;
 
 function ensureTaskThread(task) {
   if (task.threadMessageId && findMessage(task.threadMessageId)) return findMessage(task.threadMessageId);
@@ -1610,508 +1379,53 @@ function ensureTaskThread(task) {
   return message;
 }
 
-function publicState() {
-  return {
-    ...state,
-    settings: publicSettings(),
-    channels: (state.channels || []).filter((channel) => !channel.archived),
-    connection: publicConnection(),
-    runtime: runtimeSnapshot(),
-    runningRunIds: [...runningProcesses.keys()],
-  };
-}
+const systemServices = createSystemServices({
+  addSystemEvent,
+  broadcastState,
+  fanoutApiConfigured,
+  getState: () => state,
+  httpError,
+  makeId,
+  now,
+  persistState,
+  projectsForSpace,
+  runningProcesses,
+  selectedDefaultSpaceId,
+  DATA_DIR,
+  PORT,
+  ROOT,
+});
+const {
+  addProjectFolder,
+  detectInstalledRuntimes,
+  execFileResult,
+  execText,
+  getRuntimeInfo,
+  pickFolderPath,
+  publicConnection,
+  publicState,
+  updateFanoutApiConfig,
+} = systemServices;
 
-function publicSettings() {
-  const fanoutApi = normalizeFanoutApiConfig(state?.settings?.fanoutApi || {});
-  const { apiKey, ...settings } = state?.settings || {};
-  void apiKey;
-  return {
-    ...settings,
-    fanoutApi: {
-      enabled: fanoutApi.enabled,
-      baseUrl: fanoutApi.baseUrl,
-      model: fanoutApi.model,
-      timeoutMs: fanoutApi.timeoutMs,
-      hasApiKey: Boolean(fanoutApi.apiKey),
-      apiKeyPreview: publicApiKeyPreview(fanoutApi.apiKey),
-      configured: fanoutApiConfigured(fanoutApi),
-    },
-  };
-}
-
-function publicConnection() {
-  const { cloudToken, ...connection } = state?.connection || {};
-  return {
-    ...connection,
-    hasControlPlane: Boolean(state?.connection?.controlPlaneUrl),
-    hasRelay: Boolean(state?.connection?.relayUrl),
-    hasCloudToken: Boolean(cloudToken || process.env.MAGCLAW_CLOUD_TOKEN),
-  };
-}
-
-function updateFanoutApiConfig(body = {}) {
-  const current = normalizeFanoutApiConfig(state.settings?.fanoutApi || {});
-  const next = {
-    ...current,
-    enabled: body.enabled !== undefined ? Boolean(body.enabled) : current.enabled,
-    baseUrl: body.baseUrl !== undefined ? normalizeCloudUrl(body.baseUrl || '') : current.baseUrl,
-    model: body.model !== undefined ? String(body.model || '').trim() : current.model,
-    timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : current.timeoutMs,
-  };
-  if (body.clearApiKey === true) {
-    next.apiKey = '';
-  } else if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
-    next.apiKey = body.apiKey.trim();
-  }
-  state.settings.fanoutApi = normalizeFanoutApiConfig(next);
-  state.router = {
-    ...(state.router || {}),
-    mode: fanoutApiConfigured() ? 'llm_fanout' : 'rules_fallback',
-    brainAgentId: null,
-    fallback: 'rules',
-    cardSource: 'workspace_markdown',
-  };
-  return state.settings.fanoutApi;
-}
-
-function runtimeSnapshot() {
-  return {
-    node: process.version,
-    platform: `${os.platform()} ${os.arch()}`,
-    host: os.hostname(),
-    codexPath: state?.settings?.codexPath || 'codex',
-  };
-}
-
-async function getRuntimeInfo() {
-  const codexPath = state.settings.codexPath || 'codex';
-  const version = await execText(codexPath, ['--version']).catch((error) => error.message);
-  return {
-    ...runtimeSnapshot(),
-    codexVersion: version.trim(),
-    port: PORT,
-    dataDir: DATA_DIR,
-  };
-}
-
-async function getCodexModels(codexPath) {
-  try {
-    const output = await execText(codexPath, ['debug', 'models']);
-    const data = JSON.parse(output);
-    const models = [];
-    let defaultModel = null;
-    let reasoningEfforts = [];
-
-    for (const m of data.models || []) {
-      if (m.visibility === 'list') {
-        models.push({
-          slug: m.slug,
-          name: m.display_name || m.slug,
-        });
-        if (!defaultModel) {
-          defaultModel = m.slug;
-          reasoningEfforts = (m.supported_reasoning_levels || []).map(r => r.effort);
-        }
-      }
-    }
-    return { models, defaultModel, reasoningEfforts };
-  } catch {
-    return {
-      models: [{ slug: 'gpt-5.5', name: 'GPT-5.5' }],
-      defaultModel: 'gpt-5.5',
-      reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-    };
-  }
-}
-
-async function detectInstalledRuntimes() {
-  const runtimes = [];
-
-  // Codex CLI
-  try {
-    const codexPath = state.settings.codexPath || 'codex';
-    const version = await execText(codexPath, ['--version']);
-    const { models, defaultModel, reasoningEfforts } = await getCodexModels(codexPath);
-    runtimes.push({
-      id: 'codex',
-      name: 'Codex CLI',
-      path: codexPath,
-      version: version.trim(),
-      installed: true,
-      models: models.map(m => m.slug),
-      modelNames: models,
-      defaultModel,
-      reasoningEffort: reasoningEfforts,
-      defaultReasoningEffort: 'medium',
-    });
-  } catch {
-    runtimes.push({ id: 'codex', name: 'Codex CLI', installed: false });
-  }
-
-  // Claude Code
-  try {
-    const claudeVersion = await execText('claude', ['--version']);
-    runtimes.push({
-      id: 'claude-code',
-      name: 'Claude Code',
-      path: 'claude',
-      version: claudeVersion.trim(),
-      installed: true,
-      models: ['claude-sonnet-4-6', 'claude-opus-4-7', 'claude-haiku-4-5-20251001'],
-      defaultModel: 'claude-sonnet-4-6',
-    });
-  } catch {
-    runtimes.push({ id: 'claude-code', name: 'Claude Code', installed: false });
-  }
-
-  // OpenCode
-  try {
-    const openCodeVersion = await execText('opencode', ['--version']);
-    runtimes.push({
-      id: 'opencode',
-      name: 'OpenCode',
-      path: 'opencode',
-      version: openCodeVersion.trim(),
-      installed: true,
-      models: ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-      defaultModel: 'gpt-4o',
-    });
-  } catch {
-    runtimes.push({ id: 'opencode', name: 'OpenCode', installed: false });
-  }
-
-  // Goose
-  try {
-    const gooseVersion = await execText('goose', ['--version']);
-    runtimes.push({
-      id: 'goose',
-      name: 'Goose',
-      path: 'goose',
-      version: gooseVersion.trim(),
-      installed: true,
-      models: ['gpt-4o', 'claude-3-opus', 'claude-3-sonnet'],
-      defaultModel: 'gpt-4o',
-    });
-  } catch {
-    runtimes.push({ id: 'goose', name: 'Goose', installed: false });
-  }
-
-  // Aider
-  try {
-    const aiderVersion = await execText('aider', ['--version']);
-    runtimes.push({
-      id: 'aider',
-      name: 'Aider',
-      path: 'aider',
-      version: aiderVersion.trim(),
-      installed: true,
-      models: ['gpt-4o', 'claude-3-opus', 'claude-3-sonnet', 'deepseek-coder'],
-      defaultModel: 'gpt-4o',
-    });
-  } catch {
-    runtimes.push({ id: 'aider', name: 'Aider', installed: false });
-  }
-
-  return runtimes;
-}
-
-function execText(command, args) {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, { timeout: 10_000 }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error(stderr.trim() || error.message));
-        return;
-      }
-      resolve(stdout);
-    });
-  });
-}
-
-function execFileResult(command, args, options = {}) {
-  return new Promise((resolve) => {
-    execFile(command, args, options, (error, stdout, stderr) => {
-      resolve({
-        code: typeof error?.code === 'number' ? error.code : 0,
-        signal: error?.signal || null,
-        stdout: String(stdout || ''),
-        stderr: String(stderr || ''),
-        error,
-      });
-    });
-  });
-}
-
-function appleScriptString(value) {
-  return `"${String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-async function pickFolderPath(defaultPath = '') {
-  if (Object.prototype.hasOwnProperty.call(process.env, 'MAGCLAW_PICK_FOLDER_PATH')) {
-    const picked = String(process.env.MAGCLAW_PICK_FOLDER_PATH || '').trim();
-    return picked ? path.resolve(picked) : null;
-  }
-  if (process.platform !== 'darwin') {
-    throw httpError(501, 'Native folder picker is currently available on macOS only.');
-  }
-
-  let defaultLocation = '';
-  const candidate = path.resolve(String(defaultPath || state.settings?.defaultWorkspace || ROOT));
-  try {
-    const info = await stat(candidate);
-    defaultLocation = info.isDirectory() ? candidate : path.dirname(candidate);
-  } catch {
-    defaultLocation = ROOT;
-  }
-
-  const args = [
-    '-e', `set defaultFolder to POSIX file ${appleScriptString(defaultLocation)} as alias`,
-    '-e', 'try',
-    '-e', '  set pickedFolder to choose folder with prompt "Open Project Folder" default location defaultFolder',
-    '-e', '  POSIX path of pickedFolder',
-    '-e', 'on error number -128',
-    '-e', '  return ""',
-    '-e', 'end try',
-  ];
-  const result = await execFileResult('osascript', args);
-  if (result.error && result.code !== 0) {
-    throw httpError(500, result.stderr.trim() || result.error.message || 'Folder picker failed.');
-  }
-  const picked = result.stdout.trim();
-  return picked ? path.resolve(picked) : null;
-}
-
-async function addProjectFolder({ rawPath, name = '', spaceType = 'channel', spaceId = '' }) {
-  const normalizedSpaceType = spaceType === 'dm' ? 'dm' : 'channel';
-  const normalizedSpaceId = String(spaceId || selectedDefaultSpaceId(normalizedSpaceType));
-  const cleanPath = String(rawPath || '').trim();
-  if (!cleanPath) throw httpError(400, 'Project folder path is required.');
-  const projectPath = path.resolve(cleanPath);
-
-  let info;
-  try {
-    info = await stat(projectPath);
-  } catch (error) {
-    addSystemEvent('project_add_failed', `Project folder not found: ${projectPath}`, { error: error.message });
-    throw httpError(404, 'Project folder was not found on the Magclaw server.');
-  }
-  if (!info.isDirectory()) throw httpError(400, 'Project path must be a directory.');
-
-  const existing = state.projects.find((project) => (
-    project.spaceType === normalizedSpaceType && project.spaceId === normalizedSpaceId && project.path === projectPath
-  ));
-  if (existing) {
-    return { project: existing, projects: projectsForSpace(normalizedSpaceType, normalizedSpaceId), created: false };
-  }
-
-  const project = {
-    id: makeId('prj'),
-    name: String(name || path.basename(projectPath) || 'Project').trim().slice(0, 80),
-    path: projectPath,
-    spaceType: normalizedSpaceType,
-    spaceId: normalizedSpaceId,
-    createdAt: now(),
-    updatedAt: now(),
-  };
-  state.projects.push(project);
-  addSystemEvent('project_added', `Project folder added: ${project.name}`, {
-    projectId: project.id,
-    spaceType: normalizedSpaceType,
-    spaceId: normalizedSpaceId,
-  });
-  await persistState();
-  broadcastState();
-  return { project, projects: projectsForSpace(normalizedSpaceType, normalizedSpaceId), created: true };
-}
-
-function createPrompt(mission, run, attachments) {
-  const contract = {
-    goal: mission.goal,
-    workspace: mission.workspace,
-    scopeAllow: mission.scopeAllow,
-    scopeDeny: mission.scopeDeny,
-    gates: mission.gates,
-    evidenceRequired: mission.evidenceRequired,
-    humanCheckpoints: mission.humanCheckpoints,
-    localReferences: mission.localReferences || [],
-  };
-
-  const attachmentLines = attachments.length
-    ? attachments.map((item) => `- ${item.name} (${item.type || 'file'}): ${item.path}`).join('\n')
-    : '- none';
-
-  return [
-    'You are Codex running under Magclaw local mission control.',
-    '',
-    'Mission contract:',
-    JSON.stringify(contract, null, 2),
-    '',
-    'Operating rules:',
-    '- Stay inside the mission scope unless the user explicitly asks otherwise.',
-    '- Prefer small, verifiable changes.',
-    '- Run the requested gates when practical.',
-    '- End with a concise evidence report: changed files, tests run, residual risks.',
-    '- Do not claim completion if evidence is missing.',
-    '',
-    `Run id: ${run.id}`,
-    `Mission id: ${mission.id}`,
-    '',
-    'Attachments saved locally:',
-    attachmentLines,
-    '',
-    'Local project references are original files/folders, not attachment copies:',
-    localReferenceLines(mission.localReferences || []) || '- none',
-    '',
-    'User request:',
-    mission.goal,
-  ].join('\n');
-}
-
-function summarizeCodexEvent(event) {
-  if (!event || typeof event !== 'object') return String(event || '');
-  const candidates = [
-    event.message,
-    event.text,
-    event.output,
-    event.delta,
-    event.type,
-    event.msg?.message,
-    event.msg?.text,
-    event.item?.text,
-    event.item?.message,
-  ].filter(Boolean);
-
-  if (candidates.length) return String(candidates[0]);
-  return JSON.stringify(event).slice(0, 600);
-}
-
-function handleCodexLine(run, line) {
-  if (!line.trim()) return;
-  try {
-    const event = JSON.parse(line);
-    addRunEvent(run.id, 'codex', summarizeCodexEvent(event), { raw: event });
-  } catch {
-    addRunEvent(run.id, 'stdout', line);
-  }
-}
-
-function startCodexRun(mission, run) {
-  const workspace = path.resolve(mission.workspace || state.settings.defaultWorkspace || ROOT);
-  const attachments = state.attachments.filter((item) => mission.attachmentIds.includes(item.id));
-  const imageAttachments = attachments.filter((item) => String(item.type || '').startsWith('image/'));
-  const outputFile = path.join(RUNS_DIR, `${run.id}-last-message.txt`);
-  const args = [
-    'exec',
-    '--json',
-    '--skip-git-repo-check',
-    '--sandbox',
-    state.settings.sandbox || 'workspace-write',
-    '-C',
-    workspace,
-    '-o',
-    outputFile,
-  ];
-
-  if (state.settings.model) {
-    args.push('-m', state.settings.model);
-  }
-
-  for (const image of imageAttachments) {
-    args.push('-i', image.path);
-  }
-
-  args.push('-');
-
-  run.status = 'running';
-  run.startedAt = now();
-  run.workspace = workspace;
-  run.command = `${state.settings.codexPath} ${args.map((arg) => (arg.includes(' ') ? JSON.stringify(arg) : arg)).join(' ')}`;
-  mission.status = 'running';
-  mission.updatedAt = now();
-  addRunEvent(run.id, 'runner', `Starting Codex in ${workspace}`);
-  persistState().then(broadcastState);
-
-  const child = spawn(state.settings.codexPath || 'codex', args, {
-    cwd: workspace,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: process.env,
-  });
-
-  runningProcesses.set(run.id, child);
-
-  let stdoutBuffer = '';
-  child.stdout.on('data', (chunk) => {
-    stdoutBuffer += chunk.toString();
-    const lines = stdoutBuffer.split(/\r?\n/);
-    stdoutBuffer = lines.pop() || '';
-    for (const line of lines) handleCodexLine(run, line);
-    persistState();
-  });
-
-  child.stderr.on('data', (chunk) => {
-    const message = chunk.toString().trim();
-    if (message) addRunEvent(run.id, 'stderr', message);
-    persistState();
-  });
-
-  child.on('error', (error) => {
-    runningProcesses.delete(run.id);
-    run.status = 'failed';
-    run.completedAt = now();
-    run.exitCode = null;
-    mission.status = 'failed';
-    mission.updatedAt = now();
-    addRunEvent(run.id, 'runner-error', error.message);
-    persistState().then(broadcastState);
-  });
-
-  child.on('close', async (code) => {
-    runningProcesses.delete(run.id);
-    if (stdoutBuffer.trim()) handleCodexLine(run, stdoutBuffer.trim());
-    run.exitCode = code;
-    run.completedAt = now();
-
-    let finalMessage = '';
-    try {
-      finalMessage = (await readFile(outputFile, 'utf8')).trim();
-    } catch {
-      finalMessage = '';
-    }
-
-    run.finalMessage = finalMessage;
-    if (run.cancelRequested) {
-      run.status = 'cancelled';
-      mission.status = 'ready';
-    } else {
-      run.status = code === 0 ? 'succeeded' : 'failed';
-      mission.status = code === 0 ? 'review' : 'failed';
-    }
-    if (run.taskId) {
-      const task = findTask(run.taskId);
-      if (task) {
-        if (run.status === 'succeeded') {
-          task.status = 'in_review';
-          task.reviewRequestedAt = now();
-          addTaskHistory(task, 'review_requested', `Codex run ${run.id} succeeded; moved to review.`, task.claimedBy || 'agt_codex', { runId: run.id });
-          addSystemReply(ensureTaskThread(task).id, `Codex run ${run.id} finished. Review requested.`);
-          addTaskTimelineMessage(task, `👀 ${displayActor(task.claimedBy || 'agt_codex')} moved ${taskLabel(task)} to In Review`, 'task_review');
-        } else if (run.status === 'failed') {
-          addTaskHistory(task, 'run_failed', `Codex run ${run.id} failed.`, task.claimedBy || 'agt_codex', { runId: run.id });
-          addSystemReply(ensureTaskThread(task).id, `Codex run ${run.id} failed. Check evidence.`);
-        } else if (run.status === 'cancelled') {
-          addTaskHistory(task, 'run_cancelled', `Codex run ${run.id} cancelled.`, task.claimedBy || 'agt_codex', { runId: run.id });
-          addSystemReply(ensureTaskThread(task).id, `Codex run ${run.id} cancelled.`);
-        }
-      }
-    }
-    mission.updatedAt = now();
-    addRunEvent(run.id, 'runner', `Codex exited with code ${code ?? 'unknown'}.`);
-    await persistState();
-    broadcastState();
-  });
-
-  child.stdin.write(createPrompt(mission, run, attachments));
-  child.stdin.end();
-}
+const missionRunner = createMissionRunner({
+  addRunEvent,
+  addSystemReply,
+  addTaskHistory,
+  addTaskTimelineMessage,
+  broadcastState,
+  displayActor,
+  ensureTaskThread,
+  findTask,
+  getState: () => state,
+  localReferenceLines,
+  now,
+  persistState,
+  runningProcesses,
+  ROOT,
+  RUNS_DIR,
+  taskLabel,
+});
+const { startCodexRun } = missionRunner;
 
 const agentRuntime = createAgentRuntimeManager({
   addCollabEvent,
