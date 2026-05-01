@@ -29,6 +29,11 @@ import {
   searchAgentMessageHistory,
 } from './agent-history.js';
 import {
+  fanoutApiEndpoint,
+  fanoutApiResponseText,
+  parseFanoutApiJson,
+} from './fanout-api.js';
+import {
   applyMentions,
   escapeRegExp,
   extractMentionTokens,
@@ -36,6 +41,15 @@ import {
   mentionTokenForId,
   normalizeIds,
 } from './mentions.js';
+import {
+  fanoutApiConfigReady,
+  normalizeChatRuntimeConfig,
+  normalizeCloudUrl,
+  normalizeCodexModelName as normalizeCodexModelNameBase,
+  normalizeFanoutApiConfig as normalizeFanoutApiConfigBase,
+  normalizeReasoningEffort,
+  publicApiKeyPreview,
+} from './runtime-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -174,47 +188,12 @@ function makeId(prefix) {
   return `${prefix}_${crypto.randomBytes(5).toString('hex')}`;
 }
 
-function normalizeCloudUrl(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  return raw.replace(/\/+$/, '');
-}
-
 function normalizeFanoutApiConfig(config = {}) {
-  const timeoutMs = Number(config.timeoutMs || FANOUT_API_TIMEOUT_MS);
-  return {
-    enabled: Boolean(config.enabled),
-    baseUrl: normalizeCloudUrl(config.baseUrl || ''),
-    apiKey: String(config.apiKey || ''),
-    model: String(config.model || '').trim(),
-    timeoutMs: Number.isFinite(timeoutMs) ? Math.max(500, Math.min(30_000, timeoutMs)) : FANOUT_API_TIMEOUT_MS,
-  };
-}
-
-function normalizeReasoningEffort(value, fallback = null) {
-  const effort = String(value || '').trim().toLowerCase();
-  if (['low', 'medium', 'high', 'xhigh'].includes(effort)) return effort;
-  const fallbackEffort = String(fallback || '').trim().toLowerCase();
-  return ['low', 'medium', 'high', 'xhigh'].includes(fallbackEffort) ? fallbackEffort : null;
-}
-
-function normalizeChatRuntimeConfig(config = {}) {
-  return {
-    enabled: config.enabled !== false,
-    model: String(config.model || '').trim(),
-    reasoningEffort: normalizeReasoningEffort(config.reasoningEffort, 'low') || 'low',
-  };
+  return normalizeFanoutApiConfigBase(config, FANOUT_API_TIMEOUT_MS);
 }
 
 function fanoutApiConfigured(config = state?.settings?.fanoutApi) {
-  const normalized = normalizeFanoutApiConfig(config || {});
-  return Boolean(normalized.enabled && normalized.baseUrl && normalized.apiKey && normalized.model);
-}
-
-function publicApiKeyPreview(value) {
-  const key = String(value || '');
-  if (!key) return '';
-  return `${key.slice(0, Math.min(6, key.length))}${key.length > 6 ? '****' : ''}`;
+  return fanoutApiConfigReady(config || {}, FANOUT_API_TIMEOUT_MS);
 }
 
 function defaultState() {
@@ -482,11 +461,7 @@ function syncSqliteBackedState() {
 }
 
 function normalizeCodexModelName(model, fallback = '') {
-  const value = String(model || '').trim();
-  if (value && value.toLowerCase() !== 'default') return value;
-  const fallbackValue = String(fallback || process.env.CODEX_MODEL || '').trim();
-  if (fallbackValue && fallbackValue.toLowerCase() !== 'default') return fallbackValue;
-  return CODEX_FALLBACK_MODEL;
+  return normalizeCodexModelNameBase(model, fallback, CODEX_FALLBACK_MODEL);
 }
 
 function shouldUseChatFastRuntime(message, workItem = null) {
@@ -2925,13 +2900,6 @@ function routeEvidence(type, value) {
   return { type, value: String(value || '').slice(0, 240) };
 }
 
-function fanoutApiEndpoint(baseUrl) {
-  const base = normalizeCloudUrl(baseUrl || '');
-  if (!base) return '';
-  if (/\/(chat\/completions|responses)$/i.test(base)) return base;
-  return `${base}/chat/completions`;
-}
-
 function namedAgentsOutsideExplicitMentions(channelAgents, text, mentionedIds = []) {
   const explicit = new Set(normalizeIds(mentionedIds));
   return availableChannelAgents(channelAgents)
@@ -3169,35 +3137,6 @@ function fanoutApiMessages({ channelAgents, mentions, message, allCards, trigger
       content: JSON.stringify(payload),
     },
   ];
-}
-
-function fanoutApiResponseText(data) {
-  if (typeof data?.output_text === 'string') return data.output_text;
-  const choice = data?.choices?.[0]?.message?.content;
-  if (typeof choice === 'string') return choice;
-  if (Array.isArray(choice)) {
-    return choice.map((part) => part?.text || part?.content || '').join('');
-  }
-  if (Array.isArray(data?.output)) {
-    return data.output
-      .flatMap((item) => item?.content || [])
-      .map((part) => part?.text || '')
-      .join('');
-  }
-  return '';
-}
-
-function parseFanoutApiJson(text) {
-  const raw = String(text || '').trim();
-  if (!raw) throw new Error('Fan-out API returned an empty response.');
-  try {
-    return JSON.parse(raw);
-  } catch {
-    const start = raw.indexOf('{');
-    const end = raw.lastIndexOf('}');
-    if (start >= 0 && end > start) return JSON.parse(raw.slice(start, end + 1));
-    throw new Error('Fan-out API did not return valid JSON.');
-  }
 }
 
 async function callFanoutApi({ channelAgents, mentions, message, spaceId, allCards, trigger, thread = null }) {

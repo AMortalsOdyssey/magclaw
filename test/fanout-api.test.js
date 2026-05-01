@@ -1,0 +1,50 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  fanoutApiEndpoint,
+  fanoutApiResponseText,
+  parseFanoutApiJson,
+} from '../server/fanout-api.js';
+import {
+  fanoutApiConfigReady,
+  normalizeChatRuntimeConfig,
+  normalizeCloudUrl,
+  normalizeCodexModelName,
+  normalizeFanoutApiConfig,
+  publicApiKeyPreview,
+} from '../server/runtime-config.js';
+
+test('runtime config helpers normalize fan-out and chat settings', () => {
+  assert.equal(normalizeCloudUrl(' https://api.example.com/v1// '), 'https://api.example.com/v1');
+  assert.deepEqual(normalizeFanoutApiConfig({
+    enabled: true,
+    baseUrl: 'https://api.example.com/v1/',
+    apiKey: 'secret',
+    model: ' router ',
+    timeoutMs: 50_000,
+  }, 2500), {
+    enabled: true,
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: 'secret',
+    model: 'router',
+    timeoutMs: 30_000,
+  });
+  assert.equal(fanoutApiConfigReady({ enabled: true, baseUrl: 'x', apiKey: 'k', model: 'm' }), true);
+  assert.equal(fanoutApiConfigReady({ enabled: true, baseUrl: 'x', apiKey: '', model: 'm' }), false);
+  assert.equal(publicApiKeyPreview('sk-abcdef'), 'sk-abc****');
+  assert.deepEqual(normalizeChatRuntimeConfig({ reasoningEffort: 'XHIGH', model: 'fast' }), {
+    enabled: true,
+    model: 'fast',
+    reasoningEffort: 'xhigh',
+  });
+  assert.equal(normalizeCodexModelName('default', 'gpt-5.4-mini', 'gpt-5.5'), 'gpt-5.4-mini');
+});
+
+test('fan-out API helpers support OpenAI-compatible and responses shapes', () => {
+  assert.equal(fanoutApiEndpoint('https://api.example.com/v1'), 'https://api.example.com/v1/chat/completions');
+  assert.equal(fanoutApiEndpoint('https://api.example.com/v1/responses'), 'https://api.example.com/v1/responses');
+  assert.equal(fanoutApiResponseText({ choices: [{ message: { content: '{"mode":"directed"}' } }] }), '{"mode":"directed"}');
+  assert.equal(fanoutApiResponseText({ output_text: '{"mode":"broadcast"}' }), '{"mode":"broadcast"}');
+  assert.deepEqual(parseFanoutApiJson('```json\n{"targetAgentIds":["agt_a"]}\n```'), { targetAgentIds: ['agt_a'] });
+  assert.throws(() => parseFanoutApiJson(''), /empty response/);
+});
