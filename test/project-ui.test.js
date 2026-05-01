@@ -566,6 +566,7 @@ test('Fan-out API config replaces the Brain Agent UI module', async () => {
   assert.match(railSource, /const normalAgents = channelAssignableAgents\(\)/);
   assert.match(railSource, /normalAgents\.map\(\(agent\) => renderAgentListItem\(agent\)\)/);
   assert.match(railSource, /System Config/);
+  assert.doesNotMatch(railSource, /renderNavItem\('cloud', 'System'/);
   assert.match(app, /function renderFanoutApiConfigCard\(\)/);
   assert.match(app, /id="fanout-config-form"/);
   assert.match(app, /Base URL/);

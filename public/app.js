@@ -2057,7 +2057,6 @@ function renderRail() {
         ${renderNavItem('threads', 'Threads', 'message', unreadThreads || '')}
         ${renderNavItem('tasks', 'Tasks', 'file', openTasks || '')}
         ${renderNavItem('saved', 'Saved', 'bookmark', saved || '')}
-        ${renderNavItem('cloud', 'System', 'settings', appState.settings?.fanoutApi?.configured ? 'LLM' : 'Rules')}
       </div>
 
       <div class="rail-section">
