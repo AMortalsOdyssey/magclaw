@@ -5449,6 +5449,8 @@ document.addEventListener('click', async (event) => {
     'set-agent-detail-tab',
     'edit-agent-field',
     'cancel-agent-field',
+    'update-agent-model',
+    'update-agent-reasoning',
     'edit-agent-env',
     'cancel-agent-env',
     'add-agent-env-var',

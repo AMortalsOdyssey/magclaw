@@ -500,6 +500,8 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.match(app, /maxlength="3000"[\s\S]*\$\{descriptionValue\.length\}\/3000/);
   assert.match(app, /data-action="update-agent-model"/);
   assert.match(app, /data-action="update-agent-reasoning"/);
+  assert.match(app, /'update-agent-model',/);
+  assert.match(app, /'update-agent-reasoning',/);
   assert.match(app, /body: JSON\.stringify\(\{ model: target\.value \|\| null \}\)/);
   assert.match(app, /body: JSON\.stringify\(\{ reasoningEffort: target\.value \|\| null \}\)/);
   assert.match(app, />Reasoning</);
