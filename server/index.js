@@ -93,6 +93,7 @@ import {
 import { handleAgentToolApi } from './api/agent-tool-routes.js';
 import { handleCloudApi } from './api/cloud-routes.js';
 import { handleCollabApi } from './api/collab-routes.js';
+import { handleMissionApi } from './api/mission-routes.js';
 import { handleProjectApi } from './api/project-routes.js';
 import { handleSystemApi } from './api/system-routes.js';
 
@@ -6063,12 +6064,35 @@ function agentToolApiDeps() {
   };
 }
 
+function missionApiDeps() {
+  return {
+    addRunEvent,
+    addSystemEvent,
+    broadcastState,
+    findMission,
+    findRun,
+    getRunningProcess: (runId) => runningProcesses.get(runId),
+    getState: () => state,
+    makeId,
+    now,
+    persistState,
+    readJson,
+    root: ROOT,
+    sendError,
+    sendJson,
+    splitLines,
+    startCodexRun,
+  };
+}
+
 async function handleApi(req, res, url) {
   if (!requireCloudDeploymentApi(req, res, url)) return true;
 
   if (await handleSystemApi(req, res, url, systemApiDeps())) return true;
 
   if (await handleAgentToolApi(req, res, url, agentToolApiDeps())) return true;
+
+  if (await handleMissionApi(req, res, url, missionApiDeps())) return true;
 
   if (await handleCloudApi(req, res, url, cloudApiDeps())) return true;
 
@@ -6838,82 +6862,6 @@ async function handleApi(req, res, url) {
     await persistState();
     broadcastState();
     sendJson(res, 200, { ok: true });
-    return true;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/missions') {
-    const body = await readJson(req);
-    const mission = {
-      id: makeId('mis'),
-      title: String(body.title || 'Untitled mission').slice(0, 140),
-      goal: String(body.goal || '').trim(),
-      status: 'ready',
-      priority: body.priority || 'normal',
-      workspace: path.resolve(String(body.workspace || state.settings.defaultWorkspace || ROOT)),
-      scopeAllow: splitLines(body.scopeAllow || '**/*'),
-      scopeDeny: splitLines(body.scopeDeny || '.env*\nnode_modules/**\n.git/**'),
-      gates: splitLines(body.gates),
-      evidenceRequired: splitLines(body.evidenceRequired || 'diff summary\ntest output\nrisk notes'),
-      humanCheckpoints: splitLines(body.humanCheckpoints || 'before dangerous command\nbefore deploy'),
-      attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [],
-      localReferences: Array.isArray(body.localReferences) ? body.localReferences : [],
-      createdAt: now(),
-      updatedAt: now(),
-    };
-
-    if (!mission.goal) {
-      sendError(res, 400, 'Mission goal is required.');
-      return true;
-    }
-
-    state.missions.unshift(mission);
-    addSystemEvent('mission_created', `Mission created: ${mission.title}`, { missionId: mission.id });
-    await persistState();
-    broadcastState();
-    sendJson(res, 201, { mission });
-    return true;
-  }
-
-  const runMatch = url.pathname.match(/^\/api\/missions\/([^/]+)\/runs$/);
-  if (req.method === 'POST' && runMatch) {
-    const mission = findMission(runMatch[1]);
-    if (!mission) {
-      sendError(res, 404, 'Mission not found.');
-      return true;
-    }
-    const run = {
-      id: makeId('run'),
-      missionId: mission.id,
-      runtime: 'codex',
-      status: 'queued',
-      createdAt: now(),
-      startedAt: null,
-      completedAt: null,
-      exitCode: null,
-      finalMessage: '',
-    };
-    state.runs.unshift(run);
-    await persistState();
-    broadcastState();
-    startCodexRun(mission, run);
-    sendJson(res, 201, { run });
-    return true;
-  }
-
-  const cancelMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/);
-  if (req.method === 'POST' && cancelMatch) {
-    const run = findRun(cancelMatch[1]);
-    const child = runningProcesses.get(cancelMatch[1]);
-    if (!run || !child) {
-      sendError(res, 404, 'Running Codex process not found.');
-      return true;
-    }
-    run.cancelRequested = true;
-    child.kill('SIGTERM');
-    addRunEvent(run.id, 'runner', 'Cancellation requested.');
-    await persistState();
-    broadcastState();
-    sendJson(res, 200, { run });
     return true;
   }
 
