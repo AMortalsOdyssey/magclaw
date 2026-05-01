@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { chmod, cp, lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -222,6 +223,38 @@ async function request(baseUrl, pathname, options = {}) {
     throw new Error(`${response.status} ${data.error || response.statusText}`);
   }
   return data;
+}
+
+async function startMockFanoutApi(handler) {
+  const calls = [];
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', async () => {
+      try {
+        const body = Buffer.concat(chunks).toString('utf8');
+        const requestBody = body ? JSON.parse(body) : {};
+        calls.push({ url: req.url, headers: req.headers, body: requestBody });
+        const decision = await handler(requestBody, calls[calls.length - 1]);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          choices: [{ message: { content: JSON.stringify(decision) } }],
+        }));
+      } catch (error) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: error.message } }));
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    calls,
+    async stop() {
+      await new Promise((resolve) => server.close(resolve));
+    },
+  };
 }
 
 async function readJsonLines(filePath) {
@@ -1173,8 +1206,14 @@ test('contextual human follow-up stays with the recently focused agent', async (
   }
 });
 
-test('active Brain Agent also keeps contextual follow-ups with the focused agent', async () => {
+test('configured fan-out API leaves simple routing on local rules', async () => {
   const server = await startIsolatedServer();
+  const mock = await startMockFanoutApi(() => ({
+    mode: 'broadcast',
+    targetAgentIds: [],
+    confidence: 0.1,
+    reason: 'should not be called for simple rules',
+  }));
   try {
     const { agent: ziling } = await request(server.baseUrl, '/api/agents', {
       method: 'POST',
@@ -1188,21 +1227,28 @@ test('active Brain Agent also keeps contextual follow-ups with the focused agent
       method: 'POST',
       body: JSON.stringify({ name: '云道友', description: '文化、旅行和轻松闲聊', runtime: 'Codex CLI' }),
     });
-    const { brainAgent } = await request(server.baseUrl, '/api/brain-agents', {
+    await request(server.baseUrl, '/api/settings/fanout', {
       method: 'POST',
-      body: JSON.stringify({ runtime: 'Codex CLI', model: 'gpt-5.5', active: true }),
+      body: JSON.stringify({
+        enabled: true,
+        baseUrl: `${mock.baseUrl}/v1`,
+        apiKey: 'test-key',
+        model: 'test-router',
+      }),
     });
     const { channel } = await request(server.baseUrl, '/api/channels', {
       method: 'POST',
-      body: JSON.stringify({ name: 'brain-context', description: 'brain contextual routing', agentIds: [ziling.id, ccc.id, yun.id] }),
+      body: JSON.stringify({ name: 'rules-context', description: 'local contextual routing', agentIds: [ziling.id, ccc.id, yun.id] }),
     });
 
     const open = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
       method: 'POST',
       body: JSON.stringify({ body: '大家对广州的美食了解吗', attachmentIds: [] }),
     });
-    assert.equal(open.route.brainAgentId, brainAgent.id);
+    assert.equal(open.route.brainAgentId, null);
     assert.equal(open.route.fallbackUsed, false);
+    assert.equal(open.route.strategy, 'rules');
+    assert.equal(open.route.llmUsed, false);
     assert.equal(open.route.mode, 'broadcast');
 
     const directed = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
@@ -1226,22 +1272,50 @@ test('active Brain Agent also keeps contextual follow-ups with the focused agent
       method: 'POST',
       body: JSON.stringify({ body: '嗯，那为啥你心里的吃饭没有包含牛肉火锅呢？', attachmentIds: [] }),
     });
-    assert.equal(followup.route.brainAgentId, brainAgent.id);
+    assert.equal(followup.route.brainAgentId, null);
     assert.equal(followup.route.fallbackUsed, false);
+    assert.equal(followup.route.strategy, 'rules');
     assert.equal(followup.route.mode, 'contextual_follow_up');
     assert.deepEqual(followup.route.targetAgentIds, [ziling.id]);
+    assert.equal(mock.calls.length, 0);
   } finally {
     await server.stop();
+    await mock.stop();
   }
 });
 
-test('Brain Agent is configured outside normal agents and drives card-based task routing when active', async () => {
+test('Fan-out API config is masked globally and drives LLM card routing when needed', async () => {
   const server = await startIsolatedServer();
+  let githubId = '';
+  let designId = '';
+  let outsideId = '';
+  const fanoutContexts = [];
+  const mock = await startMockFanoutApi((body) => {
+    const content = JSON.parse(body.messages.at(-1).content);
+    fanoutContexts.push(content);
+    if (content.trigger.type === 'explicit_mention_plus_named_agent') {
+      return {
+        mode: 'directed',
+        targetAgentIds: [githubId, designId],
+        confidence: 0.91,
+        reason: 'The named designer should also receive this.',
+      };
+    }
+    return {
+      mode: 'task_claim',
+      targetAgentIds: [githubId],
+      claimantAgentId: githubId,
+      confidence: 0.93,
+      reason: 'GitPilot is the strongest card match for GitHub PR and CI work.',
+      taskIntent: { title: 'Fix GitHub PR CI', kind: 'coding' },
+    };
+  });
   try {
     const initial = await request(server.baseUrl, '/api/state');
     assert.deepEqual(initial.brainAgents, []);
     assert.equal(initial.router.brainAgentId, null);
     assert.equal(initial.router.mode, 'rules_fallback');
+    assert.equal(initial.settings.fanoutApi.configured, false);
     assert.equal(initial.agents.some((agent) => agent.id === 'agt_magclaw_brain' || agent.isBrain), false);
 
     const { channel: fallbackChannel } = await request(server.baseUrl, '/api/channels', {
@@ -1254,15 +1328,23 @@ test('Brain Agent is configured outside normal agents and drives card-based task
     });
     assert.equal(fallbackCreated.route.fallbackUsed, true);
     assert.equal(fallbackCreated.route.brainAgentId, null);
+    assert.equal(fallbackCreated.route.llmUsed, false);
 
     const { agent: github } = await request(server.baseUrl, '/api/agents', {
       method: 'POST',
       body: JSON.stringify({ name: 'GitPilot', description: 'General helper', runtime: 'Codex CLI' }),
     });
+    githubId = github.id;
     const { agent: design } = await request(server.baseUrl, '/api/agents', {
       method: 'POST',
       body: JSON.stringify({ name: 'DesignPilot', description: 'General helper', runtime: 'Codex CLI' }),
     });
+    designId = design.id;
+    const { agent: outside } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ResearchPilot', description: 'Research and source checking', runtime: 'Codex CLI' }),
+    });
+    outsideId = outside.id;
     await writeFile(
       path.join(server.tmp, '.magclaw', 'agents', github.id, 'notes', 'profile.md'),
       '# GitPilot Profile\n\n## Strengths And Skills\n- GitHub pull requests, repo triage, CI failures, release checks, and code review.\n',
@@ -1271,39 +1353,41 @@ test('Brain Agent is configured outside normal agents and drives card-based task
       path.join(server.tmp, '.magclaw', 'agents', design.id, 'notes', 'profile.md'),
       '# DesignPilot Profile\n\n## Strengths And Skills\n- Visual design, layout polish, writing tone, and presentation structure.\n',
     );
+    await writeFile(
+      path.join(server.tmp, '.magclaw', 'agents', outside.id, 'notes', 'profile.md'),
+      '# ResearchPilot Profile\n\n## Strengths And Skills\n- Market research, fact checking, and source synthesis.\n',
+    );
     const { channel } = await request(server.baseUrl, '/api/channels', {
       method: 'POST',
-      body: JSON.stringify({ name: 'brain-route', description: 'router v2', agentIds: [github.id, design.id] }),
+      body: JSON.stringify({ name: 'fanout-route', description: 'llm fanout routing', agentIds: [github.id, design.id] }),
     });
 
-    const { brainAgent } = await request(server.baseUrl, '/api/brain-agents', {
+    await request(server.baseUrl, '/api/settings/fanout', {
       method: 'POST',
       body: JSON.stringify({
-        name: 'Should Not Rename',
-        description: 'Should not replace the fixed description.',
-        runtime: 'Codex CLI',
-        model: 'gpt-5.5',
-        active: true,
+        enabled: true,
+        baseUrl: `${mock.baseUrl}/v1`,
+        apiKey: 'secret-test-key',
+        model: 'test-router',
       }),
     });
-    assert.equal(brainAgent.name, 'MagClaw Brain');
-    assert.equal(brainAgent.description, 'Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.');
-    assert.equal(brainAgent.runtime, 'Codex CLI');
-    assert.equal(brainAgent.active, true);
-
-    const renamed = await request(server.baseUrl, `/api/brain-agents/${brainAgent.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ name: 'Router Brain', description: 'Mutable?', model: 'gpt-5.4', active: true }),
-    });
-    assert.equal(renamed.brainAgent.name, 'MagClaw Brain');
-    assert.equal(renamed.brainAgent.description, 'Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.');
-    assert.equal(renamed.brainAgent.model, 'gpt-5.4');
 
     const configured = await request(server.baseUrl, '/api/state');
-    assert.equal(configured.brainAgents.length, 1);
-    assert.equal(configured.router.brainAgentId, brainAgent.id);
-    assert.equal(configured.router.mode, 'brain_agent');
-    assert.equal(configured.agents.some((agent) => agent.id === brainAgent.id || agent.isBrain), false);
+    assert.equal(configured.router.brainAgentId, null);
+    assert.equal(configured.router.mode, 'llm_fanout');
+    assert.equal(configured.settings.fanoutApi.configured, true);
+    assert.equal(configured.settings.fanoutApi.hasApiKey, true);
+    assert.equal(configured.settings.fanoutApi.apiKeyPreview, 'secret****');
+    assert.equal(JSON.stringify(configured.settings).includes('secret-test-key'), false);
+
+    const direct = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: `<@${github.id}> 请看一下这个 PR`, attachmentIds: [] }),
+    });
+    assert.equal(direct.route.strategy, 'rules');
+    assert.equal(direct.route.llmUsed, false);
+    assert.deepEqual(direct.route.targetAgentIds, [github.id]);
+    assert.equal(mock.calls.length, 0);
 
     const created = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
       method: 'POST',
@@ -1311,8 +1395,27 @@ test('Brain Agent is configured outside normal agents and drives card-based task
     });
 
     assert.equal(created.route.mode, 'task_claim');
+    assert.equal(created.route.strategy, 'llm');
+    assert.equal(created.route.llmUsed, true);
     assert.equal(created.route.claimantAgentId, github.id);
     assert.equal(created.task.claimedBy, github.id);
+    assert.equal(mock.calls.length, 1);
+    assert.ok(fanoutContexts[0].agentCards.map((card) => card.id).includes(outside.id));
+    assert.ok(fanoutContexts[0].agentCards.find((card) => card.id === outside.id && card.channelMember === false && card.selectable === false));
+    assert.ok(fanoutContexts[0].allowedChannelAgentIds.includes(github.id));
+    assert.equal(fanoutContexts[0].allowedChannelAgentIds.includes(outside.id), false);
+    assert.equal(mock.calls[0].url, '/v1/chat/completions');
+    assert.equal(mock.calls[0].headers.authorization, 'Bearer secret-test-key');
+
+    const mixed = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: `<@${github.id}> DesignPilot 也一起看看这个布局风险`, attachmentIds: [] }),
+    });
+    assert.equal(mixed.route.mode, 'directed');
+    assert.equal(mixed.route.strategy, 'llm');
+    assert.equal(mixed.route.llmUsed, true);
+    assert.deepEqual(mixed.route.targetAgentIds.slice().sort(), [github.id, design.id].sort());
+    assert.equal(mock.calls.length, 2);
 
     const snapshot = await waitFor(async () => {
       const state = await request(server.baseUrl, '/api/state');
@@ -1320,13 +1423,18 @@ test('Brain Agent is configured outside normal agents and drives card-based task
       const workItems = state.workItems.filter((item) => item.sourceMessageId === created.message.id);
       return routeEvent && workItems.length ? { routeEvent, workItems, state } : null;
     });
-    assert.equal(snapshot.routeEvent.brainAgentId, brainAgent.id);
+    assert.equal(snapshot.routeEvent.brainAgentId, null);
     assert.equal(snapshot.routeEvent.fallbackUsed, false);
     assert.equal(snapshot.routeEvent.mode, 'task_claim');
+    assert.equal(snapshot.routeEvent.strategy, 'llm');
+    assert.equal(snapshot.routeEvent.llmUsed, true);
+    assert.equal(snapshot.routeEvent.llmModel, 'test-router');
+    assert.ok(Number.isFinite(snapshot.routeEvent.llmLatencyMs));
     assert.deepEqual(snapshot.routeEvent.targetAgentIds, [github.id]);
     assert.deepEqual(snapshot.workItems.map((item) => item.agentId), [github.id]);
   } finally {
     await server.stop();
+    await mock.stop();
   }
 });
 

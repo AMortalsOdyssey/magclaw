@@ -21,6 +21,7 @@ let agentStartState = { agentId: null };
 let agentRestartState = { agentId: null, mode: 'restart' };
 let searchQuery = '';
 let searchIsComposing = false;
+let composerIsComposing = false;
 let searchMineOnly = false;
 let searchTimeRange = 'any';
 let searchTimeMenuOpen = false;
@@ -69,12 +70,21 @@ const AVATAR_CROP_STAGE_SIZE = 320;
 const AVATAR_CROP_VIEW_SIZE = 220;
 const AGENT_RECEIPT_VISIBLE_LIMIT = 10;
 
+function isImeComposing(event) {
+  return Boolean(
+    event?.isComposing ||
+    event?.keyCode === 229 ||
+    event?.which === 229 ||
+    composerIsComposing,
+  );
+}
+
 // Track known agent receipts per message to only animate new arrivals
 const knownMessageReceipts = new Map(); // messageId -> Set of agentIds
 let activeReceiptPopover = null; // currently open receipt popover trigger element
 let initialLoadComplete = false; // Skip animation on initial page load
-let brainDecisionCards = [];
-const seenBrainRouteEventIds = new Set();
+let fanoutDecisionCards = [];
+const seenFanoutRouteEventIds = new Set();
 const RAIL_WIDTH_KEY = 'magclawRailWidth';
 const RAIL_MIN_WIDTH = 176;
 const RAIL_MAX_WIDTH = 360;
@@ -103,13 +113,6 @@ let agentFormState = {
   reasoningEffort: '',
   avatar: '',
   envVars: [], // [{key: '', value: ''}]
-};
-
-let brainAgentFormState = {
-  id: null,
-  model: '',
-  reasoningEffort: '',
-  active: true,
 };
 
 // Avatar list (2000 avatars: 1-1000 faces, 1001-2000 objects)
@@ -1854,10 +1857,10 @@ function routeAgentNames(routeEvent, stateSnapshot = appState) {
   return names.length ? names.join(', ') : 'No agent selected';
 }
 
-function routeRouterName(routeEvent, stateSnapshot = appState) {
+function routeRouterName(routeEvent) {
+  if (routeEvent?.llmUsed) return routeEvent?.llmModel || 'Fan-out API';
   if (routeEvent?.fallbackUsed) return 'Rules fallback';
-  const brain = (stateSnapshot?.brainAgents || []).find((item) => item.id === routeEvent?.brainAgentId);
-  return brain?.name || 'Brain Agent';
+  return 'Local rules';
 }
 
 function routeEvidenceSummary(routeEvent) {
@@ -1870,6 +1873,9 @@ function routeEvidenceSummary(routeEvent) {
 }
 
 function routeReflectionText(routeEvent) {
+  if (routeEvent?.llmUsed) {
+    return 'LLM fan-out was used for this ambiguous routing decision; targets were validated against channel members.';
+  }
   if (routeEvent?.mode === 'contextual_follow_up') {
     return '检测到单 Agent 连续上下文，其他 Agent 保持旁听。';
   }
@@ -1877,7 +1883,7 @@ function routeReflectionText(routeEvent) {
     return '已进入 claim/任务锁路径，避免多个 Agent 重复执行。';
   }
   if (routeEvent?.fallbackUsed) {
-    return '当前没有可用 Brain Agent，已使用规则兜底；可从卡片和日志继续调参。';
+    return 'Fan-out API was unavailable or not configured, so local rules handled the message.';
   }
   if ((routeEvent?.targetAgentIds || []).length > 1) {
     return '这是开放群聊路由，多 Agent 可以各自补充视角。';
@@ -1885,7 +1891,7 @@ function routeReflectionText(routeEvent) {
   return '已完成上下文、显式指向和 Agent card 检查。';
 }
 
-function buildBrainDecisionCards(routeEvent, stateSnapshot = appState) {
+function buildFanoutDecisionCards(routeEvent, stateSnapshot = appState) {
   const confidence = Math.round(Number(routeEvent?.confidence || 0) * 100);
   const routerName = routeRouterName(routeEvent, stateSnapshot);
   const mode = routeEvent?.mode || 'unknown';
@@ -1893,44 +1899,44 @@ function buildBrainDecisionCards(routeEvent, stateSnapshot = appState) {
     {
       id: `${routeEvent.id}:thought`,
       phase: 'thought',
-      title: 'Brain Agent / 思考过程',
+      title: 'Fan-out API / Trigger',
       body: routeEvent?.reason || 'Router evaluated the channel message.',
       meta: `${routerName} / ${mode}`,
     },
     {
       id: `${routeEvent.id}:decision`,
       phase: 'decision',
-      title: 'Brain Agent / 决策结果',
+      title: 'Fan-out API / Decision',
       body: `Selected: ${routeAgentNames(routeEvent, stateSnapshot)}`,
-      meta: `confidence ${confidence}%`,
+      meta: `confidence ${confidence}%${routeEvent?.llmLatencyMs ? ` / ${routeEvent.llmLatencyMs}ms` : ''}`,
     },
     {
       id: `${routeEvent.id}:reflection`,
       phase: 'reflection',
-      title: 'Brain Agent / 反思过程',
+      title: 'Fan-out API / Validation',
       body: routeReflectionText(routeEvent),
       meta: routeEvidenceSummary(routeEvent),
     },
   ];
 }
 
-function renderBrainDecisionToasts() {
+function renderFanoutDecisionToasts() {
   return `
-    <div class="brain-toast-stack" aria-live="polite" aria-atomic="false">
-      ${brainDecisionCards.map((card) => `
-        <article class="brain-toast-card brain-toast-${escapeHtml(card.phase)}${card.exiting ? ' exiting' : ''}">
-          <div class="brain-toast-title">${escapeHtml(card.title)}</div>
-          <div class="brain-toast-body">${escapeHtml(card.body)}</div>
-          <div class="brain-toast-meta">${escapeHtml(card.meta || '')}</div>
+    <div class="fanout-toast-stack" aria-live="polite" aria-atomic="false">
+      ${fanoutDecisionCards.map((card) => `
+        <article class="fanout-toast-card fanout-toast-${escapeHtml(card.phase)}${card.exiting ? ' exiting' : ''}">
+          <div class="fanout-toast-title">${escapeHtml(card.title)}</div>
+          <div class="fanout-toast-body">${escapeHtml(card.body)}</div>
+          <div class="fanout-toast-meta">${escapeHtml(card.meta || '')}</div>
         </article>
       `).join('')}
     </div>
   `;
 }
 
-function patchBrainDecisionToasts() {
-  const next = htmlToElement(renderBrainDecisionToasts());
-  const current = document.querySelector('.brain-toast-stack');
+function patchFanoutDecisionToasts() {
+  const next = htmlToElement(renderFanoutDecisionToasts());
+  const current = document.querySelector('.fanout-toast-stack');
   if (current && next) {
     current.replaceWith(next);
     return;
@@ -1938,38 +1944,39 @@ function patchBrainDecisionToasts() {
   if (next) root.appendChild(next);
 }
 
-function removeBrainDecisionCard(id) {
-  brainDecisionCards = brainDecisionCards.filter((card) => card.id !== id);
-  patchBrainDecisionToasts();
+function removeFanoutDecisionCard(id) {
+  fanoutDecisionCards = fanoutDecisionCards.filter((card) => card.id !== id);
+  patchFanoutDecisionToasts();
 }
 
-function dismissBrainDecisionCard(id) {
-  brainDecisionCards = brainDecisionCards.map((card) => (
+function dismissFanoutDecisionCard(id) {
+  fanoutDecisionCards = fanoutDecisionCards.map((card) => (
     card.id === id ? { ...card, exiting: true } : card
   ));
-  patchBrainDecisionToasts();
-  window.setTimeout(() => removeBrainDecisionCard(id), 220);
+  patchFanoutDecisionToasts();
+  window.setTimeout(() => removeFanoutDecisionCard(id), 220);
 }
 
-function addBrainDecisionCard(card) {
-  brainDecisionCards = [...brainDecisionCards.filter((item) => item.id !== card.id), card].slice(-9);
-  patchBrainDecisionToasts();
-  window.setTimeout(() => dismissBrainDecisionCard(card.id), 5000);
+function addFanoutDecisionCard(card) {
+  fanoutDecisionCards = [...fanoutDecisionCards.filter((item) => item.id !== card.id), card].slice(-9);
+  patchFanoutDecisionToasts();
+  window.setTimeout(() => dismissFanoutDecisionCard(card.id), 5000);
 }
 
-function enqueueBrainDecisionCards(routeEvent, stateSnapshot = appState) {
+function enqueueFanoutDecisionCards(routeEvent, stateSnapshot = appState) {
   if (!routeEvent?.id) return;
-  buildBrainDecisionCards(routeEvent, stateSnapshot)
+  buildFanoutDecisionCards(routeEvent, stateSnapshot)
     .forEach((card, index) => {
-      window.setTimeout(() => addBrainDecisionCard(card), index * 240);
+      window.setTimeout(() => addFanoutDecisionCard(card), index * 240);
     });
 }
 
-function trackBrainRouteEvents(nextState, { silent = false } = {}) {
+function trackFanoutRouteEvents(nextState, { silent = false } = {}) {
   for (const event of nextState?.routeEvents || []) {
-    if (!event?.id || seenBrainRouteEventIds.has(event.id)) continue;
-    seenBrainRouteEventIds.add(event.id);
-    if (!silent && initialLoadComplete) enqueueBrainDecisionCards(event, nextState);
+    if (!event?.id || seenFanoutRouteEventIds.has(event.id)) continue;
+    seenFanoutRouteEventIds.add(event.id);
+    if (!event.llmUsed) continue;
+    if (!silent && initialLoadComplete) enqueueFanoutDecisionCards(event, nextState);
   }
 }
 
@@ -2017,7 +2024,7 @@ function render() {
       ` : ''}
     </div>
     ${modal ? renderModal() : ''}
-    ${renderBrainDecisionToasts()}
+    ${renderFanoutDecisionToasts()}
   `;
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);
@@ -2050,6 +2057,7 @@ function renderRail() {
         ${renderNavItem('threads', 'Threads', 'message', unreadThreads || '')}
         ${renderNavItem('tasks', 'Tasks', 'file', openTasks || '')}
         ${renderNavItem('saved', 'Saved', 'bookmark', saved || '')}
+        ${renderNavItem('cloud', 'System', 'settings', appState.settings?.fanoutApi?.configured ? 'LLM' : 'Rules')}
       </div>
 
       <div class="rail-section">
@@ -2074,8 +2082,6 @@ function renderRail() {
         }).join('')}
       </div>
       ` : `
-      ${renderBrainAgentPanel()}
-
       <div class="rail-section">
         <div class="rail-title">
           <span>Agents <em>${normalAgents.length}</em></span>
@@ -2099,6 +2105,16 @@ function renderRail() {
         </div>
         ${(appState.computers || []).map((computer) => renderComputerListItem(computer)).join('')}
       </div>
+
+      <div class="rail-section system-config-section">
+        <div class="rail-title">
+          <span>System Config <em>${appState.settings?.fanoutApi?.configured ? 'LLM' : 'rules'}</em></span>
+        </div>
+        <button class="space-btn system-config-entry${activeView === 'cloud' ? ' active' : ''}" type="button" data-action="set-view" data-view="cloud">
+          <span class="channel-icon">API</span>
+          <span class="dm-name">Fan-out API</span>
+        </button>
+      </div>
       `}
 
       <div class="runtime-chip">
@@ -2119,6 +2135,7 @@ function renderNavItem(view, label, icon, badge) {
     message: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/></svg>',
     file: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14,2 14,8 20,8"/></svg>',
     bookmark: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>',
+    settings: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="M5.6 5.6l2.1 2.1"/><path d="M16.3 16.3l2.1 2.1"/><path d="M18.4 5.6l-2.1 2.1"/><path d="M7.7 16.3l-2.1 2.1"/></svg>',
   };
   return `
     <button class="nav-item${active}" type="button" data-action="set-view" data-view="${view}">
@@ -3266,16 +3283,61 @@ function renderMissions() {
   `;
 }
 
+function renderComputerConfigCard() {
+  const computers = appState.computers || [];
+  return `
+    <div class="pixel-panel cloud-card">
+      <div class="panel-title"><span>Computer</span><span>${computers.length}</span></div>
+      <div class="computer-config-list">
+        ${computers.map((computer) => `
+          <div class="computer-config-row">
+            <strong>${escapeHtml(computer.name || 'Computer')}</strong>
+            <span>${escapeHtml(computer.os || 'unknown')} / ${escapeHtml(computer.status || 'offline')}</span>
+            <small>${escapeHtml((computer.runtimeIds || []).join(', ') || 'no runtimes')}</small>
+          </div>
+        `).join('') || '<div class="empty-box small">No computers configured.</div>'}
+      </div>
+      <button class="secondary-btn" type="button" data-action="open-modal" data-modal="computer">Add Computer</button>
+    </div>
+  `;
+}
+
+function renderFanoutApiConfigCard() {
+  const config = appState.settings?.fanoutApi || {};
+  const status = config.configured ? 'LLM enabled' : 'Rules fallback';
+  return `
+    <div class="pixel-panel cloud-card fanout-config-card">
+      <form id="fanout-config-form" class="modal-form">
+        <div class="panel-title"><span>Fan-out API</span><span>${escapeHtml(status)}</span></div>
+        <p class="fanout-api-note">This API key is used only when Magclaw needs semantic fan-out routing, such as choosing a task claimant or deciding whether a named-but-not-@mentioned agent should also receive a message. If this is incomplete or disabled, local rules handle routing.</p>
+        <label class="checkline"><input type="checkbox" name="enabled" ${config.enabled ? 'checked' : ''} /> Enable LLM fan-out for ambiguous routing</label>
+        <label><span>Base URL</span><input name="baseUrl" value="${escapeHtml(config.baseUrl || '')}" placeholder="https://api.openai.com/v1" /></label>
+        <label><span>Model</span><input name="model" value="${escapeHtml(config.model || '')}" placeholder="gpt-5.4-mini-2026-03-17" /></label>
+        <label>
+          <span>API Key</span>
+          <input name="apiKey" type="password" autocomplete="off" placeholder="${escapeHtml(config.hasApiKey ? `${config.apiKeyPreview} configured - leave blank to keep` : 'paste API key')}" />
+          <small>${escapeHtml(config.hasApiKey ? `Stored key preview: ${config.apiKeyPreview}` : 'No key stored yet.')}</small>
+        </label>
+        ${config.hasApiKey ? '<label class="checkline"><input type="checkbox" name="clearApiKey" /> Clear saved API key</label>' : ''}
+        <button class="primary-btn" type="submit">Save Fan-out API</button>
+      </form>
+    </div>
+  `;
+}
+
 function renderCloud() {
   const c = appState.connection || {};
   const isCloud = c.mode === 'cloud';
   const statusTone = c.pairingStatus === 'paired' ? 'green' : isCloud ? 'amber' : 'blue';
   return `
-    ${renderHeader('Connection Mode', 'Local-first or cloud-connected', `
+    ${renderHeader('System Config', 'Computer, fan-out and connection settings', `
       ${pill(c.mode || 'local', isCloud ? 'cyan' : 'blue')}
       ${pill(c.pairingStatus || 'local', statusTone)}
     `)}
     <section class="cloud-layout">
+      ${renderComputerConfigCard()}
+      ${renderFanoutApiConfigCard()}
+
       <div class="pixel-panel cloud-card">
         <div class="panel-title"><span>Mode</span><span>${escapeHtml(c.deployment || 'local')}</span></div>
         <div class="mode-cards">
@@ -3857,51 +3919,6 @@ function renderAgent(agent) {
   `;
 }
 
-function brainAgents() {
-  return appState?.brainAgents || [];
-}
-
-function activeBrainAgent() {
-  const activeId = appState?.router?.brainAgentId || null;
-  return brainAgents().find((brain) => brain.id === activeId) || brainAgents().find((brain) => brain.active) || null;
-}
-
-function renderBrainAgentPanel() {
-  const brains = brainAgents();
-  const active = activeBrainAgent();
-  return `
-    <div class="rail-section brain-agent-section">
-      <div class="rail-title">
-        <span>Brain Agent <em>${active ? 'active' : 'fallback'}</em></span>
-        <button type="button" data-action="open-modal" data-modal="brain-agent">+</button>
-      </div>
-      ${brains.length ? brains.map((brain) => {
-        const isActive = active?.id === brain.id;
-        return `
-          <div class="space-btn member-btn brain-agent-row${isActive ? ' active' : ''}">
-            <span class="dm-avatar-wrap"><span class="dm-avatar">MB</span></span>
-            <button class="brain-agent-main" type="button" data-action="open-brain-agent" data-id="${escapeHtml(brain.id)}">
-              <span class="dm-name">${escapeHtml(brain.name || 'MagClaw Brain')}</span>
-              <span class="agent-desc">${escapeHtml(brain.runtime || 'offline')} / ${escapeHtml(brain.model || '')}</span>
-            </button>
-            <span class="member-status-side">${avatarStatusDot(isActive ? 'idle' : 'offline', isActive ? 'Active Brain Agent' : 'Inactive Brain Agent')}</span>
-            ${isActive ? '' : `<button class="brain-agent-use-btn" type="button" data-action="activate-brain-agent" data-id="${escapeHtml(brain.id)}" title="Use Brain Agent" aria-label="Use ${escapeHtml(brain.name || 'MagClaw Brain')}">Use</button>`}
-          </div>
-        `;
-      }).join('') : `
-        <button class="space-btn member-btn brain-agent-empty" type="button" data-action="open-modal" data-modal="brain-agent">
-          <span class="dm-avatar-wrap"><span class="dm-avatar">MB</span></span>
-          <div class="member-info">
-            <span class="dm-name">MagClaw Brain</span>
-            <span class="agent-desc">Rules fallback</span>
-          </div>
-          <span class="member-status-side">${avatarStatusDot('offline', 'Brain Agent offline')}</span>
-        </button>
-      `}
-    </div>
-  `;
-}
-
 function renderAgentListItem(agent) {
   const active = selectedAgentId === agent.id ? ' active' : '';
   const desc = agent.description ? `<span class="agent-desc">${escapeHtml(agent.description)}</span>` : '';
@@ -4078,7 +4095,6 @@ function renderModal() {
     dm: renderDmModal,
     task: renderTaskModal,
     agent: renderAgentModal,
-    'brain-agent': renderBrainAgentModal,
     'avatar-picker': renderAvatarPickerModal,
     'avatar-crop': renderAvatarCropModal,
     'agent-start': renderAgentStartModal,
@@ -4537,69 +4553,6 @@ function renderAgentModal() {
   `;
 }
 
-function renderBrainAgentModal() {
-  const availableRuntimes = installedRuntimes.filter((rt) => rt.installed);
-  const editingBrain = brainAgentFormState.id ? brainAgents().find((brain) => brain.id === brainAgentFormState.id) : null;
-  const currentRuntime = availableRuntimes.find((rt) => rt.id === selectedRuntimeId) || runtimeForAgent(editingBrain) || availableRuntimes[0];
-  const models = currentRuntime?.models || [];
-  const modelNames = currentRuntime?.modelNames || models.map(m => ({ slug: m, name: m }));
-  const defaultModel = brainAgentFormState.model || editingBrain?.model || currentRuntime?.defaultModel || '';
-  const hasReasoningEffort = Boolean(currentRuntime?.reasoningEffort?.length);
-  const reasoningEfforts = currentRuntime?.reasoningEffort || [];
-  const defaultReasoningEffort = brainAgentFormState.reasoningEffort || editingBrain?.reasoningEffort || currentRuntime?.defaultReasoningEffort || 'medium';
-  const submitLabel = editingBrain ? 'Save Brain Agent' : 'Create Brain Agent';
-  return `
-    ${modalHeader(submitLabel, 'Routing')}
-    <form id="brain-agent-form" class="modal-form">
-      <label>
-        <span>NAME</span>
-        <input name="name" value="MagClaw Brain" readonly />
-      </label>
-      <label>
-        <span>DESCRIPTION</span>
-        <textarea name="description" rows="3" readonly>Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.</textarea>
-      </label>
-      <div class="form-field">
-        <span>RUNTIME <span class="required">*</span></span>
-        <select name="runtime" id="brain-runtime-select" required>
-          ${installedRuntimes.map((rt) => {
-            const label = rt.installed
-              ? `${rt.name}${rt.version ? ` (${rt.version})` : ''}`
-              : `${rt.name} (not installed)`;
-            return `<option value="${rt.id}" ${!rt.installed ? 'disabled' : ''} ${rt.id === currentRuntime?.id ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-          }).join('')}
-        </select>
-      </div>
-      <div class="form-field">
-        <span>MODEL</span>
-        <select name="model" id="brain-model-select">
-          ${modelNames.map((m) => {
-            const slug = typeof m === 'string' ? m : m.slug;
-            const name = typeof m === 'string' ? m : m.name;
-            return `<option value="${slug}" ${slug === defaultModel ? 'selected' : ''}>${escapeHtml(name)}</option>`;
-          }).join('')}
-        </select>
-      </div>
-      ${hasReasoningEffort ? `
-      <div class="form-field">
-        <span>REASONING EFFORT</span>
-        <select name="reasoningEffort" id="brain-reasoning-select">
-          ${reasoningEfforts.map((e) => `<option value="${e}" ${e === defaultReasoningEffort ? 'selected' : ''}>${escapeHtml(e.charAt(0).toUpperCase() + e.slice(1))}</option>`).join('')}
-        </select>
-      </div>
-      ` : ''}
-      <label class="checkbox-line">
-        <input type="checkbox" name="active" ${brainAgentFormState.active ? 'checked' : ''} />
-        <span>ACTIVE</span>
-      </label>
-      <div class="modal-actions">
-        <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
-        <button class="primary-btn" type="submit">${submitLabel}</button>
-      </div>
-    </form>
-  `;
-}
-
 function renderAvatarPickerModal() {
   let html = `${modalHeader('SELECT AVATAR', 'Choose an avatar for your agent')}
     <div class="avatar-grid">`;
@@ -4712,26 +4665,6 @@ function resetAgentFormState() {
   selectedRuntimeId = null;
 }
 
-function resetBrainAgentFormState(brain = null) {
-  const runtime = brain ? runtimeForAgent(brain) : installedRuntimes.find((rt) => rt.installed);
-  selectedRuntimeId = runtime?.id || null;
-  brainAgentFormState = {
-    id: brain?.id || null,
-    model: brain?.model || runtime?.defaultModel || '',
-    reasoningEffort: brain?.reasoningEffort || runtime?.defaultReasoningEffort || 'medium',
-    active: brain ? Boolean(brain.active || appState?.router?.brainAgentId === brain.id) : true,
-  };
-}
-
-function saveBrainAgentFormState() {
-  const form = document.getElementById('brain-agent-form');
-  if (!form) return;
-  const data = new FormData(form);
-  brainAgentFormState.model = data.get('model') || '';
-  brainAgentFormState.reasoningEffort = data.get('reasoningEffort') || '';
-  brainAgentFormState.active = Boolean(data.get('active'));
-}
-
 function readFileAsDataUrl(file, source = 'upload') {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -4813,10 +4746,25 @@ function cloudFormPayload(forcedMode) {
   return payload;
 }
 
+function fanoutFormPayload() {
+  const form = document.querySelector('#fanout-config-form');
+  const current = appState?.settings?.fanoutApi || {};
+  const data = form ? new FormData(form) : null;
+  const apiKey = String(data?.get('apiKey') || '').trim();
+  const payload = {
+    enabled: data ? Boolean(data.get('enabled')) : Boolean(current.enabled),
+    baseUrl: data?.get('baseUrl') ?? current.baseUrl ?? '',
+    model: data?.get('model') ?? current.model ?? '',
+    clearApiKey: data ? Boolean(data.get('clearApiKey')) : false,
+  };
+  if (apiKey) payload.apiKey = apiKey;
+  return payload;
+}
+
 async function refreshState() {
   rememberPinnedBottomBeforeStateChange();
   const nextState = await api('/api/state');
-  trackBrainRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
+  trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
   appState = nextState;
   render();
 }
@@ -4967,7 +4915,7 @@ function patchActiveConversationSurface(scrollSnapshot) {
 }
 
 function applyStateUpdate(nextState) {
-  trackBrainRouteEvents(nextState, { silent: !initialLoadComplete });
+  trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete });
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
@@ -5060,6 +5008,9 @@ document.addEventListener('compositionstart', (event) => {
   if (event.target?.id === 'search-input') {
     searchIsComposing = true;
   }
+  if (event.target?.closest?.('textarea[data-mention-input]')) {
+    composerIsComposing = true;
+  }
 });
 
 document.addEventListener('compositionend', (event) => {
@@ -5068,6 +5019,9 @@ document.addEventListener('compositionend', (event) => {
     searchQuery = event.target.value;
     searchVisibleCount = SEARCH_PAGE_SIZE;
     updateSearchResults();
+  }
+  if (event.target?.closest?.('textarea[data-mention-input]')) {
+    composerIsComposing = false;
   }
 });
 
@@ -5095,6 +5049,7 @@ document.addEventListener('keydown', async (event) => {
   }
 
   const textarea = event.target.closest('textarea[data-mention-input]');
+  if (textarea && isImeComposing(event)) return;
 
   // Handle mention popup keyboard navigation
   if (textarea && mentionPopup.active && mentionPopup.composerId === textarea.dataset.composerId) {
@@ -5315,10 +5270,6 @@ document.addEventListener('input', async (event) => {
     if (name === 'name') agentFormState.name = event.target.value;
     if (name === 'description') agentFormState.description = event.target.value;
   }
-  const brainForm = event.target.closest('#brain-agent-form');
-  if (brainForm && event.target.name === 'model') {
-    brainAgentFormState.model = event.target.value;
-  }
   // Environment variable input
   const envIndex = event.target.dataset.envIndex;
   const envField = event.target.dataset.envField;
@@ -5373,21 +5324,6 @@ document.addEventListener('change', async (event) => {
     agentFormState.reasoningEffort = '';
     render();
     return;
-  }
-  if (event.target.id === 'brain-runtime-select') {
-    saveBrainAgentFormState();
-    selectedRuntimeId = event.target.value;
-    brainAgentFormState.model = '';
-    brainAgentFormState.reasoningEffort = '';
-    render();
-    return;
-  }
-  const brainForm = event.target.closest('#brain-agent-form');
-  if (brainForm) {
-    const name = event.target.name;
-    if (name === 'model') brainAgentFormState.model = event.target.value;
-    if (name === 'reasoningEffort') brainAgentFormState.reasoningEffort = event.target.value;
-    if (name === 'active') brainAgentFormState.active = event.target.checked;
   }
   if (event.target.name === 'asTask') {
     const composerId = event.target.closest('form')?.dataset.composerId;
@@ -5908,26 +5844,7 @@ document.addEventListener('click', async (event) => {
         resetAgentFormState();
         await loadInstalledRuntimes();
       }
-      if (modal === 'brain-agent') {
-        await loadInstalledRuntimes();
-        resetBrainAgentFormState();
-      }
       render();
-    }
-    if (action === 'open-brain-agent') {
-      const brain = brainAgents().find((item) => item.id === target.dataset.id);
-      await loadInstalledRuntimes();
-      resetBrainAgentFormState(brain);
-      modal = 'brain-agent';
-      render();
-    }
-    if (action === 'activate-brain-agent') {
-      await api(`/api/brain-agents/${encodeURIComponent(target.dataset.id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ active: true }),
-      });
-      toast('Brain Agent activated');
-      await refreshState().catch(() => {});
     }
     if (action === 'agent-stop-unavailable') {
       toast('暂时不可用');
@@ -5972,9 +5889,6 @@ document.addEventListener('click', async (event) => {
       if (isBackdrop || isCloseBtn || isCancelBtn) {
         if (modal === 'agent') {
           resetAgentFormState();
-        }
-        if (modal === 'brain-agent') {
-          resetBrainAgentFormState();
         }
         if (modal === 'add-channel-member' || modal === 'channel-members') {
           addMemberSearchQuery = '';
@@ -6379,28 +6293,6 @@ document.addEventListener('submit', async (event) => {
       resetAgentFormState();
       modal = null;
     }
-    if (form.id === 'brain-agent-form') {
-      const selectedRuntime = installedRuntimes.find((rt) => rt.id === data.get('runtime'));
-      const payload = {
-        runtime: selectedRuntime?.name || data.get('runtime'),
-        model: data.get('model'),
-        reasoningEffort: data.get('reasoningEffort') || null,
-        active: Boolean(data.get('active')),
-      };
-      if (brainAgentFormState.id) {
-        await api(`/api/brain-agents/${encodeURIComponent(brainAgentFormState.id)}`, {
-          method: 'PATCH',
-          body: JSON.stringify(payload),
-        });
-      } else {
-        await api('/api/brain-agents', {
-          method: 'POST',
-          body: JSON.stringify(payload),
-        });
-      }
-      resetBrainAgentFormState();
-      modal = null;
-    }
     if (form.id === 'computer-form') {
       await api('/api/computers', {
         method: 'POST',
@@ -6421,6 +6313,13 @@ document.addEventListener('submit', async (event) => {
         body: JSON.stringify(cloudFormPayload()),
       });
       toast('Connection saved');
+    }
+    if (form.id === 'fanout-config-form') {
+      await api('/api/settings/fanout', {
+        method: 'POST',
+        body: JSON.stringify(fanoutFormPayload()),
+      });
+      toast('Fan-out API saved');
     }
   } catch (error) {
     toast(error.message);

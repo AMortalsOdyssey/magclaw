@@ -206,6 +206,22 @@ test('message composers refocus after enter-submit sends', async () => {
   assert.match(submitSource, /if \(focusComposerId\) requestComposerFocus\(focusComposerId\)/);
 });
 
+test('message composers do not submit while IME composition is active', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const compositionStartSource = app.slice(app.indexOf("document.addEventListener('compositionstart'"), app.indexOf("document.addEventListener('compositionend'"));
+  const compositionEndSource = app.slice(app.indexOf("document.addEventListener('compositionend'"), app.indexOf("document.addEventListener('keydown'"));
+  const keydownSource = app.slice(app.indexOf("document.addEventListener('keydown'"), app.indexOf("document.addEventListener('pointerdown'"));
+
+  assert.match(app, /let composerIsComposing = false/);
+  assert.match(app, /function isImeComposing\(event\)/);
+  assert.match(app, /event\?\.keyCode === 229/);
+  assert.match(compositionStartSource, /textarea\[data-mention-input\]/);
+  assert.match(compositionStartSource, /composerIsComposing = true/);
+  assert.match(compositionEndSource, /textarea\[data-mention-input\]/);
+  assert.match(compositionEndSource, /composerIsComposing = false/);
+  assert.match(keydownSource, /if \(textarea && isImeComposing\(event\)\) return/);
+});
+
 test('workspace location and scroll position survive refreshes', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
@@ -535,45 +551,51 @@ test('create agent opens with a fresh form state every time', async () => {
   assert.match(app, /if \(form\.id === 'agent-form'\)[\s\S]*resetAgentFormState\(\);\s*modal = null/);
 });
 
-test('Brain Agent config is separate from the normal agent list', async () => {
+test('Fan-out API config replaces the Brain Agent UI module', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const railSource = app.slice(app.indexOf('function renderRail'), app.indexOf('function renderNavItem'));
-  const brainModalSource = app.slice(app.indexOf('function renderBrainAgentModal'), app.indexOf('function renderAvatarPickerModal'));
   const submitSource = app.slice(app.indexOf("document.addEventListener('submit'"), app.indexOf('refreshState().then'));
 
-  assert.match(app, /function renderBrainAgentPanel\(\)/);
+  assert.doesNotMatch(app, /function renderBrainAgentPanel\(\)/);
+  assert.doesNotMatch(app, /function renderBrainAgentModal\(\)/);
+  assert.doesNotMatch(app, /'brain-agent': renderBrainAgentModal/);
+  assert.doesNotMatch(app, /id="brain-runtime-select"/);
+  assert.doesNotMatch(styles, /\.brain-agent-row/);
+  assert.doesNotMatch(styles, /\.brain-agent-use-btn/);
   assert.match(railSource, /const normalAgents = channelAssignableAgents\(\)/);
-  assert.match(railSource, /renderBrainAgentPanel\(\)/);
   assert.match(railSource, /normalAgents\.map\(\(agent\) => renderAgentListItem\(agent\)\)/);
-  assert.match(app, /'brain-agent': renderBrainAgentModal/);
-  assert.match(brainModalSource, /<input name="name" value="MagClaw Brain" readonly \/>/);
-  assert.match(brainModalSource, /<textarea name="description" rows="3" readonly>/);
-  assert.match(brainModalSource, /id="brain-runtime-select"/);
-  assert.match(submitSource, /form\.id === 'brain-agent-form'/);
-  assert.match(submitSource, /\/api\/brain-agents/);
-  assert.match(styles, /\.brain-agent-row/);
-  assert.match(styles, /\.brain-agent-use-btn/);
+  assert.match(railSource, /System Config/);
+  assert.match(app, /function renderFanoutApiConfigCard\(\)/);
+  assert.match(app, /id="fanout-config-form"/);
+  assert.match(app, /Base URL/);
+  assert.match(app, /API Key/);
+  assert.match(app, /apiKeyPreview/);
+  assert.match(app, /Enable LLM fan-out for ambiguous routing/);
+  assert.match(submitSource, /form\.id === 'fanout-config-form'/);
+  assert.match(submitSource, /\/api\/settings\/fanout/);
+  assert.match(styles, /\.fanout-api-note/);
 });
 
-test('Brain route decisions render stacked diagnostic cards', async () => {
+test('LLM fan-out decisions render stacked diagnostic cards only when LLM is used', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
-  assert.match(app, /let brainDecisionCards = \[\]/);
-  assert.match(app, /const seenBrainRouteEventIds = new Set\(\)/);
-  assert.match(app, /function trackBrainRouteEvents\(nextState/);
-  assert.match(app, /function enqueueBrainDecisionCards\(routeEvent/);
-  assert.match(app, /function renderBrainDecisionToasts\(\)/);
-  assert.match(app, /Brain Agent \/ 思考过程/);
-  assert.match(app, /Brain Agent \/ 决策结果/);
-  assert.match(app, /Brain Agent \/ 反思过程/);
-  assert.match(app, /trackBrainRouteEvents\(nextState, \{ silent: !initialLoadComplete \|\| !appState \}\)/);
-  assert.match(app, /trackBrainRouteEvents\(nextState, \{ silent: !initialLoadComplete \}\)/);
-  assert.match(styles, /\.brain-toast-stack/);
-  assert.match(styles, /\.brain-toast-card/);
-  assert.match(styles, /@keyframes brainToastIn/);
-  assert.match(styles, /@keyframes brainToastOut/);
+  assert.match(app, /let fanoutDecisionCards = \[\]/);
+  assert.match(app, /const seenFanoutRouteEventIds = new Set\(\)/);
+  assert.match(app, /function trackFanoutRouteEvents\(nextState/);
+  assert.match(app, /function enqueueFanoutDecisionCards\(routeEvent/);
+  assert.match(app, /function renderFanoutDecisionToasts\(\)/);
+  assert.match(app, /Fan-out API \/ Trigger/);
+  assert.match(app, /Fan-out API \/ Decision/);
+  assert.match(app, /Fan-out API \/ Validation/);
+  assert.match(app, /if \(!event\.llmUsed\) continue/);
+  assert.match(app, /trackFanoutRouteEvents\(nextState, \{ silent: !initialLoadComplete \|\| !appState \}\)/);
+  assert.match(app, /trackFanoutRouteEvents\(nextState, \{ silent: !initialLoadComplete \}\)/);
+  assert.match(styles, /\.fanout-toast-stack/);
+  assert.match(styles, /\.fanout-toast-card/);
+  assert.match(styles, /@keyframes fanoutToastIn/);
+  assert.match(styles, /@keyframes fanoutToastOut/);
 });
 
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {

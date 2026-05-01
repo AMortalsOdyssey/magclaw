@@ -4500,6 +4500,42 @@ code {
   gap: 10px;
 }
 
+.computer-config-list {
+  display: grid;
+  gap: 8px;
+}
+
+.computer-config-row {
+  display: grid;
+  gap: 3px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.computer-config-row:last-child {
+  border-bottom: 0;
+}
+
+.computer-config-row span,
+.computer-config-row small {
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.fanout-api-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.system-config-entry .channel-icon {
+  width: auto;
+  min-width: 24px;
+  padding: 0 4px;
+  font-size: 9px;
+}
+
 .member-row {
   display: grid;
   grid-template-columns: 34px 1fr;
@@ -4784,7 +4820,7 @@ code {
   transform: translateY(0);
 }
 
-.brain-toast-stack {
+.fanout-toast-stack {
   position: fixed;
   top: 16px;
   right: 16px;
@@ -4796,48 +4832,48 @@ code {
   pointer-events: none;
 }
 
-.brain-toast-card {
+.fanout-toast-card {
   border: 2px solid var(--border);
   background: var(--slock-cream);
   color: var(--text-primary);
   box-shadow: var(--shadow-pixel);
   padding: 10px 12px;
   pointer-events: auto;
-  animation: brainToastIn 180ms ease-out both;
+  animation: fanoutToastIn 180ms ease-out both;
 }
 
-.brain-toast-title {
+.fanout-toast-title {
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
 }
 
-.brain-toast-body {
+.fanout-toast-body {
   margin-top: 5px;
   font-size: 12px;
   line-height: 1.35;
 }
 
-.brain-toast-meta {
+.fanout-toast-meta {
   margin-top: 6px;
   color: var(--text-muted);
   font-size: 10px;
   line-height: 1.25;
 }
 
-.brain-toast-decision {
+.fanout-toast-decision {
   background: var(--accent-soft);
 }
 
-.brain-toast-reflection {
+.fanout-toast-reflection {
   background: var(--bg-card);
 }
 
-.brain-toast-card.exiting {
-  animation: brainToastOut 220ms ease-in both;
+.fanout-toast-card.exiting {
+  animation: fanoutToastOut 220ms ease-in both;
 }
 
-@keyframes brainToastIn {
+@keyframes fanoutToastIn {
   from {
     opacity: 0;
     transform: translateX(28px);
@@ -4848,7 +4884,7 @@ code {
   }
 }
 
-@keyframes brainToastOut {
+@keyframes fanoutToastOut {
   from {
     opacity: 1;
     transform: translateY(0);
@@ -5800,42 +5836,6 @@ code {
 
 .member-btn .dm-avatar-wrap .avatar-status-dot {
   display: none;
-}
-
-.brain-agent-row {
-  min-height: 42px;
-  grid-template-columns: 24px minmax(0, 1fr) 14px auto;
-}
-
-.brain-agent-main {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  padding: 0;
-}
-
-.brain-agent-use-btn {
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 5px;
-}
-
-.brain-agent-empty {
-  min-height: 42px;
-}
-
-.brain-agent-row .agent-desc,
-.brain-agent-empty .agent-desc {
-  margin-bottom: 0;
 }
 
 .member-info .dm-name {

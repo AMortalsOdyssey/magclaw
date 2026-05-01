@@ -58,6 +58,7 @@ const STATE_HEARTBEAT_MS = Math.max(25, Number(process.env.MAGCLAW_STATE_HEARTBE
 const AGENT_STATUS_STALE_MS = Math.max(1000, Number(process.env.MAGCLAW_AGENT_STATUS_STALE_MS || 45_000));
 const ROUTE_EVENTS_LIMIT = Math.max(50, Number(process.env.MAGCLAW_ROUTE_EVENTS_LIMIT || 500));
 const AGENT_CARD_TEXT_LIMIT = 5000;
+const FANOUT_API_TIMEOUT_MS = Math.max(500, Number(process.env.MAGCLAW_FANOUT_TIMEOUT_MS || 2500));
 const LEGACY_BRAIN_AGENT_ID = 'agt_magclaw_brain';
 const BRAIN_AGENT_NAME = 'MagClaw Brain';
 const BRAIN_AGENT_DESCRIPTION = 'Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.';
@@ -168,6 +169,28 @@ function normalizeCloudUrl(value) {
   return raw.replace(/\/+$/, '');
 }
 
+function normalizeFanoutApiConfig(config = {}) {
+  const timeoutMs = Number(config.timeoutMs || FANOUT_API_TIMEOUT_MS);
+  return {
+    enabled: Boolean(config.enabled),
+    baseUrl: normalizeCloudUrl(config.baseUrl || ''),
+    apiKey: String(config.apiKey || ''),
+    model: String(config.model || '').trim(),
+    timeoutMs: Number.isFinite(timeoutMs) ? Math.max(500, Math.min(30_000, timeoutMs)) : FANOUT_API_TIMEOUT_MS,
+  };
+}
+
+function fanoutApiConfigured(config = state?.settings?.fanoutApi) {
+  const normalized = normalizeFanoutApiConfig(config || {});
+  return Boolean(normalized.enabled && normalized.baseUrl && normalized.apiKey && normalized.model);
+}
+
+function publicApiKeyPreview(value) {
+  const key = String(value || '');
+  if (!key) return '';
+  return `${key.slice(0, Math.min(6, key.length))}${key.length > 6 ? '****' : ''}`;
+}
+
 function defaultState() {
   const seededAt = now();
   const hostName = os.hostname();
@@ -180,6 +203,13 @@ function defaultState() {
       defaultWorkspace: ROOT,
       model: process.env.CODEX_MODEL || '',
       sandbox: process.env.CODEX_SANDBOX || 'workspace-write',
+      fanoutApi: {
+        enabled: process.env.MAGCLAW_FANOUT_API_ENABLED === '1',
+        baseUrl: normalizeCloudUrl(process.env.MAGCLAW_FANOUT_API_BASE_URL || ''),
+        apiKey: process.env.MAGCLAW_FANOUT_API_KEY || '',
+        model: process.env.MAGCLAW_FANOUT_API_MODEL || '',
+        timeoutMs: FANOUT_API_TIMEOUT_MS,
+      },
     },
     connection: {
       mode: process.env.MAGCLAW_MODE === 'cloud' ? 'cloud' : 'local',
@@ -515,6 +545,10 @@ function migrateState() {
   const fresh = defaultState();
   state.version = 7;
   state.settings = { ...fresh.settings, ...(state.settings || {}) };
+  state.settings.fanoutApi = normalizeFanoutApiConfig({
+    ...fresh.settings.fanoutApi,
+    ...(state.settings.fanoutApi || {}),
+  });
   state.connection = { ...fresh.connection, ...(state.connection || {}) };
   state.storage = { ...fresh.storage, ...(state.storage || {}), sqliteBackedKeys: SQLITE_BACKED_STATE_KEYS };
   state.router = { ...fresh.router, ...(state.router || {}) };
@@ -530,6 +564,8 @@ function migrateState() {
   if (!state.computers.length) state.computers = fresh.computers;
   if (!state.agents.length) state.agents = fresh.agents;
   reconcileBrainAgentConfigs();
+  state.router.mode = fanoutApiConfigured() ? 'llm_fanout' : 'rules_fallback';
+  state.router.brainAgentId = null;
   if (!state.agents.length) state.agents = fresh.agents;
   if (!state.channels.length) state.channels = fresh.channels;
   if (!state.dms.length) state.dms = fresh.dms;
@@ -2858,6 +2894,208 @@ function routeEvidence(type, value) {
   return { type, value: String(value || '').slice(0, 240) };
 }
 
+function fanoutApiEndpoint(baseUrl) {
+  const base = normalizeCloudUrl(baseUrl || '');
+  if (!base) return '';
+  if (/\/(chat\/completions|responses)$/i.test(base)) return base;
+  return `${base}/chat/completions`;
+}
+
+function namedAgentsOutsideExplicitMentions(channelAgents, text, mentionedIds = []) {
+  const explicit = new Set(normalizeIds(mentionedIds));
+  return availableChannelAgents(channelAgents)
+    .filter((agent) => !explicit.has(agent.id))
+    .filter((agent) => textAddressesAgent(agent, text));
+}
+
+function fanoutApiTriggerReason({ channelAgents, mentions, message }) {
+  if (!fanoutApiConfigured()) return null;
+  if (message?.authorType !== 'human') return null;
+  const text = String(message?.body || '');
+  if (!text.trim()) return null;
+  if (mentions.special.includes('all') || mentions.special.includes('everyone')) return null;
+  if (mentions.special.includes('here') || mentions.special.includes('channel')) return null;
+
+  const extraNamed = namedAgentsOutsideExplicitMentions(channelAgents, text, mentions.agents);
+  if (mentions.agents.length && extraNamed.length) {
+    return {
+      type: 'explicit_mention_plus_named_agent',
+      reason: 'Message explicitly @mentions one agent and also names another channel agent.',
+      namedAgentIds: extraNamed.map((agent) => agent.id),
+    };
+  }
+  if (mentions.agents.length) return null;
+  if (!mentions.agents.length && extraNamed.length > 1) {
+    return {
+      type: 'multiple_named_agents',
+      reason: 'Message names multiple channel agents without explicit @mentions.',
+      namedAgentIds: extraNamed.map((agent) => agent.id),
+    };
+  }
+  if (agentCapabilityQuestionIntent(text)) {
+    return {
+      type: 'capability_question',
+      reason: 'Capability comparison should use all agent cards before deciding fan-out.',
+      namedAgentIds: extraNamed.map((agent) => agent.id),
+    };
+  }
+  if (autoTaskMessageIntent(text)) {
+    return {
+      type: 'task_claim',
+      reason: 'Concrete work request needs semantic routing and a single claimant when possible.',
+      namedAgentIds: extraNamed.map((agent) => agent.id),
+    };
+  }
+  return null;
+}
+
+function serializeFanoutCard(card, channelAgentIds) {
+  const channelMember = channelAgentIds.has(card.id);
+  return {
+    id: card.id,
+    name: card.name,
+    description: card.description,
+    status: card.status,
+    channels: card.channels || [],
+    channelMember,
+    selectable: channelMember,
+    role: card.role || '',
+    capabilities: card.capabilities || '',
+    activeContext: card.activeContext || '',
+    collaboration: card.collaboration || '',
+    recentTasks: card.recentTasks || [],
+    sourceFiles: card.sourceFiles || [],
+  };
+}
+
+function fanoutApiMessages({ channelAgents, mentions, message, allCards, trigger }) {
+  const channelAgentIds = new Set((channelAgents || []).map((agent) => agent.id));
+  const availableIds = availableChannelAgents(channelAgents).map((agent) => agent.id);
+  const payload = {
+    message: {
+      id: message?.id || null,
+      authorType: message?.authorType || 'human',
+      body: renderMentionsForAgent(message?.body || ''),
+      mentionedAgentIds: normalizeIds(mentions.agents),
+      specialMentions: normalizeIds(mentions.special),
+    },
+    trigger,
+    allowedChannelAgentIds: availableIds,
+    channelAgents: (channelAgents || []).map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      description: agent.description || '',
+      status: agent.status || '',
+    })),
+    agentCards: [...(allCards?.values?.() || [])].map((card) => serializeFanoutCard(card, channelAgentIds)),
+    outputSchema: {
+      mode: 'directed | broadcast | availability | task_claim | contextual_follow_up | passive_awareness',
+      targetAgentIds: ['agt_id'],
+      claimantAgentId: 'agt_id or null',
+      confidence: 'number from 0 to 1',
+      reason: 'short routing explanation',
+      taskIntent: { title: 'short title', kind: 'coding | research | docs | ops | planning | unknown' },
+    },
+  };
+  return [
+    {
+      role: 'system',
+      content: [
+        'You are Magclaw fan-out router.',
+        'Decide which selectable channel agents should receive this message.',
+        'Use all agent cards for capability awareness, but targetAgentIds and claimantAgentId must be chosen only from allowedChannelAgentIds.',
+        'Prefer one claimant for concrete work. Use broadcast only for open group discussion or capability comparison.',
+        'Return only a single JSON object matching the requested schema. Do not include markdown.',
+      ].join(' '),
+    },
+    {
+      role: 'user',
+      content: JSON.stringify(payload),
+    },
+  ];
+}
+
+function fanoutApiResponseText(data) {
+  if (typeof data?.output_text === 'string') return data.output_text;
+  const choice = data?.choices?.[0]?.message?.content;
+  if (typeof choice === 'string') return choice;
+  if (Array.isArray(choice)) {
+    return choice.map((part) => part?.text || part?.content || '').join('');
+  }
+  if (Array.isArray(data?.output)) {
+    return data.output
+      .flatMap((item) => item?.content || [])
+      .map((part) => part?.text || '')
+      .join('');
+  }
+  return '';
+}
+
+function parseFanoutApiJson(text) {
+  const raw = String(text || '').trim();
+  if (!raw) throw new Error('Fan-out API returned an empty response.');
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start >= 0 && end > start) return JSON.parse(raw.slice(start, end + 1));
+    throw new Error('Fan-out API did not return valid JSON.');
+  }
+}
+
+async function callFanoutApi({ channelAgents, mentions, message, spaceId, allCards, trigger }) {
+  const config = normalizeFanoutApiConfig(state.settings?.fanoutApi || {});
+  if (!fanoutApiConfigured(config)) throw new Error('Fan-out API is not fully configured.');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  const startedAt = Date.now();
+  try {
+    const response = await fetch(fanoutApiEndpoint(config.baseUrl), {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages: fanoutApiMessages({ channelAgents, mentions, message, spaceId, allCards, trigger }),
+        temperature: 0,
+      }),
+    });
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!response.ok) {
+      throw new Error(data?.error?.message || data?.message || response.statusText);
+    }
+    const rawDecision = parseFanoutApiJson(fanoutApiResponseText(data));
+    const latencyMs = Date.now() - startedAt;
+    const decision = normalizeRouteDecision({
+      ...rawDecision,
+      targetAgentIds: rawDecision.targetAgentIds || rawDecision.agentIds || rawDecision.targets || [],
+      claimantAgentId: rawDecision.claimantAgentId || null,
+      reason: rawDecision.reason || 'Fan-out API selected agents.',
+      evidence: [
+        routeEvidence('llm_trigger', trigger?.type || 'semantic'),
+        routeEvidence('llm_reason', trigger?.reason || ''),
+        routeEvidence('llm_model', config.model),
+        routeEvidence('llm_latency_ms', String(latencyMs)),
+        ...(Array.isArray(rawDecision.evidence) ? rawDecision.evidence : []),
+      ],
+      llmUsed: true,
+      llmAttempted: true,
+      llmLatencyMs: latencyMs,
+      llmModel: config.model,
+      llmBaseUrl: config.baseUrl,
+      strategy: 'llm',
+    }, channelAgents);
+    return decision;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function selectBrainAgent() {
   const activeId = state.router?.brainAgentId || null;
   const active = activeId
@@ -2995,6 +3233,8 @@ function normalizeRouteDecision(decision, channelAgents) {
   const claimantAgentId = targetAgentIds.includes(decision?.claimantAgentId)
     ? decision.claimantAgentId
     : null;
+  const llmUsed = Boolean(decision?.llmUsed);
+  const fallbackUsed = Boolean(decision?.fallbackUsed);
   return {
     mode: decision?.mode || 'passive_awareness',
     targetAgentIds,
@@ -3004,18 +3244,31 @@ function normalizeRouteDecision(decision, channelAgents) {
     evidence: Array.isArray(decision?.evidence) ? decision.evidence : [],
     taskIntent: decision?.taskIntent || null,
     brainAgentId: decision?.brainAgentId || null,
-    fallbackUsed: Boolean(decision?.fallbackUsed),
+    fallbackUsed,
+    strategy: decision?.strategy || (llmUsed ? 'llm' : (fallbackUsed ? 'fallback_rules' : 'rules')),
+    llmUsed,
+    llmAttempted: Boolean(decision?.llmAttempted || llmUsed),
+    llmLatencyMs: Number.isFinite(Number(decision?.llmLatencyMs)) ? Number(decision.llmLatencyMs) : null,
+    llmModel: decision?.llmModel ? String(decision.llmModel) : null,
+    llmBaseUrl: decision?.llmBaseUrl ? String(decision.llmBaseUrl) : null,
   };
 }
 
-function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId, cards, brainAgent }) {
+function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId, cards, brainAgent = null, fallbackUsed = false, fallbackError = null }) {
   const available = availableChannelAgents(channelAgents);
   const idle = idleChannelAgents(channelAgents);
   const text = String(message?.body || '');
   const evidence = [
-    routeEvidence('brain_agent', brainAgent?.name || 'rules fallback'),
+    routeEvidence('router', brainAgent?.name || 'rules'),
     routeEvidence('channel_member', `${available.length}/${channelAgents.length} available member agents`),
+    ...(fallbackError ? [routeEvidence('fallback_error', fallbackError.message || fallbackError)] : []),
   ];
+  const baseDecision = {
+    brainAgentId: brainAgent?.id || null,
+    fallbackUsed,
+    strategy: fallbackUsed ? 'fallback_rules' : 'rules',
+    llmAttempted: Boolean(fallbackError),
+  };
 
   if (mentions.agents.length > 0) {
     const directedPrimary = message?.authorType === 'human' ? directedPrimaryAgentId(mentions, message) : null;
@@ -3030,7 +3283,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
         ? 'Explicit multi-agent mention looked like a request for the first named agent to coordinate.'
         : 'Explicit agent mention routes to the mentioned agent(s).',
       evidence: [...evidence, routeEvidence('mention', mentions.agents.join(', '))],
-      brainAgentId: brainAgent?.id || null,
+      ...baseDecision,
     }, channelAgents);
   }
 
@@ -3041,7 +3294,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
       confidence: 0.95,
       reason: '@all/@everyone wakes every available channel agent.',
       evidence: [...evidence, routeEvidence('mention', '@all')],
-      brainAgentId: brainAgent?.id || null,
+      ...baseDecision,
     }, channelAgents);
   }
 
@@ -3052,7 +3305,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
       confidence: 0.92,
       reason: '@here/@channel wakes idle/online channel agents.',
       evidence: [...evidence, routeEvidence('status', `${idle.length} idle/online agents`)],
-      brainAgentId: brainAgent?.id || null,
+      ...baseDecision,
     }, channelAgents);
   }
 
@@ -3065,7 +3318,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
         confidence: 0.93,
         reason: 'Natural-language agent name matched a channel member.',
         evidence: [...evidence, routeEvidence('mention', named.map((agent) => agent.name).join(', '))],
-        brainAgentId: brainAgent?.id || null,
+        ...baseDecision,
       }, channelAgents);
     }
 
@@ -3077,7 +3330,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
         confidence: 0.88,
         reason: 'Availability follow-up targets remaining idle agents from recent channel context.',
         evidence: [...evidence, routeEvidence('recent_context', 'availability follow-up')],
-        brainAgentId: brainAgent?.id || null,
+        ...baseDecision,
       }, channelAgents);
     }
 
@@ -3094,7 +3347,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
           routeEvidence('reference_message', focusedFollowup.referenceMessageId || ''),
           routeEvidence('reference_route', focusedFollowup.routeEventId || ''),
         ],
-        brainAgentId: brainAgent?.id || null,
+        ...baseDecision,
       }, channelAgents);
     }
 
@@ -3105,7 +3358,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
         confidence: 0.9,
         reason: 'Availability check should let available channel agents answer for themselves.',
         evidence: [...evidence, routeEvidence('status', `${idle.length} idle/online agents`)],
-        brainAgentId: brainAgent?.id || null,
+        ...baseDecision,
       }, channelAgents);
     }
 
@@ -3116,7 +3369,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
         confidence: 0.86,
         reason: 'Capability or identity comparison needs agents to self-report and sense each other.',
         evidence: [...evidence, routeEvidence('agent_card', 'capability comparison')],
-        brainAgentId: brainAgent?.id || null,
+        ...baseDecision,
       }, channelAgents);
     }
 
@@ -3139,7 +3392,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
           title: cleanTaskTitle(text),
           kind: inferTaskIntentKind(text),
         } : null,
-        brainAgentId: brainAgent?.id || null,
+        ...baseDecision,
       }, channelAgents);
     }
 
@@ -3149,7 +3402,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
       confidence: channelGreetingIntent(text) ? 0.82 : 0.74,
       reason: 'Open human channel message fans out to available member agents.',
       evidence,
-      brainAgentId: brainAgent?.id || null,
+      ...baseDecision,
     }, channelAgents);
   }
 
@@ -3162,7 +3415,7 @@ function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId,
     confidence: 0.5,
     reason: 'Non-human message used passive awareness fallback.',
     evidence,
-    brainAgentId: brainAgent?.id || null,
+    ...baseDecision,
   }, channelAgents);
 }
 
@@ -3197,7 +3450,7 @@ function legacyRouteDecision(channelAgents, mentions, message, spaceId, error = 
     confidence: isContextualFollowup ? 0.76 : 0.45,
     reason: isContextualFollowup
       ? `Rules fallback kept the recent focused conversation with ${focusedFollowup.agent.name}.`
-      : (error ? `Brain router failed; rules fallback used: ${error.message}` : 'Rules fallback selected agents.'),
+      : (error ? `Fan-out router failed; rules fallback used: ${error.message}` : 'Rules fallback selected agents.'),
     evidence: [
       routeEvidence('fallback', error?.message || 'legacy rules'),
       ...(isContextualFollowup ? [
@@ -3228,6 +3481,11 @@ function addRouteEvent(decision, { message, spaceType = 'channel', spaceId = nul
     taskIntent: decision.taskIntent || null,
     brainAgentId: decision.brainAgentId || null,
     fallbackUsed: Boolean(decision.fallbackUsed),
+    strategy: decision.strategy || (decision.llmUsed ? 'llm' : (decision.fallbackUsed ? 'fallback_rules' : 'rules')),
+    llmUsed: Boolean(decision.llmUsed),
+    llmAttempted: Boolean(decision.llmAttempted || decision.llmUsed),
+    llmLatencyMs: Number.isFinite(Number(decision.llmLatencyMs)) ? Number(decision.llmLatencyMs) : null,
+    llmModel: decision.llmModel || null,
     createdAt: now(),
   };
   state.routeEvents.push(event);
@@ -3248,20 +3506,47 @@ function addRouteEvent(decision, { message, spaceType = 'channel', spaceId = nul
     taskIntent: event.taskIntent,
     brainAgentId: event.brainAgentId,
     fallbackUsed: event.fallbackUsed,
+    strategy: event.strategy,
+    llmUsed: event.llmUsed,
+    llmAttempted: event.llmAttempted,
+    llmLatencyMs: event.llmLatencyMs,
+    llmModel: event.llmModel,
   });
   return event;
 }
 
 async function routeMessageForChannel({ channelAgents, mentions, message, spaceId }) {
-  const brainAgent = selectBrainAgent();
-  if (!brainAgent) {
-    const decision = legacyRouteDecision(channelAgents, mentions, message, spaceId, null);
-    const routeEvent = addRouteEvent(decision, { message, spaceId });
-    return { ...decision, routeEvent };
-  }
   try {
-    const cards = await buildAgentCards(channelAgents);
-    const decision = evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId, cards, brainAgent });
+    const allRoutingAgents = (state.agents || []).filter(agentParticipatesInChannels);
+    const allCards = await buildAgentCards(allRoutingAgents);
+    const trigger = fanoutApiTriggerReason({ channelAgents, mentions, message });
+    if (trigger) {
+      try {
+        const decision = await callFanoutApi({ channelAgents, mentions, message, spaceId, allCards, trigger });
+        const routeEvent = addRouteEvent(decision, { message, spaceId });
+        return { ...decision, routeEvent };
+      } catch (error) {
+        const decision = evaluateBrainRouteDecision({
+          channelAgents,
+          mentions,
+          message,
+          spaceId,
+          cards: allCards,
+          fallbackUsed: true,
+          fallbackError: error,
+        });
+        const routeEvent = addRouteEvent(decision, { message, spaceId });
+        return { ...decision, routeEvent };
+      }
+    }
+    const decision = evaluateBrainRouteDecision({
+      channelAgents,
+      mentions,
+      message,
+      spaceId,
+      cards: allCards,
+      fallbackUsed: !fanoutApiConfigured(),
+    });
     const routeEvent = addRouteEvent(decision, { message, spaceId });
     return { ...decision, routeEvent };
   } catch (error) {
@@ -3666,10 +3951,29 @@ function ensureTaskThread(task) {
 function publicState() {
   return {
     ...state,
+    settings: publicSettings(),
     channels: (state.channels || []).filter((channel) => !channel.archived),
     connection: publicConnection(),
     runtime: runtimeSnapshot(),
     runningRunIds: [...runningProcesses.keys()],
+  };
+}
+
+function publicSettings() {
+  const fanoutApi = normalizeFanoutApiConfig(state?.settings?.fanoutApi || {});
+  const { apiKey, ...settings } = state?.settings || {};
+  void apiKey;
+  return {
+    ...settings,
+    fanoutApi: {
+      enabled: fanoutApi.enabled,
+      baseUrl: fanoutApi.baseUrl,
+      model: fanoutApi.model,
+      timeoutMs: fanoutApi.timeoutMs,
+      hasApiKey: Boolean(fanoutApi.apiKey),
+      apiKeyPreview: publicApiKeyPreview(fanoutApi.apiKey),
+      configured: fanoutApiConfigured(fanoutApi),
+    },
   };
 }
 
@@ -3681,6 +3985,31 @@ function publicConnection() {
     hasRelay: Boolean(state?.connection?.relayUrl),
     hasCloudToken: Boolean(cloudToken || process.env.MAGCLAW_CLOUD_TOKEN),
   };
+}
+
+function updateFanoutApiConfig(body = {}) {
+  const current = normalizeFanoutApiConfig(state.settings?.fanoutApi || {});
+  const next = {
+    ...current,
+    enabled: body.enabled !== undefined ? Boolean(body.enabled) : current.enabled,
+    baseUrl: body.baseUrl !== undefined ? normalizeCloudUrl(body.baseUrl || '') : current.baseUrl,
+    model: body.model !== undefined ? String(body.model || '').trim() : current.model,
+    timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : current.timeoutMs,
+  };
+  if (body.clearApiKey === true) {
+    next.apiKey = '';
+  } else if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
+    next.apiKey = body.apiKey.trim();
+  }
+  state.settings.fanoutApi = normalizeFanoutApiConfig(next);
+  state.router = {
+    ...(state.router || {}),
+    mode: fanoutApiConfigured() ? 'llm_fanout' : 'rules_fallback',
+    brainAgentId: null,
+    fallback: 'rules',
+    cardSource: 'workspace_markdown',
+  };
+  return state.settings.fanoutApi;
 }
 
 function runtimeSnapshot() {
@@ -6239,6 +6568,21 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (['POST', 'PATCH'].includes(req.method) && url.pathname === '/api/settings/fanout') {
+    const body = await readJson(req);
+    updateFanoutApiConfig(body);
+    addSystemEvent('fanout_api_settings_updated', 'Fan-out API settings updated.', {
+      configured: fanoutApiConfigured(),
+      baseUrl: state.settings.fanoutApi.baseUrl,
+      model: state.settings.fanoutApi.model,
+      hasApiKey: Boolean(state.settings.fanoutApi.apiKey),
+    });
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, publicState());
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/projects') {
     const body = await readJson(req);
     try {
@@ -7144,54 +7488,28 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'GET' && url.pathname === '/api/brain-agents') {
     sendJson(res, 200, {
-      brainAgents: state.brainAgents || [],
-      activeBrainAgentId: state.router?.brainAgentId || null,
+      brainAgents: [],
+      activeBrainAgentId: null,
       router: state.router || {},
+      deprecated: true,
+      replacement: '/api/settings/fanout',
     });
     return true;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/brain-agents') {
-    const body = await readJson(req);
-    try {
-      const brainAgent = createBrainAgentConfig(body);
-      addCollabEvent('brain_agent_created', `Brain Agent configured: ${brainAgent.name}`, { brainAgentId: brainAgent.id });
-      await persistState();
-      broadcastState();
-      sendJson(res, 201, { brainAgent, router: state.router });
-    } catch (error) {
-      sendError(res, error.status || 400, error.message);
-    }
+    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
     return true;
   }
 
   const brainAgentMatch = url.pathname.match(/^\/api\/brain-agents\/([^/]+)$/);
   if (['PATCH', 'POST'].includes(req.method) && brainAgentMatch) {
-    const body = await readJson(req);
-    try {
-      const brainAgent = updateBrainAgentConfig(findBrainAgent(brainAgentMatch[1]), body);
-      addCollabEvent('brain_agent_updated', `Brain Agent updated: ${brainAgent.name}`, { brainAgentId: brainAgent.id });
-      await persistState();
-      broadcastState();
-      sendJson(res, 200, { brainAgent, router: state.router });
-    } catch (error) {
-      sendError(res, error.status || 400, error.message);
-    }
+    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
     return true;
   }
 
   if (req.method === 'DELETE' && brainAgentMatch) {
-    const brainAgent = findBrainAgent(brainAgentMatch[1]);
-    if (!brainAgent) {
-      sendError(res, 404, 'Brain Agent not found.');
-      return true;
-    }
-    state.brainAgents = (state.brainAgents || []).filter((item) => item.id !== brainAgent.id);
-    if (state.router?.brainAgentId === brainAgent.id) deactivateBrainAgent(brainAgent.id);
-    addCollabEvent('brain_agent_deleted', `Brain Agent removed: ${brainAgent.name}`, { brainAgentId: brainAgent.id });
-    await persistState();
-    broadcastState();
-    sendJson(res, 200, { ok: true, router: state.router });
+    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
     return true;
   }
 
