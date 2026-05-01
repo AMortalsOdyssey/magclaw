@@ -1,5 +1,9 @@
 import { normalizeCloudUrl } from './runtime-config.js';
 
+// OpenAI-compatible Fan-out API helpers.
+// Higher-level routing still lives in index.js for now; this module only knows
+// how to build the endpoint and extract/parse the model's JSON decision text.
+
 export function fanoutApiEndpoint(baseUrl) {
   const base = normalizeCloudUrl(baseUrl || '');
   if (!base) return '';

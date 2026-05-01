@@ -1,3 +1,8 @@
+// Read-only history/search tools exposed to Agents.
+// These helpers implement MagClaw's progressive context disclosure: Agents get
+// a small prompt snapshot first, then call these functions when they need more
+// channel, thread, or DM history.
+
 const DEFAULT_HISTORY_LIMIT = 50;
 const MAX_HISTORY_LIMIT = 100;
 const DEFAULT_SEARCH_LIMIT = 10;

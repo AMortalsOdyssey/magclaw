@@ -3,6 +3,10 @@ import {
   normalizeReasoningEffort,
 } from './runtime-config.js';
 
+// Small, testable helpers for Codex runtime selection and stream retry handling.
+// Process lifecycle, app-server JSON-RPC, and message delivery still live in
+// index.js; this module stays pure so it can be safely reused and unit tested.
+
 export function codexStreamRetryLimit(value = process.env.MAGCLAW_CODEX_STREAM_RETRY_LIMIT, fallback = 2) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(1, parsed) : fallback;

@@ -1,3 +1,7 @@
+// Runtime and external API configuration normalizers.
+// Keep environment/input cleanup here so state migration, settings endpoints,
+// and runtime startup all interpret config values the same way.
+
 const VALID_REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 
 export function normalizeCloudUrl(value) {

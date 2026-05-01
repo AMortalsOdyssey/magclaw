@@ -1,3 +1,7 @@
+// LLM fan-out route notification renderer.
+// app.js owns state tracking and timers; this module only turns a route event
+// into a compact, escaped toast so the notification copy is easy to find.
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')

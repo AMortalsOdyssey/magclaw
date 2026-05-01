@@ -1,3 +1,8 @@
+// Compact context-pack builder for Agent prompts.
+// Delivery code uses this to provide the current message plus bounded recent
+// channel/thread/task/attachment context without dumping the entire workspace
+// into every Codex turn.
+
 const DEFAULT_LIMITS = {
   recentMessages: 12,
   threadReplies: 8,

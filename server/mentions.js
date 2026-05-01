@@ -1,3 +1,8 @@
+// Mention parsing and token helpers shared by messages, routing, and task code.
+// This module is intentionally state-free: callers can pass actor lookup
+// functions when they need to validate that a token refers to a known Agent or
+// Human in the current MagClaw state.
+
 export function normalizeIds(value) {
   return [...new Set((Array.isArray(value) ? value : [])
     .map(String)
