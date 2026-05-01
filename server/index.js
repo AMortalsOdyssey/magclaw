@@ -59,6 +59,9 @@ const AGENT_STATUS_STALE_MS = Math.max(1000, Number(process.env.MAGCLAW_AGENT_ST
 const ROUTE_EVENTS_LIMIT = Math.max(50, Number(process.env.MAGCLAW_ROUTE_EVENTS_LIMIT || 500));
 const AGENT_CARD_TEXT_LIMIT = 5000;
 const FANOUT_API_TIMEOUT_MS = Math.max(500, Number(process.env.MAGCLAW_FANOUT_TIMEOUT_MS || 2500));
+const CODEX_STREAM_RETRY_LIMIT = Number.isFinite(Number(process.env.MAGCLAW_CODEX_STREAM_RETRY_LIMIT))
+  ? Math.max(1, Number(process.env.MAGCLAW_CODEX_STREAM_RETRY_LIMIT))
+  : 2;
 const LEGACY_BRAIN_AGENT_ID = 'agt_magclaw_brain';
 const BRAIN_AGENT_NAME = 'MagClaw Brain';
 const BRAIN_AGENT_DESCRIPTION = 'Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.';
@@ -180,6 +183,21 @@ function normalizeFanoutApiConfig(config = {}) {
   };
 }
 
+function normalizeReasoningEffort(value, fallback = null) {
+  const effort = String(value || '').trim().toLowerCase();
+  if (['low', 'medium', 'high', 'xhigh'].includes(effort)) return effort;
+  const fallbackEffort = String(fallback || '').trim().toLowerCase();
+  return ['low', 'medium', 'high', 'xhigh'].includes(fallbackEffort) ? fallbackEffort : null;
+}
+
+function normalizeChatRuntimeConfig(config = {}) {
+  return {
+    enabled: config.enabled !== false,
+    model: String(config.model || '').trim(),
+    reasoningEffort: normalizeReasoningEffort(config.reasoningEffort, 'low') || 'low',
+  };
+}
+
 function fanoutApiConfigured(config = state?.settings?.fanoutApi) {
   const normalized = normalizeFanoutApiConfig(config || {});
   return Boolean(normalized.enabled && normalized.baseUrl && normalized.apiKey && normalized.model);
@@ -210,6 +228,11 @@ function defaultState() {
         model: process.env.MAGCLAW_FANOUT_API_MODEL || '',
         timeoutMs: FANOUT_API_TIMEOUT_MS,
       },
+      chatRuntime: normalizeChatRuntimeConfig({
+        enabled: process.env.MAGCLAW_CHAT_FAST_RUNTIME !== '0',
+        model: process.env.MAGCLAW_CHAT_MODEL || process.env.MAGCLAW_FAST_CHAT_MODEL || '',
+        reasoningEffort: process.env.MAGCLAW_CHAT_REASONING || 'low',
+      }),
     },
     connection: {
       mode: process.env.MAGCLAW_MODE === 'cloud' ? 'cloud' : 'local',
@@ -458,6 +481,63 @@ function normalizeCodexModelName(model, fallback = '') {
   return CODEX_FALLBACK_MODEL;
 }
 
+function shouldUseChatFastRuntime(message, workItem = null) {
+  const config = normalizeChatRuntimeConfig(state.settings?.chatRuntime || {});
+  if (!config.enabled) return false;
+  if (!message || message.authorType !== 'human') return false;
+  if (message.taskId || workItem?.taskId) return false;
+  const text = String(message.body || '').trim();
+  if (!text) return false;
+  if (taskCreationIntent(text) || autoTaskMessageIntent(text)) return false;
+  return true;
+}
+
+function codexRuntimeOverrideForDelivery(message, workItem = null) {
+  if (!shouldUseChatFastRuntime(message, workItem)) return null;
+  const config = normalizeChatRuntimeConfig(state.settings?.chatRuntime || {});
+  return {
+    reason: 'chat_fast_path',
+    model: config.model || '',
+    reasoningEffort: config.reasoningEffort || 'low',
+  };
+}
+
+function codexRuntimeOverrideForMessages(messages = []) {
+  const promptMessages = (Array.isArray(messages) ? messages : [messages]).filter(Boolean);
+  if (!promptMessages.length) return null;
+  const overrides = promptMessages.map((message) => message.runtimeOverride || null);
+  if (overrides.some((override) => !override)) return null;
+  const first = overrides[0];
+  if (!overrides.every((override) => override.reason === first.reason
+    && String(override.model || '') === String(first.model || '')
+    && String(override.reasoningEffort || '') === String(first.reasoningEffort || ''))) {
+    return null;
+  }
+  return {
+    reason: first.reason || null,
+    model: String(first.model || '').trim(),
+    reasoningEffort: normalizeReasoningEffort(first.reasoningEffort),
+  };
+}
+
+function resolveCodexRuntime(agent, messages = []) {
+  const override = codexRuntimeOverrideForMessages(messages);
+  const model = normalizeCodexModelName(override?.model || agent.model, state.settings?.model);
+  const reasoningEffort = normalizeReasoningEffort(override?.reasoningEffort, agent.reasoningEffort);
+  return {
+    model,
+    reasoningEffort,
+    overrideReason: override?.reason || null,
+    fastChat: override?.reason === 'chat_fast_path',
+  };
+}
+
+function codexThreadConfig(runtime = {}) {
+  return runtime.reasoningEffort
+    ? { model_reasoning_effort: runtime.reasoningEffort }
+    : null;
+}
+
 function isBrainAgent(agent) {
   if (!agent) return false;
   return agent.isBrain === true || String(agent.systemRole || '').toLowerCase() === 'brain';
@@ -548,6 +628,10 @@ function migrateState() {
   state.settings.fanoutApi = normalizeFanoutApiConfig({
     ...fresh.settings.fanoutApi,
     ...(state.settings.fanoutApi || {}),
+  });
+  state.settings.chatRuntime = normalizeChatRuntimeConfig({
+    ...fresh.settings.chatRuntime,
+    ...(state.settings.chatRuntime || {}),
   });
   state.connection = { ...fresh.connection, ...(state.connection || {}) };
   state.storage = { ...fresh.storage, ...(state.storage || {}), sqliteBackedKeys: SQLITE_BACKED_STATE_KEYS };
@@ -2852,6 +2936,7 @@ function threadParticipantAgentIds(message, linkedTask = null) {
   const ids = [];
   if (message?.authorType === 'agent') ids.push(message.authorId);
   ids.push(...(message?.mentionedAgentIds || []));
+  ids.push(...(latestRouteEventForMessage(message?.id, message?.spaceId)?.targetAgentIds || []));
   if (linkedTask?.claimedBy) ids.push(linkedTask.claimedBy);
   ids.push(...(linkedTask?.assigneeIds || []));
   ids.push(...state.replies
@@ -2908,7 +2993,36 @@ function namedAgentsOutsideExplicitMentions(channelAgents, text, mentionedIds = 
     .filter((agent) => textAddressesAgent(agent, text));
 }
 
-function fanoutApiTriggerReason({ channelAgents, mentions, message }) {
+function agentReferenceVariants(agent) {
+  const variants = new Set();
+  for (const alias of [agent?.name, agent?.displayName]) {
+    const value = String(alias || '').trim();
+    if (!value) continue;
+    variants.add(value);
+    if (!/^[A-Za-z0-9_.-]+$/.test(value)) {
+      if (value.length >= 2) variants.add(value.slice(-2));
+      if (value.length >= 3) variants.add(value.slice(-3));
+      const first = value.slice(0, 1);
+      if (/[\u4e00-\u9fa5]/.test(first)) {
+        variants.add(`${first}道友`);
+        variants.add(`${first}老师`);
+        variants.add(`${first}师`);
+      }
+    }
+  }
+  return [...variants].filter((variant) => variant.length >= 2);
+}
+
+function implicitAgentReferences(channelAgents, text, mentionedIds = []) {
+  const explicit = new Set(normalizeIds(mentionedIds));
+  const raw = String(text || '').toLowerCase();
+  if (!raw.trim()) return [];
+  return availableChannelAgents(channelAgents)
+    .filter((agent) => !explicit.has(agent.id))
+    .filter((agent) => agentReferenceVariants(agent).some((variant) => raw.includes(variant.toLowerCase())));
+}
+
+function fanoutApiTriggerReason({ channelAgents, mentions, message, thread = null }) {
   if (!fanoutApiConfigured()) return null;
   if (message?.authorType !== 'human') return null;
   const text = String(message?.body || '');
@@ -2917,6 +3031,51 @@ function fanoutApiTriggerReason({ channelAgents, mentions, message }) {
   if (mentions.special.includes('here') || mentions.special.includes('channel')) return null;
 
   const extraNamed = namedAgentsOutsideExplicitMentions(channelAgents, text, mentions.agents);
+  const implicitNamed = implicitAgentReferences(channelAgents, text, mentions.agents);
+  if (thread) {
+    const threadParticipantIds = normalizeIds(thread.participantAgentIds || []);
+    const combinedNamed = uniqueAgents([...extraNamed, ...implicitNamed]);
+    if (mentions.agents.length && combinedNamed.length) {
+      return {
+        type: 'thread_explicit_mention_plus_named_agent',
+        reason: 'Thread reply explicitly @mentions one agent and also appears to reference another agent.',
+        namedAgentIds: combinedNamed.map((agent) => agent.id),
+        participantAgentIds: threadParticipantIds,
+      };
+    }
+    if (!mentions.agents.length && combinedNamed.length) {
+      return {
+        type: 'thread_named_agent',
+        reason: 'Thread reply names or nicknames one or more agents; semantic routing should decide the reply targets.',
+        namedAgentIds: combinedNamed.map((agent) => agent.id),
+        participantAgentIds: threadParticipantIds,
+      };
+    }
+    if (!mentions.agents.length && threadParticipantIds.length > 1) {
+      return {
+        type: 'thread_reply_semantic',
+        reason: 'Thread reply has multiple possible agent participants and needs semantic routing.',
+        namedAgentIds: [],
+        participantAgentIds: threadParticipantIds,
+      };
+    }
+    if (agentCapabilityQuestionIntent(text)) {
+      return {
+        type: 'thread_capability_question',
+        reason: 'Thread capability comparison should use all agent cards before deciding fan-out.',
+        namedAgentIds: combinedNamed.map((agent) => agent.id),
+        participantAgentIds: threadParticipantIds,
+      };
+    }
+    if (autoTaskMessageIntent(text)) {
+      return {
+        type: 'thread_task_claim',
+        reason: 'Thread work request needs semantic routing and a single claimant when possible.',
+        namedAgentIds: combinedNamed.map((agent) => agent.id),
+        participantAgentIds: threadParticipantIds,
+      };
+    }
+  }
   if (mentions.agents.length && extraNamed.length) {
     return {
       type: 'explicit_mention_plus_named_agent',
@@ -2968,17 +3127,66 @@ function serializeFanoutCard(card, channelAgentIds) {
   };
 }
 
-function fanoutApiMessages({ channelAgents, mentions, message, allCards, trigger }) {
+function fanoutConversationRecord(record) {
+  if (!record) return null;
+  return {
+    id: record.id || null,
+    parentMessageId: record.parentMessageId || null,
+    authorType: record.authorType || 'unknown',
+    authorId: record.authorId || null,
+    authorName: displayActor(record.authorId),
+    body: renderMentionsForAgent(record.body || ''),
+    mentionedAgentIds: normalizeIds(record.mentionedAgentIds || []),
+    taskId: record.taskId || null,
+    createdAt: record.createdAt || null,
+  };
+}
+
+function threadFanoutContext(parentMessage, reply, linkedTask = null) {
+  if (!parentMessage) return null;
+  const participantAgentIds = threadParticipantAgentIds(parentMessage, linkedTask);
+  const recentReplies = [...(state.replies || [])]
+    .filter((item) => item.parentMessageId === parentMessage.id)
+    .sort((a, b) => messageTimeMs(a) - messageTimeMs(b))
+    .slice(-10);
+  return {
+    parentMessage: fanoutConversationRecord(parentMessage),
+    currentReplyId: reply?.id || null,
+    participantAgentIds,
+    participantAgents: participantAgentIds
+      .map((id) => findAgent(id))
+      .filter(Boolean)
+      .map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        description: agent.description || '',
+        status: agent.status || '',
+      })),
+    linkedTask: linkedTask ? {
+      id: linkedTask.id,
+      number: linkedTask.number || null,
+      title: linkedTask.title || '',
+      status: linkedTask.status || '',
+      claimedBy: linkedTask.claimedBy || null,
+      assigneeIds: normalizeIds(linkedTask.assigneeIds || []),
+    } : null,
+    recentReplies: recentReplies.map(fanoutConversationRecord),
+  };
+}
+
+function fanoutApiMessages({ channelAgents, mentions, message, allCards, trigger, thread = null }) {
   const channelAgentIds = new Set((channelAgents || []).map((agent) => agent.id));
   const availableIds = availableChannelAgents(channelAgents).map((agent) => agent.id);
   const payload = {
     message: {
       id: message?.id || null,
+      parentMessageId: message?.parentMessageId || null,
       authorType: message?.authorType || 'human',
       body: renderMentionsForAgent(message?.body || ''),
       mentionedAgentIds: normalizeIds(mentions.agents),
       specialMentions: normalizeIds(mentions.special),
     },
+    thread,
     trigger,
     allowedChannelAgentIds: availableIds,
     channelAgents: (channelAgents || []).map((agent) => ({
@@ -3005,6 +3213,8 @@ function fanoutApiMessages({ channelAgents, mentions, message, allCards, trigger
         'Decide which selectable channel agents should receive this message.',
         'Use all agent cards for capability awareness, but targetAgentIds and claimantAgentId must be chosen only from allowedChannelAgentIds.',
         'Prefer one claimant for concrete work. Use broadcast only for open group discussion or capability comparison.',
+        'For thread replies, use the parent message, recent replies, participants, and nicknames/titles to avoid waking unrelated agents.',
+        'If a thread reply is simple chat, prefer the smallest useful target set; use passive_awareness with no targets if no agent should answer.',
         'Return only a single JSON object matching the requested schema. Do not include markdown.',
       ].join(' '),
     },
@@ -3044,7 +3254,7 @@ function parseFanoutApiJson(text) {
   }
 }
 
-async function callFanoutApi({ channelAgents, mentions, message, spaceId, allCards, trigger }) {
+async function callFanoutApi({ channelAgents, mentions, message, spaceId, allCards, trigger, thread = null }) {
   const config = normalizeFanoutApiConfig(state.settings?.fanoutApi || {});
   if (!fanoutApiConfigured(config)) throw new Error('Fan-out API is not fully configured.');
   const controller = new AbortController();
@@ -3060,7 +3270,7 @@ async function callFanoutApi({ channelAgents, mentions, message, spaceId, allCar
       },
       body: JSON.stringify({
         model: config.model,
-        messages: fanoutApiMessages({ channelAgents, mentions, message, spaceId, allCards, trigger }),
+        messages: fanoutApiMessages({ channelAgents, mentions, message, spaceId, allCards, trigger, thread }),
         temperature: 0,
       }),
     });
@@ -3470,6 +3680,7 @@ function addRouteEvent(decision, { message, spaceType = 'channel', spaceId = nul
   const event = {
     id: makeId('route'),
     messageId: message?.id || null,
+    parentMessageId: message?.parentMessageId || null,
     spaceType,
     spaceId,
     mode: decision.mode,
@@ -3495,6 +3706,7 @@ function addRouteEvent(decision, { message, spaceType = 'channel', spaceId = nul
   addSystemEvent('route_decision', `Route ${event.mode}: ${event.targetAgentIds.length} agent(s) selected.`, {
     routeEventId: event.id,
     messageId: event.messageId,
+    parentMessageId: event.parentMessageId,
     spaceType: event.spaceType,
     spaceId: event.spaceId,
     mode: event.mode,
@@ -3552,6 +3764,90 @@ async function routeMessageForChannel({ channelAgents, mentions, message, spaceI
   } catch (error) {
     const decision = legacyRouteDecision(channelAgents, mentions, message, spaceId, error);
     const routeEvent = addRouteEvent(decision, { message, spaceId });
+    return { ...decision, routeEvent };
+  }
+}
+
+function evaluateThreadRouteDecision({ channelAgents, mentions, parentMessage, reply, linkedTask = null, fallbackUsed = false, fallbackError = null }) {
+  const respondingAgents = determineThreadRespondingAgents(parentMessage, reply, channelAgents, mentions, linkedTask);
+  const named = (channelAgents || []).filter((agent) => textAddressesAgent(agent, reply?.body));
+  const evidence = [
+    routeEvidence('router', 'thread_rules'),
+    routeEvidence('thread_parent', parentMessage?.id || ''),
+    routeEvidence('thread_participants', threadParticipantAgentIds(parentMessage, linkedTask).join(', ')),
+    ...(fallbackError ? [routeEvidence('fallback_error', fallbackError.message || fallbackError)] : []),
+  ];
+  const hasExplicitMention = Boolean(mentions.agents.length || mentions.special.length || named.length);
+  let mode = 'passive_awareness';
+  if (mentions.special.includes('all') || mentions.special.includes('everyone')) {
+    mode = 'broadcast';
+  } else if (mentions.special.includes('here') || mentions.special.includes('channel')) {
+    mode = 'availability';
+  } else if (hasExplicitMention) {
+    mode = 'directed';
+  } else if (respondingAgents.length) {
+    mode = 'contextual_follow_up';
+  }
+  return normalizeRouteDecision({
+    mode,
+    targetAgentIds: respondingAgents.map((agent) => agent.id),
+    confidence: hasExplicitMention ? 0.9 : (respondingAgents.length ? 0.72 : 0.4),
+    reason: fallbackError
+      ? `Thread fan-out router failed; rules fallback used: ${fallbackError.message}`
+      : (respondingAgents.length ? 'Thread rules selected responding agents.' : 'Thread rules found no agent that needs to answer.'),
+    evidence,
+    fallbackUsed,
+    strategy: fallbackUsed ? 'fallback_rules' : 'rules',
+    llmAttempted: Boolean(fallbackError),
+  }, channelAgents);
+}
+
+async function routeThreadReplyForChannel({ channelAgents, mentions, parentMessage, reply, linkedTask = null, spaceId }) {
+  try {
+    const thread = threadFanoutContext(parentMessage, reply, linkedTask);
+    const trigger = fanoutApiTriggerReason({ channelAgents, mentions, message: reply, thread });
+    if (trigger) {
+      try {
+        const allRoutingAgents = (state.agents || []).filter(agentParticipatesInChannels);
+        const allCards = await buildAgentCards(allRoutingAgents);
+        const decision = await callFanoutApi({ channelAgents, mentions, message: reply, spaceId, allCards, trigger, thread });
+        const routeEvent = addRouteEvent(decision, { message: reply, spaceId });
+        return { ...decision, routeEvent };
+      } catch (error) {
+        const decision = evaluateThreadRouteDecision({
+          channelAgents,
+          mentions,
+          parentMessage,
+          reply,
+          linkedTask,
+          fallbackUsed: true,
+          fallbackError: error,
+        });
+        const routeEvent = addRouteEvent(decision, { message: reply, spaceId });
+        return { ...decision, routeEvent };
+      }
+    }
+    const decision = evaluateThreadRouteDecision({
+      channelAgents,
+      mentions,
+      parentMessage,
+      reply,
+      linkedTask,
+      fallbackUsed: !fanoutApiConfigured(),
+    });
+    const routeEvent = addRouteEvent(decision, { message: reply, spaceId });
+    return { ...decision, routeEvent };
+  } catch (error) {
+    const decision = evaluateThreadRouteDecision({
+      channelAgents,
+      mentions,
+      parentMessage,
+      reply,
+      linkedTask,
+      fallbackUsed: true,
+      fallbackError: error,
+    });
+    const routeEvent = addRouteEvent(decision, { message: reply, spaceId });
     return { ...decision, routeEvent };
   }
 }
@@ -4681,6 +4977,7 @@ async function startCodexAgent(agent, proc, workspace) {
   const promptMessages = proc.inbox.slice();
   proc.promptMessageCount = promptMessages.length;
   const turnPrompt = createAgentTurnPrompt(promptMessages, agent);
+  const runtime = resolveCodexRuntime(agent, promptMessages);
   const args = ['app-server', '--listen', 'stdio://'];
   const codexHome = await prepareAgentCodexHome(agent);
 
@@ -4700,6 +4997,7 @@ async function startCodexAgent(agent, proc, workspace) {
   proc.initializeRequestId = null;
   proc.threadReady = false;
   proc.usedLegacyFallback = false;
+  proc.currentCodexRuntime = runtime;
   proc.status = 'starting';
   setAgentStatus(agent, 'starting', 'codex_app_server_start');
   agent.runtimeLastStartedAt = now();
@@ -4734,9 +5032,16 @@ async function startCodexAgent(agent, proc, workspace) {
   child.stderr.on('data', (chunk) => {
     const msg = chunk.toString().trim();
     if (msg) addSystemEvent('agent_stderr', msg, { agentId: agent.id });
+    const retry = parseCodexStreamRetry(msg);
+    if (retry) {
+      triggerCodexStreamRetryFallback(agent, proc, workspace, retry).catch((error) => {
+        addSystemEvent('agent_error', `${agent.name} stream retry fallback failed: ${error.message}`, { agentId: agent.id });
+      });
+    }
   });
 
   child.on('error', async (error) => {
+    if (proc.child !== child) return;
     clearAgentBusyDeliveryTimer(proc);
     if (!proc.threadReady && !proc.usedLegacyFallback) {
       await fallbackToCodexExec(agent, proc, workspace, error);
@@ -4751,6 +5056,7 @@ async function startCodexAgent(agent, proc, workspace) {
   });
 
   child.on('close', async (code) => {
+    if (proc.child !== child) return;
     clearAgentBusyDeliveryTimer(proc);
     if (!proc.threadReady && !proc.usedLegacyFallback) {
       if (proc.stopRequested) {
@@ -4806,8 +5112,8 @@ async function startCodexAgent(agent, proc, workspace) {
       approvalPolicy: 'never',
       sandbox: state.settings.sandbox || 'workspace-write',
       developerInstructions: standingPrompt,
-      model: normalizeCodexModelName(agent.model, state.settings?.model),
-      ...(agent.reasoningEffort ? { config: { model_reasoning_effort: agent.reasoningEffort } } : {}),
+      model: runtime.model,
+      ...(codexThreadConfig(runtime) ? { config: codexThreadConfig(runtime) } : {}),
     },
   };
   await persistState();
@@ -4829,6 +5135,34 @@ function sendCodexAppServerRequest(proc, method, params = {}) {
 function sendCodexAppServerNotification(proc, method, params = {}) {
   if (!proc.child?.stdin?.writable) return;
   proc.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
+}
+
+function parseCodexStreamRetry(text) {
+  const matches = [...String(text || '').matchAll(/stream disconnected - retrying sampling request \((\d+)\/(\d+)/gi)];
+  if (!matches.length) return null;
+  const parsed = matches
+    .map((match) => ({
+      count: Number(match[1]),
+      total: Number(match[2]),
+    }))
+    .filter((item) => Number.isFinite(item.count) && Number.isFinite(item.total))
+    .sort((a, b) => b.count - a.count);
+  return parsed[0] || null;
+}
+
+async function triggerCodexStreamRetryFallback(agent, proc, workspace, retry) {
+  if (!retry || retry.count < CODEX_STREAM_RETRY_LIMIT) return false;
+  if (proc.streamRetryFallbackStarted || proc.usedLegacyFallback || proc.stopRequested) return false;
+  proc.streamRetryFallbackStarted = true;
+  if (proc.threadId && proc.activeTurnId) {
+    sendCodexAppServerRequest(proc, 'turn/interrupt', {
+      threadId: proc.threadId,
+      turnId: proc.activeTurnId,
+    });
+  }
+  proc.responseBuffer = '';
+  await fallbackToCodexExec(agent, proc, workspace, new Error(`Codex stream disconnected ${retry.count}/${retry.total}; early retry limit is ${CODEX_STREAM_RETRY_LIMIT}.`));
+  return true;
 }
 
 async function handleCodexThreadReady(agent, proc, threadId) {
@@ -4905,6 +5239,9 @@ function applyAgentProcessDeliveryScope(proc, spaceType, spaceId, parentMessageI
 function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages = [] } = {}) {
   if (!proc.threadId) return false;
   const input = [{ type: 'text', text: prompt }];
+  const runtime = mode === 'steer' && proc.currentCodexRuntime
+    ? proc.currentCodexRuntime
+    : resolveCodexRuntime(agent, messages);
   let requestId = null;
   if (mode === 'steer' && proc.activeTurnId) {
     requestId = sendCodexAppServerRequest(proc, 'turn/steer', {
@@ -4916,6 +5253,8 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
     requestId = sendCodexAppServerRequest(proc, 'turn/start', {
       threadId: proc.threadId,
       input,
+      model: runtime.model,
+      ...(runtime.reasoningEffort ? { effort: runtime.reasoningEffort } : {}),
     });
   }
   if (!requestId) return false;
@@ -4930,14 +5269,25 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
     spaceId: sourceMessage?.spaceId || proc.spaceId,
     workItemIds: normalizeIds(promptMessages.map((message) => message?.workItemId)),
     targetKeys,
+    runtime,
   });
   rememberActiveTurnTargets(proc, mode, targetKeys);
+  proc.currentCodexRuntime = runtime;
   proc.status = 'running';
   setAgentStatus(agent, mode === 'steer' ? 'working' : 'thinking', mode === 'steer' ? 'agent_steered' : 'agent_turn_started', {
     activeWorkItemIds: normalizeIds(promptMessages.map((message) => message?.workItemId)),
+    runtimeModel: runtime.model,
+    runtimeReasoningEffort: runtime.reasoningEffort,
+    runtimeOverrideReason: runtime.overrideReason,
   });
   agent.runtimeLastTurnAt = now();
-  addSystemEvent(mode === 'steer' ? 'agent_steered' : 'agent_turn_started', `${agent.name} ${mode === 'steer' ? 'received a steering message' : 'started a turn'}`, { agentId: agent.id, sessionId: proc.threadId });
+  addSystemEvent(mode === 'steer' ? 'agent_steered' : 'agent_turn_started', `${agent.name} ${mode === 'steer' ? 'received a steering message' : 'started a turn'}`, {
+    agentId: agent.id,
+    sessionId: proc.threadId,
+    model: runtime.model,
+    reasoningEffort: runtime.reasoningEffort,
+    overrideReason: runtime.overrideReason,
+  });
   persistState().then(broadcastState);
   return true;
 }
@@ -5168,7 +5518,9 @@ async function handleCodexAppServerLine(agent, proc, line) {
 async function fallbackToCodexExec(agent, proc, workspace, error) {
   proc.usedLegacyFallback = true;
   addSystemEvent('agent_runtime_fallback', `${agent.name} falling back to legacy codex exec: ${error.message}`, { agentId: agent.id });
-  if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');
+  const previousChild = proc.child;
+  proc.child = null;
+  if (previousChild && !previousChild.killed) previousChild.kill('SIGTERM');
   await startCodexAgentLegacy(agent, proc, workspace);
 }
 
@@ -5178,6 +5530,7 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
   proc.promptMessageCount = promptMessages.length;
   const turnPrompt = createAgentTurnPrompt(promptMessages, agent);
   const fullPrompt = `${standingPrompt}\n\n---\n\n${turnPrompt}`;
+  const runtime = resolveCodexRuntime(agent, promptMessages);
   const codexHome = await prepareAgentCodexHome(agent);
 
   const outputFile = path.join(RUNS_DIR, `${proc.sessionId}-agent-response.txt`);
@@ -5192,13 +5545,12 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
     '-o', outputFile,
   ];
 
-  const model = normalizeCodexModelName(agent.model, state.settings?.model);
-  if (model) {
-    args.push('-m', model);
+  if (runtime.model) {
+    args.push('-m', runtime.model);
   }
 
-  if (agent.reasoningEffort) {
-    args.push('-c', `model_reasoning_effort=${JSON.stringify(agent.reasoningEffort)}`);
+  if (runtime.reasoningEffort) {
+    args.push('-c', `model_reasoning_effort=${JSON.stringify(runtime.reasoningEffort)}`);
   }
 
   args.push('-');
@@ -5206,8 +5558,16 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
   proc.status = 'running';
   setAgentStatus(agent, 'thinking', 'codex_legacy_turn_started', {
     activeWorkItemIds: normalizeIds(promptMessages.map((message) => message?.workItemId)),
+    runtimeModel: runtime.model,
+    runtimeReasoningEffort: runtime.reasoningEffort,
+    runtimeOverrideReason: runtime.overrideReason,
   });
-  addSystemEvent('agent_started', `${agent.name} started with Codex`, { agentId: agent.id });
+  addSystemEvent('agent_started', `${agent.name} started with Codex`, {
+    agentId: agent.id,
+    model: runtime.model,
+    reasoningEffort: runtime.reasoningEffort,
+    overrideReason: runtime.overrideReason,
+  });
   markWorkItemsDelivered(promptMessages, 'turn');
   await persistState();
   broadcastState();
@@ -5709,7 +6069,20 @@ async function restartAgentFromControl(agent, mode = 'restart') {
   return { mode: normalizedMode, stopped };
 }
 
-async function relayAgentMentions(record, { parentMessageId = null } = {}) {
+function agentAlreadyRoutedForSource(agentId, sourceMessage, { spaceType, spaceId, parentMessageId = null } = {}) {
+  if (!agentId || !sourceMessage?.id) return false;
+  const expectedParentId = parentMessageId || sourceMessage.parentMessageId || null;
+  return (state.workItems || []).some((item) => (
+    item.agentId === agentId
+    && item.sourceMessageId === sourceMessage.id
+    && item.status !== 'cancelled'
+    && item.spaceType === spaceType
+    && item.spaceId === spaceId
+    && String(item.parentMessageId || '') === String(expectedParentId || '')
+  ));
+}
+
+async function relayAgentMentions(record, { parentMessageId = null, sourceMessage = null } = {}) {
   if (record.authorType !== 'agent') return;
   if (!parentMessageId && !record.taskId) return;
   const relayDepth = Number(record.agentRelayDepth || 0);
@@ -5732,6 +6105,20 @@ async function relayAgentMentions(record, { parentMessageId = null } = {}) {
     if (!allowedIds.has(targetId)) continue;
     const targetAgent = findAgent(targetId);
     if (!targetAgent) continue;
+    if (agentAlreadyRoutedForSource(targetAgent.id, sourceMessage, {
+      spaceType: record.spaceType,
+      spaceId: record.spaceId,
+      parentMessageId,
+    })) {
+      addSystemEvent('agent_message_relay_suppressed', `${displayActor(record.authorId)} mentioned ${targetAgent.name}, but ${targetAgent.name} already received this turn.`, {
+        fromAgentId: record.authorId,
+        toAgentId: targetAgent.id,
+        messageId: record.id,
+        sourceMessageId: sourceMessage?.id || null,
+        parentMessageId,
+      });
+      continue;
+    }
     addSystemEvent('agent_message_relay', `${displayActor(record.authorId)} mentioned ${targetAgent.name}`, {
       fromAgentId: record.authorId,
       toAgentId: targetAgent.id,
@@ -5868,7 +6255,7 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
     addCollabEvent('agent_thread_response', `${agent.name} responded in thread`, { replyId: reply.id, messageId: parentMessageId, agentId: agent.id });
     await persistState();
     broadcastState();
-    await relayAgentMentions(reply, { parentMessageId });
+    await relayAgentMentions(reply, { parentMessageId, sourceMessage: options.sourceMessage });
     return reply;
   }
 
@@ -5890,13 +6277,16 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
   addCollabEvent('agent_response', `${agent.name} responded`, { messageId: message.id, agentId: agent.id });
   await persistState();
   broadcastState();
-  await relayAgentMentions(message);
+  await relayAgentMentions(message, { sourceMessage: options.sourceMessage });
   return message;
 }
 
 async function deliverMessageToAgent(agent, spaceType, spaceId, message, options = {}) {
   const parentMessageId = options.parentMessageId || message.parentMessageId || (shouldStartThreadForAgentDelivery(message) ? message.id : null);
   const workItem = createWorkItemForDelivery(agent, message, { spaceType, spaceId, parentMessageId });
+  const runtimeOverride = getAgentRuntime(agent) === 'codex'
+    ? codexRuntimeOverrideForDelivery(message, workItem)
+    : null;
   const routedMessage = {
     ...message,
     target: workItem.target,
@@ -5919,8 +6309,20 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
     spaceId,
     agentRelayDepth: Number(message.agentRelayDepth || 0),
     contextPack,
+    ...(runtimeOverride ? { runtimeOverride } : {}),
     ...(parentMessageId ? { parentMessageId } : {}),
   };
+  if (runtimeOverride) {
+    addSystemEvent('agent_fast_chat_runtime', `${agent.name} using low-latency chat runtime.`, {
+      agentId: agent.id,
+      messageId: message.id,
+      parentMessageId,
+      workItemId: workItem.id,
+      model: runtimeOverride.model || null,
+      reasoningEffort: runtimeOverride.reasoningEffort,
+      reason: runtimeOverride.reason,
+    });
+  }
   // Check if agent has a running process
   const proc = agentProcesses.get(agent.id);
 
@@ -7087,6 +7489,7 @@ async function handleApi(req, res, url) {
     let endedThreadTask = null;
     let stoppedThreadTask = null;
     let stopResult = null;
+    let routeDecision = null;
     if (reply.authorType === 'human' && linkedTask && taskStopIntent(text)) {
       stopResult = stopTaskFromThread(linkedTask, reply.authorId, reply.id);
       stoppedThreadTask = linkedTask;
@@ -7136,9 +7539,20 @@ async function handleApi(req, res, url) {
       const channelAgents = channel
         ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
         : [];
-      let respondingAgents = message.spaceType === 'channel'
-        ? determineThreadRespondingAgents(message, reply, channelAgents, mentions, linkedTask)
-        : [];
+      let respondingAgents = [];
+      if (message.spaceType === 'channel') {
+        routeDecision = await routeThreadReplyForChannel({
+          channelAgents,
+          mentions,
+          parentMessage: message,
+          reply,
+          linkedTask,
+          spaceId: message.spaceId,
+        });
+        respondingAgents = routeDecision.targetAgentIds
+          .map((id) => channelAgents.find((agent) => agent.id === id))
+          .filter(Boolean);
+      }
       if (message.spaceType === 'dm') {
         const dm = state.dms.find((item) => item.id === message.spaceId);
         const agentId = dm?.participantIds?.find((id) => id.startsWith('agt_'));
@@ -7152,6 +7566,11 @@ async function handleApi(req, res, url) {
       }
     }
 
+    if (routeDecision) {
+      await persistState();
+      broadcastState();
+    }
+
     sendJson(res, 201, {
       reply,
       createdTask: createdThreadTask,
@@ -7159,6 +7578,7 @@ async function handleApi(req, res, url) {
       endedTask: endedThreadTask,
       stoppedTask: stoppedThreadTask,
       stopResult,
+      route: routeDecision,
     });
     return true;
   }

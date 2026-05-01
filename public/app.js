@@ -1857,12 +1857,6 @@ function routeAgentNames(routeEvent, stateSnapshot = appState) {
   return names.length ? names.join(', ') : 'No agent selected';
 }
 
-function routeRouterName(routeEvent) {
-  if (routeEvent?.llmUsed) return routeEvent?.llmModel || 'Fan-out API';
-  if (routeEvent?.fallbackUsed) return 'Rules fallback';
-  return 'Local rules';
-}
-
 function routeEvidenceSummary(routeEvent) {
   const evidence = (routeEvent?.evidence || [])
     .filter((item) => item?.value)
@@ -1872,50 +1866,21 @@ function routeEvidenceSummary(routeEvent) {
   return evidence || 'No extra evidence recorded';
 }
 
-function routeReflectionText(routeEvent) {
-  if (routeEvent?.llmUsed) {
-    return 'LLM fan-out was used for this ambiguous routing decision; targets were validated against channel members.';
-  }
-  if (routeEvent?.mode === 'contextual_follow_up') {
-    return '检测到单 Agent 连续上下文，其他 Agent 保持旁听。';
-  }
-  if (routeEvent?.mode === 'task_claim') {
-    return '已进入 claim/任务锁路径，避免多个 Agent 重复执行。';
-  }
-  if (routeEvent?.fallbackUsed) {
-    return 'Fan-out API was unavailable or not configured, so local rules handled the message.';
-  }
-  if ((routeEvent?.targetAgentIds || []).length > 1) {
-    return '这是开放群聊路由，多 Agent 可以各自补充视角。';
-  }
-  return '已完成上下文、显式指向和 Agent card 检查。';
+function compactFanoutReason(routeEvent) {
+  const reason = String(routeEvent?.reason || routeEvidenceSummary(routeEvent) || '需要语义判断。')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return reason.length > 92 ? `${reason.slice(0, 89)}...` : reason;
 }
 
 function buildFanoutDecisionCards(routeEvent, stateSnapshot = appState) {
-  const confidence = Math.round(Number(routeEvent?.confidence || 0) * 100);
-  const routerName = routeRouterName(routeEvent, stateSnapshot);
-  const mode = routeEvent?.mode || 'unknown';
   return [
     {
-      id: `${routeEvent.id}:thought`,
-      phase: 'thought',
-      title: 'Fan-out API / Trigger',
-      body: routeEvent?.reason || 'Router evaluated the channel message.',
-      meta: `${routerName} / ${mode}`,
-    },
-    {
-      id: `${routeEvent.id}:decision`,
+      id: routeEvent.id,
       phase: 'decision',
-      title: 'Fan-out API / Decision',
-      body: `Selected: ${routeAgentNames(routeEvent, stateSnapshot)}`,
-      meta: `confidence ${confidence}%${routeEvent?.llmLatencyMs ? ` / ${routeEvent.llmLatencyMs}ms` : ''}`,
-    },
-    {
-      id: `${routeEvent.id}:reflection`,
-      phase: 'reflection',
-      title: 'Fan-out API / Validation',
-      body: routeReflectionText(routeEvent),
-      meta: routeEvidenceSummary(routeEvent),
+      title: 'LLM fan-out',
+      body: `路由到：${routeAgentNames(routeEvent, stateSnapshot)}`,
+      meta: `原因：${compactFanoutReason(routeEvent)}`,
     },
   ];
 }
@@ -1958,7 +1923,7 @@ function dismissFanoutDecisionCard(id) {
 }
 
 function addFanoutDecisionCard(card) {
-  fanoutDecisionCards = [...fanoutDecisionCards.filter((item) => item.id !== card.id), card].slice(-9);
+  fanoutDecisionCards = [card];
   patchFanoutDecisionToasts();
   window.setTimeout(() => dismissFanoutDecisionCard(card.id), 5000);
 }
@@ -1972,11 +1937,15 @@ function enqueueFanoutDecisionCards(routeEvent, stateSnapshot = appState) {
 }
 
 function trackFanoutRouteEvents(nextState, { silent = false } = {}) {
+  const newLlmEvents = [];
   for (const event of nextState?.routeEvents || []) {
     if (!event?.id || seenFanoutRouteEventIds.has(event.id)) continue;
     seenFanoutRouteEventIds.add(event.id);
     if (!event.llmUsed) continue;
-    if (!silent && initialLoadComplete) enqueueFanoutDecisionCards(event, nextState);
+    newLlmEvents.push(event);
+  }
+  if (!silent && initialLoadComplete && newLlmEvents.length) {
+    enqueueFanoutDecisionCards(newLlmEvents.at(-1), nextState);
   }
 }
 

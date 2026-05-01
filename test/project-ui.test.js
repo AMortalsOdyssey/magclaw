@@ -580,7 +580,7 @@ test('Fan-out API config replaces the Brain Agent UI module', async () => {
   assert.match(styles, /\.fanout-api-note/);
 });
 
-test('LLM fan-out decisions render stacked diagnostic cards only when LLM is used', async () => {
+test('LLM fan-out decisions render one concise route toast only when LLM is used', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
@@ -589,9 +589,15 @@ test('LLM fan-out decisions render stacked diagnostic cards only when LLM is use
   assert.match(app, /function trackFanoutRouteEvents\(nextState/);
   assert.match(app, /function enqueueFanoutDecisionCards\(routeEvent/);
   assert.match(app, /function renderFanoutDecisionToasts\(\)/);
-  assert.match(app, /Fan-out API \/ Trigger/);
-  assert.match(app, /Fan-out API \/ Decision/);
-  assert.match(app, /Fan-out API \/ Validation/);
+  assert.match(app, /LLM fan-out/);
+  assert.match(app, /路由到：/);
+  assert.match(app, /原因：/);
+  assert.match(app, /fanoutDecisionCards = \[card\]/);
+  assert.match(app, /const newLlmEvents = \[\]/);
+  assert.match(app, /enqueueFanoutDecisionCards\(newLlmEvents\.at\(-1\), nextState\)/);
+  assert.doesNotMatch(app, /Fan-out API \/ Trigger/);
+  assert.doesNotMatch(app, /Fan-out API \/ Decision/);
+  assert.doesNotMatch(app, /Fan-out API \/ Validation/);
   assert.match(app, /if \(!event\.llmUsed\) continue/);
   assert.match(app, /trackFanoutRouteEvents\(nextState, \{ silent: !initialLoadComplete \|\| !appState \}\)/);
   assert.match(app, /trackFanoutRouteEvents\(nextState, \{ silent: !initialLoadComplete \}\)/);

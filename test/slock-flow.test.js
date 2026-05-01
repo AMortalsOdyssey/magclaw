@@ -1438,6 +1438,96 @@ test('Fan-out API config is masked globally and drives LLM card routing when nee
   }
 });
 
+test('thread replies use Fan-out API routing when multiple agent participants are ambiguous', async () => {
+  const server = await startIsolatedServer();
+  let weiId = '';
+  let zhongId = '';
+  const fanoutContexts = [];
+  const mock = await startMockFanoutApi((body) => {
+    const content = JSON.parse(body.messages.at(-1).content);
+    fanoutContexts.push(content);
+    return {
+      mode: 'directed',
+      targetAgentIds: [weiId, zhongId],
+      confidence: 0.89,
+      reason: 'The reply addresses Wei by nickname and Zhong by title.',
+    };
+  });
+  try {
+    const { agent: hanli } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: '韩立', description: '谨慎的修仙者', runtime: 'Codex CLI' }),
+    });
+    const { agent: wei } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: '魏无涯', description: '魏道友，行事公道', runtime: 'Codex CLI' }),
+    });
+    weiId = wei.id;
+    const { agent: zhong } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: '仲神师', description: '神师，直言严厉', runtime: 'Codex CLI' }),
+    });
+    zhongId = zhong.id;
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'thread-fanout', description: 'thread semantic routing', agentIds: [hanli.id, wei.id, zhong.id] }),
+    });
+    await request(server.baseUrl, '/api/settings/fanout', {
+      method: 'POST',
+      body: JSON.stringify({
+        enabled: true,
+        baseUrl: `${mock.baseUrl}/v1`,
+        apiKey: 'thread-key',
+        model: 'thread-router',
+      }),
+    });
+
+    const parent = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: `<@${hanli.id}> <@${wei.id}> <@${zhong.id}> 先开个讨论`,
+        attachmentIds: [],
+      }),
+    });
+    assert.equal(mock.calls.length, 0);
+
+    const reply = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '我觉得魏道友确实比较公道，神师，你也太严厉了吧',
+        attachmentIds: [],
+      }),
+    });
+
+    assert.equal(reply.route.strategy, 'llm');
+    assert.equal(reply.route.llmUsed, true);
+    assert.deepEqual(reply.route.targetAgentIds.slice().sort(), [wei.id, zhong.id].sort());
+    assert.equal(mock.calls.length, 1);
+    assert.equal(fanoutContexts[0].thread.parentMessage.id, parent.message.id);
+    assert.equal(fanoutContexts[0].thread.currentReplyId, reply.reply.id);
+    assert.ok(fanoutContexts[0].thread.participantAgentIds.includes(wei.id));
+    assert.ok(fanoutContexts[0].thread.participantAgentIds.includes(zhong.id));
+    assert.equal(fanoutContexts[0].trigger.type, 'thread_named_agent');
+
+    const delivered = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const workItems = state.workItems
+        .filter((item) => item.sourceMessageId === reply.reply.id)
+        .map((item) => item.agentId)
+        .sort();
+      const routeEvent = state.routeEvents.find((event) => event.messageId === reply.reply.id);
+      return workItems.length === 2 && routeEvent ? { workItems, routeEvent } : null;
+    });
+    assert.deepEqual(delivered.workItems, [wei.id, zhong.id].sort());
+    assert.equal(delivered.routeEvent.parentMessageId, parent.message.id);
+    assert.equal(delivered.routeEvent.llmUsed, true);
+    assert.equal(delivered.routeEvent.llmModel, 'thread-router');
+  } finally {
+    await server.stop();
+    await mock.stop();
+  }
+});
+
 test('memory writeback hooks update MEMORY and notes for task progress and user preferences', async () => {
   const server = await startIsolatedServer();
   try {
@@ -1544,6 +1634,69 @@ test('top-level agent replies do not relay mentions as new channel deliveries', 
     const finalState = await request(server.baseUrl, '/api/state');
     assert.equal(finalState.messages.some((message) => message.id === sent.message.id && message.spaceId === channel.id), true);
     assert.equal(finalState.workItems.some((item) => item.sourceMessageId === sent.message.id && item.agentId === cindy.id), false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('thread agent mention relay skips agents already routed for the same human turn', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: han } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Han', description: 'Thread participant', runtime: 'Codex CLI' }),
+    });
+    const { agent: zhong } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Zhong', description: 'Thread participant', runtime: 'Codex CLI' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'relay-guard', description: 'relay guard', agentIds: [han.id, zhong.id] }),
+    });
+
+    const parent = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        authorType: 'agent',
+        authorId: han.id,
+        body: '讨论根消息',
+        attachmentIds: [],
+      }),
+    });
+
+    const userReply = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: `<@${han.id}> <@${zhong.id}> 你们都说一下`,
+        attachmentIds: [],
+      }),
+    });
+
+    const routed = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const workItems = snapshot.workItems.filter((item) => item.sourceMessageId === userReply.reply.id);
+      return workItems.length >= 2 ? { snapshot, workItems } : null;
+    });
+    assert.equal(routed.workItems.some((item) => item.agentId === zhong.id), true);
+    const hanWorkItem = routed.workItems.find((item) => item.agentId === han.id);
+    assert.ok(hanWorkItem);
+
+    const sent = await request(server.baseUrl, '/api/agent-tools/messages/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: han.id,
+        workItemId: hanWorkItem.id,
+        target: hanWorkItem.target,
+        content: `我先说一句，<@${zhong.id}> 也可以补充。`,
+      }),
+    });
+    assert.equal(sent.ok, true);
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const finalState = await request(server.baseUrl, '/api/state');
+    assert.equal(finalState.workItems.some((item) => item.sourceMessageId === sent.message.id && item.agentId === zhong.id), false);
+    assert.equal(finalState.events.some((event) => event.type === 'agent_message_relay_suppressed' && event.toAgentId === zhong.id), true);
   } finally {
     await server.stop();
   }
@@ -1879,6 +2032,194 @@ process.stdin.on('data', (chunk) => {
       return entries.some((item) => item.method === 'thread/resume');
     }, 8000);
     assert.equal(resumed, true);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('Codex ordinary chat turns use low reasoning while durable work keeps agent reasoning', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-chat-runtime-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const logPath = process.env.FAKE_CODEX_LOG;
+let buffer = '';
+let turnCount = 0;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+function completeTurn(turnId) {
+  send({ method: 'turn/started', params: { turn: { id: turnId } } });
+  send({ method: 'item/agentMessage/delta', params: { itemId: 'item_' + turnId, delta: 'runtime response ' + turnId } });
+  send({ method: 'turn/completed', params: { turn: { id: turnId, status: 'completed' } } });
+}
+function handle(message) {
+  log({ method: message.method, params: message.params });
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'initialized') return;
+  if (message.method === 'thread/start') {
+    send({ id: message.id, result: { thread: { id: 'thread_runtime_session' } } });
+    return;
+  }
+  if (message.method === 'thread/resume') {
+    send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    return;
+  }
+  if (message.method === 'turn/start') {
+    const turnId = 'turn_' + (++turnCount);
+    send({ id: message.id, result: { turn: { id: turnId } } });
+    setTimeout(() => completeTurn(turnId), 10);
+  }
+}
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    handle(JSON.parse(line));
+  }
+});
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+  });
+  try {
+    await request(server.baseUrl, '/api/agents/agt_codex', {
+      method: 'PATCH',
+      body: JSON.stringify({ model: 'gpt-5.5', reasoningEffort: 'xhigh' }),
+    });
+
+    const chat = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '你觉得这个设定自然吗', attachmentIds: [] }),
+    });
+    await waitFor(async () => {
+      const entries = await readJsonLines(logPath);
+      return entries.some((item) => item.method === 'turn/start') ? true : null;
+    }, 4000);
+    let entries = await readJsonLines(logPath);
+    const threadStart = entries.find((item) => item.method === 'thread/start');
+    const chatTurn = entries.find((item) => item.method === 'turn/start');
+    assert.equal(threadStart.params.model, 'gpt-5.5');
+    assert.equal(threadStart.params.config.model_reasoning_effort, 'low');
+    assert.equal(chatTurn.params.model, 'gpt-5.5');
+    assert.equal(chatTurn.params.effort, 'low');
+
+    await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      return state.replies.some((item) => item.parentMessageId === chat.message.id && item.body.includes('runtime response')) ? true : null;
+    }, 4000);
+
+    await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 请修复这个 bug 并验证一下', attachmentIds: [] }),
+    });
+    await waitFor(async () => {
+      const latest = await readJsonLines(logPath);
+      return latest.filter((item) => item.method === 'turn/start').length >= 2 ? true : null;
+    }, 4000);
+    entries = await readJsonLines(logPath);
+    const workTurn = entries.filter((item) => item.method === 'turn/start').at(-1);
+    assert.equal(workTurn.params.model, 'gpt-5.5');
+    assert.equal(workTurn.params.effort, 'xhigh');
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('Codex app-server falls back after two response stream retry warnings', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-retry-limit-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+if (args[0] === 'exec') {
+  const outputPath = args[args.indexOf('-o') + 1];
+  log({ mode: 'exec', args });
+  process.stdin.on('end', () => {
+    fs.writeFileSync(outputPath, 'legacy fallback after two retries');
+    process.exit(0);
+  });
+  process.stdin.resume();
+} else if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function send(value) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+  }
+  function handle(message) {
+    log({ method: message.method, params: message.params });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_retry_session' } } });
+      return;
+    }
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_retry' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_retry' } } });
+      setTimeout(() => process.stderr.write('stream disconnected - retrying sampling request (1/5 in 14s)...\\n'), 10);
+      setTimeout(() => process.stderr.write('stream disconnected - retrying sampling request (2/5 in 14s)...\\n'), 40);
+    }
+    if (message.method === 'turn/interrupt') {
+      log({ method: message.method, params: message.params });
+    }
+  }
+  process.on('SIGTERM', () => process.exit(0));
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+    MAGCLAW_CODEX_STREAM_RETRY_LIMIT: '2',
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 看一下这个问题', attachmentIds: [] }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      return state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('legacy fallback after two retries'))
+        ? state
+        : null;
+    }, 5000);
+    const entries = await readJsonLines(logPath);
+    assert.ok(entries.some((item) => item.mode === 'app-server'));
+    assert.ok(entries.some((item) => item.mode === 'exec'));
+    assert.ok(entries.some((item) => item.method === 'turn/interrupt'));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_runtime_fallback' && item.message.includes('2/5')));
   } finally {
     await server.stop();
     await rm(fakeCodexDir, { recursive: true, force: true });
