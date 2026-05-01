@@ -28,6 +28,14 @@ import {
   readAgentHistory,
   searchAgentMessageHistory,
 } from './agent-history.js';
+import {
+  applyMentions,
+  escapeRegExp,
+  extractMentionTokens,
+  isMentionBoundaryChar,
+  mentionTokenForId,
+  normalizeIds,
+} from './mentions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1884,32 +1892,6 @@ function findTask(id) {
   return state.tasks.find((task) => task.id === id);
 }
 
-function normalizeIds(value) {
-  return [...new Set((Array.isArray(value) ? value : [])
-    .map(String)
-    .map((id) => id.trim())
-    .filter(Boolean))];
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function mentionTokenForId(id) {
-  return String(id).startsWith('!') ? `<!${String(id).replace(/^!/, '')}>` : `<@${id}>`;
-}
-
-function isAsciiMentionWordChar(char) {
-  return /[A-Za-z0-9_.-]/.test(char);
-}
-
-function isMentionBoundaryChar(char) {
-  if (!char) return true;
-  if (/\s/.test(char)) return true;
-  if (/[，。！？；：、,.!?;:()[\]{}「」『』《》【】"'`“”‘’]/.test(char)) return true;
-  return !isAsciiMentionWordChar(char);
-}
-
 function visibleMentionLabel(actor) {
   return actor?.name ? `@${actor.name}` : '';
 }
@@ -1987,44 +1969,8 @@ function normalizeConversationRecord(record) {
   return record;
 }
 
-// Extract mentions from message text
-// Parses <@agent_id>, <@human_id>, and <!special> patterns
 function extractMentions(text) {
-  const mentions = {
-    agents: [],
-    humans: [],
-    special: [],
-  };
-  // Extract <@agt_xxx> agent mentions
-  const agentMatches = text.matchAll(/<@(agt_\w+)>/g);
-  for (const match of agentMatches) {
-    const agent = findAgent(match[1]);
-    if (agent && !mentions.agents.includes(agent.id)) {
-      mentions.agents.push(agent.id);
-    }
-  }
-  // Extract <@hum_xxx> human mentions
-  const humanMatches = text.matchAll(/<@(hum_\w+)>/g);
-  for (const match of humanMatches) {
-    const human = findHuman(match[1]);
-    if (human && !mentions.humans.includes(match[1])) {
-      mentions.humans.push(match[1]);
-    }
-  }
-  // Extract <!special> mentions (all, here, channel, everyone)
-  const specialMatches = text.matchAll(/<!(all|here|channel|everyone)>/g);
-  for (const match of specialMatches) {
-    if (!mentions.special.includes(match[1])) {
-      mentions.special.push(match[1]);
-    }
-  }
-  return mentions;
-}
-
-function applyMentions(record, mentions = extractMentions(record.body || '')) {
-  record.mentionedAgentIds = normalizeIds(mentions.agents);
-  record.mentionedHumanIds = normalizeIds(mentions.humans);
-  return record;
+  return extractMentionTokens(text, { findAgent, findHuman });
 }
 
 function taskScopeKey(spaceType, spaceId) {
