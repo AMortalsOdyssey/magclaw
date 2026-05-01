@@ -71,6 +71,25 @@ import {
   normalizeFanoutApiConfig as normalizeFanoutApiConfigBase,
   publicApiKeyPreview,
 } from './runtime-config.js';
+import {
+  baseNameFromProjectPath,
+  CONTENT_TYPES as contentTypes,
+  decodePathSegment,
+  httpError,
+  mimeForPath,
+  normalizeProjectRelPath,
+  safeFileName,
+  safePathWithin,
+  splitLines,
+  toPosixPath,
+} from './path-utils.js';
+import {
+  listProjectTree as listProjectTreeBase,
+  projectFilePreviewKind,
+  readProjectFilePreview as readProjectFilePreviewBase,
+  searchProject,
+  sortProjectSearchResults,
+} from './project-files.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -88,11 +107,6 @@ const PORT = Number(process.env.PORT || DEFAULT_PORT);
 const HOST = process.env.HOST || '127.0.0.1';
 const MAX_JSON_BYTES = 40 * 1024 * 1024;
 const MAX_ATTACHMENT_UPLOADS = 20;
-const MAX_PROJECT_SEARCH_RESULTS = 80;
-const MAX_PROJECT_SCAN_ENTRIES = 4000;
-const MAX_PROJECT_SEARCH_DEPTH = 8;
-const MAX_PROJECT_TREE_ENTRIES = 300;
-const MAX_PROJECT_FILE_PREVIEW_BYTES = 2 * 1024 * 1024;
 const MAX_AGENT_WORKSPACE_TREE_ENTRIES = 300;
 const MAX_AGENT_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_AGENT_RELAY_DEPTH = 2;
@@ -125,74 +139,11 @@ const CODEX_HOME_STALE_SHARED_ENTRIES = [
   'hooks',
   'vendor_imports',
 ];
-const PROJECT_SEARCH_EXCLUDES = new Set([
-  '.git',
-  '.hg',
-  '.svn',
-  '.magclaw',
-  'node_modules',
-  '.next',
-  'dist',
-  'build',
-  'target',
-  '.venv',
-  '__pycache__',
-]);
-const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd']);
-const TEXT_PREVIEW_EXTENSIONS = new Set([
-  '.txt',
-  '.md',
-  '.markdown',
-  '.mdown',
-  '.mkd',
-  '.log',
-  '.csv',
-  '.json',
-  '.jsonl',
-  '.js',
-  '.mjs',
-  '.cjs',
-  '.ts',
-  '.tsx',
-  '.jsx',
-  '.css',
-  '.html',
-  '.xml',
-  '.yml',
-  '.yaml',
-  '.toml',
-  '.ini',
-  '.sh',
-  '.zsh',
-  '.bash',
-  '.py',
-  '.go',
-  '.rs',
-  '.java',
-  '.c',
-  '.cpp',
-  '.h',
-  '.hpp',
-]);
-
 const runningProcesses = new Map();
 const agentProcesses = new Map(); // agentId -> { child, sessionId, status, inbox }
 const sseClients = new Set();
 let cloudPushTimer = null;
 let syncInProgress = false;
-
-const contentTypes = new Map([
-  ['.html', 'text/html; charset=utf-8'],
-  ['.css', 'text/css; charset=utf-8'],
-  ['.js', 'text/javascript; charset=utf-8'],
-  ['.json', 'application/json; charset=utf-8'],
-  ['.svg', 'image/svg+xml'],
-  ['.png', 'image/png'],
-  ['.jpg', 'image/jpeg'],
-  ['.jpeg', 'image/jpeg'],
-  ['.webp', 'image/webp'],
-  ['.ico', 'image/x-icon'],
-]);
 
 let state = null;
 let saveChain = Promise.resolve();
@@ -979,75 +930,11 @@ async function readJson(req) {
   return JSON.parse(raw);
 }
 
-function splitLines(value) {
-  if (Array.isArray(value)) return value.map(String).map((line) => line.trim()).filter(Boolean);
-  return String(value || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function safeFileName(name) {
-  return String(name || 'attachment')
-    .replace(/[/\\?%*:|"<>]/g, '-')
-    .replace(/\s+/g, '-')
-    .slice(0, 120);
-}
-
-function safePathWithin(base, target = '.') {
-  const basePath = path.resolve(base);
-  const resolved = path.resolve(basePath, target || '.');
-  const relative = path.relative(basePath, resolved);
-  if (relative && (relative.startsWith('..') || path.isAbsolute(relative))) return null;
-  return resolved;
-}
-
-function toPosixPath(value) {
-  return String(value || '').replace(/\\/g, '/').split(path.sep).join('/');
-}
-
-function decodePathSegment(value) {
-  try {
-    return decodeURIComponent(String(value || ''));
-  } catch {
-    return String(value || '');
-  }
-}
-
-function normalizeProjectRelPath(value) {
-  return toPosixPath(decodePathSegment(value))
-    .replace(/^\/+/, '')
-    .replace(/\/+/g, '/')
-    .replace(/^\.\//, '');
-}
-
-function baseNameFromProjectPath(value, fallback = 'project') {
-  const parts = normalizeProjectRelPath(value).split('/').filter(Boolean);
-  return parts.pop() || fallback;
-}
-
-function httpError(status, message) {
-  const error = new Error(message);
-  error.status = status;
-  return error;
-}
-
 function attachmentPeriod(createdAt = new Date()) {
   const date = createdAt instanceof Date ? createdAt : new Date(createdAt);
   const year = String(date.getFullYear());
   const month = String(date.getMonth() + 1).padStart(2, '0');
   return { year, month, relativeDir: `${year}/${month}` };
-}
-
-function mimeForPath(filePath, fallback = 'application/octet-stream') {
-  const ext = path.extname(filePath).toLowerCase();
-  if (contentTypes.has(ext)) return contentTypes.get(ext).replace(/;.*$/, '');
-  if (ext === '.txt' || ext === '.md' || ext === '.log') return 'text/plain';
-  if (ext === '.pdf') return 'application/pdf';
-  if (ext === '.csv') return 'text/csv';
-  if (ext === '.json') return 'application/json';
-  if (ext === '.zip') return 'application/zip';
-  return fallback;
 }
 
 async function saveAttachmentBuffer({ name, type, buffer, source = 'upload', extra = {} }) {
@@ -1084,93 +971,12 @@ function projectsForSpace(spaceType, spaceId) {
   ));
 }
 
-function projectRelativePath(project, absolutePath) {
-  return toPosixPath(path.relative(project.path, absolutePath));
-}
-
-function fuzzyIncludes(query, value) {
-  const q = String(query || '').toLowerCase();
-  const target = String(value || '').toLowerCase();
-  if (!q) return true;
-  if (target.includes(q)) return true;
-  let cursor = 0;
-  for (const char of q) {
-    cursor = target.indexOf(char, cursor);
-    if (cursor < 0) return false;
-    cursor += 1;
-  }
-  return true;
-}
-
-function projectSearchScore(query, item) {
-  const q = String(query || '').toLowerCase();
-  const name = item.name.toLowerCase();
-  const rel = item.path.toLowerCase();
-  if (!q) return item.kind === 'folder' ? 1 : 2;
-  if (name === q) return 0;
-  if (name.startsWith(q)) return 1;
-  if (name.includes(q)) return 2;
-  if (rel.includes(q)) return 3;
-  return 4;
-}
-
-async function searchProject(project, query) {
-  const results = [];
-  const queue = [{ dir: project.path, depth: 0 }];
-  let scanned = 0;
-
-  while (queue.length && scanned < MAX_PROJECT_SCAN_ENTRIES && results.length < MAX_PROJECT_SEARCH_RESULTS * 3) {
-    const current = queue.shift();
-    let entries = [];
-    try {
-      entries = await readdir(current.dir, { withFileTypes: true });
-    } catch (error) {
-      addSystemEvent('project_scan_skipped', `Could not scan ${project.name}: ${error.message}`, {
-        projectId: project.id,
-        path: current.dir,
-      });
-      continue;
-    }
-
-    for (const entry of entries) {
-      if (scanned >= MAX_PROJECT_SCAN_ENTRIES) break;
-      if (PROJECT_SEARCH_EXCLUDES.has(entry.name)) continue;
-      scanned += 1;
-
-      const absolutePath = path.join(current.dir, entry.name);
-      const relPath = projectRelativePath(project, absolutePath);
-      const isDirectory = entry.isDirectory();
-      if (fuzzyIncludes(query, `${entry.name} ${relPath}`)) {
-        results.push({
-          id: `${project.id}:${relPath}`,
-          projectId: project.id,
-          projectName: project.name,
-          name: entry.name,
-          path: relPath,
-          absolutePath,
-          kind: isDirectory ? 'folder' : 'file',
-        });
-      }
-      if (isDirectory && current.depth < MAX_PROJECT_SEARCH_DEPTH) {
-        queue.push({ dir: absolutePath, depth: current.depth + 1 });
-      }
-    }
-  }
-
-  return results
-    .sort((a, b) => projectSearchScore(query, a) - projectSearchScore(query, b)
-      || (a.kind === b.kind ? a.path.localeCompare(b.path) : a.kind === 'folder' ? -1 : 1))
-    .slice(0, MAX_PROJECT_SEARCH_RESULTS);
-}
-
 async function searchProjectItems(spaceType, spaceId, query) {
   const projects = projectsForSpace(spaceType, spaceId);
-  const batches = await Promise.all(projects.map((project) => searchProject(project, query)));
-  return batches
-    .flat()
-    .sort((a, b) => projectSearchScore(query, a) - projectSearchScore(query, b)
-      || (a.kind === b.kind ? a.path.localeCompare(b.path) : a.kind === 'folder' ? -1 : 1))
-    .slice(0, MAX_PROJECT_SEARCH_RESULTS);
+  const batches = await Promise.all(projects.map((project) => searchProject(project, query, {
+    onError: addSystemEvent,
+  })));
+  return sortProjectSearchResults(query, batches.flat());
 }
 
 function projectReferenceFromParts(kind, projectId, rawRelPath) {
@@ -1211,100 +1017,12 @@ function localReferenceLines(refs = []) {
     : '';
 }
 
-function projectEntry(project, relPath, info) {
-  const isDirectory = info.isDirectory();
-  return {
-    id: `${project.id}:${relPath}`,
-    projectId: project.id,
-    projectName: project.name,
-    name: baseNameFromProjectPath(relPath, project.name),
-    path: relPath,
-    kind: isDirectory ? 'folder' : 'file',
-    type: isDirectory ? 'folder' : mimeForPath(relPath),
-    bytes: isDirectory ? 0 : info.size,
-    updatedAt: info.mtime.toISOString(),
-  };
+function listProjectTree(project, rawRelPath = '') {
+  return listProjectTreeBase(project, rawRelPath, { onError: addSystemEvent });
 }
 
-async function listProjectTree(project, rawRelPath = '') {
-  const relPath = normalizeProjectRelPath(rawRelPath);
-  const dirPath = safePathWithin(project.path, relPath || '.');
-  if (!dirPath) throw httpError(400, 'Project tree path must stay inside the project folder.');
-  const info = await stat(dirPath).catch(() => null);
-  if (!info) throw httpError(404, 'Project tree path was not found.');
-  if (!info.isDirectory()) throw httpError(400, 'Project tree path must be a directory.');
-
-  const dirEntries = (await readdir(dirPath, { withFileTypes: true }))
-    .filter((entry) => !PROJECT_SEARCH_EXCLUDES.has(entry.name))
-    .sort((a, b) => (a.isDirectory() === b.isDirectory()
-      ? a.name.localeCompare(b.name)
-      : a.isDirectory() ? -1 : 1))
-    .slice(0, MAX_PROJECT_TREE_ENTRIES);
-
-  const entries = [];
-  for (const entry of dirEntries) {
-    const childRelPath = toPosixPath(path.join(relPath, entry.name)).replace(/^\/+/, '');
-    const childPath = safePathWithin(project.path, childRelPath);
-    if (!childPath) continue;
-    try {
-      entries.push(projectEntry(project, childRelPath, await stat(childPath)));
-    } catch (error) {
-      addSystemEvent('project_tree_entry_skipped', `Could not inspect ${entry.name}: ${error.message}`, {
-        projectId: project.id,
-        path: childRelPath,
-      });
-    }
-  }
-
-  return {
-    project: {
-      id: project.id,
-      name: project.name,
-      path: project.path,
-    },
-    path: relPath,
-    entries,
-    truncated: dirEntries.length >= MAX_PROJECT_TREE_ENTRIES,
-  };
-}
-
-function projectFilePreviewKind(filePath, buffer) {
-  const ext = path.extname(filePath).toLowerCase();
-  if (MARKDOWN_EXTENSIONS.has(ext)) return 'markdown';
-  if (TEXT_PREVIEW_EXTENSIONS.has(ext)) return 'text';
-  if (buffer.includes(0)) return 'binary';
-  const sample = buffer.subarray(0, Math.min(buffer.length, 2048)).toString('utf8');
-  return sample.includes('\uFFFD') ? 'binary' : 'text';
-}
-
-async function readProjectFilePreview(project, rawRelPath = '') {
-  const relPath = normalizeProjectRelPath(rawRelPath);
-  const filePath = safePathWithin(project.path, relPath);
-  if (!filePath) throw httpError(400, 'Project file path must stay inside the project folder.');
-  const info = await stat(filePath).catch(() => null);
-  if (!info) throw httpError(404, 'Project file was not found.');
-  if (!info.isFile()) throw httpError(400, 'Project preview path must be a file.');
-  if (info.size > MAX_PROJECT_FILE_PREVIEW_BYTES) {
-    throw httpError(413, `File preview is limited to ${MAX_PROJECT_FILE_PREVIEW_BYTES} bytes.`);
-  }
-
-  const buffer = await readFile(filePath);
-  const previewKind = projectFilePreviewKind(filePath, buffer);
-  return {
-    file: {
-      id: `file:${project.id}:${relPath}`,
-      projectId: project.id,
-      projectName: project.name,
-      name: baseNameFromProjectPath(relPath, project.name),
-      path: relPath,
-      absolutePath: filePath,
-      type: mimeForPath(filePath),
-      bytes: info.size,
-      updatedAt: info.mtime.toISOString(),
-      previewKind,
-      content: previewKind === 'binary' ? '' : buffer.toString('utf8'),
-    },
-  };
+function readProjectFilePreview(project, rawRelPath = '') {
+  return readProjectFilePreviewBase(project, rawRelPath);
 }
 
 function agentDataDir(agent) {
