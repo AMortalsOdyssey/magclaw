@@ -96,7 +96,9 @@ import { createAgentRuntimeManager } from './agent-runtime-manager.js';
 import { createAgentWorkspaceManager } from './agent-workspace.js';
 import { createConversationModel } from './conversation-model.js';
 import { createCollabMemoryManager } from './collab-memory.js';
+import { createCloudAuth } from './cloud/auth.js';
 import { createCloudSync } from './cloud-sync.js';
+import { createDaemonRelay } from './cloud/daemon-relay.js';
 import { createRoutingEngine } from './routing-engine.js';
 import { createMissionRunner } from './mission-runner.js';
 import { createSystemServices } from './system-services.js';
@@ -235,6 +237,14 @@ const {
   stateJsonSnapshot,
 } = stateCore;
 
+const cloudAuth = createCloudAuth({
+  getState: () => state,
+  makeId,
+  normalizeIds,
+  now,
+  persistState,
+});
+
 const serverIo = createServerIo({
   addSystemEvent,
   getState: () => state,
@@ -327,6 +337,23 @@ const {
   workItemMatchesScope,
   workItemMatchesTask,
 } = conversationModel;
+
+const daemonRelay = createDaemonRelay({
+  addSystemEvent,
+  broadcastState,
+  cloudAuth,
+  findAgent,
+  findComputer,
+  getState: () => state,
+  host: HOST,
+  makeId,
+  normalizeConversationRecord,
+  now,
+  persistState,
+  port: PORT,
+  root: ROOT,
+  setAgentStatus,
+});
 
 const agentWorkspace = createAgentWorkspaceManager({
   addSystemEvent,
@@ -483,6 +510,7 @@ const systemServices = createSystemServices({
   makeId,
   now,
   persistState,
+  publicCloudState: (req) => cloudAuth.publicCloudState(req),
   projectsForSpace,
   runningProcesses,
   selectedDefaultSpaceId,
@@ -535,6 +563,7 @@ const agentRuntime = createAgentRuntimeManager({
   broadcastState,
   channelAgentIds,
   channelHumanIds,
+  cloudRelay: daemonRelay,
   CODEX_STREAM_RETRY_LIMIT,
   codexRuntimeOverrideForDelivery,
   deliveryMessageMatchesScope,
@@ -664,6 +693,12 @@ const {
   updateTaskForAgent,
 } = agentRuntime;
 
+daemonRelay.setHandlers({
+  onAgentMessage: async ({ agent, body, spaceType, spaceId, parentMessageId, sourceMessage }) => {
+    await postAgentResponse(agent, spaceType, spaceId, body, parentMessageId, { sourceMessage });
+  },
+});
+
 function projectApiDeps() {
   return {
     addProjectFolder,
@@ -694,6 +729,8 @@ function cloudApiDeps() {
     broadcastState,
     cloudFetch,
     cloudSnapshot,
+    cloudAuth,
+    daemonRelay,
     dataDir: DATA_DIR,
     getState: () => state,
     host: HOST,
@@ -987,6 +1024,17 @@ async function handleRequest(req, res) {
 await ensureStorage();
 
 const server = http.createServer(handleRequest);
+server.on('upgrade', (req, socket) => {
+  daemonRelay.handleUpgrade(req, socket).then((handled) => {
+    if (!handled) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    }
+  }).catch((error) => {
+    socket.write('HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\n');
+    socket.end(error.message || 'WebSocket upgrade failed.');
+  });
+});
 const heartbeatTimer = setInterval(() => {
   if (reconcileAgentStatusHeartbeats()) {
     persistState().then(broadcastState).catch(() => {});

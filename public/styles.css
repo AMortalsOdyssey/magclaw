@@ -5040,6 +5040,32 @@ code {
   line-height: 1.35;
 }
 
+.pair-command-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--border-faint);
+  background: var(--bg-elevated);
+}
+
+.pair-command-box span {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.pair-command-box code {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 8px;
+  border: 1px solid var(--border-faint);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
 .fanout-api-note {
   margin: 0;
   color: var(--text-muted);

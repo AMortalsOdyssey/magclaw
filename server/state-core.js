@@ -119,6 +119,31 @@ export function createStateCore(deps) {
         autoSync: process.env.MAGCLAW_AUTO_SYNC === '1',
         protocolVersion: CLOUD_PROTOCOL_VERSION,
       },
+      cloud: {
+        schemaVersion: 1,
+        auth: {
+          allowSignups: process.env.MAGCLAW_ALLOW_SIGNUPS === '1',
+          passwordLogin: true,
+          ownerInviteOnly: process.env.MAGCLAW_ALLOW_SIGNUPS !== '1',
+        },
+        workspaces: [
+          {
+            id: process.env.MAGCLAW_WORKSPACE_ID || 'local',
+            slug: process.env.MAGCLAW_WORKSPACE_ID || 'local',
+            name: process.env.MAGCLAW_DEFAULT_WORKSPACE_NAME || 'MagClaw',
+            ownerUserId: null,
+            createdAt: seededAt,
+          },
+        ],
+        workspaceMembers: [],
+        users: [],
+        sessions: [],
+        invitations: [],
+        pairingTokens: [],
+        computerTokens: [],
+        agentDeliveries: [],
+        daemonEvents: [],
+      },
       storage: {
         schemaVersion: 1,
         sqliteFile: 'state.sqlite',
@@ -462,6 +487,12 @@ export function createStateCore(deps) {
     state.connection.relayUrl = normalizeCloudUrl(state.connection.relayUrl || '');
     state.connection.cloudToken = String(state.connection.cloudToken || process.env.MAGCLAW_CLOUD_TOKEN || '');
     state.connection.protocolVersion = CLOUD_PROTOCOL_VERSION;
+    state.cloud = { ...fresh.cloud, ...(state.cloud || {}) };
+    state.cloud.auth = { ...fresh.cloud.auth, ...(state.cloud.auth || {}) };
+    for (const key of ['workspaces', 'workspaceMembers', 'users', 'sessions', 'invitations', 'pairingTokens', 'computerTokens', 'agentDeliveries', 'daemonEvents']) {
+      if (!Array.isArray(state.cloud[key])) state.cloud[key] = fresh.cloud[key] || [];
+    }
+    if (!state.cloud.workspaces.length) state.cloud.workspaces = fresh.cloud.workspaces;
     for (const key of ['humans', 'computers', 'agents', 'brainAgents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events']) {
       if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
     }
@@ -613,6 +644,7 @@ export function createStateCore(deps) {
       agent.runtimeLastTurnAt = legacyRuntimeSessionId ? null : agent.runtimeLastTurnAt || null;
       agent.runtimeActivity = agent.runtimeActivity && typeof agent.runtimeActivity === 'object' ? agent.runtimeActivity : null;
       agent.workspacePath = agent.workspacePath || path.join(AGENTS_DIR, agent.id);
+      agent.computerId = agent.computerId || 'cmp_local';
       agent.statusUpdatedAt = agent.statusUpdatedAt || agent.updatedAt || agent.createdAt || now();
       agent.heartbeatAt = agent.heartbeatAt || agent.statusUpdatedAt;
       agent.activeWorkItemIds = normalizeIds(agent.activeWorkItemIds || []);
@@ -633,6 +665,15 @@ export function createStateCore(deps) {
           previousHome: SOURCE_CODEX_HOME,
         });
       }
+    }
+    for (const computer of state.computers) {
+      computer.workspaceId = computer.workspaceId || state.connection.workspaceId || 'local';
+      computer.status = computer.status || 'offline';
+      computer.runtimeIds = Array.isArray(computer.runtimeIds) ? computer.runtimeIds : [];
+      computer.connectedVia = computer.connectedVia || (computer.id === 'cmp_local' ? 'local' : 'manual');
+      computer.updatedAt = computer.updatedAt || computer.createdAt || now();
+      computer.lastSeenAt = computer.lastSeenAt || null;
+      computer.capabilities = Array.isArray(computer.capabilities) ? computer.capabilities : [];
     }
   }
   
@@ -699,14 +740,15 @@ export function createStateCore(deps) {
   }
   
   function broadcast(type, payload) {
-    const packet = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
     for (const res of sseClients) {
+      const body = typeof payload === 'function' ? payload(res.magclawRequest || null) : payload;
+      const packet = `event: ${type}\ndata: ${JSON.stringify(body)}\n\n`;
       res.write(packet);
     }
   }
   
   function broadcastState() {
-    broadcast('state', publicState());
+    broadcast('state', (req) => publicState(req));
     broadcastHeartbeat();
     queueCloudPush('state_changed');
   }

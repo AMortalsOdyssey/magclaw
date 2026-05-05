@@ -27,7 +27,7 @@ export async function handleSystemApi(req, res, url, deps) {
   const state = getState();
 
   if (req.method === 'GET' && url.pathname === '/api/state') {
-    sendJson(res, 200, publicState());
+    sendJson(res, 200, publicState(req));
     return true;
   }
 
@@ -48,7 +48,8 @@ export async function handleSystemApi(req, res, url, deps) {
       connection: 'keep-alive',
       'x-accel-buffering': 'no',
     });
-    res.write(`event: state\ndata: ${JSON.stringify(publicState())}\n\n`);
+    res.magclawRequest = req;
+    res.write(`event: state\ndata: ${JSON.stringify(publicState(req))}\n\n`);
     res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat())}\n\n`);
     sseClients.add(res);
     req.on('close', () => sseClients.delete(res));
@@ -69,7 +70,7 @@ export async function handleSystemApi(req, res, url, deps) {
     addSystemEvent('settings_updated', 'Runtime settings updated.');
     await persistState();
     broadcastState();
-    sendJson(res, 200, publicState());
+    sendJson(res, 200, publicState(req));
     return true;
   }
 
@@ -84,7 +85,7 @@ export async function handleSystemApi(req, res, url, deps) {
     });
     await persistState();
     broadcastState();
-    sendJson(res, 200, publicState());
+    sendJson(res, 200, publicState(req));
     return true;
   }
 

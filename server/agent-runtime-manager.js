@@ -24,6 +24,7 @@ export function createAgentRuntimeManager(deps) {
     broadcastState,
     channelAgentIds,
     channelHumanIds,
+    cloudRelay,
     CODEX_STREAM_RETRY_LIMIT,
     codexRuntimeOverrideForDelivery,
     deliveryMessageMatchesScope,
@@ -2479,11 +2480,21 @@ function scheduleCodexWarmup(agent, proc) {
 }
 
 async function startAgentFromControl(agent) {
+  if (cloudRelay?.agentShouldUseRelay?.(agent)) {
+    return cloudRelay.startAgent(agent, { reason: 'manual_start' });
+  }
   return startAgentProcess(agent, 'channel', 'chan_all', []);
 }
 
 async function warmAgentFromControl(agent, { spaceType = 'channel', spaceId = 'chan_all' } = {}) {
   const runtime = getAgentRuntime(agent);
+  if (cloudRelay?.agentShouldUseRelay?.(agent)) {
+    return cloudRelay.startAgent(agent, {
+      reason: 'warmup',
+      spaceType,
+      spaceId,
+    });
+  }
   let proc = agentProcesses.get(agent.id);
   const normalizedSpaceType = spaceType === 'dm' ? 'dm' : 'channel';
   const normalizedSpaceId = String(spaceId || (normalizedSpaceType === 'channel' ? 'chan_all' : '') || 'chan_all');
@@ -2505,6 +2516,13 @@ async function warmAgentFromControl(agent, { spaceType = 'channel', spaceId = 'c
 
 async function restartAgentFromControl(agent, mode = 'restart') {
   const normalizedMode = ['restart', 'reset-session', 'full-reset'].includes(mode) ? mode : 'restart';
+  if (cloudRelay?.agentShouldUseRelay?.(agent)) {
+    addCollabEvent('agent_restart_requested', `${agent.name} remote restart requested (${normalizedMode}).`, {
+      agentId: agent.id,
+      mode: normalizedMode,
+    });
+    return cloudRelay.startAgent(agent, { reason: `remote_${normalizedMode}` });
+  }
   const stopped = await stopAgentProcessForControl(agent);
   if (normalizedMode === 'full-reset') {
     await resetAgentWorkspaceFiles(agent);
@@ -2766,6 +2784,10 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
     ...(runtimeOverride ? { runtimeOverride } : {}),
     ...(parentMessageId ? { parentMessageId } : {}),
   };
+  if (cloudRelay?.agentShouldUseRelay?.(agent)) {
+    await cloudRelay.deliverToAgent(agent, deliveryMessage, workItem);
+    return;
+  }
   if (runtimeOverride) {
     addSystemEvent('agent_fast_chat_runtime', `${agent.name} using low-latency chat runtime.`, {
       agentId: agent.id,

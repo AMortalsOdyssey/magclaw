@@ -12,6 +12,8 @@ export async function handleCloudApi(req, res, url, deps) {
     broadcastState,
     cloudFetch,
     cloudSnapshot,
+    cloudAuth,
+    daemonRelay,
     dataDir,
     getState,
     host,
@@ -30,6 +32,15 @@ export async function handleCloudApi(req, res, url, deps) {
   } = deps;
   const state = getState();
 
+  async function sendAction(action) {
+    try {
+      return await action();
+    } catch (error) {
+      sendError(res, error.status || 500, error.message || 'Cloud action failed.');
+      return null;
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/cloud/health') {
     if (!requireCloudAccess(req, res)) return true;
     sendJson(res, 200, {
@@ -39,7 +50,129 @@ export async function handleCloudApi(req, res, url, deps) {
       protocolVersion,
       workspaceId: url.searchParams.get('workspaceId') || state.connection?.workspaceId || 'local',
       time: now(),
+      authInitialized: cloudAuth ? cloudAuth.publicCloudState(req).auth.initialized : false,
+      relay: daemonRelay ? daemonRelay.publicRelayState() : null,
     });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/cloud/auth/status') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    sendJson(res, 200, cloudAuth.publicCloudState(req));
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/auth/bootstrap-owner') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.bootstrapOwner(body, req, res));
+    if (result) {
+      broadcastState();
+      sendJson(res, 201, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/auth/login') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.login(body, req, res));
+    if (result) sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/auth/logout') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.logout(req, res));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, result);
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/auth/register') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.registerWithInvite(body, req, res));
+    if (result) {
+      broadcastState();
+      sendJson(res, 201, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/cloud/invitations') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    if (!cloudAuth.requireUser(req, res, sendError, ['admin'])) return true;
+    sendJson(res, 200, { invitations: cloudAuth.publicCloudState(req).invitations });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/invitations') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    if (!cloudAuth.requireUser(req, res, sendError, ['admin'])) return true;
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.createInvitation(body, req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 201, result);
+    }
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/cloud/relay/status') {
+    sendJson(res, 200, daemonRelay ? daemonRelay.publicRelayState() : { onlineComputerIds: [], daemonEvents: [] });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/computers/pairing-tokens') {
+    if (!daemonRelay || !cloudAuth) {
+      sendError(res, 503, 'Cloud relay service is unavailable.');
+      return true;
+    }
+    const cloudState = cloudAuth.publicCloudState(req);
+    if (cloudState.auth.initialized && !cloudAuth.requireUser(req, res, sendError, ['computer_admin'])) return true;
+    const body = await readJson(req);
+    const current = cloudAuth.currentUser(req);
+    const result = daemonRelay.createPairingToken({ ...body, createdBy: current?.id || null }, req);
+    await persistState();
+    broadcastState();
+    sendJson(res, 201, result);
+    return true;
+  }
+
+  const revokeComputerTokenMatch = url.pathname.match(/^\/api\/cloud\/computers\/([^/]+)\/tokens\/revoke$/);
+  if (req.method === 'POST' && revokeComputerTokenMatch) {
+    if (!daemonRelay || !cloudAuth) {
+      sendError(res, 503, 'Cloud relay service is unavailable.');
+      return true;
+    }
+    if (!cloudAuth.requireUser(req, res, sendError, ['computer_admin'])) return true;
+    const body = await readJson(req);
+    const result = await daemonRelay.revokeComputerToken(revokeComputerTokenMatch[1], body.tokenId || '');
+    sendJson(res, 200, result);
     return true;
   }
 
@@ -51,6 +184,8 @@ export async function handleCloudApi(req, res, url, deps) {
         dataDir,
         protocolVersion,
       },
+      cloud: cloudAuth ? cloudAuth.publicCloudState(req) : null,
+      relay: daemonRelay ? daemonRelay.publicRelayState() : null,
     });
     return true;
   }

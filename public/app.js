@@ -70,6 +70,7 @@ let agentDetailTab = 'profile';
 let agentDetailEditState = { field: null };
 let agentEnvEditState = null;
 let settingsTab = initialUiState.settingsTab || 'account';
+let latestPairingCommand = null;
 let collapsedSidebarSections = readJsonStorage(SIDEBAR_SECTION_COLLAPSE_KEY, {});
 let collapsedSkillSections = readJsonStorage(SKILL_SECTION_COLLAPSE_KEY, {});
 let avatarCropState = null;
@@ -3755,6 +3756,7 @@ function renderComputers() {
           <h2>Computers</h2>
         </div>
         <div class="action-row">
+          <button class="secondary-btn" type="button" data-action="create-computer-pairing">Pair Computer</button>
           <button class="primary-btn" type="button" data-action="open-modal" data-modal="computer">Add Computer</button>
         </div>
       </header>
@@ -3795,12 +3797,20 @@ function renderComputerConfigCard() {
         ${computers.map((computer) => `
           <div class="computer-config-row">
             <strong>${escapeHtml(computer.name || 'Computer')}</strong>
-            <span>${escapeHtml(computer.os || 'unknown')} / ${escapeHtml(computer.status || 'offline')}</span>
-            <small>${escapeHtml((computer.runtimeIds || []).join(', ') || 'no runtimes')}</small>
+            <span>${escapeHtml(computer.os || computer.hostname || 'unknown')} / ${escapeHtml(computer.status || 'offline')}</span>
+            <small>${escapeHtml((computer.runtimeIds || []).join(', ') || computer.connectedVia || 'no runtimes')}</small>
           </div>
         `).join('') || '<div class="empty-box small">No computers configured.</div>'}
       </div>
+      ${latestPairingCommand ? `
+        <div class="pair-command-box">
+          <span>Connect Command</span>
+          <code>${escapeHtml(latestPairingCommand.command || '')}</code>
+          <button class="secondary-btn" type="button" data-action="copy-pairing-command">Copy</button>
+        </div>
+      ` : ''}
       <button class="secondary-btn" type="button" data-action="open-modal" data-modal="computer">Add Computer</button>
+      <button class="secondary-btn" type="button" data-action="create-computer-pairing">Pair Computer</button>
     </div>
   `;
 }
@@ -3867,6 +3877,82 @@ function renderSettingsChrome(body, actions = '') {
 function renderAccountSettingsTab() {
   const human = byId(appState.humans, 'hum_local') || appState.humans?.[0] || {};
   const c = appState.connection || {};
+  const cloud = appState.cloud || {};
+  const auth = cloud.auth || {};
+  const currentUser = auth.currentUser;
+  const currentMember = auth.currentMember;
+  const members = cloud.members || [];
+  const invitations = cloud.invitations || [];
+  const authPanel = !auth.initialized ? `
+      <div class="pixel-panel cloud-card">
+        <form id="cloud-owner-form" class="modal-form">
+          <div class="panel-title"><span>Owner Setup</span><span>invite only</span></div>
+          <label><span>Name</span><input name="name" autocomplete="name" placeholder="Owner name" /></label>
+          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <button class="primary-btn" type="submit">Create Owner</button>
+        </form>
+      </div>
+    ` : currentUser ? `
+      <div class="pixel-panel cloud-card">
+        <div class="panel-title"><span>Signed In</span><span>${escapeHtml(currentMember?.role || 'member')}</span></div>
+        <div class="settings-account-hero compact">
+          <span class="settings-account-avatar">${escapeHtml(displayAvatar(human.id || 'hum_local', 'human'))}</span>
+          <div>
+            <strong>${escapeHtml(currentUser.name || human.name || 'You')}</strong>
+            <small>${escapeHtml(currentUser.email || human.email || '')}</small>
+          </div>
+        </div>
+        <div class="cloud-actions">
+          <button class="secondary-btn" type="button" data-action="cloud-auth-logout">Sign Out</button>
+        </div>
+      </div>
+      <div class="pixel-panel cloud-card">
+        <form id="cloud-invite-form" class="modal-form">
+          <div class="panel-title"><span>Invite Member</span><span>${escapeHtml(invitations.length)} pending</span></div>
+          <label><span>Email</span><input name="email" type="email" required /></label>
+          <label><span>Role</span><select name="role">
+            <option value="member">member</option>
+            <option value="admin">admin</option>
+            <option value="viewer">viewer</option>
+            <option value="computer_admin">computer_admin</option>
+            <option value="agent_admin">agent_admin</option>
+          </select></label>
+          <button class="primary-btn" type="submit">Create Invitation</button>
+        </form>
+      </div>
+      <div class="pixel-panel cloud-card wide">
+        <div class="panel-title"><span>Workspace Members</span><span>${escapeHtml(members.length)}</span></div>
+        <div class="computer-config-list">
+          ${members.map((member) => `
+            <div class="computer-config-row">
+              <strong>${escapeHtml(member.user?.name || member.humanId || 'Member')}</strong>
+              <span>${escapeHtml(member.user?.email || member.userId || '')} / ${escapeHtml(member.role || 'member')}</span>
+              <small>${escapeHtml(member.status || 'active')}</small>
+            </div>
+          `).join('') || '<div class="empty-box small">No members yet.</div>'}
+        </div>
+      </div>
+    ` : `
+      <div class="pixel-panel cloud-card">
+        <form id="cloud-login-form" class="modal-form">
+          <div class="panel-title"><span>Login</span><span>password</span></div>
+          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+          <button class="primary-btn" type="submit">Login</button>
+        </form>
+      </div>
+      <div class="pixel-panel cloud-card">
+        <form id="cloud-register-form" class="modal-form">
+          <div class="panel-title"><span>Accept Invitation</span><span>owner invite</span></div>
+          <label><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." required /></label>
+          <label><span>Name</span><input name="name" autocomplete="name" /></label>
+          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <button class="primary-btn" type="submit">Create Account</button>
+        </form>
+      </div>
+    `;
   return `
     <section class="settings-layout">
       <div class="pixel-panel cloud-card settings-account-card">
@@ -3884,6 +3970,7 @@ function renderAccountSettingsTab() {
           <div><span>Device</span><strong>${escapeHtml(c.deviceName || appState.runtime?.host || 'local')}</strong><small>${escapeHtml(c.deviceId || '')}</small></div>
         </div>
       </div>
+      ${authPanel}
       <div class="pixel-panel cloud-card">
         <div class="panel-title"><span>Identity Boundary</span><span>v1</span></div>
         <div class="boundary-grid single">
@@ -6246,6 +6333,7 @@ document.addEventListener('click', async (event) => {
     'close-task-detail',
     'open-modal',
     'close-modal',
+    'copy-pairing-command',
     'open-thread',
     'open-search-result',
     'open-search-entity',
@@ -6281,6 +6369,13 @@ document.addEventListener('click', async (event) => {
       agentFormState.envVars.splice(index, 1);
       const listEl = document.getElementById('env-vars-list');
       if (listEl) listEl.innerHTML = renderEnvVarsList();
+    }
+    return;
+  }
+  if (action === 'copy-pairing-command') {
+    if (latestPairingCommand?.command) {
+      await navigator.clipboard?.writeText(latestPairingCommand.command);
+      toast('Connect command copied');
     }
     return;
   }
@@ -6950,6 +7045,19 @@ document.addEventListener('click', async (event) => {
       await api('/api/cloud/sync/pull', { method: 'POST', body: '{}' });
       toast('Cloud state pulled');
     }
+    if (action === 'create-computer-pairing') {
+      latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
+        method: 'POST',
+        body: JSON.stringify({ name: appState.runtime?.host || 'Computer' }),
+      });
+      activeView = 'computers';
+      railTab = 'computers';
+      toast('Pairing command created');
+    }
+    if (action === 'cloud-auth-logout') {
+      await api('/api/cloud/auth/logout', { method: 'POST', body: '{}' });
+      toast('Signed out');
+    }
     if (action === 'leave-channel') {
       if (!window.confirm('Leave this channel?')) return;
       await api(`/api/channels/${selectedSpaceId}/leave`, { method: 'POST', body: '{}' });
@@ -7164,6 +7272,51 @@ document.addEventListener('submit', async (event) => {
         body: JSON.stringify(cloudFormPayload()),
       });
       toast('Connection saved');
+    }
+    if (form.id === 'cloud-owner-form') {
+      await api('/api/cloud/auth/bootstrap-owner', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: data.get('name'),
+          email: data.get('email'),
+          password: data.get('password'),
+        }),
+      });
+      toast('Owner created');
+    }
+    if (form.id === 'cloud-login-form') {
+      await api('/api/cloud/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: data.get('email'),
+          password: data.get('password'),
+        }),
+      });
+      toast('Signed in');
+    }
+    if (form.id === 'cloud-register-form') {
+      await api('/api/cloud/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          inviteToken: data.get('inviteToken'),
+          name: data.get('name'),
+          email: data.get('email'),
+          password: data.get('password'),
+        }),
+      });
+      toast('Account created');
+    }
+    if (form.id === 'cloud-invite-form') {
+      const invite = await api('/api/cloud/invitations', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: data.get('email'),
+          role: data.get('role'),
+        }),
+      });
+      if (invite.inviteUrl) await navigator.clipboard?.writeText(invite.inviteUrl);
+      toast(invite.inviteUrl ? 'Invitation link copied' : 'Invitation created');
+      form.reset();
     }
     if (form.id === 'fanout-config-form') {
       await api('/api/settings/fanout', {

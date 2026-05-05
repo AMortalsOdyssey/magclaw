@@ -17,6 +17,7 @@ export function createSystemServices(deps) {
     makeId,
     now,
     persistState,
+    publicCloudState,
     projectsForSpace,
     runningProcesses,
     selectedDefaultSpaceId,
@@ -29,13 +30,14 @@ export function createSystemServices(deps) {
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
 
-  function publicState() {
+  function publicState(req = null) {
     const currentState = getState() || {};
     return {
       ...currentState,
       settings: publicSettings(),
       channels: (currentState.channels || []).filter((channel) => !channel.archived),
       connection: publicConnection(),
+      cloud: typeof publicCloudState === 'function' ? publicCloudState(req) : undefined,
       runtime: runtimeSnapshot(),
       runningRunIds: [...runningProcesses.keys()],
     };
