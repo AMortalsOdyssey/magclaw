@@ -64,6 +64,7 @@ function routeDeps(overrides = {}) {
     stopAgentProcesses: () => ({ stoppedAgents: ['agt_1'], cancelledWorkItems: [] }),
     stopRunsForScope: () => ['run_1'],
     stopScopeFromBody: () => null,
+    warmAgentFromControl: async () => ({ running: true, warm: false, warming: true, status: 'starting' }),
     state,
     ...overrides,
   };
@@ -127,6 +128,28 @@ test('agent route group starts only when no process is already running', async (
   assert.equal(res.statusCode, 202);
   assert.equal(startCalls, 0);
   assert.equal(res.data.running, true);
+});
+
+test('agent route group warms an agent process for the selected space', async () => {
+  let warmPayload = null;
+  const deps = routeDeps({
+    readJson: async () => ({ spaceType: 'dm', spaceId: 'dm_1' }),
+    warmAgentFromControl: async (_agent, payload) => {
+      warmPayload = payload;
+      return { running: true, warm: false, warming: true, status: 'starting' };
+    },
+  });
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/agents/agt_1/warm'),
+    deps,
+  );
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(warmPayload, { spaceType: 'dm', spaceId: 'dm_1' });
+  assert.equal(res.data.warming, true);
 });
 
 test('agent route group stop-all resets visible status and process registry', async () => {

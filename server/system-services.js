@@ -52,6 +52,7 @@ export function createSystemServices(deps) {
         baseUrl: fanoutApi.baseUrl,
         model: fanoutApi.model,
         timeoutMs: fanoutApi.timeoutMs,
+        forceKeywords: fanoutApi.forceKeywords,
         hasApiKey: Boolean(fanoutApi.apiKey),
         apiKeyPreview: publicApiKeyPreview(fanoutApi.apiKey),
         configured: fanoutApiConfigured(fanoutApi),
@@ -77,6 +78,7 @@ export function createSystemServices(deps) {
       baseUrl: body.baseUrl !== undefined ? normalizeCloudUrl(body.baseUrl || '') : current.baseUrl,
       model: body.model !== undefined ? String(body.model || '').trim() : current.model,
       timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : current.timeoutMs,
+      forceKeywords: body.forceKeywords !== undefined ? body.forceKeywords : current.forceKeywords,
     };
     if (body.clearApiKey === true) {
       next.apiKey = '';

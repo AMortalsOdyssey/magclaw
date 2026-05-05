@@ -11,6 +11,7 @@ import {
   normalizeCloudUrl,
   normalizeCodexModelName,
   normalizeFanoutApiConfig,
+  normalizeFanoutForceKeywords,
   publicApiKeyPreview,
 } from '../server/runtime-config.js';
 
@@ -22,13 +23,16 @@ test('runtime config helpers normalize fan-out and chat settings', () => {
     apiKey: 'secret',
     model: ' router ',
     timeoutMs: 50_000,
+    forceKeywords: ' /llm\n强制LLM，/LLM ',
   }, 2500), {
     enabled: true,
     baseUrl: 'https://api.example.com/v1',
     apiKey: 'secret',
     model: 'router',
     timeoutMs: 30_000,
+    forceKeywords: ['/llm', '强制LLM'],
   });
+  assert.deepEqual(normalizeFanoutForceKeywords(['  alpha  ', '', 'ALPHA', 'beta;gamma']), ['alpha', 'beta;gamma']);
   assert.equal(fanoutApiConfigReady({ enabled: true, baseUrl: 'x', apiKey: 'k', model: 'm' }), true);
   assert.equal(fanoutApiConfigReady({ enabled: true, baseUrl: 'x', apiKey: '', model: 'm' }), false);
   assert.equal(publicApiKeyPreview('sk-abcdef'), 'sk-abc****');

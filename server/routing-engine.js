@@ -60,7 +60,7 @@ export function createRoutingEngine(deps) {
   });
 
   function fanoutApiConfigured(config = state?.settings?.fanoutApi) {
-    const normalized = normalizeFanoutApiConfig(config || {});
+    const normalized = normalizeFanoutApiConfig(config || {}, FANOUT_API_TIMEOUT_MS);
     return normalized.enabled && normalized.baseUrl && normalized.apiKey && normalized.model;
   }
 
@@ -326,6 +326,42 @@ export function createRoutingEngine(deps) {
     }
     return false;
   }
+
+  function singularSecondPersonReference(text) {
+    const raw = String(text || '');
+    return /你(?!们)|您/.test(raw) || /\b(?:you|your|yours)\b/i.test(raw);
+  }
+
+  function textDirectlyAddressesAgent(agent, text) {
+    const raw = String(text || '');
+    const compactRaw = raw.replace(/\s+/g, '');
+    const aliases = normalizeIds([agent?.name, agent?.displayName]);
+    for (const alias of aliases) {
+      const value = String(alias || '').trim();
+      if (!value) continue;
+      const haystack = /^[A-Za-z0-9_.-]+$/.test(value) ? raw.toLowerCase() : compactRaw.toLowerCase();
+      const needle = (/^[A-Za-z0-9_.-]+$/.test(value) ? value : value.replace(/\s+/g, '')).toLowerCase();
+      const index = haystack.indexOf(needle);
+      if (index < 0) continue;
+      const after = haystack.slice(index + needle.length);
+      if (/^[\s，,、:：!！?？]*(?:你(?!们)|您)/.test(after)) return true;
+      if (/^[\s，,、:：!！?？]+/.test(after)) return true;
+      if (/^[\s,;:!?-]*(?:you|your|yours)\b/i.test(after)) return true;
+    }
+    return false;
+  }
+
+  function threadParentDirectAddressAgent(parentMessage, reply, channelAgents, mentions) {
+    if (parentMessage?.authorType !== 'agent' || reply?.authorType !== 'human') return null;
+    if (mentions?.agents?.length || mentions?.special?.length) return null;
+    if (!singularSecondPersonReference(reply.body)) return null;
+    const parentAgent = (channelAgents || []).find((agent) => agent.id === parentMessage.authorId);
+    if (!parentAgent || !agentAvailableForAutoWork(parentAgent)) return null;
+    const directlyNamedOther = (channelAgents || [])
+      .filter((agent) => agent.id !== parentAgent.id)
+      .some((agent) => textAddressesAgent(agent, reply.body) && textDirectlyAddressesAgent(agent, reply.body));
+    return directlyNamedOther ? null : parentAgent;
+  }
   
   function markdownSection(content, heading) {
     const lines = String(content || '').split(/\r?\n/);
@@ -361,6 +397,19 @@ export function createRoutingEngine(deps) {
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, limit);
+  }
+
+  function compactWorkLogForRouting(value, limit = 1200) {
+    const bullets = String(value || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('- '))
+      .map((line) => line
+        .replace(/^-\s*\d{4}-\d{2}-\d{2}T[^\s]+\s*/, '- ')
+        .replace(/\s+/g, ' ')
+        .slice(0, 140))
+      .slice(0, 12);
+    return compactMarkdownText(bullets.join('\n'), limit);
   }
   
   async function fileSignature(filePath) {
@@ -416,6 +465,7 @@ export function createRoutingEngine(deps) {
       markdownSection(memory, 'Key Knowledge'),
     ].filter(Boolean).join('\n');
     const activeContext = markdownSection(memory, 'Active Context');
+    const conciseWorkLog = compactWorkLogForRouting(workLog);
     const collaboration = [
       markdownSection(memory, 'Collaboration Rules'),
       markdownSection(profile, 'Response Boundaries'),
@@ -435,7 +485,7 @@ export function createRoutingEngine(deps) {
       collaboration: compactMarkdownText(collaboration, 1600),
       activeContext: compactMarkdownText(activeContext, 1400),
       peers: compactMarkdownText(peers, 1800),
-      workLog: compactMarkdownText(workLog, 2200),
+      workLog: conciseWorkLog,
       recentTasks,
       haystack: compactMarkdownText([
         agent.name,
@@ -446,7 +496,7 @@ export function createRoutingEngine(deps) {
         capabilities,
         activeContext,
         peers,
-        workLog,
+        conciseWorkLog,
         recentTasks.join(' '),
       ].filter(Boolean).join('\n'), 9000).toLowerCase(),
       sourceFiles: files,
@@ -482,6 +532,8 @@ export function createRoutingEngine(deps) {
     if (mentions.agents.length || mentions.special.length) {
       return determineRespondingAgents(channelAgents, mentions, reply, message.spaceId);
     }
+    const parentAddressed = threadParentDirectAddressAgent(message, reply, channelAgents, mentions);
+    if (parentAddressed) return [parentAddressed];
     const named = channelAgents.filter((agent) => textAddressesAgent(agent, reply.body));
     if (named.length) return named;
     const participantIds = threadParticipantAgentIds(message, linkedTask);
@@ -537,12 +589,54 @@ export function createRoutingEngine(deps) {
       .filter((agent) => !explicit.has(agent.id))
       .filter((agent) => agentReferenceVariants(agent).some((variant) => raw.includes(variant.toLowerCase())));
   }
+
+  function fanoutForceKeywordTrigger(message, thread = null) {
+    const config = normalizeFanoutApiConfig(state.settings?.fanoutApi || {}, FANOUT_API_TIMEOUT_MS);
+    const text = String(message?.body || '');
+    if (!text.trim() || !config.forceKeywords.length) return null;
+    const lowerText = text.toLowerCase();
+    const keyword = config.forceKeywords.find((item) => lowerText.includes(item.toLowerCase()));
+    if (!keyword) return null;
+    return {
+      type: 'force_keyword',
+      reason: `Message contains force LLM keyword "${keyword}".`,
+      keyword,
+      namedAgentIds: [],
+      participantAgentIds: thread ? normalizeIds(thread.participantAgentIds || []) : [],
+    };
+  }
+
+  function fanoutTriggerEvidence(trigger) {
+    if (!trigger) return [];
+    const config = normalizeFanoutApiConfig(state.settings?.fanoutApi || {}, FANOUT_API_TIMEOUT_MS);
+    return [
+      routeEvidence('llm_trigger', trigger.type || 'semantic'),
+      routeEvidence('llm_reason', trigger.reason || ''),
+      ...(trigger.keyword ? [routeEvidence('llm_force_keyword', trigger.keyword)] : []),
+      ...(config.model ? [routeEvidence('llm_model', config.model)] : []),
+    ];
+  }
+
+  function fanoutErrorWithTrigger(error, trigger) {
+    if (error && typeof error === 'object') {
+      try {
+        error.fanoutTrigger = trigger;
+        return error;
+      } catch {}
+    }
+    const wrapped = new Error(error?.message || String(error || 'Fan-out API failed.'));
+    wrapped.cause = error;
+    wrapped.fanoutTrigger = trigger;
+    return wrapped;
+  }
   
   function fanoutApiTriggerReason({ channelAgents, mentions, message, thread = null }) {
     if (!fanoutApiConfigured()) return null;
     if (message?.authorType !== 'human') return null;
     const text = String(message?.body || '');
     if (!text.trim()) return null;
+    const forceKeyword = fanoutForceKeywordTrigger(message, thread);
+    if (forceKeyword) return forceKeyword;
     if (mentions.special.includes('all') || mentions.special.includes('everyone')) return null;
     if (mentions.special.includes('here') || mentions.special.includes('channel')) return null;
   
@@ -550,6 +644,7 @@ export function createRoutingEngine(deps) {
     const implicitNamed = implicitAgentReferences(channelAgents, text, mentions.agents);
     if (thread) {
       const threadParticipantIds = normalizeIds(thread.participantAgentIds || []);
+      if (threadParentDirectAddressAgent(thread.parentMessage, message, channelAgents, mentions)) return null;
       const combinedNamed = uniqueAgents([...extraNamed, ...implicitNamed]);
       if (mentions.agents.length && combinedNamed.length) {
         return {
@@ -730,6 +825,7 @@ export function createRoutingEngine(deps) {
           'Use all agent cards for capability awareness, but targetAgentIds and claimantAgentId must be chosen only from allowedChannelAgentIds.',
           'Prefer one claimant for concrete work. Use broadcast only for open group discussion or capability comparison.',
           'For thread replies, use the parent message, recent replies, participants, and nicknames/titles to avoid waking unrelated agents.',
+          'In an agent-authored thread, a singular second-person reply usually addresses the parent author; do not target another agent only because their name appears as context.',
           'If a thread reply is simple chat, prefer the smallest useful target set; use passive_awareness with no targets if no agent should answer.',
           'Return only a single JSON object matching the requested schema. Do not include markdown.',
         ].join(' '),
@@ -742,7 +838,7 @@ export function createRoutingEngine(deps) {
   }
   
   async function callFanoutApi({ channelAgents, mentions, message, spaceId, allCards, trigger, thread = null }) {
-    const config = normalizeFanoutApiConfig(state.settings?.fanoutApi || {});
+    const config = normalizeFanoutApiConfig(state.settings?.fanoutApi || {}, FANOUT_API_TIMEOUT_MS);
     if (!fanoutApiConfigured(config)) throw new Error('Fan-out API is not fully configured.');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -776,6 +872,7 @@ export function createRoutingEngine(deps) {
         evidence: [
           routeEvidence('llm_trigger', trigger?.type || 'semantic'),
           routeEvidence('llm_reason', trigger?.reason || ''),
+          ...(trigger?.keyword ? [routeEvidence('llm_force_keyword', trigger.keyword)] : []),
           routeEvidence('llm_model', config.model),
           routeEvidence('llm_latency_ms', String(latencyMs)),
           ...(Array.isArray(rawDecision.evidence) ? rawDecision.evidence : []),
@@ -791,6 +888,48 @@ export function createRoutingEngine(deps) {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  function withFanoutSupplementQueued(decision, channelAgents, trigger) {
+    if (!trigger) return decision;
+    return normalizeRouteDecision({
+      ...decision,
+      evidence: [
+        ...(decision.evidence || []),
+        routeEvidence('llm_supplement_queued', trigger.type || 'semantic'),
+        routeEvidence('llm_reason', trigger.reason || ''),
+      ],
+    }, channelAgents);
+  }
+
+  function createFanoutSupplementRunner({ channelAgents, mentions, message, spaceId, allCards, trigger, thread = null }) {
+    if (!trigger) return null;
+    return async function runFanoutSupplement() {
+      try {
+        const cards = allCards || await buildAgentCards((state.agents || []).filter(agentParticipatesInChannels));
+        const decision = await callFanoutApi({ channelAgents, mentions, message, spaceId, allCards: cards, trigger, thread });
+        const supplement = normalizeRouteDecision({
+          ...decision,
+          strategy: 'llm_supplement',
+          reason: `LLM supplement after rules: ${decision.reason}`,
+          evidence: [
+            ...(decision.evidence || []),
+            routeEvidence('llm_supplement', 'rules_first'),
+          ],
+        }, channelAgents);
+        const routeEvent = addRouteEvent(supplement, { message, spaceId });
+        return { ...supplement, routeEvent };
+      } catch (error) {
+        addSystemEvent('fanout_api_supplement_error', `LLM supplement routing failed: ${error.message}`, {
+          messageId: message?.id || null,
+          parentMessageId: message?.parentMessageId || null,
+          spaceId,
+          trigger: trigger?.type || 'semantic',
+          model: normalizeFanoutApiConfig(state.settings?.fanoutApi || {}, FANOUT_API_TIMEOUT_MS).model || null,
+        });
+        return null;
+      }
+    };
   }
   
   function selectBrainAgent() {
@@ -958,6 +1097,7 @@ export function createRoutingEngine(deps) {
     const evidence = [
       routeEvidence('router', brainAgent?.name || 'rules'),
       routeEvidence('channel_member', `${available.length}/${channelAgents.length} available member agents`),
+      ...fanoutTriggerEvidence(fallbackError?.fanoutTrigger),
       ...(fallbackError ? [routeEvidence('fallback_error', fallbackError.message || fallbackError)] : []),
     ];
     const baseDecision = {
@@ -1209,26 +1349,7 @@ export function createRoutingEngine(deps) {
       const allRoutingAgents = (state.agents || []).filter(agentParticipatesInChannels);
       const allCards = await buildAgentCards(allRoutingAgents);
       const trigger = fanoutApiTriggerReason({ channelAgents, mentions, message });
-      if (trigger) {
-        try {
-          const decision = await callFanoutApi({ channelAgents, mentions, message, spaceId, allCards, trigger });
-          const routeEvent = addRouteEvent(decision, { message, spaceId });
-          return { ...decision, routeEvent };
-        } catch (error) {
-          const decision = evaluateBrainRouteDecision({
-            channelAgents,
-            mentions,
-            message,
-            spaceId,
-            cards: allCards,
-            fallbackUsed: true,
-            fallbackError: error,
-          });
-          const routeEvent = addRouteEvent(decision, { message, spaceId });
-          return { ...decision, routeEvent };
-        }
-      }
-      const decision = evaluateBrainRouteDecision({
+      const rulesDecision = evaluateBrainRouteDecision({
         channelAgents,
         mentions,
         message,
@@ -1236,8 +1357,20 @@ export function createRoutingEngine(deps) {
         cards: allCards,
         fallbackUsed: !fanoutApiConfigured(),
       });
+      const decision = withFanoutSupplementQueued(rulesDecision, channelAgents, trigger);
       const routeEvent = addRouteEvent(decision, { message, spaceId });
-      return { ...decision, routeEvent };
+      return {
+        ...decision,
+        routeEvent,
+        runFanoutSupplement: createFanoutSupplementRunner({
+          channelAgents,
+          mentions,
+          message,
+          spaceId,
+          allCards,
+          trigger,
+        }),
+      };
     } catch (error) {
       const decision = legacyRouteDecision(channelAgents, mentions, message, spaceId, error);
       const routeEvent = addRouteEvent(decision, { message, spaceId });
@@ -1248,13 +1381,16 @@ export function createRoutingEngine(deps) {
   function evaluateThreadRouteDecision({ channelAgents, mentions, parentMessage, reply, linkedTask = null, fallbackUsed = false, fallbackError = null }) {
     const respondingAgents = determineThreadRespondingAgents(parentMessage, reply, channelAgents, mentions, linkedTask);
     const named = (channelAgents || []).filter((agent) => textAddressesAgent(agent, reply?.body));
+    const parentAddressed = threadParentDirectAddressAgent(parentMessage, reply, channelAgents, mentions);
     const evidence = [
       routeEvidence('router', 'thread_rules'),
       routeEvidence('thread_parent', parentMessage?.id || ''),
       routeEvidence('thread_participants', threadParticipantAgentIds(parentMessage, linkedTask).join(', ')),
+      ...(parentAddressed ? [routeEvidence('thread_parent_addressed', parentAddressed.id)] : []),
+      ...fanoutTriggerEvidence(fallbackError?.fanoutTrigger),
       ...(fallbackError ? [routeEvidence('fallback_error', fallbackError.message || fallbackError)] : []),
     ];
-    const hasExplicitMention = Boolean(mentions.agents.length || mentions.special.length || named.length);
+    const hasExplicitMention = Boolean(mentions.agents.length || mentions.special.length || named.length || parentAddressed);
     let mode = 'passive_awareness';
     if (mentions.special.includes('all') || mentions.special.includes('everyone')) {
       mode = 'broadcast';
@@ -1271,7 +1407,9 @@ export function createRoutingEngine(deps) {
       confidence: hasExplicitMention ? 0.9 : (respondingAgents.length ? 0.72 : 0.4),
       reason: fallbackError
         ? `Thread fan-out router failed; rules fallback used: ${fallbackError.message}`
-        : (respondingAgents.length ? 'Thread rules selected responding agents.' : 'Thread rules found no agent that needs to answer.'),
+        : (parentAddressed
+          ? 'Thread reply directly addresses the parent message author; other named agents stay contextual.'
+          : (respondingAgents.length ? 'Thread rules selected responding agents.' : 'Thread rules found no agent that needs to answer.')),
       evidence,
       fallbackUsed,
       strategy: fallbackUsed ? 'fallback_rules' : 'rules',
@@ -1283,28 +1421,7 @@ export function createRoutingEngine(deps) {
     try {
       const thread = threadFanoutContext(parentMessage, reply, linkedTask);
       const trigger = fanoutApiTriggerReason({ channelAgents, mentions, message: reply, thread });
-      if (trigger) {
-        try {
-          const allRoutingAgents = (state.agents || []).filter(agentParticipatesInChannels);
-          const allCards = await buildAgentCards(allRoutingAgents);
-          const decision = await callFanoutApi({ channelAgents, mentions, message: reply, spaceId, allCards, trigger, thread });
-          const routeEvent = addRouteEvent(decision, { message: reply, spaceId });
-          return { ...decision, routeEvent };
-        } catch (error) {
-          const decision = evaluateThreadRouteDecision({
-            channelAgents,
-            mentions,
-            parentMessage,
-            reply,
-            linkedTask,
-            fallbackUsed: true,
-            fallbackError: error,
-          });
-          const routeEvent = addRouteEvent(decision, { message: reply, spaceId });
-          return { ...decision, routeEvent };
-        }
-      }
-      const decision = evaluateThreadRouteDecision({
+      const rulesDecision = evaluateThreadRouteDecision({
         channelAgents,
         mentions,
         parentMessage,
@@ -1312,8 +1429,20 @@ export function createRoutingEngine(deps) {
         linkedTask,
         fallbackUsed: !fanoutApiConfigured(),
       });
+      const decision = withFanoutSupplementQueued(rulesDecision, channelAgents, trigger);
       const routeEvent = addRouteEvent(decision, { message: reply, spaceId });
-      return { ...decision, routeEvent };
+      return {
+        ...decision,
+        routeEvent,
+        runFanoutSupplement: createFanoutSupplementRunner({
+          channelAgents,
+          mentions,
+          message: reply,
+          spaceId,
+          trigger,
+          thread,
+        }),
+      };
     } catch (error) {
       const decision = evaluateThreadRouteDecision({
         channelAgents,

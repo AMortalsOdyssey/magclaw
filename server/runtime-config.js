@@ -17,8 +17,26 @@ export function normalizeReasoningEffort(value, fallback = null) {
   return VALID_REASONING_EFFORTS.has(fallbackEffort) ? fallbackEffort : null;
 }
 
-export function normalizeFanoutApiConfig(config = {}, defaultTimeoutMs = 2500) {
-  const fallbackTimeout = Number.isFinite(Number(defaultTimeoutMs)) ? Number(defaultTimeoutMs) : 2500;
+export function normalizeFanoutForceKeywords(value = []) {
+  const rawItems = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[\n,，;；]+/);
+  const seen = new Set();
+  const keywords = [];
+  for (const item of rawItems) {
+    const keyword = String(item || '').trim().slice(0, 80);
+    if (!keyword) continue;
+    const key = keyword.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keywords.push(keyword);
+    if (keywords.length >= 50) break;
+  }
+  return keywords;
+}
+
+export function normalizeFanoutApiConfig(config = {}, defaultTimeoutMs = 10_000) {
+  const fallbackTimeout = Number.isFinite(Number(defaultTimeoutMs)) ? Number(defaultTimeoutMs) : 10_000;
   const timeoutMs = Number(config.timeoutMs || fallbackTimeout);
   return {
     enabled: Boolean(config.enabled),
@@ -26,10 +44,11 @@ export function normalizeFanoutApiConfig(config = {}, defaultTimeoutMs = 2500) {
     apiKey: String(config.apiKey || ''),
     model: String(config.model || '').trim(),
     timeoutMs: Number.isFinite(timeoutMs) ? Math.max(500, Math.min(30_000, timeoutMs)) : fallbackTimeout,
+    forceKeywords: normalizeFanoutForceKeywords(config.forceKeywords),
   };
 }
 
-export function fanoutApiConfigReady(config = {}, defaultTimeoutMs = 2500) {
+export function fanoutApiConfigReady(config = {}, defaultTimeoutMs = 10_000) {
   const normalized = normalizeFanoutApiConfig(config || {}, defaultTimeoutMs);
   return Boolean(normalized.enabled && normalized.baseUrl && normalized.apiKey && normalized.model);
 }

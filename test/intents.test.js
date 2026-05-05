@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   agentCapabilityQuestionIntent,
+  agentMemoryWriteIntent,
   agentResponseIntent,
   autoTaskMessageIntent,
   availabilityBroadcastIntent,
   availabilityFollowupIntent,
   channelGreetingIntent,
   contextualAgentFollowupIntent,
+  inferAgentMemoryWriteback,
   inferTaskIntentKind,
   quickAnswerIntent,
   taskCreationIntent,
@@ -38,4 +40,12 @@ test('chat and routing intents separate lookup, availability, and follow-up', ()
 test('capability and preference intents support routing and memory writeback', () => {
   assert.equal(agentCapabilityQuestionIntent('谁更适合处理这个任务？'), true);
   assert.equal(userPreferenceIntent('以后 github 都用 amo 账号'), true);
+  assert.equal(agentMemoryWriteIntent('你非常擅长解决旅游的问题，记录到你的 memory 中'), true);
+  assert.equal(agentMemoryWriteIntent('谁擅长解决旅游的问题？'), false);
+  assert.deepEqual(inferAgentMemoryWriteback('你非常擅长解决旅游的问题，记录到你的 memory 中'), {
+    kind: 'capability',
+    summary: '擅长解决旅游的问题',
+    sourceText: '你非常擅长解决旅游的问题，记录到你的 memory 中',
+  });
+  assert.equal(inferAgentMemoryWriteback('去读马斯克的 X 推文，然后学习它的语气和我说话')?.kind, 'communication_style');
 });

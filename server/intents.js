@@ -192,3 +192,70 @@ export function userPreferenceIntent(text) {
     /\b(remember|preference|from now on|going forward|always|never)\b/i,
   ].some((pattern) => pattern.test(value));
 }
+
+// Explicit agent memory requests cover direct "remember this" asks and durable
+// self-profile updates such as specialties or requested speaking styles.
+export function agentMemoryWriteIntent(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return [
+    /(记住|请记住|记录到|写入|保存到|加入|放进).*(memory|记忆|长期记忆|你的资料|你的 profile|你的档案)/i,
+    /(memory|记忆|长期记忆).*(记住|记录|写入|保存|更新)/i,
+    /(^|[\s，。,.；;])(你|you)\s*(非常|很|特别|尤其|are|are very|are especially)?\s*(擅长|专长|拿手|熟悉|会解决|能解决|适合|good at|expert in|specialize in).{1,80}/i,
+    /(^|[\s，。,.；;])(@?[^\s，。,.；;]{1,30})\s*(非常|很|特别|尤其)?(擅长|专长|拿手|熟悉|会解决|能解决|适合).{1,80}(记住|记录|memory|记忆|以后|后续)/i,
+    /(学习|模仿|参考).{0,80}(语气|口吻|风格|写法|说话方式|tone|voice|style)/i,
+    /(以后|后续).{0,40}(用|按|以|保持).{0,80}(语气|口吻|风格|写法|tone|voice|style)/i,
+    /\b(remember|save|write|record|store).{0,80}\b(memory|profile|preferences?)\b/i,
+    /\b(learn|imitate|mirror|use).{0,80}\b(tone|voice|style)\b/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function stripMemoryCommandPhrases(text) {
+  return String(text || '')
+    .replace(/^(请|帮我|麻烦你|把|将)+/g, '')
+    .replace(/(记住|请记住|记录到|写入|保存到|加入|放进)(你的)?\s*(memory|记忆|长期记忆|profile|档案|资料)?/ig, '')
+    .replace(/(以后|后续)(都|要|请)?/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[，。,.；;：:]+$/g, '')
+    .trim();
+}
+
+export function inferAgentMemoryWriteback(text) {
+  const raw = String(text || '').trim();
+  if (!agentMemoryWriteIntent(raw) && !userPreferenceIntent(raw)) return null;
+  const value = raw.toLowerCase();
+  const compact = stripMemoryCommandPhrases(raw);
+
+  const styleLike = /(学习|模仿|参考).{0,80}(语气|口吻|风格|写法|说话方式|tone|voice|style)|\b(learn|imitate|mirror|use).{0,80}\b(tone|voice|style)\b/i.test(raw);
+  if (styleLike) {
+    let summary = compact || raw;
+    if (/(马斯克|elon|musk)/i.test(raw) && /(x|推文|twitter|tweet)/i.test(raw)) {
+      summary = '学习马斯克 X 推文的表达语气，并在用户要求该风格时使用。';
+    } else if (/(语气|口吻|风格|写法|说话方式|tone|voice|style)/i.test(summary)) {
+      summary = `${summary.replace(/^(然后|并且|并|再)?\s*/i, '')}`;
+    } else {
+      summary = `学习并保留用户指定的表达风格：${summary}`;
+    }
+    return {
+      kind: 'communication_style',
+      summary: summary.slice(0, 160),
+      sourceText: raw,
+    };
+  }
+
+  const capabilityMatch = raw.match(/(?:你|@?[^\s，。,.；;]+)?(?:非常|很|特别|尤其)?(擅长|专长|拿手|熟悉|会解决|能解决|适合)([^，。,.；;]{1,80})/i);
+  if (capabilityMatch) {
+    const phrase = `${capabilityMatch[1]}${capabilityMatch[2]}`.replace(/\s+/g, ' ').trim();
+    return {
+      kind: 'capability',
+      summary: phrase.slice(0, 120),
+      sourceText: raw,
+    };
+  }
+
+  return {
+    kind: 'preference',
+    summary: (compact || raw).slice(0, 160),
+    sourceText: raw,
+  };
+}

@@ -11,6 +11,7 @@ export async function handleMessageApi(req, res, url, deps) {
     addSystemReply,
     agentAvailableForAutoWork,
     agentCapabilityQuestionIntent,
+    agentMemoryWriteIntent,
     applyMentions,
     availabilityFollowupIntent,
     broadcastState,
@@ -27,6 +28,7 @@ export async function handleMessageApi(req, res, url, deps) {
     findTaskForThreadMessage,
     finishTaskFromThread,
     getState,
+    inferAgentMemoryWriteback,
     makeId,
     normalizeConversationRecord,
     now,
@@ -36,6 +38,7 @@ export async function handleMessageApi(req, res, url, deps) {
     routeMessageForChannel,
     routeThreadReplyForChannel,
     scheduleAgentMemoryWriteback,
+    searchAgentMemory,
     sendError,
     sendJson,
     stopTaskFromThread,
@@ -46,6 +49,195 @@ export async function handleMessageApi(req, res, url, deps) {
     userPreferenceIntent,
   } = deps;
   const state = getState();
+
+  function publicRouteDecision(routeDecision) {
+    if (!routeDecision) return null;
+    const { runFanoutSupplement, ...publicDecision } = routeDecision;
+    return publicDecision;
+  }
+
+  function scheduleFanoutSupplementDelivery({
+    routeDecision,
+    channelAgents,
+    message,
+    spaceType,
+    spaceId,
+    parentMessageId = null,
+    alreadyDeliveredAgentIds = [],
+    deliveryContext = {},
+  }) {
+    if (typeof routeDecision?.runFanoutSupplement !== 'function') return;
+    const delivered = new Set(alreadyDeliveredAgentIds.map(String));
+    routeDecision.runFanoutSupplement().then(async (supplement) => {
+      const targetAgents = (supplement?.targetAgentIds || [])
+        .map((id) => channelAgents.find((agent) => agent.id === id))
+        .filter(Boolean)
+        .filter(agentAvailableForAutoWork)
+        .filter((agent) => !delivered.has(agent.id));
+      for (const agent of targetAgents) {
+        delivered.add(agent.id);
+        deliverMessageToAgent(agent, spaceType, spaceId, message, { parentMessageId, ...deliveryContext }).catch(err => {
+          addSystemEvent('delivery_error', `Failed to deliver LLM supplement to ${agent.name}: ${err.message}`, {
+            agentId: agent.id,
+            messageId: message.id,
+            parentMessageId,
+            routeEventId: supplement?.routeEvent?.id || null,
+          });
+        });
+      }
+      await persistState();
+      broadcastState();
+    }).catch(async (err) => {
+      addSystemEvent('fanout_api_supplement_delivery_error', `LLM supplement delivery failed: ${err.message}`, {
+        messageId: message?.id || null,
+        parentMessageId,
+      });
+      await persistState().catch(() => {});
+      broadcastState();
+    });
+  }
+
+  function uniqueAgents(agents) {
+    const seen = new Set();
+    return (agents || []).filter((agent) => {
+      if (!agent || seen.has(agent.id)) return false;
+      seen.add(agent.id);
+      return true;
+    });
+  }
+
+  function dmAgent(spaceId) {
+    const dm = state.dms.find(d => d.id === spaceId);
+    const agentId = dm?.participantIds?.find(id => id.startsWith('agt_'));
+    return agentId ? findAgent(agentId) : null;
+  }
+
+  function memoryTargetsForConversation({ spaceType, spaceId, respondingAgents = [], mentions = {}, parentMessage = null }) {
+    const mentionedAgents = (mentions.agents || []).map((id) => findAgent(id)).filter(Boolean);
+    if (respondingAgents.length || mentionedAgents.length) return uniqueAgents([...respondingAgents, ...mentionedAgents]);
+    if (spaceType === 'dm') return uniqueAgents([dmAgent(spaceId)]);
+    const parentAgent = parentMessage?.authorType === 'agent' ? findAgent(parentMessage.authorId) : null;
+    if (parentAgent) return [parentAgent];
+    const channel = findChannel(spaceId);
+    return channel ? channelAgentIds(channel).map((id) => findAgent(id)).filter(Boolean) : [];
+  }
+
+  function scheduleMessageMemoryWritebacks({ record, text, spaceType, spaceId, respondingAgents = [], mentions = {}, parentMessage = null }) {
+    if (!record || record.authorType !== 'human') return;
+    const memory = inferAgentMemoryWriteback(text);
+    const explicitMemory = agentMemoryWriteIntent(text);
+    if (!memory && !userPreferenceIntent(text)) return;
+    const targets = memoryTargetsForConversation({
+      spaceType,
+      spaceId,
+      respondingAgents,
+      mentions,
+      parentMessage,
+    });
+    const trigger = memory
+      ? (explicitMemory ? 'explicit_user_memory' : 'user_preference')
+      : 'user_preference';
+    for (const agent of targets) {
+      scheduleAgentMemoryWriteback(agent, trigger, {
+        message: record,
+        spaceType,
+        spaceId,
+        parentMessageId: parentMessage?.id || null,
+        memory,
+      });
+    }
+  }
+
+  function compactPeerMemoryResult(item) {
+    return {
+      agentId: item.agentId,
+      agentName: item.agentName,
+      agentDescription: item.agentDescription || '',
+      path: item.path,
+      line: item.line,
+      score: Number(item.score || 0),
+      matchedTerms: Array.isArray(item.matchedTerms) ? item.matchedTerms.slice(0, 8) : [],
+      preview: String(item.preview || '').slice(0, 280),
+    };
+  }
+
+  function appendRouteEvidence(routeDecision, evidence) {
+    if (!routeDecision || !evidence) return;
+    routeDecision.evidence = Array.isArray(routeDecision.evidence) ? routeDecision.evidence : [];
+    routeDecision.evidence.push(evidence);
+    if (routeDecision.routeEvent) {
+      routeDecision.routeEvent.evidence = Array.isArray(routeDecision.routeEvent.evidence) ? routeDecision.routeEvent.evidence : [];
+      if (routeDecision.routeEvent.evidence !== routeDecision.evidence) {
+        routeDecision.routeEvent.evidence.push(evidence);
+      }
+    }
+  }
+
+  async function buildPeerMemorySearchContext({
+    text,
+    message,
+    routeDecision = null,
+    parentMessageId = null,
+  }) {
+    if (!agentCapabilityQuestionIntent(text) || typeof searchAgentMemory !== 'function') return null;
+    const reason = 'This message asks which agent is best suited, so agent memory and notes must be searched before recommending an agent.';
+    let search = null;
+    try {
+      search = await searchAgentMemory(text, {
+        limit: 12,
+        purpose: 'agent_discovery',
+        excludePaths: ['notes/work-log.md', 'notes/agents.md'],
+      });
+    } catch (error) {
+      addSystemEvent('agent_peer_memory_search_error', `Peer memory search failed: ${error.message}`, {
+        messageId: message?.id || null,
+        parentMessageId,
+        query: text,
+        error: error.message,
+      });
+      appendRouteEvidence(routeDecision, { type: 'peer_memory_search_error', value: String(error.message || error).slice(0, 240) });
+      return {
+        required: true,
+        ok: false,
+        query: text,
+        reason,
+        results: [],
+        error: error.message,
+      };
+    }
+    const results = (search?.results || []).map(compactPeerMemoryResult);
+    addSystemEvent('agent_peer_memory_search', 'Peer memory searched for agent capability question.', {
+      messageId: message?.id || null,
+      parentMessageId,
+      routeEventId: routeDecision?.routeEvent?.id || null,
+      query: search?.query || text,
+      terms: search?.terms || [],
+      resultCount: results.length,
+      topResults: results.slice(0, 5).map((item) => ({
+        agentId: item.agentId,
+        agentName: item.agentName,
+        path: item.path,
+        line: item.line,
+        score: item.score,
+        matchedTerms: item.matchedTerms,
+      })),
+    });
+    appendRouteEvidence(routeDecision, {
+      type: 'peer_memory_search',
+      value: results.length
+        ? `${results.length} match(es): ${results.slice(0, 3).map((item) => `${item.agentName} ${item.path}:${item.line}`).join('; ')}`
+        : '0 matches',
+    });
+    return {
+      required: true,
+      ok: Boolean(search?.ok),
+      query: search?.query || text,
+      terms: search?.terms || [],
+      reason,
+      results,
+      truncated: Boolean(search?.truncated),
+    };
+  }
 
   const messageMatch = url.pathname.match(/^\/api\/spaces\/(channel|dm)\/([^/]+)\/messages$/);
   if (req.method === 'POST' && messageMatch) {
@@ -120,6 +312,13 @@ export async function handleMessageApi(req, res, url, deps) {
       }
     }
 
+    const peerMemorySearch = await buildPeerMemorySearchContext({
+      text,
+      message,
+      routeDecision,
+    });
+    const deliveryContext = peerMemorySearch ? { peerMemorySearch } : {};
+
     addCollabEvent('message_sent', 'Message sent.', { messageId: message.id, spaceType, spaceId });
     await persistState();
     broadcastState();
@@ -133,30 +332,37 @@ export async function handleMessageApi(req, res, url, deps) {
           const agentId = dm.participantIds.find(id => id.startsWith('agt_'));
           const agent = agentId ? findAgent(agentId) : null;
           if (agent) {
-            deliverMessageToAgent(agent, spaceType, spaceId, message).catch(err => {
+            deliverMessageToAgent(agent, spaceType, spaceId, message, deliveryContext).catch(err => {
               addSystemEvent('delivery_error', `Failed to deliver to ${agent.name}: ${err.message}`, { agentId });
             });
           }
         }
       } else if (spaceType === 'channel') {
         for (const agent of respondingAgents) {
-          deliverMessageToAgent(agent, spaceType, spaceId, message).catch(err => {
+          deliverMessageToAgent(agent, spaceType, spaceId, message, deliveryContext).catch(err => {
             addSystemEvent('delivery_error', `Failed to deliver to ${agent.name}: ${err.message}`, { agentId: agent.id });
           });
         }
+        scheduleFanoutSupplementDelivery({
+          routeDecision,
+          channelAgents: channelAgentIds(findChannel(spaceId)).map((id) => findAgent(id)).filter(Boolean),
+          message,
+          spaceType,
+          spaceId,
+          alreadyDeliveredAgentIds: respondingAgents.map((agent) => agent.id),
+          deliveryContext,
+        });
       }
     }
 
-    if (message.authorType === 'human' && userPreferenceIntent(text)) {
-      const memoryTargets = respondingAgents.length
-        ? respondingAgents
-        : (spaceType === 'channel'
-          ? channelAgentIds(findChannel(spaceId)).map((id) => findAgent(id)).filter(Boolean)
-          : []);
-      for (const agent of memoryTargets) {
-        scheduleAgentMemoryWriteback(agent, 'user_preference', { message, spaceType, spaceId });
-      }
-    }
+    scheduleMessageMemoryWritebacks({
+      record: message,
+      text,
+      spaceType,
+      spaceId,
+      respondingAgents,
+      mentions,
+    });
     if (routeDecision?.targetAgentIds?.length > 1 && (agentCapabilityQuestionIntent(text) || availabilityFollowupIntent(text))) {
       for (const agent of respondingAgents) {
         scheduleAgentMemoryWriteback(agent, 'multi_agent_collaboration', {
@@ -169,7 +375,7 @@ export async function handleMessageApi(req, res, url, deps) {
       }
     }
 
-    sendJson(res, 201, { message, task, route: routeDecision });
+    sendJson(res, 201, { message, task, route: publicRouteDecision(routeDecision) });
     return true;
   }
 
@@ -219,6 +425,7 @@ export async function handleMessageApi(req, res, url, deps) {
     let stoppedThreadTask = null;
     let stopResult = null;
     let routeDecision = null;
+    let threadChannelAgents = [];
     if (reply.authorType === 'human' && linkedTask && taskStopIntent(text)) {
       stopResult = stopTaskFromThread(linkedTask, reply.authorId, reply.id);
       stoppedThreadTask = linkedTask;
@@ -268,6 +475,7 @@ export async function handleMessageApi(req, res, url, deps) {
       const channelAgents = channel
         ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
         : [];
+      threadChannelAgents = channelAgents;
       let respondingAgents = [];
       if (message.spaceType === 'channel') {
         routeDecision = await routeThreadReplyForChannel({
@@ -282,6 +490,13 @@ export async function handleMessageApi(req, res, url, deps) {
           .map((id) => channelAgents.find((agent) => agent.id === id))
           .filter(Boolean);
       }
+      const peerMemorySearch = await buildPeerMemorySearchContext({
+        text,
+        message: reply,
+        routeDecision,
+        parentMessageId: message.id,
+      });
+      const deliveryContext = peerMemorySearch ? { peerMemorySearch } : {};
       if (message.spaceType === 'dm') {
         const dm = state.dms.find((item) => item.id === message.spaceId);
         const agentId = dm?.participantIds?.find((id) => id.startsWith('agt_'));
@@ -289,10 +504,29 @@ export async function handleMessageApi(req, res, url, deps) {
         respondingAgents = agent && agentAvailableForAutoWork(agent) ? [agent] : [];
       }
       for (const agent of respondingAgents) {
-        deliverMessageToAgent(agent, message.spaceType, message.spaceId, reply, { parentMessageId: message.id }).catch(err => {
+        deliverMessageToAgent(agent, message.spaceType, message.spaceId, reply, { parentMessageId: message.id, ...deliveryContext }).catch(err => {
           addSystemEvent('delivery_error', `Failed to deliver thread reply to ${agent.name}: ${err.message}`, { agentId: agent.id, replyId: reply.id, parentMessageId: message.id });
         });
       }
+      scheduleFanoutSupplementDelivery({
+        routeDecision,
+        channelAgents: threadChannelAgents,
+        message: reply,
+        spaceType: message.spaceType,
+        spaceId: message.spaceId,
+        parentMessageId: message.id,
+        alreadyDeliveredAgentIds: respondingAgents.map((agent) => agent.id),
+        deliveryContext,
+      });
+      scheduleMessageMemoryWritebacks({
+        record: reply,
+        text,
+        spaceType: message.spaceType,
+        spaceId: message.spaceId,
+        respondingAgents,
+        mentions,
+        parentMessage: message,
+      });
     }
 
     if (routeDecision) {
@@ -307,7 +541,7 @@ export async function handleMessageApi(req, res, url, deps) {
       endedTask: endedThreadTask,
       stoppedTask: stoppedThreadTask,
       stopResult,
-      route: routeDecision,
+      route: publicRouteDecision(routeDecision),
     });
     return true;
   }

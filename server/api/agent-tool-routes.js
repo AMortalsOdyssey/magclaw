@@ -25,14 +25,17 @@ export async function handleAgentToolApi(req, res, url, deps) {
     persistState,
     postAgentResponse,
     readAgentHistory,
+    readAgentMemoryFile,
     readJson,
     resolveConversationSpace,
     resolveMessageTarget,
     searchAgentMessageHistory,
+    searchAgentMemory,
     sendError,
     sendJson,
     taskLabel,
     updateTaskForAgent,
+    writeAgentMemoryUpdate,
     workItemTargetMatches,
   } = deps;
   const state = getState();
@@ -74,6 +77,103 @@ export async function handleAgentToolApi(req, res, url, deps) {
     sendJson(res, search.ok ? 200 : 400, {
       ...search,
       text: formatAgentSearchResults(search, { state, targetAgentId: agentId }),
+    });
+    return true;
+  }
+
+  function memorySearchText(search) {
+    if (!search?.ok) return search?.text || 'Memory search failed.';
+    if (!search.results?.length) return `No memory matches for "${search.query}".`;
+    return [
+      `Memory search results for "${search.query}":`,
+      ...search.results.map((item, index) => [
+        `${index + 1}. @${item.agentName} (${item.agentId}) ${item.path}:${item.line}`,
+        `   ${item.preview}`,
+      ].join('\n')),
+      search.truncated ? '- More matches were omitted by the limit.' : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/memory/search') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const targetAgentId = url.searchParams.get('targetAgentId') || url.searchParams.get('targetAgent') || '';
+    const search = await searchAgentMemory(url.searchParams.get('q') || url.searchParams.get('query') || '', {
+      targetAgentId,
+      limit: url.searchParams.get('limit') || undefined,
+    });
+    addSystemEvent('agent_memory_search', `${displayActor(agentId) || 'Agent'} searched agent memory.`, {
+      agentId,
+      query: search.query || '',
+      targetAgentId: targetAgentId || null,
+      resultCount: search.results?.length || 0,
+      ok: Boolean(search.ok),
+    });
+    sendJson(res, search.ok ? 200 : 400, {
+      ...search,
+      text: memorySearchText(search),
+    });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/memory/read') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const targetAgentRef = url.searchParams.get('targetAgentId') || url.searchParams.get('targetAgent') || '';
+    const targetAgent = findAgent(targetAgentRef) || (state.agents || []).find((agent) => agent.name === targetAgentRef);
+    if (!targetAgent) {
+      sendError(res, 404, 'Target agent not found.');
+      return true;
+    }
+    try {
+      const file = await readAgentMemoryFile(targetAgent, url.searchParams.get('path') || 'MEMORY.md');
+      addSystemEvent('agent_memory_read', `${displayActor(agentId) || 'Agent'} read ${targetAgent.name} memory.`, {
+        agentId,
+        targetAgentId: targetAgent.id,
+        path: file.file.path,
+      });
+      sendJson(res, 200, {
+        ok: true,
+        ...file,
+        text: [
+          `@${targetAgent.name} ${file.file.path}`,
+          file.file.content,
+        ].join('\n'),
+      });
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agent-tools/memory') {
+    const body = await readJson(req);
+    const agent = findAgent(String(body.agentId || ''));
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    const summary = String(body.summary || body.content || '').trim();
+    if (!summary) {
+      sendError(res, 400, 'Memory summary is required.');
+      return true;
+    }
+    const allowedKinds = new Set(['capability', 'communication_style', 'preference', 'memory']);
+    const kind = allowedKinds.has(String(body.kind || '')) ? String(body.kind) : 'memory';
+    const sourceMessage = body.messageId ? findConversationRecord(String(body.messageId)) : null;
+    await writeAgentMemoryUpdate(agent, 'agent_memory_tool', {
+      message: sourceMessage || null,
+      spaceType: sourceMessage?.spaceType || null,
+      spaceId: sourceMessage?.spaceId || null,
+      memory: {
+        kind,
+        summary,
+        sourceText: String(body.sourceText || body.source || '').trim() || summary,
+      },
+    });
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, {
+      ok: true,
+      text: `Memory updated for ${agent.name}.`,
     });
     return true;
   }
@@ -136,6 +236,52 @@ export async function handleAgentToolApi(req, res, url, deps) {
       workItem,
       message: posted,
       text: `Message sent to ${target.label}.`,
+    });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/tasks') {
+    const agentId = url.searchParams.get('agentId') || '';
+    let scope = null;
+    if (url.searchParams.get('target') || url.searchParams.get('channel') || url.searchParams.get('spaceType') || url.searchParams.get('spaceId')) {
+      try {
+        scope = resolveConversationSpace({
+          target: url.searchParams.get('target') || '',
+          channel: url.searchParams.get('channel') || '',
+          spaceType: url.searchParams.get('spaceType') || '',
+          spaceId: url.searchParams.get('spaceId') || '',
+        });
+      } catch (error) {
+        sendError(res, error.status || 400, error.message);
+        return true;
+      }
+    }
+    const status = String(url.searchParams.get('status') || '').trim();
+    const assigneeId = String(url.searchParams.get('assigneeId') || '').trim();
+    const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') || 25)));
+    const tasks = (state.tasks || [])
+      .filter((task) => !scope || (task.spaceType === scope.spaceType && task.spaceId === scope.spaceId))
+      .filter((task) => !status || task.status === status)
+      .filter((task) => !assigneeId || (task.assigneeIds || []).includes(assigneeId))
+      .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0))
+      .slice(0, limit);
+    addSystemEvent('agent_tasks_listed', `${displayActor(agentId) || 'Agent'} listed tasks.`, {
+      agentId,
+      target: scope?.label || null,
+      status: status || null,
+      assigneeId: assigneeId || null,
+      resultCount: tasks.length,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      tasks,
+      text: tasks.length ? [
+        `Tasks${scope ? ` in ${scope.label}` : ''}:`,
+        ...tasks.map((task) => {
+          const assignees = (task.assigneeIds || []).map((id) => displayActor(id) || id).join(', ') || 'unassigned';
+          return `${taskLabel(task)} [${task.status || 'todo'}] ${task.title || '(untitled)'} - assignee ${assignees}`;
+        }),
+      ].join('\n') : `No tasks${scope ? ` in ${scope.label}` : ''}.`,
     });
     return true;
   }

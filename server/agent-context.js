@@ -209,6 +209,7 @@ export function buildAgentContextPack({
   currentMessage,
   parentMessageId = null,
   workItem = null,
+  peerMemorySearch = null,
   toolBaseUrl = '',
   limits = {},
 }) {
@@ -245,6 +246,7 @@ export function buildAgentContextPack({
     thread,
     tasks: tasksForContext(state, spaceType, spaceId, visibleRecords, effectiveLimits.tasks),
     attachments: attachmentsForContext(state, visibleRecords, effectiveLimits.attachments),
+    peerMemorySearch,
     historyTools: {
       baseUrl: toolBaseUrl,
       agentId,
@@ -286,7 +288,11 @@ function messageLine(state, record, targetAgentId) {
 
 function renderParticipants(pack) {
   return asArray(pack.participants)
-    .map((item) => `@${item.name}${item.id === pack.targetAgentId ? ' (you)' : ''}`)
+    .map((item) => {
+      const self = item.id === pack.targetAgentId ? ' (you)' : '';
+      const role = item.role ? ` - ${item.role}` : '';
+      return `@${item.name}${self}${role}`;
+    })
     .join(', ');
 }
 
@@ -308,6 +314,28 @@ function renderAttachments(attachments) {
     .join('\n');
 }
 
+function renderPeerMemorySearch(search) {
+  if (!search?.required && !search?.results?.length) return '';
+  const lines = [
+    'Peer memory search:',
+    `- Required for this turn: ${search.required ? 'yes' : 'no'}`,
+    search.reason ? `- Reason: ${search.reason}` : '',
+    search.query ? `- Query: ${search.query}` : '',
+  ].filter(Boolean);
+  if (!search.results?.length) {
+    lines.push('- Results: no matches. If the question asks who is best suited, call search_agent_memory with narrower keywords before answering.');
+    return lines.join('\n');
+  }
+  lines.push('- Results:');
+  for (const item of search.results) {
+    const location = `${item.path || 'MEMORY.md'}:${item.line || 1}`;
+    const matched = item.matchedTerms?.length ? `; matched=${item.matchedTerms.join(', ')}` : '';
+    lines.push(`  - @${item.agentName} (${item.agentId}) ${location}${matched}: ${item.preview || ''}`);
+  }
+  lines.push('- Use these matches as grounding when recommending which agent is best suited. If they are insufficient or contradictory, call search_agent_memory/read_agent_memory before answering.');
+  return lines.join('\n');
+}
+
 function renderHistoryToolHints(pack) {
   const baseUrl = pack.historyTools?.baseUrl;
   const agentId = pack.historyTools?.agentId || pack.targetAgentId;
@@ -323,6 +351,8 @@ function renderHistoryToolHints(pack) {
     '- The recent context above is only a compact snapshot. Do not assume it is the whole conversation.',
     `- read_history(target="${target}", limit=30): curl -s "${baseUrl}/api/agent-tools/history?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&limit=30"`,
     `- search_message_history(query="<query>", target="${target}", limit=10): curl -s "${baseUrl}/api/agent-tools/search?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&q=<query>&limit=10"`,
+    `- search_agent_memory(query="<query>", limit=10): curl -s "${baseUrl}/api/agent-tools/memory/search?agentId=${encodeURIComponent(agentId)}&q=<query>&limit=10"`,
+    `- read_agent_memory(targetAgentId="agt_xxx", path="MEMORY.md|notes/profile.md"): curl -s "${baseUrl}/api/agent-tools/memory/read?agentId=${encodeURIComponent(agentId)}&targetAgentId=agt_xxx&path=MEMORY.md"`,
   ];
   if (currentTarget && currentWorkItemId) {
     hints.push(
@@ -335,7 +365,9 @@ function renderHistoryToolHints(pack) {
     );
   }
   hints.push(
-    '- Use history/search only when the visible snapshot is not enough. Use send_message for explicit routed replies, especially when multiple channels or tasks are active.',
+    pack.peerMemorySearch?.required
+      ? '- For agent capability or suitability questions, use the peer memory search results above first. If they are missing or weak, call search_agent_memory/read_agent_memory before giving a recommendation.'
+      : '- Use history/search only when the visible snapshot is not enough. Use send_message for explicit routed replies, especially when multiple channels or tasks are active.',
   );
   return hints.join('\n');
 }
@@ -380,6 +412,8 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
     '',
     'Visible attachment metadata:',
     renderAttachments(pack.attachments),
+    '',
+    renderPeerMemorySearch(pack.peerMemorySearch),
     '',
     renderHistoryToolHints(pack),
     '',

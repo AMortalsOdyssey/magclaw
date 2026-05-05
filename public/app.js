@@ -7,6 +7,11 @@ const root = document.querySelector('#root');
 const UI_STATE_KEY = 'magclawUiState';
 const PANE_SCROLL_KEY = 'magclawPaneScroll';
 const TASK_COLUMN_COLLAPSE_KEY = 'magclawTaskColumnCollapse';
+const SIDEBAR_SECTION_COLLAPSE_KEY = 'magclawSidebarSectionCollapse';
+const SKILL_SECTION_COLLAPSE_KEY = 'magclawSkillSectionCollapse';
+const NOTIFICATION_PREF_KEY = 'magclawNotificationPrefs';
+const NOTIFICATION_ICON = '/favicon.svg';
+const NOTIFICATION_PREVIEW_LIMIT = 140;
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
 const initialUiState = readStoredUiState();
 
@@ -58,10 +63,17 @@ let agentWorkspaceTreeCache = {};
 let agentWorkspaceFilePreviews = {};
 let selectedAgentWorkspaceFile = null;
 let agentWorkspacePreviewMode = 'preview';
+let agentSkillsCache = {};
+let agentWarmRequests = new Set();
 let agentDetailTab = 'profile';
 let agentDetailEditState = { field: null };
 let agentEnvEditState = null;
+let settingsTab = initialUiState.settingsTab || 'server';
+let collapsedSidebarSections = readJsonStorage(SIDEBAR_SECTION_COLLAPSE_KEY, {});
+let collapsedSkillSections = readJsonStorage(SKILL_SECTION_COLLAPSE_KEY, {});
 let avatarCropState = null;
+let notificationPrefs = normalizeNotificationPrefs(readJsonStorage(NOTIFICATION_PREF_KEY, {}));
+let windowFocused = document.hasFocus();
 
 const BOTTOM_THRESHOLD = 72;
 const MAX_ATTACHMENTS_PER_COMPOSER = 20;
@@ -90,9 +102,10 @@ let activeReceiptPopover = null; // currently open receipt popover trigger eleme
 let initialLoadComplete = false; // Skip animation on initial page load
 let fanoutDecisionCards = [];
 const seenFanoutRouteEventIds = new Set();
+const seenAgentNotificationRecordIds = new Set();
 const RAIL_WIDTH_KEY = 'magclawRailWidth';
-const RAIL_MIN_WIDTH = 176;
-const RAIL_MAX_WIDTH = 360;
+const RAIL_MIN_WIDTH = 260;
+const RAIL_MAX_WIDTH = 460;
 const INSPECTOR_WIDTH_KEY = 'magclawInspectorWidth';
 const INSPECTOR_MIN_WIDTH = 260;
 const INSPECTOR_MAX_WIDTH = 620;
@@ -135,6 +148,10 @@ function editPencilIcon() {
   return '<svg class="agent-edit-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16z"/><path d="M13 7l4 4"/></svg>';
 }
 
+function refreshIcon() {
+  return '<svg class="agent-edit-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M20 6v6h-6"/><path d="M4 18v-6h6"/><path d="M19 10a7 7 0 0 0-12-3"/><path d="M5 14a7 7 0 0 0 12 3"/></svg>';
+}
+
 function folderIcon() {
   return '<svg class="project-folder-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 6h7l2 3h9v10H3z"/><path d="M3 9h18"/></svg>';
 }
@@ -153,6 +170,19 @@ function channelActionIcon(name) {
     task: '<path d="M6 4h12v16H6z" /><path d="M9 9h6" /><path d="M9 13h6" /><path d="M9 17h4" />',
   };
   return `<svg class="channel-action-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">${icons[name] || ''}</svg>`;
+}
+
+function backBottomButton(targetName, extraClass = '') {
+  const visibleClass = backBottomVisible[targetName] ? '' : ' hidden';
+  const className = `back-bottom ${extraClass}${visibleClass}`.trim();
+  return `
+    <button class="${className}" type="button" data-action="back-to-bottom" data-target="${targetName}" aria-label="Back to bottom">
+      <svg class="back-bottom-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 4v15" />
+        <path d="m5 12 7 7 7-7" />
+      </svg>
+    </button>
+  `;
 }
 
 const taskColumns = [
@@ -459,6 +489,145 @@ function writeJsonStorage(key, value) {
   }
 }
 
+function normalizeNotificationPrefs(value = {}) {
+  return {
+    enabled: Boolean(value.enabled),
+    dismissedPrompt: Boolean(value.dismissedPrompt),
+    enabledAt: value.enabledAt || null,
+    dismissedAt: value.dismissedAt || null,
+  };
+}
+
+function saveNotificationPrefs(nextPrefs = notificationPrefs) {
+  notificationPrefs = normalizeNotificationPrefs(nextPrefs);
+  writeJsonStorage(NOTIFICATION_PREF_KEY, notificationPrefs);
+}
+
+function notificationApiSupported() {
+  return 'Notification' in window;
+}
+
+function browserNotificationPermission() {
+  if (!notificationApiSupported()) return 'unsupported';
+  return Notification.permission || 'default';
+}
+
+function agentNotificationsEnabled() {
+  return notificationPrefs.enabled && browserNotificationPermission() === 'granted';
+}
+
+function notificationPromptVisible() {
+  return notificationApiSupported()
+    && browserNotificationPermission() === 'default'
+    && !notificationPrefs.enabled
+    && !notificationPrefs.dismissedPrompt;
+}
+
+function notificationStatusLabel() {
+  const permission = browserNotificationPermission();
+  if (permission === 'unsupported') return 'Unsupported';
+  if (permission === 'denied') return 'Blocked';
+  if (permission === 'granted' && notificationPrefs.enabled) return 'On';
+  if (permission === 'granted') return 'Off';
+  return 'Ask first';
+}
+
+function notificationStatusDetail() {
+  const permission = browserNotificationPermission();
+  if (permission === 'unsupported') return 'This browser does not expose desktop notifications.';
+  if (permission === 'denied') return 'Notifications are blocked in the browser site settings.';
+  if (permission === 'granted' && notificationPrefs.enabled) return 'Agent replies will notify you while Magclaw is in the background.';
+  if (permission === 'granted') return 'Browser permission is granted; app notifications are currently off.';
+  return 'Chrome will ask for permission before turning this on.';
+}
+
+function notificationBellIcon(size = 16) {
+  return `<svg class="notification-bell-icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>`;
+}
+
+function renderNotificationPromptBanner() {
+  if (!notificationPromptVisible()) return '';
+  return `
+    <section class="notification-banner" aria-label="Enable agent notifications">
+      <div class="notification-banner-copy">
+        ${notificationBellIcon(18)}
+        <strong>Enable agent notifications</strong>
+        <span>Get agent replies while Magclaw is in the background.</span>
+      </div>
+      <div class="notification-banner-actions">
+        <button class="primary-btn" type="button" data-action="enable-agent-notifications">Enable Notifications</button>
+        <button class="secondary-btn" type="button" data-action="dismiss-agent-notifications">Not Now</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderNotificationConfigCard() {
+  const permission = browserNotificationPermission();
+  const enabled = agentNotificationsEnabled();
+  const canEnable = permission === 'default' || permission === 'granted';
+  return `
+    <div class="pixel-panel cloud-card notification-config-card">
+      <div class="panel-title"><span>Agent Notifications</span><span>${escapeHtml(notificationStatusLabel())}</span></div>
+      <div class="notification-card-body">
+        <div class="notification-card-icon">${notificationBellIcon(20)}</div>
+        <div>
+          <strong>${enabled ? 'Browser notifications are on' : 'Browser notifications are off'}</strong>
+          <p>${escapeHtml(notificationStatusDetail())}</p>
+          <small>Delivered for new agent messages and thread replies while this tab is not focused.</small>
+        </div>
+      </div>
+      <div class="notification-card-actions">
+        ${enabled
+          ? '<button class="secondary-btn" type="button" data-action="disable-agent-notifications">Turn Off</button>'
+          : `<button class="primary-btn" type="button" data-action="enable-agent-notifications" ${canEnable ? '' : 'disabled'}>Turn On</button>`}
+      </div>
+    </div>
+  `;
+}
+
+async function enableAgentNotifications() {
+  if (!notificationApiSupported()) {
+    toast('Browser notifications are not supported here');
+    return false;
+  }
+  let permission = browserNotificationPermission();
+  if (permission === 'default') {
+    permission = await Notification.requestPermission();
+  }
+  if (permission === 'granted') {
+    saveNotificationPrefs({
+      ...notificationPrefs,
+      enabled: true,
+      dismissedPrompt: true,
+      enabledAt: new Date().toISOString(),
+    });
+    toast('Agent notifications enabled');
+    render();
+    return true;
+  }
+  saveNotificationPrefs({ ...notificationPrefs, enabled: false, dismissedPrompt: true });
+  toast(permission === 'denied' ? 'Notifications are blocked in browser settings' : 'Notifications were not enabled');
+  render();
+  return false;
+}
+
+function disableAgentNotifications() {
+  saveNotificationPrefs({ ...notificationPrefs, enabled: false });
+  toast('Agent notifications off');
+  render();
+}
+
+function dismissAgentNotifications() {
+  saveNotificationPrefs({
+    ...notificationPrefs,
+    enabled: false,
+    dismissedPrompt: true,
+    dismissedAt: new Date().toISOString(),
+  });
+  render();
+}
+
 function readStoredUiState() {
   const parsed = readJsonStorage(UI_STATE_KEY, {});
   const validSpaceType = ['channel', 'dm'].includes(parsed.selectedSpaceType) ? parsed.selectedSpaceType : 'channel';
@@ -467,12 +636,14 @@ function readStoredUiState() {
     : 'space';
   const validTab = ['chat', 'tasks'].includes(parsed.activeTab) ? parsed.activeTab : 'chat';
   const validRailTab = ['spaces', 'members'].includes(parsed.railTab) ? parsed.railTab : '';
+  const validSettingsTab = ['account', 'browser', 'server', 'release'].includes(parsed.settingsTab) ? parsed.settingsTab : 'server';
   return {
     selectedSpaceType: validSpaceType,
     selectedSpaceId: String(parsed.selectedSpaceId || ''),
     activeView: validView,
     activeTab: validTab,
     railTab: validRailTab,
+    settingsTab: validSettingsTab,
     threadMessageId: parsed.threadMessageId ? String(parsed.threadMessageId) : null,
   };
 }
@@ -484,6 +655,7 @@ function persistUiState() {
     activeView,
     activeTab,
     railTab,
+    settingsTab,
     threadMessageId,
   };
   writeJsonStorage(UI_STATE_KEY, payload);
@@ -530,6 +702,22 @@ function toggleTaskColumn(status) {
     [status]: !collapsedTaskColumns[status],
   };
   localStorage.setItem(TASK_COLUMN_COLLAPSE_KEY, JSON.stringify(collapsedTaskColumns));
+}
+
+function toggleSidebarSection(section) {
+  collapsedSidebarSections = {
+    ...collapsedSidebarSections,
+    [section]: !collapsedSidebarSections[section],
+  };
+  writeJsonStorage(SIDEBAR_SECTION_COLLAPSE_KEY, collapsedSidebarSections);
+}
+
+function toggleSkillSection(section) {
+  collapsedSkillSections = {
+    ...collapsedSkillSections,
+    [section]: !collapsedSkillSections[section],
+  };
+  writeJsonStorage(SKILL_SECTION_COLLAPSE_KEY, collapsedSkillSections);
 }
 
 function readStoredInspectorWidth() {
@@ -616,6 +804,48 @@ function api(path, options = {}) {
     if (!response.ok) throw new Error(data.error || response.statusText);
     return data;
   });
+}
+
+function agentWarmRequestKey(agent) {
+  return [
+    agent?.id || '',
+    agent?.runtimeLastStartedAt || '',
+    agent?.runtimeWarmAt || '',
+    agent?.runtimeLastTurnAt || '',
+  ].join(':');
+}
+
+function selectedWarmableAgent() {
+  if (!appState) return null;
+  if (selectedAgentId) return byId(appState.agents, selectedAgentId);
+  if (activeView === 'space' && selectedSpaceType === 'dm') {
+    const peer = currentDmPeer();
+    if (peer?.type === 'agent') return peer.item;
+  }
+  return null;
+}
+
+function maybeWarmAgent(agent, { spaceType = selectedSpaceType, spaceId = selectedSpaceId } = {}) {
+  if (!agent?.id) return;
+  const runtime = String(agent.runtime || '').toLowerCase();
+  if (runtime && !runtime.includes('codex')) return;
+  if (['thinking', 'working', 'starting', 'running', 'queued'].includes(String(agent.status || '').toLowerCase())) return;
+  const key = agentWarmRequestKey(agent);
+  if (agentWarmRequests.has(key)) return;
+  agentWarmRequests.add(key);
+  api(`/api/agents/${encodeURIComponent(agent.id)}/warm`, {
+    method: 'POST',
+    body: JSON.stringify({ spaceType, spaceId }),
+  }).catch((error) => {
+    agentWarmRequests.delete(key);
+    console.warn('Agent warmup failed', error);
+  });
+}
+
+function maybeWarmCurrentAgent() {
+  const agent = selectedWarmableAgent();
+  if (!agent) return;
+  maybeWarmAgent(agent, { spaceType: selectedSpaceType, spaceId: selectedSpaceId });
 }
 
 function readAvatarFileAsDataUrl(file) {
@@ -898,6 +1128,33 @@ function plainMentionText(text) {
 
 function plainActorText(text) {
   return String(text || '').replace(/\b(agt_\w+|hum_\w+)\b/g, (_, id) => displayName(id));
+}
+
+function displayNameFromState(stateSnapshot, id) {
+  if (id === 'agt_codex') return 'Codex Local';
+  const human = byId(stateSnapshot?.humans, id);
+  if (human) return human.name;
+  const agent = byId(stateSnapshot?.agents, id);
+  if (agent) return agent.name;
+  return id === 'system' ? 'Magclaw' : 'Unknown';
+}
+
+function spaceNameFromState(stateSnapshot, spaceType, spaceId) {
+  if (spaceType === 'channel') return `#${byId(stateSnapshot?.channels, spaceId)?.name || 'missing'}`;
+  const dm = byId(stateSnapshot?.dms, spaceId);
+  const other = dm?.participantIds?.find((id) => id !== 'hum_local');
+  return `@${displayNameFromState(stateSnapshot, other || 'unknown')}`;
+}
+
+function plainNotificationText(text, stateSnapshot) {
+  return String(text || '')
+    .replace(/<@(agt_\w+|hum_\w+)>/g, (_, id) => `@${displayNameFromState(stateSnapshot, id)}`)
+    .replace(/<!(all|here|channel|everyone)>/g, (_, type) => `@${type}`)
+    .replace(/<#(file|folder):([^:]+):([^>]*)>/g, (_, kind, projectId, encodedPath) => `@${referenceDisplayName(projectId, decodeReferencePath(encodedPath), kind)}`)
+    .replace(/\b(agt_\w+|hum_\w+)\b/g, (_, id) => displayNameFromState(stateSnapshot, id))
+    .replace(/[`*_>#\[\]()]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function normalizeSearchText(value) {
@@ -1539,6 +1796,19 @@ function clearAgentWorkspaceCaches(agentId) {
   if (selectedAgentWorkspaceFile?.agentId === agentId) selectedAgentWorkspaceFile = null;
 }
 
+async function loadAgentSkills(agentId, { force = false } = {}) {
+  if (!agentId) return;
+  if (!force && agentSkillsCache[agentId] && !agentSkillsCache[agentId].error) return;
+  agentSkillsCache[agentId] = { loading: true, global: [], workspace: [], plugin: [], tools: [], error: '' };
+  render();
+  try {
+    agentSkillsCache[agentId] = await api(`/api/agents/${encodeURIComponent(agentId)}/skills`);
+  } catch (error) {
+    agentSkillsCache[agentId] = { loading: false, global: [], workspace: [], plugin: [], tools: [], error: error.message };
+  }
+  render();
+}
+
 function spaceTasks(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
   return (appState?.tasks || [])
     .filter((task) => task.spaceType === spaceType && task.spaceId === spaceId)
@@ -1680,6 +1950,51 @@ function removeStagedAttachment(composerId, attachmentId) {
   const next = stagedFor(composerId).attachments.filter((item) => item.id !== attachmentId);
   setStagedFor(composerId, next);
   updateComposerAttachmentStrip(composerId);
+}
+
+function snapshotComposerState(form, composerId, { includeTask = false } = {}) {
+  const textarea = form?.querySelector('textarea[name="body"]');
+  const taskInput = form?.querySelector('input[name="asTask"]');
+  return {
+    body: textarea?.value ?? composerDrafts[composerId] ?? '',
+    attachments: [...stagedFor(composerId).attachments],
+    mentionMap: { ...(composerMentionMaps[composerId] || {}) },
+    task: includeTask ? Boolean(taskInput?.checked || composerTaskFlags[composerId]) : false,
+  };
+}
+
+function clearComposerForSubmit(form, composerId, { clearTask = false } = {}) {
+  const textarea = form?.querySelector('textarea[name="body"]');
+  if (textarea) {
+    textarea.value = '';
+    textarea.defaultValue = '';
+  }
+  const taskInput = form?.querySelector('input[name="asTask"]');
+  if (clearTask && taskInput) taskInput.checked = false;
+  clearStagedFor(composerId);
+  updateComposerAttachmentStrip(composerId);
+  delete composerDrafts[composerId];
+  delete composerMentionMaps[composerId];
+  if (clearTask) delete composerTaskFlags[composerId];
+}
+
+function restoreComposerAfterFailedSubmit(form, composerId, snapshot, { restoreTask = false } = {}) {
+  const body = snapshot?.body || '';
+  if (body) composerDrafts[composerId] = body;
+  else delete composerDrafts[composerId];
+  if (snapshot?.attachments?.length) setStagedFor(composerId, snapshot.attachments);
+  else clearStagedFor(composerId);
+  updateComposerAttachmentStrip(composerId);
+  if (snapshot?.mentionMap && Object.keys(snapshot.mentionMap).length) composerMentionMaps[composerId] = snapshot.mentionMap;
+  else delete composerMentionMaps[composerId];
+  if (restoreTask) composerTaskFlags[composerId] = Boolean(snapshot?.task);
+  const textarea = form?.querySelector('textarea[name="body"]');
+  if (textarea) {
+    textarea.value = body;
+    textarea.defaultValue = body;
+  }
+  const taskInput = form?.querySelector('input[name="asTask"]');
+  if (restoreTask && taskInput) taskInput.checked = Boolean(snapshot?.task);
 }
 
 function paneSelector(targetName) {
@@ -1895,6 +2210,69 @@ function enqueueFanoutDecisionCards(routeEvent, stateSnapshot = appState) {
     });
 }
 
+function appIsInBackground() {
+  return document.visibilityState === 'hidden' || !windowFocused;
+}
+
+function agentNotificationRecords(stateSnapshot) {
+  return [...(stateSnapshot?.messages || []), ...(stateSnapshot?.replies || [])]
+    .filter((record) => record?.id && record.authorType === 'agent')
+    .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+}
+
+function notificationRootRecord(record, stateSnapshot = appState) {
+  return record?.parentMessageId ? byId(stateSnapshot?.messages, record.parentMessageId) : record;
+}
+
+function notificationTitle(record, stateSnapshot = appState) {
+  const agentName = displayNameFromState(stateSnapshot, record?.authorId);
+  const root = notificationRootRecord(record, stateSnapshot);
+  const space = spaceNameFromState(stateSnapshot, root?.spaceType || record?.spaceType, root?.spaceId || record?.spaceId);
+  return record?.parentMessageId ? `${agentName} replied in ${space}` : `${agentName} in ${space}`;
+}
+
+function notificationBody(record, stateSnapshot = appState) {
+  const text = plainNotificationText(record?.body || '(attachment)', stateSnapshot);
+  if (!text) return '(attachment)';
+  return text.length > NOTIFICATION_PREVIEW_LIMIT ? `${text.slice(0, NOTIFICATION_PREVIEW_LIMIT - 1)}…` : text;
+}
+
+function openNotificationRecord(recordId) {
+  const record = conversationRecord(recordId);
+  if (!record) return;
+  openSearchResult(record);
+}
+
+function showAgentNotification(record, stateSnapshot = appState) {
+  if (!agentNotificationsEnabled() || !appIsInBackground()) return;
+  try {
+    const agent = byId(stateSnapshot?.agents, record.authorId);
+    const notification = new Notification(notificationTitle(record, stateSnapshot), {
+      body: notificationBody(record, stateSnapshot),
+      icon: agent?.avatar || NOTIFICATION_ICON,
+      badge: NOTIFICATION_ICON,
+      tag: `magclaw:${record.id}`,
+    });
+    notification.onclick = () => {
+      window.focus();
+      window.setTimeout(() => openNotificationRecord(record.id), 20);
+      notification.close();
+    };
+  } catch {
+    // Browser notification failures should not interrupt live chat rendering.
+  }
+}
+
+function trackAgentNotifications(nextState, { silent = false } = {}) {
+  const fresh = [];
+  for (const record of agentNotificationRecords(nextState)) {
+    if (seenAgentNotificationRecordIds.has(record.id)) continue;
+    seenAgentNotificationRecordIds.add(record.id);
+    if (!silent) fresh.push(record);
+  }
+  fresh.slice(-3).forEach((record) => showAgentNotification(record, nextState));
+}
+
 function trackFanoutRouteEvents(nextState, { silent = false } = {}) {
   const newLlmEvents = [];
   for (const event of nextState?.routeEvents || []) {
@@ -1937,8 +2315,10 @@ function render() {
   ensureSelection();
   persistUiState();
   const inspectorHtml = renderInspector();
+  const notificationBanner = renderNotificationPromptBanner();
   root.innerHTML = `
-    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}" style="${appFrameStyle()}">
+    ${notificationBanner}
+    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
       ${renderRail()}
       <div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>
       <main class="workspace collab-main">
@@ -1967,17 +2347,31 @@ function renderRail() {
   const openTasks = (appState.tasks || []).filter((task) => !taskIsClosedStatus(task.status)).length;
   const saved = savedRecords().length;
   const normalAgents = channelAssignableAgents();
+  const localHuman = byId(appState.humans, 'hum_local') || appState.humans?.[0] || { name: 'You' };
+  const railMode = activeView === 'tasks'
+    ? 'tasks'
+    : activeView === 'cloud'
+      ? 'settings'
+      : railTab === 'members'
+        ? 'members'
+        : 'chat';
+  const railHeading = railMode === 'tasks' ? 'Tasks' : railMode === 'members' ? 'Members' : railMode === 'settings' ? 'Settings' : 'Chat';
 
   return `
-    <aside class="rail collab-rail">
-      <div class="view-switcher">
-        <button class="view-tab${railTab === 'spaces' ? ' active' : ''}" type="button" data-action="set-rail-tab" data-rail-tab="spaces" title="Channels & DIRECT MESSAGES">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        </button>
-        <button class="view-tab${railTab === 'members' ? ' active' : ''}" type="button" data-action="set-rail-tab" data-rail-tab="members" title="Members">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        </button>
+    <aside class="rail collab-rail slock-rail">
+      <div class="slock-left-rail">
+        <button class="left-rail-avatar" type="button" data-action="set-left-nav" data-nav="chat" title="${escapeHtml(localHuman.name || 'You')}">${escapeHtml((localHuman.name || 'Y').trim().slice(0, 1).toUpperCase())}</button>
+        ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>')}
+        ${renderLeftRailButton('tasks', railMode, 'Tasks', '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', openTasks || '')}
+        ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>', normalAgents.length || '')}
+        ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>')}
+        <span class="left-rail-spacer"></span>
+        ${renderLeftRailButton('settings', railMode, 'Settings', '<circle cx="12" cy="12" r="3"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="M5.6 5.6l2.1 2.1"/><path d="M16.3 16.3l2.1 2.1"/><path d="M18.4 5.6l-2.1 2.1"/><path d="M7.7 16.3l-2.1 2.1"/>')}
       </div>
+      <div class="slock-sidebar">
+        <div class="slock-sidebar-header">
+          <h2>${escapeHtml(railHeading)}</h2>
+        </div>
 
       ${railTab === 'spaces' ? `
       <div class="nav-list">
@@ -1988,19 +2382,13 @@ function renderRail() {
       </div>
 
       <div class="rail-section">
-        <div class="rail-title">
-          <span>Channels <em>${channels.length}</em></span>
-          <button type="button" data-action="open-modal" data-modal="channel">+</button>
-        </div>
-        ${channels.map((channel) => renderChannelItem(channel)).join('')}
+        ${renderRailSectionTitle('channels', 'Channels', channels.length, { modal: 'channel' })}
+        ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel)).join('')}
       </div>
 
       <div class="rail-section">
-        <div class="rail-title">
-          <span>DIRECT MESSAGES <em>${dms.length}</em></span>
-          <button type="button" data-action="open-modal" data-modal="dm">+</button>
-        </div>
-        ${dms.map((dm) => {
+        ${renderRailSectionTitle('dms', 'DIRECT MESSAGES', dms.length, { modal: 'dm' })}
+        ${collapsedSidebarSections.dms ? '' : dms.map((dm) => {
           const other = dm.participantIds.find((id) => id !== 'hum_local');
           const agent = byId(appState.agents, other);
           const human = byId(appState.humans, other);
@@ -2010,37 +2398,28 @@ function renderRail() {
       </div>
       ` : `
       <div class="rail-section">
-        <div class="rail-title">
-          <span>Agents <em>${normalAgents.length}</em></span>
-          <button type="button" data-action="open-modal" data-modal="agent">+</button>
-        </div>
-        ${normalAgents.map((agent) => renderAgentListItem(agent)).join('')}
+        ${renderRailSectionTitle('agents', 'Agents', normalAgents.length, { modal: 'agent' })}
+        ${collapsedSidebarSections.agents ? '' : normalAgents.map((agent) => renderAgentListItem(agent)).join('')}
       </div>
 
       <div class="rail-section">
-        <div class="rail-title">
-          <span>Humans <em>${(appState.humans || []).length}</em></span>
-          <button type="button" data-action="open-modal" data-modal="human">+</button>
-        </div>
-        ${(appState.humans || []).map((human) => renderHumanListItem(human)).join('')}
+        ${renderRailSectionTitle('humans', 'Humans', (appState.humans || []).length, { modal: 'human' })}
+        ${collapsedSidebarSections.humans ? '' : (appState.humans || []).map((human) => renderHumanListItem(human)).join('')}
       </div>
 
       <div class="rail-section">
-        <div class="rail-title">
-          <span>Computers <em>${(appState.computers || []).length}</em></span>
-          <button type="button" data-action="open-modal" data-modal="computer">+</button>
-        </div>
-        ${(appState.computers || []).map((computer) => renderComputerListItem(computer)).join('')}
+        ${renderRailSectionTitle('computers', 'Computers', (appState.computers || []).length, { modal: 'computer' })}
+        ${collapsedSidebarSections.computers ? '' : (appState.computers || []).map((computer) => renderComputerListItem(computer)).join('')}
       </div>
 
       <div class="rail-section system-config-section">
-        <div class="rail-title">
-          <span>System Config <em>${appState.settings?.fanoutApi?.configured ? 'LLM' : 'rules'}</em></span>
-        </div>
+        ${renderRailSectionTitle('system', 'System Config', appState.settings?.fanoutApi?.configured ? 'LLM' : 'rules')}
+        ${collapsedSidebarSections.system ? '' : `
         <button class="space-btn system-config-entry${activeView === 'cloud' ? ' active' : ''}" type="button" data-action="set-view" data-view="cloud">
           <span class="channel-icon">API</span>
           <span class="dm-name">Fan-out API</span>
         </button>
+        `}
       </div>
       `}
 
@@ -2051,7 +2430,31 @@ function renderRail() {
           <small>${escapeHtml(appState.connection?.mode === 'cloud' ? 'Connected' : 'Local')}</small>
         </div>
       </div>
+      </div>
     </aside>
+  `;
+}
+
+function renderLeftRailButton(nav, activeNav, label, icon, badge = '') {
+  return `
+    <button class="left-rail-btn${activeNav === nav ? ' active' : ''}" type="button" data-action="set-left-nav" data-nav="${escapeHtml(nav)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">${icon}</svg>
+      ${badge ? `<em>${escapeHtml(badge)}</em>` : ''}
+    </button>
+  `;
+}
+
+function renderRailSectionTitle(section, label, count, { modal = '' } = {}) {
+  const collapsed = Boolean(collapsedSidebarSections[section]);
+  const countLabel = count === undefined || count === null ? '' : `<em>${escapeHtml(count)}</em>`;
+  return `
+    <div class="rail-title">
+      <button class="rail-collapse-btn" type="button" data-action="toggle-sidebar-section" data-section="${escapeHtml(section)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(label)}">
+        <span aria-hidden="true">${collapsed ? '›' : '⌄'}</span>
+      </button>
+      <span>${escapeHtml(label)} ${countLabel}</span>
+      ${modal ? `<button class="rail-add-btn" type="button" data-action="open-modal" data-modal="${escapeHtml(modal)}">+</button>` : '<span class="rail-title-spacer"></span>'}
+    </div>
   `;
 }
 
@@ -2323,7 +2726,7 @@ function renderChat() {
         <div class="message-list" id="message-list">
           ${messages.length ? messages.map(renderMessage).join('') : '<div class="empty-box">No messages here yet.</div>'}
         </div>
-        <button class="back-bottom main-back-bottom${backBottomVisible.main ? '' : ' hidden'}" type="button" data-action="back-to-bottom" data-target="main">Back to Bottom</button>
+        ${backBottomButton('main', 'main-back-bottom')}
       </div>
       ${renderComposer({ id: composerId, kind: 'message', placeholder: `Message ${spaceName(selectedSpaceType, selectedSpaceId)}`, showTaskToggle: true })}
     </section>
@@ -2339,7 +2742,7 @@ function renderDmChat() {
         <div class="message-list dm-message-list" id="message-list">
           ${messages.length ? messages.map(renderMessage).join('') : '<div class="dm-empty-state">No messages yet. Start the conversation!</div>'}
         </div>
-        <button class="back-bottom main-back-bottom${backBottomVisible.main ? '' : ' hidden'}" type="button" data-action="back-to-bottom" data-target="main">Back to Bottom</button>
+        ${backBottomButton('main', 'main-back-bottom')}
       </div>
       ${renderComposer({ id: composerId, kind: 'message', placeholder: `Message ${spaceName(selectedSpaceType, selectedSpaceId)}`, showTaskToggle: true })}
     </section>
@@ -3236,10 +3639,15 @@ function renderFanoutApiConfigCard() {
     <div class="pixel-panel cloud-card fanout-config-card">
       <form id="fanout-config-form" class="modal-form">
         <div class="panel-title"><span>Fan-out API</span><span>${escapeHtml(status)}</span></div>
-        <p class="fanout-api-note">This API key is used only when Magclaw needs semantic fan-out routing, such as choosing a task claimant or deciding whether a named-but-not-@mentioned agent should also receive a message. If this is incomplete or disabled, local rules handle routing.</p>
-        <label class="checkline"><input type="checkbox" name="enabled" ${config.enabled ? 'checked' : ''} /> Enable LLM fan-out for ambiguous routing</label>
+        <p class="fanout-api-note">Local rules always route immediately. When a message is ambiguous, this API can add a supplemental LLM route after the rules route has already been delivered.</p>
+        <label class="checkline"><input type="checkbox" name="enabled" ${config.enabled ? 'checked' : ''} /> Enable async LLM supplement for ambiguous routing</label>
         <label><span>Base URL</span><input name="baseUrl" value="${escapeHtml(config.baseUrl || '')}" placeholder="https://api.openai.com/v1" /></label>
         <label><span>Model</span><input name="model" value="${escapeHtml(config.model || '')}" placeholder="gpt-5.4-mini-2026-03-17" /></label>
+        <label>
+          <span>Force LLM Keywords</span>
+          <textarea name="forceKeywords" rows="3" placeholder="">${escapeHtml((config.forceKeywords || []).join('\n'))}</textarea>
+          <small>Optional. Matching messages still route by rules first, then queue an LLM supplement.</small>
+        </label>
         <label>
           <span>API Key</span>
           <input name="apiKey" type="password" autocomplete="off" placeholder="${escapeHtml(config.hasApiKey ? `${config.apiKeyPreview} configured - leave blank to keep` : 'paste API key')}" />
@@ -3252,15 +3660,66 @@ function renderFanoutApiConfigCard() {
   `;
 }
 
-function renderCloud() {
+function renderSettingsTabs() {
+  const tabs = [
+    ['account', 'Account'],
+    ['browser', 'Browser'],
+    ['server', 'Server'],
+    ['release', 'Release Notes'],
+  ];
+  return `
+    <div class="settings-tabs" role="tablist">
+      ${tabs.map(([id, label]) => `
+        <button type="button" class="${settingsTab === id ? 'active' : ''}" data-action="set-settings-tab" data-tab="${id}">${escapeHtml(label)}</button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderAccountSettingsTab() {
+  const human = byId(appState.humans, 'hum_local') || appState.humans?.[0] || {};
+  const c = appState.connection || {};
+  return `
+    <section class="settings-layout">
+      <div class="pixel-panel cloud-card">
+        <div class="panel-title"><span>Account</span><span>local</span></div>
+        <div class="cloud-status settings-status-grid">
+          <div><span>Name</span><strong>${escapeHtml(human.name || 'You')}</strong><small>${escapeHtml(human.role || 'owner')}</small></div>
+          <div><span>Profile</span><strong>${escapeHtml(human.email || 'local user')}</strong><small>${escapeHtml(human.id || 'hum_local')}</small></div>
+          <div><span>Workspace</span><strong>${escapeHtml(c.workspaceId || 'local')}</strong><small>${escapeHtml(appState.settings?.defaultWorkspace || '')}</small></div>
+          <div><span>Device</span><strong>${escapeHtml(c.deviceName || appState.runtime?.host || 'local')}</strong><small>${escapeHtml(c.deviceId || '')}</small></div>
+        </div>
+      </div>
+      <div class="pixel-panel cloud-card">
+        <div class="panel-title"><span>Identity Boundary</span><span>v1</span></div>
+        <div class="boundary-grid single">
+          <div><strong>Humans</strong><p>Human identity stays in MagClaw state and is used for channels, DMs, notifications, task ownership, and read receipts.</p></div>
+          <div><strong>Agents</strong><p>Agents keep isolated workspaces and Codex homes while sharing allowed local skills and MagClaw tools.</p></div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderBrowserSettingsTab() {
+  return `
+    <section class="settings-layout">
+      ${renderNotificationConfigCard()}
+      <div class="pixel-panel cloud-card">
+        <div class="panel-title"><span>Browser Runtime</span><span>${escapeHtml(browserNotificationPermission())}</span></div>
+        <div class="boundary-grid single">
+          <div><strong>Background Replies</strong><p>Desktop notifications are browser-controlled and can be turned on or off here without changing agent routing.</p></div>
+          <div><strong>Local UI State</strong><p>Collapsed sidebar sections, task boards, settings tabs, and skills panels are saved in browser local storage.</p></div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderServerSettingsTab() {
   const c = appState.connection || {};
   const isCloud = c.mode === 'cloud';
-  const statusTone = c.pairingStatus === 'paired' ? 'green' : isCloud ? 'amber' : 'blue';
   return `
-    ${renderHeader('System Config', 'Computer, fan-out and connection settings', `
-      ${pill(c.mode || 'local', isCloud ? 'cyan' : 'blue')}
-      ${pill(c.pairingStatus || 'local', statusTone)}
-    `)}
     <section class="cloud-layout">
       ${renderComputerConfigCard()}
       ${renderFanoutApiConfigCard()}
@@ -3274,7 +3733,7 @@ function renderCloud() {
           </button>
           <button class="mode-card ${isCloud ? 'active' : ''}" type="button" data-action="cloud-configure">
             <strong>Cloud Connected</strong>
-            <span>Use a Magclaw control plane URL for sync while local runner keeps executing Codex.</span>
+            <span>Use a MagClaw control plane URL for sync while local runner keeps executing Codex.</span>
           </button>
         </div>
         <div class="cloud-status">
@@ -3311,12 +3770,56 @@ function renderCloud() {
       <div class="pixel-panel cloud-card wide">
         <div class="panel-title"><span>Sync Boundary</span><span>v1</span></div>
         <div class="boundary-grid">
-          <div><strong>Synced</strong><p>channels, DIRECT MESSAGES, messages, replies, tasks, task history, agents, humans, computers, missions, run metadata and attachment metadata.</p></div>
-          <div><strong>Local only</strong><p>Codex execution, local filesystem access, attachment binary files, shell environment, secrets and process control.</p></div>
-          <div><strong>Next cloud step</strong><p>Replace manual snapshot sync with authenticated account login, cloud database, relay envelopes and object storage for attachments.</p></div>
+          <div><strong>Synced</strong><p>channels, DMs, messages, replies, tasks, agents, humans, computers, missions, run metadata and attachment metadata.</p></div>
+          <div><strong>Local only</strong><p>Codex execution, filesystem access, attachment binaries, shell environment, secrets and process control.</p></div>
+          <div><strong>Runtime</strong><p>Chat agents use isolated Codex homes, MagClaw MCP tools, and hidden warmup turns so visible replies can reuse an idle Codex session.</p></div>
         </div>
       </div>
     </section>
+  `;
+}
+
+function renderReleaseNotesSettingsTab() {
+  const notes = [
+    ['NEW', 'Agent skill and tool panels list MagClaw function calls, global Codex skills, plugin skills, and agent-local skills with collapsible sections.'],
+    ['IMPROVED', 'Codex chat agents now warm their app-server session in the background, keeping everyday DM replies on the low-latency path after startup.'],
+  ];
+  return `
+    <section class="settings-release">
+      <div class="settings-release-label">WHAT'S NEW</div>
+      <article class="pixel-panel release-card">
+        <h3>2026-05-04</h3>
+        <div class="release-note-list">
+          ${notes.map(([type, text]) => `
+            <div class="release-note-row">
+              <span class="release-badge release-${type.toLowerCase()}">${escapeHtml(type)}</span>
+              <p>${escapeHtml(text)}</p>
+            </div>
+          `).join('')}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function renderCloud() {
+  const c = appState.connection || {};
+  const isCloud = c.mode === 'cloud';
+  const statusTone = c.pairingStatus === 'paired' ? 'green' : isCloud ? 'amber' : 'blue';
+  const body = settingsTab === 'account'
+    ? renderAccountSettingsTab()
+    : settingsTab === 'browser'
+      ? renderBrowserSettingsTab()
+      : settingsTab === 'release'
+        ? renderReleaseNotesSettingsTab()
+        : renderServerSettingsTab();
+  return `
+    ${renderHeader('Settings', 'Account, browser, server and release notes', `
+      ${pill(c.mode || 'local', isCloud ? 'cyan' : 'blue')}
+      ${pill(c.pairingStatus || 'local', statusTone)}
+    `)}
+    ${renderSettingsTabs()}
+    ${body}
   `;
 }
 
@@ -3537,6 +4040,7 @@ function formatAgentBorn(value) {
 function renderAgentDetailTabs() {
   const tabs = [
     ['profile', 'Profile'],
+    ['skills', 'Skills'],
     ['dms', 'Agent DIRECT MESSAGES'],
     ['reminders', 'Reminders'],
     ['workspace', 'Workspace'],
@@ -3695,6 +4199,104 @@ function renderAgentEnvVarsSection(agent) {
   `;
 }
 
+function agentSkillsFor(agent) {
+  return agentSkillsCache[agent.id] || null;
+}
+
+function renderAgentToolCapsules(tools = []) {
+  if (!tools.length) return '<div class="agent-field-value muted">No MagClaw tools exposed yet</div>';
+  return `
+    <div class="agent-tool-grid">
+      ${tools.map((tool) => `<span class="agent-tool-pill">${escapeHtml(tool)}</span>`).join('')}
+    </div>
+  `;
+}
+
+function renderSkillChips(skills = [], { limit = 10 } = {}) {
+  const visible = skills.slice(0, limit);
+  if (!visible.length) return '<span class="muted">No skills found</span>';
+  return `
+    <div class="skill-chip-row">
+      ${visible.map((skill) => `<span class="skill-chip" title="${escapeHtml(skill.path || '')}">${escapeHtml(skill.name || 'skill')}</span>`).join('')}
+      ${skills.length > visible.length ? `<span class="skill-chip muted">+${skills.length - visible.length}</span>` : ''}
+    </div>
+  `;
+}
+
+function renderAgentCapabilitiesSection(agent) {
+  const skills = agentSkillsFor(agent);
+  return `
+    <section class="agent-profile-field agent-capabilities-section">
+      <div class="agent-field-head">
+        <span class="detail-label">Function Calls / Tools</span>
+        <button class="agent-edit-pencil" type="button" data-action="refresh-agent-skills" data-agent-id="${escapeHtml(agent.id)}" aria-label="Rescan skills and tools" title="Rescan skills and tools">${refreshIcon()}</button>
+      </div>
+      ${skills?.loading ? '<div class="agent-field-value muted">Loading tools...</div>' : renderAgentToolCapsules(skills?.tools || [])}
+    </section>
+    <section class="agent-profile-field agent-capabilities-section">
+      <span class="detail-label">Skills</span>
+      ${skills?.error ? `<div class="agent-field-value error-text">${escapeHtml(skills.error)}</div>` : ''}
+      ${skills?.loading ? '<div class="agent-field-value muted">Scanning skills...</div>' : `
+        <div class="agent-skill-summary-grid">
+          <div><strong>Agent</strong>${renderSkillChips(skills?.workspace || [], { limit: 6 })}</div>
+          <div><strong>Global</strong>${renderSkillChips([...(skills?.global || []), ...(skills?.plugin || [])], { limit: 10 })}</div>
+        </div>
+      `}
+    </section>
+  `;
+}
+
+function renderSkillList(title, skills = [], empty = 'No skills found.', sectionKey = title.toLowerCase().replace(/[^a-z0-9]+/g, '-')) {
+  const collapsed = Boolean(collapsedSkillSections[sectionKey]);
+  return `
+    <section class="skill-list-section">
+      <div class="skill-list-title">
+        <button class="skill-collapse-btn" type="button" data-action="toggle-agent-skill-section" data-section="${escapeHtml(sectionKey)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(title)}">
+          <span aria-hidden="true">${collapsed ? '›' : '⌄'}</span>
+        </button>
+        <span>${escapeHtml(title)}</span>
+        <em>${skills.length}</em>
+      </div>
+      ${collapsed ? '' : (skills.length ? `
+        <div class="skill-list">
+          ${skills.map((skill) => `
+            <article class="skill-row">
+              <div>
+                <strong>${escapeHtml(skill.name || 'skill')}</strong>
+                <p>${escapeHtml(skill.description || 'No description provided.')}</p>
+              </div>
+              <small>${escapeHtml(skill.plugin || skill.scope || '')} ${escapeHtml(skill.path || '')}</small>
+            </article>
+          `).join('')}
+        </div>
+      ` : `<div class="empty-box small">${escapeHtml(empty)}</div>`)}
+    </section>
+  `;
+}
+
+function renderAgentSkillsTab(agent) {
+  const skills = agentSkillsFor(agent);
+  if (!skills || skills.loading) return '<div class="empty-box small">Scanning Codex skills for this agent...</div>';
+  if (skills.error) return `<div class="empty-box small error-text">${escapeHtml(skills.error)}</div>`;
+  return `
+    <div class="agent-skills-tab">
+      <section class="skill-list-section">
+        <div class="skill-list-title">
+          <button class="skill-collapse-btn" type="button" data-action="toggle-agent-skill-section" data-section="magclaw-tools" aria-label="${collapsedSkillSections['magclaw-tools'] ? 'Expand' : 'Collapse'} MagClaw Function Calls">
+            <span aria-hidden="true">${collapsedSkillSections['magclaw-tools'] ? '›' : '⌄'}</span>
+          </button>
+          <span>MagClaw Function Calls</span>
+          <em>${(skills.tools || []).length}</em>
+        </div>
+        ${collapsedSkillSections['magclaw-tools'] ? '' : renderAgentToolCapsules(skills.tools || [])}
+      </section>
+      ${renderSkillList('Agent-Isolated Skills', skills.workspace || [], 'No agent-local skills installed yet.', 'agent-skills')}
+      ${renderSkillList('Global Codex Skills', skills.global || [], 'No global Codex skills found.', 'global-skills')}
+      ${renderSkillList('Plugin Skills', skills.plugin || [], 'No plugin skills found.', 'plugin-skills')}
+    </div>
+  `;
+}
+
 function renderAgentProfileTab(agent) {
   return `
     <div class="agent-profile-tab">
@@ -3709,6 +4311,7 @@ function renderAgentProfileTab(agent) {
       ${renderAgentInlineField(agent, 'name', 'Display Name', { placeholder: 'Display name' })}
       ${renderAgentInlineField(agent, 'description', 'Description', { multiline: true, placeholder: 'Describe this agent...' })}
       ${renderAgentInfoSection(agent)}
+      ${renderAgentCapabilitiesSection(agent)}
       ${renderAgentEnvVarsSection(agent)}
       <section class="agent-profile-field agent-actions-section">
         <span class="detail-label">Actions</span>
@@ -3796,6 +4399,7 @@ function renderAgentActivityTab(agent) {
 }
 
 function renderAgentDetailBody(agent) {
+  if (agentDetailTab === 'skills') return renderAgentSkillsTab(agent);
   if (agentDetailTab === 'workspace') return renderAgentWorkspaceTab(agent);
   if (agentDetailTab === 'activity') return renderAgentActivityTab(agent);
   if (agentDetailTab === 'dms') return renderAgentDmsTab(agent);
@@ -3949,7 +4553,7 @@ function renderThreadDrawer(message) {
             </div>
           ` : ''}
         </div>
-        <button class="back-bottom thread-back-bottom${backBottomVisible.thread ? '' : ' hidden'}" type="button" data-action="back-to-bottom" data-target="thread">Back to Bottom</button>
+        ${backBottomButton('thread', 'thread-back-bottom')}
       </div>
       <div class="thread-tools">
         <span>${replies.length} ${replyWord}</span>
@@ -4682,6 +5286,7 @@ function fanoutFormPayload() {
     enabled: data ? Boolean(data.get('enabled')) : Boolean(current.enabled),
     baseUrl: data?.get('baseUrl') ?? current.baseUrl ?? '',
     model: data?.get('model') ?? current.model ?? '',
+    forceKeywords: data?.get('forceKeywords') ?? current.forceKeywords ?? [],
     clearApiKey: data ? Boolean(data.get('clearApiKey')) : false,
   };
   if (apiKey) payload.apiKey = apiKey;
@@ -4692,8 +5297,10 @@ async function refreshState() {
   rememberPinnedBottomBeforeStateChange();
   const nextState = await api('/api/state');
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
+  trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
   appState = nextState;
   render();
+  maybeWarmCurrentAgent();
 }
 
 function htmlToElement(html) {
@@ -4843,6 +5450,7 @@ function patchActiveConversationSurface(scrollSnapshot) {
 
 function applyStateUpdate(nextState) {
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete });
+  trackAgentNotifications(nextState, { silent: !initialLoadComplete });
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
@@ -4888,11 +5496,13 @@ function applyPresenceHeartbeat(heartbeat) {
       status: incoming.status || agent.status,
       runtimeLastStartedAt: incoming.runtimeLastStartedAt || agent.runtimeLastStartedAt || null,
       runtimeLastTurnAt: incoming.runtimeLastTurnAt || agent.runtimeLastTurnAt || null,
+      runtimeWarmAt: incoming.runtimeWarmAt || agent.runtimeWarmAt || null,
     };
     if (
       next.status !== agent.status
       || next.runtimeLastStartedAt !== agent.runtimeLastStartedAt
       || next.runtimeLastTurnAt !== agent.runtimeLastTurnAt
+      || next.runtimeWarmAt !== agent.runtimeWarmAt
     ) {
       changed = true;
     }
@@ -4930,6 +5540,18 @@ document.addEventListener('scroll', (event) => {
     persistPaneScroll('thread', event.target);
   }
 }, true);
+
+window.addEventListener('focus', () => {
+  windowFocused = true;
+});
+
+window.addEventListener('blur', () => {
+  windowFocused = false;
+});
+
+document.addEventListener('visibilitychange', () => {
+  windowFocused = document.visibilityState === 'visible' && document.hasFocus();
+});
 
 document.addEventListener('compositionstart', (event) => {
   if (event.target?.id === 'search-input') {
@@ -5371,10 +5993,13 @@ document.addEventListener('click', async (event) => {
   if (action === 'none') return;
   const localOnlyActions = new Set([
     'set-view',
+    'set-settings-tab',
     'set-rail-tab',
+    'toggle-sidebar-section',
     'select-agent',
     'close-agent-detail',
     'set-agent-detail-tab',
+    'toggle-agent-skill-section',
     'edit-agent-field',
     'cancel-agent-field',
     'update-agent-model',
@@ -5399,6 +6024,9 @@ document.addEventListener('click', async (event) => {
     'clear-search-query',
     'clear-search-all',
     'load-more-search',
+    'enable-agent-notifications',
+    'disable-agent-notifications',
+    'dismiss-agent-notifications',
     'toggle-task-channel-menu',
     'toggle-task-channel-filter',
     'clear-task-channel-filters',
@@ -5500,6 +6128,18 @@ document.addEventListener('click', async (event) => {
     render();
     return;
   }
+  if (action === 'enable-agent-notifications') {
+    await enableAgentNotifications();
+    return;
+  }
+  if (action === 'disable-agent-notifications') {
+    disableAgentNotifications();
+    return;
+  }
+  if (action === 'dismiss-agent-notifications') {
+    dismissAgentNotifications();
+    return;
+  }
   try {
     if (action === 'set-view') {
       activeView = target.dataset.view;
@@ -5511,6 +6151,14 @@ document.addEventListener('click', async (event) => {
       selectedSavedRecordId = null;
       render();
       if (activeView === 'search') focusSearchInputEnd();
+    }
+    if (action === 'set-settings-tab') {
+      settingsTab = target.dataset.tab || 'server';
+      render();
+    }
+    if (action === 'toggle-sidebar-section') {
+      toggleSidebarSection(target.dataset.section || '');
+      render();
     }
     if (action === 'toggle-search-mine') {
       searchMineOnly = !searchMineOnly;
@@ -5559,6 +6207,36 @@ document.addEventListener('click', async (event) => {
       selectedTaskId = null;
       render();
     }
+    if (action === 'set-left-nav') {
+      const nav = target.dataset.nav || 'chat';
+      if (nav === 'chat') {
+        railTab = 'spaces';
+        activeView = 'space';
+        selectedAgentId = null;
+      } else if (nav === 'tasks') {
+        railTab = 'spaces';
+        activeView = 'tasks';
+        selectedAgentId = null;
+      } else if (nav === 'members') {
+        railTab = 'members';
+        activeView = 'space';
+        if (!selectedAgentId && channelAssignableAgents()[0]) {
+          selectedAgentId = channelAssignableAgents()[0].id;
+          loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
+        }
+      } else if (nav === 'desktop') {
+        railTab = 'members';
+        activeView = 'space';
+        selectedAgentId = null;
+      } else if (nav === 'settings') {
+        railTab = 'members';
+        activeView = 'cloud';
+        selectedAgentId = null;
+      }
+      localStorage.setItem('railTab', railTab);
+      selectedTaskId = null;
+      render();
+    }
     if (action === 'select-agent') {
       if (!installedRuntimes.length) await loadInstalledRuntimes();
       if (threadMessageId) inspectorReturnThreadId = threadMessageId;
@@ -5572,6 +6250,8 @@ document.addEventListener('click', async (event) => {
       selectedAgentWorkspaceFile = null;
       modal = null;
       render();
+      maybeWarmCurrentAgent();
+      loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
     }
     if (action === 'close-agent-detail') {
       if (inspectorReturnThreadId && byId(appState.messages, inspectorReturnThreadId)) {
@@ -5589,9 +6269,15 @@ document.addEventListener('click', async (event) => {
       agentEnvEditState = null;
       if (agentDetailTab === 'workspace') {
         await prepareAgentWorkspaceTab(selectedAgentId);
+      } else if (agentDetailTab === 'skills' || agentDetailTab === 'profile') {
+        await loadAgentSkills(selectedAgentId);
       } else {
         render();
       }
+    }
+    if (action === 'toggle-agent-skill-section') {
+      toggleSkillSection(target.dataset.section || '');
+      render();
     }
     if (action === 'edit-agent-field') {
       agentDetailEditState = { field: target.dataset.field };
@@ -5619,6 +6305,10 @@ document.addEventListener('click', async (event) => {
       });
       agentDetailEditState = { field: null };
       toast('Agent updated');
+    }
+    if (action === 'refresh-agent-skills') {
+      await loadAgentSkills(target.dataset.agentId || selectedAgentId, { force: true });
+      toast('Skills rescanned');
     }
     if (action === 'edit-agent-env') {
       const agent = byId(appState.agents, target.dataset.agentId || selectedAgentId);
@@ -5668,6 +6358,7 @@ document.addEventListener('click', async (event) => {
         selectedAgentId = null;
         selectedTaskId = null;
         render();
+        maybeWarmCurrentAgent();
       } else {
         const result = await api('/api/dms', {
           method: 'POST',
@@ -5679,6 +6370,7 @@ document.addEventListener('click', async (event) => {
         railTab = 'spaces';
         selectedAgentId = null;
         selectedTaskId = null;
+        maybeWarmAgent(byId(appState.agents, agentId), { spaceType: 'dm', spaceId: result.dm.id });
       }
     }
     if (action === 'delete-agent') {
@@ -5703,6 +6395,7 @@ document.addEventListener('click', async (event) => {
       selectedProjectFile = null;
       selectedAgentWorkspaceFile = null;
       render();
+      maybeWarmCurrentAgent();
     }
     if (action === 'set-tab') {
       activeTab = target.dataset.tab;
@@ -6092,39 +6785,47 @@ document.addEventListener('submit', async (event) => {
       const composerId = form.dataset.composerId || composerIdFor('message');
       const rawBody = composerDrafts[composerId] ?? data.get('body');
       const shouldOpenTaskThread = Boolean(composerTaskFlags[composerId] ?? data.get('asTask'));
-      const result = await api(`/api/spaces/${selectedSpaceType}/${selectedSpaceId}/messages`, {
-        method: 'POST',
-        body: JSON.stringify({
-          body: encodeComposerMentions(rawBody, composerId),
-          asTask: shouldOpenTaskThread,
-          attachmentIds: stagedFor(composerId).ids,
-        }),
-      });
+      const attachmentIds = stagedFor(composerId).ids;
+      const messageSnapshot = snapshotComposerState(form, composerId, { includeTask: true });
+      clearComposerForSubmit(form, composerId, { clearTask: true });
+      let result;
+      try {
+        result = await api(`/api/spaces/${selectedSpaceType}/${selectedSpaceId}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({
+            body: encodeComposerMentions(rawBody, composerId),
+            asTask: shouldOpenTaskThread,
+            attachmentIds,
+          }),
+        });
+      } catch (error) {
+        restoreComposerAfterFailedSubmit(form, composerId, messageSnapshot, { restoreTask: true });
+        throw error;
+      }
       if (shouldOpenTaskThread && result.message?.id) threadMessageId = result.message.id;
-      clearStagedFor(composerId);
-      delete composerDrafts[composerId];
-      delete composerTaskFlags[composerId];
-      delete composerMentionMaps[composerId];
       requestPaneBottomScroll('main');
       submittedBottomTarget = '#message-list';
       focusComposerId = shouldOpenTaskThread && result.message?.id ? composerIdFor('thread', result.message.id) : composerId;
-      form.reset();
       toast('Message sent');
     }
     if (form.id === 'reply-form') {
       const composerId = form.dataset.composerId || composerIdFor('thread', threadMessageId);
       const rawBody = composerDrafts[composerId] ?? data.get('body');
-      await api(`/api/messages/${threadMessageId}/replies`, {
-        method: 'POST',
-        body: JSON.stringify({ body: encodeComposerMentions(rawBody, composerId), attachmentIds: stagedFor(composerId).ids }),
-      });
-      clearStagedFor(composerId);
-      delete composerDrafts[composerId];
-      delete composerMentionMaps[composerId];
+      const attachmentIds = stagedFor(composerId).ids;
+      const replySnapshot = snapshotComposerState(form, composerId);
+      clearComposerForSubmit(form, composerId);
+      try {
+        await api(`/api/messages/${threadMessageId}/replies`, {
+          method: 'POST',
+          body: JSON.stringify({ body: encodeComposerMentions(rawBody, composerId), attachmentIds }),
+        });
+      } catch (error) {
+        restoreComposerAfterFailedSubmit(form, composerId, replySnapshot);
+        throw error;
+      }
       requestPaneBottomScroll('thread');
       submittedBottomTarget = '#thread-context';
       focusComposerId = composerId;
-      form.reset();
       toast('Reply added');
     }
     if (form.id === 'channel-form') {

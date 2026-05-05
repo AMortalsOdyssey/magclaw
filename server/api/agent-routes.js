@@ -16,6 +16,7 @@ export async function handleAgentApi(req, res, url, deps) {
     findChannel,
     getState,
     hasAgentProcess,
+    listAgentSkills,
     listAgentWorkspace,
     makeId,
     normalizeCodexModelName,
@@ -33,6 +34,7 @@ export async function handleAgentApi(req, res, url, deps) {
     stopAgentProcesses,
     stopRunsForScope,
     stopScopeFromBody,
+    warmAgentFromControl,
   } = deps;
   const state = getState();
 
@@ -127,6 +129,25 @@ export async function handleAgentApi(req, res, url, deps) {
     return true;
   }
 
+  const agentWarmMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/warm$/);
+  if (req.method === 'POST' && agentWarmMatch) {
+    const agent = findAgent(agentWarmMatch[1]);
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await warmAgentFromControl(agent, {
+      spaceType: body.spaceType,
+      spaceId: body.spaceId,
+    });
+    addCollabEvent('agent_warmup_requested', `Agent warmup requested: ${agent.name}`, { agentId: agent.id });
+    await persistState();
+    broadcastState();
+    sendJson(res, 202, { agent, ...result });
+    return true;
+  }
+
   const agentRestartMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/restart$/);
   if (req.method === 'POST' && agentRestartMatch) {
     const agent = findAgent(agentRestartMatch[1]);
@@ -150,6 +171,21 @@ export async function handleAgentApi(req, res, url, deps) {
     try {
       const tree = await listAgentWorkspace(agent, url.searchParams.get('path') || '');
       sendJson(res, 200, tree);
+    } catch (error) {
+      sendError(res, error.status || 500, error.message);
+    }
+    return true;
+  }
+
+  const agentSkillsMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/skills$/);
+  if (req.method === 'GET' && agentSkillsMatch) {
+    const agent = findAgent(agentSkillsMatch[1]);
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    try {
+      sendJson(res, 200, await listAgentSkills(agent));
     } catch (error) {
       sendError(res, error.status || 500, error.message);
     }

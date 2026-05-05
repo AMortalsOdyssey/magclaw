@@ -50,6 +50,7 @@ import {
 } from './mentions.js';
 import {
   agentCapabilityQuestionIntent,
+  agentMemoryWriteIntent,
   agentResponseIntent,
   autoTaskMessageIntent,
   availabilityBroadcastIntent,
@@ -57,6 +58,7 @@ import {
   channelGreetingIntent,
   contextualAgentFollowupIntent,
   directAvailabilityIntent,
+  inferAgentMemoryWriteback,
   inferTaskIntentKind,
   taskCreationIntent,
   taskEndIntent,
@@ -135,29 +137,28 @@ const STATE_HEARTBEAT_MS = Math.max(25, Number(process.env.MAGCLAW_STATE_HEARTBE
 const AGENT_STATUS_STALE_MS = Math.max(1000, Number(process.env.MAGCLAW_AGENT_STATUS_STALE_MS || 45_000));
 const ROUTE_EVENTS_LIMIT = Math.max(50, Number(process.env.MAGCLAW_ROUTE_EVENTS_LIMIT || 500));
 const AGENT_CARD_TEXT_LIMIT = 5000;
-const FANOUT_API_TIMEOUT_MS = Math.max(500, Number(process.env.MAGCLAW_FANOUT_TIMEOUT_MS || 2500));
+const FANOUT_API_TIMEOUT_MS = Math.max(500, Number(process.env.MAGCLAW_FANOUT_TIMEOUT_MS || 10_000));
 const CODEX_STREAM_RETRY_LIMIT = codexStreamRetryLimit();
 const LEGACY_BRAIN_AGENT_ID = 'agt_magclaw_brain';
 const BRAIN_AGENT_NAME = 'MagClaw Brain';
 const BRAIN_AGENT_DESCRIPTION = 'Routes channel fan-out, task claim recommendations, agent cards, and memory writeback triggers.';
 const CLOUD_PROTOCOL_VERSION = 1;
-const CODEX_HOME_CONFIG_VERSION = 2;
+const CODEX_HOME_CONFIG_VERSION = 7;
 const CODEX_FALLBACK_MODEL = 'gpt-5.5';
 const SQLITE_BACKED_STATE_KEYS = ['messages', 'replies', 'tasks', 'workItems', 'events'];
 const AGENT_BOOT_RESET_STATUSES = new Set(['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'error']);
 const CODEX_HOME_SHARED_ENTRIES = [
   'auth.json',
+  'plugins',
+  'vendor_imports',
 ];
 const CODEX_HOME_STALE_SHARED_ENTRIES = [
   'config.toml',
   'AGENTS.md',
   'agent-rules',
-  'plugins',
-  'skills',
   'rules',
   'hooks.json',
   'hooks',
-  'vendor_imports',
 ];
 const runningProcesses = new Map();
 const agentProcesses = new Map(); // agentId -> { child, sessionId, status, inbox }
@@ -341,9 +342,12 @@ const {
   agentDataDir,
   ensureAgentWorkspace,
   ensureAllAgentWorkspaces,
+  listAgentSkills,
   listAgentWorkspace,
   prepareAgentCodexHome,
+  readAgentMemoryFile,
   readAgentWorkspaceFile,
+  searchAgentMemory,
   writeAgentSessionFile,
 } = agentWorkspace;
 
@@ -415,6 +419,7 @@ const {
   addTaskHistory,
   normalizeName,
   scheduleAgentMemoryWriteback,
+  writeAgentMemoryUpdate,
 } = collabMemory;
 
 const taskOrchestrator = createTaskOrchestrator({
@@ -628,6 +633,7 @@ const {
   resetAgentRuntimeSession,
   resetAgentWorkspaceFiles,
   startAgentFromControl,
+  warmAgentFromControl,
   restartAgentFromControl,
   agentAlreadyRoutedForSource,
   relayAgentMentions,
@@ -760,14 +766,17 @@ function agentToolApiDeps() {
     persistState,
     postAgentResponse,
     readAgentHistory,
+    readAgentMemoryFile,
     readJson,
     resolveConversationSpace,
     resolveMessageTarget,
     searchAgentMessageHistory,
+    searchAgentMemory,
     sendError,
     sendJson,
     taskLabel,
     updateTaskForAgent,
+    writeAgentMemoryUpdate,
     workItemTargetMatches,
   };
 }
@@ -833,6 +842,7 @@ function agentApiDeps() {
     getState: () => state,
     hasAgentProcess: (agentId) => agentProcesses.has(agentId),
     listAgentWorkspace,
+    listAgentSkills,
     makeId,
     normalizeCodexModelName,
     normalizeIds,
@@ -846,6 +856,7 @@ function agentApiDeps() {
     sendJson,
     setAgentStatus,
     startAgentFromControl,
+    warmAgentFromControl,
     stopAgentProcesses,
     stopRunsForScope,
     stopScopeFromBody,
@@ -859,6 +870,7 @@ function messageApiDeps() {
     addSystemReply,
     agentAvailableForAutoWork,
     agentCapabilityQuestionIntent,
+    agentMemoryWriteIntent,
     applyMentions,
     availabilityFollowupIntent,
     broadcastState,
@@ -875,6 +887,7 @@ function messageApiDeps() {
     findTaskForThreadMessage,
     finishTaskFromThread,
     getState: () => state,
+    inferAgentMemoryWriteback,
     makeId,
     normalizeConversationRecord,
     now,
@@ -884,6 +897,7 @@ function messageApiDeps() {
     routeMessageForChannel,
     routeThreadReplyForChannel,
     scheduleAgentMemoryWriteback,
+    searchAgentMemory,
     sendError,
     sendJson,
     stopTaskFromThread,

@@ -12,6 +12,7 @@ import {
 test('codex runtime helpers parse retry warnings and retry limits', () => {
   assert.equal(codexStreamRetryLimit('0'), 1);
   assert.equal(codexStreamRetryLimit('4'), 4);
+  assert.equal(codexStreamRetryLimit('bad'), 6);
   assert.equal(codexStreamRetryLimit('bad', 2), 2);
   assert.deepEqual(parseCodexStreamRetry('stream disconnected - retrying sampling request (1/5 in 20ms)...'), {
     count: 1,

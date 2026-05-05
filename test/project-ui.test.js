@@ -155,7 +155,7 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
 
   assert.match(app, /const inspectorHtml = renderInspector\(\)/);
   assert.match(app, /inspectorHtml \? `[\s\S]*collab-inspector/);
-  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}"/);
+  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{notificationBanner \? ' notification-banner-active' : ''\}"/);
   assert.match(app, /let selectedTaskId = null/);
   assert.match(app, /function renderInspector\(\)[\s\S]*if \(selectedAgentId\)/);
   assert.match(app, /selectedAgentId = null;[\s\S]*selectedSpaceType = target\.dataset\.type/);
@@ -199,8 +199,16 @@ test('message composers refocus after enter-submit sends', async () => {
   assert.match(app, /function focusComposerTextarea\(composerId\)/);
   assert.match(app, /function requestComposerFocus\(composerId\)/);
   assert.match(app, /function restorePendingComposerFocus\(\)/);
+  assert.match(app, /function snapshotComposerState\(form, composerId/);
+  assert.match(app, /function clearComposerForSubmit\(form, composerId/);
+  assert.match(app, /function restoreComposerAfterFailedSubmit\(form, composerId/);
   assert.match(renderSource, /restorePendingComposerFocus\(\)/);
   assert.match(submitSource, /let focusComposerId = null/);
+  assert.match(submitSource, /const messageSnapshot = snapshotComposerState\(form, composerId, \{ includeTask: true \}\);[\s\S]*clearComposerForSubmit\(form, composerId, \{ clearTask: true \}\);[\s\S]*const result = await api/);
+  assert.match(submitSource, /const replySnapshot = snapshotComposerState\(form, composerId\);[\s\S]*clearComposerForSubmit\(form, composerId\);[\s\S]*await api/);
+  assert.match(submitSource, /`\/api\/messages\/\$\{threadMessageId\}\/replies`/);
+  assert.match(submitSource, /restoreComposerAfterFailedSubmit\(form, composerId, messageSnapshot, \{ restoreTask: true \}\)/);
+  assert.match(submitSource, /restoreComposerAfterFailedSubmit\(form, composerId, replySnapshot\)/);
   assert.match(submitSource, /focusComposerId = shouldOpenTaskThread && result\.message\?\.id \? composerIdFor\('thread', result\.message\.id\) : composerId/);
   assert.match(submitSource, /focusComposerId = composerId/);
   assert.match(submitSource, /if \(focusComposerId\) requestComposerFocus\(focusComposerId\)/);
@@ -488,6 +496,7 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.equal(app.includes('Save Profile'), false);
   assert.match(app, /let agentDetailTab = 'profile'/);
   assert.match(app, /function renderAgentProfileTab\(agent\)/);
+  assert.match(app, /\['skills', 'Skills'\]/);
   assert.match(app, /\['workspace', 'Workspace'\]/);
   assert.match(app, /data-action="set-agent-detail-tab" data-tab="\$\{id\}"/);
   assert.match(app, /renderAgentInlineField\(agent, 'name'/);
@@ -513,9 +522,50 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.match(app, /data-action="open-agent-restart"/);
   assert.match(app, /data-action="agent-stop-unavailable"/);
   assert.match(app, /function renderAgentRestartModal\(\)/);
+  assert.match(app, /function renderAgentSkillsTab\(agent\)/);
+  assert.match(app, /data-action="refresh-agent-skills"/);
+  assert.match(app, /Function Calls \/ Tools/);
+  assert.match(app, /renderAgentToolCapsules/);
   assert.match(styles, /\.agent-detail-tabs/);
+  assert.match(styles, /\.skill-row/);
+  assert.match(styles, /\.agent-tool-pill/);
   assert.match(styles, /\.agent-inline-edit/);
   assert.match(styles, /\.agent-restart-option/);
+});
+
+test('sidebar settings and skill panels support collapsible MagClaw UI sections', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /const SIDEBAR_SECTION_COLLAPSE_KEY = 'magclawSidebarSectionCollapse'/);
+  assert.match(app, /const SKILL_SECTION_COLLAPSE_KEY = 'magclawSkillSectionCollapse'/);
+  assert.match(app, /function renderRailSectionTitle\(section, label, count/);
+  assert.match(app, /data-action="toggle-sidebar-section"/);
+  assert.match(app, /data-action="toggle-agent-skill-section"/);
+  assert.match(app, /Agent-Isolated Skills/);
+  assert.match(app, /Global Codex Skills/);
+  assert.match(app, /Plugin Skills/);
+  assert.match(app, /function renderSettingsTabs\(\)/);
+  assert.match(app, /data-action="set-settings-tab"/);
+  assert.match(app, /Release Notes/);
+  assert.match(app, /hidden warmup turns/);
+  assert.match(styles, /\.rail-collapse-btn/);
+  assert.match(styles, /\.skill-collapse-btn/);
+  assert.match(styles, /\.settings-tabs/);
+  assert.match(styles, /\.settings-release/);
+  assert.match(styles, /\.release-note-row/);
+});
+
+test('left rail and active shell controls use the MagClaw pink accent', async () => {
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(styles, /--magclaw-rail:\s*var\(--accent\)/);
+  assert.match(styles, /--magclaw-rail-badge:\s*#FFE15A/);
+  assert.match(styles, /\.rail > \.slock-left-rail \{[\s\S]*?background:\s*var\(--magclaw-rail\)/);
+  assert.match(styles, /\.left-rail-avatar \{[\s\S]*?color:\s*var\(--magclaw-rail\)/);
+  assert.match(styles, /\.left-rail-btn em \{[\s\S]*?background:\s*var\(--magclaw-rail-badge\)[\s\S]*?color:\s*var\(--magclaw-rail-badge-text\)/);
+  assert.match(styles, /\.agent-detail-tabs button\.active \{[\s\S]*?background:\s*var\(--accent\)/);
+  assert.equal(/background:\s*var\(--slock-sun\)/.test(styles), false);
 });
 
 test('agent avatar uploads open a square crop modal and persist a cropped image', async () => {
@@ -574,7 +624,9 @@ test('Fan-out API config replaces the Brain Agent UI module', async () => {
   assert.match(app, /Base URL/);
   assert.match(app, /API Key/);
   assert.match(app, /apiKeyPreview/);
-  assert.match(app, /Enable LLM fan-out for ambiguous routing/);
+  assert.match(app, /Enable async LLM supplement for ambiguous routing/);
+  assert.match(app, /Force LLM Keywords/);
+  assert.match(app, /forceKeywords: data\?\.get\('forceKeywords'\)/);
   assert.match(submitSource, /form\.id === 'fanout-config-form'/);
   assert.match(submitSource, /\/api\/settings\/fanout/);
   assert.match(styles, /\.fanout-api-note/);
@@ -610,6 +662,26 @@ test('LLM fan-out decisions render one concise route toast only when LLM is used
   assert.match(styles, /\.fanout-toast-card/);
   assert.match(styles, /@keyframes fanoutToastIn/);
   assert.match(styles, /@keyframes fanoutToastOut/);
+});
+
+test('browser agent notifications can be enabled from a Slock-style prompt and settings card', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /const NOTIFICATION_PREF_KEY = 'magclawNotificationPrefs'/);
+  assert.match(app, /function renderNotificationPromptBanner\(\)/);
+  assert.match(app, /function renderNotificationConfigCard\(\)/);
+  assert.match(app, /Notification\.requestPermission\(\)/);
+  assert.match(app, /new Notification\(notificationTitle\(record, stateSnapshot\)/);
+  assert.match(app, /trackAgentNotifications\(nextState, \{ silent: !initialLoadComplete \|\| !appState \}\)/);
+  assert.match(app, /trackAgentNotifications\(nextState, \{ silent: !initialLoadComplete \}\)/);
+  assert.match(app, /data-action="enable-agent-notifications"/);
+  assert.match(app, /data-action="disable-agent-notifications"/);
+  assert.match(app, /data-action="dismiss-agent-notifications"/);
+  assert.match(app, /renderNotificationConfigCard\(\)/);
+  assert.match(styles, /\.notification-banner/);
+  assert.match(styles, /\.notification-config-card/);
+  assert.match(styles, /\.app-frame\.notification-banner-active/);
 });
 
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {

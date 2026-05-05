@@ -12,11 +12,13 @@ function makeResponse() {
 
 function routeDeps(overrides = {}) {
   const state = {
+    agents: [],
     tasks: [],
     messages: [{ id: 'msg_1', body: 'source', authorType: 'human', spaceType: 'channel', spaceId: 'chan_all' }],
   };
   const agent = { id: 'agt_one', name: 'Agent One' };
   const events = [];
+  const memoryWrites = [];
   return {
     addSystemEvent: (type, message, extra = {}) => events.push({ type, message, extra }),
     broadcastState: () => {},
@@ -31,7 +33,7 @@ function routeDeps(overrides = {}) {
       return { task, message };
     },
     displayActor: (id) => id,
-    findAgent: (agentId) => (agentId === agent.id ? agent : null),
+    findAgent: (agentId) => (agentId === agent.id ? agent : state.agents.find((item) => item.id === agentId) || null),
     findConversationRecord: (id) => state.messages.find((message) => message.id === id),
     findMessage: (id) => state.messages.find((message) => message.id === id),
     findTaskForAgentTool: () => ({ id: 'task_update', status: 'todo' }),
@@ -45,10 +47,12 @@ function routeDeps(overrides = {}) {
     persistState: async () => {},
     postAgentResponse: async () => ({ id: 'rep_1' }),
     readAgentHistory: () => ({ ok: true, target: '#all', messages: [] }),
+    readAgentMemoryFile: async () => ({ file: { path: 'MEMORY.md', content: '# Agent One\n' } }),
     readJson: async () => ({}),
     resolveConversationSpace: () => ({ spaceType: 'channel', spaceId: 'chan_all', label: 'channel:chan_all' }),
     resolveMessageTarget: () => ({ spaceType: 'channel', spaceId: 'chan_all', parentMessageId: null, label: 'channel:chan_all' }),
     searchAgentMessageHistory: () => ({ ok: true, results: [] }),
+    searchAgentMemory: async () => ({ ok: true, query: 'bug', results: [] }),
     sendError: (res, statusCode, message) => {
       res.statusCode = statusCode;
       res.error = message;
@@ -61,9 +65,11 @@ function routeDeps(overrides = {}) {
     updateTaskForAgent: (task, _agent, status) => {
       task.status = status;
     },
+    writeAgentMemoryUpdate: async (targetAgent, trigger, payload) => memoryWrites.push({ targetAgent, trigger, payload }),
     workItemTargetMatches: () => true,
     agent,
     events,
+    memoryWrites,
     state,
     ...overrides,
   };
@@ -129,4 +135,77 @@ test('agent tool task creation merges assignees and can claim created work', asy
   assert.equal(res.statusCode, 201);
   assert.deepEqual(res.data.tasks[0].task.assigneeIds, ['agt_two', 'agt_one']);
   assert.equal(res.data.tasks[0].task.claimedBy, 'agt_one');
+});
+
+test('agent tool memory endpoint records controlled memory writebacks', async () => {
+  const deps = routeDeps({
+    readJson: async () => ({
+      agentId: 'agt_one',
+      kind: 'communication_style',
+      summary: '学习马斯克 X 推文语气，按用户要求使用',
+      messageId: 'msg_1',
+    }),
+  });
+  const res = makeResponse();
+  const handled = await handleAgentToolApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/agent-tools/memory'),
+    deps,
+  );
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(deps.memoryWrites[0].trigger, 'agent_memory_tool');
+  assert.equal(deps.memoryWrites[0].payload.memory.kind, 'communication_style');
+  assert.equal(deps.memoryWrites[0].payload.message.id, 'msg_1');
+});
+
+test('agent tool memory search and read expose peer notes through controlled APIs', async () => {
+  const deps = routeDeps({
+    searchAgentMemory: async (query, options) => ({
+      ok: true,
+      query,
+      terms: ['bug', '修复'],
+      results: [{
+        agentId: 'agt_two',
+        agentName: 'Bug Fixer',
+        agentDescription: 'General helper',
+        path: 'notes/work-log.md',
+        line: 4,
+        score: 8,
+        matchedTerms: ['bug', '修复'],
+        preview: '- 修复登录 bug 并补测试',
+      }],
+      truncated: false,
+      options,
+    }),
+    readAgentMemoryFile: async (targetAgent, relPath) => ({
+      file: {
+        path: relPath,
+        content: '# Bug Fixer Work Log\n- 修复登录 bug 并补测试\n',
+      },
+    }),
+  });
+  deps.state.agents.push({ id: 'agt_two', name: 'Bug Fixer' });
+
+  const searchRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET' },
+    searchRes,
+    new URL('http://local/api/agent-tools/memory/search?agentId=agt_one&q=bug%20%E4%BF%AE%E5%A4%8D&limit=5'),
+    deps,
+  ), true);
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.results[0].agentId, 'agt_two');
+  assert.match(searchRes.data.text, /notes\/work-log\.md:4/);
+
+  const readRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET' },
+    readRes,
+    new URL('http://local/api/agent-tools/memory/read?agentId=agt_one&targetAgentId=agt_two&path=notes/work-log.md'),
+    deps,
+  ), true);
+  assert.equal(readRes.statusCode, 200);
+  assert.match(readRes.data.text, /修复登录 bug/);
 });

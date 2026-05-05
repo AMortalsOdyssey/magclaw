@@ -100,6 +100,38 @@ function getAgentRuntime(agent) {
   return 'codex'; // default
 }
 
+function tomlString(value) {
+  return JSON.stringify(String(value));
+}
+
+function tomlArray(values) {
+  return `[${values.map((value) => tomlString(value)).join(',')}]`;
+}
+
+function magclawMcpConfigArgs(agent) {
+  const bridgePath = path.join(ROOT, 'server', 'magclaw-mcp-server.js');
+  const baseUrl = `http://${HOST}:${PORT}`;
+  return [
+    '-c', 'wire_api="responses"',
+    '-c', `mcp_servers.magclaw.command=${tomlString(process.execPath)}`,
+    '-c', `mcp_servers.magclaw.args=${tomlArray([bridgePath, '--agent-id', agent.id, '--base-url', baseUrl])}`,
+    '-c', 'mcp_servers.magclaw.startup_timeout_sec=30',
+    '-c', 'mcp_servers.magclaw.tool_timeout_sec=120',
+    '-c', 'mcp_servers.magclaw.enabled=true',
+    '-c', 'mcp_servers.magclaw.required=true',
+  ];
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const CODEX_WARMUP_PROMPT = [
+  'Runtime warmup for MagClaw.',
+  'Reply with exactly: ready',
+  'Do not call tools, do not inspect files, and do not write memory.',
+].join('\n');
+
 function createAgentStandingPrompt(agent, spaceType, spaceId) {
   const channel = spaceType === 'channel' ? findChannel(spaceId) : null;
   const spaceName = spaceType === 'dm'
@@ -121,7 +153,10 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     'Context:',
     `- You are in: ${spaceName}`,
     `- Your workspace: ${agent.workspace || state.settings.defaultWorkspace || ROOT}`,
-    agentsInSpace.length ? `- Agents in this conversation: ${agentsInSpace.map((item) => item.id === agent.id ? `${item.name} (you)` : item.name).join(', ')}` : '',
+    agentsInSpace.length ? `- Agents in this conversation: ${agentsInSpace.map((item) => {
+      const label = item.id === agent.id ? `${item.name} (you)` : item.name;
+      return item.description ? `${label} - ${item.description}` : label;
+    }).join('; ')}` : '',
     humansInSpace.length ? `- Humans in this conversation: ${humansInSpace.map((item) => item.name).join(', ')}` : '',
     projectsInSpace.length ? `- Project folders in this conversation: ${projectsInSpace.map((item) => `${item.name}: ${item.path}`).join('; ')}` : '',
     '',
@@ -130,23 +165,26 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     '- In a channel, Magclaw may deliver the same open human message to every member agent, similar to a team chat. If the message is not directed at one specific agent and you have useful context, answer briefly from your role.',
     '- If the user names or @mentions another agent, respect that routing and avoid taking over unless you were also named or can add a small coordination note.',
     '- For ordinary chat or coordination, just answer in natural language. Do not run shell commands.',
-    '- Do not run Codex memory-writing, memory consolidation, or profile-update workflows inside MagClaw chat turns.',
+    '- Do not run Codex native memory-writing, memory consolidation, or profile-update workflows inside MagClaw chat turns; use MagClaw memory writeback instead.',
     '- For simple Q&A, greetings, role questions, one-off lookups, weather/forecast requests, or lightweight coordination, answer in the current thread and do not create a task.',
     '- For simple lookup/weather requests, use at most one or two authoritative lookups, then reply with a compact answer. Do not inspect local files or run project/memory workflows unless the user explicitly asks.',
     '- Each delivered message includes a bracket header such as `[target=#all:msg_xxx workItem=wi_xxx msg=msg_xxx task=task_xxx ...]`. Treat target and workItem as routing authority.',
     '- For multi-channel, multi-task, or thread/task work, reply with the controlled send_message API: POST /api/agent-tools/messages/send using the exact target and workItemId from the current header.',
     '- If you call send_message for a work item, Magclaw will not duplicate your final stdout for that same turn. If you do not call send_message, Magclaw will post your final stdout back to the source thread as a compatibility fallback.',
     '- Never guess a channel or thread target. Use the exact target from the header or read/search history first.',
-    '- If the current prompt includes Magclaw history tools, you may use them to read or search conversation history when the compact snapshot is insufficient.',
-    '- You may call the controlled Magclaw agent tool APIs when needed: GET /api/agent-tools/history, GET /api/agent-tools/search, POST /api/agent-tools/messages/send, POST /api/agent-tools/tasks, POST /api/agent-tools/tasks/claim, and POST /api/agent-tools/tasks/update.',
+    '- Prefer the native MagClaw MCP tools when they are available: send_message, read_history, search_messages, search_agent_memory, read_agent_memory, write_memory, list_tasks, create_tasks, claim_tasks, and update_task_status. Their runtime names may be prefixed by the Codex MCP bridge.',
+    '- If MCP tools are unavailable, you may call the controlled Magclaw agent tool APIs when needed: GET /api/agent-tools/history, GET /api/agent-tools/search, GET /api/agent-tools/memory/search, GET /api/agent-tools/memory/read, GET /api/agent-tools/tasks, POST /api/agent-tools/messages/send, POST /api/agent-tools/memory, POST /api/agent-tools/tasks, POST /api/agent-tools/tasks/claim, and POST /api/agent-tools/tasks/update.',
     `- Create a new task with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/tasks -H 'content-type: application/json' -d '{"agentId":"${agent.id}","channel":"${toolTarget}","claim":true,"tasks":[{"title":"Task title"}]}'`,
     `- Update a claimed task with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/tasks/update -H 'content-type: application/json' -d '{"agentId":"${agent.id}","taskId":"task_xxx","status":"in_review"}'`,
+    `- Record durable memory with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/memory -H 'content-type: application/json' -d '{"agentId":"${agent.id}","kind":"preference","summary":"Short durable fact"}'. Use kind=capability, communication_style, preference, or memory.`,
+    `- Search peer memory when name/role is not enough: curl -s "http://${HOST}:${PORT}/api/agent-tools/memory/search?agentId=${agent.id}&q=<query>&limit=10". Read a result with /api/agent-tools/memory/read?agentId=${agent.id}&targetAgentId=agt_xxx&path=notes/profile.md.`,
     '- Create or claim tasks only for durable work with progress/state: coding changes, debugging, deployment, docs/report deliverables, multi-step research, migrations, reviews, or when the user explicitly says task/as task/创建任务.',
     '- When a user asks for actionable durable work, claim the existing task if Magclaw already created one for you, then continue the work in the task thread.',
     '- Thread replies cannot become tasks directly. If new work emerges in a thread, create a new top-level task-message with sourceMessageId/sourceReplyId instead of claiming the reply.',
     '- If work already exists as a task, claim it instead of creating a duplicate.',
-    '- Maintain your own workspace memory by default: write high-value preferences, specialties, work logs, and durable handoff facts to MEMORY.md or notes/ during important task progress.',
-    '- After important task progress or completion, update your MEMORY.md with structured notes under Active Tasks, Channel Context, and Work Log. Keep it concise and progressively disclosed; put detail notes under notes/ when needed.',
+    '- Maintain your own MagClaw workspace memory during important task progress through the controlled memory API: keep MEMORY.md as a concise entrypoint, and put detailed dated notes in notes/.',
+    '- MEMORY.md should contain short skills, active context, and brief recent-work titles only. Do not turn it into a diary; use notes/work-log.md for task logs and decisions.',
+    '- If the user explicitly asks you to remember, record, learn a style, or update your specialty, acknowledge it normally. MagClaw also writes obvious explicit memory requests automatically, so do not claim that the filesystem is read-only.',
     '- Mention another participant with their visible name, for example @Alice. Do not expose internal ids like agt_xxx, hum_xxx, or raw <@...> tokens.',
     '- If a user references a local file or folder with @, treat the shown path as the original project file/folder, not as an uploaded attachment copy.',
     '- If asked to perform coding tasks, do them in your workspace and summarize the result.',
@@ -323,7 +361,7 @@ async function startCodexAgent(agent, proc, workspace) {
   proc.promptMessageCount = promptMessages.length;
   const turnPrompt = createAgentTurnPrompt(promptMessages, agent);
   const runtime = resolveCodexRuntime(agent, promptMessages);
-  const args = ['app-server', '--listen', 'stdio://'];
+  const args = ['app-server', ...magclawMcpConfigArgs(agent), '--listen', 'stdio://'];
   const codexHome = await prepareAgentCodexHome(agent);
 
   proc.requestId = 0;
@@ -358,6 +396,9 @@ async function startCodexAgent(agent, proc, workspace) {
       NO_COLOR: '1',
       ...(agent.envVars ? Object.fromEntries(agent.envVars.map(e => [e.key, e.value])) : {}),
       CODEX_HOME: codexHome,
+      MAGCLAW_AGENT_ID: agent.id,
+      MAGCLAW_AGENT_DATA_DIR: agentDataDir(agent),
+      MAGCLAW_SERVER_URL: `http://${HOST}:${PORT}`,
     },
   });
 
@@ -484,7 +525,7 @@ function sendCodexAppServerNotification(proc, method, params = {}) {
 
 async function triggerCodexStreamRetryFallback(agent, proc, workspace, retry) {
   if (!retry || retry.count < CODEX_STREAM_RETRY_LIMIT) return false;
-  if (proc.streamRetryFallbackStarted || proc.usedLegacyFallback || proc.stopRequested) return false;
+  if (proc.streamRetryFallbackStarted || proc.usedLegacyFallback || proc.stopRequested || proc.warmupActive) return false;
   proc.streamRetryFallbackStarted = true;
   if (proc.threadId && proc.activeTurnId) {
     sendCodexAppServerRequest(proc, 'turn/interrupt', {
@@ -498,11 +539,14 @@ async function triggerCodexStreamRetryFallback(agent, proc, workspace, retry) {
 }
 
 async function handleCodexThreadReady(agent, proc, threadId) {
+  const alreadyReady = proc.threadReady && proc.threadId === threadId;
   proc.threadId = threadId;
   proc.threadReady = true;
   agent.runtimeSessionId = threadId;
   await writeAgentSessionFile(agent).catch(() => {});
-  addSystemEvent('agent_session_ready', `${agent.name} Codex session ready`, { agentId: agent.id, sessionId: threadId });
+  if (!alreadyReady) {
+    addSystemEvent('agent_session_ready', `${agent.name} Codex session ready`, { agentId: agent.id, sessionId: threadId });
+  }
   if (proc.pendingInitialPrompt) {
     const prompt = proc.pendingInitialPrompt;
     const messages = proc.pendingInitialMessages || [];
@@ -512,10 +556,12 @@ async function handleCodexThreadReady(agent, proc, threadId) {
       proc.lastSourceMessage = messages[messages.length - 1] || proc.lastSourceMessage || null;
       markWorkItemsDelivered(messages, 'turn');
     }
-  } else {
+  } else if (proc.status !== 'running' && !proc.activeTurnId && !proc.activeTurnIds?.size && !proc.pendingTurnRequests?.size) {
     proc.status = 'idle';
     setAgentStatus(agent, 'idle', 'codex_process_ready');
-    addSystemEvent('agent_process_ready', `${agent.name} is ready and waiting for messages.`, { agentId: agent.id, sessionId: threadId });
+    if (!alreadyReady) {
+      addSystemEvent('agent_process_ready', `${agent.name} is ready and waiting for messages.`, { agentId: agent.id, sessionId: threadId });
+    }
   }
   await persistState();
   broadcastState();
@@ -568,12 +614,15 @@ function applyAgentProcessDeliveryScope(proc, spaceType, spaceId, parentMessageI
   proc.parentMessageId = parentMessageId || null;
 }
 
-function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages = [] } = {}) {
+function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages = [], runtimeOverride = null } = {}) {
   if (!proc.threadId) return false;
   const input = [{ type: 'text', text: prompt }];
-  const runtime = mode === 'steer' && proc.currentCodexRuntime
+  const runtime = runtimeOverride
+    ? { ...runtimeOverride }
+    : mode === 'steer' && proc.currentCodexRuntime
     ? proc.currentCodexRuntime
     : resolveCodexRuntime(agent, messages);
+  const isWarmup = mode === 'warmup';
   let requestId = null;
   if (mode === 'steer' && proc.activeTurnId) {
     requestId = sendCodexAppServerRequest(proc, 'turn/steer', {
@@ -602,18 +651,24 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
     workItemIds: normalizeIds(promptMessages.map((message) => message?.workItemId)),
     targetKeys,
     runtime,
+    warmup: isWarmup,
   });
   rememberActiveTurnTargets(proc, mode, targetKeys);
   proc.currentCodexRuntime = runtime;
   proc.status = 'running';
-  setAgentStatus(agent, mode === 'steer' ? 'working' : 'thinking', mode === 'steer' ? 'agent_steered' : 'agent_turn_started', {
+  if (isWarmup) proc.warmupActive = true;
+  setAgentStatus(agent, mode === 'steer' ? 'working' : 'thinking', isWarmup ? 'agent_warmup_started' : (mode === 'steer' ? 'agent_steered' : 'agent_turn_started'), {
     activeWorkItemIds: normalizeIds(promptMessages.map((message) => message?.workItemId)),
     runtimeModel: runtime.model,
     runtimeReasoningEffort: runtime.reasoningEffort,
     runtimeOverrideReason: runtime.overrideReason,
   });
-  agent.runtimeLastTurnAt = now();
-  addSystemEvent(mode === 'steer' ? 'agent_steered' : 'agent_turn_started', `${agent.name} ${mode === 'steer' ? 'received a steering message' : 'started a turn'}`, {
+  if (!isWarmup) {
+    agent.runtimeLastTurnAt = now();
+  } else {
+    agent.runtimeWarmRequestedAt = now();
+  }
+  addSystemEvent(isWarmup ? 'agent_warmup_started' : (mode === 'steer' ? 'agent_steered' : 'agent_turn_started'), `${agent.name} ${isWarmup ? 'started a hidden warmup turn' : (mode === 'steer' ? 'received a steering message' : 'started a turn')}`, {
     agentId: agent.id,
     sessionId: proc.threadId,
     model: runtime.model,
@@ -709,7 +764,23 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
   }
   const turnMeta = turnId ? proc.turnMeta?.get(turnId) : null;
   if (turnId) proc.turnMeta?.delete(turnId);
-  if (proc.responseBuffer.trim()) {
+  if (turnMeta?.warmup) {
+    const elapsedMs = proc.warmupStartedAt ? Date.now() - proc.warmupStartedAt : null;
+    proc.responseBuffer = '';
+    proc.warmupActive = false;
+    proc.warmupRequestedAt = null;
+    proc.warmupCompletedAt = now();
+    proc.warmupStartedAt = null;
+    agent.runtimeWarmAt = proc.warmupCompletedAt;
+    addSystemEvent('agent_warmup_completed', `${agent.name} hidden warmup completed`, {
+      agentId: agent.id,
+      sessionId: proc.threadId,
+      turnId,
+      elapsedMs,
+      model: turnMeta.runtime?.model || null,
+      reasoningEffort: turnMeta.runtime?.reasoningEffort || null,
+    });
+  } else if (proc.responseBuffer.trim()) {
     const responseText = proc.responseBuffer.trim();
     proc.responseBuffer = '';
     if (turnMeta && turnMetaAllWorkCancelled(turnMeta)) {
@@ -870,6 +941,7 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
   // Codex exec mode for agent conversation
   const args = [
     'exec',
+    ...magclawMcpConfigArgs(agent),
     '--json',
     '--skip-git-repo-check',
     '--sandbox', state.settings.sandbox || 'read-only',
@@ -911,6 +983,9 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
       ...process.env,
       ...(agent.envVars ? Object.fromEntries(agent.envVars.map(e => [e.key, e.value])) : {}),
       CODEX_HOME: codexHome,
+      MAGCLAW_AGENT_ID: agent.id,
+      MAGCLAW_AGENT_DATA_DIR: agentDataDir(agent),
+      MAGCLAW_SERVER_URL: `http://${HOST}:${PORT}`,
     },
   });
 
@@ -1378,8 +1453,124 @@ async function resetAgentWorkspaceFiles(agent) {
   await ensureAgentWorkspace(agent);
 }
 
+function codexProcessHasActiveTurn(proc) {
+  return Boolean(proc?.activeTurnId || proc?.activeTurnIds?.size || proc?.pendingTurnRequests?.size);
+}
+
+function timestampAtOrAfter(value, baseline) {
+  if (!value) return false;
+  if (!baseline) return true;
+  const valueTime = new Date(value).getTime();
+  const baselineTime = new Date(baseline).getTime();
+  return Number.isFinite(valueTime) && Number.isFinite(baselineTime) && valueTime >= baselineTime;
+}
+
+function codexProcessIsWarm(agent, proc) {
+  const startedAt = agent.runtimeLastStartedAt || proc?.startedAt || null;
+  return Boolean(
+    proc
+    && proc.threadReady
+    && !proc.child?.killed
+    && !proc.stopRequested
+    && (proc.warmupCompletedAt || timestampAtOrAfter(agent.runtimeWarmAt, startedAt) || timestampAtOrAfter(agent.runtimeLastTurnAt, startedAt))
+  );
+}
+
+async function runCodexWarmup(agent, proc) {
+  const stillCurrent = () => agentProcesses.get(agent.id) === proc && !proc.stopRequested && !proc.child?.killed;
+  const startedAt = Date.now();
+  const timeoutMs = Math.max(15_000, Number(process.env.MAGCLAW_AGENT_WARMUP_READY_TIMEOUT_MS || 180_000));
+  while (stillCurrent()) {
+    if (codexProcessIsWarm(agent, proc)) {
+      proc.warmupRequestedAt = null;
+      return true;
+    }
+    if (proc.threadReady && proc.status === 'idle' && !codexProcessHasActiveTurn(proc)) break;
+    if (Date.now() - startedAt > timeoutMs) {
+      proc.warmupRequestedAt = null;
+      addSystemEvent('agent_warmup_timeout', `${agent.name} warmup waited too long for an idle Codex session.`, {
+        agentId: agent.id,
+        sessionId: proc.threadId || null,
+        status: proc.status,
+      });
+      await persistState();
+      broadcastState();
+      return false;
+    }
+    await delay(250);
+  }
+  if (!stillCurrent()) return false;
+  const baseRuntime = resolveCodexRuntime(agent, []);
+  const runtime = {
+    ...baseRuntime,
+    reasoningEffort: 'low',
+    overrideReason: 'runtime_warmup',
+  };
+  proc.warmupStartedAt = Date.now();
+  const sent = startCodexAppServerTurn(agent, proc, CODEX_WARMUP_PROMPT, {
+    mode: 'warmup',
+    messages: [],
+    runtimeOverride: runtime,
+  });
+  if (!sent) {
+    proc.warmupRequestedAt = null;
+    proc.warmupStartedAt = null;
+    addSystemEvent('agent_warmup_failed', `${agent.name} warmup could not start.`, {
+      agentId: agent.id,
+      sessionId: proc.threadId || null,
+    });
+    await persistState();
+    broadcastState();
+    return false;
+  }
+  return true;
+}
+
+function scheduleCodexWarmup(agent, proc) {
+  if (getAgentRuntime(agent) !== 'codex') return false;
+  if (!proc || proc.stopRequested || proc.child?.killed) return false;
+  if (codexProcessIsWarm(agent, proc) || proc.warmupRequestedAt || proc.warmupActive) return false;
+  if (proc.inbox?.length || proc.pendingInitialPrompt || proc.pendingDeliveryMessages?.length || codexProcessHasActiveTurn(proc)) return false;
+  proc.warmupRequestedAt = now();
+  addSystemEvent('agent_warmup_requested', `${agent.name} Codex warmup requested`, {
+    agentId: agent.id,
+    sessionId: proc.threadId || null,
+  });
+  setTimeout(() => {
+    runCodexWarmup(agent, proc).catch((error) => {
+      proc.warmupRequestedAt = null;
+      proc.warmupStartedAt = null;
+      proc.warmupActive = false;
+      addSystemEvent('agent_warmup_failed', `${agent.name} warmup failed: ${error.message}`, { agentId: agent.id });
+      persistState().then(broadcastState).catch(() => {});
+    });
+  }, 0);
+  return true;
+}
+
 async function startAgentFromControl(agent) {
   return startAgentProcess(agent, 'channel', 'chan_all', []);
+}
+
+async function warmAgentFromControl(agent, { spaceType = 'channel', spaceId = 'chan_all' } = {}) {
+  const runtime = getAgentRuntime(agent);
+  let proc = agentProcesses.get(agent.id);
+  const normalizedSpaceType = spaceType === 'dm' ? 'dm' : 'channel';
+  const normalizedSpaceId = String(spaceId || (normalizedSpaceType === 'channel' ? 'chan_all' : '') || 'chan_all');
+  if (!proc || proc.child?.killed || proc.stopRequested) {
+    proc = await startAgentProcess(agent, normalizedSpaceType, normalizedSpaceId, []);
+  } else if (!codexProcessHasActiveTurn(proc)) {
+    applyAgentProcessDeliveryScope(proc, normalizedSpaceType, normalizedSpaceId, null);
+  }
+  const scheduled = runtime === 'codex' ? scheduleCodexWarmup(agent, proc) : false;
+  await persistState();
+  broadcastState();
+  return {
+    running: true,
+    warm: runtime === 'codex' ? codexProcessIsWarm(agent, proc) : true,
+    warming: Boolean(scheduled || proc?.warmupRequestedAt || proc?.warmupActive),
+    status: proc?.status || agent.status || 'idle',
+  };
 }
 
 async function restartAgentFromControl(agent, mode = 'restart') {
@@ -1633,6 +1824,7 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
     currentMessage: routedMessage,
     parentMessageId,
     workItem,
+    peerMemorySearch: options.peerMemorySearch || null,
     toolBaseUrl: `http://${HOST}:${PORT}`,
   });
   const deliveryMessage = {
@@ -1915,6 +2107,7 @@ function updateTaskForAgent(task, agent, nextStatus, options = {}) {
     resetAgentRuntimeSession,
     resetAgentWorkspaceFiles,
     startAgentFromControl,
+    warmAgentFromControl,
     restartAgentFromControl,
     agentAlreadyRoutedForSource,
     relayAgentMentions,

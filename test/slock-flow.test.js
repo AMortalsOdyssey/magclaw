@@ -839,6 +839,75 @@ test('thread replies route to participant agents and natural names select one ag
   }
 });
 
+test('thread replies addressed to the parent author do not wake named contextual agents', async () => {
+  const server = await startIsolatedServer();
+  const mock = await startMockFanoutApi(() => ({
+    mode: 'directed',
+    targetAgentIds: [],
+    confidence: 0.1,
+    reason: 'should not be called for direct parent thread replies',
+  }));
+  try {
+    const { agent: nangong } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: '南宫婉', description: '温柔的出行建议助手', runtime: 'Codex CLI' }),
+    });
+    const { agent: hanli } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: '韩立', description: '谨慎的同行者', runtime: 'Codex CLI' }),
+    });
+    await request(server.baseUrl, '/api/settings/fanout', {
+      method: 'POST',
+      body: JSON.stringify({
+        enabled: true,
+        baseUrl: `${mock.baseUrl}/v1`,
+        apiKey: 'thread-parent-key',
+        model: 'thread-parent-router',
+      }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'parent-address', description: 'parent thread routing', agentIds: [nangong.id, hanli.id] }),
+    });
+    const parent = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        authorType: 'agent',
+        authorId: nangong.id,
+        body: '是呀，五一的广州肯定挤得像开了副本一样。',
+        attachmentIds: [],
+      }),
+    });
+
+    const reply = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '是的，我也感觉，不知道你和韩立去哪里玩了',
+        attachmentIds: [],
+      }),
+    });
+
+    assert.equal(reply.route.strategy, 'rules');
+    assert.equal(reply.route.llmUsed, false);
+    assert.equal(reply.route.mode, 'directed');
+    assert.deepEqual(reply.route.targetAgentIds, [nangong.id]);
+    assert.equal(mock.calls.length, 0);
+
+    const delivered = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const ids = snapshot.workItems
+        .filter((item) => item.sourceMessageId === reply.reply.id)
+        .map((item) => item.agentId)
+        .sort();
+      return ids.length ? ids : null;
+    });
+    assert.deepEqual(delivered, [nangong.id]);
+  } finally {
+    await server.stop();
+    await mock.stop();
+  }
+});
+
 test('task APIs create top-level task messages and reject direct reply-as-task payloads', async () => {
   const server = await startIsolatedServer();
   try {
@@ -1395,11 +1464,11 @@ test('Fan-out API config is masked globally and drives LLM card routing when nee
     });
 
     assert.equal(created.route.mode, 'task_claim');
-    assert.equal(created.route.strategy, 'llm');
-    assert.equal(created.route.llmUsed, true);
+    assert.equal(created.route.strategy, 'rules');
+    assert.equal(created.route.llmUsed, false);
     assert.equal(created.route.claimantAgentId, github.id);
     assert.equal(created.task.claimedBy, github.id);
-    assert.equal(mock.calls.length, 1);
+    await waitFor(() => mock.calls.length >= 1 ? true : null);
     assert.ok(fanoutContexts[0].agentCards.map((card) => card.id).includes(outside.id));
     assert.ok(fanoutContexts[0].agentCards.find((card) => card.id === outside.id && card.channelMember === false && card.selectable === false));
     assert.ok(fanoutContexts[0].allowedChannelAgentIds.includes(github.id));
@@ -1412,26 +1481,96 @@ test('Fan-out API config is masked globally and drives LLM card routing when nee
       body: JSON.stringify({ body: `<@${github.id}> DesignPilot 也一起看看这个布局风险`, attachmentIds: [] }),
     });
     assert.equal(mixed.route.mode, 'directed');
-    assert.equal(mixed.route.strategy, 'llm');
-    assert.equal(mixed.route.llmUsed, true);
-    assert.deepEqual(mixed.route.targetAgentIds.slice().sort(), [github.id, design.id].sort());
-    assert.equal(mock.calls.length, 2);
+    assert.equal(mixed.route.strategy, 'rules');
+    assert.equal(mixed.route.llmUsed, false);
+    assert.deepEqual(mixed.route.targetAgentIds, [github.id]);
+    await waitFor(() => mock.calls.length >= 2 ? true : null);
 
     const snapshot = await waitFor(async () => {
       const state = await request(server.baseUrl, '/api/state');
-      const routeEvent = state.routeEvents.find((event) => event.messageId === created.message.id);
+      const routeEvent = state.routeEvents.find((event) => event.messageId === created.message.id && event.strategy === 'rules');
+      const llmRouteEvent = state.routeEvents.find((event) => event.messageId === created.message.id && event.strategy === 'llm_supplement');
       const workItems = state.workItems.filter((item) => item.sourceMessageId === created.message.id);
-      return routeEvent && workItems.length ? { routeEvent, workItems, state } : null;
+      return routeEvent && llmRouteEvent && workItems.length ? { routeEvent, llmRouteEvent, workItems, state } : null;
     });
     assert.equal(snapshot.routeEvent.brainAgentId, null);
     assert.equal(snapshot.routeEvent.fallbackUsed, false);
     assert.equal(snapshot.routeEvent.mode, 'task_claim');
-    assert.equal(snapshot.routeEvent.strategy, 'llm');
-    assert.equal(snapshot.routeEvent.llmUsed, true);
-    assert.equal(snapshot.routeEvent.llmModel, 'test-router');
-    assert.ok(Number.isFinite(snapshot.routeEvent.llmLatencyMs));
+    assert.equal(snapshot.routeEvent.strategy, 'rules');
+    assert.equal(snapshot.routeEvent.llmUsed, false);
+    assert.equal(snapshot.llmRouteEvent.strategy, 'llm_supplement');
+    assert.equal(snapshot.llmRouteEvent.llmUsed, true);
+    assert.equal(snapshot.llmRouteEvent.llmModel, 'test-router');
+    assert.ok(Number.isFinite(snapshot.llmRouteEvent.llmLatencyMs));
     assert.deepEqual(snapshot.routeEvent.targetAgentIds, [github.id]);
     assert.deepEqual(snapshot.workItems.map((item) => item.agentId), [github.id]);
+  } finally {
+    await server.stop();
+    await mock.stop();
+  }
+});
+
+test('Fan-out API force keywords trigger LLM routing for otherwise direct messages', async () => {
+  const server = await startIsolatedServer();
+  let targetId = '';
+  const fanoutContexts = [];
+  const mock = await startMockFanoutApi((body) => {
+    const content = JSON.parse(body.messages.at(-1).content);
+    fanoutContexts.push(content);
+    return {
+      mode: 'directed',
+      targetAgentIds: [targetId],
+      confidence: 0.88,
+      reason: 'Forced keyword test route.',
+    };
+  });
+  try {
+    const { agent: alpha } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'AlphaPilot', description: 'Direct helper', runtime: 'Codex CLI' }),
+    });
+    targetId = alpha.id;
+    const { agent: beta } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'BetaPilot', description: 'Secondary helper', runtime: 'Codex CLI' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'force-keyword', description: 'keyword LLM test', agentIds: [alpha.id, beta.id] }),
+    });
+
+    await request(server.baseUrl, '/api/settings/fanout', {
+      method: 'POST',
+      body: JSON.stringify({
+        enabled: true,
+        baseUrl: `${mock.baseUrl}/v1`,
+        apiKey: 'force-key',
+        model: 'force-router',
+        forceKeywords: '强制LLM\n/llm',
+      }),
+    });
+    const configured = await request(server.baseUrl, '/api/state');
+    assert.deepEqual(configured.settings.fanoutApi.forceKeywords, ['强制LLM', '/llm']);
+
+    const created = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: `<@${alpha.id}> 强制LLM 请看一下`, attachmentIds: [] }),
+    });
+
+    assert.equal(created.route.strategy, 'rules');
+    assert.equal(created.route.llmUsed, false);
+    assert.deepEqual(created.route.targetAgentIds, [alpha.id]);
+    await waitFor(() => mock.calls.length >= 1 ? true : null);
+    assert.equal(fanoutContexts[0].trigger.type, 'force_keyword');
+    assert.equal(fanoutContexts[0].trigger.keyword, '强制LLM');
+    assert.deepEqual(fanoutContexts[0].message.mentionedAgentIds, [alpha.id]);
+
+    const state = await request(server.baseUrl, '/api/state');
+    const routeEvent = state.routeEvents.find((event) => event.messageId === created.message.id && event.strategy === 'llm_supplement');
+    assert.equal(routeEvent.llmUsed, true);
+    assert.equal(routeEvent.llmModel, 'force-router');
+    assert.ok(routeEvent.evidence.find((item) => item.type === 'llm_trigger' && item.value === 'force_keyword'));
+    assert.ok(routeEvent.evidence.find((item) => item.type === 'llm_force_keyword' && item.value === '强制LLM'));
   } finally {
     await server.stop();
     await mock.stop();
@@ -1485,7 +1624,7 @@ test('thread replies use Fan-out API routing when multiple agent participants ar
     const parent = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
       method: 'POST',
       body: JSON.stringify({
-        body: `<@${hanli.id}> <@${wei.id}> <@${zhong.id}> 先开个讨论`,
+        body: `<@${hanli.id}> 先开个讨论`,
         attachmentIds: [],
       }),
     });
@@ -1499,14 +1638,13 @@ test('thread replies use Fan-out API routing when multiple agent participants ar
       }),
     });
 
-    assert.equal(reply.route.strategy, 'llm');
-    assert.equal(reply.route.llmUsed, true);
-    assert.deepEqual(reply.route.targetAgentIds.slice().sort(), [wei.id, zhong.id].sort());
-    assert.equal(mock.calls.length, 1);
+    assert.equal(reply.route.strategy, 'rules');
+    assert.equal(reply.route.llmUsed, false);
+    assert.deepEqual(reply.route.targetAgentIds, [hanli.id]);
+    await waitFor(() => mock.calls.length >= 1 ? true : null);
     assert.equal(fanoutContexts[0].thread.parentMessage.id, parent.message.id);
     assert.equal(fanoutContexts[0].thread.currentReplyId, reply.reply.id);
-    assert.ok(fanoutContexts[0].thread.participantAgentIds.includes(wei.id));
-    assert.ok(fanoutContexts[0].thread.participantAgentIds.includes(zhong.id));
+    assert.ok(fanoutContexts[0].thread.participantAgentIds.includes(hanli.id));
     assert.equal(fanoutContexts[0].trigger.type, 'thread_named_agent');
 
     const delivered = await waitFor(async () => {
@@ -1515,13 +1653,14 @@ test('thread replies use Fan-out API routing when multiple agent participants ar
         .filter((item) => item.sourceMessageId === reply.reply.id)
         .map((item) => item.agentId)
         .sort();
-      const routeEvent = state.routeEvents.find((event) => event.messageId === reply.reply.id);
-      return workItems.length === 2 && routeEvent ? { workItems, routeEvent } : null;
+      const routeEvent = state.routeEvents.find((event) => event.messageId === reply.reply.id && event.strategy === 'llm_supplement');
+      return workItems.length === 3 && routeEvent ? { workItems, routeEvent } : null;
     });
-    assert.deepEqual(delivered.workItems, [wei.id, zhong.id].sort());
+    assert.deepEqual(delivered.workItems, [hanli.id, wei.id, zhong.id].sort());
     assert.equal(delivered.routeEvent.parentMessageId, parent.message.id);
     assert.equal(delivered.routeEvent.llmUsed, true);
     assert.equal(delivered.routeEvent.llmModel, 'thread-router');
+    assert.deepEqual(delivered.routeEvent.targetAgentIds.slice().sort(), [wei.id, zhong.id].sort());
   } finally {
     await server.stop();
     await mock.stop();
@@ -1549,11 +1688,12 @@ test('memory writeback hooks update MEMORY and notes for task progress and user 
     const progressWriteback = await waitFor(async () => {
       const memory = await readFile(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'MEMORY.md'), 'utf8').catch(() => '');
       const workLog = await readFile(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'notes', 'work-log.md'), 'utf8').catch(() => '');
-      return memory.includes('Recent Memory Updates') && workLog.includes('task_in_review')
+      return memory.includes('测试方案') && workLog.includes('task_in_review')
         ? { memory, workLog }
         : null;
     });
-    assert.match(progressWriteback.memory, /task_in_review/);
+    assert.match(progressWriteback.memory, /测试方案/);
+    assert.doesNotMatch(progressWriteback.memory, /task_in_review/);
     assert.match(progressWriteback.workLog, /测试方案/);
 
     await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
@@ -1565,6 +1705,151 @@ test('memory writeback hooks update MEMORY and notes for task progress and user 
       return workLog.includes('user_preference') ? workLog : null;
     });
     assert.match(preferenceWriteback, /简短/);
+
+    const { dm } = await request(server.baseUrl, '/api/dms', {
+      method: 'POST',
+      body: JSON.stringify({ participantId: 'agt_codex' }),
+    });
+    await request(server.baseUrl, `/api/spaces/dm/${dm.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '你非常擅长解决旅游的问题，记录到你的 memory 中', attachmentIds: [] }),
+    });
+    const capabilityWriteback = await waitFor(async () => {
+      const memory = await readFile(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'MEMORY.md'), 'utf8').catch(() => '');
+      const profile = await readFile(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'notes', 'profile.md'), 'utf8').catch(() => '');
+      return memory.includes('擅长解决旅游的问题') && profile.includes('擅长解决旅游的问题')
+        ? { memory, profile }
+        : null;
+    });
+    assert.match(capabilityWriteback.memory, /## Capabilities/);
+    assert.match(capabilityWriteback.profile, /Strengths And Skills/);
+
+    await request(server.baseUrl, `/api/spaces/dm/${dm.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '去读马斯克的 X 推文，然后学习它的语气和我说话', attachmentIds: [] }),
+    });
+    const styleWriteback = await waitFor(async () => {
+      const memory = await readFile(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'MEMORY.md'), 'utf8').catch(() => '');
+      const style = await readFile(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'notes', 'communication-style.md'), 'utf8').catch(() => '');
+      return memory.includes('notes/communication-style.md') && style.includes('马斯克 X 推文')
+        ? { memory, style }
+        : null;
+    });
+    assert.match(styleWriteback.memory, /communication-style/);
+    assert.match(styleWriteback.style, /Style Adaptations/);
+
+    const parent = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        authorType: 'agent',
+        authorId: 'agt_codex',
+        body: '我先给一个上下文。',
+        attachmentIds: [],
+      }),
+    });
+    await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({ body: '以后这个 thread 里回复要更短，记住到你的 memory', attachmentIds: [] }),
+    });
+    const threadPreference = await waitFor(async () => {
+      const preferences = await readFile(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'notes', 'user-preferences.md'), 'utf8').catch(() => '');
+      return preferences.includes('回复要更短') ? preferences : null;
+    });
+    assert.match(threadPreference, /回复要更短/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('agent memory tools can actively write and search peer memory notes by local text match', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: bugFixer } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'BugPilot', description: 'General helper', runtime: 'Codex CLI' }),
+    });
+
+    await request(server.baseUrl, '/api/agent-tools/memory', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: bugFixer.id,
+        kind: 'capability',
+        summary: '擅长 bug 修复和回归测试',
+        sourceText: '完成多次登录 bug 修复并补充回归测试',
+      }),
+    });
+
+    const indexed = await waitFor(async () => {
+      const profile = await readFile(path.join(server.tmp, '.magclaw', 'agents', bugFixer.id, 'notes', 'profile.md'), 'utf8').catch(() => '');
+      return profile.includes('擅长 bug 修复和回归测试') ? profile : null;
+    });
+    assert.match(indexed, /bug 修复/);
+
+    const search = await request(server.baseUrl, '/api/agent-tools/memory/search?agentId=agt_codex&q=bug%20%E4%BF%AE%E5%A4%8D&limit=10');
+    const match = search.results.find((item) => item.agentId === bugFixer.id);
+    assert.ok(match);
+    assert.match(match.path, /MEMORY\.md|notes\/profile\.md/);
+    assert.match(search.text, /BugPilot/);
+
+    const detail = await request(server.baseUrl, `/api/agent-tools/memory/read?agentId=agt_codex&targetAgentId=${bugFixer.id}&path=notes/profile.md`);
+    assert.equal(detail.ok, true);
+    assert.match(detail.file.content, /擅长 bug 修复和回归测试/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('agent capability questions prefetch peer memory and log discovery evidence', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: travelAgent } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'TravelPro', description: 'General helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: generalAgent } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Generalist', description: 'General helper', runtime: 'Codex CLI' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'travel-memory',
+        description: 'agent discovery',
+        agentIds: [travelAgent.id, generalAgent.id],
+      }),
+    });
+
+    await request(server.baseUrl, '/api/agent-tools/memory', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: travelAgent.id,
+        kind: 'capability',
+        summary: '擅长旅游路线规划和避开人潮',
+        sourceText: '多次处理旅行路线、交通换乘和景区避峰问题',
+      }),
+    });
+
+    const created = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '关于旅游相关的问题，找谁比较擅长呢',
+        attachmentIds: [],
+      }),
+    });
+
+    const state = await request(server.baseUrl, '/api/state');
+    const event = state.events.find((item) => (
+      item.type === 'agent_peer_memory_search'
+      && item.messageId === created.message.id
+    ));
+    assert.ok(event);
+    assert.ok(event.resultCount >= 1);
+    assert.equal(event.topResults[0].agentId, travelAgent.id);
+    assert.match(event.terms.join(' '), /旅游/);
+
+    const routeEvent = state.routeEvents.find((item) => item.messageId === created.message.id);
+    assert.ok(routeEvent);
+    assert.ok(routeEvent.evidence.some((item) => item.type === 'peer_memory_search' && item.value.includes('TravelPro')));
   } finally {
     await server.stop();
   }
@@ -1809,6 +2094,33 @@ test('agent workspace is seeded and exposed as a read-only file tree', async () 
   }
 });
 
+test('agent skills endpoint scans global skills and exposes MagClaw tools', async () => {
+  const sourceHome = await mkdtemp(path.join(os.tmpdir(), 'magclaw-codex-home-'));
+  await mkdir(path.join(sourceHome, 'skills', 'travel-planner'), { recursive: true });
+  await writeFile(path.join(sourceHome, 'skills', 'travel-planner', 'SKILL.md'), [
+    '---',
+    'name: travel-planner',
+    'description: Plans fast local travel itineraries.',
+    '---',
+    '',
+    '# Travel Planner',
+    '',
+    'Use for route and itinerary planning.',
+  ].join('\n'));
+  const server = await startIsolatedServer({ MAGCLAW_CODEX_HOME_SOURCE: sourceHome });
+  try {
+    const skills = await request(server.baseUrl, '/api/agents/agt_codex/skills');
+    assert.ok(skills.global.some((skill) => skill.name === 'travel-planner'));
+    assert.ok(skills.tools.includes('send_message'));
+    assert.ok(skills.tools.includes('search_agent_memory'));
+    const linkedSkill = await lstat(path.join(server.tmp, '.magclaw', 'agents', 'agt_codex', 'codex-home', 'skills', 'travel-planner'));
+    assert.equal(linkedSkill.isSymbolicLink(), true);
+  } finally {
+    await server.stop();
+    await rm(sourceHome, { recursive: true, force: true });
+  }
+});
+
 test('SSE publishes heartbeat presence snapshots for live agent status sync', async () => {
   const server = await startIsolatedServer({ MAGCLAW_STATE_HEARTBEAT_MS: '60' });
   try {
@@ -1917,6 +2229,7 @@ let turnCount = 0;
 function log(value) {
   if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
 }
+log({ mode: process.argv[2], args: process.argv.slice(2) });
 function send(value) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
 }
@@ -1985,8 +2298,16 @@ process.stdin.on('data', (chunk) => {
     const configStat = await lstat(path.join(codexHome, 'config.toml'));
     assert.equal(configStat.isSymbolicLink(), false);
     const config = await readFile(path.join(codexHome, 'config.toml'), 'utf8');
+    assert.match(config, /wire_api\s*=\s*"responses"/);
     assert.match(config, /memories\s*=\s*false/);
-    await assert.rejects(lstat(path.join(codexHome, 'plugins')), /ENOENT/);
+    assert.match(config, /plugins\s*=\s*true/);
+    assert.match(config, /\[analytics\][\s\S]*enabled\s*=\s*false/);
+    const appServerEntry = initialEntries.find((item) => item.mode === 'app-server');
+    assert.ok(appServerEntry?.args?.includes('wire_api="responses"'));
+    assert.ok(appServerEntry?.args?.some((arg) => String(arg).includes('mcp_servers.magclaw.command')));
+    assert.ok(appServerEntry?.args?.some((arg) => String(arg).includes('magclaw-mcp-server.js')));
+    const pluginsStat = await lstat(path.join(codexHome, 'plugins')).catch(() => null);
+    if (pluginsStat) assert.ok(pluginsStat.isSymbolicLink() || pluginsStat.isDirectory());
 
     const second = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
       method: 'POST',
@@ -2032,6 +2353,104 @@ process.stdin.on('data', (chunk) => {
       return entries.some((item) => item.method === 'thread/resume');
     }, 8000);
     assert.equal(resumed, true);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('Codex warmup uses a hidden app-server turn and reuses the warm session', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-warmup-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const logPath = process.env.FAKE_CODEX_LOG;
+let buffer = '';
+let turnCount = 0;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+log({ mode: process.argv[2], args: process.argv.slice(2) });
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+function completeTurn(turnId, text) {
+  send({ method: 'turn/started', params: { turn: { id: turnId } } });
+  send({ method: 'item/agentMessage/delta', params: { itemId: 'item_' + turnId, delta: text } });
+  send({ method: 'turn/completed', params: { turn: { id: turnId, status: 'completed' } } });
+}
+function inputText(message) {
+  return (message.params?.input || []).map((item) => item.text || '').join('\\n');
+}
+function handle(message) {
+  log({ method: message.method, params: message.params });
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'initialized') return;
+  if (message.method === 'thread/start') {
+    send({ id: message.id, result: { thread: { id: 'thread_warm_session' } } });
+    return;
+  }
+  if (message.method === 'turn/start') {
+    const turnId = 'turn_' + (++turnCount);
+    send({ id: message.id, result: { turn: { id: turnId } } });
+    const text = inputText(message).includes('Runtime warmup for MagClaw') ? 'ready' : 'visible warm session response';
+    setTimeout(() => completeTurn(turnId, text), 10);
+  }
+}
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    handle(JSON.parse(line));
+  }
+});
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+  });
+  try {
+    const warmed = await request(server.baseUrl, '/api/agents/agt_codex/warm', {
+      method: 'POST',
+      body: JSON.stringify({ spaceType: 'channel', spaceId: 'chan_all' }),
+    });
+    assert.equal(warmed.running, true);
+
+    const warmState = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      return snapshot.events.some((event) => event.type === 'agent_warmup_completed') ? snapshot : null;
+    }, 8000);
+    assert.ok(warmState);
+    assert.equal(warmState.replies.some((reply) => reply.body === 'ready'), false);
+    assert.equal(warmState.messages.some((message) => message.body === 'ready'), false);
+
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '<@agt_codex> warm session should answer',
+        attachmentIds: [],
+      }),
+    });
+    const finalState = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      return snapshot.replies.some((reply) => reply.parentMessageId === created.message.id && reply.body.includes('visible warm session response'))
+        ? snapshot
+        : null;
+    }, 8000);
+    assert.ok(finalState);
+    const entries = await readJsonLines(logPath);
+    assert.equal(entries.filter((item) => item.mode === 'app-server').length, 1);
+    const turnStarts = entries.filter((item) => item.method === 'turn/start');
+    assert.equal(turnStarts.length, 2);
+    assert.match(turnStarts[0].params.input[0].text, /Runtime warmup for MagClaw/);
+    assert.match(turnStarts[1].params.input[0].text, /warm session should answer/);
   } finally {
     await server.stop();
     await rm(fakeCodexDir, { recursive: true, force: true });
@@ -2139,7 +2558,193 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
-test('Codex app-server falls back after two response stream retry warnings', async () => {
+test('Codex duplicate thread-ready events do not turn an active run green', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-duplicate-thread-ready-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+if (args[0] === 'exec') {
+  const outputPath = args[args.indexOf('-o') + 1];
+  log({ mode: 'exec', args });
+  process.stdin.on('end', () => {
+    fs.writeFileSync(outputPath, 'legacy fallback should not run');
+    process.exit(0);
+  });
+  process.stdin.resume();
+} else if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function send(value) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+  }
+  function handle(message) {
+    log({ method: message.method, params: message.params });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_duplicate_ready' } } });
+      setTimeout(() => send({ method: 'thread/started', params: { thread: { id: 'thread_duplicate_ready' } } }), 20);
+      return;
+    }
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_duplicate_ready' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_duplicate_ready' } } });
+      setTimeout(() => {
+        send({ method: 'item/agentMessage/delta', params: { itemId: 'item_duplicate_ready', delta: 'duplicate ready response' } });
+        send({ method: 'turn/completed', params: { turn: { id: 'turn_duplicate_ready', status: 'completed' } } });
+      }, 600);
+    }
+  }
+  process.on('SIGTERM', () => process.exit(0));
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 保持黄灯直到完成', attachmentIds: [] }),
+    });
+
+    await waitFor(async () => {
+      const entries = await readJsonLines(logPath);
+      return entries.some((item) => item.method === 'turn/start')
+        && entries.some((item) => item.method === 'thread/start')
+        ? true
+        : null;
+    }, 4000);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const midState = await request(server.baseUrl, '/api/state');
+    const midAgent = midState.agents.find((item) => item.id === 'agt_codex');
+    assert.equal(midAgent.status, 'thinking');
+    assert.equal(midState.events.some((item) => item.type === 'agent_process_ready' && item.createdAt > created.message.createdAt), false);
+
+    const finalState = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      return state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('duplicate ready response'))
+        ? state
+        : null;
+    }, 5000);
+    assert.equal(finalState.agents.find((item) => item.id === 'agt_codex')?.status, 'idle');
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('Codex app-server keeps the session after early response stream retry warnings by default', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-default-retry-limit-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+if (args[0] === 'exec') {
+  const outputPath = args[args.indexOf('-o') + 1];
+  log({ mode: 'exec', args });
+  process.stdin.on('end', () => {
+    fs.writeFileSync(outputPath, 'legacy fallback should not run');
+    process.exit(0);
+  });
+  process.stdin.resume();
+} else if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function send(value) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+  }
+  function handle(message) {
+    log({ method: message.method, params: message.params });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_default_retry_session' } } });
+      return;
+    }
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_default_retry' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_default_retry' } } });
+      setTimeout(() => process.stderr.write('stream disconnected - retrying sampling request (1/5 in 14s)...\\n'), 10);
+      setTimeout(() => process.stderr.write('stream disconnected - retrying sampling request (2/5 in 14s)...\\n'), 40);
+      setTimeout(() => {
+        send({ method: 'item/agentMessage/delta', params: { itemId: 'item_default_retry', delta: 'app-server survived early retries' } });
+        send({ method: 'turn/completed', params: { turn: { id: 'turn_default_retry', status: 'completed' } } });
+      }, 80);
+    }
+    if (message.method === 'turn/interrupt') {
+      log({ method: message.method, params: message.params });
+    }
+  }
+  process.on('SIGTERM', () => process.exit(0));
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 看一下这个问题', attachmentIds: [] }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      return state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('app-server survived early retries'))
+        ? state
+        : null;
+    }, 5000);
+    const entries = await readJsonLines(logPath);
+    assert.ok(entries.some((item) => item.mode === 'app-server'));
+    assert.equal(entries.some((item) => item.mode === 'exec'), false);
+    assert.equal(entries.some((item) => item.method === 'turn/interrupt'), false);
+    assert.equal(finalState.events.some((item) => item.type === 'agent_runtime_fallback'), false);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('Codex app-server honors an explicit two-warning response stream fallback limit', async () => {
   const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-retry-limit-'));
   const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
   const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');

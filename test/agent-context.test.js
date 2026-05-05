@@ -121,7 +121,7 @@ test('agent context pack includes recent channel messages, current message, task
 
   const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_333' });
   assert.match(rendered, /Context snapshot for #all/);
-  assert.match(rendered, /Participants: @You, @333 \(you\), @CCC/);
+  assert.match(rendered, /Participants: @You - owner, @333 \(you\) - solver, @CCC - reviewer/);
   assert.match(rendered, /\[msg=msg_1 .* @You: @CCC 你叫什么/);
   assert.match(rendered, /\[msg=msg_2 .* @CCC: 我叫 CCC。/);
   assert.match(rendered, /Current message/);
@@ -130,4 +130,63 @@ test('agent context pack includes recent channel messages, current message, task
   assert.match(rendered, /task #7 \[in_progress\] 做一下任务/);
   assert.match(rendered, /note\.png image\/png 1234 bytes/);
   assert.doesNotMatch(rendered, /agt_333|agt_ccc|hum_local/);
+});
+
+test('agent context pack renders required peer memory search grounding', () => {
+  const state = {
+    humans: [{ id: 'hum_local', name: 'You', role: 'owner' }],
+    agents: [
+      { id: 'agt_han', name: '韩立', description: 'protector', status: 'idle' },
+      { id: 'agt_wan', name: '南宫婉', description: 'planner', status: 'idle' },
+    ],
+    channels: [{
+      id: 'chan_trip',
+      name: 'trip',
+      humanIds: ['hum_local'],
+      agentIds: ['agt_han', 'agt_wan'],
+      memberIds: ['hum_local', 'agt_han', 'agt_wan'],
+    }],
+    dms: [],
+    messages: [{
+      id: 'msg_current',
+      spaceType: 'channel',
+      spaceId: 'chan_trip',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: '旅游相关的问题找谁比较擅长？',
+      attachmentIds: [],
+      createdAt: '2026-05-03T12:48:00.000Z',
+    }],
+    replies: [],
+    tasks: [],
+    attachments: [],
+  };
+
+  const pack = buildAgentContextPack({
+    state,
+    agentId: 'agt_wan',
+    spaceType: 'channel',
+    spaceId: 'chan_trip',
+    currentMessage: state.messages[0],
+    toolBaseUrl: 'http://127.0.0.1:6543',
+    peerMemorySearch: {
+      required: true,
+      query: '旅游相关的问题找谁比较擅长？',
+      reason: 'agent discovery',
+      results: [{
+        agentId: 'agt_han',
+        agentName: '韩立',
+        path: 'MEMORY.md',
+        line: 14,
+        matchedTerms: ['旅游'],
+        preview: '解决旅游、出行路线和避开人潮的问题。',
+      }],
+    },
+  });
+
+  const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_wan' });
+  assert.match(rendered, /Peer memory search:/);
+  assert.match(rendered, /Required for this turn: yes/);
+  assert.match(rendered, /@韩立 \(agt_han\) MEMORY\.md:14; matched=旅游: 解决旅游/);
+  assert.match(rendered, /For agent capability or suitability questions, use the peer memory search results above first/);
 });

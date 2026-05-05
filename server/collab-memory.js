@@ -71,6 +71,13 @@ export function createCollabMemoryManager(deps) {
       .trim()
       .slice(0, 260);
   }
+
+  function memoryKindLabel(kind) {
+    if (kind === 'capability') return 'capability';
+    if (kind === 'communication_style') return 'communication_style';
+    if (kind === 'preference') return 'preference';
+    return 'memory';
+  }
   
   function upsertMarkdownBullet(content, heading, bullet, maxItems = 10) {
     const lines = String(content || '').split(/\r?\n/);
@@ -109,11 +116,52 @@ export function createCollabMemoryManager(deps) {
     const memoryPath = safePathWithin(root, 'MEMORY.md');
     if (!memoryPath) return;
     const existing = await readFile(memoryPath, 'utf8').catch(() => defaultAgentMemory(agent));
-    await writeFile(memoryPath, upsertMarkdownBullet(existing, 'Recent Memory Updates', bullet, 8));
+    await writeFile(memoryPath, upsertMarkdownBullet(existing, 'Recent Work', bullet, 8));
+  }
+
+  async function updateAgentMemorySection(agent, heading, bullet, maxItems = 10) {
+    const root = await ensureAgentWorkspace(agent);
+    const memoryPath = safePathWithin(root, 'MEMORY.md');
+    if (!memoryPath) return;
+    const existing = await readFile(memoryPath, 'utf8').catch(() => defaultAgentMemory(agent));
+    await writeFile(memoryPath, upsertMarkdownBullet(existing, heading, bullet, maxItems));
+  }
+
+  async function writeExplicitAgentMemory(agent, memory) {
+    const kind = memoryKindLabel(memory?.kind);
+    const summary = markdownBulletText(memory?.summary || memory?.sourceText);
+    if (!summary) return;
+    const stamp = now();
+    const source = markdownBulletText(memory?.sourceText);
+    const detail = source && source !== summary
+      ? `- ${stamp} [${kind}] ${summary} source="${source}"`
+      : `- ${stamp} [${kind}] ${summary}`;
+
+    if (kind === 'capability') {
+      const capability = summary.startsWith('擅长') || summary.startsWith('专长')
+        ? summary
+        : summary.replace(/^(你|you)\s*/i, '').trim();
+      await updateAgentMemorySection(agent, 'Capabilities', `- ${capability}`, 12);
+      await appendAgentMemoryNote(agent, 'notes/profile.md', 'Strengths And Skills', `- ${capability}`);
+      return;
+    }
+
+    if (kind === 'communication_style') {
+      await updateAgentMemorySection(agent, 'Key Knowledge', '- `notes/communication-style.md` - user-requested speaking styles and tone adaptations.', 12);
+      await appendAgentMemoryNote(agent, 'notes/communication-style.md', 'Style Adaptations', detail);
+      return;
+    }
+
+    await updateAgentMemorySection(agent, 'Key Knowledge', '- `notes/user-preferences.md` - durable user preferences and requested defaults.', 12);
+    await appendAgentMemoryNote(agent, 'notes/user-preferences.md', 'User Preferences', detail);
   }
   
   function memoryWritebackBullet(trigger, payload = {}) {
     const stamp = now();
+    if (payload.memory) {
+      const kind = memoryKindLabel(payload.memory.kind);
+      return `- ${stamp} [${trigger}] kind=${kind} ${markdownBulletText(payload.memory.summary || payload.memory.sourceText)}`;
+    }
     if (payload.task) {
       const task = payload.task;
       return `- ${stamp} [${trigger}] ${taskLabel(task)} ${markdownBulletText(task.title)} status=${task.status || 'todo'} channel=${spaceDisplayName(task.spaceType, task.spaceId)}`;
@@ -131,12 +179,37 @@ export function createCollabMemoryManager(deps) {
     }
     return `- ${stamp} [${trigger}] ${markdownBulletText(memoryEventTitle(trigger, payload))}`;
   }
+
+  function memoryEntrypointBullet(trigger, payload = {}) {
+    if (payload.memory) {
+      return `- ${memoryKindLabel(payload.memory.kind)}: ${markdownBulletText(payload.memory.summary || payload.memory.sourceText).slice(0, 60)}`;
+    }
+    if (payload.task) {
+      const task = payload.task;
+      return `- ${taskLabel(task)} ${markdownBulletText(task.title).slice(0, 40)}`;
+    }
+    if (payload.channel) {
+      return `- #${payload.channel.name} channel context`;
+    }
+    if (payload.routeEvent) {
+      const targets = payload.routeEvent.targetAgentIds?.map(displayActor).join(', ') || 'none';
+      return `- ${payload.routeEvent.mode} route: ${markdownBulletText(targets).slice(0, 40)}`;
+    }
+    if (payload.message) {
+      return `- ${markdownBulletText(payload.message.body).slice(0, 40)}`;
+    }
+    return `- ${markdownBulletText(memoryEventTitle(trigger, payload)).slice(0, 40)}`;
+  }
   
   async function writeAgentMemoryUpdate(agent, trigger, payload = {}) {
     if (!agent || isBrainAgent(agent)) return false;
     const bullet = memoryWritebackBullet(trigger, payload);
     await appendAgentMemoryNote(agent, 'notes/work-log.md', 'Memory Writebacks', bullet);
-    await updateAgentMemoryEntrypoint(agent, bullet);
+    if (payload.memory) {
+      await writeExplicitAgentMemory(agent, payload.memory);
+    } else {
+      await updateAgentMemoryEntrypoint(agent, memoryEntrypointBullet(trigger, payload));
+    }
     if (payload.channel) {
       await appendAgentMemoryNote(agent, 'notes/channels.md', 'Channel Memory', bullet);
     }
