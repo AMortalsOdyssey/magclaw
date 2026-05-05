@@ -35,6 +35,7 @@ export function createAgentRuntimeManager(deps) {
     extractMentions,
     findAgent,
     findChannel,
+    findConversationRecord,
     findHuman,
     findMessage,
     findMission,
@@ -57,6 +58,7 @@ export function createAgentRuntimeManager(deps) {
     renderMentionsForAgent,
     resolveCodexRuntime,
     resolveConversationSpace,
+    resolveMessageTarget,
     runMatchesTask,
     ROOT,
     runningProcesses,
@@ -78,6 +80,10 @@ export function createAgentRuntimeManager(deps) {
     workItemMatchesScope,
     workItemMatchesTask,
     AGENT_BUSY_DELIVERY_DELAY_MS,
+    AGENT_RUN_STALL_LOG_MS,
+    AGENT_STUCK_SEND_MESSAGE_MS,
+    AGENT_ACTIVITY_HEARTBEAT_MS,
+    AGENT_RUNTIME_PROGRESS_STALE_MS,
     PORT,
     normalizeConversationRecord,
     nextTaskNumber,
@@ -124,6 +130,177 @@ function magclawMcpConfigArgs(agent) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function summarizeCodexEvent(event) {
+  if (!event || typeof event !== 'object') return String(event || '');
+  const candidates = [
+    event.message,
+    event.text,
+    event.output,
+    event.delta,
+    event.type,
+    event.msg?.message,
+    event.msg?.text,
+    event.item?.text,
+    event.item?.message,
+  ].filter(Boolean);
+  if (candidates.length) return String(candidates[0]);
+  return JSON.stringify(event).slice(0, 600);
+}
+
+function summarizeCodexRequest(method, params = {}) {
+  const input = Array.isArray(params.input) ? params.input : [];
+  const inputChars = input.reduce((sum, item) => sum + String(item?.text || '').length, 0);
+  return {
+    method,
+    threadId: params.threadId || params.thread?.id || null,
+    turnId: params.turnId || null,
+    expectedTurnId: params.expectedTurnId || null,
+    model: params.model || null,
+    effort: params.effort || null,
+    cwd: params.cwd || null,
+    inputChars,
+  };
+}
+
+function activeTurnIdList(proc) {
+  return proc?.activeTurnIds instanceof Set
+    ? [...proc.activeTurnIds]
+    : (proc?.activeTurnId ? [proc.activeTurnId] : []);
+}
+
+function parseToolArguments(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function codexToolCallId(item) {
+  return String(item?.id || item?.callId || item?.call_id || item?.itemId || item?.item_id || '');
+}
+
+function codexToolName(item) {
+  const tool = item?.tool;
+  return String(
+    item?.name
+    || item?.toolName
+    || item?.tool_name
+    || (typeof tool === 'string' ? tool : tool?.name)
+    || item?.function?.name
+    || item?.call?.name
+    || ''
+  );
+}
+
+function codexToolNameMatches(name, expected) {
+  const value = String(name || '').trim();
+  if (!value || !expected) return false;
+  return value === expected
+    || value.endsWith(`.${expected}`)
+    || value.endsWith(`/${expected}`)
+    || value.endsWith(`:${expected}`)
+    || value.endsWith(`__${expected}`);
+}
+
+function codexToolArguments(item) {
+  const candidates = [
+    item?.arguments,
+    item?.args,
+    item?.input,
+    item?.params?.arguments,
+    item?.params?.input,
+    item?.toolInput,
+    item?.tool_input,
+    item?.function?.arguments,
+    item?.call?.arguments,
+  ];
+  for (const candidate of candidates) {
+    const parsed = parseToolArguments(candidate);
+    if (Object.keys(parsed).length) return parsed;
+  }
+  return {};
+}
+
+function canonicalMagClawToolName(name) {
+  const tools = [
+    'send_message',
+    'read_history',
+    'search_messages',
+    'search_agent_memory',
+    'read_agent_memory',
+    'write_memory',
+    'list_tasks',
+    'create_tasks',
+    'claim_tasks',
+    'update_task_status',
+  ];
+  return tools.find((tool) => codexToolNameMatches(name, tool)) || '';
+}
+
+function summarizeToolArguments(name, args = {}) {
+  return {
+    workItemId: args.workItemId || args.work_item_id || null,
+    target: args.target || args.channel || null,
+    contentLength: args.content ? String(args.content).trim().length : 0,
+    queryLength: args.query || args.q ? String(args.query || args.q).length : 0,
+    taskId: args.taskId || null,
+    taskNumber: args.taskNumber || null,
+    status: args.status || args.nextStatus || null,
+    name: name || null,
+  };
+}
+
+function isoFromMs(value) {
+  const ms = Number(value || 0);
+  return ms > 0 ? new Date(ms).toISOString() : null;
+}
+
+function updateAgentRuntimeActivity(agent, proc, activity, detail, extra = {}) {
+  const timestamp = now();
+  const payload = {
+    activity,
+    detail: detail || '',
+    updatedAt: timestamp,
+    lastProgressAt: isoFromMs(proc?.lastTurnProgressAt),
+    lastProgressReason: proc?.lastTurnProgressReason || null,
+    activeTurnIds: activeTurnIdList(proc),
+    ...extra,
+  };
+  if (proc) {
+    proc.lastActivity = activity;
+    proc.lastActivityDetail = detail || '';
+    proc.lastActivityAt = timestamp;
+    proc.lastActivityAtMs = Date.now();
+  }
+  if (agent) {
+    agent.runtimeActivity = payload;
+    agent.heartbeatAt = timestamp;
+  }
+  return payload;
+}
+
+function addAgentRuntimeActivityEvent(agent, proc, type, activity, detail, extra = {}, options = {}) {
+  const payload = updateAgentRuntimeActivity(agent, proc, activity, detail, extra);
+  if (options.countAsHeartbeat !== false && proc) proc.lastActivityHeartbeatAt = Date.now();
+  addSystemEvent(type, detail || `${agent.name} is ${activity}.`, {
+    agentId: agent.id,
+    activity,
+    detail: detail || '',
+    ...extra,
+  });
+  if (options.broadcast) persistState().then(broadcastState).catch(() => {});
+  return payload;
+}
+
+function noteAgentRuntimeProgress(agent, proc, activity, detail, extra = {}) {
+  updateAgentRuntimeActivity(agent, proc, activity, detail, extra);
 }
 
 const CODEX_WARMUP_PROMPT = [
@@ -244,6 +421,7 @@ async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
     runtime,
     parentMessageId: initialMessages[0]?.parentMessageId || null,
     startedAt: now(),
+    workspace,
   };
   agentProcesses.set(agentId, proc);
 
@@ -365,12 +543,24 @@ async function startCodexAgent(agent, proc, workspace) {
   const codexHome = await prepareAgentCodexHome(agent);
 
   proc.requestId = 0;
+  proc.workspace = workspace;
   proc.stdoutBuffer = '';
 	  proc.responseBuffer = '';
 	  proc.activeTurnId = null;
 	  proc.activeTurnIds = new Set();
 	  proc.activeTurnTargets = new Set();
 	  proc.pendingTurnRequests = new Map();
+  proc.pendingAppServerRequests = new Map();
+  proc.pendingMcpToolCalls = new Map();
+  proc.turnWatchdogTimer = null;
+  proc.lastTurnProgressAt = null;
+  proc.lastTurnProgressReason = null;
+  proc.lastActivity = 'working';
+  proc.lastActivityDetail = 'Starting Codex app-server';
+  proc.lastActivityAt = now();
+  proc.lastActivityAtMs = Date.now();
+  proc.lastActivityHeartbeatAt = Date.now();
+  proc.runtimeProgressStaleSince = null;
   proc.turnMeta = new Map();
   proc.pendingInitialPrompt = promptMessages.length ? turnPrompt : null;
   proc.pendingInitialMessages = promptMessages;
@@ -383,10 +573,21 @@ async function startCodexAgent(agent, proc, workspace) {
   proc.currentCodexRuntime = runtime;
   proc.status = 'starting';
   setAgentStatus(agent, 'starting', 'codex_app_server_start');
+  noteAgentRuntimeProgress(agent, proc, 'working', 'Starting Codex app-server', {
+    sessionId: proc.sessionId || null,
+  });
   agent.runtimeLastStartedAt = now();
   await writeAgentSessionFile(agent).catch(() => {});
 
   addSystemEvent('agent_started', `${agent.name} starting with Codex app-server`, { agentId: agent.id });
+  addSystemEvent('agent_codex_app_server_spawn', `${agent.name} spawning Codex app-server.`, {
+    agentId: agent.id,
+    sessionId: proc.sessionId,
+    cwd: workspace,
+    codexHome,
+    model: runtime.model,
+    reasoningEffort: runtime.reasoningEffort || null,
+  });
 
   const child = spawn(state.settings.codexPath || 'codex', args, {
     cwd: workspace,
@@ -429,6 +630,7 @@ async function startCodexAgent(agent, proc, workspace) {
   child.on('error', async (error) => {
     if (proc.child !== child) return;
     clearAgentBusyDeliveryTimer(proc);
+    clearAgentRunWatchdog(proc);
     if (!proc.threadReady && !proc.usedLegacyFallback) {
       await fallbackToCodexExec(agent, proc, workspace, error);
       return;
@@ -444,6 +646,7 @@ async function startCodexAgent(agent, proc, workspace) {
   child.on('close', async (code) => {
     if (proc.child !== child) return;
     clearAgentBusyDeliveryTimer(proc);
+    clearAgentRunWatchdog(proc);
     if (!proc.threadReady && !proc.usedLegacyFallback) {
       if (proc.stopRequested) {
         proc.status = 'idle';
@@ -514,17 +717,686 @@ function nextCodexRequestId(proc) {
 function sendCodexAppServerRequest(proc, method, params = {}) {
   if (!proc.child?.stdin?.writable) return null;
   const id = nextCodexRequestId(proc);
+  const agent = findAgent(proc.agentId);
+  const summary = summarizeCodexRequest(method, params);
+  proc.pendingAppServerRequests = proc.pendingAppServerRequests || new Map();
+  proc.pendingAppServerRequests.set(id, {
+    method,
+    summary,
+    startedAt: Date.now(),
+  });
+  addSystemEvent('agent_codex_request_sent', `${agent?.name || proc.agentId} sent Codex ${method}.`, {
+    agentId: proc.agentId,
+    requestId: id,
+    ...summary,
+  });
   proc.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
   return id;
 }
 
 function sendCodexAppServerNotification(proc, method, params = {}) {
   if (!proc.child?.stdin?.writable) return;
+  const agent = findAgent(proc.agentId);
+  addSystemEvent('agent_codex_notification_sent', `${agent?.name || proc.agentId} sent Codex notification ${method}.`, {
+    agentId: proc.agentId,
+    method,
+    threadId: params.threadId || null,
+    turnId: params.turnId || null,
+  });
   proc.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
 }
 
+function sendCodexAppServerResponse(proc, id, result = {}) {
+  if (!proc.child?.stdin?.writable || id === undefined || id === null) return false;
+  proc.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+  return true;
+}
+
+function sendCodexAppServerError(proc, id, code, message, data = null) {
+  if (!proc.child?.stdin?.writable || id === undefined || id === null) return false;
+  proc.child.stdin.write(JSON.stringify({
+    jsonrpc: '2.0',
+    id,
+    error: {
+      code,
+      message: String(message || 'Request failed.'),
+      ...(data ? { data } : {}),
+    },
+  }) + '\n');
+  return true;
+}
+
+function recordCodexRequestCompleted(agent, proc, requestId, result = null) {
+  const pending = proc.pendingAppServerRequests?.get(requestId);
+  if (!pending) return;
+  proc.pendingAppServerRequests.delete(requestId);
+  addSystemEvent('agent_codex_request_completed', `${agent.name} Codex ${pending.method} completed.`, {
+    agentId: agent.id,
+    requestId,
+    method: pending.method,
+    durationMs: Date.now() - pending.startedAt,
+    threadId: result?.thread?.id || pending.summary?.threadId || null,
+    turnId: result?.turn?.id || result?.turnId || pending.summary?.turnId || null,
+  });
+}
+
+function recordCodexRequestFailed(agent, proc, requestId, error = {}) {
+  const pending = proc.pendingAppServerRequests?.get(requestId);
+  if (pending) proc.pendingAppServerRequests.delete(requestId);
+  addSystemEvent('agent_codex_request_failed', `${agent.name} Codex ${pending?.method || 'request'} failed: ${error.message || 'unknown error'}`, {
+    agentId: agent.id,
+    requestId,
+    method: pending?.method || null,
+    durationMs: pending ? Date.now() - pending.startedAt : null,
+    raw: error,
+  });
+}
+
+function localToolText(data) {
+  if (typeof data?.text === 'string' && data.text.trim()) return data.text;
+  return JSON.stringify(data ?? {}, null, 2);
+}
+
+function dynamicToolContentResult(text) {
+  return {
+    contentItems: [
+      { type: 'inputText', text: String(text || '') },
+    ],
+  };
+}
+
+function mcpElicitationToolName(params = {}) {
+  const meta = params?._meta || {};
+  const explicitName = meta.tool_name || meta.toolName || meta.tool || meta.name;
+  if (explicitName) return String(explicitName);
+  const match = /tool\s+"([^"]+)"/i.exec(String(params?.message || ''));
+  return match?.[1] || '';
+}
+
+function shouldAutoApproveMagClawElicitation(params = {}) {
+  if (String(params?.serverName || '') !== 'magclaw') return false;
+  if (params?._meta?.codex_approval_kind !== 'mcp_tool_call') return false;
+  return Boolean(canonicalMagClawToolName(mcpElicitationToolName(params)));
+}
+
+async function requestMagClawLocalTool(pathname, { method = 'GET', query = {}, body = null } = {}) {
+  const url = new URL(`http://${HOST}:${PORT}${pathname}`);
+  for (const [key, value] of Object.entries(query || {})) {
+    if (value === undefined || value === null || value === '') continue;
+    url.searchParams.set(key, String(value));
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { text };
+    }
+    if (!response.ok) {
+      const message = data?.error || data?.message || text || `HTTP ${response.status}`;
+      const error = new Error(message);
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function executeMagClawLocalTool(agent, name, args = {}) {
+  const tool = canonicalMagClawToolName(name);
+  if (!tool) throw new Error(`Unsupported MagClaw tool: ${name || '(unnamed)'}`);
+  const agentId = agent.id;
+  if (tool === 'send_message') {
+    return requestMagClawLocalTool('/api/agent-tools/messages/send', {
+      method: 'POST',
+      body: {
+        agentId,
+        workItemId: args.workItemId || args.work_item_id,
+        target: args.target,
+        content: args.content,
+      },
+    });
+  }
+  if (tool === 'read_history') {
+    return requestMagClawLocalTool('/api/agent-tools/history', {
+      query: {
+        agentId,
+        target: args.target || args.channel,
+        limit: args.limit,
+        around: args.around,
+        before: args.before,
+        after: args.after,
+      },
+    });
+  }
+  if (tool === 'search_messages') {
+    return requestMagClawLocalTool('/api/agent-tools/search', {
+      query: {
+        agentId,
+        query: args.query || args.q,
+        target: args.target || args.channel,
+        limit: args.limit,
+      },
+    });
+  }
+  if (tool === 'search_agent_memory') {
+    return requestMagClawLocalTool('/api/agent-tools/memory/search', {
+      query: {
+        agentId,
+        query: args.query || args.q,
+        targetAgentId: args.targetAgentId || args.targetAgent,
+        limit: args.limit,
+      },
+    });
+  }
+  if (tool === 'read_agent_memory') {
+    return requestMagClawLocalTool('/api/agent-tools/memory/read', {
+      query: {
+        agentId,
+        targetAgentId: args.targetAgentId || args.targetAgent,
+        path: args.path,
+      },
+    });
+  }
+  if (tool === 'write_memory') {
+    return requestMagClawLocalTool('/api/agent-tools/memory', {
+      method: 'POST',
+      body: {
+        agentId,
+        kind: args.kind,
+        summary: args.summary || args.content,
+        sourceText: args.sourceText || args.source,
+        messageId: args.messageId,
+      },
+    });
+  }
+  if (tool === 'list_tasks') {
+    return requestMagClawLocalTool('/api/agent-tools/tasks', {
+      query: {
+        agentId,
+        channel: args.channel,
+        target: args.target,
+        status: args.status,
+        assigneeId: args.assigneeId === 'me' ? agentId : args.assigneeId,
+        limit: args.limit,
+      },
+    });
+  }
+  if (tool === 'create_tasks') {
+    return requestMagClawLocalTool('/api/agent-tools/tasks', {
+      method: 'POST',
+      body: { ...args, agentId: args.agentId || agentId },
+    });
+  }
+  if (tool === 'claim_tasks') {
+    return requestMagClawLocalTool('/api/agent-tools/tasks/claim', {
+      method: 'POST',
+      body: { ...args, agentId: args.agentId || agentId },
+    });
+  }
+  if (tool === 'update_task_status') {
+    return requestMagClawLocalTool('/api/agent-tools/tasks/update', {
+      method: 'POST',
+      body: {
+        agentId,
+        taskId: args.taskId,
+        taskNumber: args.taskNumber,
+        channel: args.channel,
+        status: args.status || args.nextStatus,
+        force: args.force,
+      },
+    });
+  }
+  throw new Error(`Unsupported MagClaw tool: ${tool}`);
+}
+
+function dynamicToolRequestInfo(proc, params = {}) {
+  const item = params.item || params;
+  const callId = codexToolCallId(item) || String(params.callId || params.call_id || '');
+  const pending = callId ? proc.pendingMcpToolCalls?.get(callId) : null;
+  const rawArgs = codexToolArguments(item);
+  const textArgs = parseToolArguments(params.inputText || params.input_text);
+  const args = Object.keys(rawArgs).length
+    ? rawArgs
+    : (Object.keys(textArgs).length ? textArgs : (pending?.arguments || {}));
+  const name = codexToolName(item) || pending?.name || '';
+  return {
+    callId,
+    turnId: params.turnId || params.turn_id || null,
+    name,
+    canonicalName: canonicalMagClawToolName(name),
+    args,
+  };
+}
+
+async function handleCodexDynamicToolCallRequest(agent, proc, message) {
+  const info = dynamicToolRequestInfo(proc, message.params || {});
+  if (!info.canonicalName) {
+    addSystemEvent('agent_dynamic_tool_call_failed', `${agent.name} received an unsupported dynamic tool request.`, {
+      agentId: agent.id,
+      requestId: message.id,
+      toolCallId: info.callId || null,
+      name: info.name || null,
+      raw: message.params || null,
+    });
+    sendCodexAppServerError(proc, message.id, -32602, `Unsupported dynamic tool request: ${info.name || '(unnamed)'}`);
+    return true;
+  }
+  const startedAt = Date.now();
+  addSystemEvent('agent_dynamic_tool_call_started', `${agent.name} executing ${info.canonicalName} for Codex app-server.`, {
+    agentId: agent.id,
+    requestId: message.id,
+    toolCallId: info.callId || null,
+    turnId: info.turnId,
+    ...summarizeToolArguments(info.canonicalName, info.args),
+  });
+  try {
+    const data = await executeMagClawLocalTool(agent, info.canonicalName, info.args);
+    const result = dynamicToolContentResult(localToolText(data));
+    sendCodexAppServerResponse(proc, message.id, result);
+    if (info.callId) {
+      recordCodexToolCallCompleted(agent, proc, {
+        id: info.callId,
+        type: 'mcpToolCall',
+        name: info.canonicalName,
+        arguments: info.args,
+      });
+    }
+    touchAgentRunProgress(agent, proc, 'dynamic_tool_response', { turnId: info.turnId });
+    addSystemEvent('agent_dynamic_tool_call_completed', `${agent.name} completed ${info.canonicalName} for Codex app-server.`, {
+      agentId: agent.id,
+      requestId: message.id,
+      toolCallId: info.callId || null,
+      turnId: info.turnId,
+      durationMs: Date.now() - startedAt,
+      ...summarizeToolArguments(info.canonicalName, info.args),
+    });
+  } catch (error) {
+    sendCodexAppServerError(proc, message.id, error.status || 1, error.message || 'Tool call failed.', error.data || null);
+    addSystemEvent('agent_dynamic_tool_call_failed', `${agent.name} failed ${info.canonicalName}: ${error.message}`, {
+      agentId: agent.id,
+      requestId: message.id,
+      toolCallId: info.callId || null,
+      turnId: info.turnId,
+      durationMs: Date.now() - startedAt,
+      status: error.status || null,
+      ...summarizeToolArguments(info.canonicalName, info.args),
+    });
+  }
+  await persistState();
+  broadcastState();
+  return true;
+}
+
+async function handleCodexMcpServerElicitationRequest(agent, proc, message) {
+  const params = message.params || {};
+  const toolName = mcpElicitationToolName(params);
+  const canonicalName = canonicalMagClawToolName(toolName);
+  const approve = shouldAutoApproveMagClawElicitation(params);
+  const eventType = approve ? 'agent_mcp_elicitation_auto_approved' : 'agent_mcp_elicitation_declined';
+  addSystemEvent(eventType, approve
+    ? `${agent.name} auto-approved MagClaw MCP tool ${canonicalName}.`
+    : `${agent.name} declined unsupported MCP elicitation ${toolName || params.serverName || 'unknown'}.`, {
+      agentId: agent.id,
+      requestId: message.id,
+      serverName: params.serverName || null,
+      toolName: toolName || null,
+      canonicalName: canonicalName || null,
+      turnId: params.turnId || null,
+      threadId: params.threadId || null,
+      raw: params,
+    });
+  sendCodexAppServerResponse(proc, message.id, {
+    action: approve ? 'accept' : 'decline',
+  });
+  touchAgentRunProgress(agent, proc, approve ? 'mcp_elicitation_auto_approved' : 'mcp_elicitation_declined', {
+    turnId: params.turnId || null,
+  });
+  await persistState();
+  broadcastState();
+  return true;
+}
+
+function clearAgentRunWatchdog(proc) {
+  if (!proc?.turnWatchdogTimer) return;
+  clearTimeout(proc.turnWatchdogTimer);
+  proc.turnWatchdogTimer = null;
+}
+
+function resetCodexActiveTurnState(proc) {
+  proc.activeTurnId = null;
+  proc.activeTurnIds = new Set();
+  proc.activeTurnTargets = new Set();
+  proc.pendingTurnRequests = new Map();
+  proc.turnMeta = new Map();
+  proc.pendingMcpToolCalls = new Map();
+  proc.lastTurnProgressAt = null;
+  proc.lastTurnProgressReason = null;
+  proc.lastRunStallLoggedAt = null;
+  proc.lastTurnProgressTurnId = null;
+  proc.lastActivity = '';
+  proc.lastActivityDetail = '';
+  proc.lastActivityAt = null;
+  proc.lastActivityAtMs = null;
+  proc.lastActivityHeartbeatAt = null;
+  proc.runtimeProgressStaleSince = null;
+  proc.agentMessageStreamingAt = null;
+}
+
+function scheduleAgentRunWatchdog(agent, proc) {
+  if (!proc || proc.usedLegacyFallback || proc.stopRequested || proc.child?.killed) return false;
+  const intervalMs = Math.min(...[
+    AGENT_RUN_STALL_LOG_MS,
+    AGENT_STUCK_SEND_MESSAGE_MS,
+    AGENT_ACTIVITY_HEARTBEAT_MS,
+    AGENT_RUNTIME_PROGRESS_STALE_MS,
+  ].filter((value) => Number(value) > 0));
+  if (!Number.isFinite(intervalMs) || intervalMs < 1) return false;
+  if (!codexProcessHasActiveTurn(proc)) {
+    clearAgentRunWatchdog(proc);
+    return false;
+  }
+  clearAgentRunWatchdog(proc);
+  proc.turnWatchdogTimer = setTimeout(() => {
+    proc.turnWatchdogTimer = null;
+    handleAgentRunWatchdogTimeout(agent, proc).catch((error) => {
+      addSystemEvent('agent_error', `${agent.name} watchdog failed: ${error.message}`, { agentId: agent.id });
+      persistState().then(broadcastState).catch(() => {});
+    });
+  }, intervalMs);
+  proc.turnWatchdogTimer.unref?.();
+  return true;
+}
+
+function touchAgentRunProgress(agent, proc, reason, extra = {}) {
+  if (!proc || proc.usedLegacyFallback || proc.stopRequested) return;
+  if (!codexProcessHasActiveTurn(proc)) return;
+  const wasStalled = Boolean(proc.runtimeProgressStaleSince);
+  proc.lastTurnProgressAt = Date.now();
+  proc.lastTurnProgressReason = reason;
+  proc.lastRunStallLoggedAt = null;
+  proc.runtimeProgressStaleSince = null;
+  if (extra.turnId) proc.lastTurnProgressTurnId = extra.turnId;
+  if (wasStalled) {
+    addAgentRuntimeActivityEvent(agent, proc, 'agent_runtime_progress_observed', 'working', 'Runtime progress resumed after a stalled window.', {
+      reason,
+      turnId: extra.turnId || null,
+    }, { broadcast: true });
+  } else {
+    updateAgentRuntimeActivity(agent, proc, proc.lastActivity || 'working', proc.lastActivityDetail || reason, {
+      reason,
+    });
+  }
+  scheduleAgentRunWatchdog(agent, proc);
+}
+
+function activeToolCallSummaries(proc) {
+  return [...(proc?.pendingMcpToolCalls?.values?.() || [])]
+    .filter((call) => !call.completedAt && !call.recoveredAt)
+    .map((call) => ({
+      id: call.id,
+      name: call.name,
+      startedAt: call.startedAt,
+      startedAtMs: call.startedAtMs,
+      turnIds: call.turnIds || [],
+      workItemId: call.arguments?.workItemId || call.arguments?.work_item_id || null,
+      target: call.arguments?.target || null,
+      contentLength: call.arguments?.content ? String(call.arguments.content).trim().length : 0,
+    }));
+}
+
+function recordCodexToolCallStarted(agent, proc, item = {}) {
+  const name = codexToolName(item);
+  const args = codexToolArguments(item);
+  const explicitId = codexToolCallId(item);
+  const id = explicitId || `tool_${Date.now().toString(36)}_${Number(proc.nextToolCallSequence || 0) + 1}`;
+  proc.nextToolCallSequence = Number(proc.nextToolCallSequence || 0) + 1;
+  proc.pendingMcpToolCalls = proc.pendingMcpToolCalls || new Map();
+  const summary = summarizeToolArguments(name, args);
+  proc.pendingMcpToolCalls.set(id, {
+    id,
+    name,
+    arguments: args,
+    raw: item,
+    turnIds: activeTurnIdList(proc),
+    startedAt: now(),
+    startedAtMs: Date.now(),
+  });
+  addSystemEvent('agent_mcp_tool_call_started', `${agent.name} started ${name || item.type || 'tool call'}.`, {
+    agentId: agent.id,
+    toolCallId: id,
+    turnIds: activeTurnIdList(proc),
+    ...summary,
+    raw: item,
+  });
+}
+
+function recordCodexToolCallCompleted(agent, proc, item = {}) {
+  const name = codexToolName(item);
+  const explicitId = codexToolCallId(item);
+  let call = explicitId ? proc.pendingMcpToolCalls?.get(explicitId) : null;
+  if (!call && proc.pendingMcpToolCalls?.size) {
+    call = [...proc.pendingMcpToolCalls.values()]
+      .reverse()
+      .find((candidate) => !candidate.completedAt && (!name || candidate.name === name));
+  }
+  const id = explicitId || call?.id || null;
+  if (call) {
+    call.completedAt = now();
+    call.durationMs = Date.now() - call.startedAtMs;
+  }
+  addSystemEvent('agent_mcp_tool_call_completed', `${agent.name} completed ${name || call?.name || item.type || 'tool call'}.`, {
+    agentId: agent.id,
+    toolCallId: id,
+    durationMs: call?.durationMs || null,
+    turnIds: call?.turnIds || activeTurnIdList(proc),
+    ...summarizeToolArguments(name || call?.name || '', codexToolArguments(item) || call?.arguments || {}),
+    raw: item,
+  });
+}
+
+function maybeAddAgentActivityHeartbeat(agent, proc, staleMs, activeTurnIds, pendingToolCalls) {
+  if (!AGENT_ACTIVITY_HEARTBEAT_MS || !codexProcessHasActiveTurn(proc)) return false;
+  const lastHeartbeatAt = Number(proc.lastActivityHeartbeatAt || 0);
+  if (lastHeartbeatAt && Date.now() - lastHeartbeatAt < AGENT_ACTIVITY_HEARTBEAT_MS) return false;
+  proc.lastActivityHeartbeatAt = Date.now();
+  const activity = proc.runtimeProgressStaleSince ? 'error' : (proc.lastActivity || 'working');
+  const detail = proc.runtimeProgressStaleSince
+    ? proc.lastActivityDetail || 'Runtime progress is stalled.'
+    : proc.lastActivityDetail || 'Runtime is still active.';
+  updateAgentRuntimeActivity(agent, proc, activity, detail, {
+    staleMs,
+    activeTurnIds,
+    pendingToolCalls,
+  });
+  addSystemEvent('agent_activity_heartbeat', `${agent.name} still ${activity}: ${detail}`, {
+    agentId: agent.id,
+    activity,
+    detail,
+    staleMs,
+    lastProgressAt: isoFromMs(proc.lastTurnProgressAt),
+    lastProgressReason: proc.lastTurnProgressReason || null,
+    activeTurnIds,
+    pendingToolCalls,
+  });
+  return true;
+}
+
+function maybeMarkRuntimeProgressStale(agent, proc, staleMs, activeTurnIds, pendingToolCalls) {
+  if (!AGENT_RUNTIME_PROGRESS_STALE_MS || staleMs < AGENT_RUNTIME_PROGRESS_STALE_MS || proc.runtimeProgressStaleSince) return false;
+  proc.runtimeProgressStaleSince = now();
+  const staleForMinutes = Math.max(1, Math.floor(staleMs / 60_000));
+  const detail = `Runtime stalled: no runtime events for ${staleForMinutes}m`;
+  updateAgentRuntimeActivity(agent, proc, 'error', detail, {
+    staleMs,
+    activeTurnIds,
+    pendingToolCalls,
+  });
+  proc.lastActivityHeartbeatAt = Date.now();
+  addSystemEvent('agent_runtime_progress_stalled', `${agent.name} ${detail}.`, {
+    agentId: agent.id,
+    activity: 'error',
+    detail,
+    staleMs,
+    staleForMinutes,
+    lastProgressAt: isoFromMs(proc.lastTurnProgressAt),
+    lastProgressReason: proc.lastTurnProgressReason || null,
+    activeTurnIds,
+    pendingToolCalls,
+  });
+  return true;
+}
+
+async function recoverPendingSendMessageToolCalls(agent, proc) {
+  const minAgeMs = Math.max(1, Number(AGENT_STUCK_SEND_MESSAGE_MS || 0));
+  const calls = [...(proc.pendingMcpToolCalls?.values?.() || [])]
+    .filter((call) => !call.completedAt && !call.recoveredAt && codexToolNameMatches(call.name, 'send_message') && (Date.now() - Number(call.startedAtMs || 0)) >= minAgeMs);
+  let recovered = 0;
+  for (const call of calls) {
+    const args = call.arguments || {};
+    const workItemId = String(args.workItemId || args.work_item_id || '').trim()
+      || normalizeIds(call.turnIds?.flatMap((turnId) => proc.turnMeta?.get(turnId)?.workItemIds || []))[0]
+      || '';
+    const workItem = findWorkItem(workItemId);
+    const content = String(args.content || '').trim();
+    if (!workItem || workItem.agentId !== agent.id || workItem.status === 'responded' || workItem.status === 'cancelled' || !content) {
+      addSystemEvent('agent_run_watchdog_recovery_skipped', `${agent.name} could not recover a pending send_message call.`, {
+        agentId: agent.id,
+        toolCallId: call.id,
+        workItemId: workItemId || null,
+        hasWorkItem: Boolean(workItem),
+        workItemStatus: workItem?.status || null,
+        contentLength: content.length,
+      });
+      continue;
+    }
+    let target;
+    try {
+      target = resolveMessageTarget(args.target || workItem.target);
+      if (!workItemTargetMatches(workItem, target)) {
+        throw httpError(409, 'Target does not match the work item conversation.');
+      }
+      const sourceMessage = findMessage(workItem.sourceMessageId) || findConversationRecord(workItem.sourceMessageId);
+      const posted = await postAgentResponse(agent, target.spaceType, target.spaceId, content, target.parentMessageId || null, {
+        sourceMessage,
+      });
+      markWorkItemResponded(workItem, target.label, posted);
+      call.recoveredAt = now();
+      recovered += 1;
+      addSystemEvent('agent_run_watchdog_recovered_send_message', `${agent.name} recovered a stuck send_message call to ${target.label}.`, {
+        agentId: agent.id,
+        toolCallId: call.id,
+        workItemId: workItem.id,
+        target: target.label,
+        responseId: posted?.id || null,
+      });
+    } catch (error) {
+      addSystemEvent('agent_run_watchdog_recovery_failed', `${agent.name} failed to recover send_message: ${error.message}`, {
+        agentId: agent.id,
+        toolCallId: call.id,
+        workItemId,
+      });
+    }
+  }
+  return recovered;
+}
+
+async function handleAgentRunWatchdogTimeout(agent, proc) {
+  if (agentProcesses.get(agent.id) !== proc || proc.stopRequested || proc.child?.killed || proc.usedLegacyFallback) return false;
+  if (!codexProcessHasActiveTurn(proc)) return false;
+  const lastProgressAt = Number(proc.lastTurnProgressAt || 0);
+  const staleMs = Date.now() - (lastProgressAt || Date.now());
+  const activeTurnIds = activeTurnIdList(proc);
+  const pendingToolCalls = activeToolCallSummaries(proc);
+  let changed = false;
+
+  const hasRecoverableSendMessage = pendingToolCalls.some((call) => (
+    codexToolNameMatches(call.name, 'send_message')
+    && call.workItemId
+    && call.contentLength > 0
+    && Date.now() - Number(call.startedAtMs || 0) >= AGENT_STUCK_SEND_MESSAGE_MS
+  ));
+
+  if (hasRecoverableSendMessage) {
+    addSystemEvent('agent_send_message_watchdog_timeout', `${agent.name} send_message watchdog fired after ${staleMs}ms without progress.`, {
+      agentId: agent.id,
+      sessionId: proc.threadId || null,
+      staleMs,
+      lastProgressReason: proc.lastTurnProgressReason || null,
+      activeTurnIds,
+      pendingToolCalls,
+    });
+    const recovered = await recoverPendingSendMessageToolCalls(agent, proc);
+    if (recovered > 0) {
+      for (const turnId of activeTurnIds) {
+        sendCodexAppServerRequest(proc, 'turn/interrupt', {
+          threadId: proc.threadId,
+          turnId,
+        });
+      }
+      clearAgentRunWatchdog(proc);
+      const queuedMessages = uniqueDeliveryMessages(proc.pendingDeliveryMessages || []);
+      proc.stopRequested = true;
+      proc.suppressOutput = true;
+      proc.restartMessagesAfterStop = queuedMessages;
+      proc.pendingDeliveryMessages = [];
+      proc.responseBuffer = '';
+      resetCodexActiveTurnState(proc);
+      proc.status = 'idle';
+      setAgentStatus(agent, queuedMessages.length ? 'queued' : 'idle', 'agent_run_watchdog_recovered', { activeWorkItemIds: [] });
+      await writeAgentSessionFile(agent).catch(() => {});
+      await persistState();
+      broadcastState();
+      if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');
+      else {
+        agentProcesses.delete(agent.id);
+        if (queuedMessages.length) restartAgentWithQueuedMessages(agent, proc, queuedMessages);
+      }
+      return true;
+    }
+  }
+
+  if (AGENT_RUN_STALL_LOG_MS && (!lastProgressAt || staleMs >= AGENT_RUN_STALL_LOG_MS)) {
+    const lastLoggedAt = Number(proc.lastRunStallLoggedAt || 0);
+    if (!lastLoggedAt || Date.now() - lastLoggedAt >= AGENT_RUN_STALL_LOG_MS) {
+      proc.lastRunStallLoggedAt = Date.now();
+      addSystemEvent('agent_run_watchdog_stall', `${agent.name} has had no app-server progress for ${staleMs}ms; leaving the turn running.`, {
+        agentId: agent.id,
+        sessionId: proc.threadId || null,
+        staleMs,
+        lastProgressReason: proc.lastTurnProgressReason || null,
+        activeTurnIds,
+        pendingToolCalls,
+      });
+      changed = true;
+    }
+  }
+  changed = maybeMarkRuntimeProgressStale(agent, proc, staleMs, activeTurnIds, pendingToolCalls) || changed;
+  changed = maybeAddAgentActivityHeartbeat(agent, proc, staleMs, activeTurnIds, pendingToolCalls) || changed;
+  if (changed) {
+    await persistState();
+    broadcastState();
+  }
+  scheduleAgentRunWatchdog(agent, proc);
+  return false;
+}
+
 async function triggerCodexStreamRetryFallback(agent, proc, workspace, retry) {
-  if (!retry || retry.count < CODEX_STREAM_RETRY_LIMIT) return false;
+  if (!retry) return false;
+  const retryLimit = Math.min(CODEX_STREAM_RETRY_LIMIT, Number(retry.total) || CODEX_STREAM_RETRY_LIMIT);
+  if (retry.count < retryLimit) return false;
   if (proc.streamRetryFallbackStarted || proc.usedLegacyFallback || proc.stopRequested || proc.warmupActive) return false;
   proc.streamRetryFallbackStarted = true;
   if (proc.threadId && proc.activeTurnId) {
@@ -653,6 +1525,7 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
     runtime,
     warmup: isWarmup,
   });
+  touchAgentRunProgress(agent, proc, `${mode}_request_sent`);
   rememberActiveTurnTargets(proc, mode, targetKeys);
   proc.currentCodexRuntime = runtime;
   proc.status = 'running';
@@ -663,6 +1536,13 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
     runtimeReasoningEffort: runtime.reasoningEffort,
     runtimeOverrideReason: runtime.overrideReason,
   });
+  addAgentRuntimeActivityEvent(agent, proc, 'agent_runtime_activity', mode === 'steer' ? 'working' : 'thinking', isWarmup ? 'Hidden warmup turn started.' : (mode === 'steer' ? 'Queued message delivered to active runtime.' : 'Turn started.'), {
+    sessionId: proc.threadId,
+    model: runtime.model,
+    reasoningEffort: runtime.reasoningEffort || null,
+    mode,
+    warmup: isWarmup,
+  }, { broadcast: false });
   if (!isWarmup) {
     agent.runtimeLastTurnAt = now();
   } else {
@@ -758,6 +1638,7 @@ async function flushCodexPendingDeliveries(agent, proc) {
 
 async function handleCodexTurnCompleted(agent, proc, turn) {
   const turnId = turn?.id || proc.activeTurnId;
+  touchAgentRunProgress(agent, proc, 'turn_completed', { turnId });
   if (turnId) proc.activeTurnIds?.delete(turnId);
   if (turn?.status === 'failed' && turn?.error?.message) {
     addSystemEvent('agent_error', `${agent.name} turn failed: ${turn.error.message}`, { agentId: agent.id, sessionId: proc.threadId });
@@ -810,8 +1691,14 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
     }
   }
   if (!proc.activeTurnIds?.size) {
+    clearAgentRunWatchdog(proc);
     proc.activeTurnId = null;
     proc.activeTurnTargets = new Set();
+    proc.agentMessageStreamingAt = null;
+    updateAgentRuntimeActivity(agent, proc, 'online', 'Idle', {
+      activeTurnIds: [],
+      pendingToolCalls: [],
+    });
     proc.status = 'idle';
     setAgentStatus(agent, 'idle', 'codex_turn_completed', { activeWorkItemIds: [] });
   }
@@ -835,6 +1722,8 @@ async function handleCodexAppServerLine(agent, proc, line) {
   }
 
   if (message.result) {
+    recordCodexRequestCompleted(agent, proc, message.id, message.result);
+    touchAgentRunProgress(agent, proc, 'app_server_result');
     if (message.id === proc.initializeRequestId) {
       proc.initializeRequestId = null;
       sendCodexAppServerNotification(proc, 'initialized', {});
@@ -860,12 +1749,33 @@ async function handleCodexAppServerLine(agent, proc, line) {
         proc.turnMeta.set(turnId, meta);
         proc.pendingTurnRequests.delete(message.id);
       }
+      touchAgentRunProgress(agent, proc, 'turn_request_acknowledged', { turnId });
       return;
     }
   }
 
   if (message.error) {
+    if (message.id !== undefined && message.id !== null) recordCodexRequestFailed(agent, proc, message.id, message.error);
     addSystemEvent('agent_error', `${agent.name} app-server request failed: ${message.error.message || 'unknown error'}`, { agentId: agent.id, raw: message.error });
+    return;
+  }
+
+  if (message.method && message.id !== undefined && message.id !== null) {
+    if (message.method === 'mcpServer/elicitation/request') {
+      await handleCodexMcpServerElicitationRequest(agent, proc, message);
+      return;
+    }
+    if (message.method === 'item/tool/call') {
+      await handleCodexDynamicToolCallRequest(agent, proc, message);
+      return;
+    }
+    addSystemEvent('agent_app_server_request_unhandled', `${agent.name} received unsupported app-server request ${message.method}.`, {
+      agentId: agent.id,
+      requestId: message.id,
+      method: message.method,
+      raw: message.params || null,
+    });
+    sendCodexAppServerError(proc, message.id, -32601, `Method not found: ${message.method}`);
     return;
   }
 
@@ -882,6 +1792,7 @@ async function handleCodexAppServerLine(agent, proc, line) {
         proc.activeTurnIds = proc.activeTurnIds || new Set();
         proc.activeTurnIds.add(turnId);
       }
+      touchAgentRunProgress(agent, proc, 'turn_started', { turnId });
       proc.status = 'running';
       setAgentStatus(agent, 'thinking', 'codex_turn_started');
       await persistState();
@@ -891,6 +1802,15 @@ async function handleCodexAppServerLine(agent, proc, line) {
     case 'item/agentMessage/delta': {
       const delta = message.params?.delta;
       if (typeof delta === 'string') proc.responseBuffer += delta;
+      if (!proc.agentMessageStreamingAt) {
+        proc.agentMessageStreamingAt = Date.now();
+        addAgentRuntimeActivityEvent(agent, proc, 'agent_activity', 'thinking', 'Streaming response text.', {
+          raw: { type: 'agentMessageDelta' },
+        }, { broadcast: true });
+      } else {
+        noteAgentRuntimeProgress(agent, proc, 'thinking', 'Streaming response text.');
+      }
+      touchAgentRunProgress(agent, proc, 'agent_message_delta');
       break;
     }
     case 'item/completed': {
@@ -899,13 +1819,19 @@ async function handleCodexAppServerLine(agent, proc, line) {
         proc.responseBuffer += item.text;
       }
       if (item?.type === 'commandExecution' || item?.type === 'mcpToolCall' || item?.type === 'collabAgentToolCall') {
-        addSystemEvent('agent_activity', summarizeCodexEvent(item), { agentId: agent.id, raw: item });
+        recordCodexToolCallCompleted(agent, proc, item);
+        addAgentRuntimeActivityEvent(agent, proc, 'agent_activity', 'working', summarizeCodexEvent(item), { raw: item }, { broadcast: true });
       }
+      touchAgentRunProgress(agent, proc, 'item_completed');
       break;
     }
     case 'item/started': {
       const item = message.params?.item;
-      if (item?.type) addSystemEvent('agent_activity', `${agent.name}: ${item.type}`, { agentId: agent.id, raw: item });
+      if (item?.type === 'commandExecution' || item?.type === 'mcpToolCall' || item?.type === 'collabAgentToolCall') {
+        recordCodexToolCallStarted(agent, proc, item);
+      }
+      if (item?.type) addAgentRuntimeActivityEvent(agent, proc, 'agent_activity', 'working', `${agent.name}: ${item.type}`, { raw: item }, { broadcast: true });
+      touchAgentRunProgress(agent, proc, 'item_started');
       break;
     }
     case 'turn/completed': {
@@ -919,6 +1845,7 @@ async function handleCodexAppServerLine(agent, proc, line) {
 }
 
 async function fallbackToCodexExec(agent, proc, workspace, error) {
+  clearAgentRunWatchdog(proc);
   proc.usedLegacyFallback = true;
   addSystemEvent('agent_runtime_fallback', `${agent.name} falling back to legacy codex exec: ${error.message}`, { agentId: agent.id });
   const previousChild = proc.child;
@@ -1186,6 +2113,7 @@ function processHasActiveTaskWork(proc, task) {
 
 function stopAgentProcessForScope(agent, proc, scope, restartMessages = []) {
   clearAgentBusyDeliveryTimer(proc);
+  clearAgentRunWatchdog(proc);
   proc.stopRequested = true;
   proc.suppressOutput = true;
   proc.stoppedAt = now();
@@ -1206,6 +2134,7 @@ function stopAgentProcessForScope(agent, proc, scope, restartMessages = []) {
 
 function stopAgentProcessForTask(agent, proc, task, restartMessages = []) {
   clearAgentBusyDeliveryTimer(proc);
+  clearAgentRunWatchdog(proc);
   proc.stopRequested = true;
   proc.suppressOutput = true;
   proc.stoppedAt = now();
@@ -1421,6 +2350,7 @@ async function stopAgentProcessForControl(agent) {
   const proc = agentProcesses.get(agent.id);
   if (!proc) return false;
   clearAgentBusyDeliveryTimer(proc);
+  clearAgentRunWatchdog(proc);
   proc.stopRequested = true;
   proc.suppressOutput = true;
   proc.restartMessagesAfterStop = [];

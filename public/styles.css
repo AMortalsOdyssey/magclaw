@@ -369,6 +369,62 @@ button {
   color: var(--accent-text);
 }
 
+.settings-nav-list {
+  display: grid;
+  gap: 8px;
+  padding: 14px 12px;
+}
+
+.settings-nav-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 2px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font-weight: 700;
+}
+
+.settings-nav-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav-item em {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.settings-nav-item:hover {
+  border-color: var(--border);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-pixel-sm);
+}
+
+.settings-nav-item.active {
+  border-color: var(--border);
+  background: var(--accent);
+  color: var(--accent-text);
+  box-shadow: var(--shadow-pixel);
+}
+
+.settings-nav-item.active em {
+  color: var(--accent-text);
+}
+
+.settings-icon {
+  flex: 0 0 auto;
+}
+
 /* ===== 品牌区（隐藏，改用 view-switcher） ===== */
 .brand-block {
   display: none;
@@ -642,7 +698,9 @@ p {
 }
 
 .workspace > .task-page,
-.workspace > .saved-page {
+.workspace > .saved-page,
+.workspace > .settings-page,
+.workspace > .computers-page {
   grid-row: 1 / -1;
 }
 
@@ -4060,6 +4118,71 @@ button:disabled {
 }
 
 /* ===== Cloud 布局 ===== */
+.settings-page,
+.computers-page {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  background: var(--bg-chat);
+}
+
+.settings-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 72px;
+  padding: 14px 18px;
+  border-bottom: 3px solid var(--border);
+  background: var(--bg-card);
+}
+
+.settings-page-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.settings-page-heading h2 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.settings-page-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 3px solid var(--border);
+  background: var(--magclaw-rail-badge);
+  box-shadow: var(--shadow-pixel);
+}
+
+.settings-section-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 14px 18px 10px;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.settings-page > .cloud-layout,
+.settings-page > .settings-layout,
+.settings-page > .settings-release,
+.computers-page > .cloud-layout {
+  padding: 0 14px 18px;
+}
+
 .cloud-layout {
   display: grid;
   grid-template-columns: minmax(320px, 0.95fr) minmax(360px, 1.05fr);
@@ -4105,12 +4228,53 @@ button:disabled {
   margin-top: 0;
 }
 
+.settings-account-card {
+  display: grid;
+  gap: 18px;
+}
+
+.settings-account-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.settings-account-hero strong,
+.settings-account-hero small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.settings-account-hero strong {
+  font-size: 18px;
+}
+
+.settings-account-hero small {
+  margin-top: 4px;
+  color: var(--text-muted);
+}
+
+.settings-account-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  width: 74px;
+  height: 74px;
+  place-items: center;
+  border: 3px solid var(--border);
+  background: var(--identity);
+  color: var(--identity-text);
+  font-size: 22px;
+  font-weight: 900;
+  box-shadow: var(--shadow-pixel);
+}
+
 .boundary-grid.single {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .settings-release {
   display: grid;
+  align-self: start;
   gap: 12px;
   max-width: 960px;
 }
@@ -4128,6 +4292,8 @@ button:disabled {
 
 .release-card {
   display: grid;
+  align-content: start;
+  align-items: start;
   gap: 16px;
   padding: 22px 24px;
 }
@@ -4881,11 +5047,15 @@ code {
   line-height: 1.45;
 }
 
-.system-config-entry .channel-icon {
+.computer-feature-entry .channel-icon {
   width: auto;
   min-width: 24px;
   padding: 0 4px;
   font-size: 9px;
+}
+
+.system-boundary-copy {
+  margin-top: 12px;
 }
 
 .member-row {

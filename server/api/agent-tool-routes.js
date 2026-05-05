@@ -20,6 +20,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     formatAgentSearchResults,
     getState,
     httpError,
+    makeId,
     markWorkItemResponded,
     normalizeIds,
     persistState,
@@ -179,29 +180,64 @@ export async function handleAgentToolApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/agent-tools/messages/send') {
+    const traceId = makeId ? makeId('tool') : `tool_${Date.now().toString(36)}`;
+    const startedAt = Date.now();
+    const fail = (status, message, extra = {}) => {
+      addSystemEvent('agent_tool_send_message_failed', `send_message failed: ${message}`, {
+        traceId,
+        status,
+        durationMs: Date.now() - startedAt,
+        ...extra,
+      });
+      persistState().then(broadcastState).catch(() => {});
+      sendError(res, status, message);
+      return true;
+    };
     const body = await readJson(req);
+    const rawAgentId = String(body.agentId || '');
+    const rawWorkItemId = String(body.workItemId || body.work_item_id || '');
+    const rawTarget = String(body.target || '');
+    const rawContent = String(body.content || '');
+    addSystemEvent('agent_tool_send_message_started', 'send_message request received.', {
+      traceId,
+      agentId: rawAgentId || null,
+      workItemId: rawWorkItemId || null,
+      target: rawTarget || null,
+      contentLength: rawContent.trim().length,
+    });
     const agent = findAgent(String(body.agentId || ''));
     if (!agent) {
-      sendError(res, 404, 'Agent not found.');
-      return true;
+      return fail(404, 'Agent not found.', {
+        agentId: rawAgentId || null,
+        workItemId: rawWorkItemId || null,
+      });
     }
     const workItem = findWorkItem(String(body.workItemId || body.work_item_id || ''));
     if (!workItem) {
-      sendError(res, 404, 'Work item not found.');
-      return true;
+      return fail(404, 'Work item not found.', {
+        agentId: agent.id,
+        workItemId: rawWorkItemId || null,
+      });
     }
     if (workItem.agentId !== agent.id) {
-      sendError(res, 403, 'Work item belongs to a different agent.');
-      return true;
+      return fail(403, 'Work item belongs to a different agent.', {
+        agentId: agent.id,
+        workItemId: workItem.id,
+        ownerAgentId: workItem.agentId,
+      });
     }
     if (workItem.status === 'cancelled') {
-      sendError(res, 409, 'Work item was stopped by the user.');
-      return true;
+      return fail(409, 'Work item was stopped by the user.', {
+        agentId: agent.id,
+        workItemId: workItem.id,
+      });
     }
     const content = String(body.content || '').trim();
     if (!content) {
-      sendError(res, 400, 'Message content is required.');
-      return true;
+      return fail(400, 'Message content is required.', {
+        agentId: agent.id,
+        workItemId: workItem.id,
+      });
     }
     let target;
     try {
@@ -210,33 +246,46 @@ export async function handleAgentToolApi(req, res, url, deps) {
         throw httpError(409, 'Target does not match the work item conversation.');
       }
     } catch (error) {
-      sendError(res, error.status || 400, error.message);
-      return true;
+      return fail(error.status || 400, error.message, {
+        agentId: agent.id,
+        workItemId: workItem.id,
+        target: rawTarget || workItem.target || null,
+      });
     }
 
     // send_message is tied to the work item target so an Agent cannot post into
     // another channel or thread just by guessing a conversation id.
     const sourceMessage = findConversationRecord(workItem.sourceMessageId);
-    const posted = await postAgentResponse(agent, target.spaceType, target.spaceId, content, target.parentMessageId || null, {
-      sourceMessage,
-    });
-    markWorkItemResponded(workItem, target.label, posted);
-    addSystemEvent('agent_tool_send_message', `${agent.name} sent a routed message to ${target.label}.`, {
-      agentId: agent.id,
-      workItemId: workItem.id,
-      target: target.label,
-      responseId: posted?.id || null,
-    });
-    await persistState();
-    broadcastState();
-    sendJson(res, 200, {
-      ok: true,
-      target: target.label,
-      workItemId: workItem.id,
-      workItem,
-      message: posted,
-      text: `Message sent to ${target.label}.`,
-    });
+    try {
+      const posted = await postAgentResponse(agent, target.spaceType, target.spaceId, content, target.parentMessageId || null, {
+        sourceMessage,
+      });
+      markWorkItemResponded(workItem, target.label, posted);
+      addSystemEvent('agent_tool_send_message', `${agent.name} sent a routed message to ${target.label}.`, {
+        traceId,
+        agentId: agent.id,
+        workItemId: workItem.id,
+        target: target.label,
+        responseId: posted?.id || null,
+        durationMs: Date.now() - startedAt,
+      });
+      await persistState();
+      broadcastState();
+      sendJson(res, 200, {
+        ok: true,
+        target: target.label,
+        workItemId: workItem.id,
+        workItem,
+        message: posted,
+        text: `Message sent to ${target.label}.`,
+      });
+    } catch (error) {
+      return fail(error.status || 500, error.message || 'Failed to send message.', {
+        agentId: agent.id,
+        workItemId: workItem.id,
+        target: target.label,
+      });
+    }
     return true;
   }
 

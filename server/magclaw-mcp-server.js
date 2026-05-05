@@ -25,6 +25,34 @@ function parseArgs(argv) {
 }
 
 const options = parseArgs(process.argv);
+let nextCallId = 0;
+
+function summarizeToolArgs(name, args = {}) {
+  const summary = {};
+  if (args.workItemId || args.work_item_id) summary.workItemId = args.workItemId || args.work_item_id;
+  if (args.target || args.channel) summary.target = args.target || args.channel;
+  if (args.query || args.q) summary.queryLength = String(args.query || args.q).length;
+  if (args.path) summary.path = args.path;
+  if (args.targetAgentId || args.targetAgent) summary.targetAgentId = args.targetAgentId || args.targetAgent;
+  if (args.taskId) summary.taskId = args.taskId;
+  if (args.taskNumber) summary.taskNumber = args.taskNumber;
+  if (args.status || args.nextStatus) summary.status = args.status || args.nextStatus;
+  if (args.content || args.summary || args.body || args.title) {
+    summary.contentLength = String(args.content || args.summary || args.body || args.title || '').trim().length;
+  }
+  return { tool: name, ...summary };
+}
+
+function logBridge(event, details = {}) {
+  const payload = {
+    source: 'magclaw-mcp-bridge',
+    event,
+    agentId: options.agentId || null,
+    baseUrl: options.baseUrl,
+    ...details,
+  };
+  process.stderr.write(`${JSON.stringify(payload)}\n`);
+}
 
 function schema(properties, required = []) {
   return {
@@ -334,7 +362,32 @@ async function handle(message) {
       return;
     }
     if (method === 'tools/call') {
-      const data = await callTool(params?.name || '', params?.arguments || {});
+      const toolName = params?.name || '';
+      const toolArgs = params?.arguments || {};
+      const callId = `mcp_${++nextCallId}`;
+      const startedAt = Date.now();
+      logBridge('tools_call_started', {
+        callId,
+        ...summarizeToolArgs(toolName, toolArgs),
+      });
+      let data;
+      try {
+        data = await callTool(toolName, toolArgs);
+      } catch (error) {
+        logBridge('tools_call_failed', {
+          callId,
+          ...summarizeToolArgs(toolName, toolArgs),
+          durationMs: Date.now() - startedAt,
+          error: error.message || String(error),
+        });
+        throw error;
+      }
+      logBridge('tools_call_completed', {
+        callId,
+        ...summarizeToolArgs(toolName, toolArgs),
+        durationMs: Date.now() - startedAt,
+        ok: data?.ok !== false,
+      });
       sendMessage(id, textResult(jsonText(data)));
       return;
     }

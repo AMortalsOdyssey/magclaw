@@ -611,6 +611,7 @@ export function createStateCore(deps) {
       }
       agent.runtimeLastStartedAt = agent.runtimeLastStartedAt || null;
       agent.runtimeLastTurnAt = legacyRuntimeSessionId ? null : agent.runtimeLastTurnAt || null;
+      agent.runtimeActivity = agent.runtimeActivity && typeof agent.runtimeActivity === 'object' ? agent.runtimeActivity : null;
       agent.workspacePath = agent.workspacePath || path.join(AGENTS_DIR, agent.id);
       agent.statusUpdatedAt = agent.statusUpdatedAt || agent.updatedAt || agent.createdAt || now();
       agent.heartbeatAt = agent.heartbeatAt || agent.statusUpdatedAt;
@@ -618,6 +619,12 @@ export function createStateCore(deps) {
       agent.model = isBrainAgent(agent) ? (agent.model || 'agent-card-router') : normalizeCodexModelName(agent.model, state.settings?.model);
       if (!isBrainAgent(agent) && AGENT_BOOT_RESET_STATUSES.has(String(agent.status || '').toLowerCase())) {
         agent.status = 'idle';
+        agent.activeWorkItemIds = [];
+        agent.runtimeActivity = null;
+      }
+      if (!isBrainAgent(agent) && !agentStatusIsBusy(agent.status)) {
+        agent.activeWorkItemIds = [];
+        agent.runtimeActivity = null;
       }
       if (legacyRuntimeSessionId) {
         addSystemEvent('agent_runtime_session_reset', `${agent.name} legacy Codex session was cleared before isolated runtime start.`, {
@@ -718,6 +725,7 @@ export function createStateCore(deps) {
         activeWorkItemIds: normalizeIds(agent.activeWorkItemIds || []),
         runtimeLastStartedAt: agent.runtimeLastStartedAt || null,
         runtimeLastTurnAt: agent.runtimeLastTurnAt || null,
+        runtimeActivity: agent.runtimeActivity || null,
       })),
     };
   }
@@ -729,6 +737,17 @@ export function createStateCore(deps) {
   function agentStatusIsBusy(status) {
     return ['starting', 'thinking', 'working', 'running', 'busy', 'queued'].includes(String(status || '').toLowerCase());
   }
+
+  function runtimeProcessHasActiveWork(proc) {
+    if (!proc) return false;
+    const status = String(proc.status || '').toLowerCase();
+    if (agentStatusIsBusy(status)) return true;
+    if (proc.warmupActive || proc.pendingInitialPrompt || proc.pendingThreadRequest || proc.initializeRequestId) return true;
+    if (proc.activeTurnId) return true;
+    if (proc.activeTurnIds instanceof Set && proc.activeTurnIds.size) return true;
+    if (Array.isArray(proc.pendingDeliveryMessages) && proc.pendingDeliveryMessages.length) return true;
+    return false;
+  }
   
   function setAgentStatus(agent, status, reason = 'status_update', extra = {}) {
     if (!agent) return null;
@@ -737,6 +756,9 @@ export function createStateCore(deps) {
     agent.status = nextStatus;
     agent.statusUpdatedAt = now();
     agent.heartbeatAt = agent.statusUpdatedAt;
+    if (!agentStatusIsBusy(nextStatus)) {
+      agent.runtimeActivity = null;
+    }
     if (extra.activeWorkItemIds !== undefined) {
       agent.activeWorkItemIds = normalizeIds(extra.activeWorkItemIds);
     }
@@ -759,7 +781,14 @@ export function createStateCore(deps) {
     const threshold = Date.now() - AGENT_STATUS_STALE_MS;
     for (const agent of state.agents) {
       if (isBrainAgent(agent)) continue;
-      if (activeAgentIds.has(agent.id)) {
+      const activeProc = activeAgentIds.has(agent.id) ? agentProcesses.get(agent.id) : null;
+      if (activeProc) {
+        if (agentStatusIsBusy(agent.status) && !runtimeProcessHasActiveWork(activeProc)) {
+          setAgentStatus(agent, 'idle', 'activity_probe_idle');
+          addSystemEvent('agent_status_probe_recovered', `${agent.name} status reset to idle after local runtime reported no active work.`, { agentId: agent.id });
+          changed = true;
+          continue;
+        }
         agent.heartbeatAt = now();
         continue;
       }

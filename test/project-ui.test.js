@@ -237,16 +237,24 @@ test('workspace location and scroll position survive refreshes', async () => {
     app.indexOf("document.addEventListener('scroll'"),
     app.indexOf("document.addEventListener('compositionstart'"),
   );
+  const selectSpaceSource = app.slice(app.indexOf("if (action === 'select-space')"), app.indexOf("if (action === 'set-tab')"));
+  const setTabSource = app.slice(app.indexOf("if (action === 'set-tab')"), app.indexOf("if (action === 'task-filter')"));
 
   assert.match(app, /const UI_STATE_KEY = 'magclawUiState'/);
   assert.match(app, /const PANE_SCROLL_KEY = 'magclawPaneScroll'/);
   assert.match(app, /function readStoredUiState\(\)/);
   assert.match(app, /function persistUiState\(\)/);
   assert.match(app, /function readStoredPaneScrolls\(\)/);
+  assert.match(app, /function normalizeStoredPaneScroll\(value\)/);
   assert.match(app, /function persistPaneScroll\(targetName, node\)/);
+  assert.match(app, /atBottom: paneIsAtBottom\(node\)/);
+  assert.match(app, /function persistVisiblePaneScrolls\(\)/);
+  assert.match(app, /function targetDefaultAtBottom\(targetName\)/);
   assert.match(renderSource, /persistUiState\(\)/);
   assert.match(scrollListenerSource, /persistPaneScroll\('main', event\.target\)/);
   assert.match(scrollListenerSource, /persistPaneScroll\('thread', event\.target\)/);
+  assert.match(selectSpaceSource, /persistVisiblePaneScrolls\(\);[\s\S]*selectedSpaceType = target\.dataset\.type/);
+  assert.match(setTabSource, /persistVisiblePaneScrolls\(\);[\s\S]*activeTab = target\.dataset\.tab/);
 });
 
 test('task cards open their thread conversation and keep compact blocks without delete action', async () => {
@@ -545,13 +553,17 @@ test('sidebar settings and skill panels support collapsible MagClaw UI sections'
   assert.match(app, /Agent-Isolated Skills/);
   assert.match(app, /Global Codex Skills/);
   assert.match(app, /Plugin Skills/);
-  assert.match(app, /function renderSettingsTabs\(\)/);
+  assert.match(app, /function renderSettingsRail\(\)/);
+  assert.match(app, /function renderSettingsChrome\(body, actions = ''\)/);
+  assert.match(app, /function renderComputersRail\(\)/);
   assert.match(app, /data-action="set-settings-tab"/);
+  assert.match(app, /System Config/);
   assert.match(app, /Release Notes/);
   assert.match(app, /hidden warmup turns/);
   assert.match(styles, /\.rail-collapse-btn/);
   assert.match(styles, /\.skill-collapse-btn/);
-  assert.match(styles, /\.settings-tabs/);
+  assert.match(styles, /\.settings-nav-list/);
+  assert.match(styles, /\.settings-page-header/);
   assert.match(styles, /\.settings-release/);
   assert.match(styles, /\.release-note-row/);
 });
@@ -618,8 +630,13 @@ test('Fan-out API config replaces the Brain Agent UI module', async () => {
   assert.match(railSource, /const normalAgents = channelAssignableAgents\(\)/);
   assert.match(railSource, /normalAgents\.map\(\(agent\) => renderAgentListItem\(agent\)\)/);
   assert.match(railSource, /System Config/);
+  assert.match(app, /function renderSystemSettingsTab\(\)/);
+  assert.match(app, /settingsTab === 'system'/);
+  assert.match(app, /function renderComputersRail\(\)/);
+  assert.doesNotMatch(app.slice(app.indexOf('function renderComputersRail'), app.indexOf('function renderSettingsRail')), /Fan-out API/);
   assert.doesNotMatch(railSource, /renderNavItem\('cloud', 'System'/);
   assert.match(app, /function renderFanoutApiConfigCard\(\)/);
+  assert.match(app.slice(app.indexOf('function renderSystemSettingsTab'), app.indexOf('function renderReleaseNotesSettingsTab')), /renderFanoutApiConfigCard\(\)/);
   assert.match(app, /id="fanout-config-form"/);
   assert.match(app, /Base URL/);
   assert.match(app, /API Key/);

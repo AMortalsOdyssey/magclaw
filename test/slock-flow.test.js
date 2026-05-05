@@ -423,12 +423,41 @@ test('stale runtime statuses reset to idle when the local server restarts', asyn
       body: JSON.stringify({ status: 'error' }),
     });
     assert.equal(patched.agent.status, 'error');
+    const { agent: idleStale } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Idle Stale', description: 'stale live activity', runtime: 'Codex CLI' }),
+    });
 
     await server.stop({ keepTmp: true });
+    const stateFile = path.join(tmp, '.magclaw', 'state.json');
+    const savedState = JSON.parse(await readFile(stateFile, 'utf8'));
+    const savedAgent = savedState.agents.find((agent) => agent.id === 'agt_codex');
+    savedAgent.activeWorkItemIds = ['wi_stale'];
+    savedAgent.runtimeActivity = {
+      activity: 'working',
+      detail: 'Old stuck turn',
+      activeTurnIds: ['turn_stale'],
+      pendingToolCalls: [{ id: 'tool_stale', name: '', workItemId: 'wi_stale' }],
+    };
+    const savedIdleStale = savedState.agents.find((agent) => agent.id === idleStale.id);
+    savedIdleStale.activeWorkItemIds = ['wi_idle_stale'];
+    savedIdleStale.runtimeActivity = {
+      activity: 'working',
+      detail: 'Old idle live marker',
+      activeTurnIds: ['turn_idle_stale'],
+    };
+    await writeFile(stateFile, JSON.stringify(savedState, null, 2));
     server = await launchIsolatedServer(tmp);
 
     const state = await request(server.baseUrl, '/api/state');
-    assert.equal(state.agents.find((agent) => agent.id === 'agt_codex')?.status, 'idle');
+    const agent = state.agents.find((item) => item.id === 'agt_codex');
+    assert.equal(agent?.status, 'idle');
+    assert.deepEqual(agent?.activeWorkItemIds, []);
+    assert.equal(agent?.runtimeActivity, null);
+    const idleRecovered = state.agents.find((item) => item.id === idleStale.id);
+    assert.equal(idleRecovered?.status, 'idle');
+    assert.deepEqual(idleRecovered?.activeWorkItemIds, []);
+    assert.equal(idleRecovered?.runtimeActivity, null);
     await server.stop();
     cleaned = true;
   } finally {
@@ -462,6 +491,85 @@ test('status changes publish an immediate heartbeat without waiting for the inte
     controller.abort();
     await reader.cancel().catch(() => {});
     await server.stop();
+  }
+});
+
+test('activity probe resets stale busy status when the local app-server is idle', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-probe-idle-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function send(value) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+  }
+  function handle(message) {
+    log({ method: message.method, params: message.params });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_probe_idle' } } });
+      return;
+    }
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_probe_idle' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_probe_idle' } } });
+      setTimeout(() => {
+        send({ method: 'item/agentMessage/delta', params: { itemId: 'item_probe_idle', delta: 'probe idle complete' } });
+        send({ method: 'turn/completed', params: { turn: { id: 'turn_probe_idle', status: 'completed' } } });
+      }, 40);
+    }
+  }
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+    MAGCLAW_STATE_HEARTBEAT_MS: '50',
+  });
+  try {
+    await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> complete and stay warm', attachmentIds: [] }),
+    });
+    await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      return state.agents.find((agent) => agent.id === 'agt_codex')?.status === 'idle' ? state : null;
+    }, 4000);
+    await request(server.baseUrl, '/api/agents/agt_codex', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'working' }),
+    });
+    const recovered = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return agent?.status === 'idle' && state.events.some((event) => event.type === 'agent_status_probe_recovered' && event.agentId === 'agt_codex') ? state : null;
+    }, 2500);
+    assert.ok(recovered);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
   }
 });
 
@@ -2643,7 +2751,9 @@ if (args[0] === 'exec') {
 
     const finalState = await waitFor(async () => {
       const state = await request(server.baseUrl, '/api/state');
-      return state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('duplicate ready response'))
+      const replied = state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('duplicate ready response'));
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return replied && agent?.status === 'idle'
         ? state
         : null;
     }, 5000);
@@ -2831,6 +2941,781 @@ if (args[0] === 'exec') {
   }
 });
 
+test('Codex app-server falls back after the final built-in response stream retry', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-final-retry-limit-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+if (args[0] === 'exec') {
+  const outputPath = args[args.indexOf('-o') + 1];
+  log({ mode: 'exec', args });
+  process.stdin.on('end', () => {
+    fs.writeFileSync(outputPath, 'legacy fallback after final retry');
+    process.exit(0);
+  });
+  process.stdin.resume();
+} else if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function send(value) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+  }
+  function handle(message) {
+    log({ method: message.method, params: message.params });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_final_retry_session' } } });
+      return;
+    }
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_final_retry' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_final_retry' } } });
+      setTimeout(() => process.stderr.write('stream disconnected - retrying sampling request (1/5 in 14s)...\\n'), 10);
+      setTimeout(() => process.stderr.write('stream disconnected - retrying sampling request (5/5 in 14s)...\\n'), 40);
+    }
+    if (message.method === 'turn/interrupt') {
+      log({ method: message.method, params: message.params });
+    }
+  }
+  process.on('SIGTERM', () => process.exit(0));
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 看一下最终重试兜底', attachmentIds: [] }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      return state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('legacy fallback after final retry'))
+        ? state
+        : null;
+    }, 5000);
+    const entries = await readJsonLines(logPath);
+    assert.ok(entries.some((item) => item.mode === 'app-server'));
+    assert.ok(entries.some((item) => item.mode === 'exec'));
+    assert.ok(entries.some((item) => item.method === 'turn/interrupt'));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_runtime_fallback' && item.message.includes('5/5')));
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('Codex app-server watchdog recovers a stuck send_message tool call', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-watchdog-send-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+if (args[0] === 'exec') {
+  const outputPath = args[args.indexOf('-o') + 1];
+  log({ mode: 'exec', args });
+  process.stdin.on('end', () => {
+    fs.writeFileSync(outputPath, 'legacy fallback should not run after send_message recovery');
+    process.exit(0);
+  });
+  process.stdin.resume();
+} else if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function send(value) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+  }
+  function handle(message) {
+    log({ method: message.method, params: message.params });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_watchdog_send' } } });
+      return;
+    }
+    if (message.method === 'thread/resume') {
+      send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+      return;
+    }
+    if (message.method === 'turn/start') {
+      const prompt = message.params?.input?.[0]?.text || '';
+      const workItemId = /workItem=(wi_[a-z0-9]+)/.exec(prompt)?.[1] || '';
+      const target = /target=([^\\s\\]]+)/.exec(prompt)?.[1] || '#all';
+      send({ id: message.id, result: { turn: { id: 'turn_watchdog_send' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_watchdog_send' } } });
+      setTimeout(() => {
+        send({
+          method: 'item/started',
+          params: {
+            item: {
+              id: 'tool_watchdog_send',
+              type: 'mcpToolCall',
+              server: 'magclaw',
+              tool: 'send_message',
+              status: 'inProgress',
+              arguments: {
+                workItemId,
+                target,
+                content: 'watchdog recovered routed reply',
+              },
+            },
+          },
+        });
+      }, 20);
+    }
+    if (message.method === 'turn/interrupt') {
+      send({ id: message.id, result: {} });
+    }
+  }
+  process.on('SIGTERM', () => process.exit(0));
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+    MAGCLAW_AGENT_STUCK_SEND_MESSAGE_MS: '300',
+    MAGCLAW_AGENT_RUN_STALL_LOG_MS: '300',
+    MAGCLAW_STATE_HEARTBEAT_MS: '25',
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 用 send_message 回复但卡住', attachmentIds: [] }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const replied = state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('watchdog recovered routed reply'));
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return replied && agent?.status === 'idle' ? state : null;
+    }, 6000);
+    assert.ok(finalState, JSON.stringify((await request(server.baseUrl, '/api/state')).events.slice(-20), null, 2));
+    const agent = finalState.agents.find((item) => item.id === 'agt_codex');
+    assert.equal(agent.runtimeActivity, null);
+    const workItem = finalState.workItems.find((item) => item.sourceMessageId === created.message.id && item.agentId === 'agt_codex');
+    assert.equal(workItem.status, 'responded');
+    assert.ok(finalState.events.some((item) => item.type === 'agent_mcp_tool_call_started' && item.toolCallId === 'tool_watchdog_send'));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_send_message_watchdog_timeout' && item.agentId === 'agt_codex'));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_run_watchdog_recovered_send_message' && item.workItemId === workItem.id));
+    const entries = await readJsonLines(logPath);
+    assert.ok(entries.some((item) => item.mode === 'app-server'));
+    assert.equal(entries.some((item) => item.mode === 'exec'), false);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('Codex app-server dynamic tool call requests execute MagClaw MCP tools', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-dynamic-tool-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+if (args[0] === 'exec') {
+  const outputPath = args[args.indexOf('-o') + 1];
+  log({ mode: 'exec', args });
+  process.stdin.on('end', () => {
+    fs.writeFileSync(outputPath, 'legacy fallback should not run for dynamic tool call');
+    process.exit(0);
+  });
+  process.stdin.resume();
+} else if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function send(value) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+  }
+  function handle(message) {
+    log({ incoming: message });
+    if (message.id === 99 && message.result) {
+      log({ dynamicToolResponse: message.result });
+      send({
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'call_dynamic_send',
+            type: 'mcpToolCall',
+            server: 'magclaw',
+            tool: 'send_message',
+            status: 'completed',
+            arguments: message.params?.arguments || {},
+            result: message.result,
+          },
+        },
+      });
+      send({ method: 'turn/completed', params: { turn: { id: 'turn_dynamic_tool', status: 'completed' } } });
+      return;
+    }
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_dynamic_tool' } } });
+      return;
+    }
+    if (message.method === 'thread/resume') {
+      send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+      return;
+    }
+    if (message.method === 'turn/start') {
+      const prompt = message.params?.input?.[0]?.text || '';
+      const workItemId = /workItem=(wi_[a-z0-9]+)/.exec(prompt)?.[1] || '';
+      const target = /target=([^\\s\\]]+)/.exec(prompt)?.[1] || '#all';
+      const toolArgs = {
+        workItemId,
+        target,
+        content: 'dynamic tool routed reply',
+      };
+      send({ id: message.id, result: { turn: { id: 'turn_dynamic_tool' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_dynamic_tool' } } });
+      setTimeout(() => {
+        send({
+          method: 'item/started',
+          params: {
+            item: {
+              id: 'call_dynamic_send',
+              type: 'mcpToolCall',
+              server: 'magclaw',
+              tool: 'send_message',
+              status: 'inProgress',
+              arguments: toolArgs,
+            },
+          },
+        });
+        send({
+          id: 99,
+          method: 'item/tool/call',
+          params: {
+            callId: 'call_dynamic_send',
+            turnId: 'turn_dynamic_tool',
+            name: 'send_message',
+            arguments: toolArgs,
+          },
+        });
+      }, 20);
+    }
+    if (message.method === 'turn/interrupt') {
+      log({ method: 'turn/interrupt-unexpected', params: message.params });
+      send({ id: message.id, result: {} });
+    }
+  }
+  process.on('SIGTERM', () => process.exit(0));
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+    MAGCLAW_AGENT_STUCK_SEND_MESSAGE_MS: '5000',
+    MAGCLAW_AGENT_RUN_STALL_LOG_MS: '5000',
+    MAGCLAW_STATE_HEARTBEAT_MS: '25',
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 用动态 tool call 回复', attachmentIds: [] }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const replied = state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('dynamic tool routed reply'));
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return replied && agent?.status === 'idle' ? state : null;
+    }, 6000);
+    assert.ok(finalState, JSON.stringify((await request(server.baseUrl, '/api/state')).events.slice(-20), null, 2));
+    const workItem = finalState.workItems.find((item) => item.sourceMessageId === created.message.id && item.agentId === 'agt_codex');
+    assert.equal(workItem.status, 'responded');
+    assert.ok(finalState.events.some((item) => item.type === 'agent_dynamic_tool_call_started' && item.toolCallId === 'call_dynamic_send'));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_dynamic_tool_call_completed' && item.toolCallId === 'call_dynamic_send'));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_mcp_tool_call_completed' && item.toolCallId === 'call_dynamic_send'));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_tool_send_message' && item.workItemId === workItem.id));
+    assert.equal(finalState.events.some((item) => item.type === 'agent_send_message_watchdog_timeout'), false);
+    const entries = await readJsonLines(logPath);
+    assert.ok(entries.some((item) => item.dynamicToolResponse?.contentItems?.[0]?.type === 'inputText'
+      && item.dynamicToolResponse.contentItems[0].text.includes('Message sent')));
+    assert.equal(entries.some((item) => item.mode === 'exec'), false);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('Codex app-server MCP tool approval requests auto-approve MagClaw tools', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-mcp-approval-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+if (args[0] === 'exec') {
+  const outputPath = args[args.indexOf('-o') + 1];
+  log({ mode: 'exec', args });
+  process.stdin.on('end', () => {
+    fs.writeFileSync(outputPath, 'legacy fallback should not run for MCP approval');
+    process.exit(0);
+  });
+  process.stdin.resume();
+} else if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function send(value) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+  }
+  function handle(message) {
+    log({ incoming: message });
+    if (message.id === 77 && message.result) {
+      log({ elicitationResponse: message.result });
+      send({
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'call_memory_search',
+            type: 'mcpToolCall',
+            server: 'magclaw',
+            tool: 'search_agent_memory',
+            status: 'completed',
+            arguments: { query: '旅游', limit: 10 },
+            result: { content: [{ type: 'text', text: '魏无涯: 旅游经验丰富' }] },
+          },
+        },
+      });
+      send({ method: 'item/agentMessage/delta', params: { delta: '查过记忆了，魏无涯更擅长旅游。' } });
+      send({
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'agent_reply',
+            type: 'agentMessage',
+            text: '查过记忆了，魏无涯更擅长旅游。',
+          },
+        },
+      });
+      send({ method: 'turn/completed', params: { turn: { id: 'turn_mcp_approval', status: 'completed' } } });
+      return;
+    }
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_mcp_approval' } } });
+      return;
+    }
+    if (message.method === 'thread/resume') {
+      send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+      return;
+    }
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_mcp_approval' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_mcp_approval' } } });
+      setTimeout(() => {
+        send({
+          method: 'item/started',
+          params: {
+            item: {
+              id: 'call_memory_search',
+              type: 'mcpToolCall',
+              server: 'magclaw',
+              tool: 'search_agent_memory',
+              status: 'inProgress',
+              arguments: { query: '旅游', limit: 10 },
+            },
+          },
+        });
+        send({
+          id: 77,
+          method: 'mcpServer/elicitation/request',
+          params: {
+            threadId: 'thread_mcp_approval',
+            turnId: 'turn_mcp_approval',
+            serverName: 'magclaw',
+            mode: 'form',
+            _meta: {
+              codex_approval_kind: 'mcp_tool_call',
+              persist: ['session', 'always'],
+              tool_description: 'Search MagClaw agent memory.',
+              tool_params: { query: '旅游', limit: 10 },
+              tool_params_display: [
+                { name: 'query', value: '旅游', display_name: 'query' },
+                { name: 'limit', value: 10, display_name: 'limit' },
+              ],
+            },
+            message: 'Allow the magclaw MCP server to run tool "search_agent_memory"?',
+            requestedSchema: { type: 'object', properties: {} },
+          },
+        });
+      }, 20);
+    }
+    if (message.method === 'turn/interrupt') {
+      log({ method: 'turn/interrupt-unexpected', params: message.params });
+      send({ id: message.id, result: {} });
+    }
+  }
+  process.on('SIGTERM', () => process.exit(0));
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+    MAGCLAW_AGENT_STUCK_SEND_MESSAGE_MS: '5000',
+    MAGCLAW_AGENT_RUN_STALL_LOG_MS: '5000',
+    MAGCLAW_STATE_HEARTBEAT_MS: '25',
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 查一下谁对旅游比较擅长', attachmentIds: [] }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const replied = state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('魏无涯更擅长旅游'));
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return replied && agent?.status === 'idle' ? state : null;
+    }, 6000);
+    assert.ok(finalState, JSON.stringify((await request(server.baseUrl, '/api/state')).events.slice(-20), null, 2));
+    const workItem = finalState.workItems.find((item) => item.sourceMessageId === created.message.id && item.agentId === 'agt_codex');
+    assert.equal(workItem.status, 'responded');
+    assert.ok(finalState.events.some((item) => item.type === 'agent_mcp_elicitation_auto_approved'
+      && item.canonicalName === 'search_agent_memory'));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_mcp_tool_call_completed'
+      && item.toolCallId === 'call_memory_search'));
+    assert.equal(finalState.events.some((item) => item.type === 'agent_app_server_request_unhandled'
+      && item.method === 'mcpServer/elicitation/request'), false);
+    const entries = await readJsonLines(logPath);
+    assert.ok(entries.some((item) => item.elicitationResponse?.action === 'accept'));
+    assert.equal(entries.some((item) => item.mode === 'exec'), false);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('Codex app-server watchdog logs but does not kill a long-running tool call', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-watchdog-long-tool-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+if (args[0] === 'exec') {
+  const outputPath = args[args.indexOf('-o') + 1];
+  log({ mode: 'exec', args });
+  process.stdin.on('end', () => {
+    fs.writeFileSync(outputPath, 'legacy fallback should not run for long tool call');
+    process.exit(0);
+  });
+  process.stdin.resume();
+} else if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function send(value) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+  }
+  function handle(message) {
+    log({ method: message.method, params: message.params });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_watchdog_long_tool' } } });
+      return;
+    }
+    if (message.method === 'thread/resume') {
+      send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+      return;
+    }
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_watchdog_long_tool' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_watchdog_long_tool' } } });
+      setTimeout(() => {
+        send({
+          method: 'item/started',
+          params: {
+            item: {
+              id: 'tool_watchdog_shell',
+              type: 'commandExecution',
+              command: 'sleep 20 && echo done',
+            },
+          },
+        });
+      }, 20);
+      setTimeout(() => {
+        send({
+          method: 'item/completed',
+          params: {
+            item: {
+              id: 'tool_watchdog_shell',
+              type: 'commandExecution',
+              command: 'sleep 20 && echo done',
+            },
+          },
+        });
+        send({ method: 'item/agentMessage/delta', params: { itemId: 'item_watchdog_long_tool', delta: 'long tool completed normally' } });
+        send({ method: 'turn/completed', params: { turn: { id: 'turn_watchdog_long_tool', status: 'completed' } } });
+      }, 850);
+    }
+    if (message.method === 'turn/interrupt') {
+      log({ method: 'turn/interrupt-unexpected', params: message.params });
+      send({ id: message.id, result: {} });
+    }
+  }
+  process.on('SIGTERM', () => {
+    log({ signal: 'SIGTERM' });
+    process.exit(143);
+  });
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+    MAGCLAW_AGENT_STUCK_SEND_MESSAGE_MS: '300',
+    MAGCLAW_AGENT_RUN_STALL_LOG_MS: '300',
+    MAGCLAW_STATE_HEARTBEAT_MS: '25',
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 跑一个耗时工具调用', attachmentIds: [] }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const replied = state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('long tool completed normally'));
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return replied && agent?.status === 'idle' ? state : null;
+    }, 6000);
+    assert.ok(finalState, JSON.stringify((await request(server.baseUrl, '/api/state')).events.slice(-20), null, 2));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_run_watchdog_stall' && item.agentId === 'agt_codex'));
+    assert.equal(finalState.events.some((item) => item.type === 'agent_runtime_fallback'), false);
+    assert.equal(finalState.events.some((item) => item.type === 'agent_send_message_watchdog_timeout'), false);
+    const entries = await readJsonLines(logPath);
+    assert.ok(entries.some((item) => item.mode === 'app-server'));
+    assert.equal(entries.some((item) => item.mode === 'exec'), false);
+    assert.equal(entries.some((item) => item.method === 'turn/interrupt-unexpected'), false);
+    assert.equal(entries.some((item) => item.signal === 'SIGTERM'), false);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
+test('Codex app-server watchdog emits Slock-style activity heartbeat and runtime stalled events without killing the turn', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-watchdog-activity-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+if (args[0] === 'exec') {
+  const outputPath = args[args.indexOf('-o') + 1];
+  log({ mode: 'exec', args });
+  process.stdin.on('end', () => {
+    fs.writeFileSync(outputPath, 'legacy fallback should not run for activity watchdog');
+    process.exit(0);
+  });
+  process.stdin.resume();
+} else if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function send(value) {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+  }
+  function handle(message) {
+    log({ method: message.method, params: message.params });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_watchdog_activity' } } });
+      return;
+    }
+    if (message.method === 'thread/resume') {
+      send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+      return;
+    }
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_watchdog_activity' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_watchdog_activity' } } });
+      setTimeout(() => {
+        send({
+          method: 'item/started',
+          params: {
+            item: {
+              id: 'tool_watchdog_activity',
+              type: 'commandExecution',
+              command: 'long command with sparse runtime events',
+            },
+          },
+        });
+      }, 20);
+      setTimeout(() => {
+        send({
+          method: 'item/completed',
+          params: {
+            item: {
+              id: 'tool_watchdog_activity',
+              type: 'commandExecution',
+              command: 'long command with sparse runtime events',
+            },
+          },
+        });
+        send({ method: 'item/agentMessage/delta', params: { itemId: 'item_watchdog_activity', delta: 'activity watchdog completed normally' } });
+        send({ method: 'turn/completed', params: { turn: { id: 'turn_watchdog_activity', status: 'completed' } } });
+      }, 1100);
+    }
+    if (message.method === 'turn/interrupt') {
+      log({ method: 'turn/interrupt-unexpected', params: message.params });
+      send({ id: message.id, result: {} });
+    }
+  }
+  process.on('SIGTERM', () => {
+    log({ signal: 'SIGTERM' });
+    process.exit(143);
+  });
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+    MAGCLAW_AGENT_STUCK_SEND_MESSAGE_MS: '5000',
+    MAGCLAW_AGENT_RUN_STALL_LOG_MS: '250',
+    MAGCLAW_AGENT_ACTIVITY_HEARTBEAT_MS: '250',
+    MAGCLAW_AGENT_RUNTIME_PROGRESS_STALE_MS: '650',
+    MAGCLAW_STATE_HEARTBEAT_MS: '25',
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 跑一个稀疏事件长任务', attachmentIds: [] }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const replied = state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('activity watchdog completed normally'));
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return replied && agent?.status === 'idle' ? state : null;
+    }, 6000);
+    assert.ok(finalState.events.some((item) => item.type === 'agent_activity_heartbeat' && item.agentId === 'agt_codex'));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_runtime_progress_stalled' && item.agentId === 'agt_codex'));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_runtime_progress_observed' && item.agentId === 'agt_codex'));
+    assert.equal(finalState.events.some((item) => item.type === 'agent_runtime_fallback'), false);
+    assert.equal(finalState.events.some((item) => item.type === 'agent_send_message_watchdog_timeout'), false);
+    const entries = await readJsonLines(logPath);
+    assert.ok(entries.some((item) => item.mode === 'app-server'));
+    assert.equal(entries.some((item) => item.mode === 'exec'), false);
+    assert.equal(entries.some((item) => item.method === 'turn/interrupt-unexpected'), false);
+    assert.equal(entries.some((item) => item.signal === 'SIGTERM'), false);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
 test('agent tool send_message routes by work item and rejects cross-channel targets', async () => {
   const server = await startIsolatedServer();
   try {
@@ -2882,6 +3767,9 @@ test('agent tool send_message routes by work item and rejects cross-channel targ
     const finalState = await request(server.baseUrl, '/api/state');
     assert.ok(finalState.replies.some((reply) => reply.parentMessageId === created.message.id && reply.body === 'explicit routed reply'));
     assert.equal(finalState.messages.some((message) => message.spaceId === channel.id && message.body === 'this must not land in the wrong channel'), false);
+    assert.ok(finalState.events.some((event) => event.type === 'agent_tool_send_message_started' && event.workItemId === workItem.id));
+    assert.ok(finalState.events.some((event) => event.type === 'agent_tool_send_message' && event.workItemId === workItem.id && event.durationMs >= 0));
+    assert.ok(finalState.events.some((event) => event.type === 'agent_tool_send_message_failed' && event.status === 409 && event.workItemId === workItem.id));
   } finally {
     await server.stop();
   }

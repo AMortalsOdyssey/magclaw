@@ -20,7 +20,7 @@ let selectedSpaceType = initialUiState.selectedSpaceType || 'channel';
 let selectedSpaceId = initialUiState.selectedSpaceId || 'chan_all';
 let activeView = initialUiState.activeView || 'space';
 let activeTab = initialUiState.activeTab || 'chat';
-let railTab = initialUiState.railTab || localStorage.getItem('railTab') || 'spaces'; // 'spaces' or 'members'
+let railTab = initialUiState.railTab || localStorage.getItem('railTab') || 'spaces'; // 'spaces', 'members', 'computers', or 'settings'
 let threadMessageId = initialUiState.threadMessageId || null;
 let inspectorReturnThreadId = null;
 let selectedAgentId = null; // selected agent for detail panel
@@ -49,6 +49,7 @@ let composerTaskFlags = {};
 let composerMentionMaps = {};
 let installedRuntimes = [];
 let selectedRuntimeId = null;
+const BOTTOM_THRESHOLD = 72;
 let backBottomVisible = { main: false, thread: false };
 let pendingBottomScroll = { main: false, thread: false };
 let pendingComposerFocusId = null;
@@ -68,14 +69,13 @@ let agentWarmRequests = new Set();
 let agentDetailTab = 'profile';
 let agentDetailEditState = { field: null };
 let agentEnvEditState = null;
-let settingsTab = initialUiState.settingsTab || 'server';
+let settingsTab = initialUiState.settingsTab || 'account';
 let collapsedSidebarSections = readJsonStorage(SIDEBAR_SECTION_COLLAPSE_KEY, {});
 let collapsedSkillSections = readJsonStorage(SKILL_SECTION_COLLAPSE_KEY, {});
 let avatarCropState = null;
 let notificationPrefs = normalizeNotificationPrefs(readJsonStorage(NOTIFICATION_PREF_KEY, {}));
 let windowFocused = document.hasFocus();
 
-const BOTTOM_THRESHOLD = 72;
 const MAX_ATTACHMENTS_PER_COMPOSER = 20;
 const AGENT_AVATAR_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 const AGENT_ACTIVITY_EVENT_LIMIT = 5000;
@@ -631,12 +631,12 @@ function dismissAgentNotifications() {
 function readStoredUiState() {
   const parsed = readJsonStorage(UI_STATE_KEY, {});
   const validSpaceType = ['channel', 'dm'].includes(parsed.selectedSpaceType) ? parsed.selectedSpaceType : 'channel';
-  const validView = ['space', 'tasks', 'threads', 'saved', 'search', 'missions', 'cloud'].includes(parsed.activeView)
+  const validView = ['space', 'tasks', 'threads', 'saved', 'search', 'missions', 'cloud', 'computers'].includes(parsed.activeView)
     ? parsed.activeView
     : 'space';
   const validTab = ['chat', 'tasks'].includes(parsed.activeTab) ? parsed.activeTab : 'chat';
-  const validRailTab = ['spaces', 'members'].includes(parsed.railTab) ? parsed.railTab : '';
-  const validSettingsTab = ['account', 'browser', 'server', 'release'].includes(parsed.settingsTab) ? parsed.settingsTab : 'server';
+  const validRailTab = ['spaces', 'members', 'computers', 'settings'].includes(parsed.railTab) ? parsed.railTab : '';
+  const validSettingsTab = ['account', 'browser', 'server', 'system', 'release'].includes(parsed.settingsTab) ? parsed.settingsTab : 'account';
   return {
     selectedSpaceType: validSpaceType,
     selectedSpaceId: String(parsed.selectedSpaceId || ''),
@@ -669,14 +669,44 @@ function persistUiState() {
 function readStoredPaneScrolls() {
   const parsed = readJsonStorage(PANE_SCROLL_KEY, {});
   return Object.fromEntries(Object.entries(parsed)
-    .map(([key, value]) => [key, Number(value)])
-    .filter(([key, value]) => key && Number.isFinite(value) && value >= 0));
+    .map(([key, value]) => {
+      const normalized = normalizeStoredPaneScroll(value);
+      return normalized ? [key, normalized] : null;
+    })
+    .filter(Boolean));
+}
+
+function normalizeStoredPaneScroll(value) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) return null;
+    return {
+      top: value,
+      atBottom: value <= BOTTOM_THRESHOLD,
+      legacy: true,
+    };
+  }
+  if (!value || typeof value !== 'object') return null;
+  const top = Number(value.top);
+  if (!Number.isFinite(top) || top < 0) return null;
+  return {
+    top,
+    atBottom: Boolean(value.atBottom),
+    scrollHeight: Number.isFinite(Number(value.scrollHeight)) ? Number(value.scrollHeight) : null,
+    clientHeight: Number.isFinite(Number(value.clientHeight)) ? Number(value.clientHeight) : null,
+    updatedAt: value.updatedAt || null,
+  };
 }
 
 function persistPaneScroll(targetName, node) {
   const key = paneKey(targetName);
   if (!key || !node) return;
-  paneScrollPositions[key] = Math.max(0, Math.round(node.scrollTop || 0));
+  paneScrollPositions[key] = {
+    top: Math.max(0, Math.round(node.scrollTop || 0)),
+    atBottom: paneIsAtBottom(node),
+    scrollHeight: Math.max(0, Math.round(node.scrollHeight || 0)),
+    clientHeight: Math.max(0, Math.round(node.clientHeight || 0)),
+    updatedAt: new Date().toISOString(),
+  };
   const entries = Object.entries(paneScrollPositions);
   if (entries.length > 120) {
     paneScrollPositions = Object.fromEntries(entries.slice(entries.length - 120));
@@ -2006,6 +2036,14 @@ function paneKey(targetName) {
   return `main:${activeView}:${activeTab}:${selectedSpaceType}:${selectedSpaceId}`;
 }
 
+function storedPaneScroll(key) {
+  return key ? normalizeStoredPaneScroll(paneScrollPositions[key]) : null;
+}
+
+function targetDefaultAtBottom(targetName) {
+  return targetName === 'main' || targetName === 'thread';
+}
+
 function paneIsAtBottom(node) {
   if (!node) return true;
   return node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_THRESHOLD;
@@ -2014,19 +2052,28 @@ function paneIsAtBottom(node) {
 function paneScrollSnapshot(targetName) {
   const node = document.querySelector(paneSelector(targetName));
   const key = paneKey(targetName);
-  const storedTop = paneScrollPositions[key];
+  const stored = storedPaneScroll(key);
   if (!node) {
     return {
       key,
-      top: Number.isFinite(storedTop) ? storedTop : 0,
-      atBottom: !Number.isFinite(storedTop),
+      top: stored?.top || 0,
+      atBottom: stored ? stored.atBottom : targetDefaultAtBottom(targetName),
+      hasPosition: Boolean(stored),
     };
   }
   return {
     key,
     top: node.scrollTop || 0,
     atBottom: paneIsAtBottom(node),
+    hasPosition: true,
   };
+}
+
+function persistVisiblePaneScrolls() {
+  const main = document.querySelector(paneSelector('main'));
+  if (main) persistPaneScroll('main', main);
+  const thread = document.querySelector(paneSelector('thread'));
+  if (thread) persistPaneScroll('thread', thread);
 }
 
 function rememberPinnedBottomBeforeStateChange() {
@@ -2051,11 +2098,18 @@ function updateBackBottomVisibility(targetName) {
 function restorePaneScroll(targetName, snapshot) {
   const node = document.querySelector(paneSelector(targetName));
   if (!node) return;
+  const currentKey = paneKey(targetName);
+  const stored = storedPaneScroll(currentKey);
+  const candidate = snapshot?.key === currentKey
+    ? snapshot
+    : (stored ? { key: currentKey, ...stored, hasPosition: true } : null);
   const forceBottom = pendingBottomScroll[targetName];
   pendingBottomScroll[targetName] = false;
-  const shouldFollowBottom = forceBottom || snapshot?.atBottom;
-  if (!shouldFollowBottom && snapshot?.key === paneKey(targetName)) {
-    node.scrollTop = snapshot.top;
+  const hasPosition = Boolean(candidate?.hasPosition);
+  const shouldFollowBottom = forceBottom || (hasPosition ? candidate.atBottom : targetDefaultAtBottom(targetName));
+  if (!shouldFollowBottom && hasPosition) {
+    const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+    node.scrollTop = Math.min(Math.max(0, candidate.top || 0), maxTop);
     persistPaneScroll(targetName, node);
   } else {
     node.scrollTop = node.scrollHeight;
@@ -2352,10 +2406,27 @@ function renderRail() {
     ? 'tasks'
     : activeView === 'cloud'
       ? 'settings'
-      : railTab === 'members'
-        ? 'members'
-        : 'chat';
-  const railHeading = railMode === 'tasks' ? 'Tasks' : railMode === 'members' ? 'Members' : railMode === 'settings' ? 'Settings' : 'Chat';
+      : activeView === 'computers' || (activeView === 'missions' && railTab === 'computers')
+        ? 'desktop'
+        : railTab === 'members'
+          ? 'members'
+          : 'chat';
+  const railHeading = railMode === 'tasks'
+    ? 'Tasks'
+    : railMode === 'members'
+      ? 'Members'
+      : railMode === 'settings'
+        ? 'Settings'
+        : railMode === 'desktop'
+          ? 'Computers'
+          : 'Chat';
+  const sidebarBody = railMode === 'settings'
+    ? renderSettingsRail()
+    : railMode === 'desktop'
+      ? renderComputersRail()
+      : railTab === 'spaces'
+        ? renderChatRail({ channels, dms, unreadThreads, openTasks, saved })
+        : renderMembersRail({ normalAgents });
 
   return `
     <aside class="rail collab-rail slock-rail">
@@ -2373,55 +2444,7 @@ function renderRail() {
           <h2>${escapeHtml(railHeading)}</h2>
         </div>
 
-      ${railTab === 'spaces' ? `
-      <div class="nav-list">
-        ${renderNavItem('search', 'Search', 'search', searchQuery ? '⌘K' : '⌘K')}
-        ${renderNavItem('threads', 'Threads', 'message', unreadThreads || '')}
-        ${renderNavItem('tasks', 'Tasks', 'file', openTasks || '')}
-        ${renderNavItem('saved', 'Saved', 'bookmark', saved || '')}
-      </div>
-
-      <div class="rail-section">
-        ${renderRailSectionTitle('channels', 'Channels', channels.length, { modal: 'channel' })}
-        ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel)).join('')}
-      </div>
-
-      <div class="rail-section">
-        ${renderRailSectionTitle('dms', 'DIRECT MESSAGES', dms.length, { modal: 'dm' })}
-        ${collapsedSidebarSections.dms ? '' : dms.map((dm) => {
-          const other = dm.participantIds.find((id) => id !== 'hum_local');
-          const agent = byId(appState.agents, other);
-          const human = byId(appState.humans, other);
-          const status = agent?.status || human?.status || '';
-          return renderDmItem(dm.id, displayName(other), status, agent?.avatar || human?.avatar);
-        }).join('')}
-      </div>
-      ` : `
-      <div class="rail-section">
-        ${renderRailSectionTitle('agents', 'Agents', normalAgents.length, { modal: 'agent' })}
-        ${collapsedSidebarSections.agents ? '' : normalAgents.map((agent) => renderAgentListItem(agent)).join('')}
-      </div>
-
-      <div class="rail-section">
-        ${renderRailSectionTitle('humans', 'Humans', (appState.humans || []).length, { modal: 'human' })}
-        ${collapsedSidebarSections.humans ? '' : (appState.humans || []).map((human) => renderHumanListItem(human)).join('')}
-      </div>
-
-      <div class="rail-section">
-        ${renderRailSectionTitle('computers', 'Computers', (appState.computers || []).length, { modal: 'computer' })}
-        ${collapsedSidebarSections.computers ? '' : (appState.computers || []).map((computer) => renderComputerListItem(computer)).join('')}
-      </div>
-
-      <div class="rail-section system-config-section">
-        ${renderRailSectionTitle('system', 'System Config', appState.settings?.fanoutApi?.configured ? 'LLM' : 'rules')}
-        ${collapsedSidebarSections.system ? '' : `
-        <button class="space-btn system-config-entry${activeView === 'cloud' ? ' active' : ''}" type="button" data-action="set-view" data-view="cloud">
-          <span class="channel-icon">API</span>
-          <span class="dm-name">Fan-out API</span>
-        </button>
-        `}
-      </div>
-      `}
+      ${sidebarBody}
 
       <div class="runtime-chip">
         <span class="status-dot ${appState.connection?.mode === 'cloud' ? 'online' : ''}"></span>
@@ -2432,6 +2455,90 @@ function renderRail() {
       </div>
       </div>
     </aside>
+  `;
+}
+
+function renderChatRail({ channels, dms, unreadThreads, openTasks, saved }) {
+  return `
+    <div class="nav-list">
+      ${renderNavItem('search', 'Search', 'search', searchQuery ? '⌘K' : '⌘K')}
+      ${renderNavItem('threads', 'Threads', 'message', unreadThreads || '')}
+      ${renderNavItem('tasks', 'Tasks', 'file', openTasks || '')}
+      ${renderNavItem('saved', 'Saved', 'bookmark', saved || '')}
+    </div>
+
+    <div class="rail-section">
+      ${renderRailSectionTitle('channels', 'Channels', channels.length, { modal: 'channel' })}
+      ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel)).join('')}
+    </div>
+
+    <div class="rail-section">
+      ${renderRailSectionTitle('dms', 'DIRECT MESSAGES', dms.length, { modal: 'dm' })}
+      ${collapsedSidebarSections.dms ? '' : dms.map((dm) => {
+        const other = dm.participantIds.find((id) => id !== 'hum_local');
+        const agent = byId(appState.agents, other);
+        const human = byId(appState.humans, other);
+        const status = agent?.status || human?.status || '';
+        return renderDmItem(dm.id, displayName(other), status, agent?.avatar || human?.avatar);
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderMembersRail({ normalAgents }) {
+  return `
+    <div class="rail-section">
+      ${renderRailSectionTitle('agents', 'Agents', normalAgents.length, { modal: 'agent' })}
+      ${collapsedSidebarSections.agents ? '' : normalAgents.map((agent) => renderAgentListItem(agent)).join('')}
+    </div>
+
+    <div class="rail-section">
+      ${renderRailSectionTitle('humans', 'Humans', (appState.humans || []).length, { modal: 'human' })}
+      ${collapsedSidebarSections.humans ? '' : (appState.humans || []).map((human) => renderHumanListItem(human)).join('')}
+    </div>
+  `;
+}
+
+function renderComputersRail() {
+  const computers = appState.computers || [];
+  return `
+    <div class="rail-section">
+      ${renderRailSectionTitle('computers', 'Computers', computers.length, { modal: 'computer' })}
+      ${collapsedSidebarSections.computers ? '' : computers.map((computer) => renderComputerListItem(computer)).join('')}
+    </div>
+
+    <div class="rail-section">
+      ${renderRailSectionTitle('computer-features', 'Feature Entrances', 3)}
+      ${collapsedSidebarSections['computer-features'] ? '' : `
+        <button class="space-btn computer-feature-entry${activeView === 'computers' ? ' active' : ''}" type="button" data-action="set-view" data-view="computers">
+          <span class="channel-icon">PC</span>
+          <span class="dm-name">Computer Overview</span>
+        </button>
+        <button class="space-btn computer-feature-entry${activeView === 'missions' ? ' active' : ''}" type="button" data-action="set-view" data-view="missions">
+          <span class="channel-icon">RUN</span>
+          <span class="dm-name">Codex Missions</span>
+        </button>
+        <button class="space-btn computer-feature-entry" type="button" data-action="open-modal" data-modal="computer">
+          <span class="channel-icon">+</span>
+          <span class="dm-name">Add Computer</span>
+        </button>
+      `}
+    </div>
+  `;
+}
+
+function renderSettingsRail() {
+  const items = settingsNavItems();
+  return `
+    <nav class="settings-nav-list" aria-label="Settings sections">
+      ${items.map((item) => `
+        <button class="settings-nav-item${settingsTab === item.id ? ' active' : ''}" type="button" data-action="set-settings-tab" data-tab="${escapeHtml(item.id)}">
+          ${settingsIcon(item.icon, 20)}
+          <span>${escapeHtml(item.label)}</span>
+          ${item.meta ? `<em>${escapeHtml(item.meta)}</em>` : ''}
+        </button>
+      `).join('')}
+    </nav>
   `;
 }
 
@@ -2456,6 +2563,29 @@ function renderRailSectionTitle(section, label, count, { modal = '' } = {}) {
       ${modal ? `<button class="rail-add-btn" type="button" data-action="open-modal" data-modal="${escapeHtml(modal)}">+</button>` : '<span class="rail-title-spacer"></span>'}
     </div>
   `;
+}
+
+function settingsNavItems() {
+  const fanoutConfigured = appState.settings?.fanoutApi?.configured;
+  return [
+    { id: 'account', label: 'Account', icon: 'account' },
+    { id: 'browser', label: 'Browser', icon: 'browser', meta: notificationStatusLabel() },
+    { id: 'server', label: 'Server', icon: 'server', meta: appState.connection?.mode || 'local' },
+    { id: 'system', label: 'System Config', icon: 'system', meta: fanoutConfigured ? 'LLM' : 'rules' },
+    { id: 'release', label: 'Release Notes', icon: 'release' },
+  ];
+}
+
+function settingsIcon(name, size = 20) {
+  const icons = {
+    account: '<path d="M20 21v-2a5 5 0 0 0-5-5H9a5 5 0 0 0-5 5v2"/><circle cx="12" cy="7" r="4"/>',
+    browser: '<rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 9h18"/>',
+    server: '<rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h6"/><path d="M9 12h6"/><path d="M9 17h.01"/><path d="M15 17h.01"/>',
+    system: '<path d="M4 7h16"/><path d="M4 17h16"/><path d="M8 3v8"/><path d="M16 13v8"/>',
+    release: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h6"/>',
+    computer: '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>',
+  };
+  return `<svg class="settings-icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">${icons[name] || icons.system}</svg>`;
 }
 
 function renderNavItem(view, label, icon, badge) {
@@ -2538,6 +2668,7 @@ function renderMain() {
   if (activeView === 'search') return renderSearch();
   if (activeView === 'missions') return renderMissions();
   if (activeView === 'cloud') return renderCloud();
+  if (activeView === 'computers') return renderComputers();
   return renderSpace();
 }
 
@@ -3613,11 +3744,53 @@ function renderMissions() {
   `;
 }
 
+function renderComputers() {
+  const computers = appState.computers || [];
+  const connected = computers.filter((computer) => computer.status === 'connected').length;
+  return `
+    <section class="computers-page">
+      <header class="settings-page-header">
+        <div class="settings-page-heading">
+          <div class="settings-page-icon">${settingsIcon('computer', 24)}</div>
+          <h2>Computers</h2>
+        </div>
+        <div class="action-row">
+          <button class="primary-btn" type="button" data-action="open-modal" data-modal="computer">Add Computer</button>
+        </div>
+      </header>
+      <div class="settings-section-label">
+        ${settingsIcon('computer', 18)}
+        <span>LOCAL RUNNERS</span>
+      </div>
+      <section class="cloud-layout">
+        ${renderComputerConfigCard()}
+        <div class="pixel-panel cloud-card">
+          <div class="panel-title"><span>Feature Entrances</span><span>${connected}/${computers.length || 0} connected</span></div>
+          <div class="mode-cards">
+            <button class="mode-card active" type="button" data-action="set-view" data-view="computers">
+              <strong>Computer Overview</strong>
+              <span>Review registered local and remote runners without mixing them into member management.</span>
+            </button>
+            <button class="mode-card" type="button" data-action="set-view" data-view="missions">
+              <strong>Codex Missions</strong>
+              <span>Open the local runner history for task-backed Codex runs.</span>
+            </button>
+            <button class="mode-card" type="button" data-action="open-modal" data-modal="agent">
+              <strong>Create Agent</strong>
+              <span>Bind a new agent to an available computer and runtime.</span>
+            </button>
+          </div>
+        </div>
+      </section>
+    </section>
+  `;
+}
+
 function renderComputerConfigCard() {
   const computers = appState.computers || [];
   return `
     <div class="pixel-panel cloud-card">
-      <div class="panel-title"><span>Computer</span><span>${computers.length}</span></div>
+      <div class="panel-title"><span>Computers</span><span>${computers.length}</span></div>
       <div class="computer-config-list">
         ${computers.map((computer) => `
           <div class="computer-config-row">
@@ -3660,19 +3833,34 @@ function renderFanoutApiConfigCard() {
   `;
 }
 
-function renderSettingsTabs() {
-  const tabs = [
-    ['account', 'Account'],
-    ['browser', 'Browser'],
-    ['server', 'Server'],
-    ['release', 'Release Notes'],
-  ];
+function settingsPageMeta(tab = settingsTab) {
+  const metas = {
+    account: { title: 'Account', icon: 'account', section: 'ACCOUNT' },
+    browser: { title: 'Browser', icon: 'browser', section: 'BROWSER' },
+    server: { title: 'Server', icon: 'server', section: 'SERVER' },
+    system: { title: 'System Config', icon: 'system', section: 'SYSTEM CONFIG' },
+    release: { title: 'Release Notes', icon: 'release', section: "WHAT'S NEW" },
+  };
+  return metas[tab] || metas.account;
+}
+
+function renderSettingsChrome(body, actions = '') {
+  const meta = settingsPageMeta();
   return `
-    <div class="settings-tabs" role="tablist">
-      ${tabs.map(([id, label]) => `
-        <button type="button" class="${settingsTab === id ? 'active' : ''}" data-action="set-settings-tab" data-tab="${id}">${escapeHtml(label)}</button>
-      `).join('')}
-    </div>
+    <section class="settings-page">
+      <header class="settings-page-header">
+        <div class="settings-page-heading">
+          <div class="settings-page-icon">${settingsIcon(meta.icon, 24)}</div>
+          <h2>${escapeHtml(meta.title)}</h2>
+        </div>
+        ${actions ? `<div class="action-row">${actions}</div>` : ''}
+      </header>
+      <div class="settings-section-label">
+        ${settingsIcon(meta.icon, 18)}
+        <span>${escapeHtml(meta.section)}</span>
+      </div>
+      ${body}
+    </section>
   `;
 }
 
@@ -3681,8 +3869,14 @@ function renderAccountSettingsTab() {
   const c = appState.connection || {};
   return `
     <section class="settings-layout">
-      <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Account</span><span>local</span></div>
+      <div class="pixel-panel cloud-card settings-account-card">
+        <div class="settings-account-hero">
+          <span class="settings-account-avatar">${escapeHtml(displayAvatar(human.id || 'hum_local', 'human'))}</span>
+          <div>
+            <strong>${escapeHtml(human.name || 'You')}</strong>
+            <small>${escapeHtml(human.email || 'Local MagClaw user')}</small>
+          </div>
+        </div>
         <div class="cloud-status settings-status-grid">
           <div><span>Name</span><strong>${escapeHtml(human.name || 'You')}</strong><small>${escapeHtml(human.role || 'owner')}</small></div>
           <div><span>Profile</span><strong>${escapeHtml(human.email || 'local user')}</strong><small>${escapeHtml(human.id || 'hum_local')}</small></div>
@@ -3721,9 +3915,6 @@ function renderServerSettingsTab() {
   const isCloud = c.mode === 'cloud';
   return `
     <section class="cloud-layout">
-      ${renderComputerConfigCard()}
-      ${renderFanoutApiConfigCard()}
-
       <div class="pixel-panel cloud-card">
         <div class="panel-title"><span>Mode</span><span>${escapeHtml(c.deployment || 'local')}</span></div>
         <div class="mode-cards">
@@ -3779,6 +3970,29 @@ function renderServerSettingsTab() {
   `;
 }
 
+function renderSystemSettingsTab() {
+  const config = appState.settings?.fanoutApi || {};
+  const routerMode = config.configured ? 'llm_fanout' : 'rules_fallback';
+  return `
+    <section class="cloud-layout">
+      ${renderFanoutApiConfigCard()}
+      <div class="pixel-panel cloud-card">
+        <div class="panel-title"><span>Routing Boundary</span><span>${escapeHtml(routerMode)}</span></div>
+        <div class="cloud-status">
+          <div><span>Fan-out API</span><strong>${escapeHtml(config.configured ? 'Configured' : 'Rules only')}</strong><small>${escapeHtml(config.model || 'no model')}</small></div>
+          <div><span>Endpoint</span><strong>${escapeHtml(config.baseUrl || '--')}</strong><small>${escapeHtml(config.hasApiKey ? `key ${config.apiKeyPreview}` : 'no key stored')}</small></div>
+          <div><span>Force Keywords</span><strong>${escapeHtml((config.forceKeywords || []).length)}</strong><small>${escapeHtml((config.forceKeywords || []).join(', ') || 'none')}</small></div>
+          <div><span>Delivery</span><strong>Rules first</strong><small>LLM supplements queue only when routing is ambiguous or forced.</small></div>
+        </div>
+        <div class="boundary-grid single system-boundary-copy">
+          <div><strong>Local rules stay immediate</strong><p>Messages still route by deterministic MagClaw rules before an optional LLM supplement is delivered.</p></div>
+          <div><strong>Secrets stay server-side</strong><p>The browser only receives a masked API key preview; saved keys are never rendered back into the form.</p></div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderReleaseNotesSettingsTab() {
   const notes = [
     ['NEW', 'Agent skill and tool panels list MagClaw function calls, global Codex skills, plugin skills, and agent-local skills with collapsible sections.'],
@@ -3786,7 +4000,6 @@ function renderReleaseNotesSettingsTab() {
   ];
   return `
     <section class="settings-release">
-      <div class="settings-release-label">WHAT'S NEW</div>
       <article class="pixel-panel release-card">
         <h3>2026-05-04</h3>
         <div class="release-note-list">
@@ -3810,17 +4023,15 @@ function renderCloud() {
     ? renderAccountSettingsTab()
     : settingsTab === 'browser'
       ? renderBrowserSettingsTab()
+      : settingsTab === 'system'
+        ? renderSystemSettingsTab()
       : settingsTab === 'release'
         ? renderReleaseNotesSettingsTab()
         : renderServerSettingsTab();
-  return `
-    ${renderHeader('Settings', 'Account, browser, server and release notes', `
-      ${pill(c.mode || 'local', isCloud ? 'cyan' : 'blue')}
-      ${pill(c.pairingStatus || 'local', statusTone)}
-    `)}
-    ${renderSettingsTabs()}
-    ${body}
-  `;
+  return renderSettingsChrome(body, `
+    ${pill(c.mode || 'local', isCloud ? 'cyan' : 'blue')}
+    ${pill(c.pairingStatus || 'local', statusTone)}
+  `);
 }
 
 function renderInspector() {
@@ -6143,6 +6354,10 @@ document.addEventListener('click', async (event) => {
   try {
     if (action === 'set-view') {
       activeView = target.dataset.view;
+      if (activeView === 'cloud') railTab = 'settings';
+      if (activeView === 'computers' || activeView === 'missions') railTab = 'computers';
+      if (activeView === 'tasks' || activeView === 'threads' || activeView === 'saved' || activeView === 'search') railTab = 'spaces';
+      localStorage.setItem('railTab', railTab);
       threadMessageId = null;
       inspectorReturnThreadId = null;
       selectedProjectFile = null;
@@ -6153,7 +6368,10 @@ document.addEventListener('click', async (event) => {
       if (activeView === 'search') focusSearchInputEnd();
     }
     if (action === 'set-settings-tab') {
-      settingsTab = target.dataset.tab || 'server';
+      settingsTab = target.dataset.tab || 'account';
+      activeView = 'cloud';
+      railTab = 'settings';
+      localStorage.setItem('railTab', railTab);
       render();
     }
     if (action === 'toggle-sidebar-section') {
@@ -6225,11 +6443,11 @@ document.addEventListener('click', async (event) => {
           loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
         }
       } else if (nav === 'desktop') {
-        railTab = 'members';
-        activeView = 'space';
+        railTab = 'computers';
+        activeView = 'computers';
         selectedAgentId = null;
       } else if (nav === 'settings') {
-        railTab = 'members';
+        railTab = 'settings';
         activeView = 'cloud';
         selectedAgentId = null;
       }
@@ -6381,6 +6599,7 @@ document.addEventListener('click', async (event) => {
       toast('Agent deleted');
     }
     if (action === 'select-space') {
+      persistVisiblePaneScrolls();
       selectedAgentId = null;
       selectedTaskId = null;
       inspectorReturnThreadId = null;
@@ -6398,6 +6617,7 @@ document.addEventListener('click', async (event) => {
       maybeWarmCurrentAgent();
     }
     if (action === 'set-tab') {
+      persistVisiblePaneScrolls();
       activeTab = target.dataset.tab;
       if (activeTab !== 'tasks') selectedTaskId = null;
       render();
@@ -6558,6 +6778,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'view-in-channel') {
       const message = byId(appState.messages, target.dataset.id);
       if (message) {
+        persistVisiblePaneScrolls();
         selectedSpaceType = message.spaceType;
         selectedSpaceId = message.spaceId;
         activeView = 'space';

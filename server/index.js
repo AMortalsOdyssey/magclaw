@@ -133,6 +133,10 @@ const MAX_AGENT_WORKSPACE_TREE_ENTRIES = 300;
 const MAX_AGENT_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_AGENT_RELAY_DEPTH = 2;
 const AGENT_BUSY_DELIVERY_DELAY_MS = Math.max(10, Number(process.env.MAGCLAW_AGENT_BUSY_DELIVERY_DELAY_MS || 160));
+const AGENT_RUN_STALL_LOG_MS = Math.max(250, Number(process.env.MAGCLAW_AGENT_RUN_STALL_LOG_MS || process.env.MAGCLAW_AGENT_RUN_WATCHDOG_STALE_MS || 90_000));
+const AGENT_STUCK_SEND_MESSAGE_MS = Math.max(250, Number(process.env.MAGCLAW_AGENT_STUCK_SEND_MESSAGE_MS || 15_000));
+const AGENT_ACTIVITY_HEARTBEAT_MS = Math.max(250, Number(process.env.MAGCLAW_AGENT_ACTIVITY_HEARTBEAT_MS || 60_000));
+const AGENT_RUNTIME_PROGRESS_STALE_MS = Math.max(250, Number(process.env.MAGCLAW_AGENT_RUNTIME_PROGRESS_STALE_MS || 15 * 60_000));
 const STATE_HEARTBEAT_MS = Math.max(25, Number(process.env.MAGCLAW_STATE_HEARTBEAT_MS || 1000));
 const AGENT_STATUS_STALE_MS = Math.max(1000, Number(process.env.MAGCLAW_AGENT_STATUS_STALE_MS || 45_000));
 const ROUTE_EVENTS_LIMIT = Math.max(50, Number(process.env.MAGCLAW_ROUTE_EVENTS_LIMIT || 500));
@@ -542,6 +546,7 @@ const agentRuntime = createAgentRuntimeManager({
   extractMentions,
   findAgent,
   findChannel,
+  findConversationRecord,
   findHuman,
   findMessage,
   findMission,
@@ -566,6 +571,7 @@ const agentRuntime = createAgentRuntimeManager({
   renderMentionsForAgent,
   resolveCodexRuntime,
   resolveConversationSpace,
+  resolveMessageTarget,
   runMatchesTask,
   ROOT,
   runningProcesses,
@@ -587,6 +593,10 @@ const agentRuntime = createAgentRuntimeManager({
   workItemMatchesScope,
   workItemMatchesTask,
   AGENT_BUSY_DELIVERY_DELAY_MS,
+  AGENT_RUN_STALL_LOG_MS,
+  AGENT_STUCK_SEND_MESSAGE_MS,
+  AGENT_ACTIVITY_HEARTBEAT_MS,
+  AGENT_RUNTIME_PROGRESS_STALE_MS,
   PORT,
 });
 
@@ -761,6 +771,7 @@ function agentToolApiDeps() {
     formatAgentSearchResults,
     getState: () => state,
     httpError,
+    makeId,
     markWorkItemResponded,
     normalizeIds,
     persistState,
