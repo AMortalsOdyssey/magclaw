@@ -44,6 +44,7 @@ export function createStateCore(deps) {
     CODEX_FALLBACK_MODEL,
     CODEX_HOME_CONFIG_VERSION,
     FANOUT_API_TIMEOUT_MS,
+    HUMAN_PRESENCE_TIMEOUT_MS = 1000 * 60 * 2,
     ROOT,
     RUNS_DIR,
     SOURCE_CODEX_HOME,
@@ -234,10 +235,12 @@ export function createStateCore(deps) {
       attachments: [],
       projects: [],
       workItems: [],
-      routeEvents: [],
-      events: [],
-    };
-  }
+        routeEvents: [],
+        events: [],
+        systemNotifications: [],
+        inboxReads: {},
+      };
+    }
   
   async function ensureStorage() {
     await mkdir(ATTACHMENTS_DIR, { recursive: true });
@@ -424,20 +427,32 @@ export function createStateCore(deps) {
     }
     if (!state.cloud.workspaces.length) state.cloud.workspaces = fresh.cloud.workspaces;
     for (const workspace of state.cloud.workspaces) delete workspace.ownerUserId;
-    for (const member of state.cloud.workspaceMembers) {
-      if (member.role === 'owner') member.role = 'admin';
-    }
-    for (const invitation of state.cloud.invitations) {
-      if (invitation.role === 'owner') invitation.role = 'admin';
-    }
-    for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events']) {
-      if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
+      const roleMap = { owner: 'admin', viewer: 'member', agent_admin: 'core_member', computer_admin: 'core_member' };
+      for (const member of state.cloud.workspaceMembers) {
+        member.role = roleMap[member.role] || member.role || 'member';
+      }
+      for (const invitation of state.cloud.invitations) {
+        invitation.role = roleMap[invitation.role] || invitation.role || 'member';
+      }
+      for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events', 'systemNotifications']) {
+        if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
+      }
+    state.inboxReads = state.inboxReads && typeof state.inboxReads === 'object' && !Array.isArray(state.inboxReads)
+      ? state.inboxReads
+      : {};
+    for (const [humanId, readState] of Object.entries(state.inboxReads)) {
+      if (!readState || typeof readState !== 'object' || Array.isArray(readState)) {
+        delete state.inboxReads[humanId];
+        continue;
+      }
+      readState.workspaceActivityReadAt = readState.workspaceActivityReadAt || null;
+      readState.updatedAt = readState.updatedAt || readState.workspaceActivityReadAt || now();
     }
     delete state.brainAgents;
     if (!state.humans.length) state.humans = fresh.humans;
-    for (const human of state.humans) {
-      if (human.role === 'owner') human.role = 'admin';
-    }
+      for (const human of state.humans) {
+        human.role = roleMap[human.role] || human.role || 'member';
+      }
     if (!state.computers.length) state.computers = fresh.computers;
     if (!state.agents.length) state.agents = fresh.agents;
     state.agents = (state.agents || []).filter((agent) => !isRetiredRoutingAgent(agent));
@@ -695,6 +710,13 @@ export function createStateCore(deps) {
   }
   
   function presenceHeartbeat() {
+    const humanCutoff = Date.now() - HUMAN_PRESENCE_TIMEOUT_MS;
+    const humanPresence = (human) => {
+      const status = String(human?.status || 'offline').toLowerCase();
+      if (status !== 'online') return status || 'offline';
+      const seenAt = Date.parse(human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt || human.createdAt || '');
+      return seenAt && seenAt >= humanCutoff ? 'online' : 'offline';
+    };
     return {
       createdAt: now(),
       updatedAt: state?.updatedAt || null,
@@ -709,6 +731,13 @@ export function createStateCore(deps) {
         runtimeLastStartedAt: agent.runtimeLastStartedAt || null,
         runtimeLastTurnAt: agent.runtimeLastTurnAt || null,
         runtimeActivity: agent.runtimeActivity || null,
+      })),
+      humans: (state?.humans || []).map((human) => ({
+        id: human.id,
+        name: human.name,
+        status: humanPresence(human),
+        lastSeenAt: human.lastSeenAt || null,
+        presenceUpdatedAt: human.presenceUpdatedAt || null,
       })),
     };
   }

@@ -112,6 +112,71 @@ export async function handleMessageApi(req, res, url, deps) {
     return agentId ? findAgent(agentId) : null;
   }
 
+  function currentHumanId() {
+    return state.cloud?.auth?.currentMember?.humanId || 'hum_local';
+  }
+
+  function ensureInboxReadState(humanId) {
+    state.inboxReads = state.inboxReads && typeof state.inboxReads === 'object' && !Array.isArray(state.inboxReads)
+      ? state.inboxReads
+      : {};
+    state.inboxReads[humanId] = state.inboxReads[humanId] && typeof state.inboxReads[humanId] === 'object'
+      ? state.inboxReads[humanId]
+      : {};
+    return state.inboxReads[humanId];
+  }
+
+  function markConversationRecordRead(record, humanId) {
+    if (!record) return false;
+    normalizeConversationRecord(record);
+    const readBy = new Set((record.readBy || []).map(String));
+    const before = readBy.size;
+    readBy.add(String(humanId));
+    record.readBy = [...readBy];
+    return readBy.size !== before;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/inbox/read') {
+    const body = await readJson(req);
+    const humanId = currentHumanId();
+    const recordIds = Array.isArray(body.recordIds)
+      ? [...new Set(body.recordIds.map(String).filter(Boolean))].slice(0, 500)
+      : [];
+    const readState = ensureInboxReadState(humanId);
+    let changed = false;
+    const markedRecordIds = [];
+    for (const recordId of recordIds) {
+      const record = findConversationRecord(recordId);
+      if (!record) continue;
+      if (markConversationRecordRead(record, humanId)) changed = true;
+      markedRecordIds.push(record.id);
+    }
+    if (body.workspaceActivityReadAt !== undefined) {
+      const parsed = Date.parse(body.workspaceActivityReadAt || '');
+      const readAt = parsed ? new Date(parsed).toISOString() : now();
+      if (readState.workspaceActivityReadAt !== readAt) {
+        readState.workspaceActivityReadAt = readAt;
+        changed = true;
+      }
+    }
+    readState.updatedAt = now();
+    console.info('[inbox] mark read', {
+      humanId,
+      recordCount: markedRecordIds.length,
+      workspaceActivityReadAt: readState.workspaceActivityReadAt || null,
+    });
+    if (changed) {
+      await persistState();
+      broadcastState();
+    }
+    sendJson(res, 200, {
+      ok: true,
+      readRecordIds: markedRecordIds,
+      inboxReads: readState,
+    });
+    return true;
+  }
+
   function memoryTargetsForConversation({ spaceType, spaceId, respondingAgents = [], mentions = {}, parentMessage = null }) {
     const mentionedAgents = (mentions.agents || []).map((id) => findAgent(id)).filter(Boolean);
     if (respondingAgents.length || mentionedAgents.length) return uniqueAgents([...respondingAgents, ...mentionedAgents]);

@@ -121,6 +121,51 @@ test('save endpoint toggles both channel messages and thread replies', async () 
   }
 });
 
+test('inbox read endpoint marks agent messages, replies, and workspace activity read', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const agentMessage = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        authorType: 'agent',
+        authorId: 'agt_codex',
+        body: 'Unread top-level agent note',
+      }),
+    });
+    const parent = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: 'Human thread parent' }),
+    });
+    const agentReply = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        authorType: 'agent',
+        authorId: 'agt_codex',
+        body: 'Unread agent reply',
+      }),
+    });
+
+    assert.deepEqual(agentMessage.message.readBy, []);
+    assert.deepEqual(agentReply.reply.readBy, []);
+
+    const readAt = new Date().toISOString();
+    await request(server.baseUrl, '/api/inbox/read', {
+      method: 'POST',
+      body: JSON.stringify({
+        recordIds: [agentMessage.message.id, agentReply.reply.id],
+        workspaceActivityReadAt: readAt,
+      }),
+    });
+
+    const state = await request(server.baseUrl, '/api/state');
+    assert.ok(state.messages.find((message) => message.id === agentMessage.message.id)?.readBy.includes('hum_local'));
+    assert.ok(state.replies.find((reply) => reply.id === agentReply.reply.id)?.readBy.includes('hum_local'));
+    assert.equal(state.inboxReads.hum_local.workspaceActivityReadAt, readAt);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('dm thread replies dispatch to the private agent for pickup receipts', async () => {
   const server = await startIsolatedServer();
   try {
@@ -2146,6 +2191,78 @@ test('thread agent mention relay skips agents already routed for the same human 
     const finalState = await request(server.baseUrl, '/api/state');
     assert.equal(finalState.workItems.some((item) => item.sourceMessageId === sent.message.id && item.agentId === zhong.id), false);
     assert.equal(finalState.events.some((event) => event.type === 'agent_message_relay_suppressed' && event.toAgentId === zhong.id), true);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('thread agent mention relay ignores descriptive references and keeps explicit handoffs', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: han } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Han', description: 'Thread participant', runtime: 'Codex CLI' }),
+    });
+    const { agent: zhong } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Zhong', description: 'Thread participant', runtime: 'Codex CLI' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'relay-intent', description: 'relay intent', agentIds: [han.id, zhong.id] }),
+    });
+
+    const parent = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: `<@${han.id}> 先聊两句`,
+        attachmentIds: [],
+      }),
+    });
+
+    const hanWorkItem = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      return snapshot.workItems.find((item) => item.sourceMessageId === parent.message.id && item.agentId === han.id);
+    });
+    assert.ok(hanWorkItem);
+
+    const descriptive = await request(server.baseUrl, '/api/agent-tools/messages/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: han.id,
+        workItemId: hanWorkItem.id,
+        target: hanWorkItem.target,
+        content: `<@${zhong.id}> 读代码挺稳，我负责把闲聊接上。`,
+      }),
+    });
+    assert.equal(descriptive.ok, true);
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    let snapshot = await request(server.baseUrl, '/api/state');
+    assert.equal(snapshot.workItems.some((item) => item.sourceMessageId === descriptive.message.id && item.agentId === zhong.id), false);
+    assert.equal(snapshot.events.some((event) => (
+      event.type === 'agent_message_relay_suppressed'
+      && event.toAgentId === zhong.id
+      && event.reason === 'mention_reference'
+    )), true);
+
+    const handoff = await request(server.baseUrl, '/api/agent-tools/messages/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: han.id,
+        workItemId: hanWorkItem.id,
+        target: hanWorkItem.target,
+        content: `我先说一句，<@${zhong.id}> 也可以补充一下。`,
+      }),
+    });
+    assert.equal(handoff.ok, true);
+
+    snapshot = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const workItem = state.workItems.find((item) => item.sourceMessageId === handoff.message.id && item.agentId === zhong.id);
+      return workItem ? state : null;
+    });
+    assert.equal(snapshot.workItems.some((item) => item.sourceMessageId === handoff.message.id && item.agentId === zhong.id), true);
   } finally {
     await server.stop();
   }

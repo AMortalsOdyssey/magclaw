@@ -463,7 +463,8 @@ async function startClaudeAgent(agent, proc, workspace) {
 
   proc.status = 'running';
   addSystemEvent('agent_started', `${agent.name} started with Claude Code`, { agentId: agent.id });
-  markWorkItemsDelivered(promptMessages, 'turn');
+  const deliveredWorkItemIds = markWorkItemsDelivered(promptMessages, 'turn');
+  setAgentStatus(agent, 'thinking', 'claude_turn_started', { activeWorkItemIds: deliveredWorkItemIds });
   await persistState();
   broadcastState();
 
@@ -490,7 +491,7 @@ async function startClaudeAgent(agent, proc, workspace) {
 
   child.on('error', async (error) => {
     proc.status = 'error';
-    setAgentStatus(agent, 'error', 'claude_error');
+    setAgentStatus(agent, 'error', 'claude_error', { activeWorkItemIds: [] });
     addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
     await persistState();
     broadcastState();
@@ -501,7 +502,7 @@ async function startClaudeAgent(agent, proc, workspace) {
     const queuedMessages = proc.stopRequested ? (proc.restartMessagesAfterStop || []) : proc.inbox.slice(proc.promptMessageCount);
     const sourceMessage = proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
     proc.status = 'idle';
-    setAgentStatus(agent, 'idle', 'claude_turn_closed');
+    setAgentStatus(agent, 'idle', 'claude_turn_closed', { activeWorkItemIds: [] });
 
 	    // Post the response back to the conversation
 	    const responseText = stdout.trim() || stderr.trim() || '(No response)';
@@ -2553,6 +2554,31 @@ function agentAlreadyRoutedForSource(agentId, sourceMessage, { spaceType, spaceI
   ));
 }
 
+function compactRelayText(value) {
+  return String(value || '').replace(/\s+/g, '');
+}
+
+function agentMentionRelayLooksIntentional(record, targetAgent) {
+  const body = String(record?.body || '');
+  const targetId = String(targetAgent?.id || '');
+  if (!body || !targetId) return false;
+  const token = `<@${targetId}>`;
+  let index = body.indexOf(token);
+  while (index >= 0) {
+    const before = compactRelayText(body.slice(Math.max(0, index - 48), index));
+    const after = compactRelayText(body.slice(index + token.length, index + token.length + 64));
+    const afterLower = after.toLowerCase();
+    const beforeLower = before.toLowerCase();
+
+    if (/(请|麻烦|叫|让|找|问|邀请|交给|拉|handoff|invite|ask|loopin|loop-in)$/.test(beforeLower)) return true;
+    if (/^(你|您|也|可以|能|能不能|要不要|来|请|麻烦|帮|帮忙|接|接着|继续|补|补充|看|看看|处理|跟进|推进|判断|评审|review|take|handle|please|can|could|would)/i.test(afterLower)) return true;
+    if (/^(也可以|也来|也帮|你也|您也|来补|补一下|补充一下|接一下|看一下|看看|处理一下|跟进一下)/.test(after)) return true;
+
+    index = body.indexOf(token, index + token.length);
+  }
+  return false;
+}
+
 async function relayAgentMentions(record, { parentMessageId = null, sourceMessage = null } = {}) {
   if (record.authorType !== 'agent') return;
   if (!parentMessageId && !record.taskId) return;
@@ -2576,6 +2602,17 @@ async function relayAgentMentions(record, { parentMessageId = null, sourceMessag
     if (!allowedIds.has(targetId)) continue;
     const targetAgent = findAgent(targetId);
     if (!targetAgent) continue;
+    if (!agentMentionRelayLooksIntentional(record, targetAgent)) {
+      addSystemEvent('agent_message_relay_suppressed', `${displayActor(record.authorId)} mentioned ${targetAgent.name}, but it did not look like a handoff.`, {
+        fromAgentId: record.authorId,
+        toAgentId: targetAgent.id,
+        messageId: record.id,
+        sourceMessageId: sourceMessage?.id || null,
+        parentMessageId,
+        reason: 'mention_reference',
+      });
+      continue;
+    }
     if (agentAlreadyRoutedForSource(targetAgent.id, sourceMessage, {
       spaceType: record.spaceType,
       spaceId: record.spaceId,
