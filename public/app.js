@@ -4025,8 +4025,8 @@ function renderAccountSettingsTab() {
     ` : '';
   const authPanel = !auth.initialized ? `
       <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Admin Login</span><span>server env</span></div>
-        <div class="empty-box small">Admin credentials are configured on the server with MAGCLAW_ADMIN_EMAIL and MAGCLAW_ADMIN_PASSWORD. Restart MagClaw after setting them.</div>
+        <div class="panel-title"><span>Sign-in Account</span><span>server config</span></div>
+        <div class="empty-box small">The initial sign-in account is configured on the server. Restart MagClaw after updating the server environment.</div>
       </div>
     ` : currentUser ? `
       <div class="pixel-panel cloud-card">
@@ -4117,8 +4117,8 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '') {
       <section class="pixel-panel cloud-invite-card" aria-label="Accept invitation">
         <form id="cloud-register-form" class="cloud-login-form">
           <div class="cloud-login-section-title">
-            <span>Accept invitation</span>
-            <small>invite token</small>
+            <span>Join workspace</span>
+            <small>invitation</small>
           </div>
           <label class="cloud-login-field"><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
           <label class="cloud-login-field"><span>Name</span><input name="name" autocomplete="name" placeholder="Display name" /></label>
@@ -4131,20 +4131,16 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '') {
   const loginPanels = auth.initialized ? `
       <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
         <div class="cloud-login-brand">
-          <span class="cloud-login-logo" aria-hidden="true">M</span>
+          <span class="cloud-login-logo" aria-hidden="true"><img src="/favicon.svg" alt="" /></span>
         </div>
         <div class="cloud-login-heading">
-          <p>MAGCLAW CLOUD</p>
+          <p>MagClaw</p>
           <h1 id="cloud-login-title">Welcome back!</h1>
-          <span>${escapeHtml(errorMessage || 'Sign in with the admin account configured on the server.')}</span>
+          <span>${escapeHtml(errorMessage || 'Sign in to continue to your MagClaw workspace.')}</span>
         </div>
         <form id="cloud-login-form" class="cloud-login-form">
           <label class="cloud-login-field"><span>Email address</span><input name="email" type="email" autocomplete="email" placeholder="Email address" required /></label>
           <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="current-password" placeholder="Password" required /></label>
-          <div class="cloud-login-meta">
-            <span>Protected workspace</span>
-            <small>${escapeHtml(auth.loginRequired ? 'Admin access required' : 'Cloud access')}</small>
-          </div>
           <button class="primary-btn cloud-login-submit" type="submit">Log in</button>
         </form>
       </section>
@@ -4152,12 +4148,12 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '') {
     ` : `
       <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
         <div class="cloud-login-brand">
-          <span class="cloud-login-logo" aria-hidden="true">M</span>
+          <span class="cloud-login-logo" aria-hidden="true"><img src="/favicon.svg" alt="" /></span>
         </div>
         <div class="cloud-login-heading">
-          <p>MAGCLAW CLOUD</p>
-          <h1 id="cloud-login-title">Admin login is not ready</h1>
-          <span>Admin credentials are configured on the server with MAGCLAW_ADMIN_EMAIL and MAGCLAW_ADMIN_PASSWORD. Restart MagClaw after setting them.</span>
+          <p>MagClaw</p>
+          <h1 id="cloud-login-title">Sign in is not ready</h1>
+          <span>The server needs a configured sign-in account before this workspace can be opened. Update the server environment and restart MagClaw.</span>
         </div>
       </section>
     `;
@@ -4165,10 +4161,6 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '') {
   root.innerHTML = `
     <main class="cloud-auth-shell">
       <div class="cloud-auth-stage">
-        <div class="cloud-login-workspace">
-          <strong>${escapeHtml(cloud.workspace?.name || 'MagClaw')}</strong>
-          <span>${escapeHtml(auth.loginRequired ? 'Login required' : 'Cloud workspace')}</span>
-        </div>
         ${loginPanels}
       </div>
     </main>

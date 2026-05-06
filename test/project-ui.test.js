@@ -18,7 +18,7 @@ test('cloud account settings show invitation controls only to admins', async () 
   assert.match(accountSettingsSource, /\$\{canManageCloud \? `[\s\S]*id="cloud-invite-form"/);
 });
 
-test('cloud account settings use server-configured admin without owner bootstrap UI', async () => {
+test('cloud account settings use server-configured sign-in without owner bootstrap UI', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
 
@@ -26,8 +26,9 @@ test('cloud account settings use server-configured admin without owner bootstrap
   assert.equal(app.includes('/api/cloud/auth/bootstrap-owner'), false);
   assert.equal(app.includes('ownerConfigured'), false);
   assert.doesNotMatch(accountSettingsSource, /\bOwner\b/);
-  assert.match(accountSettingsSource, /Admin credentials are configured on the server/);
-  assert.match(accountSettingsSource, /MAGCLAW_ADMIN_EMAIL and MAGCLAW_ADMIN_PASSWORD/);
+  assert.match(accountSettingsSource, /Sign-in Account/);
+  assert.match(accountSettingsSource, /The initial sign-in account is configured on the server/);
+  assert.doesNotMatch(accountSettingsSource, /Admin Login/);
   assert.match(app, /function renderCloudAuthGate/);
 });
 
@@ -39,7 +40,9 @@ test('cloud auth gate only shows invite registration when an invite token is pre
   assert.match(authGateSource, /inviteTokenFromUrl \? `/);
   assert.match(authGateSource, /id="cloud-register-form"/);
   assert.doesNotMatch(authGateSource, /owner invite/);
-  assert.match(authGateSource, /Sign in with the admin account configured on the server/);
+  assert.doesNotMatch(authGateSource, /admin account configured|Admin access required|Admin login/i);
+  assert.match(authGateSource, /Sign in to continue to your MagClaw workspace/);
+  assert.match(authGateSource, /<img src="\/favicon\.svg" alt="" \/>/);
   assert.match(authGateSource, /class="cloud-auth-shell"/);
   assert.match(authGateSource, /class="pixel-panel cloud-login-card"/);
   assert.match(authGateSource, /id="cloud-login-title">Welcome back!/);
