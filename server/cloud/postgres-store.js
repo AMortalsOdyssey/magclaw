@@ -101,18 +101,20 @@ function sessionFromRow(row) {
 }
 
 function invitationFromRow(row) {
-  return {
-    id: row.id,
-    workspaceId: row.workspace_id,
-    email: row.email,
-    role: row.role,
-    tokenHash: row.token_hash,
-    invitedBy: row.invited_by || null,
-    expiresAt: requiredIso(row.expires_at),
-    acceptedAt: iso(row.accepted_at),
-    revokedAt: iso(row.revoked_at),
-    createdAt: requiredIso(row.created_at),
-    metadata: jsonObject(row.metadata),
+    return {
+      id: row.id,
+      workspaceId: row.workspace_id,
+      humanId: row.human_id || '',
+      email: row.email,
+      role: row.role,
+      tokenHash: row.token_hash,
+      invitedBy: row.invited_by || null,
+      expiresAt: requiredIso(row.expires_at),
+      acceptedAt: iso(row.accepted_at),
+      acceptedBy: row.accepted_by || null,
+      revokedAt: iso(row.revoked_at),
+      createdAt: requiredIso(row.created_at),
+      metadata: jsonObject(row.metadata),
   };
 }
 
@@ -290,34 +292,38 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
         for (const invitation of safeArray(cloud.invitations)) {
           await client.query(`
-            INSERT INTO ${table('cloud_invitations')}
-              (id, workspace_id, email, normalized_email, role, token_hash,
-               invited_by, expires_at, accepted_at, revoked_at, created_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              workspace_id = EXCLUDED.workspace_id,
-              email = EXCLUDED.email,
-              normalized_email = EXCLUDED.normalized_email,
-              role = EXCLUDED.role,
-              token_hash = EXCLUDED.token_hash,
-              invited_by = EXCLUDED.invited_by,
-              expires_at = EXCLUDED.expires_at,
-              accepted_at = EXCLUDED.accepted_at,
-              revoked_at = EXCLUDED.revoked_at,
-              metadata = EXCLUDED.metadata
-          `, [
-            invitation.id,
-            invitation.workspaceId,
-            invitation.email,
-            normalizeEmail(invitation.email),
-            invitation.role || 'member',
-            invitation.tokenHash,
-            invitation.invitedBy || null,
-            requiredIso(invitation.expiresAt),
-            iso(invitation.acceptedAt),
-            iso(invitation.revokedAt),
-            requiredIso(invitation.createdAt),
-            JSON.stringify(jsonObject(invitation.metadata)),
+              INSERT INTO ${table('cloud_invitations')}
+                (id, workspace_id, human_id, email, normalized_email, role, token_hash,
+                 invited_by, expires_at, accepted_at, accepted_by, revoked_at, created_at, metadata)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+              ON CONFLICT (id) DO UPDATE SET
+                workspace_id = EXCLUDED.workspace_id,
+                human_id = EXCLUDED.human_id,
+                email = EXCLUDED.email,
+                normalized_email = EXCLUDED.normalized_email,
+                role = EXCLUDED.role,
+                token_hash = EXCLUDED.token_hash,
+                invited_by = EXCLUDED.invited_by,
+                expires_at = EXCLUDED.expires_at,
+                accepted_at = EXCLUDED.accepted_at,
+                accepted_by = EXCLUDED.accepted_by,
+                revoked_at = EXCLUDED.revoked_at,
+                metadata = EXCLUDED.metadata
+            `, [
+              invitation.id,
+              invitation.workspaceId,
+              invitation.humanId || null,
+              invitation.email,
+              normalizeEmail(invitation.email),
+              invitation.role || 'member',
+              invitation.tokenHash,
+              invitation.invitedBy || null,
+              requiredIso(invitation.expiresAt),
+              iso(invitation.acceptedAt),
+              invitation.acceptedBy || null,
+              iso(invitation.revokedAt),
+              requiredIso(invitation.createdAt),
+              JSON.stringify(jsonObject(invitation.metadata)),
           ]);
         }
 

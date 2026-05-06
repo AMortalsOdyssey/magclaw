@@ -790,10 +790,17 @@ function appApiAuthIsBypassed(url) {
     || url.pathname.startsWith('/api/agent-tools/');
 }
 
+function requiredRolesForAppApi(req, url) {
+  if (req.method === 'GET') return [];
+  if (['PATCH', 'POST'].includes(req.method) && /^\/api\/humans\/[^/]+$/.test(url.pathname)) return [];
+  if (url.pathname === '/api/settings' || url.pathname === '/api/settings/fanout') return ['admin'];
+  return ['core_member'];
+}
+
 function requireAppApiAccess(req, res, url) {
   if (!cloudAuth.isLoginRequired()) return true;
   if (appApiAuthIsBypassed(url)) return true;
-  return Boolean(cloudAuth.requireUser(req, res, sendError));
+  return Boolean(cloudAuth.requireUser(req, res, sendError, requiredRolesForAppApi(req, url)));
 }
 
 function collabApiDeps() {
@@ -803,8 +810,9 @@ function collabApiDeps() {
     broadcastState,
     findAgent,
     findChannel,
-    findComputer,
-    getState: () => state,
+	    findComputer,
+	    currentActor: (req) => cloudAuth.currentActor(req),
+	    getState: () => state,
     makeId,
     normalizeConversationRecord,
     normalizeIds,

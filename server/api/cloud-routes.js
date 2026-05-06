@@ -86,10 +86,13 @@ export async function handleCloudApi(req, res, url, deps) {
         { method: 'GET', path: '/api/cloud/auth/status', role: 'guest' },
         { method: 'POST', path: '/api/cloud/auth/login', role: 'guest' },
         { method: 'POST', path: '/api/cloud/auth/logout', role: 'member' },
+        { method: 'POST', path: '/api/cloud/auth/heartbeat', role: 'member' },
         { method: 'POST', path: '/api/cloud/auth/register', role: 'invite' },
         { method: 'GET', path: '/api/cloud/admin/apis', role: 'admin' },
-        { method: 'GET', path: '/api/cloud/invitations', role: 'admin' },
-        { method: 'POST', path: '/api/cloud/invitations', role: 'admin' },
+          { method: 'GET', path: '/api/cloud/invitations', role: 'member' },
+          { method: 'POST', path: '/api/cloud/invitations', role: 'member' },
+          { method: 'PATCH', path: '/api/cloud/members/:id', role: 'admin' },
+          { method: 'DELETE', path: '/api/cloud/members/:id', role: 'core_member' },
         { method: 'POST', path: '/api/settings', role: 'admin' },
         { method: 'POST', path: '/api/settings/fanout', role: 'admin' },
         { method: 'PATCH', path: '/api/settings/fanout', role: 'admin' },
@@ -98,7 +101,7 @@ export async function handleCloudApi(req, res, url, deps) {
         { method: 'POST', path: '/api/cloud/disconnect', role: 'admin' },
         { method: 'POST', path: '/api/cloud/sync/push', role: 'admin' },
         { method: 'POST', path: '/api/cloud/sync/pull', role: 'admin' },
-        { method: 'POST', path: '/api/cloud/computers/pairing-tokens', role: 'computer_admin' },
+          { method: 'POST', path: '/api/cloud/computers/pairing-tokens', role: 'admin' },
       ],
     });
     return true;
@@ -128,6 +131,16 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/cloud/auth/heartbeat') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.touchPresence(req));
+    if (result) sendJson(res, 200, { ok: true, ...result });
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/cloud/auth/register') {
     if (!cloudAuth) {
       sendError(res, 503, 'Cloud auth service is unavailable.');
@@ -142,30 +155,57 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/cloud/invitations') {
+    if (req.method === 'GET' && url.pathname === '/api/cloud/invitations') {
     if (!cloudAuth) {
       sendError(res, 503, 'Cloud auth service is unavailable.');
       return true;
     }
-    if (!cloudAuth.requireUser(req, res, sendError, ['admin'])) return true;
-    sendJson(res, 200, { invitations: cloudAuth.publicCloudState(req).invitations });
-    return true;
-  }
+      if (!cloudAuth.requireUser(req, res, sendError)) return true;
+      sendJson(res, 200, { invitations: cloudAuth.publicCloudState(req).invitations });
+      return true;
+    }
 
   if (req.method === 'POST' && url.pathname === '/api/cloud/invitations') {
     if (!cloudAuth) {
       sendError(res, 503, 'Cloud auth service is unavailable.');
       return true;
     }
-    if (!cloudAuth.requireUser(req, res, sendError, ['admin'])) return true;
-    const body = await readJson(req);
-    const result = await sendAction(() => cloudAuth.createInvitation(body, req));
+      const body = await readJson(req);
+      const result = await sendAction(() => cloudAuth.createInvitation(body, req));
     if (result) {
       broadcastState();
       sendJson(res, 201, result);
     }
-    return true;
-  }
+      return true;
+    }
+
+    const cloudMemberMatch = url.pathname.match(/^\/api\/cloud\/members\/([^/]+)$/);
+    if (cloudMemberMatch && req.method === 'PATCH') {
+      if (!cloudAuth) {
+        sendError(res, 503, 'Cloud auth service is unavailable.');
+        return true;
+      }
+      const body = await readJson(req);
+      const result = await sendAction(() => cloudAuth.updateMemberRole(cloudMemberMatch[1], body, req));
+      if (result) {
+        broadcastState();
+        sendJson(res, 200, result);
+      }
+      return true;
+    }
+
+    if (cloudMemberMatch && req.method === 'DELETE') {
+      if (!cloudAuth) {
+        sendError(res, 503, 'Cloud auth service is unavailable.');
+        return true;
+      }
+      const result = await sendAction(() => cloudAuth.removeMember(cloudMemberMatch[1], req));
+      if (result) {
+        broadcastState();
+        sendJson(res, 200, result);
+      }
+      return true;
+    }
 
   if (req.method === 'GET' && url.pathname === '/api/cloud/relay/status') {
     sendJson(res, 200, daemonRelay ? daemonRelay.publicRelayState() : { onlineComputerIds: [], daemonEvents: [] });
@@ -177,7 +217,7 @@ export async function handleCloudApi(req, res, url, deps) {
       sendError(res, 503, 'Cloud relay service is unavailable.');
       return true;
     }
-    if (cloudAuth.isLoginRequired() && !cloudAuth.requireUser(req, res, sendError, ['computer_admin'])) return true;
+      if (cloudAuth.isLoginRequired() && !cloudAuth.requireUser(req, res, sendError, ['admin'])) return true;
     const body = await readJson(req);
     const current = cloudAuth.currentUser(req);
     const result = daemonRelay.createPairingToken({ ...body, createdBy: current?.id || null }, req);
@@ -193,7 +233,7 @@ export async function handleCloudApi(req, res, url, deps) {
       sendError(res, 503, 'Cloud relay service is unavailable.');
       return true;
     }
-    if (!cloudAuth.requireUser(req, res, sendError, ['computer_admin'])) return true;
+      if (!cloudAuth.requireUser(req, res, sendError, ['admin'])) return true;
     const body = await readJson(req);
     const result = await daemonRelay.revokeComputerToken(revokeComputerTokenMatch[1], body.tokenId || '');
     sendJson(res, 200, result);

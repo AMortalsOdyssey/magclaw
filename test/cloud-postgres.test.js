@@ -67,8 +67,11 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     'cloud_audit_logs',
   ]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
-  }
-  assert.doesNotMatch(sql, /\bowner_user_id\b/);
-  assert.doesNotMatch(sql, /'owner'/);
-  assert.match(sql, /role IN \('viewer', 'member', 'agent_admin', 'computer_admin', 'admin'\)/);
+    }
+    assert.doesNotMatch(sql, /\bowner_user_id\b/);
+    assert.match(sql, /role IN \('member', 'core_member', 'admin'\)/);
+    assert.match(sql, /WHEN 'owner' THEN 'admin'/);
+    assert.match(sql, /cloud_users_active_normalized_email_uidx/);
+  assert.match(sql, /WHERE disabled_at IS NULL/);
+  assert.doesNotMatch(sql, /\buid\b/);
 });

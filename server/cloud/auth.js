@@ -1,8 +1,18 @@
 import crypto from 'node:crypto';
+import {
+  CLOUD_ROLES,
+  canInviteRole,
+  canRemoveRole,
+  cloudCapabilitiesForRole,
+  normalizeCloudRole,
+  roleAllows,
+} from './roles.js';
 
 const SESSION_COOKIE = 'magclaw_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
 const INVITATION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const HUMAN_PRESENCE_TIMEOUT_MS = Number(process.env.MAGCLAW_HUMAN_PRESENCE_TIMEOUT_MS || 1000 * 60 * 2);
+const HUMAN_PRESENCE_PERSIST_INTERVAL_MS = 1000 * 60;
 const PASSWORD_MIN_LENGTH = 8;
 
 function safeArray(value) {
@@ -97,6 +107,10 @@ function publicInvitation(invitation) {
   return safe;
 }
 
+function publicSystemNotification(notification) {
+  return notification ? { ...notification } : null;
+}
+
 function basicAuthCredentials(req) {
   const header = String(req.headers?.authorization || '');
   const match = header.match(/^Basic\s+(.+)$/i);
@@ -156,24 +170,65 @@ export function createCloudAuth(deps) {
     state.cloud.invitations = safeArray(state.cloud.invitations);
     state.cloud.pairingTokens = safeArray(state.cloud.pairingTokens);
     state.cloud.computerTokens = safeArray(state.cloud.computerTokens);
-    state.cloud.agentDeliveries = safeArray(state.cloud.agentDeliveries);
-    state.cloud.daemonEvents = safeArray(state.cloud.daemonEvents);
-    for (const member of state.cloud.workspaceMembers) {
-      if (member.role === 'owner') member.role = 'admin';
+      state.cloud.agentDeliveries = safeArray(state.cloud.agentDeliveries);
+      state.cloud.daemonEvents = safeArray(state.cloud.daemonEvents);
+      state.systemNotifications = safeArray(state.systemNotifications);
+      for (const member of state.cloud.workspaceMembers) {
+        member.role = normalizeCloudRole(member.role);
+        if (!member.status) member.status = 'active';
+      }
+      for (const invitation of state.cloud.invitations) {
+        invitation.role = normalizeCloudRole(invitation.role);
+      }
+      state.humans = safeArray(state.humans);
+      for (const human of state.humans) {
+        human.role = normalizeCloudRole(human.role);
+      }
+      return state.cloud;
     }
-    for (const invitation of state.cloud.invitations) {
-      if (invitation.role === 'owner') invitation.role = 'admin';
-    }
-    state.humans = safeArray(state.humans);
-    for (const human of state.humans) {
-      if (human.role === 'owner') human.role = 'admin';
-    }
-    return state.cloud;
-  }
 
-  function storageBackend() {
-    return cloudRepository?.isEnabled?.() ? 'postgres' : 'state';
-  }
+    function storageBackend() {
+      return cloudRepository?.isEnabled?.() ? 'postgres' : 'state';
+    }
+
+    function activeUserWithEmail(email) {
+      const normalized = normalizeEmail(email);
+      if (!normalized) return null;
+      return ensureCloudState().users.find((user) => (
+        user.email === normalized
+        && !user.disabledAt
+        && memberForUser(user.id)
+      )) || null;
+    }
+
+    function makeUserId() {
+      const cloud = ensureCloudState();
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const id = `usr_${String(crypto.randomInt(0, 100_000_000)).padStart(8, '0')}`;
+        if (!cloud.users.some((user) => user.id === id)) return id;
+      }
+      let id = '';
+      do {
+        id = makeId('usr');
+      } while (cloud.users.some((user) => user.id === id));
+      return id;
+    }
+
+    function systemNotification(event, payload = {}) {
+      state.systemNotifications = safeArray(state.systemNotifications);
+      const item = {
+        id: makeId('sys'),
+        type: 'member_notification',
+        event,
+        createdAt: now(),
+        ...payload,
+      };
+      state.systemNotifications.push(item);
+      if (state.systemNotifications.length > 500) {
+        state.systemNotifications.splice(0, state.systemNotifications.length - 500);
+      }
+      return item;
+    }
 
   async function initializeStorage() {
     const cloud = ensureCloudState();
@@ -212,15 +267,18 @@ export function createCloudAuth(deps) {
     return session;
   }
 
-  function currentUser(req) {
-    const session = currentSession(req);
-    if (session) return ensureCloudState().users.find((user) => user.id === session.userId) || null;
-    const credentials = basicAuthCredentials(req);
-    if (!credentials?.email || !credentials.password) return null;
-    const user = ensureCloudState().users.find((item) => item.email === credentials.email);
-    if (!user || !verifyPassword(credentials.password, user.passwordHash)) return null;
-    return user;
-  }
+    function currentUser(req) {
+      const session = currentSession(req);
+      if (session) {
+        const user = ensureCloudState().users.find((item) => item.id === session.userId) || null;
+        return user && !user.disabledAt ? user : null;
+      }
+      const credentials = basicAuthCredentials(req);
+      if (!credentials?.email || !credentials.password) return null;
+      const user = ensureCloudState().users.find((item) => item.email === credentials.email && !item.disabledAt);
+      if (!user || !verifyPassword(credentials.password, user.passwordHash)) return null;
+      return user;
+    }
 
   function memberForUser(userId, workspaceId = primaryWorkspace()?.id) {
     return ensureCloudState().workspaceMembers.find((member) => (
@@ -230,13 +288,44 @@ export function createCloudAuth(deps) {
     )) || null;
   }
 
-  function roleAllows(role, allowedRoles = []) {
-    if (!allowedRoles.length) return true;
-    const hierarchy = ['viewer', 'member', 'agent_admin', 'computer_admin', 'admin'];
-    const roleIndex = hierarchy.indexOf(String(role || 'viewer'));
-    if (roleIndex < 0) return false;
-    return allowedRoles.some((allowed) => roleIndex >= hierarchy.indexOf(allowed));
+  function humanForMember(member, user = null) {
+    state.humans = safeArray(state.humans);
+    return state.humans.find((human) => human.id === member?.humanId)
+      || (user ? state.humans.find((human) => human.authUserId === user.id && human.status !== 'removed') : null)
+      || null;
   }
+
+  function markHumanPresence(human, status = 'online') {
+    if (!human) return false;
+    const timestamp = now();
+    const nextStatus = status === 'offline' ? 'offline' : 'online';
+    const changed = human.status !== nextStatus;
+    human.status = nextStatus;
+    human.lastSeenAt = timestamp;
+    human.presenceUpdatedAt = timestamp;
+    return changed;
+  }
+
+  function refreshHumanPresence() {
+    let changed = false;
+    const cutoff = Date.now() - HUMAN_PRESENCE_TIMEOUT_MS;
+    for (const human of safeArray(state.humans)) {
+      if (!human?.authUserId || human.status !== 'online') continue;
+      const seenAt = Date.parse(human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt || human.createdAt || '');
+      if (!seenAt || seenAt < cutoff) {
+        human.status = 'offline';
+        human.presenceUpdatedAt = now();
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+    function currentActor(req) {
+      const user = currentUser(req);
+      const member = user ? memberForUser(user.id) : null;
+      return user && member ? { user, member } : null;
+    }
 
   function isLoginRequired() {
     const cloud = ensureCloudState();
@@ -246,19 +335,18 @@ export function createCloudAuth(deps) {
       || cloud.users.length > 0;
   }
 
-  function requireUser(req, res, sendError, allowedRoles = []) {
-    const user = currentUser(req);
-    if (!user) {
-      sendError(res, 401, 'Login is required.');
-      return null;
+    function requireUser(req, res, sendError, allowedRoles = []) {
+      const auth = currentActor(req);
+      if (!auth) {
+        sendError(res, 401, 'Login is required.');
+        return null;
+      }
+      if (!roleAllows(auth.member.role, allowedRoles)) {
+        sendError(res, 403, 'Workspace role is not allowed.');
+        return null;
+      }
+      return auth;
     }
-    const member = memberForUser(user.id);
-    if (!member || !roleAllows(member.role, allowedRoles)) {
-      sendError(res, 403, 'Workspace role is not allowed.');
-      return null;
-    }
-    return { user, member };
-  }
 
   function issueSession(user, req) {
     const cloud = ensureCloudState();
@@ -279,29 +367,42 @@ export function createCloudAuth(deps) {
     return { session, cookie: sessionCookie(raw, req) };
   }
 
-  function ensureHumanForUser(user, role = 'member') {
-    state.humans = safeArray(state.humans);
-    let human = state.humans.find((item) => item.authUserId === user.id)
-      || state.humans.find((item) => normalizeEmail(item.email) === user.email);
-    if (!human && role === 'admin') human = state.humans.find((item) => item.id === 'hum_local');
-    if (!human) {
-      human = {
-        id: makeId('hum'),
-        name: user.name || user.email.split('@')[0],
-        email: user.email,
-        role,
-        status: 'online',
-        createdAt: now(),
-      };
+    function ensureHumanForUser(user, role = 'member', options = {}) {
+      state.humans = safeArray(state.humans);
+      const normalizedRole = normalizeCloudRole(role);
+      let human = options.humanId
+        ? state.humans.find((item) => item.id === options.humanId)
+        : null;
+      if (!human) human = state.humans.find((item) => item.authUserId === user.id);
+      if (!human && normalizedRole === 'admin') human = state.humans.find((item) => item.id === 'hum_local');
+      if (!human) {
+        human = state.humans.find((item) => (
+          normalizeEmail(item.email) === user.email
+          && item.status !== 'removed'
+          && !item.authUserId
+        ));
+      }
+      if (!human) {
+        human = {
+          id: makeId('hum'),
+          name: user.name || user.email.split('@')[0],
+          email: user.email,
+          role: normalizedRole,
+          status: 'online',
+          createdAt: now(),
+        };
       state.humans.push(human);
     }
-    human.authUserId = user.id;
-    human.name = user.name || human.name || user.email.split('@')[0];
-    human.email = user.email;
-    human.role = role;
-    human.status = 'online';
-    return human;
-  }
+      human.authUserId = user.id;
+      human.name = user.name || human.name || user.email.split('@')[0];
+      human.email = user.email;
+      human.role = normalizedRole;
+      human.status = 'online';
+      human.lastSeenAt = now();
+      human.presenceUpdatedAt = human.lastSeenAt;
+      delete human.removedAt;
+      return human;
+    }
 
   function addHumanToAllChannel(human) {
     const allChannel = safeArray(state.channels).find((channel) => channel.id === 'chan_all');
@@ -327,9 +428,9 @@ export function createCloudAuth(deps) {
     let user = cloud.users.find((item) => item.email === credentials.email)
       || cloud.users.find((item) => item.id === adminMember?.userId);
 
-    if (!user) {
-      user = {
-        id: makeId('usr'),
+      if (!user) {
+        user = {
+          id: makeUserId(),
         email: credentials.email,
         name: credentials.name || credentials.email.split('@')[0],
         passwordHash: scryptPassword(credentials.password),
@@ -350,10 +451,14 @@ export function createCloudAuth(deps) {
       user.name = credentials.name;
       changed = true;
     }
-    if (!user.emailVerifiedAt) {
-      user.emailVerifiedAt = now();
-      changed = true;
-    }
+      if (!user.emailVerifiedAt) {
+        user.emailVerifiedAt = now();
+        changed = true;
+      }
+      if (user.disabledAt) {
+        delete user.disabledAt;
+        changed = true;
+      }
     if (!verifyPassword(credentials.password, user.passwordHash)) {
       user.passwordHash = scryptPassword(credentials.password);
       changed = true;
@@ -393,85 +498,133 @@ export function createCloudAuth(deps) {
     return { configured: true, user: publicUser(user), member, workspace };
   }
 
-  async function login(body, req, res) {
-    const cloud = ensureCloudState();
-    const email = normalizeEmail(body.email);
-    const user = cloud.users.find((item) => item.email === email);
-    if (!user || !verifyPassword(body.password || '', user.passwordHash)) {
-      const error = new Error('Invalid email or password.');
-      error.status = 401;
-      throw error;
+    async function login(body, req, res) {
+      const cloud = ensureCloudState();
+      const email = normalizeEmail(body.email);
+      const user = cloud.users.find((item) => item.email === email && !item.disabledAt);
+      const member = user ? memberForUser(user.id) : null;
+      if (!user || !member || !verifyPassword(body.password || '', user.passwordHash)) {
+        const error = new Error('Invalid email or password.');
+        error.status = 401;
+        throw error;
     }
+      const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, { humanId: member.humanId });
+      if (!member.humanId && human?.id) member.humanId = human.id;
+      markHumanPresence(human, 'online');
     const issued = issueSession(user, req);
-    await persistCloudState();
-    res.setHeader('Set-Cookie', issued.cookie);
-    return { user: publicUser(user), member: memberForUser(user.id), workspace: primaryWorkspace() };
-  }
+      await persistCloudState();
+      res.setHeader('Set-Cookie', issued.cookie);
+      return { user: publicUser(user), member, workspace: primaryWorkspace() };
+    }
 
   async function logout(req, res) {
+    const auth = currentActor(req);
     const session = currentSession(req);
     if (session) session.revokedAt = now();
+    if (auth) markHumanPresence(humanForMember(auth.member, auth.user), 'offline');
     res.setHeader('Set-Cookie', clearSessionCookie());
     await persistCloudState();
     return { ok: true };
   }
 
-  async function createInvitation(body, req) {
-    const auth = requireUser(req, { setHeader() {} }, () => {}, ['admin']);
-    if (!auth) {
-      const error = new Error('Admin role is required.');
-      error.status = 403;
-      throw error;
+    async function touchPresence(req) {
+      const auth = currentActor(req);
+      if (!auth) {
+        const error = new Error('Login is required.');
+        error.status = 401;
+        throw error;
+      }
+      const human = humanForMember(auth.member, auth.user)
+        || ensureHumanForUser(auth.user, auth.member.role, { humanId: auth.member.humanId });
+      if (!auth.member.humanId && human?.id) auth.member.humanId = human.id;
+      const previousSeen = Date.parse(human.lastSeenAt || '');
+      const changed = markHumanPresence(human, 'online');
+      const shouldPersist = changed || !previousSeen || Date.now() - previousSeen > HUMAN_PRESENCE_PERSIST_INTERVAL_MS;
+      if (shouldPersist) await persistCloudState();
+      return { human, member: auth.member, timeoutMs: HUMAN_PRESENCE_TIMEOUT_MS };
     }
-    const cloud = ensureCloudState();
-    const workspace = primaryWorkspace();
-    const email = normalizeEmail(body.email);
+
+    async function createInvitation(body, req) {
+      const auth = currentActor(req);
+      if (!auth) {
+        const error = new Error('Login is required.');
+        error.status = 401;
+        throw error;
+      }
+      const cloud = ensureCloudState();
+      const workspace = primaryWorkspace();
+      const email = normalizeEmail(body.email);
     if (!email) {
       const error = new Error('Invite email is required.');
-      error.status = 400;
-      throw error;
-    }
-    const raw = token('mc_inv');
-    const role = ['admin', 'member', 'viewer', 'computer_admin', 'agent_admin'].includes(body.role)
-      ? body.role
-      : 'member';
-    const invitation = {
-      id: makeId('inv'),
-      workspaceId: workspace.id,
-      email,
-      role,
-      tokenHash: sha256(raw),
+        error.status = 400;
+        throw error;
+      }
+      if (activeUserWithEmail(email)) {
+        const error = new Error('User already exists.');
+        error.status = 409;
+        throw error;
+      }
+      const raw = token('mc_inv');
+      const role = normalizeCloudRole(body.role);
+      if (!canInviteRole(auth.member.role, role)) {
+        const error = new Error('Workspace role is not allowed.');
+        error.status = 403;
+        throw error;
+      }
+      let human = safeArray(state.humans).find((item) => (
+        normalizeEmail(item.email) === email
+        && item.status !== 'removed'
+        && !item.authUserId
+      ));
+      if (!human) {
+        human = {
+          id: makeId('hum'),
+          name: String(body.name || email.split('@')[0]).trim(),
+          email,
+          role,
+          status: 'invited',
+          createdAt: now(),
+        };
+        state.humans.push(human);
+        addHumanToAllChannel(human);
+      } else {
+        human.role = role;
+        human.status = 'invited';
+        human.updatedAt = now();
+      }
+      const invitation = {
+        id: makeId('inv'),
+        workspaceId: workspace.id,
+        humanId: human.id,
+        email,
+        role,
+        tokenHash: sha256(raw),
       invitedBy: auth.user.id,
       expiresAt: new Date(Date.now() + Number(body.ttlMs || INVITATION_TTL_MS)).toISOString(),
       acceptedAt: null,
-      revokedAt: null,
-      createdAt: now(),
-    };
-    cloud.invitations.push(invitation);
-    let human = safeArray(state.humans).find((item) => normalizeEmail(item.email) === email);
-    if (!human) {
-      human = {
-        id: makeId('hum'),
-        name: String(body.name || email.split('@')[0]).trim(),
-        email,
-        role,
-        status: 'invited',
+        revokedAt: null,
         createdAt: now(),
       };
-      state.humans.push(human);
-      addHumanToAllChannel(human);
-    }
-    const base = process.env.MAGCLAW_PUBLIC_URL || requestOrigin(req);
-    await persistCloudState();
-    return {
+      cloud.invitations.push(invitation);
+      systemNotification('member_invited', {
+        actorUserId: auth.user.id,
+        actorHumanId: auth.member.humanId,
+        targetEmail: email,
+        targetHumanId: human.id,
+        targetRole: role,
+        message: `${auth.user.name || auth.user.email} invited ${email} as ${role}.`,
+      });
+      const base = process.env.MAGCLAW_PUBLIC_URL || requestOrigin(req);
+      await persistCloudState();
+      return {
       invitation: publicInvitation(invitation),
       inviteToken: raw,
       inviteUrl: base ? `${base}/invite?token=${encodeURIComponent(raw)}` : '',
     };
   }
 
-  async function registerWithInvite(body, req, res) {
-    const cloud = ensureCloudState();
+    async function registerWithInvite(body, req, res) {
+      const cloud = ensureCloudState();
     const workspace = primaryWorkspace();
     const raw = String(body.inviteToken || body.token || '').trim();
     const email = normalizeEmail(body.email);
@@ -495,31 +648,31 @@ export function createCloudAuth(deps) {
       error.status = 400;
       throw error;
     }
-    if (cloud.users.some((user) => user.email === finalEmail)) {
-      const error = new Error('User already exists.');
-      error.status = 409;
-      throw error;
+      if (activeUserWithEmail(finalEmail)) {
+        const error = new Error('User already exists.');
+        error.status = 409;
+        throw error;
     }
     if (password.length < PASSWORD_MIN_LENGTH) {
       const error = new Error(`Password must be at least ${PASSWORD_MIN_LENGTH} characters.`);
       error.status = 400;
       throw error;
     }
-    const user = {
-      id: makeId('usr'),
-      email: finalEmail,
-      name: String(body.name || finalEmail.split('@')[0]).trim(),
+      const user = {
+        id: makeUserId(),
+        email: finalEmail,
+        name: String(body.name || finalEmail.split('@')[0]).trim(),
       passwordHash: scryptPassword(password),
       emailVerifiedAt: invitation ? now() : null,
       createdAt: now(),
       updatedAt: now(),
       lastLoginAt: null,
-    };
-    cloud.users.push(user);
-    const role = invitation?.role || 'member';
-    const human = ensureHumanForUser(user, role);
-    addHumanToAllChannel(human);
-    cloud.workspaceMembers.push({
+      };
+      cloud.users.push(user);
+      const role = normalizeCloudRole(invitation?.role || 'member');
+      const human = ensureHumanForUser(user, role, { humanId: invitation?.humanId });
+      addHumanToAllChannel(human);
+      cloud.workspaceMembers.push({
       id: makeId('wmem'),
       workspaceId: workspace.id,
       userId: user.id,
@@ -527,52 +680,212 @@ export function createCloudAuth(deps) {
       role,
       status: 'active',
       joinedAt: now(),
-      createdAt: now(),
-    });
-    if (invitation) invitation.acceptedAt = now();
+        createdAt: now(),
+      });
+      if (invitation) {
+        invitation.acceptedAt = now();
+        invitation.acceptedBy = user.id;
+      }
+      systemNotification('member_joined', {
+        actorUserId: user.id,
+        actorHumanId: human.id,
+        targetEmail: user.email,
+        targetUserId: user.id,
+        targetHumanId: human.id,
+        targetRole: role,
+        message: `${user.name || user.email} accepted an invitation and joined as ${role}.`,
+      });
     const issued = issueSession(user, req);
     await persistCloudState();
-    res.setHeader('Set-Cookie', issued.cookie);
-    return { user: publicUser(user), member: memberForUser(user.id, workspace.id), workspace };
-  }
+      res.setHeader('Set-Cookie', issued.cookie);
+      return { user: publicUser(user), member: memberForUser(user.id, workspace.id), workspace };
+    }
 
-  function publicCloudState(req) {
-    const cloud = ensureCloudState();
-    const user = req ? currentUser(req) : null;
-    const member = user ? memberForUser(user.id) : null;
-    const canManage = member && roleAllows(member.role, ['admin']);
-    const canSeeDirectory = !cloud.users.length || Boolean(member);
-    return {
-      schemaVersion: cloud.schemaVersion,
-      auth: {
+    function publicMember(member) {
+      if (!member) return null;
+      const cloud = ensureCloudState();
+      return {
+        ...member,
+        user: publicUser(cloud.users.find((user) => user.id === member.userId)),
+        human: safeArray(state.humans).find((human) => human.id === member.humanId) || null,
+      };
+    }
+
+    function activeAdminCount(workspaceId = primaryWorkspace()?.id) {
+      return ensureCloudState().workspaceMembers.filter((member) => (
+        member.workspaceId === workspaceId
+        && member.status === 'active'
+        && normalizeCloudRole(member.role) === 'admin'
+      )).length;
+    }
+
+    async function updateMemberRole(memberId, body, req) {
+      const auth = currentActor(req);
+      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
+        const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
+        error.status = auth ? 403 : 401;
+        throw error;
+      }
+      const cloud = ensureCloudState();
+      const workspace = primaryWorkspace();
+      const member = cloud.workspaceMembers.find((item) => (
+        item.id === memberId
+        && item.workspaceId === workspace.id
+        && item.status === 'active'
+      ));
+      if (!member) {
+        const error = new Error('Member was not found.');
+        error.status = 404;
+        throw error;
+      }
+      const role = normalizeCloudRole(body.role, null);
+      if (!CLOUD_ROLES.includes(role)) {
+        const error = new Error('Role is not allowed.');
+        error.status = 400;
+        throw error;
+      }
+      const previousRole = normalizeCloudRole(member.role);
+      if (previousRole === 'admin' && role !== 'admin' && activeAdminCount(workspace.id) <= 1) {
+        const error = new Error('At least one Admin is required.');
+        error.status = 400;
+        throw error;
+      }
+      member.role = role;
+      member.updatedAt = now();
+      const human = safeArray(state.humans).find((item) => item.id === member.humanId);
+      if (human) {
+        human.role = role;
+        human.updatedAt = member.updatedAt;
+      }
+      systemNotification('member_role_changed', {
+        actorUserId: auth.user.id,
+        actorHumanId: auth.member.humanId,
+        targetUserId: member.userId,
+        targetHumanId: member.humanId,
+        previousRole,
+        targetRole: role,
+        message: `${auth.user.name || auth.user.email} changed a member role from ${previousRole} to ${role}.`,
+      });
+      await persistCloudState();
+      return { member: publicMember(member) };
+    }
+
+    async function removeMember(memberId, req) {
+      const auth = currentActor(req);
+      if (!auth) {
+        const error = new Error('Login is required.');
+        error.status = 401;
+        throw error;
+      }
+      const cloud = ensureCloudState();
+      const workspace = primaryWorkspace();
+      const member = cloud.workspaceMembers.find((item) => (
+        item.id === memberId
+        && item.workspaceId === workspace.id
+        && item.status === 'active'
+      ));
+      if (!member) {
+        const error = new Error('Member was not found.');
+        error.status = 404;
+        throw error;
+      }
+      if (member.userId === auth.user.id) {
+        const error = new Error('You cannot remove yourself.');
+        error.status = 400;
+        throw error;
+      }
+      if (!canRemoveRole(auth.member.role, member.role)) {
+        const error = new Error('Workspace role is not allowed.');
+        error.status = 403;
+        throw error;
+      }
+      if (normalizeCloudRole(member.role) === 'admin' && activeAdminCount(workspace.id) <= 1) {
+        const error = new Error('At least one Admin is required.');
+        error.status = 400;
+        throw error;
+      }
+      const removedAt = now();
+      member.status = 'removed';
+      member.removedAt = removedAt;
+      member.removedBy = auth.user.id;
+      member.updatedAt = removedAt;
+      const user = cloud.users.find((item) => item.id === member.userId);
+      if (user) {
+        user.disabledAt = removedAt;
+        user.updatedAt = removedAt;
+      }
+      for (const session of cloud.sessions) {
+        if (session.userId === member.userId && !session.revokedAt) session.revokedAt = removedAt;
+      }
+      const human = safeArray(state.humans).find((item) => item.id === member.humanId);
+      if (human) {
+        human.status = 'removed';
+        human.removedAt = removedAt;
+        human.updatedAt = removedAt;
+      }
+      for (const channel of safeArray(state.channels)) {
+        const nextHumanIds = safeArray(channel.humanIds).filter((id) => id !== member.humanId);
+        const nextMemberIds = safeArray(channel.memberIds).filter((id) => id !== member.humanId);
+        if (nextHumanIds.length !== safeArray(channel.humanIds).length || nextMemberIds.length !== safeArray(channel.memberIds).length) {
+          channel.humanIds = nextHumanIds;
+          channel.memberIds = nextMemberIds;
+          channel.updatedAt = removedAt;
+        }
+      }
+      systemNotification('member_removed', {
+        actorUserId: auth.user.id,
+        actorHumanId: auth.member.humanId,
+        targetUserId: member.userId,
+        targetHumanId: member.humanId,
+        targetRole: normalizeCloudRole(member.role),
+        message: `${auth.user.name || auth.user.email} removed a member from the workspace.`,
+      });
+      await persistCloudState();
+      return { member: publicMember(member) };
+    }
+
+    function publicCloudState(req) {
+      const cloud = ensureCloudState();
+      refreshHumanPresence();
+      const user = req ? currentUser(req) : null;
+      const member = user ? memberForUser(user.id) : null;
+      const session = req ? currentSession(req) : null;
+      const capabilities = member ? cloudCapabilitiesForRole(member.role) : {};
+      const canManageCloud = Boolean(capabilities.manage_cloud_connection);
+      const canSeeDirectory = !cloud.users.length || Boolean(member);
+      return {
+        schemaVersion: cloud.schemaVersion,
+        auth: {
         initialized: cloud.users.length > 0,
         adminConfigured: Boolean(configuredAdminCredentials()),
         loginRequired: isLoginRequired(),
         allowSignups: Boolean(cloud.auth.allowSignups),
         passwordLogin: true,
-        storageBackend: storageBackend(),
-        currentUser: publicUser(user),
-        currentMember: member || null,
-      },
-      workspace: primaryWorkspace(),
-      members: canSeeDirectory ? cloud.workspaceMembers.map((item) => ({
-        ...item,
-        user: publicUser(cloud.users.find((userItem) => userItem.id === item.userId)),
-      })) : [],
-      invitations: canManage ? cloud.invitations.map(publicInvitation) : [],
-      pairingTokens: canManage ? cloud.pairingTokens.map((item) => {
-        const { tokenHash, ...safe } = item;
-        void tokenHash;
-        return safe;
-      }) : [],
-      computerTokens: canManage ? cloud.computerTokens.map((item) => {
-        const { tokenHash, ...safe } = item;
-        void tokenHash;
-        return safe;
-      }) : [],
-      agentDeliveries: canManage ? safeArray(cloud.agentDeliveries).map((item) => {
-        const { payload, ...safe } = item;
-        void payload;
+          storageBackend: storageBackend(),
+          currentUser: publicUser(user),
+          currentMember: member || null,
+          capabilities,
+          sessionTtlMs: SESSION_TTL_MS,
+          sessionExpiresAt: session?.expiresAt || null,
+          humanPresenceTimeoutMs: HUMAN_PRESENCE_TIMEOUT_MS,
+        },
+        workspace: primaryWorkspace(),
+        members: canSeeDirectory ? cloud.workspaceMembers.map(publicMember) : [],
+        invitations: member ? cloud.invitations.map(publicInvitation) : [],
+        systemNotifications: member ? safeArray(state.systemNotifications).map(publicSystemNotification) : [],
+        pairingTokens: canManageCloud ? cloud.pairingTokens.map((item) => {
+          const { tokenHash, ...safe } = item;
+          void tokenHash;
+          return safe;
+        }) : [],
+        computerTokens: canManageCloud ? cloud.computerTokens.map((item) => {
+          const { tokenHash, ...safe } = item;
+          void tokenHash;
+          return safe;
+        }) : [],
+        agentDeliveries: canManageCloud ? safeArray(cloud.agentDeliveries).map((item) => {
+          const { payload, ...safe } = item;
+          void payload;
         return safe;
       }) : [],
     };
@@ -580,17 +893,21 @@ export function createCloudAuth(deps) {
 
   return {
     clearSessionCookie,
-    close: () => cloudRepository?.close?.(),
-    currentUser,
+      close: () => cloudRepository?.close?.(),
+      currentActor,
+      currentUser,
     ensureConfiguredAdmin,
     ensureCloudState,
     initializeStorage,
     isLoginRequired,
     login,
-    logout,
-    createInvitation,
-    registerWithInvite,
-    publicCloudState,
+      logout,
+      touchPresence,
+      createInvitation,
+      registerWithInvite,
+      removeMember,
+      updateMemberRole,
+      publicCloudState,
     publicInvitation,
     requireUser,
     persistCloudState,

@@ -9,8 +9,9 @@ export async function handleCollabApi(req, res, url, deps) {
   const {
     addCollabEvent,
     agentParticipatesInChannels,
-    broadcastState,
-    findAgent,
+      broadcastState,
+      currentActor,
+      findAgent,
     findChannel,
     findComputer,
     getState,
@@ -249,8 +250,8 @@ export async function handleCollabApi(req, res, url, deps) {
     return true;
   }
 
-  const computerMatch = url.pathname.match(/^\/api\/computers\/([^/]+)$/);
-  if (['PATCH', 'POST'].includes(req.method) && computerMatch) {
+    const computerMatch = url.pathname.match(/^\/api\/computers\/([^/]+)$/);
+    if (['PATCH', 'POST'].includes(req.method) && computerMatch) {
     const computer = findComputer(computerMatch[1]);
     if (!computer) {
       sendError(res, 404, 'Computer not found.');
@@ -263,10 +264,46 @@ export async function handleCollabApi(req, res, url, deps) {
     await persistState();
     broadcastState();
     sendJson(res, 200, { computer });
-    return true;
-  }
+      return true;
+    }
 
-  if (req.method === 'POST' && url.pathname === '/api/humans') {
+    const humanMatch = url.pathname.match(/^\/api\/humans\/([^/]+)$/);
+    if (['PATCH', 'POST'].includes(req.method) && humanMatch) {
+      const human = state.humans.find((item) => item.id === humanMatch[1]);
+      if (!human) {
+        sendError(res, 404, 'Human not found.');
+        return true;
+      }
+      const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+      const ownsHuman = auth && (auth.member?.humanId === human.id || auth.user?.id === human.authUserId);
+      if (auth && !ownsHuman && auth.member?.role !== 'admin') {
+        sendError(res, 403, 'Workspace role is not allowed.');
+        return true;
+      }
+      if (auth && auth.user?.id === human.authUserId && !auth.member?.humanId) auth.member.humanId = human.id;
+      const body = await readJson(req);
+      if (body.displayName !== undefined || body.name !== undefined) {
+        const name = String(body.displayName ?? body.name ?? '').trim();
+        if (name) human.name = name.slice(0, 120);
+      }
+      if (body.description !== undefined) human.description = String(body.description || '').trim().slice(0, 3000);
+      if (body.avatar !== undefined) human.avatar = String(body.avatar || '').trim();
+      human.updatedAt = now();
+      const cloudUser = auth?.user && auth.member?.humanId === human.id
+        ? (state.cloud?.users || []).find((user) => user.id === auth.user.id)
+        : null;
+      if (cloudUser) {
+        cloudUser.name = human.name;
+        cloudUser.avatarUrl = human.avatar || '';
+        cloudUser.updatedAt = human.updatedAt;
+      }
+      await persistState();
+      broadcastState();
+      sendJson(res, 200, { human });
+      return true;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/humans') {
     const body = await readJson(req);
     const email = String(body.email || '').trim();
     const human = {

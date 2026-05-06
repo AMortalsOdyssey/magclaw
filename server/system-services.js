@@ -32,12 +32,13 @@ export function createSystemServices(deps) {
 
   function publicState(req = null) {
     const currentState = getState() || {};
+    const cloud = typeof publicCloudState === 'function' ? publicCloudState(req) : undefined;
     return {
       ...currentState,
       settings: publicSettings(),
       channels: (currentState.channels || []).filter((channel) => !channel.archived),
       connection: publicConnection(),
-      cloud: typeof publicCloudState === 'function' ? publicCloudState(req) : undefined,
+      cloud,
       runtime: runtimeSnapshot(),
       runningRunIds: [...runningProcesses.keys()],
     };

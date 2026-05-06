@@ -20,8 +20,11 @@ CREATE TABLE IF NOT EXISTS cloud_users (
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS cloud_users_normalized_email_uidx
-  ON cloud_users(normalized_email);
+DROP INDEX IF EXISTS cloud_users_normalized_email_uidx;
+
+CREATE UNIQUE INDEX IF NOT EXISTS cloud_users_active_normalized_email_uidx
+  ON cloud_users(normalized_email)
+  WHERE disabled_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS cloud_users_created_at_idx
   ON cloud_users(created_at DESC);
@@ -60,7 +63,7 @@ CREATE TABLE IF NOT EXISTS cloud_workspace_members (
   user_id TEXT NOT NULL REFERENCES cloud_users(id) ON DELETE CASCADE,
   human_id TEXT,
   role TEXT NOT NULL CHECK (
-    role IN ('viewer', 'member', 'agent_admin', 'computer_admin', 'admin')
+    role IN ('member', 'core_member', 'admin')
   ),
   status TEXT NOT NULL DEFAULT 'active' CHECK (
     status IN ('invited', 'active', 'disabled', 'removed')
@@ -108,19 +111,59 @@ CREATE INDEX IF NOT EXISTS cloud_sessions_expires_at_idx
 CREATE TABLE IF NOT EXISTS cloud_invitations (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  human_id TEXT,
   email TEXT NOT NULL,
   normalized_email TEXT NOT NULL,
   role TEXT NOT NULL CHECK (
-    role IN ('viewer', 'member', 'agent_admin', 'computer_admin', 'admin')
+    role IN ('member', 'core_member', 'admin')
   ),
   token_hash TEXT NOT NULL,
   invited_by TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
   expires_at TIMESTAMPTZ NOT NULL,
   accepted_at TIMESTAMPTZ,
+  accepted_by TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
   revoked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+
+ALTER TABLE cloud_workspace_members
+  DROP CONSTRAINT IF EXISTS cloud_workspace_members_role_check;
+
+ALTER TABLE cloud_invitations
+  DROP CONSTRAINT IF EXISTS cloud_invitations_role_check;
+
+ALTER TABLE cloud_invitations
+  ADD COLUMN IF NOT EXISTS human_id TEXT;
+
+ALTER TABLE cloud_invitations
+  ADD COLUMN IF NOT EXISTS accepted_by TEXT REFERENCES cloud_users(id) ON DELETE SET NULL;
+
+UPDATE cloud_workspace_members
+  SET role = CASE role
+    WHEN 'owner' THEN 'admin'
+    WHEN 'viewer' THEN 'member'
+    WHEN 'agent_admin' THEN 'core_member'
+    WHEN 'computer_admin' THEN 'core_member'
+    ELSE role
+  END;
+
+UPDATE cloud_invitations
+  SET role = CASE role
+    WHEN 'owner' THEN 'admin'
+    WHEN 'viewer' THEN 'member'
+    WHEN 'agent_admin' THEN 'core_member'
+    WHEN 'computer_admin' THEN 'core_member'
+    ELSE role
+  END;
+
+ALTER TABLE cloud_workspace_members
+  ADD CONSTRAINT cloud_workspace_members_role_check
+  CHECK (role IN ('member', 'core_member', 'admin'));
+
+ALTER TABLE cloud_invitations
+  ADD CONSTRAINT cloud_invitations_role_check
+  CHECK (role IN ('member', 'core_member', 'admin'));
 
 CREATE UNIQUE INDEX IF NOT EXISTS cloud_invitations_token_hash_uidx
   ON cloud_invitations(token_hash);

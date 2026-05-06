@@ -150,7 +150,7 @@ test('environment admin login protects app APIs and supports invites end to end'
       headers: { authorization: basicAuth },
     });
     assert.equal(adminApis.data.auth.basicAuth, true);
-    assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations' && item.role === 'admin'));
+    assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations' && item.role === 'member'));
     assert.ok(adminApis.data.endpoints.some((item) => item.path === '/api/settings/fanout' && item.role === 'admin'));
 
     const admin = await request(server.baseUrl, '/api/cloud/auth/login', {
@@ -168,6 +168,15 @@ test('environment admin login protects app APIs and supports invites end to end'
     const adminState = await request(server.baseUrl, '/api/state', { cookie: adminCookie });
     assert.equal(adminState.data.cloud.auth.currentUser.email, 'admin@example.com');
     assert.equal(adminState.data.cloud.auth.currentMember.role, 'admin');
+    assert.equal(adminState.data.cloud.auth.sessionTtlMs, 1000 * 60 * 60 * 24 * 14);
+    assert.match(adminState.data.cloud.auth.sessionExpiresAt, /^\d{4}-\d{2}-\d{2}T/);
+    const adminPresence = await request(server.baseUrl, '/api/cloud/auth/heartbeat', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: '{}',
+    });
+    assert.equal(adminPresence.data.timeoutMs, 1000 * 60 * 2);
+    assert.equal(adminPresence.data.human.status, 'online');
     const adminSettings = await request(server.baseUrl, '/api/settings', {
       method: 'POST',
       cookie: adminCookie,
@@ -194,12 +203,12 @@ test('environment admin login protects app APIs and supports invites end to end'
     assert.equal(member.data.member.role, 'member');
     const memberCookie = member.cookie;
 
-    await request(server.baseUrl, '/api/cloud/invitations', {
+    const memberInviteResult = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
       cookie: memberCookie,
       body: JSON.stringify({ email: 'another@example.com', role: 'member' }),
-      expectStatus: 403,
     });
+    assert.equal(memberInviteResult.data.invitation.role, 'member');
     await request(server.baseUrl, '/api/settings', {
       method: 'POST',
       cookie: memberCookie,
@@ -208,6 +217,7 @@ test('environment admin login protects app APIs and supports invites end to end'
     });
     const memberState = await request(server.baseUrl, '/api/state', { cookie: memberCookie });
     assert.equal(memberState.data.cloud.auth.currentUser.email, 'member@example.com');
+    assert.ok(memberState.data.humans.some((human) => human.id === member.data.member.humanId && human.status === 'online'));
 
     const pairing = await request(server.baseUrl, '/api/cloud/computers/pairing-tokens', {
       method: 'POST',
@@ -250,6 +260,151 @@ test('environment admin login protects app APIs and supports invites end to end'
         new Promise((resolve) => setTimeout(resolve, 500)),
       ]);
     }
+    await server.stop();
+  }
+});
+
+test('cloud roles enforce core member invite and removal boundaries', async () => {
+  const server = await startIsolatedServer({
+    MAGCLAW_ADMIN_NAME: 'Admin',
+    MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
+    MAGCLAW_ADMIN_PASSWORD: 'password123',
+  });
+  try {
+    const admin = await request(server.baseUrl, '/api/cloud/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@example.com', password: 'password123' }),
+    });
+    const adminCookie = admin.cookie;
+
+    const coreInvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ email: 'core@example.com', role: 'core_member' }),
+    });
+    const core = await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: coreInvite.data.inviteToken,
+        email: 'core@example.com',
+        name: 'Core',
+        password: 'password123',
+      }),
+    });
+    assert.equal(core.data.member.role, 'core_member');
+    assert.match(core.data.user.id, /^usr_\d{8}$/);
+    const coreCookie = core.cookie;
+
+      const invitedCore = await request(server.baseUrl, '/api/cloud/invitations', {
+        method: 'POST',
+        cookie: coreCookie,
+        body: JSON.stringify({ email: 'core-two@example.com', role: 'core_member' }),
+      });
+      assert.equal(invitedCore.data.invitation.role, 'core_member');
+      const coreTwo = await request(server.baseUrl, '/api/cloud/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          inviteToken: invitedCore.data.inviteToken,
+          email: 'core-two@example.com',
+          name: 'Core Two',
+          password: 'password123',
+        }),
+      });
+    await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: coreCookie,
+      body: JSON.stringify({ email: 'bad-admin@example.com', role: 'admin' }),
+      expectStatus: 403,
+    });
+
+    const memberInvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: coreCookie,
+      body: JSON.stringify({ email: 'member@example.com', role: 'member' }),
+    });
+    const member = await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: memberInvite.data.inviteToken,
+        email: 'member@example.com',
+        name: 'Member',
+        password: 'password123',
+      }),
+    });
+    assert.equal(member.data.member.role, 'member');
+    const oldMemberUserId = member.data.user.id;
+    const oldMemberHumanId = member.data.member.humanId;
+    const memberCookie = member.cookie;
+
+    const memberInvitesMember = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ email: 'friend@example.com', role: 'member' }),
+    });
+    assert.equal(memberInvitesMember.data.invitation.role, 'member');
+    await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ email: 'bad-core@example.com', role: 'core_member' }),
+      expectStatus: 403,
+    });
+
+    const computer = await request(server.baseUrl, '/api/computers', {
+      method: 'POST',
+      cookie: coreCookie,
+      body: JSON.stringify({ name: 'Core runner' }),
+    });
+    assert.equal(computer.data.computer.name, 'Core runner');
+    await request(server.baseUrl, '/api/computers', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ name: 'Member runner' }),
+      expectStatus: 403,
+    });
+    await request(server.baseUrl, '/api/settings', {
+      method: 'POST',
+      cookie: coreCookie,
+      body: JSON.stringify({ model: 'core-probe' }),
+      expectStatus: 403,
+    });
+
+    const removed = await request(server.baseUrl, `/api/cloud/members/${member.data.member.id}`, {
+      method: 'DELETE',
+      cookie: coreCookie,
+      body: JSON.stringify({}),
+    });
+    assert.equal(removed.data.member.status, 'removed');
+    await request(server.baseUrl, '/api/cloud/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'member@example.com', password: 'password123' }),
+      expectStatus: 401,
+    });
+
+      await request(server.baseUrl, `/api/cloud/members/${coreTwo.data.member.id}`, {
+        method: 'DELETE',
+        cookie: coreCookie,
+        body: JSON.stringify({}),
+      expectStatus: 403,
+    });
+
+    const reinvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: coreCookie,
+      body: JSON.stringify({ email: 'member@example.com', role: 'member' }),
+    });
+    const rejoined = await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: reinvite.data.inviteToken,
+        email: 'member@example.com',
+        name: 'Member Again',
+        password: 'password456',
+      }),
+    });
+    assert.notEqual(rejoined.data.user.id, oldMemberUserId);
+    assert.notEqual(rejoined.data.member.humanId, oldMemberHumanId);
+    assert.match(rejoined.data.user.id, /^usr_\d{8}$/);
+  } finally {
     await server.stop();
   }
 });
