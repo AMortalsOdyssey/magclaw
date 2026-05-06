@@ -42,12 +42,18 @@ test('cloud auth gate only shows invite registration when an invite token is pre
   assert.doesNotMatch(authGateSource, /owner invite/);
   assert.doesNotMatch(authGateSource, /admin account configured|Admin access required|Admin login/i);
   assert.match(authGateSource, /Sign in to continue to your MagClaw workspace/);
+  assert.match(authGateSource, /cloud-login-error/);
+  assert.match(authGateSource, /role="alert" aria-live="polite"/);
+  assert.match(authGateSource, /value="\$\{escapeHtml\(cloudLoginDraftEmail\)\}"/);
+  assert.match(app, /Email or password is incorrect/);
+  assert.match(app, /showCloudAuthGate\(error, \{ interactive: true \}\)/);
   assert.match(authGateSource, /<img src="\/favicon\.svg" alt="" \/>/);
   assert.match(authGateSource, /class="cloud-auth-shell"/);
   assert.match(authGateSource, /class="pixel-panel cloud-login-card"/);
   assert.match(authGateSource, /id="cloud-login-title">Welcome back!/);
   assert.match(styles, /\.cloud-auth-stage/);
   assert.match(styles, /\.cloud-login-card,/);
+  assert.match(styles, /\.cloud-login-error/);
   assert.match(styles, /\.cloud-login-submit/);
 });
 

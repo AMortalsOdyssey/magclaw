@@ -79,6 +79,7 @@ let avatarCropState = null;
 let notificationPrefs = normalizeNotificationPrefs(readJsonStorage(NOTIFICATION_PREF_KEY, {}));
 let windowFocused = document.hasFocus();
 let eventSource = null;
+let cloudLoginDraftEmail = '';
 
 const MAX_ATTACHMENTS_PER_COMPOSER = 20;
 const AGENT_AVATAR_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
@@ -4113,6 +4114,10 @@ function renderAccountSettingsTab() {
 function renderCloudAuthGate(cloud = {}, errorMessage = '') {
   const auth = cloud.auth || {};
   const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
+  const loginError = String(errorMessage || '').trim();
+  const loginErrorHtml = loginError
+    ? `<div class="cloud-login-error" role="alert" aria-live="polite">${escapeHtml(loginError)}</div>`
+    : '';
   const inviteRegisterPanel = inviteTokenFromUrl ? `
       <section class="pixel-panel cloud-invite-card" aria-label="Accept invitation">
         <form id="cloud-register-form" class="cloud-login-form">
@@ -4136,11 +4141,12 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '') {
         <div class="cloud-login-heading">
           <p>MagClaw</p>
           <h1 id="cloud-login-title">Welcome back!</h1>
-          <span>${escapeHtml(errorMessage || 'Sign in to continue to your MagClaw workspace.')}</span>
+          <span>Sign in to continue to your MagClaw workspace.</span>
         </div>
         <form id="cloud-login-form" class="cloud-login-form">
-          <label class="cloud-login-field"><span>Email address</span><input name="email" type="email" autocomplete="email" placeholder="Email address" required /></label>
+          <label class="cloud-login-field"><span>Email address</span><input name="email" type="email" autocomplete="email" placeholder="Email address" value="${escapeHtml(cloudLoginDraftEmail)}" required /></label>
           <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="current-password" placeholder="Password" required /></label>
+          ${loginErrorHtml}
           <button class="primary-btn cloud-login-submit" type="submit">Log in</button>
         </form>
       </section>
@@ -5786,7 +5792,13 @@ async function refreshState() {
   maybeWarmCurrentAgent();
 }
 
-async function showCloudAuthGate(error = null) {
+function cloudAuthErrorMessage(error, { interactive = false } = {}) {
+  if (!error) return '';
+  if (error.status === 401) return interactive ? 'Email or password is incorrect.' : '';
+  return error.message || '';
+}
+
+async function showCloudAuthGate(error = null, options = {}) {
   disconnectEvents();
   appState = null;
   let cloud = { auth: { initialized: false, loginRequired: true } };
@@ -5795,7 +5807,7 @@ async function showCloudAuthGate(error = null) {
   } catch {
     // Keep the login shell available even if auth status is temporarily unavailable.
   }
-  const authErrorMessage = error?.status === 401 ? '' : (error?.message || '');
+  const authErrorMessage = cloudAuthErrorMessage(error, options);
   renderCloudAuthGate(cloud, authErrorMessage);
 }
 
@@ -7348,6 +7360,7 @@ document.addEventListener('submit', async (event) => {
   const data = new FormData(form);
   let submittedBottomTarget = null;
   let focusComposerId = null;
+  let authErrorHandled = false;
 
   try {
     if (form.id === 'message-form') {
@@ -7514,13 +7527,15 @@ document.addEventListener('submit', async (event) => {
       toast('Connection saved');
     }
     if (form.id === 'cloud-login-form') {
+      cloudLoginDraftEmail = String(data.get('email') || '').trim();
       await api('/api/cloud/auth/login', {
         method: 'POST',
         body: JSON.stringify({
-          email: data.get('email'),
+          email: cloudLoginDraftEmail,
           password: data.get('password'),
         }),
       });
+      cloudLoginDraftEmail = '';
       toast('Signed in');
     }
     if (form.id === 'cloud-register-form') {
@@ -7555,10 +7570,15 @@ document.addEventListener('submit', async (event) => {
       toast('Fan-out API saved');
     }
   } catch (error) {
-    toast(error.message);
+    if (form.id === 'cloud-login-form' && error.status === 401) {
+      authErrorHandled = true;
+      await showCloudAuthGate(error, { interactive: true });
+    } else {
+      toast(error.message);
+    }
   } finally {
     if (focusComposerId) requestComposerFocus(focusComposerId);
-    await refreshStateOrAuthGate().catch(() => {});
+    if (!authErrorHandled) await refreshStateOrAuthGate().catch(() => {});
     if (submittedBottomTarget) scrollPaneToBottom(submittedBottomTarget, 'auto');
   }
 });

@@ -123,6 +123,12 @@ test('environment admin login protects app APIs and supports invites end to end'
       body: JSON.stringify({ model: 'anonymous-probe' }),
       expectStatus: 401,
     });
+    const badLogin = await request(server.baseUrl, '/api/cloud/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'missing@example.com', password: 'wrong-password' }),
+      expectStatus: 401,
+    });
+    assert.equal(badLogin.data.error, 'Invalid email or password.');
 
     const basicAuth = `Basic ${Buffer.from('admin@example.com:password123').toString('base64')}`;
     const basicState = await request(server.baseUrl, '/api/state', {

@@ -4366,6 +4366,19 @@ button:disabled {
   box-shadow: var(--shadow-pixel-sm);
 }
 
+.cloud-login-error {
+  min-height: 38px;
+  padding: 10px 12px;
+  border: 2px solid #d64a7f;
+  border-radius: 8px;
+  background: #ffe1ec;
+  color: #8f1744;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.35;
+  text-align: center;
+}
+
 .cloud-login-meta {
   display: flex;
   align-items: center;
