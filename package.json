@@ -7,12 +7,17 @@
   "scripts": {
     "dev": "node server/index.js",
     "start": "node server/index.js",
-    "check": "node --check server/index.js"
+    "check": "node --check server/index.js",
+    "cloud:db:init": "node server/cloud/postgres.js migrate",
+    "cloud:db:status": "node server/cloud/postgres.js status"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
     "playwright": "^1.59.1"
+  },
+  "dependencies": {
+    "pg": "^8.20.0"
   }
 }
