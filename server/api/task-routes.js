@@ -181,7 +181,7 @@ export async function handleTaskApi(req, res, url, deps) {
       return true;
     }
 
-    // Reopen clears terminal/cancellation markers together; otherwise old
+    // Reopen clears terminal stop markers together; otherwise old
     // status timestamps can make a newly reopened task look already resolved.
     task.status = 'todo';
     task.claimedBy = null;
@@ -190,7 +190,6 @@ export async function handleTaskApi(req, res, url, deps) {
     task.reviewRequestedAt = null;
     task.completedAt = null;
     task.endIntentAt = null;
-    task.cancelledAt = null;
     task.stoppedAt = null;
     addTaskHistory(task, 'reopened', 'Task reopened by human.');
     const thread = ensureTaskThread(task);

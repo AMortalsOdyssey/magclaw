@@ -79,7 +79,7 @@ function routeDeps(overrides = {}) {
       res.data = data;
     },
     startCodexRun: () => {},
-    taskIsClosed: (task) => ['done', 'cancelled', 'stopped'].includes(task.status),
+    taskIsClosed: (task) => ['done', 'stopped', 'stopped'].includes(task.status),
     taskLabel: (task) => `#${task.number || task.id}`,
   };
   return { ...deps, ...overrides, state };

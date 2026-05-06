@@ -61,7 +61,7 @@ function routeDeps(overrides = {}) {
       agent.statusReason = reason;
     },
     startAgentFromControl: async () => ({ started: true }),
-    stopAgentProcesses: () => ({ stoppedAgents: ['agt_1'], cancelledWorkItems: [] }),
+    stopAgentProcesses: () => ({ stoppedAgents: ['agt_1'], stoppedWorkItems: [] }),
     stopRunsForScope: () => ['run_1'],
     stopScopeFromBody: () => null,
     warmAgentFromControl: async () => ({ running: true, warm: false, warming: true, status: 'starting' }),

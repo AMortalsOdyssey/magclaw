@@ -10,7 +10,7 @@ export function createTaskOrchestrator(deps) {
     addCollabEvent,
     addTaskHistory,
     addTaskTimelineMessage,
-    cancelWorkItemsForTask,
+    stopWorkItemsForTask,
     claimTask,
     cleanTaskTitle,
     createTaskFromMessage,
@@ -167,7 +167,7 @@ export function createTaskOrchestrator(deps) {
   
   function stopTaskFromThread(task, actorId, replyId) {
     if (!task || taskIsClosed(task)) {
-      return { changed: false, stoppedRuns: [], stoppedAgents: [], cancelledWorkItems: [] };
+      return { changed: false, stoppedRuns: [], stoppedAgents: [], stoppedWorkItems: [] };
     }
     const stoppedAt = now();
     task.status = 'done';
@@ -183,7 +183,7 @@ export function createTaskOrchestrator(deps) {
       actorId: actorId || 'hum_local',
       replyId,
     });
-    const directlyCancelledWorkItems = cancelWorkItemsForTask(task);
+    const directlyStoppedWorkItems = stopWorkItemsForTask(task);
     const stoppedRuns = stopRunsForTask(task);
     const steered = steerAgentProcessesForTaskStop(task, actorId, replyId);
     return {
@@ -191,7 +191,7 @@ export function createTaskOrchestrator(deps) {
       stoppedRuns,
       stoppedAgents: [],
       steeredAgents: steered.steeredAgents,
-      cancelledWorkItems: normalizeIds([...directlyCancelledWorkItems, ...steered.cancelledWorkItems]),
+      stoppedWorkItems: normalizeIds([...directlyStoppedWorkItems, ...steered.stoppedWorkItems]),
     };
   }
   

@@ -6,7 +6,7 @@
 // investigations much easier: start in this file, then follow callers outward.
 
 // Thread/task lifecycle controls. These should stay narrow; false positives can
-// cancel or complete active work.
+// stop or complete active work.
 export function taskStopIntent(text) {
   const value = String(text || '').trim().toLowerCase();
   if (!value) return false;

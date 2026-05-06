@@ -226,7 +226,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
         ownerAgentId: workItem.agentId,
       });
     }
-    if (workItem.status === 'cancelled') {
+    if (workItem.status === 'stopped') {
       return fail(409, 'Work item was stopped by the user.', {
         agentId: agent.id,
         workItemId: workItem.id,

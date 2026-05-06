@@ -88,20 +88,20 @@ export async function handleMissionApi(req, res, url, deps) {
     return true;
   }
 
-  const cancelMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/);
-  if (req.method === 'POST' && cancelMatch) {
-    const run = findRun(cancelMatch[1]);
-    const child = getRunningProcess(cancelMatch[1]);
+  const stopMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/stop$/);
+  if (req.method === 'POST' && stopMatch) {
+    const run = findRun(stopMatch[1]);
+    const child = getRunningProcess(stopMatch[1]);
     if (!run || !child) {
       sendError(res, 404, 'Running Codex process not found.');
       return true;
     }
 
-    // Cancellation is persisted before the SIGTERM so the UI can reflect the
-    // user's intent even if the child process exits immediately.
-    run.cancelRequested = true;
+    // The stop intent is persisted before the SIGTERM so the UI can reflect it
+    // even if the child process exits immediately.
+    run.stopRequested = true;
     child.kill('SIGTERM');
-    addRunEvent(run.id, 'runner', 'Cancellation requested.');
+    addRunEvent(run.id, 'runner', 'Stop requested.');
     await persistState();
     broadcastState();
     sendJson(res, 200, { run });

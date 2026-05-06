@@ -92,7 +92,7 @@ test('mission route group creates mission with normalized defaults', async () =>
   assert.deepEqual(deps.state.missions[0].attachmentIds, ['123', 'att_2']);
 });
 
-test('mission route group starts and cancels Codex runs through injected process controls', async () => {
+test('mission route group starts and stops Codex runs through injected process controls', async () => {
   let startedRun = null;
   let killedSignal = null;
   const deps = routeDeps({
@@ -114,15 +114,15 @@ test('mission route group starts and cancels Codex runs through injected process
   assert.equal(startedRun.run.id, 'run_new');
   assert.equal(deps.state.runs[0].id, 'run_new');
 
-  const cancelRes = makeResponse();
-  const cancelHandled = await handleMissionApi(
+  const stopRes = makeResponse();
+  const stopHandled = await handleMissionApi(
     { method: 'POST' },
-    cancelRes,
-    new URL('http://local/api/runs/run_1/cancel'),
+    stopRes,
+    new URL('http://local/api/runs/run_1/stop'),
     deps,
   );
-  assert.equal(cancelHandled, true);
-  assert.equal(cancelRes.statusCode, 200);
+  assert.equal(stopHandled, true);
+  assert.equal(stopRes.statusCode, 200);
   assert.equal(killedSignal, 'SIGTERM');
-  assert.equal(deps.state.runs.find((run) => run.id === 'run_1').cancelRequested, true);
+  assert.equal(deps.state.runs.find((run) => run.id === 'run_1').stopRequested, true);
 });

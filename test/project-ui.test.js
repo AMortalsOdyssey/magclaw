@@ -33,12 +33,19 @@ test('cloud account settings use server-configured admin without owner bootstrap
 
 test('cloud auth gate only shows invite registration when an invite token is present', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const authGateSource = app.slice(app.indexOf('function renderCloudAuthGate('), app.indexOf('function renderBrowserSettingsTab()'));
 
   assert.match(authGateSource, /inviteTokenFromUrl \? `/);
   assert.match(authGateSource, /id="cloud-register-form"/);
   assert.doesNotMatch(authGateSource, /owner invite/);
   assert.match(authGateSource, /Sign in with the admin account configured on the server/);
+  assert.match(authGateSource, /class="cloud-auth-shell"/);
+  assert.match(authGateSource, /class="pixel-panel cloud-login-card"/);
+  assert.match(authGateSource, /id="cloud-login-title">Welcome back!/);
+  assert.match(styles, /\.cloud-auth-stage/);
+  assert.match(styles, /\.cloud-login-card,/);
+  assert.match(styles, /\.cloud-login-submit/);
 });
 
 test('cloud account settings prefill invite tokens from invite URLs', async () => {
@@ -202,6 +209,24 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
   assert.match(styles, /\.app-frame\.no-inspector/);
 });
 
+test('members navigation preserves chat layout until an agent is explicitly selected', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const leftNavSource = app.slice(app.indexOf("if (action === 'set-left-nav')"), app.indexOf("if (action === 'select-agent')"));
+  const selectAgentSource = app.slice(app.indexOf("if (action === 'select-agent')"), app.indexOf("if (action === 'close-agent-detail')"));
+
+  assert.match(app, /let membersLayout = normalizeMembersLayout\(initialUiState\.membersLayout\)/);
+  assert.match(app, /function rememberMembersLayoutFromCurrent\(\)/);
+  assert.match(app, /function restoreMembersLayout\(\)/);
+  assert.match(app, /function openMembersNav\(\)/);
+  assert.match(app, /if \(activeView === 'members'\) return renderMembersMain\(\)/);
+  assert.match(app, /function renderInspector\(\) \{\s*if \(activeView === 'members'\) return '';/);
+  assert.match(leftNavSource, /const agentId = openMembersNav\(\)/);
+  assert.doesNotMatch(leftNavSource, /channelAssignableAgents\(\)\[0\]/);
+  assert.match(selectAgentSource, /if \(railTab === 'members'\) \{[\s\S]*activeView = 'members'[\s\S]*rememberMembersLayoutFromCurrent\(\)/);
+  assert.match(styles, /\.workspace > \.agent-detail-shell/);
+});
+
 test('dm chat and task empty states use Slock-style simple surfaces', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
@@ -317,16 +342,16 @@ test('task cards open their thread conversation and keep compact blocks without 
   assert.match(styles, /\.task-detail-panel/);
 });
 
-test('global task board follows Slock board list channel filtering without cancelled task state', async () => {
+test('global task board follows Slock board list channel filtering without stopped task state', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const server = await readFile(new URL('../server/index.js', import.meta.url), 'utf8');
 
-  assert.equal(app.includes("['cancelled', 'Cancelled']"), false);
-  assert.equal(app.includes("task.status !== 'cancelled'"), false);
-  assert.equal(app.includes("['done', 'cancelled']"), false);
-  assert.equal(server.includes("task.status = 'cancelled'"), false);
-  assert.equal(server.includes('cancelled_from_thread'), false);
+  assert.equal(app.includes("['stopped', 'Stopped']"), false);
+  assert.equal(app.includes("task.status !== 'stopped'"), false);
+  assert.equal(app.includes("['done', 'stopped']"), false);
+  assert.equal(server.includes("task.status = 'stopped'"), false);
+  assert.equal(server.includes('stopped_from_thread'), false);
   assert.match(app, /let taskViewMode = 'board'/);
   assert.match(app, /let taskChannelFilterIds = \[\]/);
   assert.match(app, /function renderTaskToolbar\(tasks, filteredTasks\)/);
@@ -655,18 +680,12 @@ test('create agent opens with a fresh form state every time', async () => {
   assert.match(app, /if \(form\.id === 'agent-form'\)[\s\S]*resetAgentFormState\(\);\s*modal = null/);
 });
 
-test('Fan-out API config replaces the Brain Agent UI module', async () => {
+test('Fan-out API config owns the routing settings UI', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const railSource = app.slice(app.indexOf('function renderRail'), app.indexOf('function renderNavItem'));
   const submitSource = app.slice(app.indexOf("document.addEventListener('submit'"), app.indexOf('refreshState().then'));
 
-  assert.doesNotMatch(app, /function renderBrainAgentPanel\(\)/);
-  assert.doesNotMatch(app, /function renderBrainAgentModal\(\)/);
-  assert.doesNotMatch(app, /'brain-agent': renderBrainAgentModal/);
-  assert.doesNotMatch(app, /id="brain-runtime-select"/);
-  assert.doesNotMatch(styles, /\.brain-agent-row/);
-  assert.doesNotMatch(styles, /\.brain-agent-use-btn/);
   assert.match(railSource, /const normalAgents = channelAssignableAgents\(\)/);
   assert.match(railSource, /normalAgents\.map\(\(agent\) => renderAgentListItem\(agent\)\)/);
   assert.match(railSource, /System Config/);

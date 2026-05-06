@@ -21,7 +21,7 @@ import {
 
 // State core and migration layer.
 // This owns the mutable state object, JSON/SQLite persistence, startup
-// migrations, brain-agent compatibility cleanup, and Agent status bookkeeping.
+// migrations, retired routing-agent cleanup, and Agent status bookkeeping.
 export function createStateCore(deps) {
   const {
     ensureAllAgentWorkspaces,
@@ -40,13 +40,10 @@ export function createStateCore(deps) {
     AGENT_STATUS_STALE_MS,
     AGENTS_DIR,
     ATTACHMENTS_DIR,
-    BRAIN_AGENT_DESCRIPTION,
-    BRAIN_AGENT_NAME,
     CLOUD_PROTOCOL_VERSION,
     CODEX_FALLBACK_MODEL,
     CODEX_HOME_CONFIG_VERSION,
     FANOUT_API_TIMEOUT_MS,
-    LEGACY_BRAIN_AGENT_ID,
     ROOT,
     RUNS_DIR,
     SOURCE_CODEX_HOME,
@@ -153,11 +150,9 @@ export function createStateCore(deps) {
       },
       router: {
         mode: 'rules_fallback',
-        brainAgentId: null,
         fallback: 'rules',
         cardSource: 'workspace_markdown',
       },
-      brainAgents: [],
       humans: [
         {
           id: 'hum_local',
@@ -386,87 +381,19 @@ export function createStateCore(deps) {
     });
   }
   
-  function isBrainAgent(agent) {
-    if (!agent) return false;
-    return agent.isBrain === true || String(agent.systemRole || '').toLowerCase() === 'brain';
-  }
-  
   function agentParticipatesInChannels(agent) {
-    return Boolean(agent && !isBrainAgent(agent));
+    return Boolean(agent);
   }
   
-  function isLegacyBrainRuntime(runtime) {
-    return String(runtime || '').trim().toLowerCase() === 'router brain';
-  }
-  
-  function normalizeBrainAgentConfig(brain = {}, options = {}) {
-    const createdAt = brain.createdAt || now();
-    const runtime = isLegacyBrainRuntime(brain.runtime) ? '' : String(brain.runtime || '').trim();
-    const model = brain.model
-      ? normalizeCodexModelName(brain.model, state.settings?.model)
-      : normalizeCodexModelName(state.settings?.model, CODEX_FALLBACK_MODEL);
-    const active = Boolean(options.active ?? brain.active);
-    return {
-      id: String(brain.id || makeId('brain')),
-      name: BRAIN_AGENT_NAME,
-      description: BRAIN_AGENT_DESCRIPTION,
-      runtime,
-      model,
-      status: runtime ? 'configured' : 'offline',
-      active,
-      computerId: String(brain.computerId || 'cmp_local'),
-      workspace: path.resolve(String(brain.workspace || state.settings?.defaultWorkspace || ROOT)),
-      reasoningEffort: brain.reasoningEffort ? String(brain.reasoningEffort) : null,
-      createdAt,
-      updatedAt: brain.updatedAt || createdAt,
-    };
-  }
-  
-  function reconcileBrainAgentConfigs() {
-    state.brainAgents = Array.isArray(state.brainAgents) ? state.brainAgents : [];
-    const migrated = [];
-    const currentBrainId = state.router?.brainAgentId || null;
-  
-    for (const agent of state.agents || []) {
-      if (!isBrainAgent(agent)) continue;
-      if (agent.id !== LEGACY_BRAIN_AGENT_ID && !isLegacyBrainRuntime(agent.runtime)) {
-        migrated.push(normalizeBrainAgentConfig(agent, { active: agent.id === currentBrainId || Boolean(agent.active) }));
-      }
-    }
-  
-    state.agents = (state.agents || []).filter((agent) => !isBrainAgent(agent));
-    state.brainAgents = [...state.brainAgents, ...migrated].map((brain) => normalizeBrainAgentConfig(brain));
-  
-    const seen = new Set();
-    state.brainAgents = state.brainAgents.filter((brain) => {
-      if (!brain.id || seen.has(brain.id)) return false;
-      seen.add(brain.id);
-      return true;
-    });
-  
-    const configured = state.brainAgents.filter((brain) => brain.runtime);
-    const requestedActive = currentBrainId
-      ? configured.find((brain) => brain.id === currentBrainId)
-      : configured.find((brain) => brain.active);
-    const activeBrain = requestedActive || null;
-  
-    for (const brain of state.brainAgents) {
-      brain.active = Boolean(activeBrain && brain.id === activeBrain.id);
-      brain.status = brain.runtime ? 'configured' : 'offline';
-    }
-  
-    state.router = {
-      mode: activeBrain ? 'brain_agent' : 'rules_fallback',
-      brainAgentId: activeBrain?.id || null,
-      fallback: 'rules',
-      cardSource: 'workspace_markdown',
-      ...(state.router || {}),
-    };
-    state.router.mode = activeBrain ? 'brain_agent' : 'rules_fallback';
-    state.router.brainAgentId = activeBrain?.id || null;
-    state.router.fallback = state.router.fallback || 'rules';
-    state.router.cardSource = state.router.cardSource || 'workspace_markdown';
-    return activeBrain;
+  function isRetiredRoutingAgent(agent) {
+    if (!agent) return false;
+    const runtime = String(agent.runtime || '').trim().toLowerCase();
+    const role = String(agent.systemRole || '').trim().toLowerCase();
+    return agent.id === 'agt_magclaw_brain'
+      || agent.isBrain === true
+      || role === 'brain'
+      || runtime === 'agent-card-router'
+      || runtime === 'router brain';
   }
   
   function migrateState() {
@@ -503,18 +430,20 @@ export function createStateCore(deps) {
     for (const invitation of state.cloud.invitations) {
       if (invitation.role === 'owner') invitation.role = 'admin';
     }
-    for (const key of ['humans', 'computers', 'agents', 'brainAgents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events']) {
+    for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events']) {
       if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
     }
+    delete state.brainAgents;
     if (!state.humans.length) state.humans = fresh.humans;
     for (const human of state.humans) {
       if (human.role === 'owner') human.role = 'admin';
     }
     if (!state.computers.length) state.computers = fresh.computers;
     if (!state.agents.length) state.agents = fresh.agents;
-    reconcileBrainAgentConfigs();
+    state.agents = (state.agents || []).filter((agent) => !isRetiredRoutingAgent(agent));
+    state.router = { ...fresh.router, ...(state.router || {}) };
     state.router.mode = fanoutApiConfigured() ? 'llm_fanout' : 'rules_fallback';
-    state.router.brainAgentId = null;
+    delete state.router.brainAgentId;
     if (!state.agents.length) state.agents = fresh.agents;
     if (!state.channels.length) state.channels = fresh.channels;
     if (!state.dms.length) state.dms = fresh.dms;
@@ -593,10 +522,9 @@ export function createStateCore(deps) {
       task.claimedAt = task.claimedAt || null;
       task.reviewRequestedAt = task.reviewRequestedAt || null;
       task.completedAt = task.completedAt || null;
-      task.cancelledAt = task.cancelledAt || null;
       task.stoppedAt = task.stoppedAt || null;
-      if (task.status === 'cancelled') {
-        const closedAt = task.completedAt || task.cancelledAt || task.stoppedAt || task.updatedAt || task.createdAt || now();
+      if (task.status === 'stopped') {
+        const closedAt = task.completedAt || task.stoppedAt || task.updatedAt || task.createdAt || now();
         task.status = 'done';
         task.completedAt = closedAt;
         task.endIntentAt = task.endIntentAt || closedAt;
@@ -661,13 +589,13 @@ export function createStateCore(deps) {
       agent.statusUpdatedAt = agent.statusUpdatedAt || agent.updatedAt || agent.createdAt || now();
       agent.heartbeatAt = agent.heartbeatAt || agent.statusUpdatedAt;
       agent.activeWorkItemIds = normalizeIds(agent.activeWorkItemIds || []);
-      agent.model = isBrainAgent(agent) ? (agent.model || 'agent-card-router') : normalizeCodexModelName(agent.model, state.settings?.model);
-      if (!isBrainAgent(agent) && AGENT_BOOT_RESET_STATUSES.has(String(agent.status || '').toLowerCase())) {
+      agent.model = normalizeCodexModelName(agent.model, state.settings?.model);
+      if (AGENT_BOOT_RESET_STATUSES.has(String(agent.status || '').toLowerCase())) {
         agent.status = 'idle';
         agent.activeWorkItemIds = [];
         agent.runtimeActivity = null;
       }
-      if (!isBrainAgent(agent) && !agentStatusIsBusy(agent.status)) {
+      if (!agentStatusIsBusy(agent.status)) {
         agent.activeWorkItemIds = [];
         agent.runtimeActivity = null;
       }
@@ -835,7 +763,6 @@ export function createStateCore(deps) {
     const activeAgentIds = new Set([...agentProcesses.keys()]);
     const threshold = Date.now() - AGENT_STATUS_STALE_MS;
     for (const agent of state.agents) {
-      if (isBrainAgent(agent)) continue;
       const activeProc = activeAgentIds.has(agent.id) ? agentProcesses.get(agent.id) : null;
       if (activeProc) {
         if (agentStatusIsBusy(agent.status) && !runtimeProcessHasActiveWork(activeProc)) {
@@ -871,16 +798,12 @@ export function createStateCore(deps) {
     ensureStorage,
     fanoutApiConfigured,
     getState: () => state,
-    isBrainAgent,
-    isLegacyBrainRuntime,
     migrateState,
-    normalizeBrainAgentConfig,
     normalizeCodexModelName,
     normalizeFanoutApiConfig,
     persistState,
     presenceHeartbeat,
     reconcileAgentStatusHeartbeats,
-    reconcileBrainAgentConfigs,
     resolveCodexRuntime,
     setAgentStatus,
     state: stateProxy,

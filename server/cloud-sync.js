@@ -19,7 +19,7 @@ export function createCloudSync(deps) {
   });
 
   function cloudSnapshot() {
-    const allowedKeys = ['humans', 'computers', 'agents', 'brainAgents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
+    const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
     const snapshot = {
       version: state.version,
       exportedAt: now(),
@@ -34,7 +34,7 @@ export function createCloudSync(deps) {
   }
   
   function applyCloudSnapshot(snapshot) {
-    const allowedKeys = ['humans', 'computers', 'agents', 'brainAgents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
+    const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events'];
     for (const key of allowedKeys) {
       if (Array.isArray(snapshot?.[key])) state[key] = snapshot[key];
     }

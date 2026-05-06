@@ -387,7 +387,7 @@ CREATE TABLE IF NOT EXISTS cloud_agent_deliveries (
   type TEXT NOT NULL,
   command_type TEXT NOT NULL,
   status TEXT NOT NULL CHECK (
-    status IN ('queued', 'sent', 'acked', 'failed', 'cancelled')
+    status IN ('queued', 'sent', 'acked', 'failed', 'stopped')
   ),
   attempts INTEGER NOT NULL DEFAULT 0,
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,

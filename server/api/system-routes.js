@@ -2,9 +2,8 @@ import path from 'node:path';
 
 // System-level API routes.
 // This group handles public state snapshots, SSE, runtime discovery, global
-// settings, Fan-out API settings, and the deprecated Brain Agent compatibility
-// endpoints. Keeping these routes together makes the main dispatcher easier to
-// scan before deeper Agent/task routing begins.
+// settings, and Fan-out API settings. Keeping these routes together makes the
+// main dispatcher easier to scan before deeper Agent/task routing begins.
 
 export async function handleSystemApi(req, res, url, deps) {
   const {
@@ -96,33 +95,6 @@ export async function handleSystemApi(req, res, url, deps) {
     await persistState();
     broadcastState();
     sendJson(res, 200, publicState(req));
-    return true;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/brain-agents') {
-    sendJson(res, 200, {
-      brainAgents: [],
-      activeBrainAgentId: null,
-      router: state.router || {},
-      deprecated: true,
-      replacement: '/api/settings/fanout',
-    });
-    return true;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/brain-agents') {
-    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
-    return true;
-  }
-
-  const brainAgentMatch = url.pathname.match(/^\/api\/brain-agents\/([^/]+)$/);
-  if (['PATCH', 'POST'].includes(req.method) && brainAgentMatch) {
-    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
-    return true;
-  }
-
-  if (req.method === 'DELETE' && brainAgentMatch) {
-    sendError(res, 410, 'Brain Agent configuration was replaced by /api/settings/fanout.');
     return true;
   }
 

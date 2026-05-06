@@ -93,10 +93,10 @@ export function createSystemServices(deps) {
     state.router = {
       ...(state.router || {}),
       mode: fanoutApiConfigured() ? 'llm_fanout' : 'rules_fallback',
-      brainAgentId: null,
       fallback: 'rules',
       cardSource: 'workspace_markdown',
     };
+    delete state.router.brainAgentId;
     return state.settings.fanoutApi;
   }
   

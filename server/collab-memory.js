@@ -16,7 +16,6 @@ export function createCollabMemoryManager(deps) {
     ensureAgentWorkspace,
     findMessage,
     getState,
-    isBrainAgent,
     makeId,
     normalizeConversationRecord,
     now,
@@ -202,7 +201,7 @@ export function createCollabMemoryManager(deps) {
   }
   
   async function writeAgentMemoryUpdate(agent, trigger, payload = {}) {
-    if (!agent || isBrainAgent(agent)) return false;
+    if (!agent) return false;
     const bullet = memoryWritebackBullet(trigger, payload);
     await appendAgentMemoryNote(agent, 'notes/work-log.md', 'Memory Writebacks', bullet);
     if (payload.memory) {
@@ -228,7 +227,7 @@ export function createCollabMemoryManager(deps) {
   }
   
   function scheduleAgentMemoryWriteback(agent, trigger, payload = {}) {
-    if (!agent || isBrainAgent(agent)) return;
+    if (!agent) return;
     writeAgentMemoryUpdate(agent, trigger, payload)
       .then((changed) => (changed ? persistState().then(broadcastState) : null))
       .catch((error) => {

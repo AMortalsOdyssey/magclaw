@@ -90,12 +90,12 @@ test('agent tool route group formats bounded history reads', async () => {
   assert.equal(deps.events[0].type, 'agent_history_read');
 });
 
-test('agent tool send_message rejects cancelled work before posting', async () => {
+test('agent tool send_message rejects stopped work before posting', async () => {
   const deps = routeDeps({
     findWorkItem: () => ({
       id: 'work_1',
       agentId: 'agt_one',
-      status: 'cancelled',
+      status: 'stopped',
       target: { spaceType: 'channel', spaceId: 'chan_all' },
     }),
     readJson: async () => ({

@@ -861,7 +861,7 @@ process.stdin.on('data', (chunk) => {
     assert.ok(taskReplies.some((reply) => reply.body === 'Task marked done from thread stop request.'));
     const stoppedItem = finalState.workItems.find((item) => item.sourceMessageId === taskMessage.message.id);
     const otherItem = finalState.workItems.find((item) => item.sourceMessageId === otherMessage.message.id);
-    assert.equal(stoppedItem?.status, 'cancelled');
+    assert.equal(stoppedItem?.status, 'stopped');
     assert.equal(otherItem?.status, 'responded');
     const entries = await readJsonLines(logPath);
     assert.equal(entries.some((item) => item.signal === 'SIGTERM'), false);
@@ -1422,7 +1422,6 @@ test('configured fan-out API leaves simple routing on local rules', async () => 
       method: 'POST',
       body: JSON.stringify({ body: '大家对广州的美食了解吗', attachmentIds: [] }),
     });
-    assert.equal(open.route.brainAgentId, null);
     assert.equal(open.route.fallbackUsed, false);
     assert.equal(open.route.strategy, 'rules');
     assert.equal(open.route.llmUsed, false);
@@ -1449,7 +1448,6 @@ test('configured fan-out API leaves simple routing on local rules', async () => 
       method: 'POST',
       body: JSON.stringify({ body: '嗯，那为啥你心里的吃饭没有包含牛肉火锅呢？', attachmentIds: [] }),
     });
-    assert.equal(followup.route.brainAgentId, null);
     assert.equal(followup.route.fallbackUsed, false);
     assert.equal(followup.route.strategy, 'rules');
     assert.equal(followup.route.mode, 'contextual_follow_up');
@@ -1489,22 +1487,18 @@ test('Fan-out API config is masked globally and drives LLM card routing when nee
   });
   try {
     const initial = await request(server.baseUrl, '/api/state');
-    assert.deepEqual(initial.brainAgents, []);
-    assert.equal(initial.router.brainAgentId, null);
     assert.equal(initial.router.mode, 'rules_fallback');
     assert.equal(initial.settings.fanoutApi.configured, false);
-    assert.equal(initial.agents.some((agent) => agent.id === 'agt_magclaw_brain' || agent.isBrain), false);
 
     const { channel: fallbackChannel } = await request(server.baseUrl, '/api/channels', {
       method: 'POST',
-      body: JSON.stringify({ name: 'brain-fallback', description: 'no brain yet', agentIds: [] }),
+      body: JSON.stringify({ name: 'fanout-fallback', description: 'no fan-out config yet', agentIds: [] }),
     });
     const fallbackCreated = await request(server.baseUrl, `/api/spaces/channel/${fallbackChannel.id}/messages`, {
       method: 'POST',
       body: JSON.stringify({ body: '晚上好', attachmentIds: [] }),
     });
     assert.equal(fallbackCreated.route.fallbackUsed, true);
-    assert.equal(fallbackCreated.route.brainAgentId, null);
     assert.equal(fallbackCreated.route.llmUsed, false);
 
     const { agent: github } = await request(server.baseUrl, '/api/agents', {
@@ -1550,7 +1544,6 @@ test('Fan-out API config is masked globally and drives LLM card routing when nee
     });
 
     const configured = await request(server.baseUrl, '/api/state');
-    assert.equal(configured.router.brainAgentId, null);
     assert.equal(configured.router.mode, 'llm_fanout');
     assert.equal(configured.settings.fanoutApi.configured, true);
     assert.equal(configured.settings.fanoutApi.hasApiKey, true);
@@ -1603,7 +1596,6 @@ test('Fan-out API config is masked globally and drives LLM card routing when nee
       const workItems = state.workItems.filter((item) => item.sourceMessageId === created.message.id);
       return routeEvent && llmRouteEvent && workItems.length ? { routeEvent, llmRouteEvent, workItems, state } : null;
     });
-    assert.equal(snapshot.routeEvent.brainAgentId, null);
     assert.equal(snapshot.routeEvent.fallbackUsed, false);
     assert.equal(snapshot.routeEvent.mode, 'task_claim');
     assert.equal(snapshot.routeEvent.strategy, 'rules');
@@ -4300,7 +4292,7 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
-test('scoped stop cancels current channel work without stopping queued work in another channel', async () => {
+test('scoped stop marks current channel work stopped without stopping queued work in another channel', async () => {
   const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-scoped-stop-'));
   const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
   const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
@@ -4408,7 +4400,7 @@ process.stdin.on('data', (chunk) => {
       };
       return otherReplies.some((reply) => reply.body.includes('other channel survived scoped stop'))
         && !stoppedReplies.some((reply) => reply.body.includes('stopped channel should not reply'))
-        && stoppedItem?.status === 'cancelled'
+        && stoppedItem?.status === 'stopped'
         && otherItem?.status === 'responded'
         ? snapshot
         : null;
@@ -4417,7 +4409,7 @@ process.stdin.on('data', (chunk) => {
     assert.ok(finalState, JSON.stringify(lastScopedStopSnapshot));
     const stoppedItem = finalState.workItems.find((item) => item.sourceMessageId === stoppedChannel.message.id);
     const otherItem = finalState.workItems.find((item) => item.sourceMessageId === otherChannel.message.id);
-    assert.equal(stoppedItem?.status, 'cancelled');
+    assert.equal(stoppedItem?.status, 'stopped');
     assert.equal(otherItem?.status, 'responded');
   } finally {
     await server.stop();

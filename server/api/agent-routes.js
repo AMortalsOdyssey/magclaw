@@ -98,7 +98,7 @@ export async function handleAgentApi(req, res, url, deps) {
       scope: scope ? { spaceType: scope.spaceType, spaceId: scope.spaceId } : null,
       stoppedRuns,
       stoppedAgents: stopped.stoppedAgents,
-      cancelledWorkItems: stopped.cancelledWorkItems,
+      stoppedWorkItems: stopped.stoppedWorkItems,
     });
     await persistState();
     broadcastState();
@@ -107,7 +107,7 @@ export async function handleAgentApi(req, res, url, deps) {
       scope,
       stoppedRuns,
       stoppedAgents: stopped.stoppedAgents,
-      cancelledWorkItems: stopped.cancelledWorkItems,
+      stoppedWorkItems: stopped.stoppedWorkItems,
     });
     return true;
   }

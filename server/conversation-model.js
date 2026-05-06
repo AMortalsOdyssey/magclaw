@@ -345,17 +345,17 @@ export function createConversationModel(deps) {
     return false;
   }
   
-  function workItemIsCancelled(workItemId) {
-    return Boolean(workItemId && findWorkItem(workItemId)?.status === 'cancelled');
+  function workItemIsStopped(workItemId) {
+    return Boolean(workItemId && findWorkItem(workItemId)?.status === 'stopped');
   }
   
-  function turnMetaHasCancelledWork(turnMeta) {
-    return normalizeIds(turnMeta?.workItemIds || []).some(workItemIsCancelled);
+  function turnMetaHasStoppedWork(turnMeta) {
+    return normalizeIds(turnMeta?.workItemIds || []).some(workItemIsStopped);
   }
   
-  function turnMetaAllWorkCancelled(turnMeta) {
+  function turnMetaAllWorkStopped(turnMeta) {
     const ids = normalizeIds(turnMeta?.workItemIds || []);
-    return ids.length > 0 && ids.every(workItemIsCancelled);
+    return ids.length > 0 && ids.every(workItemIsStopped);
   }
   
   function turnMetaMatchesScope(turnMeta, scope) {
@@ -528,13 +528,13 @@ export function createConversationModel(deps) {
     taskMatchesScope,
     taskScopeKey,
     taskThreadRecordIds,
-    turnMetaAllWorkCancelled,
-    turnMetaHasCancelledWork,
+    turnMetaAllWorkStopped,
+    turnMetaHasStoppedWork,
     turnMetaHasWorkOutsideScope,
     turnMetaMatchesScope,
     turnMetaMatchesTask,
     visibleMentionLabel,
-    workItemIsCancelled,
+    workItemIsStopped,
     workItemMatchesScope,
     workItemMatchesTask,
   };

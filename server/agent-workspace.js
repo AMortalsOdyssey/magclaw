@@ -31,7 +31,6 @@ export function createAgentWorkspaceManager(deps) {
     addSystemEvent,
     channelAgentIds,
     getState,
-    isBrainAgent,
     now,
     AGENTS_DIR,
     CODEX_HOME_CONFIG_VERSION,
@@ -391,36 +390,6 @@ export function createAgentWorkspaceManager(deps) {
   }
   
   function defaultAgentMemory(agent) {
-    if (isBrainAgent(agent)) {
-      return [
-        `# ${agent?.name || 'MagClaw Brain'}`,
-        '',
-        '## Role',
-        'You are the internal routing brain for MagClaw. Your job is to decide which channel agents should be awakened, which agent should claim durable work, and when memory writeback should be triggered.',
-        '',
-        '## Routing Principles',
-        '- Hard rules first: explicit mentions, channel membership, thread ownership, and claimed tasks override semantic guesses.',
-        '- Use Agent Cards as the compact progressive-disclosure layer. Do not read every note for every message unless a later implementation explicitly asks you to.',
-        '- Prefer all member agents for ordinary open channel chat and availability checks.',
-        '- Prefer a single best-fit claimant for concrete durable work, then rely on the task claim lock.',
-        '- If routing fails, let the rule fallback handle the message instead of dropping it.',
-        '',
-        '## Key Knowledge',
-        '- `notes/profile.md` - router capability, fallback policy, and scoring priorities.',
-        '- `notes/channels.md` - channel membership and dispatch norms.',
-        '- `notes/agents.md` - agent cards and observed specialties.',
-        '- `notes/work-log.md` - route tuning decisions and memory writeback changes.',
-        '',
-        '## Active Context',
-        '- Router v2 uses structured route events, agent cards, and rules fallback.',
-        '- Future upgrades may replace the deterministic evaluator with an LLM or embedding-based router while preserving the same RouteDecision shape.',
-        '',
-        '## Memory Maintenance',
-        '- Record high-signal routing failures, new dispatch rules, and agent specialty changes in notes/work-log.md or notes/agents.md.',
-        '- Keep this entrypoint short; link to detailed notes instead of expanding everything here.',
-        '',
-      ].join('\n');
-    }
     const role = String(agent?.description || 'General-purpose MagClaw teammate.').trim();
     return [
       `# ${agent?.name || 'Agent'}`,

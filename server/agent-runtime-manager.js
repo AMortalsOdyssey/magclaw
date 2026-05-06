@@ -73,7 +73,7 @@ export function createAgentRuntimeManager(deps) {
     taskLabel,
     taskMatchesScope,
     targetForConversation,
-    turnMetaAllWorkCancelled,
+    turnMetaAllWorkStopped,
     turnMetaHasWorkOutsideScope,
     turnMetaMatchesScope,
     turnMetaMatchesTask,
@@ -511,7 +511,7 @@ async function startClaudeAgent(agent, proc, workspace) {
 	        agentId: agent.id,
 	        workItemId: sourceMessage?.workItemId || null,
 	      });
-	    } else if (responseText && responseText !== '(No response)' && turnMetaAllWorkCancelled(fallbackGuard)) {
+	    } else if (responseText && responseText !== '(No response)' && turnMetaAllWorkStopped(fallbackGuard)) {
 	      addSystemEvent('agent_stdout_suppressed', `${agent.name} output was suppressed for stopped work.`, {
 	        agentId: agent.id,
 	        workItemId: sourceMessage?.workItemId || null,
@@ -1272,7 +1272,7 @@ async function recoverPendingSendMessageToolCalls(agent, proc) {
       || '';
     const workItem = findWorkItem(workItemId);
     const content = String(args.content || '').trim();
-    if (!workItem || workItem.agentId !== agent.id || workItem.status === 'responded' || workItem.status === 'cancelled' || !content) {
+    if (!workItem || workItem.agentId !== agent.id || workItem.status === 'responded' || workItem.status === 'stopped' || !content) {
       addSystemEvent('agent_run_watchdog_recovery_skipped', `${agent.name} could not recover a pending send_message call.`, {
         agentId: agent.id,
         toolCallId: call.id,
@@ -1665,7 +1665,7 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
   } else if (proc.responseBuffer.trim()) {
     const responseText = proc.responseBuffer.trim();
     proc.responseBuffer = '';
-    if (turnMeta && turnMetaAllWorkCancelled(turnMeta)) {
+    if (turnMeta && turnMetaAllWorkStopped(turnMeta)) {
       addSystemEvent('agent_stdout_suppressed', `${agent.name} output was suppressed for stopped work.`, {
         agentId: agent.id,
         sessionId: proc.threadId,
@@ -1972,7 +1972,7 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
         agentId: agent.id,
         workItemId: sourceMessage?.workItemId || null,
       });
-    } else if (responseText && turnMetaAllWorkCancelled(fallbackGuard)) {
+    } else if (responseText && turnMetaAllWorkStopped(fallbackGuard)) {
       addSystemEvent('agent_stdout_suppressed', `${agent.name} output was suppressed for stopped work.`, {
         agentId: agent.id,
         workItemId: sourceMessage?.workItemId || null,
@@ -2032,36 +2032,36 @@ function partitionMessagesByTask(messages, task) {
   return { scoped, other };
 }
 
-function cancelWorkItemsForScope(scope, agentId = null) {
-  const cancelled = [];
+function stopWorkItemsForScope(scope, agentId = null) {
+  const stopped = [];
   state.workItems = Array.isArray(state.workItems) ? state.workItems : [];
   for (const item of state.workItems) {
     if (agentId && item.agentId !== agentId) continue;
     if (!workItemMatchesScope(item, scope)) continue;
-    if (item.status === 'responded' || item.status === 'cancelled') continue;
-    item.status = 'cancelled';
-    item.cancelledAt = item.cancelledAt || now();
+    if (item.status === 'responded' || item.status === 'stopped') continue;
+    item.status = 'stopped';
+    item.stoppedAt = item.stoppedAt || now();
     item.updatedAt = now();
-    item.cancelScope = scope ? { spaceType: scope.spaceType, spaceId: scope.spaceId } : null;
-    cancelled.push(item.id);
+    item.stopScope = scope ? { spaceType: scope.spaceType, spaceId: scope.spaceId } : null;
+    stopped.push(item.id);
   }
-  return cancelled;
+  return stopped;
 }
 
-function cancelWorkItemsForTask(task, agentId = null) {
-  const cancelled = [];
+function stopWorkItemsForTask(task, agentId = null) {
+  const stopped = [];
   state.workItems = Array.isArray(state.workItems) ? state.workItems : [];
   for (const item of state.workItems) {
     if (agentId && item.agentId !== agentId) continue;
     if (!workItemMatchesTask(item, task)) continue;
-    if (item.status === 'responded' || item.status === 'cancelled') continue;
-    item.status = 'cancelled';
-    item.cancelledAt = item.cancelledAt || now();
+    if (item.status === 'responded' || item.status === 'stopped') continue;
+    item.status = 'stopped';
+    item.stoppedAt = item.stoppedAt || now();
     item.updatedAt = now();
-    item.cancelTaskId = task.id;
-    cancelled.push(item.id);
+    item.stopTaskId = task.id;
+    stopped.push(item.id);
   }
-  return cancelled;
+  return stopped;
 }
 
 function activeTurnMetas(proc) {
@@ -2077,7 +2077,7 @@ function activeDeliveryMessagesOutsideTask(proc, task) {
     if (!turnMetaMatchesTask(meta, task)) continue;
     for (const id of normalizeIds(meta.workItemIds || [])) {
       const item = findWorkItem(id);
-      if (item && !workItemMatchesTask(item, task) && item.status !== 'responded' && item.status !== 'cancelled') {
+      if (item && !workItemMatchesTask(item, task) && item.status !== 'responded' && item.status !== 'stopped') {
         outsideWorkItemIds.add(id);
       }
     }
@@ -2156,12 +2156,12 @@ function stopAgentProcessForTask(agent, proc, task, restartMessages = []) {
 
 function stopAgentProcesses(scope = null) {
   const stoppedAgents = [];
-  const cancelledWorkItems = [];
+  const stoppedWorkItems = [];
   for (const [agentId, proc] of agentProcesses.entries()) {
     const agent = findAgent(agentId);
     if (!agent) continue;
-    const cancelledForAgent = cancelWorkItemsForScope(scope, agentId);
-    cancelledWorkItems.push(...cancelledForAgent);
+    const stoppedForAgent = stopWorkItemsForScope(scope, agentId);
+    stoppedWorkItems.push(...stoppedForAgent);
 
     const inbox = partitionMessagesByScope(proc.inbox, scope);
     const pending = partitionMessagesByScope(proc.pendingDeliveryMessages, scope);
@@ -2180,27 +2180,27 @@ function stopAgentProcesses(scope = null) {
     if (shouldStop) {
       stopAgentProcessForScope(agent, proc, scope, restartMessages);
       stoppedAgents.push(agentId);
-    } else if (removedMessages > 0 || cancelledForAgent.length) {
+    } else if (removedMessages > 0 || stoppedForAgent.length) {
       clearAgentBusyDeliveryTimer(proc);
       if (!restartMessages.length && !activeMetas.length) setAgentStatus(agent, 'idle', 'agent_stop_scope_pruned');
     }
   }
   return {
     stoppedAgents: normalizeIds(stoppedAgents),
-    cancelledWorkItems: normalizeIds(cancelledWorkItems),
+    stoppedWorkItems: normalizeIds(stoppedWorkItems),
   };
 }
 
 function stopAgentProcessesForTask(task) {
   const stoppedAgents = [];
-  const cancelledWorkItems = [];
+  const stoppedWorkItems = [];
   for (const [agentId, proc] of agentProcesses.entries()) {
     const agent = findAgent(agentId);
     if (!agent) continue;
     const activeTask = processHasActiveTaskWork(proc, task);
     const restartActiveMessages = activeTask ? activeDeliveryMessagesOutsideTask(proc, task) : [];
-    const cancelledForAgent = cancelWorkItemsForTask(task, agentId);
-    cancelledWorkItems.push(...cancelledForAgent);
+    const stoppedForAgent = stopWorkItemsForTask(task, agentId);
+    stoppedWorkItems.push(...stoppedForAgent);
 
     const inbox = partitionMessagesByTask(proc.inbox, task);
     const pending = partitionMessagesByTask(proc.pendingDeliveryMessages, task);
@@ -2221,20 +2221,20 @@ function stopAgentProcessesForTask(task) {
     if (shouldStop) {
       stopAgentProcessForTask(agent, proc, task, restartMessages);
       stoppedAgents.push(agentId);
-    } else if (removedMessages > 0 || cancelledForAgent.length) {
+    } else if (removedMessages > 0 || stoppedForAgent.length) {
       clearAgentBusyDeliveryTimer(proc);
       if (!restartMessages.length && !activeTurnMetas(proc).length) setAgentStatus(agent, 'idle', 'agent_stop_task_pruned');
     }
   }
   return {
     stoppedAgents: normalizeIds(stoppedAgents),
-    cancelledWorkItems: normalizeIds(cancelledWorkItems),
+    stoppedWorkItems: normalizeIds(stoppedWorkItems),
   };
 }
 
 function steerAgentProcessesForTaskStop(task, actorId = 'hum_local', replyId = null) {
   const steeredAgents = [];
-  const cancelledWorkItems = [];
+  const stoppedWorkItems = [];
   for (const [agentId, proc] of agentProcesses.entries()) {
     const agent = findAgent(agentId);
     if (!agent) continue;
@@ -2255,7 +2255,7 @@ function steerAgentProcessesForTaskStop(task, actorId = 'hum_local', replyId = n
       ...pending.scoped.map((message) => message?.workItemId),
       ...initial.scoped.map((message) => message?.workItemId),
     ]);
-    cancelledWorkItems.push(...taskWorkIds);
+    stoppedWorkItems.push(...taskWorkIds);
 
     if (!taskTurnIds.length) {
       if (removedMessages > 0 || taskWorkIds.length) {
@@ -2300,7 +2300,7 @@ function steerAgentProcessesForTaskStop(task, actorId = 'hum_local', replyId = n
   }
   return {
     steeredAgents: normalizeIds(steeredAgents),
-    cancelledWorkItems: normalizeIds(cancelledWorkItems),
+    stoppedWorkItems: normalizeIds(stoppedWorkItems),
   };
 }
 
@@ -2309,7 +2309,7 @@ function stopRunsForScope(scope = null) {
   for (const [runId, child] of runningProcesses.entries()) {
     const run = findRun(runId);
     if (!run || (scope && !runMatchesScope(run, scope))) continue;
-    run.cancelRequested = true;
+    run.stopRequested = true;
     child.kill('SIGTERM');
     stoppedRuns.push(runId);
   }
@@ -2321,7 +2321,7 @@ function stopRunsForTask(task) {
   for (const [runId, child] of runningProcesses.entries()) {
     const run = findRun(runId);
     if (!run || !runMatchesTask(run, task)) continue;
-    run.cancelRequested = true;
+    run.stopRequested = true;
     child.kill('SIGTERM');
     stoppedRuns.push(runId);
   }
@@ -2546,7 +2546,7 @@ function agentAlreadyRoutedForSource(agentId, sourceMessage, { spaceType, spaceI
   return (state.workItems || []).some((item) => (
     item.agentId === agentId
     && item.sourceMessageId === sourceMessage.id
-    && item.status !== 'cancelled'
+    && item.status !== 'stopped'
     && item.spaceType === spaceType
     && item.spaceId === spaceId
     && String(item.parentMessageId || '') === String(expectedParentId || '')
@@ -2649,7 +2649,7 @@ function markWorkItemsDelivered(messages, deliveryMode) {
   for (const id of ids) {
     const item = findWorkItem(id);
     if (!item) continue;
-    if (item.status === 'cancelled') continue;
+    if (item.status === 'stopped') continue;
     item.status = item.status === 'responded' ? item.status : 'delivered';
     item.deliveryMode = deliveryMode;
     item.deliveredAt = item.deliveredAt || now();
@@ -2662,7 +2662,7 @@ function turnMetaHasExplicitSend(turnMeta) {
   const ids = normalizeIds(turnMeta?.workItemIds || []);
   return ids.some((id) => {
     const item = findWorkItem(id);
-    return item?.respondedAt || item?.status === 'responded' || item?.status === 'cancelled' || Number(item?.sendCount || 0) > 0;
+    return item?.respondedAt || item?.status === 'responded' || item?.status === 'stopped' || Number(item?.sendCount || 0) > 0;
   });
 }
 
@@ -2694,7 +2694,7 @@ function markFallbackResponseWorkItems(sourceMessage, record, workItemIds = []) 
   let marked = false;
   for (const id of ids) {
     const item = findWorkItem(id);
-    if (!item || item.status === 'responded' || item.status === 'cancelled') continue;
+    if (!item || item.status === 'responded' || item.status === 'stopped') continue;
     markWorkItemResponded(item, sourceMessage?.target || item.target || null, record);
     marked = true;
   }
@@ -3040,8 +3040,8 @@ function updateTaskForAgent(task, agent, nextStatus, options = {}) {
     restartAgentWithQueuedMessages,
     partitionMessagesByScope,
     partitionMessagesByTask,
-    cancelWorkItemsForScope,
-    cancelWorkItemsForTask,
+    stopWorkItemsForScope,
+    stopWorkItemsForTask,
     activeTurnMetas,
     activeDeliveryMessagesOutsideTask,
     uniqueDeliveryMessages,

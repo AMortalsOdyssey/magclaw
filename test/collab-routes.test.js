@@ -15,7 +15,7 @@ function routeDeps(overrides = {}) {
   const state = {
     agents: [
       { id: 'agt_one', name: 'One', runtime: 'Codex CLI' },
-      { id: 'agt_brain', name: 'Brain', runtime: 'agent-card-router' },
+      { id: 'agt_two', name: 'Two', runtime: 'Codex CLI' },
     ],
     channels: [{
       id: 'chan_all',
@@ -34,7 +34,7 @@ function routeDeps(overrides = {}) {
   const memoryUpdates = [];
   return {
     addCollabEvent: (type, message, extra = {}) => events.push({ type, message, extra }),
-    agentParticipatesInChannels: (agent) => agent && agent.runtime !== 'agent-card-router',
+    agentParticipatesInChannels: (agent) => Boolean(agent),
     broadcastState: () => {},
     findAgent: (agentId) => state.agents.find((agent) => agent.id === agentId),
     findChannel: (channelId) => state.channels.find((channel) => channel.id === channelId),
@@ -68,7 +68,7 @@ test('collab route group creates channels with synced membership fields and an a
     readJson: async () => ({
       name: 'Product Room',
       humanIds: ['hum_local'],
-      agentIds: ['agt_one', 'agt_brain'],
+      agentIds: ['agt_one', 'agt_two', 'agt_missing'],
     }),
   });
   const res = makeResponse();
@@ -80,8 +80,8 @@ test('collab route group creates channels with synced membership fields and an a
   );
   assert.equal(handled, true);
   assert.equal(res.statusCode, 201);
-  assert.deepEqual(res.data.channel.agentIds, ['agt_one']);
-  assert.deepEqual(res.data.channel.memberIds, ['hum_local', 'agt_one']);
+  assert.deepEqual(res.data.channel.agentIds, ['agt_one', 'agt_two']);
+  assert.deepEqual(res.data.channel.memberIds, ['hum_local', 'agt_one', 'agt_two']);
   assert.equal(deps.state.messages[0].body, 'Channel #product-room created.');
   assert.equal(deps.memoryUpdates[0].trigger, 'channel_membership_changed');
 });

@@ -13,7 +13,7 @@ import {
 } from './intents.js';
 import { fanoutApiEndpoint, fanoutApiResponseText, parseFanoutApiJson } from './fanout-api.js';
 import { escapeRegExp, normalizeIds } from './mentions.js';
-import { safePathWithin, httpError } from './path-utils.js';
+import { safePathWithin } from './path-utils.js';
 import { normalizeFanoutApiConfig } from './runtime-config.js';
 
 // Fan-out routing and Agent-card dispatch.
@@ -34,7 +34,6 @@ export function createRoutingEngine(deps) {
     findTask,
     findTaskForThreadMessage,
     getState,
-    isBrainAgent,
     makeId,
     now,
     renderMentionsForAgent,
@@ -43,10 +42,7 @@ export function createRoutingEngine(deps) {
     taskLabel,
     visibleMentionLabel,
     AGENT_CARD_TEXT_LIMIT,
-    BRAIN_AGENT_DESCRIPTION,
-    BRAIN_AGENT_NAME,
     FANOUT_API_TIMEOUT_MS,
-    LEGACY_BRAIN_AGENT_ID,
     ROUTE_EVENTS_LIMIT,
   } = deps;
   const state = new Proxy({}, {
@@ -478,7 +474,6 @@ export function createRoutingEngine(deps) {
       runtime: agent.runtime || '',
       status: agent.status || 'offline',
       systemRole: agent.systemRole || '',
-      isBrain: isBrainAgent(agent),
       channels: agentChannelNames(agent),
       role: compactMarkdownText(role, 1600),
       capabilities: compactMarkdownText(capabilities || profile, 2200),
@@ -968,97 +963,6 @@ export function createRoutingEngine(deps) {
     };
   }
   
-  function selectBrainAgent() {
-    const activeId = state.router?.brainAgentId || null;
-    const active = activeId
-      ? (state.brainAgents || []).find((brain) => brain.id === activeId && brain.active && brain.runtime)
-      : null;
-    return active || null;
-  }
-  
-  function findBrainAgent(id) {
-    return (state.brainAgents || []).find((brain) => brain.id === id) || null;
-  }
-  
-  function activateBrainAgent(brainId) {
-    const brain = findBrainAgent(brainId);
-    if (!brain) throw httpError(404, 'Brain Agent not found.');
-    if (!brain.runtime) throw httpError(400, 'Brain Agent runtime must be configured before activation.');
-    for (const item of state.brainAgents || []) {
-      item.active = item.id === brain.id;
-      item.status = item.runtime ? 'configured' : 'offline';
-      item.updatedAt = item.id === brain.id ? now() : item.updatedAt;
-    }
-    state.router = {
-      mode: 'brain_agent',
-      brainAgentId: brain.id,
-      fallback: 'rules',
-      cardSource: 'workspace_markdown',
-      ...(state.router || {}),
-    };
-    state.router.mode = 'brain_agent';
-    state.router.brainAgentId = brain.id;
-    return brain;
-  }
-  
-  function deactivateBrainAgent(brainId = null) {
-    for (const item of state.brainAgents || []) {
-      if (!brainId || item.id === brainId) {
-        item.active = false;
-        item.status = item.runtime ? 'configured' : 'offline';
-        item.updatedAt = now();
-      }
-    }
-    if (!brainId || state.router?.brainAgentId === brainId) {
-      state.router = {
-        mode: 'rules_fallback',
-        brainAgentId: null,
-        fallback: 'rules',
-        cardSource: 'workspace_markdown',
-        ...(state.router || {}),
-      };
-      state.router.mode = 'rules_fallback';
-      state.router.brainAgentId = null;
-    }
-  }
-  
-  function createBrainAgentConfig(body = {}) {
-    const runtime = String(body.runtime || '').trim();
-    if (!runtime || isLegacyBrainRuntime(runtime)) throw httpError(400, 'Brain Agent runtime is required.');
-    const brain = normalizeBrainAgentConfig({
-      runtime,
-      model: body.model || state.settings?.model,
-      computerId: body.computerId || 'cmp_local',
-      workspace: body.workspace || state.settings?.defaultWorkspace || ROOT,
-      reasoningEffort: body.reasoningEffort || null,
-      createdAt: now(),
-      updatedAt: now(),
-    });
-    state.brainAgents.push(brain);
-    const shouldActivate = body.active === true || (body.active === undefined && !selectBrainAgent());
-    if (shouldActivate) activateBrainAgent(brain.id);
-    return brain;
-  }
-  
-  function updateBrainAgentConfig(brain, body = {}) {
-    if (!brain) throw httpError(404, 'Brain Agent not found.');
-    const next = {
-      ...brain,
-      runtime: body.runtime !== undefined ? String(body.runtime || '').trim() : brain.runtime,
-      model: body.model !== undefined ? body.model : brain.model,
-      computerId: body.computerId !== undefined ? body.computerId : brain.computerId,
-      workspace: body.workspace !== undefined ? body.workspace : brain.workspace,
-      reasoningEffort: body.reasoningEffort !== undefined ? body.reasoningEffort : brain.reasoningEffort,
-      updatedAt: now(),
-    };
-    const normalized = normalizeBrainAgentConfig(next, { active: brain.active });
-    if (!normalized.runtime) throw httpError(400, 'Brain Agent runtime is required.');
-    Object.assign(brain, normalized);
-    if (body.active === true) activateBrainAgent(brain.id);
-    if (body.active === false) deactivateBrainAgent(brain.id);
-    return brain;
-  }
-  
   function availableChannelAgents(channelAgents) {
     return (channelAgents || [])
       .filter(agentParticipatesInChannels)
@@ -1115,7 +1019,6 @@ export function createRoutingEngine(deps) {
       reason: String(decision?.reason || 'Router selected agents.'),
       evidence: Array.isArray(decision?.evidence) ? decision.evidence : [],
       taskIntent: decision?.taskIntent || null,
-      brainAgentId: decision?.brainAgentId || null,
       fallbackUsed,
       strategy: decision?.strategy || (llmUsed ? 'llm' : (fallbackUsed ? 'fallback_rules' : 'rules')),
       llmUsed,
@@ -1126,18 +1029,17 @@ export function createRoutingEngine(deps) {
     };
   }
   
-  function evaluateBrainRouteDecision({ channelAgents, mentions, message, spaceId, cards, brainAgent = null, fallbackUsed = false, fallbackError = null }) {
+  function evaluateRulesRouteDecision({ channelAgents, mentions, message, spaceId, cards, fallbackUsed = false, fallbackError = null }) {
     const available = availableChannelAgents(channelAgents);
     const idle = idleChannelAgents(channelAgents);
     const text = String(message?.body || '');
     const evidence = [
-      routeEvidence('router', brainAgent?.name || 'rules'),
+      routeEvidence('router', 'rules'),
       routeEvidence('channel_member', `${available.length}/${channelAgents.length} available member agents`),
       ...fanoutTriggerEvidence(fallbackError?.fanoutTrigger),
       ...(fallbackError ? [routeEvidence('fallback_error', fallbackError.message || fallbackError)] : []),
     ];
     const baseDecision = {
-      brainAgentId: brainAgent?.id || null,
       fallbackUsed,
       strategy: fallbackUsed ? 'fallback_rules' : 'rules',
       llmAttempted: Boolean(fallbackError),
@@ -1323,7 +1225,6 @@ export function createRoutingEngine(deps) {
         ] : []),
       ],
       taskIntent: claimant ? { title: cleanTaskTitle(message?.body || ''), kind: inferTaskIntentKind(message?.body || '') } : null,
-      brainAgentId: selectBrainAgent()?.id || null,
       fallbackUsed: true,
     }, channelAgents);
   }
@@ -1343,7 +1244,6 @@ export function createRoutingEngine(deps) {
       reason: decision.reason,
       evidence: decision.evidence || [],
       taskIntent: decision.taskIntent || null,
-      brainAgentId: decision.brainAgentId || null,
       fallbackUsed: Boolean(decision.fallbackUsed),
       strategy: decision.strategy || (decision.llmUsed ? 'llm' : (decision.fallbackUsed ? 'fallback_rules' : 'rules')),
       llmUsed: Boolean(decision.llmUsed),
@@ -1369,7 +1269,6 @@ export function createRoutingEngine(deps) {
       reason: event.reason,
       evidence: event.evidence,
       taskIntent: event.taskIntent,
-      brainAgentId: event.brainAgentId,
       fallbackUsed: event.fallbackUsed,
       strategy: event.strategy,
       llmUsed: event.llmUsed,
@@ -1385,7 +1284,7 @@ export function createRoutingEngine(deps) {
       const allRoutingAgents = (state.agents || []).filter(agentParticipatesInChannels);
       const allCards = await buildAgentCards(allRoutingAgents);
       const trigger = fanoutApiTriggerReason({ channelAgents, mentions, message });
-      const rulesDecision = evaluateBrainRouteDecision({
+      const rulesDecision = evaluateRulesRouteDecision({
         channelAgents,
         mentions,
         message,
@@ -1586,7 +1485,7 @@ export function createRoutingEngine(deps) {
     determineRespondingAgents,
     determineThreadRespondingAgents,
     displayActor,
-    evaluateBrainRouteDecision,
+    evaluateRulesRouteDecision,
     evaluateThreadRouteDecision,
     implicitAgentReferences,
     namedAgentsOutsideExplicitMentions,

@@ -13,6 +13,7 @@ const NOTIFICATION_PREF_KEY = 'magclawNotificationPrefs';
 const NOTIFICATION_ICON = '/favicon.svg';
 const NOTIFICATION_PREVIEW_LIMIT = 140;
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
+const MEMBERS_LAYOUT_MODES = new Set(['channel', 'split', 'agent']);
 const initialUiState = readStoredUiState();
 
 let appState = null;
@@ -23,7 +24,8 @@ let activeTab = initialUiState.activeTab || 'chat';
 let railTab = initialUiState.railTab || localStorage.getItem('railTab') || 'spaces'; // 'spaces', 'members', 'computers', or 'settings'
 let threadMessageId = initialUiState.threadMessageId || null;
 let inspectorReturnThreadId = null;
-let selectedAgentId = null; // selected agent for detail panel
+let selectedAgentId = initialUiState.selectedAgentId || null; // selected agent for detail panel
+let membersLayout = normalizeMembersLayout(initialUiState.membersLayout);
 let selectedTaskId = null;
 let selectedSavedRecordId = null;
 let modal = null;
@@ -640,7 +642,7 @@ function dismissAgentNotifications() {
 function readStoredUiState() {
   const parsed = readJsonStorage(UI_STATE_KEY, {});
   const validSpaceType = ['channel', 'dm'].includes(parsed.selectedSpaceType) ? parsed.selectedSpaceType : 'channel';
-  const validView = ['space', 'tasks', 'threads', 'saved', 'search', 'missions', 'cloud', 'computers'].includes(parsed.activeView)
+  const validView = ['space', 'members', 'tasks', 'threads', 'saved', 'search', 'missions', 'cloud', 'computers'].includes(parsed.activeView)
     ? parsed.activeView
     : 'space';
   const validTab = ['chat', 'tasks'].includes(parsed.activeTab) ? parsed.activeTab : 'chat';
@@ -654,6 +656,8 @@ function readStoredUiState() {
     railTab: validRailTab,
     settingsTab: validSettingsTab,
     threadMessageId: parsed.threadMessageId ? String(parsed.threadMessageId) : null,
+    selectedAgentId: parsed.selectedAgentId ? String(parsed.selectedAgentId) : null,
+    membersLayout: normalizeMembersLayout(parsed.membersLayout),
   };
 }
 
@@ -666,6 +670,8 @@ function persistUiState() {
     railTab,
     settingsTab,
     threadMessageId,
+    selectedAgentId,
+    membersLayout,
   };
   writeJsonStorage(UI_STATE_KEY, payload);
   try {
@@ -673,6 +679,73 @@ function persistUiState() {
   } catch {
     // Non-critical compatibility write for older saved sessions.
   }
+}
+
+function normalizeMembersLayout(value = {}) {
+  const mode = MEMBERS_LAYOUT_MODES.has(value?.mode) ? value.mode : 'channel';
+  const agentId = value?.agentId ? String(value.agentId) : null;
+  if ((mode === 'agent' || mode === 'split') && agentId) return { mode, agentId };
+  return { mode: 'channel', agentId: null };
+}
+
+function rememberMembersLayoutFromCurrent() {
+  if (activeView === 'members' && selectedAgentId) {
+    membersLayout = normalizeMembersLayout({ mode: 'agent', agentId: selectedAgentId });
+    return membersLayout;
+  }
+  if (activeView === 'space' && selectedAgentId) {
+    membersLayout = normalizeMembersLayout({ mode: 'split', agentId: selectedAgentId });
+    return membersLayout;
+  }
+  if (activeView === 'space') {
+    membersLayout = normalizeMembersLayout({ mode: 'channel' });
+  }
+  return membersLayout;
+}
+
+function clearNonAgentInspectors() {
+  threadMessageId = null;
+  inspectorReturnThreadId = null;
+  selectedTaskId = null;
+  selectedSavedRecordId = null;
+  selectedProjectFile = null;
+  selectedAgentWorkspaceFile = null;
+}
+
+function restoreMembersLayout() {
+  railTab = 'members';
+  membersLayout = normalizeMembersLayout(membersLayout);
+  const restoredAgent = membersLayout.agentId ? byId(appState?.agents, membersLayout.agentId) : null;
+
+  if (membersLayout.mode === 'agent' && restoredAgent) {
+    activeView = 'members';
+    selectedAgentId = restoredAgent.id;
+    clearNonAgentInspectors();
+    return selectedAgentId;
+  }
+
+  if (membersLayout.mode === 'split' && restoredAgent) {
+    activeView = 'space';
+    selectedAgentId = restoredAgent.id;
+    clearNonAgentInspectors();
+    return selectedAgentId;
+  }
+
+  activeView = 'space';
+  selectedAgentId = null;
+  clearNonAgentInspectors();
+  membersLayout = normalizeMembersLayout({ mode: 'channel' });
+  return null;
+}
+
+function openMembersNav() {
+  if (activeView === 'space') {
+    rememberMembersLayoutFromCurrent();
+    railTab = 'members';
+    clearNonAgentInspectors();
+    return selectedAgentId;
+  }
+  return restoreMembersLayout();
 }
 
 function readStoredPaneScrolls() {
@@ -2376,6 +2449,20 @@ function ensureSelection() {
   if (threadMessageId && !byId(appState.messages, threadMessageId)) {
     threadMessageId = null;
   }
+  if (selectedAgentId && !byId(appState.agents, selectedAgentId)) {
+    selectedAgentId = null;
+    agentDetailEditState = { field: null };
+    agentEnvEditState = null;
+    selectedAgentWorkspaceFile = null;
+  }
+  membersLayout = normalizeMembersLayout(membersLayout);
+  if (membersLayout.agentId && !byId(appState.agents, membersLayout.agentId)) {
+    membersLayout = normalizeMembersLayout({ mode: 'channel' });
+  }
+  if (activeView === 'members' && !selectedAgentId) {
+    activeView = 'space';
+    membersLayout = normalizeMembersLayout({ mode: 'channel' });
+  }
 }
 
 function render() {
@@ -2694,6 +2781,7 @@ function currentDmPeer() {
 }
 
 function renderMain() {
+  if (activeView === 'members') return renderMembersMain();
   if (activeView === 'tasks') return renderGlobalTasks();
   if (activeView === 'threads') return renderThreads();
   if (activeView === 'saved') return renderSaved();
@@ -2702,6 +2790,11 @@ function renderMain() {
   if (activeView === 'cloud') return renderCloud();
   if (activeView === 'computers') return renderComputers();
   return renderSpace();
+}
+
+function renderMembersMain() {
+  const agent = selectedAgentId ? byId(appState.agents, selectedAgentId) : null;
+  return agent ? renderAgentDetail(agent) : renderSpace();
 }
 
 function renderHeader(title, subtitle, actions = '') {
@@ -2956,14 +3049,14 @@ function renderMentionChips(record) {
 }
 
 function agentReceiptStatus(item) {
-  if (item?.status === 'cancelled') return 'cancelled';
+  if (item?.status === 'stopped') return 'stopped';
   if (item?.respondedAt || item?.status === 'responded' || Number(item?.sendCount || 0) > 0) return 'responded';
   if (item?.deliveredAt || item?.status === 'delivered') return 'delivered';
   return 'queued';
 }
 
 function agentReceiptRank(status) {
-  return { responded: 4, delivered: 3, queued: 2, cancelled: 1 }[status] || 0;
+  return { responded: 4, delivered: 3, queued: 2, stopped: 1 }[status] || 0;
 }
 
 function agentReceiptTime(item) {
@@ -3022,7 +3115,7 @@ function agentReceiptLabel(status) {
     responded: 'Responded',
     delivered: 'Received',
     queued: 'Pending',
-    cancelled: 'Stopped',
+    stopped: 'Stopped',
   }[status] || 'Pending';
 }
 
@@ -4021,47 +4114,63 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '') {
   const auth = cloud.auth || {};
   const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
   const inviteRegisterPanel = inviteTokenFromUrl ? `
-      <div class="pixel-panel cloud-card">
-        <form id="cloud-register-form" class="modal-form">
-          <div class="panel-title"><span>Accept Invitation</span><span>invite token</span></div>
-          <label><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
-          <label><span>Name</span><input name="name" autocomplete="name" /></label>
-          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
-          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
-          <button class="primary-btn" type="submit">Create Account</button>
+      <section class="pixel-panel cloud-invite-card" aria-label="Accept invitation">
+        <form id="cloud-register-form" class="cloud-login-form">
+          <div class="cloud-login-section-title">
+            <span>Accept invitation</span>
+            <small>invite token</small>
+          </div>
+          <label class="cloud-login-field"><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
+          <label class="cloud-login-field"><span>Name</span><input name="name" autocomplete="name" placeholder="Display name" /></label>
+          <label class="cloud-login-field"><span>Email</span><input name="email" type="email" autocomplete="email" placeholder="Email address" required /></label>
+          <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="new-password" placeholder="Password" minlength="8" required /></label>
+          <button class="primary-btn cloud-login-submit" type="submit">Create Account</button>
         </form>
-      </div>
+      </section>
     ` : '';
   const loginPanels = auth.initialized ? `
-      <div class="pixel-panel cloud-card">
-        <form id="cloud-login-form" class="modal-form">
-          <div class="panel-title"><span>Login</span><span>password</span></div>
-          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
-          <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
-          <button class="primary-btn" type="submit">Login</button>
+      <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
+        <div class="cloud-login-brand">
+          <span class="cloud-login-logo" aria-hidden="true">M</span>
+        </div>
+        <div class="cloud-login-heading">
+          <p>MAGCLAW CLOUD</p>
+          <h1 id="cloud-login-title">Welcome back!</h1>
+          <span>${escapeHtml(errorMessage || 'Sign in with the admin account configured on the server.')}</span>
+        </div>
+        <form id="cloud-login-form" class="cloud-login-form">
+          <label class="cloud-login-field"><span>Email address</span><input name="email" type="email" autocomplete="email" placeholder="Email address" required /></label>
+          <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="current-password" placeholder="Password" required /></label>
+          <div class="cloud-login-meta">
+            <span>Protected workspace</span>
+            <small>${escapeHtml(auth.loginRequired ? 'Admin access required' : 'Cloud access')}</small>
+          </div>
+          <button class="primary-btn cloud-login-submit" type="submit">Log in</button>
         </form>
-      </div>
+      </section>
       ${inviteRegisterPanel}
     ` : `
-      <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Admin Login</span><span>server env</span></div>
-        <div class="empty-box small">Admin credentials are configured on the server with MAGCLAW_ADMIN_EMAIL and MAGCLAW_ADMIN_PASSWORD. Restart MagClaw after setting them.</div>
-      </div>
+      <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
+        <div class="cloud-login-brand">
+          <span class="cloud-login-logo" aria-hidden="true">M</span>
+        </div>
+        <div class="cloud-login-heading">
+          <p>MAGCLAW CLOUD</p>
+          <h1 id="cloud-login-title">Admin login is not ready</h1>
+          <span>Admin credentials are configured on the server with MAGCLAW_ADMIN_EMAIL and MAGCLAW_ADMIN_PASSWORD. Restart MagClaw after setting them.</span>
+        </div>
+      </section>
     `;
 
   root.innerHTML = `
-    <main class="settings-layout cloud-auth-gate">
-      <div class="pixel-panel cloud-card settings-account-card">
-        <div class="panel-title"><span>MagClaw Login</span><span>${escapeHtml(auth.loginRequired ? 'required' : 'cloud')}</span></div>
-        <div class="settings-account-hero compact">
-          <span class="settings-account-avatar">M</span>
-          <div>
-            <strong>${escapeHtml(cloud.workspace?.name || 'MagClaw')}</strong>
-            <small>${escapeHtml(errorMessage || 'Sign in with the admin account configured on the server.')}</small>
-          </div>
+    <main class="cloud-auth-shell">
+      <div class="cloud-auth-stage">
+        <div class="cloud-login-workspace">
+          <strong>${escapeHtml(cloud.workspace?.name || 'MagClaw')}</strong>
+          <span>${escapeHtml(auth.loginRequired ? 'Login required' : 'Cloud workspace')}</span>
         </div>
+        ${loginPanels}
       </div>
-      ${loginPanels}
     </main>
   `;
 }
@@ -4206,6 +4315,8 @@ function renderCloud() {
 }
 
 function renderInspector() {
+  if (activeView === 'members') return '';
+
   const thread = threadMessageId ? byId(appState.messages, threadMessageId) : null;
   if (thread) return renderThreadDrawer(thread);
 
@@ -5151,15 +5262,11 @@ function renderProjectModal() {
 }
 
 function agentCanJoinNewChannel(agent) {
-  return !isBrainAgent(agent) && !['offline', 'error'].includes(String(agent?.status || '').toLowerCase());
-}
-
-function isBrainAgent(agent) {
-  return Boolean(agent?.isBrain || String(agent?.systemRole || '').toLowerCase() === 'brain');
+  return !['offline', 'error'].includes(String(agent?.status || '').toLowerCase());
 }
 
 function channelAssignableAgents() {
-  return (appState.agents || []).filter((agent) => !isBrainAgent(agent));
+  return appState.agents || [];
 }
 
 function renderChannelModal() {
@@ -5696,7 +5803,8 @@ async function showCloudAuthGate(error = null) {
   } catch {
     // Keep the login shell available even if auth status is temporarily unavailable.
   }
-  renderCloudAuthGate(cloud, error?.message || '');
+  const authErrorMessage = error?.status === 401 ? '' : (error?.message || '');
+  renderCloudAuthGate(cloud, authErrorMessage);
 }
 
 async function refreshStateOrAuthGate() {
@@ -6568,6 +6676,7 @@ document.addEventListener('click', async (event) => {
   }
   try {
     if (action === 'set-view') {
+      if (railTab === 'members') rememberMembersLayoutFromCurrent();
       activeView = target.dataset.view;
       if (activeView === 'cloud') railTab = 'settings';
       if (activeView === 'computers' || activeView === 'missions') railTab = 'computers';
@@ -6632,6 +6741,14 @@ document.addEventListener('click', async (event) => {
       focusSearchInputEnd();
     }
     if (action === 'set-rail-tab') {
+      if (target.dataset.railTab === 'members') {
+        const agentId = openMembersNav();
+        localStorage.setItem('railTab', railTab);
+        render();
+        if (agentId) loadAgentSkills(agentId).catch((error) => toast(error.message));
+        return;
+      }
+      if (railTab === 'members') rememberMembersLayoutFromCurrent();
       railTab = target.dataset.railTab;
       localStorage.setItem('railTab', railTab);
       if (railTab === 'spaces') {
@@ -6642,6 +6759,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'set-left-nav') {
       const nav = target.dataset.nav || 'chat';
+      if (nav !== 'members' && railTab === 'members') rememberMembersLayoutFromCurrent();
       if (nav === 'chat') {
         railTab = 'spaces';
         activeView = 'space';
@@ -6651,12 +6769,8 @@ document.addEventListener('click', async (event) => {
         activeView = 'tasks';
         selectedAgentId = null;
       } else if (nav === 'members') {
-        railTab = 'members';
-        activeView = 'space';
-        if (!selectedAgentId && channelAssignableAgents()[0]) {
-          selectedAgentId = channelAssignableAgents()[0].id;
-          loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
-        }
+        const agentId = openMembersNav();
+        if (agentId) loadAgentSkills(agentId).catch((error) => toast(error.message));
       } else if (nav === 'desktop') {
         railTab = 'computers';
         activeView = 'computers';
@@ -6681,12 +6795,26 @@ document.addEventListener('click', async (event) => {
       selectedTaskId = null;
       selectedProjectFile = null;
       selectedAgentWorkspaceFile = null;
+      if (railTab === 'members') {
+        activeView = 'members';
+        rememberMembersLayoutFromCurrent();
+      }
       modal = null;
       render();
       maybeWarmCurrentAgent();
       loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
     }
     if (action === 'close-agent-detail') {
+      if (activeView === 'members') {
+        selectedAgentId = null;
+        agentDetailEditState = { field: null };
+        agentEnvEditState = null;
+        selectedAgentWorkspaceFile = null;
+        activeView = 'space';
+        membersLayout = normalizeMembersLayout({ mode: 'channel' });
+        render();
+        return;
+      }
       if (inspectorReturnThreadId && byId(appState.messages, inspectorReturnThreadId)) {
         threadMessageId = inspectorReturnThreadId;
       }

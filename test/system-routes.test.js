@@ -104,25 +104,3 @@ test('system settings route updates runtime settings through injected state', as
   assert.equal(deps.state.settings.sandbox, 'read-only');
   assert.equal(deps.events[0].type, 'settings_updated');
 });
-
-test('system route group keeps legacy Brain Agent endpoints deprecated', async () => {
-  const deps = routeDeps();
-  const listRes = makeResponse();
-  assert.equal(await handleSystemApi(
-    { method: 'GET', on: () => {} },
-    listRes,
-    new URL('http://local/api/brain-agents'),
-    deps,
-  ), true);
-  assert.equal(listRes.data.deprecated, true);
-  assert.equal(listRes.data.replacement, '/api/settings/fanout');
-
-  const updateRes = makeResponse();
-  assert.equal(await handleSystemApi(
-    { method: 'POST', on: () => {} },
-    updateRes,
-    new URL('http://local/api/brain-agents/old'),
-    deps,
-  ), true);
-  assert.equal(updateRes.statusCode, 410);
-});

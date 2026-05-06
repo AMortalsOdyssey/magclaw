@@ -101,8 +101,6 @@ export async function handleCollabApi(req, res, url, deps) {
     }
     if (Array.isArray(body.humanIds)) channel.humanIds = body.humanIds.map(String);
     if (Array.isArray(body.memberIds)) {
-      // Router/Brain agents are not regular collaborators; filter them out even
-      // if an older client sends their ids in memberIds.
       channel.memberIds = body.memberIds.map(String).filter((id) => !id.startsWith('agt_') || agentParticipatesInChannels(findAgent(id)));
     }
     const changedAgentIds = normalizeIds([...previousAgentIds, ...(channel.agentIds || [])]);
@@ -133,7 +131,7 @@ export async function handleCollabApi(req, res, url, deps) {
       return true;
     }
     if (memberId.startsWith('agt_') && !agentParticipatesInChannels(findAgent(memberId))) {
-      sendError(res, 400, 'Brain/router agents cannot be added as channel members.');
+      sendError(res, 400, 'Agent cannot be added as a channel member.');
       return true;
     }
     channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds : [];

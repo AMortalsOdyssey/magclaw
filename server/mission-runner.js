@@ -184,8 +184,8 @@ export function createMissionRunner(deps) {
       }
   
       run.finalMessage = finalMessage;
-      if (run.cancelRequested) {
-        run.status = 'cancelled';
+      if (run.stopRequested) {
+        run.status = 'stopped';
         mission.status = 'ready';
       } else {
         run.status = code === 0 ? 'succeeded' : 'failed';
@@ -203,9 +203,9 @@ export function createMissionRunner(deps) {
           } else if (run.status === 'failed') {
             addTaskHistory(task, 'run_failed', `Codex run ${run.id} failed.`, task.claimedBy || 'agt_codex', { runId: run.id });
             addSystemReply(ensureTaskThread(task).id, `Codex run ${run.id} failed. Check evidence.`);
-          } else if (run.status === 'cancelled') {
-            addTaskHistory(task, 'run_cancelled', `Codex run ${run.id} cancelled.`, task.claimedBy || 'agt_codex', { runId: run.id });
-            addSystemReply(ensureTaskThread(task).id, `Codex run ${run.id} cancelled.`);
+          } else if (run.status === 'stopped') {
+            addTaskHistory(task, 'run_stopped', `Codex run ${run.id} stopped.`, task.claimedBy || 'agt_codex', { runId: run.id });
+            addSystemReply(ensureTaskThread(task).id, `Codex run ${run.id} stopped.`);
           }
         }
       }
