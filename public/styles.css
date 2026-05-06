@@ -363,6 +363,36 @@ button {
   font-family: monospace;
 }
 
+.rail-unread-badge {
+  display: inline-grid;
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 17px;
+  place-items: center;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.nav-item .rail-unread-badge,
+.space-btn .rail-unread-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.nav-item.active .rail-unread-badge,
+.space-btn.active .rail-unread-badge {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
 .nav-item:hover {
   color: var(--text-primary);
   background: var(--bg-card);
@@ -2306,6 +2336,15 @@ button:disabled {
   background: var(--identity-soft);
 }
 
+.mention-tag.mention-human {
+  background: #9FE3D1;
+  color: #0B302A;
+}
+
+.mention-tag.mention-human:hover {
+  background: #CFF3EA;
+}
+
 .mention-tag.mention-special {
   background: var(--accent-soft);
   color: var(--accent-text);
@@ -2313,6 +2352,15 @@ button:disabled {
 
 .mention-tag.mention-special:hover {
   background: var(--accent);
+}
+
+.mention-tag.mention-channel {
+  background: #FFE15A;
+  color: #1A1A1A;
+}
+
+.mention-tag.mention-channel:hover {
+  background: #FFD800;
 }
 
 .mention-tag.mention-file {
@@ -4418,6 +4466,107 @@ button:disabled {
   margin-top: 0;
 }
 
+.account-layout {
+  align-content: start;
+  max-width: 1080px;
+}
+
+.account-overview-card {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 18px;
+  padding: 22px;
+  background: var(--bg-card);
+}
+
+.account-profile-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 18px;
+}
+
+.account-profile-main > div {
+  min-width: 0;
+}
+
+.account-profile-main h3,
+.account-profile-main p {
+  margin: 0;
+}
+
+.account-profile-main h3 {
+  overflow-wrap: anywhere;
+  font-size: 26px;
+  line-height: 1.05;
+}
+
+.account-profile-main p:last-child {
+  margin-top: 6px;
+  color: var(--text-muted);
+}
+
+.account-avatar-lg {
+  width: 88px;
+  height: 88px;
+  font-size: 28px;
+}
+
+.account-role-badge {
+  display: grid;
+  min-width: 168px;
+  gap: 5px;
+  padding: 14px 18px;
+  border: 3px solid var(--border);
+  background: var(--slock-cream);
+  box-shadow: var(--shadow-pixel);
+  text-align: center;
+}
+
+.account-role-badge span,
+.account-role-badge small {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.account-role-badge strong {
+  font-size: 22px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.account-role-badge.role-admin strong {
+  color: #D91F2D;
+}
+
+.account-role-badge.role-core_member strong {
+  color: #9A6A00;
+}
+
+.account-signout-btn {
+  align-self: stretch;
+}
+
+.account-grid {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+  gap: 16px;
+}
+
+.account-edit-card,
+.account-access-card {
+  align-content: start;
+}
+
+.account-profile-form {
+  gap: 16px;
+}
+
 .settings-account-card {
   display: grid;
   gap: 18px;
@@ -4456,10 +4605,129 @@ button:disabled {
   font-size: 22px;
   font-weight: 900;
   box-shadow: var(--shadow-pixel);
+  overflow: hidden;
+}
+
+.settings-account-avatar-inner {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+}
+
+.settings-account-avatar-inner.avatar-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-avatar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.profile-avatar-row .settings-account-avatar {
+  width: 68px;
+  height: 68px;
+  font-size: 18px;
+}
+
+.account-avatar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-upload-btn,
+.file-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.profile-upload-btn {
+  position: relative;
+}
+
+.account-meta-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.account-meta-grid div {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 2px solid var(--border);
+  background: var(--slock-cream);
+}
+
+.account-meta-grid span,
+.account-meta-grid small {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.account-meta-grid strong {
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+
+.account-permission-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.account-permission-chips span {
+  padding: 5px 9px;
+  border: 2px solid var(--border);
+  background: #9FE3D1;
+  color: #0B302A;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.settings-permission-list {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-elevated);
+}
+
+.settings-permission-list span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-permission-list strong {
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .boundary-grid.single {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .account-overview-card,
+  .account-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .account-role-badge,
+  .account-signout-btn {
+    width: 100%;
+  }
 }
 
 .settings-release {
@@ -5228,6 +5496,46 @@ code {
 .computer-config-row small {
   color: var(--text-muted);
   line-height: 1.35;
+}
+
+.cloud-member-row strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.computer-config-row .cloud-member-swatch {
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--border);
+  background: currentColor;
+  color: var(--text-primary);
+}
+
+.cloud-member-row.role-admin strong,
+.cloud-member-row.role-admin .cloud-member-swatch {
+  color: #ff5a5f;
+}
+
+.cloud-member-row.role-core_member strong,
+.cloud-member-row.role-core_member .cloud-member-swatch {
+  color: #d4a017;
+}
+
+.cloud-member-row.role-member strong,
+.cloud-member-row.role-member .cloud-member-swatch {
+  color: var(--text-primary);
+}
+
+.cloud-member-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.cloud-member-actions select {
+  min-height: 32px;
 }
 
 .pair-command-box {
@@ -6736,6 +7044,50 @@ code {
   width: 100%;
 }
 
+.member-btn.human-role-admin .dm-name,
+.member-btn.human-role-admin .dm-avatar {
+  color: #ff5a5f;
+  border-color: #ff5a5f;
+}
+
+.member-btn.human-role-core_member .dm-name,
+.member-btn.human-role-core_member .dm-avatar {
+  color: #d4a017;
+  border-color: #d4a017;
+}
+
+.member-btn.human-role-member .dm-name,
+.member-btn.human-role-member .dm-avatar {
+  color: var(--text-primary);
+  border-color: var(--text-primary);
+}
+
+.system-notification-list {
+  display: grid;
+  gap: 8px;
+}
+
+.system-notification-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.system-notification-row:last-child {
+  border-bottom: 0;
+}
+
+.system-notification-row span {
+  font-size: 11px;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.system-notification-row small {
+  color: var(--text-muted);
+}
+
 .agent-desc {
   font-size: 11px;
   color: var(--accent);
@@ -6758,12 +7110,14 @@ code {
 
 /* Channel Members Modal */
 .modal-confirm-stop-all-backdrop,
+.modal-confirm-sign-out-backdrop,
 .modal-channel-members-backdrop,
 .modal-add-channel-member-backdrop {
   background: rgba(0, 0, 0, 0.58);
 }
 
 .modal-confirm-stop-all,
+.modal-confirm-sign-out,
 .modal-channel-members,
 .modal-add-channel-member {
   width: min(390px, calc(100vw - 48px));
@@ -6773,17 +7127,20 @@ code {
   box-shadow: 5px 5px 0 var(--border);
 }
 
-.modal-confirm-stop-all {
+.modal-confirm-stop-all,
+.modal-confirm-sign-out {
   width: min(430px, calc(100vw - 48px));
 }
 
 .modal-confirm-stop-all .modal-head,
+.modal-confirm-sign-out .modal-head,
 .modal-channel-members .modal-head,
 .modal-add-channel-member .modal-head {
   margin-bottom: 14px;
 }
 
 .modal-confirm-stop-all .modal-head h3,
+.modal-confirm-sign-out .modal-head h3,
 .modal-channel-members .modal-head h3,
 .modal-add-channel-member .modal-head h3 {
   margin: 0;
@@ -6793,6 +7150,7 @@ code {
 }
 
 .modal-confirm-stop-all .modal-head button,
+.modal-confirm-sign-out .modal-head button,
 .modal-channel-members .modal-head button,
 .modal-add-channel-member .modal-head button {
   width: 32px;
@@ -6824,6 +7182,10 @@ code {
 
 .confirm-stop-icon svg {
   display: block;
+}
+
+.signout-confirm-icon {
+  background: #FFE15A;
 }
 
 .confirm-stop-copy {
@@ -7631,5 +7993,1451 @@ code {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
+  }
+}
+
+/* Inbox redesign color pass: pink sidebar, white work surfaces. */
+body {
+  background: #ffffff;
+}
+
+.slock-left-rail,
+.rail > .slock-left-rail,
+.rail-icon-only {
+  background: var(--magclaw-rail);
+}
+
+.slock-sidebar,
+.rail > .slock-sidebar,
+.slock-sidebar-header,
+.nav-list,
+.rail-section,
+.runtime-chip {
+  background: var(--bg-chat);
+}
+
+.left-rail-avatar {
+  background: #0b0b0b;
+  color: var(--magclaw-rail);
+}
+
+.nav-item:hover,
+.settings-nav-item:hover,
+.space-btn:hover,
+.quick-item:hover,
+.thread-row:hover,
+.saved-record:hover,
+.task-row:hover,
+.task-card:hover,
+.search-result:hover,
+.inbox-category-btn:hover {
+  background: var(--accent-soft);
+}
+
+.workspace,
+.collab-main,
+.inspector,
+.collab-inspector,
+.chat-panel,
+.message-area,
+.message-list,
+.dm-message-list,
+.dm-task-view,
+.dm-task-list,
+.task-page,
+.task-board,
+.task-list,
+.task-column,
+.task-list-section,
+.saved-page,
+.saved-list-panel,
+.settings-page,
+.computers-page,
+.agent-detail-shell,
+.list-panel,
+.thread-list-panel,
+.search-panel,
+.search-results,
+.search-shell,
+.inbox-page,
+.inbox-shell,
+.inbox-list-wrap,
+.inbox-list-panel,
+.inbox-category-panel,
+.inbox-toolbar,
+.space-panel,
+.thread-drawer,
+.thread-context,
+.workspace-activity-drawer,
+.workspace-activity-list {
+  background: #ffffff;
+}
+
+.thread-row,
+.saved-record,
+.task-row,
+.task-card,
+.search-result,
+.message-card,
+.pixel-panel,
+.inbox-category-btn {
+  background: #ffffff;
+}
+
+.thread-row.active,
+.saved-record.active,
+.task-row.active,
+.search-result.active,
+.inbox-category-btn.active,
+.nav-item.active,
+.space-btn.active {
+  background: var(--accent-soft);
+}
+
+.inbox-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  padding: 10px;
+}
+
+.inbox-shell {
+  display: grid;
+  grid-template-columns: minmax(170px, 210px) minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+}
+
+.inbox-category-panel {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+
+.inbox-category-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.inbox-category-btn.active {
+  border-color: var(--border);
+  font-weight: 900;
+}
+
+.inbox-category-btn em {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.inbox-list-wrap {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+}
+
+.inbox-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+
+.inbox-filter-tabs {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.inbox-filter-tabs button {
+  min-height: 28px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.inbox-filter-tabs button:hover,
+.inbox-filter-tabs button.active {
+  background: var(--accent-soft);
+}
+
+.inbox-list-panel {
+  padding: 12px;
+}
+
+.inbox-row {
+  position: relative;
+}
+
+.inbox-row.unread::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  background: var(--accent);
+}
+
+.inbox-row.unread .thread-row-main strong {
+  font-weight: 900;
+}
+
+.inbox-unread-count {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.workspace-activity-avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.workspace-activity-drawer {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.workspace-activity-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.workspace-activity-load {
+  width: 100%;
+  min-height: 30px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.workspace-activity-load:hover {
+  background: var(--accent-soft);
+}
+
+.workspace-activity-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 9px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.workspace-activity-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.workspace-activity-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.workspace-activity-row-head strong,
+.workspace-activity-row p {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-activity-row-head time,
+.workspace-activity-row p,
+.workspace-activity-tags {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.workspace-activity-row p {
+  margin: 4px 0;
+}
+
+.workspace-activity-tags {
+  display: flex;
+  gap: 6px;
+}
+
+.workspace-activity-tags span {
+  padding: 1px 5px;
+  border: 1px solid var(--border-faint);
+  background: #ffffff;
+}
+
+/* Workspace density pass: align Chat, Tasks, Members, and Computers with Settings. */
+.collab-frame {
+  --workspace-line: rgba(26, 26, 26, 0.22);
+  --workspace-line-strong: rgba(26, 26, 26, 0.48);
+  --workspace-muted-line: rgba(26, 26, 26, 0.13);
+  grid-template-columns: minmax(240px, min(var(--rail-width, 300px), 420px)) 4px minmax(360px, 1fr) 4px minmax(260px, min(var(--inspector-width, 340px), 40vw));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.collab-frame.no-inspector {
+  grid-template-columns: minmax(240px, min(var(--rail-width, 300px), 420px)) 4px minmax(360px, 1fr);
+}
+
+.collab-frame.task-focus {
+  grid-template-columns: 60px minmax(0, 1fr) 4px minmax(260px, min(var(--inspector-width, 340px), 40vw));
+}
+
+.collab-frame.task-focus.no-inspector {
+  grid-template-columns: 60px minmax(0, 1fr);
+}
+
+.collab-frame .rail-icon-only {
+  width: 60px;
+  min-width: 60px;
+}
+
+.collab-frame .slock-left-rail {
+  flex-basis: 60px;
+  width: 60px;
+  min-width: 60px;
+  gap: 10px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--workspace-line-strong);
+}
+
+.collab-frame .left-rail-avatar,
+.collab-frame .left-rail-btn {
+  width: 38px;
+  height: 38px;
+  min-height: 38px;
+  border-width: 1px;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.collab-frame .left-rail-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.collab-frame .left-rail-btn:hover,
+.collab-frame .left-rail-btn:focus-visible,
+.collab-frame .left-rail-btn.active {
+  border-color: var(--workspace-line-strong);
+  box-shadow: none;
+}
+
+.collab-frame .left-rail-btn em {
+  top: -5px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  border-width: 1px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+.collab-frame .slock-sidebar-header {
+  flex-basis: 60px;
+  min-height: 60px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--workspace-line-strong);
+}
+
+.collab-frame .slock-sidebar-header h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.collab-frame .rail-resizer,
+.collab-frame .inspector-resizer {
+  min-width: 4px;
+}
+
+.collab-frame .rail-resizer::before,
+.collab-frame .inspector-resizer::before {
+  left: 1px;
+  width: 1px;
+  background: var(--workspace-line-strong);
+}
+
+.collab-frame .nav-list {
+  gap: 2px;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--workspace-line-strong);
+}
+
+.collab-frame .nav-item,
+.collab-frame .space-btn {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.collab-frame .nav-item {
+  height: 32px;
+  padding: 0 8px;
+}
+
+.collab-frame .nav-item svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.8;
+}
+
+.collab-frame .nav-item em,
+.collab-frame .space-btn small {
+  font-size: 11px;
+}
+
+.collab-frame .nav-item:hover,
+.collab-frame .nav-item.active,
+.collab-frame .space-btn:hover,
+.collab-frame .space-btn.active {
+  border-color: var(--workspace-line-strong);
+  box-shadow: none;
+}
+
+.collab-frame .nav-item.active,
+.collab-frame .space-btn.active {
+  font-weight: 700;
+}
+
+.collab-frame .rail-section {
+  gap: 2px;
+  padding: 0 8px 8px;
+}
+
+.collab-frame .rail-title {
+  padding: 11px 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.collab-frame .rail-title button,
+.collab-frame .panel-title button,
+.collab-frame .modal-head button {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.collab-frame .rail-title button:hover,
+.collab-frame .panel-title button:hover,
+.collab-frame .modal-head button:hover {
+  box-shadow: none;
+}
+
+.collab-frame .rail-title .rail-collapse-btn {
+  border: 0;
+  border-radius: 0;
+}
+
+.collab-frame .runtime-chip {
+  gap: 8px;
+  margin: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--workspace-line-strong);
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.collab-frame .runtime-chip .status-dot,
+.collab-frame .status-dot {
+  width: 8px;
+  height: 8px;
+  border-width: 1px;
+}
+
+.collab-frame .dm-avatar,
+.collab-frame .avatar,
+.collab-frame .saved-avatar,
+.collab-frame .thread-list-avatar,
+.collab-frame .search-entity-icon,
+.collab-frame .task-page-icon,
+.collab-frame .agent-detail-avatar-frame {
+  border-width: 1px;
+  border-radius: 5px;
+  box-shadow: none;
+}
+
+.collab-frame .space-header,
+.collab-frame .dm-space-header,
+.collab-frame .task-page-header,
+.collab-frame .agent-detail-topbar,
+.collab-frame .search-topbar {
+  min-height: 60px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--workspace-line-strong);
+  box-shadow: none;
+}
+
+.collab-frame .space-header h2,
+.collab-frame .task-page-title h2,
+.collab-frame .agent-profile-hero h3 {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.collab-frame .eyebrow,
+.collab-frame .task-page-title small,
+.collab-frame .dm-peer-copy small,
+.collab-frame .agent-detail-title small,
+.collab-frame .detail-label,
+.collab-frame .panel-title,
+.collab-frame .search-summary,
+.collab-frame .search-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.collab-frame .dm-peer-copy strong,
+.collab-frame .agent-detail-title strong,
+.collab-frame .message-meta strong,
+.collab-frame .thread-row-main strong,
+.collab-frame .saved-row-text,
+.collab-frame .search-result-snippet,
+.collab-frame .task-card-title,
+.collab-frame .detail-value,
+.collab-frame .agent-field-value {
+  font-size: 13px;
+}
+
+.collab-frame .tabbar,
+.collab-frame .agent-detail-tabs {
+  border-bottom: 1px solid var(--workspace-line-strong);
+}
+
+.collab-frame .tabbar button,
+.collab-frame .agent-detail-tabs button {
+  min-height: 30px;
+  border-right-width: 1px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.collab-frame .pixel-panel,
+.collab-frame .task-column,
+.collab-frame .task-card,
+.collab-frame .thread-row,
+.collab-frame .saved-row,
+.collab-frame .search-result-card,
+.collab-frame .inbox-category-panel,
+.collab-frame .inbox-toolbar,
+.collab-frame .mode-card,
+.collab-frame .cloud-card,
+.collab-frame .computer-config-row,
+.collab-frame .skill-row,
+.collab-frame .agent-tool-pill,
+.collab-frame .runtime-badge,
+.collab-frame .task-proof span,
+.collab-frame .task-history span,
+.collab-frame .mission-mini,
+.collab-frame .goal-box,
+.collab-frame .contract-block,
+.collab-frame .terminal,
+.collab-frame .history-item,
+.collab-frame .project-strip,
+.collab-frame .project-chip {
+  border-width: 1px;
+  border-color: var(--workspace-line);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.collab-frame .pixel-panel:hover,
+.collab-frame .task-card:hover,
+.collab-frame .compact-task-card:hover,
+.collab-frame .compact-task-card.active,
+.collab-frame .thread-row:hover,
+.collab-frame .thread-row.active,
+.collab-frame .saved-row:hover,
+.collab-frame .saved-row.active,
+.collab-frame .search-result-card:hover,
+.collab-frame .search-result-card.active,
+.collab-frame .mode-card:hover,
+.collab-frame .mode-card.active {
+  box-shadow: none;
+}
+
+.collab-frame .primary-btn,
+.collab-frame .secondary-btn,
+.collab-frame .danger-btn,
+.collab-frame .file-btn,
+.collab-frame .channel-action,
+.collab-frame .task-view-toggle button,
+.collab-frame .task-channel-button,
+.collab-frame .task-filter button,
+.collab-frame .dm-task-filters button,
+.collab-frame .search-filter-btn,
+.collab-frame .search-clear-all,
+.collab-frame .search-load-more,
+.collab-frame .search-clear-btn,
+.collab-frame .message-icon-action,
+.collab-frame .task-actions button,
+.collab-frame .saved-remove,
+.collab-frame .workspace-activity-load,
+.collab-frame .agent-inline-actions button,
+.collab-frame .agent-header-actions button,
+.collab-frame .agent-workspace-sidebar-title button,
+.collab-frame .agent-workspace-file-actions button {
+  min-height: 32px;
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.collab-frame .primary-btn,
+.collab-frame .task-view-toggle button.active,
+.collab-frame .dm-task-filters button.active,
+.collab-frame .agent-detail-tabs button.active,
+.collab-frame .tabbar button.active {
+  font-weight: 700;
+}
+
+.collab-frame .channel-action {
+  min-width: 32px;
+  min-height: 30px;
+  transform: none;
+}
+
+.collab-frame .channel-action:hover,
+.collab-frame .channel-action:focus-visible,
+.collab-frame .channel-action:active {
+  box-shadow: none;
+  transform: none;
+}
+
+.collab-frame .channel-action::after {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+  font-weight: 700;
+}
+
+.collab-frame .channel-action::before {
+  border-left-width: 1px;
+  border-top-width: 1px;
+}
+
+.collab-frame input,
+.collab-frame textarea,
+.collab-frame select,
+.collab-frame .agent-inline-edit input,
+.collab-frame .agent-inline-edit textarea,
+.collab-frame .agent-env-row input,
+.collab-frame .agent-auto-select,
+.collab-frame .search-input-shell {
+  border-width: 1px;
+  border-color: var(--workspace-line-strong);
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.collab-frame input:focus,
+.collab-frame textarea:focus,
+.collab-frame select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.collab-frame .chat-composer {
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--workspace-line-strong);
+}
+
+.collab-frame .chat-composer textarea {
+  min-height: 54px;
+  max-height: 72px;
+  padding: 8px 10px;
+}
+
+.collab-frame .message-card {
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 8px;
+  padding: 5px 8px;
+  border-width: 1px;
+  border-radius: 6px;
+}
+
+.collab-frame .slock-message:hover,
+.collab-frame .slock-message.highlighted,
+.collab-frame .slock-message.focus-pulse {
+  border-color: var(--workspace-line-strong);
+  box-shadow: none;
+}
+
+.collab-frame .message-markdown pre,
+.collab-frame .message-markdown blockquote {
+  border-width: 1px;
+}
+
+.collab-frame .message-markdown blockquote {
+  border-left-width: 2px;
+}
+
+.collab-frame .task-page,
+.collab-frame .task-board,
+.collab-frame .task-list-view,
+.collab-frame .task-toolbar,
+.collab-frame .saved-page,
+.collab-frame .saved-list-panel,
+.collab-frame .search-page,
+.collab-frame .search-topbar,
+.collab-frame .search-filter-row,
+.collab-frame .search-results,
+.collab-frame .thread-list-panel,
+.collab-frame .computers-page,
+.collab-frame .computers-page > .cloud-layout,
+.collab-frame .agent-detail-shell,
+.collab-frame .agent-workspace-preview .markdown-preview,
+.collab-frame .agent-workspace-preview .text-file-preview {
+  background: #ffffff;
+}
+
+.collab-frame .task-toolbar,
+.collab-frame .dm-task-toolbar,
+.collab-frame .search-filter-row,
+.collab-frame .agent-detail-actions,
+.collab-frame .agent-profile-header,
+.collab-frame .agent-detail-tabs,
+.collab-frame .agent-workspace-sidebar,
+.collab-frame .agent-workspace-path,
+.collab-frame .agent-workspace-filebar {
+  border-color: var(--workspace-line-strong);
+  border-width: 1px;
+}
+
+.collab-frame .task-board {
+  gap: 12px;
+  padding: 14px 20px;
+}
+
+.collab-frame .task-column {
+  padding: 12px;
+}
+
+.collab-frame .task-card {
+  padding: 9px 10px;
+}
+
+.collab-frame .task-status-chip,
+.collab-frame .task-status-icon-badge,
+.collab-frame .task-inline-badge,
+.collab-frame .task-number,
+.collab-frame .thread-kind-badge,
+.collab-frame .search-result-meta em,
+.collab-frame .task-event-chip,
+.collab-frame .task-event-icon,
+.collab-frame .task-state-flow,
+.collab-frame .task-state-node > span,
+.collab-frame .inbox-unread-count,
+.collab-frame .workspace-activity-icon,
+.collab-frame .workspace-activity-avatar {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.collab-frame .task-action-btn,
+.collab-frame .thread-row-check {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.collab-frame .task-state-node.current > span {
+  box-shadow: 0 0 0 1px #e6b22f;
+}
+
+.collab-frame .task-state-node.current > span::before {
+  inset: -4px;
+}
+
+.collab-frame .search-top-icon,
+.collab-frame .settings-page-icon {
+  width: 36px;
+  height: 36px;
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.collab-frame .computers-page > .cloud-layout {
+  padding: 0 20px 22px;
+}
+
+.collab-frame .agent-profile-hero {
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.collab-frame .agent-detail-avatar-frame.hero-avatar {
+  width: 52px;
+  height: 52px;
+}
+
+.collab-frame .agent-profile-field,
+.collab-frame .skill-list-section,
+.collab-frame .agent-dm-row {
+  padding: 12px 18px;
+  border-bottom-color: var(--workspace-muted-line);
+}
+
+.collab-frame .agent-workspace-sidebar {
+  border-right-width: 1px;
+}
+
+.collab-frame .agent-hover-card,
+.collab-frame .task-hover-card,
+.collab-frame .search-time-menu,
+.collab-frame .mention-popup {
+  border-width: 1px;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+@media (max-width: 1200px) {
+  .collab-frame {
+    grid-template-columns: minmax(180px, min(var(--rail-width, 220px), 320px)) 4px minmax(300px, 1fr) 4px minmax(240px, min(var(--inspector-width, 320px), 38vw));
+  }
+
+  .collab-frame.no-inspector {
+    grid-template-columns: minmax(180px, min(var(--rail-width, 220px), 320px)) 4px minmax(300px, 1fr);
+  }
+}
+
+/* Settings density pass: Slack-like scale while preserving MagClaw colors. */
+.settings-rail,
+.settings-page,
+.computers-page {
+  --settings-line: rgba(26, 26, 26, 0.22);
+  --settings-line-strong: rgba(26, 26, 26, 0.48);
+  --settings-muted-line: rgba(26, 26, 26, 0.13);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.settings-rail .slock-left-rail {
+  flex-basis: 60px;
+  width: 60px;
+  min-width: 60px;
+  gap: 10px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--settings-line-strong);
+}
+
+.settings-rail .left-rail-avatar,
+.settings-rail .left-rail-btn {
+  width: 38px;
+  height: 38px;
+  min-height: 38px;
+  border-width: 1px;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.settings-rail .left-rail-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.settings-rail .left-rail-btn:hover,
+.settings-rail .left-rail-btn:focus-visible,
+.settings-rail .left-rail-btn.active {
+  border-color: var(--settings-line-strong);
+  box-shadow: none;
+}
+
+.settings-rail .left-rail-btn em {
+  top: -5px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  border-width: 1px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+.settings-rail .slock-sidebar-header {
+  flex-basis: 60px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--settings-line-strong);
+}
+
+.settings-rail .slock-sidebar-header h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.settings-layout-frame .rail-resizer {
+  min-width: 4px;
+}
+
+.settings-layout-frame .rail-resizer::before {
+  left: 1px;
+  width: 1px;
+  background: var(--settings-line-strong);
+}
+
+.settings-rail .runtime-chip {
+  gap: 8px;
+  margin: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--settings-line-strong);
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.settings-rail .runtime-chip .status-dot {
+  width: 8px;
+  height: 8px;
+  border-width: 1px;
+}
+
+.settings-nav-list {
+  gap: 2px;
+  padding: 12px 8px;
+}
+
+.settings-nav-item {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border-width: 1px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-nav-item .settings-icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.8;
+}
+
+.settings-nav-item em {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.settings-nav-item:hover,
+.settings-nav-item.active {
+  border-color: var(--settings-line-strong);
+  box-shadow: none;
+}
+
+.settings-nav-item.active {
+  font-weight: 700;
+}
+
+.settings-page {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  background: #ffffff;
+}
+
+.settings-page-header {
+  min-height: 60px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--settings-line-strong);
+}
+
+.settings-page-heading {
+  gap: 12px;
+}
+
+.settings-page-heading h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.settings-page-icon {
+  width: 36px;
+  height: 36px;
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.settings-page-icon .settings-icon {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.settings-section-label {
+  min-height: 38px;
+  gap: 8px;
+  padding: 10px 20px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.settings-section-label .settings-icon {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.75;
+}
+
+.settings-page-mobile-tabs {
+  display: none;
+}
+
+.settings-page > .cloud-layout,
+.settings-page > .settings-layout,
+.settings-page > .settings-release {
+  padding: 0 20px 22px;
+}
+
+.settings-layout,
+.account-layout,
+.account-grid {
+  gap: 12px;
+}
+
+.settings-page .pixel-panel,
+.settings-page .cloud-card,
+.settings-page .mode-card,
+.settings-page .account-meta-grid div,
+.settings-page .cloud-status div,
+.settings-page .boundary-grid div,
+.settings-page .computer-config-row,
+.settings-page .settings-permission-list,
+.settings-page .notification-card-body,
+.settings-page .release-card {
+  border: 1px solid var(--settings-line);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.settings-page .pixel-panel:hover,
+.settings-page .mode-card:hover,
+.settings-page .mode-card.active {
+  box-shadow: none;
+}
+
+.settings-page .cloud-card {
+  padding: 14px;
+}
+
+.account-layout {
+  max-width: 1040px;
+}
+
+.account-overview-card {
+  gap: 14px;
+  padding: 16px;
+}
+
+.account-profile-main {
+  gap: 12px;
+}
+
+.account-profile-main h3 {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.account-profile-main p {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.account-profile-main p:last-child {
+  margin-top: 3px;
+}
+
+.account-avatar-lg {
+  width: 56px;
+  height: 56px;
+  font-size: 18px;
+}
+
+.account-role-badge {
+  min-width: 126px;
+  gap: 2px;
+  padding: 9px 12px;
+  border-width: 1px;
+  border-color: var(--settings-line);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.account-role-badge span,
+.account-role-badge small {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.account-role-badge strong {
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.account-signout-btn {
+  align-self: center;
+  min-height: 34px;
+}
+
+.panel-title {
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.settings-account-avatar {
+  width: 52px;
+  height: 52px;
+  border-width: 1px;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 16px;
+}
+
+.profile-avatar-row {
+  gap: 10px;
+}
+
+.profile-avatar-row .settings-account-avatar {
+  width: 48px;
+  height: 48px;
+  font-size: 15px;
+}
+
+.account-avatar-actions {
+  gap: 6px;
+}
+
+.account-profile-form {
+  gap: 12px;
+}
+
+.account-meta-grid {
+  gap: 8px;
+}
+
+.account-meta-grid div {
+  gap: 2px;
+  padding: 9px 10px;
+}
+
+.account-meta-grid span,
+.account-meta-grid small {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.account-meta-grid strong {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.account-permission-chips {
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.account-permission-chips span {
+  padding: 3px 8px;
+  border-width: 1px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-page label,
+.settings-page .form-field {
+  gap: 5px;
+}
+
+.settings-page label span,
+.settings-page .form-field span {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.settings-page input,
+.settings-page textarea,
+.settings-page select {
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid var(--settings-line-strong);
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.settings-page textarea {
+  min-height: 78px;
+}
+
+.settings-page input:focus,
+.settings-page textarea:focus,
+.settings-page select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.settings-page .primary-btn,
+.settings-page .secondary-btn,
+.settings-page .danger-btn,
+.settings-page .file-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-page .primary-btn {
+  font-weight: 700;
+}
+
+.settings-page .primary-btn:hover,
+.settings-page .secondary-btn:hover,
+.settings-page .danger-btn:hover,
+.settings-page .file-btn:hover {
+  box-shadow: none;
+}
+
+.settings-page .computer-config-list {
+  gap: 8px;
+}
+
+.settings-page .computer-config-row {
+  padding: 10px;
+}
+
+.settings-page .computer-config-row strong,
+.settings-page .mode-card strong,
+.settings-page .boundary-grid strong {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.settings-page .computer-config-row span,
+.settings-page .computer-config-row small,
+.settings-page .mode-card span,
+.settings-page .boundary-grid p,
+.settings-page .cloud-status small,
+.settings-page .fanout-api-note {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-page .release-card {
+  gap: 12px;
+  padding: 16px;
+}
+
+.settings-page .release-card h3,
+.settings-page .release-badge {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.settings-page .release-card h3 {
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.settings-page .release-note-row p {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.settings-page .release-badge {
+  min-height: 22px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .account-overview-card {
+    align-items: stretch;
+  }
+
+  .account-role-badge,
+  .account-signout-btn {
+    width: auto;
+  }
+}
+
+@media (max-width: 700px) {
+  .settings-layout-frame.no-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-layout-frame .settings-rail,
+  .settings-layout-frame .rail-resizer {
+    display: none;
+  }
+
+  .settings-layout-frame .workspace {
+    min-width: 0;
+  }
+
+  .settings-page-header {
+    min-height: 54px;
+    padding: 9px 10px;
+  }
+
+  .settings-page-heading {
+    gap: 8px;
+  }
+
+  .settings-page-heading h2 {
+    font-size: 16px;
+  }
+
+  .settings-page-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .settings-page .action-row {
+    min-width: 0;
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+
+  .settings-section-label {
+    min-height: 34px;
+    padding: 8px 10px 6px;
+  }
+
+  .settings-page-mobile-tabs {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+    padding: 7px 10px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--settings-line);
+    background: #ffffff;
+  }
+
+  .settings-page-mobile-tabs button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+    padding: 0 9px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: #ffffff;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .settings-page-mobile-tabs button.active {
+    border-color: var(--settings-line-strong);
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .settings-page-mobile-tabs .settings-icon {
+    width: 14px;
+    height: 14px;
+    stroke-width: 1.75;
+  }
+
+  .settings-page > .cloud-layout,
+  .settings-page > .settings-layout,
+  .settings-page > .settings-release {
+    padding: 10px 10px 16px;
+  }
+
+  .account-overview-card {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .account-profile-main {
+    align-items: flex-start;
+  }
+
+  .account-role-badge,
+  .account-signout-btn {
+    width: 100%;
+  }
+
+  .account-avatar-actions {
+    align-items: flex-start;
   }
 }

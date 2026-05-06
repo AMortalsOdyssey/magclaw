@@ -9,13 +9,49 @@ test('project remove buttons render as icons instead of rem text', async () => {
   assert.match(app, /class="project-remove-icon"/);
 });
 
-test('cloud account settings show invitation controls only to admins', async () => {
+test('cloud account settings expose role-aware invitation controls', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
 
   assert.match(app, /function cloudRoleAllows\(role, allowedRole\)/);
-  assert.match(accountSettingsSource, /const canManageCloud = cloudRoleAllows\(currentMember\?\.role, 'admin'\)/);
-  assert.match(accountSettingsSource, /\$\{canManageCloud \? `[\s\S]*id="cloud-invite-form"/);
+  assert.match(app, /function cloudCan\(capability\)/);
+  assert.match(accountSettingsSource, /const canInviteCloud = cloudCan\('invite_member'\)/);
+  assert.match(accountSettingsSource, /const inviteRoleOptions = cloudInviteRoleOptions\(\)/);
+  assert.match(accountSettingsSource, /\$\{canInviteCloud \? `[\s\S]*id="cloud-invite-form"/);
+  assert.match(app, /function cloudInviteRoleOptions\(\)/);
+  assert.match(app, /'core_member', 'Core Member'/);
+  assert.match(app, /'member', 'Member'/);
+  assert.doesNotMatch(accountSettingsSource, /value="viewer"|value="agent_admin"|value="computer_admin"|value="owner"/);
+});
+
+test('account profile uses a focused role layout with avatar picker controls', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
+
+  assert.match(accountSettingsSource, /class="account-role-badge role-\$\{escapeHtml\(role\)\}"/);
+  assert.match(accountSettingsSource, /data-action="pick-profile-avatar"/);
+  assert.match(accountSettingsSource, /class="account-permission-chips"/);
+  assert.doesNotMatch(accountSettingsSource, /Identity Boundary|<span>Device<\/span>|id="profile-avatar-library"/);
+  assert.match(styles, /\.account-overview-card/);
+  assert.match(styles, /\.account-role-badge strong/);
+  assert.match(styles, /\.account-permission-chips span/);
+  assert.match(styles, /\.profile-upload-btn,\n\.file-btn \{/);
+});
+
+test('sign out uses a confirmation modal before logging out', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
+
+  assert.match(accountSettingsSource, /data-action="open-modal" data-modal="confirm-sign-out"[\s\S]*>Sign Out<\/button>/);
+  assert.match(app, /'confirm-sign-out': renderSignOutConfirmModal/);
+  assert.match(app, /function renderSignOutConfirmModal\(\)/);
+  assert.match(app, /data-action="confirm-cloud-auth-logout"/);
+  assert.match(app, /if \(action === 'confirm-cloud-auth-logout'\)/);
+  assert.doesNotMatch(accountSettingsSource, /data-action="cloud-auth-logout"/);
+  assert.match(styles, /\.modal-confirm-sign-out/);
+  assert.match(styles, /\.modal-confirm-sign-out-backdrop/);
 });
 
 test('cloud account settings use server-configured sign-in without owner bootstrap UI', async () => {
@@ -106,10 +142,77 @@ test('threads render newest first with display names instead of raw ids', async 
   assert.match(app, /function threadUpdatedAt\(message\)/);
   assert.match(app, /\.sort\(\(a, b\) => threadUpdatedAt\(b\) - threadUpdatedAt\(a\)\)/);
   assert.match(app, /const author = displayName\(message\.authorId\)/);
-  assert.match(app, /const lastReplyAuthor = lastReply \? displayName\(lastReply\.authorId\) : author/);
+  assert.match(app, /const lastReplyAuthor = displayName\(previewRecord\?\.authorId \|\| message\.authorId\)/);
+  assert.match(app, /const lastReplyAuthor = displayName\(previewRecord\.authorId\)/);
   assert.match(app, /function plainMentionText\(text\)/);
   assert.match(app, /function plainActorText\(text\)/);
   assert.match(app, /plainMentionText\(message\.body\)/);
+});
+
+test('thread rows use the last reply actor avatar and prefix the preview with the actor name', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const inboxItemSource = app.slice(app.indexOf('function buildThreadInboxItem('), app.indexOf('function buildDirectInboxItem('));
+  const threadsSource = app.slice(app.indexOf('function renderThreads()'), app.indexOf('function renderSaved()'));
+
+  assert.match(app, /function threadPreviewRecord\(message\)/);
+  assert.match(app, /function threadPreviewText\(message\)/);
+  assert.match(inboxItemSource, /const previewRecord = threadPreviewRecord\(message\)/);
+  assert.match(inboxItemSource, /previewRecord,/);
+  assert.match(inboxItemSource, /preview: threadPreviewText\(message\)/);
+  assert.match(threadsSource, /const previewRecord = threadPreviewRecord\(message\)/);
+  assert.match(threadsSource, /renderThreadRowAvatar\(previewRecord\)/);
+  assert.match(threadsSource, /threadPreviewText\(message\)/);
+  assert.match(app, /\$\{lastReplyAuthor\}：\$\{previewBody\}/);
+  assert.doesNotMatch(app, /\$\{lastReply \? plainMentionText\(previewRecord\.body\)\.slice\(0, 140\) : 'latest'\} · \$\{lastReplyAuthor\}/);
+});
+
+test('chat rail keeps Threads and adds Inbox without a System notification tab', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const chatRailSource = app.slice(app.indexOf('function renderChatRail('), app.indexOf('function renderMembersRail('));
+
+  assert.match(chatRailSource, /renderNavItem\('inbox', 'Inbox', 'inbox', inboxUnread \|\| '', \{ badgeKind: 'unread' \}\)/);
+  assert.match(chatRailSource, /renderNavItem\('threads', 'Threads', 'message'/);
+  assert.match(chatRailSource, /renderChannelItem\(channel, unreadCountForSpace\(spaceUnreadCounts, 'channel', channel\.id\)\)/);
+  assert.match(chatRailSource, /renderDmItem\(dm\.id, displayName\(other\), status, agent\?\.avatar \|\| human\?\.avatar, unreadCountForSpace\(spaceUnreadCounts, 'dm', dm\.id\)\)/);
+  assert.match(app, /function renderRailUnreadBadge\(count, label = 'unread messages'\)/);
+  assert.match(app, /function buildSpaceUnreadCounts\(humanId = currentHumanId\(\), stateSnapshot = appState\)/);
+  assert.match(app, /function markSpaceRead\(spaceType, spaceId\)/);
+  assert.doesNotMatch(chatRailSource, /system-notifications|System Notification List/);
+  assert.match(app, /if \(activeView === 'inbox'\) return renderInbox\(\)/);
+  assert.doesNotMatch(app, /function renderSystemNotifications\(\)/);
+  assert.match(styles, /\.rail-unread-badge/);
+  assert.match(styles, /\.space-btn \.rail-unread-badge/);
+});
+
+test('inbox reuses thread rows and renders workspace activity drawer', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /function renderInbox\(\)/);
+  assert.match(app, /function buildInboxModel\(\)/);
+  assert.match(app, /function renderWorkspaceActivityDrawer\(\)/);
+  assert.match(app, /class="thread-row slock-thread-row inbox-row/);
+  assert.match(app, /data-action="open-workspace-activity"/);
+  assert.match(styles, /\.inbox-shell/);
+  assert.match(styles, /\.workspace-activity-drawer/);
+  assert.match(styles, /\.inbox-row\.unread::before/);
+});
+
+test('workspace uses dark icon rail, pink chat sidebar, and white main surfaces', async () => {
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const colorPass = styles.slice(styles.indexOf('Inbox redesign color pass'));
+  const densityPass = styles.slice(styles.indexOf('Workspace density pass'));
+
+  assert.match(colorPass, /\.slock-left-rail,[\s\S]*\.rail-icon-only \{[\s\S]*background: var\(--magclaw-rail\)/);
+  assert.match(colorPass, /\.slock-sidebar,[\s\S]*background: var\(--bg-chat\)/);
+  assert.match(colorPass, /\.workspace,[\s\S]*\.thread-list-panel,[\s\S]*\.search-results,[\s\S]*\.inbox-page[\s\S]*background: #ffffff/);
+  assert.match(colorPass, /\.thread-row:hover,[\s\S]*background: var\(--accent-soft\)/);
+  assert.match(densityPass, /\.collab-frame \{[\s\S]*font-family: -apple-system/);
+  assert.match(densityPass, /\.collab-frame \.slock-left-rail \{[\s\S]*border-right: 1px solid var\(--workspace-line-strong\)/);
+  assert.match(densityPass, /\.collab-frame \.space-header,[\s\S]*\.collab-frame \.task-page-header,[\s\S]*\.collab-frame \.agent-detail-topbar,[\s\S]*border-bottom: 1px solid var\(--workspace-line-strong\)/);
+  assert.match(densityPass, /\.collab-frame \.nav-item,[\s\S]*\.collab-frame \.space-btn \{[\s\S]*font-size: 13px/);
+  assert.match(densityPass, /\.collab-frame \.computers-page > \.cloud-layout \{[\s\S]*padding: 0 20px 22px/);
 });
 
 test('messages and replies render markdown while preserving mention chips', async () => {
@@ -124,6 +227,30 @@ test('messages and replies render markdown while preserving mention chips', asyn
   assert.match(styles, /\.message-table-wrap/);
 });
 
+test('human mention chips use a distinct color from agent mentions', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /mention-identity mention-agent/);
+  assert.match(app, /mention-human/);
+  assert.match(styles, /\.mention-tag\.mention-human/);
+  assert.match(styles, /background: #9FE3D1/);
+  assert.match(styles, /color: #0B302A/);
+});
+
+test('channel mention chips render in yellow', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /mention-special\$\{channelClass\}/);
+  assert.match(app, /mention-tag mention-channel/);
+  assert.match(app, /function renderPlainChannelMentions\(html\)/);
+  assert.match(app, /renderPlainChannelMentions\(html\)/);
+  assert.match(styles, /\.mention-tag\.mention-channel/);
+  assert.match(styles, /background: #FFE15A/);
+  assert.match(styles, /color: #1A1A1A/);
+});
+
 test('human messages and thread replies render agent pickup avatars from work items', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
@@ -133,6 +260,7 @@ test('human messages and thread replies render agent pickup avatars from work it
   assert.match(app, /item\?\.sourceMessageId === record\.id/);
   assert.match(app, /function renderAgentReceiptTray\(record\)/);
   assert.match(app, /function renderMessageFooter\(\{ replyCountChip = '', receiptTray = '' \} = \{\}\)/);
+  assert.match(app, /record\.authorType === 'agent'/);
   assert.match(app, /renderAgentReceiptTray\(message\)/);
   assert.match(app, /renderAgentReceiptTray\(reply\)/);
   assert.match(app, /renderMessageFooter\(\{ replyCountChip, receiptTray \}\)/);
@@ -211,7 +339,7 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
 
   assert.match(app, /const inspectorHtml = renderInspector\(\)/);
   assert.match(app, /inspectorHtml \? `[\s\S]*collab-inspector/);
-  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{taskFocusLayout \? ' task-focus' : ''\}\$\{notificationBanner \? ' notification-banner-active' : ''\}"/);
+  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{taskFocusLayout \? ' task-focus' : ''\}[\s\S]*\$\{notificationBanner \? ' notification-banner-active' : ''\}"/);
   assert.match(app, /let selectedTaskId = null/);
   assert.match(app, /function renderInspector\(\)[\s\S]*if \(selectedAgentId\)/);
   assert.match(app, /selectedAgentId = null;[\s\S]*selectedSpaceType = target\.dataset\.type/);
@@ -464,14 +592,15 @@ test('search page matches Slock shortcuts filters persistence and thread drawer 
   assert.match(styles, /\.search-time-menu/);
 });
 
-test('thread list rows keep the top-message avatar at the far left', async () => {
+test('thread list rows keep the latest actor avatar at the far left', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const threadsSource = app.slice(app.indexOf('function renderThreads'), app.indexOf('function renderSaved'));
 
   assert.match(threadsSource, /class="thread-row-avatar"/);
-  assert.match(app, /function renderThreadRowAvatar\(message\)/);
-  assert.match(threadsSource, /renderThreadRowAvatar\(message\)/);
+  assert.match(app, /function renderThreadRowAvatar\(record\)/);
+  assert.match(threadsSource, /const previewRecord = threadPreviewRecord\(message\)/);
+  assert.match(threadsSource, /renderThreadRowAvatar\(previewRecord\)/);
   assert.match(styles, /\.thread-row \{[\s\S]*grid-template-columns: 32px minmax\(0, 1fr\) auto/);
   assert.match(styles, /\.thread-row-avatar/);
   assert.match(styles, /\.thread-list-avatar/);
@@ -512,6 +641,8 @@ test('message rows re-render when author presence changes from heartbeat', async
   assert.match(renderKeySource, /authorStatus: author\?\.status \|\| ''/);
   assert.match(renderKeySource, /record\?\.authorType === 'agent'/);
   assert.match(app, /function applyPresenceHeartbeat\(heartbeat\)/);
+  assert.match(app, /const incomingHumansById = new Map/);
+  assert.match(app, /humans,\n    updatedAt: heartbeat\.updatedAt/);
 });
 
 test('agent detail opened from a thread returns to that thread when closed', async () => {
@@ -537,11 +668,13 @@ test('selected thread rows keep the active highlight while the drawer is open', 
 test('messages use Slock-style hover save actions and saved messages open context', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const openThreadSource = app.slice(app.indexOf("if (action === 'open-thread')"), app.indexOf("if (action === 'open-search-result'"));
 
   assert.match(app, /function renderMessageActions\(record, options = \{\}\)/);
   assert.match(app, /Reply in thread/);
   assert.match(app, /Save message/);
   assert.match(app, /Remove from saved/);
+  assert.match(openThreadSource, /requestComposerFocus\(composerIdFor\('thread', threadMessageId\)\)/);
   assert.match(app, /function renderSavedRecord\(record\)/);
   assert.match(app, /function savedRecords\(\)/);
   assert.match(app, /data-action="open-saved-message"/);
@@ -598,6 +731,7 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.match(app, />Reasoning</);
   assert.equal(app.includes('>Thinking</span>'), false);
   assert.match(app, /type="file"[\s\S]*data-action="upload-agent-avatar"/);
+  assert.match(app, /data-action="pick-agent-detail-avatar"/);
   assert.match(app, /data-action="start-agent"/);
   assert.match(app, /function renderAgentStartModal\(\)/);
   assert.match(app, /data-action="confirm-agent-start"/);
@@ -684,6 +818,17 @@ test('agent avatar uploads open a square crop modal and persist a cropped image'
   assert.match(styles, /aspect-ratio: 1 \/ 1/);
   assert.match(styles, /\.avatar-preview[\s\S]*object-fit: cover/);
   assert.match(styles, /\.avatar-option[\s\S]*object-fit: cover/);
+});
+
+test('human presence uses browser heartbeat and settings clears agent detail', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  assert.match(app, /const HUMAN_PRESENCE_HEARTBEAT_MS = 30 \* 1000/);
+  assert.match(app, /function sendHumanPresenceHeartbeat\(\)/);
+  assert.match(app, /api\('\/api\/cloud\/auth\/heartbeat', \{ method: 'POST', body: '\{\}' \}\)/);
+  assert.match(app, /function humanStatusDot\(authorId, authorType\)/);
+  assert.match(app, /getAvatarHtml\(authorId, authorType, 'avatar-inner'\)\}\$\{humanStatusDot\(authorId, authorType\)\}/);
+  assert.match(app, /if \(action === 'set-settings-tab'\)[\s\S]*selectedAgentId = null/);
 });
 
 test('create agent opens with a fresh form state every time', async () => {

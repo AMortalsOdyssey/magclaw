@@ -12,6 +12,7 @@ const SKILL_SECTION_COLLAPSE_KEY = 'magclawSkillSectionCollapse';
 const NOTIFICATION_PREF_KEY = 'magclawNotificationPrefs';
 const NOTIFICATION_ICON = '/favicon.svg';
 const NOTIFICATION_PREVIEW_LIMIT = 140;
+const WORKSPACE_ACTIVITY_VISIBLE_STEP = 30;
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
 const MEMBERS_LAYOUT_MODES = new Set(['channel', 'split', 'agent']);
 const initialUiState = readStoredUiState();
@@ -24,6 +25,11 @@ let activeTab = initialUiState.activeTab || 'chat';
 let railTab = initialUiState.railTab || localStorage.getItem('railTab') || 'spaces'; // 'spaces', 'members', 'computers', or 'settings'
 let threadMessageId = initialUiState.threadMessageId || null;
 let inspectorReturnThreadId = null;
+let inboxCategory = 'all';
+let inboxFilter = 'all';
+let workspaceActivityDrawerOpen = false;
+let workspaceActivityVisibleCount = WORKSPACE_ACTIVITY_VISIBLE_STEP;
+let workspaceActivityScrollToBottom = false;
 let selectedAgentId = initialUiState.selectedAgentId || null; // selected agent for detail panel
 let membersLayout = normalizeMembersLayout(initialUiState.membersLayout);
 let selectedTaskId = null;
@@ -76,10 +82,13 @@ let latestPairingCommand = null;
 let collapsedSidebarSections = readJsonStorage(SIDEBAR_SECTION_COLLAPSE_KEY, {});
 let collapsedSkillSections = readJsonStorage(SKILL_SECTION_COLLAPSE_KEY, {});
 let avatarCropState = null;
+let avatarPickerState = null;
 let notificationPrefs = normalizeNotificationPrefs(readJsonStorage(NOTIFICATION_PREF_KEY, {}));
 let windowFocused = document.hasFocus();
 let eventSource = null;
 let cloudLoginDraftEmail = '';
+let humanPresenceTimer = null;
+let humanPresenceInFlight = false;
 
 const MAX_ATTACHMENTS_PER_COMPOSER = 20;
 const AGENT_AVATAR_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
@@ -91,6 +100,7 @@ const AVATAR_CROP_SIZE = 256;
 const AVATAR_CROP_STAGE_SIZE = 320;
 const AVATAR_CROP_VIEW_SIZE = 220;
 const AGENT_RECEIPT_VISIBLE_LIMIT = 10;
+const HUMAN_PRESENCE_HEARTBEAT_MS = 30 * 1000;
 
 function isImeComposing(event) {
   return Boolean(
@@ -293,11 +303,12 @@ function renderThreadKindBadge(message, task) {
   `;
 }
 
-function renderThreadRowAvatar(message) {
+function renderThreadRowAvatar(record) {
   return `
     <span class="avatar thread-list-avatar" aria-hidden="true">
-      ${getAvatarHtml(message.authorId, message.authorType, 'avatar-inner')}
-      ${agentStatusDot(message.authorId, message.authorType)}
+      ${getAvatarHtml(record?.authorId, record?.authorType, 'avatar-inner')}
+      ${agentStatusDot(record?.authorId, record?.authorType)}
+      ${humanStatusDot(record?.authorId, record?.authorType)}
     </span>
   `;
 }
@@ -331,10 +342,70 @@ function escapeHtml(value) {
 }
 
 function cloudRoleAllows(role, allowedRole) {
-  const hierarchy = ['viewer', 'member', 'agent_admin', 'computer_admin', 'admin'];
-  const roleIndex = hierarchy.indexOf(String(role || 'viewer'));
-  const allowedIndex = hierarchy.indexOf(String(allowedRole || 'viewer'));
+  const hierarchy = ['member', 'core_member', 'admin'];
+  const roleIndex = hierarchy.indexOf(String(role || 'member'));
+  const allowedIndex = hierarchy.indexOf(String(allowedRole || 'member'));
   return roleIndex >= 0 && allowedIndex >= 0 && roleIndex >= allowedIndex;
+}
+
+function cloudCan(capability) {
+  const capabilities = appState?.cloud?.auth?.capabilities || {};
+  return Boolean(capabilities[capability]);
+}
+
+function cloudRoleLabel(role) {
+  return {
+    admin: 'Admin',
+    core_member: 'Core Member',
+    member: 'Member',
+  }[String(role || 'member')] || 'Member';
+}
+
+function currentAccountHuman() {
+  const auth = appState?.cloud?.auth || {};
+  const currentUser = auth.currentUser;
+  const currentMember = auth.currentMember;
+  return byId(appState?.humans, currentMember?.humanId)
+    || (currentUser ? (appState?.humans || []).find((human) => human.authUserId === currentUser.id && human.status !== 'removed') : null)
+    || byId(appState?.humans, 'hum_local')
+    || appState?.humans?.[0]
+    || {};
+}
+
+function cloudCapabilityLabels(capabilities = {}) {
+  const labels = [
+    ['invite_member', 'Invite members'],
+    ['invite_core_member', 'Invite core members'],
+    ['manage_computers', 'Add computers'],
+    ['remove_member', 'Remove members'],
+    ['manage_member_roles', 'Manage roles'],
+    ['manage_system', 'System config'],
+  ];
+  return labels.filter(([key]) => capabilities[key]).map(([, label]) => label);
+}
+
+function durationDays(ms) {
+  const days = Math.round(Number(ms || 0) / (1000 * 60 * 60 * 24));
+  return days > 0 ? `${days} days` : '--';
+}
+
+function humanPresenceText(human) {
+  return presenceTone(human?.status) === 'online' ? 'Online' : 'Offline';
+}
+
+function cloudInviteRoleOptions() {
+  const options = [];
+  if (cloudCan('invite_admin')) options.push(['admin', 'Admin']);
+  if (cloudCan('invite_core_member')) options.push(['core_member', 'Core Member']);
+  if (cloudCan('invite_member')) options.push(['member', 'Member']);
+  return options;
+}
+
+function cloudCanRemoveMemberRole(role) {
+  const normalized = String(role || 'member');
+  if (normalized === 'admin') return cloudCan('remove_admin');
+  if (normalized === 'core_member') return cloudCan('remove_core_member');
+  return cloudCan('remove_member');
 }
 
 function safeMarkdownHref(value) {
@@ -481,7 +552,59 @@ function renderMarkdownWithMentions(content) {
     const marker = `${markerPrefix}${index}TOKEN`;
     html = html.replaceAll(marker, parseMentions(token));
   });
-  return html;
+  return renderPlainChannelMentions(html);
+}
+
+function plainChannelMentionCandidates() {
+  const channels = Array.isArray(appState?.channels) ? appState.channels : [];
+  const seen = new Set();
+  return channels
+    .filter((channel) => channel?.id && channel?.name)
+    .map((channel) => ({
+      id: channel.id,
+      nameHtml: escapeHtml(channel.name),
+    }))
+    .filter((channel) => {
+      const key = channel.nameHtml.toLowerCase();
+      if (!channel.nameHtml || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => b.nameHtml.length - a.nameHtml.length);
+}
+
+function replacePlainChannelMentionsInText(text, channels) {
+  if (!channels.length || !String(text || '').includes('#')) return text;
+  const byName = new Map(channels.map((channel) => [channel.nameHtml, channel]));
+  const names = channels.map((channel) => escapeRegExp(channel.nameHtml)).join('|');
+  if (!names) return text;
+  const pattern = new RegExp(`(^|[^A-Za-z0-9_@])#(${names})(?=$|[^A-Za-z0-9_-])`, 'g');
+  return String(text).replace(pattern, (match, prefix, nameHtml) => {
+    const channel = byName.get(nameHtml);
+    if (!channel) return match;
+    return `${prefix}<span class="mention-tag mention-channel" data-channel-id="${escapeHtml(channel.id)}">#${nameHtml}</span>`;
+  });
+}
+
+function renderPlainChannelMentions(html) {
+  const channels = plainChannelMentionCandidates();
+  if (!channels.length || !String(html || '').includes('#')) return html;
+  let codeDepth = 0;
+  let mentionDepth = 0;
+  return String(html).split(/(<[^>]+>)/g).map((part) => {
+    if (!part) return part;
+    if (part.startsWith('<')) {
+      const tag = part.match(/^<\s*\/?\s*([a-z0-9-]+)/i)?.[1]?.toLowerCase();
+      const closing = /^<\s*\//.test(part);
+      const selfClosing = /\/\s*>$/.test(part);
+      if (closing && tag === 'span' && mentionDepth > 0) mentionDepth -= 1;
+      if (closing && (tag === 'code' || tag === 'pre') && codeDepth > 0) codeDepth -= 1;
+      if (!closing && !selfClosing && (tag === 'code' || tag === 'pre')) codeDepth += 1;
+      if (!closing && !selfClosing && tag === 'span' && /\bmention-tag\b/.test(part)) mentionDepth += 1;
+      return part;
+    }
+    return codeDepth || mentionDepth ? part : replacePlainChannelMentionsInText(part, channels);
+  }).join('');
 }
 
 function readJsonStorage(key, fallback) {
@@ -643,8 +766,11 @@ function dismissAgentNotifications() {
 function readStoredUiState() {
   const parsed = readJsonStorage(UI_STATE_KEY, {});
   const validSpaceType = ['channel', 'dm'].includes(parsed.selectedSpaceType) ? parsed.selectedSpaceType : 'channel';
-  const validView = ['space', 'members', 'tasks', 'threads', 'saved', 'search', 'missions', 'cloud', 'computers'].includes(parsed.activeView)
-    ? parsed.activeView
+  const rawView = String(parsed.activeView || '');
+  const validView = rawView === 'system-notifications'
+    ? 'inbox'
+    : ['space', 'members', 'tasks', 'inbox', 'threads', 'saved', 'search', 'missions', 'cloud', 'computers'].includes(rawView)
+      ? rawView
     : 'space';
   const validTab = ['chat', 'tasks'].includes(parsed.activeTab) ? parsed.activeTab : 'chat';
   const validRailTab = ['spaces', 'members', 'computers', 'settings'].includes(parsed.railTab) ? parsed.railTab : '';
@@ -1089,6 +1215,34 @@ async function uploadAgentAvatar(input) {
   await openAvatarCropModal({ agentId, source: avatar, target });
 }
 
+function setProfileAvatarInput(value) {
+  const avatar = String(value || '').trim();
+  const input = document.getElementById('profile-avatar-input');
+  if (input) input.value = avatar;
+  const preview = document.querySelector('#profile-form .settings-account-avatar');
+  if (!preview) return;
+  if (avatar) {
+    preview.innerHTML = `<img src="${escapeHtml(avatar)}" class="settings-account-avatar-inner avatar-img" alt="">`;
+    return;
+  }
+  const name = document.querySelector('#profile-form input[name="displayName"]')?.value
+    || byId(appState.humans, appState.cloud?.auth?.currentMember?.humanId)?.name
+    || 'You';
+  preview.textContent = String(name).trim().slice(0, 1).toUpperCase() || 'Y';
+}
+
+function openAvatarPicker({ target = 'agent-create', agentId = '', humanId = '', selectedAvatar = '', returnModal = null } = {}) {
+  avatarPickerState = {
+    target,
+    agentId,
+    humanId,
+    selectedAvatar: selectedAvatar || '',
+    returnModal,
+  };
+  modal = 'avatar-picker';
+  render();
+}
+
 function byId(list, id) {
   return (list || []).find((item) => item.id === id) || null;
 }
@@ -1141,10 +1295,14 @@ function getAvatarHtml(id, type, cssClass = '') {
   if (type === 'system') {
     return `<span class="${cssClass}">MC</span>`;
   }
-  const agent = byId(appState?.agents, id);
-  if (agent?.avatar) {
-    return `<img src="${escapeHtml(agent.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(agent.name)}" />`;
-  }
+    const agent = byId(appState?.agents, id);
+    if (agent?.avatar) {
+      return `<img src="${escapeHtml(agent.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(agent.name)}" />`;
+    }
+    const human = byId(appState?.humans, id);
+    if (human?.avatar) {
+      return `<img src="${escapeHtml(human.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(human.name || 'Human')}" />`;
+    }
   const initials = displayAvatar(id, type);
   return `<span class="${cssClass}">${escapeHtml(initials)}</span>`;
 }
@@ -1186,7 +1344,7 @@ function renderActorAvatar(authorId, authorType) {
   if (authorType === 'agent') {
     return `<div class="avatar agent-avatar-cell">${renderAgentIdentityButton(authorId, 'agent-avatar-button')}${agentStatusDot(authorId, authorType)}</div>`;
   }
-  return `<div class="avatar">${getAvatarHtml(authorId, authorType, 'avatar-inner')}</div>`;
+  return `<div class="avatar">${getAvatarHtml(authorId, authorType, 'avatar-inner')}${humanStatusDot(authorId, authorType)}</div>`;
 }
 
 function renderActorName(authorId, authorType) {
@@ -1210,19 +1368,26 @@ function parseMentions(text) {
     const agent = byId(appState?.agents, id);
     const name = agent?.name || (id === 'agt_codex' ? displayName(id) : '');
     return name
-      ? `<span class="mention-tag mention-identity" data-mention-id="${id}">@${escapeHtml(name)}</span>`
+      ? `<span class="mention-tag mention-identity mention-agent" data-mention-id="${id}">@${escapeHtml(name)}</span>`
       : match;
   });
   // Replace human mentions: <@hum_xxx> -> styled span
   result = result.replace(/&lt;@(hum_\w+)&gt;/g, (match, id) => {
     const human = byId(appState?.humans, id);
     return human
-      ? `<span class="mention-tag mention-identity" data-mention-id="${id}">@${escapeHtml(human.name)}</span>`
+      ? `<span class="mention-tag mention-human" data-mention-id="${id}">@${escapeHtml(human.name)}</span>`
       : match;
   });
   // Replace special mentions: <!all>, <!here> -> styled span
   result = result.replace(/&lt;!(all|here|channel|everyone)&gt;/g, (match, type) => {
-    return `<span class="mention-tag mention-special" data-mention-type="${type}">@${type}</span>`;
+    const channelClass = type === 'channel' ? ' mention-channel' : '';
+    return `<span class="mention-tag mention-special${channelClass}" data-mention-type="${type}">@${type}</span>`;
+  });
+  result = result.replace(/&lt;#(chan_\w+)&gt;/g, (match, id) => {
+    const channel = byId(appState?.channels, id);
+    return channel
+      ? `<span class="mention-tag mention-channel" data-channel-id="${escapeHtml(id)}">#${escapeHtml(channel.name)}</span>`
+      : match;
   });
   result = result.replace(/&lt;#(file|folder):([^:]+):([^&]*)&gt;/g, (match, kind, projectId, encodedPath) => {
     const relPath = decodeReferencePath(encodedPath);
@@ -1960,6 +2125,154 @@ function threadUpdatedAt(message) {
   return new Date(lastReply?.createdAt || message.updatedAt || message.createdAt || 0).getTime();
 }
 
+function threadPreviewRecord(message) {
+  if (!message) return null;
+  return threadReplies(message.id).at(-1) || message;
+}
+
+function threadPreviewText(message) {
+  const previewRecord = threadPreviewRecord(message);
+  if (!previewRecord) return '';
+  const lastReplyAuthor = displayName(previewRecord.authorId);
+  const previewBody = plainMentionText(previewRecord.body).slice(0, 140) || '(attachment)';
+  const replyCount = Number(message?.replyCount || 0);
+  return `${lastReplyAuthor}：${previewBody} · ${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}`;
+}
+
+function currentHumanId(stateSnapshot = appState) {
+  return stateSnapshot?.cloud?.auth?.currentMember?.humanId || 'hum_local';
+}
+
+function recordUpdatedAt(record) {
+  return new Date(record?.updatedAt || record?.createdAt || 0).getTime();
+}
+
+function recordUnreadForHuman(record, humanId = currentHumanId()) {
+  if (!record?.id || record.authorType !== 'agent') return false;
+  return !(Array.isArray(record.readBy) ? record.readBy : []).map(String).includes(String(humanId));
+}
+
+function spaceUnreadKey(spaceType, spaceId) {
+  return `${spaceType || 'channel'}:${spaceId || ''}`;
+}
+
+function recordSpaceKey(record, stateSnapshot = appState) {
+  if (!record) return '';
+  if (record.spaceType && record.spaceId) return spaceUnreadKey(record.spaceType, record.spaceId);
+  if (!record.parentMessageId) return '';
+  const parent = byId(stateSnapshot?.messages, record.parentMessageId);
+  return parent ? spaceUnreadKey(parent.spaceType, parent.spaceId) : '';
+}
+
+function buildSpaceUnreadCounts(humanId = currentHumanId(), stateSnapshot = appState) {
+  const counts = new Map();
+  const addUnread = (record) => {
+    if (!recordUnreadForHuman(record, humanId)) return;
+    const key = recordSpaceKey(record, stateSnapshot);
+    if (!key) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  };
+  (stateSnapshot?.messages || []).forEach(addUnread);
+  (stateSnapshot?.replies || []).forEach(addUnread);
+  return counts;
+}
+
+function unreadCountForSpace(counts, spaceType, spaceId) {
+  return counts?.get(spaceUnreadKey(spaceType, spaceId)) || 0;
+}
+
+function spaceUnreadRecordIds(spaceType, spaceId, humanId = currentHumanId()) {
+  const key = spaceUnreadKey(spaceType, spaceId);
+  const ids = [];
+  for (const record of appState?.messages || []) {
+    if (recordSpaceKey(record) === key && recordUnreadForHuman(record, humanId)) ids.push(record.id);
+  }
+  for (const record of appState?.replies || []) {
+    if (recordSpaceKey(record) === key && recordUnreadForHuman(record, humanId)) ids.push(record.id);
+  }
+  return ids;
+}
+
+function railUnreadSignature(stateSnapshot = appState) {
+  const counts = buildSpaceUnreadCounts(currentHumanId(stateSnapshot), stateSnapshot);
+  return [...counts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, count]) => `${key}:${count}`)
+    .join('|');
+}
+
+function threadRecordIds(messageId) {
+  const message = byId(appState?.messages, messageId);
+  if (!message) return [];
+  return [message.id, ...threadReplies(message.id).map((reply) => reply.id)];
+}
+
+function threadUnreadRecords(message, humanId = currentHumanId()) {
+  if (!message) return [];
+  return [message, ...threadReplies(message.id)].filter((record) => recordUnreadForHuman(record, humanId));
+}
+
+function markRecordsReadLocally(recordIds = [], humanId = currentHumanId()) {
+  const ids = new Set((recordIds || []).map(String).filter(Boolean));
+  if (!ids.size || !appState) return;
+  for (const collection of [appState.messages || [], appState.replies || []]) {
+    for (const record of collection) {
+      if (!ids.has(record?.id)) continue;
+      const readBy = new Set((record.readBy || []).map(String));
+      readBy.add(String(humanId));
+      record.readBy = [...readBy];
+    }
+  }
+}
+
+function workspaceActivityReadAt(humanId = currentHumanId()) {
+  return appState?.inboxReads?.[humanId]?.workspaceActivityReadAt || '';
+}
+
+function setWorkspaceActivityReadAtLocally(value, humanId = currentHumanId()) {
+  if (!appState || !value) return;
+  appState.inboxReads = appState.inboxReads && typeof appState.inboxReads === 'object' ? appState.inboxReads : {};
+  appState.inboxReads[humanId] = {
+    ...(appState.inboxReads[humanId] || {}),
+    workspaceActivityReadAt: value,
+  };
+}
+
+async function markInboxRead({ recordIds = [], workspaceActivityReadAt: activityReadAt = null } = {}) {
+  const humanId = currentHumanId();
+  markRecordsReadLocally(recordIds, humanId);
+  if (activityReadAt) setWorkspaceActivityReadAtLocally(activityReadAt, humanId);
+  if (!recordIds.length && !activityReadAt) return null;
+  return api('/api/inbox/read', {
+    method: 'POST',
+    body: JSON.stringify({
+      recordIds,
+      workspaceActivityReadAt: activityReadAt,
+    }),
+  });
+}
+
+function markThreadRead(messageId) {
+  const recordIds = threadRecordIds(messageId);
+  if (!recordIds.length) return;
+  markInboxRead({ recordIds }).catch((error) => toast(error.message));
+}
+
+function markConversationRecordRead(record) {
+  if (!record) return;
+  const root = record.parentMessageId ? byId(appState?.messages, record.parentMessageId) : record;
+  const recordIds = root && (root.replyCount > 0 || root.taskId || record.parentMessageId)
+    ? threadRecordIds(root.id)
+    : [record.id];
+  markInboxRead({ recordIds }).catch((error) => toast(error.message));
+}
+
+function markSpaceRead(spaceType, spaceId) {
+  const recordIds = spaceUnreadRecordIds(spaceType, spaceId);
+  if (!recordIds.length) return;
+  markInboxRead({ recordIds }).catch((error) => toast(error.message));
+}
+
 function taskThreadMessage(task) {
   return byId(appState?.messages, task?.threadMessageId || task?.messageId);
 }
@@ -1993,6 +2306,12 @@ function agentStatusDot(authorId, authorType) {
   if (authorType !== 'agent') return '';
   const agent = byId(appState?.agents, authorId);
   return avatarStatusDot(agent?.status || 'offline', 'Agent status');
+}
+
+function humanStatusDot(authorId, authorType) {
+  if (authorType !== 'human') return '';
+  const human = byId(appState?.humans, authorId);
+  return avatarStatusDot(human?.status || 'offline', 'Human status');
 }
 
 function attachmentLinks(ids = []) {
@@ -2269,6 +2588,15 @@ function scrollPaneToBottom(selector, behavior = 'smooth') {
   if (behavior !== 'smooth') window.setTimeout(scroll, 120);
 }
 
+function scrollWorkspaceActivityToBottom(behavior = 'auto') {
+  const scroll = () => {
+    const node = document.querySelector('#workspace-activity-list');
+    if (node) node.scrollTo({ top: node.scrollHeight, behavior });
+  };
+  window.setTimeout(scroll, 20);
+  window.setTimeout(scroll, 120);
+}
+
 function focusComposerTextarea(composerId) {
   if (!composerId) return false;
   const textarea = document.querySelector(`textarea[data-composer-id="${CSS.escape(composerId)}"]`);
@@ -2480,9 +2808,10 @@ function render() {
   const inspectorHtml = renderInspector();
   const notificationBanner = renderNotificationPromptBanner();
   const taskFocusLayout = activeView === 'tasks';
+  const settingsLayout = activeView === 'cloud';
   root.innerHTML = `
     ${notificationBanner}
-    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${taskFocusLayout ? ' task-focus' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
+    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${taskFocusLayout ? ' task-focus' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
       ${renderRail()}
       ${taskFocusLayout ? '' : '<div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>'}
       <main class="workspace collab-main">
@@ -2500,17 +2829,26 @@ function render() {
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);
     restorePendingComposerFocus();
+    if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
+      workspaceActivityScrollToBottom = false;
+      scrollWorkspaceActivityToBottom('auto');
+    }
   });
 }
 
 function renderRail() {
   const channels = appState.channels || [];
   const dms = appState.dms || [];
+  const inbox = buildInboxModel();
+  const spaceUnreadCounts = buildSpaceUnreadCounts(inbox.humanId);
   const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0 || message.taskId).length;
   const openTasks = (appState.tasks || []).filter((task) => !taskIsClosedStatus(task.status)).length;
   const saved = savedRecords().length;
   const normalAgents = channelAssignableAgents();
-  const localHuman = byId(appState.humans, 'hum_local') || appState.humans?.[0] || { name: 'You' };
+  const localHuman = byId(appState.humans, appState.cloud?.auth?.currentMember?.humanId)
+    || byId(appState.humans, 'hum_local')
+    || appState.humans?.[0]
+    || { name: 'You' };
   const railMode = activeView === 'tasks'
     ? 'tasks'
     : activeView === 'cloud'
@@ -2530,16 +2868,17 @@ function renderRail() {
           ? 'Computers'
           : 'Chat';
   const sidebarBody = railMode === 'settings'
-    ? renderSettingsRail()
-    : railMode === 'desktop'
-      ? renderComputersRail()
+      ? renderSettingsRail()
+      : railMode === 'desktop'
+        ? renderComputersRail()
       : railTab === 'spaces'
-        ? renderChatRail({ channels, dms, unreadThreads, openTasks, saved })
+        ? renderChatRail({ channels, dms, inboxUnread: inbox.unreadCount, unreadThreads, openTasks, saved, spaceUnreadCounts })
         : renderMembersRail({ normalAgents });
+  const railClass = `rail collab-rail slock-rail${railMode === 'settings' ? ' settings-rail' : ''}`;
   const leftRailHtml = `
     <div class="slock-left-rail">
-      <button class="left-rail-avatar" type="button" data-action="set-left-nav" data-nav="chat" title="${escapeHtml(localHuman.name || 'You')}">${escapeHtml((localHuman.name || 'Y').trim().slice(0, 1).toUpperCase())}</button>
-      ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>')}
+        <button class="left-rail-avatar" type="button" data-action="set-settings-tab" data-tab="account" title="${escapeHtml(localHuman.name || 'You')}">${escapeHtml((localHuman.name || 'Y').trim().slice(0, 1).toUpperCase())}</button>
+      ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', inbox.unreadCount || '')}
       ${renderLeftRailButton('tasks', railMode, 'Tasks', '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', openTasks || '')}
       ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>', normalAgents.length || '')}
       ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>')}
@@ -2550,14 +2889,14 @@ function renderRail() {
 
   if (activeView === 'tasks') {
     return `
-      <aside class="rail collab-rail slock-rail rail-icon-only">
+      <aside class="${railClass} rail-icon-only">
         ${leftRailHtml}
       </aside>
     `;
   }
 
   return `
-    <aside class="rail collab-rail slock-rail">
+    <aside class="${railClass}">
       ${leftRailHtml}
       <div class="slock-sidebar">
         <div class="slock-sidebar-header">
@@ -2578,10 +2917,11 @@ function renderRail() {
   `;
 }
 
-function renderChatRail({ channels, dms, unreadThreads, openTasks, saved }) {
+function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, saved, spaceUnreadCounts }) {
   return `
     <div class="nav-list">
       ${renderNavItem('search', 'Search', 'search', searchQuery ? '⌘K' : '⌘K')}
+      ${renderNavItem('inbox', 'Inbox', 'inbox', inboxUnread || '', { badgeKind: 'unread' })}
       ${renderNavItem('threads', 'Threads', 'message', unreadThreads || '')}
       ${renderNavItem('tasks', 'Tasks', 'file', openTasks || '')}
       ${renderNavItem('saved', 'Saved', 'bookmark', saved || '')}
@@ -2589,34 +2929,48 @@ function renderChatRail({ channels, dms, unreadThreads, openTasks, saved }) {
 
     <div class="rail-section">
       ${renderRailSectionTitle('channels', 'Channels', channels.length, { modal: 'channel' })}
-      ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel)).join('')}
+      ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel, unreadCountForSpace(spaceUnreadCounts, 'channel', channel.id))).join('')}
     </div>
 
-    <div class="rail-section">
-      ${renderRailSectionTitle('dms', 'DIRECT MESSAGES', dms.length, { modal: 'dm' })}
-      ${collapsedSidebarSections.dms ? '' : dms.map((dm) => {
+      <div class="rail-section">
+        ${renderRailSectionTitle('dms', 'DIRECT MESSAGES', dms.length, { modal: 'dm' })}
+        ${collapsedSidebarSections.dms ? '' : dms.map((dm) => {
         const other = dm.participantIds.find((id) => id !== 'hum_local');
         const agent = byId(appState.agents, other);
         const human = byId(appState.humans, other);
         const status = agent?.status || human?.status || '';
-        return renderDmItem(dm.id, displayName(other), status, agent?.avatar || human?.avatar);
-      }).join('')}
-    </div>
-  `;
+        return renderDmItem(dm.id, displayName(other), status, agent?.avatar || human?.avatar, unreadCountForSpace(spaceUnreadCounts, 'dm', dm.id));
+        }).join('')}
+      </div>
+
+    `;
 }
 
 function renderMembersRail({ normalAgents }) {
+  const humans = humansByJoinOrder();
   return `
     <div class="rail-section">
       ${renderRailSectionTitle('agents', 'Agents', normalAgents.length, { modal: 'agent' })}
       ${collapsedSidebarSections.agents ? '' : normalAgents.map((agent) => renderAgentListItem(agent)).join('')}
     </div>
 
-    <div class="rail-section">
-      ${renderRailSectionTitle('humans', 'Humans', (appState.humans || []).length, { modal: 'human' })}
-      ${collapsedSidebarSections.humans ? '' : (appState.humans || []).map((human) => renderHumanListItem(human)).join('')}
-    </div>
-  `;
+      <div class="rail-section">
+        ${renderRailSectionTitle('humans', 'Humans', humans.length, { modal: 'human' })}
+        ${collapsedSidebarSections.humans ? '' : humans.map((human) => renderHumanListItem(human)).join('')}
+      </div>
+    `;
+}
+
+function humansByJoinOrder() {
+  const cloudMembers = (appState.cloud?.members || [])
+    .filter((member) => (member.status || 'active') === 'active')
+    .sort((a, b) => new Date(a.joinedAt || a.createdAt || 0) - new Date(b.joinedAt || b.createdAt || 0));
+  if (cloudMembers.length) {
+    return cloudMembers
+      .map((member) => byId(appState.humans, member.humanId) || member.human)
+      .filter(Boolean);
+  }
+  return (appState.humans || []).filter((human) => human.status !== 'removed');
 }
 
 function renderComputersRail() {
@@ -2671,6 +3025,13 @@ function renderLeftRailButton(nav, activeNav, label, icon, badge = '') {
   `;
 }
 
+function renderRailUnreadBadge(count, label = 'unread messages') {
+  const value = Math.max(0, Number(count) || 0);
+  if (!value) return '';
+  const text = value > 99 ? '99+' : String(value);
+  return `<span class="rail-unread-badge" aria-label="${escapeHtml(`${text} ${label}`)}">${escapeHtml(text)}</span>`;
+}
+
 function renderRailSectionTitle(section, label, count, { modal = '' } = {}) {
   const collapsed = Boolean(collapsedSidebarSections[section]);
   const countLabel = count === undefined || count === null ? '' : `<em>${escapeHtml(count)}</em>`;
@@ -2708,35 +3069,40 @@ function settingsIcon(name, size = 20) {
   return `<svg class="settings-icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">${icons[name] || icons.system}</svg>`;
 }
 
-function renderNavItem(view, label, icon, badge) {
+function renderNavItem(view, label, icon, badge, { badgeKind = 'meta' } = {}) {
   const active = activeView === view ? ' active' : '';
   const icons = {
     search: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>',
+    inbox: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6L5.5 5z"/></svg>',
     message: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/></svg>',
     file: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14,2 14,8 20,8"/></svg>',
     bookmark: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>',
     settings: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="M5.6 5.6l2.1 2.1"/><path d="M16.3 16.3l2.1 2.1"/><path d="M18.4 5.6l-2.1 2.1"/><path d="M7.7 16.3l-2.1 2.1"/></svg>',
   };
+  const badgeHtml = badgeKind === 'unread'
+    ? renderRailUnreadBadge(badge, `${label} unread messages`)
+    : (badge ? `<em class="nav-item-meta">${escapeHtml(badge)}</em>` : '');
   return `
     <button class="nav-item${active}" type="button" data-action="set-view" data-view="${view}">
       ${icons[icon] || ''}
       <span>${escapeHtml(label)}</span>
-      ${badge ? `<em>${escapeHtml(badge)}</em>` : ''}
+      ${badgeHtml}
     </button>
   `;
 }
 
-function renderChannelItem(channel) {
+function renderChannelItem(channel, unreadCount = 0) {
   const active = activeView === 'space' && selectedSpaceType === 'channel' && selectedSpaceId === channel.id ? ' active' : '';
   return `
     <button class="space-btn${active}" type="button" data-action="select-space" data-type="channel" data-id="${channel.id}">
       <span class="channel-icon">#</span>
       <span class="channel-name">${escapeHtml(channel.name)}</span>
+      ${renderRailUnreadBadge(unreadCount, `unread messages in #${channel.name}`)}
     </button>
   `;
 }
 
-function renderDmItem(id, name, status, avatar) {
+function renderDmItem(id, name, status, avatar, unreadCount = 0) {
   const active = activeView === 'space' && selectedSpaceType === 'dm' && selectedSpaceId === id ? ' active' : '';
   const initials = name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
   return `
@@ -2746,6 +3112,7 @@ function renderDmItem(id, name, status, avatar) {
         ${avatarStatusDot(status, 'DM status')}
       </span>
       <span class="dm-name">${escapeHtml(name)}</span>
+      ${renderRailUnreadBadge(unreadCount, `unread direct messages from ${name}`)}
     </button>
   `;
 }
@@ -2784,6 +3151,7 @@ function currentDmPeer() {
 function renderMain() {
   if (activeView === 'members') return renderMembersMain();
   if (activeView === 'tasks') return renderGlobalTasks();
+  if (activeView === 'inbox') return renderInbox();
   if (activeView === 'threads') return renderThreads();
   if (activeView === 'saved') return renderSaved();
   if (activeView === 'search') return renderSearch();
@@ -2791,6 +3159,270 @@ function renderMain() {
   if (activeView === 'cloud') return renderCloud();
   if (activeView === 'computers') return renderComputers();
   return renderSpace();
+}
+
+function workspaceActivityKind(type = '') {
+  const value = String(type || '').toLowerCase();
+  if (/computer|daemon|device|pairing|runtime/.test(value)) return 'computer';
+  if (/member|human|invite|invitation|role|auth/.test(value)) return 'member';
+  return 'system';
+}
+
+function workspaceActivityTitle(type = '', fallback = '') {
+  const text = String(fallback || '').trim();
+  if (text) return text;
+  const label = String(type || 'system_activity')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+  return label || 'Workspace activity';
+}
+
+function workspaceActivityDetail(item = {}) {
+  const parts = [];
+  if (item.agentId) parts.push(`Agent: ${displayName(item.agentId)}`);
+  if (item.humanId) parts.push(`Member: ${displayName(item.humanId)}`);
+  if (item.memberId) parts.push(`Member: ${displayName(item.memberId)}`);
+  if (item.computerId) parts.push(`Computer: ${byId(appState?.computers, item.computerId)?.name || item.computerId}`);
+  if (item.workspaceId) parts.push(`Workspace: ${item.workspaceId}`);
+  if (item.role || item.targetRole) parts.push(`Role: ${cloudRoleLabel(item.role || item.targetRole)}`);
+  return parts.join(' · ');
+}
+
+function workspaceActivityRecords() {
+  const records = [];
+  for (const item of appState?.events || []) {
+    const type = item.type || 'system_event';
+    records.push({
+      id: item.id || `event:${type}:${item.createdAt}`,
+      source: 'event',
+      kind: workspaceActivityKind(type),
+      type,
+      title: workspaceActivityTitle(type, item.message),
+      detail: workspaceActivityDetail(item),
+      createdAt: item.createdAt || item.updatedAt,
+    });
+  }
+  for (const item of appState?.cloud?.daemonEvents || []) {
+    const type = item.type || item.event || 'daemon_event';
+    records.push({
+      id: item.id || `daemon:${type}:${item.createdAt}`,
+      source: 'daemon',
+      kind: workspaceActivityKind(type),
+      type,
+      title: workspaceActivityTitle(type, item.message || item.detail),
+      detail: workspaceActivityDetail(item),
+      createdAt: item.createdAt || item.updatedAt,
+    });
+  }
+  for (const item of [...(appState?.cloud?.systemNotifications || []), ...(appState?.systemNotifications || [])]) {
+    const type = item.event || item.type || 'member_notification';
+    records.push({
+      id: item.id || `notification:${type}:${item.createdAt}`,
+      source: 'notification',
+      kind: workspaceActivityKind(type),
+      type,
+      title: workspaceActivityTitle(type, item.message || 'Member notification'),
+      detail: workspaceActivityDetail(item),
+      createdAt: item.createdAt || item.updatedAt,
+    });
+  }
+
+  const seen = new Set();
+  return records
+    .filter((item) => item.id && item.createdAt && !seen.has(item.id) && seen.add(item.id))
+    .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+}
+
+function workspaceActivityUnreadCount(records = workspaceActivityRecords(), humanId = currentHumanId()) {
+  const readAt = Date.parse(workspaceActivityReadAt(humanId) || '');
+  return records.filter((item) => {
+    const createdAt = Date.parse(item.createdAt || '');
+    return createdAt && (!readAt || createdAt > readAt);
+  }).length;
+}
+
+function buildThreadInboxItem(message, humanId = currentHumanId()) {
+  const replies = threadReplies(message.id);
+  const lastReply = replies.at(-1);
+  const previewRecord = threadPreviewRecord(message);
+  const author = displayName(message.authorId);
+  const lastReplyAuthor = displayName(previewRecord?.authorId || message.authorId);
+  const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
+  const unreadRecords = threadUnreadRecords(message, humanId);
+  return {
+    id: `thread:${message.id}`,
+    type: 'thread',
+    recordId: message.id,
+    message,
+    task,
+    author,
+    previewRecord,
+    lastReply,
+    lastReplyAuthor,
+    unreadCount: unreadRecords.length,
+    updatedAt: threadUpdatedAt(message),
+    title: plainMentionText(message.body).slice(0, 140) || '(attachment)',
+    preview: threadPreviewText(message),
+  };
+}
+
+function buildDirectInboxItem(record, humanId = currentHumanId()) {
+  const author = displayName(record.authorId);
+  return {
+    id: `record:${record.id}`,
+    type: 'direct',
+    recordId: record.id,
+    message: record,
+    author,
+    unreadCount: recordUnreadForHuman(record, humanId) ? 1 : 0,
+    updatedAt: recordUpdatedAt(record),
+    title: `${author}: ${plainMentionText(record.body).slice(0, 140) || '(attachment)'}`,
+    preview: `${spaceName(record.spaceType, record.spaceId)} · ${fmtTime(record.createdAt)}`,
+  };
+}
+
+function buildInboxModel() {
+  const humanId = currentHumanId();
+  const threadItems = (appState.messages || [])
+    .filter((message) => message.replyCount > 0 || message.taskId)
+    .map((message) => buildThreadInboxItem(message, humanId));
+  const threadedMessageIds = new Set(threadItems.map((item) => item.recordId));
+  const directItems = (appState.messages || [])
+    .filter((message) => message.authorType === 'agent' && !threadedMessageIds.has(message.id))
+    .map((message) => buildDirectInboxItem(message, humanId));
+  const activityRecords = workspaceActivityRecords();
+  const workspaceUnread = workspaceActivityUnreadCount(activityRecords, humanId);
+  const workspacePreview = activityRecords.slice(-2).map((item) => item.title).join(' · ');
+  const workspaceItem = {
+    id: 'workspace-activity',
+    type: 'workspace',
+    unreadCount: workspaceUnread,
+    updatedAt: new Date(activityRecords.at(-1)?.createdAt || 0).getTime(),
+    title: 'Workspace Activity',
+    preview: workspacePreview || 'Members, computers, and system changes will appear here.',
+    records: activityRecords,
+  };
+  const normalItems = [...threadItems, ...directItems]
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  const allItems = [...normalItems, workspaceItem]
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  const unreadCount = allItems.reduce((sum, item) => sum + item.unreadCount, 0);
+  return {
+    humanId,
+    normalItems,
+    allItems,
+    threadItems,
+    directItems,
+    workspaceItem,
+    activeCount: allItems.length,
+    unreadCount,
+  };
+}
+
+function inboxVisibleItems(model) {
+  let items = model.allItems;
+  if (inboxCategory === 'threads') items = model.threadItems;
+  if (inboxCategory === 'direct') items = model.directItems;
+  if (inboxCategory === 'workspace') items = [model.workspaceItem];
+  if (inboxCategory === 'unread' || inboxFilter === 'unread') items = items.filter((item) => item.unreadCount > 0);
+  return items;
+}
+
+function renderInboxCategoryButton(id, label, count) {
+  const active = inboxCategory === id ? ' active' : '';
+  return `
+    <button class="inbox-category-btn${active}" type="button" data-action="set-inbox-category" data-category="${id}">
+      <span>${escapeHtml(label)}</span>
+      <em>${escapeHtml(count)}</em>
+    </button>
+  `;
+}
+
+function renderInboxItem(item) {
+  if (item.type === 'workspace') return renderWorkspaceActivityInboxItem(item);
+  const message = item.message;
+  const active = threadMessageId === item.recordId ? ' active' : '';
+  const unread = item.unreadCount ? ' unread' : '';
+  const task = item.task || (message.taskId ? byId(appState.tasks, message.taskId) : null);
+  const action = item.type === 'thread' ? 'open-inbox-item' : 'open-inbox-item';
+  return `
+    <button class="thread-row slock-thread-row inbox-row inbox-${escapeHtml(item.type)}${active}${unread}" type="button" data-action="${action}" data-id="${escapeHtml(item.recordId)}" data-inbox-type="${escapeHtml(item.type)}">
+      <span class="thread-row-avatar">
+        ${renderThreadRowAvatar(item.previewRecord || message)}
+      </span>
+      <span class="thread-row-main">
+        <span class="thread-row-meta-line">
+          <span>${escapeHtml(spaceName(message.spaceType, message.spaceId))}</span>
+          ${item.type === 'thread' ? renderThreadKindBadge(message, task) : '<span class="thread-kind-badge">Direct</span>'}
+          <span>${escapeHtml(item.author)}</span>
+          <time>${fmtTime(item.lastReply?.createdAt || message.updatedAt || message.createdAt)}</time>
+        </span>
+        <strong>${escapeHtml(item.title)}</strong>
+        <small>${escapeHtml(item.preview)}</small>
+      </span>
+      <span class="thread-row-side">
+        ${item.unreadCount ? `<span class="inbox-unread-count">${escapeHtml(item.unreadCount)}</span>` : '<span>0</span>'}
+        <span class="thread-row-check" title="Open">✓</span>
+      </span>
+    </button>
+  `;
+}
+
+function renderWorkspaceActivityInboxItem(item) {
+  const active = workspaceActivityDrawerOpen ? ' active' : '';
+  const unread = item.unreadCount ? ' unread' : '';
+  return `
+    <button class="thread-row slock-thread-row inbox-row inbox-workspace${active}${unread}" type="button" data-action="open-workspace-activity">
+      <span class="thread-row-avatar workspace-activity-avatar">WA</span>
+      <span class="thread-row-main">
+        <span class="thread-row-meta-line">
+          <span>Members · Computers · System</span>
+          <time>${item.records.at(-1) ? fmtTime(item.records.at(-1).createdAt) : 'No activity'}</time>
+        </span>
+        <strong>${escapeHtml(item.title)}</strong>
+        <small>${escapeHtml(item.preview)}</small>
+      </span>
+      <span class="thread-row-side">
+        ${item.unreadCount ? `<span class="inbox-unread-count">${escapeHtml(item.unreadCount)}</span>` : '<span>0</span>'}
+        <span class="thread-row-check" title="Open activity">✓</span>
+      </span>
+    </button>
+  `;
+}
+
+function renderInbox() {
+  const model = buildInboxModel();
+  const visibleItems = inboxVisibleItems(model);
+  const actions = `
+    <button class="secondary-btn compact" type="button" data-action="mark-inbox-read">Mark all read</button>
+  `;
+  return `
+    <section class="inbox-page">
+      ${renderHeader('Inbox', `${model.activeCount} active · ${model.unreadCount} unread`, actions)}
+      <div class="inbox-shell">
+        <aside class="inbox-category-panel pixel-panel">
+          ${renderInboxCategoryButton('all', 'All', model.activeCount)}
+          ${renderInboxCategoryButton('unread', 'Unread', model.unreadCount)}
+          ${renderInboxCategoryButton('threads', 'Threads', model.threadItems.length)}
+          ${renderInboxCategoryButton('direct', 'Direct Messages', model.directItems.length)}
+          ${renderInboxCategoryButton('workspace', 'Workspace Activity', model.workspaceItem.unreadCount || model.workspaceItem.records.length)}
+        </aside>
+        <section class="inbox-list-wrap">
+          <div class="inbox-toolbar pixel-panel">
+            <div class="inbox-filter-tabs">
+              ${['all', 'unread'].map((filter) => `
+                <button class="${inboxFilter === filter ? 'active' : ''}" type="button" data-action="set-inbox-filter" data-filter="${filter}">${filter === 'all' ? 'All' : 'Unread'}</button>
+              `).join('')}
+            </div>
+            <span>${escapeHtml(visibleItems.length)} shown</span>
+          </div>
+          <div class="list-panel thread-list-panel slock-thread-list inbox-list-panel">
+            ${visibleItems.length ? visibleItems.map(renderInboxItem).join('') : '<div class="empty-box small">No inbox items for this filter.</div>'}
+          </div>
+        </section>
+      </div>
+    </section>
+  `;
 }
 
 function renderMembersMain() {
@@ -3066,7 +3698,10 @@ function agentReceiptTime(item) {
 }
 
 function deliveryReceiptItemsForRecord(record) {
-  if (!record?.id || record.authorType !== 'human' || record.authorId !== 'hum_local') return [];
+  if (!record?.id) return [];
+  const canShowReceipts = (record.authorType === 'human' && record.authorId === 'hum_local')
+    || record.authorType === 'agent';
+  if (!canShowReceipts) return [];
   const firstOrder = new Map();
   const byAgent = new Map();
   (appState?.workItems || [])
@@ -3545,14 +4180,14 @@ function renderThreads() {
       ${threaded.length ? threaded.map((message) => {
         const replies = threadReplies(message.id);
         const lastReply = replies.at(-1);
+        const previewRecord = threadPreviewRecord(message);
         const author = displayName(message.authorId);
-        const lastReplyAuthor = lastReply ? displayName(lastReply.authorId) : author;
         const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
         const active = threadMessageId === message.id ? ' active' : '';
         return `
         <button class="thread-row slock-thread-row${active}" type="button" data-action="open-thread" data-id="${message.id}">
           <span class="thread-row-avatar">
-            ${renderThreadRowAvatar(message)}
+            ${renderThreadRowAvatar(previewRecord)}
           </span>
           <span class="thread-row-main">
             <span class="thread-row-meta-line">
@@ -3562,7 +4197,7 @@ function renderThreads() {
               <time>${fmtTime(lastReply?.createdAt || message.updatedAt || message.createdAt)}</time>
             </span>
             <strong>${escapeHtml(plainMentionText(message.body).slice(0, 120) || '(attachment)')}</strong>
-            <small>latest ${escapeHtml(lastReplyAuthor)} · ${message.replyCount || 0} ${(message.replyCount || 0) === 1 ? 'reply' : 'replies'}</small>
+            <small>${escapeHtml(threadPreviewText(message))}</small>
           </span>
           <span class="thread-row-side">
             <span>${message.replyCount || 0}</span>
@@ -3761,6 +4396,8 @@ function updateSearchResults() {
 function openSearchResult(record) {
   const parent = record.parentMessageId ? byId(appState?.messages, record.parentMessageId) : null;
   const root = parent || record;
+  markConversationRecordRead(record);
+  workspaceActivityDrawerOpen = false;
   selectedSavedRecordId = record.id;
   selectedAgentId = null;
   selectedTaskId = null;
@@ -3983,6 +4620,12 @@ function settingsPageMeta(tab = settingsTab) {
 
 function renderSettingsChrome(body, actions = '') {
   const meta = settingsPageMeta();
+  const mobileTabs = settingsNavItems().map((item) => `
+    <button class="${settingsTab === item.id ? 'active' : ''}" type="button" data-action="set-settings-tab" data-tab="${escapeHtml(item.id)}">
+      ${settingsIcon(item.icon, 16)}
+      <span>${escapeHtml(item.label)}</span>
+    </button>
+  `).join('');
   return `
     <section class="settings-page">
       <header class="settings-page-header">
@@ -3996,21 +4639,33 @@ function renderSettingsChrome(body, actions = '') {
         ${settingsIcon(meta.icon, 18)}
         <span>${escapeHtml(meta.section)}</span>
       </div>
+      <nav class="settings-page-mobile-tabs" aria-label="Settings sections">
+        ${mobileTabs}
+      </nav>
       ${body}
     </section>
   `;
 }
 
 function renderAccountSettingsTab() {
-  const human = byId(appState.humans, 'hum_local') || appState.humans?.[0] || {};
   const c = appState.connection || {};
   const cloud = appState.cloud || {};
   const auth = cloud.auth || {};
   const currentUser = auth.currentUser;
   const currentMember = auth.currentMember;
-  const members = cloud.members || [];
+  const human = currentAccountHuman();
+  const role = currentMember?.role || human.role || 'member';
+  const roleLabel = cloudRoleLabel(role);
+  const capabilityLabels = cloudCapabilityLabels(auth.capabilities || {});
+  const joinedAt = fmtTime(currentMember?.joinedAt || currentMember?.createdAt);
+  const sessionLabel = durationDays(auth.sessionTtlMs);
+  const sessionExpiresAt = fmtTime(auth.sessionExpiresAt);
+  const members = (cloud.members || [])
+    .filter((member) => (member.status || 'active') === 'active')
+    .sort((a, b) => new Date(a.joinedAt || a.createdAt || 0) - new Date(b.joinedAt || b.createdAt || 0));
   const invitations = cloud.invitations || [];
-  const canManageCloud = cloudRoleAllows(currentMember?.role, 'admin');
+  const canInviteCloud = cloudCan('invite_member');
+  const inviteRoleOptions = cloudInviteRoleOptions();
   const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
   const inviteRegisterPanel = inviteTokenFromUrl ? `
       <div class="pixel-panel cloud-card">
@@ -4030,45 +4685,34 @@ function renderAccountSettingsTab() {
         <div class="empty-box small">The initial sign-in account is configured on the server. Restart MagClaw after updating the server environment.</div>
       </div>
     ` : currentUser ? `
-      <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Signed In</span><span>${escapeHtml(currentMember?.role || 'member')}</span></div>
-        <div class="settings-account-hero compact">
-          <span class="settings-account-avatar">${escapeHtml(displayAvatar(human.id || 'hum_local', 'human'))}</span>
-          <div>
-            <strong>${escapeHtml(currentUser.name || human.name || 'You')}</strong>
-            <small>${escapeHtml(currentUser.email || human.email || '')}</small>
-          </div>
+      ${canInviteCloud ? `
+        <div class="pixel-panel cloud-card">
+          <form id="cloud-invite-form" class="modal-form">
+            <div class="panel-title"><span>Invite Member</span><span>${escapeHtml(invitations.length)} pending</span></div>
+            <label><span>Email</span><input name="email" type="email" required /></label>
+            <label><span>Role</span><select name="role">
+              ${inviteRoleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')}
+            </select></label>
+            <button class="primary-btn" type="submit">Create Invitation</button>
+          </form>
         </div>
-        <div class="cloud-actions">
-          <button class="secondary-btn" type="button" data-action="cloud-auth-logout">Sign Out</button>
-        </div>
-      </div>
-      ${canManageCloud ? `
-      <div class="pixel-panel cloud-card">
-        <form id="cloud-invite-form" class="modal-form">
-          <div class="panel-title"><span>Invite Member</span><span>${escapeHtml(invitations.length)} pending</span></div>
-          <label><span>Email</span><input name="email" type="email" required /></label>
-          <label><span>Role</span><select name="role">
-            <option value="member">member</option>
-            <option value="admin">admin</option>
-            <option value="viewer">viewer</option>
-            <option value="computer_admin">computer_admin</option>
-            <option value="agent_admin">agent_admin</option>
-          </select></label>
-          <button class="primary-btn" type="submit">Create Invitation</button>
-        </form>
-      </div>
       ` : ''}
       <div class="pixel-panel cloud-card wide">
         <div class="panel-title"><span>Workspace Members</span><span>${escapeHtml(members.length)}</span></div>
         <div class="computer-config-list">
-          ${members.map((member) => `
-            <div class="computer-config-row">
-              <strong>${escapeHtml(member.user?.name || member.humanId || 'Member')}</strong>
-              <span>${escapeHtml(member.user?.email || member.userId || '')} / ${escapeHtml(member.role || 'member')}</span>
-              <small>${escapeHtml(member.status || 'active')}</small>
-            </div>
-          `).join('') || '<div class="empty-box small">No members yet.</div>'}
+            ${members.map((member) => `
+              <div class="computer-config-row cloud-member-row role-${escapeHtml(member.role || 'member')}">
+                <strong><span class="cloud-member-swatch"></span>${escapeHtml(member.user?.name || member.human?.name || member.humanId || 'Member')}</strong>
+                <span>${escapeHtml(member.user?.email || member.userId || '')} / ${escapeHtml(cloudRoleLabel(member.role))}</span>
+                <small>${escapeHtml(member.status || 'active')}</small>
+                ${currentMember?.id !== member.id ? `<div class="cloud-member-actions">
+                  ${cloudCan('manage_member_roles') ? `<select data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}" aria-label="Change member role">
+                    ${['admin', 'core_member', 'member'].map((role) => `<option value="${role}" ${member.role === role ? 'selected' : ''}>${escapeHtml(cloudRoleLabel(role))}</option>`).join('')}
+                  </select>` : ''}
+                  ${cloudCanRemoveMemberRole(member.role) ? `<button class="danger-btn" type="button" data-action="remove-cloud-member" data-id="${escapeHtml(member.id)}">Remove</button>` : ''}
+                </div>` : ''}
+              </div>
+            `).join('') || '<div class="empty-box small">No members yet.</div>'}
         </div>
       </div>
     ` : `
@@ -4082,31 +4726,57 @@ function renderAccountSettingsTab() {
       </div>
       ${inviteRegisterPanel}
     `;
-  return `
-    <section class="settings-layout">
-      <div class="pixel-panel cloud-card settings-account-card">
-        <div class="settings-account-hero">
-          <span class="settings-account-avatar">${escapeHtml(displayAvatar(human.id || 'hum_local', 'human'))}</span>
+    return `
+      <section class="settings-layout account-layout">
+        <div class="pixel-panel cloud-card account-overview-card">
+          <div class="account-profile-main">
+            <span class="settings-account-avatar account-avatar-lg">${getAvatarHtml(human.id || 'hum_local', 'human', 'settings-account-avatar-inner')}</span>
           <div>
-            <strong>${escapeHtml(human.name || 'You')}</strong>
-            <small>${escapeHtml(human.email || 'Local MagClaw user')}</small>
+              <p class="eyebrow">Human Profile</p>
+              <h3>${escapeHtml(human.name || currentUser?.name || 'You')}</h3>
+              <p>${escapeHtml(human.email || currentUser?.email || 'Local MagClaw user')}</p>
+            </div>
+          </div>
+          <div class="account-role-badge role-${escapeHtml(role)}">
+            <span>Role</span>
+            <strong>${escapeHtml(roleLabel)}</strong>
+            <small>${escapeHtml(humanPresenceText(human))}</small>
+          </div>
+          ${currentUser ? `<button class="secondary-btn account-signout-btn" type="button" data-action="open-modal" data-modal="confirm-sign-out">Sign Out</button>` : ''}
+          </div>
+        ${currentUser ? `
+        <div class="account-grid">
+          <div class="pixel-panel cloud-card account-edit-card">
+            <form id="profile-form" class="modal-form account-profile-form" data-human-id="${escapeHtml(human.id || '')}">
+              <div class="panel-title"><span>Personal Profile</span><span>${escapeHtml(roleLabel)}</span></div>
+              <div class="profile-avatar-row">
+                <span class="settings-account-avatar">${getAvatarHtml(human.id || 'hum_local', 'human', 'settings-account-avatar-inner')}</span>
+              <input id="profile-avatar-input" type="hidden" name="avatar" value="${escapeHtml(human.avatar || '')}" />
+                <div class="account-avatar-actions">
+                  <button class="secondary-btn" type="button" data-action="random-profile-avatar">Random</button>
+                  <button class="secondary-btn" type="button" data-action="pick-profile-avatar">Browse</button>
+                  <label class="secondary-btn profile-upload-btn">Upload<input id="profile-avatar-file" class="visually-hidden" type="file" accept="image/*" /></label>
+                </div>
+              </div>
+              <label><span>Display Name</span><input name="displayName" value="${escapeHtml(human.name || currentUser.name || '')}" /></label>
+              <label><span>Description</span><textarea name="description" rows="3">${escapeHtml(human.description || '')}</textarea></label>
+              <button class="primary-btn" type="submit">Save</button>
+            </form>
+          </div>
+          <div class="pixel-panel cloud-card account-access-card">
+            <div class="panel-title"><span>Access</span><span>${escapeHtml(c.workspaceId || 'local')}</span></div>
+            <div class="account-meta-grid">
+              <div><span>Joined</span><strong>${escapeHtml(joinedAt)}</strong></div>
+              <div><span>User ID</span><strong>${escapeHtml(currentUser.id || human.authUserId || human.id || '--')}</strong></div>
+              <div><span>Session</span><strong>${escapeHtml(sessionLabel)}</strong><small>${escapeHtml(sessionExpiresAt)}</small></div>
+            </div>
+            <div class="account-permission-chips">
+              ${(capabilityLabels.length ? capabilityLabels : ['Invite members']).map((label) => `<span>${escapeHtml(label)}</span>`).join('')}
+            </div>
           </div>
         </div>
-        <div class="cloud-status settings-status-grid">
-          <div><span>Name</span><strong>${escapeHtml(human.name || 'You')}</strong><small>${escapeHtml(human.role || 'admin')}</small></div>
-          <div><span>Profile</span><strong>${escapeHtml(human.email || 'local user')}</strong><small>${escapeHtml(human.id || 'hum_local')}</small></div>
-          <div><span>Workspace</span><strong>${escapeHtml(c.workspaceId || 'local')}</strong><small>${escapeHtml(appState.settings?.defaultWorkspace || '')}</small></div>
-          <div><span>Device</span><strong>${escapeHtml(c.deviceName || appState.runtime?.host || 'local')}</strong><small>${escapeHtml(c.deviceId || '')}</small></div>
-        </div>
-      </div>
-      ${authPanel}
-      <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Identity Boundary</span><span>v1</span></div>
-        <div class="boundary-grid single">
-          <div><strong>Humans</strong><p>Human identity stays in MagClaw state and is used for channels, DMs, notifications, task ownership, and read receipts.</p></div>
-          <div><strong>Agents</strong><p>Agents keep isolated workspaces and Codex homes while sharing allowed local skills and MagClaw tools.</p></div>
-        </div>
-      </div>
+        ` : ''}
+        ${authPanel}
     </section>
   `;
 }
@@ -4314,6 +4984,7 @@ function renderCloud() {
 
 function renderInspector() {
   if (activeView === 'members') return '';
+  if (workspaceActivityDrawerOpen) return renderWorkspaceActivityDrawer();
 
   const thread = threadMessageId ? byId(appState.messages, threadMessageId) : null;
   if (thread) return renderThreadDrawer(thread);
@@ -4588,6 +5259,7 @@ function renderAgentAvatarEditor(agent) {
       <div class="agent-avatar-edit-row">
         <span class="agent-detail-avatar-frame">${getAvatarHtml(agent.id, 'agent', 'agent-detail-avatar-preview')}</span>
         <button class="secondary-btn" type="button" data-action="randomize-agent-detail-avatar" data-id="${escapeHtml(agent.id)}">Random</button>
+        <button class="secondary-btn" type="button" data-action="pick-agent-detail-avatar" data-id="${escapeHtml(agent.id)}">Browse</button>
         <label class="secondary-btn file-btn">
           Upload
           <input class="visually-hidden agent-avatar-upload" type="file" accept="image/*" data-action="upload-agent-avatar" data-id="${escapeHtml(agent.id)}" />
@@ -4966,10 +5638,11 @@ function renderAgentListItem(agent) {
 }
 
 function renderHumanListItem(human) {
+  const role = human.role || 'member';
   return `
-    <div class="space-btn member-btn">
+    <div class="space-btn member-btn human-role-${escapeHtml(role)}">
       <span class="dm-avatar-wrap">
-        <span class="dm-avatar">${escapeHtml(displayAvatar(human.id, 'human'))}</span>
+        ${getAvatarHtml(human.id, 'human', 'dm-avatar')}
       </span>
       <div class="member-info">
         <span class="dm-name">${escapeHtml(human.name)}</span>
@@ -5014,6 +5687,48 @@ function renderReply(reply) {
         ${footer}
       </div>
     </article>
+  `;
+}
+
+function renderWorkspaceActivityDrawer() {
+  const records = workspaceActivityRecords();
+  const visible = records.slice(Math.max(0, records.length - workspaceActivityVisibleCount));
+  const hiddenCount = Math.max(0, records.length - visible.length);
+  return `
+    <section class="pixel-panel inspector-panel workspace-activity-drawer">
+      <div class="thread-head workspace-activity-head">
+        <div>
+          <strong>Workspace Activity</strong>
+          <span>Members · Computers · System</span>
+        </div>
+        <div class="thread-head-actions">
+          <button class="icon-btn small" type="button" data-action="close-workspace-activity" aria-label="Close workspace activity">×</button>
+        </div>
+      </div>
+      <div class="workspace-activity-list" id="workspace-activity-list">
+        ${hiddenCount ? `
+          <button class="workspace-activity-load" type="button" data-action="load-more-workspace-activity">
+            Load ${Math.min(WORKSPACE_ACTIVITY_VISIBLE_STEP, hiddenCount)} older
+          </button>
+        ` : ''}
+        ${visible.length ? visible.map((item) => `
+          <article class="workspace-activity-row activity-${escapeHtml(item.kind)}">
+            <span class="workspace-activity-icon">${escapeHtml(item.kind.slice(0, 2).toUpperCase())}</span>
+            <div>
+              <div class="workspace-activity-row-head">
+                <strong>${escapeHtml(item.title)}</strong>
+                <time>${fmtTime(item.createdAt)}</time>
+              </div>
+              <p>${escapeHtml(item.detail || item.type || item.source)}</p>
+              <div class="workspace-activity-tags">
+                <span>${escapeHtml(item.kind)}</span>
+                <span>${escapeHtml(item.source)}</span>
+              </div>
+            </div>
+          </article>
+        `).join('') : '<div class="empty-box small">No workspace activity yet.</div>'}
+      </div>
+    </section>
   `;
 }
 
@@ -5119,6 +5834,7 @@ function renderModal() {
     'channel-members': renderChannelMembersModal,
     'add-channel-member': renderAddChannelMemberModal,
     'confirm-stop-all': renderStopAllConfirmModal,
+    'confirm-sign-out': renderSignOutConfirmModal,
     project: renderProjectModal,
     dm: renderDmModal,
     task: renderTaskModal,
@@ -5159,6 +5875,25 @@ function renderStopAllConfirmModal() {
     </div>
     <div class="modal-actions confirm-stop-actions">
       <button type="button" class="secondary-btn" data-action="close-modal">OK</button>
+    </div>
+  `;
+}
+
+function renderSignOutConfirmModal() {
+  const currentUser = appState?.cloud?.auth?.currentUser;
+  const name = currentUser?.name || currentUser?.email || 'this account';
+  return `
+    ${modalHeader('SIGN OUT')}
+    <div class="confirm-stop-modal signout-confirm-modal">
+      <div class="confirm-stop-icon signout-confirm-icon">${navIcon('settings')}</div>
+      <div class="confirm-stop-copy">
+        <strong>Sign out of ${escapeHtml(name)}?</strong>
+        <p>You will need to sign in again to access this workspace from this browser.</p>
+      </div>
+    </div>
+    <div class="modal-actions confirm-stop-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+      <button type="button" class="primary-btn danger-btn" data-action="confirm-cloud-auth-logout">Sign Out</button>
     </div>
   `;
 }
@@ -5578,11 +6313,16 @@ function renderAgentModal() {
 }
 
 function renderAvatarPickerModal() {
-  let html = `${modalHeader('SELECT AVATAR', 'Choose an avatar for your agent')}
+  const picker = avatarPickerState || { target: 'agent-create', selectedAvatar: agentFormState.avatar };
+  const isProfile = picker.target === 'profile';
+  const title = 'SELECT AVATAR';
+  const subtitle = isProfile ? 'Choose an avatar for your profile' : 'Choose an avatar for your agent';
+  const selectedAvatar = picker.selectedAvatar || (picker.target === 'agent-create' ? agentFormState.avatar : '');
+  let html = `${modalHeader(title, subtitle)}
     <div class="avatar-grid">`;
   for (let i = 1; i <= AVATAR_COUNT; i++) {
     const src = `/avatars/avatar_${String(i).padStart(4, '0')}.svg`;
-    const selected = agentFormState.avatar === src ? 'selected' : '';
+    const selected = selectedAvatar === src ? 'selected' : '';
     html += `<img src="${src}" class="avatar-option ${selected}" data-avatar="${src}" />`;
   }
   html += `</div>
@@ -5640,6 +6380,19 @@ function renderComputerModal() {
 }
 
 function renderHumanModal() {
+  const inviteRoleOptions = cloudInviteRoleOptions();
+  if (appState.cloud?.auth?.currentUser && inviteRoleOptions.length) {
+    return `
+      ${modalHeader('Invite Human', 'Cloud workspace invitation')}
+      <form id="cloud-invite-form" class="modal-form">
+        <label><span>Email</span><input name="email" type="email" placeholder="person@example.com" required /></label>
+        <label><span>Role</span><select name="role">
+          ${inviteRoleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')}
+        </select></label>
+        <button class="primary-btn" type="submit">Create Invitation</button>
+      </form>
+    `;
+  }
   return `
     ${modalHeader('Invite Human', 'Local team placeholder')}
     <form id="human-form" class="modal-form">
@@ -5794,6 +6547,7 @@ async function refreshState() {
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
   trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
   appState = nextState;
+  startHumanPresenceHeartbeat();
   render();
   maybeWarmCurrentAgent();
 }
@@ -5806,6 +6560,7 @@ function cloudAuthErrorMessage(error, { interactive = false } = {}) {
 
 async function showCloudAuthGate(error = null, options = {}) {
   disconnectEvents();
+  stopHumanPresenceHeartbeat();
   appState = null;
   let cloud = { auth: { initialized: false, loginRequired: true } };
   try {
@@ -5985,12 +6740,15 @@ function applyStateUpdate(nextState) {
     thread: paneScrollSnapshot('thread'),
   };
   const selectionBefore = `${selectedSpaceType}:${selectedSpaceId}`;
+  const unreadBefore = railUnreadSignature();
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
+  startHumanPresenceHeartbeat();
   if (modal) return;
   ensureSelection();
   const selectionChanged = selectionBefore !== `${selectedSpaceType}:${selectedSpaceId}`;
-  if (selectionChanged) {
+  const unreadChanged = unreadBefore !== railUnreadSignature();
+  if (selectionChanged || unreadChanged) {
     render();
     return;
   }
@@ -6016,6 +6774,7 @@ function applyRunEventUpdate(incoming) {
 function applyPresenceHeartbeat(heartbeat) {
   if (!appState || !Array.isArray(heartbeat?.agents)) return;
   const incomingById = new Map(heartbeat.agents.map((agent) => [agent.id, agent]));
+  const incomingHumansById = new Map((heartbeat.humans || []).map((human) => [human.id, human]));
   let changed = false;
   const agents = (appState.agents || []).map((agent) => {
     const incoming = incomingById.get(agent.id);
@@ -6037,10 +6796,29 @@ function applyPresenceHeartbeat(heartbeat) {
     }
     return next;
   });
+  const humans = (appState.humans || []).map((human) => {
+    const incoming = incomingHumansById.get(human.id);
+    if (!incoming) return human;
+    const next = {
+      ...human,
+      status: incoming.status || human.status || 'offline',
+      lastSeenAt: incoming.lastSeenAt || human.lastSeenAt || null,
+      presenceUpdatedAt: incoming.presenceUpdatedAt || human.presenceUpdatedAt || null,
+    };
+    if (
+      next.status !== human.status
+      || next.lastSeenAt !== human.lastSeenAt
+      || next.presenceUpdatedAt !== human.presenceUpdatedAt
+    ) {
+      changed = true;
+    }
+    return next;
+  });
   if (!changed) return;
   applyStateUpdate({
     ...appState,
     agents,
+    humans,
     updatedAt: heartbeat.updatedAt || appState.updatedAt,
   });
 }
@@ -6066,6 +6844,47 @@ function disconnectEvents() {
   eventSource = null;
 }
 
+async function sendHumanPresenceHeartbeat() {
+  if (humanPresenceInFlight || !appState?.cloud?.auth?.currentUser) return;
+  humanPresenceInFlight = true;
+  try {
+    const result = await api('/api/cloud/auth/heartbeat', { method: 'POST', body: '{}' });
+    if (result?.human?.id && appState?.humans) {
+      let changed = false;
+      const humans = appState.humans.map((human) => {
+        if (human.id !== result.human.id) return human;
+        changed = human.status !== result.human.status || human.lastSeenAt !== result.human.lastSeenAt;
+        return { ...human, ...result.human };
+      });
+      if (changed) applyStateUpdate({ ...appState, humans });
+    }
+  } catch (error) {
+    if (error.status === 401) stopHumanPresenceHeartbeat();
+  } finally {
+    humanPresenceInFlight = false;
+  }
+}
+
+function startHumanPresenceHeartbeat() {
+  if (!appState?.cloud?.auth?.currentUser) {
+    stopHumanPresenceHeartbeat();
+    return;
+  }
+  if (!humanPresenceTimer) {
+    humanPresenceTimer = window.setInterval(() => {
+      sendHumanPresenceHeartbeat();
+    }, HUMAN_PRESENCE_HEARTBEAT_MS);
+  }
+  sendHumanPresenceHeartbeat();
+}
+
+function stopHumanPresenceHeartbeat() {
+  if (humanPresenceTimer) {
+    window.clearInterval(humanPresenceTimer);
+    humanPresenceTimer = null;
+  }
+}
+
 document.addEventListener('scroll', (event) => {
   if (event.target?.id === 'message-list') {
     updateBackBottomVisibility('main');
@@ -6075,10 +6894,19 @@ document.addEventListener('scroll', (event) => {
     updateBackBottomVisibility('thread');
     persistPaneScroll('thread', event.target);
   }
+  if (event.target?.id === 'workspace-activity-list' && event.target.scrollTop <= 24) {
+    const total = workspaceActivityRecords().length;
+    if (workspaceActivityDrawerOpen && workspaceActivityVisibleCount < total) {
+      workspaceActivityVisibleCount += WORKSPACE_ACTIVITY_VISIBLE_STEP;
+      workspaceActivityScrollToBottom = false;
+      render();
+    }
+  }
 }, true);
 
 window.addEventListener('focus', () => {
   windowFocused = true;
+  sendHumanPresenceHeartbeat();
 });
 
 window.addEventListener('blur', () => {
@@ -6087,6 +6915,7 @@ window.addEventListener('blur', () => {
 
 document.addEventListener('visibilitychange', () => {
   windowFocused = document.visibilityState === 'visible' && document.hasFocus();
+  if (document.visibilityState === 'visible') sendHumanPresenceHeartbeat();
 });
 
 document.addEventListener('compositionstart', (event) => {
@@ -6367,12 +7196,40 @@ document.addEventListener('input', async (event) => {
 });
 
 document.addEventListener('change', async (event) => {
+  if (event.target.id === 'profile-avatar-library') {
+    setProfileAvatarInput(event.target.value);
+    return;
+  }
+
+  if (event.target.id === 'profile-avatar-file') {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > AGENT_AVATAR_UPLOAD_MAX_BYTES) {
+      toast('Avatar must be 10 MB or smaller');
+      event.target.value = '';
+      return;
+    }
+    const avatar = await readAvatarFileAsDataUrl(file);
+    event.target.value = '';
+    setProfileAvatarInput(avatar);
+    return;
+  }
+
   if (event.target.matches?.('.agent-avatar-upload')) {
     await uploadAgentAvatar(event.target).catch((error) => toast(error.message));
     return;
   }
 
   const target = event.target;
+  if (target.dataset?.action === 'update-cloud-member-role') {
+    await api(`/api/cloud/members/${encodeURIComponent(target.dataset.id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role: target.value }),
+    }).then(() => toast('Member role updated')).catch((error) => toast(error.message));
+    await refreshStateOrAuthGate().catch(() => {});
+    return;
+  }
+
   if (target.dataset?.action === 'update-agent-model') {
     await api(`/api/agents/${encodeURIComponent(target.dataset.agentId)}`, {
       method: 'PATCH',
@@ -6500,7 +7357,11 @@ document.addEventListener('click', async (event) => {
   if (avatarOption) {
     const avatarSrc = avatarOption.dataset.avatar;
     if (avatarSrc) {
-      agentFormState.avatar = avatarSrc;
+      if (avatarPickerState) {
+        avatarPickerState.selectedAvatar = avatarSrc;
+      } else {
+        agentFormState.avatar = avatarSrc;
+      }
       document.querySelectorAll('.avatar-option').forEach((el) => el.classList.remove('selected'));
       avatarOption.classList.add('selected');
     }
@@ -6560,6 +7421,11 @@ document.addEventListener('click', async (event) => {
     'clear-search-query',
     'clear-search-all',
     'load-more-search',
+    'set-inbox-category',
+    'set-inbox-filter',
+    'open-inbox-item',
+    'open-workspace-activity',
+    'load-more-workspace-activity',
     'enable-agent-notifications',
     'disable-agent-notifications',
     'dismiss-agent-notifications',
@@ -6590,8 +7456,9 @@ document.addEventListener('click', async (event) => {
     'start-agent',
     'open-agent-restart',
     'select-agent-restart-mode',
-    'upload-agent-avatar',
-    'toggle-receipt-popover',
+      'upload-agent-avatar',
+      'random-profile-avatar',
+      'toggle-receipt-popover',
   ]);
 
   // Environment variable actions: don't trigger refreshState
@@ -6619,23 +7486,81 @@ document.addEventListener('click', async (event) => {
   }
 
   // Avatar picker actions
-  if (action === 'randomize-avatar') {
+    if (action === 'randomize-avatar') {
     agentFormState.avatar = getRandomAvatar();
     const preview = document.querySelector('.avatar-preview');
     const input = document.querySelector('input[name="avatar"]');
     if (preview) preview.src = agentFormState.avatar;
     if (input) input.value = agentFormState.avatar;
-    return;
-  }
-  if (action === 'pick-avatar') {
-    saveAgentFormState();
-    modal = 'avatar-picker';
-    render();
-    return;
+      return;
+    }
+    if (action === 'random-profile-avatar') {
+      const avatar = getRandomAvatar();
+      setProfileAvatarInput(avatar);
+      return;
+    }
+    if (action === 'pick-avatar') {
+      saveAgentFormState();
+      openAvatarPicker({ target: 'agent-create', selectedAvatar: agentFormState.avatar, returnModal: 'agent' });
+      return;
+    }
+    if (action === 'pick-profile-avatar') {
+      const input = document.getElementById('profile-avatar-input');
+      openAvatarPicker({
+        target: 'profile',
+        humanId: document.getElementById('profile-form')?.dataset?.humanId || '',
+        selectedAvatar: input?.value || currentAccountHuman().avatar || '',
+        returnModal: null,
+      });
+      return;
+    }
+    if (action === 'pick-agent-detail-avatar') {
+      const agent = byId(appState.agents, target.dataset.id || selectedAgentId);
+      openAvatarPicker({
+        target: 'agent-detail',
+        agentId: agent?.id || '',
+        selectedAvatar: agent?.avatar || '',
+        returnModal: null,
+      });
+      return;
   }
   if (action === 'back-to-agent-modal' || action === 'confirm-avatar') {
-    modal = 'agent';
+    const picker = avatarPickerState || { target: 'agent-create', selectedAvatar: agentFormState.avatar, returnModal: 'agent' };
+    if (action === 'confirm-avatar') {
+      const selectedAvatar = document.querySelector('.avatar-option.selected')?.dataset?.avatar || '';
+      const avatar = selectedAvatar || picker.selectedAvatar || getRandomAvatar();
+      if (picker.target === 'agent-create') {
+        agentFormState.avatar = avatar;
+        toast('Avatar selected');
+      } else if (picker.target === 'profile') {
+        if (picker.humanId && appState?.humans) {
+          appState = {
+            ...appState,
+            humans: appState.humans.map((human) => (
+              human.id === picker.humanId ? { ...human, avatar } : human
+            )),
+          };
+        }
+        setProfileAvatarInput(avatar);
+        toast('Avatar selected');
+      } else if (picker.target === 'agent-detail' && picker.agentId) {
+        try {
+          await api(`/api/agents/${encodeURIComponent(picker.agentId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ avatar }),
+          });
+          toast('Avatar updated');
+        } catch (error) {
+          toast(error.message);
+        }
+      }
+    }
+    modal = picker.returnModal || null;
+    avatarPickerState = null;
     render();
+    if (picker.target === 'agent-detail' && action === 'confirm-avatar') {
+      await refreshStateOrAuthGate().catch(() => {});
+    }
     return;
   }
   if (action === 'randomize-agent-detail-avatar') {
@@ -6690,9 +7615,10 @@ document.addEventListener('click', async (event) => {
       activeView = target.dataset.view;
       if (activeView === 'cloud') railTab = 'settings';
       if (activeView === 'computers' || activeView === 'missions') railTab = 'computers';
-      if (activeView === 'tasks' || activeView === 'threads' || activeView === 'saved' || activeView === 'search') railTab = 'spaces';
+      if (activeView === 'tasks' || activeView === 'inbox' || activeView === 'threads' || activeView === 'saved' || activeView === 'search') railTab = 'spaces';
       localStorage.setItem('railTab', railTab);
       threadMessageId = null;
+      workspaceActivityDrawerOpen = false;
       inspectorReturnThreadId = null;
       selectedProjectFile = null;
       selectedAgentId = null;
@@ -6705,6 +7631,13 @@ document.addEventListener('click', async (event) => {
       settingsTab = target.dataset.tab || 'account';
       activeView = 'cloud';
       railTab = 'settings';
+      threadMessageId = null;
+      workspaceActivityDrawerOpen = false;
+      inspectorReturnThreadId = null;
+      selectedAgentId = null;
+      selectedTaskId = null;
+      selectedProjectFile = null;
+      selectedSavedRecordId = null;
       localStorage.setItem('railTab', railTab);
       render();
     }
@@ -6750,6 +7683,57 @@ document.addEventListener('click', async (event) => {
       updateSearchResults();
       focusSearchInputEnd();
     }
+    if (action === 'set-inbox-category') {
+      inboxCategory = ['all', 'unread', 'threads', 'direct', 'workspace'].includes(target.dataset.category)
+        ? target.dataset.category
+        : 'all';
+      render();
+    }
+    if (action === 'set-inbox-filter') {
+      inboxFilter = target.dataset.filter === 'unread' ? 'unread' : 'all';
+      render();
+    }
+    if (action === 'open-inbox-item') {
+      const record = conversationRecord(target.dataset.id);
+      if (record) {
+        workspaceActivityDrawerOpen = false;
+        openSearchResult(record);
+      }
+    }
+    if (action === 'open-workspace-activity') {
+      activeView = 'inbox';
+      railTab = 'spaces';
+      threadMessageId = null;
+      selectedSavedRecordId = null;
+      selectedAgentId = null;
+      selectedTaskId = null;
+      selectedProjectFile = null;
+      workspaceActivityDrawerOpen = true;
+      workspaceActivityVisibleCount = WORKSPACE_ACTIVITY_VISIBLE_STEP;
+      workspaceActivityScrollToBottom = true;
+      render();
+    }
+    if (action === 'load-more-workspace-activity') {
+      workspaceActivityVisibleCount += WORKSPACE_ACTIVITY_VISIBLE_STEP;
+      workspaceActivityScrollToBottom = false;
+      render();
+    }
+    if (action === 'close-workspace-activity') {
+      workspaceActivityDrawerOpen = false;
+      await markInboxRead({ workspaceActivityReadAt: new Date().toISOString() });
+      render();
+    }
+    if (action === 'mark-inbox-read') {
+      const model = buildInboxModel();
+      const recordIds = model.normalItems.flatMap((item) => (
+        item.type === 'thread' ? threadRecordIds(item.recordId) : [item.recordId]
+      ));
+      await markInboxRead({
+        recordIds,
+        workspaceActivityReadAt: new Date().toISOString(),
+      });
+      toast('Inbox marked read');
+    }
     if (action === 'set-rail-tab') {
       if (target.dataset.railTab === 'members') {
         const agentId = openMembersNav();
@@ -6774,10 +7758,12 @@ document.addEventListener('click', async (event) => {
         railTab = 'spaces';
         activeView = 'space';
         selectedAgentId = null;
+        workspaceActivityDrawerOpen = false;
       } else if (nav === 'tasks') {
         railTab = 'spaces';
         activeView = 'tasks';
         selectedAgentId = null;
+        workspaceActivityDrawerOpen = false;
       } else if (nav === 'members') {
         const agentId = openMembersNav();
         if (agentId) loadAgentSkills(agentId).catch((error) => toast(error.message));
@@ -6785,10 +7771,12 @@ document.addEventListener('click', async (event) => {
         railTab = 'computers';
         activeView = 'computers';
         selectedAgentId = null;
+        workspaceActivityDrawerOpen = false;
       } else if (nav === 'settings') {
         railTab = 'settings';
         activeView = 'cloud';
         selectedAgentId = null;
+        workspaceActivityDrawerOpen = false;
       }
       localStorage.setItem('railTab', railTab);
       selectedTaskId = null;
@@ -6802,6 +7790,7 @@ document.addEventListener('click', async (event) => {
       agentDetailEditState = { field: null };
       agentEnvEditState = null;
       threadMessageId = null;
+      workspaceActivityDrawerOpen = false;
       selectedTaskId = null;
       selectedProjectFile = null;
       selectedAgentWorkspaceFile = null;
@@ -6963,9 +7952,11 @@ document.addEventListener('click', async (event) => {
       activeView = 'space';
       activeTab = 'chat';
       threadMessageId = null;
+      workspaceActivityDrawerOpen = false;
       selectedSavedRecordId = null;
       selectedProjectFile = null;
       selectedAgentWorkspaceFile = null;
+      markSpaceRead(selectedSpaceType, selectedSpaceId);
       render();
       maybeWarmCurrentAgent();
     }
@@ -7013,9 +8004,11 @@ document.addEventListener('click', async (event) => {
       if (thread) {
         selectedTaskId = null;
         threadMessageId = thread.id;
+        workspaceActivityDrawerOpen = false;
       } else {
         selectedTaskId = target.dataset.id;
         threadMessageId = null;
+        workspaceActivityDrawerOpen = false;
       }
       inspectorReturnThreadId = null;
       selectedAgentId = null;
@@ -7102,17 +8095,24 @@ document.addEventListener('click', async (event) => {
           if (avatarCropState?.target === 'agent-create') nextModal = 'agent';
           avatarCropState = null;
         }
+        if (modal === 'avatar-picker') {
+          nextModal = avatarPickerState?.returnModal || null;
+          avatarPickerState = null;
+        }
         modal = nextModal;
         render();
       }
     }
     if (action === 'open-thread') {
       threadMessageId = target.dataset.id;
+      workspaceActivityDrawerOpen = false;
       inspectorReturnThreadId = null;
       selectedSavedRecordId = null;
       selectedAgentId = null;
       selectedTaskId = null;
       selectedProjectFile = null;
+      markThreadRead(threadMessageId);
+      requestComposerFocus(composerIdFor('thread', threadMessageId));
       render();
       scrollToMessage(threadMessageId);
     }
@@ -7137,7 +8137,9 @@ document.addEventListener('click', async (event) => {
         activeView = 'space';
         activeTab = 'chat';
         threadMessageId = message.id;
+        workspaceActivityDrawerOpen = false;
         selectedTaskId = null;
+        markThreadRead(message.id);
         render();
         scrollToMessage(message.id);
       }
@@ -7312,11 +8314,17 @@ document.addEventListener('click', async (event) => {
       railTab = 'computers';
       toast('Pairing command created');
     }
-    if (action === 'cloud-auth-logout') {
-      await api('/api/cloud/auth/logout', { method: 'POST', body: '{}' });
-      toast('Signed out');
-    }
-    if (action === 'leave-channel') {
+      if (action === 'confirm-cloud-auth-logout') {
+        await api('/api/cloud/auth/logout', { method: 'POST', body: '{}' });
+        modal = null;
+        toast('Signed out');
+      }
+      if (action === 'remove-cloud-member') {
+        if (!window.confirm('Remove this member?')) return;
+        await api(`/api/cloud/members/${encodeURIComponent(target.dataset.id)}`, { method: 'DELETE', body: '{}' });
+        toast('Member removed');
+      }
+      if (action === 'leave-channel') {
       if (!window.confirm('Leave this channel?')) return;
       await api(`/api/channels/${selectedSpaceId}/leave`, { method: 'POST', body: '{}' });
       selectedSpaceType = 'channel';
@@ -7518,14 +8526,27 @@ document.addEventListener('submit', async (event) => {
       });
       modal = null;
     }
-    if (form.id === 'human-form') {
-      await api('/api/humans', {
-        method: 'POST',
-        body: JSON.stringify({ name: data.get('name'), email: data.get('email') }),
-      });
-      modal = null;
-    }
-    if (form.id === 'cloud-config-form') {
+      if (form.id === 'human-form') {
+        await api('/api/humans', {
+          method: 'POST',
+          body: JSON.stringify({ name: data.get('name'), email: data.get('email') }),
+        });
+        modal = null;
+      }
+      if (form.id === 'profile-form') {
+        const humanId = form.dataset.humanId;
+        if (!humanId) throw new Error('Profile identity is missing.');
+        await api(`/api/humans/${encodeURIComponent(humanId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            displayName: data.get('displayName'),
+            description: data.get('description'),
+            avatar: data.get('avatar'),
+          }),
+        });
+        toast('Profile saved');
+      }
+      if (form.id === 'cloud-config-form') {
       await api('/api/cloud/config', {
         method: 'POST',
         body: JSON.stringify(cloudFormPayload()),
