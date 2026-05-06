@@ -120,7 +120,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
-const DATA_DIR = path.join(ROOT, '.magclaw');
+const DATA_DIR = path.resolve(process.env.MAGCLAW_DATA_DIR || path.join(os.homedir(), '.magclaw'));
 
 function loadLocalServerEnv() {
   const envPath = path.join(DATA_DIR, 'server.env');

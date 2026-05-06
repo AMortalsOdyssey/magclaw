@@ -41,6 +41,7 @@ async function launchIsolatedServer(tmp, schema) {
       PORT: String(port),
       HOST: '127.0.0.1',
       CODEX_PATH: '/bin/false',
+      MAGCLAW_DATA_DIR: path.join(tmp, '.magclaw'),
       MAGCLAW_DATABASE_URL: TEST_DATABASE_URL,
       MAGCLAW_DATABASE: TEST_DATABASE,
       MAGCLAW_DATABASE_SCHEMA: schema,

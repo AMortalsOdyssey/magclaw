@@ -6,9 +6,9 @@ This MVP is intentionally local-first and dependency-free:
 
 - Node built-in HTTP server
 - Static HTML/CSS/JS client
-- Lightweight state in `.magclaw/state.json`
-- Chat, thread, task, work-item, and event records in `.magclaw/state.sqlite` when Node's built-in SQLite is available
-- Local attachments in `.magclaw/attachments`
+- Lightweight state in `~/.magclaw/state.json`
+- Chat, thread, task, work-item, and event records in `~/.magclaw/state.sqlite` when Node's built-in SQLite is available
+- Local attachments in `~/.magclaw/attachments`
 - Codex agent conversations through `codex app-server --listen stdio://`
 - One-shot Codex mission runs still use `codex exec --json`
 - Server-Sent Events for live run updates
@@ -45,7 +45,7 @@ CODEX_MODEL=gpt-5.5 npm run dev
 CODEX_SANDBOX=workspace-write npm run dev
 ```
 
-Magclaw keeps Codex channel/DM agent conversations in a persistent app-server thread. The runner starts `codex app-server --listen stdio://`, records the returned Codex `threadId` in the agent state and `.magclaw/agents/<agentId>/sessions.json`, resumes that session after a restart, and sends steering messages into an active turn instead of starting a fresh `codex exec` for every chat message.
+Magclaw keeps Codex channel/DM agent conversations in a persistent app-server thread. The runner starts `codex app-server --listen stdio://`, records the returned Codex `threadId` in the agent state and `~/.magclaw/agents/<agentId>/sessions.json`, resumes that session after a restart, and sends steering messages into an active turn instead of starting a fresh `codex exec` for every chat message.
 
 Claude agents currently remain on the legacy `claude --print` one-shot path. TODO: move Claude and future runtimes to the same persistent session contract once their stable resume/steer APIs are available.
 
@@ -54,7 +54,7 @@ Claude agents currently remain on the legacy `claude --print` one-shot path. TOD
 Each agent gets a local read-only workspace surface under:
 
 ```text
-.magclaw/agents/<agentId>/
+~/.magclaw/agents/<agentId>/
   MEMORY.md
   notes/
   workspace/
@@ -107,7 +107,7 @@ MAGCLAW_ADMIN_PASSWORD=replace-with-a-long-password \
 npm run dev
 ```
 
-For a single-machine local instance, the same variables may also live in the gitignored `.magclaw/server.env` file.
+For a single-machine local instance, the same variables may also live in the user-local `~/.magclaw/server.env` file. Set `MAGCLAW_DATA_DIR=/path/to/data` only when you intentionally want a different data root.
 
 To persist cloud auth control-plane data in PostgreSQL, set a database URL before startup:
 
@@ -118,7 +118,7 @@ MAGCLAW_DATABASE_SCHEMA=magclaw \
 npm run dev
 ```
 
-`postgresql+asyncpg://` URLs are accepted and normalized for Node's `pg` driver. When this is configured, MagClaw runs the cloud schema migration on startup and stores users, workspace members, invitations, and browser sessions in PostgreSQL instead of keeping those records only in `.magclaw/state.json`. The local state file remains as the single-machine fallback when no database URL is configured.
+`postgresql+asyncpg://` URLs are accepted and normalized for Node's `pg` driver. When this is configured, MagClaw runs the cloud schema migration on startup and stores users, workspace members, invitations, and browser sessions in PostgreSQL instead of keeping those records only in `~/.magclaw/state.json`. The local state file remains as the single-machine fallback when no database URL is configured.
 
 Browser users sign in through `/api/cloud/auth/login`, which issues an HttpOnly session cookie. Automation and local `curl` calls can use HTTP Basic Auth for the same admin-protected APIs:
 
@@ -130,6 +130,10 @@ curl -u admin@example.com:replace-with-a-long-password -X POST http://127.0.0.1:
 ```
 
 Do not use Basic Auth over plain HTTP except on localhost. For a domain or gateway deployment, put it behind HTTPS.
+
+## Distribution
+
+The source checkout is intended to be distributable without runtime data. Do not include `~/.magclaw/`, `.git/`, `node_modules/`, temporary logs, or local environment files in a release archive. A repository user should install dependencies, set their own environment variables, and let Magclaw create a fresh `~/.magclaw/` data directory on first startup.
 
 ## Current MVP Scope
 
@@ -163,6 +167,6 @@ Do not use Basic Auth over plain HTTP except on localhost. For a domain or gatew
 
 - Server binds to `127.0.0.1` by default.
 - Codex sandbox defaults to `workspace-write`.
-- Local state and attachments stay under `.magclaw/`.
+- Local state and attachments stay under `~/.magclaw/` by default, outside the source checkout.
 - Cloud import/export endpoints require `MAGCLAW_CLOUD_TOKEN` when that environment variable is set on the control plane.
 - The app does not expose a public tunnel or realtime relay yet.
