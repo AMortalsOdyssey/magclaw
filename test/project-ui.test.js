@@ -705,6 +705,8 @@ test('LLM fan-out decisions render one concise route toast only when LLM is used
   assert.match(app, /function enqueueFanoutDecisionCards\(routeEvent/);
   assert.match(app, /function renderFanoutDecisionToasts\(\)/);
   assert.match(app, /renderFanoutDecisionToastsHtml\(fanoutDecisionCards\)/);
+  assert.match(app, /document\.body\.appendChild\(next\)/);
+  assert.doesNotMatch(app, /\$\{renderFanoutDecisionToasts\(\)\}/);
   assert.match(fanoutToast, /LLM fan-out/);
   assert.match(fanoutToast, /路由到：/);
   assert.match(fanoutToast, /原因：/);

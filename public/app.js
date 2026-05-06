@@ -2241,13 +2241,21 @@ function renderFanoutDecisionToasts() {
 }
 
 function patchFanoutDecisionToasts() {
-  const next = htmlToElement(renderFanoutDecisionToasts());
   const current = document.querySelector('.fanout-toast-stack');
+  if (!fanoutDecisionCards.length) {
+    if (current) current.remove();
+    return;
+  }
+  const next = htmlToElement(renderFanoutDecisionToasts());
+  if (!next) {
+    if (current) current.remove();
+    return;
+  }
   if (current && next) {
     current.replaceWith(next);
     return;
   }
-  if (next) root.appendChild(next);
+  document.body.appendChild(next);
 }
 
 function removeFanoutDecisionCard(id) {
@@ -2400,7 +2408,6 @@ function render() {
       ` : ''}
     </div>
     ${modal ? renderModal() : ''}
-    ${renderFanoutDecisionToasts()}
   `;
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);
