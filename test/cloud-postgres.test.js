@@ -33,14 +33,14 @@ test('postgres CLI args validate database and schema identifiers', () => {
     '--database-url',
     'postgresql://user:secret@example.test:5432/postgres',
     '--database',
-    'magclaw_cloud_mvp',
+    'magclaw_cloud',
     '--schema',
     'magclaw',
     '--maintenance-database',
     'postgres',
   ]);
   assert.equal(options.command, 'migrate');
-  assert.equal(options.database, 'magclaw_cloud_mvp');
+  assert.equal(options.database, 'magclaw_cloud');
   assert.equal(options.schema, 'magclaw');
   assert.equal(options.maintenanceDatabase, 'postgres');
   assert.throws(
