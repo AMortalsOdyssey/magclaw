@@ -116,6 +116,7 @@ function basicAuthCredentials(req) {
 
 export function createCloudAuth(deps) {
   const {
+    cloudRepository = null,
     getState,
     makeId,
     now,
@@ -168,6 +169,29 @@ export function createCloudAuth(deps) {
       if (human.role === 'owner') human.role = 'admin';
     }
     return state.cloud;
+  }
+
+  function storageBackend() {
+    return cloudRepository?.isEnabled?.() ? 'postgres' : 'state';
+  }
+
+  async function initializeStorage() {
+    const cloud = ensureCloudState();
+    cloud.storageBackend = storageBackend();
+    if (!cloudRepository?.isEnabled?.()) return { enabled: false, backend: 'state' };
+    const result = await cloudRepository.initialize(getState());
+    ensureCloudState().storageBackend = 'postgres';
+    return { ...result, backend: 'postgres' };
+  }
+
+  async function persistCloudState() {
+    try {
+      if (cloudRepository?.isEnabled?.()) await cloudRepository.persistFromState(getState());
+      await persistState();
+    } catch (error) {
+      if (cloudRepository?.isEnabled?.()) await cloudRepository.loadIntoState(getState()).catch(() => {});
+      throw error;
+    }
   }
 
   function primaryWorkspace() {
@@ -236,7 +260,7 @@ export function createCloudAuth(deps) {
     return { user, member };
   }
 
-  function issueSession(user, req, res) {
+  function issueSession(user, req) {
     const cloud = ensureCloudState();
     const raw = token('mc_sess');
     const createdAt = now();
@@ -252,8 +276,7 @@ export function createCloudAuth(deps) {
     };
     cloud.sessions.push(session);
     user.lastLoginAt = createdAt;
-    res.setHeader('Set-Cookie', sessionCookie(raw, req));
-    return session;
+    return { session, cookie: sessionCookie(raw, req) };
   }
 
   function ensureHumanForUser(user, role = 'member') {
@@ -366,7 +389,7 @@ export function createCloudAuth(deps) {
       }
     }
 
-    if (changed) await persistState();
+    if (changed) await persistCloudState();
     return { configured: true, user: publicUser(user), member, workspace };
   }
 
@@ -379,8 +402,9 @@ export function createCloudAuth(deps) {
       error.status = 401;
       throw error;
     }
-    issueSession(user, req, res);
-    await persistState();
+    const issued = issueSession(user, req);
+    await persistCloudState();
+    res.setHeader('Set-Cookie', issued.cookie);
     return { user: publicUser(user), member: memberForUser(user.id), workspace: primaryWorkspace() };
   }
 
@@ -388,7 +412,7 @@ export function createCloudAuth(deps) {
     const session = currentSession(req);
     if (session) session.revokedAt = now();
     res.setHeader('Set-Cookie', clearSessionCookie());
-    await persistState();
+    await persistCloudState();
     return { ok: true };
   }
 
@@ -438,7 +462,7 @@ export function createCloudAuth(deps) {
       addHumanToAllChannel(human);
     }
     const base = process.env.MAGCLAW_PUBLIC_URL || requestOrigin(req);
-    await persistState();
+    await persistCloudState();
     return {
       invitation: publicInvitation(invitation),
       inviteToken: raw,
@@ -506,8 +530,9 @@ export function createCloudAuth(deps) {
       createdAt: now(),
     });
     if (invitation) invitation.acceptedAt = now();
-    issueSession(user, req, res);
-    await persistState();
+    const issued = issueSession(user, req);
+    await persistCloudState();
+    res.setHeader('Set-Cookie', issued.cookie);
     return { user: publicUser(user), member: memberForUser(user.id, workspace.id), workspace };
   }
 
@@ -525,6 +550,7 @@ export function createCloudAuth(deps) {
         loginRequired: isLoginRequired(),
         allowSignups: Boolean(cloud.auth.allowSignups),
         passwordLogin: true,
+        storageBackend: storageBackend(),
         currentUser: publicUser(user),
         currentMember: member || null,
       },
@@ -554,9 +580,11 @@ export function createCloudAuth(deps) {
 
   return {
     clearSessionCookie,
+    close: () => cloudRepository?.close?.(),
     currentUser,
     ensureConfiguredAdmin,
     ensureCloudState,
+    initializeStorage,
     isLoginRequired,
     login,
     logout,
@@ -565,6 +593,7 @@ export function createCloudAuth(deps) {
     publicCloudState,
     publicInvitation,
     requireUser,
+    persistCloudState,
     sha256,
     token,
   };

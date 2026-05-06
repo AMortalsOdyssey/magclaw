@@ -3,10 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
 
-const MIGRATION_ID = '20260506_cloud_base';
-const DEFAULT_DATABASE = 'magclaw_cloud';
-const DEFAULT_SCHEMA = 'magclaw';
-const DEFAULT_MAINTENANCE_DATABASE = 'postgres';
+export const MIGRATION_ID = '20260506_cloud_base';
+export const DEFAULT_DATABASE = 'magclaw_cloud';
+export const DEFAULT_SCHEMA = 'magclaw';
+export const DEFAULT_MAINTENANCE_DATABASE = 'postgres';
 
 function assertIdentifier(value, label) {
   const name = String(value || '').trim();
@@ -161,9 +161,7 @@ export async function migratePostgres(optionsInput = {}) {
     `);
 
     const previous = await migrationStatus(client, options.schema, MIGRATION_ID);
-    if (previous && previous.checksum !== checksum) {
-      throw new Error(`Migration ${MIGRATION_ID} was already applied with a different checksum.`);
-    }
+    const checksumChanged = Boolean(previous && previous.checksum !== checksum);
 
     await client.query('BEGIN');
     try {
@@ -194,6 +192,7 @@ export async function migratePostgres(optionsInput = {}) {
       schema: options.schema,
       migrationId: MIGRATION_ID,
       checksum,
+      checksumChanged,
       databaseCreated: databaseResult.created,
       tableCount: Number(tableCount.rows[0]?.count || 0),
     };

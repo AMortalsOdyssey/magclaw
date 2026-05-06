@@ -17,6 +17,8 @@ async function launchIsolatedServer(tmp, extraEnv = {}) {
       PORT: String(port),
       HOST: '127.0.0.1',
       CODEX_PATH: '/bin/false',
+      DATABASE_URL: '',
+      MAGCLAW_DATABASE_URL: '',
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],

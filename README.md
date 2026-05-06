@@ -109,6 +109,17 @@ npm run dev
 
 For a single-machine local instance, the same variables may also live in the gitignored `.magclaw/server.env` file.
 
+To persist cloud auth control-plane data in PostgreSQL, set a database URL before startup:
+
+```bash
+MAGCLAW_DATABASE_URL=postgresql://user:password@host:5432 \
+MAGCLAW_DATABASE=magclaw_cloud \
+MAGCLAW_DATABASE_SCHEMA=magclaw \
+npm run dev
+```
+
+`postgresql+asyncpg://` URLs are accepted and normalized for Node's `pg` driver. When this is configured, MagClaw runs the cloud schema migration on startup and stores users, workspace members, invitations, and browser sessions in PostgreSQL instead of keeping those records only in `.magclaw/state.json`. The local state file remains as the single-machine fallback when no database URL is configured.
+
 Browser users sign in through `/api/cloud/auth/login`, which issues an HttpOnly session cookie. Automation and local `curl` calls can use HTTP Basic Auth for the same admin-protected APIs:
 
 ```bash

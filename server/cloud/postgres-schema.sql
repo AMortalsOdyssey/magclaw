@@ -1,9 +1,9 @@
 -- MagClaw Cloud PostgreSQL schema v1.
 --
--- The application still uses state.cloud as the live repository in the first
--- cloud MVP. This schema is the production-shaped persistence target for the
--- next repository migration: auth, workspace membership, daemon pairing, agent
--- delivery, collaboration records, attachments, and audit logs.
+-- When MAGCLAW_DATABASE_URL or DATABASE_URL is configured, MagClaw uses this
+-- schema for cloud auth control-plane persistence: users, workspace
+-- memberships, invitations, and browser sessions. The remaining tables are
+-- production-shaped targets for the next cloud repository migrations.
 
 CREATE TABLE IF NOT EXISTS cloud_users (
   id TEXT PRIMARY KEY,

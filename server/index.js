@@ -250,7 +250,15 @@ const {
   stateJsonSnapshot,
 } = stateCore;
 
+async function createCloudRepositoryFromEnv() {
+  if (!process.env.MAGCLAW_DATABASE_URL && !process.env.DATABASE_URL) return null;
+  const { createCloudPostgresStore } = await import('./cloud/postgres-store.js');
+  return createCloudPostgresStore();
+}
+
+const cloudRepository = await createCloudRepositoryFromEnv();
 const cloudAuth = createCloudAuth({
+  cloudRepository,
   getState: () => state,
   makeId,
   normalizeIds,
@@ -1042,6 +1050,7 @@ async function handleRequest(req, res) {
 }
 
 await ensureStorage();
+await cloudAuth.initializeStorage();
 await cloudAuth.ensureConfiguredAdmin();
 
 const server = http.createServer(handleRequest);
@@ -1078,5 +1087,11 @@ process.on('SIGINT', () => {
   for (const proc of agentProcesses.values()) {
     if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');
   }
-  server.close(() => process.exit(0));
+  server.close(async () => {
+    try {
+      await cloudAuth.close?.();
+    } finally {
+      process.exit(0);
+    }
+  });
 });
