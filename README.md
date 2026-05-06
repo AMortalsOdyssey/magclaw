@@ -97,7 +97,28 @@ npm run dev
 
 `MAGCLAW_AUTO_SYNC=1` enables automatic push after local state changes. Manual `Pair / Probe`, `Push Local`, and `Pull Cloud` remain available in the Cloud panel.
 
-Cloud sync v1 is intentionally a snapshot protocol. It syncs collaboration state and metadata; attachment binary files, Codex process control, shell access, secrets and local filesystem reads stay on the local runner. When `MAGCLAW_DEPLOYMENT=cloud` and `MAGCLAW_CLOUD_TOKEN` are set, non-sync API routes on that control plane also require the bearer token. A hosted product version should replace this with account auth, per-workspace database rows, object storage for attachment binaries, and a relay transport for mobile/web clients.
+Cloud sync v1 is intentionally a snapshot protocol. It syncs collaboration state and metadata; attachment binary files, Codex process control, shell access, secrets and local filesystem reads stay on the local runner. When `MAGCLAW_DEPLOYMENT=cloud` or `MAGCLAW_REQUIRE_LOGIN=1` is set, the web app and core APIs require a configured admin login before state, channels, tasks, settings, or events can be read.
+
+Set the first admin from server-side environment variables:
+
+```bash
+MAGCLAW_ADMIN_EMAIL=admin@example.com \
+MAGCLAW_ADMIN_PASSWORD=replace-with-a-long-password \
+npm run dev
+```
+
+For a single-machine local instance, the same variables may also live in the gitignored `.magclaw/server.env` file.
+
+Browser users sign in through `/api/cloud/auth/login`, which issues an HttpOnly session cookie. Automation and local `curl` calls can use HTTP Basic Auth for the same admin-protected APIs:
+
+```bash
+curl -u admin@example.com:replace-with-a-long-password http://127.0.0.1:6543/api/cloud/admin/apis
+curl -u admin@example.com:replace-with-a-long-password -X POST http://127.0.0.1:6543/api/cloud/invitations \
+  -H 'content-type: application/json' \
+  -d '{"email":"member@example.com","role":"member"}'
+```
+
+Do not use Basic Auth over plain HTTP except on localhost. For a domain or gateway deployment, put it behind HTTPS.
 
 ## Current MVP Scope
 

@@ -328,7 +328,7 @@ function escapeHtml(value) {
 }
 
 function cloudRoleAllows(role, allowedRole) {
-  const hierarchy = ['viewer', 'member', 'agent_admin', 'computer_admin', 'admin', 'owner'];
+  const hierarchy = ['viewer', 'member', 'agent_admin', 'computer_admin', 'admin'];
   const roleIndex = hierarchy.indexOf(String(role || 'viewer'));
   const allowedIndex = hierarchy.indexOf(String(allowedRole || 'viewer'));
   return roleIndex >= 0 && allowedIndex >= 0 && roleIndex >= allowedIndex;
@@ -2929,8 +2929,8 @@ function actorSubtitle(authorId, authorType, message) {
   }
   if (authorType === 'human') {
     const human = byId(appState.humans, authorId);
-    const owner = message?.spaceType === 'channel' ? byId(appState.channels, message.spaceId)?.ownerId : null;
-    return human?.id === owner ? 'owner' : human?.role || 'human';
+    const channelOwnerId = message?.spaceType === 'channel' ? byId(appState.channels, message.spaceId)?.ownerId : null;
+    return human?.role || (human?.id === channelOwnerId ? 'admin' : 'human');
   }
   return 'system';
 }
@@ -3911,10 +3911,22 @@ function renderAccountSettingsTab() {
   const invitations = cloud.invitations || [];
   const canManageCloud = cloudRoleAllows(currentMember?.role, 'admin');
   const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
+  const inviteRegisterPanel = inviteTokenFromUrl ? `
+      <div class="pixel-panel cloud-card">
+        <form id="cloud-register-form" class="modal-form">
+          <div class="panel-title"><span>Accept Invitation</span><span>invite token</span></div>
+          <label><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
+          <label><span>Name</span><input name="name" autocomplete="name" /></label>
+          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <button class="primary-btn" type="submit">Create Account</button>
+        </form>
+      </div>
+    ` : '';
   const authPanel = !auth.initialized ? `
       <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Owner Setup</span><span>server env</span></div>
-        <div class="empty-box small">Owner credentials are configured on the server with MAGCLAW_OWNER_EMAIL and MAGCLAW_OWNER_PASSWORD. Restart MagClaw after setting them.</div>
+        <div class="panel-title"><span>Admin Login</span><span>server env</span></div>
+        <div class="empty-box small">Admin credentials are configured on the server with MAGCLAW_ADMIN_EMAIL and MAGCLAW_ADMIN_PASSWORD. Restart MagClaw after setting them.</div>
       </div>
     ` : currentUser ? `
       <div class="pixel-panel cloud-card">
@@ -3967,16 +3979,7 @@ function renderAccountSettingsTab() {
           <button class="primary-btn" type="submit">Login</button>
         </form>
       </div>
-      <div class="pixel-panel cloud-card">
-        <form id="cloud-register-form" class="modal-form">
-          <div class="panel-title"><span>Accept Invitation</span><span>owner invite</span></div>
-          <label><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
-          <label><span>Name</span><input name="name" autocomplete="name" /></label>
-          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
-          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
-          <button class="primary-btn" type="submit">Create Account</button>
-        </form>
-      </div>
+      ${inviteRegisterPanel}
     `;
   return `
     <section class="settings-layout">
@@ -3989,7 +3992,7 @@ function renderAccountSettingsTab() {
           </div>
         </div>
         <div class="cloud-status settings-status-grid">
-          <div><span>Name</span><strong>${escapeHtml(human.name || 'You')}</strong><small>${escapeHtml(human.role || 'owner')}</small></div>
+          <div><span>Name</span><strong>${escapeHtml(human.name || 'You')}</strong><small>${escapeHtml(human.role || 'admin')}</small></div>
           <div><span>Profile</span><strong>${escapeHtml(human.email || 'local user')}</strong><small>${escapeHtml(human.id || 'hum_local')}</small></div>
           <div><span>Workspace</span><strong>${escapeHtml(c.workspaceId || 'local')}</strong><small>${escapeHtml(appState.settings?.defaultWorkspace || '')}</small></div>
           <div><span>Device</span><strong>${escapeHtml(c.deviceName || appState.runtime?.host || 'local')}</strong><small>${escapeHtml(c.deviceId || '')}</small></div>
@@ -4010,6 +4013,18 @@ function renderAccountSettingsTab() {
 function renderCloudAuthGate(cloud = {}, errorMessage = '') {
   const auth = cloud.auth || {};
   const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
+  const inviteRegisterPanel = inviteTokenFromUrl ? `
+      <div class="pixel-panel cloud-card">
+        <form id="cloud-register-form" class="modal-form">
+          <div class="panel-title"><span>Accept Invitation</span><span>invite token</span></div>
+          <label><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
+          <label><span>Name</span><input name="name" autocomplete="name" /></label>
+          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <button class="primary-btn" type="submit">Create Account</button>
+        </form>
+      </div>
+    ` : '';
   const loginPanels = auth.initialized ? `
       <div class="pixel-panel cloud-card">
         <form id="cloud-login-form" class="modal-form">
@@ -4019,20 +4034,11 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '') {
           <button class="primary-btn" type="submit">Login</button>
         </form>
       </div>
-      <div class="pixel-panel cloud-card">
-        <form id="cloud-register-form" class="modal-form">
-          <div class="panel-title"><span>Accept Invitation</span><span>owner invite</span></div>
-          <label><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
-          <label><span>Name</span><input name="name" autocomplete="name" /></label>
-          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
-          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
-          <button class="primary-btn" type="submit">Create Account</button>
-        </form>
-      </div>
+      ${inviteRegisterPanel}
     ` : `
       <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Owner Setup</span><span>server env</span></div>
-        <div class="empty-box small">Owner credentials are configured on the server with MAGCLAW_OWNER_EMAIL and MAGCLAW_OWNER_PASSWORD. Restart MagClaw after setting them.</div>
+        <div class="panel-title"><span>Admin Login</span><span>server env</span></div>
+        <div class="empty-box small">Admin credentials are configured on the server with MAGCLAW_ADMIN_EMAIL and MAGCLAW_ADMIN_PASSWORD. Restart MagClaw after setting them.</div>
       </div>
     `;
 
@@ -4044,7 +4050,7 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '') {
           <span class="settings-account-avatar">M</span>
           <div>
             <strong>${escapeHtml(cloud.workspace?.name || 'MagClaw')}</strong>
-            <small>${escapeHtml(errorMessage || 'Sign in with the owner account configured on the server.')}</small>
+            <small>${escapeHtml(errorMessage || 'Sign in with the admin account configured on the server.')}</small>
           </div>
         </div>
       </div>

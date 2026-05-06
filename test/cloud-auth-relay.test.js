@@ -92,60 +92,83 @@ async function waitFor(fn, timeoutMs = 5000) {
   throw new Error('timed out waiting for condition');
 }
 
-test('environment owner login protects app APIs and supports invites end to end', async () => {
+test('environment admin login protects app APIs and supports invites end to end', async () => {
   const server = await startIsolatedServer({
-    MAGCLAW_OWNER_NAME: 'Owner',
-    MAGCLAW_OWNER_EMAIL: 'owner@example.com',
-    MAGCLAW_OWNER_PASSWORD: 'password123',
+    MAGCLAW_ADMIN_NAME: 'Admin',
+    MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
+    MAGCLAW_ADMIN_PASSWORD: 'password123',
   });
   let daemon = null;
   try {
     const initial = await request(server.baseUrl, '/api/cloud/auth/status');
     assert.equal(initial.data.auth.initialized, true);
-    assert.equal(initial.data.auth.ownerConfigured, true);
+    assert.equal(initial.data.auth.adminConfigured, true);
+    assert.equal('ownerConfigured' in initial.data.auth, false);
     assert.equal(initial.data.auth.currentUser, null);
 
     await request(server.baseUrl, '/api/cloud/auth/bootstrap-owner', {
       method: 'POST',
       body: JSON.stringify({
-        name: 'Web Owner',
-        email: 'web-owner@example.com',
+        name: 'Web Admin',
+        email: 'web-admin@example.com',
         password: 'password123',
       }),
-      expectStatus: 410,
+      expectStatus: 404,
     });
 
     await request(server.baseUrl, '/api/state', { expectStatus: 401 });
+    await request(server.baseUrl, '/api/events', { expectStatus: 401 });
     await request(server.baseUrl, '/api/settings', {
       method: 'POST',
       body: JSON.stringify({ model: 'anonymous-probe' }),
       expectStatus: 401,
     });
 
-    const owner = await request(server.baseUrl, '/api/cloud/auth/login', {
+    const basicAuth = `Basic ${Buffer.from('admin@example.com:password123').toString('base64')}`;
+    const basicState = await request(server.baseUrl, '/api/state', {
+      headers: { authorization: basicAuth },
+    });
+    assert.equal(basicState.data.cloud.auth.currentUser.email, 'admin@example.com');
+    assert.equal(basicState.data.cloud.auth.currentMember.role, 'admin');
+
+    const basicInvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      headers: { authorization: basicAuth },
+      body: JSON.stringify({ email: 'basic-member@example.com', role: 'member' }),
+    });
+    assert.match(basicInvite.data.inviteToken, /^mc_inv_/);
+    const adminApis = await request(server.baseUrl, '/api/cloud/admin/apis', {
+      headers: { authorization: basicAuth },
+    });
+    assert.equal(adminApis.data.auth.basicAuth, true);
+    assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations' && item.role === 'admin'));
+    assert.ok(adminApis.data.endpoints.some((item) => item.path === '/api/settings/fanout' && item.role === 'admin'));
+
+    const admin = await request(server.baseUrl, '/api/cloud/auth/login', {
       method: 'POST',
       body: JSON.stringify({
-        email: 'owner@example.com',
+        email: 'admin@example.com',
         password: 'password123',
       }),
     });
-    assert.equal(owner.data.user.email, 'owner@example.com');
-    assert.equal(owner.data.member.role, 'owner');
-    const ownerCookie = owner.cookie;
-    assert.match(ownerCookie, /magclaw_session=/);
+    assert.equal(admin.data.user.email, 'admin@example.com');
+    assert.equal(admin.data.member.role, 'admin');
+    const adminCookie = admin.cookie;
+    assert.match(adminCookie, /magclaw_session=/);
 
-    const ownerState = await request(server.baseUrl, '/api/state', { cookie: ownerCookie });
-    assert.equal(ownerState.data.cloud.auth.currentUser.email, 'owner@example.com');
-    const ownerSettings = await request(server.baseUrl, '/api/settings', {
+    const adminState = await request(server.baseUrl, '/api/state', { cookie: adminCookie });
+    assert.equal(adminState.data.cloud.auth.currentUser.email, 'admin@example.com');
+    assert.equal(adminState.data.cloud.auth.currentMember.role, 'admin');
+    const adminSettings = await request(server.baseUrl, '/api/settings', {
       method: 'POST',
-      cookie: ownerCookie,
-      body: JSON.stringify({ model: 'owner-model' }),
+      cookie: adminCookie,
+      body: JSON.stringify({ model: 'admin-model' }),
     });
-    assert.equal(ownerSettings.status, 200);
+    assert.equal(adminSettings.status, 200);
 
     const invite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
-      cookie: ownerCookie,
+      cookie: adminCookie,
       body: JSON.stringify({ email: 'member@example.com', role: 'member' }),
     });
     assert.match(invite.data.inviteToken, /^mc_inv_/);
@@ -179,7 +202,7 @@ test('environment owner login protects app APIs and supports invites end to end'
 
     const pairing = await request(server.baseUrl, '/api/cloud/computers/pairing-tokens', {
       method: 'POST',
-      cookie: ownerCookie,
+      cookie: adminCookie,
       body: JSON.stringify({ name: 'CI runner' }),
     });
     assert.match(pairing.data.pairToken, /^mc_pair_/);
@@ -200,7 +223,7 @@ test('environment owner login protects app APIs and supports invites end to end'
     });
 
     const state = await waitFor(async () => {
-      const snapshot = (await request(server.baseUrl, '/api/state', { cookie: ownerCookie })).data;
+      const snapshot = (await request(server.baseUrl, '/api/state', { cookie: adminCookie })).data;
       const computer = snapshot.computers.find((item) => item.id === pairing.data.computer.id);
       return computer?.status === 'connected' ? snapshot : null;
     });

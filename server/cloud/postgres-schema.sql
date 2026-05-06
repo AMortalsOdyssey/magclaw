@@ -46,7 +46,6 @@ CREATE TABLE IF NOT EXISTS cloud_workspaces (
   id TEXT PRIMARY KEY,
   slug TEXT NOT NULL,
   name TEXT NOT NULL,
-  owner_user_id TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -61,7 +60,7 @@ CREATE TABLE IF NOT EXISTS cloud_workspace_members (
   user_id TEXT NOT NULL REFERENCES cloud_users(id) ON DELETE CASCADE,
   human_id TEXT,
   role TEXT NOT NULL CHECK (
-    role IN ('viewer', 'member', 'agent_admin', 'computer_admin', 'admin', 'owner')
+    role IN ('viewer', 'member', 'agent_admin', 'computer_admin', 'admin')
   ),
   status TEXT NOT NULL DEFAULT 'active' CHECK (
     status IN ('invited', 'active', 'disabled', 'removed')
@@ -112,7 +111,7 @@ CREATE TABLE IF NOT EXISTS cloud_invitations (
   email TEXT NOT NULL,
   normalized_email TEXT NOT NULL,
   role TEXT NOT NULL CHECK (
-    role IN ('viewer', 'member', 'agent_admin', 'computer_admin', 'admin', 'owner')
+    role IN ('viewer', 'member', 'agent_admin', 'computer_admin', 'admin')
   ),
   token_hash TEXT NOT NULL,
   invited_by TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
@@ -238,7 +237,6 @@ CREATE TABLE IF NOT EXISTS cloud_channels (
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  owner_user_id TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
   archived_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),

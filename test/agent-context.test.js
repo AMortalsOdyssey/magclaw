@@ -8,7 +8,7 @@ import {
 
 test('agent context pack includes recent channel messages, current message, tasks, attachments, and thread context', () => {
   const state = {
-    humans: [{ id: 'hum_local', name: 'You', role: 'owner' }],
+    humans: [{ id: 'hum_local', name: 'You', role: 'admin' }],
     agents: [
       { id: 'agt_333', name: '333', description: 'solver', status: 'idle' },
       { id: 'agt_ccc', name: 'CCC', description: 'reviewer', status: 'idle' },
@@ -121,7 +121,7 @@ test('agent context pack includes recent channel messages, current message, task
 
   const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_333' });
   assert.match(rendered, /Context snapshot for #all/);
-  assert.match(rendered, /Participants: @You - owner, @333 \(you\) - solver, @CCC - reviewer/);
+  assert.match(rendered, /Participants: @You - admin, @333 \(you\) - solver, @CCC - reviewer/);
   assert.match(rendered, /\[msg=msg_1 .* @You: @CCC 你叫什么/);
   assert.match(rendered, /\[msg=msg_2 .* @CCC: 我叫 CCC。/);
   assert.match(rendered, /Current message/);
@@ -134,7 +134,7 @@ test('agent context pack includes recent channel messages, current message, task
 
 test('agent context pack renders required peer memory search grounding', () => {
   const state = {
-    humans: [{ id: 'hum_local', name: 'You', role: 'owner' }],
+    humans: [{ id: 'hum_local', name: 'You', role: 'admin' }],
     agents: [
       { id: 'agt_han', name: '韩立', description: 'protector', status: 'idle' },
       { id: 'agt_wan', name: '南宫婉', description: 'planner', status: 'idle' },

@@ -17,13 +17,13 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(app, /function patchThreadReplyList\(context, replies\)/);
   assert.match(connectEventsSource, /applyStateUpdate\(JSON\.parse\(event\.data\)\)/);
   assert.match(connectEventsSource, /applyRunEventUpdate\(incoming\)/);
-  assert.match(connectEventsSource, /source\.addEventListener\('heartbeat'/);
+  assert.match(connectEventsSource, /eventSource\.addEventListener\('heartbeat'/);
   assert.match(connectEventsSource, /applyPresenceHeartbeat\(JSON\.parse\(event\.data\)\)/);
   assert.match(app, /if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;\n  if \(patchActiveConversationSurface\(scrollSnapshot\)\) return;/);
   assert.match(app, /syncRecordList\(list, spaceMessages\(\), renderMessage, 'messageId', emptyHtml\)/);
   assert.match(app, /syncRecordList\(list, replies, renderReply, 'replyId', ''\)/);
   assert.equal(
-    /source\.addEventListener\('state'[\s\S]*appState = JSON\.parse\(event\.data\);[\s\S]*render\(\);/.test(connectEventsSource),
+    /EventSource\('\/api\/events'\)[\s\S]*addEventListener\('state'[\s\S]*appState = JSON\.parse\(event\.data\);[\s\S]*render\(\);/.test(connectEventsSource),
     false,
   );
 });

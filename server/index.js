@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { spawn, execFile } from 'node:child_process';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import {
   lstat,
   mkdir,
@@ -121,6 +121,28 @@ const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = path.join(ROOT, '.magclaw');
+
+function loadLocalServerEnv() {
+  const envPath = path.join(DATA_DIR, 'server.env');
+  if (!existsSync(envPath)) return;
+  const lines = readFileSync(envPath, 'utf8').split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const index = trimmed.indexOf('=');
+    if (index <= 0) continue;
+    const key = trimmed.slice(0, index).trim();
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(key) || process.env[key] !== undefined) continue;
+    let value = trimmed.slice(index + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
+loadLocalServerEnv();
+
 const ATTACHMENTS_DIR = path.join(DATA_DIR, 'attachments');
 const RUNS_DIR = path.join(DATA_DIR, 'runs');
 const AGENTS_DIR = path.join(DATA_DIR, 'agents');
@@ -1036,7 +1058,7 @@ async function handleRequest(req, res) {
 }
 
 await ensureStorage();
-await cloudAuth.ensureConfiguredOwner();
+await cloudAuth.ensureConfiguredAdmin();
 
 const server = http.createServer(handleRequest);
 server.on('upgrade', (req, socket) => {

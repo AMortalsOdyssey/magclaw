@@ -72,14 +72,14 @@ function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-function configuredOwnerCredentials() {
-  const email = normalizeEmail(process.env.MAGCLAW_OWNER_EMAIL || process.env.MAGCLAW_ADMIN_EMAIL || '');
-  const password = String(process.env.MAGCLAW_OWNER_PASSWORD || process.env.MAGCLAW_ADMIN_PASSWORD || '');
+function configuredAdminCredentials() {
+  const email = normalizeEmail(process.env.MAGCLAW_ADMIN_EMAIL || '');
+  const password = String(process.env.MAGCLAW_ADMIN_PASSWORD || '');
   if (!email || !password) return null;
   return {
     email,
     password,
-    name: String(process.env.MAGCLAW_OWNER_NAME || process.env.MAGCLAW_ADMIN_NAME || email.split('@')[0]).trim(),
+    name: String(process.env.MAGCLAW_ADMIN_NAME || email.split('@')[0]).trim(),
   };
 }
 
@@ -95,6 +95,23 @@ function publicInvitation(invitation) {
   const { tokenHash, ...safe } = invitation;
   void tokenHash;
   return safe;
+}
+
+function basicAuthCredentials(req) {
+  const header = String(req.headers?.authorization || '');
+  const match = header.match(/^Basic\s+(.+)$/i);
+  if (!match) return null;
+  try {
+    const decoded = Buffer.from(match[1], 'base64').toString('utf8');
+    const separator = decoded.indexOf(':');
+    if (separator === -1) return null;
+    return {
+      email: normalizeEmail(decoded.slice(0, separator)),
+      password: decoded.slice(separator + 1),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function createCloudAuth(deps) {
@@ -119,19 +136,19 @@ export function createCloudAuth(deps) {
     state.cloud.auth = {
       allowSignups: process.env.MAGCLAW_ALLOW_SIGNUPS === '1',
       passwordLogin: true,
-      ownerInviteOnly: process.env.MAGCLAW_ALLOW_SIGNUPS !== '1',
       ...(state.cloud.auth || {}),
     };
+    delete state.cloud.auth.ownerInviteOnly;
     state.cloud.workspaces = safeArray(state.cloud.workspaces);
     if (!state.cloud.workspaces.length) {
       state.cloud.workspaces.push({
         id: workspaceId,
         slug: workspaceId,
         name: process.env.MAGCLAW_DEFAULT_WORKSPACE_NAME || 'MagClaw',
-        ownerUserId: null,
         createdAt,
       });
     }
+    for (const workspace of state.cloud.workspaces) delete workspace.ownerUserId;
     state.cloud.workspaceMembers = safeArray(state.cloud.workspaceMembers);
     state.cloud.users = safeArray(state.cloud.users);
     state.cloud.sessions = safeArray(state.cloud.sessions);
@@ -140,6 +157,16 @@ export function createCloudAuth(deps) {
     state.cloud.computerTokens = safeArray(state.cloud.computerTokens);
     state.cloud.agentDeliveries = safeArray(state.cloud.agentDeliveries);
     state.cloud.daemonEvents = safeArray(state.cloud.daemonEvents);
+    for (const member of state.cloud.workspaceMembers) {
+      if (member.role === 'owner') member.role = 'admin';
+    }
+    for (const invitation of state.cloud.invitations) {
+      if (invitation.role === 'owner') invitation.role = 'admin';
+    }
+    state.humans = safeArray(state.humans);
+    for (const human of state.humans) {
+      if (human.role === 'owner') human.role = 'admin';
+    }
     return state.cloud;
   }
 
@@ -163,8 +190,12 @@ export function createCloudAuth(deps) {
 
   function currentUser(req) {
     const session = currentSession(req);
-    if (!session) return null;
-    return ensureCloudState().users.find((user) => user.id === session.userId) || null;
+    if (session) return ensureCloudState().users.find((user) => user.id === session.userId) || null;
+    const credentials = basicAuthCredentials(req);
+    if (!credentials?.email || !credentials.password) return null;
+    const user = ensureCloudState().users.find((item) => item.email === credentials.email);
+    if (!user || !verifyPassword(credentials.password, user.passwordHash)) return null;
+    return user;
   }
 
   function memberForUser(userId, workspaceId = primaryWorkspace()?.id) {
@@ -177,8 +208,9 @@ export function createCloudAuth(deps) {
 
   function roleAllows(role, allowedRoles = []) {
     if (!allowedRoles.length) return true;
-    const hierarchy = ['viewer', 'member', 'agent_admin', 'computer_admin', 'admin', 'owner'];
+    const hierarchy = ['viewer', 'member', 'agent_admin', 'computer_admin', 'admin'];
     const roleIndex = hierarchy.indexOf(String(role || 'viewer'));
+    if (roleIndex < 0) return false;
     return allowedRoles.some((allowed) => roleIndex >= hierarchy.indexOf(allowed));
   }
 
@@ -186,7 +218,7 @@ export function createCloudAuth(deps) {
     const cloud = ensureCloudState();
     return process.env.MAGCLAW_REQUIRE_LOGIN === '1'
       || process.env.MAGCLAW_DEPLOYMENT === 'cloud'
-      || Boolean(configuredOwnerCredentials())
+      || Boolean(configuredAdminCredentials())
       || cloud.users.length > 0;
   }
 
@@ -228,7 +260,7 @@ export function createCloudAuth(deps) {
     state.humans = safeArray(state.humans);
     let human = state.humans.find((item) => item.authUserId === user.id)
       || state.humans.find((item) => normalizeEmail(item.email) === user.email);
-    if (!human && role === 'owner') human = state.humans.find((item) => item.id === 'hum_local');
+    if (!human && role === 'admin') human = state.humans.find((item) => item.id === 'hum_local');
     if (!human) {
       human = {
         id: makeId('hum'),
@@ -256,11 +288,11 @@ export function createCloudAuth(deps) {
     allChannel.updatedAt = now();
   }
 
-  async function ensureConfiguredOwner() {
-    const credentials = configuredOwnerCredentials();
+  async function ensureConfiguredAdmin() {
+    const credentials = configuredAdminCredentials();
     if (!credentials) return { configured: false };
     if (credentials.password.length < PASSWORD_MIN_LENGTH) {
-      const error = new Error(`MAGCLAW_OWNER_PASSWORD must be at least ${PASSWORD_MIN_LENGTH} characters.`);
+      const error = new Error(`MAGCLAW_ADMIN_PASSWORD must be at least ${PASSWORD_MIN_LENGTH} characters.`);
       error.status = 500;
       throw error;
     }
@@ -268,10 +300,9 @@ export function createCloudAuth(deps) {
     const cloud = ensureCloudState();
     const workspace = primaryWorkspace();
     let changed = false;
-    const ownerMember = cloud.workspaceMembers.find((member) => member.workspaceId === workspace.id && member.role === 'owner');
+    const adminMember = cloud.workspaceMembers.find((member) => member.workspaceId === workspace.id && member.role === 'admin');
     let user = cloud.users.find((item) => item.email === credentials.email)
-      || cloud.users.find((item) => item.id === workspace.ownerUserId)
-      || cloud.users.find((item) => item.id === ownerMember?.userId);
+      || cloud.users.find((item) => item.id === adminMember?.userId);
 
     if (!user) {
       user = {
@@ -306,7 +337,7 @@ export function createCloudAuth(deps) {
     }
     if (changed) user.updatedAt = now();
 
-    const human = ensureHumanForUser(user, 'owner');
+    const human = ensureHumanForUser(user, 'admin');
     addHumanToAllChannel(human);
     let member = memberForUser(user.id, workspace.id);
     if (!member) {
@@ -315,7 +346,7 @@ export function createCloudAuth(deps) {
         workspaceId: workspace.id,
         userId: user.id,
         humanId: human.id,
-        role: 'owner',
+        role: 'admin',
         status: 'active',
         joinedAt: now(),
         createdAt: now(),
@@ -323,7 +354,7 @@ export function createCloudAuth(deps) {
       cloud.workspaceMembers.push(member);
       changed = true;
     } else {
-      for (const [key, value] of Object.entries({ humanId: human.id, role: 'owner', status: 'active' })) {
+      for (const [key, value] of Object.entries({ humanId: human.id, role: 'admin', status: 'active' })) {
         if (member[key] !== value) {
           member[key] = value;
           changed = true;
@@ -334,22 +365,9 @@ export function createCloudAuth(deps) {
         changed = true;
       }
     }
-    if (workspace.ownerUserId !== user.id) {
-      workspace.ownerUserId = user.id;
-      changed = true;
-    }
 
     if (changed) await persistState();
     return { configured: true, user: publicUser(user), member, workspace };
-  }
-
-  async function bootstrapOwner(body, req, res) {
-    void body;
-    void req;
-    void res;
-    const error = new Error('Owner is provisioned from MAGCLAW_OWNER_EMAIL and MAGCLAW_OWNER_PASSWORD on the server.');
-    error.status = 410;
-    throw error;
   }
 
   async function login(body, req, res) {
@@ -390,7 +408,7 @@ export function createCloudAuth(deps) {
       throw error;
     }
     const raw = token('mc_inv');
-    const role = ['owner', 'admin', 'member', 'viewer', 'computer_admin', 'agent_admin'].includes(body.role)
+    const role = ['admin', 'member', 'viewer', 'computer_admin', 'agent_admin'].includes(body.role)
       ? body.role
       : 'member';
     const invitation = {
@@ -503,10 +521,9 @@ export function createCloudAuth(deps) {
       schemaVersion: cloud.schemaVersion,
       auth: {
         initialized: cloud.users.length > 0,
-        ownerConfigured: Boolean(configuredOwnerCredentials()),
+        adminConfigured: Boolean(configuredAdminCredentials()),
         loginRequired: isLoginRequired(),
         allowSignups: Boolean(cloud.auth.allowSignups),
-        ownerInviteOnly: Boolean(cloud.auth.ownerInviteOnly),
         passwordLogin: true,
         currentUser: publicUser(user),
         currentMember: member || null,
@@ -538,12 +555,11 @@ export function createCloudAuth(deps) {
   return {
     clearSessionCookie,
     currentUser,
-    ensureConfiguredOwner,
+    ensureConfiguredAdmin,
     ensureCloudState,
     isLoginRequired,
     login,
     logout,
-    bootstrapOwner,
     createInvitation,
     registerWithInvite,
     publicCloudState,

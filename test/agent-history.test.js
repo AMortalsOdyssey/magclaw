@@ -9,7 +9,7 @@ import {
 
 test('agent history tools read channel, read thread, and search visible messages with task hints', () => {
   const state = {
-    humans: [{ id: 'hum_local', name: 'You', role: 'owner' }],
+    humans: [{ id: 'hum_local', name: 'You', role: 'admin' }],
     agents: [{ id: 'agt_333', name: '333', description: 'solver' }],
     channels: [{
       id: 'chan_all',

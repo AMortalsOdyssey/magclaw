@@ -70,17 +70,37 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/cloud/auth/bootstrap-owner') {
+  if (req.method === 'GET' && url.pathname === '/api/cloud/admin/apis') {
     if (!cloudAuth) {
       sendError(res, 503, 'Cloud auth service is unavailable.');
       return true;
     }
-    const body = await readJson(req);
-    const result = await sendAction(() => cloudAuth.bootstrapOwner(body, req, res));
-    if (result) {
-      broadcastState();
-      sendJson(res, 201, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
-    }
+    if (!cloudAuth.requireUser(req, res, sendError, ['admin'])) return true;
+    sendJson(res, 200, {
+      auth: {
+        sessionLogin: '/api/cloud/auth/login',
+        basicAuth: true,
+        note: 'Use browser session cookies or HTTP Basic Auth over HTTPS for admin API calls.',
+      },
+      endpoints: [
+        { method: 'GET', path: '/api/cloud/auth/status', role: 'guest' },
+        { method: 'POST', path: '/api/cloud/auth/login', role: 'guest' },
+        { method: 'POST', path: '/api/cloud/auth/logout', role: 'member' },
+        { method: 'POST', path: '/api/cloud/auth/register', role: 'invite' },
+        { method: 'GET', path: '/api/cloud/admin/apis', role: 'admin' },
+        { method: 'GET', path: '/api/cloud/invitations', role: 'admin' },
+        { method: 'POST', path: '/api/cloud/invitations', role: 'admin' },
+        { method: 'POST', path: '/api/settings', role: 'admin' },
+        { method: 'POST', path: '/api/settings/fanout', role: 'admin' },
+        { method: 'PATCH', path: '/api/settings/fanout', role: 'admin' },
+        { method: 'POST', path: '/api/cloud/config', role: 'admin' },
+        { method: 'POST', path: '/api/cloud/pair', role: 'admin' },
+        { method: 'POST', path: '/api/cloud/disconnect', role: 'admin' },
+        { method: 'POST', path: '/api/cloud/sync/push', role: 'admin' },
+        { method: 'POST', path: '/api/cloud/sync/pull', role: 'admin' },
+        { method: 'POST', path: '/api/cloud/computers/pairing-tokens', role: 'computer_admin' },
+      ],
+    });
     return true;
   }
 

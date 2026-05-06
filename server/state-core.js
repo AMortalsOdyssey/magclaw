@@ -128,14 +128,12 @@ export function createStateCore(deps) {
         auth: {
           allowSignups: process.env.MAGCLAW_ALLOW_SIGNUPS === '1',
           passwordLogin: true,
-          ownerInviteOnly: process.env.MAGCLAW_ALLOW_SIGNUPS !== '1',
         },
         workspaces: [
           {
             id: process.env.MAGCLAW_WORKSPACE_ID || 'local',
             slug: process.env.MAGCLAW_WORKSPACE_ID || 'local',
             name: process.env.MAGCLAW_DEFAULT_WORKSPACE_NAME || 'MagClaw',
-            ownerUserId: null,
             createdAt: seededAt,
           },
         ],
@@ -165,7 +163,7 @@ export function createStateCore(deps) {
           id: 'hum_local',
           name: 'You',
           email: 'local@magclaw.dev',
-          role: 'owner',
+          role: 'admin',
           status: 'online',
           createdAt: seededAt,
         },
@@ -493,14 +491,25 @@ export function createStateCore(deps) {
     state.connection.protocolVersion = CLOUD_PROTOCOL_VERSION;
     state.cloud = { ...fresh.cloud, ...(state.cloud || {}) };
     state.cloud.auth = { ...fresh.cloud.auth, ...(state.cloud.auth || {}) };
+    delete state.cloud.auth.ownerInviteOnly;
     for (const key of ['workspaces', 'workspaceMembers', 'users', 'sessions', 'invitations', 'pairingTokens', 'computerTokens', 'agentDeliveries', 'daemonEvents']) {
       if (!Array.isArray(state.cloud[key])) state.cloud[key] = fresh.cloud[key] || [];
     }
     if (!state.cloud.workspaces.length) state.cloud.workspaces = fresh.cloud.workspaces;
+    for (const workspace of state.cloud.workspaces) delete workspace.ownerUserId;
+    for (const member of state.cloud.workspaceMembers) {
+      if (member.role === 'owner') member.role = 'admin';
+    }
+    for (const invitation of state.cloud.invitations) {
+      if (invitation.role === 'owner') invitation.role = 'admin';
+    }
     for (const key of ['humans', 'computers', 'agents', 'brainAgents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events']) {
       if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
     }
     if (!state.humans.length) state.humans = fresh.humans;
+    for (const human of state.humans) {
+      if (human.role === 'owner') human.role = 'admin';
+    }
     if (!state.computers.length) state.computers = fresh.computers;
     if (!state.agents.length) state.agents = fresh.agents;
     reconcileBrainAgentConfigs();

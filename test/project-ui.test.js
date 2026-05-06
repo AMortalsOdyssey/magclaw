@@ -18,14 +18,27 @@ test('cloud account settings show invitation controls only to admins', async () 
   assert.match(accountSettingsSource, /\$\{canManageCloud \? `[\s\S]*id="cloud-invite-form"/);
 });
 
-test('cloud account settings never create the owner from the browser', async () => {
+test('cloud account settings use server-configured admin without owner bootstrap UI', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
 
   assert.equal(accountSettingsSource.includes('id="cloud-owner-form"'), false);
   assert.equal(app.includes('/api/cloud/auth/bootstrap-owner'), false);
-  assert.match(accountSettingsSource, /Owner credentials are configured on the server/);
+  assert.equal(app.includes('ownerConfigured'), false);
+  assert.doesNotMatch(accountSettingsSource, /\bOwner\b/);
+  assert.match(accountSettingsSource, /Admin credentials are configured on the server/);
+  assert.match(accountSettingsSource, /MAGCLAW_ADMIN_EMAIL and MAGCLAW_ADMIN_PASSWORD/);
   assert.match(app, /function renderCloudAuthGate/);
+});
+
+test('cloud auth gate only shows invite registration when an invite token is present', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const authGateSource = app.slice(app.indexOf('function renderCloudAuthGate('), app.indexOf('function renderBrowserSettingsTab()'));
+
+  assert.match(authGateSource, /inviteTokenFromUrl \? `/);
+  assert.match(authGateSource, /id="cloud-register-form"/);
+  assert.doesNotMatch(authGateSource, /owner invite/);
+  assert.match(authGateSource, /Sign in with the admin account configured on the server/);
 });
 
 test('cloud account settings prefill invite tokens from invite URLs', async () => {
