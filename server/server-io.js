@@ -68,6 +68,7 @@ export function createServerIo(deps) {
     if (!process.env.MAGCLAW_CLOUD_TOKEN) return true;
     const syncPaths = new Set(['/api/cloud/health', '/api/cloud/export-state', '/api/cloud/import-state']);
     if (syncPaths.has(url.pathname)) return true;
+    if (url.pathname.startsWith('/api/cloud/')) return true;
     if (safeTokenEqual(cloudBearerToken(req), process.env.MAGCLAW_CLOUD_TOKEN)) return true;
     sendError(res, 401, 'Cloud deployment API requires a bearer token.');
     return false;

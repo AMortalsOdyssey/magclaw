@@ -18,6 +18,16 @@ test('cloud account settings show invitation controls only to admins', async () 
   assert.match(accountSettingsSource, /\$\{canManageCloud \? `[\s\S]*id="cloud-invite-form"/);
 });
 
+test('cloud account settings never create the owner from the browser', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
+
+  assert.equal(accountSettingsSource.includes('id="cloud-owner-form"'), false);
+  assert.equal(app.includes('/api/cloud/auth/bootstrap-owner'), false);
+  assert.match(accountSettingsSource, /Owner credentials are configured on the server/);
+  assert.match(app, /function renderCloudAuthGate/);
+});
+
 test('cloud account settings prefill invite tokens from invite URLs', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));

@@ -76,6 +76,7 @@ let collapsedSkillSections = readJsonStorage(SKILL_SECTION_COLLAPSE_KEY, {});
 let avatarCropState = null;
 let notificationPrefs = normalizeNotificationPrefs(readJsonStorage(NOTIFICATION_PREF_KEY, {}));
 let windowFocused = document.hasFocus();
+let eventSource = null;
 
 const MAX_ATTACHMENTS_PER_COMPOSER = 20;
 const AGENT_AVATAR_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
@@ -839,7 +840,11 @@ function api(path, options = {}) {
     },
   }).then(async (response) => {
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || response.statusText);
+    if (!response.ok) {
+      const error = new Error(data.error || response.statusText);
+      error.status = response.status;
+      throw error;
+    }
     return data;
   });
 }
@@ -3894,13 +3899,8 @@ function renderAccountSettingsTab() {
   const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
   const authPanel = !auth.initialized ? `
       <div class="pixel-panel cloud-card">
-        <form id="cloud-owner-form" class="modal-form">
-          <div class="panel-title"><span>Owner Setup</span><span>invite only</span></div>
-          <label><span>Name</span><input name="name" autocomplete="name" placeholder="Owner name" /></label>
-          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
-          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
-          <button class="primary-btn" type="submit">Create Owner</button>
-        </form>
+        <div class="panel-title"><span>Owner Setup</span><span>server env</span></div>
+        <div class="empty-box small">Owner credentials are configured on the server with MAGCLAW_OWNER_EMAIL and MAGCLAW_OWNER_PASSWORD. Restart MagClaw after setting them.</div>
       </div>
     ` : currentUser ? `
       <div class="pixel-panel cloud-card">
@@ -3990,6 +3990,52 @@ function renderAccountSettingsTab() {
         </div>
       </div>
     </section>
+  `;
+}
+
+function renderCloudAuthGate(cloud = {}, errorMessage = '') {
+  const auth = cloud.auth || {};
+  const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
+  const loginPanels = auth.initialized ? `
+      <div class="pixel-panel cloud-card">
+        <form id="cloud-login-form" class="modal-form">
+          <div class="panel-title"><span>Login</span><span>password</span></div>
+          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+          <button class="primary-btn" type="submit">Login</button>
+        </form>
+      </div>
+      <div class="pixel-panel cloud-card">
+        <form id="cloud-register-form" class="modal-form">
+          <div class="panel-title"><span>Accept Invitation</span><span>owner invite</span></div>
+          <label><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
+          <label><span>Name</span><input name="name" autocomplete="name" /></label>
+          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <button class="primary-btn" type="submit">Create Account</button>
+        </form>
+      </div>
+    ` : `
+      <div class="pixel-panel cloud-card">
+        <div class="panel-title"><span>Owner Setup</span><span>server env</span></div>
+        <div class="empty-box small">Owner credentials are configured on the server with MAGCLAW_OWNER_EMAIL and MAGCLAW_OWNER_PASSWORD. Restart MagClaw after setting them.</div>
+      </div>
+    `;
+
+  root.innerHTML = `
+    <main class="settings-layout cloud-auth-gate">
+      <div class="pixel-panel cloud-card settings-account-card">
+        <div class="panel-title"><span>MagClaw Login</span><span>${escapeHtml(auth.loginRequired ? 'required' : 'cloud')}</span></div>
+        <div class="settings-account-hero compact">
+          <span class="settings-account-avatar">M</span>
+          <div>
+            <strong>${escapeHtml(cloud.workspace?.name || 'MagClaw')}</strong>
+            <small>${escapeHtml(errorMessage || 'Sign in with the owner account configured on the server.')}</small>
+          </div>
+        </div>
+      </div>
+      ${loginPanels}
+    </main>
   `;
 }
 
@@ -5612,6 +5658,33 @@ async function refreshState() {
   maybeWarmCurrentAgent();
 }
 
+async function showCloudAuthGate(error = null) {
+  disconnectEvents();
+  appState = null;
+  let cloud = { auth: { initialized: false, loginRequired: true } };
+  try {
+    cloud = await api('/api/cloud/auth/status');
+  } catch {
+    // Keep the login shell available even if auth status is temporarily unavailable.
+  }
+  renderCloudAuthGate(cloud, error?.message || '');
+}
+
+async function refreshStateOrAuthGate() {
+  try {
+    await refreshState();
+    initialLoadComplete = true;
+    connectEvents();
+    return true;
+  } catch (error) {
+    if (error.status === 401) {
+      await showCloudAuthGate(error);
+      return false;
+    }
+    throw error;
+  }
+}
+
 function htmlToElement(html) {
   const template = document.createElement('template');
   template.innerHTML = html.trim();
@@ -5826,17 +5899,24 @@ function applyPresenceHeartbeat(heartbeat) {
 }
 
 function connectEvents() {
-  const source = new EventSource('/api/events');
-  source.addEventListener('state', (event) => {
+  if (eventSource) return;
+  eventSource = new EventSource('/api/events');
+  eventSource.addEventListener('state', (event) => {
     applyStateUpdate(JSON.parse(event.data));
   });
-  source.addEventListener('run-event', (event) => {
+  eventSource.addEventListener('run-event', (event) => {
     const incoming = JSON.parse(event.data);
     applyRunEventUpdate(incoming);
   });
-  source.addEventListener('heartbeat', (event) => {
+  eventSource.addEventListener('heartbeat', (event) => {
     applyPresenceHeartbeat(JSON.parse(event.data));
   });
+}
+
+function disconnectEvents() {
+  if (!eventSource) return;
+  eventSource.close();
+  eventSource = null;
 }
 
 document.addEventListener('scroll', (event) => {
@@ -6151,7 +6231,7 @@ document.addEventListener('change', async (event) => {
       method: 'PATCH',
       body: JSON.stringify({ model: target.value || null }),
     }).then(() => toast('Model updated')).catch((error) => toast(error.message));
-    await refreshState().catch(() => {});
+    await refreshStateOrAuthGate().catch(() => {});
     return;
   }
 
@@ -6160,7 +6240,7 @@ document.addEventListener('change', async (event) => {
       method: 'PATCH',
       body: JSON.stringify({ reasoningEffort: target.value || null }),
     }).then(() => toast('Reasoning updated')).catch((error) => toast(error.message));
-    await refreshState().catch(() => {});
+    await refreshStateOrAuthGate().catch(() => {});
     return;
   }
 
@@ -6419,7 +6499,7 @@ document.addEventListener('click', async (event) => {
         body: JSON.stringify({ avatar }),
       });
       toast('Avatar updated');
-      await refreshState().catch(() => {});
+      await refreshStateOrAuthGate().catch(() => {});
     } catch (error) {
       toast(error.message);
     }
@@ -7097,7 +7177,7 @@ document.addEventListener('click', async (event) => {
     toast(error.message);
   } finally {
     if (!localOnlyActions.has(action)) {
-      await refreshState().catch(() => {});
+      await refreshStateOrAuthGate().catch(() => {});
     }
     if (action === 'open-thread') scrollToMessage(threadMessageId);
     if (action === 'view-in-channel') scrollToMessage(target.dataset.id);
@@ -7284,17 +7364,6 @@ document.addEventListener('submit', async (event) => {
       });
       toast('Connection saved');
     }
-    if (form.id === 'cloud-owner-form') {
-      await api('/api/cloud/auth/bootstrap-owner', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: data.get('name'),
-          email: data.get('email'),
-          password: data.get('password'),
-        }),
-      });
-      toast('Owner created');
-    }
     if (form.id === 'cloud-login-form') {
       await api('/api/cloud/auth/login', {
         method: 'POST',
@@ -7340,15 +7409,12 @@ document.addEventListener('submit', async (event) => {
     toast(error.message);
   } finally {
     if (focusComposerId) requestComposerFocus(focusComposerId);
-    await refreshState().catch(() => {});
+    await refreshStateOrAuthGate().catch(() => {});
     if (submittedBottomTarget) scrollPaneToBottom(submittedBottomTarget, 'auto');
   }
 });
 
 render();
-refreshState().then(() => {
-  initialLoadComplete = true;
-  return connectEvents();
-}).catch((error) => {
+refreshStateOrAuthGate().catch((error) => {
   root.innerHTML = `<div class="boot">MAGCLAW LOCAL / ${escapeHtml(error.message)}</div>`;
 });

@@ -10,6 +10,7 @@ export async function handleSystemApi(req, res, url, deps) {
   const {
     addSystemEvent,
     broadcastState,
+    cloudAuth,
     defaultWorkspace,
     detectInstalledRuntimes,
     fanoutApiConfigured,
@@ -25,6 +26,11 @@ export async function handleSystemApi(req, res, url, deps) {
     updateFanoutApiConfig,
   } = deps;
   const state = getState();
+
+  function requireSystemRole(allowedRoles = []) {
+    if (!cloudAuth?.isLoginRequired?.()) return true;
+    return Boolean(cloudAuth.requireUser(req, res, sendError, allowedRoles));
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/state') {
     sendJson(res, 200, publicState(req));
@@ -57,6 +63,7 @@ export async function handleSystemApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/settings') {
+    if (!requireSystemRole(['admin'])) return true;
     const body = await readJson(req);
     state.settings = {
       ...state.settings,
@@ -75,6 +82,7 @@ export async function handleSystemApi(req, res, url, deps) {
   }
 
   if (['POST', 'PATCH'].includes(req.method) && url.pathname === '/api/settings/fanout') {
+    if (!requireSystemRole(['admin'])) return true;
     const body = await readJson(req);
     updateFanoutApiConfig(body);
     addSystemEvent('fanout_api_settings_updated', 'Fan-out API settings updated.', {

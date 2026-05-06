@@ -753,6 +753,7 @@ function systemApiDeps() {
   return {
     addSystemEvent,
     broadcastState,
+    cloudAuth,
     defaultWorkspace: ROOT,
     detectInstalledRuntimes,
     fanoutApiConfigured,
@@ -767,6 +768,17 @@ function systemApiDeps() {
     sseClients,
     updateFanoutApiConfig,
   };
+}
+
+function appApiAuthIsBypassed(url) {
+  return url.pathname.startsWith('/api/cloud/')
+    || url.pathname.startsWith('/api/agent-tools/');
+}
+
+function requireAppApiAccess(req, res, url) {
+  if (!cloudAuth.isLoginRequired()) return true;
+  if (appApiAuthIsBypassed(url)) return true;
+  return Boolean(cloudAuth.requireUser(req, res, sendError));
 }
 
 function collabApiDeps() {
@@ -959,6 +971,7 @@ function messageApiDeps() {
 
 async function handleApi(req, res, url) {
   if (!requireCloudDeploymentApi(req, res, url)) return true;
+  if (!requireAppApiAccess(req, res, url)) return true;
 
   if (await handleSystemApi(req, res, url, systemApiDeps())) return true;
 
@@ -1022,6 +1035,7 @@ async function handleRequest(req, res) {
 }
 
 await ensureStorage();
+await cloudAuth.ensureConfiguredOwner();
 
 const server = http.createServer(handleRequest);
 server.on('upgrade', (req, socket) => {

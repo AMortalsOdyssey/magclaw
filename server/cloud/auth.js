@@ -72,6 +72,17 @@ function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function configuredOwnerCredentials() {
+  const email = normalizeEmail(process.env.MAGCLAW_OWNER_EMAIL || process.env.MAGCLAW_ADMIN_EMAIL || '');
+  const password = String(process.env.MAGCLAW_OWNER_PASSWORD || process.env.MAGCLAW_ADMIN_PASSWORD || '');
+  if (!email || !password) return null;
+  return {
+    email,
+    password,
+    name: String(process.env.MAGCLAW_OWNER_NAME || process.env.MAGCLAW_ADMIN_NAME || email.split('@')[0]).trim(),
+  };
+}
+
 function publicUser(user) {
   if (!user) return null;
   const { passwordHash, ...safe } = user;
@@ -171,6 +182,14 @@ export function createCloudAuth(deps) {
     return allowedRoles.some((allowed) => roleIndex >= hierarchy.indexOf(allowed));
   }
 
+  function isLoginRequired() {
+    const cloud = ensureCloudState();
+    return process.env.MAGCLAW_REQUIRE_LOGIN === '1'
+      || process.env.MAGCLAW_DEPLOYMENT === 'cloud'
+      || Boolean(configuredOwnerCredentials())
+      || cloud.users.length > 0;
+  }
+
   function requireUser(req, res, sendError, allowedRoles = []) {
     const user = currentUser(req);
     if (!user) {
@@ -237,53 +256,100 @@ export function createCloudAuth(deps) {
     allChannel.updatedAt = now();
   }
 
-  async function bootstrapOwner(body, req, res) {
+  async function ensureConfiguredOwner() {
+    const credentials = configuredOwnerCredentials();
+    if (!credentials) return { configured: false };
+    if (credentials.password.length < PASSWORD_MIN_LENGTH) {
+      const error = new Error(`MAGCLAW_OWNER_PASSWORD must be at least ${PASSWORD_MIN_LENGTH} characters.`);
+      error.status = 500;
+      throw error;
+    }
+
     const cloud = ensureCloudState();
     const workspace = primaryWorkspace();
-    if (cloud.users.some((user) => memberForUser(user.id, workspace.id)?.role === 'owner')) {
-      const error = new Error('Owner has already been initialized.');
-      error.status = 409;
-      throw error;
+    let changed = false;
+    const ownerMember = cloud.workspaceMembers.find((member) => member.workspaceId === workspace.id && member.role === 'owner');
+    let user = cloud.users.find((item) => item.email === credentials.email)
+      || cloud.users.find((item) => item.id === workspace.ownerUserId)
+      || cloud.users.find((item) => item.id === ownerMember?.userId);
+
+    if (!user) {
+      user = {
+        id: makeId('usr'),
+        email: credentials.email,
+        name: credentials.name || credentials.email.split('@')[0],
+        passwordHash: scryptPassword(credentials.password),
+        emailVerifiedAt: now(),
+        createdAt: now(),
+        updatedAt: now(),
+        lastLoginAt: null,
+      };
+      cloud.users.push(user);
+      changed = true;
     }
-    const email = normalizeEmail(body.email);
-    const password = String(body.password || '');
-    if (!email) {
-      const error = new Error('Email is required.');
-      error.status = 400;
-      throw error;
+
+    if (user.email !== credentials.email) {
+      user.email = credentials.email;
+      changed = true;
     }
-    if (password.length < PASSWORD_MIN_LENGTH) {
-      const error = new Error(`Password must be at least ${PASSWORD_MIN_LENGTH} characters.`);
-      error.status = 400;
-      throw error;
+    if (credentials.name && user.name !== credentials.name) {
+      user.name = credentials.name;
+      changed = true;
     }
-    const user = {
-      id: makeId('usr'),
-      email,
-      name: String(body.name || email.split('@')[0]).trim(),
-      passwordHash: scryptPassword(password),
-      emailVerifiedAt: now(),
-      createdAt: now(),
-      updatedAt: now(),
-      lastLoginAt: null,
-    };
-    cloud.users.push(user);
+    if (!user.emailVerifiedAt) {
+      user.emailVerifiedAt = now();
+      changed = true;
+    }
+    if (!verifyPassword(credentials.password, user.passwordHash)) {
+      user.passwordHash = scryptPassword(credentials.password);
+      changed = true;
+    }
+    if (changed) user.updatedAt = now();
+
     const human = ensureHumanForUser(user, 'owner');
     addHumanToAllChannel(human);
-    workspace.ownerUserId = user.id;
-    cloud.workspaceMembers.push({
-      id: makeId('wmem'),
-      workspaceId: workspace.id,
-      userId: user.id,
-      humanId: human.id,
-      role: 'owner',
-      status: 'active',
-      joinedAt: now(),
-      createdAt: now(),
-    });
-    issueSession(user, req, res);
-    await persistState();
-    return { user: publicUser(user), member: memberForUser(user.id, workspace.id), workspace };
+    let member = memberForUser(user.id, workspace.id);
+    if (!member) {
+      member = {
+        id: makeId('wmem'),
+        workspaceId: workspace.id,
+        userId: user.id,
+        humanId: human.id,
+        role: 'owner',
+        status: 'active',
+        joinedAt: now(),
+        createdAt: now(),
+      };
+      cloud.workspaceMembers.push(member);
+      changed = true;
+    } else {
+      for (const [key, value] of Object.entries({ humanId: human.id, role: 'owner', status: 'active' })) {
+        if (member[key] !== value) {
+          member[key] = value;
+          changed = true;
+        }
+      }
+      if (!member.joinedAt) {
+        member.joinedAt = now();
+        changed = true;
+      }
+    }
+    if (workspace.ownerUserId !== user.id) {
+      workspace.ownerUserId = user.id;
+      changed = true;
+    }
+
+    if (changed) await persistState();
+    return { configured: true, user: publicUser(user), member, workspace };
+  }
+
+  async function bootstrapOwner(body, req, res) {
+    void body;
+    void req;
+    void res;
+    const error = new Error('Owner is provisioned from MAGCLAW_OWNER_EMAIL and MAGCLAW_OWNER_PASSWORD on the server.');
+    error.status = 410;
+    throw error;
   }
 
   async function login(body, req, res) {
@@ -437,6 +503,8 @@ export function createCloudAuth(deps) {
       schemaVersion: cloud.schemaVersion,
       auth: {
         initialized: cloud.users.length > 0,
+        ownerConfigured: Boolean(configuredOwnerCredentials()),
+        loginRequired: isLoginRequired(),
         allowSignups: Boolean(cloud.auth.allowSignups),
         ownerInviteOnly: Boolean(cloud.auth.ownerInviteOnly),
         passwordLogin: true,
@@ -470,7 +538,9 @@ export function createCloudAuth(deps) {
   return {
     clearSessionCookie,
     currentUser,
+    ensureConfiguredOwner,
     ensureCloudState,
+    isLoginRequired,
     login,
     logout,
     bootstrapOwner,

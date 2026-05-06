@@ -41,6 +41,11 @@ export async function handleCloudApi(req, res, url, deps) {
     }
   }
 
+  function requireCloudRole(allowedRoles = []) {
+    if (!cloudAuth?.isLoginRequired?.()) return true;
+    return Boolean(cloudAuth.requireUser(req, res, sendError, allowedRoles));
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/cloud/health') {
     if (!requireCloudAccess(req, res)) return true;
     sendJson(res, 200, {
@@ -152,8 +157,7 @@ export async function handleCloudApi(req, res, url, deps) {
       sendError(res, 503, 'Cloud relay service is unavailable.');
       return true;
     }
-    const cloudState = cloudAuth.publicCloudState(req);
-    if (cloudState.auth.initialized && !cloudAuth.requireUser(req, res, sendError, ['computer_admin'])) return true;
+    if (cloudAuth.isLoginRequired() && !cloudAuth.requireUser(req, res, sendError, ['computer_admin'])) return true;
     const body = await readJson(req);
     const current = cloudAuth.currentUser(req);
     const result = daemonRelay.createPairingToken({ ...body, createdBy: current?.id || null }, req);
@@ -191,6 +195,7 @@ export async function handleCloudApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/cloud/config') {
+    if (!requireCloudRole(['admin'])) return true;
     const body = await readJson(req);
     const previousMode = state.connection.mode;
     state.connection = {
@@ -218,6 +223,7 @@ export async function handleCloudApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/cloud/pair') {
+    if (!requireCloudRole(['admin'])) return true;
     const body = await readJson(req);
     if (body.controlPlaneUrl !== undefined) state.connection.controlPlaneUrl = normalizeCloudUrl(body.controlPlaneUrl);
     if (body.relayUrl !== undefined) state.connection.relayUrl = normalizeCloudUrl(body.relayUrl);
@@ -248,6 +254,7 @@ export async function handleCloudApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/cloud/disconnect') {
+    if (!requireCloudRole(['admin'])) return true;
     state.connection.mode = 'local';
     state.connection.pairingStatus = 'local';
     state.connection.pairedAt = null;
@@ -284,6 +291,7 @@ export async function handleCloudApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/cloud/sync/push') {
+    if (!requireCloudRole(['admin'])) return true;
     const result = await pushStateToCloud('manual_push');
     broadcastState();
     sendJson(res, 200, { ok: true, result, connection: publicConnection() });
@@ -291,6 +299,7 @@ export async function handleCloudApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/cloud/sync/pull') {
+    if (!requireCloudRole(['admin'])) return true;
     const result = await pullStateFromCloud();
     broadcastState();
     sendJson(res, 200, { ok: true, result, connection: publicConnection() });

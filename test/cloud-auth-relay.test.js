@@ -30,7 +30,7 @@ async function launchIsolatedServer(tmp, extraEnv = {}) {
 
   for (let attempt = 0; attempt < 80; attempt += 1) {
     try {
-      const response = await fetch(`${baseUrl}/api/state`);
+      const response = await fetch(`${baseUrl}/api/cloud/auth/status`);
       if (response.ok) {
         return {
           baseUrl,
@@ -73,8 +73,12 @@ async function request(baseUrl, pathname, options = {}) {
     },
   });
   const data = await response.json().catch(() => ({}));
+  if (options.expectStatus) {
+    assert.equal(response.status, options.expectStatus, JSON.stringify(data));
+    return { data, cookie: response.headers.get('set-cookie') || '', status: response.status };
+  }
   if (!response.ok) throw new Error(`${response.status} ${data.error || response.statusText}`);
-  return { data, cookie: response.headers.get('set-cookie') || '' };
+  return { data, cookie: response.headers.get('set-cookie') || '', status: response.status };
 }
 
 async function waitFor(fn, timeoutMs = 5000) {
@@ -88,30 +92,56 @@ async function waitFor(fn, timeoutMs = 5000) {
   throw new Error('timed out waiting for condition');
 }
 
-test('owner invite auth and daemon pairing work end to end', async () => {
-  const server = await startIsolatedServer();
+test('environment owner login protects app APIs and supports invites end to end', async () => {
+  const server = await startIsolatedServer({
+    MAGCLAW_OWNER_NAME: 'Owner',
+    MAGCLAW_OWNER_EMAIL: 'owner@example.com',
+    MAGCLAW_OWNER_PASSWORD: 'password123',
+  });
   let daemon = null;
   try {
     const initial = await request(server.baseUrl, '/api/cloud/auth/status');
-    assert.equal(initial.data.auth.initialized, false);
+    assert.equal(initial.data.auth.initialized, true);
+    assert.equal(initial.data.auth.ownerConfigured, true);
+    assert.equal(initial.data.auth.currentUser, null);
 
-    const owner = await request(server.baseUrl, '/api/cloud/auth/bootstrap-owner', {
+    await request(server.baseUrl, '/api/cloud/auth/bootstrap-owner', {
       method: 'POST',
       body: JSON.stringify({
-        name: 'Owner',
+        name: 'Web Owner',
+        email: 'web-owner@example.com',
+        password: 'password123',
+      }),
+      expectStatus: 410,
+    });
+
+    await request(server.baseUrl, '/api/state', { expectStatus: 401 });
+    await request(server.baseUrl, '/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'anonymous-probe' }),
+      expectStatus: 401,
+    });
+
+    const owner = await request(server.baseUrl, '/api/cloud/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
         email: 'owner@example.com',
         password: 'password123',
       }),
     });
     assert.equal(owner.data.user.email, 'owner@example.com');
+    assert.equal(owner.data.member.role, 'owner');
     const ownerCookie = owner.cookie;
     assert.match(ownerCookie, /magclaw_session=/);
 
     const ownerState = await request(server.baseUrl, '/api/state', { cookie: ownerCookie });
     assert.equal(ownerState.data.cloud.auth.currentUser.email, 'owner@example.com');
-    const anonymousState = await request(server.baseUrl, '/api/state');
-    assert.equal(anonymousState.data.cloud.auth.currentUser, null);
-    assert.deepEqual(anonymousState.data.cloud.members, []);
+    const ownerSettings = await request(server.baseUrl, '/api/settings', {
+      method: 'POST',
+      cookie: ownerCookie,
+      body: JSON.stringify({ model: 'owner-model' }),
+    });
+    assert.equal(ownerSettings.status, 200);
 
     const invite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
@@ -130,6 +160,22 @@ test('owner invite auth and daemon pairing work end to end', async () => {
       }),
     });
     assert.equal(member.data.member.role, 'member');
+    const memberCookie = member.cookie;
+
+    await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ email: 'another@example.com', role: 'member' }),
+      expectStatus: 403,
+    });
+    await request(server.baseUrl, '/api/settings', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ model: 'member-probe' }),
+      expectStatus: 403,
+    });
+    const memberState = await request(server.baseUrl, '/api/state', { cookie: memberCookie });
+    assert.equal(memberState.data.cloud.auth.currentUser.email, 'member@example.com');
 
     const pairing = await request(server.baseUrl, '/api/cloud/computers/pairing-tokens', {
       method: 'POST',
@@ -154,7 +200,7 @@ test('owner invite auth and daemon pairing work end to end', async () => {
     });
 
     const state = await waitFor(async () => {
-      const snapshot = (await request(server.baseUrl, '/api/state')).data;
+      const snapshot = (await request(server.baseUrl, '/api/state', { cookie: ownerCookie })).data;
       const computer = snapshot.computers.find((item) => item.id === pairing.data.computer.id);
       return computer?.status === 'connected' ? snapshot : null;
     });
