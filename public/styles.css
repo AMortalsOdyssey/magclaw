@@ -106,6 +106,14 @@ button {
   grid-template-columns: minmax(260px, min(var(--rail-width, 320px), 460px)) 8px minmax(360px, 1fr);
 }
 
+.app-frame.task-focus {
+  grid-template-columns: 64px minmax(0, 1fr) 8px minmax(260px, min(var(--inspector-width, 360px), 42vw));
+}
+
+.app-frame.task-focus.no-inspector {
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+
 .app-frame.notification-banner-active {
   height: calc(100vh - 54px);
   margin-top: 54px;
@@ -128,6 +136,12 @@ button {
   background: var(--slock-cream);
   display: flex;
   flex-direction: row;
+}
+
+.rail-icon-only {
+  width: 64px;
+  min-width: 64px;
+  background: var(--magclaw-rail);
 }
 
 .slock-left-rail {

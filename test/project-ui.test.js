@@ -182,7 +182,7 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
 
   assert.match(app, /const inspectorHtml = renderInspector\(\)/);
   assert.match(app, /inspectorHtml \? `[\s\S]*collab-inspector/);
-  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{notificationBanner \? ' notification-banner-active' : ''\}"/);
+  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{taskFocusLayout \? ' task-focus' : ''\}\$\{notificationBanner \? ' notification-banner-active' : ''\}"/);
   assert.match(app, /let selectedTaskId = null/);
   assert.match(app, /function renderInspector\(\)[\s\S]*if \(selectedAgentId\)/);
   assert.match(app, /selectedAgentId = null;[\s\S]*selectedSpaceType = target\.dataset\.type/);
