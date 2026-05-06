@@ -4703,36 +4703,48 @@ function renderAgentToolCapsules(tools = []) {
   `;
 }
 
-function renderSkillChips(skills = [], { limit = 10 } = {}) {
-  const visible = skills.slice(0, limit);
-  if (!visible.length) return '<span class="muted">No skills found</span>';
+function agentSkillCount(skills) {
+  return (skills?.workspace || []).length + (skills?.global || []).length + (skills?.plugin || []).length;
+}
+
+function renderSkillCollapseButton(sectionKey, title) {
+  const collapsed = Boolean(collapsedSkillSections[sectionKey]);
   return `
-    <div class="skill-chip-row">
-      ${visible.map((skill) => `<span class="skill-chip" title="${escapeHtml(skill.path || '')}">${escapeHtml(skill.name || 'skill')}</span>`).join('')}
-      ${skills.length > visible.length ? `<span class="skill-chip muted">+${skills.length - visible.length}</span>` : ''}
+    <button class="skill-collapse-btn" type="button" data-action="toggle-agent-skill-section" data-section="${escapeHtml(sectionKey)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(title)}" aria-expanded="${collapsed ? 'false' : 'true'}">
+      <span aria-hidden="true">${collapsed ? '›' : '⌄'}</span>
+    </button>
+  `;
+}
+
+function renderAgentSkillSections(skills, { compact = false } = {}) {
+  return `
+    <div class="agent-skill-section-stack ${compact ? 'compact' : ''}">
+      ${renderSkillList('Agent-Isolated Skills', skills?.workspace || [], 'No agent-local skills installed yet.', 'agent-skills')}
+      ${renderSkillList('Global Codex Skills', skills?.global || [], 'No global Codex skills found.', 'global-skills')}
+      ${renderSkillList('Plugin Skills', skills?.plugin || [], 'No plugin skills found.', 'plugin-skills')}
     </div>
   `;
 }
 
 function renderAgentCapabilitiesSection(agent) {
   const skills = agentSkillsFor(agent);
+  const profileSkillsCollapsed = Boolean(collapsedSkillSections['profile-skills']);
   return `
     <section class="agent-profile-field agent-capabilities-section">
       <div class="agent-field-head">
         <span class="detail-label">Function Calls / Tools</span>
         <button class="agent-edit-pencil" type="button" data-action="refresh-agent-skills" data-agent-id="${escapeHtml(agent.id)}" aria-label="Rescan skills and tools" title="Rescan skills and tools">${refreshIcon()}</button>
       </div>
-      ${skills?.loading ? '<div class="agent-field-value muted">Loading tools...</div>' : renderAgentToolCapsules(skills?.tools || [])}
+      ${!skills || skills.loading ? '<div class="agent-field-value muted">Loading tools...</div>' : renderAgentToolCapsules(skills.tools || [])}
     </section>
-    <section class="agent-profile-field agent-capabilities-section">
-      <span class="detail-label">Skills</span>
+    <section class="agent-profile-field agent-capabilities-section agent-skills-profile-section">
+      <div class="agent-field-head agent-skills-profile-head">
+        ${renderSkillCollapseButton('profile-skills', 'Skills')}
+        <span class="detail-label">Skills${skills && !skills.loading && !skills.error ? ` (${agentSkillCount(skills)})` : ''}</span>
+        <button class="agent-edit-pencil" type="button" data-action="refresh-agent-skills" data-agent-id="${escapeHtml(agent.id)}" aria-label="Rescan skills and tools" title="Rescan skills and tools">${refreshIcon()}</button>
+      </div>
       ${skills?.error ? `<div class="agent-field-value error-text">${escapeHtml(skills.error)}</div>` : ''}
-      ${skills?.loading ? '<div class="agent-field-value muted">Scanning skills...</div>' : `
-        <div class="agent-skill-summary-grid">
-          <div><strong>Agent</strong>${renderSkillChips(skills?.workspace || [], { limit: 6 })}</div>
-          <div><strong>Global</strong>${renderSkillChips([...(skills?.global || []), ...(skills?.plugin || [])], { limit: 10 })}</div>
-        </div>
-      `}
+      ${!skills || skills.loading ? '<div class="agent-field-value muted">Scanning skills...</div>' : (profileSkillsCollapsed ? '' : renderAgentSkillSections(skills, { compact: true }))}
     </section>
   `;
 }
@@ -4742,9 +4754,7 @@ function renderSkillList(title, skills = [], empty = 'No skills found.', section
   return `
     <section class="skill-list-section">
       <div class="skill-list-title">
-        <button class="skill-collapse-btn" type="button" data-action="toggle-agent-skill-section" data-section="${escapeHtml(sectionKey)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(title)}">
-          <span aria-hidden="true">${collapsed ? '›' : '⌄'}</span>
-        </button>
+        ${renderSkillCollapseButton(sectionKey, title)}
         <span>${escapeHtml(title)}</span>
         <em>${skills.length}</em>
       </div>
@@ -4773,17 +4783,13 @@ function renderAgentSkillsTab(agent) {
     <div class="agent-skills-tab">
       <section class="skill-list-section">
         <div class="skill-list-title">
-          <button class="skill-collapse-btn" type="button" data-action="toggle-agent-skill-section" data-section="magclaw-tools" aria-label="${collapsedSkillSections['magclaw-tools'] ? 'Expand' : 'Collapse'} MagClaw Function Calls">
-            <span aria-hidden="true">${collapsedSkillSections['magclaw-tools'] ? '›' : '⌄'}</span>
-          </button>
+          ${renderSkillCollapseButton('magclaw-tools', 'MagClaw Function Calls')}
           <span>MagClaw Function Calls</span>
           <em>${(skills.tools || []).length}</em>
         </div>
         ${collapsedSkillSections['magclaw-tools'] ? '' : renderAgentToolCapsules(skills.tools || [])}
       </section>
-      ${renderSkillList('Agent-Isolated Skills', skills.workspace || [], 'No agent-local skills installed yet.', 'agent-skills')}
-      ${renderSkillList('Global Codex Skills', skills.global || [], 'No global Codex skills found.', 'global-skills')}
-      ${renderSkillList('Plugin Skills', skills.plugin || [], 'No plugin skills found.', 'plugin-skills')}
+      ${renderAgentSkillSections(skills)}
     </div>
   `;
 }

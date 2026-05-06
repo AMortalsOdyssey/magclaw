@@ -608,8 +608,13 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.match(app, /data-action="refresh-agent-skills"/);
   assert.match(app, /Function Calls \/ Tools/);
   assert.match(app, /renderAgentToolCapsules/);
+  assert.match(app, /function agentSkillCount\(skills\)/);
+  assert.match(app, /renderSkillCollapseButton\('profile-skills', 'Skills'\)/);
+  assert.match(app, /renderAgentSkillSections\(skills, \{ compact: true \}\)/);
+  assert.equal(app.includes('renderSkillChips'), false);
   assert.match(styles, /\.agent-detail-tabs/);
   assert.match(styles, /\.skill-row/);
+  assert.match(styles, /\.agent-skill-section-stack\.compact/);
   assert.match(styles, /\.agent-tool-pill/);
   assert.match(styles, /\.agent-inline-edit/);
   assert.match(styles, /\.agent-restart-option/);

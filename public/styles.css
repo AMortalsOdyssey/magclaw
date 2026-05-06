@@ -6226,6 +6226,14 @@ code {
   gap: 8px;
 }
 
+.agent-skills-profile-head {
+  justify-content: flex-start;
+}
+
+.agent-skills-profile-head .detail-label {
+  flex: 1 1 auto;
+}
+
 .agent-edit-pencil {
   display: inline-grid;
   width: 20px;
@@ -6267,15 +6275,13 @@ code {
   color: #b42318;
 }
 
-.agent-tool-grid,
-.skill-chip-row {
+.agent-tool-grid {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.agent-tool-pill,
-.skill-chip {
+.agent-tool-pill {
   display: inline-flex;
   align-items: center;
   max-width: 100%;
@@ -6289,27 +6295,23 @@ code {
   overflow-wrap: anywhere;
 }
 
-.skill-chip {
-  background: #fff4cc;
-  font-family: inherit;
-}
-
-.skill-chip.muted {
-  background: var(--slock-fog);
-  color: var(--text-muted);
-}
-
-.agent-skill-summary-grid {
+.agent-skill-section-stack {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 0;
 }
 
-.agent-skill-summary-grid > div {
-  display: grid;
-  align-content: start;
-  gap: 6px;
-  min-width: 0;
+.agent-skill-section-stack.compact {
+  gap: 10px;
+}
+
+.agent-skill-section-stack.compact .skill-list-section {
+  padding: 0;
+  border-bottom: 0;
+}
+
+.agent-skill-section-stack.compact .skill-list-section + .skill-list-section {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-faint);
 }
 
 .skill-list-section {
