@@ -326,6 +326,13 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+function cloudRoleAllows(role, allowedRole) {
+  const hierarchy = ['viewer', 'member', 'agent_admin', 'computer_admin', 'admin', 'owner'];
+  const roleIndex = hierarchy.indexOf(String(role || 'viewer'));
+  const allowedIndex = hierarchy.indexOf(String(allowedRole || 'viewer'));
+  return roleIndex >= 0 && allowedIndex >= 0 && roleIndex >= allowedIndex;
+}
+
 function safeMarkdownHref(value) {
   const href = String(value || '').trim();
   if (/^(https?:|mailto:|#)/i.test(href)) return href;
@@ -3883,6 +3890,8 @@ function renderAccountSettingsTab() {
   const currentMember = auth.currentMember;
   const members = cloud.members || [];
   const invitations = cloud.invitations || [];
+  const canManageCloud = cloudRoleAllows(currentMember?.role, 'admin');
+  const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
   const authPanel = !auth.initialized ? `
       <div class="pixel-panel cloud-card">
         <form id="cloud-owner-form" class="modal-form">
@@ -3907,6 +3916,7 @@ function renderAccountSettingsTab() {
           <button class="secondary-btn" type="button" data-action="cloud-auth-logout">Sign Out</button>
         </div>
       </div>
+      ${canManageCloud ? `
       <div class="pixel-panel cloud-card">
         <form id="cloud-invite-form" class="modal-form">
           <div class="panel-title"><span>Invite Member</span><span>${escapeHtml(invitations.length)} pending</span></div>
@@ -3921,6 +3931,7 @@ function renderAccountSettingsTab() {
           <button class="primary-btn" type="submit">Create Invitation</button>
         </form>
       </div>
+      ` : ''}
       <div class="pixel-panel cloud-card wide">
         <div class="panel-title"><span>Workspace Members</span><span>${escapeHtml(members.length)}</span></div>
         <div class="computer-config-list">
@@ -3945,7 +3956,7 @@ function renderAccountSettingsTab() {
       <div class="pixel-panel cloud-card">
         <form id="cloud-register-form" class="modal-form">
           <div class="panel-title"><span>Accept Invitation</span><span>owner invite</span></div>
-          <label><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." required /></label>
+          <label><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
           <label><span>Name</span><input name="name" autocomplete="name" /></label>
           <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
           <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>

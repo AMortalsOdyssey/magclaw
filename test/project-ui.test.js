@@ -9,6 +9,23 @@ test('project remove buttons render as icons instead of rem text', async () => {
   assert.match(app, /class="project-remove-icon"/);
 });
 
+test('cloud account settings show invitation controls only to admins', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
+
+  assert.match(app, /function cloudRoleAllows\(role, allowedRole\)/);
+  assert.match(accountSettingsSource, /const canManageCloud = cloudRoleAllows\(currentMember\?\.role, 'admin'\)/);
+  assert.match(accountSettingsSource, /\$\{canManageCloud \? `[\s\S]*id="cloud-invite-form"/);
+});
+
+test('cloud account settings prefill invite tokens from invite URLs', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
+
+  assert.match(accountSettingsSource, /const inviteTokenFromUrl = new URLSearchParams\(window\.location\.search\)\.get\('token'\) \|\| ''/);
+  assert.match(accountSettingsSource, /name="inviteToken"[\s\S]*value="\$\{escapeHtml\(inviteTokenFromUrl\)\}"/);
+});
+
 test('project picker keeps only the native folder action and polished chip icons', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
