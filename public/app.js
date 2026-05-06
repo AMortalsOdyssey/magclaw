@@ -3848,8 +3848,10 @@ function renderFanoutApiConfigCard() {
         <div class="panel-title"><span>Fan-out API</span><span>${escapeHtml(status)}</span></div>
         <p class="fanout-api-note">Local rules always route immediately. When a message is ambiguous, this API can add a supplemental LLM route after the rules route has already been delivered.</p>
         <label class="checkline"><input type="checkbox" name="enabled" ${config.enabled ? 'checked' : ''} /> Enable async LLM supplement for ambiguous routing</label>
-        <label><span>Base URL</span><input name="baseUrl" value="${escapeHtml(config.baseUrl || '')}" placeholder="https://api.openai.com/v1" /></label>
-        <label><span>Model</span><input name="model" value="${escapeHtml(config.model || '')}" placeholder="gpt-5.4-mini-2026-03-17" /></label>
+        <label><span>Base URL</span><input name="baseUrl" value="${escapeHtml(config.baseUrl || '')}" placeholder="https://model-api.skyengine.com.cn/v1" /></label>
+        <label><span>Model</span><input name="model" value="${escapeHtml(config.model || '')}" placeholder="qwen3.5-flash" /></label>
+        <label><span>Fallback Model</span><input name="fallbackModel" value="${escapeHtml(config.fallbackModel || '')}" placeholder="deepseek-v4-flash" /></label>
+        <label><span>Timeout</span><input name="timeoutMs" type="number" min="500" max="30000" step="500" value="${escapeHtml(config.timeoutMs || 5000)}" /></label>
         <label>
           <span>Force LLM Keywords</span>
           <textarea name="forceKeywords" rows="3" placeholder="">${escapeHtml((config.forceKeywords || []).join('\n'))}</textarea>
@@ -5653,6 +5655,8 @@ function fanoutFormPayload() {
     enabled: data ? Boolean(data.get('enabled')) : Boolean(current.enabled),
     baseUrl: data?.get('baseUrl') ?? current.baseUrl ?? '',
     model: data?.get('model') ?? current.model ?? '',
+    fallbackModel: data?.get('fallbackModel') ?? current.fallbackModel ?? '',
+    timeoutMs: data?.get('timeoutMs') ?? current.timeoutMs ?? 5000,
     forceKeywords: data?.get('forceKeywords') ?? current.forceKeywords ?? [],
     clearApiKey: data ? Boolean(data.get('clearApiKey')) : false,
   };

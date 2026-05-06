@@ -53,6 +53,7 @@ export function createSystemServices(deps) {
         enabled: fanoutApi.enabled,
         baseUrl: fanoutApi.baseUrl,
         model: fanoutApi.model,
+        fallbackModel: fanoutApi.fallbackModel,
         timeoutMs: fanoutApi.timeoutMs,
         forceKeywords: fanoutApi.forceKeywords,
         hasApiKey: Boolean(fanoutApi.apiKey),
@@ -79,6 +80,7 @@ export function createSystemServices(deps) {
       enabled: body.enabled !== undefined ? Boolean(body.enabled) : current.enabled,
       baseUrl: body.baseUrl !== undefined ? normalizeCloudUrl(body.baseUrl || '') : current.baseUrl,
       model: body.model !== undefined ? String(body.model || '').trim() : current.model,
+      fallbackModel: body.fallbackModel !== undefined ? String(body.fallbackModel || '').trim() : current.fallbackModel,
       timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : current.timeoutMs,
       forceKeywords: body.forceKeywords !== undefined ? body.forceKeywords : current.forceKeywords,
     };

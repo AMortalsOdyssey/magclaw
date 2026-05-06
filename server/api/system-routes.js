@@ -89,6 +89,8 @@ export async function handleSystemApi(req, res, url, deps) {
       configured: fanoutApiConfigured(),
       baseUrl: state.settings.fanoutApi.baseUrl,
       model: state.settings.fanoutApi.model,
+      fallbackModel: state.settings.fanoutApi.fallbackModel,
+      timeoutMs: state.settings.fanoutApi.timeoutMs,
       hasApiKey: Boolean(state.settings.fanoutApi.apiKey),
     });
     await persistState();

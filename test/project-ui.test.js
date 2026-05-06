@@ -666,10 +666,14 @@ test('Fan-out API config replaces the Brain Agent UI module', async () => {
   assert.match(app.slice(app.indexOf('function renderSystemSettingsTab'), app.indexOf('function renderReleaseNotesSettingsTab')), /renderFanoutApiConfigCard\(\)/);
   assert.match(app, /id="fanout-config-form"/);
   assert.match(app, /Base URL/);
+  assert.match(app, /Fallback Model/);
+  assert.match(app, /Timeout/);
   assert.match(app, /API Key/);
   assert.match(app, /apiKeyPreview/);
   assert.match(app, /Enable async LLM supplement for ambiguous routing/);
   assert.match(app, /Force LLM Keywords/);
+  assert.match(app, /fallbackModel: data\?\.get\('fallbackModel'\)/);
+  assert.match(app, /timeoutMs: data\?\.get\('timeoutMs'\)/);
   assert.match(app, /forceKeywords: data\?\.get\('forceKeywords'\)/);
   assert.match(submitSource, /form\.id === 'fanout-config-form'/);
   assert.match(submitSource, /\/api\/settings\/fanout/);

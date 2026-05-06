@@ -6,6 +6,10 @@ import {
   parseFanoutApiJson,
 } from '../server/fanout-api.js';
 import {
+  DEFAULT_FANOUT_API_BASE_URL,
+  DEFAULT_FANOUT_API_FALLBACK_MODEL,
+  DEFAULT_FANOUT_API_MODEL,
+  DEFAULT_FANOUT_API_TIMEOUT_MS,
   fanoutApiConfigReady,
   normalizeChatRuntimeConfig,
   normalizeCloudUrl,
@@ -22,6 +26,7 @@ test('runtime config helpers normalize fan-out and chat settings', () => {
     baseUrl: 'https://api.example.com/v1/',
     apiKey: 'secret',
     model: ' router ',
+    fallbackModel: ' fallback-router ',
     timeoutMs: 50_000,
     forceKeywords: ' /llm\n强制LLM，/LLM ',
   }, 2500), {
@@ -29,8 +34,20 @@ test('runtime config helpers normalize fan-out and chat settings', () => {
     baseUrl: 'https://api.example.com/v1',
     apiKey: 'secret',
     model: 'router',
+    fallbackModel: 'fallback-router',
     timeoutMs: 30_000,
     forceKeywords: ['/llm', '强制LLM'],
+  });
+  assert.deepEqual({
+    baseUrl: DEFAULT_FANOUT_API_BASE_URL,
+    model: DEFAULT_FANOUT_API_MODEL,
+    fallbackModel: DEFAULT_FANOUT_API_FALLBACK_MODEL,
+    timeoutMs: DEFAULT_FANOUT_API_TIMEOUT_MS,
+  }, {
+    baseUrl: 'https://model-api.skyengine.com.cn/v1',
+    model: 'qwen3.5-flash',
+    fallbackModel: 'deepseek-v4-flash',
+    timeoutMs: 5000,
   });
   assert.deepEqual(normalizeFanoutForceKeywords(['  alpha  ', '', 'ALPHA', 'beta;gamma']), ['alpha', 'beta;gamma']);
   assert.equal(fanoutApiConfigReady({ enabled: true, baseUrl: 'x', apiKey: 'k', model: 'm' }), true);

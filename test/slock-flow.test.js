@@ -1555,6 +1555,8 @@ test('Fan-out API config is masked globally and drives LLM card routing when nee
     assert.equal(configured.settings.fanoutApi.configured, true);
     assert.equal(configured.settings.fanoutApi.hasApiKey, true);
     assert.equal(configured.settings.fanoutApi.apiKeyPreview, 'secret****');
+    assert.equal(configured.settings.fanoutApi.fallbackModel, 'deepseek-v4-flash');
+    assert.equal(configured.settings.fanoutApi.timeoutMs, 5000);
     assert.equal(JSON.stringify(configured.settings).includes('secret-test-key'), false);
 
     const direct = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
@@ -1679,6 +1681,65 @@ test('Fan-out API force keywords trigger LLM routing for otherwise direct messag
     assert.equal(routeEvent.llmModel, 'force-router');
     assert.ok(routeEvent.evidence.find((item) => item.type === 'llm_trigger' && item.value === 'force_keyword'));
     assert.ok(routeEvent.evidence.find((item) => item.type === 'llm_force_keyword' && item.value === '强制LLM'));
+  } finally {
+    await server.stop();
+    await mock.stop();
+  }
+});
+
+test('Fan-out API retries with the fallback model after primary failure', async () => {
+  const server = await startIsolatedServer();
+  let targetId = '';
+  const mock = await startMockFanoutApi((body) => {
+    if (body.model === 'qwen3.5-flash') {
+      throw new Error('primary model unavailable');
+    }
+    return {
+      mode: 'directed',
+      targetAgentIds: [targetId],
+      confidence: 0.9,
+      reason: 'Fallback model selected the explicit helper.',
+    };
+  });
+  try {
+    const { agent: alpha } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'AlphaPilot', description: 'Direct helper', runtime: 'Codex CLI' }),
+    });
+    targetId = alpha.id;
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'fallback-route', description: 'fallback route test', agentIds: [alpha.id] }),
+    });
+
+    await request(server.baseUrl, '/api/settings/fanout', {
+      method: 'POST',
+      body: JSON.stringify({
+        enabled: true,
+        baseUrl: `${mock.baseUrl}/v1`,
+        apiKey: 'fallback-key',
+        model: 'qwen3.5-flash',
+        fallbackModel: 'deepseek-v4-flash',
+        timeoutMs: 5000,
+        forceKeywords: '/llm',
+      }),
+    });
+
+    await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: `<@${alpha.id}> /llm 请确认一下`, attachmentIds: [] }),
+    });
+
+    const delivered = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      return state.routeEvents.find((event) => event.strategy === 'llm_supplement') || null;
+    });
+    assert.equal(mock.calls.length, 2);
+    assert.deepEqual(mock.calls.map((call) => call.body.model), ['qwen3.5-flash', 'deepseek-v4-flash']);
+    assert.equal(delivered.llmUsed, true);
+    assert.equal(delivered.llmModel, 'deepseek-v4-flash');
+    assert.ok(delivered.evidence.find((item) => item.type === 'llm_primary_model' && item.value === 'qwen3.5-flash'));
+    assert.ok(delivered.evidence.find((item) => item.type === 'llm_fallback_model' && item.value === 'deepseek-v4-flash'));
   } finally {
     await server.stop();
     await mock.stop();

@@ -827,6 +827,7 @@ export function createRoutingEngine(deps) {
           'For thread replies, use the parent message, recent replies, participants, and nicknames/titles to avoid waking unrelated agents.',
           'In an agent-authored thread, a singular second-person reply usually addresses the parent author; do not target another agent only because their name appears as context.',
           'If a thread reply is simple chat, prefer the smallest useful target set; use passive_awareness with no targets if no agent should answer.',
+          'Keep reason under 80 characters, and use exact agent id strings only.',
           'Return only a single JSON object matching the requested schema. Do not include markdown.',
         ].join(' '),
       },
@@ -837,9 +838,7 @@ export function createRoutingEngine(deps) {
     ];
   }
   
-  async function callFanoutApi({ channelAgents, mentions, message, spaceId, allCards, trigger, thread = null }) {
-    const config = normalizeFanoutApiConfig(state.settings?.fanoutApi || {}, FANOUT_API_TIMEOUT_MS);
-    if (!fanoutApiConfigured(config)) throw new Error('Fan-out API is not fully configured.');
+  async function requestFanoutApiModel({ config, model, channelAgents, mentions, message, spaceId, allCards, trigger, thread = null }) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
     const startedAt = Date.now();
@@ -852,9 +851,11 @@ export function createRoutingEngine(deps) {
           authorization: `Bearer ${config.apiKey}`,
         },
         body: JSON.stringify({
-          model: config.model,
+          model,
           messages: fanoutApiMessages({ channelAgents, mentions, message, spaceId, allCards, trigger, thread }),
           temperature: 0,
+          max_tokens: 240,
+          response_format: { type: 'json_object' },
         }),
       });
       const text = await response.text();
@@ -862,32 +863,67 @@ export function createRoutingEngine(deps) {
       if (!response.ok) {
         throw new Error(data?.error?.message || data?.message || response.statusText);
       }
-      const rawDecision = parseFanoutApiJson(fanoutApiResponseText(data));
-      const latencyMs = Date.now() - startedAt;
-      const decision = normalizeRouteDecision({
-        ...rawDecision,
-        targetAgentIds: rawDecision.targetAgentIds || rawDecision.agentIds || rawDecision.targets || [],
-        claimantAgentId: rawDecision.claimantAgentId || null,
-        reason: rawDecision.reason || 'Fan-out API selected agents.',
-        evidence: [
-          routeEvidence('llm_trigger', trigger?.type || 'semantic'),
-          routeEvidence('llm_reason', trigger?.reason || ''),
-          ...(trigger?.keyword ? [routeEvidence('llm_force_keyword', trigger.keyword)] : []),
-          routeEvidence('llm_model', config.model),
-          routeEvidence('llm_latency_ms', String(latencyMs)),
-          ...(Array.isArray(rawDecision.evidence) ? rawDecision.evidence : []),
-        ],
-        llmUsed: true,
-        llmAttempted: true,
-        llmLatencyMs: latencyMs,
-        llmModel: config.model,
-        llmBaseUrl: config.baseUrl,
-        strategy: 'llm',
-      }, channelAgents);
-      return decision;
+      return {
+        rawDecision: parseFanoutApiJson(fanoutApiResponseText(data)),
+        latencyMs: Date.now() - startedAt,
+        model,
+      };
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  async function callFanoutApi({ channelAgents, mentions, message, spaceId, allCards, trigger, thread = null }) {
+    const config = normalizeFanoutApiConfig(state.settings?.fanoutApi || {}, FANOUT_API_TIMEOUT_MS);
+    if (!fanoutApiConfigured(config)) throw new Error('Fan-out API is not fully configured.');
+    const fallbackModel = config.fallbackModel && config.fallbackModel !== config.model ? config.fallbackModel : '';
+    const startedAt = Date.now();
+    let primaryError = null;
+    let result = null;
+    try {
+      result = await requestFanoutApiModel({ config, model: config.model, channelAgents, mentions, message, spaceId, allCards, trigger, thread });
+    } catch (error) {
+      primaryError = error;
+      if (!fallbackModel) throw error;
+      addSystemEvent('fanout_api_fallback_attempt', `Fan-out API primary model failed; trying fallback ${fallbackModel}.`, {
+        messageId: message?.id || null,
+        parentMessageId: message?.parentMessageId || null,
+        spaceId,
+        trigger: trigger?.type || 'semantic',
+        primaryModel: config.model,
+        fallbackModel,
+        error: error.message,
+      });
+      result = await requestFanoutApiModel({ config, model: fallbackModel, channelAgents, mentions, message, spaceId, allCards, trigger, thread });
+    }
+    const rawDecision = result.rawDecision;
+    const latencyMs = Date.now() - startedAt;
+    const fallbackEvidence = primaryError ? [
+      routeEvidence('llm_primary_model', config.model),
+      routeEvidence('llm_fallback_model', result.model),
+      routeEvidence('llm_primary_error', primaryError.message.slice(0, 160)),
+    ] : [];
+    return normalizeRouteDecision({
+      ...rawDecision,
+      targetAgentIds: rawDecision.targetAgentIds || rawDecision.agentIds || rawDecision.targets || [],
+      claimantAgentId: rawDecision.claimantAgentId || null,
+      reason: rawDecision.reason || 'Fan-out API selected agents.',
+      evidence: [
+        routeEvidence('llm_trigger', trigger?.type || 'semantic'),
+        routeEvidence('llm_reason', trigger?.reason || ''),
+        ...(trigger?.keyword ? [routeEvidence('llm_force_keyword', trigger.keyword)] : []),
+        routeEvidence('llm_model', result.model),
+        routeEvidence('llm_latency_ms', String(latencyMs)),
+        ...fallbackEvidence,
+        ...(Array.isArray(rawDecision.evidence) ? rawDecision.evidence : []),
+      ],
+      llmUsed: true,
+      llmAttempted: true,
+      llmLatencyMs: latencyMs,
+      llmModel: result.model,
+      llmBaseUrl: config.baseUrl,
+      strategy: 'llm',
+    }, channelAgents);
   }
 
   function withFanoutSupplementQueued(decision, channelAgents, trigger) {
