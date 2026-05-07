@@ -35,8 +35,7 @@ export function cloudCapabilitiesForRole(role) {
   return {
     invite_member: true,
     invite_core_member: isCore,
-    invite_admin: isAdmin,
-    manage_member_roles: isAdmin,
+    manage_member_roles: isCore,
     remove_member: isCore,
     remove_core_member: isAdmin,
     remove_admin: isAdmin,
@@ -61,7 +60,7 @@ export function canInviteRole(actorRole, targetRole) {
   if (target === 'core_member') {
     return roleAllows(actorRole, ['core_member']);
   }
-  return normalizeCloudRole(actorRole) === 'admin';
+  return false;
 }
 
 export function canRemoveRole(actorRole, targetRole) {
@@ -73,4 +72,14 @@ export function canRemoveRole(actorRole, targetRole) {
     return true;
   }
   return normalizeCloudRole(actorRole) === 'core_member' && target === 'member';
+}
+
+export function canUpdateMemberRole(actorRole, targetRole, nextRole) {
+  const actor = normalizeCloudRole(actorRole, null);
+  const target = normalizeCloudRole(targetRole, null);
+  const next = normalizeCloudRole(nextRole, null);
+  if (!actor || !target || !next) return false;
+  if (!roleAllows(actor, ['core_member'])) return false;
+  if (target === 'admin' || next === 'admin') return false;
+  return next === 'member' || next === 'core_member';
 }

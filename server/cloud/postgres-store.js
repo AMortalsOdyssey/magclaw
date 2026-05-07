@@ -118,6 +118,21 @@ function invitationFromRow(row) {
   };
 }
 
+function passwordResetFromRow(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    userId: row.user_id,
+    tokenHash: row.token_hash,
+    createdBy: row.created_by || null,
+    expiresAt: requiredIso(row.expires_at),
+    consumedAt: iso(row.consumed_at),
+    revokedAt: iso(row.revoked_at),
+    createdAt: requiredIso(row.created_at),
+    metadata: jsonObject(row.metadata),
+  };
+}
+
 export function cloudPostgresOptionsFromEnv(env = process.env) {
   const databaseUrl = normalizeDatabaseUrl(env.MAGCLAW_DATABASE_URL || env.DATABASE_URL || '');
   if (!databaseUrl) return null;
@@ -327,6 +342,35 @@ export function createCloudPostgresStore(optionsInput = {}) {
           ]);
         }
 
+        for (const reset of safeArray(cloud.passwordResetTokens)) {
+          await client.query(`
+            INSERT INTO ${table('cloud_password_resets')}
+              (id, workspace_id, user_id, token_hash, created_by, expires_at,
+               consumed_at, revoked_at, created_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+              workspace_id = EXCLUDED.workspace_id,
+              user_id = EXCLUDED.user_id,
+              token_hash = EXCLUDED.token_hash,
+              created_by = EXCLUDED.created_by,
+              expires_at = EXCLUDED.expires_at,
+              consumed_at = EXCLUDED.consumed_at,
+              revoked_at = EXCLUDED.revoked_at,
+              metadata = EXCLUDED.metadata
+          `, [
+            reset.id,
+            reset.workspaceId,
+            reset.userId,
+            reset.tokenHash,
+            reset.createdBy || null,
+            requiredIso(reset.expiresAt),
+            iso(reset.consumedAt),
+            iso(reset.revokedAt),
+            requiredIso(reset.createdAt),
+            JSON.stringify(jsonObject(reset.metadata)),
+          ]);
+        }
+
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK');
@@ -343,11 +387,13 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const members = await client.query(`SELECT * FROM ${table('cloud_workspace_members')} ORDER BY created_at ASC, id ASC`);
       const sessions = await client.query(`SELECT * FROM ${table('cloud_sessions')} ORDER BY created_at ASC, id ASC`);
       const invitations = await client.query(`SELECT * FROM ${table('cloud_invitations')} ORDER BY created_at ASC, id ASC`);
+      const passwordResets = await client.query(`SELECT * FROM ${table('cloud_password_resets')} ORDER BY created_at ASC, id ASC`);
       cloud.workspaces = workspaces.rows.map(workspaceFromRow);
       cloud.users = users.rows.map(userFromRow);
       cloud.workspaceMembers = members.rows.map(memberFromRow);
       cloud.sessions = sessions.rows.map(sessionFromRow);
       cloud.invitations = invitations.rows.map(invitationFromRow);
+      cloud.passwordResetTokens = passwordResets.rows.map(passwordResetFromRow);
       state.cloud = cloud;
     });
   }

@@ -82,17 +82,77 @@ export async function handleCloudApi(req, res, url, deps) {
         basicAuth: true,
         note: 'Use browser session cookies or HTTP Basic Auth over HTTPS for admin API calls.',
       },
+      modules: [
+        {
+          id: 'members',
+          name: 'Members',
+          description: 'Invite workspace users, manage member roles, and create password reset links.',
+          endpoints: [
+            {
+              method: 'POST',
+              path: '/api/cloud/invitations/batch',
+              role: 'member',
+              request: {
+                emails: ['member@example.com', 'core@example.com'],
+                role: 'member',
+              },
+              response: {
+                invitations: [
+                  {
+                    email: 'member@example.com',
+                    role: 'member',
+                    inviteToken: 'mc_inv_...',
+                    inviteUrl: 'https://your-magclaw-host/invite?token=mc_inv_...',
+                  },
+                ],
+              },
+              note: 'Target role must be member or core_member. Admin invitations are never allowed.',
+            },
+            {
+              method: 'POST',
+              path: '/api/cloud/password-resets',
+              role: 'admin',
+              request: {
+                memberId: 'wmem_...',
+              },
+              response: {
+                email: 'member@example.com',
+                resetToken: 'mc_reset_...',
+                resetUrl: 'https://your-magclaw-host/reset-password?token=mc_reset_...',
+              },
+              note: 'Creates a one-time reset link, invalidates existing sessions, and disables the old password.',
+            },
+            {
+              method: 'PATCH',
+              path: '/api/cloud/members/:id',
+              role: 'core_member',
+              request: {
+                role: 'core_member',
+              },
+              response: {
+                member: { id: 'wmem_...', role: 'core_member' },
+              },
+              note: 'Only member and core_member are editable target roles; Admin rows are immutable.',
+            },
+          ],
+        },
+      ],
       endpoints: [
         { method: 'GET', path: '/api/cloud/auth/status', role: 'guest' },
         { method: 'POST', path: '/api/cloud/auth/login', role: 'guest' },
         { method: 'POST', path: '/api/cloud/auth/logout', role: 'member' },
         { method: 'POST', path: '/api/cloud/auth/heartbeat', role: 'member' },
         { method: 'POST', path: '/api/cloud/auth/register', role: 'invite' },
+        { method: 'GET', path: '/api/cloud/auth/invitation-status', role: 'guest' },
+        { method: 'GET', path: '/api/cloud/auth/reset-status', role: 'guest' },
+        { method: 'POST', path: '/api/cloud/auth/reset-password', role: 'guest' },
         { method: 'GET', path: '/api/cloud/admin/apis', role: 'admin' },
           { method: 'GET', path: '/api/cloud/invitations', role: 'member' },
           { method: 'POST', path: '/api/cloud/invitations', role: 'member' },
-          { method: 'PATCH', path: '/api/cloud/members/:id', role: 'admin' },
+          { method: 'POST', path: '/api/cloud/invitations/batch', role: 'member' },
+          { method: 'PATCH', path: '/api/cloud/members/:id', role: 'core_member' },
           { method: 'DELETE', path: '/api/cloud/members/:id', role: 'core_member' },
+          { method: 'POST', path: '/api/cloud/password-resets', role: 'admin' },
         { method: 'POST', path: '/api/settings', role: 'admin' },
         { method: 'POST', path: '/api/settings/fanout', role: 'admin' },
         { method: 'PATCH', path: '/api/settings/fanout', role: 'admin' },
@@ -155,6 +215,40 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/cloud/auth/invitation-status') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.invitationStatus(url.searchParams.get('token') || ''));
+    if (result) sendJson(res, 200, { ok: true, ...result });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/cloud/auth/reset-status') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.resetStatus(url.searchParams.get('token') || ''));
+    if (result) sendJson(res, 200, { ok: true, ...result });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/auth/reset-password') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.resetPassword(body, req, res));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
     if (req.method === 'GET' && url.pathname === '/api/cloud/invitations') {
     if (!cloudAuth) {
       sendError(res, 503, 'Cloud auth service is unavailable.');
@@ -178,6 +272,34 @@ export async function handleCloudApi(req, res, url, deps) {
     }
       return true;
     }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/invitations/batch') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.batchCreateInvitations(body, req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 201, result);
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/password-resets') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.createPasswordReset(body, req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 201, result);
+    }
+    return true;
+  }
 
     const cloudMemberMatch = url.pathname.match(/^\/api\/cloud\/members\/([^/]+)$/);
     if (cloudMemberMatch && req.method === 'PATCH') {

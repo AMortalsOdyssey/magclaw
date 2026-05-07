@@ -175,6 +175,29 @@ CREATE INDEX IF NOT EXISTS cloud_invitations_active_idx
   ON cloud_invitations(workspace_id, expires_at)
   WHERE accepted_at IS NULL AND revoked_at IS NULL;
 
+CREATE TABLE IF NOT EXISTS cloud_password_resets (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES cloud_users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  created_by TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS cloud_password_resets_token_hash_uidx
+  ON cloud_password_resets(token_hash);
+
+CREATE INDEX IF NOT EXISTS cloud_password_resets_user_active_idx
+  ON cloud_password_resets(user_id, expires_at DESC)
+  WHERE consumed_at IS NULL AND revoked_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS cloud_password_resets_workspace_idx
+  ON cloud_password_resets(workspace_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS cloud_computers (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,

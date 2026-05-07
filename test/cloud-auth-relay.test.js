@@ -150,7 +150,14 @@ test('environment admin login protects app APIs and supports invites end to end'
       headers: { authorization: basicAuth },
     });
     assert.equal(adminApis.data.auth.basicAuth, true);
+    const membersApiModule = adminApis.data.modules.find((item) => item.id === 'members');
+    assert.equal(membersApiModule.name, 'Members');
+    assert.ok(membersApiModule.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations/batch' && item.response.invitations[0].inviteUrl));
+    assert.ok(membersApiModule.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/password-resets' && item.response.resetUrl));
+    assert.ok(membersApiModule.endpoints.some((item) => item.method === 'PATCH' && item.path === '/api/cloud/members/:id'));
     assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations' && item.role === 'member'));
+    assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations/batch' && item.role === 'member'));
+    assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/password-resets' && item.role === 'admin'));
     assert.ok(adminApis.data.endpoints.some((item) => item.path === '/api/settings/fanout' && item.role === 'admin'));
 
     const admin = await request(server.baseUrl, '/api/cloud/auth/login', {
@@ -277,6 +284,13 @@ test('cloud roles enforce core member invite and removal boundaries', async () =
     });
     const adminCookie = admin.cookie;
 
+    await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ email: 'bad-admin@example.com', role: 'admin' }),
+      expectStatus: 403,
+    });
+
     const coreInvite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
       cookie: adminCookie,
@@ -310,6 +324,12 @@ test('cloud roles enforce core member invite and removal boundaries', async () =
           password: 'password123',
         }),
       });
+    await request(server.baseUrl, `/api/cloud/members/${admin.data.member.id}`, {
+      method: 'PATCH',
+      cookie: adminCookie,
+      body: JSON.stringify({ role: 'member' }),
+      expectStatus: 403,
+    });
     await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
       cookie: coreCookie,
@@ -335,6 +355,31 @@ test('cloud roles enforce core member invite and removal boundaries', async () =
     const oldMemberUserId = member.data.user.id;
     const oldMemberHumanId = member.data.member.humanId;
     const memberCookie = member.cookie;
+
+    const corePromotesMember = await request(server.baseUrl, `/api/cloud/members/${member.data.member.id}`, {
+      method: 'PATCH',
+      cookie: coreCookie,
+      body: JSON.stringify({ role: 'core_member' }),
+    });
+    assert.equal(corePromotesMember.data.member.role, 'core_member');
+    const adminDemotesMember = await request(server.baseUrl, `/api/cloud/members/${member.data.member.id}`, {
+      method: 'PATCH',
+      cookie: adminCookie,
+      body: JSON.stringify({ role: 'member' }),
+    });
+    assert.equal(adminDemotesMember.data.member.role, 'member');
+    await request(server.baseUrl, `/api/cloud/members/${member.data.member.id}`, {
+      method: 'PATCH',
+      cookie: coreCookie,
+      body: JSON.stringify({ role: 'admin' }),
+      expectStatus: 400,
+    });
+    await request(server.baseUrl, `/api/cloud/members/${core.data.member.id}`, {
+      method: 'PATCH',
+      cookie: memberCookie,
+      body: JSON.stringify({ role: 'member' }),
+      expectStatus: 403,
+    });
 
     const memberInvitesMember = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
@@ -404,6 +449,118 @@ test('cloud roles enforce core member invite and removal boundaries', async () =
     assert.notEqual(rejoined.data.user.id, oldMemberUserId);
     assert.notEqual(rejoined.data.member.humanId, oldMemberHumanId);
     assert.match(rejoined.data.user.id, /^usr_\d{8}$/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('cloud invite registration and admin password reset flows enforce tokens and password policy', async () => {
+  const server = await startIsolatedServer({
+    MAGCLAW_ADMIN_NAME: 'Admin',
+    MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
+    MAGCLAW_ADMIN_PASSWORD: 'password123',
+  });
+  try {
+    const admin = await request(server.baseUrl, '/api/cloud/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@example.com', password: 'password123' }),
+    });
+    const adminCookie = admin.cookie;
+
+    const batch = await request(server.baseUrl, '/api/cloud/invitations/batch', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ emails: ['batch-one@example.com', 'batch-two@example.com'], role: 'member' }),
+    });
+    assert.equal(batch.data.invitations.length, 2);
+    assert.deepEqual(batch.data.invitations.map((item) => item.email), ['batch-one@example.com', 'batch-two@example.com']);
+    assert.ok(batch.data.invitations.every((item) => item.inviteToken?.startsWith('mc_inv_')));
+    assert.ok(batch.data.invitations.every((item) => item.inviteUrl?.includes('/invite?token=')));
+    await request(server.baseUrl, '/api/cloud/invitations/batch', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ emails: ['bad-admin@example.com'], role: 'admin' }),
+      expectStatus: 403,
+    });
+
+    const inviteStatus = await request(server.baseUrl, `/api/cloud/auth/invitation-status?token=${encodeURIComponent(batch.data.invitations[0].inviteToken)}`);
+    assert.equal(inviteStatus.data.invitation.email, 'batch-one@example.com');
+    assert.equal(inviteStatus.data.invitation.role, 'member');
+    assert.equal(inviteStatus.data.invitation.status, 'pending');
+
+    await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: batch.data.invitations[0].inviteToken,
+        email: 'batch-one@example.com',
+        name: 'Batch One',
+        password: 'password',
+      }),
+      expectStatus: 400,
+    });
+    const member = await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: batch.data.invitations[0].inviteToken,
+        email: 'batch-one@example.com',
+        name: 'Batch One',
+        password: 'password123',
+      }),
+    });
+    assert.equal(member.data.user.email, 'batch-one@example.com');
+    assert.equal(member.data.member.role, 'member');
+    await request(server.baseUrl, `/api/cloud/auth/invitation-status?token=${encodeURIComponent(batch.data.invitations[0].inviteToken)}`, {
+      expectStatus: 409,
+    });
+    await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: batch.data.invitations[0].inviteToken,
+        email: 'batch-one@example.com',
+        name: 'Batch One Again',
+        password: 'password123',
+      }),
+      expectStatus: 409,
+    });
+
+    const reset = await request(server.baseUrl, '/api/cloud/password-resets', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ memberId: member.data.member.id }),
+    });
+    assert.equal(reset.data.email, 'batch-one@example.com');
+    assert.match(reset.data.resetToken, /^mc_reset_/);
+    assert.match(reset.data.resetUrl, /\/reset-password\?token=/);
+    await request(server.baseUrl, '/api/state', { cookie: member.cookie, expectStatus: 401 });
+    await request(server.baseUrl, '/api/cloud/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'batch-one@example.com', password: 'password123' }),
+      expectStatus: 401,
+    });
+
+    const resetStatus = await request(server.baseUrl, `/api/cloud/auth/reset-status?token=${encodeURIComponent(reset.data.resetToken)}`);
+    assert.equal(resetStatus.data.reset.email, 'batch-one@example.com');
+    await request(server.baseUrl, '/api/cloud/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ resetToken: reset.data.resetToken, password: 'password' }),
+      expectStatus: 400,
+    });
+    const resetLogin = await request(server.baseUrl, '/api/cloud/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ resetToken: reset.data.resetToken, password: 'newpass123' }),
+    });
+    assert.equal(resetLogin.data.user.email, 'batch-one@example.com');
+    assert.match(resetLogin.cookie, /magclaw_session=/);
+    await request(server.baseUrl, '/api/cloud/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ resetToken: reset.data.resetToken, password: 'again123' }),
+      expectStatus: 410,
+    });
+    const newLogin = await request(server.baseUrl, '/api/cloud/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'batch-one@example.com', password: 'newpass123' }),
+    });
+    assert.equal(newLogin.data.user.email, 'batch-one@example.com');
   } finally {
     await server.stop();
   }

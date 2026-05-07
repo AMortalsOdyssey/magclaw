@@ -139,6 +139,7 @@ export function createStateCore(deps) {
         users: [],
         sessions: [],
         invitations: [],
+        passwordResetTokens: [],
         pairingTokens: [],
         computerTokens: [],
         agentDeliveries: [],
