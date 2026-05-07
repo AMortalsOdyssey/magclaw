@@ -1327,6 +1327,11 @@ button:disabled {
   opacity: 1;
 }
 
+.avatar-status-dot.status-warming {
+  background: var(--slock-pink);
+  opacity: 1;
+}
+
 .avatar-status-dot.status-queued {
   background: var(--info);
   opacity: 1;
@@ -1442,6 +1447,11 @@ button:disabled {
 
 .agent-hover-status-dot.status-busy {
   background: var(--warning);
+  opacity: 1;
+}
+
+.agent-hover-status-dot.status-warming {
+  background: var(--slock-pink);
   opacity: 1;
 }
 
@@ -7583,6 +7593,10 @@ code {
 
 .add-member-status-dot.status-busy {
   background: var(--warning);
+}
+
+.add-member-status-dot.status-warming {
+  background: var(--slock-pink);
 }
 
 .add-member-status-dot.status-queued {

@@ -40,6 +40,8 @@ function displayName(id) {
   return id === 'system' ? 'Magclaw' : 'Unknown';
 }
 
+const SYSTEM_AVATAR_SRC = '/favicon.svg';
+
 function displayAvatar(id, type) {
   const name = displayName(id);
   if (type === 'system') return 'MC';
@@ -48,7 +50,7 @@ function displayAvatar(id, type) {
 
 function getAvatarHtml(id, type, cssClass = '') {
   if (type === 'system') {
-    return `<span class="${cssClass}">MC</span>`;
+    return `<img src="${SYSTEM_AVATAR_SRC}" class="${cssClass} avatar-img system-avatar-img" alt="Magclaw" />`;
   }
     const agent = byId(appState?.agents, id);
     if (agent?.avatar) {
@@ -67,7 +69,7 @@ function agentHandle(agent) {
 }
 
 function renderAgentHoverCard(agent) {
-  const status = agent?.status || 'offline';
+  const status = agent ? agentDisplayStatus(agent) : 'offline';
   const description = agent?.description || agent?.runtime || 'Agent';
   return `
     <span class="agent-hover-card" role="tooltip">

@@ -254,7 +254,7 @@ function renderAgentProfileTab(agent) {
         <span class="agent-detail-avatar-frame hero-avatar">${getAvatarHtml(agent.id, 'agent', 'agent-detail-avatar-preview')}</span>
         <div>
           <h3>${escapeHtml(agent.name)}</h3>
-          <p><span class="avatar-status-dot inline ${presenceClass(agent.status)}"></span>${escapeHtml(agentStatusLabel(agent))} <span>${escapeHtml(agentHandle(agent))}</span></p>
+          <p><span class="avatar-status-dot inline ${presenceClass(agentDisplayStatus(agent))}"></span>${escapeHtml(agentStatusLabel(agent))} <span>${escapeHtml(agentHandle(agent))}</span></p>
         </div>
       </div>
       ${renderAgentAvatarEditor(agent)}
@@ -403,7 +403,7 @@ function renderAgent(agent) {
 function renderAgentListItem(agent) {
   const active = selectedAgentId === agent.id ? ' active' : '';
   const desc = agent.description ? `<span class="agent-desc">${escapeHtml(agent.description)}</span>` : '';
-  const status = agent.status;
+  const status = agentDisplayStatus(agent);
   return `
     <button class="space-btn member-btn${active}" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}">
       <span class="dm-avatar-wrap">

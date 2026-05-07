@@ -913,8 +913,10 @@ function agentIsRunning(agent) {
 }
 
 function agentStatusLabel(agent) {
-  const status = agent?.status || 'offline';
-  return `${status.charAt(0).toUpperCase()}${status.slice(1)}`;
+  const status = agentDisplayStatus(agent);
+  const value = String(status || 'offline').toLowerCase();
+  if (value === 'warming') return 'Warming';
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
 function shouldCelebrateAgentBorn(value, today = new Date()) {

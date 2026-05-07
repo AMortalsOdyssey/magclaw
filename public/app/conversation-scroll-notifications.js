@@ -191,8 +191,23 @@ function taskTone(status) {
   return 'blue';
 }
 
+function agentIsWarming(agent) {
+  const activity = agent?.runtimeActivity || {};
+  const status = String(agent?.status || '').toLowerCase();
+  const mode = String(activity.mode || '').toLowerCase();
+  const detail = String(activity.detail || '').toLowerCase();
+  return status === 'thinking'
+    && (activity.warmup === true || mode === 'warmup' || detail.includes('hidden warmup'));
+}
+
+function agentDisplayStatus(agent) {
+  if (agentIsWarming(agent)) return 'warming';
+  return agent?.status || 'offline';
+}
+
 function presenceTone(status) {
   const value = String(status || '').toLowerCase();
+  if (value === 'warming') return 'warming';
   if (['working', 'running', 'starting', 'thinking', 'busy'].includes(value)) return 'busy';
   if (['queued', 'pending'].includes(value)) return 'queued';
   if (['error', 'failed'].includes(value)) return 'error';
@@ -212,7 +227,7 @@ function avatarStatusDot(status, label = 'Status') {
 function agentStatusDot(authorId, authorType) {
   if (authorType !== 'agent') return '';
   const agent = byId(appState?.agents, authorId);
-  return avatarStatusDot(agent?.status || 'offline', 'Agent status');
+  return avatarStatusDot(agent ? agentDisplayStatus(agent) : 'offline', 'Agent status');
 }
 
 function humanStatusDot(authorId, authorType) {

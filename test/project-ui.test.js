@@ -316,6 +316,14 @@ test('all visible frontend timestamps include seconds', async () => {
   assert.match(app, /hour12: false/);
 });
 
+test('system messages render the browser tab logo as the avatar', async () => {
+  const app = await readAppSource();
+
+  assert.match(app, /const SYSTEM_AVATAR_SRC = '\/favicon\.svg'/);
+  assert.match(app, /<img src="\$\{SYSTEM_AVATAR_SRC\}" class="\$\{cssClass\} avatar-img system-avatar-img" alt="Magclaw" \/>/);
+  assert.equal(app.includes('return `<span class="${cssClass}">MC</span>`;'), false);
+});
+
 test('agent born date shows a cake on same-month-day anniversaries only', async () => {
   const app = await readAppSource();
 
@@ -645,6 +653,22 @@ test('member rail lists keep status dots on the far right only in the agent tab'
   assert.match(styles, /\.member-status-side/);
   assert.match(styles, /\.member-btn \.dm-avatar-wrap \.avatar-status-dot/);
   assert.match(styles, /\.message-card \.avatar-status-dot/);
+});
+
+test('agent warmup renders as Warming with a distinct pink status dot', async () => {
+  const app = await readAppSource();
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderHumanListItem'));
+  const profileSource = app.slice(app.indexOf('function renderAgentProfileTab'), app.indexOf('function renderAgentDmsTab'));
+
+  assert.match(app, /function agentIsWarming\(agent\)/);
+  assert.match(app, /agent\?\.runtimeActivity/);
+  assert.match(app, /function agentDisplayStatus\(agent\)/);
+  assert.match(app, /if \(agentIsWarming\(agent\)\) return 'warming'/);
+  assert.match(app, /if \(value === 'warming'\) return 'Warming'/);
+  assert.match(agentListSource, /const status = agentDisplayStatus\(agent\)/);
+  assert.match(profileSource, /presenceClass\(agentDisplayStatus\(agent\)\)/);
+  assert.match(styles, /\.avatar-status-dot\.status-warming \{[\s\S]*background: var\(--slock-pink\)/);
 });
 
 test('message rows re-render when author presence changes from heartbeat', async () => {
