@@ -54,6 +54,42 @@ test('members settings expose role-aware invitation controls', async () => {
   assert.doesNotMatch(accountSettingsSource, /value="viewer"|value="agent_admin"|value="computer_admin"|value="owner"/);
 });
 
+test('members page uses a join-ordered directory with invite modals', async () => {
+  const app = await readAppSource();
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const membersSettingsSource = app.slice(app.indexOf('function normalizeInviteEmailValue(value)'), app.indexOf('function renderCloudAuthGate('));
+  const membersMainSource = app.slice(app.indexOf('function renderMembersMain()'));
+  const modalSource = app.slice(app.indexOf('function renderModal()'), app.indexOf('function modalHeader('));
+
+  assert.match(app, /function renderMembersDirectory/);
+  assert.match(membersMainSource, /renderMembersDirectory\(\{ context: 'main' \}\)/);
+  assert.match(membersSettingsSource, /renderMembersDirectory\(\{ context: 'settings' \}\)/);
+  assert.match(app, /\.sort\(\(a, b\) => memberJoinTimestamp\(a\) - memberJoinTimestamp\(b\)\)/);
+  assert.match(app, /<span>Name<\/span>[\s\S]*<span>Status<\/span>[\s\S]*<span>上次活动时间<\/span>[\s\S]*<span>Role<\/span>/);
+  assert.doesNotMatch(app, />Heartbeat<\/span>/);
+  assert.match(app, /data-modal="member-invite"[\s\S]*>Invite<\/button>/);
+  assert.match(modalSource, /'member-invite': renderMemberInviteModal/);
+  assert.match(modalSource, /'member-invite-links': renderMemberInviteLinksModal/);
+  assert.match(styles, /\.members-directory-shell/);
+  assert.match(styles, /\.modal-member-invite/);
+  assert.match(styles, /\.member-invite-links-list/);
+});
+
+test('member invitations dedupe and reject invalid or existing emails', async () => {
+  const app = await readAppSource();
+  const auth = await readFile(new URL('../server/cloud/auth.js', import.meta.url), 'utf8');
+
+  assert.match(app, /event\.key === ' ' \|\| event\.code === 'Space'/);
+  assert.match(app, /function memberInviteExistingEmailSet\(\)/);
+  assert.match(app, /memberInviteDuplicateEmailsForSubmit\(\)/);
+  assert.match(app, /throw new Error\(`Remove invalid email/);
+  assert.match(app, /throw new Error\(`Already invited or already a member/);
+  assert.match(auth, /function activeInvitationWithEmail\(email, workspaceId = primaryWorkspace\(\)\?\.id\)/);
+  assert.match(auth, /Invitation already exists for this email\./);
+  assert.match(auth, /Invalid invite email/);
+  assert.match(auth, /\/activate\?\$\{params\.toString\(\)\}/);
+});
+
 test('account profile uses a focused role layout with avatar picker controls', async () => {
   const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
@@ -118,7 +154,7 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.match(authGateSource, /8 到 30 位/);
   assert.match(authGateSource, /使用协议/);
   assert.match(authGateSource, /隐私政策/);
-  assert.match(authGateSource, /如果你还没有注册过账号，请联系你的管理员获取邀请。/);
+  assert.match(authGateSource, /如果您还没有注册过账号，请联系您的管理员获取邀请。/);
   assert.match(authGateSource, /© 2026 MagClaw\. All Rights Reserved\./);
   assert.doesNotMatch(authGateSource, /owner invite/);
   assert.doesNotMatch(authGateSource, /admin account configured|Admin access required|Admin login/i);
@@ -134,6 +170,7 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.match(authGateSource, /class="pixel-panel cloud-login-card"/);
   assert.match(authGateSource, /id="cloud-login-title">Welcome back!/);
   assert.match(styles, /\.cloud-auth-stage/);
+  assert.match(styles, /\.cloud-auth-shell \{[\s\S]*background: #fff4fb/);
   assert.match(styles, /\.cloud-login-card,/);
   assert.match(styles, /\.cloud-login-error/);
   assert.match(styles, /\.cloud-login-submit/);
@@ -145,15 +182,23 @@ test('browser favicon and shared brand assets use the selected Modular Claw logo
   const index = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
   const app = await readAppSource();
 
-  assert.match(index, /<link rel="icon" type="image\/png" sizes="64x64" href="\/brand\/magclaw-favicon\.png\?v=modular-claw-v1" \/>/);
-  assert.match(index, /<link rel="shortcut icon" href="\/favicon\.ico\?v=modular-claw-v1" \/>/);
-  assert.match(index, /<link rel="apple-touch-icon" href="\/brand\/magclaw-logo\.png\?v=modular-claw-v1" \/>/);
+  assert.match(index, /<link rel="icon" type="image\/png" sizes="16x16" href="\/brand\/magclaw-favicon-16\.png\?v=modular-claw-v2" \/>/);
+  assert.match(index, /<link rel="icon" type="image\/png" sizes="32x32" href="\/brand\/magclaw-favicon-32\.png\?v=modular-claw-v2" \/>/);
+  assert.match(index, /<link rel="icon" type="image\/png" sizes="64x64" href="\/brand\/magclaw-favicon\.png\?v=modular-claw-v2" \/>/);
+  assert.match(index, /<link rel="shortcut icon" href="\/favicon\.ico\?v=modular-claw-v2" \/>/);
+  assert.match(index, /<link rel="apple-touch-icon" href="\/brand\/magclaw-logo\.png\?v=modular-claw-v2" \/>/);
   assert.match(app, /const BRAND_FAVICON_SRC = '\/brand\/magclaw-favicon\.png'/);
   assert.match(app, /const NOTIFICATION_ICON = BRAND_FAVICON_SRC/);
   assert.equal((await stat(new URL('../public/brand/magclaw-logo.png', import.meta.url))).isFile(), true);
+  assert.equal((await stat(new URL('../public/brand/magclaw-favicon-16.png', import.meta.url))).isFile(), true);
+  assert.equal((await stat(new URL('../public/brand/magclaw-favicon-32.png', import.meta.url))).isFile(), true);
   assert.equal((await stat(new URL('../public/brand/magclaw-favicon.png', import.meta.url))).isFile(), true);
   assert.equal((await stat(new URL('../public/brand/magclaw-logo-concepts.png', import.meta.url))).isFile(), true);
   assert.equal((await stat(new URL('../public/favicon.ico', import.meta.url))).isFile(), true);
+  assert.deepEqual(
+    [...(await readFile(new URL('../public/favicon.ico', import.meta.url))).subarray(0, 4)],
+    [0, 0, 1, 0],
+  );
 });
 
 test('login legal links have built-in terms and privacy pages', async () => {
@@ -443,7 +488,7 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
   assert.match(styles, /\.app-frame\.no-inspector/);
 });
 
-test('members navigation preserves chat layout until an agent is explicitly selected', async () => {
+test('members navigation opens the directory before drilling into agents', async () => {
   const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const leftNavSource = app.slice(app.indexOf("if (action === 'set-left-nav')"), app.indexOf("if (action === 'select-agent')"));
@@ -455,9 +500,12 @@ test('members navigation preserves chat layout until an agent is explicitly sele
   assert.match(app, /function openMembersNav\(\)/);
   assert.match(app, /if \(activeView === 'members'\) return renderMembersMain\(\)/);
   assert.match(app, /function renderInspector\(\) \{\s*if \(activeView === 'members'\) return '';/);
+  assert.doesNotMatch(app, /if \(activeView === 'members' && !selectedAgentId\) \{\s*activeView = 'space'/);
   assert.match(leftNavSource, /const agentId = openMembersNav\(\)/);
+  assert.match(app, /activeView = 'members';[\s\S]*membersLayout = normalizeMembersLayout\(\{ mode: 'directory'/);
   assert.doesNotMatch(leftNavSource, /channelAssignableAgents\(\)\[0\]/);
   assert.match(selectAgentSource, /if \(railTab === 'members'\) \{[\s\S]*activeView = 'members'[\s\S]*rememberMembersLayoutFromCurrent\(\)/);
+  assert.match(styles, /\.members-page/);
   assert.match(styles, /\.workspace > \.agent-detail-shell/);
 });
 
