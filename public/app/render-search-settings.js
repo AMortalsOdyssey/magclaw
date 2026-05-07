@@ -465,29 +465,102 @@ function renderAccountSettingsTab() {
 }
 
 function normalizeInviteEmailValue(value) {
-  return String(value || '').trim().toLowerCase();
+  return String(value || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toLowerCase();
 }
 
-function validInviteEmailsFromValue(value) {
+function splitInviteEmailValues(value) {
   return String(value || '')
     .split(/[\s,;，；]+/)
     .map(normalizeInviteEmailValue)
-    .filter((email, index, list) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && list.indexOf(email) === index);
+    .filter(Boolean);
+}
+
+function validInviteEmailsFromValue(value) {
+  const seen = new Set();
+  return splitInviteEmailValues(value)
+    .filter((email) => {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || seen.has(email)) return false;
+      seen.add(email);
+      return true;
+    });
+}
+
+function invalidInviteEmailsFromValue(value) {
+  return splitInviteEmailValues(value).filter((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+}
+
+function dedupeInviteEmails(emails = []) {
+  const seen = new Set();
+  const result = [];
+  for (const item of emails) {
+    const email = normalizeInviteEmailValue(item);
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || seen.has(email)) continue;
+    seen.add(email);
+    result.push(email);
+  }
+  return result;
+}
+
+function memberInviteExistingEmailSet() {
+  const existing = new Set();
+  for (const member of appState?.cloud?.members || []) {
+    if ((member.status || 'active') !== 'active') continue;
+    const email = normalizeInviteEmailValue(memberEmail(member));
+    if (email) existing.add(email);
+  }
+  for (const invitation of appState?.cloud?.invitations || []) {
+    const active = !invitation.acceptedAt
+      && !invitation.revokedAt
+      && (!invitation.expiresAt || Date.parse(invitation.expiresAt) > Date.now());
+    if (!active) continue;
+    const email = normalizeInviteEmailValue(invitation.email);
+    if (email) existing.add(email);
+  }
+  return existing;
 }
 
 function memberInviteEmailsForSubmit() {
-  return [...new Set([...cloudInviteEmails, ...validInviteEmailsFromValue(cloudInviteDraft)])];
+  return dedupeInviteEmails([...cloudInviteEmails, ...validInviteEmailsFromValue(cloudInviteDraft)]);
+}
+
+function memberInviteInvalidEmailsForSubmit() {
+  return dedupeInviteEmails(cloudInviteEmails.filter((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeInviteEmailValue(email))))
+    .concat(invalidInviteEmailsFromValue(cloudInviteDraft));
+}
+
+function memberInviteDuplicateEmailsForSubmit() {
+  const existing = memberInviteExistingEmailSet();
+  return memberInviteEmailsForSubmit().filter((email) => existing.has(email));
 }
 
 function memberInviteValidCount() {
   return memberInviteEmailsForSubmit().length;
 }
 
+function sanitizeMemberInviteTokens() {
+  const next = dedupeInviteEmails(cloudInviteEmails);
+  const changed = next.length !== cloudInviteEmails.length || next.some((email, index) => email !== cloudInviteEmails[index]);
+  cloudInviteEmails = next;
+  return changed;
+}
+
 function commitMemberInviteDraft(value = cloudInviteDraft) {
+  const invalidEmails = invalidInviteEmailsFromValue(value);
+  if (invalidEmails.length) {
+    cloudInviteDraft = value;
+    return false;
+  }
   const emails = validInviteEmailsFromValue(value);
-  if (!emails.length) return false;
-  cloudInviteEmails = [...new Set([...cloudInviteEmails, ...emails])];
+  sanitizeMemberInviteTokens();
+  if (!emails.length) {
+    cloudInviteDraft = value;
+    return false;
+  }
+  const existing = memberInviteExistingEmailSet();
+  const duplicates = emails.filter((email) => existing.has(email) || cloudInviteEmails.includes(email));
+  cloudInviteEmails = dedupeInviteEmails([...cloudInviteEmails, ...emails.filter((email) => !existing.has(email))]);
   cloudInviteDraft = '';
+  if (duplicates.length) toast(`Already invited or already a member: ${duplicates.join(', ')}`);
   return true;
 }
 
@@ -521,18 +594,33 @@ function memberAvatar(member, pending = false) {
   return `<span class="member-avatar">${escapeHtml(String(name || 'M').trim().slice(0, 1).toUpperCase())}</span>`;
 }
 
+function memberJoinTimestamp(member) {
+  const timestamp = Date.parse(member?.joinedAt || member?.createdAt || '');
+  return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
+}
+
+function memberLastActivityAt(member) {
+  return member?.human?.lastSeenAt
+    || member?.human?.presenceUpdatedAt
+    || member?.user?.lastLoginAt
+    || member?.joinedAt
+    || member?.createdAt;
+}
+
+function memberStatusLabel(member) {
+  const status = String(member?.status || 'active').toLowerCase();
+  if (status === 'active') return '已加入';
+  if (status === 'invited' || status === 'pending') return '邀请中';
+  return status || 'unknown';
+}
+
 function buildMembersRows() {
   const cloud = appState.cloud || {};
   const activeMembers = (cloud.members || [])
     .filter((member) => (member.status || 'active') === 'active')
-    .sort((a, b) => new Date(b.joinedAt || b.createdAt || 0) - new Date(a.joinedAt || a.createdAt || 0))
+    .sort((a, b) => memberJoinTimestamp(a) - memberJoinTimestamp(b))
     .map((member) => ({ type: 'member', member, sortAt: member.joinedAt || member.createdAt || '' }));
-  const pendingInvitations = (cloud.invitations || [])
-    .filter((invitation) => !invitation.acceptedAt && !invitation.revokedAt)
-    .filter((invitation) => !invitation.expiresAt || Date.parse(invitation.expiresAt) > Date.now())
-    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
-    .map((invitation) => ({ type: 'invitation', invitation, sortAt: invitation.createdAt || '' }));
-  return [...pendingInvitations, ...activeMembers];
+  return activeMembers;
 }
 
 function generatedLinkText(item) {
@@ -543,15 +631,12 @@ function generatedLinksText(items = cloudGeneratedLinks) {
   return items.map(generatedLinkText).join('\n\n');
 }
 
-function renderGeneratedLinksPanel() {
+function renderMemberInviteLinksModal() {
   if (!cloudGeneratedLinks.length) return '';
   return `
-    <div class="pixel-panel cloud-card member-generated-links">
-      <div class="panel-title">
-        <span>Generated Links</span>
-        <button class="secondary-btn compact-btn" type="button" data-action="copy-all-member-generated-links">Copy All</button>
-      </div>
-      <div class="member-link-list">
+    ${modalHeader('邀请链接', '复制链接发送给对应成员')}
+    <div class="member-invite-links-modal">
+      <div class="member-invite-links-list">
         ${cloudGeneratedLinks.map((item, index) => `
           <div class="member-link-row">
             <div>
@@ -564,18 +649,20 @@ function renderGeneratedLinksPanel() {
           </div>
         `).join('')}
       </div>
+      <button class="primary-btn" type="button" data-action="copy-all-member-generated-links">Copy All</button>
     </div>
   `;
 }
 
-function renderMemberInviteForm() {
+function renderMemberInviteModal() {
   const inviteRoleOptions = cloudInviteRoleOptions();
   if (!cloudCan('invite_member') || !inviteRoleOptions.length) return '';
   const count = memberInviteValidCount();
   return `
-    <div class="pixel-panel cloud-card member-invite-card">
+    ${modalHeader('添加团队成员', '对方在登录后可以访问你的团队数据。')}
+    <div class="member-invite-card">
       <form id="member-invite-form" class="modal-form">
-        <div class="panel-title"><span>Invite Members</span><span>${escapeHtml(count)} ready</span></div>
+        <label class="member-invite-label"><span>邮箱</span></label>
         <div class="member-invite-box" data-action="focus-member-invite-input">
           <div class="member-email-token-list">
             ${cloudInviteEmails.map((email) => `
@@ -583,12 +670,12 @@ function renderMemberInviteForm() {
             `).join('')}
             <textarea id="member-invite-input" name="emailsDraft" rows="3" placeholder="name@example.com">${escapeHtml(cloudInviteDraft)}</textarea>
           </div>
-          <span id="member-invite-count" class="member-invite-count">${escapeHtml(count)}</span>
+          <span id="member-invite-count" class="member-invite-count">${escapeHtml(count)}/无限制</span>
         </div>
-        <label><span>Role</span><select name="role">
+        <label class="member-invite-role"><span>Role</span><select name="role">
           ${inviteRoleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')}
         </select></label>
-        <button class="primary-btn" type="submit">Create Invitation</button>
+        <button class="primary-btn member-invite-submit" type="submit" ${count ? '' : 'disabled'}>发送邀请</button>
       </form>
     </div>
   `;
@@ -597,21 +684,6 @@ function renderMemberInviteForm() {
 function renderMemberRow(row) {
   const auth = appState.cloud?.auth || {};
   const currentMember = auth.currentMember;
-  if (row.type === 'invitation') {
-    const invitation = row.invitation;
-    return `
-      <div class="members-row pending" data-member-kind="invitation">
-        <div class="members-person">
-          ${memberAvatar(invitation, true)}
-          <div><strong>${escapeHtml(invitation.name || invitation.email.split('@')[0])}</strong><small>${escapeHtml(invitation.email)}</small></div>
-        </div>
-        <span class="member-status-pill">邀请中</span>
-        <span>${escapeHtml(cloudRoleLabel(invitation.role))}</span>
-        <span>${escapeHtml(relativeMemberTime(invitation.createdAt))}</span>
-        <div class="member-row-actions"></div>
-      </div>
-    `;
-  }
   const member = row.member;
   const role = member.role || 'member';
   const isCurrent = currentMember?.id === member.id;
@@ -627,13 +699,12 @@ function renderMemberRow(row) {
           <small>${escapeHtml(memberEmail(member))}</small>
         </div>
       </div>
-      <span class="member-status-pill">active</span>
-      <span>${escapeHtml(cloudRoleLabel(role))}</span>
-      <span>${escapeHtml(relativeMemberTime(member.human?.lastSeenAt || member.human?.presenceUpdatedAt || member.user?.lastLoginAt || member.joinedAt || member.createdAt))}</span>
-      <div class="member-row-actions">
+      <span class="member-status-pill">${escapeHtml(memberStatusLabel(member))}</span>
+      <span>${escapeHtml(relativeMemberTime(memberLastActivityAt(member)))}</span>
+      <div class="member-role-cell">
         ${canEditRole ? `<select data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}" aria-label="Change member role">
           ${['core_member', 'member'].map((optionRole) => `<option value="${optionRole}" ${role === optionRole ? 'selected' : ''}>${escapeHtml(cloudRoleLabel(optionRole))}</option>`).join('')}
-        </select>` : ''}
+        </select>` : `<span>${escapeHtml(cloudRoleLabel(role))}</span>`}
         ${canResetPassword ? `<button class="secondary-btn compact-btn" type="button" data-action="reset-cloud-member-password" data-id="${escapeHtml(member.id)}">Reset Password</button>` : ''}
         ${cloudCanRemoveMemberRole(role) && !isAdminRow && !isCurrent ? `<button class="danger-btn compact-btn" type="button" data-action="remove-cloud-member" data-id="${escapeHtml(member.id)}">Remove</button>` : ''}
       </div>
@@ -641,25 +712,41 @@ function renderMemberRow(row) {
   `;
 }
 
-function renderMembersSettingsTab() {
+function renderMemberInviteTrigger() {
+  if (!cloudCan('invite_member') || !cloudInviteRoleOptions().length) return '';
+  return `<button class="primary-btn member-directory-invite-btn" type="button" data-action="open-modal" data-modal="member-invite">Invite</button>`;
+}
+
+function renderMembersDirectory({ context = 'main' } = {}) {
   const rows = buildMembersRows();
   const activeCount = (appState.cloud?.members || []).filter((member) => (member.status || 'active') === 'active').length;
+  const pendingCount = (appState.cloud?.invitations || []).filter((invitation) => (
+    !invitation.acceptedAt
+    && !invitation.revokedAt
+    && (!invitation.expiresAt || Date.parse(invitation.expiresAt) > Date.now())
+  )).length;
+  const workspace = appState.cloud?.workspace || {};
+  const workspaceName = workspace.name || appState.connection?.workspaceId || 'MagClaw';
+  const initial = String(workspaceName || 'M').trim().slice(0, 1).toUpperCase();
   return `
-    <section class="settings-layout members-settings-layout">
-      <div class="members-summary-strip">
-        <div><strong>${escapeHtml(activeCount)}</strong><span>members</span></div>
-        <div><strong>${escapeHtml(rows.length - activeCount)}</strong><span>pending</span></div>
+    <section class="members-page members-directory-shell members-directory-${escapeHtml(context)}">
+      <div class="members-page-title">
+        <h2>Members</h2>
       </div>
-      ${renderMemberInviteForm()}
-      ${renderGeneratedLinksPanel()}
-      <div class="pixel-panel cloud-card members-settings-list">
-        <div class="panel-title"><span>Workspace Members</span><span>${escapeHtml(rows.length)} total</span></div>
+      <div class="members-workspace-card">
+        <span class="members-workspace-avatar">${escapeHtml(initial)}</span>
+        <div>
+          <strong>${escapeHtml(workspaceName)}</strong>
+          <span>${escapeHtml(activeCount)} members${pendingCount ? ` · ${escapeHtml(pendingCount)} pending` : ''}</span>
+        </div>
+        ${renderMemberInviteTrigger()}
+      </div>
+      <div class="members-table-card">
         <div class="members-table-head">
           <span>Name</span>
           <span>Status</span>
+          <span>上次活动时间</span>
           <span>Role</span>
-          <span>Heartbeat</span>
-          <span></span>
         </div>
         <div class="members-table-body">
           ${rows.map(renderMemberRow).join('') || '<div class="empty-box small">No members yet.</div>'}
@@ -667,6 +754,10 @@ function renderMembersSettingsTab() {
       </div>
     </section>
   `;
+}
+
+function renderMembersSettingsTab() {
+  return renderMembersDirectory({ context: 'settings' });
 }
 
 function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
@@ -678,7 +769,7 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
   const legalHtml = `
     <div class="cloud-auth-legal">
       <p>使用即代表您同意我们的 <a href="/terms" target="_blank" rel="noreferrer">使用协议</a> 和 <a href="/privacy" target="_blank" rel="noreferrer">隐私政策</a></p>
-      <p>如果你还没有注册过账号，请联系你的管理员获取邀请。</p>
+      <p>如果您还没有注册过账号，请联系您的管理员获取邀请。</p>
       <small>© 2026 MagClaw. All Rights Reserved.</small>
     </div>
   `;

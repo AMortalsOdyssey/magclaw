@@ -11,7 +11,7 @@ const NOTIFICATION_ICON = BRAND_FAVICON_SRC;
 const NOTIFICATION_PREVIEW_LIMIT = 140;
 const WORKSPACE_ACTIVITY_VISIBLE_STEP = 30;
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
-const MEMBERS_LAYOUT_MODES = new Set(['channel', 'split', 'agent']);
+const MEMBERS_LAYOUT_MODES = new Set(['directory', 'channel', 'split', 'agent']);
 const initialUiState = readStoredUiState();
 
 let appState = null;

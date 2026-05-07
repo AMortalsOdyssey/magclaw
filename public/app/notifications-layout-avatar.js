@@ -155,6 +155,10 @@ function rememberMembersLayoutFromCurrent() {
     membersLayout = normalizeMembersLayout({ mode: 'agent', agentId: selectedAgentId });
     return membersLayout;
   }
+  if (activeView === 'members') {
+    membersLayout = normalizeMembersLayout({ mode: 'directory' });
+    return membersLayout;
+  }
   if (activeView === 'space' && selectedAgentId) {
     membersLayout = normalizeMembersLayout({ mode: 'split', agentId: selectedAgentId });
     return membersLayout;
@@ -193,21 +197,20 @@ function restoreMembersLayout() {
     return selectedAgentId;
   }
 
-  activeView = 'space';
+  activeView = 'members';
   selectedAgentId = null;
   clearNonAgentInspectors();
-  membersLayout = normalizeMembersLayout({ mode: 'channel' });
+  membersLayout = normalizeMembersLayout({ mode: 'directory' });
   return null;
 }
 
 function openMembersNav() {
-  if (activeView === 'space') {
-    rememberMembersLayoutFromCurrent();
-    railTab = 'members';
-    clearNonAgentInspectors();
-    return selectedAgentId;
-  }
-  return restoreMembersLayout();
+  railTab = 'members';
+  activeView = 'members';
+  selectedAgentId = null;
+  clearNonAgentInspectors();
+  membersLayout = normalizeMembersLayout({ mode: 'directory' });
+  return null;
 }
 
 function persistPaneScroll(targetName, node) {

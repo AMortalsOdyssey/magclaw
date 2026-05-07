@@ -457,7 +457,7 @@ document.addEventListener('keydown', async (event) => {
   if (textarea && isImeComposing(event)) return;
 
   if (event.target.id === 'member-invite-input' && !isImeComposing(event)) {
-    if (event.key === 'Enter' || event.key === ',' || event.key === '，' || event.key === ';' || event.key === '；' || event.key === 'Tab') {
+    if (event.key === 'Enter' || event.key === ' ' || event.code === 'Space' || event.key === ',' || event.key === '，' || event.key === ';' || event.key === '；' || event.key === 'Tab') {
       event.preventDefault();
       cloudInviteDraft = event.target.value;
       commitMemberInviteDraft();
@@ -674,8 +674,16 @@ document.addEventListener('input', async (event) => {
 
   if (event.target.id === 'member-invite-input') {
     cloudInviteDraft = event.target.value;
+    sanitizeMemberInviteTokens();
+    const draftEmails = validInviteEmailsFromValue(cloudInviteDraft);
+    if (draftEmails.length === 1 && cloudInviteEmails.includes(draftEmails[0])) {
+      cloudInviteDraft = '';
+      event.target.value = '';
+    }
     const count = document.getElementById('member-invite-count');
-    if (count) count.textContent = String(memberInviteValidCount());
+    if (count) count.textContent = `${memberInviteValidCount()}/无限制`;
+    const submit = event.target.closest('form')?.querySelector('.member-invite-submit');
+    if (submit) submit.disabled = memberInviteValidCount() === 0;
     return;
   }
 

@@ -533,6 +533,10 @@ document.addEventListener('click', async (event) => {
         resetAgentFormState();
         await loadInstalledRuntimes();
       }
+      if (modal === 'member-invite') {
+        cloudInviteEmails = [];
+        cloudInviteDraft = '';
+      }
       render();
     }
     if (action === 'agent-stop-unavailable') {
@@ -575,7 +579,8 @@ document.addEventListener('click', async (event) => {
       const isBackdrop = event.target.classList.contains('modal-backdrop');
       const isCloseBtn = event.target.closest('.modal-head button[data-action="close-modal"]');
       const isCancelBtn = event.target.closest('.modal-actions .secondary-btn[data-action="close-modal"]');
-      if (isBackdrop || isCloseBtn || isCancelBtn) {
+      const closeOnlyByHeader = ['member-invite', 'member-invite-links'].includes(modal);
+      if ((closeOnlyByHeader && isCloseBtn) || (!closeOnlyByHeader && (isBackdrop || isCloseBtn || isCancelBtn))) {
         if (modal === 'agent') {
           resetAgentFormState();
         }
@@ -590,6 +595,10 @@ document.addEventListener('click', async (event) => {
         }
         if (modal === 'agent-restart') {
           agentRestartState = { agentId: null, mode: 'restart' };
+        }
+        if (modal === 'member-invite') {
+          cloudInviteEmails = [];
+          cloudInviteDraft = '';
         }
         let nextModal = null;
         if (modal === 'avatar-crop') {

@@ -635,5 +635,5 @@ function renderInbox() {
 
 function renderMembersMain() {
   const agent = selectedAgentId ? byId(appState.agents, selectedAgentId) : null;
-  return agent ? renderAgentDetail(agent) : renderSpace();
+  return agent ? renderAgentDetail(agent) : renderMembersDirectory({ context: 'main' });
 }

@@ -739,7 +739,6 @@ function ensureSelection() {
     membersLayout = normalizeMembersLayout({ mode: 'channel' });
   }
   if (activeView === 'members' && !selectedAgentId) {
-    activeView = 'space';
-    membersLayout = normalizeMembersLayout({ mode: 'channel' });
+    membersLayout = normalizeMembersLayout({ mode: 'directory' });
   }
 }

@@ -245,6 +245,11 @@ document.addEventListener('submit', async (event) => {
     }
     if (form.id === 'member-invite-form') {
       cloudInviteDraft = String(data.get('emailsDraft') || '');
+      sanitizeMemberInviteTokens();
+      const invalidEmails = memberInviteInvalidEmailsForSubmit();
+      if (invalidEmails.length) throw new Error(`Remove invalid email: ${invalidEmails.join(', ')}`);
+      const duplicateEmails = memberInviteDuplicateEmailsForSubmit();
+      if (duplicateEmails.length) throw new Error(`Already invited or already a member: ${duplicateEmails.join(', ')}`);
       const emails = memberInviteEmailsForSubmit();
       if (!emails.length) throw new Error('Enter at least one valid email.');
       const result = await api('/api/cloud/invitations/batch', {
@@ -261,6 +266,7 @@ document.addEventListener('submit', async (event) => {
       latestInvitationLink = cloudGeneratedLinks[0]?.link || null;
       cloudInviteEmails = [];
       cloudInviteDraft = '';
+      modal = 'member-invite-links';
       toast(`Created ${cloudGeneratedLinks.length} invitation${cloudGeneratedLinks.length === 1 ? '' : 's'}`);
     }
     if (form.id === 'cloud-invite-form') {

@@ -6,6 +6,8 @@ function renderModal() {
     'add-channel-member': renderAddChannelMemberModal,
     'confirm-stop-all': renderStopAllConfirmModal,
     'confirm-sign-out': renderSignOutConfirmModal,
+    'member-invite': renderMemberInviteModal,
+    'member-invite-links': renderMemberInviteLinksModal,
     project: renderProjectModal,
     dm: renderDmModal,
     task: renderTaskModal,

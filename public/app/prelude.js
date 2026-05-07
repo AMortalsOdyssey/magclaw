@@ -53,6 +53,7 @@ function normalizeMembersLayout(value = {}) {
   const mode = MEMBERS_LAYOUT_MODES.has(value?.mode) ? value.mode : 'channel';
   const agentId = value?.agentId ? String(value.agentId) : null;
   if ((mode === 'agent' || mode === 'split') && agentId) return { mode, agentId };
+  if (mode === 'directory') return { mode: 'directory', agentId: null };
   return { mode: 'channel', agentId: null };
 }
 
