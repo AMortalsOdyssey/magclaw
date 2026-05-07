@@ -235,6 +235,18 @@ export function createCloudAuth(deps) {
       )) || null;
     }
 
+    function activeInvitationWithEmail(email, workspaceId = primaryWorkspace()?.id) {
+      const normalized = normalizeEmail(email);
+      if (!normalized) return null;
+      const nowMs = Date.now();
+      return ensureCloudState().invitations.find((invitation) => {
+        if (invitation.workspaceId !== workspaceId) return false;
+        if (normalizeEmail(invitation.email) !== normalized) return false;
+        if (invitation.acceptedAt || invitation.revokedAt) return false;
+        return !invitation.expiresAt || Date.parse(invitation.expiresAt) > nowMs;
+      }) || null;
+    }
+
     function makeUserId() {
       const cloud = ensureCloudState();
       for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -401,9 +413,13 @@ export function createCloudAuth(deps) {
     return { session, cookie: sessionCookie(raw, req) };
   }
 
-  function inviteUrlForToken(raw, req) {
+  function inviteUrlForToken(raw, req, email = '') {
     const base = process.env.MAGCLAW_PUBLIC_URL || requestOrigin(req);
-    return base ? `${base}/invite?token=${encodeURIComponent(raw)}` : '';
+    const params = new URLSearchParams({
+      email: normalizeEmail(email),
+      token: String(raw || ''),
+    });
+    return base ? `${base}/activate?${params.toString()}` : '';
   }
 
   function resetUrlForToken(raw, req) {
@@ -602,15 +618,25 @@ export function createCloudAuth(deps) {
 
     function normalizedInviteEmails(value) {
       const rawItems = Array.isArray(value)
-        ? value
+        ? value.flatMap((item) => String(item || '').split(/[\s,;，；]+/))
         : String(value || '').split(/[\s,;，；]+/);
       const emails = [];
       const seen = new Set();
+      const invalid = [];
       for (const item of rawItems) {
         const email = normalizeEmail(item);
         if (!email || seen.has(email)) continue;
+        if (!isValidEmail(email)) {
+          invalid.push(email);
+          continue;
+        }
         seen.add(email);
         emails.push(email);
+      }
+      if (invalid.length) {
+        const error = new Error(`Invalid invite email: ${invalid.join(', ')}`);
+        error.status = 400;
+        throw error;
       }
       return emails;
     }
@@ -628,6 +654,11 @@ export function createCloudAuth(deps) {
       }
       if (activeUserWithEmail(email)) {
         const error = new Error('User already exists.');
+        error.status = 409;
+        throw error;
+      }
+      if (activeInvitationWithEmail(email)) {
+        const error = new Error('Invitation already exists for this email.');
         error.status = 409;
         throw error;
       }
@@ -689,7 +720,7 @@ export function createCloudAuth(deps) {
       return {
         invitation: publicInvitation(invitation),
         inviteToken: raw,
-        inviteUrl: inviteUrlForToken(raw, req),
+        inviteUrl: inviteUrlForToken(raw, req, email),
       };
     }
 
