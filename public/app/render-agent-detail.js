@@ -492,22 +492,32 @@ function renderWorkspaceActivityDrawer() {
             Load ${Math.min(WORKSPACE_ACTIVITY_VISIBLE_STEP, hiddenCount)} older
           </button>
         ` : ''}
-        ${visible.length ? visible.map((item) => `
-          <article class="workspace-activity-row activity-${escapeHtml(item.kind)}">
-            <span class="workspace-activity-icon">${escapeHtml(item.kind.slice(0, 2).toUpperCase())}</span>
-            <div>
-              <div class="workspace-activity-row-head">
-                <strong>${escapeHtml(item.title)}</strong>
-                <time>${fmtTime(item.createdAt)}</time>
+        ${visible.length ? visible.map((item, index) => {
+          const popoverId = `workspace-activity-popover-${index}`;
+          const detail = item.detail || item.type || item.source;
+          return `
+            <article class="workspace-activity-row activity-${escapeHtml(item.kind)}">
+              <span class="workspace-activity-icon">${escapeHtml(item.kind.slice(0, 2).toUpperCase())}</span>
+              <div>
+                <div class="workspace-activity-row-head">
+                  <span class="workspace-activity-title-wrap">
+                    <strong class="workspace-activity-title-trigger" tabindex="0" aria-describedby="${escapeHtml(popoverId)}">${escapeHtml(item.title)}</strong>
+                    <span class="workspace-activity-popover" id="${escapeHtml(popoverId)}" role="tooltip">
+                      <span class="workspace-activity-popover-title">${escapeHtml(item.title)}</span>
+                      ${detail ? `<span class="workspace-activity-popover-detail">${escapeHtml(detail)}</span>` : ''}
+                    </span>
+                  </span>
+                  <time>${fmtTime(item.createdAt)}</time>
+                </div>
+                <p class="workspace-activity-detail">${escapeHtml(detail)}</p>
+                <div class="workspace-activity-tags">
+                  <span>${escapeHtml(item.kind)}</span>
+                  <span>${escapeHtml(item.source)}</span>
+                </div>
               </div>
-              <p>${escapeHtml(item.detail || item.type || item.source)}</p>
-              <div class="workspace-activity-tags">
-                <span>${escapeHtml(item.kind)}</span>
-                <span>${escapeHtml(item.source)}</span>
-              </div>
-            </div>
-          </article>
-        `).join('') : '<div class="empty-box small">No workspace activity yet.</div>'}
+            </article>
+          `;
+        }).join('') : '<div class="empty-box small">No workspace activity yet.</div>'}
       </div>
     </section>
   `;

@@ -1,8 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" fill="#1a0020"/>
-  <rect x="8" y="8" width="48" height="48" fill="#FF66CC"/>
-  <rect x="14" y="14" width="36" height="36" fill="#1a0020"/>
-  <rect x="20" y="20" width="8" height="8" fill="#FF66CC"/>
-  <rect x="36" y="20" width="8" height="8" fill="#FF66CC"/>
-  <rect x="20" y="38" width="24" height="6" fill="#FF99DD"/>
+  <rect width="64" height="64" rx="13" fill="#27092a"/>
+  <path d="M13 17 28 8l4 4v14L13 17Z" fill="#ff4f9b"/>
+  <path d="M51 17 36 8l-4 4v14l19-9Z" fill="#ff4f9b"/>
+  <path d="M13 20v25l12 6V27L13 20Z" fill="#b989d9"/>
+  <path d="M51 20v25l-12 6V27l12-7Z" fill="#fff7df"/>
+  <path d="m32 38 10 6-10 6-10-6 10-6Z" fill="#65d4d0"/>
+  <path d="M22 45v10l10 6V50l-10-5Z" fill="#48b9b9"/>
+  <path d="M42 45v10l-10 6V50l10-5Z" fill="#2da5a8"/>
+  <path d="M32 12v14" stroke="#27092a" stroke-width="2"/>
+  <path d="M25 27v24M39 27v24" stroke="#27092a" stroke-width="2"/>
 </svg>

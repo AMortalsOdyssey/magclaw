@@ -15,6 +15,35 @@ function cloudAuthErrorMessage(error, { interactive = false } = {}) {
   return error.message || '';
 }
 
+function cloudAuthTokenFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('token') || '';
+  const path = window.location.pathname || '';
+  if (!token) return { mode: '', token: '' };
+  if (path.includes('reset-password') || token.startsWith('mc_reset_')) return { mode: 'reset', token };
+  return { mode: 'invite', token };
+}
+
+async function loadCloudAuthTokenContext() {
+  const context = cloudAuthTokenFromLocation();
+  if (!context.mode) return context;
+  try {
+    if (context.mode === 'reset') {
+      const status = await api(`/api/cloud/auth/reset-status?token=${encodeURIComponent(context.token)}`);
+      return { ...context, reset: status.reset || {} };
+    }
+    const status = await api(`/api/cloud/auth/invitation-status?token=${encodeURIComponent(context.token)}`);
+    cloudAuthAvatar = status.invitation?.avatarUrl || '';
+    return { ...context, invitation: status.invitation || {} };
+  } catch (error) {
+    const alreadyUsed = error.status === 409;
+    return {
+      ...context,
+      error: alreadyUsed ? '用户已注册或邀请已使用。' : (error.message || 'This link is no longer available.'),
+    };
+  }
+}
+
 async function showCloudAuthGate(error = null, options = {}) {
   disconnectEvents();
   stopHumanPresenceHeartbeat();
@@ -26,10 +55,15 @@ async function showCloudAuthGate(error = null, options = {}) {
     // Keep the login shell available even if auth status is temporarily unavailable.
   }
   const authErrorMessage = cloudAuthErrorMessage(error, options);
-  renderCloudAuthGate(cloud, authErrorMessage);
+  const tokenContext = await loadCloudAuthTokenContext();
+  renderCloudAuthGate(cloud, authErrorMessage, tokenContext);
 }
 
 async function refreshStateOrAuthGate() {
+  if (cloudAuthTokenFromLocation().mode) {
+    await showCloudAuthGate(null);
+    return false;
+  }
   try {
     await refreshState();
     initialLoadComplete = true;
@@ -422,6 +456,19 @@ document.addEventListener('keydown', async (event) => {
   const textarea = event.target.closest('textarea[data-mention-input]');
   if (textarea && isImeComposing(event)) return;
 
+  if (event.target.id === 'member-invite-input' && !isImeComposing(event)) {
+    if (event.key === 'Enter' || event.key === ',' || event.key === '，' || event.key === ';' || event.key === '；' || event.key === 'Tab') {
+      event.preventDefault();
+      cloudInviteDraft = event.target.value;
+      commitMemberInviteDraft();
+      render();
+      const input = document.getElementById('member-invite-input');
+      input?.focus();
+      input?.setSelectionRange(input.value.length, input.value.length);
+      return;
+    }
+  }
+
   // Handle mention popup keyboard navigation
   if (textarea && mentionPopup.active && mentionPopup.composerId === textarea.dataset.composerId) {
     if (event.key === 'ArrowDown') {
@@ -622,6 +669,13 @@ document.addEventListener('input', async (event) => {
     const input = document.querySelector('#add-member-search');
     input?.focus();
     input?.setSelectionRange(addMemberSearchQuery.length, addMemberSearchQuery.length);
+    return;
+  }
+
+  if (event.target.id === 'member-invite-input') {
+    cloudInviteDraft = event.target.value;
+    const count = document.getElementById('member-invite-count');
+    if (count) count.textContent = String(memberInviteValidCount());
     return;
   }
 

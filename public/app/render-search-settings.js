@@ -355,6 +355,7 @@ function settingsPageMeta(tab = settingsTab) {
     browser: { title: 'Browser', icon: 'browser', section: 'BROWSER' },
     server: { title: 'Server', icon: 'server', section: 'SERVER' },
     system: { title: 'System Config', icon: 'system', section: 'SYSTEM CONFIG' },
+    members: { title: 'Members', icon: 'members', section: 'MEMBERS' },
     release: { title: 'Release Notes', icon: 'release', section: "WHAT'S NEW" },
   };
   return metas[tab] || metas.account;
@@ -402,72 +403,12 @@ function renderAccountSettingsTab() {
   const joinedAt = fmtTime(currentMember?.joinedAt || currentMember?.createdAt);
   const sessionLabel = durationDays(auth.sessionTtlMs);
   const sessionExpiresAt = fmtTime(auth.sessionExpiresAt);
-  const members = (cloud.members || [])
-    .filter((member) => (member.status || 'active') === 'active')
-    .sort((a, b) => new Date(a.joinedAt || a.createdAt || 0) - new Date(b.joinedAt || b.createdAt || 0));
-  const invitations = cloud.invitations || [];
-  const canInviteCloud = cloudCan('invite_member');
-  const inviteRoleOptions = cloudInviteRoleOptions();
-  const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
-  const inviteRegisterPanel = inviteTokenFromUrl ? `
-      <div class="pixel-panel cloud-card">
-        <form id="cloud-register-form" class="modal-form">
-          <div class="panel-title"><span>Accept Invitation</span><span>invite token</span></div>
-          <label><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
-          <label><span>Name</span><input name="name" autocomplete="name" /></label>
-          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
-          <label><span>Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
-          <button class="primary-btn" type="submit">Create Account</button>
-        </form>
-      </div>
-    ` : '';
   const authPanel = !auth.initialized ? `
       <div class="pixel-panel cloud-card">
         <div class="panel-title"><span>Sign-in Account</span><span>server config</span></div>
         <div class="empty-box small">The initial sign-in account is configured on the server. Restart MagClaw after updating the server environment.</div>
       </div>
-    ` : currentUser ? `
-      ${canInviteCloud ? `
-        <div class="pixel-panel cloud-card">
-          <form id="cloud-invite-form" class="modal-form">
-            <div class="panel-title"><span>Invite Member</span><span>${escapeHtml(invitations.length)} pending</span></div>
-            <label><span>Email</span><input name="email" type="email" required /></label>
-            <label><span>Role</span><select name="role">
-              ${inviteRoleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')}
-            </select></label>
-            <button class="primary-btn" type="submit">Create Invitation</button>
-          </form>
-        </div>
-      ` : ''}
-      <div class="pixel-panel cloud-card wide">
-        <div class="panel-title"><span>Workspace Members</span><span>${escapeHtml(members.length)}</span></div>
-        <div class="computer-config-list">
-            ${members.map((member) => `
-              <div class="computer-config-row cloud-member-row role-${escapeHtml(member.role || 'member')}">
-                <strong><span class="cloud-member-swatch"></span>${escapeHtml(member.user?.name || member.human?.name || member.humanId || 'Member')}</strong>
-                <span>${escapeHtml(member.user?.email || member.userId || '')} / ${escapeHtml(cloudRoleLabel(member.role))}</span>
-                <small>${escapeHtml(member.status || 'active')}</small>
-                ${currentMember?.id !== member.id ? `<div class="cloud-member-actions">
-                  ${cloudCan('manage_member_roles') ? `<select data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}" aria-label="Change member role">
-                    ${['admin', 'core_member', 'member'].map((role) => `<option value="${role}" ${member.role === role ? 'selected' : ''}>${escapeHtml(cloudRoleLabel(role))}</option>`).join('')}
-                  </select>` : ''}
-                  ${cloudCanRemoveMemberRole(member.role) ? `<button class="danger-btn" type="button" data-action="remove-cloud-member" data-id="${escapeHtml(member.id)}">Remove</button>` : ''}
-                </div>` : ''}
-              </div>
-            `).join('') || '<div class="empty-box small">No members yet.</div>'}
-        </div>
-      </div>
-    ` : `
-      <div class="pixel-panel cloud-card">
-        <form id="cloud-login-form" class="modal-form">
-          <div class="panel-title"><span>Login</span><span>password</span></div>
-          <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
-          <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
-          <button class="primary-btn" type="submit">Login</button>
-        </form>
-      </div>
-      ${inviteRegisterPanel}
-    `;
+    ` : '';
     return `
       <section class="settings-layout account-layout">
         <div class="pixel-panel cloud-card account-overview-card">
@@ -523,32 +464,286 @@ function renderAccountSettingsTab() {
   `;
 }
 
-function renderCloudAuthGate(cloud = {}, errorMessage = '') {
+function normalizeInviteEmailValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function validInviteEmailsFromValue(value) {
+  return String(value || '')
+    .split(/[\s,;，；]+/)
+    .map(normalizeInviteEmailValue)
+    .filter((email, index, list) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && list.indexOf(email) === index);
+}
+
+function memberInviteEmailsForSubmit() {
+  return [...new Set([...cloudInviteEmails, ...validInviteEmailsFromValue(cloudInviteDraft)])];
+}
+
+function memberInviteValidCount() {
+  return memberInviteEmailsForSubmit().length;
+}
+
+function commitMemberInviteDraft(value = cloudInviteDraft) {
+  const emails = validInviteEmailsFromValue(value);
+  if (!emails.length) return false;
+  cloudInviteEmails = [...new Set([...cloudInviteEmails, ...emails])];
+  cloudInviteDraft = '';
+  return true;
+}
+
+function relativeMemberTime(value) {
+  const timestamp = Date.parse(value || '');
+  if (!timestamp) return '--';
+  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} 天前`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} 个月前`;
+  return `${Math.floor(months / 12)} 年前`;
+}
+
+function memberDisplayName(member) {
+  return member?.user?.name || member?.human?.name || member?.user?.email || member?.humanId || 'Member';
+}
+
+function memberEmail(member) {
+  return member?.user?.email || member?.human?.email || member?.userId || '';
+}
+
+function memberAvatar(member, pending = false) {
+  const name = pending ? (member.name || member.email || 'I') : memberDisplayName(member);
+  const avatar = pending ? member.avatarUrl : (member.user?.avatarUrl || member.human?.avatarUrl || member.human?.avatar || '');
+  if (avatar) return `<span class="member-avatar"><img src="${escapeHtml(avatar)}" alt="" /></span>`;
+  return `<span class="member-avatar">${escapeHtml(String(name || 'M').trim().slice(0, 1).toUpperCase())}</span>`;
+}
+
+function buildMembersRows() {
+  const cloud = appState.cloud || {};
+  const activeMembers = (cloud.members || [])
+    .filter((member) => (member.status || 'active') === 'active')
+    .sort((a, b) => new Date(b.joinedAt || b.createdAt || 0) - new Date(a.joinedAt || a.createdAt || 0))
+    .map((member) => ({ type: 'member', member, sortAt: member.joinedAt || member.createdAt || '' }));
+  const pendingInvitations = (cloud.invitations || [])
+    .filter((invitation) => !invitation.acceptedAt && !invitation.revokedAt)
+    .filter((invitation) => !invitation.expiresAt || Date.parse(invitation.expiresAt) > Date.now())
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+    .map((invitation) => ({ type: 'invitation', invitation, sortAt: invitation.createdAt || '' }));
+  return [...pendingInvitations, ...activeMembers];
+}
+
+function generatedLinkText(item) {
+  return `Email: ${item.email}\nLink: ${item.link}`;
+}
+
+function generatedLinksText(items = cloudGeneratedLinks) {
+  return items.map(generatedLinkText).join('\n\n');
+}
+
+function renderGeneratedLinksPanel() {
+  if (!cloudGeneratedLinks.length) return '';
+  return `
+    <div class="pixel-panel cloud-card member-generated-links">
+      <div class="panel-title">
+        <span>Generated Links</span>
+        <button class="secondary-btn compact-btn" type="button" data-action="copy-all-member-generated-links">Copy All</button>
+      </div>
+      <div class="member-link-list">
+        ${cloudGeneratedLinks.map((item, index) => `
+          <div class="member-link-row">
+            <div>
+              <span>Email:</span>
+              <code>${escapeHtml(item.email)}</code>
+              <span>Link:</span>
+              <code>${escapeHtml(item.link)}</code>
+            </div>
+            <button class="secondary-btn compact-btn" type="button" data-action="copy-member-generated-link" data-index="${escapeHtml(index)}">Copy</button>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderMemberInviteForm() {
+  const inviteRoleOptions = cloudInviteRoleOptions();
+  if (!cloudCan('invite_member') || !inviteRoleOptions.length) return '';
+  const count = memberInviteValidCount();
+  return `
+    <div class="pixel-panel cloud-card member-invite-card">
+      <form id="member-invite-form" class="modal-form">
+        <div class="panel-title"><span>Invite Members</span><span>${escapeHtml(count)} ready</span></div>
+        <div class="member-invite-box" data-action="focus-member-invite-input">
+          <div class="member-email-token-list">
+            ${cloudInviteEmails.map((email) => `
+              <span class="member-email-token">${escapeHtml(email)}<button type="button" data-action="remove-member-invite-email" data-email="${escapeHtml(email)}" aria-label="Remove ${escapeHtml(email)}">×</button></span>
+            `).join('')}
+            <textarea id="member-invite-input" name="emailsDraft" rows="3" placeholder="name@example.com">${escapeHtml(cloudInviteDraft)}</textarea>
+          </div>
+          <span id="member-invite-count" class="member-invite-count">${escapeHtml(count)}</span>
+        </div>
+        <label><span>Role</span><select name="role">
+          ${inviteRoleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')}
+        </select></label>
+        <button class="primary-btn" type="submit">Create Invitation</button>
+      </form>
+    </div>
+  `;
+}
+
+function renderMemberRow(row) {
+  const auth = appState.cloud?.auth || {};
+  const currentMember = auth.currentMember;
+  if (row.type === 'invitation') {
+    const invitation = row.invitation;
+    return `
+      <div class="members-row pending" data-member-kind="invitation">
+        <div class="members-person">
+          ${memberAvatar(invitation, true)}
+          <div><strong>${escapeHtml(invitation.name || invitation.email.split('@')[0])}</strong><small>${escapeHtml(invitation.email)}</small></div>
+        </div>
+        <span class="member-status-pill">邀请中</span>
+        <span>${escapeHtml(cloudRoleLabel(invitation.role))}</span>
+        <span>${escapeHtml(relativeMemberTime(invitation.createdAt))}</span>
+        <div class="member-row-actions"></div>
+      </div>
+    `;
+  }
+  const member = row.member;
+  const role = member.role || 'member';
+  const isCurrent = currentMember?.id === member.id;
+  const isAdminRow = role === 'admin';
+  const canEditRole = cloudCan('manage_member_roles') && !isAdminRow && !isCurrent;
+  const canResetPassword = auth.currentMember?.role === 'admin' && !isAdminRow && !isCurrent;
+  return `
+    <div class="members-row" data-member-kind="active">
+      <div class="members-person">
+        ${memberAvatar(member)}
+        <div>
+          <strong>${escapeHtml(memberDisplayName(member))}${isCurrent ? ' <span class="member-you">(you)</span>' : ''}</strong>
+          <small>${escapeHtml(memberEmail(member))}</small>
+        </div>
+      </div>
+      <span class="member-status-pill">active</span>
+      <span>${escapeHtml(cloudRoleLabel(role))}</span>
+      <span>${escapeHtml(relativeMemberTime(member.human?.lastSeenAt || member.human?.presenceUpdatedAt || member.user?.lastLoginAt || member.joinedAt || member.createdAt))}</span>
+      <div class="member-row-actions">
+        ${canEditRole ? `<select data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}" aria-label="Change member role">
+          ${['core_member', 'member'].map((optionRole) => `<option value="${optionRole}" ${role === optionRole ? 'selected' : ''}>${escapeHtml(cloudRoleLabel(optionRole))}</option>`).join('')}
+        </select>` : ''}
+        ${canResetPassword ? `<button class="secondary-btn compact-btn" type="button" data-action="reset-cloud-member-password" data-id="${escapeHtml(member.id)}">Reset Password</button>` : ''}
+        ${cloudCanRemoveMemberRole(role) && !isAdminRow && !isCurrent ? `<button class="danger-btn compact-btn" type="button" data-action="remove-cloud-member" data-id="${escapeHtml(member.id)}">Remove</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderMembersSettingsTab() {
+  const rows = buildMembersRows();
+  const activeCount = (appState.cloud?.members || []).filter((member) => (member.status || 'active') === 'active').length;
+  return `
+    <section class="settings-layout members-settings-layout">
+      <div class="members-summary-strip">
+        <div><strong>${escapeHtml(activeCount)}</strong><span>members</span></div>
+        <div><strong>${escapeHtml(rows.length - activeCount)}</strong><span>pending</span></div>
+      </div>
+      ${renderMemberInviteForm()}
+      ${renderGeneratedLinksPanel()}
+      <div class="pixel-panel cloud-card members-settings-list">
+        <div class="panel-title"><span>Workspace Members</span><span>${escapeHtml(rows.length)} total</span></div>
+        <div class="members-table-head">
+          <span>Name</span>
+          <span>Status</span>
+          <span>Role</span>
+          <span>Heartbeat</span>
+          <span></span>
+        </div>
+        <div class="members-table-body">
+          ${rows.map(renderMemberRow).join('') || '<div class="empty-box small">No members yet.</div>'}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
   const auth = cloud.auth || {};
-  const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('token') || '';
   const loginError = String(errorMessage || '').trim();
   const loginErrorHtml = loginError
     ? `<div class="cloud-login-error" role="alert" aria-live="polite">${escapeHtml(loginError)}</div>`
     : '';
-  const inviteRegisterPanel = inviteTokenFromUrl ? `
-      <section class="pixel-panel cloud-invite-card" aria-label="Accept invitation">
+  const legalHtml = `
+    <div class="cloud-auth-legal">
+      <p>使用即代表您同意我们的 <a href="/terms" target="_blank" rel="noreferrer">使用协议</a> 和 <a href="/privacy" target="_blank" rel="noreferrer">隐私政策</a></p>
+      <p>如果你还没有注册过账号，请联系你的管理员获取邀请。</p>
+      <small>© 2026 MagClaw. All Rights Reserved.</small>
+    </div>
+  `;
+  const tokenError = tokenContext.error || '';
+  const tokenErrorHtml = tokenError
+    ? `<div class="cloud-login-error" role="alert" aria-live="polite">${escapeHtml(tokenError)}</div>`
+    : '';
+  const invitation = tokenContext.invitation || {};
+  const reset = tokenContext.reset || {};
+  const avatarPreview = cloudAuthAvatar
+    ? `<img src="${escapeHtml(cloudAuthAvatar)}" alt="" />`
+    : escapeHtml(String(invitation.name || invitation.email || 'M').slice(0, 1).toUpperCase());
+  const registerPanel = tokenContext.mode === 'invite' ? `
+      <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">
+        <div class="cloud-login-brand"><span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span></div>
+        <div class="cloud-login-heading">
+          <p>MagClaw</p>
+          <h1 id="cloud-login-title">Join workspace</h1>
+          <span>Set up your MagClaw account from this invitation.</span>
+        </div>
+        ${tokenErrorHtml || `
         <form id="cloud-register-form" class="cloud-login-form">
-          <div class="cloud-login-section-title">
-            <span>Join workspace</span>
-            <small>invitation</small>
+          <input type="hidden" name="inviteToken" value="${escapeHtml(tokenContext.token || '')}" />
+          <input type="hidden" name="email" value="${escapeHtml(invitation.email || '')}" />
+          <input id="cloud-auth-avatar-input" type="hidden" name="avatar" value="${escapeHtml(cloudAuthAvatar)}" />
+          <label class="cloud-login-field"><span>Email address</span><input type="email" value="${escapeHtml(invitation.email || '')}" disabled /></label>
+          <label class="cloud-login-field"><span>Role</span><input value="${escapeHtml(cloudRoleLabel(invitation.role || 'member'))}" disabled /></label>
+          <label class="cloud-login-field"><span>Display name</span><input name="name" autocomplete="name" placeholder="Display name" value="${escapeHtml(invitation.name || '')}" /></label>
+          <div class="cloud-auth-avatar-row">
+            <span class="cloud-auth-avatar-preview">${avatarPreview}</span>
+            <button class="secondary-btn" type="button" data-action="random-cloud-auth-avatar">Random</button>
+            <label class="secondary-btn profile-upload-btn">Upload<input id="cloud-auth-avatar-file" class="visually-hidden" type="file" accept="image/*" /></label>
           </div>
-          <label class="cloud-login-field"><span>Invite Token</span><input name="inviteToken" autocomplete="off" placeholder="mc_inv_..." value="${escapeHtml(inviteTokenFromUrl)}" required /></label>
-          <label class="cloud-login-field"><span>Name</span><input name="name" autocomplete="name" placeholder="Display name" /></label>
-          <label class="cloud-login-field"><span>Email</span><input name="email" type="email" autocomplete="email" placeholder="Email address" required /></label>
-          <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="new-password" placeholder="Password" minlength="8" required /></label>
-          <button class="primary-btn cloud-login-submit" type="submit">Create Account</button>
-        </form>
+          <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="new-password" placeholder="Password" minlength="8" maxlength="30" required /></label>
+          <label class="cloud-login-field"><span>Confirm password</span><input name="passwordConfirm" type="password" autocomplete="new-password" placeholder="Confirm password" minlength="8" maxlength="30" required /></label>
+          <p class="cloud-password-rule">密码需要 8 到 30 位，并且必须同时包含字母和数字。</p>
+          ${loginErrorHtml}
+          <button class="primary-btn cloud-login-submit" type="submit">Set Account</button>
+        </form>`}
       </section>
     ` : '';
-  const loginPanels = auth.initialized ? `
+  const resetPanel = tokenContext.mode === 'reset' ? `
+      <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">
+        <div class="cloud-login-brand"><span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span></div>
+        <div class="cloud-login-heading">
+          <p>MagClaw</p>
+          <h1 id="cloud-login-title">Reset password</h1>
+          <span>Your password was reset by an administrator. Set a new password to continue.</span>
+        </div>
+        ${tokenErrorHtml || `
+        <form id="cloud-reset-form" class="cloud-login-form">
+          <input type="hidden" name="resetToken" value="${escapeHtml(tokenContext.token || '')}" />
+          <label class="cloud-login-field"><span>Email address</span><input type="email" value="${escapeHtml(reset.email || '')}" disabled /></label>
+          <label class="cloud-login-field"><span>New password</span><input name="password" type="password" autocomplete="new-password" placeholder="Password" minlength="8" maxlength="30" required /></label>
+          <label class="cloud-login-field"><span>Confirm password</span><input name="passwordConfirm" type="password" autocomplete="new-password" placeholder="Confirm password" minlength="8" maxlength="30" required /></label>
+          <p class="cloud-password-rule">密码需要 8 到 30 位，并且必须同时包含字母和数字。</p>
+          ${loginErrorHtml}
+          <button class="primary-btn cloud-login-submit" type="submit">Reset Password</button>
+        </form>`}
+      </section>
+    ` : '';
+  const loginPanel = auth.initialized ? `
       <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
         <div class="cloud-login-brand">
-          <span class="cloud-login-logo" aria-hidden="true"><img src="/favicon.svg" alt="" /></span>
+          <span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span>
         </div>
         <div class="cloud-login-heading">
           <p>MagClaw</p>
@@ -562,11 +757,10 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '') {
           <button class="primary-btn cloud-login-submit" type="submit">Log in</button>
         </form>
       </section>
-      ${inviteRegisterPanel}
     ` : `
       <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
         <div class="cloud-login-brand">
-          <span class="cloud-login-logo" aria-hidden="true"><img src="/favicon.svg" alt="" /></span>
+          <span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span>
         </div>
         <div class="cloud-login-heading">
           <p>MagClaw</p>
@@ -575,11 +769,17 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '') {
         </div>
       </section>
     `;
+  const loginPanels = tokenContext.mode === 'invite'
+    ? registerPanel
+    : tokenContext.mode === 'reset'
+      ? resetPanel
+      : loginPanel;
 
   root.innerHTML = `
     <main class="cloud-auth-shell">
       <div class="cloud-auth-stage">
         ${loginPanels}
+        ${legalHtml}
       </div>
     </main>
   `;
@@ -715,9 +915,11 @@ function renderCloud() {
       ? renderBrowserSettingsTab()
       : settingsTab === 'system'
         ? renderSystemSettingsTab()
-      : settingsTab === 'release'
-        ? renderReleaseNotesSettingsTab()
-        : renderServerSettingsTab();
+        : settingsTab === 'members'
+          ? renderMembersSettingsTab()
+          : settingsTab === 'release'
+            ? renderReleaseNotesSettingsTab()
+            : renderServerSettingsTab();
   return renderSettingsChrome(body, `
     ${pill(c.mode || 'local', isCloud ? 'cyan' : 'blue')}
     ${pill(c.pairingStatus || 'local', statusTone)}

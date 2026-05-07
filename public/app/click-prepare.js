@@ -151,8 +151,14 @@ async function prepareDocumentClick(event) {
     'start-agent',
     'open-agent-restart',
     'select-agent-restart-mode',
-      'upload-agent-avatar',
-      'random-profile-avatar',
+    'upload-agent-avatar',
+    'random-profile-avatar',
+    'random-cloud-auth-avatar',
+    'focus-member-invite-input',
+    'commit-member-invite-email',
+    'remove-member-invite-email',
+    'copy-member-generated-link',
+    'copy-all-member-generated-links',
       'toggle-receipt-popover',
   ]);
   // Environment variable actions: don't trigger refreshState
@@ -190,6 +196,46 @@ async function prepareDocumentClick(event) {
     if (action === 'random-profile-avatar') {
       const avatar = getRandomAvatar();
       setProfileAvatarInput(avatar);
+      return;
+    }
+    if (action === 'random-cloud-auth-avatar') {
+      cloudAuthAvatar = getRandomAvatar();
+      await showCloudAuthGate(null);
+      return;
+    }
+    if (action === 'focus-member-invite-input') {
+      const draftInput = document.getElementById('member-invite-input');
+      if (draftInput) cloudInviteDraft = draftInput.value;
+      if (commitMemberInviteDraft()) {
+        render();
+        document.getElementById('member-invite-input')?.focus();
+        return;
+      }
+      const input = document.getElementById('member-invite-input');
+      input?.focus();
+      return;
+    }
+    if (action === 'remove-member-invite-email') {
+      const email = target.dataset.email || '';
+      cloudInviteEmails = cloudInviteEmails.filter((item) => item !== email);
+      render();
+      document.getElementById('member-invite-input')?.focus();
+      return;
+    }
+    if (action === 'copy-member-generated-link') {
+      const index = Number(target.dataset.index);
+      const item = Number.isInteger(index) ? cloudGeneratedLinks[index] : null;
+      if (item) {
+        const copied = await tryCopyTextToClipboard(generatedLinkText(item));
+        toast(copied ? 'Invitation copied' : 'Copy failed');
+      }
+      return;
+    }
+    if (action === 'copy-all-member-generated-links') {
+      if (cloudGeneratedLinks.length) {
+        const copied = await tryCopyTextToClipboard(generatedLinksText());
+        toast(copied ? 'All invitations copied' : 'Copy failed');
+      }
       return;
     }
     if (action === 'pick-avatar') {

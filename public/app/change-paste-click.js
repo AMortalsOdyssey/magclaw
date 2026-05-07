@@ -16,6 +16,19 @@ document.addEventListener('change', async (event) => {
     setProfileAvatarInput(avatar);
     return;
   }
+  if (event.target.id === 'cloud-auth-avatar-file') {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > AGENT_AVATAR_UPLOAD_MAX_BYTES) {
+      toast('Avatar must be 10 MB or smaller');
+      event.target.value = '';
+      return;
+    }
+    cloudAuthAvatar = await readAvatarFileAsDataUrl(file);
+    event.target.value = '';
+    showCloudAuthGate(null).catch((error) => toast(error.message));
+    return;
+  }
   if (event.target.matches?.('.agent-avatar-upload')) {
     await uploadAgentAvatar(event.target).catch((error) => toast(error.message));
     return;
@@ -118,6 +131,7 @@ document.addEventListener('click', async (event) => {
       settingsTab = target.dataset.tab || 'account';
       activeView = 'cloud';
       railTab = 'settings';
+      modal = null;
       threadMessageId = null;
       workspaceActivityDrawerOpen = false;
       inspectorReturnThreadId = null;
@@ -810,6 +824,16 @@ document.addEventListener('click', async (event) => {
         if (!window.confirm('Remove this member?')) return;
         await api(`/api/cloud/members/${encodeURIComponent(target.dataset.id)}`, { method: 'DELETE', body: '{}' });
         toast('Member removed');
+      }
+      if (action === 'reset-cloud-member-password') {
+        const reset = await api('/api/cloud/password-resets', {
+          method: 'POST',
+          body: JSON.stringify({ memberId: target.dataset.id }),
+        });
+        cloudGeneratedLinks = reset.resetUrl ? [{ email: reset.email, link: reset.resetUrl }] : [];
+        settingsTab = 'members';
+        activeView = 'cloud';
+        toast('Password reset link created');
       }
       if (action === 'leave-channel') {
       if (!window.confirm('Leave this channel?')) return;

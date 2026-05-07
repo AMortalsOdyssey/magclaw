@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import test from 'node:test';
 
 async function readAppSource() {
@@ -22,25 +22,42 @@ test('project remove buttons render as icons instead of rem text', async () => {
   assert.match(app, /class="project-remove-icon"/);
 });
 
-test('cloud account settings expose role-aware invitation controls', async () => {
+test('members settings expose role-aware invitation controls', async () => {
   const app = await readAppSource();
-  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
+  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));
+  const membersSettingsSource = app.slice(app.indexOf('function normalizeInviteEmailValue(value)'), app.indexOf('function renderCloudAuthGate('));
+  const railSource = app.slice(app.indexOf('function settingsNavItems()'), app.indexOf('function settingsIcon('));
 
   assert.match(app, /function cloudRoleAllows\(role, allowedRole\)/);
   assert.match(app, /function cloudCan\(capability\)/);
-  assert.match(accountSettingsSource, /const canInviteCloud = cloudCan\('invite_member'\)/);
-  assert.match(accountSettingsSource, /const inviteRoleOptions = cloudInviteRoleOptions\(\)/);
-  assert.match(accountSettingsSource, /\$\{canInviteCloud \? `[\s\S]*id="cloud-invite-form"/);
+  assert.match(railSource, /System Config[\s\S]*Members[\s\S]*Release Notes/);
+  assert.match(membersSettingsSource, /id="member-invite-form"/);
+  assert.match(membersSettingsSource, /memberInviteValidCount\(\)/);
+  assert.match(membersSettingsSource, /data-action="copy-member-generated-link"/);
+  assert.match(membersSettingsSource, /data-action="copy-all-member-generated-links"/);
+  assert.match(membersSettingsSource, /Email:[\s\S]*Link:/);
+  assert.match(app, /\/api\/cloud\/invitations\/batch/);
+  assert.match(app, /\/api\/cloud\/password-resets/);
   assert.match(app, /function cloudInviteRoleOptions\(\)/);
+  const inviteRoleOptionsSource = app.slice(app.indexOf('function cloudInviteRoleOptions()'), app.indexOf('function cloudCanRemoveMemberRole'));
+  assert.doesNotMatch(inviteRoleOptionsSource, /invite_admin|admin', 'Admin'/);
+  assert.match(app, /let latestInvitationLink = null/);
+  assert.match(app, /let cloudGeneratedLinks = \[\]/);
+  assert.match(app, /function generatedLinkText\(item\)/);
+  assert.match(app, /async function tryCopyTextToClipboard\(text\)[\s\S]*catch/);
+  assert.match(app, /tryCopyTextToClipboard\(generatedLinksText\(\)\)/);
   assert.match(app, /'core_member', 'Core Member'/);
   assert.match(app, /'member', 'Member'/);
+  assert.match(membersSettingsSource, /\['core_member', 'member'\]/);
+  assert.doesNotMatch(membersSettingsSource, /optionRole\) => `<option value="\$\{optionRole\}"[\s\S]*admin/);
+  assert.doesNotMatch(accountSettingsSource, /id="cloud-invite-form"|Workspace Members/);
   assert.doesNotMatch(accountSettingsSource, /value="viewer"|value="agent_admin"|value="computer_admin"|value="owner"/);
 });
 
 test('account profile uses a focused role layout with avatar picker controls', async () => {
   const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
-  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
+  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));
 
   assert.match(accountSettingsSource, /class="account-role-badge role-\$\{escapeHtml\(role\)\}"/);
   assert.match(accountSettingsSource, /data-action="pick-profile-avatar"/);
@@ -55,11 +72,14 @@ test('account profile uses a focused role layout with avatar picker controls', a
 test('sign out uses a confirmation modal before logging out', async () => {
   const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
-  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
+  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));
+  const signOutModalSource = app.slice(app.indexOf('function renderSignOutConfirmModal()'), app.indexOf('function renderAgentStartModal()'));
 
   assert.match(accountSettingsSource, /data-action="open-modal" data-modal="confirm-sign-out"[\s\S]*>Sign Out<\/button>/);
   assert.match(app, /'confirm-sign-out': renderSignOutConfirmModal/);
   assert.match(app, /function renderSignOutConfirmModal\(\)/);
+  assert.match(signOutModalSource, /settingsIcon\('account'\)/);
+  assert.doesNotMatch(signOutModalSource, /navIcon\(/);
   assert.match(app, /data-action="confirm-cloud-auth-logout"/);
   assert.match(app, /if \(action === 'confirm-cloud-auth-logout'\)/);
   assert.doesNotMatch(accountSettingsSource, /data-action="cloud-auth-logout"/);
@@ -69,7 +89,7 @@ test('sign out uses a confirmation modal before logging out', async () => {
 
 test('cloud account settings use server-configured sign-in without owner bootstrap UI', async () => {
   const app = await readAppSource();
-  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
+  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));
 
   assert.equal(accountSettingsSource.includes('id="cloud-owner-form"'), false);
   assert.equal(app.includes('/api/cloud/auth/bootstrap-owner'), false);
@@ -81,13 +101,25 @@ test('cloud account settings use server-configured sign-in without owner bootstr
   assert.match(app, /function renderCloudAuthGate/);
 });
 
-test('cloud auth gate only shows invite registration when an invite token is present', async () => {
+test('cloud auth gate uses token context for invite and reset forms', async () => {
   const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const authGateSource = app.slice(app.indexOf('function renderCloudAuthGate('), app.indexOf('function renderBrowserSettingsTab()'));
 
-  assert.match(authGateSource, /inviteTokenFromUrl \? `/);
+  assert.match(app, /function cloudAuthTokenFromLocation\(\)/);
+  assert.match(app, /if \(cloudAuthTokenFromLocation\(\)\.mode\)[\s\S]*showCloudAuthGate\(null\)/);
+  assert.match(app, /\/api\/cloud\/auth\/invitation-status\?token=/);
+  assert.match(app, /\/api\/cloud\/auth\/reset-status\?token=/);
+  assert.match(authGateSource, /tokenContext\.mode === 'invite'/);
+  assert.match(authGateSource, /tokenContext\.mode === 'reset'/);
   assert.match(authGateSource, /id="cloud-register-form"/);
+  assert.match(authGateSource, /id="cloud-reset-form"/);
+  assert.match(authGateSource, /passwordConfirm/);
+  assert.match(authGateSource, /8 到 30 位/);
+  assert.match(authGateSource, /使用协议/);
+  assert.match(authGateSource, /隐私政策/);
+  assert.match(authGateSource, /如果你还没有注册过账号，请联系你的管理员获取邀请。/);
+  assert.match(authGateSource, /© 2026 MagClaw\. All Rights Reserved\./);
   assert.doesNotMatch(authGateSource, /owner invite/);
   assert.doesNotMatch(authGateSource, /admin account configured|Admin access required|Admin login/i);
   assert.match(authGateSource, /Sign in to continue to your MagClaw workspace/);
@@ -96,7 +128,8 @@ test('cloud auth gate only shows invite registration when an invite token is pre
   assert.match(authGateSource, /value="\$\{escapeHtml\(cloudLoginDraftEmail\)\}"/);
   assert.match(app, /Email or password is incorrect/);
   assert.match(app, /showCloudAuthGate\(error, \{ interactive: true \}\)/);
-  assert.match(authGateSource, /<img src="\/favicon\.svg" alt="" \/>/);
+  assert.match(app, /const BRAND_LOGO_SRC = '\/brand\/magclaw-logo\.png'/);
+  assert.match(authGateSource, /<img src="\$\{BRAND_LOGO_SRC\}" alt="" \/>/);
   assert.match(authGateSource, /class="cloud-auth-shell"/);
   assert.match(authGateSource, /class="pixel-panel cloud-login-card"/);
   assert.match(authGateSource, /id="cloud-login-title">Welcome back!/);
@@ -104,14 +137,42 @@ test('cloud auth gate only shows invite registration when an invite token is pre
   assert.match(styles, /\.cloud-login-card,/);
   assert.match(styles, /\.cloud-login-error/);
   assert.match(styles, /\.cloud-login-submit/);
+  assert.match(styles, /\.cloud-auth-legal/);
+  assert.match(styles, /\.cloud-password-rule/);
 });
 
-test('cloud account settings prefill invite tokens from invite URLs', async () => {
+test('browser favicon and shared brand assets use the selected Modular Claw logo', async () => {
+  const index = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
   const app = await readAppSource();
-  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
 
-  assert.match(accountSettingsSource, /const inviteTokenFromUrl = new URLSearchParams\(window\.location\.search\)\.get\('token'\) \|\| ''/);
-  assert.match(accountSettingsSource, /name="inviteToken"[\s\S]*value="\$\{escapeHtml\(inviteTokenFromUrl\)\}"/);
+  assert.match(index, /<link rel="icon" type="image\/png" sizes="64x64" href="\/brand\/magclaw-favicon\.png\?v=modular-claw-v1" \/>/);
+  assert.match(index, /<link rel="shortcut icon" href="\/favicon\.ico\?v=modular-claw-v1" \/>/);
+  assert.match(index, /<link rel="apple-touch-icon" href="\/brand\/magclaw-logo\.png\?v=modular-claw-v1" \/>/);
+  assert.match(app, /const BRAND_FAVICON_SRC = '\/brand\/magclaw-favicon\.png'/);
+  assert.match(app, /const NOTIFICATION_ICON = BRAND_FAVICON_SRC/);
+  assert.equal((await stat(new URL('../public/brand/magclaw-logo.png', import.meta.url))).isFile(), true);
+  assert.equal((await stat(new URL('../public/brand/magclaw-favicon.png', import.meta.url))).isFile(), true);
+  assert.equal((await stat(new URL('../public/brand/magclaw-logo-concepts.png', import.meta.url))).isFile(), true);
+  assert.equal((await stat(new URL('../public/favicon.ico', import.meta.url))).isFile(), true);
+});
+
+test('login legal links have built-in terms and privacy pages', async () => {
+  const terms = await readFile(new URL('../public/terms/index.html', import.meta.url), 'utf8');
+  const privacy = await readFile(new URL('../public/privacy/index.html', import.meta.url), 'utf8');
+
+  assert.match(terms, /MagClaw Terms of Use/);
+  assert.match(terms, /© 2026 MagClaw\. All Rights Reserved\./);
+  assert.match(privacy, /MagClaw Privacy Policy/);
+  assert.match(privacy, /Password.*plain text|Passwords are never stored in plain text/);
+});
+
+test('cloud auth gate loads invite tokens from invite URLs', async () => {
+  const app = await readAppSource();
+
+  assert.match(app, /const params = new URLSearchParams\(window\.location\.search\)/);
+  assert.match(app, /path\.includes\('reset-password'\) \|\| token\.startsWith\('mc_reset_'\)/);
+  assert.match(app, /name="inviteToken" value="\$\{escapeHtml\(tokenContext\.token \|\| ''\)\}"/);
+  assert.match(app, /window\.history\.replaceState\(\{\}, '', '\/'\)/);
 });
 
 test('project picker keeps only the native folder action and polished chip icons', async () => {
@@ -201,14 +262,29 @@ test('chat rail keeps Threads and adds Inbox without a System notification tab',
 test('inbox reuses thread rows and renders workspace activity drawer', async () => {
   const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
+  const drawerSource = app.slice(app.indexOf('function renderWorkspaceActivityDrawer()'), app.indexOf('function renderThreadDrawer(message)'));
 
   assert.match(app, /function renderInbox\(\)/);
   assert.match(app, /function buildInboxModel\(\)/);
   assert.match(app, /function renderWorkspaceActivityDrawer\(\)/);
+  assert.match(app, /function workspaceActivityScrollSnapshot\(\)/);
+  assert.match(app, /function restoreWorkspaceActivityScroll\(snapshot\)/);
+  assert.match(renderSource, /workspaceActivity: workspaceActivityScrollSnapshot\(\)/);
+  assert.match(renderSource, /restoreWorkspaceActivityScroll\(scrollSnapshot\.workspaceActivity\)/);
   assert.match(app, /class="thread-row slock-thread-row inbox-row/);
   assert.match(app, /data-action="open-workspace-activity"/);
+  assert.match(drawerSource, /class="workspace-activity-title-trigger"/);
+  assert.match(drawerSource, /class="workspace-activity-popover"/);
+  assert.match(drawerSource, /tabindex="0"/);
   assert.match(styles, /\.inbox-shell/);
   assert.match(styles, /\.workspace-activity-drawer/);
+  assert.match(styles, /\.workspace-activity-popover/);
+  assert.match(styles, /\.workspace-activity-popover \{[\s\S]*border: 1px solid/);
+  assert.match(styles, /\.workspace-activity-popover \{[\s\S]*border-radius: 6px/);
+  assert.doesNotMatch(styles, /\.workspace-activity-popover \{[\s\S]*box-shadow: var\(--shadow-pixel\)/);
+  assert.match(styles, /\.workspace-activity-row:hover \.workspace-activity-popover/);
+  assert.match(styles, /\.workspace-activity-title-wrap:focus-within \.workspace-activity-popover/);
   assert.match(styles, /\.inbox-row\.unread::before/);
 });
 
@@ -319,7 +395,7 @@ test('all visible frontend timestamps include seconds', async () => {
 test('system messages render the browser tab logo as the avatar', async () => {
   const app = await readAppSource();
 
-  assert.match(app, /const SYSTEM_AVATAR_SRC = '\/favicon\.svg'/);
+  assert.match(app, /const SYSTEM_AVATAR_SRC = BRAND_LOGO_SRC/);
   assert.match(app, /<img src="\$\{SYSTEM_AVATAR_SRC\}" class="\$\{cssClass\} avatar-img system-avatar-img" alt="Magclaw" \/>/);
   assert.equal(app.includes('return `<span class="${cssClass}">MC</span>`;'), false);
 });

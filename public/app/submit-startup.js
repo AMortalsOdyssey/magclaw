@@ -1,3 +1,14 @@
+async function tryCopyTextToClipboard(text) {
+  const value = String(text || '');
+  if (!value || !navigator.clipboard?.writeText) return false;
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 document.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
@@ -196,16 +207,61 @@ document.addEventListener('submit', async (event) => {
       toast('Signed in');
     }
     if (form.id === 'cloud-register-form') {
+      const password = String(data.get('password') || '');
+      const passwordConfirm = String(data.get('passwordConfirm') || password);
+      if (password !== passwordConfirm) throw new Error('Passwords do not match.');
+      if (password.length < 8 || password.length > 30 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+        throw new Error('Password must be 8-30 characters and include letters and numbers.');
+      }
       await api('/api/cloud/auth/register', {
         method: 'POST',
         body: JSON.stringify({
           inviteToken: data.get('inviteToken'),
           name: data.get('name'),
           email: data.get('email'),
-          password: data.get('password'),
+          avatar: data.get('avatar'),
+          password,
         }),
       });
+      window.history.replaceState({}, '', '/');
       toast('Account created');
+    }
+    if (form.id === 'cloud-reset-form') {
+      const password = String(data.get('password') || '');
+      const passwordConfirm = String(data.get('passwordConfirm') || password);
+      if (password !== passwordConfirm) throw new Error('Passwords do not match.');
+      if (password.length < 8 || password.length > 30 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+        throw new Error('Password must be 8-30 characters and include letters and numbers.');
+      }
+      await api('/api/cloud/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({
+          resetToken: data.get('resetToken'),
+          password,
+        }),
+      });
+      window.history.replaceState({}, '', '/');
+      toast('Password reset');
+    }
+    if (form.id === 'member-invite-form') {
+      cloudInviteDraft = String(data.get('emailsDraft') || '');
+      const emails = memberInviteEmailsForSubmit();
+      if (!emails.length) throw new Error('Enter at least one valid email.');
+      const result = await api('/api/cloud/invitations/batch', {
+        method: 'POST',
+        body: JSON.stringify({
+          emails,
+          role: data.get('role'),
+        }),
+      });
+      cloudGeneratedLinks = (result.invitations || []).map((item) => ({
+        email: item.email,
+        link: item.inviteUrl,
+      })).filter((item) => item.email && item.link);
+      latestInvitationLink = cloudGeneratedLinks[0]?.link || null;
+      cloudInviteEmails = [];
+      cloudInviteDraft = '';
+      toast(`Created ${cloudGeneratedLinks.length} invitation${cloudGeneratedLinks.length === 1 ? '' : 's'}`);
     }
     if (form.id === 'cloud-invite-form') {
       const invite = await api('/api/cloud/invitations', {
@@ -215,8 +271,13 @@ document.addEventListener('submit', async (event) => {
           role: data.get('role'),
         }),
       });
-      if (invite.inviteUrl) await navigator.clipboard?.writeText(invite.inviteUrl);
-      toast(invite.inviteUrl ? 'Invitation link copied' : 'Invitation created');
+      if (invite.inviteUrl) {
+        latestInvitationLink = invite.inviteUrl;
+        const copied = await tryCopyTextToClipboard(invite.inviteUrl);
+        toast(copied ? 'Invitation link copied' : 'Invitation created - copy the link below');
+      } else {
+        toast('Invitation created');
+      }
       form.reset();
     }
     if (form.id === 'fanout-config-form') {

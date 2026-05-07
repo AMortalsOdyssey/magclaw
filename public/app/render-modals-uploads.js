@@ -56,7 +56,7 @@ function renderSignOutConfirmModal() {
   return `
     ${modalHeader('SIGN OUT')}
     <div class="confirm-stop-modal signout-confirm-modal">
-      <div class="confirm-stop-icon signout-confirm-icon">${navIcon('settings')}</div>
+      <div class="confirm-stop-icon signout-confirm-icon">${settingsIcon('account')}</div>
       <div class="confirm-stop-copy">
         <strong>Sign out of ${escapeHtml(name)}?</strong>
         <p>You will need to sign in again to access this workspace from this browser.</p>
@@ -551,17 +551,13 @@ function renderComputerModal() {
 }
 
 function renderHumanModal() {
-  const inviteRoleOptions = cloudInviteRoleOptions();
-  if (appState.cloud?.auth?.currentUser && inviteRoleOptions.length) {
+  if (appState.cloud?.auth?.currentUser) {
     return `
-      ${modalHeader('Invite Human', 'Cloud workspace invitation')}
-      <form id="cloud-invite-form" class="modal-form">
-        <label><span>Email</span><input name="email" type="email" placeholder="person@example.com" required /></label>
-        <label><span>Role</span><select name="role">
-          ${inviteRoleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')}
-        </select></label>
-        <button class="primary-btn" type="submit">Create Invitation</button>
-      </form>
+      ${modalHeader('Members', 'Cloud workspace directory')}
+      <div class="modal-form">
+        <div class="empty-box small">Invitations are managed from Settings → Members.</div>
+        <button class="primary-btn" type="button" data-action="set-settings-tab" data-tab="members">Open Members</button>
+      </div>
     `;
   }
   return `

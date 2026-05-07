@@ -397,6 +397,22 @@ function paneScrollSnapshot(targetName) {
   };
 }
 
+function workspaceActivityScrollSnapshot() {
+  const node = document.querySelector('#workspace-activity-list');
+  if (!workspaceActivityDrawerOpen || !node) {
+    return {
+      top: 0,
+      atBottom: true,
+      hasPosition: false,
+    };
+  }
+  return {
+    top: node.scrollTop || 0,
+    atBottom: paneIsAtBottom(node),
+    hasPosition: true,
+  };
+}
+
 function persistVisiblePaneScrolls() {
   const main = document.querySelector(paneSelector('main'));
   if (main) persistPaneScroll('main', main);
@@ -463,6 +479,18 @@ function restorePaneScroll(targetName, snapshot) {
 function restorePaneScrolls(snapshot) {
   restorePaneScroll('main', snapshot.main);
   restorePaneScroll('thread', snapshot.thread);
+}
+
+function restoreWorkspaceActivityScroll(snapshot) {
+  if (!workspaceActivityDrawerOpen || workspaceActivityScrollToBottom) return;
+  const node = document.querySelector('#workspace-activity-list');
+  if (!node || !snapshot?.hasPosition) return;
+  if (snapshot.atBottom) {
+    node.scrollTop = node.scrollHeight;
+    return;
+  }
+  const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+  node.scrollTop = Math.min(Math.max(0, snapshot.top || 0), maxTop);
 }
 
 function requestPaneBottomScroll(targetName) {

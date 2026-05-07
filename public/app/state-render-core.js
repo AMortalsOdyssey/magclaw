@@ -5,7 +5,9 @@ const TASK_COLUMN_COLLAPSE_KEY = 'magclawTaskColumnCollapse';
 const SIDEBAR_SECTION_COLLAPSE_KEY = 'magclawSidebarSectionCollapse';
 const SKILL_SECTION_COLLAPSE_KEY = 'magclawSkillSectionCollapse';
 const NOTIFICATION_PREF_KEY = 'magclawNotificationPrefs';
-const NOTIFICATION_ICON = '/favicon.svg';
+const BRAND_LOGO_SRC = '/brand/magclaw-logo.png';
+const BRAND_FAVICON_SRC = '/brand/magclaw-favicon.png';
+const NOTIFICATION_ICON = BRAND_FAVICON_SRC;
 const NOTIFICATION_PREVIEW_LIMIT = 140;
 const WORKSPACE_ACTIVITY_VISIBLE_STEP = 30;
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
@@ -74,6 +76,11 @@ let agentDetailEditState = { field: null };
 let agentEnvEditState = null;
 let settingsTab = initialUiState.settingsTab || 'account';
 let latestPairingCommand = null;
+let latestInvitationLink = null;
+let cloudInviteEmails = [];
+let cloudInviteDraft = '';
+let cloudGeneratedLinks = [];
+let cloudAuthAvatar = '';
 let collapsedSidebarSections = readJsonStorage(SIDEBAR_SECTION_COLLAPSE_KEY, {});
 let collapsedSkillSections = readJsonStorage(SKILL_SECTION_COLLAPSE_KEY, {});
 let avatarCropState = null;
@@ -390,7 +397,6 @@ function humanPresenceText(human) {
 
 function cloudInviteRoleOptions() {
   const options = [];
-  if (cloudCan('invite_admin')) options.push(['admin', 'Admin']);
   if (cloudCan('invite_core_member')) options.push(['core_member', 'Core Member']);
   if (cloudCan('invite_member')) options.push(['member', 'Member']);
   return options;

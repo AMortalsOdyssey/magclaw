@@ -6,6 +6,7 @@ function render() {
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
+    workspaceActivity: workspaceActivityScrollSnapshot(),
   };
   ensureSelection();
   persistUiState();
@@ -32,6 +33,7 @@ function render() {
   `;
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);
+    restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
     restorePendingComposerFocus();
     if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
       workspaceActivityScrollToBottom = false;
@@ -257,6 +259,7 @@ function settingsNavItems() {
     { id: 'browser', label: 'Browser', icon: 'browser', meta: notificationStatusLabel() },
     { id: 'server', label: 'Server', icon: 'server', meta: appState.connection?.mode || 'local' },
     { id: 'system', label: 'System Config', icon: 'system', meta: fanoutConfigured ? 'LLM' : 'rules' },
+    { id: 'members', label: 'Members', icon: 'members', meta: `${(appState.cloud?.members || []).filter((member) => (member.status || 'active') === 'active').length}` },
     { id: 'release', label: 'Release Notes', icon: 'release' },
   ];
 }
@@ -264,6 +267,7 @@ function settingsNavItems() {
 function settingsIcon(name, size = 20) {
   const icons = {
     account: '<path d="M20 21v-2a5 5 0 0 0-5-5H9a5 5 0 0 0-5 5v2"/><circle cx="12" cy="7" r="4"/>',
+    members: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
     browser: '<rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 9h18"/>',
     server: '<rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h6"/><path d="M9 12h6"/><path d="M9 17h.01"/><path d="M15 17h.01"/>',
     system: '<path d="M4 7h16"/><path d="M4 17h16"/><path d="M8 3v8"/><path d="M16 13v8"/>',

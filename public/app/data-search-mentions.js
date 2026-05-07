@@ -40,7 +40,7 @@ function displayName(id) {
   return id === 'system' ? 'Magclaw' : 'Unknown';
 }
 
-const SYSTEM_AVATAR_SRC = '/favicon.svg';
+const SYSTEM_AVATAR_SRC = BRAND_LOGO_SRC;
 
 function displayAvatar(id, type) {
   const name = displayName(id);
