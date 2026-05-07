@@ -385,6 +385,9 @@ export function createAgentWorkspaceManager(deps) {
         'create_tasks',
         'claim_tasks',
         'update_task_status',
+        'schedule_reminder',
+        'list_reminders',
+        'cancel_reminder',
       ],
     };
   }

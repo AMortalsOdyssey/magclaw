@@ -35,6 +35,7 @@ function summarizeToolArgs(name, args = {}) {
   if (args.path) summary.path = args.path;
   if (args.targetAgentId || args.targetAgent) summary.targetAgentId = args.targetAgentId || args.targetAgent;
   if (args.taskId) summary.taskId = args.taskId;
+  if (args.reminderId || args.id) summary.reminderId = args.reminderId || args.id;
   if (args.taskNumber) summary.taskNumber = args.taskNumber;
   if (args.status || args.nextStatus) summary.status = args.status || args.nextStatus;
   if (args.content || args.summary || args.body || args.title) {
@@ -133,6 +134,39 @@ const tools = [
       status: { type: 'string', description: 'Optional task status.' },
       assigneeId: { type: 'string', description: 'Optional assignee id. Use "me" for this agent.' },
       limit: { type: 'number', description: 'Maximum tasks to return.' },
+    }),
+  },
+  {
+    name: 'schedule_reminder',
+    description: 'Schedule a one-time MagClaw reminder that will post back into the channel or thread at the requested time. Use for "remind me" requests; do not create a task for simple reminders.',
+    inputSchema: schema({
+      target: { type: 'string', description: 'Conversation target such as #all or #channel:msg_id. Prefer the exact current target from the prompt header.' },
+      channel: { type: 'string', description: 'Channel label/name/id alternative to target.' },
+      title: { type: 'string', description: 'Reminder title.' },
+      body: { type: 'string', description: 'Optional reminder details.' },
+      delaySeconds: { type: 'number', description: 'Delay in seconds from now.' },
+      delay_seconds: { type: 'number', description: 'Delay in seconds from now.' },
+      fireAt: { type: 'string', description: 'Absolute reminder time as ISO timestamp or parseable datetime.' },
+      fire_at: { type: 'string', description: 'Absolute reminder time as ISO timestamp or parseable datetime.' },
+      messageId: { type: 'string', description: 'Optional parent message id to anchor a thread reminder.' },
+      parentMessageId: { type: 'string', description: 'Optional parent message id to anchor a thread reminder.' },
+      sourceMessageId: { type: 'string', description: 'Optional source message id.' },
+    }, ['title']),
+  },
+  {
+    name: 'list_reminders',
+    description: 'List MagClaw reminders owned by this agent, optionally filtered by status.',
+    inputSchema: schema({
+      status: { type: 'string', description: 'Optional status: scheduled, fired, or canceled.' },
+      limit: { type: 'number', description: 'Maximum reminders to return.' },
+    }),
+  },
+  {
+    name: 'cancel_reminder',
+    description: 'Cancel a scheduled MagClaw reminder by id.',
+    inputSchema: schema({
+      reminderId: { type: 'string', description: 'Reminder id or short id.' },
+      id: { type: 'string', description: 'Reminder id or short id.' },
     }),
   },
   {
@@ -314,6 +348,28 @@ async function callTool(name, args = {}) {
         status: args.status,
         assigneeId: args.assigneeId === 'me' ? options.agentId : args.assigneeId,
         limit: args.limit,
+      }),
+    });
+  }
+  if (name === 'schedule_reminder') {
+    return request('/api/agent-tools/reminders', {
+      method: 'POST',
+      body: withAgentId(args),
+    });
+  }
+  if (name === 'list_reminders') {
+    return request('/api/agent-tools/reminders', {
+      query: withAgentId({
+        status: args.status,
+        limit: args.limit,
+      }),
+    });
+  }
+  if (name === 'cancel_reminder') {
+    return request('/api/agent-tools/reminders/cancel', {
+      method: 'POST',
+      body: withAgentId({
+        reminderId: args.reminderId || args.id,
       }),
     });
   }

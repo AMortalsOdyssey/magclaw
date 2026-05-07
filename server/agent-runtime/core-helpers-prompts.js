@@ -140,6 +140,9 @@ function canonicalMagClawToolName(name) {
     'create_tasks',
     'claim_tasks',
     'update_task_status',
+    'schedule_reminder',
+    'list_reminders',
+    'cancel_reminder',
   ];
   return tools.find((tool) => codexToolNameMatches(name, tool)) || '';
 }
@@ -151,6 +154,7 @@ function summarizeToolArguments(name, args = {}) {
     contentLength: args.content ? String(args.content).trim().length : 0,
     queryLength: args.query || args.q ? String(args.query || args.q).length : 0,
     taskId: args.taskId || null,
+    reminderId: args.reminderId || args.reminder_id || args.id || null,
     taskNumber: args.taskNumber || null,
     status: args.status || args.nextStatus || null,
     name: name || null,
@@ -249,12 +253,13 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     '- For multi-channel, multi-task, or thread/task work, reply with the controlled send_message API: POST /api/agent-tools/messages/send using the exact target and workItemId from the current header.',
     '- If you call send_message for a work item, Magclaw will not duplicate your final stdout for that same turn. If you do not call send_message, Magclaw will post your final stdout back to the source thread as a compatibility fallback.',
     '- Never guess a channel or thread target. Use the exact target from the header or read/search history first.',
-    '- Prefer the native MagClaw MCP tools when they are available: send_message, read_history, search_messages, search_agent_memory, read_agent_memory, write_memory, list_tasks, create_tasks, claim_tasks, and update_task_status. Their runtime names may be prefixed by the Codex MCP bridge.',
-    '- If MCP tools are unavailable, you may call the controlled Magclaw agent tool APIs when needed: GET /api/agent-tools/history, GET /api/agent-tools/search, GET /api/agent-tools/memory/search, GET /api/agent-tools/memory/read, GET /api/agent-tools/tasks, POST /api/agent-tools/messages/send, POST /api/agent-tools/memory, POST /api/agent-tools/tasks, POST /api/agent-tools/tasks/claim, and POST /api/agent-tools/tasks/update.',
+    '- Prefer the native MagClaw MCP tools when they are available: send_message, read_history, search_messages, search_agent_memory, read_agent_memory, write_memory, list_tasks, create_tasks, claim_tasks, update_task_status, schedule_reminder, list_reminders, and cancel_reminder. Their runtime names may be prefixed by the Codex MCP bridge.',
+    '- If MCP tools are unavailable, you may call the controlled Magclaw agent tool APIs when needed: GET /api/agent-tools/history, GET /api/agent-tools/search, GET /api/agent-tools/memory/search, GET /api/agent-tools/memory/read, GET /api/agent-tools/tasks, GET /api/agent-tools/reminders, POST /api/agent-tools/messages/send, POST /api/agent-tools/memory, POST /api/agent-tools/tasks, POST /api/agent-tools/tasks/claim, POST /api/agent-tools/tasks/update, POST /api/agent-tools/reminders, and POST /api/agent-tools/reminders/cancel.',
     `- Create a new task with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/tasks -H 'content-type: application/json' -d '{"agentId":"${agent.id}","channel":"${toolTarget}","claim":true,"tasks":[{"title":"Task title"}]}'`,
     `- Update a claimed task with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/tasks/update -H 'content-type: application/json' -d '{"agentId":"${agent.id}","taskId":"task_xxx","status":"in_review"}'`,
     `- Record durable memory with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/memory -H 'content-type: application/json' -d '{"agentId":"${agent.id}","kind":"preference","summary":"Short durable fact"}'. Use kind=capability, communication_style, preference, or memory.`,
     `- Search peer memory when name/role is not enough: curl -s "http://${HOST}:${PORT}/api/agent-tools/memory/search?agentId=${agent.id}&q=<query>&limit=10". Read a result with /api/agent-tools/memory/read?agentId=${agent.id}&targetAgentId=agt_xxx&path=notes/profile.md.`,
+    `- For a simple "remind me" request, schedule a reminder instead of creating a task: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/reminders -H 'content-type: application/json' -d '{"agentId":"${agent.id}","target":"${toolTarget}","title":"Reminder title","delaySeconds":300}'. Use the exact thread target from the header when the reminder belongs in a thread.`,
     '- Create or claim tasks only for durable work with progress/state: coding changes, debugging, deployment, docs/report deliverables, multi-step research, migrations, reviews, or when the user explicitly says task/as task/创建任务.',
     '- When a user asks for actionable durable work, claim the existing task if Magclaw already created one for you, then continue the work in the task thread.',
     '- Thread replies cannot become tasks directly. If new work emerges in a thread, create a new top-level task-message with sourceMessageId/sourceReplyId instead of claiming the reply.',

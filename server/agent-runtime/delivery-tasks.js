@@ -1,6 +1,7 @@
 async function deliverMessageToAgent(agent, spaceType, spaceId, message, options = {}) {
   const parentMessageId = options.parentMessageId || message.parentMessageId || (shouldStartThreadForAgentDelivery(message) ? message.id : null);
-  const workItem = createWorkItemForDelivery(agent, message, { spaceType, spaceId, parentMessageId });
+  const suppressTaskContext = options.suppressTaskContext === true || message.suppressTaskContext === true;
+  const workItem = createWorkItemForDelivery(agent, message, { spaceType, spaceId, parentMessageId, suppressTaskContext });
   const runtimeOverride = getAgentRuntime(agent) === 'codex'
     ? codexRuntimeOverrideForDelivery(message, workItem)
     : null;
@@ -8,7 +9,7 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
     ...message,
     target: workItem.target,
     workItemId: workItem.id,
-    taskId: message.taskId || workItem.taskId || null,
+    taskId: suppressTaskContext ? null : (message.taskId || workItem.taskId || null),
   };
   const contextPack = buildAgentContextPack({
     state,
@@ -20,6 +21,7 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
     workItem,
     peerMemorySearch: options.peerMemorySearch || null,
     toolBaseUrl: `http://${HOST}:${PORT}`,
+    limits: options.contextLimits || {},
   });
   const deliveryMessage = {
     ...routedMessage,

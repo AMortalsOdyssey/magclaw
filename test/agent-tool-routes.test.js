@@ -14,6 +14,7 @@ function routeDeps(overrides = {}) {
   const state = {
     agents: [],
     tasks: [],
+    reminders: [],
     messages: [{ id: 'msg_1', body: 'source', authorType: 'human', spaceType: 'channel', spaceId: 'chan_all' }],
   };
   const agent = { id: 'agt_one', name: 'Agent One' };
@@ -31,6 +32,26 @@ function routeDeps(overrides = {}) {
       const task = { id: 'task_1', number: 1, title, status: 'todo', assigneeIds };
       const message = { id: 'msg_task_1', taskId: task.id };
       return { task, message };
+    },
+    createReminder: (input) => {
+      const reminder = {
+        id: 'rem_1',
+        title: input.title,
+        status: 'scheduled',
+        fireAt: input.fireAt,
+        ownerAgentId: input.agentId,
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        parentMessageId: input.parentMessageId || null,
+      };
+      state.reminders.unshift(reminder);
+      return { reminder, text: `Scheduled reminder ${reminder.id}.` };
+    },
+    cancelReminder: (input) => {
+      const reminder = state.reminders.find((item) => item.id === input.reminderId);
+      if (!reminder) throw Object.assign(new Error('Reminder not found.'), { status: 404 });
+      reminder.status = 'canceled';
+      return { reminder, text: `Canceled reminder ${reminder.id}.` };
     },
     displayActor: (id) => id,
     findAgent: (agentId) => (agentId === agent.id ? agent : state.agents.find((item) => item.id === agentId) || null),
@@ -74,6 +95,53 @@ function routeDeps(overrides = {}) {
     ...overrides,
   };
 }
+
+test('agent tool reminders can schedule, list, and cancel timed reminders', async () => {
+  const deps = routeDeps({
+    readJson: async () => ({
+      agentId: 'agt_one',
+      target: '#all:msg_1',
+      title: '提醒我带笔记本',
+      delaySeconds: 300,
+    }),
+  });
+
+  const scheduleRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'POST' },
+    scheduleRes,
+    new URL('http://local/api/agent-tools/reminders'),
+    deps,
+  ), true);
+  assert.equal(scheduleRes.statusCode, 201);
+  assert.equal(scheduleRes.data.reminder.title, '提醒我带笔记本');
+  assert.equal(deps.state.reminders[0].status, 'scheduled');
+
+  const listRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET' },
+    listRes,
+    new URL('http://local/api/agent-tools/reminders?agentId=agt_one&status=scheduled'),
+    deps,
+  ), true);
+  assert.equal(listRes.statusCode, 200);
+  assert.equal(listRes.data.reminders.length, 1);
+  assert.match(listRes.data.text, /提醒我带笔记本/);
+
+  const cancelDeps = {
+    ...deps,
+    readJson: async () => ({ agentId: 'agt_one', reminderId: 'rem_1' }),
+  };
+  const cancelRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'POST' },
+    cancelRes,
+    new URL('http://local/api/agent-tools/reminders/cancel'),
+    cancelDeps,
+  ), true);
+  assert.equal(cancelRes.statusCode, 200);
+  assert.equal(deps.state.reminders[0].status, 'canceled');
+});
 
 test('agent tool route group formats bounded history reads', async () => {
   const deps = routeDeps();

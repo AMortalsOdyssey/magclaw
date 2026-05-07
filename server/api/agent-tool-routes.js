@@ -7,7 +7,9 @@ export async function handleAgentToolApi(req, res, url, deps) {
   const {
     addSystemEvent,
     broadcastState,
+    cancelReminder,
     claimTask,
+    createReminder,
     createTaskFromMessage,
     createTaskMessage,
     displayActor,
@@ -30,6 +32,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     readJson,
     resolveConversationSpace,
     resolveMessageTarget,
+    listReminders,
     searchAgentMessageHistory,
     searchAgentMemory,
     sendError,
@@ -40,6 +43,87 @@ export async function handleAgentToolApi(req, res, url, deps) {
     workItemTargetMatches,
   } = deps;
   const state = getState();
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/reminders') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const result = typeof listReminders === 'function'
+      ? listReminders({
+        agentId,
+        status: url.searchParams.get('status') || '',
+        limit: url.searchParams.get('limit') || undefined,
+      })
+      : {
+        ok: true,
+        reminders: (state.reminders || []).filter((reminder) => (
+          (!agentId || reminder.ownerAgentId === agentId || reminder.createdBy === agentId)
+          && (!url.searchParams.get('status') || reminder.status === url.searchParams.get('status'))
+        )),
+      };
+    const reminders = result.reminders || [];
+    addSystemEvent('agent_reminders_listed', `${displayActor(agentId) || 'Agent'} listed reminders.`, {
+      agentId,
+      status: url.searchParams.get('status') || null,
+      resultCount: reminders.length,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      reminders,
+      text: result.text || (reminders.length
+        ? [
+          'Reminders:',
+          ...reminders.map((reminder) => `#${String(reminder.id || '').split('_').pop() || reminder.id} [${reminder.status}] ${reminder.fireAt} "${reminder.title}"`),
+        ].join('\n')
+        : 'No reminders.'),
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agent-tools/reminders') {
+    const body = await readJson(req);
+    const agent = findAgent(String(body.agentId || ''));
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    try {
+      const result = createReminder({
+        ...body,
+        agentId: agent.id,
+      });
+      addSystemEvent('agent_tool_schedule_reminder', `${agent.name} scheduled a reminder.`, {
+        agentId: agent.id,
+        reminderId: result.reminder?.id || null,
+        fireAt: result.reminder?.fireAt || null,
+      });
+      await persistState();
+      broadcastState();
+      sendJson(res, 201, result);
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agent-tools/reminders/cancel') {
+    const body = await readJson(req);
+    const agent = findAgent(String(body.agentId || ''));
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    try {
+      const result = cancelReminder({
+        ...body,
+        agentId: agent.id,
+      });
+      await persistState();
+      broadcastState();
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+    }
+    return true;
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/agent-tools/history') {
     const agentId = url.searchParams.get('agentId') || '';

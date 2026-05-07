@@ -281,7 +281,7 @@ function inferTaskIdForDelivery(message, parentMessageId) {
   return task?.id || null;
 }
 
-function createWorkItemForDelivery(agent, message, { spaceType, spaceId, parentMessageId = null } = {}) {
+function createWorkItemForDelivery(agent, message, { spaceType, spaceId, parentMessageId = null, suppressTaskContext = false } = {}) {
   state.workItems = Array.isArray(state.workItems) ? state.workItems : [];
   const target = targetForConversation(spaceType, spaceId, parentMessageId);
   const item = {
@@ -292,7 +292,7 @@ function createWorkItemForDelivery(agent, message, { spaceType, spaceId, parentM
     spaceType,
     spaceId,
     target,
-    taskId: inferTaskIdForDelivery(message, parentMessageId),
+    taskId: suppressTaskContext ? null : inferTaskIdForDelivery(message, parentMessageId),
     status: 'queued',
     createdAt: now(),
     updatedAt: now(),
