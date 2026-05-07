@@ -1,16 +1,29 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-test('project remove buttons render as icons instead of rem text', async () => {
+async function readAppSource() {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const appDir = new URL('../public/app/', import.meta.url);
+  const chunks = [...app.matchAll(/['"]\/app\/([^'"]+)['"]/g)]
+    .map((match) => match[1]);
+  if (!chunks.length) chunks.push(...(await readdir(appDir)).filter((name) => name.endsWith('.js')).sort());
+  const chunkSources = await Promise.all(
+    chunks
+      .map((name) => readFile(new URL(name, appDir), 'utf8')),
+  );
+  return [app, ...chunkSources].join('\n');
+}
+
+test('project remove buttons render as icons instead of rem text', async () => {
+  const app = await readAppSource();
 
   assert.equal(/data-action="remove-project"[\s\S]*?>rem<\/button>/.test(app), false);
   assert.match(app, /class="project-remove-icon"/);
 });
 
 test('cloud account settings expose role-aware invitation controls', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
 
   assert.match(app, /function cloudRoleAllows\(role, allowedRole\)/);
@@ -25,7 +38,7 @@ test('cloud account settings expose role-aware invitation controls', async () =>
 });
 
 test('account profile uses a focused role layout with avatar picker controls', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
 
@@ -40,7 +53,7 @@ test('account profile uses a focused role layout with avatar picker controls', a
 });
 
 test('sign out uses a confirmation modal before logging out', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
 
@@ -55,7 +68,7 @@ test('sign out uses a confirmation modal before logging out', async () => {
 });
 
 test('cloud account settings use server-configured sign-in without owner bootstrap UI', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
 
   assert.equal(accountSettingsSource.includes('id="cloud-owner-form"'), false);
@@ -69,7 +82,7 @@ test('cloud account settings use server-configured sign-in without owner bootstr
 });
 
 test('cloud auth gate only shows invite registration when an invite token is present', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const authGateSource = app.slice(app.indexOf('function renderCloudAuthGate('), app.indexOf('function renderBrowserSettingsTab()'));
 
@@ -94,7 +107,7 @@ test('cloud auth gate only shows invite registration when an invite token is pre
 });
 
 test('cloud account settings prefill invite tokens from invite URLs', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function renderBrowserSettingsTab()'));
 
   assert.match(accountSettingsSource, /const inviteTokenFromUrl = new URLSearchParams\(window\.location\.search\)\.get\('token'\) \|\| ''/);
@@ -102,7 +115,7 @@ test('cloud account settings prefill invite tokens from invite URLs', async () =
 });
 
 test('project picker keeps only the native folder action and polished chip icons', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.equal(app.includes('Add Workspace'), false);
@@ -115,7 +128,7 @@ test('project picker keeps only the native folder action and polished chip icons
 });
 
 test('project chip paths stay readable with horizontal scrolling', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /class="project-chip-path"/);
@@ -125,7 +138,7 @@ test('project chip paths stay readable with horizontal scrolling', async () => {
 });
 
 test('project mentions show full local paths in the candidate list', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /absolutePath: item\.absolutePath/);
@@ -137,7 +150,7 @@ test('project mentions show full local paths in the candidate list', async () =>
 });
 
 test('threads render newest first with display names instead of raw ids', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /function threadUpdatedAt\(message\)/);
   assert.match(app, /\.sort\(\(a, b\) => threadUpdatedAt\(b\) - threadUpdatedAt\(a\)\)/);
@@ -150,7 +163,7 @@ test('threads render newest first with display names instead of raw ids', async 
 });
 
 test('thread rows use the last reply actor avatar and prefix the preview with the actor name', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const inboxItemSource = app.slice(app.indexOf('function buildThreadInboxItem('), app.indexOf('function buildDirectInboxItem('));
   const threadsSource = app.slice(app.indexOf('function renderThreads()'), app.indexOf('function renderSaved()'));
 
@@ -167,7 +180,7 @@ test('thread rows use the last reply actor avatar and prefix the preview with th
 });
 
 test('chat rail keeps Threads and adds Inbox without a System notification tab', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const chatRailSource = app.slice(app.indexOf('function renderChatRail('), app.indexOf('function renderMembersRail('));
 
@@ -186,7 +199,7 @@ test('chat rail keeps Threads and adds Inbox without a System notification tab',
 });
 
 test('inbox reuses thread rows and renders workspace activity drawer', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /function renderInbox\(\)/);
@@ -216,7 +229,7 @@ test('workspace uses dark icon rail, pink chat sidebar, and white main surfaces'
 });
 
 test('messages and replies render markdown while preserving mention chips', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /function renderMarkdownWithMentions\(content\)/);
   assert.match(app, /message-table/);
@@ -228,7 +241,7 @@ test('messages and replies render markdown while preserving mention chips', asyn
 });
 
 test('human mention chips use a distinct color from agent mentions', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /mention-identity mention-agent/);
@@ -239,7 +252,7 @@ test('human mention chips use a distinct color from agent mentions', async () =>
 });
 
 test('channel mention chips render in yellow', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /mention-special\$\{channelClass\}/);
@@ -252,7 +265,7 @@ test('channel mention chips render in yellow', async () => {
 });
 
 test('human messages and thread replies render agent pickup avatars from work items', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /const AGENT_RECEIPT_VISIBLE_LIMIT = 10/);
@@ -273,7 +286,7 @@ test('human messages and thread replies render agent pickup avatars from work it
 });
 
 test('task columns can be collapsed from the board header', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /let collapsedTaskColumns = readCollapsedTaskColumns\(\)/);
@@ -286,7 +299,7 @@ test('task columns can be collapsed from the board header', async () => {
 });
 
 test('stop all agents channel action is labelled but temporarily unavailable', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /title="Stop All Agents - Stop all Agent actions in this channel \(temporarily unavailable\)"/);
   assert.match(app, /data-tooltip="Stop All Agents[\s\S]*temporarily unavailable/);
@@ -296,7 +309,7 @@ test('stop all agents channel action is labelled but temporarily unavailable', a
 });
 
 test('all visible frontend timestamps include seconds', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /function fmtTime\(value\)/);
   assert.match(app, /second: '2-digit'/);
@@ -304,7 +317,7 @@ test('all visible frontend timestamps include seconds', async () => {
 });
 
 test('agent born date shows a cake on same-month-day anniversaries only', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /function shouldCelebrateAgentBorn\(value, today = new Date\(\)\)/);
   assert.match(app, /date\.getMonth\(\) === today\.getMonth\(\)/);
@@ -314,7 +327,7 @@ test('agent born date shows a cake on same-month-day anniversaries only', async 
 });
 
 test('agent messages and thread replies render live status dots on avatar corners', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /function agentStatusDot\(authorId, authorType\)/);
@@ -326,7 +339,7 @@ test('agent messages and thread replies render live status dots on avatar corner
 });
 
 test('empty thread replies keep the count without rendering a no-replies placeholder', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
 
   assert.equal(app.includes('No replies yet'), false);
   assert.match(app, /<strong>\$\{replies\.length\} \$\{replyWord\}<\/strong>/);
@@ -334,7 +347,7 @@ test('empty thread replies keep the count without rendering a no-replies placeho
 });
 
 test('channel navigation hides the inspector until an agent, task, or thread is selected', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /const inspectorHtml = renderInspector\(\)/);
@@ -347,7 +360,7 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
 });
 
 test('members navigation preserves chat layout until an agent is explicitly selected', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const leftNavSource = app.slice(app.indexOf("if (action === 'set-left-nav')"), app.indexOf("if (action === 'select-agent')"));
   const selectAgentSource = app.slice(app.indexOf("if (action === 'select-agent')"), app.indexOf("if (action === 'close-agent-detail')"));
@@ -365,7 +378,7 @@ test('members navigation preserves chat layout until an agent is explicitly sele
 });
 
 test('dm chat and task empty states use Slock-style simple surfaces', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /function renderDmHeader\(\)/);
@@ -381,7 +394,7 @@ test('dm chat and task empty states use Slock-style simple surfaces', async () =
 });
 
 test('create channel keeps agent members optional and manually selected', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const channelModalSource = app.slice(app.indexOf('function renderChannelModal'), app.indexOf('function renderEditChannelModal'));
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
@@ -393,7 +406,7 @@ test('create channel keeps agent members optional and manually selected', async 
 });
 
 test('message composers refocus after enter-submit sends', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
   const submitSource = app.slice(app.indexOf("document.addEventListener('submit'"), app.indexOf('refreshState().then'));
 
@@ -417,7 +430,7 @@ test('message composers refocus after enter-submit sends', async () => {
 });
 
 test('message composers do not submit while IME composition is active', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const compositionStartSource = app.slice(app.indexOf("document.addEventListener('compositionstart'"), app.indexOf("document.addEventListener('compositionend'"));
   const compositionEndSource = app.slice(app.indexOf("document.addEventListener('compositionend'"), app.indexOf("document.addEventListener('keydown'"));
   const keydownSource = app.slice(app.indexOf("document.addEventListener('keydown'"), app.indexOf("document.addEventListener('pointerdown'"));
@@ -433,7 +446,7 @@ test('message composers do not submit while IME composition is active', async ()
 });
 
 test('workspace location and scroll position survive refreshes', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
   const scrollListenerSource = app.slice(
     app.indexOf("document.addEventListener('scroll'"),
@@ -460,7 +473,7 @@ test('workspace location and scroll position survive refreshes', async () => {
 });
 
 test('task cards open their thread conversation and keep compact blocks without delete action', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const cardSource = app.slice(app.indexOf('function renderTaskCard'), app.indexOf('function renderTaskActionButtons'));
   const selectTaskSource = app.slice(app.indexOf("if (action === 'select-task')"), app.indexOf("if (action === 'close-task-detail')"));
@@ -480,7 +493,7 @@ test('task cards open their thread conversation and keep compact blocks without 
 });
 
 test('global task board follows Slock board list channel filtering without stopped task state', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const server = await readFile(new URL('../server/index.js', import.meta.url), 'utf8');
 
@@ -504,7 +517,7 @@ test('global task board follows Slock board list channel filtering without stopp
 });
 
 test('task status icons sync across messages threads saved and task detail', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const messageSource = app.slice(app.indexOf('function renderMessage'), app.indexOf('function renderComposer'));
   const threadsSource = app.slice(app.indexOf('function renderThreads'), app.indexOf('function renderSaved'));
@@ -540,7 +553,7 @@ test('task status icons sync across messages threads saved and task detail', asy
 });
 
 test('search input preserves IME composition and updates results without full rerender', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const searchInputSource = app.slice(app.indexOf("if (event.target.id === 'search-input')"), app.indexOf("if (event.target.id === 'add-member-search')"));
 
@@ -556,7 +569,7 @@ test('search input preserves IME composition and updates results without full re
 });
 
 test('search covers messages and replies with local ranking helpers', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /function searchRecords\(query\)/);
   assert.match(app, /\.\.\.\(appState\?\.messages \|\| \[\]\), \.\.\.\(appState\?\.replies \|\| \[\]\)/);
@@ -568,7 +581,7 @@ test('search covers messages and replies with local ranking helpers', async () =
 });
 
 test('search page matches Slock shortcuts filters persistence and thread drawer behavior', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const keydownSource = app.slice(app.indexOf("document.addEventListener('keydown'"), app.indexOf("document.addEventListener('pointerdown'"));
   const setViewSource = app.slice(app.indexOf("if (action === 'set-view')"), app.indexOf("if (action === 'set-rail-tab')"));
@@ -593,7 +606,7 @@ test('search page matches Slock shortcuts filters persistence and thread drawer 
 });
 
 test('thread list rows keep the latest actor avatar at the far left', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const threadsSource = app.slice(app.indexOf('function renderThreads'), app.indexOf('function renderSaved'));
 
@@ -607,7 +620,7 @@ test('thread list rows keep the latest actor avatar at the far left', async () =
 });
 
 test('task filter popover closes on outside clicks and list cards fit their content', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /const clickedTaskChannelFilter = event\.target\.closest\('\.task-channel-filter'\)/);
@@ -619,7 +632,7 @@ test('task filter popover closes on outside clicks and list cards fit their cont
 });
 
 test('member rail lists keep status dots on the far right only in the agent tab', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderHumanListItem'));
   const humanListSource = app.slice(app.indexOf('function renderHumanListItem'), app.indexOf('function renderComputerListItem'));
@@ -635,7 +648,7 @@ test('member rail lists keep status dots on the far right only in the agent tab'
 });
 
 test('message rows re-render when author presence changes from heartbeat', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const renderKeySource = app.slice(app.indexOf('function renderRecordKey'), app.indexOf('function renderSystemEvent'));
 
   assert.match(renderKeySource, /authorStatus: author\?\.status \|\| ''/);
@@ -646,7 +659,7 @@ test('message rows re-render when author presence changes from heartbeat', async
 });
 
 test('agent detail opened from a thread returns to that thread when closed', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /let inspectorReturnThreadId = null/);
   assert.match(app, /if \(threadMessageId\) inspectorReturnThreadId = threadMessageId/);
@@ -655,7 +668,7 @@ test('agent detail opened from a thread returns to that thread when closed', asy
 });
 
 test('selected thread rows keep the active highlight while the drawer is open', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /const active = threadMessageId === message\.id \? ' active' : ''/);
@@ -666,7 +679,7 @@ test('selected thread rows keep the active highlight while the drawer is open', 
 });
 
 test('messages use Slock-style hover save actions and saved messages open context', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const openThreadSource = app.slice(app.indexOf("if (action === 'open-thread')"), app.indexOf("if (action === 'open-search-result'"));
 
@@ -688,7 +701,7 @@ test('messages use Slock-style hover save actions and saved messages open contex
 });
 
 test('agent identities are clickable and expose Slock-style hover summaries', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderHumanListItem'));
 
@@ -704,7 +717,7 @@ test('agent identities are clickable and expose Slock-style hover summaries', as
 });
 
 test('agent detail uses Slock-style tabs with inline profile editing and autosaved model controls', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.equal(app.includes('id="agent-detail-form"'), false);
@@ -755,7 +768,7 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
 });
 
 test('sidebar settings and skill panels support collapsible MagClaw UI sections', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /const SIDEBAR_SECTION_COLLAPSE_KEY = 'magclawSidebarSectionCollapse'/);
@@ -794,7 +807,7 @@ test('left rail and active shell controls use the MagClaw pink accent', async ()
 });
 
 test('agent avatar uploads open a square crop modal and persist a cropped image', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /const AVATAR_CROP_SIZE = 256/);
@@ -821,7 +834,7 @@ test('agent avatar uploads open a square crop modal and persist a cropped image'
 });
 
 test('human presence uses browser heartbeat and settings clears agent detail', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /const HUMAN_PRESENCE_HEARTBEAT_MS = 30 \* 1000/);
   assert.match(app, /function sendHumanPresenceHeartbeat\(\)/);
@@ -832,7 +845,7 @@ test('human presence uses browser heartbeat and settings clears agent detail', a
 });
 
 test('create agent opens with a fresh form state every time', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /function resetAgentFormState\(\)/);
   assert.match(app, /if \(modal === 'agent'\) \{\s*resetAgentFormState\(\);\s*await loadInstalledRuntimes\(\);/);
@@ -840,7 +853,7 @@ test('create agent opens with a fresh form state every time', async () => {
 });
 
 test('Fan-out API config owns the routing settings UI', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const railSource = app.slice(app.indexOf('function renderRail'), app.indexOf('function renderNavItem'));
   const submitSource = app.slice(app.indexOf("document.addEventListener('submit'"), app.indexOf('refreshState().then'));
@@ -872,7 +885,7 @@ test('Fan-out API config owns the routing settings UI', async () => {
 });
 
 test('LLM fan-out decisions render one concise route toast only when LLM is used', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const fanoutToast = await readFile(new URL('../public/fanout-toast.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
@@ -906,7 +919,7 @@ test('LLM fan-out decisions render one concise route toast only when LLM is used
 });
 
 test('browser agent notifications can be enabled from a Slock-style prompt and settings card', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /const NOTIFICATION_PREF_KEY = 'magclawNotificationPrefs'/);
@@ -926,7 +939,7 @@ test('browser agent notifications can be enabled from a Slock-style prompt and s
 });
 
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /function renderAgentWorkspaceTab\(agent\)/);
@@ -942,7 +955,7 @@ test('agent workspace tab has split tree and raw/preview markdown controls', asy
 });
 
 test('agent activity tab renders newest first with second-level timestamps and a 5000 item cap', async () => {
-  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
   assert.match(app, /const AGENT_ACTIVITY_EVENT_LIMIT = 5000/);
