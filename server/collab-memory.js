@@ -239,7 +239,7 @@ export function createCollabMemoryManager(deps) {
       });
   }
   
-  function addSystemReply(parentMessageId, body) {
+  function addSystemReply(parentMessageId, body, extra = {}) {
     const parent = findMessage(parentMessageId);
     if (!parent) return null;
     const reply = normalizeConversationRecord({
@@ -253,6 +253,7 @@ export function createCollabMemoryManager(deps) {
       attachmentIds: [],
       createdAt: now(),
       updatedAt: now(),
+      ...extra,
     });
     state.replies.push(reply);
     parent.replyCount = state.replies.filter((item) => item.parentMessageId === parentMessageId).length;

@@ -106,6 +106,7 @@ import { createSystemServices } from './system-services.js';
 import { createStateCore } from './state-core.js';
 import { createTaskOrchestrator } from './task-orchestrator.js';
 import { createServerIo } from './server-io.js';
+import { createReminderScheduler } from './reminder-scheduler.js';
 import { handleAgentApi } from './api/agent-routes.js';
 import { handleAgentToolApi } from './api/agent-tool-routes.js';
 import { handleCloudApi } from './api/cloud-routes.js';
@@ -171,7 +172,7 @@ const CODEX_STREAM_RETRY_LIMIT = codexStreamRetryLimit();
 const CLOUD_PROTOCOL_VERSION = 1;
 const CODEX_HOME_CONFIG_VERSION = 7;
 const CODEX_FALLBACK_MODEL = 'gpt-5.5';
-const SQLITE_BACKED_STATE_KEYS = ['messages', 'replies', 'tasks', 'workItems', 'events'];
+const SQLITE_BACKED_STATE_KEYS = ['messages', 'replies', 'tasks', 'reminders', 'workItems', 'events'];
 const AGENT_BOOT_RESET_STATUSES = new Set(['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'error']);
 const CODEX_HOME_SHARED_ENTRIES = [
   'auth.json',
@@ -708,6 +709,30 @@ const {
   updateTaskForAgent,
 } = agentRuntime;
 
+const reminderScheduler = createReminderScheduler({
+  addSystemEvent,
+  addSystemMessage,
+  addSystemReply,
+  broadcastState,
+  deliverMessageToAgent,
+  findAgent,
+  findMessage,
+  getState: () => state,
+  makeId,
+  now,
+  persistState,
+  resolveMessageTarget,
+  targetForConversation,
+});
+const {
+  cancelReminder,
+  createReminder,
+  fireDueReminders,
+  listReminders,
+  start: startReminderScheduler,
+  stop: stopReminderScheduler,
+} = reminderScheduler;
+
 daemonRelay.setHandlers({
   onAgentMessage: async ({ agent, body, spaceType, spaceId, parentMessageId, sourceMessage }) => {
     await postAgentResponse(agent, spaceType, spaceId, body, parentMessageId, { sourceMessage });
@@ -831,8 +856,10 @@ function agentToolApiDeps() {
     addSystemEvent,
     broadcastState,
     claimTask,
+    cancelReminder,
     createTaskFromMessage,
     createTaskMessage,
+    createReminder,
     displayActor,
     findAgent,
     findConversationRecord,
@@ -853,6 +880,7 @@ function agentToolApiDeps() {
     readJson,
     resolveConversationSpace,
     resolveMessageTarget,
+    listReminders,
     searchAgentMessageHistory,
     searchAgentMemory,
     sendError,
@@ -1084,6 +1112,11 @@ heartbeatTimer.unref?.();
 
 server.listen(PORT, HOST, () => {
   addSystemEvent('server_started', `Magclaw local server started at http://${HOST}:${PORT}`);
+  startReminderScheduler();
+  fireDueReminders().catch((error) => {
+    addSystemEvent('reminder_startup_fire_error', `Startup reminder check failed: ${error.message}`);
+    persistState().then(broadcastState).catch(() => {});
+  });
   persistState().then(broadcastState);
   console.log(`Magclaw local is running at http://${HOST}:${PORT}`);
   console.log(`Data directory: ${DATA_DIR}`);
@@ -1091,6 +1124,7 @@ server.listen(PORT, HOST, () => {
 
 process.on('SIGINT', () => {
   clearInterval(heartbeatTimer);
+  stopReminderScheduler();
   for (const child of runningProcesses.values()) child.kill('SIGTERM');
   for (const proc of agentProcesses.values()) {
     if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');

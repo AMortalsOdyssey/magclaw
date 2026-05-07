@@ -230,6 +230,7 @@ export function createStateCore(deps) {
       ],
       replies: [],
       tasks: [],
+      reminders: [],
       missions: [],
       runs: [],
       attachments: [],
@@ -434,7 +435,7 @@ export function createStateCore(deps) {
       for (const invitation of state.cloud.invitations) {
         invitation.role = roleMap[invitation.role] || invitation.role || 'member';
       }
-      for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events', 'systemNotifications']) {
+      for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'reminders', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events', 'systemNotifications']) {
         if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
       }
     state.inboxReads = state.inboxReads && typeof state.inboxReads === 'object' && !Array.isArray(state.inboxReads)
@@ -559,6 +560,28 @@ export function createStateCore(deps) {
         task.number = next;
         taskCounters.set(key, next);
       }
+    }
+    for (const reminder of state.reminders) {
+      reminder.id = reminder.id || makeId('rem');
+      reminder.title = String(reminder.title || reminder.body || 'Reminder').trim().slice(0, 180);
+      reminder.body = String(reminder.body || '').trim();
+      reminder.status = ['scheduled', 'fired', 'canceled'].includes(reminder.status) ? reminder.status : 'scheduled';
+      reminder.spaceType = reminder.spaceType === 'dm' ? 'dm' : 'channel';
+      reminder.spaceId = reminder.spaceId
+        || (reminder.spaceType === 'dm' ? state.dms?.[0]?.id : state.channels?.[0]?.id)
+        || 'chan_all';
+      reminder.parentMessageId = reminder.parentMessageId || reminder.threadMessageId || null;
+      reminder.sourceMessageId = reminder.sourceMessageId || reminder.messageId || reminder.parentMessageId || null;
+      reminder.ownerAgentId = reminder.ownerAgentId || reminder.agentId || reminder.createdBy || null;
+      reminder.createdBy = reminder.createdBy || reminder.ownerAgentId || null;
+      reminder.createdAt = reminder.createdAt || now();
+      reminder.updatedAt = reminder.updatedAt || reminder.createdAt;
+      reminder.fireAt = reminder.fireAt || reminder.scheduledFor || reminder.createdAt;
+      reminder.repeat = reminder.repeat || null;
+      reminder.firedAt = reminder.firedAt || null;
+      reminder.canceledAt = reminder.canceledAt || null;
+      reminder.history = Array.isArray(reminder.history) ? reminder.history : [];
+      reminder.target = reminder.target || targetForConversation(reminder.spaceType, reminder.spaceId, reminder.parentMessageId);
     }
     // Migrate agents to include personality and memory fields
     for (const agent of state.agents) {
