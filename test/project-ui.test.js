@@ -1393,6 +1393,14 @@ test('console has routed sections, invitation actions, and no human heartbeat', 
   assert.match(consoleRailSource, /slock-sidebar/);
   assert.doesNotMatch(consoleRailSource, /leftRailHtml|slock-left-rail|runtime-chip/);
   assert.match(app, /id="console-server-form"/);
+  assert.match(app, /data-console-server-name/);
+  assert.match(app, /data-console-server-slug/);
+  assert.match(app, /data-auto-slug="1"/);
+  assert.match(app, /function consoleServerSlugFromName\(value\)/);
+  assert.match(app, /syncConsoleServerSlug\(consoleServerForm\)/);
+  assert.match(app, /event\.target\.dataset\.autoSlug = '0'/);
+  assert.match(app, /setConsoleServerFormError\(form, message\)/);
+  assert.match(app, /This URL slug is already taken\./);
   assert.match(app, /data-modal="server-create"/);
   assert.match(app, /\/api\/console\/servers/);
   assert.match(app, /Choose a server to continue\. If you do not have one yet, create a new server\./);
@@ -1400,6 +1408,7 @@ test('console has routed sections, invitation actions, and no human heartbeat', 
   assert.match(styles, /\.console-page/);
   assert.match(styles, /\.console-grid/);
   assert.match(styles, /\.console-row/);
+  assert.match(styles, /\.modal-form \.form-error/);
 });
 
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {

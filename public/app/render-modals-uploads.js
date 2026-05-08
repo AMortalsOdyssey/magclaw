@@ -39,8 +39,10 @@ function renderServerCreateModal() {
   return `
     ${modalHeader('Create Server', 'Console')}
     <form id="console-server-form" class="modal-form">
-      <label><span>Server name</span><input name="name" placeholder="My Team" required /></label>
-      <label><span>URL slug</span><input name="slug" placeholder="my-team" autocomplete="off" /></label>
+      <label><span>Server name</span><input name="name" placeholder="My Team" autocomplete="off" data-console-server-name required /></label>
+      <label><span>URL slug</span><input name="slug" placeholder="my-team" autocomplete="off" spellcheck="false" minlength="2" maxlength="63" pattern="[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?" data-console-server-slug data-auto-slug="1" required /></label>
+      <small class="form-hint">Generated from the server name unless you edit it. Use lowercase letters, numbers, and hyphens.</small>
+      <div class="form-error console-server-error" data-console-server-error role="alert" aria-live="polite" hidden></div>
       <div class="modal-actions">
         <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
         <button class="primary-btn" type="submit">Create Server</button>

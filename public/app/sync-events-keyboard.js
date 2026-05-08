@@ -504,6 +504,10 @@ document.addEventListener('compositionend', (event) => {
       window.requestAnimationFrame(() => render());
     }
   }
+  const consoleServerForm = event.target?.closest?.('#console-server-form');
+  if (consoleServerForm && event.target.matches?.('[data-console-server-name]')) {
+    syncConsoleServerSlug(consoleServerForm);
+  }
 });
 
 document.addEventListener('keydown', async (event) => {
@@ -663,6 +667,42 @@ function updateMentionPopupSelection() {
   });
 }
 
+function consoleServerSlugFromName(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/['"]/g, '')
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 63)
+    .replace(/-$/g, '');
+}
+
+function clearConsoleServerFormError(form = document.getElementById('console-server-form')) {
+  const errorNode = form?.querySelector?.('[data-console-server-error]');
+  if (!errorNode) return;
+  errorNode.textContent = '';
+  errorNode.hidden = true;
+}
+
+function setConsoleServerFormError(form, message) {
+  const errorNode = form?.querySelector?.('[data-console-server-error]');
+  if (!errorNode) return;
+  errorNode.textContent = message;
+  errorNode.hidden = false;
+}
+
+function syncConsoleServerSlug(form, { force = false } = {}) {
+  const nameInput = form?.querySelector?.('[data-console-server-name]');
+  const slugInput = form?.querySelector?.('[data-console-server-slug]');
+  if (!nameInput || !slugInput) return;
+  if (!force && slugInput.dataset.autoSlug === '0') return;
+  slugInput.value = consoleServerSlugFromName(nameInput.value);
+  slugInput.dataset.autoSlug = '1';
+}
+
 document.addEventListener('input', async (event) => {
   if (event.target.matches?.('[data-action="avatar-crop-scale"]') && avatarCropState) {
     avatarCropState.scale = clampAvatarCropScale(event.target.value);
@@ -685,6 +725,24 @@ document.addEventListener('input', async (event) => {
       agentEnvEditState.items[idx][agentEnvField] = event.target.value;
     }
     return;
+  }
+
+  const consoleServerForm = event.target.closest?.('#console-server-form');
+  if (consoleServerForm) {
+    clearConsoleServerFormError(consoleServerForm);
+    if (event.target.matches?.('[data-console-server-name]')) {
+      if (!event.isComposing && event.inputType !== 'insertCompositionText') {
+        syncConsoleServerSlug(consoleServerForm);
+      }
+      return;
+    }
+    if (event.target.matches?.('[data-console-server-slug]')) {
+      event.target.dataset.autoSlug = '0';
+      const normalized = consoleServerSlugFromName(event.target.value);
+      if (event.target.value !== normalized) event.target.value = normalized;
+      if (!normalized) syncConsoleServerSlug(consoleServerForm, { force: true });
+      return;
+    }
   }
 
   // Handle @ mention autocomplete in message textarea

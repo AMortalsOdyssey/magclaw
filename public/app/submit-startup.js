@@ -23,7 +23,7 @@ document.addEventListener('submit', async (event) => {
   const data = new FormData(form);
   let submittedBottomTarget = null;
   let focusComposerId = null;
-  let authErrorHandled = false;
+  let skipFinalRefresh = false;
 
   try {
     if (form.id === 'message-form') {
@@ -312,11 +312,12 @@ document.addEventListener('submit', async (event) => {
       form.reset();
     }
     if (form.id === 'console-server-form') {
+      syncConsoleServerSlug(form);
       const result = await api('/api/console/servers', {
         method: 'POST',
         body: JSON.stringify({
           name: data.get('name'),
-          slug: data.get('slug'),
+          slug: form.querySelector('[name="slug"]')?.value || data.get('slug'),
         }),
       });
       const slug = String(result.server?.slug || '').trim();
@@ -342,14 +343,19 @@ document.addEventListener('submit', async (event) => {
     }
   } catch (error) {
     if (form.id === 'cloud-login-form' && error.status === 401) {
-      authErrorHandled = true;
+      skipFinalRefresh = true;
       await showCloudAuthGate(error, { interactive: true });
+    } else if (form.id === 'console-server-form') {
+      skipFinalRefresh = true;
+      const message = error.status === 409 ? 'This URL slug is already taken.' : error.message;
+      setConsoleServerFormError(form, message);
+      toast(message);
     } else {
       toast(error.message);
     }
   } finally {
     if (focusComposerId) requestComposerFocus(focusComposerId);
-    if (!authErrorHandled) await refreshStateOrAuthGate().catch(() => {});
+    if (!skipFinalRefresh) await refreshStateOrAuthGate().catch(() => {});
     if (submittedBottomTarget) scrollPaneToBottom(submittedBottomTarget, 'auto');
   }
 });

@@ -190,12 +190,13 @@ test('public account registration and password reset use SMTP outbox without inv
     assert.equal(serverCreated.data.server.name, 'Free Team');
     assert.equal(serverCreated.data.server.slug, 'free-team');
     assert.equal(serverCreated.data.member.role, 'admin');
-    await request(server.baseUrl, '/api/console/servers', {
+    const duplicateServer = await request(server.baseUrl, '/api/console/servers', {
       method: 'POST',
       cookie: created.cookie,
       body: JSON.stringify({ name: 'Duplicate Team', slug: 'free-team' }),
       expectStatus: 409,
     });
+    assert.equal(duplicateServer.data.error, 'Server slug is already taken.');
 
     const forgot = await request(server.baseUrl, '/api/auth/forgot-password', {
       method: 'POST',
