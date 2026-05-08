@@ -9,6 +9,14 @@ async function tryCopyTextToClipboard(text) {
   }
 }
 
+function assertCloudPasswordPolicy(password) {
+  const value = String(password || '');
+  if (value.length < 8 || value.length > 30 || !/[A-Za-z]/.test(value) || !/\d/.test(value)) {
+    throw new Error('Password must be 8-30 characters and include letters and numbers.');
+  }
+  return value;
+}
+
 document.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
@@ -185,6 +193,7 @@ document.addEventListener('submit', async (event) => {
             avatar: data.get('avatar'),
           }),
         });
+        clearProfileFormDraft();
         toast('Profile saved');
       }
       if (form.id === 'cloud-config-form') {
@@ -196,7 +205,7 @@ document.addEventListener('submit', async (event) => {
     }
     if (form.id === 'cloud-login-form') {
       cloudLoginDraftEmail = String(data.get('email') || '').trim();
-      await api('/api/cloud/auth/login', {
+      await api('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({
           email: cloudLoginDraftEmail,
@@ -206,19 +215,40 @@ document.addEventListener('submit', async (event) => {
       cloudLoginDraftEmail = '';
       toast('Signed in');
     }
+    if (form.id === 'cloud-open-register-form') {
+      const password = assertCloudPasswordPolicy(data.get('password'));
+      await api('/api/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: data.get('name'),
+          email: data.get('email'),
+          password,
+        }),
+      });
+      activeView = 'console';
+      consoleTab = 'overview';
+      window.history.replaceState({}, '', '/console');
+      toast('Account created');
+    }
+    if (form.id === 'cloud-forgot-form') {
+      cloudLoginDraftEmail = String(data.get('email') || '').trim();
+      await api('/api/auth/forgot-password', {
+        method: 'POST',
+        body: JSON.stringify({ email: cloudLoginDraftEmail }),
+      });
+      const params = new URLSearchParams({ email: cloudLoginDraftEmail });
+      window.history.replaceState({}, '', `/forgot-password/check-email?${params.toString()}`);
+      toast('Reset link sent');
+    }
     if (form.id === 'cloud-register-form') {
-      const password = String(data.get('password') || '');
+      const password = assertCloudPasswordPolicy(data.get('password'));
       const passwordConfirm = String(data.get('passwordConfirm') || password);
       if (password !== passwordConfirm) throw new Error('Passwords do not match.');
-      if (password.length < 8 || password.length > 30 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
-        throw new Error('Password must be 8-30 characters and include letters and numbers.');
-      }
       await api('/api/cloud/auth/register', {
         method: 'POST',
         body: JSON.stringify({
           inviteToken: data.get('inviteToken'),
           name: data.get('name'),
-          email: data.get('email'),
           avatar: data.get('avatar'),
           password,
         }),
@@ -227,13 +257,10 @@ document.addEventListener('submit', async (event) => {
       toast('Account created');
     }
     if (form.id === 'cloud-reset-form') {
-      const password = String(data.get('password') || '');
+      const password = assertCloudPasswordPolicy(data.get('password'));
       const passwordConfirm = String(data.get('passwordConfirm') || password);
       if (password !== passwordConfirm) throw new Error('Passwords do not match.');
-      if (password.length < 8 || password.length > 30 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
-        throw new Error('Password must be 8-30 characters and include letters and numbers.');
-      }
-      await api('/api/cloud/auth/reset-password', {
+      await api('/api/auth/reset-password', {
         method: 'POST',
         body: JSON.stringify({
           resetToken: data.get('resetToken'),
@@ -248,8 +275,6 @@ document.addEventListener('submit', async (event) => {
       sanitizeMemberInviteTokens();
       const invalidEmails = memberInviteInvalidEmailsForSubmit();
       if (invalidEmails.length) throw new Error(`Remove invalid email: ${invalidEmails.join(', ')}`);
-      const duplicateEmails = memberInviteDuplicateEmailsForSubmit();
-      if (duplicateEmails.length) throw new Error(`Already invited or already a member: ${duplicateEmails.join(', ')}`);
       const emails = memberInviteEmailsForSubmit();
       if (!emails.length) throw new Error('Enter at least one valid email.');
       const result = await api('/api/cloud/invitations/batch', {
@@ -261,7 +286,7 @@ document.addEventListener('submit', async (event) => {
       });
       cloudGeneratedLinks = (result.invitations || []).map((item) => ({
         email: item.email,
-        link: item.inviteUrl,
+        link: inviteLinkForCurrentOrigin(item.inviteUrl),
       })).filter((item) => item.email && item.link);
       latestInvitationLink = cloudGeneratedLinks[0]?.link || null;
       cloudInviteEmails = [];
@@ -278,13 +303,35 @@ document.addEventListener('submit', async (event) => {
         }),
       });
       if (invite.inviteUrl) {
-        latestInvitationLink = invite.inviteUrl;
-        const copied = await tryCopyTextToClipboard(invite.inviteUrl);
+        latestInvitationLink = inviteLinkForCurrentOrigin(invite.inviteUrl);
+        const copied = await tryCopyTextToClipboard(latestInvitationLink);
         toast(copied ? 'Invitation link copied' : 'Invitation created - copy the link below');
       } else {
         toast('Invitation created');
       }
       form.reset();
+    }
+    if (form.id === 'console-server-form') {
+      const result = await api('/api/console/servers', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: data.get('name'),
+          slug: data.get('slug'),
+        }),
+      });
+      const slug = String(result.server?.slug || '').trim();
+      modal = null;
+      activeView = 'space';
+      railTab = 'spaces';
+      consoleTab = 'servers';
+      selectedSpaceType = 'channel';
+      selectedSpaceId = appState?.channels?.[0]?.id || selectedSpaceId || 'chan_all';
+      threadMessageId = null;
+      selectedAgentId = null;
+      selectedTaskId = null;
+      workspaceActivityDrawerOpen = false;
+      if (slug && window.history?.replaceState) window.history.replaceState({}, '', `/s/${encodeURIComponent(slug)}`);
+      toast('Server created');
     }
     if (form.id === 'fanout-config-form') {
       await api('/api/settings/fanout', {

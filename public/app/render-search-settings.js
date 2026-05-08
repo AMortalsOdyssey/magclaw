@@ -252,6 +252,9 @@ function renderMissions() {
 function renderComputers() {
   const computers = appState.computers || [];
   const connected = computers.filter((computer) => computer.status === 'connected').length;
+  const canManageComputers = cloudCan('manage_computers');
+  const canPairComputers = cloudCan('pair_computers');
+  const canManageAgents = cloudCan('manage_agents');
   return `
     <section class="computers-page">
       <header class="settings-page-header">
@@ -260,8 +263,8 @@ function renderComputers() {
           <h2>Computers</h2>
         </div>
         <div class="action-row">
-          <button class="secondary-btn" type="button" data-action="create-computer-pairing">Pair Computer</button>
-          <button class="primary-btn" type="button" data-action="open-modal" data-modal="computer">Add Computer</button>
+          ${canPairComputers ? '<button class="secondary-btn" type="button" data-action="create-computer-pairing">Pair Computer</button>' : ''}
+          ${canManageComputers ? '<button class="primary-btn" type="button" data-action="open-modal" data-modal="computer">Add Computer</button>' : ''}
         </div>
       </header>
       <div class="settings-section-label">
@@ -281,10 +284,10 @@ function renderComputers() {
               <strong>Codex Missions</strong>
               <span>Open the local runner history for task-backed Codex runs.</span>
             </button>
-            <button class="mode-card" type="button" data-action="open-modal" data-modal="agent">
+            ${canManageAgents ? `<button class="mode-card" type="button" data-action="open-modal" data-modal="agent">
               <strong>Create Agent</strong>
               <span>Bind a new agent to an available computer and runtime.</span>
-            </button>
+            </button>` : ''}
           </div>
         </div>
       </section>
@@ -294,6 +297,8 @@ function renderComputers() {
 
 function renderComputerConfigCard() {
   const computers = appState.computers || [];
+  const canManageComputers = cloudCan('manage_computers');
+  const canPairComputers = cloudCan('pair_computers');
   return `
     <div class="pixel-panel cloud-card">
       <div class="panel-title"><span>Computers</span><span>${computers.length}</span></div>
@@ -313,8 +318,8 @@ function renderComputerConfigCard() {
           <button class="secondary-btn" type="button" data-action="copy-pairing-command">Copy</button>
         </div>
       ` : ''}
-      <button class="secondary-btn" type="button" data-action="open-modal" data-modal="computer">Add Computer</button>
-      <button class="secondary-btn" type="button" data-action="create-computer-pairing">Pair Computer</button>
+      ${canManageComputers ? '<button class="secondary-btn" type="button" data-action="open-modal" data-modal="computer">Add Computer</button>' : ''}
+      ${canPairComputers ? '<button class="secondary-btn" type="button" data-action="create-computer-pairing">Pair Computer</button>' : ''}
     </div>
   `;
 }
@@ -401,8 +406,7 @@ function renderAccountSettingsTab() {
   const roleLabel = cloudRoleLabel(role);
   const capabilityLabels = cloudCapabilityLabels(auth.capabilities || {});
   const joinedAt = fmtTime(currentMember?.joinedAt || currentMember?.createdAt);
-  const sessionLabel = durationDays(auth.sessionTtlMs);
-  const sessionExpiresAt = fmtTime(auth.sessionExpiresAt);
+  const profileValues = profileFormValuesForRender(human, currentUser);
   const authPanel = !auth.initialized ? `
       <div class="pixel-panel cloud-card">
         <div class="panel-title"><span>Sign-in Account</span><span>server config</span></div>
@@ -413,10 +417,10 @@ function renderAccountSettingsTab() {
       <section class="settings-layout account-layout">
         <div class="pixel-panel cloud-card account-overview-card">
           <div class="account-profile-main">
-            <span class="settings-account-avatar account-avatar-lg">${getAvatarHtml(human.id || 'hum_local', 'human', 'settings-account-avatar-inner')}</span>
+            <span class="settings-account-avatar account-avatar-lg">${profileAvatarInnerHtml({ human, avatar: profileValues.avatar, displayName: profileValues.displayName, cssClass: 'settings-account-avatar-inner' })}</span>
           <div>
               <p class="eyebrow">Human Profile</p>
-              <h3>${escapeHtml(human.name || currentUser?.name || 'You')}</h3>
+              <h3>${escapeHtml(profileValues.displayName || 'You')}</h3>
               <p>${escapeHtml(human.email || currentUser?.email || 'Local MagClaw user')}</p>
             </div>
           </div>
@@ -433,16 +437,17 @@ function renderAccountSettingsTab() {
             <form id="profile-form" class="modal-form account-profile-form" data-human-id="${escapeHtml(human.id || '')}">
               <div class="panel-title"><span>Personal Profile</span><span>${escapeHtml(roleLabel)}</span></div>
               <div class="profile-avatar-row">
-                <span class="settings-account-avatar">${getAvatarHtml(human.id || 'hum_local', 'human', 'settings-account-avatar-inner')}</span>
-              <input id="profile-avatar-input" type="hidden" name="avatar" value="${escapeHtml(human.avatar || '')}" />
+                <span class="settings-account-avatar">${profileAvatarInnerHtml({ human, avatar: profileValues.avatar, displayName: profileValues.displayName, cssClass: 'settings-account-avatar-inner' })}</span>
+              <input id="profile-avatar-input" type="hidden" name="avatar" value="${escapeHtml(profileValues.avatar || '')}" />
                 <div class="account-avatar-actions">
                   <button class="secondary-btn" type="button" data-action="random-profile-avatar">Random</button>
                   <button class="secondary-btn" type="button" data-action="pick-profile-avatar">Browse</button>
                   <label class="secondary-btn profile-upload-btn">Upload<input id="profile-avatar-file" class="visually-hidden" type="file" accept="image/*" /></label>
+                  <button class="secondary-btn" type="button" data-action="reset-profile-avatar">Reset to Default</button>
                 </div>
               </div>
-              <label><span>Display Name</span><input name="displayName" value="${escapeHtml(human.name || currentUser.name || '')}" /></label>
-              <label><span>Description</span><textarea name="description" rows="3">${escapeHtml(human.description || '')}</textarea></label>
+              <label><span>Display Name</span><input name="displayName" value="${escapeHtml(profileValues.displayName || '')}" /></label>
+              <label><span>Description</span><textarea name="description" rows="3">${escapeHtml(profileValues.description || '')}</textarea></label>
               <button class="primary-btn" type="submit">Save</button>
             </form>
           </div>
@@ -451,7 +456,6 @@ function renderAccountSettingsTab() {
             <div class="account-meta-grid">
               <div><span>Joined</span><strong>${escapeHtml(joinedAt)}</strong></div>
               <div><span>User ID</span><strong>${escapeHtml(currentUser.id || human.authUserId || human.id || '--')}</strong></div>
-              <div><span>Session</span><strong>${escapeHtml(sessionLabel)}</strong><small>${escapeHtml(sessionExpiresAt)}</small></div>
             </div>
             <div class="account-permission-chips">
               ${(capabilityLabels.length ? capabilityLabels : ['Invite members']).map((label) => `<span>${escapeHtml(label)}</span>`).join('')}
@@ -501,24 +505,6 @@ function dedupeInviteEmails(emails = []) {
   return result;
 }
 
-function memberInviteExistingEmailSet() {
-  const existing = new Set();
-  for (const member of appState?.cloud?.members || []) {
-    if ((member.status || 'active') !== 'active') continue;
-    const email = normalizeInviteEmailValue(memberEmail(member));
-    if (email) existing.add(email);
-  }
-  for (const invitation of appState?.cloud?.invitations || []) {
-    const active = !invitation.acceptedAt
-      && !invitation.revokedAt
-      && (!invitation.expiresAt || Date.parse(invitation.expiresAt) > Date.now());
-    if (!active) continue;
-    const email = normalizeInviteEmailValue(invitation.email);
-    if (email) existing.add(email);
-  }
-  return existing;
-}
-
 function memberInviteEmailsForSubmit() {
   return dedupeInviteEmails([...cloudInviteEmails, ...validInviteEmailsFromValue(cloudInviteDraft)]);
 }
@@ -526,11 +512,6 @@ function memberInviteEmailsForSubmit() {
 function memberInviteInvalidEmailsForSubmit() {
   return dedupeInviteEmails(cloudInviteEmails.filter((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeInviteEmailValue(email))))
     .concat(invalidInviteEmailsFromValue(cloudInviteDraft));
-}
-
-function memberInviteDuplicateEmailsForSubmit() {
-  const existing = memberInviteExistingEmailSet();
-  return memberInviteEmailsForSubmit().filter((email) => existing.has(email));
 }
 
 function memberInviteValidCount() {
@@ -556,27 +537,27 @@ function commitMemberInviteDraft(value = cloudInviteDraft) {
     cloudInviteDraft = value;
     return false;
   }
-  const existing = memberInviteExistingEmailSet();
-  const duplicates = emails.filter((email) => existing.has(email) || cloudInviteEmails.includes(email));
-  cloudInviteEmails = dedupeInviteEmails([...cloudInviteEmails, ...emails.filter((email) => !existing.has(email))]);
+  cloudInviteEmails = dedupeInviteEmails([...cloudInviteEmails, ...emails]);
   cloudInviteDraft = '';
-  if (duplicates.length) toast(`Already invited or already a member: ${duplicates.join(', ')}`);
   return true;
 }
+
+const MEMBERS_PAGE_SIZE = 50;
 
 function relativeMemberTime(value) {
   const timestamp = Date.parse(value || '');
   if (!timestamp) return '--';
   const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
-  if (minutes < 1) return '刚刚';
-  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
+  if (hours < 24) return `${hours} hr ago`;
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} 天前`;
+  if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`;
   const months = Math.floor(days / 30);
-  if (months < 12) return `${months} 个月前`;
-  return `${Math.floor(months / 12)} 年前`;
+  if (months < 12) return `${months} mo ago`;
+  const years = Math.floor(months / 12);
+  return `${years} yr${years === 1 ? '' : 's'} ago`;
 }
 
 function memberDisplayName(member) {
@@ -594,9 +575,54 @@ function memberAvatar(member, pending = false) {
   return `<span class="member-avatar">${escapeHtml(String(name || 'M').trim().slice(0, 1).toUpperCase())}</span>`;
 }
 
-function memberJoinTimestamp(member) {
-  const timestamp = Date.parse(member?.joinedAt || member?.createdAt || '');
+function memberDirectorySortTimestamp(value) {
+  const timestamp = Date.parse(value || '');
   return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
+}
+
+function compareMemberDirectorySortParts(a, b) {
+  const timeDiff = memberDirectorySortTimestamp(a?.invitedAt) - memberDirectorySortTimestamp(b?.invitedAt);
+  if (timeDiff) return timeDiff;
+  return String(a?.id || '').localeCompare(String(b?.id || ''));
+}
+
+function acceptedInvitationForMember(member, invitations = appState.cloud?.invitations || []) {
+  const email = normalizeInviteEmailValue(memberEmail(member));
+  const userId = String(member?.user?.id || member?.userId || '').trim();
+  const accepted = invitations
+    .filter((invitation) => {
+      if (!invitation?.acceptedAt) return false;
+      if (userId && invitation.acceptedBy === userId) return true;
+      return email && normalizeInviteEmailValue(invitation.email) === email;
+    })
+    .sort((a, b) => compareMemberDirectorySortParts(
+      { invitedAt: a.createdAt, id: a.id },
+      { invitedAt: b.createdAt, id: b.id },
+    ));
+  return accepted[0] || null;
+}
+
+function memberDirectorySortParts(row) {
+  if (row?.type === 'invitation') {
+    return {
+      group: 1,
+      invitedAt: row.invitation?.createdAt,
+      id: row.invitation?.id || row.invitation?.email || '',
+    };
+  }
+  return {
+    group: 0,
+    invitedAt: row?.invitation?.createdAt || row?.member?.createdAt || row?.member?.joinedAt,
+    id: row?.invitation?.id || row?.member?.id || row?.member?.userId || memberEmail(row?.member),
+  };
+}
+
+function compareMemberDirectoryRows(a, b) {
+  const left = memberDirectorySortParts(a);
+  const right = memberDirectorySortParts(b);
+  const groupDiff = left.group - right.group;
+  if (groupDiff) return groupDiff;
+  return compareMemberDirectorySortParts(left, right);
 }
 
 function memberLastActivityAt(member) {
@@ -609,22 +635,93 @@ function memberLastActivityAt(member) {
 
 function memberStatusLabel(member) {
   const status = String(member?.status || 'active').toLowerCase();
-  if (status === 'active') return '已加入';
-  if (status === 'invited' || status === 'pending') return '邀请中';
+  if (status === 'active') return 'Active';
+  if (status === 'invited' || status === 'pending') return 'Pending';
   return status || 'unknown';
 }
 
 function buildMembersRows() {
   const cloud = appState.cloud || {};
+  const invitations = cloud.invitations || [];
+  const activeEmails = new Set((cloud.members || [])
+    .filter((member) => (member.status || 'active') === 'active')
+    .map(memberEmail)
+    .map(normalizeInviteEmailValue)
+    .filter(Boolean));
   const activeMembers = (cloud.members || [])
     .filter((member) => (member.status || 'active') === 'active')
-    .sort((a, b) => memberJoinTimestamp(a) - memberJoinTimestamp(b))
-    .map((member) => ({ type: 'member', member, sortAt: member.joinedAt || member.createdAt || '' }));
-  return activeMembers;
+    .map((member) => {
+      const invitation = acceptedInvitationForMember(member, invitations);
+      return {
+        type: 'member',
+        member,
+        invitation,
+        sortAt: invitation?.createdAt || member.createdAt || member.joinedAt || '',
+      };
+    });
+  const pendingInvitations = invitations
+    .filter((invitation) => !invitation.acceptedAt && !invitation.revokedAt)
+    .filter((invitation) => !invitation.expiresAt || Date.parse(invitation.expiresAt) > Date.now())
+    .filter((invitation) => !activeEmails.has(normalizeInviteEmailValue(invitation.email)))
+    .map((invitation) => ({
+      type: 'invitation',
+      invitation,
+      sortAt: invitation.createdAt || '',
+    }));
+  return [...activeMembers, ...pendingInvitations].sort(compareMemberDirectoryRows);
+}
+
+function clampMembersPage(page, totalPages) {
+  const value = Number.parseInt(page, 10);
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(Math.max(value, 1), Math.max(totalPages, 1));
+}
+
+function membersPaginationModel(rows = buildMembersRows()) {
+  const total = rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / MEMBERS_PAGE_SIZE));
+  const page = clampMembersPage(memberDirectoryPage, totalPages);
+  memberDirectoryPage = page;
+  const start = (page - 1) * MEMBERS_PAGE_SIZE;
+  return {
+    total,
+    totalPages,
+    page,
+    rows: rows.slice(start, start + MEMBERS_PAGE_SIZE),
+  };
+}
+
+function isLoopbackInviteHostname(hostname) {
+  const value = String(hostname || '').toLowerCase();
+  return value === 'localhost'
+    || value === '[::1]'
+    || value === '::1'
+    || value === '0.0.0.0'
+    || value === '127.0.0.1'
+    || value.startsWith('127.');
+}
+
+function inviteLinkForCurrentOrigin(link) {
+  const raw = String(link || '').trim();
+  if (!raw) return '';
+  const currentOrigin = typeof window !== 'undefined' ? window.location?.origin : '';
+  if (!currentOrigin) return raw;
+  try {
+    const url = new URL(raw, currentOrigin);
+    const current = new URL(currentOrigin);
+    if (url.pathname === '/activate' && isLoopbackInviteHostname(url.hostname) && !isLoopbackInviteHostname(current.hostname)) {
+      url.protocol = current.protocol;
+      url.hostname = current.hostname;
+      url.port = current.port;
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
 }
 
 function generatedLinkText(item) {
-  return `Email: ${item.email}\nLink: ${item.link}`;
+  return `Email: ${item.email}\nLink: ${inviteLinkForCurrentOrigin(item.link)}`;
 }
 
 function generatedLinksText(items = cloudGeneratedLinks) {
@@ -634,7 +731,7 @@ function generatedLinksText(items = cloudGeneratedLinks) {
 function renderMemberInviteLinksModal() {
   if (!cloudGeneratedLinks.length) return '';
   return `
-    ${modalHeader('邀请链接', '复制链接发送给对应成员')}
+    ${modalHeader('Invitation links', 'Copy each link and send it to the matching member.')}
     <div class="member-invite-links-modal">
       <div class="member-invite-links-list">
         ${cloudGeneratedLinks.map((item, index) => `
@@ -643,7 +740,7 @@ function renderMemberInviteLinksModal() {
               <span>Email:</span>
               <code>${escapeHtml(item.email)}</code>
               <span>Link:</span>
-              <code>${escapeHtml(item.link)}</code>
+              <code>${escapeHtml(inviteLinkForCurrentOrigin(item.link))}</code>
             </div>
             <button class="secondary-btn compact-btn" type="button" data-action="copy-member-generated-link" data-index="${escapeHtml(index)}">Copy</button>
           </div>
@@ -659,10 +756,10 @@ function renderMemberInviteModal() {
   if (!cloudCan('invite_member') || !inviteRoleOptions.length) return '';
   const count = memberInviteValidCount();
   return `
-    ${modalHeader('添加团队成员', '对方在登录后可以访问你的团队数据。')}
+    ${modalHeader('Invite members', 'They can access your workspace after signing in.')}
     <div class="member-invite-card">
       <form id="member-invite-form" class="modal-form">
-        <label class="member-invite-label"><span>邮箱</span></label>
+        <label class="member-invite-label"><span>Email</span></label>
         <div class="member-invite-box" data-action="focus-member-invite-input">
           <div class="member-email-token-list">
             ${cloudInviteEmails.map((email) => `
@@ -670,13 +767,135 @@ function renderMemberInviteModal() {
             `).join('')}
             <textarea id="member-invite-input" name="emailsDraft" rows="3" placeholder="name@example.com">${escapeHtml(cloudInviteDraft)}</textarea>
           </div>
-          <span id="member-invite-count" class="member-invite-count">${escapeHtml(count)}/无限制</span>
+          <span id="member-invite-count" class="member-invite-count">${escapeHtml(count)}/unlimited</span>
         </div>
         <label class="member-invite-role"><span>Role</span><select name="role">
           ${inviteRoleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')}
         </select></label>
-        <button class="primary-btn member-invite-submit" type="submit" ${count ? '' : 'disabled'}>发送邀请</button>
+        <button class="primary-btn member-invite-submit" type="submit" ${count ? '' : 'disabled'}>Send invites</button>
       </form>
+    </div>
+  `;
+}
+
+function memberManageTarget() {
+  const id = memberManageState?.memberId || '';
+  if (!id) return null;
+  return (appState.cloud?.members || []).find((member) => member.id === id) || null;
+}
+
+function memberActionConfirmTarget() {
+  const id = memberActionConfirmState?.memberId || '';
+  if (!id) return null;
+  return (appState.cloud?.members || []).find((member) => member.id === id) || null;
+}
+
+function memberResetLinkText() {
+  return `Email: ${memberResetLinkState.email}\nLink: ${memberResetLinkState.link}`;
+}
+
+function renderMemberManageModal() {
+  const auth = appState.cloud?.auth || {};
+  const member = memberManageTarget();
+  if (!member) return modalHeader('Manage member', 'Member not found');
+  const role = member.role || 'member';
+  const isAdminRow = role === 'admin';
+  const isCurrent = auth.currentMember?.id === member.id;
+  const roleOptions = cloudMemberManageRoleOptions();
+  const canManageRole = Boolean(roleOptions.length) && !isAdminRow && !isCurrent;
+  const canResetPassword = auth.currentMember?.role === 'admin' && !isAdminRow && !isCurrent;
+  const canRemove = cloudCanRemoveMemberRole(role) && !isAdminRow && !isCurrent;
+  return `
+    ${modalHeader('Manage member', 'Account operations')}
+    <div class="member-manage-modal">
+      <div class="member-manage-summary">
+        ${memberAvatar(member)}
+        <div>
+          <strong>${escapeHtml(memberDisplayName(member))}</strong>
+          <span>${escapeHtml(memberEmail(member))}</span>
+        </div>
+        <em>${escapeHtml(cloudRoleLabel(role))}</em>
+      </div>
+      ${canManageRole ? `
+        <form class="member-manage-role-form" data-current-role="${escapeHtml(role)}" data-id="${escapeHtml(member.id)}">
+          <label for="member-manage-role-select">
+            <span>Role</span>
+            <small>Change this member's workspace access level.</small>
+          </label>
+          <div class="member-manage-role-controls">
+            <select id="member-manage-role-select" name="role" data-member-role-select>
+              ${roleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === role ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}
+            </select>
+            <button class="secondary-btn compact-btn" type="button" data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}">Save Role</button>
+          </div>
+        </form>
+      ` : ''}
+      ${(canResetPassword || canRemove || (!canManageRole && !canResetPassword && !canRemove)) ? `
+        <div class="member-manage-actions">
+          ${canResetPassword ? `
+            <button class="member-manage-action" type="button" data-action="open-member-action-confirm" data-member-action="reset-password" data-id="${escapeHtml(member.id)}">
+              <strong>Reset Password</strong>
+              <span>Create a one-time password reset link for this member.</span>
+            </button>
+          ` : ''}
+          ${canRemove ? `
+            <button class="member-manage-action danger" type="button" data-action="open-member-action-confirm" data-member-action="remove" data-id="${escapeHtml(member.id)}">
+              <strong>Remove</strong>
+              <span>Remove workspace access for this member.</span>
+            </button>
+          ` : ''}
+          ${(!canManageRole && !canResetPassword && !canRemove) ? '<div class="empty-box small">No available operations for this member.</div>' : ''}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderMemberActionConfirmModal() {
+  const member = memberActionConfirmTarget();
+  const action = memberActionConfirmState?.action || '';
+  if (!member || !action) return modalHeader('Confirm operation', 'Member not found');
+  const isRemove = action === 'remove';
+  const title = isRemove ? 'Remove member' : 'Reset password';
+  const description = isRemove
+    ? 'This member will lose access to the workspace immediately.'
+    : 'A one-time password reset link will be created for this member.';
+  const confirmLabel = isRemove ? 'Remove' : 'Create Reset Link';
+  return `
+    ${modalHeader(title, 'Confirm member operation')}
+    <div class="member-action-confirm-modal">
+      <div class="member-manage-summary">
+        ${memberAvatar(member)}
+        <div>
+          <strong>${escapeHtml(memberDisplayName(member))}</strong>
+          <span>${escapeHtml(memberEmail(member))}</span>
+        </div>
+        <em>${escapeHtml(cloudRoleLabel(member.role || 'member'))}</em>
+      </div>
+      <p>${escapeHtml(description)}</p>
+    </div>
+    <div class="modal-actions member-action-confirm-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+      <button type="button" class="${isRemove ? 'danger-btn' : 'primary-btn'}" data-action="confirm-member-action">${escapeHtml(confirmLabel)}</button>
+    </div>
+  `;
+}
+
+function renderMemberResetLinkModal() {
+  const email = memberResetLinkState.email || '';
+  const link = memberResetLinkState.link || '';
+  return `
+    ${modalHeader('Password reset link', 'Copy and send this link to the member.')}
+    <div class="member-reset-link-modal">
+      <div class="member-link-row member-reset-link-row">
+        <div>
+          <span>Email:</span>
+          <code>${escapeHtml(email || '--')}</code>
+          <span>Link:</span>
+          <code>${escapeHtml(link || '--')}</code>
+        </div>
+        <button class="secondary-btn compact-btn" type="button" data-action="copy-member-reset-link" ${link ? '' : 'disabled'}>Copy</button>
+      </div>
     </div>
   `;
 }
@@ -684,12 +903,32 @@ function renderMemberInviteModal() {
 function renderMemberRow(row) {
   const auth = appState.cloud?.auth || {};
   const currentMember = auth.currentMember;
+  if (row.type === 'invitation') {
+    const invitation = row.invitation;
+    return `
+      <div class="members-row" data-member-kind="pending">
+        <div class="members-person">
+          ${memberAvatar(invitation, true)}
+          <div>
+            <strong>${escapeHtml(invitation.name || invitation.email || 'Pending member')}</strong>
+            <small>${escapeHtml(invitation.email || '')}</small>
+          </div>
+        </div>
+        <span class="member-status-pill is-pending">Pending</span>
+        <span>--</span>
+        <div class="member-role-cell"><span class="member-role-badge">${escapeHtml(cloudRoleLabel(invitation.role || 'member'))}</span></div>
+        <div class="member-manage-cell"><span class="members-empty-action">--</span></div>
+      </div>
+    `;
+  }
   const member = row.member;
   const role = member.role || 'member';
   const isCurrent = currentMember?.id === member.id;
   const isAdminRow = role === 'admin';
-  const canEditRole = cloudCan('manage_member_roles') && !isAdminRow && !isCurrent;
+  const canManageRole = cloudCan('manage_member_roles') && !isAdminRow && !isCurrent;
   const canResetPassword = auth.currentMember?.role === 'admin' && !isAdminRow && !isCurrent;
+  const canRemove = cloudCanRemoveMemberRole(role) && !isAdminRow && !isCurrent;
+  const canManage = canManageRole || canResetPassword || canRemove;
   return `
     <div class="members-row" data-member-kind="active">
       <div class="members-person">
@@ -699,14 +938,13 @@ function renderMemberRow(row) {
           <small>${escapeHtml(memberEmail(member))}</small>
         </div>
       </div>
-      <span class="member-status-pill">${escapeHtml(memberStatusLabel(member))}</span>
+      <span class="member-status-pill is-active">${escapeHtml(memberStatusLabel(member))}</span>
       <span>${escapeHtml(relativeMemberTime(memberLastActivityAt(member)))}</span>
       <div class="member-role-cell">
-        ${canEditRole ? `<select data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}" aria-label="Change member role">
-          ${['core_member', 'member'].map((optionRole) => `<option value="${optionRole}" ${role === optionRole ? 'selected' : ''}>${escapeHtml(cloudRoleLabel(optionRole))}</option>`).join('')}
-        </select>` : `<span>${escapeHtml(cloudRoleLabel(role))}</span>`}
-        ${canResetPassword ? `<button class="secondary-btn compact-btn" type="button" data-action="reset-cloud-member-password" data-id="${escapeHtml(member.id)}">Reset Password</button>` : ''}
-        ${cloudCanRemoveMemberRole(role) && !isAdminRow && !isCurrent ? `<button class="danger-btn compact-btn" type="button" data-action="remove-cloud-member" data-id="${escapeHtml(member.id)}">Remove</button>` : ''}
+        <span class="member-role-badge">${escapeHtml(cloudRoleLabel(role))}</span>
+      </div>
+      <div class="member-manage-cell">
+        ${canManage ? `<button class="secondary-btn compact-btn member-manage-btn" type="button" data-action="open-member-manage" data-id="${escapeHtml(member.id)}">Manage</button>` : '<span class="members-empty-action">--</span>'}
       </div>
     </div>
   `;
@@ -718,41 +956,45 @@ function renderMemberInviteTrigger() {
 }
 
 function renderMembersDirectory({ context = 'main' } = {}) {
-  const rows = buildMembersRows();
-  const activeCount = (appState.cloud?.members || []).filter((member) => (member.status || 'active') === 'active').length;
-  const pendingCount = (appState.cloud?.invitations || []).filter((invitation) => (
-    !invitation.acceptedAt
-    && !invitation.revokedAt
-    && (!invitation.expiresAt || Date.parse(invitation.expiresAt) > Date.now())
-  )).length;
-  const workspace = appState.cloud?.workspace || {};
-  const workspaceName = workspace.name || appState.connection?.workspaceId || 'MagClaw';
-  const initial = String(workspaceName || 'M').trim().slice(0, 1).toUpperCase();
+  const model = membersPaginationModel();
   return `
     <section class="members-page members-directory-shell members-directory-${escapeHtml(context)}">
-      <div class="members-page-title">
+      <header class="members-page-header">
         <h2>Members</h2>
-      </div>
-      <div class="members-workspace-card">
-        <span class="members-workspace-avatar">${escapeHtml(initial)}</span>
-        <div>
-          <strong>${escapeHtml(workspaceName)}</strong>
-          <span>${escapeHtml(activeCount)} members${pendingCount ? ` · ${escapeHtml(pendingCount)} pending` : ''}</span>
-        </div>
         ${renderMemberInviteTrigger()}
-      </div>
+      </header>
       <div class="members-table-card">
         <div class="members-table-head">
           <span>Name</span>
           <span>Status</span>
-          <span>上次活动时间</span>
+          <span>Last active</span>
           <span>Role</span>
+          <span>Manage</span>
         </div>
         <div class="members-table-body">
-          ${rows.map(renderMemberRow).join('') || '<div class="empty-box small">No members yet.</div>'}
+          ${model.rows.map(renderMemberRow).join('') || '<div class="empty-box small">No members yet.</div>'}
         </div>
+        ${renderMembersPagination(model)}
       </div>
     </section>
+  `;
+}
+
+function renderMembersPagination(model) {
+  if (!model || model.totalPages <= 1) {
+    return `<div class="members-pagination"><span>${escapeHtml(model?.total || 0)} total</span><span>Page 1 of 1</span></div>`;
+  }
+  return `
+    <div class="members-pagination" aria-label="Members pagination">
+      <span>${escapeHtml(model.total)} total</span>
+      <button class="secondary-btn compact-btn" type="button" data-action="members-page-prev" data-page="${escapeHtml(model.page - 1)}" ${model.page <= 1 ? 'disabled' : ''}>Previous</button>
+      <label>Page
+        <input id="members-page-input" type="number" min="1" max="${escapeHtml(model.totalPages)}" value="${escapeHtml(model.page)}" inputmode="numeric" />
+      </label>
+      <span>of ${escapeHtml(model.totalPages)}</span>
+      <button class="secondary-btn compact-btn" type="button" data-action="members-page-go">Go</button>
+      <button class="secondary-btn compact-btn" type="button" data-action="members-page-next" data-page="${escapeHtml(model.page + 1)}" ${model.page >= model.totalPages ? 'disabled' : ''}>Next</button>
+    </div>
   `;
 }
 
@@ -769,7 +1011,6 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
   const legalHtml = `
     <div class="cloud-auth-legal">
       <p>使用即代表您同意我们的 <a href="/terms" target="_blank" rel="noreferrer">使用协议</a> 和 <a href="/privacy" target="_blank" rel="noreferrer">隐私政策</a></p>
-      <p>如果您还没有注册过账号，请联系您的管理员获取邀请。</p>
       <small>© 2026 MagClaw. All Rights Reserved.</small>
     </div>
   `;
@@ -779,53 +1020,89 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
     : '';
   const invitation = tokenContext.invitation || {};
   const reset = tokenContext.reset || {};
-  const avatarPreview = cloudAuthAvatar
-    ? `<img src="${escapeHtml(cloudAuthAvatar)}" alt="" />`
-    : escapeHtml(String(invitation.name || invitation.email || 'M').slice(0, 1).toUpperCase());
+  const brandHtml = `<div class="cloud-login-brand"><span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span></div>`;
   const registerPanel = tokenContext.mode === 'invite' ? `
       <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">
-        <div class="cloud-login-brand"><span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span></div>
+        ${brandHtml}
         <div class="cloud-login-heading">
           <p>MagClaw</p>
           <h1 id="cloud-login-title">Join workspace</h1>
           <span>Set up your MagClaw account from this invitation.</span>
         </div>
         ${tokenErrorHtml || `
-        <form id="cloud-register-form" class="cloud-login-form">
+        <form id="cloud-register-form" class="cloud-login-form" novalidate>
           <input type="hidden" name="inviteToken" value="${escapeHtml(tokenContext.token || '')}" />
-          <input type="hidden" name="email" value="${escapeHtml(invitation.email || '')}" />
-          <input id="cloud-auth-avatar-input" type="hidden" name="avatar" value="${escapeHtml(cloudAuthAvatar)}" />
           <label class="cloud-login-field"><span>Email address</span><input type="email" value="${escapeHtml(invitation.email || '')}" disabled /></label>
           <label class="cloud-login-field"><span>Role</span><input value="${escapeHtml(cloudRoleLabel(invitation.role || 'member'))}" disabled /></label>
           <label class="cloud-login-field"><span>Display name</span><input name="name" autocomplete="name" placeholder="Display name" value="${escapeHtml(invitation.name || '')}" /></label>
-          <div class="cloud-auth-avatar-row">
-            <span class="cloud-auth-avatar-preview">${avatarPreview}</span>
-            <button class="secondary-btn" type="button" data-action="random-cloud-auth-avatar">Random</button>
-            <label class="secondary-btn profile-upload-btn">Upload<input id="cloud-auth-avatar-file" class="visually-hidden" type="file" accept="image/*" /></label>
-          </div>
-          <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="new-password" placeholder="Password" minlength="8" maxlength="30" required /></label>
-          <label class="cloud-login-field"><span>Confirm password</span><input name="passwordConfirm" type="password" autocomplete="new-password" placeholder="Confirm password" minlength="8" maxlength="30" required /></label>
-          <p class="cloud-password-rule">密码需要 8 到 30 位，并且必须同时包含字母和数字。</p>
+          <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="new-password" placeholder="Password" required /></label>
+          <label class="cloud-login-field"><span>Confirm password</span><input name="passwordConfirm" type="password" autocomplete="new-password" placeholder="Confirm password" required /></label>
+          <p class="cloud-password-rule">Password must be 8-30 characters and include letters and numbers.</p>
           ${loginErrorHtml}
           <button class="primary-btn cloud-login-submit" type="submit">Set Account</button>
         </form>`}
       </section>
     ` : '';
-  const resetPanel = tokenContext.mode === 'reset' ? `
+  const createPanel = tokenContext.mode === 'create' ? `
       <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">
-        <div class="cloud-login-brand"><span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span></div>
+        ${brandHtml}
+        <div class="cloud-login-heading">
+          <p>MagClaw</p>
+          <h1 id="cloud-login-title">Create account</h1>
+          <span>Create a MagClaw account with your email and password.</span>
+        </div>
+        <form id="cloud-open-register-form" class="cloud-login-form" novalidate>
+          <label class="cloud-login-field"><span>Name</span><input name="name" autocomplete="name" placeholder="Letters, numbers, hyphens, underscores" required /></label>
+          <label class="cloud-login-field"><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="new-password" placeholder="Min 8 characters" required /></label>
+          <p class="cloud-password-rule">Password must be 8-30 characters and include letters and numbers.</p>
+          ${loginErrorHtml}
+          <button class="primary-btn cloud-login-submit" type="submit">Create account</button>
+          <p class="cloud-login-switch">Already have an account? <a href="/" data-action="none">Sign in</a></p>
+        </form>
+      </section>
+    ` : '';
+  const forgotPanel = tokenContext.mode === 'forgot' ? `
+      <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">
+        ${brandHtml}
         <div class="cloud-login-heading">
           <p>MagClaw</p>
           <h1 id="cloud-login-title">Reset password</h1>
-          <span>Your password was reset by an administrator. Set a new password to continue.</span>
+          <span>Enter your email and we’ll send a link to reset your password.</span>
+        </div>
+        <form id="cloud-forgot-form" class="cloud-login-form" novalidate>
+          <label class="cloud-login-field"><span>Email</span><input name="email" type="email" autocomplete="email" value="${escapeHtml(cloudLoginDraftEmail)}" required /></label>
+          ${loginErrorHtml}
+          <button class="primary-btn cloud-login-submit" type="submit">Send reset link</button>
+          <p class="cloud-login-switch"><a href="/" data-action="none">Back to sign in</a></p>
+        </form>
+      </section>
+    ` : '';
+  const forgotSentPanel = tokenContext.mode === 'forgot-sent' ? `
+      <section class="pixel-panel cloud-login-card cloud-token-card cloud-check-email-card" aria-labelledby="cloud-login-title">
+        <div class="cloud-check-icon" aria-hidden="true">${settingsIcon('members', 28)}</div>
+        <div class="cloud-login-heading">
+          <h1 id="cloud-login-title">Check your email</h1>
+          <span>If an account exists with <strong>${escapeHtml(tokenContext.email || cloudLoginDraftEmail || 'that email')}</strong>, we’ve sent a password reset link.</span>
+        </div>
+        <a class="primary-btn cloud-login-submit" href="/">Back to sign in</a>
+      </section>
+    ` : '';
+  const resetPanel = tokenContext.mode === 'reset' ? `
+      <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">
+        ${brandHtml}
+        <div class="cloud-login-heading">
+          <p>MagClaw</p>
+          <h1 id="cloud-login-title">Set new password</h1>
+          <span>Choose a new password for your account.</span>
         </div>
         ${tokenErrorHtml || `
-        <form id="cloud-reset-form" class="cloud-login-form">
+        <form id="cloud-reset-form" class="cloud-login-form" novalidate>
           <input type="hidden" name="resetToken" value="${escapeHtml(tokenContext.token || '')}" />
           <label class="cloud-login-field"><span>Email address</span><input type="email" value="${escapeHtml(reset.email || '')}" disabled /></label>
-          <label class="cloud-login-field"><span>New password</span><input name="password" type="password" autocomplete="new-password" placeholder="Password" minlength="8" maxlength="30" required /></label>
-          <label class="cloud-login-field"><span>Confirm password</span><input name="passwordConfirm" type="password" autocomplete="new-password" placeholder="Confirm password" minlength="8" maxlength="30" required /></label>
-          <p class="cloud-password-rule">密码需要 8 到 30 位，并且必须同时包含字母和数字。</p>
+          <label class="cloud-login-field"><span>New password</span><input name="password" type="password" autocomplete="new-password" placeholder="Password" required /></label>
+          <label class="cloud-login-field"><span>Confirm password</span><input name="passwordConfirm" type="password" autocomplete="new-password" placeholder="Confirm password" required /></label>
+          <p class="cloud-password-rule">Password must be 8-30 characters and include letters and numbers.</p>
           ${loginErrorHtml}
           <button class="primary-btn cloud-login-submit" type="submit">Reset Password</button>
         </form>`}
@@ -833,30 +1110,29 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
     ` : '';
   const loginPanel = auth.initialized ? `
       <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
-        <div class="cloud-login-brand">
-          <span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span>
-        </div>
+        ${brandHtml}
         <div class="cloud-login-heading">
           <p>MagClaw</p>
-          <h1 id="cloud-login-title">Welcome back!</h1>
-          <span>Sign in to continue to your MagClaw workspace.</span>
+          <h1 id="cloud-login-title">Sign in</h1>
+          <span>Where humans and AI agents collaborate.</span>
         </div>
         <form id="cloud-login-form" class="cloud-login-form">
-          <label class="cloud-login-field"><span>Email address</span><input name="email" type="email" autocomplete="email" placeholder="Email address" value="${escapeHtml(cloudLoginDraftEmail)}" required /></label>
+          <label class="cloud-login-field"><span>Email</span><input name="email" type="email" autocomplete="email" value="${escapeHtml(cloudLoginDraftEmail)}" required /></label>
           <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="current-password" placeholder="Password" required /></label>
           ${loginErrorHtml}
-          <button class="primary-btn cloud-login-submit" type="submit">Log in</button>
+          <button class="primary-btn cloud-login-submit" type="submit">Sign in</button>
+          <p class="cloud-login-switch"><a href="/forgot-password" data-action="none">Forgot password?</a></p>
+          <p class="cloud-login-switch">No account? <a href="/create-account" data-action="none">Create one</a></p>
         </form>
       </section>
     ` : `
       <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
-        <div class="cloud-login-brand">
-          <span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span>
-        </div>
+        ${brandHtml}
         <div class="cloud-login-heading">
           <p>MagClaw</p>
           <h1 id="cloud-login-title">Sign in is not ready</h1>
-          <span>The server needs a configured sign-in account before this workspace can be opened. Update the server environment and restart MagClaw.</span>
+          <span>Create the first account or configure sign-in on the server.</span>
+          <a class="primary-btn cloud-login-submit" href="/create-account">Create account</a>
         </div>
       </section>
     `;
@@ -864,7 +1140,13 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
     ? registerPanel
     : tokenContext.mode === 'reset'
       ? resetPanel
-      : loginPanel;
+      : tokenContext.mode === 'create'
+        ? createPanel
+        : tokenContext.mode === 'forgot'
+          ? forgotPanel
+          : tokenContext.mode === 'forgot-sent'
+            ? forgotSentPanel
+            : loginPanel;
 
   root.innerHTML = `
     <main class="cloud-auth-shell">
@@ -992,6 +1274,133 @@ function renderReleaseNotesSettingsTab() {
           `).join('')}
         </div>
       </article>
+    </section>
+  `;
+}
+
+function consoleInvitationRows() {
+  const currentEmail = normalizeInviteEmailValue(appState?.cloud?.auth?.currentUser?.email || '');
+  const rows = appState?.cloud?.myInvitations || appState?.cloud?.invitations || [];
+  return rows
+    .filter((item) => !currentEmail || normalizeInviteEmailValue(item.email || '') === currentEmail)
+    .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0));
+}
+
+function consoleServers() {
+  const servers = appState?.cloud?.workspaces || [];
+  if (servers.length) return servers;
+  const workspace = appState?.cloud?.workspace;
+  const currentMember = appState?.cloud?.auth?.currentMember;
+  return workspace && currentMember ? [workspace] : [];
+}
+
+function consoleServerPath(server = appState?.cloud?.workspace || {}) {
+  const slug = encodeURIComponent(String(server.slug || server.id || currentServerSlug()).trim() || 'local');
+  return `/s/${slug}`;
+}
+
+function renderConsoleOverview() {
+  const user = appState?.cloud?.auth?.currentUser || {};
+  const pendingCount = consoleInvitationRows().filter((item) => item.status === 'pending').length;
+  const serversCount = consoleServers().length;
+  return `
+    <section class="console-grid">
+      <div class="pixel-panel cloud-card console-hero-card">
+        <p class="eyebrow">Console</p>
+        <h2>${escapeHtml(user.name || user.email || 'MagClaw account')}</h2>
+        <p>${escapeHtml(user.email || 'Manage your servers and invitations from one account.')}</p>
+      </div>
+      <div class="pixel-panel cloud-card console-stat-card">
+        <span>Servers</span>
+        <strong>${escapeHtml(serversCount)}</strong>
+        <button class="secondary-btn" type="button" data-action="set-console-tab" data-tab="servers">View Servers</button>
+      </div>
+      <div class="pixel-panel cloud-card console-stat-card">
+        <span>Pending invitations</span>
+        <strong>${escapeHtml(pendingCount)}</strong>
+        <button class="secondary-btn" type="button" data-action="set-console-tab" data-tab="invitations">View Invitations</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderConsoleInvitations() {
+  const invitations = consoleInvitationRows();
+  if (!invitations.length) {
+    return '<div class="pixel-panel cloud-card empty-box">No invitations for this account yet.</div>';
+  }
+  return `
+    <section class="console-list">
+      ${invitations.map((invitation) => {
+        const pending = invitation.status === 'pending';
+        return `
+          <article class="pixel-panel cloud-card console-row">
+            <div>
+              <p class="eyebrow">${escapeHtml(invitation.status || 'pending')}</p>
+              <h3>${escapeHtml(invitation.email || '')}</h3>
+              <p>${escapeHtml(cloudRoleLabel(invitation.role || 'member'))} · invited ${escapeHtml(fmtTime(invitation.createdAt))}</p>
+            </div>
+            <div class="action-row">
+              ${pending ? `
+                <button class="secondary-btn" type="button" data-action="decline-console-invitation" data-id="${escapeHtml(invitation.id)}">Decline</button>
+                <button class="primary-btn" type="button" data-action="accept-console-invitation" data-id="${escapeHtml(invitation.id)}">Join Server</button>
+              ` : `<span class="pill">${escapeHtml(invitation.status || 'used')}</span>`}
+            </div>
+          </article>
+        `;
+      }).join('')}
+    </section>
+  `;
+}
+
+function renderConsoleServers() {
+  const servers = consoleServers();
+  if (!servers.length) {
+    return `
+      <section class="console-list">
+        <div class="pixel-panel cloud-card empty-box">Choose a server to continue. If you do not have one yet, create a new server.</div>
+        <button class="primary-btn console-create-server" type="button" data-action="open-modal" data-modal="server-create">+ Create Server</button>
+      </section>
+    `;
+  }
+  return `
+    <section class="console-list">
+      ${servers.map((server) => `
+        <article class="pixel-panel cloud-card console-row">
+          <div>
+            <p class="eyebrow">Server</p>
+            <h3>${escapeHtml(server.name || server.slug || server.id)}</h3>
+            <p>/${escapeHtml(server.slug || server.id || 'local')}</p>
+          </div>
+          <button class="primary-btn" type="button" data-action="open-console-server" data-slug="${escapeHtml(server.slug || server.id || 'local')}">Open</button>
+        </article>
+      `).join('')}
+      <button class="primary-btn console-create-server" type="button" data-action="open-modal" data-modal="server-create">+ Create Server</button>
+    </section>
+  `;
+}
+
+function renderConsole() {
+  const title = consoleTab === 'invitations'
+    ? 'Invitations'
+    : consoleTab === 'servers'
+      ? 'Servers'
+      : 'Console';
+  const body = consoleTab === 'invitations'
+    ? renderConsoleInvitations()
+    : consoleTab === 'servers'
+      ? renderConsoleServers()
+      : renderConsoleOverview();
+  return `
+    <section class="settings-page console-page">
+      <header class="settings-page-header">
+        <div class="settings-page-heading">
+          <div class="settings-page-icon">${settingsIcon('system', 24)}</div>
+          <h2>${escapeHtml(title)}</h2>
+        </div>
+        <div class="action-row">${pill('Console', 'cyan')}</div>
+      </header>
+      ${body}
     </section>
   `;
 }

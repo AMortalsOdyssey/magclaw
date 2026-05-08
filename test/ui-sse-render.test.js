@@ -25,18 +25,51 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(app, /function applyStateUpdate\(nextState\)/);
   assert.match(app, /function applyRunEventUpdate\(incoming\)/);
   assert.match(app, /function applyPresenceHeartbeat\(heartbeat\)/);
-  assert.match(app, /function patchActiveConversationSurface\(scrollSnapshot\)/);
+  assert.match(app, /function patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector = false \} = \{\}\)/);
   assert.match(app, /function patchActiveThreadSurface\(scrollSnapshot\)/);
   assert.match(app, /function patchThreadReplyList\(context, replies\)/);
+  assert.match(app, /function activeConversationSignature\(stateSnapshot = appState\)/);
   assert.match(connectEventsSource, /applyStateUpdate\(JSON\.parse\(event\.data\)\)/);
   assert.match(connectEventsSource, /applyRunEventUpdate\(incoming\)/);
   assert.match(connectEventsSource, /eventSource\.addEventListener\('heartbeat'/);
   assert.match(connectEventsSource, /applyPresenceHeartbeat\(JSON\.parse\(event\.data\)\)/);
-  assert.match(app, /if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;\n  if \(patchActiveConversationSurface\(scrollSnapshot\)\) return;/);
+  assert.match(app, /if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;\n  if \(patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: activeConversationChanged \|\| unreadChanged \}\)\) return;/);
   assert.match(app, /syncRecordList\(list, spaceMessages\(\), renderMessage, 'messageId', emptyHtml\)/);
   assert.match(app, /syncRecordList\(list, replies, renderReply, 'replyId', ''\)/);
   assert.equal(
     /EventSource\('\/api\/events'\)[\s\S]*addEventListener\('state'[\s\S]*appState = JSON\.parse\(event\.data\);[\s\S]*render\(\);/.test(connectEventsSource),
     false,
   );
+});
+
+test('unread count changes do not force full render before active chat patching', async () => {
+  const app = await readAppSource();
+  const applyStateSource = app.slice(
+    app.indexOf('function applyStateUpdate(nextState)'),
+    app.indexOf('function applyRunEventUpdate(incoming)'),
+  );
+  const beforePatchSource = applyStateSource.slice(0, applyStateSource.indexOf('if (patchActiveThreadSurface(scrollSnapshot)) return;'));
+
+  assert.match(app, /function railUnreadSignature\(stateSnapshot = appState\)/);
+  assert.match(app, /function patchRailSurface\(\)/);
+  assert.match(app, /function patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector = false \} = \{\}\)/);
+  assert.match(app, /const activeConversationBefore = activeConversationSignature\(\)/);
+  assert.match(app, /const activeConversationChanged = activeConversationBefore !== activeConversationSignature\(\)/);
+  assert.match(app, /const unreadChanged = unreadBefore !== railUnreadSignature\(\)/);
+  assert.doesNotMatch(beforePatchSource, /selectionChanged \|\| unreadChanged/);
+  assert.doesNotMatch(beforePatchSource, /if \([^{]*unreadChanged[^{]*\) \{\s*render\(\)/);
+  assert.match(applyStateSource, /if \(selectionChanged\) \{\s*render\(\);\s*return;\s*\}[\s\S]*if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;[\s\S]*if \(patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: activeConversationChanged \|\| unreadChanged \}\)\) return;/);
+});
+
+test('state SSE updates do not send an immediate presence heartbeat on every event', async () => {
+  const app = await readAppSource();
+  const heartbeatSource = app.slice(
+    app.indexOf('function startHumanPresenceHeartbeat()'),
+    app.indexOf('function stopHumanPresenceHeartbeat()'),
+  );
+
+  assert.match(heartbeatSource, /if \(!humanPresenceTimer\) \{/);
+  assert.match(heartbeatSource, /window\.setInterval\(\(\) => \{[\s\S]*sendHumanPresenceHeartbeat\(\)/);
+  assert.match(heartbeatSource, /if \(!humanPresenceTimer\) \{[\s\S]*sendHumanPresenceHeartbeat\(\);[\s\S]*\}/);
+  assert.doesNotMatch(heartbeatSource.replace(/if \(!humanPresenceTimer\) \{[\s\S]*?\n  \}/, ''), /sendHumanPresenceHeartbeat\(\)/);
 });

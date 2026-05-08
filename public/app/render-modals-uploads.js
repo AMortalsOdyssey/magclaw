@@ -8,6 +8,10 @@ function renderModal() {
     'confirm-sign-out': renderSignOutConfirmModal,
     'member-invite': renderMemberInviteModal,
     'member-invite-links': renderMemberInviteLinksModal,
+    'member-manage': renderMemberManageModal,
+    'member-action-confirm': renderMemberActionConfirmModal,
+    'member-reset-link': renderMemberResetLinkModal,
+    'server-create': renderServerCreateModal,
     project: renderProjectModal,
     dm: renderDmModal,
     task: renderTaskModal,
@@ -29,6 +33,29 @@ function renderModal() {
       </div>
     </div>
   `;
+}
+
+function renderServerCreateModal() {
+  return `
+    ${modalHeader('Create Server', 'Console')}
+    <form id="console-server-form" class="modal-form">
+      <label><span>Server name</span><input name="name" placeholder="My Team" required /></label>
+      <label><span>URL slug</span><input name="slug" placeholder="my-team" autocomplete="off" /></label>
+      <div class="modal-actions">
+        <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+        <button class="primary-btn" type="submit">Create Server</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderShellOrModal() {
+  if (appState) {
+    render();
+    return;
+  }
+  document.querySelector('.modal-backdrop')?.remove();
+  if (modal) root.insertAdjacentHTML('beforeend', renderModal());
 }
 
 function modalHeader(title, subtitle) {
@@ -391,6 +418,15 @@ function renderEnvVarsList() {
 }
 
 function renderAgentModal() {
+  if (!cloudCan('manage_agents')) {
+    return `
+      ${modalHeader('CREATE AGENT', 'Workspace role required')}
+      <div class="modal-form">
+        <div class="empty-box small">Your current role can chat with Agents, but cannot create or configure Agent profiles.</div>
+        <button type="button" class="primary-btn" data-action="close-modal">Close</button>
+      </div>
+    `;
+  }
   const availableRuntimes = installedRuntimes.filter((rt) => rt.installed);
   const currentRuntime = availableRuntimes.find((rt) => rt.id === selectedRuntimeId) || availableRuntimes[0];
   const models = currentRuntime?.models || [];
@@ -541,6 +577,15 @@ function renderAvatarCropModal() {
 }
 
 function renderComputerModal() {
+  if (!cloudCan('manage_computers')) {
+    return `
+      ${modalHeader('Add Computer', 'Workspace role required')}
+      <div class="modal-form">
+        <div class="empty-box small">Your current role can chat with Agents, but cannot add or configure computers.</div>
+        <button type="button" class="primary-btn" data-action="close-modal">Close</button>
+      </div>
+    `;
+  }
   return `
     ${modalHeader('Add Computer', 'Local or remote runner')}
     <form id="computer-form" class="modal-form">

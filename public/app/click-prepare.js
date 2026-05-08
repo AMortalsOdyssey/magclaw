@@ -86,6 +86,7 @@ async function prepareDocumentClick(event) {
   const localOnlyActions = new Set([
     'set-view',
     'set-settings-tab',
+    'set-console-tab',
     'set-rail-tab',
     'toggle-sidebar-section',
     'select-agent',
@@ -153,12 +154,20 @@ async function prepareDocumentClick(event) {
     'select-agent-restart-mode',
     'upload-agent-avatar',
     'random-profile-avatar',
+    'reset-profile-avatar',
     'random-cloud-auth-avatar',
+    'reset-cloud-auth-avatar',
     'focus-member-invite-input',
     'commit-member-invite-email',
     'remove-member-invite-email',
     'copy-member-generated-link',
     'copy-all-member-generated-links',
+    'members-page-prev',
+    'members-page-next',
+    'members-page-go',
+    'open-member-manage',
+    'open-member-action-confirm',
+    'copy-member-reset-link',
       'toggle-receipt-popover',
   ]);
   // Environment variable actions: don't trigger refreshState
@@ -198,8 +207,17 @@ async function prepareDocumentClick(event) {
       setProfileAvatarInput(avatar);
       return;
     }
+    if (action === 'reset-profile-avatar') {
+      setProfileAvatarInput('');
+      return;
+    }
     if (action === 'random-cloud-auth-avatar') {
       cloudAuthAvatar = getRandomAvatar();
+      await showCloudAuthGate(null);
+      return;
+    }
+    if (action === 'reset-cloud-auth-avatar') {
+      cloudAuthAvatar = '';
       await showCloudAuthGate(null);
       return;
     }
@@ -236,6 +254,40 @@ async function prepareDocumentClick(event) {
         const copied = await tryCopyTextToClipboard(generatedLinksText());
         toast(copied ? 'All invitations copied' : 'Copy failed');
       }
+      return;
+    }
+    if (action === 'copy-member-reset-link') {
+      if (memberResetLinkState.link) {
+        const copied = await tryCopyTextToClipboard(memberResetLinkText());
+        toast(copied ? 'Password reset link copied' : 'Copy failed');
+      }
+      return;
+    }
+    if (action === 'members-page-prev' || action === 'members-page-next') {
+      memberDirectoryPage = Number.parseInt(target.dataset.page, 10) || 1;
+      render();
+      return;
+    }
+    if (action === 'members-page-go') {
+      const input = document.getElementById('members-page-input');
+      memberDirectoryPage = Number.parseInt(input?.value, 10) || 1;
+      render();
+      document.getElementById('members-page-input')?.focus();
+      return;
+    }
+    if (action === 'open-member-manage') {
+      memberManageState = { memberId: target.dataset.id || null };
+      modal = 'member-manage';
+      render();
+      return;
+    }
+    if (action === 'open-member-action-confirm') {
+      memberActionConfirmState = {
+        memberId: target.dataset.id || memberManageState?.memberId || null,
+        action: target.dataset.memberAction || null,
+      };
+      modal = 'member-action-confirm';
+      render();
       return;
     }
     if (action === 'pick-avatar') {
@@ -319,13 +371,13 @@ async function prepareDocumentClick(event) {
   if (action === 'avatar-crop-zoom-in' && avatarCropState) {
     avatarCropState.scale = clampAvatarCropScale(avatarCropState.scale + 0.15);
     clampAvatarCropOffset();
-    render();
+    renderShellOrModal();
     return;
   }
   if (action === 'avatar-crop-zoom-out' && avatarCropState) {
     avatarCropState.scale = clampAvatarCropScale(avatarCropState.scale - 0.15);
     clampAvatarCropOffset();
-    render();
+    renderShellOrModal();
     return;
   }
   if (action === 'avatar-crop-reset' && avatarCropState) {
@@ -333,7 +385,7 @@ async function prepareDocumentClick(event) {
     avatarCropState.offsetX = 0;
     avatarCropState.offsetY = 0;
     clampAvatarCropOffset();
-    render();
+    renderShellOrModal();
     return;
   }
   if (action === 'enable-agent-notifications') {

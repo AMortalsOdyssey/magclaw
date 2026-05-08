@@ -24,9 +24,9 @@ document.addEventListener('change', async (event) => {
       event.target.value = '';
       return;
     }
-    cloudAuthAvatar = await readAvatarFileAsDataUrl(file);
+    const avatar = await readAvatarFileAsDataUrl(file);
     event.target.value = '';
-    showCloudAuthGate(null).catch((error) => toast(error.message));
+    await openAvatarCropModal({ source: avatar, target: 'cloud-auth' });
     return;
   }
   if (event.target.matches?.('.agent-avatar-upload')) {
@@ -114,6 +114,7 @@ document.addEventListener('click', async (event) => {
       if (railTab === 'members') rememberMembersLayoutFromCurrent();
       activeView = target.dataset.view;
       if (activeView === 'cloud') railTab = 'settings';
+      if (activeView === 'console') consoleTab = consoleTab || 'overview';
       if (activeView === 'computers' || activeView === 'missions') railTab = 'computers';
       if (activeView === 'tasks' || activeView === 'inbox' || activeView === 'threads' || activeView === 'saved' || activeView === 'search') railTab = 'spaces';
       localStorage.setItem('railTab', railTab);
@@ -125,6 +126,7 @@ document.addEventListener('click', async (event) => {
       selectedTaskId = null;
       selectedSavedRecordId = null;
       render();
+      syncBrowserRouteForActiveView();
       if (activeView === 'search') focusSearchInputEnd();
     }
     if (action === 'set-settings-tab') {
@@ -141,6 +143,21 @@ document.addEventListener('click', async (event) => {
       selectedSavedRecordId = null;
       localStorage.setItem('railTab', railTab);
       render();
+      syncBrowserRouteForActiveView();
+    }
+    if (action === 'set-console-tab') {
+      consoleTab = target.dataset.tab || 'overview';
+      activeView = 'console';
+      modal = null;
+      threadMessageId = null;
+      workspaceActivityDrawerOpen = false;
+      inspectorReturnThreadId = null;
+      selectedAgentId = null;
+      selectedTaskId = null;
+      selectedProjectFile = null;
+      selectedSavedRecordId = null;
+      render();
+      syncBrowserRouteForActiveView();
     }
     if (action === 'toggle-sidebar-section') {
       toggleSidebarSection(target.dataset.section || '');
@@ -273,6 +290,11 @@ document.addEventListener('click', async (event) => {
         activeView = 'computers';
         selectedAgentId = null;
         workspaceActivityDrawerOpen = false;
+      } else if (nav === 'console') {
+        activeView = 'console';
+        consoleTab = consoleTab || 'overview';
+        selectedAgentId = null;
+        workspaceActivityDrawerOpen = false;
       } else if (nav === 'settings') {
         railTab = 'settings';
         activeView = 'cloud';
@@ -282,6 +304,7 @@ document.addEventListener('click', async (event) => {
       localStorage.setItem('railTab', railTab);
       selectedTaskId = null;
       render();
+      syncBrowserRouteForActiveView();
     }
     if (action === 'select-agent') {
       if (!installedRuntimes.length) await loadInstalledRuntimes();
@@ -410,7 +433,11 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'open-dm-with-agent') {
       const agentId = target.dataset.id;
-      const existingDm = (appState.dms || []).find((dm) => dm.participantIds.includes(agentId));
+      const humanId = currentHumanId();
+      const existingDm = (appState.dms || []).find((dm) => (
+        dm.participantIds.includes(humanId)
+        && dm.participantIds.includes(agentId)
+      ));
       if (existingDm) {
         selectedSpaceType = 'dm';
         selectedSpaceId = existingDm.id;
@@ -459,7 +486,30 @@ document.addEventListener('click', async (event) => {
       selectedAgentWorkspaceFile = null;
       markSpaceRead(selectedSpaceType, selectedSpaceId);
       render();
+      syncBrowserRouteForActiveView();
       maybeWarmCurrentAgent();
+    }
+    if (action === 'open-console-server') {
+      activeView = 'space';
+      railTab = 'spaces';
+      selectedSpaceType = 'channel';
+      selectedSpaceId = appState.channels?.[0]?.id || selectedSpaceId || 'chan_all';
+      threadMessageId = null;
+      selectedAgentId = null;
+      selectedTaskId = null;
+      workspaceActivityDrawerOpen = false;
+      render();
+      syncBrowserRouteForActiveView();
+    }
+    if (action === 'accept-console-invitation' || action === 'decline-console-invitation') {
+      const id = target.dataset.id || '';
+      const verb = action === 'accept-console-invitation' ? 'accept' : 'decline';
+      await api(`/api/console/invitations/${encodeURIComponent(id)}/${verb}`, { method: 'POST', body: '{}' });
+      toast(verb === 'accept' ? 'Server joined' : 'Invitation declined');
+      consoleTab = verb === 'accept' ? 'servers' : 'invitations';
+      activeView = 'console';
+      render();
+      syncBrowserRouteForActiveView();
     }
     if (action === 'set-tab') {
       persistVisiblePaneScrolls();
@@ -600,6 +650,16 @@ document.addEventListener('click', async (event) => {
           cloudInviteEmails = [];
           cloudInviteDraft = '';
         }
+        if (modal === 'member-manage') {
+          memberManageState = { memberId: null };
+        }
+        if (modal === 'member-action-confirm') {
+          memberActionConfirmState = { memberId: null, action: null };
+          memberManageState = { memberId: null };
+        }
+        if (modal === 'member-reset-link') {
+          memberResetLinkState = { email: '', link: '' };
+        }
         let nextModal = null;
         if (modal === 'avatar-crop') {
           if (avatarCropState?.target === 'agent-create') nextModal = 'agent';
@@ -610,7 +670,7 @@ document.addEventListener('click', async (event) => {
           avatarPickerState = null;
         }
         modal = nextModal;
-        render();
+        renderShellOrModal();
       }
     }
     if (action === 'open-thread') {
@@ -716,6 +776,10 @@ document.addEventListener('click', async (event) => {
       }
       if (crop?.target === 'agent-create') {
         agentFormState.avatar = avatar;
+        toast('Avatar selected');
+      }
+      if (crop?.target === 'cloud-auth') {
+        cloudAuthAvatar = avatar;
         toast('Avatar selected');
       }
       avatarCropState = null;
@@ -829,20 +893,51 @@ document.addEventListener('click', async (event) => {
         modal = null;
         toast('Signed out');
       }
-      if (action === 'remove-cloud-member') {
-        if (!window.confirm('Remove this member?')) return;
-        await api(`/api/cloud/members/${encodeURIComponent(target.dataset.id)}`, { method: 'DELETE', body: '{}' });
-        toast('Member removed');
+      if (action === 'confirm-member-action') {
+        const memberId = memberActionConfirmState?.memberId || '';
+        const memberAction = memberActionConfirmState?.action || '';
+        if (!memberId || !memberAction) throw new Error('Member operation is missing.');
+        if (memberAction === 'remove') {
+          await api(`/api/cloud/members/${encodeURIComponent(memberId)}`, { method: 'DELETE', body: '{}' });
+          memberActionConfirmState = { memberId: null, action: null };
+          memberManageState = { memberId: null };
+          modal = null;
+          toast('Member removed');
+        }
+        if (memberAction === 'reset-password') {
+          const reset = await api('/api/cloud/password-resets', {
+            method: 'POST',
+            body: JSON.stringify({ memberId }),
+          });
+          const link = inviteLinkForCurrentOrigin(reset.resetUrl || '');
+          if (!link) throw new Error('Password reset link was not returned.');
+          memberResetLinkState = { email: reset.email || '', link };
+          memberActionConfirmState = { memberId: null, action: null };
+          memberManageState = { memberId: null };
+          modal = 'member-reset-link';
+          settingsTab = 'members';
+          activeView = 'cloud';
+        }
       }
-      if (action === 'reset-cloud-member-password') {
-        const reset = await api('/api/cloud/password-resets', {
-          method: 'POST',
-          body: JSON.stringify({ memberId: target.dataset.id }),
+      if (action === 'update-cloud-member-role') {
+        const roleForm = target.closest('.member-manage-role-form') || document.querySelector('.member-manage-role-form');
+        const memberId = target.dataset.id || roleForm?.dataset?.id || memberManageState?.memberId || '';
+        const role = roleForm?.querySelector('[data-member-role-select]')?.value || '';
+        const currentRole = roleForm?.dataset?.currentRole || '';
+        if (!memberId || !role) throw new Error('Member role is missing.');
+        if (role === currentRole) {
+          toast('Member role is already up to date');
+          return;
+        }
+        await api(`/api/cloud/members/${encodeURIComponent(memberId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ role }),
         });
-        cloudGeneratedLinks = reset.resetUrl ? [{ email: reset.email, link: reset.resetUrl }] : [];
+        memberManageState = { memberId };
+        modal = 'member-manage';
         settingsTab = 'members';
         activeView = 'cloud';
-        toast('Password reset link created');
+        toast('Member role updated');
       }
       if (action === 'leave-channel') {
       if (!window.confirm('Leave this channel?')) return;

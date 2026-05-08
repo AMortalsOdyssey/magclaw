@@ -30,12 +30,13 @@ function readStoredUiState() {
   const rawView = String(parsed.activeView || '');
   const validView = rawView === 'system-notifications'
     ? 'inbox'
-    : ['space', 'members', 'tasks', 'inbox', 'threads', 'saved', 'search', 'missions', 'cloud', 'computers'].includes(rawView)
+    : ['space', 'members', 'tasks', 'inbox', 'threads', 'saved', 'search', 'missions', 'cloud', 'computers', 'console'].includes(rawView)
       ? rawView
     : 'space';
   const validTab = ['chat', 'tasks'].includes(parsed.activeTab) ? parsed.activeTab : 'chat';
   const validRailTab = ['spaces', 'members', 'computers', 'settings'].includes(parsed.railTab) ? parsed.railTab : '';
   const validSettingsTab = ['account', 'browser', 'server', 'system', 'members', 'release'].includes(parsed.settingsTab) ? parsed.settingsTab : 'account';
+  const validConsoleTab = ['overview', 'invitations', 'servers'].includes(parsed.consoleTab) ? parsed.consoleTab : 'overview';
   return {
     selectedSpaceType: validSpaceType,
     selectedSpaceId: String(parsed.selectedSpaceId || ''),
@@ -43,6 +44,7 @@ function readStoredUiState() {
     activeTab: validTab,
     railTab: validRailTab,
     settingsTab: validSettingsTab,
+    consoleTab: validConsoleTab,
     threadMessageId: parsed.threadMessageId ? String(parsed.threadMessageId) : null,
     selectedAgentId: parsed.selectedAgentId ? String(parsed.selectedAgentId) : null,
     membersLayout: normalizeMembersLayout(parsed.membersLayout),

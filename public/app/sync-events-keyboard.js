@@ -19,6 +19,11 @@ function cloudAuthTokenFromLocation() {
   const params = new URLSearchParams(window.location.search);
   const token = params.get('token') || '';
   const path = window.location.pathname || '';
+  if (path.startsWith('/create-account')) return { mode: 'create', token: '' };
+  if (path.startsWith('/forgot-password/check-email')) {
+    return { mode: 'forgot-sent', token: '', email: params.get('email') || '' };
+  }
+  if (path.startsWith('/forgot-password')) return { mode: 'forgot', token: '' };
   if (!token) return { mode: '', token: '' };
   if (path.includes('reset-password') || token.startsWith('mc_reset_')) return { mode: 'reset', token };
   return { mode: 'invite', token };
@@ -26,20 +31,28 @@ function cloudAuthTokenFromLocation() {
 
 async function loadCloudAuthTokenContext() {
   const context = cloudAuthTokenFromLocation();
-  if (!context.mode) return context;
+  if (!context.mode || !context.token) return context;
   try {
     if (context.mode === 'reset') {
       const status = await api(`/api/cloud/auth/reset-status?token=${encodeURIComponent(context.token)}`);
       return { ...context, reset: status.reset || {} };
     }
     const status = await api(`/api/cloud/auth/invitation-status?token=${encodeURIComponent(context.token)}`);
-    cloudAuthAvatar = status.invitation?.avatarUrl || '';
+    if (cloudAuthAvatarToken !== context.token) {
+      cloudAuthAvatar = status.invitation?.avatarUrl || '';
+      cloudAuthAvatarToken = context.token;
+    }
     return { ...context, invitation: status.invitation || {} };
   } catch (error) {
+    const alreadyRegistered = error.status === 409 && /User already exists/i.test(error.message || '');
     const alreadyUsed = error.status === 409;
     return {
       ...context,
-      error: alreadyUsed ? '用户已注册或邀请已使用。' : (error.message || 'This link is no longer available.'),
+      error: alreadyRegistered
+        ? 'User already registered.'
+        : alreadyUsed
+          ? 'Invitation link already used.'
+          : (error.message || 'This link is no longer available.'),
     };
   }
 }
@@ -167,6 +180,45 @@ function patchThreadReplyList(context, replies) {
   return syncRecordList(list, replies, renderReply, 'replyId', '');
 }
 
+function stateSpaceMessages(stateSnapshot, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  return (stateSnapshot?.messages || [])
+    .filter((message) => message.spaceType === spaceType && message.spaceId === spaceId)
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+}
+
+function stateThreadReplies(stateSnapshot, messageId) {
+  return (stateSnapshot?.replies || [])
+    .filter((reply) => reply.parentMessageId === messageId)
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+}
+
+function recordPatchSignature(record) {
+  return [
+    record?.id || '',
+    record?.updatedAt || '',
+    record?.createdAt || '',
+    record?.body || '',
+    record?.replyCount || 0,
+    record?.taskId || '',
+    (record?.attachmentIds || []).join(','),
+    (record?.savedBy || []).join(','),
+    (record?.readBy || []).join(','),
+    deliveryReceiptSignature(record),
+  ].join('::');
+}
+
+function activeConversationSignature(stateSnapshot = appState) {
+  if (!stateSnapshot || activeView !== 'space' || activeTab !== 'chat') return '';
+  if (threadMessageId) {
+    const root = byId(stateSnapshot.messages, threadMessageId);
+    const records = root ? [root, ...stateThreadReplies(stateSnapshot, root.id)] : [];
+    return records.map(recordPatchSignature).join('|');
+  }
+  return stateSpaceMessages(stateSnapshot)
+    .map(recordPatchSignature)
+    .join('|');
+}
+
 function patchActiveThreadSurface(scrollSnapshot) {
   if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
   if (!threadMessageId || selectedProjectFile || selectedAgentId || selectedTaskId) return false;
@@ -207,9 +259,10 @@ function patchActiveThreadSurface(scrollSnapshot) {
   return true;
 }
 
-function patchActiveConversationSurface(scrollSnapshot) {
+function patchActiveConversationSurface(scrollSnapshot, { allowInspector = false } = {}) {
   if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
-  if (threadMessageId || selectedProjectFile || selectedAgentId || selectedTaskId) return false;
+  const inspectorOpen = selectedProjectFile || selectedAgentId || selectedTaskId;
+  if (threadMessageId || (!allowInspector && inspectorOpen)) return false;
   const list = document.querySelector('#message-list');
   const panel = document.querySelector('.chat-panel');
   if (!list || !panel) return false;
@@ -232,6 +285,7 @@ function applyStateUpdate(nextState) {
   };
   const selectionBefore = `${selectedSpaceType}:${selectedSpaceId}`;
   const unreadBefore = railUnreadSignature();
+  const activeConversationBefore = activeConversationSignature();
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
   startHumanPresenceHeartbeat();
@@ -239,12 +293,14 @@ function applyStateUpdate(nextState) {
   ensureSelection();
   const selectionChanged = selectionBefore !== `${selectedSpaceType}:${selectedSpaceId}`;
   const unreadChanged = unreadBefore !== railUnreadSignature();
-  if (selectionChanged || unreadChanged) {
+  const activeConversationChanged = activeConversationBefore !== activeConversationSignature();
+  if (selectionChanged) {
     render();
     return;
   }
   if (patchActiveThreadSurface(scrollSnapshot)) return;
-  if (patchActiveConversationSurface(scrollSnapshot)) return;
+  if (patchActiveConversationSurface(scrollSnapshot, { allowInspector: activeConversationChanged || unreadChanged })) return;
+  if (unreadChanged) patchRailSurface();
   render();
 }
 
@@ -336,6 +392,7 @@ function disconnectEvents() {
 }
 
 async function sendHumanPresenceHeartbeat() {
+  if (activeView === 'console' || (window.location.pathname || '').startsWith('/console')) return;
   if (humanPresenceInFlight || !appState?.cloud?.auth?.currentUser) return;
   humanPresenceInFlight = true;
   try {
@@ -357,6 +414,10 @@ async function sendHumanPresenceHeartbeat() {
 }
 
 function startHumanPresenceHeartbeat() {
+  if (activeView === 'console' || (window.location.pathname || '').startsWith('/console')) {
+    stopHumanPresenceHeartbeat();
+    return;
+  }
   if (!appState?.cloud?.auth?.currentUser) {
     stopHumanPresenceHeartbeat();
     return;
@@ -365,8 +426,8 @@ function startHumanPresenceHeartbeat() {
     humanPresenceTimer = window.setInterval(() => {
       sendHumanPresenceHeartbeat();
     }, HUMAN_PRESENCE_HEARTBEAT_MS);
+    sendHumanPresenceHeartbeat();
   }
-  sendHumanPresenceHeartbeat();
 }
 
 function stopHumanPresenceHeartbeat() {
@@ -416,6 +477,9 @@ document.addEventListener('compositionstart', (event) => {
   if (event.target?.closest?.('textarea[data-mention-input]')) {
     composerIsComposing = true;
   }
+  if (event.target?.closest?.('#profile-form')) {
+    profileFormIsComposing = true;
+  }
 });
 
 document.addEventListener('compositionend', (event) => {
@@ -427,6 +491,18 @@ document.addEventListener('compositionend', (event) => {
   }
   if (event.target?.closest?.('textarea[data-mention-input]')) {
     composerIsComposing = false;
+  }
+  const profileForm = event.target?.closest?.('#profile-form');
+  if (profileForm) {
+    profileFormIsComposing = false;
+    captureProfileFormDraft(profileForm);
+    if (event.target.name === 'displayName' && !profileForm.querySelector('[name="avatar"]')?.value) {
+      setProfileAvatarInput('');
+    }
+    if (pendingProfileFormRender) {
+      pendingProfileFormRender = false;
+      window.requestAnimationFrame(() => render());
+    }
   }
 });
 
@@ -467,6 +543,14 @@ document.addEventListener('keydown', async (event) => {
       input?.setSelectionRange(input.value.length, input.value.length);
       return;
     }
+  }
+
+  if (event.target.id === 'members-page-input' && event.key === 'Enter') {
+    event.preventDefault();
+    memberDirectoryPage = Number.parseInt(event.target.value, 10) || 1;
+    render();
+    document.getElementById('members-page-input')?.focus();
+    return;
   }
 
   // Handle mention popup keyboard navigation
@@ -681,7 +765,7 @@ document.addEventListener('input', async (event) => {
       event.target.value = '';
     }
     const count = document.getElementById('member-invite-count');
-    if (count) count.textContent = `${memberInviteValidCount()}/无限制`;
+    if (count) count.textContent = `${memberInviteValidCount()}/unlimited`;
     const submit = event.target.closest('form')?.querySelector('.member-invite-submit');
     if (submit) submit.disabled = memberInviteValidCount() === 0;
     return;
@@ -693,6 +777,17 @@ document.addEventListener('input', async (event) => {
     const input = document.querySelector('#create-channel-member-search');
     input?.focus();
     input?.setSelectionRange(createChannelMemberSearchQuery.length, createChannelMemberSearchQuery.length);
+    return;
+  }
+
+  const profileForm = event.target.closest('#profile-form');
+  if (profileForm) {
+    if (profileFormIsComposing || event.isComposing || event.inputType === 'insertCompositionText') return;
+    captureProfileFormDraft(profileForm);
+    if (event.target.name === 'displayName') {
+      const hiddenAvatar = profileForm.querySelector('[name="avatar"]')?.value || '';
+      if (!hiddenAvatar) setProfileAvatarInput('');
+    }
     return;
   }
 

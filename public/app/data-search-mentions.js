@@ -519,12 +519,31 @@ function encodeComposerMentions(text, composerId) {
   return result;
 }
 
+function mentionWorkspaceHumans() {
+  const humans = new Map((appState.humans || []).map((human) => [human.id, human]));
+  for (const member of appState.cloud?.members || []) {
+    if ((member.status || 'active') !== 'active') continue;
+    const humanId = member.humanId || member.human?.id;
+    if (!humanId || humans.has(humanId)) continue;
+    const email = member.human?.email || member.user?.email || '';
+    humans.set(humanId, {
+      id: humanId,
+      name: member.human?.name || member.user?.name || email.split('@')[0] || humanId.replace(/^hum_/, ''),
+      email,
+      role: member.role || member.human?.role || 'member',
+      status: member.human?.status || 'offline',
+      avatar: member.human?.avatar || member.human?.avatarUrl || '',
+    });
+  }
+  return [...humans.values()];
+}
+
 function getMentionCandidates(query, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
   const inMembers = spaceType === 'channel'
     ? getChannelMembers(spaceId)
     : {
       agents: (appState.agents || []).filter((agent) => byId(appState.dms, spaceId)?.participantIds?.includes(agent.id)),
-      humans: (appState.humans || []).filter((human) => byId(appState.dms, spaceId)?.participantIds?.includes(human.id)),
+      humans: mentionWorkspaceHumans().filter((human) => byId(appState.dms, spaceId)?.participantIds?.includes(human.id)),
     };
   const inIds = new Set([...inMembers.agents.map((a) => a.id), ...inMembers.humans.map((h) => h.id)]);
   const allItems = [
@@ -537,7 +556,7 @@ function getMentionCandidates(query, spaceType = selectedSpaceType, spaceId = se
       description: agent.description || agent.runtime || 'Agent',
       group: inIds.has(agent.id) ? 'in' : 'out',
     })),
-    ...(appState.humans || []).map((human) => ({
+    ...mentionWorkspaceHumans().map((human) => ({
       id: human.id,
       name: human.name,
       type: 'human',

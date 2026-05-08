@@ -15,9 +15,10 @@ const MEMBERS_LAYOUT_MODES = new Set(['directory', 'channel', 'split', 'agent'])
 const initialUiState = readStoredUiState();
 
 let appState = null;
-let selectedSpaceType = initialUiState.selectedSpaceType || 'channel';
-let selectedSpaceId = initialUiState.selectedSpaceId || 'chan_all';
-let activeView = initialUiState.activeView || 'space';
+const initialRouteSpace = initialSpaceFromLocation(initialUiState.selectedSpaceType || 'channel', initialUiState.selectedSpaceId || 'chan_all');
+let selectedSpaceType = initialRouteSpace.type;
+let selectedSpaceId = initialRouteSpace.id;
+let activeView = initialActiveViewFromLocation(initialUiState.activeView || 'space');
 let activeTab = initialUiState.activeTab || 'chat';
 let railTab = initialUiState.railTab || localStorage.getItem('railTab') || 'spaces'; // 'spaces', 'members', 'computers', or 'settings'
 let threadMessageId = initialUiState.threadMessageId || null;
@@ -75,12 +76,21 @@ let agentDetailTab = 'profile';
 let agentDetailEditState = { field: null };
 let agentEnvEditState = null;
 let settingsTab = initialUiState.settingsTab || 'account';
+let consoleTab = consoleTabFromPath() || initialUiState.consoleTab || 'overview';
 let latestPairingCommand = null;
 let latestInvitationLink = null;
 let cloudInviteEmails = [];
 let cloudInviteDraft = '';
 let cloudGeneratedLinks = [];
+let memberDirectoryPage = 1;
+let memberManageState = { memberId: null };
+let memberActionConfirmState = { memberId: null, action: null };
+let memberResetLinkState = { email: '', link: '' };
+let profileFormDraft = null;
+let profileFormIsComposing = false;
+let pendingProfileFormRender = false;
 let cloudAuthAvatar = '';
+let cloudAuthAvatarToken = '';
 let collapsedSidebarSections = readJsonStorage(SIDEBAR_SECTION_COLLAPSE_KEY, {});
 let collapsedSkillSections = readJsonStorage(SKILL_SECTION_COLLAPSE_KEY, {});
 let avatarCropState = null;
@@ -103,6 +113,62 @@ const AVATAR_CROP_STAGE_SIZE = 320;
 const AVATAR_CROP_VIEW_SIZE = 220;
 const AGENT_RECEIPT_VISIBLE_LIMIT = 10;
 const HUMAN_PRESENCE_HEARTBEAT_MS = 30 * 1000;
+
+function consoleTabFromPath(path = window.location.pathname || '') {
+  if (path.startsWith('/console/invitations')) return 'invitations';
+  if (path.startsWith('/console/servers')) return 'servers';
+  if (path.startsWith('/console')) return 'overview';
+  return '';
+}
+
+function initialActiveViewFromLocation(savedView = 'space') {
+  const path = window.location.pathname || '';
+  if (path.startsWith('/console')) return 'console';
+  if (path.startsWith('/s/')) return 'space';
+  return savedView || 'space';
+}
+
+function initialSpaceFromLocation(defaultType = 'channel', defaultId = 'chan_all') {
+  const match = (window.location.pathname || '').match(/^\/s\/[^/]+\/(channels|dms)\/([^/]+)/);
+  if (!match) return { type: defaultType, id: defaultId };
+  return {
+    type: match[1] === 'dms' ? 'dm' : 'channel',
+    id: decodeURIComponent(match[2] || defaultId),
+  };
+}
+
+function currentServerSlug() {
+  const workspace = appState?.cloud?.workspace || appState?.cloud?.workspaces?.[0] || {};
+  const slug = String(workspace.slug || workspace.id || appState?.connection?.workspaceId || 'local').trim();
+  return slug || 'local';
+}
+
+function consolePath(tab = consoleTab) {
+  if (tab === 'invitations') return '/console/invitations';
+  if (tab === 'servers') return '/console/servers';
+  return '/console';
+}
+
+function routePathForActiveView() {
+  if (activeView === 'console') return consolePath(consoleTab);
+  const serverSlug = encodeURIComponent(currentServerSlug());
+  if (activeView === 'space') {
+    const kind = selectedSpaceType === 'dm' ? 'dms' : 'channels';
+    return `/s/${serverSlug}/${kind}/${encodeURIComponent(selectedSpaceId || '')}`;
+  }
+  if (activeView === 'computers') return `/s/${serverSlug}/computers`;
+  if (activeView === 'members') return `/s/${serverSlug}/members`;
+  if (activeView === 'tasks') return `/s/${serverSlug}/tasks`;
+  if (activeView === 'cloud') return `/s/${serverSlug}/settings/${encodeURIComponent(settingsTab || 'account')}`;
+  return `/s/${serverSlug}`;
+}
+
+function syncBrowserRouteForActiveView({ replace = false } = {}) {
+  if (!window.history?.pushState) return;
+  const nextPath = routePathForActiveView();
+  if (!nextPath || window.location.pathname === nextPath) return;
+  window.history[replace ? 'replaceState' : 'pushState']({}, '', nextPath);
+}
 
 function isImeComposing(event) {
   return Boolean(
@@ -351,6 +417,8 @@ function cloudRoleAllows(role, allowedRole) {
 }
 
 function cloudCan(capability) {
+  const auth = appState?.cloud?.auth || {};
+  if (auth.loginRequired === false) return true;
   const capabilities = appState?.cloud?.auth?.capabilities || {};
   return Boolean(capabilities[capability]);
 }
@@ -376,19 +444,19 @@ function currentAccountHuman() {
 
 function cloudCapabilityLabels(capabilities = {}) {
   const labels = [
+    ['chat_channels', 'Channel chat'],
+    ['chat_agent_dm', 'Agent DMs'],
+    ['warm_agents', 'Agent warmup'],
     ['invite_member', 'Invite members'],
     ['invite_core_member', 'Invite core members'],
+    ['manage_agents', 'Manage agents'],
     ['manage_computers', 'Add computers'],
+    ['pair_computers', 'Pair computers'],
     ['remove_member', 'Remove members'],
     ['manage_member_roles', 'Manage roles'],
     ['manage_system', 'System config'],
   ];
   return labels.filter(([key]) => capabilities[key]).map(([, label]) => label);
-}
-
-function durationDays(ms) {
-  const days = Math.round(Number(ms || 0) / (1000 * 60 * 60 * 24));
-  return days > 0 ? `${days} days` : '--';
 }
 
 function humanPresenceText(human) {
@@ -397,8 +465,16 @@ function humanPresenceText(human) {
 
 function cloudInviteRoleOptions() {
   const options = [];
-  if (cloudCan('invite_core_member')) options.push(['core_member', 'Core Member']);
   if (cloudCan('invite_member')) options.push(['member', 'Member']);
+  if (cloudCan('invite_core_member')) options.push(['core_member', 'Core Member']);
+  return options;
+}
+
+function cloudMemberManageRoleOptions() {
+  const options = [];
+  if (!cloudCan('manage_member_roles')) return options;
+  options.push(['member', 'Member']);
+  if (cloudCan('invite_core_member')) options.push(['core_member', 'Core Member']);
   return options;
 }
 

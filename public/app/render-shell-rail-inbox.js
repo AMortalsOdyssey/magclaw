@@ -3,6 +3,12 @@ function render() {
     root.innerHTML = '<div class="boot">MAGCLAW LOCAL / BOOTING</div>';
     return;
   }
+  if (shouldDeferProfileFormRender()) {
+    pendingProfileFormRender = true;
+    return;
+  }
+  captureProfileFormDraft();
+  const profileFocus = profileFormFocusSnapshot();
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
@@ -13,10 +19,11 @@ function render() {
   const inspectorHtml = renderInspector();
   const notificationBanner = renderNotificationPromptBanner();
   const taskFocusLayout = activeView === 'tasks';
-  const settingsLayout = activeView === 'cloud';
+  const settingsLayout = activeView === 'cloud' || activeView === 'console';
+  const consoleLayout = activeView === 'console';
   root.innerHTML = `
     ${notificationBanner}
-    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${taskFocusLayout ? ' task-focus' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
+    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${taskFocusLayout ? ' task-focus' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${consoleLayout ? ' console-layout-frame' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
       ${renderRail()}
       ${taskFocusLayout ? '' : '<div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>'}
       <main class="workspace collab-main">
@@ -34,6 +41,7 @@ function render() {
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);
     restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
+    restoreProfileFormFocus(profileFocus);
     restorePendingComposerFocus();
     if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
       workspaceActivityScrollToBottom = false;
@@ -57,7 +65,9 @@ function renderRail() {
     || { name: 'You' };
   const railMode = activeView === 'tasks'
     ? 'tasks'
-    : activeView === 'cloud'
+    : activeView === 'console'
+      ? 'console'
+      : activeView === 'cloud'
       ? 'settings'
       : activeView === 'computers' || (activeView === 'missions' && railTab === 'computers')
         ? 'desktop'
@@ -68,19 +78,23 @@ function renderRail() {
     ? 'Tasks'
     : railMode === 'members'
       ? 'Members'
-      : railMode === 'settings'
+      : railMode === 'console'
+        ? 'Console'
+        : railMode === 'settings'
         ? 'Settings'
         : railMode === 'desktop'
           ? 'Computers'
           : 'Chat';
-  const sidebarBody = railMode === 'settings'
+  const sidebarBody = railMode === 'console'
+      ? renderConsoleRail()
+      : railMode === 'settings'
       ? renderSettingsRail()
       : railMode === 'desktop'
         ? renderComputersRail()
       : railTab === 'spaces'
         ? renderChatRail({ channels, dms, inboxUnread: inbox.unreadCount, unreadThreads, openTasks, saved, spaceUnreadCounts })
         : renderMembersRail({ normalAgents });
-  const railClass = `rail collab-rail slock-rail${railMode === 'settings' ? ' settings-rail' : ''}`;
+  const railClass = `rail collab-rail slock-rail${railMode === 'settings' ? ' settings-rail' : ''}${railMode === 'console' ? ' console-rail' : ''}`;
   const leftRailHtml = `
     <div class="slock-left-rail">
         <button class="left-rail-avatar" type="button" data-action="set-settings-tab" data-tab="account" title="${escapeHtml(localHuman.name || 'You')}">${escapeHtml((localHuman.name || 'Y').trim().slice(0, 1).toUpperCase())}</button>
@@ -89,6 +103,7 @@ function renderRail() {
       ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>', normalAgents.length || '')}
       ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>')}
       <span class="left-rail-spacer"></span>
+      ${renderLeftRailButton('console', railMode, 'Console', '<rect x="4" y="5" width="16" height="14" rx="1"/><path d="m8 10 3 2-3 2"/><path d="M13 15h4"/>')}
       ${renderLeftRailButton('settings', railMode, 'Settings', '<circle cx="12" cy="12" r="3"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="M5.6 5.6l2.1 2.1"/><path d="M16.3 16.3l2.1 2.1"/><path d="M18.4 5.6l-2.1 2.1"/><path d="M7.7 16.3l-2.1 2.1"/>')}
     </div>
   `;
@@ -97,6 +112,19 @@ function renderRail() {
     return `
       <aside class="${railClass} rail-icon-only">
         ${leftRailHtml}
+      </aside>
+    `;
+  }
+
+  if (activeView === 'console') {
+    return `
+      <aside class="${railClass}">
+        <div class="slock-sidebar">
+          <div class="slock-sidebar-header">
+            <h2>${escapeHtml(railHeading)}</h2>
+          </div>
+          ${sidebarBody}
+        </div>
       </aside>
     `;
   }
@@ -154,9 +182,10 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
 
 function renderMembersRail({ normalAgents }) {
   const humans = humansByJoinOrder();
+  const agentModal = cloudCan('manage_agents') ? 'agent' : '';
   return `
     <div class="rail-section">
-      ${renderRailSectionTitle('agents', 'Agents', normalAgents.length, { modal: 'agent' })}
+      ${renderRailSectionTitle('agents', 'Agents', normalAgents.length, { modal: agentModal })}
       ${collapsedSidebarSections.agents ? '' : normalAgents.map((agent) => renderAgentListItem(agent)).join('')}
     </div>
 
@@ -181,14 +210,16 @@ function humansByJoinOrder() {
 
 function renderComputersRail() {
   const computers = appState.computers || [];
+  const canManageComputers = cloudCan('manage_computers');
+  const featureCount = canManageComputers ? 3 : 2;
   return `
     <div class="rail-section">
-      ${renderRailSectionTitle('computers', 'Computers', computers.length, { modal: 'computer' })}
+      ${renderRailSectionTitle('computers', 'Computers', computers.length, { modal: canManageComputers ? 'computer' : '' })}
       ${collapsedSidebarSections.computers ? '' : computers.map((computer) => renderComputerListItem(computer)).join('')}
     </div>
 
     <div class="rail-section">
-      ${renderRailSectionTitle('computer-features', 'Feature Entrances', 3)}
+      ${renderRailSectionTitle('computer-features', 'Feature Entrances', featureCount)}
       ${collapsedSidebarSections['computer-features'] ? '' : `
         <button class="space-btn computer-feature-entry${activeView === 'computers' ? ' active' : ''}" type="button" data-action="set-view" data-view="computers">
           <span class="channel-icon">PC</span>
@@ -198,10 +229,10 @@ function renderComputersRail() {
           <span class="channel-icon">RUN</span>
           <span class="dm-name">Codex Missions</span>
         </button>
-        <button class="space-btn computer-feature-entry" type="button" data-action="open-modal" data-modal="computer">
+        ${canManageComputers ? `<button class="space-btn computer-feature-entry" type="button" data-action="open-modal" data-modal="computer">
           <span class="channel-icon">+</span>
           <span class="dm-name">Add Computer</span>
-        </button>
+        </button>` : ''}
       `}
     </div>
   `;
@@ -214,6 +245,27 @@ function renderSettingsRail() {
       ${items.map((item) => `
         <button class="settings-nav-item${settingsTab === item.id ? ' active' : ''}" type="button" data-action="set-settings-tab" data-tab="${escapeHtml(item.id)}">
           ${settingsIcon(item.icon, 20)}
+          <span>${escapeHtml(item.label)}</span>
+          ${item.meta ? `<em>${escapeHtml(item.meta)}</em>` : ''}
+        </button>
+      `).join('')}
+    </nav>
+  `;
+}
+
+function renderConsoleRail() {
+  const pendingCount = consoleInvitationRows().filter((item) => item.status === 'pending').length;
+  const serversCount = consoleServers().length;
+  const items = [
+    { id: 'overview', label: 'Overview', meta: 'home' },
+    { id: 'invitations', label: 'Invitations', meta: pendingCount ? `${pendingCount}` : '' },
+    { id: 'servers', label: 'Servers', meta: `${serversCount}` },
+  ];
+  return `
+    <nav class="settings-nav-list console-nav-list" aria-label="Console sections">
+      ${items.map((item) => `
+        <button class="settings-nav-item${consoleTab === item.id ? ' active' : ''}" type="button" data-action="set-console-tab" data-tab="${escapeHtml(item.id)}">
+          ${settingsIcon(item.id === 'servers' ? 'server' : item.id === 'invitations' ? 'members' : 'system', 20)}
           <span>${escapeHtml(item.label)}</span>
           ${item.meta ? `<em>${escapeHtml(item.meta)}</em>` : ''}
         </button>
@@ -365,6 +417,7 @@ function renderMain() {
   if (activeView === 'search') return renderSearch();
   if (activeView === 'missions') return renderMissions();
   if (activeView === 'cloud') return renderCloud();
+  if (activeView === 'console') return renderConsole();
   if (activeView === 'computers') return renderComputers();
   return renderSpace();
 }

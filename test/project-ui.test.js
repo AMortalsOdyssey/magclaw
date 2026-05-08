@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import test from 'node:test';
+import vm from 'node:vm';
 
 async function readAppSource() {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -39,8 +40,13 @@ test('members settings expose role-aware invitation controls', async () => {
   assert.match(app, /\/api\/cloud\/invitations\/batch/);
   assert.match(app, /\/api\/cloud\/password-resets/);
   assert.match(app, /function cloudInviteRoleOptions\(\)/);
-  const inviteRoleOptionsSource = app.slice(app.indexOf('function cloudInviteRoleOptions()'), app.indexOf('function cloudCanRemoveMemberRole'));
+  assert.match(app, /function cloudMemberManageRoleOptions\(\)/);
+  const inviteRoleOptionsSource = app.slice(app.indexOf('function cloudInviteRoleOptions()'), app.indexOf('function cloudMemberManageRoleOptions'));
+  const manageRoleOptionsSource = app.slice(app.indexOf('function cloudMemberManageRoleOptions()'), app.indexOf('function cloudCanRemoveMemberRole'));
   assert.doesNotMatch(inviteRoleOptionsSource, /invite_admin|admin', 'Admin'/);
+  assert.match(inviteRoleOptionsSource, /options\.push\(\['member', 'Member'\]\)[\s\S]*options\.push\(\['core_member', 'Core Member'\]\)/);
+  assert.doesNotMatch(manageRoleOptionsSource, /admin', 'Admin'/);
+  assert.match(manageRoleOptionsSource, /manage_member_roles/);
   assert.match(app, /let latestInvitationLink = null/);
   assert.match(app, /let cloudGeneratedLinks = \[\]/);
   assert.match(app, /function generatedLinkText\(item\)/);
@@ -48,10 +54,25 @@ test('members settings expose role-aware invitation controls', async () => {
   assert.match(app, /tryCopyTextToClipboard\(generatedLinksText\(\)\)/);
   assert.match(app, /'core_member', 'Core Member'/);
   assert.match(app, /'member', 'Member'/);
-  assert.match(membersSettingsSource, /\['core_member', 'member'\]/);
+  assert.match(membersSettingsSource, /member-role-badge/);
   assert.doesNotMatch(membersSettingsSource, /optionRole\) => `<option value="\$\{optionRole\}"[\s\S]*admin/);
   assert.doesNotMatch(accountSettingsSource, /id="cloud-invite-form"|Workspace Members/);
   assert.doesNotMatch(accountSettingsSource, /value="viewer"|value="agent_admin"|value="computer_admin"|value="owner"/);
+});
+
+test('computer and agent creation entrances honor cloud capabilities', async () => {
+  const app = await readAppSource();
+  const computersSource = app.slice(app.indexOf('function renderComputers()'), app.indexOf('function renderComputerConfigCard()'));
+  const computerCardSource = app.slice(app.indexOf('function renderComputerConfigCard()'), app.indexOf('function renderFanoutApiConfigCard()'));
+  const computerRailSource = app.slice(app.indexOf('function renderComputersRail()'), app.indexOf('function renderSettingsRail()'));
+  const modalSource = app.slice(app.indexOf('function renderAgentModal()'), app.indexOf('function renderHumanModal()'));
+
+  assert.match(computersSource, /cloudCan\('manage_computers'\)/);
+  assert.match(computersSource, /cloudCan\('manage_agents'\)/);
+  assert.match(computerCardSource, /cloudCan\('manage_computers'\)/);
+  assert.match(computerRailSource, /cloudCan\('manage_computers'\)/);
+  assert.match(modalSource, /!cloudCan\('manage_agents'\)/);
+  assert.match(modalSource, /!cloudCan\('manage_computers'\)/);
 });
 
 test('members page uses a join-ordered directory with invite modals', async () => {
@@ -64,30 +85,179 @@ test('members page uses a join-ordered directory with invite modals', async () =
   assert.match(app, /function renderMembersDirectory/);
   assert.match(membersMainSource, /renderMembersDirectory\(\{ context: 'main' \}\)/);
   assert.match(membersSettingsSource, /renderMembersDirectory\(\{ context: 'settings' \}\)/);
-  assert.match(app, /\.sort\(\(a, b\) => memberJoinTimestamp\(a\) - memberJoinTimestamp\(b\)\)/);
-  assert.match(app, /<span>Name<\/span>[\s\S]*<span>Status<\/span>[\s\S]*<span>上次活动时间<\/span>[\s\S]*<span>Role<\/span>/);
-  assert.doesNotMatch(app, />Heartbeat<\/span>/);
+  assert.match(app, /const MEMBERS_PAGE_SIZE = 50/);
+  assert.match(app, /function compareMemberDirectoryRows\(a, b\)/);
+  assert.match(app, /function membersPaginationModel\(rows = buildMembersRows\(\)\)/);
+  assert.match(app, /<span>Name<\/span>[\s\S]*<span>Status<\/span>[\s\S]*<span>Last active<\/span>[\s\S]*<span>Role<\/span>/);
+  assert.doesNotMatch(membersSettingsSource, />Heartbeat<\/span>|上次活动时间|已加入|邀请中|刚刚|分钟前|小时前|个月前|添加团队成员|发送邀请|邀请链接|无限制/);
   assert.match(app, /data-modal="member-invite"[\s\S]*>Invite<\/button>/);
+  assert.match(app, /data-action="members-page-prev"/);
+  assert.match(app, /data-action="members-page-next"/);
+  assert.match(app, /data-action="members-page-go"/);
+  assert.match(app, /id="members-page-input"/);
+  assert.doesNotMatch(membersSettingsSource, /members-workspace-card|members-workspace-avatar/);
   assert.match(modalSource, /'member-invite': renderMemberInviteModal/);
   assert.match(modalSource, /'member-invite-links': renderMemberInviteLinksModal/);
   assert.match(styles, /\.members-directory-shell/);
+  assert.match(styles, /\.members-page-header/);
+  assert.match(styles, /\.members-pagination/);
   assert.match(styles, /\.modal-member-invite/);
   assert.match(styles, /\.member-invite-links-list/);
 });
 
-test('member invitations dedupe and reject invalid or existing emails', async () => {
+test('members directory separates roles from top-centered manage actions', async () => {
+  const app = await readAppSource();
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const rowSource = app.slice(app.indexOf('function renderMemberRow(row)'), app.indexOf('function renderMemberInviteTrigger()'));
+  const manageSource = app.slice(app.indexOf('function renderMemberManageModal()'), app.indexOf('function renderMemberRow(row)'));
+  const modalSource = app.slice(app.indexOf('function renderModal()'), app.indexOf('function modalHeader('));
+
+  assert.match(app, /let memberManageState = \{ memberId: null \}/);
+  assert.match(app, /let memberActionConfirmState = \{ memberId: null, action: null \}/);
+  assert.match(app, /let memberResetLinkState = \{ email: '', link: '' \}/);
+  assert.match(app, /function renderMemberManageModal\(\)/);
+  assert.match(app, /function renderMemberActionConfirmModal\(\)/);
+  assert.match(app, /function renderMemberResetLinkModal\(\)/);
+  assert.match(modalSource, /'member-manage': renderMemberManageModal/);
+  assert.match(modalSource, /'member-action-confirm': renderMemberActionConfirmModal/);
+  assert.match(modalSource, /'member-reset-link': renderMemberResetLinkModal/);
+  assert.match(app, /<span>Role<\/span>\s*<span>Manage<\/span>/);
+  assert.match(rowSource, /class="member-role-badge"/);
+  assert.match(rowSource, /data-action="open-member-manage"/);
+  assert.doesNotMatch(rowSource, /reset-cloud-member-password|remove-cloud-member|update-cloud-member-role/);
+  assert.match(manageSource, /class="member-manage-role-form"/);
+  assert.match(manageSource, /data-member-role-select/);
+  assert.match(manageSource, /data-action="update-cloud-member-role"/);
+  assert.match(manageSource, /data-action="open-member-action-confirm"[\s\S]*data-member-action="reset-password"/);
+  assert.match(manageSource, /data-action="open-member-action-confirm"[\s\S]*data-member-action="remove"/);
+  assert.doesNotMatch(manageSource, /reset-cloud-member-password|remove-cloud-member/);
+  assert.match(app, /if \(action === 'update-cloud-member-role'\)/);
+  assert.match(app, /data-action="confirm-member-action"/);
+  assert.match(app, /data-action="copy-member-reset-link"/);
+  assert.match(app, /memberResetLinkText\(\)/);
+  assert.match(styles, /\.modal-member-manage-backdrop/);
+  assert.match(styles, /\.modal-member-action-confirm-backdrop/);
+  assert.match(styles, /\.modal-member-reset-link/);
+  assert.match(styles, /\.member-manage-role-form/);
+  assert.match(styles, /\.member-manage-role-controls/);
+  assert.match(styles, /\.member-manage-actions/);
+  assert.match(styles, /\.member-reset-link-modal/);
+});
+
+test('members directory sorts active before pending by invite time and paginates at 50 rows', async () => {
+  const source = await readFile(new URL('../public/app/render-search-settings.js', import.meta.url), 'utf8');
+  const context = {
+    Date,
+    Math,
+    Number,
+    String,
+    Set,
+    appState: {
+      cloud: {
+        members: [
+          {
+            id: 'm-late-invite',
+            userId: 'u-late',
+            role: 'member',
+            status: 'active',
+            joinedAt: '2026-01-02T00:00:00.000Z',
+            createdAt: '2026-01-02T00:00:00.000Z',
+            user: { id: 'u-late', email: 'late@example.com', name: 'Late Invite' },
+          },
+          {
+            id: 'm-early-invite',
+            userId: 'u-early',
+            role: 'member',
+            status: 'active',
+            joinedAt: '2026-03-01T00:00:00.000Z',
+            createdAt: '2026-03-01T00:00:00.000Z',
+            user: { id: 'u-early', email: 'early@example.com', name: 'Early Invite' },
+          },
+          {
+            id: 'm-reset',
+            userId: 'u-reset',
+            role: 'member',
+            status: 'active',
+            joinedAt: '2026-04-01T00:00:00.000Z',
+            createdAt: '2026-04-01T00:00:00.000Z',
+            user: { id: 'u-reset', email: 'reset@example.com', name: 'Reset Member' },
+          },
+        ],
+        invitations: [
+          { id: 'inv-member-late', email: 'late@example.com', acceptedAt: '2026-01-02T00:00:00.000Z', acceptedBy: 'u-late', createdAt: '2026-02-01T00:00:00.000Z' },
+          { id: 'inv-member-early', email: 'early@example.com', acceptedAt: '2026-03-01T00:00:00.000Z', acceptedBy: 'u-early', createdAt: '2026-01-01T00:00:00.000Z' },
+          { id: 'inv-member-reset', email: 'reset@example.com', acceptedAt: '2026-04-01T00:00:00.000Z', acceptedBy: 'u-reset', createdAt: '2026-01-15T00:00:00.000Z' },
+          { id: 'inv-registered-later', email: 'early@example.com', createdAt: '2026-05-01T00:00:00.000Z' },
+          { id: 'inv-pending-b', email: 'pending-b@example.com', role: 'member', createdAt: '2026-01-01T00:00:00.000Z' },
+          { id: 'inv-pending-a', email: 'pending-a@example.com', role: 'member', createdAt: '2026-01-01T00:00:00.000Z' },
+        ],
+      },
+    },
+    memberDirectoryPage: 2,
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+
+  const rows = context.buildMembersRows();
+  const orderedIds = JSON.parse(JSON.stringify(rows.map((row) => row.member?.id || row.invitation?.id)));
+  assert.deepEqual(orderedIds, [
+    'm-early-invite',
+    'm-reset',
+    'm-late-invite',
+    'inv-pending-a',
+    'inv-pending-b',
+  ]);
+  assert.equal(rows[0].member.joinedAt, '2026-03-01T00:00:00.000Z');
+
+  const manyRows = Array.from({ length: 123 }, (_, index) => ({ type: 'member', member: { id: `m-${index}` } }));
+  const page = context.membersPaginationModel(manyRows);
+  assert.equal(page.totalPages, 3);
+  assert.equal(page.page, 2);
+  assert.equal(page.rows.length, 50);
+  assert.equal(page.rows[0].member.id, 'm-50');
+});
+
+test('member invitations dedupe input and show registered-user invite errors', async () => {
   const app = await readAppSource();
   const auth = await readFile(new URL('../server/cloud/auth.js', import.meta.url), 'utf8');
 
   assert.match(app, /event\.key === ' ' \|\| event\.code === 'Space'/);
-  assert.match(app, /function memberInviteExistingEmailSet\(\)/);
-  assert.match(app, /memberInviteDuplicateEmailsForSubmit\(\)/);
+  assert.match(app, /function dedupeInviteEmails\(emails = \[\]\)/);
   assert.match(app, /throw new Error\(`Remove invalid email/);
-  assert.match(app, /throw new Error\(`Already invited or already a member/);
-  assert.match(auth, /function activeInvitationWithEmail\(email, workspaceId = primaryWorkspace\(\)\?\.id\)/);
-  assert.match(auth, /Invitation already exists for this email\./);
+  assert.doesNotMatch(app, /Already invited or already a member/);
+  assert.match(app, /User already registered\./);
+  assert.match(auth, /function revokeActiveInvitationsForEmail\(email, workspaceId = primaryWorkspace\(\)\?\.id/);
+  assert.match(auth, /function uniqueCloudToken\(prefix\)/);
+  assert.match(auth, /activeUserWithEmail\(invitation\.email\)/);
   assert.match(auth, /Invalid invite email/);
   assert.match(auth, /\/activate\?\$\{params\.toString\(\)\}/);
+});
+
+test('generated invitation links use the current browser origin for loopback API URLs', async () => {
+  const source = await readFile(new URL('../public/app/render-search-settings.js', import.meta.url), 'utf8');
+  const context = {
+    URL,
+    window: {
+      location: {
+        origin: 'https://cloud.magclaw.example',
+      },
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+
+  assert.equal(
+    context.inviteLinkForCurrentOrigin('http://127.0.0.1:6543/activate?email=a%40example.com&token=mc_inv_123'),
+    'https://cloud.magclaw.example/activate?email=a%40example.com&token=mc_inv_123',
+  );
+  assert.equal(
+    context.inviteLinkForCurrentOrigin('http://localhost:6543/activate?email=a%40example.com&token=mc_inv_123'),
+    'https://cloud.magclaw.example/activate?email=a%40example.com&token=mc_inv_123',
+  );
+  assert.equal(
+    context.inviteLinkForCurrentOrigin('https://public.magclaw.example/activate?email=a%40example.com&token=mc_inv_123'),
+    'https://public.magclaw.example/activate?email=a%40example.com&token=mc_inv_123',
+  );
 });
 
 test('account profile uses a focused role layout with avatar picker controls', async () => {
@@ -96,9 +266,27 @@ test('account profile uses a focused role layout with avatar picker controls', a
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));
 
   assert.match(accountSettingsSource, /class="account-role-badge role-\$\{escapeHtml\(role\)\}"/);
+  assert.match(app, /let profileFormDraft = null/);
+  assert.match(app, /let profileFormIsComposing = false/);
+  assert.match(app, /let pendingProfileFormRender = false/);
+  assert.match(app, /function captureProfileFormDraft/);
+  assert.match(app, /function profileFormFocusSnapshot/);
+  assert.match(app, /function shouldDeferProfileFormRender/);
+  assert.match(app, /function restoreProfileFormFocus/);
+  assert.match(app, /profileFormValuesForRender\(human, currentUser\)/);
   assert.match(accountSettingsSource, /data-action="pick-profile-avatar"/);
+  assert.match(accountSettingsSource, /data-action="reset-profile-avatar"[\s\S]*Reset to Default/);
   assert.match(accountSettingsSource, /class="account-permission-chips"/);
-  assert.doesNotMatch(accountSettingsSource, /Identity Boundary|<span>Device<\/span>|id="profile-avatar-library"/);
+  assert.match(app, /const profileFocus = profileFormFocusSnapshot\(\)/);
+  assert.match(app, /shouldDeferProfileFormRender\(\)[\s\S]*pendingProfileFormRender = true/);
+  assert.match(app, /restoreProfileFormFocus\(profileFocus\)/);
+  assert.match(app, /compositionstart[\s\S]*#profile-form[\s\S]*profileFormIsComposing = true/);
+  assert.match(app, /compositionend[\s\S]*#profile-form[\s\S]*profileFormIsComposing = false/);
+  assert.match(app, /if \(profileFormIsComposing \|\| event\.isComposing \|\| event\.inputType === 'insertCompositionText'\) return/);
+  assert.match(app, /pendingProfileFormRender[\s\S]*window\.requestAnimationFrame\(\(\) => render\(\)\)/);
+  assert.match(app, /if \(profileForm\) \{[\s\S]*captureProfileFormDraft\(profileForm\)/);
+  assert.match(app, /clearProfileFormDraft\(\)/);
+  assert.doesNotMatch(accountSettingsSource, /Identity Boundary|<span>Device<\/span>|id="profile-avatar-library"|<span>Session<\/span>|sessionTtlMs|sessionExpiresAt/);
   assert.match(styles, /\.account-overview-card/);
   assert.match(styles, /\.account-role-badge strong/);
   assert.match(styles, /\.account-permission-chips span/);
@@ -141,6 +329,10 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const authGateSource = app.slice(app.indexOf('function renderCloudAuthGate('), app.indexOf('function renderBrowserSettingsTab()'));
+  const openRegisterSource = authGateSource.slice(authGateSource.indexOf('id="cloud-open-register-form"'), authGateSource.indexOf('id="cloud-forgot-form"'));
+  const submitStyles = styles.slice(styles.indexOf('.cloud-login-submit {'), styles.indexOf('.cloud-login-switch {'));
+  const checkCardButtonStyles = styles.slice(styles.indexOf('.cloud-check-email-card .cloud-login-submit {'), styles.indexOf('.cloud-check-icon {'));
+  const checkIconStyles = styles.slice(styles.indexOf('.cloud-check-icon {'), styles.indexOf('.console-page {'));
 
   assert.match(app, /function cloudAuthTokenFromLocation\(\)/);
   assert.match(app, /if \(cloudAuthTokenFromLocation\(\)\.mode\)[\s\S]*showCloudAuthGate\(null\)/);
@@ -150,15 +342,33 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.match(authGateSource, /tokenContext\.mode === 'reset'/);
   assert.match(authGateSource, /id="cloud-register-form"/);
   assert.match(authGateSource, /id="cloud-reset-form"/);
+  assert.match(authGateSource, /id="cloud-open-register-form"/);
+  assert.match(authGateSource, /id="cloud-forgot-form"/);
+  assert.match(openRegisterSource, /id="cloud-open-register-form" class="cloud-login-form" novalidate/);
+  assert.doesNotMatch(openRegisterSource, /minlength|maxlength/);
+  assert.match(app, /function assertCloudPasswordPolicy\(password\)/);
+  assert.match(app, /const password = assertCloudPasswordPolicy\(data\.get\('password'\)\)/);
   assert.match(authGateSource, /passwordConfirm/);
-  assert.match(authGateSource, /8 到 30 位/);
+  assert.match(authGateSource, /Password must be 8-30 characters and include letters and numbers\./);
+  assert.doesNotMatch(authGateSource, /<span>Avatar<\/span>/);
+  assert.doesNotMatch(authGateSource, /data-action="reset-cloud-auth-avatar"[\s\S]*Reset to Default/);
+  assert.doesNotMatch(authGateSource, /<input type="hidden" name="email"/);
   assert.match(authGateSource, /使用协议/);
   assert.match(authGateSource, /隐私政策/);
-  assert.match(authGateSource, /如果您还没有注册过账号，请联系您的管理员获取邀请。/);
   assert.match(authGateSource, /© 2026 MagClaw\. All Rights Reserved\./);
+  assert.match(submitStyles, /display: inline-flex;/);
+  assert.match(submitStyles, /align-items: center;/);
+  assert.match(submitStyles, /justify-content: center;/);
+  assert.match(submitStyles, /color: var\(--accent-text\);/);
+  assert.match(submitStyles, /text-decoration: none;/);
+  assert.match(checkCardButtonStyles, /margin-bottom: 4px;/);
+  assert.match(checkCardButtonStyles, /color: var\(--accent-text\);/);
+  assert.match(checkIconStyles, /background: var\(--accent\);/);
+  assert.match(checkIconStyles, /color: var\(--accent-text\);/);
+  assert.doesNotMatch(checkIconStyles, /#ffd743|--slock-sun|#FFD800/i);
   assert.doesNotMatch(authGateSource, /owner invite/);
   assert.doesNotMatch(authGateSource, /admin account configured|Admin access required|Admin login/i);
-  assert.match(authGateSource, /Sign in to continue to your MagClaw workspace/);
+  assert.match(authGateSource, /Where humans and AI agents collaborate/);
   assert.match(authGateSource, /cloud-login-error/);
   assert.match(authGateSource, /role="alert" aria-live="polite"/);
   assert.match(authGateSource, /value="\$\{escapeHtml\(cloudLoginDraftEmail\)\}"/);
@@ -168,14 +378,20 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.match(authGateSource, /<img src="\$\{BRAND_LOGO_SRC\}" alt="" \/>/);
   assert.match(authGateSource, /class="cloud-auth-shell"/);
   assert.match(authGateSource, /class="pixel-panel cloud-login-card"/);
-  assert.match(authGateSource, /id="cloud-login-title">Welcome back!/);
+  assert.match(authGateSource, /id="cloud-login-title">Sign in/);
   assert.match(styles, /\.cloud-auth-stage/);
-  assert.match(styles, /\.cloud-auth-shell \{[\s\S]*background: #fff4fb/);
+  assert.match(styles, /\.cloud-auth-shell \{[\s\S]*background: #fffaf7/);
   assert.match(styles, /\.cloud-login-card,/);
   assert.match(styles, /\.cloud-login-error/);
   assert.match(styles, /\.cloud-login-submit/);
   assert.match(styles, /\.cloud-auth-legal/);
   assert.match(styles, /\.cloud-password-rule/);
+  assert.match(styles, /\.cloud-login-switch/);
+  assert.match(app, /let cloudAuthAvatarToken = ''/);
+  assert.match(app, /cloudAuthAvatarToken !== context\.token/);
+  assert.match(app, /if \(action === 'reset-cloud-auth-avatar'\)/);
+  assert.match(app, /if \(action === 'reset-profile-avatar'\)/);
+  assert.doesNotMatch(app.slice(app.indexOf("if (form.id === 'cloud-register-form')"), app.indexOf("if (form.id === 'cloud-reset-form')")), /email: data\.get\('email'\)/);
 });
 
 test('browser favicon and shared brand assets use the selected Modular Claw logo', async () => {
@@ -253,6 +469,56 @@ test('project mentions show full local paths in the candidate list', async () =>
   assert.match(styles, /grid-template-columns: 28px 8px minmax\(120px, 0\.55fr\) minmax\(260px, 1\.45fr\)/);
   assert.match(styles, /\.mention-type-file \.mention-handle,\n\.mention-type-folder \.mention-handle/);
   assert.match(styles, /overflow-wrap: anywhere/);
+});
+
+test('thread mentions include active workspace humans outside the current channel', async () => {
+  const source = await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8');
+  const appState = {
+    agents: [],
+    humans: [{ id: 'hum_local', name: 'You', email: 'you@example.com', status: 'online' }],
+    channels: [{ id: 'chan_private', memberIds: ['hum_local'], humanIds: ['hum_local'], agentIds: [] }],
+    dms: [],
+    projects: [],
+    cloud: {
+      members: [
+        {
+          id: 'mem_other',
+          humanId: 'hum_other',
+          role: 'member',
+          status: 'active',
+          user: { id: 'usr_other', email: 'other@example.com', name: 'Other Human' },
+        },
+        {
+          id: 'mem_removed',
+          humanId: 'hum_removed',
+          role: 'member',
+          status: 'removed',
+          user: { id: 'usr_removed', email: 'removed@example.com', name: 'Removed Human' },
+        },
+      ],
+    },
+  };
+  const context = {
+    BRAND_LOGO_SRC: '',
+    appState,
+    selectedSpaceType: 'channel',
+    selectedSpaceId: 'chan_private',
+    getChannelMembers(channelId) {
+      const channel = appState.channels.find((item) => item.id === channelId);
+      const ids = channel?.memberIds || [];
+      return {
+        agents: [],
+        humans: appState.humans.filter((human) => ids.includes(human.id)),
+      };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+
+  const candidates = context.getMentionCandidates('', 'channel', 'chan_private');
+
+  assert.ok(candidates.some((item) => item.id === 'hum_other' && item.name === 'Other Human' && item.group === 'out'));
+  assert.equal(candidates.some((item) => item.id === 'hum_removed'), false);
 });
 
 test('threads render newest first with display names instead of raw ids', async () => {
@@ -981,6 +1247,23 @@ test('agent avatar uploads open a square crop modal and persist a cropped image'
   assert.match(styles, /\.avatar-option[\s\S]*object-fit: cover/);
 });
 
+test('join avatar upload reuses the avatar crop confirmation flow', async () => {
+  const app = await readAppSource();
+  const uploadSource = app.slice(
+    app.indexOf("if (event.target.id === 'cloud-auth-avatar-file')"),
+    app.indexOf("if (event.target.matches?.('.agent-avatar-upload')"),
+  );
+  const cropSource = app.slice(
+    app.indexOf("if (action === 'confirm-avatar-crop')"),
+    app.indexOf("if (action === 'remove-project')"),
+  );
+
+  assert.match(uploadSource, /const avatar = await readAvatarFileAsDataUrl\(file\)/);
+  assert.match(uploadSource, /openAvatarCropModal\(\{ source: avatar, target: 'cloud-auth' \}\)/);
+  assert.match(cropSource, /crop\?\.target === 'cloud-auth'/);
+  assert.match(cropSource, /cloudAuthAvatar = avatar/);
+});
+
 test('human presence uses browser heartbeat and settings clears agent detail', async () => {
   const app = await readAppSource();
 
@@ -1084,6 +1367,39 @@ test('browser agent notifications can be enabled from a Slock-style prompt and s
   assert.match(styles, /\.notification-banner/);
   assert.match(styles, /\.notification-config-card/);
   assert.match(styles, /\.app-frame\.notification-banner-active/);
+});
+
+test('console has routed sections, invitation actions, and no human heartbeat', async () => {
+  const app = await readAppSource();
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /function consoleTabFromPath\(path = window\.location\.pathname \|\| ''\)/);
+  assert.match(app, /path\.startsWith\('\/console\/invitations'\)/);
+  assert.match(app, /path\.startsWith\('\/console\/servers'\)/);
+  assert.match(app, /activeView === 'console'/);
+  assert.match(app, /function renderConsole\(\)/);
+  assert.match(app, /function renderConsoleInvitations\(\)/);
+  assert.match(app, /data-action="set-console-tab"/);
+  assert.match(app, /data-action="accept-console-invitation"/);
+  assert.match(app, /\/api\/console\/invitations\/\$\{encodeURIComponent\(id\)\}\/\$\{verb\}/);
+  assert.match(app, /activeView === 'console' \|\| \(window\.location\.pathname \|\| ''\)\.startsWith\('\/console'\)/);
+  assert.match(app, /console-layout-frame/);
+  assert.match(app, /console-rail/);
+  const consoleSidebarStart = app.indexOf('const sidebarBody = railMode ===');
+  const consoleSidebarSource = app.slice(consoleSidebarStart, app.indexOf('const railClass =', consoleSidebarStart));
+  assert.match(consoleSidebarSource, /railMode === 'console'[\s\S]*renderConsoleRail\(\)/);
+  const consoleRailStart = app.indexOf("if (activeView === 'console') {");
+  const consoleRailSource = app.slice(consoleRailStart, app.indexOf('return `\n    <aside class="${railClass}">', consoleRailStart));
+  assert.match(consoleRailSource, /slock-sidebar/);
+  assert.doesNotMatch(consoleRailSource, /leftRailHtml|slock-left-rail|runtime-chip/);
+  assert.match(app, /id="console-server-form"/);
+  assert.match(app, /data-modal="server-create"/);
+  assert.match(app, /\/api\/console\/servers/);
+  assert.match(app, /Choose a server to continue\. If you do not have one yet, create a new server\./);
+  assert.doesNotMatch(app, /console-create-server" type="button" disabled/);
+  assert.match(styles, /\.console-page/);
+  assert.match(styles, /\.console-grid/);
+  assert.match(styles, /\.console-row/);
 });
 
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {

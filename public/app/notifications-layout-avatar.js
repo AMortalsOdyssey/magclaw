@@ -130,6 +130,84 @@ function dismissAgentNotifications() {
   render();
 }
 
+function profileFormFocusSnapshot() {
+  const active = document.activeElement;
+  if (!active?.closest?.('#profile-form')) return null;
+  if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return null;
+  return {
+    name: active.name || '',
+    id: active.id || '',
+    selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+    selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+    selectionDirection: active.selectionDirection || 'none',
+  };
+}
+
+function shouldDeferProfileFormRender() {
+  return Boolean(
+    profileFormIsComposing
+    && document.getElementById('profile-form')
+    && document.activeElement?.closest?.('#profile-form')
+  );
+}
+
+function restoreProfileFormFocus(snapshot) {
+  if (!snapshot) return;
+  const fields = [...document.querySelectorAll('#profile-form input, #profile-form textarea, #profile-form select')];
+  const target = fields.find((field) => (
+    (snapshot.name && field.name === snapshot.name)
+    || (snapshot.id && field.id === snapshot.id)
+  ));
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  if (
+    typeof target.setSelectionRange === 'function'
+    && snapshot.selectionStart !== null
+    && snapshot.selectionEnd !== null
+  ) {
+    target.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd, snapshot.selectionDirection);
+  }
+}
+
+function captureProfileFormDraft(form = document.getElementById('profile-form')) {
+  if (!form) return profileFormDraft;
+  profileFormDraft = {
+    humanId: form.dataset.humanId || '',
+    displayName: form.querySelector('[name="displayName"]')?.value || '',
+    description: form.querySelector('[name="description"]')?.value || '',
+    avatar: form.querySelector('[name="avatar"]')?.value || '',
+  };
+  return profileFormDraft;
+}
+
+function clearProfileFormDraft() {
+  profileFormDraft = null;
+}
+
+function profileFormValuesForRender(human = {}, currentUser = {}) {
+  const humanId = human.id || '';
+  if (profileFormDraft && profileFormDraft.humanId === humanId) {
+    return {
+      displayName: profileFormDraft.displayName,
+      description: profileFormDraft.description,
+      avatar: profileFormDraft.avatar,
+    };
+  }
+  return {
+    displayName: human.name || currentUser?.name || '',
+    description: human.description || '',
+    avatar: human.avatar || '',
+  };
+}
+
+function profileAvatarInnerHtml({ human = {}, avatar = '', displayName = '', cssClass = '' } = {}) {
+  const src = String(avatar || '').trim();
+  if (src) return `<img src="${escapeHtml(src)}" class="${escapeHtml(cssClass)} avatar-img" alt="">`;
+  const label = String(displayName || human.name || 'You').trim();
+  const initial = label.slice(0, 1).toUpperCase() || 'Y';
+  return `<span class="${escapeHtml(cssClass)}">${escapeHtml(initial)}</span>`;
+}
+
 function persistUiState() {
   const payload = {
     selectedSpaceType,
@@ -138,6 +216,7 @@ function persistUiState() {
     activeTab,
     railTab,
     settingsTab,
+    consoleTab,
     threadMessageId,
     selectedAgentId,
     membersLayout,
@@ -442,7 +521,7 @@ async function openAvatarCropModal({ agentId, source, target = 'agent-detail' })
     offsetY: 0,
   });
   modal = 'avatar-crop';
-  render();
+  renderShellOrModal();
 }
 
 async function drawCroppedAvatarToDataUrl(state = avatarCropState) {
@@ -499,6 +578,7 @@ function setProfileAvatarInput(value) {
   const input = document.getElementById('profile-avatar-input');
   if (input) input.value = avatar;
   const preview = document.querySelector('#profile-form .settings-account-avatar');
+  captureProfileFormDraft();
   if (!preview) return;
   if (avatar) {
     preview.innerHTML = `<img src="${escapeHtml(avatar)}" class="settings-account-avatar-inner avatar-img" alt="">`;
