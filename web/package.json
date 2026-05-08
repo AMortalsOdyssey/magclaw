@@ -1,0 +1,17 @@
+{
+  "name": "@magclaw/web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "MagClaw cloud Web Service package boundary.",
+  "scripts": {
+    "start": "node ../server/index.js",
+    "check": "node --check ../server/index.js",
+    "db:init": "node ../server/cloud/postgres.js migrate",
+    "db:status": "node ../server/cloud/postgres.js status"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
+

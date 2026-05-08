@@ -1,0 +1,8 @@
+{
+  "name": "@magclaw/shared",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Shared MagClaw route and protocol constants for the Web Service and daemon packages."
+}
+

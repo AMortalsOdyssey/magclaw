@@ -9,7 +9,11 @@
     "start": "node server/index.js",
     "check": "node --check server/index.js",
     "cloud:db:init": "node server/cloud/postgres.js migrate",
-    "cloud:db:status": "node server/cloud/postgres.js status"
+    "cloud:db:status": "node server/cloud/postgres.js status",
+    "web:start": "node server/index.js",
+    "web:check": "node --check server/index.js",
+    "web:docker:build": "docker build -f web/Dockerfile -t magclaw-web .",
+    "daemon:pack": "npm pack --dry-run --json ./daemon"
   },
   "engines": {
     "node": ">=20"
