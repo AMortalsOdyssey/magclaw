@@ -63,7 +63,7 @@ export function parsePostgresArgs(argv = []) {
   const options = {
     command: 'migrate',
     databaseUrl: process.env.DATABASE_URL || process.env.MAGCLAW_DATABASE_URL || '',
-    database: '',
+    database: process.env.MAGCLAW_DATABASE || '',
     schema: process.env.MAGCLAW_DATABASE_SCHEMA || DEFAULT_SCHEMA,
     maintenanceDatabase: process.env.MAGCLAW_MAINTENANCE_DATABASE || DEFAULT_MAINTENANCE_DATABASE,
     createDatabase: true,

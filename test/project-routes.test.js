@@ -42,6 +42,9 @@ function routeDeps(overrides = {}) {
       bytes: buffer.length,
       source,
       path: '/tmp/upload',
+      storageMode: 'pvc',
+      storageKey: 'attachments/local/att_1-note.txt',
+      serverId: 'local',
     }),
     searchProjectItems: async () => [],
     selectedDefaultSpaceId: () => 'chan_all',
@@ -90,6 +93,9 @@ test('project route group uploads attachments through injected storage', async (
   assert.equal(res.statusCode, 201);
   assert.equal(deps.state.attachments.length, 1);
   assert.equal(deps.state.attachments[0].source, 'clipboard');
+  assert.equal(deps.state.attachments[0].storageMode, 'pvc');
+  assert.equal(deps.state.attachments[0].storageKey, 'attachments/local/att_1-note.txt');
+  assert.equal(deps.state.attachments[0].serverId, 'local');
 });
 
 test('project route group keeps project references local', async () => {

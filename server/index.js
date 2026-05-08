@@ -107,6 +107,7 @@ import { createStateCore } from './state-core.js';
 import { createTaskOrchestrator } from './task-orchestrator.js';
 import { createServerIo } from './server-io.js';
 import { createReminderScheduler } from './reminder-scheduler.js';
+import { createMailService } from './mail-service.js';
 import { handleAgentApi } from './api/agent-routes.js';
 import { handleAgentToolApi } from './api/agent-tool-routes.js';
 import { handleCloudApi } from './api/cloud-routes.js';
@@ -144,7 +145,7 @@ function loadLocalServerEnv() {
 
 loadLocalServerEnv();
 
-const ATTACHMENTS_DIR = path.join(DATA_DIR, 'attachments');
+const ATTACHMENTS_DIR = path.resolve(process.env.MAGCLAW_UPLOAD_DIR || path.join(DATA_DIR, 'attachments'));
 const RUNS_DIR = path.join(DATA_DIR, 'runs');
 const AGENTS_DIR = path.join(DATA_DIR, 'agents');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
@@ -252,15 +253,22 @@ const {
 } = stateCore;
 
 async function createCloudRepositoryFromEnv() {
-  if (!process.env.MAGCLAW_DATABASE_URL && !process.env.DATABASE_URL) return null;
+  if (!process.env.MAGCLAW_DATABASE_URL && !process.env.DATABASE_URL) {
+    if (process.env.MAGCLAW_DEPLOYMENT === 'cloud') {
+      throw new Error('MAGCLAW_DATABASE_URL or DATABASE_URL is required when MAGCLAW_DEPLOYMENT=cloud.');
+    }
+    return null;
+  }
   const { createCloudPostgresStore } = await import('./cloud/postgres-store.js');
   return createCloudPostgresStore();
 }
 
 const cloudRepository = await createCloudRepositoryFromEnv();
+const mailService = createMailService();
 const cloudAuth = createCloudAuth({
   cloudRepository,
   getState: () => state,
+  mailService,
   makeId,
   normalizeIds,
   now,
@@ -359,6 +367,39 @@ const {
   workItemMatchesScope,
   workItemMatchesTask,
 } = conversationModel;
+
+async function deploymentHealth() {
+  const attachmentMode = process.env.MAGCLAW_ATTACHMENT_STORAGE || (process.env.MAGCLAW_UPLOAD_DIR ? 'pvc' : 'local');
+  const attachmentProbe = {
+    mode: attachmentMode,
+    path: ATTACHMENTS_DIR,
+    writable: false,
+  };
+  try {
+    await mkdir(ATTACHMENTS_DIR, { recursive: true });
+    const probePath = path.join(ATTACHMENTS_DIR, '.magclaw-ready');
+    await writeFile(probePath, now());
+    attachmentProbe.writable = true;
+  } catch (error) {
+    attachmentProbe.error = error.message;
+  }
+  const postgresRequired = process.env.MAGCLAW_DEPLOYMENT === 'cloud';
+  const postgresConfigured = Boolean(process.env.MAGCLAW_DATABASE_URL || process.env.DATABASE_URL);
+  return {
+    ok: attachmentProbe.writable && (!postgresRequired || postgresConfigured),
+    service: 'magclaw-web',
+    deployment: state.connection?.deployment || process.env.MAGCLAW_DEPLOYMENT || 'local',
+    storage: {
+      postgres: {
+        required: postgresRequired,
+        configured: postgresConfigured,
+        enabled: Boolean(cloudRepository?.isEnabled?.()),
+      },
+      attachments: attachmentProbe,
+    },
+    time: now(),
+  };
+}
 
 const daemonRelay = createDaemonRelay({
   addSystemEvent,
@@ -794,6 +835,7 @@ function systemApiDeps() {
     addSystemEvent,
     broadcastState,
     cloudAuth,
+    deploymentHealth,
     defaultWorkspace: ROOT,
     detectInstalledRuntimes,
     fanoutApiConfigured,
@@ -812,19 +854,36 @@ function systemApiDeps() {
 
 function appApiAuthIsBypassed(url) {
   return url.pathname.startsWith('/api/cloud/')
-    || url.pathname.startsWith('/api/agent-tools/');
+    || url.pathname.startsWith('/api/auth/')
+    || url.pathname.startsWith('/api/console/')
+    || url.pathname === '/api/healthz'
+    || url.pathname === '/api/readyz';
 }
 
 function requiredRolesForAppApi(req, url) {
   if (req.method === 'GET') return [];
   if (['PATCH', 'POST'].includes(req.method) && /^\/api\/humans\/[^/]+$/.test(url.pathname)) return [];
+  if (req.method === 'POST' && (
+    url.pathname === '/api/attachments'
+    || url.pathname === '/api/dms'
+    || url.pathname === '/api/inbox/read'
+    || /^\/api\/spaces\/(channel|dm)\/[^/]+\/messages$/.test(url.pathname)
+    || /^\/api\/messages\/[^/]+\/replies$/.test(url.pathname)
+    || /^\/api\/agents\/[^/]+\/warm$/.test(url.pathname)
+  )) return [];
   if (url.pathname === '/api/settings' || url.pathname === '/api/settings/fanout') return ['admin'];
   return ['core_member'];
 }
 
 function requireAppApiAccess(req, res, url) {
   if (!cloudAuth.isLoginRequired()) return true;
+  if (url.pathname.startsWith('/api/agent-tools/')) {
+    if (req.daemonAuth) return true;
+    sendError(res, 401, 'Machine token is required for cloud agent tools.');
+    return false;
+  }
   if (appApiAuthIsBypassed(url)) return true;
+  if (req.method === 'GET' && url.pathname === '/api/state' && cloudAuth.currentUser(req)) return true;
   return Boolean(cloudAuth.requireUser(req, res, sendError, requiredRolesForAppApi(req, url)));
 }
 
@@ -989,6 +1048,7 @@ function messageApiDeps() {
     createOrClaimTaskForMessage,
     createTaskFromMessage,
     createTaskFromThreadIntent,
+    currentActor: (req) => cloudAuth.currentActor(req),
     deliverMessageToAgent,
     extractMentions,
     findAgent,
@@ -1021,7 +1081,11 @@ function messageApiDeps() {
 }
 
 async function handleApi(req, res, url) {
-  if (!requireCloudDeploymentApi(req, res, url)) return true;
+  const daemonToolAuth = url.pathname.startsWith('/api/agent-tools/')
+    ? daemonRelay.authenticateHttpRequest(req)
+    : null;
+  if (daemonToolAuth) req.daemonAuth = daemonToolAuth;
+  if (!daemonToolAuth && !requireCloudDeploymentApi(req, res, url)) return true;
   if (!requireAppApiAccess(req, res, url)) return true;
 
   if (await handleSystemApi(req, res, url, systemApiDeps())) return true;
@@ -1122,18 +1186,28 @@ server.listen(PORT, HOST, () => {
   console.log(`Data directory: ${DATA_DIR}`);
 });
 
-process.on('SIGINT', () => {
+let shutdownStarted = false;
+function shutdown() {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   clearInterval(heartbeatTimer);
   stopReminderScheduler();
   for (const child of runningProcesses.values()) child.kill('SIGTERM');
   for (const proc of agentProcesses.values()) {
     if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');
   }
+  const forceExit = setTimeout(() => process.exit(0), 1500);
+  forceExit.unref?.();
   server.close(async () => {
     try {
       await cloudAuth.close?.();
     } finally {
+      clearTimeout(forceExit);
       process.exit(0);
     }
   });
-});
+  server.closeAllConnections?.();
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

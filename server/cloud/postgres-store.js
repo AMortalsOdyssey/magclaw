@@ -34,6 +34,11 @@ function jsonObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function computerStatus(value) {
+  const status = String(value || '').trim();
+  return ['pairing', 'connected', 'offline', 'disabled'].includes(status) ? status : 'offline';
+}
+
 function firstRow(result) {
   return result.rows[0] || null;
 }
@@ -63,6 +68,7 @@ function workspaceFromRow(row) {
     id: row.id,
     slug: row.slug,
     name: row.name,
+    ownerUserId: row.owner_user_id || null,
     createdAt: requiredIso(row.created_at),
     updatedAt: requiredIso(row.updated_at),
     metadata: jsonObject(row.metadata),
@@ -133,6 +139,98 @@ function passwordResetFromRow(row) {
   };
 }
 
+function computerFromRow(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    name: row.name || '',
+    hostname: row.hostname || '',
+    os: row.os || '',
+    arch: row.arch || '',
+    daemonVersion: row.daemon_version || '',
+    status: row.status || 'offline',
+    connectedVia: row.connected_via || 'daemon',
+    runtimeIds: safeArray(row.runtime_ids),
+    runtimeDetails: safeArray(row.runtime_details),
+    capabilities: safeArray(row.capabilities),
+    runningAgents: safeArray(row.running_agents),
+    machineFingerprint: row.machine_fingerprint || '',
+    createdBy: row.created_by || null,
+    createdAt: requiredIso(row.created_at),
+    updatedAt: requiredIso(row.updated_at),
+    lastSeenAt: iso(row.last_seen_at),
+    daemonConnectedAt: iso(row.daemon_connected_at),
+    disconnectedAt: iso(row.disconnected_at),
+    disabledAt: iso(row.disabled_at),
+    metadata: jsonObject(row.metadata),
+  };
+}
+
+function computerTokenFromRow(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    computerId: row.computer_id,
+    label: row.label || '',
+    tokenHash: row.token_hash,
+    createdAt: requiredIso(row.created_at),
+    lastUsedAt: iso(row.last_used_at),
+    expiresAt: iso(row.expires_at),
+    revokedAt: iso(row.revoked_at),
+    metadata: jsonObject(row.metadata),
+  };
+}
+
+function pairingTokenFromRow(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    computerId: row.computer_id,
+    label: row.label || '',
+    tokenHash: row.token_hash,
+    createdBy: row.created_by || null,
+    createdAt: requiredIso(row.created_at),
+    expiresAt: requiredIso(row.expires_at),
+    consumedAt: iso(row.consumed_at),
+    revokedAt: iso(row.revoked_at),
+    metadata: jsonObject(row.metadata),
+  };
+}
+
+function agentDeliveryFromRow(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    agentId: row.agent_id,
+    computerId: row.computer_id,
+    messageId: row.message_id || null,
+    workItemId: row.work_item_id || null,
+    seq: Number(row.seq || 0),
+    type: row.type,
+    commandType: row.command_type,
+    status: row.status,
+    attempts: Number(row.attempts || 0),
+    payload: jsonObject(row.payload),
+    error: row.error || '',
+    createdAt: requiredIso(row.created_at),
+    updatedAt: requiredIso(row.updated_at),
+    sentAt: iso(row.sent_at),
+    ackedAt: iso(row.acked_at),
+  };
+}
+
+function daemonEventFromRow(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id || null,
+    computerId: row.computer_id || null,
+    type: row.type,
+    message: row.message || '',
+    meta: jsonObject(row.meta),
+    createdAt: requiredIso(row.created_at),
+  };
+}
+
 export function cloudPostgresOptionsFromEnv(env = process.env) {
   const databaseUrl = normalizeDatabaseUrl(env.MAGCLAW_DATABASE_URL || env.DATABASE_URL || '');
   if (!databaseUrl) return null;
@@ -195,17 +293,19 @@ export function createCloudPostgresStore(optionsInput = {}) {
         for (const workspace of safeArray(cloud.workspaces)) {
           await client.query(`
             INSERT INTO ${table('cloud_workspaces')}
-              (id, slug, name, created_at, updated_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+              (id, slug, name, owner_user_id, created_at, updated_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
             ON CONFLICT (id) DO UPDATE SET
               slug = EXCLUDED.slug,
               name = EXCLUDED.name,
+              owner_user_id = EXCLUDED.owner_user_id,
               updated_at = EXCLUDED.updated_at,
               metadata = EXCLUDED.metadata
           `, [
             workspace.id,
             workspace.slug || workspace.id,
             workspace.name || workspace.slug || workspace.id,
+            workspace.ownerUserId || workspace.owner_user_id || null,
             requiredIso(workspace.createdAt),
             requiredIso(workspace.updatedAt || workspace.createdAt),
             JSON.stringify(jsonObject(workspace.metadata)),
@@ -371,6 +471,190 @@ export function createCloudPostgresStore(optionsInput = {}) {
           ]);
         }
 
+        for (const computer of safeArray(state.computers)) {
+          const workspaceId = computer.workspaceId || cloud.workspaces?.[0]?.id;
+          if (!workspaceId) continue;
+          await client.query(`
+            INSERT INTO ${table('cloud_computers')}
+              (id, workspace_id, name, hostname, os, arch, daemon_version,
+               status, connected_via, runtime_ids, runtime_details, capabilities, running_agents,
+               machine_fingerprint, created_by, created_at, updated_at, last_seen_at, daemon_connected_at,
+               disconnected_at, disabled_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb,
+              $12::jsonb, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+              workspace_id = EXCLUDED.workspace_id,
+              name = EXCLUDED.name,
+              hostname = EXCLUDED.hostname,
+              os = EXCLUDED.os,
+              arch = EXCLUDED.arch,
+              daemon_version = EXCLUDED.daemon_version,
+              status = EXCLUDED.status,
+              connected_via = EXCLUDED.connected_via,
+              runtime_ids = EXCLUDED.runtime_ids,
+              runtime_details = EXCLUDED.runtime_details,
+              capabilities = EXCLUDED.capabilities,
+              running_agents = EXCLUDED.running_agents,
+              machine_fingerprint = EXCLUDED.machine_fingerprint,
+              updated_at = EXCLUDED.updated_at,
+              last_seen_at = EXCLUDED.last_seen_at,
+              daemon_connected_at = EXCLUDED.daemon_connected_at,
+              disconnected_at = EXCLUDED.disconnected_at,
+              disabled_at = EXCLUDED.disabled_at,
+              metadata = EXCLUDED.metadata
+          `, [
+            computer.id,
+            workspaceId,
+            computer.name || computer.hostname || computer.id,
+            computer.hostname || '',
+            computer.os || '',
+            computer.arch || '',
+            computer.daemonVersion || '',
+            computerStatus(computer.status),
+            computer.connectedVia || 'daemon',
+            JSON.stringify(safeArray(computer.runtimeIds)),
+            JSON.stringify(safeArray(computer.runtimeDetails)),
+            JSON.stringify(safeArray(computer.capabilities)),
+            JSON.stringify(safeArray(computer.runningAgents)),
+            computer.machineFingerprint || computer.fingerprint || '',
+            computer.createdBy || null,
+            requiredIso(computer.createdAt),
+            requiredIso(computer.updatedAt || computer.createdAt),
+            iso(computer.lastSeenAt),
+            iso(computer.daemonConnectedAt),
+            iso(computer.disconnectedAt),
+            iso(computer.disabledAt),
+            JSON.stringify(jsonObject(computer.metadata)),
+          ]);
+        }
+
+        for (const token of safeArray(cloud.computerTokens)) {
+          await client.query(`
+            INSERT INTO ${table('cloud_computer_tokens')}
+              (id, workspace_id, computer_id, label, token_hash, created_at,
+               last_used_at, expires_at, revoked_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+              workspace_id = EXCLUDED.workspace_id,
+              computer_id = EXCLUDED.computer_id,
+              label = EXCLUDED.label,
+              token_hash = EXCLUDED.token_hash,
+              last_used_at = EXCLUDED.last_used_at,
+              expires_at = EXCLUDED.expires_at,
+              revoked_at = EXCLUDED.revoked_at,
+              metadata = EXCLUDED.metadata
+          `, [
+            token.id,
+            token.workspaceId || cloud.workspaces?.[0]?.id,
+            token.computerId,
+            token.label || '',
+            token.tokenHash,
+            requiredIso(token.createdAt),
+            iso(token.lastUsedAt),
+            iso(token.expiresAt),
+            iso(token.revokedAt),
+            JSON.stringify(jsonObject(token.metadata)),
+          ]);
+        }
+
+        for (const pair of safeArray(cloud.pairingTokens)) {
+          await client.query(`
+            INSERT INTO ${table('cloud_pairing_tokens')}
+              (id, workspace_id, computer_id, label, token_hash, created_by,
+               created_at, expires_at, consumed_at, revoked_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+              workspace_id = EXCLUDED.workspace_id,
+              computer_id = EXCLUDED.computer_id,
+              label = EXCLUDED.label,
+              token_hash = EXCLUDED.token_hash,
+              created_by = EXCLUDED.created_by,
+              expires_at = EXCLUDED.expires_at,
+              consumed_at = EXCLUDED.consumed_at,
+              revoked_at = EXCLUDED.revoked_at,
+              metadata = EXCLUDED.metadata
+          `, [
+            pair.id,
+            pair.workspaceId || cloud.workspaces?.[0]?.id,
+            pair.computerId,
+            pair.label || '',
+            pair.tokenHash,
+            pair.createdBy || null,
+            requiredIso(pair.createdAt),
+            requiredIso(pair.expiresAt),
+            iso(pair.consumedAt),
+            iso(pair.revokedAt),
+            JSON.stringify(jsonObject(pair.metadata)),
+          ]);
+        }
+
+        for (const delivery of safeArray(cloud.agentDeliveries)) {
+          await client.query(`
+            INSERT INTO ${table('cloud_agent_deliveries')}
+              (id, workspace_id, agent_id, computer_id, message_id, work_item_id,
+               seq, type, command_type, status, attempts, payload, error,
+               created_at, updated_at, sent_at, acked_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+              $12::jsonb, $13, $14, $15, $16, $17)
+            ON CONFLICT (id) DO UPDATE SET
+              workspace_id = EXCLUDED.workspace_id,
+              agent_id = EXCLUDED.agent_id,
+              computer_id = EXCLUDED.computer_id,
+              message_id = EXCLUDED.message_id,
+              work_item_id = EXCLUDED.work_item_id,
+              seq = EXCLUDED.seq,
+              type = EXCLUDED.type,
+              command_type = EXCLUDED.command_type,
+              status = EXCLUDED.status,
+              attempts = EXCLUDED.attempts,
+              payload = EXCLUDED.payload,
+              error = EXCLUDED.error,
+              updated_at = EXCLUDED.updated_at,
+              sent_at = EXCLUDED.sent_at,
+              acked_at = EXCLUDED.acked_at
+          `, [
+            delivery.id,
+            delivery.workspaceId || cloud.workspaces?.[0]?.id,
+            delivery.agentId,
+            delivery.computerId,
+            delivery.messageId || null,
+            delivery.workItemId || null,
+            Number(delivery.seq || 0),
+            delivery.type || delivery.commandType || '',
+            delivery.commandType || delivery.type || '',
+            delivery.status || 'queued',
+            Number(delivery.attempts || 0),
+            JSON.stringify(jsonObject(delivery.payload)),
+            delivery.error || '',
+            requiredIso(delivery.createdAt),
+            requiredIso(delivery.updatedAt || delivery.createdAt),
+            iso(delivery.sentAt),
+            iso(delivery.ackedAt),
+          ]);
+        }
+
+        for (const event of safeArray(cloud.daemonEvents)) {
+          await client.query(`
+            INSERT INTO ${table('cloud_daemon_events')}
+              (id, workspace_id, computer_id, type, message, meta, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+            ON CONFLICT (id) DO UPDATE SET
+              workspace_id = EXCLUDED.workspace_id,
+              computer_id = EXCLUDED.computer_id,
+              type = EXCLUDED.type,
+              message = EXCLUDED.message,
+              meta = EXCLUDED.meta
+          `, [
+            event.id,
+            event.workspaceId || event.meta?.workspaceId || cloud.workspaces?.[0]?.id || null,
+            event.computerId || event.meta?.computerId || null,
+            event.type,
+            event.message || '',
+            JSON.stringify(jsonObject(event.meta)),
+            requiredIso(event.createdAt),
+          ]);
+        }
+
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK');
@@ -388,12 +672,30 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const sessions = await client.query(`SELECT * FROM ${table('cloud_sessions')} ORDER BY created_at ASC, id ASC`);
       const invitations = await client.query(`SELECT * FROM ${table('cloud_invitations')} ORDER BY created_at ASC, id ASC`);
       const passwordResets = await client.query(`SELECT * FROM ${table('cloud_password_resets')} ORDER BY created_at ASC, id ASC`);
+      const computers = await client.query(`SELECT * FROM ${table('cloud_computers')} ORDER BY created_at ASC, id ASC`);
+      const computerTokens = await client.query(`SELECT * FROM ${table('cloud_computer_tokens')} ORDER BY created_at ASC, id ASC`);
+      const pairingTokens = await client.query(`SELECT * FROM ${table('cloud_pairing_tokens')} ORDER BY created_at ASC, id ASC`);
+      const agentDeliveries = await client.query(`SELECT * FROM ${table('cloud_agent_deliveries')} ORDER BY created_at ASC, id ASC`);
+      const daemonEvents = await client.query(`SELECT * FROM ${table('cloud_daemon_events')} ORDER BY created_at DESC, id DESC LIMIT 300`);
       cloud.workspaces = workspaces.rows.map(workspaceFromRow);
       cloud.users = users.rows.map(userFromRow);
       cloud.workspaceMembers = members.rows.map(memberFromRow);
       cloud.sessions = sessions.rows.map(sessionFromRow);
       cloud.invitations = invitations.rows.map(invitationFromRow);
       cloud.passwordResetTokens = passwordResets.rows.map(passwordResetFromRow);
+      cloud.computerTokens = computerTokens.rows.map(computerTokenFromRow);
+      cloud.pairingTokens = pairingTokens.rows.map(pairingTokenFromRow);
+      cloud.agentDeliveries = agentDeliveries.rows.map(agentDeliveryFromRow);
+      cloud.daemonEvents = daemonEvents.rows.map(daemonEventFromRow);
+      const loadedComputers = computers.rows.map(computerFromRow);
+      const loadedComputerIds = new Set(loadedComputers.map((computer) => computer.id));
+      const localOnlyComputers = safeArray(state.computers).filter((computer) => (
+        computer.id === 'cmp_local' && !loadedComputerIds.has(computer.id)
+      ));
+      state.computers = [
+        ...localOnlyComputers,
+        ...loadedComputers,
+      ];
       state.cloud = cloud;
     });
   }

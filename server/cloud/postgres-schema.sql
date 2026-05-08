@@ -1,9 +1,10 @@
 -- MagClaw Cloud PostgreSQL schema v1.
 --
 -- When MAGCLAW_DATABASE_URL or DATABASE_URL is configured, MagClaw uses this
--- schema for cloud auth control-plane persistence: users, workspace
--- memberships, invitations, and browser sessions. The remaining tables are
--- production-shaped targets for the next cloud repository migrations.
+-- schema for cloud auth and relay control-plane persistence: users, workspace
+-- memberships, invitations, browser sessions, computers, daemon tokens, and
+-- queued remote agent deliveries. Collaboration tables remain production-shaped
+-- targets for the next cloud repository migrations.
 
 CREATE TABLE IF NOT EXISTS cloud_users (
   id TEXT PRIMARY KEY,
@@ -49,10 +50,14 @@ CREATE TABLE IF NOT EXISTS cloud_workspaces (
   id TEXT PRIMARY KEY,
   slug TEXT NOT NULL,
   name TEXT NOT NULL,
+  owner_user_id TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+
+ALTER TABLE cloud_workspaces
+  ADD COLUMN IF NOT EXISTS owner_user_id TEXT REFERENCES cloud_users(id) ON DELETE SET NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS cloud_workspaces_slug_uidx
   ON cloud_workspaces(slug);
@@ -211,8 +216,10 @@ CREATE TABLE IF NOT EXISTS cloud_computers (
   ),
   connected_via TEXT NOT NULL DEFAULT 'daemon',
   runtime_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+  runtime_details JSONB NOT NULL DEFAULT '[]'::jsonb,
   capabilities JSONB NOT NULL DEFAULT '[]'::jsonb,
   running_agents JSONB NOT NULL DEFAULT '[]'::jsonb,
+  machine_fingerprint TEXT NOT NULL DEFAULT '',
   created_by TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -222,6 +229,12 @@ CREATE TABLE IF NOT EXISTS cloud_computers (
   disabled_at TIMESTAMPTZ,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+
+ALTER TABLE cloud_computers
+  ADD COLUMN IF NOT EXISTS runtime_details JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE cloud_computers
+  ADD COLUMN IF NOT EXISTS machine_fingerprint TEXT NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS cloud_computers_workspace_status_idx
   ON cloud_computers(workspace_id, status);
@@ -429,6 +442,7 @@ CREATE TABLE IF NOT EXISTS cloud_attachments (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
   storage_key TEXT NOT NULL,
+  storage_mode TEXT NOT NULL DEFAULT 'pvc',
   filename TEXT NOT NULL,
   mime_type TEXT NOT NULL DEFAULT '',
   size_bytes BIGINT NOT NULL DEFAULT 0,
@@ -438,6 +452,9 @@ CREATE TABLE IF NOT EXISTS cloud_attachments (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+
+ALTER TABLE cloud_attachments
+  ADD COLUMN IF NOT EXISTS storage_mode TEXT NOT NULL DEFAULT 'pvc';
 
 CREATE INDEX IF NOT EXISTS cloud_attachments_workspace_created_idx
   ON cloud_attachments(workspace_id, created_at DESC);

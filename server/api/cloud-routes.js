@@ -102,11 +102,11 @@ export async function handleCloudApi(req, res, url, deps) {
                     email: 'member@example.com',
                     role: 'member',
                     inviteToken: 'mc_inv_...',
-                    inviteUrl: 'https://your-magclaw-host/invite?token=mc_inv_...',
+                    inviteUrl: 'https://your-magclaw-host/activate?email=member%40example.com&token=mc_inv_...',
                   },
                 ],
               },
-              note: 'Target role must be member or core_member. Admin invitations are never allowed.',
+              note: 'Target role must be member or core_member. Admin invitations are never allowed. Each request issues a fresh invitation token.',
             },
             {
               method: 'POST',
@@ -120,7 +120,7 @@ export async function handleCloudApi(req, res, url, deps) {
                 resetToken: 'mc_reset_...',
                 resetUrl: 'https://your-magclaw-host/reset-password?token=mc_reset_...',
               },
-              note: 'Creates a one-time reset link, invalidates existing sessions, and disables the old password.',
+              note: 'Creates a fresh one-time reset link, revokes older unused reset links, invalidates existing sessions, and disables the old password.',
             },
             {
               method: 'PATCH',
@@ -178,7 +178,31 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.login(body, req, res));
+    if (result) sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/cloud/auth/logout') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.logout(req, res));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, result);
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
     if (!cloudAuth) {
       sendError(res, 503, 'Cloud auth service is unavailable.');
       return true;
@@ -215,6 +239,31 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/auth/register') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.registerOpenAccount(body, req, res));
+    if (result) {
+      broadcastState();
+      sendJson(res, 201, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/forgot-password') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.requestPasswordReset(body, req));
+    if (result) sendJson(res, 200, result);
+    return true;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/cloud/auth/invitation-status') {
     if (!cloudAuth) {
       sendError(res, 503, 'Cloud auth service is unavailable.');
@@ -235,6 +284,16 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/auth/reset-status') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.resetStatus(url.searchParams.get('token') || ''));
+    if (result) sendJson(res, 200, { ok: true, ...result });
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/cloud/auth/reset-password') {
     if (!cloudAuth) {
       sendError(res, 503, 'Cloud auth service is unavailable.');
@@ -242,6 +301,82 @@ export async function handleCloudApi(req, res, url, deps) {
     }
     const body = await readJson(req);
     const result = await sendAction(() => cloudAuth.resetPassword(body, req, res));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/reset-password') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.resetPassword(body, req, res));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/console/invitations') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const user = cloudAuth.currentUser(req);
+    if (!user) {
+      sendError(res, 401, 'Login is required.');
+      return true;
+    }
+    sendJson(res, 200, { invitations: cloudAuth.consoleStateForUser(user).invitations });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/console/servers') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const user = cloudAuth.currentUser(req);
+    if (!user) {
+      sendError(res, 401, 'Login is required.');
+      return true;
+    }
+    sendJson(res, 200, { servers: cloudAuth.consoleStateForUser(user).workspaces });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/console/servers') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.createConsoleServer(body, req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 201, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
+  const consoleInviteMatch = url.pathname.match(/^\/api\/console\/invitations\/([^/]+)\/(accept|decline)$/);
+  if (req.method === 'POST' && consoleInviteMatch) {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const invitationId = decodeURIComponent(consoleInviteMatch[1]);
+    const action = consoleInviteMatch[2];
+    const result = await sendAction(() => (
+      action === 'accept'
+        ? cloudAuth.acceptConsoleInvitation(invitationId, req)
+        : cloudAuth.declineConsoleInvitation(invitationId, req)
+    ));
     if (result) {
       broadcastState();
       sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });

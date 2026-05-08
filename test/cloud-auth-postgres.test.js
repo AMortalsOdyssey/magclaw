@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -30,6 +30,7 @@ async function dropSchema(schema) {
 async function launchIsolatedServer(tmp, schema) {
   const port = nextTestPort++;
   await mkdir(path.join(tmp, 'public'), { recursive: true });
+  await mkdir(path.join(tmp, 'uploads'), { recursive: true });
   await cp(path.join(ROOT, 'server'), path.join(tmp, 'server'), { recursive: true });
   await cp(path.join(ROOT, 'public', 'index.html'), path.join(tmp, 'public', 'index.html'));
   await symlink(path.join(ROOT, 'node_modules'), path.join(tmp, 'node_modules'), 'dir');
@@ -41,13 +42,22 @@ async function launchIsolatedServer(tmp, schema) {
       PORT: String(port),
       HOST: '127.0.0.1',
       CODEX_PATH: '/bin/false',
+      MAGCLAW_DEPLOYMENT: 'cloud',
       MAGCLAW_DATA_DIR: path.join(tmp, '.magclaw'),
+      MAGCLAW_UPLOAD_DIR: path.join(tmp, 'uploads'),
+      MAGCLAW_ATTACHMENT_STORAGE: 'pvc',
+      DATABASE_URL: '',
       MAGCLAW_DATABASE_URL: TEST_DATABASE_URL,
       MAGCLAW_DATABASE: TEST_DATABASE,
       MAGCLAW_DATABASE_SCHEMA: schema,
       MAGCLAW_ADMIN_NAME: 'Admin',
       MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
       MAGCLAW_ADMIN_PASSWORD: 'password123',
+      MAGCLAW_ALLOW_SIGNUPS: '1',
+      MAGCLAW_MAIL_TRANSPORT: 'file',
+      MAGCLAW_MAIL_OUTBOX: path.join(tmp, '.magclaw', 'outbox.jsonl'),
+      MAGCLAW_MAIL_FROM: 'MagClaw <noreply@example.com>',
+      MAGCLAW_PUBLIC_URL: 'https://pg.magclaw.example',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -102,41 +112,124 @@ async function request(baseUrl, pathname, options = {}) {
   return { data, cookie: response.headers.get('set-cookie') || '', status: response.status };
 }
 
-test('Postgres-backed cloud auth stores admin sessions invitations and registered users', {
+test('Postgres-backed cloud auth persists open signup and Console invitation decisions', {
   skip: TEST_DATABASE_URL ? false : 'set MAGCLAW_TEST_DATABASE_URL to run this integration test',
 }, async () => {
   const schema = `magclaw_test_${Date.now()}_${process.pid}`;
   let server = null;
+  let tmp = null;
   try {
-    const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cloud-pg-'));
+    tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cloud-pg-'));
     server = await launchIsolatedServer(tmp, schema);
     const initial = await request(server.baseUrl, '/api/cloud/auth/status');
     assert.equal(initial.data.auth.storageBackend, 'postgres');
     assert.equal(initial.data.auth.initialized, true);
 
-    const admin = await request(server.baseUrl, '/api/cloud/auth/login', {
+    const admin = await request(server.baseUrl, '/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email: 'admin@example.com', password: 'password123' }),
     });
     assert.match(admin.cookie, /magclaw_session=/);
 
-    const invite = await request(server.baseUrl, '/api/cloud/invitations', {
+    const firstInvite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
       cookie: admin.cookie,
-      body: JSON.stringify({ email: 'member@example.com', role: 'member' }),
+      body: JSON.stringify({ email: 'console-pg@example.com', role: 'member' }),
     });
-    assert.match(invite.data.inviteToken, /^mc_inv_/);
+    const secondInvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ email: 'console-pg@example.com', role: 'core_member' }),
+    });
+    assert.notEqual(firstInvite.data.invitation.id, secondInvite.data.invitation.id);
+    assert.match(firstInvite.data.inviteToken, /^mc_inv_/);
+    assert.match(secondInvite.data.inviteToken, /^mc_inv_/);
 
-    const member = await request(server.baseUrl, '/api/cloud/auth/register', {
+    const openAccount = await request(server.baseUrl, '/api/auth/register', {
       method: 'POST',
       body: JSON.stringify({
-        inviteToken: invite.data.inviteToken,
-        email: 'member@example.com',
-        name: 'Member',
+        email: 'console-pg@example.com',
+        name: 'Console PG',
         password: 'password123',
       }),
     });
-    assert.equal(member.data.member.role, 'member');
+    assert.equal(openAccount.status, 201);
+    assert.equal(openAccount.data.user.email, 'console-pg@example.com');
+    assert.equal(openAccount.data.member, null);
+    assert.equal(openAccount.data.workspace, null);
+    assert.match(openAccount.cookie, /magclaw_session=/);
+
+    const accountState = await request(server.baseUrl, '/api/state', { cookie: openAccount.cookie });
+    assert.equal(accountState.data.channels.length, 0);
+    assert.equal(accountState.data.cloud.myInvitations.length, 2);
+    assert.equal(accountState.data.cloud.auth.currentMember, null);
+
+    const createdServer = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: openAccount.cookie,
+      body: JSON.stringify({ name: 'PG Team', slug: 'pg-team' }),
+    });
+    assert.equal(createdServer.status, 201);
+    assert.equal(createdServer.data.server.slug, 'pg-team');
+    assert.equal(createdServer.data.member.role, 'admin');
+    await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: openAccount.cookie,
+      body: JSON.stringify({ name: 'PG Team Duplicate', slug: 'pg-team' }),
+      expectStatus: 409,
+    });
+
+    const ownedServers = await request(server.baseUrl, '/api/console/servers', { cookie: openAccount.cookie });
+    assert.deepEqual(ownedServers.data.servers.map((item) => item.slug), ['pg-team']);
+
+    const consoleInvitations = await request(server.baseUrl, '/api/console/invitations', {
+      cookie: openAccount.cookie,
+    });
+    assert.deepEqual(
+      consoleInvitations.data.invitations.map((item) => item.status).sort(),
+      ['pending', 'pending'],
+    );
+
+    const declined = await request(server.baseUrl, `/api/console/invitations/${firstInvite.data.invitation.id}/decline`, {
+      method: 'POST',
+      cookie: openAccount.cookie,
+      body: '{}',
+    });
+    assert.equal(declined.data.invitation.status, 'declined');
+
+    await request(server.baseUrl, `/api/console/invitations/${firstInvite.data.invitation.id}/accept`, {
+      method: 'POST',
+      cookie: openAccount.cookie,
+      body: '{}',
+      expectStatus: 409,
+    });
+
+    const accepted = await request(server.baseUrl, `/api/console/invitations/${secondInvite.data.invitation.id}/accept`, {
+      method: 'POST',
+      cookie: openAccount.cookie,
+      body: '{}',
+    });
+    assert.equal(accepted.data.invitation.status, 'accepted');
+    assert.equal(accepted.data.member.role, 'core_member');
+    assert.ok(accepted.data.cloud.auth.currentMember);
+    assert.deepEqual(accepted.data.console.workspaces.map((item) => item.slug).sort(), ['local', 'pg-team']);
+
+    const servers = await request(server.baseUrl, '/api/console/servers', { cookie: openAccount.cookie });
+    assert.deepEqual(servers.data.servers.map((item) => item.slug).sort(), ['local', 'pg-team']);
+
+    const forgot = await request(server.baseUrl, '/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'console-pg@example.com' }),
+    });
+    assert.equal(forgot.data.ok, true);
+    assert.equal(forgot.data.sent, true);
+    const outbox = (await readFile(path.join(tmp, '.magclaw', 'outbox.jsonl'), 'utf8')).trim().split('\n');
+    const message = JSON.parse(outbox.at(-1));
+    assert.equal(message.to, 'console-pg@example.com');
+    assert.match(message.html, /https:\/\/pg\.magclaw\.example\/reset-password\?token=mc_reset_/);
+    assert.match(message.html, /https:\/\/pg\.magclaw\.example\/brand\/magclaw-logo\.png/);
+    assert.match(message.html, /background:#ff66cc/);
+    assert.doesNotMatch(message.html, /#ffd743|#FFD800|--slock-sun/i);
 
     const client = new Client({ connectionString: databaseUrlWithName(TEST_DATABASE_URL, TEST_DATABASE) });
     await client.connect();
@@ -144,7 +237,7 @@ test('Postgres-backed cloud auth stores admin sessions invitations and registere
       const users = await client.query(
         `SELECT normalized_email, password_hash FROM ${quoteIdent(schema)}.cloud_users ORDER BY normalized_email ASC`,
       );
-      assert.deepEqual(users.rows.map((row) => row.normalized_email), ['admin@example.com', 'member@example.com']);
+      assert.deepEqual(users.rows.map((row) => row.normalized_email), ['admin@example.com', 'console-pg@example.com']);
       assert.ok(users.rows.every((row) => String(row.password_hash || '').startsWith('scrypt$')));
 
       const sessions = await client.query(
@@ -152,11 +245,41 @@ test('Postgres-backed cloud auth stores admin sessions invitations and registere
       );
       assert.equal(sessions.rows[0].count, 2);
 
-      const invitation = await client.query(
-        `SELECT accepted_at FROM ${quoteIdent(schema)}.cloud_invitations WHERE normalized_email = $1`,
-        ['member@example.com'],
+      const memberRows = await client.query(
+        `SELECT m.role, m.status
+         FROM ${quoteIdent(schema)}.cloud_workspace_members m
+         JOIN ${quoteIdent(schema)}.cloud_users u ON u.id = m.user_id
+         WHERE u.normalized_email = $1`,
+        ['console-pg@example.com'],
       );
-      assert.ok(invitation.rows[0].accepted_at);
+      assert.deepEqual(memberRows.rows.map((row) => row.role).sort(), ['admin', 'core_member']);
+      assert.ok(memberRows.rows.every((row) => row.status === 'active'));
+
+      const invitations = await client.query(
+        `SELECT role, accepted_at, revoked_at, metadata
+         FROM ${quoteIdent(schema)}.cloud_invitations
+         WHERE normalized_email = $1
+         ORDER BY created_at ASC`,
+        ['console-pg@example.com'],
+      );
+      assert.equal(invitations.rows.length, 2);
+      assert.equal(invitations.rows[0].role, 'member');
+      assert.equal(invitations.rows[0].metadata.consoleAction, 'declined');
+      assert.ok(invitations.rows[0].revoked_at);
+      assert.equal(invitations.rows[1].role, 'core_member');
+      assert.equal(invitations.rows[1].metadata.consoleAction, 'accepted');
+      assert.ok(invitations.rows[1].accepted_at);
+
+      const resets = await client.query(
+        `SELECT COUNT(*)::int AS count
+         FROM ${quoteIdent(schema)}.cloud_password_resets r
+         JOIN ${quoteIdent(schema)}.cloud_users u ON u.id = r.user_id
+         WHERE u.normalized_email = $1
+           AND r.consumed_at IS NULL
+           AND r.revoked_at IS NULL`,
+        ['console-pg@example.com'],
+      );
+      assert.equal(resets.rows[0].count, 1);
     } finally {
       await client.end();
     }
@@ -166,12 +289,15 @@ test('Postgres-backed cloud auth stores admin sessions invitations and registere
 
     const restartTmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cloud-pg-restart-'));
     server = await launchIsolatedServer(restartTmp, schema);
-    const restartedMember = await request(server.baseUrl, '/api/cloud/auth/login', {
+    const restartedMember = await request(server.baseUrl, '/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email: 'member@example.com', password: 'password123' }),
+      body: JSON.stringify({ email: 'console-pg@example.com', password: 'password123' }),
     });
-    assert.equal(restartedMember.data.user.email, 'member@example.com');
-    assert.equal(restartedMember.data.member.role, 'member');
+    assert.equal(restartedMember.data.user.email, 'console-pg@example.com');
+    assert.equal(restartedMember.data.member.role, 'core_member');
+    const restartedState = await request(server.baseUrl, '/api/state', { cookie: restartedMember.cookie });
+    assert.equal(restartedState.data.cloud.auth.currentMember.role, 'core_member');
+    assert.ok(restartedState.data.channels.length > 0);
   } finally {
     if (server) await server.stop();
     await dropSchema(schema);

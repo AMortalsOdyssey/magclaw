@@ -212,13 +212,18 @@ export async function handleCollabApi(req, res, url, deps) {
       sendError(res, 400, 'Participant is required.');
       return true;
     }
-    let dm = state.dms.find((item) => item.participantIds.includes(participantId));
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    const humanId = auth?.member?.humanId || 'hum_local';
+    let dm = state.dms.find((item) => (
+      item.participantIds.includes(humanId)
+      && item.participantIds.includes(participantId)
+    ));
     if (!dm) {
-      // DMs are keyed by the non-local participant so reopening the same DM does
-      // not fork history into duplicate conversations.
+      // DMs are keyed by the current human and the peer so each cloud member
+      // keeps a private conversation with the same Agent.
       dm = {
         id: makeId('dm'),
-        participantIds: ['hum_local', participantId],
+        participantIds: [humanId, participantId],
         createdAt: now(),
         updatedAt: now(),
       };

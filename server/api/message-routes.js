@@ -19,6 +19,7 @@ export async function handleMessageApi(req, res, url, deps) {
     createOrClaimTaskForMessage,
     createTaskFromMessage,
     createTaskFromThreadIntent,
+    currentActor,
     deliverMessageToAgent,
     extractMentions,
     findAgent,
@@ -112,8 +113,25 @@ export async function handleMessageApi(req, res, url, deps) {
     return agentId ? findAgent(agentId) : null;
   }
 
-  function currentHumanId() {
-    return state.cloud?.auth?.currentMember?.humanId || 'hum_local';
+  function currentHumanId(req) {
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    return auth?.member?.humanId || state.cloud?.auth?.currentMember?.humanId || 'hum_local';
+  }
+
+  function canUseDm(req, spaceId) {
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    if (!auth) return true;
+    const humanId = auth.member?.humanId;
+    const dm = state.dms.find((item) => item.id === spaceId);
+    return Boolean(humanId && dm?.participantIds?.includes(humanId));
+  }
+
+  function messageAuthor(req, body = {}) {
+    const authorType = body.authorType === 'agent' ? 'agent' : 'human';
+    const authorId = authorType === 'human'
+      ? currentHumanId(req)
+      : String(body.authorId || 'hum_local');
+    return { authorType, authorId };
   }
 
   function ensureInboxReadState(humanId) {
@@ -138,7 +156,7 @@ export async function handleMessageApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/inbox/read') {
     const body = await readJson(req);
-    const humanId = currentHumanId();
+    const humanId = currentHumanId(req);
     const recordIds = Array.isArray(body.recordIds)
       ? [...new Set(body.recordIds.map(String).filter(Boolean))].slice(0, 500)
       : [];
@@ -315,6 +333,10 @@ export async function handleMessageApi(req, res, url, deps) {
       sendError(res, 404, 'Conversation not found.');
       return true;
     }
+    if (spaceType === 'dm' && !canUseDm(req, spaceId)) {
+      sendError(res, 403, 'Conversation is not available.');
+      return true;
+    }
     const text = String(body.body || '').trim();
     const attachmentIds = Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [];
     if (!text && !attachmentIds.length) {
@@ -322,17 +344,18 @@ export async function handleMessageApi(req, res, url, deps) {
       return true;
     }
     const mentions = extractMentions(text);
+    const author = messageAuthor(req, body);
     const message = normalizeConversationRecord({
       id: makeId('msg'),
       spaceType,
       spaceId,
-      authorType: body.authorType === 'agent' ? 'agent' : 'human',
-      authorId: String(body.authorId || 'hum_local'),
+      authorType: author.authorType,
+      authorId: author.authorId,
       body: text,
       attachmentIds,
       mentionedAgentIds: mentions.agents,
       mentionedHumanIds: mentions.humans,
-      readBy: body.authorType === 'agent' ? [] : ['hum_local'],
+      readBy: author.authorType === 'agent' ? [] : [author.authorId],
       replyCount: 0,
       savedBy: [],
       createdAt: now(),
@@ -451,6 +474,10 @@ export async function handleMessageApi(req, res, url, deps) {
       sendError(res, 404, 'Message not found.');
       return true;
     }
+    if (message.spaceType === 'dm' && !canUseDm(req, message.spaceId)) {
+      sendError(res, 403, 'Conversation is not available.');
+      return true;
+    }
     const body = await readJson(req);
     if (body.asTask) {
       sendError(res, 400, 'Thread replies cannot become tasks. Create a new top-level task message instead.');
@@ -463,18 +490,19 @@ export async function handleMessageApi(req, res, url, deps) {
       return true;
     }
     const mentions = extractMentions(text);
+    const author = messageAuthor(req, body);
     const reply = normalizeConversationRecord({
       id: makeId('rep'),
       parentMessageId: message.id,
       spaceType: message.spaceType,
       spaceId: message.spaceId,
-      authorType: body.authorType === 'agent' ? 'agent' : 'human',
-      authorId: String(body.authorId || 'hum_local'),
+      authorType: author.authorType,
+      authorId: author.authorId,
       body: text,
       attachmentIds,
       mentionedAgentIds: mentions.agents,
       mentionedHumanIds: mentions.humans,
-      readBy: body.authorType === 'agent' ? [] : ['hum_local'],
+      readBy: author.authorType === 'agent' ? [] : [author.authorId],
       createdAt: now(),
       updatedAt: now(),
     });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, rm, readFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm, readFile, access } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -66,6 +66,43 @@ async function startIsolatedServer(extraEnv = {}) {
   return launchIsolatedServer(tmp, extraEnv);
 }
 
+async function launchExpectingExit(extraEnv = {}) {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cloud-exit-'));
+  await mkdir(path.join(tmp, 'public'), { recursive: true });
+  await cp(path.join(ROOT, 'server'), path.join(tmp, 'server'), { recursive: true });
+  await cp(path.join(ROOT, 'public', 'index.html'), path.join(tmp, 'public', 'index.html'));
+  const port = nextTestPort++;
+  const child = spawn(process.execPath, ['server/index.js'], {
+    cwd: tmp,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      CODEX_PATH: '/bin/false',
+      MAGCLAW_DATA_DIR: path.join(tmp, '.magclaw'),
+      DATABASE_URL: '',
+      MAGCLAW_DATABASE_URL: '',
+      ...extraEnv,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => { output += chunk.toString(); });
+  child.stderr.on('data', (chunk) => { output += chunk.toString(); });
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill('SIGINT');
+      resolve(null);
+    }, 1500);
+    child.once('exit', (exitCode) => {
+      clearTimeout(timer);
+      resolve(exitCode);
+    });
+  });
+  await rm(tmp, { recursive: true, force: true });
+  return { code, output };
+}
+
 async function request(baseUrl, pathname, options = {}) {
   const response = await fetch(`${baseUrl}${pathname}`, {
     ...options,
@@ -94,6 +131,155 @@ async function waitFor(fn, timeoutMs = 5000) {
   }
   throw new Error('timed out waiting for condition');
 }
+
+test('cloud deployment refuses to start without PostgreSQL', async () => {
+  const result = await launchExpectingExit({ MAGCLAW_DEPLOYMENT: 'cloud' });
+  assert.notEqual(result.code, 0);
+  assert.match(result.output, /MAGCLAW_DATABASE_URL or DATABASE_URL is required/);
+});
+
+test('cloud health and readiness expose K8s-friendly storage checks', async () => {
+  const uploadDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-upload-pvc-'));
+  const server = await startIsolatedServer({
+    MAGCLAW_UPLOAD_DIR: uploadDir,
+    MAGCLAW_ATTACHMENT_STORAGE: 'pvc',
+  });
+  try {
+    const health = await request(server.baseUrl, '/api/healthz');
+    assert.equal(health.data.ok, true);
+    assert.equal(health.data.service, 'magclaw-web');
+    const ready = await request(server.baseUrl, '/api/readyz');
+    assert.equal(ready.data.ok, true);
+    assert.equal(ready.data.storage.attachments.mode, 'pvc');
+    assert.equal(ready.data.storage.attachments.writable, true);
+  } finally {
+    await server.stop();
+    await rm(uploadDir, { recursive: true, force: true });
+  }
+});
+
+test('public account registration and password reset use SMTP outbox without invite', async () => {
+  const outbox = path.join(await mkdtemp(path.join(os.tmpdir(), 'magclaw-mail-')), 'outbox.jsonl');
+  const server = await startIsolatedServer({
+    MAGCLAW_ALLOW_SIGNUPS: '1',
+    MAGCLAW_MAIL_TRANSPORT: 'file',
+    MAGCLAW_MAIL_OUTBOX: outbox,
+    MAGCLAW_MAIL_FROM: 'MagClaw <noreply@example.com>',
+    MAGCLAW_PUBLIC_URL: 'https://cloud.magclaw.example',
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Free User',
+        email: 'free@example.com',
+        password: 'password123',
+      }),
+    });
+    assert.equal(created.status, 201);
+    assert.equal(created.data.user.email, 'free@example.com');
+    assert.equal(created.data.member, null);
+    assert.match(created.cookie, /magclaw_session=/);
+
+    const serverCreated = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: created.cookie,
+      body: JSON.stringify({ name: 'Free Team', slug: 'free-team' }),
+    });
+    assert.equal(serverCreated.status, 201);
+    assert.equal(serverCreated.data.server.name, 'Free Team');
+    assert.equal(serverCreated.data.server.slug, 'free-team');
+    assert.equal(serverCreated.data.member.role, 'admin');
+    await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: created.cookie,
+      body: JSON.stringify({ name: 'Duplicate Team', slug: 'free-team' }),
+      expectStatus: 409,
+    });
+
+    const forgot = await request(server.baseUrl, '/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'free@example.com' }),
+    });
+    assert.equal(forgot.data.ok, true);
+    assert.equal(forgot.data.sent, true);
+    await access(outbox);
+    const lines = (await readFile(outbox, 'utf8')).trim().split('\n');
+    const message = JSON.parse(lines.at(-1));
+    assert.equal(message.to, 'free@example.com');
+    assert.match(message.html, /https:\/\/cloud\.magclaw\.example\/reset-password\?token=mc_reset_/);
+    assert.match(message.html, /https:\/\/cloud\.magclaw\.example\/brand\/magclaw-logo\.png/);
+    assert.match(message.html, /background:#ff66cc/);
+    assert.doesNotMatch(message.html, /#ffd743|#FFD800|--slock-sun/i);
+  } finally {
+    await server.stop();
+    await rm(path.dirname(outbox), { recursive: true, force: true });
+  }
+});
+
+test('console invitations stay repeatable and resolve per logged-in user', async () => {
+  const server = await startIsolatedServer({
+    MAGCLAW_ADMIN_NAME: 'Admin',
+    MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
+    MAGCLAW_ADMIN_PASSWORD: 'password123',
+    MAGCLAW_ALLOW_SIGNUPS: '1',
+  });
+  try {
+    const admin = await request(server.baseUrl, '/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@example.com', password: 'password123' }),
+    });
+    const first = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ email: 'console-user@example.com', role: 'member' }),
+    });
+    const second = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ email: 'console-user@example.com', role: 'core_member' }),
+    });
+    assert.notEqual(first.data.invitation.id, second.data.invitation.id);
+    await request(server.baseUrl, `/api/cloud/auth/invitation-status?token=${encodeURIComponent(first.data.inviteToken)}`);
+
+    const user = await request(server.baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Console User',
+        email: 'console-user@example.com',
+        password: 'password123',
+      }),
+    });
+    const consoleState = await request(server.baseUrl, '/api/state', { cookie: user.cookie });
+    assert.equal(consoleState.data.channels.length, 0);
+    assert.equal(consoleState.data.cloud.myInvitations.length, 2);
+    assert.equal(consoleState.data.cloud.auth.currentMember, null);
+
+    const declined = await request(server.baseUrl, `/api/console/invitations/${first.data.invitation.id}/decline`, {
+      method: 'POST',
+      cookie: user.cookie,
+      body: '{}',
+    });
+    assert.equal(declined.data.invitation.status, 'declined');
+    await request(server.baseUrl, `/api/console/invitations/${first.data.invitation.id}/accept`, {
+      method: 'POST',
+      cookie: user.cookie,
+      body: '{}',
+      expectStatus: 409,
+    });
+
+    const accepted = await request(server.baseUrl, `/api/console/invitations/${second.data.invitation.id}/accept`, {
+      method: 'POST',
+      cookie: user.cookie,
+      body: '{}',
+    });
+    assert.equal(accepted.data.invitation.status, 'accepted');
+    assert.equal(accepted.data.member.role, 'core_member');
+    assert.ok(accepted.data.cloud.auth.currentMember);
+  } finally {
+    await server.stop();
+  }
+});
 
 test('environment admin login protects app APIs and supports invites end to end', async () => {
   const server = await startIsolatedServer({
@@ -224,7 +410,74 @@ test('environment admin login protects app APIs and supports invites end to end'
     });
     const memberState = await request(server.baseUrl, '/api/state', { cookie: memberCookie });
     assert.equal(memberState.data.cloud.auth.currentUser.email, 'member@example.com');
+    assert.equal(memberState.data.cloud.auth.capabilities.chat_channels, true);
+    assert.equal(memberState.data.cloud.auth.capabilities.chat_agent_dm, true);
+    assert.equal(memberState.data.cloud.auth.capabilities.warm_agents, true);
+    assert.equal(memberState.data.cloud.auth.capabilities.manage_agents, false);
+    assert.equal(memberState.data.cloud.auth.capabilities.manage_computers, false);
+    assert.equal(memberState.data.cloud.auth.capabilities.pair_computers, false);
     assert.ok(memberState.data.humans.some((human) => human.id === member.data.member.humanId && human.status === 'online'));
+    assert.equal(memberState.data.dms.some((dm) => dm.id === 'dm_codex'), false);
+
+    const memberMessage = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ body: 'Member can chat in #all.' }),
+    });
+    assert.equal(memberMessage.status, 201);
+    assert.equal(memberMessage.data.message.authorId, member.data.member.humanId);
+    assert.deepEqual(memberMessage.data.message.readBy, [member.data.member.humanId]);
+    const memberReply = await request(server.baseUrl, `/api/messages/${memberMessage.data.message.id}/replies`, {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ body: 'Member can reply in a thread.' }),
+    });
+    assert.equal(memberReply.status, 201);
+    assert.equal(memberReply.data.reply.authorId, member.data.member.humanId);
+    await request(server.baseUrl, '/api/spaces/dm/dm_codex/messages', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ body: 'Member cannot write to someone else DM.' }),
+      expectStatus: 403,
+    });
+    const memberDm = await request(server.baseUrl, '/api/dms', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ participantId: 'agt_codex' }),
+    });
+    assert.ok(memberDm.data.dm.participantIds.includes(member.data.member.humanId));
+    assert.ok(memberDm.data.dm.participantIds.includes('agt_codex'));
+    const memberDmMessage = await request(server.baseUrl, `/api/spaces/dm/${memberDm.data.dm.id}/messages`, {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ body: 'Member can DM an agent.' }),
+    });
+    assert.equal(memberDmMessage.status, 201);
+    assert.equal(memberDmMessage.data.message.authorId, member.data.member.humanId);
+    const memberDmState = await request(server.baseUrl, '/api/state', { cookie: memberCookie });
+    assert.ok(memberDmState.data.dms.some((dm) => dm.id === memberDm.data.dm.id));
+    assert.equal(memberDmState.data.dms.some((dm) => dm.id === 'dm_codex'), false);
+    assert.ok(memberDmState.data.messages.some((message) => message.id === memberDmMessage.data.message.id));
+    assert.equal(memberDmState.data.messages.some((message) => message.spaceId === 'dm_codex'), false);
+    const memberWarmMissingAgent = await request(server.baseUrl, '/api/agents/missing-agent/warm', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ spaceType: 'channel', spaceId: 'chan_all' }),
+      expectStatus: 404,
+    });
+    assert.equal(memberWarmMissingAgent.data.error, 'Agent not found.');
+    await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ name: 'Member-created Agent' }),
+      expectStatus: 403,
+    });
+    await request(server.baseUrl, '/api/computers', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ name: 'Member computer' }),
+      expectStatus: 403,
+    });
 
     const pairing = await request(server.baseUrl, '/api/cloud/computers/pairing-tokens', {
       method: 'POST',
@@ -232,7 +485,10 @@ test('environment admin login protects app APIs and supports invites end to end'
       body: JSON.stringify({ name: 'CI runner' }),
     });
     assert.match(pairing.data.pairToken, /^mc_pair_/);
-    assert.match(pairing.data.command, /server\/daemon\/cli\.js/);
+    assert.match(pairing.data.command, /npx -y @magclaw\/daemon@latest connect/);
+    assert.match(pairing.data.command, /--background/);
+    assert.match(pairing.data.command, /--profile "?local"?/);
+    assert.match(pairing.data.command, /# MagClaw|# local/);
 
     const daemonConfig = path.join(server.tmp, 'daemon.json');
     daemon = spawn(process.execPath, [
@@ -259,6 +515,13 @@ test('environment admin login protects app APIs and supports invites end to end'
     assert.ok((pairedComputer.runtimeIds || []).includes('codex'));
     const saved = JSON.parse(await readFile(daemonConfig, 'utf8'));
     assert.match(saved.token, /^mc_machine_/);
+    await request(server.baseUrl, '/api/agent-tools/history?agentId=agt_codex', {
+      expectStatus: 401,
+    });
+    const daemonHistory = await request(server.baseUrl, '/api/agent-tools/history?agentId=agt_codex', {
+      headers: { authorization: `Bearer ${saved.token}` },
+    });
+    assert.equal(daemonHistory.data.ok, true);
   } finally {
     if (daemon) {
       daemon.kill('SIGINT');
@@ -475,7 +738,26 @@ test('cloud invite registration and admin password reset flows enforce tokens an
     assert.equal(batch.data.invitations.length, 2);
     assert.deepEqual(batch.data.invitations.map((item) => item.email), ['batch-one@example.com', 'batch-two@example.com']);
     assert.ok(batch.data.invitations.every((item) => item.inviteToken?.startsWith('mc_inv_')));
-    assert.ok(batch.data.invitations.every((item) => item.inviteUrl?.includes('/invite?token=')));
+    assert.ok(batch.data.invitations.every((item) => item.inviteUrl?.includes('/activate?email=')));
+    const refreshedInvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ email: 'batch-two@example.com', role: 'member' }),
+    });
+    assert.match(refreshedInvite.data.inviteToken, /^mc_inv_/);
+    assert.notEqual(refreshedInvite.data.inviteToken, batch.data.invitations[1].inviteToken);
+    assert.notEqual(refreshedInvite.data.inviteUrl, batch.data.invitations[1].inviteUrl);
+    const olderInviteStatus = await request(server.baseUrl, `/api/cloud/auth/invitation-status?token=${encodeURIComponent(batch.data.invitations[1].inviteToken)}`);
+    assert.equal(olderInviteStatus.data.invitation.email, 'batch-two@example.com');
+    const refreshedInviteStatus = await request(server.baseUrl, `/api/cloud/auth/invitation-status?token=${encodeURIComponent(refreshedInvite.data.inviteToken)}`);
+    assert.equal(refreshedInviteStatus.data.invitation.email, 'batch-two@example.com');
+    const browserOriginInvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: adminCookie,
+      headers: { origin: 'https://cloud.magclaw.example' },
+      body: JSON.stringify({ email: 'browser-origin@example.com', role: 'member' }),
+    });
+    assert.match(browserOriginInvite.data.inviteUrl, /^https:\/\/cloud\.magclaw\.example\/activate\?email=browser-origin%40example\.com&token=mc_inv_/);
     await request(server.baseUrl, '/api/cloud/invitations/batch', {
       method: 'POST',
       cookie: adminCookie,
@@ -487,6 +769,44 @@ test('cloud invite registration and admin password reset flows enforce tokens an
     assert.equal(inviteStatus.data.invitation.email, 'batch-one@example.com');
     assert.equal(inviteStatus.data.invitation.role, 'member');
     assert.equal(inviteStatus.data.invitation.status, 'pending');
+
+    const tamperInvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ email: 'tamper@example.com', role: 'member' }),
+    });
+    const changedEmail = await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: tamperInvite.data.inviteToken,
+        email: 'changed@example.com',
+        name: 'Changed Email',
+        password: 'password123',
+      }),
+      expectStatus: 400,
+    });
+    assert.equal(changedEmail.data.error, 'Email must match the invitation.');
+    const changedRole = await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: tamperInvite.data.inviteToken,
+        role: 'core_member',
+        name: 'Changed Role',
+        password: 'password123',
+      }),
+      expectStatus: 400,
+    });
+    assert.equal(changedRole.data.error, 'Role is controlled by the invitation.');
+    const tamperMember = await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: tamperInvite.data.inviteToken,
+        name: 'Tamper Member',
+        password: 'password123',
+      }),
+    });
+    assert.equal(tamperMember.data.user.email, 'tamper@example.com');
+    assert.equal(tamperMember.data.member.role, 'member');
 
     await request(server.baseUrl, '/api/cloud/auth/register', {
       method: 'POST',
@@ -522,6 +842,18 @@ test('cloud invite registration and admin password reset flows enforce tokens an
       }),
       expectStatus: 409,
     });
+    const registeredInvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ email: 'batch-one@example.com', role: 'member' }),
+    });
+    assert.match(registeredInvite.data.inviteToken, /^mc_inv_/);
+    assert.notEqual(registeredInvite.data.inviteToken, batch.data.invitations[0].inviteToken);
+    assert.match(registeredInvite.data.inviteUrl, /\/activate\?email=batch-one%40example\.com&token=mc_inv_/);
+    const registeredInviteStatus = await request(server.baseUrl, `/api/cloud/auth/invitation-status?token=${encodeURIComponent(registeredInvite.data.inviteToken)}`, {
+      expectStatus: 409,
+    });
+    assert.equal(registeredInviteStatus.data.error, 'User already exists.');
 
     const reset = await request(server.baseUrl, '/api/cloud/password-resets', {
       method: 'POST',
@@ -531,6 +863,17 @@ test('cloud invite registration and admin password reset flows enforce tokens an
     assert.equal(reset.data.email, 'batch-one@example.com');
     assert.match(reset.data.resetToken, /^mc_reset_/);
     assert.match(reset.data.resetUrl, /\/reset-password\?token=/);
+    const refreshedReset = await request(server.baseUrl, '/api/cloud/password-resets', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ memberId: member.data.member.id }),
+    });
+    assert.match(refreshedReset.data.resetToken, /^mc_reset_/);
+    assert.notEqual(refreshedReset.data.resetToken, reset.data.resetToken);
+    assert.notEqual(refreshedReset.data.resetUrl, reset.data.resetUrl);
+    await request(server.baseUrl, `/api/cloud/auth/reset-status?token=${encodeURIComponent(reset.data.resetToken)}`, {
+      expectStatus: 410,
+    });
     await request(server.baseUrl, '/api/state', { cookie: member.cookie, expectStatus: 401 });
     await request(server.baseUrl, '/api/cloud/auth/login', {
       method: 'POST',
@@ -538,22 +881,22 @@ test('cloud invite registration and admin password reset flows enforce tokens an
       expectStatus: 401,
     });
 
-    const resetStatus = await request(server.baseUrl, `/api/cloud/auth/reset-status?token=${encodeURIComponent(reset.data.resetToken)}`);
+    const resetStatus = await request(server.baseUrl, `/api/cloud/auth/reset-status?token=${encodeURIComponent(refreshedReset.data.resetToken)}`);
     assert.equal(resetStatus.data.reset.email, 'batch-one@example.com');
     await request(server.baseUrl, '/api/cloud/auth/reset-password', {
       method: 'POST',
-      body: JSON.stringify({ resetToken: reset.data.resetToken, password: 'password' }),
+      body: JSON.stringify({ resetToken: refreshedReset.data.resetToken, password: 'password' }),
       expectStatus: 400,
     });
     const resetLogin = await request(server.baseUrl, '/api/cloud/auth/reset-password', {
       method: 'POST',
-      body: JSON.stringify({ resetToken: reset.data.resetToken, password: 'newpass123' }),
+      body: JSON.stringify({ resetToken: refreshedReset.data.resetToken, password: 'newpass123' }),
     });
     assert.equal(resetLogin.data.user.email, 'batch-one@example.com');
     assert.match(resetLogin.cookie, /magclaw_session=/);
     await request(server.baseUrl, '/api/cloud/auth/reset-password', {
       method: 'POST',
-      body: JSON.stringify({ resetToken: reset.data.resetToken, password: 'again123' }),
+      body: JSON.stringify({ resetToken: refreshedReset.data.resetToken, password: 'again123' }),
       expectStatus: 410,
     });
     const newLogin = await request(server.baseUrl, '/api/cloud/auth/login', {
@@ -561,6 +904,13 @@ test('cloud invite registration and admin password reset flows enforce tokens an
       body: JSON.stringify({ email: 'batch-one@example.com', password: 'newpass123' }),
     });
     assert.equal(newLogin.data.user.email, 'batch-one@example.com');
+    const resetAfterUse = await request(server.baseUrl, '/api/cloud/password-resets', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ memberId: member.data.member.id }),
+    });
+    assert.match(resetAfterUse.data.resetToken, /^mc_reset_/);
+    assert.notEqual(resetAfterUse.data.resetToken, refreshedReset.data.resetToken);
   } finally {
     await server.stop();
   }

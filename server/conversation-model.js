@@ -156,8 +156,26 @@ export function createConversationModel(deps) {
     return state.agents.find((agent) => agent.id === id);
   }
   
+  function workspaceHumans() {
+    const humans = new Map((state.humans || []).map((human) => [human.id, human]));
+    const usersById = new Map((state.cloud?.users || []).map((user) => [user.id, user]));
+    for (const member of state.cloud?.workspaceMembers || []) {
+      if ((member.status || 'active') !== 'active') continue;
+      if (!member.humanId || humans.has(member.humanId)) continue;
+      const user = usersById.get(member.userId) || {};
+      humans.set(member.humanId, {
+        id: member.humanId,
+        name: user.name || user.email?.split('@')[0] || member.humanId.replace(/^hum_/, ''),
+        email: user.email || '',
+        role: member.role || 'member',
+        status: 'offline',
+      });
+    }
+    return [...humans.values()];
+  }
+
   function findHuman(id) {
-    return state.humans.find((human) => human.id === id);
+    return workspaceHumans().find((human) => human.id === id);
   }
   
   function findActor(id) {
@@ -194,7 +212,7 @@ export function createConversationModel(deps) {
     for (const agent of state.agents || []) {
       entries.push([visibleMentionLabel(agent), agent.id]);
     }
-    for (const human of state.humans || []) {
+    for (const human of workspaceHumans()) {
       entries.push([visibleMentionLabel(human), human.id]);
       if (human.email) entries.push([`@${human.email.split('@')[0]}`, human.id]);
     }

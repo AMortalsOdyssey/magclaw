@@ -115,13 +115,20 @@ export function createServerIo(deps) {
     await mkdir(dir, { recursive: true });
     const filePath = path.join(dir, diskName);
     await writeFile(filePath, buffer);
+    const storageKey = `${period.relativeDir}/${diskName}`;
+    const checksumSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+    const serverId = state.connection?.workspaceId || state.cloud?.workspaces?.[0]?.id || 'local';
     return {
       id,
+      serverId,
       name: safeName,
       type: type || 'application/octet-stream',
       bytes: buffer.length,
       path: filePath,
-      relativePath: `${period.relativeDir}/${diskName}`,
+      relativePath: storageKey,
+      storageMode: process.env.MAGCLAW_ATTACHMENT_STORAGE || (process.env.MAGCLAW_UPLOAD_DIR ? 'pvc' : 'local'),
+      storageKey,
+      checksumSha256,
       source,
       url: `/api/attachments/${id}/${encodeURIComponent(safeName)}`,
       createdAt,

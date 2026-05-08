@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { chmod, cp, lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -7,10 +8,21 @@ import path from 'node:path';
 import test from 'node:test';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
-let nextTestPort = 6200 + Math.floor(Math.random() * 300);
+
+async function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
+}
 
 async function launchIsolatedServer(tmp, extraEnv = {}) {
-  const port = nextTestPort++;
+  const port = await getFreePort();
   const child = spawn(process.execPath, ['server/index.js'], {
     cwd: tmp,
     env: {
@@ -53,6 +65,7 @@ async function launchIsolatedServer(tmp, extraEnv = {}) {
           },
         };
       }
+      await new Promise((resolve) => setTimeout(resolve, 50));
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }

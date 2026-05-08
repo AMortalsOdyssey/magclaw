@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
-import path from 'node:path';
 
 const PAIR_TTL_MS = 1000 * 60 * 15;
 const MACHINE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 365;
@@ -85,6 +84,16 @@ function toWsUrl(serverUrl) {
   return value;
 }
 
+function shellArg(value) {
+  return JSON.stringify(String(value || ''));
+}
+
+function bearerToken(req) {
+  const header = String(req.headers?.authorization || '');
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : '';
+}
+
 function publicComputerToken(item) {
   if (!item) return null;
   const { tokenHash, ...safe } = item;
@@ -113,7 +122,6 @@ export function createDaemonRelay(deps) {
     now,
     persistState,
     port,
-    root,
     setAgentStatus,
   } = deps;
 
@@ -155,8 +163,25 @@ export function createDaemonRelay(deps) {
 
   function connectCommand(pairToken, req) {
     const publicUrl = publicUrlFromRequest(req);
-    const cliPath = path.join(root, 'server', 'daemon', 'cli.js');
-    return `node ${JSON.stringify(cliPath)} --server-url ${JSON.stringify(publicUrl)} --pair-token ${JSON.stringify(pairToken)}`;
+    const workspace = cloud().workspaces[0] || {};
+    const profile = String(workspace.slug || workspace.id || 'local').trim() || 'local';
+    const comment = String(workspace.name || workspace.slug || workspace.id || 'local').trim() || profile;
+    const template = process.env.MAGCLAW_DAEMON_CONNECT_COMMAND || '';
+    if (template) {
+      return template
+        .replaceAll('{serverUrl}', publicUrl)
+        .replaceAll('{pairToken}', pairToken)
+        .replaceAll('{profile}', profile)
+        .replaceAll('{serverName}', comment);
+    }
+    return [
+      'npx -y @magclaw/daemon@latest connect',
+      `--server-url ${shellArg(publicUrl)}`,
+      `--pair-token ${shellArg(pairToken)}`,
+      `--profile ${shellArg(profile)}`,
+      '--background',
+      `# ${comment}`,
+    ].join(' ');
   }
 
   function createPairingToken(body = {}, req) {
@@ -224,6 +249,25 @@ export function createDaemonRelay(deps) {
     if (!record) return null;
     if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) return null;
     return record;
+  }
+
+  function authenticateHttpRequest(req) {
+    const raw = bearerToken(req);
+    if (!raw) return null;
+    const tokenRecord = validateMachineToken(raw);
+    if (!tokenRecord) return null;
+    const computer = findComputer(tokenRecord.computerId);
+    if (!computer) return null;
+    const at = now();
+    tokenRecord.lastUsedAt = at;
+    computer.lastSeenAt = at;
+    persistState().catch(() => {});
+    return {
+      type: 'daemon',
+      workspaceId: tokenRecord.workspaceId || computer.workspaceId || null,
+      computerId: computer.id,
+      tokenId: tokenRecord.id,
+    };
   }
 
   function issueMachineToken(computer, pair) {
@@ -389,6 +433,15 @@ export function createDaemonRelay(deps) {
 
   async function deliverToAgent(agent, deliveryMessage, workItem = null) {
     const result = queueAgentCommand(agent, 'agent:deliver', {
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        runtime: agent.runtime,
+        model: agent.model,
+        reasoningEffort: agent.reasoningEffort || null,
+        workspace: agent.workspace || null,
+        envVars: safeArray(agent.envVars),
+      },
       message: deliveryMessage,
       workItem,
     });
@@ -425,10 +478,12 @@ export function createDaemonRelay(deps) {
     if (!computer) return;
     computer.hostname = String(message.hostname || computer.hostname || '');
     computer.name = String(message.name || computer.name || computer.hostname || os.hostname());
+    if (message.machineFingerprint) computer.machineFingerprint = String(message.machineFingerprint);
     computer.os = String(message.os || computer.os || '');
     computer.arch = String(message.arch || computer.arch || '');
     computer.daemonVersion = String(message.daemonVersion || computer.daemonVersion || '');
     computer.runtimeIds = safeArray(message.runtimes || message.runtimeIds).map(String);
+    computer.runtimeDetails = safeArray(message.runtimeDetails);
     computer.runningAgents = safeArray(message.runningAgents);
     computer.capabilities = safeArray(message.capabilities).map(String);
     computer.status = 'connected';
@@ -469,6 +524,16 @@ export function createDaemonRelay(deps) {
     if (!agent) return;
     setAgentStatus(agent, String(message.status || 'idle'), 'daemon_status', { forceEvent: true });
     if (message.sessionId !== undefined) agent.runtimeSessionId = message.sessionId || null;
+    agent.runtimeActivity = message.activity || agent.runtimeActivity || null;
+    agent.heartbeatAt = now();
+    await persistState();
+    broadcastState();
+  }
+
+  async function handleAgentActivity(message) {
+    const agent = findAgent(message.agentId);
+    if (!agent) return;
+    if (message.status) setAgentStatus(agent, String(message.status), 'daemon_activity', { forceEvent: true });
     agent.runtimeActivity = message.activity || agent.runtimeActivity || null;
     agent.heartbeatAt = now();
     await persistState();
@@ -538,8 +603,22 @@ export function createDaemonRelay(deps) {
       case 'agent:session':
         await handleAgentStatus(message);
         break;
+      case 'agent:activity':
+        await handleAgentActivity(message);
+        break;
       case 'agent:message':
         await handleAgentMessage(message);
+        break;
+      case 'agent:skills:list_result':
+      case 'machine:runtime_models:result':
+        recordDaemonEvent('daemon_result', `Daemon returned ${message.type}.`, {
+          computerId: connection.computerId,
+          agentId: message.agentId || null,
+          commandId: message.commandId || null,
+          resultType: message.type,
+        });
+        await persistState();
+        broadcastState();
         break;
       case 'agent:error':
         recordDaemonEvent('agent_error', String(message.error || 'Agent error'), {
@@ -673,6 +752,7 @@ export function createDaemonRelay(deps) {
 
   return {
     agentShouldUseRelay,
+    authenticateHttpRequest,
     createPairingToken,
     deliverToAgent,
     handleUpgrade,

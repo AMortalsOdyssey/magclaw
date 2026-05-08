@@ -9,6 +9,7 @@ import {
   quoteIdent,
   redactDatabaseUrl,
 } from '../server/cloud/postgres.js';
+import { createCloudPostgresStore as createStore } from '../server/cloud/postgres-store.js';
 
 test('postgres URL helpers accept asyncpg URLs without exposing secrets', () => {
   const asyncpgUrl = 'postgresql+asyncpg://user:secret@example.test:5432';
@@ -68,10 +69,105 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
   ]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
     }
-    assert.doesNotMatch(sql, /\bowner_user_id\b/);
+    assert.match(sql, /\bowner_user_id\b/);
+    assert.match(sql, /\bmachine_fingerprint\b/);
+    assert.match(sql, /\bruntime_details\b/);
+    assert.match(sql, /\bstorage_mode\b/);
     assert.match(sql, /role IN \('member', 'core_member', 'admin'\)/);
     assert.match(sql, /WHEN 'owner' THEN 'admin'/);
     assert.match(sql, /cloud_users_active_normalized_email_uidx/);
   assert.match(sql, /WHERE disabled_at IS NULL/);
   assert.doesNotMatch(sql, /\buid\b/);
+});
+
+test('postgres store persists relay computers tokens deliveries and daemon events', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-07T00:00:00.000Z';
+  await store.persistFromState({
+    computers: [{
+      id: 'cmp_remote',
+      workspaceId: 'wsp_main',
+      name: 'Remote Mac',
+      status: 'connected',
+      connectedVia: 'daemon',
+      runtimeIds: ['codex'],
+      capabilities: ['agent:deliver'],
+      createdAt,
+      updatedAt: createdAt,
+    }],
+    cloud: {
+      workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
+      users: [],
+      workspaceMembers: [],
+      sessions: [],
+      invitations: [],
+      passwordResetTokens: [],
+      computerTokens: [{
+        id: 'ctok_remote',
+        workspaceId: 'wsp_main',
+        computerId: 'cmp_remote',
+        label: 'Remote Mac',
+        tokenHash: 'hash_machine',
+        createdAt,
+      }],
+      pairingTokens: [{
+        id: 'pair_remote',
+        workspaceId: 'wsp_main',
+        computerId: 'cmp_remote',
+        label: 'Pair Remote',
+        tokenHash: 'hash_pair',
+        createdAt,
+        expiresAt: '2026-05-07T00:15:00.000Z',
+      }],
+      agentDeliveries: [{
+        id: 'adl_remote',
+        workspaceId: 'wsp_main',
+        agentId: 'agt_remote',
+        computerId: 'cmp_remote',
+        seq: 1,
+        type: 'agent:deliver',
+        commandType: 'agent:deliver',
+        status: 'queued',
+        payload: { message: { body: 'hello' } },
+        createdAt,
+        updatedAt: createdAt,
+      }],
+      daemonEvents: [{
+        id: 'devt_remote',
+        workspaceId: 'wsp_main',
+        computerId: 'cmp_remote',
+        type: 'computer_ready',
+        message: 'Computer ready',
+        meta: { computerId: 'cmp_remote' },
+        createdAt,
+      }],
+    },
+  });
+  const sqlText = queries.map((query) => query.sql).join('\n');
+  for (const table of [
+    'cloud_computers',
+    'cloud_computer_tokens',
+    'cloud_pairing_tokens',
+    'cloud_agent_deliveries',
+    'cloud_daemon_events',
+  ]) {
+    assert.match(sqlText, new RegExp(`INSERT INTO "magclaw"\\."${table}"`));
+  }
 });

@@ -33,6 +33,9 @@ export function cloudCapabilitiesForRole(role) {
   const isAdmin = normalized === 'admin';
   const isCore = roleAllows(normalized, ['core_member']);
   return {
+    chat_channels: true,
+    chat_agent_dm: true,
+    warm_agents: true,
     invite_member: true,
     invite_core_member: isCore,
     manage_member_roles: isCore,

@@ -10,6 +10,7 @@ export async function handleSystemApi(req, res, url, deps) {
     addSystemEvent,
     broadcastState,
     cloudAuth,
+    deploymentHealth,
     defaultWorkspace,
     detectInstalledRuntimes,
     fanoutApiConfigured,
@@ -29,6 +30,23 @@ export async function handleSystemApi(req, res, url, deps) {
   function requireSystemRole(allowedRoles = []) {
     if (!cloudAuth?.isLoginRequired?.()) return true;
     return Boolean(cloudAuth.requireUser(req, res, sendError, allowedRoles));
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/healthz') {
+    sendJson(res, 200, {
+      ok: true,
+      service: 'magclaw-web',
+      time: new Date().toISOString(),
+    });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/readyz') {
+    const ready = typeof deploymentHealth === 'function'
+      ? await deploymentHealth()
+      : { ok: true };
+    sendJson(res, ready.ok ? 200 : 503, ready);
+    return true;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/state') {

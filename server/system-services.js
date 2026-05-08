@@ -33,10 +33,38 @@ export function createSystemServices(deps) {
   function publicState(req = null) {
     const currentState = getState() || {};
     const cloud = typeof publicCloudState === 'function' ? publicCloudState(req) : undefined;
+    const currentHumanId = cloud?.auth?.currentMember?.humanId || null;
+    if (cloud?.auth?.currentUser && !cloud?.auth?.currentMember) {
+      return {
+        ...currentState,
+        channels: [],
+        dms: [],
+        messages: [],
+        replies: [],
+        tasks: [],
+        agents: [],
+        computers: [],
+        humans: [],
+        routeEvents: [],
+        systemNotifications: [],
+        settings: publicSettings(),
+        connection: publicConnection(),
+        cloud,
+        runtime: runtimeSnapshot(),
+        runningRunIds: [],
+      };
+    }
+    const visibleDms = currentHumanId
+      ? (currentState.dms || []).filter((dm) => (dm.participantIds || []).includes(currentHumanId))
+      : (currentState.dms || []);
+    const visibleDmIds = new Set(visibleDms.map((dm) => dm.id));
     return {
       ...currentState,
       settings: publicSettings(),
       channels: (currentState.channels || []).filter((channel) => !channel.archived),
+      dms: visibleDms,
+      messages: (currentState.messages || []).filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId)),
+      replies: (currentState.replies || []).filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId)),
       connection: publicConnection(),
       cloud,
       runtime: runtimeSnapshot(),

@@ -17,6 +17,7 @@ const HUMAN_PRESENCE_PERSIST_INTERVAL_MS = 1000 * 60;
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 30;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const WORKSPACE_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -65,6 +66,30 @@ function requestOrigin(req) {
   return host ? `${proto}://${host}` : '';
 }
 
+function httpOriginFromValue(value) {
+  const raw = String(value || '').split(',')[0].trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    return url.origin;
+  } catch {
+    return '';
+  }
+}
+
+function publicLinkOrigin(req) {
+  const configured = String(process.env.MAGCLAW_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  if (configured) return configured;
+  const forwardedHost = String(req.headers?.['x-forwarded-host'] || '').split(',')[0].trim();
+  if (forwardedHost) {
+    const proto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim()
+      || (req.socket?.encrypted ? 'https' : 'http');
+    return `${proto}://${forwardedHost}`;
+  }
+  return httpOriginFromValue(req.headers?.origin) || requestOrigin(req);
+}
+
 function sessionCookie(rawToken, req) {
   const secure = requestOrigin(req).startsWith('https://') || process.env.MAGCLAW_SECURE_COOKIES === '1';
   return [
@@ -87,6 +112,21 @@ function normalizeEmail(value) {
 
 function isValidEmail(value) {
   return EMAIL_PATTERN.test(normalizeEmail(value));
+}
+
+function slugifyWorkspace(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/['"]/g, '')
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function normalizeWorkspaceSlug(value, fallback = '') {
+  return slugifyWorkspace(value) || slugifyWorkspace(fallback);
 }
 
 function validatePassword(password) {
@@ -126,7 +166,18 @@ function publicInvitation(invitation) {
   if (!invitation) return null;
   const { tokenHash, ...safe } = invitation;
   void tokenHash;
-  return safe;
+  const metadata = safe.metadata && typeof safe.metadata === 'object' ? safe.metadata : {};
+  const expiresAt = new Date(safe.expiresAt || 0).getTime();
+  const status = safe.acceptedAt
+    ? 'accepted'
+    : metadata.declinedAt
+      ? 'declined'
+      : safe.revokedAt
+        ? 'revoked'
+        : expiresAt && expiresAt <= Date.now()
+          ? 'expired'
+          : 'pending';
+  return { ...safe, status, metadata };
 }
 
 function publicPasswordReset(reset, user = null) {
@@ -165,6 +216,7 @@ export function createCloudAuth(deps) {
   const {
     cloudRepository = null,
     getState,
+    mailService = null,
     makeId,
     now,
     persistState,
@@ -182,9 +234,9 @@ export function createCloudAuth(deps) {
     if (!state.cloud || typeof state.cloud !== 'object') state.cloud = {};
     state.cloud.schemaVersion = Number(state.cloud.schemaVersion || 1);
     state.cloud.auth = {
+      ...(state.cloud.auth || {}),
       allowSignups: process.env.MAGCLAW_ALLOW_SIGNUPS === '1',
       passwordLogin: true,
-      ...(state.cloud.auth || {}),
     };
     delete state.cloud.auth.ownerInviteOnly;
     state.cloud.workspaces = safeArray(state.cloud.workspaces);
@@ -196,7 +248,6 @@ export function createCloudAuth(deps) {
         createdAt,
       });
     }
-    for (const workspace of state.cloud.workspaces) delete workspace.ownerUserId;
     state.cloud.workspaceMembers = safeArray(state.cloud.workspaceMembers);
     state.cloud.users = safeArray(state.cloud.users);
     state.cloud.sessions = safeArray(state.cloud.sessions);
@@ -235,16 +286,70 @@ export function createCloudAuth(deps) {
       )) || null;
     }
 
-    function activeInvitationWithEmail(email, workspaceId = primaryWorkspace()?.id) {
+    function userWithEmail(email) {
       const normalized = normalizeEmail(email);
       if (!normalized) return null;
+      return ensureCloudState().users.find((user) => (
+        user.email === normalized
+        && !user.disabledAt
+      )) || null;
+    }
+
+    function revokeActiveInvitationsForEmail(email, workspaceId = primaryWorkspace()?.id, options = {}) {
+      const normalized = normalizeEmail(email);
+      if (!normalized) return 0;
+      const revokedAt = options.revokedAt || now();
       const nowMs = Date.now();
-      return ensureCloudState().invitations.find((invitation) => {
-        if (invitation.workspaceId !== workspaceId) return false;
-        if (normalizeEmail(invitation.email) !== normalized) return false;
-        if (invitation.acceptedAt || invitation.revokedAt) return false;
-        return !invitation.expiresAt || Date.parse(invitation.expiresAt) > nowMs;
-      }) || null;
+      let revokedCount = 0;
+      for (const invitation of ensureCloudState().invitations) {
+        if (invitation.workspaceId !== workspaceId) continue;
+        if (normalizeEmail(invitation.email) !== normalized) continue;
+        if (invitation.acceptedAt || invitation.revokedAt) continue;
+        if (invitation.expiresAt && Date.parse(invitation.expiresAt) <= nowMs) continue;
+        invitation.revokedAt = revokedAt;
+        invitation.revokedBy = options.actorUserId || null;
+        invitation.updatedAt = revokedAt;
+        revokedCount += 1;
+      }
+      return revokedCount;
+    }
+
+    function revokeActivePasswordResetsForUser(userId, workspaceId = primaryWorkspace()?.id, options = {}) {
+      const normalizedUserId = String(userId || '').trim();
+      if (!normalizedUserId) return 0;
+      const revokedAt = options.revokedAt || now();
+      const nowMs = Date.now();
+      let revokedCount = 0;
+      for (const reset of ensureCloudState().passwordResetTokens) {
+        if (reset.workspaceId !== workspaceId) continue;
+        if (reset.userId !== normalizedUserId) continue;
+        if (reset.consumedAt || reset.revokedAt) continue;
+        if (reset.expiresAt && Date.parse(reset.expiresAt) <= nowMs) continue;
+        reset.revokedAt = revokedAt;
+        reset.revokedBy = options.actorUserId || null;
+        reset.updatedAt = revokedAt;
+        revokedCount += 1;
+      }
+      return revokedCount;
+    }
+
+    function uniqueCloudToken(prefix) {
+      const cloud = ensureCloudState();
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const raw = token(prefix);
+        const hash = sha256(raw);
+        const exists = [
+          ...cloud.sessions,
+          ...cloud.invitations,
+          ...cloud.passwordResetTokens,
+          ...cloud.pairingTokens,
+          ...cloud.computerTokens,
+        ].some((item) => item.tokenHash === hash);
+        if (!exists) return raw;
+      }
+      const error = new Error('Unable to generate a unique token.');
+      error.status = 500;
+      throw error;
     }
 
     function makeUserId() {
@@ -394,6 +499,16 @@ export function createCloudAuth(deps) {
       return auth;
     }
 
+    function requireAuthenticatedUser(req) {
+      const user = currentUser(req);
+      if (!user) {
+        const error = new Error('Login is required.');
+        error.status = 401;
+        throw error;
+      }
+      return user;
+    }
+
   function issueSession(user, req) {
     const cloud = ensureCloudState();
     const raw = token('mc_sess');
@@ -414,7 +529,7 @@ export function createCloudAuth(deps) {
   }
 
   function inviteUrlForToken(raw, req, email = '') {
-    const base = process.env.MAGCLAW_PUBLIC_URL || requestOrigin(req);
+    const base = publicLinkOrigin(req);
     const params = new URLSearchParams({
       email: normalizeEmail(email),
       token: String(raw || ''),
@@ -423,7 +538,7 @@ export function createCloudAuth(deps) {
   }
 
   function resetUrlForToken(raw, req) {
-    const base = process.env.MAGCLAW_PUBLIC_URL || requestOrigin(req);
+    const base = publicLinkOrigin(req);
     return base ? `${base}/reset-password?token=${encodeURIComponent(raw)}` : '';
   }
 
@@ -565,18 +680,59 @@ export function createCloudAuth(deps) {
       const email = normalizeEmail(body.email);
       const user = cloud.users.find((item) => item.email === email && !item.disabledAt);
       const member = user ? memberForUser(user.id) : null;
-      if (!user || !member || !verifyPassword(body.password || '', user.passwordHash)) {
+      if (!user || !verifyPassword(body.password || '', user.passwordHash)) {
         const error = new Error('Invalid email or password.');
         error.status = 401;
         throw error;
     }
-      const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, { humanId: member.humanId });
-      if (!member.humanId && human?.id) member.humanId = human.id;
-      markHumanPresence(human, 'online');
+      if (member) {
+        const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, { humanId: member.humanId });
+        if (!member.humanId && human?.id) member.humanId = human.id;
+        markHumanPresence(human, 'online');
+      }
     const issued = issueSession(user, req);
       await persistCloudState();
       res.setHeader('Set-Cookie', issued.cookie);
       return { user: publicUser(user), member, workspace: primaryWorkspace() };
+    }
+
+    async function registerOpenAccount(body, req, res) {
+      const cloud = ensureCloudState();
+      if (!cloud.auth.allowSignups) {
+        const error = new Error('Account creation is disabled.');
+        error.status = 403;
+        throw error;
+      }
+      const email = normalizeEmail(body.email);
+      if (!isValidEmail(email)) {
+        const error = new Error('A valid email is required.');
+        error.status = 400;
+        throw error;
+      }
+      if (userWithEmail(email)) {
+        const error = new Error('User already exists.');
+        error.status = 409;
+        throw error;
+      }
+      const password = validatePassword(body.password);
+      const createdAt = now();
+      const user = {
+        id: makeUserId(),
+        email,
+        name: String(body.name || email.split('@')[0]).trim(),
+        passwordHash: scryptPassword(password),
+        avatarUrl: '',
+        emailVerifiedAt: null,
+        createdAt,
+        updatedAt: createdAt,
+        lastLoginAt: null,
+      };
+      cloud.users.push(user);
+      console.info(`[cloud-auth] open account registered email=${email} user=${user.id}`);
+      const issued = issueSession(user, req);
+      await persistCloudState();
+      res.setHeader('Set-Cookie', issued.cookie);
+      return { user: publicUser(user), member: null, workspace: null };
     }
 
   async function logout(req, res) {
@@ -652,16 +808,6 @@ export function createCloudAuth(deps) {
         error.status = 403;
         throw error;
       }
-      if (activeUserWithEmail(email)) {
-        const error = new Error('User already exists.');
-        error.status = 409;
-        throw error;
-      }
-      if (activeInvitationWithEmail(email)) {
-        const error = new Error('Invitation already exists for this email.');
-        error.status = 409;
-        throw error;
-      }
     }
 
     function createInvitationRecord(auth, body, req) {
@@ -670,12 +816,18 @@ export function createCloudAuth(deps) {
       const email = normalizeEmail(body.email);
       const role = normalizeCloudRole(body.role, null);
       assertInvitationRequest(auth, email, role);
-      const raw = token('mc_inv');
-      let human = safeArray(state.humans).find((item) => (
-        normalizeEmail(item.email) === email
-        && item.status !== 'removed'
-        && !item.authUserId
-      ));
+      const createdAt = now();
+      const raw = uniqueCloudToken('mc_inv');
+      const registeredUser = activeUserWithEmail(email);
+      const registeredMember = registeredUser ? memberForUser(registeredUser.id, workspace.id) : null;
+      let human = registeredMember ? humanForMember(registeredMember, registeredUser) : null;
+      if (!human) {
+        human = safeArray(state.humans).find((item) => (
+          normalizeEmail(item.email) === email
+          && item.status !== 'removed'
+          && !item.authUserId
+        ));
+      }
       if (!human) {
         human = {
           id: makeId('hum'),
@@ -687,17 +839,16 @@ export function createCloudAuth(deps) {
         };
         state.humans.push(human);
         addHumanToAllChannel(human);
-      } else {
+      } else if (!registeredUser) {
         human.role = role;
         human.status = 'invited';
         human.updatedAt = now();
       }
-      const createdAt = now();
       const ttlMs = Number(body.ttlMs || INVITATION_TTL_MS);
       const invitation = {
         id: makeId('inv'),
         workspaceId: workspace.id,
-        humanId: human.id,
+        humanId: human?.id || null,
         email,
         role,
         tokenHash: sha256(raw),
@@ -749,6 +900,177 @@ export function createCloudAuth(deps) {
       return { invitations };
     }
 
+    function invitationsForUser(user) {
+      const email = normalizeEmail(user?.email);
+      if (!email) return [];
+      return ensureCloudState().invitations
+        .filter((item) => normalizeEmail(item.email) === email)
+        .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0));
+    }
+
+    function workspacesForUser(user) {
+      const cloud = ensureCloudState();
+      const memberships = cloud.workspaceMembers.filter((member) => (
+        member.userId === user?.id
+        && member.status === 'active'
+      ));
+      const workspaceIds = new Set(memberships.map((member) => member.workspaceId));
+      return cloud.workspaces.filter((workspace) => workspaceIds.has(workspace.id));
+    }
+
+    function consoleInvitationForUser(invitationId, user) {
+      const invitation = invitationsForUser(user).find((item) => item.id === invitationId) || null;
+      if (!invitation) {
+        const error = new Error('Invitation was not found.');
+        error.status = 404;
+        throw error;
+      }
+      if (invitation.acceptedAt || invitation.revokedAt || invitation.metadata?.declinedAt) {
+        const error = new Error('Invitation has already been used.');
+        error.status = 409;
+        throw error;
+      }
+      if (new Date(invitation.expiresAt).getTime() <= Date.now()) {
+        const error = new Error('Invitation has expired.');
+        error.status = 410;
+        throw error;
+      }
+      return invitation;
+    }
+
+    function consoleStateForUser(user) {
+      return {
+        workspaces: workspacesForUser(user),
+        invitations: invitationsForUser(user).map(publicInvitation),
+      };
+    }
+
+    async function createConsoleServer(body, req) {
+      const user = requireAuthenticatedUser(req);
+      const cloud = ensureCloudState();
+      const name = String(body.name || '').trim();
+      if (!name) {
+        const error = new Error('Server name is required.');
+        error.status = 400;
+        throw error;
+      }
+      const slug = normalizeWorkspaceSlug(body.slug, name);
+      if (slug.length < 2 || slug.length > 63 || !WORKSPACE_SLUG_PATTERN.test(slug)) {
+        const error = new Error('Server slug must be 2-63 lowercase letters, numbers, or hyphens.');
+        error.status = 400;
+        throw error;
+      }
+      if (cloud.workspaces.some((workspace) => String(workspace.slug || '').toLowerCase() === slug)) {
+        const error = new Error('Server slug is already taken.');
+        error.status = 409;
+        throw error;
+      }
+      const createdAt = now();
+      const workspace = {
+        id: makeId('wsp'),
+        slug,
+        name,
+        ownerUserId: user.id,
+        createdAt,
+        updatedAt: createdAt,
+      };
+      cloud.workspaces.push(workspace);
+      const human = ensureHumanForUser(user, 'admin');
+      addHumanToAllChannel(human);
+      cloud.workspaceMembers.push({
+        id: makeId('wmem'),
+        workspaceId: workspace.id,
+        userId: user.id,
+        humanId: human.id,
+        role: 'admin',
+        status: 'active',
+        joinedAt: createdAt,
+        createdAt,
+      });
+      state.connection.workspaceId = workspace.id;
+      console.info(`[cloud-auth] console server created workspace=${workspace.id} slug=${workspace.slug} owner=${user.id}`);
+      await persistCloudState();
+      return { server: workspace, member: memberForUser(user.id, workspace.id) };
+    }
+
+    async function acceptConsoleInvitation(invitationId, req) {
+      const user = requireAuthenticatedUser(req);
+      const cloud = ensureCloudState();
+      const invitation = consoleInvitationForUser(String(invitationId || ''), user);
+      const acceptedAt = now();
+      const role = normalizeCloudRole(invitation.role || 'member');
+      let member = memberForUser(user.id, invitation.workspaceId);
+      if (!member) {
+        const human = ensureHumanForUser(user, role, { humanId: invitation.humanId });
+        if (human) {
+          human.role = role;
+          human.status = 'online';
+          human.updatedAt = acceptedAt;
+          addHumanToAllChannel(human);
+        }
+        member = {
+          id: makeId('wmem'),
+          workspaceId: invitation.workspaceId,
+          userId: user.id,
+          humanId: human?.id || '',
+          role,
+          status: 'active',
+          joinedAt: acceptedAt,
+          createdAt: acceptedAt,
+          updatedAt: acceptedAt,
+        };
+        cloud.workspaceMembers.push(member);
+      } else {
+        member.status = 'active';
+        member.role = normalizeCloudRole(member.role || role);
+        member.joinedAt ||= acceptedAt;
+        member.updatedAt = acceptedAt;
+      }
+      invitation.acceptedAt = acceptedAt;
+      invitation.acceptedBy = user.id;
+      invitation.metadata = {
+        ...(invitation.metadata || {}),
+        consoleAction: 'accepted',
+        resolvedAt: acceptedAt,
+        resolvedBy: user.id,
+      };
+      systemNotification('member_joined', {
+        actorUserId: user.id,
+        actorHumanId: member.humanId,
+        targetEmail: user.email,
+        targetUserId: user.id,
+        targetHumanId: member.humanId,
+        targetRole: role,
+        message: `${user.name || user.email} accepted an invitation from Console.`,
+      });
+      await persistCloudState();
+      return {
+        invitation: publicInvitation(invitation),
+        member: publicMember(member),
+        console: consoleStateForUser(user),
+      };
+    }
+
+    async function declineConsoleInvitation(invitationId, req) {
+      const user = requireAuthenticatedUser(req);
+      const invitation = consoleInvitationForUser(String(invitationId || ''), user);
+      const declinedAt = now();
+      invitation.revokedAt = declinedAt;
+      invitation.metadata = {
+        ...(invitation.metadata || {}),
+        consoleAction: 'declined',
+        declinedAt,
+        declinedBy: user.id,
+        resolvedAt: declinedAt,
+        resolvedBy: user.id,
+      };
+      await persistCloudState();
+      return {
+        invitation: publicInvitation(invitation),
+        console: consoleStateForUser(user),
+      };
+    }
+
     function invitationForToken(raw) {
       const value = String(raw || '').trim();
       if (!value) return null;
@@ -767,7 +1089,12 @@ export function createCloudAuth(deps) {
         error.status = 410;
         throw error;
       }
-      if (invitation.acceptedAt || activeUserWithEmail(invitation.email)) {
+      if (activeUserWithEmail(invitation.email)) {
+        const error = new Error('User already exists.');
+        error.status = 409;
+        throw error;
+      }
+      if (invitation.acceptedAt) {
         const error = new Error('Invitation has already been used.');
         error.status = 409;
         throw error;
@@ -805,6 +1132,11 @@ export function createCloudAuth(deps) {
         throw error;
       }
       if (invitation) assertInvitationCanBeAccepted(invitation);
+      if (invitation && Object.prototype.hasOwnProperty.call(body, 'role')) {
+        const error = new Error('Role is controlled by the invitation.');
+        error.status = 400;
+        throw error;
+      }
       const finalEmail = invitation?.email || email;
       if (!finalEmail || (invitation && email && email !== invitation.email)) {
         const error = new Error('Email must match the invitation.');
@@ -966,7 +1298,7 @@ export function createCloudAuth(deps) {
       }
       const user = ensureCloudState().users.find((item) => item.id === reset.userId && !item.disabledAt);
       const member = user ? memberForUser(user.id, reset.workspaceId) : null;
-      if (!user || !member) {
+      if (!user) {
         const error = new Error('Password reset user was not found.');
         error.status = 404;
         throw error;
@@ -1006,7 +1338,9 @@ export function createCloudAuth(deps) {
         throw error;
       }
       const createdAt = now();
-      const raw = token('mc_reset');
+      const revokedCount = revokeActivePasswordResetsForUser(user.id, workspace.id, { actorUserId: auth.user.id, revokedAt: createdAt });
+      if (revokedCount) console.info(`[cloud-auth] revoked previous password resets user=${user.id} count=${revokedCount} actor=${auth.user.id}`);
+      const raw = uniqueCloudToken('mc_reset');
       const reset = {
         id: makeId('preset'),
         workspaceId: workspace.id,
@@ -1047,6 +1381,44 @@ export function createCloudAuth(deps) {
       return { reset: publicPasswordReset(reset, user) };
     }
 
+    async function requestPasswordReset(body, req) {
+      const email = normalizeEmail(body.email);
+      if (!isValidEmail(email)) {
+        const error = new Error('A valid email is required.');
+        error.status = 400;
+        throw error;
+      }
+      const user = userWithEmail(email);
+      if (!user) {
+        console.info(`[cloud-auth] password reset requested for unknown email=${email}`);
+        return { ok: true, sent: false };
+      }
+      const workspace = primaryWorkspace();
+      const createdAt = now();
+      const revokedCount = revokeActivePasswordResetsForUser(user.id, workspace.id, { actorUserId: null, revokedAt: createdAt });
+      if (revokedCount) console.info(`[cloud-auth] revoked previous password resets user=${user.id} count=${revokedCount} actor=self-service`);
+      const raw = uniqueCloudToken('mc_reset');
+      const reset = {
+        id: makeId('preset'),
+        workspaceId: workspace.id,
+        userId: user.id,
+        tokenHash: sha256(raw),
+        createdBy: null,
+        expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS).toISOString(),
+        consumedAt: null,
+        revokedAt: null,
+        createdAt,
+      };
+      ensureCloudState().passwordResetTokens.push(reset);
+      await persistCloudState();
+      const resetUrl = resetUrlForToken(raw, req);
+      const sent = mailService
+        ? await mailService.sendPasswordReset({ to: user.email, name: user.name, resetUrl })
+        : { sent: false, reason: 'mail-service-unavailable' };
+      console.info(`[cloud-auth] password reset requested user=${user.id} sent=${Boolean(sent?.sent)}`);
+      return { ok: true, sent: Boolean(sent?.sent) };
+    }
+
     async function resetPassword(body, req, res) {
       const resetToken = String(body.resetToken || body.token || '').trim();
       const { reset, user, member } = assertPasswordResetCanBeUsed(passwordResetForToken(resetToken));
@@ -1056,9 +1428,11 @@ export function createCloudAuth(deps) {
       user.emailVerifiedAt = user.emailVerifiedAt || completedAt;
       user.updatedAt = completedAt;
       reset.consumedAt = completedAt;
-      const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, { humanId: member.humanId });
-      if (!member.humanId && human?.id) member.humanId = human.id;
-      markHumanPresence(human, 'online');
+      if (member) {
+        const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, { humanId: member.humanId });
+        if (!member.humanId && human?.id) member.humanId = human.id;
+        markHumanPresence(human, 'online');
+      }
       const issued = issueSession(user, req);
       console.info(`[cloud-auth] password reset completed user=${user.id}`);
       await persistCloudState();
@@ -1149,6 +1523,7 @@ export function createCloudAuth(deps) {
       const capabilities = member ? cloudCapabilitiesForRole(member.role) : {};
       const canManageCloud = Boolean(capabilities.manage_cloud_connection);
       const canSeeDirectory = !cloud.users.length || Boolean(member);
+      const ownConsoleState = user ? consoleStateForUser(user) : { workspaces: [], invitations: [] };
       return {
         schemaVersion: cloud.schemaVersion,
         auth: {
@@ -1166,8 +1541,10 @@ export function createCloudAuth(deps) {
           humanPresenceTimeoutMs: HUMAN_PRESENCE_TIMEOUT_MS,
         },
         workspace: primaryWorkspace(),
+        workspaces: ownConsoleState.workspaces,
         members: canSeeDirectory ? cloud.workspaceMembers.map(publicMember) : [],
-        invitations: member ? cloud.invitations.map(publicInvitation) : [],
+        invitations: member ? cloud.invitations.map(publicInvitation) : ownConsoleState.invitations,
+        myInvitations: ownConsoleState.invitations,
         systemNotifications: member ? safeArray(state.systemNotifications).map(publicSystemNotification) : [],
         pairingTokens: canManageCloud ? cloud.pairingTokens.map((item) => {
           const { tokenHash, ...safe } = item;
@@ -1201,9 +1578,15 @@ export function createCloudAuth(deps) {
       touchPresence,
       createInvitation,
       batchCreateInvitations,
+      acceptConsoleInvitation,
+      declineConsoleInvitation,
+      createConsoleServer,
+      consoleStateForUser,
       invitationStatus,
+      registerOpenAccount,
       registerWithInvite,
       createPasswordReset,
+      requestPasswordReset,
       resetStatus,
       resetPassword,
       removeMember,
