@@ -126,6 +126,10 @@ export async function handleAgentApi(req, res, url, deps) {
       sendError(res, 404, 'Agent not found.');
       return true;
     }
+    if (agent.deletedAt || agent.archivedAt || String(agent.status || '').toLowerCase() === 'disabled') {
+      sendError(res, 409, 'Agent is disabled or deleted.');
+      return true;
+    }
     if (!hasAgentProcess(agent.id)) {
       await startAgentFromControl(agent);
       addCollabEvent('agent_start_requested', `Agent start requested: ${agent.name}`, { agentId: agent.id });
@@ -162,9 +166,39 @@ export async function handleAgentApi(req, res, url, deps) {
       sendError(res, 404, 'Agent not found.');
       return true;
     }
+    if (agent.deletedAt || agent.archivedAt || String(agent.status || '').toLowerCase() === 'disabled') {
+      sendError(res, 409, 'Agent is disabled or deleted.');
+      return true;
+    }
     const body = await readJson(req);
     const result = await restartAgentFromControl(agent, String(body.mode || 'restart'));
     sendJson(res, 202, { agent, ...result });
+    return true;
+  }
+
+  const agentRestoreMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/restore$/);
+  if (req.method === 'POST' && agentRestoreMatch) {
+    const agent = findAgent(agentRestoreMatch[1]);
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    const restoredAt = now();
+    agent.deletedAt = null;
+    agent.archivedAt = null;
+    agent.status = 'idle';
+    agent.statusUpdatedAt = restoredAt;
+    agent.updatedAt = restoredAt;
+    const allChannel = findChannel('chan_all');
+    if (allChannel && agentParticipatesInChannels(agent)) {
+      allChannel.agentIds = normalizeIds([...(allChannel.agentIds || []), agent.id]);
+      allChannel.memberIds = normalizeIds([...(allChannel.memberIds || []), agent.id]);
+      allChannel.updatedAt = restoredAt;
+    }
+    addCollabEvent('agent_restored', `Agent restored from Lost Space: ${agent.name}`, { agentId: agent.id });
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, { ok: true, agent });
     return true;
   }
 
@@ -237,7 +271,7 @@ export async function handleAgentApi(req, res, url, deps) {
     return true;
   }
 
-  if (req.method === 'DELETE' && agentMatch) {
+    if (req.method === 'DELETE' && agentMatch) {
     const agentId = agentMatch[1];
     const agent = findAgent(agentId);
     if (!agent) {
@@ -245,17 +279,21 @@ export async function handleAgentApi(req, res, url, deps) {
       return true;
     }
 
-    state.agents = state.agents.filter((item) => item.id !== agentId);
+    const deletedAt = now();
+    agent.deletedAt = deletedAt;
+    agent.status = 'deleted';
+    agent.statusUpdatedAt = deletedAt;
+    agent.updatedAt = deletedAt;
     for (const channel of state.channels) {
       // Keep the old agentIds field and the newer memberIds field synchronized
       // until all callers have moved to canonical memberIds.
       channel.agentIds = Array.isArray(channel.agentIds) ? channel.agentIds.filter((id) => id !== agentId) : [];
       channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds.filter((id) => id !== agentId) : [];
     }
-    addCollabEvent('agent_deleted', `Agent deleted: ${agent.name}`, { agentId });
+    addCollabEvent('agent_deleted', `Agent moved to Lost Space: ${agent.name}`, { agentId });
     await persistState();
     broadcastState();
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, agent });
     return true;
   }
 

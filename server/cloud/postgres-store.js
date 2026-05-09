@@ -10,6 +10,7 @@ import {
   quoteIdent,
   redactDatabaseUrl,
 } from './postgres.js';
+import { normalizeReleaseNotes, RELEASE_COMPONENTS } from '../release-notes.js';
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -28,6 +29,19 @@ function iso(value) {
 
 function requiredIso(value) {
   return iso(value) || new Date().toISOString();
+}
+
+function dateOnly(value) {
+  if (!value) return '';
+  if (value instanceof Date) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  const raw = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+  return iso(value)?.slice(0, 10) || '';
 }
 
 function jsonObject(value) {
@@ -72,6 +86,7 @@ function workspaceFromRow(row) {
     onboardingAgentId: row.onboarding_agent_id || '',
     newAgentGreetingEnabled: row.new_agent_greeting_enabled !== false,
     ownerUserId: row.owner_user_id || null,
+    deletedAt: iso(row.deleted_at),
     createdAt: requiredIso(row.created_at),
     updatedAt: requiredIso(row.updated_at),
     metadata: jsonObject(row.metadata),
@@ -251,6 +266,72 @@ function daemonEventFromRow(row) {
   };
 }
 
+function releaseNoteRowId(component, version, category, position) {
+  return [component, version, category, position]
+    .map((part) => String(part || '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, ''))
+    .join('_')
+    .slice(0, 180);
+}
+
+function releaseEntriesFromNotes(releaseNotesInput) {
+  const releaseNotes = normalizeReleaseNotes(releaseNotesInput);
+  const entries = [];
+  for (const component of RELEASE_COMPONENTS) {
+    for (const release of safeArray(releaseNotes[component]?.releases)) {
+      for (const category of ['features', 'fixes', 'improved']) {
+        safeArray(release[category]).forEach((body, position) => {
+          entries.push({
+            id: releaseNoteRowId(component, release.version, category, position),
+            component,
+            version: release.version,
+            releasedAt: release.date,
+            title: release.title || '',
+            category,
+            body: String(body || ''),
+            position,
+          });
+        });
+      }
+    }
+  }
+  return entries.filter((entry) => entry.version && entry.releasedAt && entry.body);
+}
+
+function releaseNotesFromRows(rows, fallback) {
+  const notes = normalizeReleaseNotes(fallback);
+  const grouped = {
+    web: new Map(),
+    daemon: new Map(),
+  };
+  for (const row of safeArray(rows)) {
+    const component = RELEASE_COMPONENTS.includes(row.component) ? row.component : '';
+    if (!component) continue;
+    const version = String(row.version || '').trim();
+    const date = dateOnly(row.released_at);
+    if (!version || !date) continue;
+    const key = `${version}:${date}`;
+    if (!grouped[component].has(key)) {
+      grouped[component].set(key, {
+        id: `${component}-${version}`,
+        version,
+        date,
+        title: row.title || '',
+        features: [],
+        fixes: [],
+        improved: [],
+      });
+    }
+    const release = grouped[component].get(key);
+    const category = ['features', 'fixes', 'improved'].includes(row.category) ? row.category : 'features';
+    release[category].push(String(row.body || ''));
+  }
+  for (const component of RELEASE_COMPONENTS) {
+    const releases = [...grouped[component].values()];
+    if (releases.length) notes[component].releases = releases;
+  }
+  return normalizeReleaseNotes(notes);
+}
+
 export function cloudPostgresOptionsFromEnv(env = process.env) {
   const databaseUrl = normalizeDatabaseUrl(env.MAGCLAW_DATABASE_URL || env.DATABASE_URL || '');
   if (!databaseUrl) return null;
@@ -305,17 +386,45 @@ export function createCloudPostgresStore(optionsInput = {}) {
     return Number(row?.users || 0) === 0 && Number(row?.workspaces || 0) === 0;
   }
 
+  async function persistReleaseNotesFromState(client, state) {
+    const entries = releaseEntriesFromNotes(state.releaseNotes);
+    for (const entry of entries) {
+      await client.query(`
+        INSERT INTO ${table('cloud_release_notes')}
+          (id, component, version, released_at, title, category, body, position, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{}'::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          released_at = EXCLUDED.released_at,
+          title = EXCLUDED.title,
+          category = EXCLUDED.category,
+          body = EXCLUDED.body,
+          position = EXCLUDED.position
+      `, [
+        entry.id,
+        entry.component,
+        entry.version,
+        entry.releasedAt,
+        entry.title,
+        entry.category,
+        entry.body,
+        entry.position,
+      ]);
+    }
+  }
+
   async function persistFromState(state) {
     const cloud = state.cloud || {};
     await withClient(async (client) => {
       await client.query('BEGIN');
       try {
+        await persistReleaseNotesFromState(client, state);
+
         for (const workspace of safeArray(cloud.workspaces)) {
           await client.query(`
             INSERT INTO ${table('cloud_workspaces')}
               (id, slug, name, avatar, onboarding_agent_id, new_agent_greeting_enabled,
-               owner_user_id, created_at, updated_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+               owner_user_id, deleted_at, created_at, updated_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
             ON CONFLICT (id) DO UPDATE SET
               slug = EXCLUDED.slug,
               name = EXCLUDED.name,
@@ -323,6 +432,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
               onboarding_agent_id = EXCLUDED.onboarding_agent_id,
               new_agent_greeting_enabled = EXCLUDED.new_agent_greeting_enabled,
               owner_user_id = EXCLUDED.owner_user_id,
+              deleted_at = EXCLUDED.deleted_at,
               updated_at = EXCLUDED.updated_at,
               metadata = EXCLUDED.metadata
           `, [
@@ -333,6 +443,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
             workspace.onboardingAgentId || '',
             workspace.newAgentGreetingEnabled !== false,
             workspace.ownerUserId || workspace.owner_user_id || null,
+            iso(workspace.deletedAt),
             requiredIso(workspace.createdAt),
             requiredIso(workspace.updatedAt || workspace.createdAt),
             JSON.stringify(jsonObject(workspace.metadata)),
@@ -737,6 +848,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const pairingTokens = await client.query(`SELECT * FROM ${table('cloud_pairing_tokens')} ORDER BY created_at ASC, id ASC`);
       const agentDeliveries = await client.query(`SELECT * FROM ${table('cloud_agent_deliveries')} ORDER BY created_at ASC, id ASC`);
       const daemonEvents = await client.query(`SELECT * FROM ${table('cloud_daemon_events')} ORDER BY created_at DESC, id DESC LIMIT 300`);
+      const releaseNotes = await client.query(`SELECT * FROM ${table('cloud_release_notes')} ORDER BY component ASC, released_at DESC, version DESC, category ASC, position ASC`);
       cloud.workspaces = workspaces.rows.map(workspaceFromRow);
       cloud.users = users.rows.map(userFromRow);
       cloud.workspaceMembers = members.rows.map(memberFromRow);
@@ -757,6 +869,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         ...localOnlyComputers,
         ...loadedComputers,
       ];
+      state.releaseNotes = releaseNotesFromRows(releaseNotes.rows, state.releaseNotes);
       state.cloud = cloud;
     });
   }
@@ -772,6 +885,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     });
     await withClient(async (client) => {
       if (await isEmpty(client)) await persistFromState(state);
+      else await persistReleaseNotesFromState(client, state);
     });
     await loadIntoState(state);
     initialized = true;

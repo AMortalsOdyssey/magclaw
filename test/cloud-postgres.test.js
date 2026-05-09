@@ -65,6 +65,7 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     'cloud_tasks',
     'cloud_attachments',
     'cloud_agent_deliveries',
+    'cloud_release_notes',
     'cloud_audit_logs',
   ]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
@@ -73,6 +74,7 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     assert.match(sql, /\bmachine_fingerprint\b/);
     assert.match(sql, /\bruntime_details\b/);
     assert.match(sql, /\bstorage_mode\b/);
+    assert.match(sql, /component IN \('web', 'daemon'\)/);
     assert.match(sql, /role IN \('member', 'core_member', 'admin'\)/);
     assert.match(sql, /WHEN 'owner' THEN 'admin'/);
     assert.match(sql, /cloud_users_active_normalized_email_uidx/);
@@ -159,6 +161,25 @@ test('postgres store persists relay computers tokens deliveries and daemon event
         createdAt,
       }],
     },
+    releaseNotes: {
+      web: {
+        currentVersion: '0.2.0',
+        latestVersion: '0.2.0',
+        releases: [{
+          version: '0.2.0',
+          date: '2026-05-09',
+          title: 'Cloud release',
+          features: ['Cloud account flow'],
+          fixes: [],
+          improved: [],
+        }],
+      },
+      daemon: {
+        currentVersion: '0.1.1',
+        latestVersion: '0.1.1',
+        releases: [],
+      },
+    },
   });
   const sqlText = queries.map((query) => query.sql).join('\n');
   for (const table of [
@@ -167,6 +188,7 @@ test('postgres store persists relay computers tokens deliveries and daemon event
     'cloud_pairing_tokens',
     'cloud_agent_deliveries',
     'cloud_daemon_events',
+    'cloud_release_notes',
   ]) {
     assert.match(sqlText, new RegExp(`INSERT INTO "magclaw"\\."${table}"`));
   }

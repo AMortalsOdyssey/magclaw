@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { defaultReleaseNotes, normalizeReleaseNotes } from './release-notes.js';
 import {
   codexRuntimeOverrideForDelivery as codexRuntimeOverrideForDeliveryBase,
   resolveCodexRuntime as resolveCodexRuntimeBase,
@@ -104,6 +105,7 @@ export function createStateCore(deps) {
           reasoningEffort: process.env.MAGCLAW_CHAT_REASONING || 'low',
         }),
       },
+      releaseNotes: defaultReleaseNotes({ root: ROOT }),
       connection: {
         mode: process.env.MAGCLAW_MODE === 'cloud' ? 'cloud' : 'local',
         deployment: process.env.MAGCLAW_DEPLOYMENT || 'local',
@@ -413,6 +415,7 @@ export function createStateCore(deps) {
       ...fresh.settings.chatRuntime,
       ...(state.settings.chatRuntime || {}),
     });
+    state.releaseNotes = normalizeReleaseNotes(state.releaseNotes, fresh.releaseNotes);
     state.connection = { ...fresh.connection, ...(state.connection || {}) };
     state.storage = { ...fresh.storage, ...(state.storage || {}), sqliteBackedKeys: SQLITE_BACKED_STATE_KEYS };
     state.router = { ...fresh.router, ...(state.router || {}) };
@@ -428,7 +431,15 @@ export function createStateCore(deps) {
       if (!Array.isArray(state.cloud[key])) state.cloud[key] = fresh.cloud[key] || [];
     }
     if (!state.cloud.workspaces.length) state.cloud.workspaces = fresh.cloud.workspaces;
-    for (const workspace of state.cloud.workspaces) delete workspace.ownerUserId;
+    for (const workspace of state.cloud.workspaces) {
+      workspace.updatedAt = workspace.updatedAt || workspace.createdAt || now();
+      if (!workspace.ownerUserId) {
+        const ownerMember = state.cloud.workspaceMembers
+          .filter((member) => member.workspaceId === workspace.id && member.status !== 'removed' && member.role === 'admin')
+          .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0))[0];
+        if (ownerMember?.userId) workspace.ownerUserId = ownerMember.userId;
+      }
+    }
       const roleMap = { owner: 'admin', viewer: 'member', agent_admin: 'core_member', computer_admin: 'core_member' };
       for (const member of state.cloud.workspaceMembers) {
         member.role = roleMap[member.role] || member.role || 'member';

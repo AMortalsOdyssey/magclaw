@@ -300,9 +300,21 @@ export async function handleCollabApi(req, res, url, deps) {
         computer.disabledAt = now();
         computer.disconnectedAt = computer.disconnectedAt || computer.disabledAt;
         daemonRelay?.disconnectComputer?.(computer.id, 'This computer was disabled in MagClaw Cloud.');
+        for (const agent of state.agents.filter((item) => item.computerId === computer.id && !item.deletedAt)) {
+          agent.status = 'disabled';
+          agent.disabledByComputerAt = computer.disabledAt;
+          agent.statusUpdatedAt = computer.disabledAt;
+          agent.updatedAt = computer.disabledAt;
+        }
         addCollabEvent('computer_disabled', `Computer disabled: ${computer.name}`, { computerId: computer.id });
       } else if (computer.disabledAt) {
         computer.disabledAt = null;
+        for (const agent of state.agents.filter((item) => item.computerId === computer.id && item.disabledByComputerAt && !item.deletedAt)) {
+          agent.status = 'idle';
+          agent.disabledByComputerAt = null;
+          agent.statusUpdatedAt = now();
+          agent.updatedAt = agent.statusUpdatedAt;
+        }
         addCollabEvent('computer_enabled', `Computer enabled: ${computer.name}`, { computerId: computer.id });
       }
     }

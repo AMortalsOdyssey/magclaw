@@ -277,7 +277,7 @@ test('public account registration and password reset use SMTP outbox without inv
     assert.match(message.html, /https:\/\/cloud\.magclaw\.example\/reset-password\?token=mc_reset_/);
     assert.match(message.html, /https:\/\/cloud\.magclaw\.example\/brand\/magclaw-logo\.png/);
     assert.match(message.html, /background:#ff66cc/);
-    assert.doesNotMatch(message.html, /#ffd743|#FFD800|--slock-sun/i);
+    assert.doesNotMatch(message.html, /#ffd743|#FFD800|--magclaw-sun/i);
   } finally {
     await server.stop();
     await rm(path.dirname(outbox), { recursive: true, force: true });
@@ -286,24 +286,30 @@ test('public account registration and password reset use SMTP outbox without inv
 
 test('console invitations stay repeatable and resolve per logged-in user', async () => {
   const server = await startIsolatedServer({
-    MAGCLAW_ADMIN_NAME: 'Admin',
-    MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
-    MAGCLAW_ADMIN_PASSWORD: 'password123',
     MAGCLAW_ALLOW_SIGNUPS: '1',
   });
   try {
-    const admin = await request(server.baseUrl, '/api/auth/login', {
+    const owner = await request(server.baseUrl, '/api/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ email: 'admin@example.com', password: 'password123' }),
+      body: JSON.stringify({
+        name: 'Owner',
+        email: 'owner@example.com',
+        password: 'password123',
+      }),
+    });
+    await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: owner.cookie,
+      body: JSON.stringify({ name: 'Owner Team', slug: 'owner-team' }),
     });
     const first = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
-      cookie: admin.cookie,
+      cookie: owner.cookie,
       body: JSON.stringify({ email: 'console-user@example.com', role: 'member' }),
     });
     const second = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
-      cookie: admin.cookie,
+      cookie: owner.cookie,
       body: JSON.stringify({ email: 'console-user@example.com', role: 'core_member' }),
     });
     assert.notEqual(first.data.invitation.id, second.data.invitation.id);
@@ -552,7 +558,7 @@ test('environment admin login protects app APIs and supports invites end to end'
       body: JSON.stringify({ name: 'CI runner' }),
     });
     assert.match(pairing.data.pairToken, /^mc_pair_/);
-    assert.match(pairing.data.command, /npx -y @magclaw\/daemon@latest connect/);
+    assert.match(pairing.data.command, /node ".+daemon\/bin\/magclaw-daemon\.js" connect/);
     assert.match(pairing.data.command, /--background/);
     assert.match(pairing.data.command, /--profile "?local"?/);
     assert.match(pairing.data.command, /# MagClaw|# local/);

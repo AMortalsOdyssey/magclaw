@@ -1421,7 +1421,7 @@ export function createRoutingEngine(deps) {
       return channelAgents.filter(agentIdleForAvailability);
     }
   
-    // Case 4: Top-level human channel messages follow Slock-style channel membership.
+    // Case 4: Top-level human channel messages follow MagClaw-style channel membership.
     if (message?.authorType === 'human') {
       const named = channelAgents.filter((agent) => textAddressesAgent(agent, message.body));
       if (named.length) return uniqueAgents(named.filter(agentAvailableForAutoWork));

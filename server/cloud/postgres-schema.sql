@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS cloud_workspaces (
   onboarding_agent_id TEXT NOT NULL DEFAULT '',
   new_agent_greeting_enabled BOOLEAN NOT NULL DEFAULT true,
   owner_user_id TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
+  deleted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -67,6 +68,8 @@ ALTER TABLE cloud_workspaces
   ADD COLUMN IF NOT EXISTS onboarding_agent_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE cloud_workspaces
   ADD COLUMN IF NOT EXISTS new_agent_greeting_enabled BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE cloud_workspaces
+  ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 CREATE UNIQUE INDEX IF NOT EXISTS cloud_workspaces_slug_uidx
   ON cloud_workspaces(slug);
@@ -533,6 +536,25 @@ CREATE INDEX IF NOT EXISTS cloud_daemon_events_workspace_created_idx
 
 CREATE INDEX IF NOT EXISTS cloud_daemon_events_computer_created_idx
   ON cloud_daemon_events(computer_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS cloud_release_notes (
+  id TEXT PRIMARY KEY,
+  component TEXT NOT NULL CHECK (component IN ('web', 'daemon')),
+  version TEXT NOT NULL,
+  released_at DATE NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL CHECK (category IN ('features', 'fixes', 'improved')),
+  body TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS cloud_release_notes_component_position_uidx
+  ON cloud_release_notes(component, version, category, position);
+
+CREATE INDEX IF NOT EXISTS cloud_release_notes_component_released_idx
+  ON cloud_release_notes(component, released_at DESC, version DESC);
 
 CREATE TABLE IF NOT EXISTS cloud_audit_logs (
   id TEXT PRIMARY KEY,

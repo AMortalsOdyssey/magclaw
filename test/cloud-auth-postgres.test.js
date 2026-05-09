@@ -249,7 +249,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
     assert.match(message.html, /https:\/\/pg\.magclaw\.example\/reset-password\?token=mc_reset_/);
     assert.match(message.html, /https:\/\/pg\.magclaw\.example\/brand\/magclaw-logo\.png/);
     assert.match(message.html, /background:#ff66cc/);
-    assert.doesNotMatch(message.html, /#ffd743|#FFD800|--slock-sun/i);
+    assert.doesNotMatch(message.html, /#ffd743|#FFD800|--magclaw-sun/i);
 
     const client = new Client({ connectionString: databaseUrlWithName(TEST_DATABASE_URL, TEST_DATABASE) });
     await client.connect();

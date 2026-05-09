@@ -378,6 +378,20 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
+  const consoleServerRestoreMatch = url.pathname.match(/^\/api\/console\/servers\/([^/]+)\/restore$/);
+  if (req.method === 'POST' && consoleServerRestoreMatch) {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.restoreConsoleServer(decodeURIComponent(consoleServerRestoreMatch[1]), req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
   const consoleServerDeleteMatch = url.pathname.match(/^\/api\/console\/servers\/([^/]+)$/);
   if (req.method === 'DELETE' && consoleServerDeleteMatch) {
     if (!cloudAuth) {

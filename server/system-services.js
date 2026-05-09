@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { defaultReleaseNotes, normalizeReleaseNotes } from './release-notes.js';
 import { normalizeCloudUrl, normalizeFanoutApiConfig, publicApiKeyPreview } from './runtime-config.js';
 
 // System/runtime and local-project services.
@@ -51,6 +52,7 @@ export function createSystemServices(deps) {
         settings: publicSettings(),
         connection: publicConnection(),
         cloud,
+        releaseNotes: publicReleaseNotes(),
         runtime: runtimeSnapshot(),
         runningRunIds: [],
       };
@@ -68,6 +70,7 @@ export function createSystemServices(deps) {
       replies: (currentState.replies || []).filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId)),
       connection: publicConnection(),
       cloud,
+      releaseNotes: publicReleaseNotes(),
       runtime: runtimeSnapshot(),
       runningRunIds: [...runningProcesses.keys()],
     };
@@ -136,11 +139,43 @@ export function createSystemServices(deps) {
       node: process.version,
       platform: `${os.platform()} ${os.arch()}`,
       host: os.hostname(),
+      webPackageName: '@magclaw/web',
+      webPackageVersion: localWebPackageVersion(),
+      webLatestVersion: latestWebPackageVersion(localWebPackageVersion()),
       codexPath: state?.settings?.codexPath || defaultCodexPath(),
       daemonPackageName: '@magclaw/daemon',
       daemonPackageVersion,
       daemonLatestVersion: latestDaemonPackageVersion(daemonPackageVersion),
     };
+  }
+
+  function publicReleaseNotes() {
+    const defaults = defaultReleaseNotes({ root: ROOT });
+    const normalized = normalizeReleaseNotes(state?.releaseNotes, defaults);
+    normalized.web.currentVersion = process.env.MAGCLAW_WEB_VERSION || localWebPackageVersion() || normalized.web.currentVersion;
+    normalized.web.latestVersion = latestWebPackageVersion(normalized.web.currentVersion);
+    normalized.daemon.currentVersion = localDaemonPackageVersion() || normalized.daemon.currentVersion;
+    normalized.daemon.latestVersion = latestDaemonPackageVersion(normalized.daemon.currentVersion);
+    return normalized;
+  }
+
+  function localWebPackageVersion() {
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(ROOT, 'web', 'package.json'), 'utf8'));
+      return String(pkg.version || '');
+    } catch {
+      return '';
+    }
+  }
+
+  function latestWebPackageVersion(fallback = '') {
+    return String(
+      process.env.MAGCLAW_WEB_LATEST_VERSION
+      || state?.settings?.webVersionControl?.latestVersion
+      || state?.settings?.webLatestVersion
+      || fallback
+      || '',
+    ).trim();
   }
 
   function localDaemonPackageVersion() {

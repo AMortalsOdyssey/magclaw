@@ -1,12 +1,6 @@
 import crypto from 'node:crypto';
-import {
-  canInviteRole,
-  canRemoveRole,
-  canUpdateMemberRole,
-  cloudCapabilitiesForRole,
-  normalizeCloudRole,
-  roleAllows,
-} from './roles.js';
+import { canInviteRole, canRemoveRole, canUpdateMemberRole, cloudCapabilitiesForRole, normalizeCloudRole, roleAllows } from './roles.js';
+import { parseCookies, publicLinkOrigin, requestOrigin, safeArray } from './auth-utils.js';
 
 const SESSION_COOKIE = 'magclaw_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
@@ -18,10 +12,6 @@ const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 30;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const WORKSPACE_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-
-function safeArray(value) {
-  return Array.isArray(value) ? value : [];
-}
 
 function sha256(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex');
@@ -44,51 +34,6 @@ function verifyPassword(password, stored) {
   const a = Buffer.from(actual);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-function parseCookies(req) {
-  const header = String(req.headers?.cookie || '');
-  const cookies = new Map();
-  for (const item of header.split(';')) {
-    const index = item.indexOf('=');
-    if (index === -1) continue;
-    const key = item.slice(0, index).trim();
-    const value = item.slice(index + 1).trim();
-    if (key) cookies.set(key, decodeURIComponent(value));
-  }
-  return cookies;
-}
-
-function requestOrigin(req) {
-  const proto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim()
-    || (req.socket?.encrypted ? 'https' : 'http');
-  const host = String(req.headers?.['x-forwarded-host'] || req.headers?.host || '').split(',')[0].trim();
-  return host ? `${proto}://${host}` : '';
-}
-
-function httpOriginFromValue(value) {
-  const raw = String(value || '').split(',')[0].trim();
-  if (!raw) return '';
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
-    return url.origin;
-  } catch {
-    return '';
-  }
-}
-
-function publicLinkOrigin(req) {
-  const configured = String(process.env.MAGCLAW_PUBLIC_URL || '').trim().replace(/\/+$/, '');
-  if (configured) return configured;
-  if (!req) return '';
-  const forwardedHost = String(req.headers?.['x-forwarded-host'] || '').split(',')[0].trim();
-  if (forwardedHost) {
-    const proto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim()
-      || (req.socket?.encrypted ? 'https' : 'http');
-    return `${proto}://${forwardedHost}`;
-  }
-  return httpOriginFromValue(req.headers?.origin) || requestOrigin(req);
 }
 
 function sessionCookie(rawToken, req) {
@@ -307,6 +252,15 @@ export function createCloudAuth(deps) {
       for (const human of state.humans) {
         human.role = normalizeCloudRole(human.role);
       }
+      for (const workspace of state.cloud.workspaces) {
+        workspace.updatedAt = workspace.updatedAt || workspace.createdAt || createdAt;
+        if (!workspace.ownerUserId) {
+          const ownerMember = state.cloud.workspaceMembers
+            .filter((member) => member.workspaceId === workspace.id && member.status !== 'removed' && member.role === 'admin')
+            .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0))[0];
+          if (ownerMember?.userId) workspace.ownerUserId = ownerMember.userId;
+        }
+      }
       cleanupLegacyConfiguredAdminMembers();
       return state.cloud;
     }
@@ -443,7 +397,8 @@ export function createCloudAuth(deps) {
   function primaryWorkspace() {
     const cloud = ensureCloudState();
     const preferred = String(state.connection?.workspaceId || 'local');
-    return cloud.workspaces.find((workspace) => workspace.id === preferred)
+    return cloud.workspaces.find((workspace) => workspace.id === preferred && !workspace.deletedAt)
+      || cloud.workspaces.find((workspace) => !workspace.deletedAt)
       || cloud.workspaces[0];
   }
 
@@ -961,7 +916,17 @@ export function createCloudAuth(deps) {
         && member.status === 'active'
       ));
       const workspaceIds = new Set(memberships.map((member) => member.workspaceId));
-      return cloud.workspaces.filter((workspace) => workspaceIds.has(workspace.id));
+      return cloud.workspaces.filter((workspace) => workspaceIds.has(workspace.id) && !workspace.deletedAt);
+    }
+
+    function deletedWorkspacesForUser(user) {
+      const cloud = ensureCloudState();
+      const memberships = cloud.workspaceMembers.filter((member) => (
+        member.userId === user?.id
+        && member.status === 'active'
+      ));
+      const workspaceIds = new Set(memberships.map((member) => member.workspaceId));
+      return cloud.workspaces.filter((workspace) => workspaceIds.has(workspace.id) && workspace.deletedAt);
     }
 
     function consoleInvitationForUser(invitationId, user) {
@@ -987,6 +952,7 @@ export function createCloudAuth(deps) {
     function consoleStateForUser(user) {
       return {
         workspaces: workspacesForUser(user),
+        deletedWorkspaces: deletedWorkspacesForUser(user),
         invitations: invitationsForUser(user).map(publicInvitation),
       };
     }
@@ -1054,6 +1020,11 @@ export function createCloudAuth(deps) {
         error.status = 404;
         throw error;
       }
+      if (workspace.deletedAt) {
+        const error = new Error('Server is in Lost Space.');
+        error.status = 410;
+        throw error;
+      }
       const member = memberForUser(user.id, workspace.id);
       if (!member || (member.status && member.status !== 'active')) {
         const error = new Error('You are not a member of this server.');
@@ -1081,17 +1052,89 @@ export function createCloudAuth(deps) {
         error.status = 400;
         throw error;
       }
-      cloud.workspaces = cloud.workspaces.filter((item) => item.id !== workspace.id);
-      cloud.workspaceMembers = cloud.workspaceMembers.filter((item) => item.workspaceId !== workspace.id);
-      cloud.invitations = cloud.invitations.filter((item) => item.workspaceId !== workspace.id);
-      cloud.joinLinks = safeArray(cloud.joinLinks).filter((item) => item.workspaceId !== workspace.id);
-      cloud.pairingTokens = cloud.pairingTokens.filter((item) => item.workspaceId !== workspace.id);
-      cloud.computerTokens = cloud.computerTokens.filter((item) => item.workspaceId !== workspace.id);
-      const nextWorkspace = workspacesForUser(auth.user).find((item) => item.id !== workspace.id) || cloud.workspaces[0] || null;
+      const deletedAt = now();
+      workspace.deletedAt = deletedAt;
+      workspace.deletedBy = auth.user.id;
+      workspace.updatedAt = deletedAt;
+      const workspaceComputers = safeArray(state.computers).filter((computer) => computer.workspaceId === workspace.id);
+      const workspaceComputerIds = new Set(workspaceComputers.map((computer) => computer.id));
+      for (const computer of workspaceComputers) {
+        computer.status = 'disabled';
+        computer.disabledAt = computer.disabledAt || deletedAt;
+        computer.disconnectedAt = computer.disconnectedAt || deletedAt;
+        computer.disabledByServerDeletedAt = deletedAt;
+        computer.updatedAt = deletedAt;
+      }
+      for (const agent of safeArray(state.agents)) {
+        if (!workspaceComputerIds.has(agent.computerId)) continue;
+        agent.status = 'disabled';
+        agent.disabledByServerDeletedAt = deletedAt;
+        agent.statusUpdatedAt = deletedAt;
+        agent.updatedAt = deletedAt;
+      }
+      for (const joinLink of safeArray(cloud.joinLinks)) {
+        if (joinLink.workspaceId === workspace.id && !joinLink.revokedAt) {
+          joinLink.revokedAt = deletedAt;
+          joinLink.revokedBy = auth.user.id;
+          joinLink.updatedAt = deletedAt;
+        }
+      }
+      for (const pair of safeArray(cloud.pairingTokens)) {
+        if (pair.workspaceId === workspace.id && !pair.revokedAt && !pair.consumedAt) pair.revokedAt = deletedAt;
+      }
+      for (const token of safeArray(cloud.computerTokens)) {
+        if (token.workspaceId === workspace.id && !token.revokedAt) token.revokedAt = deletedAt;
+      }
+      const nextWorkspace = workspacesForUser(auth.user).find((item) => item.id !== workspace.id) || null;
       state.connection.workspaceId = nextWorkspace?.id || 'local';
-      console.info(`[cloud-auth] console server deleted workspace=${workspace.id} slug=${workspace.slug || workspace.id} actor=${auth.user.id}`);
+      console.info(`[cloud-auth] console server soft-deleted workspace=${workspace.id} slug=${workspace.slug || workspace.id} actor=${auth.user.id}`);
       await persistCloudState();
       return { deleted: workspace, nextWorkspace };
+    }
+
+    async function restoreConsoleServer(slug, req) {
+      const user = requireAuthenticatedUser(req);
+      const normalizedSlug = String(slug || '').trim().toLowerCase();
+      const cloud = ensureCloudState();
+      const workspace = cloud.workspaces.find((item) => (
+        String(item.slug || item.id || '').toLowerCase() === normalizedSlug
+      ));
+      if (!workspace || !workspace.deletedAt) {
+        const error = new Error('Server was not found in Lost Space.');
+        error.status = 404;
+        throw error;
+      }
+      const member = memberForUser(user.id, workspace.id);
+      if (!member || (member.status && member.status !== 'active')) {
+        const error = new Error('You are not a member of this server.');
+        error.status = 403;
+        throw error;
+      }
+      const restoredAt = now();
+      workspace.deletedAt = null;
+      workspace.deletedBy = null;
+      workspace.restoredAt = restoredAt;
+      workspace.updatedAt = restoredAt;
+      const workspaceComputers = safeArray(state.computers).filter((computer) => computer.workspaceId === workspace.id);
+      const workspaceComputerIds = new Set(workspaceComputers.map((computer) => computer.id));
+      for (const computer of workspaceComputers) {
+        if (!computer.disabledByServerDeletedAt) continue;
+        computer.status = 'offline';
+        computer.disabledAt = null;
+        computer.disabledByServerDeletedAt = null;
+        computer.updatedAt = restoredAt;
+      }
+      for (const agent of safeArray(state.agents)) {
+        if (!workspaceComputerIds.has(agent.computerId) || !agent.disabledByServerDeletedAt) continue;
+        agent.status = 'idle';
+        agent.disabledByServerDeletedAt = null;
+        agent.statusUpdatedAt = restoredAt;
+        agent.updatedAt = restoredAt;
+      }
+      state.connection.workspaceId = workspace.id;
+      console.info(`[cloud-auth] console server restored workspace=${workspace.id} slug=${workspace.slug || workspace.id} user=${user.id}`);
+      await persistCloudState();
+      return { server: workspace, member };
     }
 
     async function updateServerProfile(body, req) {
@@ -1140,7 +1183,22 @@ export function createCloudAuth(deps) {
       const rawMaxUses = Number(body.maxUses || 0);
       const maxUses = Number.isFinite(rawMaxUses) && rawMaxUses > 0 ? Math.floor(rawMaxUses) : 0;
       let expiresAt = null;
-      if (body.expiresAt) {
+      if (body.expiresIn && body.expiresIn !== 'never') {
+        const ttlByKey = {
+          '1h': 60 * 60 * 1000,
+          '12h': 12 * 60 * 60 * 1000,
+          '24h': 24 * 60 * 60 * 1000,
+          '30d': 30 * 24 * 60 * 60 * 1000,
+          '365d': 365 * 24 * 60 * 60 * 1000,
+        };
+        const ttlMs = ttlByKey[String(body.expiresIn || '').trim()];
+        if (!ttlMs) {
+          const error = new Error('Join link expiry duration is invalid.');
+          error.status = 400;
+          throw error;
+        }
+        expiresAt = new Date(Date.now() + ttlMs).toISOString();
+      } else if (body.expiresAt) {
         const expires = new Date(body.expiresAt);
         if (Number.isNaN(expires.getTime())) {
           const error = new Error('Join link expiry is invalid.');
@@ -1836,7 +1894,7 @@ export function createCloudAuth(deps) {
       const capabilities = member ? cloudCapabilitiesForRole(member.role) : {};
       const canManageCloud = Boolean(capabilities.manage_cloud_connection);
       const canSeeDirectory = !cloud.users.length || Boolean(member);
-      const ownConsoleState = user ? consoleStateForUser(user) : { workspaces: [], invitations: [] };
+      const ownConsoleState = user ? consoleStateForUser(user) : { workspaces: [], deletedWorkspaces: [], invitations: [] };
       const workspaceMembers = workspace
         ? cloud.workspaceMembers.filter((item) => item.workspaceId === workspace.id)
         : [];
@@ -1858,6 +1916,7 @@ export function createCloudAuth(deps) {
         },
         workspace,
         workspaces: ownConsoleState.workspaces,
+        deletedWorkspaces: ownConsoleState.deletedWorkspaces || [],
         members: canSeeDirectory ? workspaceMembers.map(publicMember) : [],
         invitations: member ? cloud.invitations.map(publicInvitation) : ownConsoleState.invitations,
         joinLinks: canManageCloud ? safeArray(cloud.joinLinks)
@@ -1903,6 +1962,7 @@ export function createCloudAuth(deps) {
       createConsoleServer,
       switchConsoleServer,
       deleteConsoleServer,
+      restoreConsoleServer,
       updateServerProfile,
       createJoinLink,
       joinLinkStatus,
