@@ -338,7 +338,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'set-rail-tab') {
       if (target.dataset.railTab === 'members') {
-        const agentId = openMembersNav();
+        const agentId = openMembersNav({ preserveSpace: activeView === 'space' });
         localStorage.setItem('railTab', railTab);
         render();
         if (agentId) loadAgentSkills(agentId).catch((error) => toast(error.message));
@@ -375,7 +375,7 @@ document.addEventListener('click', async (event) => {
         selectedComputerId = null;
         workspaceActivityDrawerOpen = false;
       } else if (nav === 'members') {
-        const agentId = openMembersNav();
+        const agentId = openMembersNav({ preserveSpace: activeView === 'space' });
         if (agentId) loadAgentSkills(agentId).catch((error) => toast(error.message));
       } else if (nav === 'desktop') {
         railTab = 'computers';
@@ -429,6 +429,26 @@ document.addEventListener('click', async (event) => {
       syncBrowserRouteForActiveView();
       maybeWarmCurrentAgent();
       loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
+    }
+    if (action === 'select-human-inspector') {
+      selectedHumanId = target.dataset.id;
+      selectedAgentId = null;
+      selectedComputerId = null;
+      agentDetailEditState = { field: null };
+      agentEnvEditState = null;
+      humanDescriptionEditState = { humanId: null };
+      threadMessageId = null;
+      workspaceActivityDrawerOpen = false;
+      selectedTaskId = null;
+      selectedProjectFile = null;
+      selectedAgentWorkspaceFile = null;
+      modal = null;
+      if (activeView !== 'space') {
+        activeView = 'members';
+        railTab = 'members';
+      }
+      render();
+      if (activeView === 'members') syncBrowserRouteForActiveView();
     }
     if (action === 'select-human') {
       selectedHumanId = target.dataset.id;

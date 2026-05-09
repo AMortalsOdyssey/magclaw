@@ -1766,6 +1766,11 @@ function renderInspector() {
     if (agent) return renderAgentDetail(agent);
   }
 
+  if (selectedHumanId) {
+    const human = humanByIdAny(selectedHumanId);
+    if (human) return renderHumanDetail(human);
+  }
+
   if (selectedTaskId) {
     const task = byId(appState.tasks, selectedTaskId);
     if (task) return renderTaskDetail(task);

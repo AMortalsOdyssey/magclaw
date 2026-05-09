@@ -326,14 +326,18 @@ function restoreMembersLayout() {
   return null;
 }
 
-function openMembersNav() {
+function openMembersNav({ preserveSpace = false } = {}) {
   railTab = 'members';
-  activeView = 'members';
   selectedAgentId = null;
   selectedHumanId = null;
   selectedComputerId = null;
   clearNonAgentInspectors();
-  membersLayout = normalizeMembersLayout({ mode: 'directory' });
+  if (preserveSpace && activeView === 'space') {
+    membersLayout = normalizeMembersLayout({ mode: 'channel' });
+  } else {
+    activeView = 'members';
+    membersLayout = normalizeMembersLayout({ mode: 'directory' });
+  }
   return null;
 }
 
@@ -456,9 +460,23 @@ function agentWarmRequestKey(agent) {
   return [
     agent?.id || '',
     agent?.runtimeLastStartedAt || '',
-    agent?.runtimeWarmAt || '',
     agent?.runtimeLastTurnAt || '',
   ].join(':');
+}
+
+function timestampMs(value) {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function agentHasWarmRuntimeSession(agent) {
+  const startedAt = timestampMs(agent?.runtimeLastStartedAt);
+  const warmAt = timestampMs(agent?.runtimeWarmAt);
+  const lastTurnAt = timestampMs(agent?.runtimeLastTurnAt);
+  const warmEnoughAt = Math.max(warmAt, lastTurnAt);
+  if (!warmEnoughAt) return false;
+  return !startedAt || warmEnoughAt >= startedAt;
 }
 
 function selectedWarmableAgent() {
@@ -476,6 +494,7 @@ function maybeWarmAgent(agent, { spaceType = selectedSpaceType, spaceId = select
   const runtime = String(agent.runtime || '').toLowerCase();
   if (runtime && !runtime.includes('codex')) return;
   if (['thinking', 'working', 'starting', 'running', 'queued', 'warming'].includes(String(agent.status || '').toLowerCase())) return;
+  if (agentHasWarmRuntimeSession(agent)) return;
   const key = agentWarmRequestKey(agent);
   if (agentWarmRequests.has(key)) return;
   agentWarmRequests.add(key);

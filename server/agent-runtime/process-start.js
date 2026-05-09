@@ -145,6 +145,64 @@ async function startClaudeAgent(agent, proc, workspace) {
   });
 }
 
+function commandRuns(command, args = ['--version'], timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    const value = String(command || '').trim();
+    if (!value) {
+      resolve(false);
+      return;
+    }
+    let child = null;
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(Boolean(ok));
+    };
+    const timer = setTimeout(() => {
+      try { child?.kill?.(); } catch {}
+      finish(false);
+    }, timeoutMs);
+    try {
+      child = spawn(value, args, {
+        stdio: ['ignore', 'ignore', 'ignore'],
+        env: { ...process.env },
+      });
+      child.on('error', () => finish(false));
+      child.on('close', (code) => finish(code === 0));
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+async function resolveCodexSpawnCommand(agent) {
+  const configured = String(state.settings?.codexPath || '').trim();
+  const macAppBinary = '/Applications/Codex.app/Contents/Resources/codex';
+  const candidates = [...new Set([
+    configured,
+    process.env.CODEX_PATH,
+    process.env.MAGCLAW_CODEX_PATH,
+    macAppBinary,
+    'codex',
+  ].map((item) => String(item || '').trim()).filter(Boolean))];
+  for (const command of candidates) {
+    if (!(await commandRuns(command))) continue;
+    if (configured && command !== configured) {
+      state.settings.codexPath = command;
+      addSystemEvent('codex_path_repaired', `${agent.name} switched Codex path from a stale configured value.`, {
+        agentId: agent.id,
+        previousCodexPath: configured,
+        codexPath: command,
+      });
+      await persistState();
+    }
+    return command;
+  }
+  return configured || 'codex';
+}
+
 async function startCodexAgent(agent, proc, workspace) {
   const standingPrompt = createAgentStandingPrompt(agent, proc.spaceType, proc.spaceId);
   const promptMessages = proc.inbox.slice();
@@ -153,6 +211,7 @@ async function startCodexAgent(agent, proc, workspace) {
   const runtime = resolveCodexRuntime(agent, promptMessages);
   const args = ['app-server', ...magclawMcpConfigArgs(agent), '--listen', 'stdio://'];
   const codexHome = await prepareAgentCodexHome(agent);
+  const codexCommand = await resolveCodexSpawnCommand(agent);
 
   proc.requestId = 0;
   proc.workspace = workspace;
@@ -201,7 +260,7 @@ async function startCodexAgent(agent, proc, workspace) {
     reasoningEffort: runtime.reasoningEffort || null,
   });
 
-  const child = spawn(state.settings.codexPath || 'codex', args, {
+  const child = spawn(codexCommand, args, {
     cwd: workspace,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {

@@ -795,21 +795,44 @@ test('members navigation opens the directory before drilling into agents', async
   const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const leftNavSource = app.slice(app.indexOf("if (action === 'set-left-nav')"), app.indexOf("if (action === 'select-agent')"));
+  const setRailSource = app.slice(app.indexOf("if (action === 'set-rail-tab')"), app.indexOf("if (action === 'set-left-nav')"));
   const selectAgentSource = app.slice(app.indexOf("if (action === 'select-agent')"), app.indexOf("if (action === 'close-agent-detail')"));
 
   assert.match(app, /let membersLayout = normalizeMembersLayout\(initialUiState\.membersLayout\)/);
   assert.match(app, /function rememberMembersLayoutFromCurrent\(\)/);
   assert.match(app, /function restoreMembersLayout\(\)/);
-  assert.match(app, /function openMembersNav\(\)/);
+  assert.match(app, /function openMembersNav\(\{ preserveSpace = false \} = \{\}\)/);
   assert.match(app, /if \(activeView === 'members'\) return renderMembersMain\(\)/);
   assert.match(app, /function renderInspector\(\) \{\s*if \(activeView === 'members'\) return '';/);
   assert.doesNotMatch(app, /if \(activeView === 'members' && !selectedAgentId\) \{\s*activeView = 'space'/);
-  assert.match(leftNavSource, /const agentId = openMembersNav\(\)/);
+  assert.match(leftNavSource, /const agentId = openMembersNav\(\{ preserveSpace: activeView === 'space' \}\)/);
+  assert.match(setRailSource, /const agentId = openMembersNav\(\{ preserveSpace: activeView === 'space' \}\)/);
   assert.match(app, /activeView = 'members';[\s\S]*membersLayout = normalizeMembersLayout\(\{ mode: 'directory'/);
+  assert.match(app, /membersLayout = normalizeMembersLayout\(\{ mode: 'channel' \}\)/);
   assert.doesNotMatch(leftNavSource, /channelAssignableAgents\(\)\[0\]/);
   assert.match(selectAgentSource, /if \(railTab === 'members'\) \{[\s\S]*activeView = 'members'[\s\S]*rememberMembersLayoutFromCurrent\(\)/);
   assert.match(styles, /\.members-page/);
   assert.match(styles, /\.workspace > \.agent-detail-shell/);
+});
+
+test('message human avatars open right-side human details without changing the chat route', async () => {
+  const app = await readAppSource();
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const avatarSource = app.slice(app.indexOf('function renderHumanIdentityButton'), app.indexOf('function renderActorName'));
+  const inspectorSource = app.slice(app.indexOf('function renderInspector()'), app.indexOf('function renderProjectFilePreview()'));
+  const clickSource = app.slice(app.indexOf("if (action === 'select-human-inspector')"), app.indexOf("if (action === 'select-human')"));
+  const subtitleSource = app.slice(app.indexOf('function actorSubtitle'), app.indexOf('function renderMentionChips'));
+
+  assert.match(avatarSource, /data-action="select-human-inspector"/);
+  assert.match(clickSource, /if \(activeView !== 'space'\)/);
+  assert.match(clickSource, /if \(activeView === 'members'\) syncBrowserRouteForActiveView\(\)/);
+  assert.match(inspectorSource, /if \(selectedHumanId\)/);
+  assert.match(subtitleSource, /humanByIdAny/);
+  assert.match(subtitleSource, /cloudMemberForHuman/);
+  assert.match(subtitleSource, /cloudMemberDisplayRole/);
+  assert.doesNotMatch(subtitleSource, /channelOwnerId[\s\S]*admin/);
+  assert.match(styles, /\.avatar\.human-avatar-cell/);
+  assert.match(styles, /\.human-identity-button/);
 });
 
 test('dm chat and task empty states use Slock-style simple surfaces', async () => {
@@ -1098,6 +1121,29 @@ test('agent warmup renders as Warming with a distinct pink status dot', async ()
   assert.match(agentListSource, /const status = agentDisplayStatus\(agent\)/);
   assert.match(profileSource, /presenceClass\(agentDisplayStatus\(agent\)\)/);
   assert.match(styles, /\.avatar-status-dot\.status-warming \{[\s\S]*background: var\(--slock-pink\)/);
+});
+
+test('agent warmup is session-scoped and not retriggered by every state refresh', async () => {
+  const app = await readAppSource();
+  const refreshSource = app.slice(app.indexOf('async function refreshState()'), app.indexOf('function cloudAuthErrorMessage'));
+  const warmSource = app.slice(app.indexOf('function agentWarmRequestKey'), app.indexOf('function readAvatarFileAsDataUrl'));
+
+  assert.match(warmSource, /function agentHasWarmRuntimeSession\(agent\)/);
+  assert.match(warmSource, /agent\?\.runtimeWarmAt/);
+  assert.match(warmSource, /agent\?\.runtimeLastTurnAt/);
+  assert.match(warmSource, /if \(agentHasWarmRuntimeSession\(agent\)\) return;/);
+  assert.doesNotMatch(refreshSource, /maybeWarmCurrentAgent\(\)/);
+});
+
+test('codex agent startup repairs stale configured Codex paths before spawning', async () => {
+  const source = await readFile(new URL('../server/agent-runtime/process-start.js', import.meta.url), 'utf8');
+
+  assert.match(source, /async function resolveCodexSpawnCommand\(agent\)/);
+  assert.match(source, /process\.env\.CODEX_PATH/);
+  assert.match(source, /state\.settings\.codexPath = command/);
+  assert.match(source, /codex_path_repaired/);
+  assert.match(source, /const codexCommand = await resolveCodexSpawnCommand\(agent\)/);
+  assert.match(source, /spawn\(codexCommand, args/);
 });
 
 test('message rows re-render when author presence changes from heartbeat', async () => {

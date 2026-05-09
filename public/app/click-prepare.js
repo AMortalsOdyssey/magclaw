@@ -100,6 +100,7 @@ async function prepareDocumentClick(event) {
     'toggle-server-switcher',
     'open-console-server-switcher',
     'select-agent',
+    'select-human-inspector',
     'select-human',
     'select-computer',
     'close-agent-detail',

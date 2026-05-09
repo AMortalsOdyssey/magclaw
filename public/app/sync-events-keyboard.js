@@ -21,7 +21,6 @@ async function refreshState() {
     await loadInstalledRuntimes().catch(() => {});
   }
   render();
-  maybeWarmCurrentAgent();
 }
 
 function cloudAuthErrorMessage(error, { interactive = false } = {}) {

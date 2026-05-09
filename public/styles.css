@@ -1348,12 +1348,14 @@ button:disabled {
   opacity: 1;
 }
 
-.avatar.agent-avatar-cell {
+.avatar.agent-avatar-cell,
+.avatar.human-avatar-cell {
   overflow: visible;
   padding: 0;
 }
 
 .agent-identity-button,
+.human-identity-button,
 .agent-author-name,
 .member-profile-btn {
   position: relative;
@@ -1364,12 +1366,14 @@ button:disabled {
   text-align: left;
 }
 
-.agent-identity-button {
+.agent-identity-button,
+.human-identity-button {
   display: grid;
   place-items: center;
   width: 100%;
   height: 100%;
   padding: 0;
+  cursor: pointer;
 }
 
 .agent-author-name {

@@ -29,12 +29,13 @@ function getChannelMembers(channelId) {
   const humans = [];
   const seenHumans = new Set();
   for (const id of humanIds) {
-    const human = humansInWorkspace.find((item) => (
+    const human = (typeof humanByIdAny === 'function' ? humanByIdAny(id) : null)
+      || humansInWorkspace.find((item) => (
       item.id === id
       || item.cloudMemberId === id
       || item.authUserId === id
       || (id === 'hum_local' && typeof humanIsCurrent === 'function' && humanIsCurrent(item))
-    )) || (typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState.humans, id));
+    )) || byId(appState.humans, id);
     if (!human) continue;
     const key = human.authUserId || human.email || human.id;
     if (seenHumans.has(key)) continue;
@@ -247,9 +248,12 @@ function actorSubtitle(authorId, authorType, message) {
     return agent?.description || agent?.runtime || 'Agent';
   }
   if (authorType === 'human') {
-    const human = byId(appState.humans, authorId);
-    const channelOwnerId = message?.spaceType === 'channel' ? byId(appState.channels, message.spaceId)?.ownerId : null;
-    return human?.role || (human?.id === channelOwnerId ? 'admin' : 'human');
+    const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState.humans, authorId);
+    const member = human && typeof cloudMemberForHuman === 'function' ? cloudMemberForHuman(human) : null;
+    const role = member && typeof cloudMemberDisplayRole === 'function'
+      ? cloudMemberDisplayRole(member)
+      : human?.role || 'human';
+    return String(role || 'human').toLowerCase();
   }
   return 'system';
 }

@@ -33,7 +33,7 @@ function shortId(id) {
 
 function displayName(id) {
   if (id === 'agt_codex') return 'Codex Local';
-  const human = byId(appState?.humans, id);
+  const human = typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id);
   if (human) return human.name;
   const agent = byId(appState?.agents, id);
   if (agent) return agent.name;
@@ -56,7 +56,7 @@ function getAvatarHtml(id, type, cssClass = '') {
     if (agent?.avatar) {
       return `<img src="${escapeHtml(agent.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(agent.name)}" />`;
     }
-    const human = byId(appState?.humans, id);
+    const human = typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id);
     if (human?.avatar) {
       return `<img src="${escapeHtml(human.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(human.name || 'Human')}" />`;
     }
@@ -97,9 +97,22 @@ function renderAgentIdentityButton(agentId, className = '') {
   `;
 }
 
+function renderHumanIdentityButton(humanId, className = '') {
+  const human = typeof humanByIdAny === 'function' ? humanByIdAny(humanId) : byId(appState?.humans, humanId);
+  if (!human) return getAvatarHtml(humanId, 'human', 'avatar-inner');
+  return `
+    <button class="human-identity-button ${className}" type="button" data-action="select-human-inspector" data-id="${escapeHtml(human.id)}" aria-label="View ${escapeHtml(human.name || 'Human')}">
+      ${getAvatarHtml(human.id, 'human', 'avatar-inner')}
+    </button>
+  `;
+}
+
 function renderActorAvatar(authorId, authorType) {
   if (authorType === 'agent') {
     return `<div class="avatar agent-avatar-cell">${renderAgentIdentityButton(authorId, 'agent-avatar-button')}${agentStatusDot(authorId, authorType)}</div>`;
+  }
+  if (authorType === 'human') {
+    return `<div class="avatar human-avatar-cell">${renderHumanIdentityButton(authorId, 'human-avatar-button')}${humanStatusDot(authorId, authorType)}</div>`;
   }
   return `<div class="avatar">${getAvatarHtml(authorId, authorType, 'avatar-inner')}${humanStatusDot(authorId, authorType)}</div>`;
 }
