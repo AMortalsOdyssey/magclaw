@@ -2,12 +2,22 @@
 import http from 'node:http';
 import https from 'node:https';
 import crypto from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-const DAEMON_VERSION = '0.1.0-cloud';
+function readDaemonVersion() {
+  try {
+    const packageUrl = new URL('../../daemon/package.json', import.meta.url);
+    const pkg = JSON.parse(readFileSync(packageUrl, 'utf8'));
+    return String(pkg.version || '0.0.0');
+  } catch {
+    return '0.0.0';
+  }
+}
+
+const DAEMON_VERSION = readDaemonVersion();
 
 function parseArgs(argv) {
   const args = {};

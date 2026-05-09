@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -134,12 +135,22 @@ export function createSystemServices(deps) {
       node: process.version,
       platform: `${os.platform()} ${os.arch()}`,
       host: os.hostname(),
-      codexPath: state?.settings?.codexPath || 'codex',
+      codexPath: state?.settings?.codexPath || defaultCodexPath(),
+      daemonPackageVersion: localDaemonPackageVersion(),
     };
+  }
+
+  function localDaemonPackageVersion() {
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(ROOT, 'daemon', 'package.json'), 'utf8'));
+      return String(pkg.version || '');
+    } catch {
+      return '';
+    }
   }
   
   async function getRuntimeInfo() {
-    const codexPath = state.settings.codexPath || 'codex';
+    const codexPath = await resolveCodexPath();
     const version = await execText(codexPath, ['--version']).catch((error) => error.message);
     return {
       ...runtimeSnapshot(),
@@ -147,6 +158,51 @@ export function createSystemServices(deps) {
       port: PORT,
       dataDir: DATA_DIR,
     };
+  }
+
+  function defaultCodexPath() {
+    const macAppBinary = '/Applications/Codex.app/Contents/Resources/codex';
+    if (existsSync(macAppBinary)) return macAppBinary;
+    return 'codex';
+  }
+
+  async function resolveCodexPath() {
+    const configured = state.settings?.codexPath || '';
+    const candidates = [configured, defaultCodexPath(), 'codex']
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+    for (const candidate of [...new Set(candidates)]) {
+      try {
+        await execText(candidate, ['--version']);
+        return candidate;
+      } catch {
+        // Keep trying known fallbacks so a stale CODEX_PATH does not hide Codex.app.
+      }
+    }
+    return configured || defaultCodexPath();
+  }
+
+  function executableCandidates(command) {
+    return [...new Set([
+      command,
+      path.join(path.dirname(process.execPath), command),
+      path.join(os.homedir(), '.local', 'bin', command),
+    ].filter(Boolean))];
+  }
+
+  async function resolveCommandVersion(command) {
+    let lastError = null;
+    for (const candidate of executableCandidates(command)) {
+      try {
+        return {
+          path: candidate,
+          version: (await execText(candidate, ['--version'])).trim(),
+        };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error(`${command} was not found`);
   }
   
   async function getCodexModels(codexPath) {
@@ -184,7 +240,7 @@ export function createSystemServices(deps) {
   
     // Codex CLI
     try {
-      const codexPath = state.settings.codexPath || 'codex';
+      const codexPath = await resolveCodexPath();
       const version = await execText(codexPath, ['--version']);
       const { models, defaultModel, reasoningEfforts } = await getCodexModels(codexPath);
       runtimes.push({
@@ -205,12 +261,12 @@ export function createSystemServices(deps) {
   
     // Claude Code
     try {
-      const claudeVersion = await execText('claude', ['--version']);
+      const claude = await resolveCommandVersion('claude');
       runtimes.push({
         id: 'claude-code',
         name: 'Claude Code',
-        path: 'claude',
-        version: claudeVersion.trim(),
+        path: claude.path,
+        version: claude.version,
         installed: true,
         models: ['claude-sonnet-4-6', 'claude-opus-4-7', 'claude-haiku-4-5-20251001'],
         defaultModel: 'claude-sonnet-4-6',
@@ -221,12 +277,12 @@ export function createSystemServices(deps) {
   
     // Kimi CLI
     try {
-      const kimiVersion = await execText('kimi', ['--version']);
+      const kimi = await resolveCommandVersion('kimi');
       runtimes.push({
         id: 'kimi',
         name: 'Kimi CLI',
-        path: 'kimi',
-        version: kimiVersion.trim(),
+        path: kimi.path,
+        version: kimi.version,
         installed: true,
         createSupported: false,
         models: ['kimi-k2-0905', 'kimi-k2-turbo-preview'],
@@ -241,16 +297,20 @@ export function createSystemServices(deps) {
       let cursorPath = 'cursor-agent';
       let cursorVersion = '';
       try {
-        cursorVersion = await execText(cursorPath, ['--version']);
+        const cursor = await resolveCommandVersion(cursorPath);
+        cursorPath = cursor.path;
+        cursorVersion = cursor.version;
       } catch {
         cursorPath = 'cursor';
-        cursorVersion = await execText(cursorPath, ['--version']);
+        const cursor = await resolveCommandVersion(cursorPath);
+        cursorPath = cursor.path;
+        cursorVersion = cursor.version;
       }
       runtimes.push({
         id: 'cursor',
         name: 'Cursor CLI',
         path: cursorPath,
-        version: cursorVersion.trim(),
+        version: cursorVersion,
         installed: true,
         createSupported: false,
         models: ['auto'],
@@ -262,12 +322,12 @@ export function createSystemServices(deps) {
 
     // Gemini CLI
     try {
-      const geminiVersion = await execText('gemini', ['--version']);
+      const gemini = await resolveCommandVersion('gemini');
       runtimes.push({
         id: 'gemini',
         name: 'Gemini CLI',
-        path: 'gemini',
-        version: geminiVersion.trim(),
+        path: gemini.path,
+        version: gemini.version,
         installed: true,
         createSupported: false,
         models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
@@ -279,12 +339,12 @@ export function createSystemServices(deps) {
 
     // Copilot CLI
     try {
-      const copilotVersion = await execText('copilot', ['--version']);
+      const copilot = await resolveCommandVersion('copilot');
       runtimes.push({
         id: 'copilot',
         name: 'Copilot CLI',
-        path: 'copilot',
-        version: copilotVersion.trim(),
+        path: copilot.path,
+        version: copilot.version,
         installed: true,
         createSupported: false,
         models: ['gpt-5', 'gpt-4.1', 'claude-sonnet-4.5'],
@@ -296,12 +356,12 @@ export function createSystemServices(deps) {
 
     // OpenCode
     try {
-      const openCodeVersion = await execText('opencode', ['--version']);
+      const openCode = await resolveCommandVersion('opencode');
       runtimes.push({
         id: 'opencode',
         name: 'OpenCode',
-        path: 'opencode',
-        version: openCodeVersion.trim(),
+        path: openCode.path,
+        version: openCode.version,
         installed: true,
         createSupported: false,
         models: ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'],

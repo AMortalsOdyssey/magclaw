@@ -892,6 +892,7 @@ function collabApiDeps() {
     addCollabEvent,
     agentParticipatesInChannels,
     broadcastState,
+    daemonRelay,
     findAgent,
     findChannel,
 	    findComputer,

@@ -307,6 +307,10 @@ export function createDaemonRelay(deps) {
     return send(connections.get(computerId), payload);
   }
 
+  function computerIsDisabled(computer) {
+    return String(computer?.status || '').toLowerCase() === 'disabled' || Boolean(computer?.disabledAt);
+  }
+
   function markComputerDisconnected(connection) {
     if (!connection?.computerId) return;
     if (connection.disconnected) return;
@@ -314,7 +318,7 @@ export function createDaemonRelay(deps) {
     if (connections.get(connection.computerId) === connection) connections.delete(connection.computerId);
     const computer = findComputer(connection.computerId);
     if (computer) {
-      computer.status = 'offline';
+      if (!computerIsDisabled(computer)) computer.status = 'offline';
       computer.disconnectedAt = now();
       computer.updatedAt = now();
     }
@@ -334,7 +338,7 @@ export function createDaemonRelay(deps) {
     connection.workspaceId = tokenRecord.workspaceId || computer.workspaceId || cloud().workspaces[0]?.id;
     connection.tokenId = tokenRecord.id;
     connections.set(computer.id, connection);
-    computer.status = 'connected';
+    if (!computerIsDisabled(computer)) computer.status = 'connected';
     computer.connectedVia = 'daemon';
     computer.lastSeenAt = now();
     computer.daemonConnectedAt = now();
@@ -380,6 +384,7 @@ export function createDaemonRelay(deps) {
     if (!agent?.computerId || agent.computerId === 'cmp_local') return false;
     const computer = findComputer(agent.computerId);
     if (!computer) return false;
+    if (computerIsDisabled(computer)) return false;
     return computer.connectedVia === 'daemon'
       || Boolean(cloud().computerTokens.some((item) => item.computerId === computer.id && !item.revokedAt))
       || computer.status === 'connected';
@@ -389,6 +394,7 @@ export function createDaemonRelay(deps) {
     const store = cloud();
     const computer = findComputer(agent.computerId);
     if (!computer) return { queued: false, error: 'Computer not found.' };
+    if (computerIsDisabled(computer)) return { queued: false, error: 'Computer is disabled.' };
     const workspace = store.workspaces[0];
     const delivery = {
       id: makeId('adl'),
@@ -480,6 +486,19 @@ export function createDaemonRelay(deps) {
   async function handleReady(connection, message) {
     const computer = findComputer(connection.computerId);
     if (!computer) return;
+    if (computerIsDisabled(computer)) {
+      computer.status = 'disabled';
+      computer.lastSeenAt = now();
+      computer.updatedAt = now();
+      send(connection, {
+        type: 'error',
+        error: 'This computer is disabled in MagClaw Cloud.',
+      });
+      connection.socket.end();
+      await persistState();
+      broadcastState();
+      return;
+    }
     computer.hostname = String(message.hostname || computer.hostname || '');
     computer.name = String(message.name || computer.name || computer.hostname || os.hostname());
     if (message.machineFingerprint) computer.machineFingerprint = String(message.machineFingerprint);
@@ -658,6 +677,7 @@ export function createDaemonRelay(deps) {
       if (!pair) return { error: 'Invalid or expired pair token.' };
       const computer = findComputer(pair.computerId);
       if (!computer) return { error: 'Paired computer was not found.' };
+      if (computerIsDisabled(computer)) return { error: 'Computer is disabled.' };
       const issued = issueMachineToken(computer, pair);
       pair.consumedAt = now();
       return {
@@ -676,6 +696,7 @@ export function createDaemonRelay(deps) {
       if (!tokenRecord) return { error: 'Invalid or revoked machine token.' };
       const computer = findComputer(tokenRecord.computerId);
       if (!computer) return { error: 'Computer token is not linked to a computer.' };
+      if (computerIsDisabled(computer)) return { error: 'Computer is disabled.' };
       return {
         computer,
         tokenRecord,
@@ -761,9 +782,17 @@ export function createDaemonRelay(deps) {
 
   function publicRelayState() {
     return {
-      onlineComputerIds: [...connections.keys()],
+      onlineComputerIds: [...connections.keys()].filter((computerId) => !computerIsDisabled(findComputer(computerId))),
       daemonEvents: safeArray(cloud().daemonEvents).slice(0, 50),
     };
+  }
+
+  function disconnectComputer(computerId, reason = 'Computer disconnected.') {
+    const connection = connections.get(computerId);
+    if (!connection) return false;
+    send(connection, { type: 'error', error: reason });
+    connection.socket.end();
+    return true;
   }
 
   return {
@@ -771,6 +800,7 @@ export function createDaemonRelay(deps) {
     authenticateHttpRequest,
     createPairingToken,
     deliverToAgent,
+    disconnectComputer,
     handleUpgrade,
     publicRelayState,
     revokeComputerToken,

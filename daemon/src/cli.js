@@ -2,13 +2,12 @@ import http from 'node:http';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const DAEMON_VERSION = '0.1.0';
 export const DEFAULT_PROFILE = 'default';
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
 
@@ -16,6 +15,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
 const MCP_BRIDGE_PATH = path.join(PACKAGE_ROOT, 'src', 'mcp-bridge.js');
+const PACKAGE_JSON = (() => {
+  try {
+    return JSON.parse(readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+})();
+export const DAEMON_VERSION = String(PACKAGE_JSON.version || '0.0.0');
 const CAPABILITIES = [
   'agent:start',
   'agent:deliver',
@@ -275,7 +282,14 @@ function commandExists(command, env = process.env) {
   const result = process.platform === 'win32'
     ? commandOutput(checker, args, { env, timeoutMs: 1500 })
     : commandOutput('/bin/sh', ['-lc', `command -v ${JSON.stringify(command)}`], { env, timeoutMs: 1500 });
-  return result.ok ? result.stdout.split(/\r?\n/)[0] || command : '';
+  if (result.ok) return result.stdout.split(/\r?\n/)[0] || command;
+  for (const candidate of [
+    path.join(path.dirname(process.execPath), command),
+    path.join(os.homedir(), '.local', 'bin', command),
+  ]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return '';
 }
 
 function runtimeVersion(command, env = process.env) {
@@ -290,6 +304,19 @@ function codexAppServerCapable(command, env = process.env) {
   if (result.ok) return true;
   const output = `${result.stdout}\n${result.stderr}`.toLowerCase();
   return output.includes('app-server') || output.includes('listen') || output.includes('stdio');
+}
+
+function defaultCodexCommand(env = process.env) {
+  const macAppBinary = '/Applications/Codex.app/Contents/Resources/codex';
+  const candidates = [env.CODEX_PATH, env.MAGCLAW_CODEX_PATH, macAppBinary, 'codex']
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  for (const candidate of [...new Set(candidates)]) {
+    if (candidate.includes(path.sep) && !existsSync(candidate)) continue;
+    const result = commandOutput(candidate, ['--version'], { env, timeoutMs: 3000 });
+    if (result.ok) return candidate;
+  }
+  return candidates[0] || 'codex';
 }
 
 function codexRuntimeModels(command, env = process.env) {
@@ -338,7 +365,7 @@ function codexRuntimeModels(command, env = process.env) {
 }
 
 export async function detectRuntimes(env = process.env) {
-  const codexCommand = env.CODEX_PATH || env.MAGCLAW_CODEX_PATH || 'codex';
+  const codexCommand = defaultCodexCommand(env);
   const candidates = [
     {
       id: 'codex',
@@ -634,7 +661,7 @@ class CodexAgentSession {
   async start() {
     if (this.started) return;
     await this.prepare();
-    const codexCommand = this.env.CODEX_PATH || this.env.MAGCLAW_CODEX_PATH || 'codex';
+    const codexCommand = defaultCodexCommand(this.env);
     const args = ['app-server', ...codexMcpArgs({
       agentId: this.agent.id,
       serverUrl: this.serverUrl,

@@ -11,6 +11,7 @@ export async function handleCollabApi(req, res, url, deps) {
     agentParticipatesInChannels,
       broadcastState,
       currentActor,
+      daemonRelay,
       findAgent,
     findChannel,
     findComputer,
@@ -238,14 +239,18 @@ export async function handleCollabApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/computers') {
     const body = await readJson(req);
+    const createdAt = now();
     const computer = {
       id: makeId('cmp'),
       name: String(body.name || os.hostname()).trim(),
       os: String(body.os || `${os.platform()} ${os.arch()}`),
-      daemonVersion: String(body.daemonVersion || 'manual'),
+      daemonVersion: String(body.daemonVersion || ''),
       status: body.status || 'offline',
       runtimeIds: Array.isArray(body.runtimeIds) ? body.runtimeIds.map(String) : ['codex'],
-      createdAt: now(),
+      connectedVia: body.connectedVia || 'manual',
+      createdAt,
+      updatedAt: createdAt,
+      disabledAt: null,
     };
     state.computers.push(computer);
     addCollabEvent('computer_added', `Computer added: ${computer.name}`, { computerId: computer.id });
@@ -281,9 +286,27 @@ export async function handleCollabApi(req, res, url, deps) {
       return true;
     }
     const body = await readJson(req);
-    for (const key of ['name', 'os', 'daemonVersion', 'status']) {
+    for (const key of ['name', 'os', 'daemonVersion']) {
       if (body[key] !== undefined) computer[key] = String(body[key] || '').trim();
     }
+    if (body.status !== undefined) {
+      const nextStatus = String(body.status || '').trim().toLowerCase();
+      if (!['pairing', 'connected', 'offline', 'disabled'].includes(nextStatus)) {
+        sendError(res, 400, 'Unsupported computer status.');
+        return true;
+      }
+      computer.status = nextStatus;
+      if (nextStatus === 'disabled') {
+        computer.disabledAt = now();
+        computer.disconnectedAt = computer.disconnectedAt || computer.disabledAt;
+        daemonRelay?.disconnectComputer?.(computer.id, 'This computer was disabled in MagClaw Cloud.');
+        addCollabEvent('computer_disabled', `Computer disabled: ${computer.name}`, { computerId: computer.id });
+      } else if (computer.disabledAt) {
+        computer.disabledAt = null;
+        addCollabEvent('computer_enabled', `Computer enabled: ${computer.name}`, { computerId: computer.id });
+      }
+    }
+    computer.updatedAt = now();
     await persistState();
     broadcastState();
     sendJson(res, 200, { computer });

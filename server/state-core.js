@@ -170,7 +170,7 @@ export function createStateCore(deps) {
           id: 'cmp_local',
           name: hostName,
           os: `${os.platform()} ${os.arch()}`,
-          daemonVersion: 'local-dev',
+          daemonVersion: '',
           status: 'connected',
           runtimeIds: ['codex'],
           createdAt: seededAt,
@@ -654,6 +654,7 @@ export function createStateCore(deps) {
       computer.updatedAt = computer.updatedAt || computer.createdAt || now();
       computer.lastSeenAt = computer.lastSeenAt || null;
       computer.capabilities = Array.isArray(computer.capabilities) ? computer.capabilities : [];
+      if (computer.disabledAt) computer.status = 'disabled';
     }
   }
   
