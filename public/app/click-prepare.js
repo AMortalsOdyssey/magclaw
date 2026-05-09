@@ -65,7 +65,15 @@ async function prepareDocumentClick(event) {
   }
   const clickedTaskChannelFilter = event.target.closest('.task-channel-filter');
   const clickedSearchFilter = event.target.closest('.search-time-filter');
+  const clickedServerSwitcher = event.target.closest('.server-switcher-anchor');
   const target = event.target.closest('[data-action]');
+  if (serverSwitcherOpen && !clickedServerSwitcher) {
+    serverSwitcherOpen = false;
+    if (!target) {
+      render();
+      return;
+    }
+  }
   if (taskChannelMenuOpen && !clickedTaskChannelFilter) {
     taskChannelMenuOpen = false;
     if (!target) {
@@ -89,7 +97,11 @@ async function prepareDocumentClick(event) {
     'set-console-tab',
     'set-rail-tab',
     'toggle-sidebar-section',
+    'toggle-server-switcher',
+    'open-console-server-switcher',
     'select-agent',
+    'select-human',
+    'select-computer',
     'close-agent-detail',
     'set-agent-detail-tab',
     'toggle-agent-skill-section',
@@ -155,6 +167,7 @@ async function prepareDocumentClick(event) {
     'upload-agent-avatar',
     'random-profile-avatar',
     'reset-profile-avatar',
+    'reset-server-avatar',
     'random-cloud-auth-avatar',
     'reset-cloud-auth-avatar',
     'focus-member-invite-input',
@@ -168,6 +181,9 @@ async function prepareDocumentClick(event) {
     'open-member-manage',
     'open-member-action-confirm',
     'copy-member-reset-link',
+    'copy-join-link',
+    'start-all-computer-agents',
+    'scan-computer-workspaces',
       'toggle-receipt-popover',
   ]);
   // Environment variable actions: don't trigger refreshState

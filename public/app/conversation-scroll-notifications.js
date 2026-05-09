@@ -734,6 +734,12 @@ function ensureSelection() {
     agentEnvEditState = null;
     selectedAgentWorkspaceFile = null;
   }
+  if (selectedHumanId && !byId(appState.humans, selectedHumanId)) {
+    selectedHumanId = null;
+  }
+  if (selectedComputerId && !byId(appState.computers, selectedComputerId)) {
+    selectedComputerId = null;
+  }
   membersLayout = normalizeMembersLayout(membersLayout);
   if (membersLayout.agentId && !byId(appState.agents, membersLayout.agentId)) {
     membersLayout = normalizeMembersLayout({ mode: 'channel' });

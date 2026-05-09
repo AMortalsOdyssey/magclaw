@@ -219,6 +219,8 @@ function persistUiState() {
     consoleTab,
     threadMessageId,
     selectedAgentId,
+    selectedHumanId,
+    selectedComputerId,
     membersLayout,
   };
   writeJsonStorage(UI_STATE_KEY, payload);
@@ -278,6 +280,8 @@ function restoreMembersLayout() {
 
   activeView = 'members';
   selectedAgentId = null;
+  selectedHumanId = null;
+  selectedComputerId = null;
   clearNonAgentInspectors();
   membersLayout = normalizeMembersLayout({ mode: 'directory' });
   return null;

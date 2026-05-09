@@ -419,6 +419,29 @@ function renderEnvVarsList() {
   `).join('');
 }
 
+function runtimeOptionsForComputer(computerId) {
+  const computer = byId(appState.computers, computerId) || appState.computers?.[0] || {};
+  const supported = new Set(['codex', 'claude-code']);
+  const details = computerRuntimeDetails(computer);
+  const options = details
+    .filter((runtime) => supported.has(String(runtime.id || '').toLowerCase()))
+    .map((runtime) => {
+      const installedRuntime = installedRuntimes.find((item) => item.id === runtime.id || item.name === runtime.name);
+      return {
+        ...installedRuntime,
+        ...runtime,
+        name: runtime.name || installedRuntime?.name || runtimeNameForId(runtime.id),
+        installed: runtime.installed !== false,
+        modelNames: installedRuntime?.modelNames || installedRuntime?.models?.map((model) => ({ slug: model, name: model })) || [],
+        models: installedRuntime?.models || [],
+        defaultModel: installedRuntime?.defaultModel || '',
+        reasoningEffort: runtime.id === 'codex' ? (installedRuntime?.reasoningEffort || ['low', 'medium', 'high']) : [],
+        defaultReasoningEffort: installedRuntime?.defaultReasoningEffort || 'medium',
+      };
+    });
+  return options;
+}
+
 function renderAgentModal() {
   if (!cloudCan('manage_agents')) {
     return `
@@ -429,7 +452,20 @@ function renderAgentModal() {
       </div>
     `;
   }
-  const availableRuntimes = installedRuntimes.filter((rt) => rt.installed);
+  if (!cloudCan('manage_computers') && !(appState.computers || []).length) {
+    return `
+      ${modalHeader('CREATE AGENT', 'Computer required')}
+      <div class="modal-form">
+        <div class="empty-box small">Connect a Computer before creating cloud Agents.</div>
+        <button type="button" class="primary-btn" data-action="close-modal">Close</button>
+      </div>
+    `;
+  }
+  const defaultComputer = agentFormState.computerId || appState.computers?.[0]?.id || '';
+  const availableRuntimes = runtimeOptionsForComputer(defaultComputer);
+  if (!availableRuntimes.some((rt) => rt.id === selectedRuntimeId)) {
+    selectedRuntimeId = availableRuntimes[0]?.id || '';
+  }
   const currentRuntime = availableRuntimes.find((rt) => rt.id === selectedRuntimeId) || availableRuntimes[0];
   const models = currentRuntime?.models || [];
   const modelNames = currentRuntime?.modelNames || models.map(m => ({ slug: m, name: m }));
@@ -437,7 +473,6 @@ function renderAgentModal() {
   const hasReasoningEffort = Boolean(currentRuntime?.reasoningEffort?.length);
   const reasoningEfforts = currentRuntime?.reasoningEffort || [];
   const defaultReasoningEffort = agentFormState.reasoningEffort || currentRuntime?.defaultReasoningEffort || 'medium';
-  const defaultComputer = agentFormState.computerId || appState.computers?.[0]?.id || '';
 
   // Initialize avatar if not set
   if (!agentFormState.avatar) {
@@ -462,7 +497,7 @@ function renderAgentModal() {
       </div>
       <label>
         <span>COMPUTER <span class="required">*</span></span>
-        <select name="computerId">
+        <select name="computerId" id="agent-computer-select">
           ${(appState.computers || []).map((c) => `<option value="${c.id}" ${c.id === defaultComputer ? 'selected' : ''}>${escapeHtml(c.name)} (${escapeHtml(c.name)})</option>`).join('')}
         </select>
       </label>
@@ -478,12 +513,12 @@ function renderAgentModal() {
       <div class="form-field">
         <span>RUNTIME</span>
         <select name="runtime" id="agent-runtime-select">
-          ${installedRuntimes.map((rt) => {
+          ${availableRuntimes.length ? availableRuntimes.map((rt) => {
             const label = rt.installed
               ? `${rt.name}${rt.version ? ` (${rt.version})` : ''}`
               : `${rt.name} (not installed)`;
             return `<option value="${rt.id}" ${!rt.installed ? 'disabled' : ''} ${rt.id === selectedRuntimeId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-          }).join('')}
+          }).join('') : '<option value="" disabled selected>No supported runtime on this computer</option>'}
         </select>
       </div>
       <div class="form-field">
@@ -517,7 +552,7 @@ function renderAgentModal() {
       </details>
       <div class="modal-actions">
         <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
-        <button class="primary-btn" type="submit">Create Agent</button>
+        <button class="primary-btn" type="submit" ${currentRuntime ? '' : 'disabled'}>Create Agent</button>
       </div>
     </form>
   `;
@@ -588,26 +623,31 @@ function renderComputerModal() {
       </div>
     `;
   }
+  const command = latestPairingCommand?.command || '';
+  const connected = latestPairingCommand?.computer?.status === 'connected';
   return `
-    ${modalHeader('Add Computer', 'Local or remote runner')}
-    <form id="computer-form" class="modal-form">
-      <label><span>Name</span><input name="name" placeholder="Mac Studio" required /></label>
-      <label><span>OS</span><input name="os" placeholder="darwin arm64" /></label>
-      <label><span>Status</span><select name="status"><option>offline</option><option>connected</option></select></label>
-      <button class="primary-btn" type="submit">Add Computer</button>
-    </form>
+    ${modalHeader('CONNECT COMPUTER', 'Run this command on your computer to connect')}
+    <div class="modal-form connect-computer-modal">
+      <div class="pair-command-box">
+        <span>Run this command on your computer to connect:</span>
+        <code>${escapeHtml(command || 'Generating command...')}</code>
+        ${command ? '<button class="secondary-btn" type="button" data-action="copy-pairing-command">Copy command</button>' : ''}
+      </div>
+      <div class="pairing-wait-box ${connected ? 'connected' : ''}">
+        <span class="avatar-status-dot inline ${connected ? 'online' : 'queued'}"></span>
+        <strong>${connected ? 'Computer connected.' : 'Waiting for computer to connect...'}</strong>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+        <button type="button" class="primary-btn" data-action="close-modal" ${connected ? '' : 'disabled'}>Done</button>
+      </div>
+    </div>
   `;
 }
 
 function renderHumanModal() {
   if (appState.cloud?.auth?.currentUser) {
-    return `
-      ${modalHeader('Members', 'Cloud workspace directory')}
-      <div class="modal-form">
-        <div class="empty-box small">Invitations are managed from Settings → Members.</div>
-        <button class="primary-btn" type="button" data-action="set-settings-tab" data-tab="members">Open Members</button>
-      </div>
-    `;
+    return renderMemberInviteModal();
   }
   return `
     ${modalHeader('Invite Human', 'Local team placeholder')}

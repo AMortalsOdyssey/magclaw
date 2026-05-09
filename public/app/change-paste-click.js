@@ -29,6 +29,23 @@ document.addEventListener('change', async (event) => {
     await openAvatarCropModal({ source: avatar, target: 'cloud-auth' });
     return;
   }
+  if (event.target.id === 'server-avatar-file') {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > AGENT_AVATAR_UPLOAD_MAX_BYTES) {
+      toast('Avatar must be 10 MB or smaller');
+      event.target.value = '';
+      return;
+    }
+    const avatar = await readAvatarFileAsDataUrl(file);
+    event.target.value = '';
+    const input = document.querySelector('[data-server-avatar-input]');
+    if (input) input.value = avatar;
+    const preview = document.querySelector('.server-profile-avatar');
+    if (preview) preview.innerHTML = `<img class="server-profile-avatar-img" src="${escapeHtml(avatar)}" alt="">`;
+    toast('Avatar selected');
+    return;
+  }
   if (event.target.matches?.('.agent-avatar-upload')) {
     await uploadAgentAvatar(event.target).catch((error) => toast(error.message));
     return;
@@ -62,7 +79,16 @@ document.addEventListener('change', async (event) => {
   const form = event.target.closest('#agent-form');
   if (form) {
     const name = event.target.name;
-    if (name === 'computerId') agentFormState.computerId = event.target.value;
+    if (name === 'computerId') {
+      saveAgentFormState();
+      agentFormState.computerId = event.target.value;
+      const nextRuntime = runtimeOptionsForComputer(agentFormState.computerId)[0];
+      selectedRuntimeId = nextRuntime?.id || '';
+      agentFormState.model = '';
+      agentFormState.reasoningEffort = '';
+      render();
+      return;
+    }
     if (name === 'model') agentFormState.model = event.target.value;
     if (name === 'reasoningEffort') agentFormState.reasoningEffort = event.target.value;
   }
@@ -123,6 +149,8 @@ document.addEventListener('click', async (event) => {
       inspectorReturnThreadId = null;
       selectedProjectFile = null;
       selectedAgentId = null;
+      selectedHumanId = null;
+      selectedComputerId = null;
       selectedTaskId = null;
       selectedSavedRecordId = null;
       render();
@@ -138,6 +166,8 @@ document.addEventListener('click', async (event) => {
       workspaceActivityDrawerOpen = false;
       inspectorReturnThreadId = null;
       selectedAgentId = null;
+      selectedHumanId = null;
+      selectedComputerId = null;
       selectedTaskId = null;
       selectedProjectFile = null;
       selectedSavedRecordId = null;
@@ -153,9 +183,62 @@ document.addEventListener('click', async (event) => {
       workspaceActivityDrawerOpen = false;
       inspectorReturnThreadId = null;
       selectedAgentId = null;
+      selectedHumanId = null;
+      selectedComputerId = null;
       selectedTaskId = null;
       selectedProjectFile = null;
       selectedSavedRecordId = null;
+      render();
+      syncBrowserRouteForActiveView();
+    }
+    if (action === 'toggle-server-switcher') {
+      serverSwitcherOpen = !serverSwitcherOpen;
+      render();
+    }
+    if (action === 'reset-server-avatar') {
+      const input = document.querySelector('[data-server-avatar-input]');
+      if (input) input.value = '';
+      const preview = document.querySelector('.server-profile-avatar');
+      if (preview) preview.innerHTML = renderServerAvatar({ ...currentServerProfile(), avatar: '' }, 'server-profile-avatar-img');
+      toast('Server avatar reset');
+    }
+    if (action === 'open-console-server-switcher') {
+      serverSwitcherOpen = false;
+      activeView = 'console';
+      consoleTab = 'servers';
+      railTab = 'console';
+      modal = null;
+      threadMessageId = null;
+      workspaceActivityDrawerOpen = false;
+      inspectorReturnThreadId = null;
+      selectedAgentId = null;
+      selectedHumanId = null;
+      selectedComputerId = null;
+      selectedTaskId = null;
+      selectedProjectFile = null;
+      selectedSavedRecordId = null;
+      render();
+      syncBrowserRouteForActiveView();
+    }
+    if (action === 'switch-server') {
+      const slug = target.dataset.slug || '';
+      if (!slug) throw new Error('Server slug is missing.');
+      await api(`/api/console/servers/${encodeURIComponent(slug)}/switch`, { method: 'POST', body: '{}' });
+      serverSwitcherOpen = false;
+      activeView = 'space';
+      railTab = 'spaces';
+      selectedSpaceType = 'channel';
+      selectedSpaceId = appState.channels?.[0]?.id || selectedSpaceId || 'chan_all';
+      threadMessageId = null;
+      workspaceActivityDrawerOpen = false;
+      inspectorReturnThreadId = null;
+      selectedAgentId = null;
+      selectedHumanId = null;
+      selectedComputerId = null;
+      selectedTaskId = null;
+      selectedProjectFile = null;
+      selectedSavedRecordId = null;
+      toast('Server switched');
       render();
       syncBrowserRouteForActiveView();
     }
@@ -265,6 +348,8 @@ document.addEventListener('click', async (event) => {
       localStorage.setItem('railTab', railTab);
       if (railTab === 'spaces') {
         selectedAgentId = null;
+        selectedHumanId = null;
+        selectedComputerId = null;
       }
       selectedTaskId = null;
       render();
@@ -276,11 +361,15 @@ document.addEventListener('click', async (event) => {
         railTab = 'spaces';
         activeView = 'space';
         selectedAgentId = null;
+        selectedHumanId = null;
+        selectedComputerId = null;
         workspaceActivityDrawerOpen = false;
       } else if (nav === 'tasks') {
         railTab = 'spaces';
         activeView = 'tasks';
         selectedAgentId = null;
+        selectedHumanId = null;
+        selectedComputerId = null;
         workspaceActivityDrawerOpen = false;
       } else if (nav === 'members') {
         const agentId = openMembersNav();
@@ -289,16 +378,22 @@ document.addEventListener('click', async (event) => {
         railTab = 'computers';
         activeView = 'computers';
         selectedAgentId = null;
+        selectedHumanId = null;
+        selectedComputerId = null;
         workspaceActivityDrawerOpen = false;
       } else if (nav === 'console') {
         activeView = 'console';
         consoleTab = consoleTab || 'overview';
         selectedAgentId = null;
+        selectedHumanId = null;
+        selectedComputerId = null;
         workspaceActivityDrawerOpen = false;
       } else if (nav === 'settings') {
         railTab = 'settings';
         activeView = 'cloud';
         selectedAgentId = null;
+        selectedHumanId = null;
+        selectedComputerId = null;
         workspaceActivityDrawerOpen = false;
       }
       localStorage.setItem('railTab', railTab);
@@ -310,6 +405,8 @@ document.addEventListener('click', async (event) => {
       if (!installedRuntimes.length) await loadInstalledRuntimes();
       if (threadMessageId) inspectorReturnThreadId = threadMessageId;
       selectedAgentId = target.dataset.id;
+      selectedHumanId = null;
+      selectedComputerId = null;
       agentDetailTab = 'profile';
       agentDetailEditState = { field: null };
       agentEnvEditState = null;
@@ -324,8 +421,39 @@ document.addEventListener('click', async (event) => {
       }
       modal = null;
       render();
+      syncBrowserRouteForActiveView();
       maybeWarmCurrentAgent();
       loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
+    }
+    if (action === 'select-human') {
+      selectedHumanId = target.dataset.id;
+      selectedAgentId = null;
+      selectedComputerId = null;
+      activeView = 'members';
+      railTab = 'members';
+      threadMessageId = null;
+      workspaceActivityDrawerOpen = false;
+      selectedTaskId = null;
+      selectedProjectFile = null;
+      selectedAgentWorkspaceFile = null;
+      modal = null;
+      render();
+      syncBrowserRouteForActiveView();
+    }
+    if (action === 'select-computer') {
+      selectedComputerId = target.dataset.id;
+      selectedAgentId = null;
+      selectedHumanId = null;
+      activeView = 'computers';
+      railTab = 'computers';
+      threadMessageId = null;
+      workspaceActivityDrawerOpen = false;
+      selectedTaskId = null;
+      selectedProjectFile = null;
+      selectedAgentWorkspaceFile = null;
+      modal = null;
+      render();
+      syncBrowserRouteForActiveView();
     }
     if (action === 'close-agent-detail') {
       if (activeView === 'members') {
@@ -444,6 +572,8 @@ document.addEventListener('click', async (event) => {
         activeView = 'space';
         railTab = 'spaces';
         selectedAgentId = null;
+        selectedHumanId = null;
+        selectedComputerId = null;
         selectedTaskId = null;
         render();
         maybeWarmCurrentAgent();
@@ -457,9 +587,38 @@ document.addEventListener('click', async (event) => {
         activeView = 'space';
         railTab = 'spaces';
         selectedAgentId = null;
+        selectedHumanId = null;
+        selectedComputerId = null;
         selectedTaskId = null;
         maybeWarmAgent(byId(appState.agents, agentId), { spaceType: 'dm', spaceId: result.dm.id });
       }
+      syncBrowserRouteForActiveView();
+    }
+    if (action === 'open-dm-with-human') {
+      const humanId = target.dataset.id;
+      const actorId = currentHumanId();
+      const existingDm = (appState.dms || []).find((dm) => (
+        dm.participantIds.includes(actorId)
+        && dm.participantIds.includes(humanId)
+      ));
+      if (existingDm) {
+        selectedSpaceId = existingDm.id;
+      } else {
+        const result = await api('/api/dms', {
+          method: 'POST',
+          body: JSON.stringify({ participantId: humanId }),
+        });
+        selectedSpaceId = result.dm.id;
+      }
+      selectedSpaceType = 'dm';
+      activeView = 'space';
+      railTab = 'spaces';
+      selectedAgentId = null;
+      selectedHumanId = null;
+      selectedComputerId = null;
+      selectedTaskId = null;
+      render();
+      syncBrowserRouteForActiveView();
     }
     if (action === 'delete-agent') {
       if (!window.confirm('Delete this agent?')) return;
@@ -471,6 +630,8 @@ document.addEventListener('click', async (event) => {
     if (action === 'select-space') {
       persistVisiblePaneScrolls();
       selectedAgentId = null;
+      selectedHumanId = null;
+      selectedComputerId = null;
       selectedTaskId = null;
       inspectorReturnThreadId = null;
       agentDetailEditState = { field: null };
@@ -490,12 +651,18 @@ document.addEventListener('click', async (event) => {
       maybeWarmCurrentAgent();
     }
     if (action === 'open-console-server') {
+      const slug = target.dataset.slug || '';
+      if (slug) {
+        await api(`/api/console/servers/${encodeURIComponent(slug)}/switch`, { method: 'POST', body: '{}' });
+      }
       activeView = 'space';
       railTab = 'spaces';
       selectedSpaceType = 'channel';
       selectedSpaceId = appState.channels?.[0]?.id || selectedSpaceId || 'chan_all';
       threadMessageId = null;
       selectedAgentId = null;
+      selectedHumanId = null;
+      selectedComputerId = null;
       selectedTaskId = null;
       workspaceActivityDrawerOpen = false;
       render();
@@ -583,6 +750,12 @@ document.addEventListener('click', async (event) => {
         resetAgentFormState();
         await loadInstalledRuntimes();
       }
+      if (modal === 'computer' && cloudCan('manage_computers')) {
+        latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
+          method: 'POST',
+          body: JSON.stringify({ name: appState.runtime?.host || 'Computer' }),
+        });
+      }
       if (modal === 'member-invite') {
         cloudInviteEmails = [];
         cloudInviteDraft = '';
@@ -629,8 +802,9 @@ document.addEventListener('click', async (event) => {
       const isBackdrop = event.target.classList.contains('modal-backdrop');
       const isCloseBtn = event.target.closest('.modal-head button[data-action="close-modal"]');
       const isCancelBtn = event.target.closest('.modal-actions .secondary-btn[data-action="close-modal"]');
+      const isAnyCloseBtn = event.target.closest('button[data-action="close-modal"]');
       const closeOnlyByHeader = ['member-invite', 'member-invite-links'].includes(modal);
-      if ((closeOnlyByHeader && isCloseBtn) || (!closeOnlyByHeader && (isBackdrop || isCloseBtn || isCancelBtn))) {
+      if ((closeOnlyByHeader && isCloseBtn) || (!closeOnlyByHeader && (isBackdrop || isCloseBtn || isCancelBtn || isAnyCloseBtn))) {
         if (modal === 'agent') {
           resetAgentFormState();
         }
@@ -887,6 +1061,41 @@ document.addEventListener('click', async (event) => {
       activeView = 'computers';
       railTab = 'computers';
       toast('Pairing command created');
+    }
+    if (action === 'regenerate-computer-command') {
+      const computer = byId(appState.computers, target.dataset.id);
+      latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
+        method: 'POST',
+        body: JSON.stringify({ computerId: target.dataset.id, name: computer?.name || 'Computer' }),
+      });
+      selectedComputerId = target.dataset.id || selectedComputerId;
+      activeView = 'computers';
+      railTab = 'computers';
+      toast('Connect command regenerated');
+    }
+    if (action === 'copy-join-link') {
+      const copied = await tryCopyTextToClipboard(target.dataset.url || '');
+      toast(copied ? 'Join link copied' : 'Copy is unavailable');
+    }
+    if (action === 'revoke-join-link') {
+      await api(`/api/cloud/join-links/${encodeURIComponent(target.dataset.id || '')}/revoke`, { method: 'POST', body: '{}' });
+      toast('Join link revoked');
+    }
+    if (action === 'start-all-computer-agents') {
+      const agents = computerAgents(target.dataset.id || '');
+      for (const agent of agents) {
+        await api(`/api/agents/${encodeURIComponent(agent.id)}/start`, { method: 'POST', body: '{}' });
+      }
+      toast(`Start requested for ${agents.length} agent${agents.length === 1 ? '' : 's'}`);
+    }
+    if (action === 'scan-computer-workspaces') {
+      toast('Workspace scan requested');
+    }
+    if (action === 'delete-computer') {
+      if (!window.confirm('Delete this computer?')) return;
+      await api(`/api/computers/${encodeURIComponent(target.dataset.id || '')}`, { method: 'DELETE' });
+      selectedComputerId = null;
+      toast('Computer deleted');
     }
       if (action === 'confirm-cloud-auth-logout') {
         await api('/api/cloud/auth/logout', { method: 'POST', body: '{}' });

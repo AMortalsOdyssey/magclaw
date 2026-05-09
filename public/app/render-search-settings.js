@@ -251,10 +251,11 @@ function renderMissions() {
 
 function renderComputers() {
   const computers = appState.computers || [];
-  const connected = computers.filter((computer) => computer.status === 'connected').length;
   const canManageComputers = cloudCan('manage_computers');
   const canPairComputers = cloudCan('pair_computers');
   const canManageAgents = cloudCan('manage_agents');
+  const selected = selectedComputerId ? byId(computers, selectedComputerId) : computers[0] || null;
+  if (selected && !selectedComputerId) selectedComputerId = selected.id;
   return `
     <section class="computers-page">
       <header class="settings-page-header">
@@ -265,32 +266,119 @@ function renderComputers() {
         <div class="action-row">
           ${canPairComputers ? '<button class="secondary-btn" type="button" data-action="create-computer-pairing">Pair Computer</button>' : ''}
           ${canManageComputers ? '<button class="primary-btn" type="button" data-action="open-modal" data-modal="computer">Add Computer</button>' : ''}
+          ${canManageAgents ? '<button class="secondary-btn" type="button" data-action="open-modal" data-modal="agent">Create Agent</button>' : ''}
         </div>
       </header>
       <div class="settings-section-label">
         ${settingsIcon('computer', 18)}
-        <span>LOCAL RUNNERS</span>
+        <span>COMPUTERS</span>
       </div>
-      <section class="cloud-layout">
-        ${renderComputerConfigCard()}
-        <div class="pixel-panel cloud-card">
-          <div class="panel-title"><span>Feature Entrances</span><span>${connected}/${computers.length || 0} connected</span></div>
-          <div class="mode-cards">
-            <button class="mode-card active" type="button" data-action="set-view" data-view="computers">
-              <strong>Computer Overview</strong>
-              <span>Review registered local and remote runners without mixing them into member management.</span>
-            </button>
-            <button class="mode-card" type="button" data-action="set-view" data-view="missions">
-              <strong>Codex Missions</strong>
-              <span>Open the local runner history for task-backed Codex runs.</span>
-            </button>
-            ${canManageAgents ? `<button class="mode-card" type="button" data-action="open-modal" data-modal="agent">
-              <strong>Create Agent</strong>
-              <span>Bind a new agent to an available computer and runtime.</span>
-            </button>` : ''}
+      ${selected ? renderComputerDetail(selected) : `
+        <section class="computer-detail-page empty">
+          <div class="pixel-panel cloud-card empty-box">No computers connected yet.</div>
+        </section>
+      `}
+    </section>
+  `;
+}
+
+function computerRuntimeDetails(computer = {}) {
+  const details = Array.isArray(computer.runtimeDetails) ? computer.runtimeDetails : [];
+  if (details.length) return details;
+  return (computer.runtimeIds || []).map((id) => ({ id, name: runtimeNameForId(id), installed: true }));
+}
+
+function runtimeNameForId(id = '') {
+  const value = String(id || '');
+  const labels = {
+    codex: 'Codex CLI',
+    'claude-code': 'Claude Code',
+    gemini: 'Gemini CLI',
+  };
+  return labels[value] || value || 'Runtime';
+}
+
+function computerAgents(computerId) {
+  return (appState.agents || []).filter((agent) => agent.computerId === computerId);
+}
+
+function renderComputerRuntimeBadges(computer = {}) {
+  const details = computerRuntimeDetails(computer);
+  if (!details.length) return '<span class="runtime-badge muted">No runtimes detected</span>';
+  return details.map((runtime) => `
+    <span class="runtime-badge ${runtime.installed === false ? 'muted' : ''}">
+      ${escapeHtml(runtime.name || runtimeNameForId(runtime.id))}
+      ${runtime.version ? `<small>${escapeHtml(String(runtime.version).split(/\r?\n/)[0])}</small>` : ''}
+    </span>
+  `).join('');
+}
+
+function renderComputerDetail(computer) {
+  const agents = computerAgents(computer.id);
+  const currentCommand = latestPairingCommand?.computer?.id === computer.id ? latestPairingCommand.command : '';
+  return `
+    <section class="computer-detail-page">
+      <div class="pixel-panel cloud-card wide computer-detail-card">
+        <div class="computer-detail-header">
+          <span class="settings-page-icon computer-detail-icon">${settingsIcon('computer', 24)}</span>
+          <div>
+            <h2>${escapeHtml(computer.name || computer.hostname || 'Computer')}</h2>
+            <p><span class="avatar-status-dot inline ${presenceClass(computer.status || 'offline')}"></span>${escapeHtml(computer.status || 'offline')}</p>
           </div>
         </div>
-      </section>
+        <form id="computer-name-form" class="modal-form compact-form" data-computer-id="${escapeHtml(computer.id)}">
+          <label><span>Name</span><input name="name" value="${escapeHtml(computer.name || '')}" /></label>
+          <button class="secondary-btn" type="submit">Save Name</button>
+        </form>
+      </div>
+
+      <div class="pixel-panel cloud-card wide computer-info-card">
+        <div class="panel-title"><span>Info</span><span>${escapeHtml(computer.daemonVersion || 'daemon')}</span></div>
+        <div class="cloud-status">
+          <div><span>OS</span><strong>${escapeHtml(computer.os || '--')}</strong><small>${escapeHtml(computer.arch || computer.hostname || '')}</small></div>
+          <div><span>Daemon Version</span><strong>${escapeHtml(computer.daemonVersion || '--')}</strong><small>${escapeHtml(computer.connectedVia || 'daemon')}</small></div>
+          <div><span>Detected Runtimes</span><strong>${escapeHtml((computer.runtimeIds || []).length)}</strong><small>${escapeHtml((computer.runtimeIds || []).join(', ') || 'none')}</small></div>
+          <div><span>Created</span><strong>${escapeHtml(computer.createdAt ? fmtTime(computer.createdAt) : '--')}</strong><small>${escapeHtml(computer.lastSeenAt ? `Seen ${fmtTime(computer.lastSeenAt)}` : 'not seen')}</small></div>
+        </div>
+        <div class="detected-runtime-list">${renderComputerRuntimeBadges(computer)}</div>
+      </div>
+
+      <div class="pixel-panel cloud-card wide">
+        <div class="panel-title"><span>Connect Command</span><span>short lived</span></div>
+        ${currentCommand ? `
+          <div class="pair-command-box">
+            <code>${escapeHtml(currentCommand)}</code>
+            <button class="secondary-btn" type="button" data-action="copy-pairing-command">Copy</button>
+          </div>
+        ` : '<div class="empty-box small">Generate a fresh one-time command when you need to reconnect this computer.</div>'}
+        <button class="secondary-btn" type="button" data-action="regenerate-computer-command" data-id="${escapeHtml(computer.id)}">Regenerate command</button>
+      </div>
+
+      <div class="pixel-panel cloud-card wide">
+        <div class="panel-title"><span>Agents on this computer</span><span>${agents.length}</span></div>
+        ${agents.length ? agents.map((agent) => renderAgentListItem(agent)).join('') : '<div class="empty-box small">No Agents are bound to this computer.</div>'}
+        <div class="action-row">
+          <button class="secondary-btn" type="button" data-action="start-all-computer-agents" data-id="${escapeHtml(computer.id)}">Start All</button>
+          <button class="primary-btn" type="button" data-action="open-modal" data-modal="agent">+ Create</button>
+        </div>
+      </div>
+
+      <div class="pixel-panel cloud-card wide">
+        <div class="panel-title"><span>Agent Workspaces</span><span>scan</span></div>
+        <p class="muted-note">Scan checks workspace directories reported by this computer.</p>
+        <button class="secondary-btn" type="button" data-action="scan-computer-workspaces" data-id="${escapeHtml(computer.id)}">Scan</button>
+      </div>
+
+      <div class="pixel-panel cloud-card wide danger-card">
+        <div class="panel-title"><span>Actions</span><span>restricted</span></div>
+        <div class="danger-row">
+          <div>
+            <strong>Delete Computer</strong>
+            <p>Permanently remove this computer. All agents must be deleted or migrated first.</p>
+          </div>
+          <button class="danger-btn" type="button" data-action="delete-computer" data-id="${escapeHtml(computer.id)}" ${agents.length ? 'disabled' : ''}>Delete Computer</button>
+        </div>
+      </div>
     </section>
   `;
 }
@@ -1174,60 +1262,112 @@ function renderBrowserSettingsTab() {
 }
 
 function renderServerSettingsTab() {
-  const c = appState.connection || {};
-  const isCloud = c.mode === 'cloud';
+  const server = currentServerProfile();
+  const members = appState.cloud?.members || [];
+  const admins = members.filter((member) => (member.status || 'active') === 'active' && (member.role || 'member') === 'admin');
+  const pendingInvites = (appState.cloud?.invitations || []).filter((item) => (item.status || 'pending') === 'pending' && !item.acceptedAt && !item.declinedAt);
+  const joinLinks = appState.cloud?.joinLinks || [];
+  const agents = appState.agents || [];
+  const canManage = cloudCan('manage_cloud_connection');
   return `
-    <section class="cloud-layout">
-      <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Mode</span><span>${escapeHtml(c.deployment || 'local')}</span></div>
-        <div class="mode-cards">
-          <button class="mode-card ${!isCloud ? 'active' : ''}" type="button" data-action="cloud-local">
-            <strong>Local Only</strong>
-            <span>State, attachments, Codex runs, tasks and threads stay on this machine.</span>
-          </button>
-          <button class="mode-card ${isCloud ? 'active' : ''}" type="button" data-action="cloud-configure">
-            <strong>Cloud Connected</strong>
-            <span>Use a MagClaw control plane URL for sync while local runner keeps executing Codex.</span>
-          </button>
-        </div>
-        <div class="cloud-status">
-          <div><span>Device</span><strong>${escapeHtml(c.deviceName || 'local')}</strong><small>${escapeHtml(c.deviceId || '')}</small></div>
-          <div><span>Workspace</span><strong>${escapeHtml(c.workspaceId || 'local')}</strong><small>protocol v${escapeHtml(c.protocolVersion || 1)}</small></div>
-          <div><span>Access</span><strong>${escapeHtml(c.hasCloudToken ? 'Token Set' : 'Open')}</strong><small>${escapeHtml(c.hasCloudToken ? 'server-side' : 'no token')}</small></div>
-          <div><span>Last Sync</span><strong>${escapeHtml(c.lastSyncAt ? fmtTime(c.lastSyncAt) : '--')}</strong><small>${escapeHtml(c.lastSyncDirection || 'none')}</small></div>
-        </div>
-        ${c.lastError ? `<div class="cloud-error">${escapeHtml(c.lastError)}</div>` : ''}
+    <section class="cloud-layout server-settings-layout">
+      <div class="pixel-panel cloud-card wide">
+        <form id="server-profile-form" class="modal-form server-profile-form">
+          <div class="panel-title"><span>Profile</span><span>/${escapeHtml(server.slug || server.id || 'local')}</span></div>
+          <div class="server-profile-row">
+            <span class="server-profile-avatar">${renderServerAvatar(server, 'server-profile-avatar-img')}</span>
+            <div class="server-profile-avatar-actions">
+              <input type="hidden" name="avatar" value="${escapeHtml(server.avatar || '')}" data-server-avatar-input />
+              <label class="secondary-btn file-btn">
+                Upload Avatar
+                <input id="server-avatar-file" class="visually-hidden" type="file" accept="image/*" />
+              </label>
+              <button class="secondary-btn" type="button" data-action="reset-server-avatar">Use Initial</button>
+            </div>
+          </div>
+          <label><span>Server Name</span><input name="name" value="${escapeHtml(server.name || '')}" ${canManage ? '' : 'disabled'} required /></label>
+          <label><span>URL Slug</span><input name="slug" value="${escapeHtml(server.slug || server.id || 'local')}" disabled /></label>
+          <input type="hidden" name="onboardingAgentId" value="${escapeHtml(server.onboardingAgentId || '')}" />
+          <input type="hidden" name="newAgentGreetingEnabled" value="${server.newAgentGreetingEnabled === false ? 'false' : 'true'}" />
+          <button class="primary-btn" type="submit" ${canManage ? '' : 'disabled'}>Save Server</button>
+        </form>
       </div>
 
       <div class="pixel-panel cloud-card">
-        <form id="cloud-config-form" class="modal-form">
-          <div class="panel-title"><span>Control Plane</span><span>${escapeHtml(c.mode || 'local')}</span></div>
-          <label><span>Mode</span><select name="mode"><option value="local" ${c.mode !== 'cloud' ? 'selected' : ''}>local</option><option value="cloud" ${c.mode === 'cloud' ? 'selected' : ''}>cloud</option></select></label>
-          <label><span>Control Plane URL</span><input name="controlPlaneUrl" value="${escapeHtml(c.controlPlaneUrl || '')}" placeholder="https://app.magclaw.ai or http://127.0.0.1:6543" /></label>
-          <label><span>Relay URL</span><input name="relayUrl" value="${escapeHtml(c.relayUrl || '')}" placeholder="wss://relay.magclaw.ai" /></label>
-          <label><span>Access Token</span><input name="cloudToken" type="password" autocomplete="off" placeholder="${escapeHtml(c.hasCloudToken ? 'configured - leave blank to keep' : 'optional bearer token')}" /></label>
-          <div class="form-grid">
-            <label><span>Workspace ID</span><input name="workspaceId" value="${escapeHtml(c.workspaceId || 'local')}" /></label>
-            <label><span>Device Name</span><input name="deviceName" value="${escapeHtml(c.deviceName || '')}" /></label>
-          </div>
-          <label class="checkline"><input type="checkbox" name="autoSync" ${c.autoSync ? 'checked' : ''} /> Auto push local changes to cloud</label>
-          <button class="primary-btn" type="submit">Save Connection</button>
-        </form>
-        <div class="cloud-actions">
-          <button class="secondary-btn" type="button" data-action="cloud-pair">Pair / Probe</button>
-          <button class="secondary-btn" type="button" data-action="cloud-push">Push Local</button>
-          <button class="secondary-btn" type="button" data-action="cloud-pull">Pull Cloud</button>
-          <button class="danger-btn" type="button" data-action="cloud-disconnect">Local Only</button>
+        <div class="panel-title"><span>Admins</span><span>${admins.length}</span></div>
+        <div class="server-admin-list">
+          ${admins.length ? admins.map((member) => `
+            <div class="server-admin-row">
+              <div>
+                <strong>${escapeHtml(member.user?.name || member.user?.email || member.id)}</strong>
+                <small>${escapeHtml(member.user?.email || '')}</small>
+              </div>
+              <select data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}" ${canManage && admins.length > 1 ? '' : 'disabled'}>
+                <option value="admin" selected>Admin</option>
+                <option value="core_member">Core Member</option>
+                <option value="member">Member</option>
+              </select>
+            </div>
+          `).join('') : '<div class="empty-box small">No admins found.</div>'}
         </div>
+      </div>
+
+      <div class="pixel-panel cloud-card">
+        <div class="panel-title"><span>Pending Invites</span><span>${pendingInvites.length}</span></div>
+        <div class="server-invite-list">
+          ${pendingInvites.length ? pendingInvites.map((invite) => `
+            <div class="server-invite-row">
+              <strong>${escapeHtml(invite.email || '')}</strong>
+              <small>${escapeHtml(cloudRoleLabel(invite.role || 'member'))} · ${escapeHtml(fmtTime(invite.createdAt))}</small>
+            </div>
+          `).join('') : '<div class="empty-box small">No pending invites.</div>'}
+        </div>
+        <button class="secondary-btn" type="button" data-action="open-modal" data-modal="member-invite">Invite Human</button>
       </div>
 
       <div class="pixel-panel cloud-card wide">
-        <div class="panel-title"><span>Sync Boundary</span><span>v1</span></div>
-        <div class="boundary-grid">
-          <div><strong>Synced</strong><p>channels, DMs, messages, replies, tasks, agents, humans, computers, missions, run metadata and attachment metadata.</p></div>
-          <div><strong>Local only</strong><p>Codex execution, filesystem access, attachment binaries, shell environment, secrets and process control.</p></div>
-          <div><strong>Runtime</strong><p>Chat agents use isolated Codex homes, MagClaw MCP tools, and hidden warmup turns so visible replies can reuse an idle Codex session.</p></div>
+        <form id="server-join-link-form" class="modal-form">
+          <div class="panel-title"><span>Join Links</span><span>${joinLinks.length}</span></div>
+          <div class="form-grid">
+            <label><span>Max Uses</span><input name="maxUses" type="number" min="0" step="1" placeholder="Unlimited" /></label>
+            <label><span>Expires At</span><input name="expiresAt" type="datetime-local" /></label>
+          </div>
+          <button class="primary-btn" type="submit" ${canManage ? '' : 'disabled'}>Create Join Link</button>
+        </form>
+        <div class="server-join-link-list">
+          ${joinLinks.length ? joinLinks.map((link) => `
+            <div class="server-join-link-row">
+              <div>
+                <strong>${escapeHtml(link.url || 'Join link hidden')}</strong>
+                <small>${escapeHtml(link.revokedAt ? 'Revoked' : link.expiresAt ? `Expires ${fmtTime(link.expiresAt)}` : 'No expiry')} · ${escapeHtml(link.usedCount || 0)}/${escapeHtml(link.maxUses || 'unlimited')} used</small>
+              </div>
+              <div class="action-row">
+                ${link.url ? `<button class="secondary-btn" type="button" data-action="copy-join-link" data-url="${escapeHtml(link.url)}">Copy</button>` : ''}
+                ${!link.revokedAt ? `<button class="danger-btn" type="button" data-action="revoke-join-link" data-id="${escapeHtml(link.id)}">Revoke</button>` : ''}
+              </div>
+            </div>
+          `).join('') : '<div class="empty-box small">No join links yet.</div>'}
         </div>
+      </div>
+
+      <div class="pixel-panel cloud-card">
+        <form id="server-onboarding-form" class="modal-form">
+          <div class="panel-title"><span>Onboarding Behavior</span><span>${server.newAgentGreetingEnabled === false ? 'quiet' : 'greeting'}</span></div>
+          <label><span>Human Onboarding Agent</span><select name="onboardingAgentId">
+            <option value="">None</option>
+            ${agents.map((agent) => `<option value="${escapeHtml(agent.id)}" ${server.onboardingAgentId === agent.id ? 'selected' : ''}>${escapeHtml(agent.name)}</option>`).join('')}
+          </select></label>
+          <label class="checkline"><input type="checkbox" name="newAgentGreetingEnabled" ${server.newAgentGreetingEnabled === false ? '' : 'checked'} /> Enable new Agent greeting</label>
+          <button class="primary-btn" type="submit" ${canManage ? '' : 'disabled'}>Save Onboarding</button>
+        </form>
+      </div>
+
+      <div class="pixel-panel cloud-card danger-card">
+        <form id="delete-server-form" class="modal-form">
+          <div class="panel-title"><span>Danger Zone</span><span>delete server</span></div>
+          <label><span>Type slug to confirm</span><input name="slugConfirm" placeholder="${escapeHtml(server.slug || '')}" /></label>
+          <button class="danger-btn" type="submit" ${canManage ? '' : 'disabled'}>Delete Server</button>
+        </form>
       </div>
     </section>
   `;
@@ -1355,27 +1495,24 @@ function renderConsoleInvitations() {
 
 function renderConsoleServers() {
   const servers = consoleServers();
-  if (!servers.length) {
-    return `
-      <section class="console-list">
-        <div class="pixel-panel cloud-card empty-box">Choose a server to continue. If you do not have one yet, create a new server.</div>
-        <button class="primary-btn console-create-server" type="button" data-action="open-modal" data-modal="server-create">+ Create Server</button>
-      </section>
-    `;
-  }
   return `
-    <section class="console-list">
-      ${servers.map((server) => `
-        <article class="pixel-panel cloud-card console-row">
-          <div>
-            <p class="eyebrow">Server</p>
-            <h3>${escapeHtml(server.name || server.slug || server.id)}</h3>
-            <p>/${escapeHtml(server.slug || server.id || 'local')}</p>
-          </div>
-          <button class="primary-btn" type="button" data-action="open-console-server" data-slug="${escapeHtml(server.slug || server.id || 'local')}">Open</button>
-        </article>
-      `).join('')}
-      <button class="primary-btn console-create-server" type="button" data-action="open-modal" data-modal="server-create">+ Create Server</button>
+    <section class="console-switch-page">
+      <div class="console-switch-head">
+        <div>
+          <h2>Choose Server</h2>
+          <p>Signed in as ${escapeHtml(appState.cloud?.auth?.currentUser?.name || appState.cloud?.auth?.currentUser?.email || 'MagClaw user')}</p>
+        </div>
+        <button class="secondary-btn" type="button" data-action="confirm-cloud-auth-logout">Sign out</button>
+      </div>
+      <div class="console-switch-list">
+        ${servers.length ? servers.map((server) => `
+          <button class="console-switch-server" type="button" data-action="open-console-server" data-slug="${escapeHtml(server.slug || server.id || 'local')}">
+            <strong>${escapeHtml(server.name || server.slug || server.id)}</strong>
+            <small>/${escapeHtml(server.slug || server.id || 'local')}</small>
+          </button>
+        `).join('') : '<div class="empty-box small">Choose a server to continue. If you do not have one yet, create a new server.</div>'}
+      </div>
+      <button class="primary-btn console-create-server" type="button" data-action="open-modal" data-modal="server-create">+ Create new server</button>
     </section>
   `;
 }
@@ -1384,7 +1521,7 @@ function renderConsole() {
   const title = consoleTab === 'invitations'
     ? 'Invitations'
     : consoleTab === 'servers'
-      ? 'Servers'
+      ? 'Choose Server'
       : 'Console';
   const body = consoleTab === 'invitations'
     ? renderConsoleInvitations()

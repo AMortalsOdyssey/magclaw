@@ -31,7 +31,8 @@ test('members settings expose role-aware invitation controls', async () => {
 
   assert.match(app, /function cloudRoleAllows\(role, allowedRole\)/);
   assert.match(app, /function cloudCan\(capability\)/);
-  assert.match(railSource, /System Config[\s\S]*Members[\s\S]*Release Notes/);
+  assert.match(railSource, /System Config[\s\S]*Release Notes/);
+  assert.doesNotMatch(railSource, /id: 'members'/);
   assert.match(membersSettingsSource, /id="member-invite-form"/);
   assert.match(membersSettingsSource, /memberInviteValidCount\(\)/);
   assert.match(membersSettingsSource, /data-action="copy-member-generated-link"/);
@@ -83,7 +84,9 @@ test('members page uses a join-ordered directory with invite modals', async () =
   const modalSource = app.slice(app.indexOf('function renderModal()'), app.indexOf('function modalHeader('));
 
   assert.match(app, /function renderMembersDirectory/);
-  assert.match(membersMainSource, /renderMembersDirectory\(\{ context: 'main' \}\)/);
+  assert.doesNotMatch(membersMainSource, /renderMembersDirectory\(\{ context: 'main' \}\)/);
+  assert.match(membersMainSource, /renderHumanDetail\(human\)/);
+  assert.match(membersMainSource, /renderAgentDetail\(agent\)/);
   assert.match(membersSettingsSource, /renderMembersDirectory\(\{ context: 'settings' \}\)/);
   assert.match(app, /const MEMBERS_PAGE_SIZE = 50/);
   assert.match(app, /function compareMemberDirectoryRows\(a, b\)/);
@@ -1199,7 +1202,7 @@ test('sidebar settings and skill panels support collapsible MagClaw UI sections'
   assert.match(app, /data-action="set-settings-tab"/);
   assert.match(app, /System Config/);
   assert.match(app, /Release Notes/);
-  assert.match(app, /hidden warmup turns/);
+  assert.match(app, /Agent warmup/);
   assert.match(styles, /\.rail-collapse-btn/);
   assert.match(styles, /\.skill-collapse-btn/);
   assert.match(styles, /\.settings-nav-list/);
@@ -1290,7 +1293,7 @@ test('Fan-out API config owns the routing settings UI', async () => {
   const submitSource = app.slice(app.indexOf("document.addEventListener('submit'"), app.indexOf('refreshState().then'));
 
   assert.match(railSource, /const normalAgents = channelAssignableAgents\(\)/);
-  assert.match(railSource, /normalAgents\.map\(\(agent\) => renderAgentListItem\(agent\)\)/);
+  assert.match(railSource, /renderAgentGroupsByComputer\(normalAgents\)/);
   assert.match(railSource, /System Config/);
   assert.match(app, /function renderSystemSettingsTab\(\)/);
   assert.match(app, /settingsTab === 'system'/);
@@ -1409,6 +1412,60 @@ test('console has routed sections, invitation actions, and no human heartbeat', 
   assert.match(styles, /\.console-grid/);
   assert.match(styles, /\.console-row/);
   assert.match(styles, /\.modal-form \.form-error/);
+});
+
+test('cloud server shell uses Slock-style switcher and removes local-only chrome', async () => {
+  const app = await readAppSource();
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const railSource = app.slice(app.indexOf('function renderRail()'), app.indexOf('function renderChatRail'));
+  const settingsNavSource = app.slice(app.indexOf('function settingsNavItems()'), app.indexOf('function settingsIcon('));
+
+  assert.match(app, /let serverSwitcherOpen = false/);
+  assert.match(app, /function currentServerProfile\(\)/);
+  assert.match(app, /function renderServerSwitcherMenu\(\)/);
+  assert.match(railSource, /data-action="toggle-server-switcher"/);
+  assert.match(railSource, /renderServerSwitcherMenu\(\)/);
+  assert.match(app, /data-action="switch-server"/);
+  assert.match(app, /data-action="open-console-server-switcher"/);
+  assert.match(app, /Switch or create server/);
+  assert.doesNotMatch(railSource, /runtime-chip/);
+  assert.doesNotMatch(settingsNavSource, /id: 'members'/);
+  assert.doesNotMatch(app, /Local Only[\s\S]*State, attachments, Codex runs/);
+  assert.match(styles, /\.server-switcher-menu/);
+  assert.match(styles, /\.console-switch-page/);
+});
+
+test('server settings, human detail, and computer detail mirror Slock structure', async () => {
+  const app = await readAppSource();
+  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const computerRailSource = app.slice(app.indexOf('function renderComputersRail()'), app.indexOf('function renderSettingsRail()'));
+  const computerPageSource = app.slice(app.indexOf('function renderComputers()'), app.indexOf('function renderComputerConfigCard()'));
+
+  assert.match(app, /function routeStateFromLocation/);
+  assert.match(app, /human\\\/\(\[\^\/\]\+\)/);
+  assert.match(app, /computer\\\/\(\[\^\/\]\+\)/);
+  assert.match(app, /agent\\\/\(\[\^\/\]\+\)/);
+  assert.match(app, /let selectedHumanId = /);
+  assert.match(app, /let selectedComputerId = /);
+  assert.match(app, /function renderServerSettingsTab\(\)/);
+  assert.match(app, /id="server-profile-form"/);
+  assert.match(app, /Join Links/);
+  assert.match(app, /Onboarding Behavior/);
+  assert.match(app, /Danger Zone/);
+  assert.match(app, /function renderHumanDetail\(/);
+  assert.match(app, /data-action="select-human"/);
+  assert.match(app, /Created Agents/);
+  assert.match(app, /function renderAgentGroupsByComputer\(/);
+  assert.match(app, /function renderComputerDetail\(/);
+  assert.match(app, /data-action="select-computer"/);
+  assert.match(app, /Agents on this computer/);
+  assert.match(app, /data-action="regenerate-computer-command"/);
+  assert.doesNotMatch(computerRailSource, /Feature Entrances/);
+  assert.doesNotMatch(computerPageSource, /Feature Entrances/);
+  assert.match(app, /runtimeOptionsForComputer/);
+  assert.match(styles, /\.human-detail-page/);
+  assert.match(styles, /\.computer-detail-page/);
+  assert.match(styles, /\.server-profile-avatar/);
 });
 
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {

@@ -4,6 +4,18 @@ async function refreshState() {
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
   trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
   appState = nextState;
+  const routeSlug = serverSlugFromPath();
+  if (
+    routeSlug
+    && routeSlug !== currentServerSlug()
+    && !routeServerSwitchAttempted
+    && appState.cloud?.auth?.currentUser
+    && (appState.cloud?.workspaces || []).some((server) => String(server.slug || server.id) === routeSlug)
+  ) {
+    routeServerSwitchAttempted = true;
+    await api(`/api/console/servers/${encodeURIComponent(routeSlug)}/switch`, { method: 'POST', body: '{}' });
+    appState = await api('/api/state');
+  }
   startHumanPresenceHeartbeat();
   render();
   maybeWarmCurrentAgent();

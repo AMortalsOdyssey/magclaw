@@ -418,10 +418,35 @@ function renderAgentListItem(agent) {
   `;
 }
 
+function renderAgentGroupsByComputer(agents = []) {
+  const computers = appState.computers || [];
+  const groups = new Map();
+  for (const computer of computers) {
+    groups.set(computer.id, { id: computer.id, label: computer.name || 'Computer', meta: computer.status || '', agents: [] });
+  }
+  groups.set('unassigned', { id: 'unassigned', label: 'Unassigned', meta: '', agents: [] });
+  for (const agent of agents) {
+    const key = agent.computerId && groups.has(agent.computerId) ? agent.computerId : 'unassigned';
+    groups.get(key).agents.push(agent);
+  }
+  const visibleGroups = [...groups.values()].filter((group) => group.agents.length || group.id !== 'unassigned');
+  if (!visibleGroups.length) return '<div class="empty-box small">No agents yet.</div>';
+  return visibleGroups.map((group) => `
+    <div class="agent-computer-group">
+      <div class="agent-computer-group-title">
+        <span>${escapeHtml(group.label)}</span>
+        ${group.meta ? `<small>${escapeHtml(group.meta)}</small>` : ''}
+      </div>
+      ${group.agents.map((agent) => renderAgentListItem(agent)).join('')}
+    </div>
+  `).join('');
+}
+
 function renderHumanListItem(human) {
   const role = human.role || 'member';
+  const active = selectedHumanId === human.id ? ' active' : '';
   return `
-    <div class="space-btn member-btn human-role-${escapeHtml(role)}">
+    <button class="space-btn member-btn human-role-${escapeHtml(role)}${active}" type="button" data-action="select-human" data-id="${escapeHtml(human.id)}">
       <span class="dm-avatar-wrap">
         ${getAvatarHtml(human.id, 'human', 'dm-avatar')}
       </span>
@@ -429,13 +454,14 @@ function renderHumanListItem(human) {
         <span class="dm-name">${escapeHtml(human.name)}</span>
       </div>
       <span class="member-status-side">${avatarStatusDot(human.status, 'Human status')}</span>
-    </div>
+    </button>
   `;
 }
 
 function renderComputerListItem(computer) {
+  const active = selectedComputerId === computer.id ? ' active' : '';
   return `
-    <div class="space-btn member-btn">
+    <button class="space-btn member-btn${active}" type="button" data-action="select-computer" data-id="${escapeHtml(computer.id)}">
       <span class="dm-avatar-wrap">
         <span class="dm-avatar">PC</span>
       </span>
@@ -443,7 +469,84 @@ function renderComputerListItem(computer) {
         <span class="dm-name">${escapeHtml(computer.name)}</span>
       </div>
       <span class="member-status-side">${avatarStatusDot(computer.status, 'Computer status')}</span>
-    </div>
+    </button>
+  `;
+}
+
+function cloudMemberForHuman(human) {
+  const email = String(human?.email || '').toLowerCase();
+  return (appState.cloud?.members || []).find((member) => (
+    member.humanId === human?.id
+    || member.human?.id === human?.id
+    || (email && String(member.user?.email || member.email || '').toLowerCase() === email)
+  )) || null;
+}
+
+function humanCreatedAgents(human) {
+  return (appState.agents || []).filter((agent) => (
+    agent.createdBy === human?.id
+    || agent.createdByHumanId === human?.id
+    || agent.ownerHumanId === human?.id
+  ));
+}
+
+function renderHumanDetail(human) {
+  const member = cloudMemberForHuman(human);
+  const createdAgents = humanCreatedAgents(human);
+  const email = human.email || member?.user?.email || member?.email || '';
+  return `
+    <section class="pixel-panel inspector-panel human-detail-page">
+      <div class="agent-detail-topbar">
+        <div class="agent-detail-title">
+          <span class="agent-detail-avatar-frame mini">${getAvatarHtml(human.id, 'human', 'agent-detail-avatar-preview')}</span>
+          <div>
+            <strong>${escapeHtml(human.name || member?.user?.name || 'Human')}</strong>
+            <small>${escapeHtml(email || 'Server member')}</small>
+          </div>
+        </div>
+        <div class="agent-header-actions">
+          <button class="secondary-btn" type="button" data-action="open-dm-with-human" data-id="${escapeHtml(human.id)}">Message</button>
+        </div>
+      </div>
+      <div class="human-detail-grid">
+        <section class="agent-profile-field">
+          <span class="detail-label">Description</span>
+          <div class="agent-field-value ${human.description ? '' : 'muted'}">${escapeHtml(human.description || 'No description')}</div>
+        </section>
+        <section class="agent-profile-field">
+          <span class="detail-label">Role</span>
+          <div class="agent-field-value">${escapeHtml(cloudRoleLabel(member?.role || human.role || 'member'))}</div>
+        </section>
+        <section class="agent-profile-field">
+          <span class="detail-label">Email</span>
+          <div class="agent-field-value ${email ? '' : 'muted'}">${escapeHtml(email || '--')}</div>
+        </section>
+        <section class="agent-profile-field">
+          <span class="detail-label">Joined</span>
+          <div class="agent-field-value">${escapeHtml(member?.joinedAt ? fmtTime(member.joinedAt) : human.createdAt ? fmtTime(human.createdAt) : '--')}</div>
+        </section>
+        <section class="agent-profile-field human-actions-section">
+          <span class="detail-label">Actions</span>
+          <div class="agent-detail-actions">
+            <button class="secondary-btn" type="button" data-action="open-dm-with-human" data-id="${escapeHtml(human.id)}">Message</button>
+            ${member && cloudCan('remove_member') ? `<button class="danger-btn" type="button" data-action="open-member-action-confirm" data-id="${escapeHtml(member.id)}" data-member-action="remove">Remove Human</button>` : ''}
+          </div>
+        </section>
+        <section class="agent-profile-field human-created-agents">
+          <span class="detail-label">Created Agents</span>
+          ${createdAgents.length ? `
+            <div class="human-created-agent-list">
+              ${createdAgents.map((agent) => `
+                <button class="created-agent-row" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}">
+                  ${getAvatarHtml(agent.id, 'agent', 'dm-avatar')}
+                  <span><strong>${escapeHtml(agent.name)}</strong><small>${escapeHtml(agent.runtime || agent.status || 'Agent')}</small></span>
+                </button>
+              `).join('')}
+            </div>
+          ` : '<div class="agent-field-value muted">No agents created by this human yet.</div>'}
+        </section>
+      </div>
+    </section>
   `;
 }
 

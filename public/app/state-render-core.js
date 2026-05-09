@@ -13,14 +13,15 @@ const WORKSPACE_ACTIVITY_VISIBLE_STEP = 30;
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
 const MEMBERS_LAYOUT_MODES = new Set(['directory', 'channel', 'split', 'agent']);
 const initialUiState = readStoredUiState();
+const initialRouteState = routeStateFromLocation(window.location.pathname || '');
 
 let appState = null;
-const initialRouteSpace = initialSpaceFromLocation(initialUiState.selectedSpaceType || 'channel', initialUiState.selectedSpaceId || 'chan_all');
+const initialRouteSpace = initialRouteState.space || initialSpaceFromLocation(initialUiState.selectedSpaceType || 'channel', initialUiState.selectedSpaceId || 'chan_all');
 let selectedSpaceType = initialRouteSpace.type;
 let selectedSpaceId = initialRouteSpace.id;
-let activeView = initialActiveViewFromLocation(initialUiState.activeView || 'space');
+let activeView = initialRouteState.activeView || initialActiveViewFromLocation(initialUiState.activeView || 'space');
 let activeTab = initialUiState.activeTab || 'chat';
-let railTab = initialUiState.railTab || localStorage.getItem('railTab') || 'spaces'; // 'spaces', 'members', 'computers', or 'settings'
+let railTab = initialRouteState.railTab || initialUiState.railTab || localStorage.getItem('railTab') || 'spaces'; // 'spaces', 'members', 'computers', or 'settings'
 let threadMessageId = initialUiState.threadMessageId || null;
 let inspectorReturnThreadId = null;
 let inboxCategory = 'all';
@@ -28,7 +29,9 @@ let inboxFilter = 'all';
 let workspaceActivityDrawerOpen = false;
 let workspaceActivityVisibleCount = WORKSPACE_ACTIVITY_VISIBLE_STEP;
 let workspaceActivityScrollToBottom = false;
-let selectedAgentId = initialUiState.selectedAgentId || null; // selected agent for detail panel
+let selectedAgentId = initialRouteState.selectedAgentId || initialUiState.selectedAgentId || null; // selected agent for detail panel
+let selectedHumanId = initialRouteState.selectedHumanId || initialUiState.selectedHumanId || null;
+let selectedComputerId = initialRouteState.selectedComputerId || initialUiState.selectedComputerId || null;
 let membersLayout = normalizeMembersLayout(initialUiState.membersLayout);
 let selectedTaskId = null;
 let selectedSavedRecordId = null;
@@ -75,9 +78,10 @@ let agentWarmRequests = new Set();
 let agentDetailTab = 'profile';
 let agentDetailEditState = { field: null };
 let agentEnvEditState = null;
-let settingsTab = initialUiState.settingsTab || 'account';
-let consoleTab = consoleTabFromPath() || initialUiState.consoleTab || 'overview';
+let settingsTab = initialRouteState.settingsTab || initialUiState.settingsTab || 'account';
+let consoleTab = initialRouteState.consoleTab || consoleTabFromPath() || initialUiState.consoleTab || 'overview';
 let latestPairingCommand = null;
+let serverSwitcherOpen = false;
 let latestInvitationLink = null;
 let cloudInviteEmails = [];
 let cloudInviteDraft = '';
@@ -101,6 +105,7 @@ let eventSource = null;
 let cloudLoginDraftEmail = '';
 let humanPresenceTimer = null;
 let humanPresenceInFlight = false;
+let routeServerSwitchAttempted = false;
 
 const MAX_ATTACHMENTS_PER_COMPOSER = 20;
 const AGENT_AVATAR_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
@@ -121,11 +126,52 @@ function consoleTabFromPath(path = window.location.pathname || '') {
   return '';
 }
 
+function serverSlugFromPath(path = window.location.pathname || '') {
+  const match = String(path || '').match(/^\/s\/([^/]+)/);
+  return match ? decodeURIComponent(match[1] || '') : '';
+}
+
+function routeStateFromLocation(path = window.location.pathname || '') {
+  const value = String(path || '');
+  if (value.startsWith('/console')) {
+    return { activeView: 'console', consoleTab: consoleTabFromPath(value), railTab: 'console' };
+  }
+  const settingsMatch = value.match(/^\/s\/[^/]+\/settings\/([^/]+)/);
+  if (settingsMatch) {
+    return { activeView: 'cloud', settingsTab: decodeURIComponent(settingsMatch[1] || 'server'), railTab: 'settings' };
+  }
+  const humanMatch = value.match(/^\/s\/[^/]+\/human\/([^/]+)/);
+  if (humanMatch) {
+    return { activeView: 'members', selectedHumanId: decodeURIComponent(humanMatch[1] || ''), railTab: 'members' };
+  }
+  const agentMatch = value.match(/^\/s\/[^/]+\/agent\/([^/]+)/);
+  if (agentMatch) {
+    return { activeView: 'members', selectedAgentId: decodeURIComponent(agentMatch[1] || ''), railTab: 'members' };
+  }
+  const computerMatch = value.match(/^\/s\/[^/]+\/computer\/([^/]+)/);
+  if (computerMatch) {
+    return { activeView: 'computers', selectedComputerId: decodeURIComponent(computerMatch[1] || ''), railTab: 'computers' };
+  }
+  if (/^\/s\/[^/]+\/members/.test(value)) return { activeView: 'members', railTab: 'members' };
+  if (/^\/s\/[^/]+\/computers/.test(value)) return { activeView: 'computers', railTab: 'computers' };
+  if (/^\/s\/[^/]+\/tasks/.test(value)) return { activeView: 'tasks', railTab: 'spaces' };
+  const spaceMatch = value.match(/^\/s\/[^/]+\/(channels|dms)\/([^/]+)/);
+  if (spaceMatch) {
+    return {
+      activeView: 'space',
+      railTab: 'spaces',
+      space: {
+        type: spaceMatch[1] === 'dms' ? 'dm' : 'channel',
+        id: decodeURIComponent(spaceMatch[2] || 'chan_all'),
+      },
+    };
+  }
+  if (value.startsWith('/s/')) return { activeView: 'space', railTab: 'spaces' };
+  return {};
+}
+
 function initialActiveViewFromLocation(savedView = 'space') {
-  const path = window.location.pathname || '';
-  if (path.startsWith('/console')) return 'console';
-  if (path.startsWith('/s/')) return 'space';
-  return savedView || 'space';
+  return routeStateFromLocation(window.location.pathname || '').activeView || savedView || 'space';
 }
 
 function initialSpaceFromLocation(defaultType = 'channel', defaultId = 'chan_all') {
@@ -156,8 +202,16 @@ function routePathForActiveView() {
     const kind = selectedSpaceType === 'dm' ? 'dms' : 'channels';
     return `/s/${serverSlug}/${kind}/${encodeURIComponent(selectedSpaceId || '')}`;
   }
-  if (activeView === 'computers') return `/s/${serverSlug}/computers`;
-  if (activeView === 'members') return `/s/${serverSlug}/members`;
+  if (activeView === 'computers') {
+    return selectedComputerId
+      ? `/s/${serverSlug}/computer/${encodeURIComponent(selectedComputerId)}`
+      : `/s/${serverSlug}/computers`;
+  }
+  if (activeView === 'members') {
+    if (selectedHumanId) return `/s/${serverSlug}/human/${encodeURIComponent(selectedHumanId)}`;
+    if (selectedAgentId) return `/s/${serverSlug}/agent/${encodeURIComponent(selectedAgentId)}`;
+    return `/s/${serverSlug}/members`;
+  }
   if (activeView === 'tasks') return `/s/${serverSlug}/tasks`;
   if (activeView === 'cloud') return `/s/${serverSlug}/settings/${encodeURIComponent(settingsTab || 'account')}`;
   return `/s/${serverSlug}`;

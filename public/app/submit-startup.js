@@ -149,7 +149,8 @@ document.addEventListener('submit', async (event) => {
       activeTab = 'tasks';
     }
     if (form.id === 'agent-form') {
-      const selectedRuntime = installedRuntimes.find((rt) => rt.id === data.get('runtime'));
+      const selectedRuntime = runtimeOptionsForComputer(data.get('computerId')).find((rt) => rt.id === data.get('runtime'));
+      if (!selectedRuntime) throw new Error('Selected computer does not report a supported runtime.');
       // Filter out empty environment variables
       const envVars = agentFormState.envVars.filter((item) => item.key.trim());
       await api('/api/agents', {
@@ -158,6 +159,7 @@ document.addEventListener('submit', async (event) => {
           name: data.get('name'),
           description: data.get('description'),
           runtime: selectedRuntime?.name || data.get('runtime'),
+          runtimeId: selectedRuntime?.id || data.get('runtime'),
           model: data.get('model'),
           computerId: data.get('computerId'),
           reasoningEffort: data.get('reasoningEffort') || null,
@@ -174,6 +176,15 @@ document.addEventListener('submit', async (event) => {
         body: JSON.stringify({ name: data.get('name'), os: data.get('os'), status: data.get('status') }),
       });
       modal = null;
+    }
+    if (form.id === 'computer-name-form') {
+      const computerId = form.dataset.computerId || selectedComputerId;
+      if (!computerId) throw new Error('Computer is missing.');
+      await api(`/api/computers/${encodeURIComponent(computerId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: data.get('name') }),
+      });
+      toast('Computer name saved');
     }
       if (form.id === 'human-form') {
         await api('/api/humans', {
@@ -202,6 +213,54 @@ document.addEventListener('submit', async (event) => {
         body: JSON.stringify(cloudFormPayload()),
       });
       toast('Connection saved');
+    }
+    if (form.id === 'server-profile-form') {
+      await api('/api/cloud/server/profile', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: data.get('name'),
+          avatar: data.get('avatar'),
+          onboardingAgentId: data.get('onboardingAgentId') || currentServerProfile().onboardingAgentId || '',
+          newAgentGreetingEnabled: data.get('newAgentGreetingEnabled') !== 'false',
+        }),
+      });
+      toast('Server profile saved');
+    }
+    if (form.id === 'server-onboarding-form') {
+      await api('/api/cloud/server/profile', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: currentServerProfile().name,
+          avatar: currentServerProfile().avatar || '',
+          onboardingAgentId: data.get('onboardingAgentId') || '',
+          newAgentGreetingEnabled: Boolean(data.get('newAgentGreetingEnabled')),
+        }),
+      });
+      toast('Onboarding saved');
+    }
+    if (form.id === 'server-join-link-form') {
+      await api('/api/cloud/join-links', {
+        method: 'POST',
+        body: JSON.stringify({
+          maxUses: data.get('maxUses'),
+          expiresAt: data.get('expiresAt') ? new Date(data.get('expiresAt')).toISOString() : '',
+        }),
+      });
+      form.reset();
+      toast('Join link created');
+    }
+    if (form.id === 'delete-server-form') {
+      const slug = String(currentServerProfile().slug || '').trim();
+      if (String(data.get('slugConfirm') || '').trim() !== slug) throw new Error('Type the server slug to confirm.');
+      await api(`/api/console/servers/${encodeURIComponent(slug)}`, { method: 'DELETE', body: '{}' });
+      activeView = 'console';
+      consoleTab = 'servers';
+      railTab = 'console';
+      selectedAgentId = null;
+      selectedHumanId = null;
+      selectedComputerId = null;
+      window.history.replaceState({}, '', '/console/servers');
+      toast('Server deleted');
     }
     if (form.id === 'cloud-login-form') {
       cloudLoginDraftEmail = String(data.get('email') || '').trim();

@@ -59,10 +59,7 @@ function renderRail() {
   const openTasks = (appState.tasks || []).filter((task) => !taskIsClosedStatus(task.status)).length;
   const saved = savedRecords().length;
   const normalAgents = channelAssignableAgents();
-  const localHuman = byId(appState.humans, appState.cloud?.auth?.currentMember?.humanId)
-    || byId(appState.humans, 'hum_local')
-    || appState.humans?.[0]
-    || { name: 'You' };
+  const serverProfile = currentServerProfile();
   const railMode = activeView === 'tasks'
     ? 'tasks'
     : activeView === 'console'
@@ -97,13 +94,18 @@ function renderRail() {
   const railClass = `rail collab-rail slock-rail${railMode === 'settings' ? ' settings-rail' : ''}${railMode === 'console' ? ' console-rail' : ''}`;
   const leftRailHtml = `
     <div class="slock-left-rail">
-        <button class="left-rail-avatar" type="button" data-action="set-settings-tab" data-tab="account" title="${escapeHtml(localHuman.name || 'You')}">${escapeHtml((localHuman.name || 'Y').trim().slice(0, 1).toUpperCase())}</button>
+      <div class="server-switcher-anchor">
+        <button class="left-rail-avatar server-switcher-trigger" type="button" data-action="toggle-server-switcher" title="${escapeHtml(serverProfile.name || serverProfile.slug || 'Server')}" aria-label="Switch server">
+          ${renderServerAvatar(serverProfile, 'left-rail-server-avatar')}
+        </button>
+        ${renderServerSwitcherMenu()}
+      </div>
       ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', inbox.unreadCount || '')}
       ${renderLeftRailButton('tasks', railMode, 'Tasks', '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', openTasks || '')}
       ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>', normalAgents.length || '')}
       ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>')}
       <span class="left-rail-spacer"></span>
-      ${renderLeftRailButton('console', railMode, 'Console', '<rect x="4" y="5" width="16" height="14" rx="1"/><path d="m8 10 3 2-3 2"/><path d="M13 15h4"/>')}
+      ${renderLeftRailButton('console', railMode, 'Console', '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 8h8"/><path d="M8 12h4"/><path d="M14 12h2"/><path d="M8 16h8"/>')}
       ${renderLeftRailButton('settings', railMode, 'Settings', '<circle cx="12" cy="12" r="3"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="M5.6 5.6l2.1 2.1"/><path d="M16.3 16.3l2.1 2.1"/><path d="M18.4 5.6l-2.1 2.1"/><path d="M7.7 16.3l-2.1 2.1"/>')}
     </div>
   `;
@@ -138,16 +140,57 @@ function renderRail() {
         </div>
 
       ${sidebarBody}
-
-      <div class="runtime-chip">
-        <span class="status-dot ${appState.connection?.mode === 'cloud' ? 'online' : ''}"></span>
-        <div>
-          <strong>${escapeHtml(appState.runtime?.host || 'local')}</strong>
-          <small>${escapeHtml(appState.connection?.mode === 'cloud' ? 'Connected' : 'Local')}</small>
-        </div>
-      </div>
       </div>
     </aside>
+  `;
+}
+
+function currentServerProfile() {
+  const current = appState?.cloud?.workspace || {};
+  const slug = currentServerSlug();
+  return (appState?.cloud?.workspaces || []).find((server) => String(server.slug || server.id) === slug)
+    || current
+    || { name: 'MagClaw', slug: 'local' };
+}
+
+function serverAvatarInitial(server = {}) {
+  const label = String(server.name || server.slug || server.id || 'M').trim();
+  const match = label.match(/[a-zA-Z0-9]/);
+  return (match?.[0] || 'M').toUpperCase();
+}
+
+function renderServerAvatar(server = {}, cssClass = '') {
+  const avatar = String(server.avatar || '').trim();
+  if (avatar) return `<img class="${escapeHtml(cssClass)}" src="${escapeHtml(avatar)}" alt="">`;
+  return `<span class="${escapeHtml(cssClass)}">${escapeHtml(serverAvatarInitial(server))}</span>`;
+}
+
+function renderServerSwitcherMenu() {
+  if (!serverSwitcherOpen) return '';
+  const servers = consoleServers();
+  const currentSlug = String(currentServerProfile().slug || currentServerSlug());
+  return `
+    <div class="server-switcher-menu pixel-panel" role="menu">
+      <div class="server-switcher-list">
+        ${servers.length ? servers.map((server) => {
+          const slug = String(server.slug || server.id || 'local');
+          const active = slug === currentSlug ? ' active' : '';
+          return `
+            <button class="server-switcher-row${active}" type="button" data-action="switch-server" data-slug="${escapeHtml(slug)}" role="menuitem">
+              ${active ? '<span class="server-switcher-check">✓</span>' : '<span class="server-switcher-check"></span>'}
+              <span>
+                <strong>${escapeHtml(server.name || slug)}</strong>
+                <small>/${escapeHtml(slug)}</small>
+              </span>
+            </button>
+          `;
+        }).join('') : '<div class="server-switcher-empty">No servers yet</div>'}
+      </div>
+      <button class="server-switcher-create" type="button" data-action="open-console-server-switcher" role="menuitem">
+        <span>＋</span>
+        <strong>Switch or create server</strong>
+      </button>
+    </div>
   `;
 }
 
@@ -186,7 +229,7 @@ function renderMembersRail({ normalAgents }) {
   return `
     <div class="rail-section">
       ${renderRailSectionTitle('agents', 'Agents', normalAgents.length, { modal: agentModal })}
-      ${collapsedSidebarSections.agents ? '' : normalAgents.map((agent) => renderAgentListItem(agent)).join('')}
+      ${collapsedSidebarSections.agents ? '' : renderAgentGroupsByComputer(normalAgents)}
     </div>
 
       <div class="rail-section">
@@ -211,29 +254,10 @@ function humansByJoinOrder() {
 function renderComputersRail() {
   const computers = appState.computers || [];
   const canManageComputers = cloudCan('manage_computers');
-  const featureCount = canManageComputers ? 3 : 2;
   return `
     <div class="rail-section">
       ${renderRailSectionTitle('computers', 'Computers', computers.length, { modal: canManageComputers ? 'computer' : '' })}
       ${collapsedSidebarSections.computers ? '' : computers.map((computer) => renderComputerListItem(computer)).join('')}
-    </div>
-
-    <div class="rail-section">
-      ${renderRailSectionTitle('computer-features', 'Feature Entrances', featureCount)}
-      ${collapsedSidebarSections['computer-features'] ? '' : `
-        <button class="space-btn computer-feature-entry${activeView === 'computers' ? ' active' : ''}" type="button" data-action="set-view" data-view="computers">
-          <span class="channel-icon">PC</span>
-          <span class="dm-name">Computer Overview</span>
-        </button>
-        <button class="space-btn computer-feature-entry${activeView === 'missions' ? ' active' : ''}" type="button" data-action="set-view" data-view="missions">
-          <span class="channel-icon">RUN</span>
-          <span class="dm-name">Codex Missions</span>
-        </button>
-        ${canManageComputers ? `<button class="space-btn computer-feature-entry" type="button" data-action="open-modal" data-modal="computer">
-          <span class="channel-icon">+</span>
-          <span class="dm-name">Add Computer</span>
-        </button>` : ''}
-      `}
     </div>
   `;
 }
@@ -311,7 +335,6 @@ function settingsNavItems() {
     { id: 'browser', label: 'Browser', icon: 'browser', meta: notificationStatusLabel() },
     { id: 'server', label: 'Server', icon: 'server', meta: appState.connection?.mode || 'local' },
     { id: 'system', label: 'System Config', icon: 'system', meta: fanoutConfigured ? 'LLM' : 'rules' },
-    { id: 'members', label: 'Members', icon: 'members', meta: `${(appState.cloud?.members || []).filter((member) => (member.status || 'active') === 'active').length}` },
     { id: 'release', label: 'Release Notes', icon: 'release' },
   ];
 }
@@ -688,5 +711,13 @@ function renderInbox() {
 
 function renderMembersMain() {
   const agent = selectedAgentId ? byId(appState.agents, selectedAgentId) : null;
-  return agent ? renderAgentDetail(agent) : renderMembersDirectory({ context: 'main' });
+  const human = selectedHumanId ? byId(appState.humans, selectedHumanId) : null;
+  if (human) return renderHumanDetail(human);
+  if (agent) return renderAgentDetail(agent);
+  return `
+    <section class="members-empty-page">
+      ${renderHeader('Members', 'Select an Agent or Human from the sidebar.', cloudCan('manage_agents') ? '<button class="primary-btn" type="button" data-action="open-modal" data-modal="agent">+ Create Agent</button>' : '')}
+      <div class="pixel-panel cloud-card empty-box">Choose a Human to view profile details, or choose an Agent to inspect runtime, tools, and workspaces.</div>
+    </section>
+  `;
 }

@@ -256,6 +256,24 @@ export async function handleCollabApi(req, res, url, deps) {
   }
 
     const computerMatch = url.pathname.match(/^\/api\/computers\/([^/]+)$/);
+    if (req.method === 'DELETE' && computerMatch) {
+      const computer = findComputer(computerMatch[1]);
+      if (!computer) {
+        sendError(res, 404, 'Computer not found.');
+        return true;
+      }
+      const boundAgents = state.agents.filter((agent) => agent.computerId === computer.id);
+      if (boundAgents.length) {
+        sendError(res, 409, 'Delete or migrate agents before deleting this computer.');
+        return true;
+      }
+      state.computers = state.computers.filter((item) => item.id !== computer.id);
+      addCollabEvent('computer_deleted', `Computer deleted: ${computer.name}`, { computerId: computer.id });
+      await persistState();
+      broadcastState();
+      sendJson(res, 200, { ok: true });
+      return true;
+    }
     if (['PATCH', 'POST'].includes(req.method) && computerMatch) {
     const computer = findComputer(computerMatch[1]);
     if (!computer) {
