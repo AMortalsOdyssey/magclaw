@@ -78,6 +78,7 @@ let agentWarmRequests = new Set();
 let agentDetailTab = 'profile';
 let agentDetailEditState = { field: null };
 let agentEnvEditState = null;
+let humanDescriptionEditState = { humanId: null };
 let settingsTab = initialRouteState.settingsTab || initialUiState.settingsTab || 'account';
 let consoleTab = initialRouteState.consoleTab || consoleTabFromPath() || initialUiState.consoleTab || 'overview';
 let latestPairingCommand = null;

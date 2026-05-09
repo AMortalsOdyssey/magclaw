@@ -107,6 +107,8 @@ async function prepareDocumentClick(event) {
     'toggle-agent-skill-section',
     'edit-agent-field',
     'cancel-agent-field',
+    'edit-human-description',
+    'cancel-human-description',
     'update-agent-model',
     'update-agent-reasoning',
     'edit-agent-env',

@@ -414,6 +414,7 @@ document.addEventListener('click', async (event) => {
       agentDetailTab = 'profile';
       agentDetailEditState = { field: null };
       agentEnvEditState = null;
+      humanDescriptionEditState = { humanId: null };
       threadMessageId = null;
       workspaceActivityDrawerOpen = false;
       selectedTaskId = null;
@@ -433,6 +434,9 @@ document.addEventListener('click', async (event) => {
       selectedHumanId = target.dataset.id;
       selectedAgentId = null;
       selectedComputerId = null;
+      agentDetailEditState = { field: null };
+      agentEnvEditState = null;
+      humanDescriptionEditState = { humanId: null };
       activeView = 'members';
       railTab = 'members';
       threadMessageId = null;
@@ -448,6 +452,7 @@ document.addEventListener('click', async (event) => {
       selectedComputerId = target.dataset.id;
       selectedAgentId = null;
       selectedHumanId = null;
+      humanDescriptionEditState = { humanId: null };
       activeView = 'computers';
       railTab = 'computers';
       threadMessageId = null;
@@ -521,6 +526,26 @@ document.addEventListener('click', async (event) => {
       });
       agentDetailEditState = { field: null };
       toast('Agent updated');
+    }
+    if (action === 'edit-human-description') {
+      humanDescriptionEditState = { humanId: target.dataset.id || selectedHumanId };
+      render();
+    }
+    if (action === 'cancel-human-description') {
+      humanDescriptionEditState = { humanId: null };
+      render();
+    }
+    if (action === 'save-human-description') {
+      const editor = target.closest('.human-description-edit');
+      const humanId = editor?.dataset.humanId || selectedHumanId;
+      const input = editor?.querySelector('textarea[name="description"]');
+      if (!humanId) throw new Error('Human profile is missing.');
+      await api(`/api/humans/${encodeURIComponent(humanId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ description: String(input?.value || '').slice(0, 3000) }),
+      });
+      humanDescriptionEditState = { humanId: null };
+      toast('Description saved');
     }
     if (action === 'refresh-agent-skills') {
       await loadAgentSkills(target.dataset.agentId || selectedAgentId, { force: true });

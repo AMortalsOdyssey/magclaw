@@ -645,6 +645,38 @@ function renderHumanAvatarEditor(human, member) {
   `;
 }
 
+function renderHumanDescriptionField(human = {}, member = null) {
+  const canEdit = humanCanEditProfile(human, member);
+  const value = String(human.description || '').slice(0, 3000);
+  const isEditing = canEdit && humanDescriptionEditState?.humanId === human.id;
+  if (!isEditing) {
+    return `
+      <section class="agent-profile-field">
+        <div class="agent-field-head">
+          <span class="detail-label">Description</span>
+          ${canEdit ? `<button class="agent-edit-pencil" type="button" data-action="edit-human-description" data-id="${escapeHtml(human.id)}" aria-label="Edit Description" title="Edit Description">${editPencilIcon()}</button>` : ''}
+        </div>
+        <div class="agent-field-value ${value ? '' : 'muted'}">${escapeHtml(value || 'No description')}</div>
+      </section>
+    `;
+  }
+  return `
+    <section class="agent-profile-field editing">
+      <div class="agent-field-head">
+        <span class="detail-label">Description</span>
+      </div>
+      <div class="agent-inline-edit human-description-edit" data-human-id="${escapeHtml(human.id)}">
+        <textarea name="description" rows="3" maxlength="3000" placeholder="Add a short profile description...">${escapeHtml(value)}</textarea>
+        <small class="char-count">${value.length}/3000</small>
+        <div class="agent-inline-actions">
+          <button class="primary-btn" type="button" data-action="save-human-description">Save</button>
+          <button class="secondary-btn" type="button" data-action="cancel-human-description">Cancel</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderHumanDetail(human) {
   const member = cloudMemberForHuman(human);
   const createdAgents = humanCreatedAgents(human);
@@ -676,10 +708,7 @@ function renderHumanDetail(human) {
           </div>
         </div>
         ${renderHumanAvatarEditor(human, member)}
-        <section class="agent-profile-field">
-          <span class="detail-label">Description</span>
-          <div class="agent-field-value ${human.description ? '' : 'muted'}">${escapeHtml(human.description || 'No description')}</div>
-        </section>
+        ${renderHumanDescriptionField(human, member)}
         <section class="agent-profile-field human-info-section">
           <span class="detail-label">Info</span>
           <div class="human-info-list">

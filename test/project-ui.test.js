@@ -1478,6 +1478,11 @@ test('server settings, human detail, and computer detail mirror Slock structure'
   assert.match(app, /data-action="randomize-human-avatar"/);
   assert.match(app, /data-action="pick-human-avatar"/);
   assert.match(app, /class="visually-hidden human-avatar-upload"/);
+  assert.match(app, /function renderHumanDescriptionField\(/);
+  assert.match(app, /data-action="edit-human-description"/);
+  assert.match(app, /class="agent-inline-edit human-description-edit"/);
+  assert.match(app, /data-action="save-human-description"/);
+  assert.match(app, /data-action="cancel-human-description"/);
   assert.match(app, /Created Agents/);
   assert.match(app, /Created Agents \(\$\{createdAgents\.length\}\)/);
   assert.doesNotMatch(app, /human-role-/);
