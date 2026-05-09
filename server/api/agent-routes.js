@@ -45,6 +45,7 @@ export async function handleAgentApi(req, res, url, deps) {
       name: String(body.name || 'New Agent').trim().slice(0, 80),
       description: String(body.description || '').trim(),
       runtime: String(body.runtime || 'Codex CLI'),
+      runtimeId: body.runtimeId ? String(body.runtimeId) : '',
       model: normalizeCodexModelName(body.model, state.settings?.model),
       status: 'idle',
       computerId: String(body.computerId || 'cmp_local'),

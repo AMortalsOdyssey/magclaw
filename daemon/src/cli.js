@@ -147,8 +147,6 @@ async function writeLockFile(file, lock) {
 
 async function acquireDaemonLock(profile = DEFAULT_PROFILE, config = {}, env = process.env) {
   const paths = profilePaths(profile, env);
-  const rootLock = rootLockPaths(env);
-  await mkdir(rootLock.runDir, { recursive: true });
   await mkdir(paths.runDir, { recursive: true });
   const lock = {
     pid: process.pid,
@@ -158,32 +156,19 @@ async function acquireDaemonLock(profile = DEFAULT_PROFILE, config = {}, env = p
     startedAt: now(),
   };
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const activeComputer = await activeComputerLock(env);
-    if (activeComputer) {
-      throw new Error(`MagClaw daemon is already running on this computer with pid ${activeComputer.pid}. Run "magclaw-daemon stop --profile ${activeComputer.profile || paths.profile}" before starting another daemon.`);
-    }
     const active = await activeDaemonLock(paths.profile, env);
     if (active) {
       throw new Error(`MagClaw daemon profile "${paths.profile}" is already running with pid ${active.pid}. Run "magclaw-daemon stop --profile ${paths.profile}" before starting another daemon.`);
     }
     try {
-      await writeLockFile(rootLock.lockFile, { ...lock, scope: 'computer' });
       await writeLockFile(paths.lockFile, lock);
       return async () => {
         const current = await readJsonFile(paths.lockFile, null);
         if (Number(current?.pid) === process.pid) {
           await rm(paths.lockFile, { force: true }).catch(() => {});
         }
-        const rootCurrent = await readJsonFile(rootLock.lockFile, null);
-        if (Number(rootCurrent?.pid) === process.pid) {
-          await rm(rootLock.lockFile, { force: true }).catch(() => {});
-        }
       };
     } catch (error) {
-      const rootCurrent = await readJsonFile(rootLock.lockFile, null);
-      if (Number(rootCurrent?.pid) === process.pid) {
-        await rm(rootLock.lockFile, { force: true }).catch(() => {});
-      }
       if (error?.code !== 'EEXIST') throw error;
     }
   }
@@ -439,6 +424,23 @@ function deliveryPrompt(agent, message = {}, workItem = null) {
   ].filter(Boolean).join('\n');
 }
 
+function agentRuntimeKind(agent = {}) {
+  const value = String(agent.runtimeId || agent.runtime || '').toLowerCase();
+  if (value.includes('claude')) return 'claude-code';
+  if (value.includes('codex')) return 'codex';
+  return value || 'codex';
+}
+
+function agentEnvironment(agent = {}, env = process.env) {
+  const output = { ...env };
+  for (const item of Array.isArray(agent.envVars) ? agent.envVars : []) {
+    const key = String(item.key || '').trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    output[key] = String(item.value || '');
+  }
+  return output;
+}
+
 class CodexAgentSession {
   constructor({ agent, profile, paths, serverUrl, token, send, env = process.env }) {
     this.agent = agent;
@@ -534,7 +536,7 @@ class CodexAgentSession {
       cwd: this.workspace(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
-        ...this.env,
+        ...agentEnvironment(this.agent, this.env),
         NO_COLOR: '1',
         CODEX_HOME: this.codexHome(),
         MAGCLAW_AGENT_ID: this.agent.id,
@@ -717,6 +719,145 @@ class CodexAgentSession {
   }
 }
 
+class ClaudeAgentSession {
+  constructor({ agent, profile, paths, serverUrl, token, send, env = process.env }) {
+    this.agent = agent;
+    this.profile = profile;
+    this.paths = paths;
+    this.serverUrl = serverUrl;
+    this.token = token;
+    this.send = send;
+    this.env = env;
+    this.child = null;
+    this.status = 'offline';
+    this.started = false;
+  }
+
+  agentDir() {
+    return path.join(this.paths.agentsDir, safeFilePart(this.agent.id));
+  }
+
+  workspace() {
+    return path.join(this.agentDir(), 'workspace');
+  }
+
+  async prepare() {
+    await mkdir(this.workspace(), { recursive: true });
+    await writeFile(path.join(this.workspace(), 'AGENTS.md'), [
+      '# MagClaw Remote Claude Agent Workspace',
+      '',
+      'This workspace is isolated for a MagClaw cloud-connected Claude Code agent.',
+      '',
+    ].join('\n'));
+  }
+
+  sendStatus(status, activity = null) {
+    this.status = status;
+    this.send({
+      type: 'agent:status',
+      agentId: this.agent.id,
+      status,
+      sessionId: null,
+      activity: activity || {
+        source: 'claude-code',
+        status,
+        at: now(),
+      },
+    });
+  }
+
+  async start() {
+    if (this.started) return;
+    await this.prepare();
+    this.started = true;
+    this.sendStatus('idle', { source: 'claude-code', detail: 'Claude Code runner ready', at: now() });
+  }
+
+  async deliver(message = {}, workItem = null) {
+    await this.start();
+    const prompt = deliveryPrompt(this.agent, message, workItem);
+    const claudeCommand = this.env.CLAUDE_PATH || 'claude';
+    const args = ['--print'];
+    if (this.agent.model) args.push('--model', String(this.agent.model));
+    args.push(prompt);
+    const timeoutMs = Number(this.env.MAGCLAW_DAEMON_RUNTIME_TIMEOUT_MS || 10 * 60 * 1000);
+    this.sendStatus('thinking', { source: 'claude-code', detail: 'Claude Code turn started', at: now() });
+    await new Promise((resolve) => {
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      const finish = (status, detail) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.child = null;
+        if (status === 'idle') {
+          const body = stdout.trim();
+          if (body) {
+            this.send({
+              type: 'agent:message',
+              agentId: this.agent.id,
+              payload: {
+                body,
+                message,
+                sourceMessage: message,
+                spaceType: message.spaceType || 'channel',
+                spaceId: message.spaceId || 'chan_all',
+                parentMessageId: message.parentMessageId || null,
+              },
+            });
+          }
+          this.sendStatus('idle', { source: 'claude-code', detail: detail || 'Claude Code turn completed', at: now() });
+        } else {
+          const error = detail || stderr.trim() || 'Claude Code failed.';
+          this.send({ type: 'agent:error', agentId: this.agent.id, error });
+          this.sendStatus('error', { source: 'claude-code', error, at: now() });
+        }
+        resolve();
+      };
+      this.child = spawn(claudeCommand, args, {
+        cwd: this.workspace(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...agentEnvironment(this.agent, this.env),
+          NO_COLOR: '1',
+          MAGCLAW_AGENT_ID: this.agent.id,
+          MAGCLAW_DAEMON_PROFILE: this.profile,
+          MAGCLAW_SERVER_URL: this.serverUrl,
+          MAGCLAW_MACHINE_TOKEN: this.token,
+        },
+      });
+      const timer = setTimeout(() => {
+        if (this.child) this.child.kill('SIGTERM');
+        finish('error', 'Claude Code session timed out.');
+      }, timeoutMs);
+      this.child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString();
+        this.send({
+          type: 'agent:activity',
+          agentId: this.agent.id,
+          status: 'working',
+          activity: { source: 'claude-code', chars: stdout.length, at: now() },
+        });
+      });
+      this.child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      this.child.on('error', (error) => finish('error', error.message));
+      this.child.on('close', (code, signal) => {
+        if (code === 0) finish('idle');
+        else finish('error', stderr.trim() || `Claude Code exited with code ${code ?? 'unknown'}${signal ? ` (${signal})` : ''}.`);
+      });
+    });
+  }
+
+  stop() {
+    this.status = 'stopping';
+    if (this.child) this.child.kill('SIGTERM');
+    this.started = false;
+  }
+}
+
 class MagClawDaemon {
   constructor(config, env = process.env) {
     this.env = env;
@@ -810,7 +951,14 @@ class MagClawDaemon {
   sessionFor(agent) {
     const existing = this.sessions.get(agent.id);
     if (existing) return existing;
-    const session = new CodexAgentSession({
+    const kind = agentRuntimeKind(agent);
+    const SessionClass = kind === 'codex'
+      ? CodexAgentSession
+      : kind === 'claude-code'
+        ? ClaudeAgentSession
+        : null;
+    if (!SessionClass) throw new Error(`Unsupported runtime: ${agent.runtime || agent.runtimeId || 'unknown'}`);
+    const session = new SessionClass({
       agent,
       profile: this.paths.profile,
       paths: this.paths,
@@ -836,9 +984,9 @@ class MagClawDaemon {
 
   async handleAgentDeliver(message) {
     const agent = message.payload?.agent || { id: message.agentId, name: message.agentId || 'Agent' };
-    const session = this.sessionFor(agent);
-    this.send({ type: 'agent:deliver:ack', commandId: message.commandId, agentId: agent.id, status: 'queued' });
     try {
+      const session = this.sessionFor(agent);
+      this.send({ type: 'agent:deliver:ack', commandId: message.commandId, agentId: agent.id, status: 'queued' });
       await session.deliver(message.payload?.message || {}, message.payload?.workItem || null);
     } catch (error) {
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
@@ -1177,17 +1325,6 @@ async function runConnect(flags, env = process.env) {
   }
   await saveProfile(config.profile, config, env);
   if (flags.background) {
-    const active = await activeComputerLock(env);
-    if (active) {
-      printJson({
-        ok: true,
-        mode: 'already-running',
-        profile: active.profile || config.profile,
-        pid: active.pid,
-        message: 'MagClaw daemon is already running on this computer.',
-      });
-      return;
-    }
     const result = await startBackground(config.profile, env);
     printJson(result);
     if (!result.ok) {

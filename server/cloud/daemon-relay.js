@@ -163,7 +163,9 @@ export function createDaemonRelay(deps) {
 
   function connectCommand(pairToken, req) {
     const publicUrl = publicUrlFromRequest(req);
-    const workspace = cloud().workspaces[0] || {};
+    const workspace = typeof cloudAuth.primaryWorkspace === 'function'
+      ? cloudAuth.primaryWorkspace()
+      : (cloud().workspaces[0] || {});
     const profile = String(workspace.slug || workspace.id || 'local').trim() || 'local';
     const comment = String(workspace.name || workspace.slug || workspace.id || 'local').trim() || profile;
     const template = process.env.MAGCLAW_DAEMON_CONNECT_COMMAND || '';
@@ -186,7 +188,9 @@ export function createDaemonRelay(deps) {
 
   function createPairingToken(body = {}, req) {
     const store = cloud();
-    const workspace = store.workspaces[0];
+    const workspace = typeof cloudAuth.primaryWorkspace === 'function'
+      ? cloudAuth.primaryWorkspace()
+      : store.workspaces[0];
     const raw = cloudAuth.token('mc_pair');
     const createdAt = now();
     const expiresAt = new Date(Date.now() + Number(body.ttlMs || PAIR_TTL_MS)).toISOString();
@@ -621,6 +625,18 @@ export function createDaemonRelay(deps) {
         broadcastState();
         break;
       case 'agent:error':
+        {
+          const agent = findAgent(message.agentId);
+          if (agent) {
+            setAgentStatus(agent, 'error', 'daemon_error', { forceEvent: true });
+            agent.runtimeActivity = {
+              source: '@magclaw/daemon',
+              error: String(message.error || 'Agent error'),
+              at: now(),
+            };
+            agent.heartbeatAt = now();
+          }
+        }
         recordDaemonEvent('agent_error', String(message.error || 'Agent error'), {
           agentId: message.agentId || null,
           computerId: connection.computerId,

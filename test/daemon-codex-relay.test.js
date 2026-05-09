@@ -96,7 +96,7 @@ function waitFor(fn, timeoutMs = 30000) {
   });
 }
 
-async function startRelay() {
+async function startRelay(options = {}) {
   const messages = [];
   const sockets = new Set();
   let activeSocket = null;
@@ -133,14 +133,14 @@ async function startRelay() {
             type: 'agent:deliver',
             commandId: 'adl_test',
             seq: 1,
-            agentId: 'agt_remote',
+            agentId: options.agent?.id || 'agt_remote',
             workspaceId: 'wsp_test',
             payload: {
               agent: {
-                id: 'agt_remote',
-                name: 'Remote Codex',
-                runtime: 'codex',
-                model: 'gpt-test',
+                id: options.agent?.id || 'agt_remote',
+                name: options.agent?.name || 'Remote Codex',
+                runtime: options.agent?.runtime || 'codex',
+                model: options.agent?.model || 'gpt-test',
                 reasoningEffort: 'low',
               },
               message: {
@@ -281,6 +281,73 @@ process.stdin.on('data', (chunk) => {
     assert.ok(appServer.args.some((arg) => String(arg).includes('mcp_servers.magclaw.args')));
     assert.equal(appServer.args.some((arg) => String(arg).includes('mc_machine_test')), false);
     assert.ok(entries.some((entry) => entry.method === 'turn/start'));
+  } finally {
+    daemon.kill('SIGINT');
+    await Promise.race([
+      new Promise((resolve) => daemon.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 500)),
+    ]);
+    await relay.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('npm daemon dispatches Claude Code agents through the Claude runner', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-claude-'));
+  const fakeClaude = path.join(tmp, 'claude-fake.js');
+  const logPath = path.join(tmp, 'claude-log.jsonl');
+  await writeFile(fakeClaude, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CLAUDE_LOG;
+if (logPath) fs.appendFileSync(logPath, JSON.stringify({ args, cwd: process.cwd(), env: { MAGCLAW_AGENT_ID: process.env.MAGCLAW_AGENT_ID } }) + '\\n');
+if (args[0] === '--version') {
+  console.log('2.1.71 (Claude Code)');
+  process.exit(0);
+}
+if (args.includes('--print')) {
+  console.log('remote claude response');
+  process.exit(0);
+}
+process.exit(2);
+`);
+  await chmod(fakeClaude, 0o755);
+  const relay = await startRelay({
+    agent: {
+      id: 'agt_claude_remote',
+      name: 'Remote Claude',
+      runtime: 'claude-code',
+      model: 'claude-sonnet-4-6',
+    },
+  });
+  const daemon = spawn(process.execPath, [
+    DAEMON_BIN,
+    'connect',
+    '--server-url',
+    relay.baseUrl,
+    '--pair-token',
+    'mc_pair_test',
+    '--profile',
+    'cloud-claude-test',
+  ], {
+    env: {
+      ...process.env,
+      MAGCLAW_DAEMON_HOME: path.join(tmp, 'daemon-home'),
+      CODEX_PATH: '/bin/false',
+      CLAUDE_PATH: fakeClaude,
+      FAKE_CLAUDE_LOG: logPath,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    const message = await waitFor(() => relay.messages.find((item) => item.type === 'agent:message'));
+    assert.equal(message.agentId, 'agt_claude_remote');
+    assert.equal(message.payload.body, 'remote claude response');
+    assert.ok(relay.messages.some((item) => item.type === 'agent:deliver:ack' && item.commandId === 'adl_test'));
+    assert.ok(relay.messages.some((item) => item.type === 'agent:status' && item.agentId === 'agt_claude_remote' && item.status === 'idle'));
+    const entries = (await readFile(logPath, 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.ok(entries.some((entry) => entry.args.includes('--print')));
+    assert.equal(entries.some((entry) => entry.args.includes('app-server')), false);
   } finally {
     daemon.kill('SIGINT');
     await Promise.race([
