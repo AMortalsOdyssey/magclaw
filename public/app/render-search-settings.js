@@ -252,21 +252,16 @@ function renderMissions() {
 function renderComputers() {
   const computers = appState.computers || [];
   const canManageComputers = cloudCan('manage_computers');
-  const canPairComputers = cloudCan('pair_computers');
   const canManageAgents = cloudCan('manage_agents');
-  const selected = selectedComputerId ? byId(computers, selectedComputerId) : computers[0] || null;
-  if (selected && !selectedComputerId) selectedComputerId = selected.id;
+  void canManageComputers;
+  void canManageAgents;
+  const selected = (selectedComputerId ? byId(computers, selectedComputerId) : null) || computers[0] || null;
   return `
     <section class="computers-page">
       <header class="settings-page-header">
         <div class="settings-page-heading">
           <div class="settings-page-icon">${settingsIcon('computer', 24)}</div>
           <h2>Computers</h2>
-        </div>
-        <div class="action-row">
-          ${canPairComputers ? '<button class="secondary-btn" type="button" data-action="create-computer-pairing">Pair Computer</button>' : ''}
-          ${canManageComputers ? '<button class="primary-btn" type="button" data-action="open-modal" data-modal="computer">Add Computer</button>' : ''}
-          ${canManageAgents ? '<button class="secondary-btn" type="button" data-action="open-modal" data-modal="agent">Create Agent</button>' : ''}
         </div>
       </header>
       <div class="settings-section-label">
@@ -283,9 +278,47 @@ function renderComputers() {
 }
 
 function computerRuntimeDetails(computer = {}) {
-  const details = Array.isArray(computer.runtimeDetails) ? computer.runtimeDetails : [];
-  if (details.length) return details;
-  return (computer.runtimeIds || []).map((id) => ({ id, name: runtimeNameForId(id), installed: true }));
+  const known = [
+    { id: 'claude-code', name: 'Claude Code' },
+    { id: 'codex', name: 'Codex CLI' },
+    { id: 'kimi', name: 'Kimi CLI' },
+    { id: 'copilot', name: 'Copilot CLI' },
+    { id: 'cursor', name: 'Cursor CLI' },
+    { id: 'gemini', name: 'Gemini CLI' },
+    { id: 'opencode', name: 'OpenCode' },
+  ];
+  const merged = new Map(known.map((item) => [item.id, { ...item, installed: false, known: true }]));
+  const explicit = Array.isArray(computer.runtimeDetails) && computer.runtimeDetails.length
+    ? computer.runtimeDetails
+    : (computer.runtimeIds || []).map((id) => ({ id, name: runtimeNameForId(id), installed: true }));
+  for (const runtime of explicit) {
+    const id = String(runtime.id || runtime.name || '').toLowerCase();
+    if (!id) continue;
+    const base = merged.get(id) || {};
+    merged.set(id, {
+      ...base,
+      ...runtime,
+      id: runtime.id || base.id || id,
+      name: runtime.name || base.name || runtimeNameForId(id),
+      installed: runtime.installed !== false,
+    });
+  }
+  for (const runtime of installedRuntimes || []) {
+    const id = String(runtime.id || runtime.name || '').toLowerCase();
+    if (!id) continue;
+    const base = merged.get(id) || {};
+    merged.set(id, {
+      ...base,
+      ...runtime,
+      id: runtime.id || base.id || id,
+      name: runtime.name || base.name || runtimeNameForId(id),
+      installed: runtime.installed !== false,
+    });
+  }
+  return [
+    ...known.map((item) => merged.get(item.id)).filter(Boolean),
+    ...[...merged.values()].filter((item) => !known.some((knownItem) => knownItem.id === item.id)),
+  ];
 }
 
 function runtimeNameForId(id = '') {
@@ -312,6 +345,7 @@ function renderComputerRuntimeBadges(computer = {}) {
   return details.map((runtime) => `
     <span class="runtime-badge ${runtime.installed === false ? 'muted' : ''}">
       ${escapeHtml(runtime.name || runtimeNameForId(runtime.id))}
+      ${runtime.installed === false ? '<em>not installed</em>' : ''}
       ${runtime.version ? `<small>${escapeHtml(String(runtime.version).split(/\r?\n/)[0])}</small>` : ''}
     </span>
   `).join('');
@@ -320,43 +354,53 @@ function renderComputerRuntimeBadges(computer = {}) {
 function renderComputerDetail(computer) {
   const agents = computerAgents(computer.id);
   const currentCommand = latestPairingCommand?.computer?.id === computer.id ? latestPairingCommand.command : '';
+  const connected = presenceTone(computer.status || 'offline') === 'online' || String(computer.status || '').toLowerCase() === 'connected';
+  const installedCount = computerRuntimeDetails(computer).filter((runtime) => runtime.installed !== false).length;
+  const rawDaemonVersion = computer.daemonVersion || computer.version || '';
+  const daemonVersion = rawDaemonVersion && String(rawDaemonVersion).toLowerCase() !== 'local-dev'
+    ? rawDaemonVersion
+    : '--';
   return `
-    <section class="computer-detail-page">
-      <div class="pixel-panel cloud-card wide computer-detail-card">
+    <section class="computer-detail-page slock-computer-detail">
+      <div class="pixel-panel cloud-card wide computer-detail-card computer-profile-card">
         <div class="computer-detail-header">
           <span class="settings-page-icon computer-detail-icon">${settingsIcon('computer', 24)}</span>
           <div>
             <h2>${escapeHtml(computer.name || computer.hostname || 'Computer')}</h2>
-            <p><span class="avatar-status-dot inline ${presenceClass(computer.status || 'offline')}"></span>${escapeHtml(computer.status || 'offline')}</p>
+            <p><span class="avatar-status-dot inline ${presenceClass(computer.status || 'offline')}"></span>${escapeHtml(connected ? 'connected' : 'offline')}</p>
+            <small>${escapeHtml(computer.hostname || computer.localHostname || '')}</small>
           </div>
         </div>
-        <form id="computer-name-form" class="modal-form compact-form" data-computer-id="${escapeHtml(computer.id)}">
-          <label><span>Name</span><input name="name" value="${escapeHtml(computer.name || '')}" /></label>
-          <button class="secondary-btn" type="submit">Save Name</button>
-        </form>
       </div>
 
-      <div class="pixel-panel cloud-card wide computer-info-card">
-        <div class="panel-title"><span>Info</span><span>${escapeHtml(computer.daemonVersion || 'daemon')}</span></div>
-        <div class="cloud-status">
-          <div><span>OS</span><strong>${escapeHtml(computer.os || '--')}</strong><small>${escapeHtml(computer.arch || computer.hostname || '')}</small></div>
-          <div><span>Daemon Version</span><strong>${escapeHtml(computer.daemonVersion || '--')}</strong><small>${escapeHtml(computer.connectedVia || 'daemon')}</small></div>
-          <div><span>Detected Runtimes</span><strong>${escapeHtml((computer.runtimeIds || []).length)}</strong><small>${escapeHtml((computer.runtimeIds || []).join(', ') || 'none')}</small></div>
-          <div><span>Created</span><strong>${escapeHtml(computer.createdAt ? fmtTime(computer.createdAt) : '--')}</strong><small>${escapeHtml(computer.lastSeenAt ? `Seen ${fmtTime(computer.lastSeenAt)}` : 'not seen')}</small></div>
+      <div class="pixel-panel cloud-card wide computer-info-card slock-info-card">
+        <form id="computer-name-form" class="computer-name-line" data-computer-id="${escapeHtml(computer.id)}">
+          <label><span>Name</span><input name="name" value="${escapeHtml(computer.name || '')}" /></label>
+          <button class="secondary-btn compact-btn" type="submit">Save Name</button>
+        </form>
+        <div class="panel-title"><span>Info</span><span>${escapeHtml(connected ? 'online' : 'offline')}</span></div>
+        <div class="computer-info-list">
+          <div class="computer-info-row"><span>OS</span><strong>${escapeHtml([computer.os, computer.arch].filter(Boolean).join(' ') || '--')}</strong></div>
+          <div class="computer-info-row important"><span>Daemon Version</span><strong>${escapeHtml(daemonVersion)}</strong>${daemonVersion === '--' ? '<small>daemon</small>' : ''}</div>
+          <div class="computer-info-row"><span>Detected Runtimes</span><strong>${escapeHtml(installedCount)}</strong><small>${escapeHtml(installedCount === 1 ? 'runtime available' : 'runtimes available')}</small></div>
+          <div class="computer-info-row"><span>Created</span><strong>${escapeHtml(computer.createdAt ? fmtTime(computer.createdAt) : '--')}</strong><small>${escapeHtml(computer.lastSeenAt ? `seen ${fmtTime(computer.lastSeenAt)}` : 'not seen')}</small></div>
         </div>
         <div class="detected-runtime-list">${renderComputerRuntimeBadges(computer)}</div>
       </div>
 
-      <div class="pixel-panel cloud-card wide">
-        <div class="panel-title"><span>Connect Command</span><span>short lived</span></div>
-        ${currentCommand ? `
-          <div class="pair-command-box">
-            <code>${escapeHtml(currentCommand)}</code>
-            <button class="secondary-btn" type="button" data-action="copy-pairing-command">Copy</button>
-          </div>
-        ` : '<div class="empty-box small">Generate a fresh one-time command when you need to reconnect this computer.</div>'}
-        <button class="secondary-btn" type="button" data-action="regenerate-computer-command" data-id="${escapeHtml(computer.id)}">Regenerate command</button>
-      </div>
+      ${connected ? '' : `
+        <div class="pixel-panel cloud-card wide computer-connect-card">
+          <div class="panel-title"><span>Connect Command</span><span>short lived</span></div>
+          ${currentCommand ? `
+            <div class="pair-command-box">
+              <code>${escapeHtml(currentCommand)}</code>
+              <button class="secondary-btn compact-btn" type="button" data-action="copy-pairing-command">Copy command</button>
+            </div>
+            <p class="muted-note">Keep this process running. It maintains the connection between your computer and MagClaw.</p>
+          ` : '<div class="empty-box small">Generate a fresh one-time command when you need to reconnect this computer.</div>'}
+          <button class="secondary-btn" type="button" data-action="regenerate-computer-command" data-id="${escapeHtml(computer.id)}">${currentCommand ? 'Regenerate command' : 'Connect'}</button>
+        </div>
+      `}
 
       <div class="pixel-panel cloud-card wide">
         <div class="panel-title"><span>Agents on this computer</span><span>${agents.length}</span></div>
@@ -418,12 +462,11 @@ function renderComputerConfigCard() {
 
 function renderFanoutApiConfigCard() {
   const config = appState.settings?.fanoutApi || {};
-  const status = config.configured ? 'LLM enabled' : 'Rules fallback';
   return `
     <div class="pixel-panel cloud-card fanout-config-card">
       <form id="fanout-config-form" class="modal-form">
-        <div class="panel-title"><span>Fan-out API</span><span>${escapeHtml(status)}</span></div>
-        <p class="fanout-api-note">Local rules always route immediately. When a message is ambiguous, this API can add a supplemental LLM route after the rules route has already been delivered.</p>
+        <div class="panel-title"><span>Fan-out API</span></div>
+        <p class="fanout-api-note">Configure the supplemental LLM route used for ambiguous fan-out decisions.</p>
         <label class="checkline"><input type="checkbox" name="enabled" ${config.enabled ? 'checked' : ''} /> Enable async LLM supplement for ambiguous routing</label>
         <label><span>Base URL</span><input name="baseUrl" value="${escapeHtml(config.baseUrl || '')}" placeholder="https://model-api.skyengine.com.cn/v1" /></label>
         <label><span>Model</span><input name="model" value="${escapeHtml(config.model || '')}" placeholder="qwen3.5-flash" /></label>
@@ -488,16 +531,10 @@ function renderSettingsChrome(body, actions = '') {
 }
 
 function renderAccountSettingsTab() {
-  const c = appState.connection || {};
   const cloud = appState.cloud || {};
   const auth = cloud.auth || {};
   const currentUser = auth.currentUser;
-  const currentMember = auth.currentMember;
   const human = currentAccountHuman();
-  const role = currentMember?.role || human.role || 'member';
-  const roleLabel = cloudRoleLabel(role);
-  const capabilityLabels = cloudCapabilityLabels(auth.capabilities || {});
-  const joinedAt = fmtTime(currentMember?.joinedAt || currentMember?.createdAt);
   const profileValues = profileFormValuesForRender(human, currentUser);
   const authPanel = !auth.initialized ? `
       <div class="pixel-panel cloud-card">
@@ -506,54 +543,41 @@ function renderAccountSettingsTab() {
       </div>
     ` : '';
     return `
-      <section class="settings-layout account-layout">
-        <div class="pixel-panel cloud-card account-overview-card">
+      <section class="settings-layout account-layout account-waterfall">
+        <div class="pixel-panel cloud-card account-overview-card account-slock-card">
+          <span class="settings-account-avatar account-avatar-lg">${profileAvatarInnerHtml({ human, avatar: profileValues.avatar, displayName: profileValues.displayName, cssClass: 'settings-account-avatar-inner' })}</span>
           <div class="account-profile-main">
-            <span class="settings-account-avatar account-avatar-lg">${profileAvatarInnerHtml({ human, avatar: profileValues.avatar, displayName: profileValues.displayName, cssClass: 'settings-account-avatar-inner' })}</span>
-          <div>
-              <p class="eyebrow">Human Profile</p>
-              <h3>${escapeHtml(profileValues.displayName || 'You')}</h3>
+            <div>
+              <p class="eyebrow">Account</p>
+              <h3>${escapeHtml(profileValues.displayName || currentUser?.name || 'You')}</h3>
               <p>${escapeHtml(human.email || currentUser?.email || 'Local MagClaw user')}</p>
             </div>
           </div>
-          <div class="account-role-badge role-${escapeHtml(role)}">
-            <span>Role</span>
-            <strong>${escapeHtml(roleLabel)}</strong>
-            <small>${escapeHtml(humanPresenceText(human))}</small>
-          </div>
           ${currentUser ? `<button class="secondary-btn account-signout-btn" type="button" data-action="open-modal" data-modal="confirm-sign-out">Sign Out</button>` : ''}
-          </div>
-        ${currentUser ? `
-        <div class="account-grid">
-          <div class="pixel-panel cloud-card account-edit-card">
-            <form id="profile-form" class="modal-form account-profile-form" data-human-id="${escapeHtml(human.id || '')}">
-              <div class="panel-title"><span>Personal Profile</span><span>${escapeHtml(roleLabel)}</span></div>
-              <div class="profile-avatar-row">
-                <span class="settings-account-avatar">${profileAvatarInnerHtml({ human, avatar: profileValues.avatar, displayName: profileValues.displayName, cssClass: 'settings-account-avatar-inner' })}</span>
-              <input id="profile-avatar-input" type="hidden" name="avatar" value="${escapeHtml(profileValues.avatar || '')}" />
-                <div class="account-avatar-actions">
-                  <button class="secondary-btn" type="button" data-action="random-profile-avatar">Random</button>
-                  <button class="secondary-btn" type="button" data-action="pick-profile-avatar">Browse</button>
-                  <label class="secondary-btn profile-upload-btn">Upload<input id="profile-avatar-file" class="visually-hidden" type="file" accept="image/*" /></label>
-                  <button class="secondary-btn" type="button" data-action="reset-profile-avatar">Reset to Default</button>
-                </div>
-              </div>
-              <label><span>Display Name</span><input name="displayName" value="${escapeHtml(profileValues.displayName || '')}" /></label>
-              <label><span>Description</span><textarea name="description" rows="3">${escapeHtml(profileValues.description || '')}</textarea></label>
-              <button class="primary-btn" type="submit">Save</button>
-            </form>
-          </div>
-          <div class="pixel-panel cloud-card account-access-card">
-            <div class="panel-title"><span>Access</span><span>${escapeHtml(c.workspaceId || 'local')}</span></div>
-            <div class="account-meta-grid">
-              <div><span>Joined</span><strong>${escapeHtml(joinedAt)}</strong></div>
-              <div><span>User ID</span><strong>${escapeHtml(currentUser.id || human.authUserId || human.id || '--')}</strong></div>
-            </div>
-            <div class="account-permission-chips">
-              ${(capabilityLabels.length ? capabilityLabels : ['Invite members']).map((label) => `<span>${escapeHtml(label)}</span>`).join('')}
-            </div>
-          </div>
         </div>
+        ${currentUser ? `
+          <form id="profile-form" class="pixel-panel cloud-card modal-form account-profile-form account-slock-card" data-human-id="${escapeHtml(human.id || '')}">
+            <div class="panel-title"><span>Profile</span><span>${escapeHtml(currentUser.id || human.authUserId || '')}</span></div>
+            <div class="profile-avatar-row">
+              <span class="settings-account-avatar">${profileAvatarInnerHtml({ human, avatar: profileValues.avatar, displayName: profileValues.displayName, cssClass: 'settings-account-avatar-inner' })}</span>
+              <input id="profile-avatar-input" type="hidden" name="avatar" value="${escapeHtml(profileValues.avatar || '')}" />
+              <div class="account-avatar-actions">
+                <button class="secondary-btn" type="button" data-action="random-profile-avatar">Random</button>
+                <button class="secondary-btn" type="button" data-action="pick-profile-avatar">Browse</button>
+                <label class="secondary-btn profile-upload-btn">Upload<input id="profile-avatar-file" class="visually-hidden" type="file" accept="image/*" /></label>
+                <button class="secondary-btn" type="button" data-action="reset-profile-avatar">Reset to Default</button>
+              </div>
+            </div>
+            <label><span>Name</span><input name="displayName" value="${escapeHtml(profileValues.displayName || '')}" /></label>
+            <label><span>Email</span><input value="${escapeHtml(human.email || currentUser?.email || '')}" disabled /></label>
+            <label><span>Description</span><textarea name="description" rows="3">${escapeHtml(profileValues.description || '')}</textarea></label>
+            <button class="primary-btn" type="submit">Save</button>
+          </form>
+          <div class="pixel-panel cloud-card account-slock-card account-session-card">
+            <div class="panel-title"><span>Session</span><span>active</span></div>
+            <p>Sign out of this browser. Your account and server memberships remain unchanged.</p>
+            <button class="secondary-btn" type="button" data-action="open-modal" data-modal="confirm-sign-out">Log out</button>
+          </div>
         ` : ''}
         ${authPanel}
     </section>
@@ -1112,6 +1136,7 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
     : '';
   const invitation = tokenContext.invitation || {};
   const reset = tokenContext.reset || {};
+  const joinWorkspace = tokenContext.joinWorkspace || {};
   const brandHtml = `<div class="cloud-login-brand"><span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span></div>`;
   const registerPanel = tokenContext.mode === 'invite' ? `
       <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">
@@ -1228,6 +1253,38 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
         </div>
       </section>
     `;
+  const joinPanel = tokenContext.mode === 'join' ? `
+      <section class="pixel-panel cloud-login-card cloud-token-card join-link-card" aria-labelledby="cloud-login-title">
+        ${brandHtml}
+        <div class="cloud-login-heading">
+          <p>MagClaw</p>
+          <h1 id="cloud-login-title">${escapeHtml(joinWorkspace.name || 'Join server')}</h1>
+          <span>${escapeHtml(joinWorkspace.slug ? `/${joinWorkspace.slug}` : 'Use this link to join a MagClaw server.')}</span>
+        </div>
+        ${tokenErrorHtml || (auth.currentUser ? `
+          <form id="cloud-join-link-form" class="cloud-login-form" novalidate>
+            <input type="hidden" name="joinToken" value="${escapeHtml(tokenContext.token || '')}" />
+            <div class="join-link-summary">
+              ${renderServerAvatar(joinWorkspace, 'join-link-server-avatar')}
+              <div>
+                <strong>${escapeHtml(joinWorkspace.name || 'Server')}</strong>
+                <small>${escapeHtml(tokenContext.alreadyMember ? 'You are already a member.' : 'Joining adds this server to your Console.')}</small>
+              </div>
+            </div>
+            <button class="primary-btn cloud-login-submit" type="submit">${tokenContext.alreadyMember ? 'Open Server' : 'Join Server'}</button>
+          </form>
+        ` : `
+          <div class="join-link-summary">
+            ${renderServerAvatar(joinWorkspace, 'join-link-server-avatar')}
+            <div>
+              <strong>${escapeHtml(joinWorkspace.name || 'Server')}</strong>
+              <small>Sign in or create an account, then return to join this server.</small>
+            </div>
+          </div>
+          ${loginPanel}
+        `)}
+      </section>
+    ` : '';
   const loginPanels = tokenContext.mode === 'invite'
     ? registerPanel
     : tokenContext.mode === 'reset'
@@ -1238,7 +1295,9 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
           ? forgotPanel
           : tokenContext.mode === 'forgot-sent'
             ? forgotSentPanel
-            : loginPanel;
+            : tokenContext.mode === 'join'
+              ? joinPanel
+              : loginPanel;
 
   root.innerHTML = `
     <main class="cloud-auth-shell">
@@ -1254,13 +1313,6 @@ function renderBrowserSettingsTab() {
   return `
     <section class="settings-layout">
       ${renderNotificationConfigCard()}
-      <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Browser Runtime</span><span>${escapeHtml(browserNotificationPermission())}</span></div>
-        <div class="boundary-grid single">
-          <div><strong>Background Replies</strong><p>Desktop notifications are browser-controlled and can be turned on or off here without changing agent routing.</p></div>
-          <div><strong>Local UI State</strong><p>Collapsed sidebar sections, task boards, settings tabs, and skills panels are saved in browser local storage.</p></div>
-        </div>
-      </div>
     </section>
   `;
 }
@@ -1268,7 +1320,10 @@ function renderBrowserSettingsTab() {
 function renderServerSettingsTab() {
   const server = currentServerProfile();
   const members = appState.cloud?.members || [];
-  const admins = members.filter((member) => (member.status || 'active') === 'active' && (member.role || 'member') === 'admin');
+  const admins = members.filter((member) => (
+    (member.status || 'active') === 'active'
+    && (cloudMemberDisplayRole(member) === 'owner' || (member.role || 'member') === 'admin')
+  ));
   const pendingInvites = (appState.cloud?.invitations || []).filter((item) => (item.status || 'pending') === 'pending' && !item.acceptedAt && !item.declinedAt);
   const joinLinks = appState.cloud?.joinLinks || [];
   const agents = appState.agents || [];
@@ -1306,9 +1361,8 @@ function renderServerSettingsTab() {
                 <strong>${escapeHtml(member.user?.name || member.user?.email || member.id)}</strong>
                 <small>${escapeHtml(member.user?.email || '')}</small>
               </div>
-              <select data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}" ${canManage && admins.length > 1 ? '' : 'disabled'}>
-                <option value="admin" selected>Admin</option>
-                <option value="core_member">Core Member</option>
+              <select data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}" ${canManage && admins.length > 1 && cloudMemberDisplayRole(member) !== 'owner' ? '' : 'disabled'}>
+                <option value="admin" selected>${cloudMemberDisplayRole(member) === 'owner' ? 'Owner' : 'Admin'}</option>
                 <option value="member">Member</option>
               </select>
             </div>
@@ -1332,6 +1386,7 @@ function renderServerSettingsTab() {
       <div class="pixel-panel cloud-card wide">
         <form id="server-join-link-form" class="modal-form">
           <div class="panel-title"><span>Join Links</span><span>${joinLinks.length}</span></div>
+          <p class="muted-note">Create a shareable link for people to join this server after signing in.</p>
           <div class="form-grid">
             <label><span>Max Uses</span><input name="maxUses" type="number" min="0" step="1" placeholder="Unlimited" /></label>
             <label><span>Expires At</span><input name="expiresAt" type="datetime-local" /></label>
@@ -1342,8 +1397,8 @@ function renderServerSettingsTab() {
           ${joinLinks.length ? joinLinks.map((link) => `
             <div class="server-join-link-row">
               <div>
-                <strong>${escapeHtml(link.url || 'Join link hidden')}</strong>
-                <small>${escapeHtml(link.revokedAt ? 'Revoked' : link.expiresAt ? `Expires ${fmtTime(link.expiresAt)}` : 'No expiry')} · ${escapeHtml(link.usedCount || 0)}/${escapeHtml(link.maxUses || 'unlimited')} used</small>
+                <strong>${escapeHtml(link.url || 'Join link created')}</strong>
+                <small>${escapeHtml(link.status || (link.revokedAt ? 'revoked' : 'active'))} · ${escapeHtml(link.usedCount || 0)}/${escapeHtml(link.maxUses || 'unlimited')} uses · ${escapeHtml(link.expiresAt ? `expires ${fmtTime(link.expiresAt)}` : 'no expiry')}</small>
               </div>
               <div class="action-row">
                 ${link.url ? `<button class="secondary-btn" type="button" data-action="copy-join-link" data-url="${escapeHtml(link.url)}">Copy</button>` : ''}
@@ -1378,46 +1433,47 @@ function renderServerSettingsTab() {
 }
 
 function renderSystemSettingsTab() {
-  const config = appState.settings?.fanoutApi || {};
-  const routerMode = config.configured ? 'llm_fanout' : 'rules_fallback';
   return `
     <section class="cloud-layout">
       ${renderFanoutApiConfigCard()}
-      <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Routing Boundary</span><span>${escapeHtml(routerMode)}</span></div>
-        <div class="cloud-status">
-          <div><span>Fan-out API</span><strong>${escapeHtml(config.configured ? 'Configured' : 'Rules only')}</strong><small>${escapeHtml(config.model || 'no model')}</small></div>
-          <div><span>Endpoint</span><strong>${escapeHtml(config.baseUrl || '--')}</strong><small>${escapeHtml(config.hasApiKey ? `key ${config.apiKeyPreview}` : 'no key stored')}</small></div>
-          <div><span>Force Keywords</span><strong>${escapeHtml((config.forceKeywords || []).length)}</strong><small>${escapeHtml((config.forceKeywords || []).join(', ') || 'none')}</small></div>
-          <div><span>Delivery</span><strong>Rules first</strong><small>LLM supplements queue only when routing is ambiguous or forced.</small></div>
-        </div>
-        <div class="boundary-grid single system-boundary-copy">
-          <div><strong>Local rules stay immediate</strong><p>Messages still route by deterministic MagClaw rules before an optional LLM supplement is delivered.</p></div>
-          <div><strong>Secrets stay server-side</strong><p>The browser only receives a masked API key preview; saved keys are never rendered back into the form.</p></div>
-        </div>
-      </div>
     </section>
   `;
 }
 
 function renderReleaseNotesSettingsTab() {
-  const notes = [
-    ['NEW', 'Agent skill and tool panels list MagClaw function calls, global Codex skills, plugin skills, and agent-local skills with collapsible sections.'],
-    ['IMPROVED', 'Codex chat agents now warm their app-server session in the background, keeping everyday DM replies on the low-latency path after startup.'],
+  const groups = [
+    {
+      date: '2026-05-09',
+      notes: [
+        ['NEW', 'Cloud Console adds server switching, invitations, join links, and server-scoped settings.'],
+        ['IMPROVED', 'Computer and Human detail pages now follow the cloud server layout.'],
+        ['FIX', 'Server routes restore the selected member, computer, or settings page after refresh.'],
+      ],
+    },
+    {
+      date: '2026-05-04',
+      notes: [
+        ['NEW', 'Agent skill panels list MagClaw function calls, global Codex skills, plugin skills, and agent-local skills.'],
+        ['IMPROVED', 'Codex chat agents warm their app-server session in the background after startup.'],
+      ],
+    },
   ];
   return `
     <section class="settings-release">
-      <article class="pixel-panel release-card">
-        <h3>2026-05-04</h3>
-        <div class="release-note-list">
-          ${notes.map(([type, text]) => `
-            <div class="release-note-row">
-              <span class="release-badge release-${type.toLowerCase()}">${escapeHtml(type)}</span>
-              <p>${escapeHtml(text)}</p>
-            </div>
-          `).join('')}
-        </div>
-      </article>
+      <h3>What's New</h3>
+      ${groups.map((group) => `
+        <article class="release-day">
+          <h4>${escapeHtml(group.date)}</h4>
+          <div class="release-note-list">
+            ${group.notes.map(([type, text]) => `
+              <div class="release-note-row">
+                <span class="release-badge release-${type.toLowerCase()}">${escapeHtml(type)}</span>
+                <p>${escapeHtml(text)}</p>
+              </div>
+            `).join('')}
+          </div>
+        </article>
+      `).join('')}
     </section>
   `;
 }
@@ -1547,9 +1603,6 @@ function renderConsole() {
 }
 
 function renderCloud() {
-  const c = appState.connection || {};
-  const isCloud = c.mode === 'cloud';
-  const statusTone = c.pairingStatus === 'paired' ? 'green' : isCloud ? 'amber' : 'blue';
   const body = settingsTab === 'account'
     ? renderAccountSettingsTab()
     : settingsTab === 'browser'
@@ -1557,14 +1610,11 @@ function renderCloud() {
       : settingsTab === 'system'
         ? renderSystemSettingsTab()
         : settingsTab === 'members'
-          ? renderMembersSettingsTab()
-          : settingsTab === 'release'
-            ? renderReleaseNotesSettingsTab()
-            : renderServerSettingsTab();
-  return renderSettingsChrome(body, `
-    ${pill(c.mode || 'local', isCloud ? 'cyan' : 'blue')}
-    ${pill(c.pairingStatus || 'local', statusTone)}
-  `);
+        ? renderMembersSettingsTab()
+        : settingsTab === 'release'
+          ? renderReleaseNotesSettingsTab()
+          : renderServerSettingsTab();
+  return renderSettingsChrome(body);
 }
 
 function renderInspector() {

@@ -525,6 +525,30 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/cloud/join-links/status') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.joinLinkStatus(url.searchParams.get('token') || '', req));
+    if (result) sendJson(res, 200, { ok: true, ...result });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/join-links/accept') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.acceptJoinLink(body, req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
   const revokeJoinLinkMatch = url.pathname.match(/^\/api\/cloud\/join-links\/([^/]+)\/revoke$/);
   if (req.method === 'POST' && revokeJoinLinkMatch) {
     if (!cloudAuth) {

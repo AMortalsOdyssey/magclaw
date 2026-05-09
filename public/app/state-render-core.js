@@ -479,19 +479,100 @@ function cloudCan(capability) {
 
 function cloudRoleLabel(role) {
   return {
+    owner: 'Owner',
     admin: 'Admin',
     core_member: 'Core Member',
     member: 'Member',
   }[String(role || 'member')] || 'Member';
 }
 
+function cloudMemberDisplayRole(member = {}) {
+  const ownerUserId = appState?.cloud?.workspace?.ownerUserId || '';
+  if (ownerUserId && member?.userId === ownerUserId) return 'owner';
+  return member?.role || 'member';
+}
+
+function humanInitialFromName(value = '') {
+  const label = String(value || 'Human').trim();
+  const match = label.match(/[a-zA-Z0-9\u4e00-\u9fff]/);
+  return (match?.[0] || 'H').toUpperCase();
+}
+
+function renderHumanAvatar(human = {}, cssClass = 'dm-avatar') {
+  const avatar = String(human.avatar || human.avatarUrl || '').trim();
+  if (avatar) return `<span class="${escapeHtml(cssClass)}"><img src="${escapeHtml(avatar)}" alt=""></span>`;
+  return `<span class="${escapeHtml(cssClass)}">${escapeHtml(humanInitialFromName(human.name || human.email || human.id))}</span>`;
+}
+
+function humanFromCloudMember(member = {}) {
+  const human = member.human || byId(appState?.humans, member.humanId) || {};
+  const user = member.user || {};
+  return {
+    ...human,
+    id: human.id || member.humanId || `hum_${member.userId || member.id || 'member'}`,
+    authUserId: member.userId || human.authUserId || '',
+    name: human.name || user.name || user.email || member.email || 'Human',
+    email: human.email || user.email || member.email || '',
+    avatar: human.avatar || human.avatarUrl || user.avatarUrl || '',
+    role: cloudMemberDisplayRole(member),
+    status: human.status || member.presenceStatus || 'offline',
+    joinedAt: member.joinedAt || member.createdAt || human.createdAt || '',
+    cloudMemberId: member.id || '',
+    cloudMember: member,
+  };
+}
+
+function workspaceHumans() {
+  const members = (appState?.cloud?.members || [])
+    .filter((member) => (member.status || 'active') === 'active')
+    .sort((a, b) => new Date(a.joinedAt || a.createdAt || 0) - new Date(b.joinedAt || b.createdAt || 0));
+  if (members.length) {
+    const seen = new Set();
+    const humans = [];
+    for (const member of members) {
+      const human = humanFromCloudMember(member);
+      const key = member.userId || human.authUserId || human.email?.toLowerCase() || human.id;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      humans.push(human);
+    }
+    return humans;
+  }
+  return (appState?.humans || []).filter((human) => human.status !== 'removed');
+}
+
+function humanByIdAny(id) {
+  const target = String(id || '');
+  return byId(appState?.humans, target)
+    || workspaceHumans().find((human) => (
+      human.id === target
+      || human.cloudMemberId === target
+      || human.authUserId === target
+    ))
+    || null;
+}
+
 function currentAccountHuman() {
   const auth = appState?.cloud?.auth || {};
   const currentUser = auth.currentUser;
   const currentMember = auth.currentMember;
-  return byId(appState?.humans, currentMember?.humanId)
-    || (currentUser ? (appState?.humans || []).find((human) => human.authUserId === currentUser.id && human.status !== 'removed') : null)
-    || byId(appState?.humans, 'hum_local')
+  if (currentMember) {
+    return humanFromCloudMember(currentMember);
+  }
+  if (currentUser) {
+    const human = (appState?.humans || []).find((item) => item.authUserId === currentUser.id && item.status !== 'removed');
+    return human || {
+      id: `usr_${currentUser.id || 'current'}`,
+      authUserId: currentUser.id || '',
+      name: currentUser.name || currentUser.email || 'You',
+      email: currentUser.email || '',
+      avatar: currentUser.avatarUrl || '',
+      role: 'member',
+      status: 'offline',
+      createdAt: currentUser.createdAt || '',
+    };
+  }
+  return byId(appState?.humans, 'hum_local')
     || appState?.humans?.[0]
     || {};
 }

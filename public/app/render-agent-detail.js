@@ -549,7 +549,7 @@ function renderAgentGroupsByComputer(agents = []) {
   const computers = appState.computers || [];
   const groups = new Map();
   for (const computer of computers) {
-    groups.set(computer.id, { id: computer.id, label: computer.name || 'Computer', meta: computer.status || '', agents: [] });
+    groups.set(computer.id, { id: computer.id, label: computer.name || computer.hostname || 'Computer', meta: computer.status || '', agents: [] });
   }
   groups.set('unassigned', { id: 'unassigned', label: 'Unassigned', meta: '', agents: [] });
   for (const agent of agents) {
@@ -562,7 +562,7 @@ function renderAgentGroupsByComputer(agents = []) {
     <div class="agent-computer-group">
       <div class="agent-computer-group-title">
         <span>${escapeHtml(group.label)}</span>
-        ${group.meta ? `<small>${escapeHtml(group.meta)}</small>` : ''}
+        ${group.meta ? `<small>${avatarStatusDot(group.meta, 'Computer status')}</small>` : ''}
       </div>
       ${group.agents.map((agent) => renderAgentListItem(agent)).join('')}
     </div>
@@ -575,7 +575,7 @@ function renderHumanListItem(human) {
   return `
     <button class="space-btn member-btn human-role-${escapeHtml(role)}${active}" type="button" data-action="select-human" data-id="${escapeHtml(human.id)}">
       <span class="dm-avatar-wrap">
-        ${getAvatarHtml(human.id, 'human', 'dm-avatar')}
+        ${renderHumanAvatar(human, 'dm-avatar')}
       </span>
       <div class="member-info">
         <span class="dm-name">${escapeHtml(human.name)}</span>
@@ -605,6 +605,7 @@ function cloudMemberForHuman(human) {
   return (appState.cloud?.members || []).find((member) => (
     member.humanId === human?.id
     || member.human?.id === human?.id
+    || member.userId === human?.authUserId
     || (email && String(member.user?.email || member.email || '').toLowerCase() === email)
   )) || null;
 }
@@ -622,10 +623,10 @@ function renderHumanDetail(human) {
   const createdAgents = humanCreatedAgents(human);
   const email = human.email || member?.user?.email || member?.email || '';
   return `
-    <section class="pixel-panel inspector-panel human-detail-page">
+    <section class="pixel-panel inspector-panel human-detail-page slock-profile-detail">
       <div class="agent-detail-topbar">
         <div class="agent-detail-title">
-          <span class="agent-detail-avatar-frame mini">${getAvatarHtml(human.id, 'human', 'agent-detail-avatar-preview')}</span>
+          <span class="agent-detail-avatar-frame mini">${renderHumanAvatar(human, 'agent-detail-avatar-preview')}</span>
           <div>
             <strong>${escapeHtml(human.name || member?.user?.name || 'Human')}</strong>
             <small>${escapeHtml(email || 'Server member')}</small>
@@ -640,17 +641,14 @@ function renderHumanDetail(human) {
           <span class="detail-label">Description</span>
           <div class="agent-field-value ${human.description ? '' : 'muted'}">${escapeHtml(human.description || 'No description')}</div>
         </section>
-        <section class="agent-profile-field">
-          <span class="detail-label">Role</span>
-          <div class="agent-field-value">${escapeHtml(cloudRoleLabel(member?.role || human.role || 'member'))}</div>
-        </section>
-        <section class="agent-profile-field">
-          <span class="detail-label">Email</span>
-          <div class="agent-field-value ${email ? '' : 'muted'}">${escapeHtml(email || '--')}</div>
-        </section>
-        <section class="agent-profile-field">
-          <span class="detail-label">Joined</span>
-          <div class="agent-field-value">${escapeHtml(member?.joinedAt ? fmtTime(member.joinedAt) : human.createdAt ? fmtTime(human.createdAt) : '--')}</div>
+        <section class="agent-profile-field human-info-section">
+          <span class="detail-label">Info</span>
+          <div class="human-info-grid">
+            <div><span>Role</span><strong>${escapeHtml(cloudRoleLabel(member ? cloudMemberDisplayRole(member) : human.role || 'member'))}</strong></div>
+            <div><span>Email</span><strong>${escapeHtml(email || '--')}</strong></div>
+            <div><span>Joined</span><strong>${escapeHtml(member?.joinedAt ? fmtTime(member.joinedAt) : human.joinedAt ? fmtTime(human.joinedAt) : human.createdAt ? fmtTime(human.createdAt) : '--')}</strong></div>
+            <div><span>User ID</span><strong>${escapeHtml(member?.userId || human.authUserId || '--')}</strong></div>
+          </div>
         </section>
         <section class="agent-profile-field human-actions-section">
           <span class="detail-label">Actions</span>

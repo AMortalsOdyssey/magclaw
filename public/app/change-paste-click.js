@@ -39,11 +39,7 @@ document.addEventListener('change', async (event) => {
     }
     const avatar = await readAvatarFileAsDataUrl(file);
     event.target.value = '';
-    const input = document.querySelector('[data-server-avatar-input]');
-    if (input) input.value = avatar;
-    const preview = document.querySelector('.server-profile-avatar');
-    if (preview) preview.innerHTML = `<img class="server-profile-avatar-img" src="${escapeHtml(avatar)}" alt="">`;
-    toast('Avatar selected');
+    await openAvatarCropModal({ source: avatar, target: 'server-profile' });
     return;
   }
   if (event.target.matches?.('.agent-avatar-upload')) {
@@ -361,6 +357,8 @@ document.addEventListener('click', async (event) => {
       if (nav === 'chat') {
         railTab = 'spaces';
         activeView = 'space';
+        selectedSpaceType = selectedSpaceType || 'channel';
+        selectedSpaceId = selectedSpaceId || appState?.channels?.[0]?.id || 'chan_all';
         selectedAgentId = null;
         selectedHumanId = null;
         selectedComputerId = null;
@@ -383,6 +381,7 @@ document.addEventListener('click', async (event) => {
         selectedComputerId = null;
         workspaceActivityDrawerOpen = false;
       } else if (nav === 'console') {
+        railTab = 'console';
         activeView = 'console';
         consoleTab = consoleTab || 'overview';
         selectedAgentId = null;
@@ -957,8 +956,17 @@ document.addEventListener('click', async (event) => {
         cloudAuthAvatar = avatar;
         toast('Avatar selected');
       }
+      if (crop?.target === 'server-profile') {
+        const input = document.querySelector('[data-server-avatar-input]');
+        if (input) input.value = avatar;
+        const preview = document.querySelector('.server-profile-avatar');
+        if (preview) preview.innerHTML = `<img class="server-profile-avatar-img" src="${escapeHtml(avatar)}" alt="">`;
+        toast('Server avatar selected');
+      }
       avatarCropState = null;
       modal = crop?.target === 'agent-create' ? 'agent' : null;
+      render();
+      return;
     }
     if (action === 'remove-project') {
       clearProjectCaches(target.dataset.id);

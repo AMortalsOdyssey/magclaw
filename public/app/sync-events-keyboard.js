@@ -39,6 +39,8 @@ function cloudAuthTokenFromLocation() {
     return { mode: 'forgot-sent', token: '', email: params.get('email') || '' };
   }
   if (path.startsWith('/forgot-password')) return { mode: 'forgot', token: '' };
+  const joinMatch = path.match(/^\/join\/([^/]+)/);
+  if (joinMatch) return { mode: 'join', token: decodeURIComponent(joinMatch[1] || '') };
   if (!token) return { mode: '', token: '' };
   if (path.includes('reset-password') || token.startsWith('mc_reset_')) return { mode: 'reset', token };
   return { mode: 'invite', token };
@@ -51,6 +53,10 @@ async function loadCloudAuthTokenContext() {
     if (context.mode === 'reset') {
       const status = await api(`/api/cloud/auth/reset-status?token=${encodeURIComponent(context.token)}`);
       return { ...context, reset: status.reset || {} };
+    }
+    if (context.mode === 'join') {
+      const status = await api(`/api/cloud/join-links/status?token=${encodeURIComponent(context.token)}`);
+      return { ...context, joinLink: status.joinLink || {}, joinWorkspace: status.workspace || {}, alreadyMember: Boolean(status.alreadyMember) };
     }
     const status = await api(`/api/cloud/auth/invitation-status?token=${encodeURIComponent(context.token)}`);
     if (cloudAuthAvatarToken !== context.token) {

@@ -671,7 +671,7 @@ function openNotificationRecord(recordId) {
 }
 
 function showAgentNotification(record, stateSnapshot = appState) {
-  if (!agentNotificationsEnabled() || !appIsInBackground()) return;
+  if (!agentNotificationsEnabled() || serverNotificationsMuted() || !appIsInBackground()) return;
   try {
     const agent = byId(stateSnapshot?.agents, record.authorId);
     const notification = new Notification(notificationTitle(record, stateSnapshot), {

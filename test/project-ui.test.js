@@ -263,12 +263,13 @@ test('generated invitation links use the current browser origin for loopback API
   );
 });
 
-test('account profile uses a focused role layout with avatar picker controls', async () => {
+test('account profile uses a Slock-style waterfall layout with avatar picker controls', async () => {
   const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));
 
-  assert.match(accountSettingsSource, /class="account-role-badge role-\$\{escapeHtml\(role\)\}"/);
+  assert.match(accountSettingsSource, /account-waterfall/);
+  assert.doesNotMatch(accountSettingsSource, /account-role-badge/);
   assert.match(app, /let profileFormDraft = null/);
   assert.match(app, /let profileFormIsComposing = false/);
   assert.match(app, /let pendingProfileFormRender = false/);
@@ -279,7 +280,7 @@ test('account profile uses a focused role layout with avatar picker controls', a
   assert.match(app, /profileFormValuesForRender\(human, currentUser\)/);
   assert.match(accountSettingsSource, /data-action="pick-profile-avatar"/);
   assert.match(accountSettingsSource, /data-action="reset-profile-avatar"[\s\S]*Reset to Default/);
-  assert.match(accountSettingsSource, /class="account-permission-chips"/);
+  assert.match(accountSettingsSource, /account-session-card/);
   assert.match(app, /const profileFocus = profileFormFocusSnapshot\(\)/);
   assert.match(app, /shouldDeferProfileFormRender\(\)[\s\S]*pendingProfileFormRender = true/);
   assert.match(app, /restoreProfileFormFocus\(profileFocus\)/);
@@ -289,10 +290,9 @@ test('account profile uses a focused role layout with avatar picker controls', a
   assert.match(app, /pendingProfileFormRender[\s\S]*window\.requestAnimationFrame\(\(\) => render\(\)\)/);
   assert.match(app, /if \(profileForm\) \{[\s\S]*captureProfileFormDraft\(profileForm\)/);
   assert.match(app, /clearProfileFormDraft\(\)/);
-  assert.doesNotMatch(accountSettingsSource, /Identity Boundary|<span>Device<\/span>|id="profile-avatar-library"|<span>Session<\/span>|sessionTtlMs|sessionExpiresAt/);
+  assert.doesNotMatch(accountSettingsSource, /Identity Boundary|<span>Device<\/span>|id="profile-avatar-library"|sessionTtlMs|sessionExpiresAt/);
   assert.match(styles, /\.account-overview-card/);
-  assert.match(styles, /\.account-role-badge strong/);
-  assert.match(styles, /\.account-permission-chips span/);
+  assert.match(styles, /\.account-session-card/);
   assert.match(styles, /\.profile-upload-btn,\n\.file-btn \{/);
 });
 

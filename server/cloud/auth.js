@@ -81,6 +81,7 @@ function httpOriginFromValue(value) {
 function publicLinkOrigin(req) {
   const configured = String(process.env.MAGCLAW_PUBLIC_URL || '').trim().replace(/\/+$/, '');
   if (configured) return configured;
+  if (!req) return '';
   const forwardedHost = String(req.headers?.['x-forwarded-host'] || '').split(',')[0].trim();
   if (forwardedHost) {
     const proto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim()
@@ -184,6 +185,7 @@ function publicJoinLink(link, rawToken = '', req = null) {
   if (!link) return null;
   const { tokenHash, ...safe } = link;
   void tokenHash;
+  const metadata = safe.metadata && typeof safe.metadata === 'object' ? safe.metadata : {};
   const expiresAt = safe.expiresAt ? new Date(safe.expiresAt).getTime() : 0;
   const status = safe.revokedAt
     ? 'revoked'
@@ -192,10 +194,11 @@ function publicJoinLink(link, rawToken = '', req = null) {
       : safe.maxUses && Number(safe.usedCount || 0) >= Number(safe.maxUses)
         ? 'exhausted'
         : 'active';
-  const url = rawToken
-    ? `${publicLinkOrigin(req).replace(/\/+$/, '')}/join/${encodeURIComponent(rawToken)}`
+  const displayToken = rawToken || metadata.rawToken || '';
+  const url = displayToken
+    ? `${publicLinkOrigin(req).replace(/\/+$/, '')}/join/${encodeURIComponent(displayToken)}`
     : '';
-  return { ...safe, status, url };
+  return { ...safe, metadata: { ...metadata, rawToken: undefined }, status, url };
 }
 
 function publicPasswordReset(reset, user = null) {
@@ -1136,6 +1139,7 @@ export function createCloudAuth(deps) {
         createdBy: auth.user.id,
         createdAt,
         updatedAt: createdAt,
+        metadata: { rawToken: raw },
       };
       cloud.joinLinks.push(joinLink);
       console.info(`[cloud-auth] join link created workspace=${workspace.id} actor=${auth.user.id} maxUses=${maxUses}`);
@@ -1166,6 +1170,111 @@ export function createCloudAuth(deps) {
       console.info(`[cloud-auth] join link revoked id=${joinLink.id} actor=${auth.user.id}`);
       await persistCloudState();
       return { joinLink: publicJoinLink(joinLink) };
+    }
+
+    function joinLinkForToken(raw) {
+      const tokenValue = String(raw || '').trim();
+      if (!tokenValue) return null;
+      const hash = sha256(tokenValue);
+      return safeArray(ensureCloudState().joinLinks).find((item) => item.tokenHash === hash) || null;
+    }
+
+    function assertJoinLinkCanBeUsed(joinLink) {
+      if (!joinLink) {
+        const error = new Error('Join link was not found.');
+        error.status = 404;
+        throw error;
+      }
+      if (joinLink.revokedAt) {
+        const error = new Error('Join link has been revoked.');
+        error.status = 410;
+        throw error;
+      }
+      if (joinLink.expiresAt && new Date(joinLink.expiresAt).getTime() <= Date.now()) {
+        const error = new Error('Join link has expired.');
+        error.status = 410;
+        throw error;
+      }
+      if (joinLink.maxUses && Number(joinLink.usedCount || 0) >= Number(joinLink.maxUses)) {
+        const error = new Error('Join link has no uses left.');
+        error.status = 409;
+        throw error;
+      }
+      return joinLink;
+    }
+
+    function publicJoinWorkspace(workspace) {
+      if (!workspace) return null;
+      return {
+        id: workspace.id,
+        slug: workspace.slug || workspace.id,
+        name: workspace.name || workspace.slug || 'Server',
+        avatar: workspace.avatar || '',
+        ownerUserId: workspace.ownerUserId || '',
+      };
+    }
+
+    function joinLinkStatus(raw, req) {
+      const joinLink = assertJoinLinkCanBeUsed(joinLinkForToken(raw));
+      const workspace = ensureCloudState().workspaces.find((item) => item.id === joinLink.workspaceId) || null;
+      if (!workspace) {
+        const error = new Error('Server was not found.');
+        error.status = 404;
+        throw error;
+      }
+      const user = currentUser(req);
+      const existingMember = user ? memberForUser(user.id, workspace.id) : null;
+      return {
+        joinLink: publicJoinLink(joinLink, raw, req),
+        workspace: publicJoinWorkspace(workspace),
+        alreadyMember: Boolean(existingMember),
+      };
+    }
+
+    async function acceptJoinLink(body, req) {
+      const user = requireAuthenticatedUser(req);
+      const raw = String(body.token || body.joinToken || '').trim();
+      const joinLink = assertJoinLinkCanBeUsed(joinLinkForToken(raw));
+      const cloud = ensureCloudState();
+      const workspace = cloud.workspaces.find((item) => item.id === joinLink.workspaceId) || null;
+      if (!workspace) {
+        const error = new Error('Server was not found.');
+        error.status = 404;
+        throw error;
+      }
+      const joinedAt = now();
+      let member = memberForUser(user.id, workspace.id);
+      if (!member) {
+        const human = ensureHumanForUser(user, 'member');
+        addHumanToAllChannel(human);
+        member = {
+          id: makeId('wmem'),
+          workspaceId: workspace.id,
+          userId: user.id,
+          humanId: human?.id || '',
+          role: 'member',
+          status: 'active',
+          joinedAt,
+          createdAt: joinedAt,
+          updatedAt: joinedAt,
+        };
+        cloud.workspaceMembers.push(member);
+        joinLink.usedCount = Number(joinLink.usedCount || 0) + 1;
+      } else {
+        member.status = 'active';
+        member.joinedAt ||= joinedAt;
+        member.updatedAt = joinedAt;
+      }
+      joinLink.updatedAt = joinedAt;
+      state.connection.workspaceId = workspace.id;
+      console.info(`[cloud-auth] join link accepted workspace=${workspace.id} user=${user.id}`);
+      await persistCloudState();
+      return {
+        server: workspace,
+        workspace,
+        member: publicMember(member),
+        joinLink: publicJoinLink(joinLink, raw, req),
+      };
     }
 
     async function acceptConsoleInvitation(invitationId, req) {
@@ -1697,13 +1806,17 @@ export function createCloudAuth(deps) {
     function publicCloudState(req) {
       const cloud = ensureCloudState();
       refreshHumanPresence();
+      const workspace = primaryWorkspace();
       const user = req ? currentUser(req) : null;
-      const member = user ? memberForUser(user.id) : null;
+      const member = user ? memberForUser(user.id, workspace?.id) : null;
       const session = req ? currentSession(req) : null;
       const capabilities = member ? cloudCapabilitiesForRole(member.role) : {};
       const canManageCloud = Boolean(capabilities.manage_cloud_connection);
       const canSeeDirectory = !cloud.users.length || Boolean(member);
       const ownConsoleState = user ? consoleStateForUser(user) : { workspaces: [], invitations: [] };
+      const workspaceMembers = workspace
+        ? cloud.workspaceMembers.filter((item) => item.workspaceId === workspace.id)
+        : [];
       return {
         schemaVersion: cloud.schemaVersion,
         auth: {
@@ -1720,12 +1833,12 @@ export function createCloudAuth(deps) {
           sessionExpiresAt: session?.expiresAt || null,
           humanPresenceTimeoutMs: HUMAN_PRESENCE_TIMEOUT_MS,
         },
-        workspace: primaryWorkspace(),
+        workspace,
         workspaces: ownConsoleState.workspaces,
-        members: canSeeDirectory ? cloud.workspaceMembers.map(publicMember) : [],
+        members: canSeeDirectory ? workspaceMembers.map(publicMember) : [],
         invitations: member ? cloud.invitations.map(publicInvitation) : ownConsoleState.invitations,
         joinLinks: canManageCloud ? safeArray(cloud.joinLinks)
-          .filter((item) => item.workspaceId === primaryWorkspace()?.id)
+          .filter((item) => item.workspaceId === workspace?.id)
           .map((item) => publicJoinLink(item)) : [],
         myInvitations: ownConsoleState.invitations,
         systemNotifications: member ? safeArray(state.systemNotifications).map(publicSystemNotification) : [],
@@ -1769,6 +1882,8 @@ export function createCloudAuth(deps) {
       deleteConsoleServer,
       updateServerProfile,
       createJoinLink,
+      joinLinkStatus,
+      acceptJoinLink,
       revokeJoinLink,
       consoleStateForUser,
       invitationStatus,

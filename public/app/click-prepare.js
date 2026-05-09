@@ -137,6 +137,7 @@ async function prepareDocumentClick(event) {
     'enable-agent-notifications',
     'disable-agent-notifications',
     'dismiss-agent-notifications',
+    'toggle-server-notification-mute',
     'toggle-task-channel-menu',
     'toggle-task-channel-filter',
     'clear-task-channel-filters',
@@ -207,6 +208,10 @@ async function prepareDocumentClick(event) {
       await navigator.clipboard?.writeText(latestPairingCommand.command);
       toast('Connect command copied');
     }
+    return;
+  }
+  if (action === 'toggle-server-notification-mute') {
+    toggleServerNotificationsMuted();
     return;
   }
   // Avatar picker actions

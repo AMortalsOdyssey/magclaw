@@ -16,11 +16,15 @@ function writeJsonStorage(key, value) {
 }
 
 function normalizeNotificationPrefs(value = {}) {
+  const mutedServerSlugs = Array.isArray(value.mutedServerSlugs)
+    ? value.mutedServerSlugs.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : [];
   return {
     enabled: Boolean(value.enabled),
     dismissedPrompt: Boolean(value.dismissedPrompt),
     enabledAt: value.enabledAt || null,
     dismissedAt: value.dismissedAt || null,
+    mutedServerSlugs,
   };
 }
 

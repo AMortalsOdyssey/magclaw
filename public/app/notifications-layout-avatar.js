@@ -14,8 +14,35 @@ function browserNotificationPermission() {
   return Notification.permission || 'default';
 }
 
+function notificationServerKey() {
+  return String(currentServerSlug() || currentServerProfile()?.slug || currentServerProfile()?.id || '').trim().toLowerCase();
+}
+
+function serverNotificationsMuted() {
+  const key = notificationServerKey();
+  return Boolean(key && (notificationPrefs.mutedServerSlugs || []).includes(key));
+}
+
+function toggleServerNotificationsMuted() {
+  const key = notificationServerKey();
+  if (!key) return;
+  const muted = new Set(notificationPrefs.mutedServerSlugs || []);
+  if (muted.has(key)) {
+    muted.delete(key);
+    toast('Server notifications unmuted');
+  } else {
+    muted.add(key);
+    toast('Server notifications muted');
+  }
+  saveNotificationPrefs({
+    ...notificationPrefs,
+    mutedServerSlugs: [...muted],
+  });
+  render();
+}
+
 function agentNotificationsEnabled() {
-  return notificationPrefs.enabled && browserNotificationPermission() === 'granted';
+  return notificationPrefs.enabled && browserNotificationPermission() === 'granted' && !serverNotificationsMuted();
 }
 
 function notificationPromptVisible() {
@@ -29,6 +56,7 @@ function notificationStatusLabel() {
   const permission = browserNotificationPermission();
   if (permission === 'unsupported') return 'Unsupported';
   if (permission === 'denied') return 'Blocked';
+  if (serverNotificationsMuted()) return 'Muted';
   if (permission === 'granted' && notificationPrefs.enabled) return 'On';
   if (permission === 'granted') return 'Off';
   return 'Ask first';
@@ -38,6 +66,7 @@ function notificationStatusDetail() {
   const permission = browserNotificationPermission();
   if (permission === 'unsupported') return 'This browser does not expose desktop notifications.';
   if (permission === 'denied') return 'Notifications are blocked in the browser site settings.';
+  if (serverNotificationsMuted()) return 'This server is muted for this browser.';
   if (permission === 'granted' && notificationPrefs.enabled) return 'Agent replies will notify you while Magclaw is in the background.';
   if (permission === 'granted') return 'Browser permission is granted; app notifications are currently off.';
   return 'Chrome will ask for permission before turning this on.';
@@ -66,23 +95,33 @@ function renderNotificationPromptBanner() {
 
 function renderNotificationConfigCard() {
   const permission = browserNotificationPermission();
-  const enabled = agentNotificationsEnabled();
+  const globallyEnabled = notificationPrefs.enabled && permission === 'granted';
+  const muted = serverNotificationsMuted();
   const canEnable = permission === 'default' || permission === 'granted';
+  const serverName = currentServerProfile()?.name || currentServerSlug() || 'this server';
   return `
     <div class="pixel-panel cloud-card notification-config-card">
-      <div class="panel-title"><span>Agent Notifications</span><span>${escapeHtml(notificationStatusLabel())}</span></div>
+      <div class="panel-title"><span>Push Notifications</span><span>${escapeHtml(notificationStatusLabel())}</span></div>
       <div class="notification-card-body">
         <div class="notification-card-icon">${notificationBellIcon(20)}</div>
         <div>
-          <strong>${enabled ? 'Browser notifications are on' : 'Browser notifications are off'}</strong>
+          <strong>${globallyEnabled ? 'Browser notifications are on' : 'Browser notifications are off'}</strong>
           <p>${escapeHtml(notificationStatusDetail())}</p>
-          <small>Delivered for new agent messages and thread replies while this tab is not focused.</small>
+          <small>Delivered for DMs, direct mentions, and followed thread replies while this tab is in the background.</small>
         </div>
       </div>
       <div class="notification-card-actions">
-        ${enabled
+        ${globallyEnabled
           ? '<button class="secondary-btn" type="button" data-action="disable-agent-notifications">Turn Off</button>'
           : `<button class="primary-btn" type="button" data-action="enable-agent-notifications" ${canEnable ? '' : 'disabled'}>Turn On</button>`}
+      </div>
+      <div class="notification-card-body notification-server-mute">
+        <div class="notification-card-icon">${settingsIcon('server', 18)}</div>
+        <div>
+          <strong>${muted ? 'This server is muted' : 'Mute this server'}</strong>
+          <p>${muted ? `Web push notifications from ${serverName} are muted for this browser.` : `Stops web push notifications from ${serverName} without changing other servers.`}</p>
+        </div>
+        <button class="${muted ? 'primary-btn' : 'secondary-btn'}" type="button" data-action="toggle-server-notification-mute">${muted ? 'Unmute Server' : 'Mute Server'}</button>
       </div>
     </div>
   `;
@@ -291,6 +330,8 @@ function openMembersNav() {
   railTab = 'members';
   activeView = 'members';
   selectedAgentId = null;
+  selectedHumanId = null;
+  selectedComputerId = null;
   clearNonAgentInspectors();
   membersLayout = normalizeMembersLayout({ mode: 'directory' });
   return null;

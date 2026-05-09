@@ -254,6 +254,15 @@ test('public account registration and password reset use SMTP outbox without inv
       expectStatus: 409,
     });
     assert.equal(duplicateServer.data.error, 'Server slug is already taken.');
+    const secondServer = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: created.cookie,
+      body: JSON.stringify({ name: 'Second Team', slug: 'second-team' }),
+    });
+    assert.equal(secondServer.status, 201);
+    const scopedState = await request(server.baseUrl, '/api/state', { cookie: created.cookie });
+    assert.equal(scopedState.data.cloud.workspace.slug, 'second-team');
+    assert.deepEqual(scopedState.data.cloud.members.map((member) => member.workspaceId), [secondServer.data.server.id]);
 
     const forgot = await request(server.baseUrl, '/api/auth/forgot-password', {
       method: 'POST',

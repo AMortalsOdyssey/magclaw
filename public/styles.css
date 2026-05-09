@@ -577,6 +577,7 @@ p {
   box-shadow: none;
   font-size: 15px;
   line-height: 1;
+  transform: translateY(-1px);
 }
 
 .rail-title .rail-collapse-btn:hover,
@@ -2162,6 +2163,33 @@ button:disabled {
   gap: 10px;
 }
 
+.human-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--settings-line, var(--border-faint));
+}
+
+.human-info-grid div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--settings-line, var(--border-faint));
+}
+
+.human-info-grid span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.human-info-grid strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .server-admin-row,
 .server-invite-row,
 .server-join-link-row,
@@ -2189,6 +2217,47 @@ button:disabled {
   color: var(--text-secondary);
 }
 
+.join-link-card .cloud-login-card {
+  width: 100%;
+  margin: 12px 0 0;
+  box-shadow: none;
+}
+
+.join-link-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--settings-line, var(--border-faint));
+  border-radius: 6px;
+  background: var(--surface-soft, #fff8fb);
+}
+
+.join-link-server-avatar {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.join-link-summary strong,
+.join-link-summary small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.join-link-summary small {
+  margin-top: 3px;
+  color: var(--text-muted);
+}
+
 .danger-card {
   border-color: #e35b67;
 }
@@ -2204,11 +2273,16 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   padding: 3px 2px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.agent-computer-group-title small {
+  display: inline-flex;
+  align-items: center;
 }
 
 .rail-title {
@@ -2223,12 +2297,13 @@ button:disabled {
 .computer-detail-card,
 .computer-info-card {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .computer-detail-header h2 {
   margin: 0 0 4px;
-  font-size: 22px;
+  font-size: 18px;
+  line-height: 1.15;
 }
 
 .computer-detail-header p {
@@ -2237,11 +2312,69 @@ button:disabled {
   gap: 7px;
   margin: 0;
   color: var(--text-secondary);
+  font-size: 13px;
 }
 
-.compact-form {
+.computer-detail-header small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.compact-form,
+.computer-name-line {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
+}
+
+.computer-name-line {
+  display: grid;
+  gap: 10px;
+}
+
+.computer-name-line label {
+  display: grid;
+  gap: 5px;
+}
+
+.computer-name-line span,
+.computer-info-row span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.computer-info-list {
+  display: grid;
+  border-top: 1px solid var(--settings-line, var(--border-faint));
+}
+
+.computer-info-row {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--settings-line, var(--border-faint));
+}
+
+.computer-info-row strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.computer-info-row small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.computer-info-row.important strong {
+  color: #D91F2D;
 }
 
 .detected-runtime-list {
@@ -2254,23 +2387,48 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 24px;
   padding: 4px 8px;
   border: 1px solid var(--border);
-  background: #00b8d8;
-  color: #061114;
-  font-size: 12px;
-  font-weight: 900;
+  border-radius: 3px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .runtime-badge.muted {
   background: var(--bg-elevated);
   color: var(--text-muted);
+  border-color: var(--settings-line, var(--border-faint));
 }
 
-.runtime-badge small {
+.runtime-badge small,
+.runtime-badge em {
   color: inherit;
   font-size: 10px;
+  font-style: normal;
   opacity: 0.76;
+}
+
+.slock-computer-detail .cloud-card,
+.slock-profile-detail {
+  border-width: 1px;
+  border-color: var(--settings-line, var(--border-faint));
+  box-shadow: none;
+}
+
+.computer-profile-card {
+  padding: 16px;
+}
+
+.computer-connect-card .pair-command-box {
+  align-items: stretch;
+}
+
+.computer-connect-card code {
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .danger-row {
@@ -5094,21 +5252,24 @@ button:disabled {
   max-width: 1080px;
 }
 
+.account-waterfall {
+  grid-template-columns: 1fr;
+}
+
 .account-overview-card {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 18px;
-  padding: 22px;
+  gap: 14px;
+  padding: 16px;
   background: var(--bg-card);
 }
 
 .account-profile-main {
-  display: flex;
+  display: grid;
   min-width: 0;
-  align-items: center;
-  gap: 18px;
+  gap: 4px;
 }
 
 .account-profile-main > div {
@@ -5122,8 +5283,8 @@ button:disabled {
 
 .account-profile-main h3 {
   overflow-wrap: anywhere;
-  font-size: 26px;
-  line-height: 1.05;
+  font-size: 20px;
+  line-height: 1.15;
 }
 
 .account-profile-main p:last-child {
@@ -5132,9 +5293,9 @@ button:disabled {
 }
 
 .account-avatar-lg {
-  width: 88px;
-  height: 88px;
-  font-size: 28px;
+  width: 58px;
+  height: 58px;
+  font-size: 20px;
 }
 
 .account-role-badge {
@@ -5188,6 +5349,19 @@ button:disabled {
 
 .account-profile-form {
   gap: 16px;
+  width: 100%;
+}
+
+.account-session-card {
+  display: grid;
+  gap: 10px;
+}
+
+.account-session-card p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .settings-account-card {
@@ -5356,8 +5530,14 @@ button:disabled {
 .settings-release {
   display: grid;
   align-self: start;
-  gap: 12px;
-  max-width: 960px;
+  gap: 18px;
+  max-width: 880px;
+}
+
+.settings-release > h3 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.15;
 }
 
 .settings-release-label {
@@ -5371,23 +5551,21 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.release-card {
+.release-card,
+.release-day {
   display: grid;
   align-content: start;
   align-items: start;
-  gap: 16px;
-  padding: 22px 24px;
+  gap: 10px;
 }
 
-.release-card h3 {
+.release-card h3,
+.release-day h4 {
   justify-self: start;
   margin: 0;
-  padding: 5px 16px;
-  border: 3px solid var(--border);
-  background: var(--accent);
-  color: var(--accent-text);
-  box-shadow: var(--shadow-pixel);
-  font-size: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 900;
   letter-spacing: 0;
 }
 
@@ -5398,26 +5576,28 @@ button:disabled {
 
 .release-note-row {
   display: grid;
-  grid-template-columns: 86px minmax(0, 1fr);
+  grid-template-columns: 78px minmax(0, 1fr);
   align-items: start;
-  gap: 12px;
+  gap: 10px;
+  padding: 2px 0;
 }
 
 .release-note-row p {
   margin: 0;
   color: var(--text-primary);
-  font-size: 16px;
+  font-size: 13px;
   line-height: 1.45;
 }
 
 .release-badge {
   display: inline-grid;
-  min-height: 28px;
+  min-height: 22px;
   place-items: center;
-  border: 3px solid var(--border);
+  border: 1px solid var(--settings-line, var(--border-faint));
+  border-radius: 3px;
   color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 900;
+  font-size: 10px;
+  font-weight: 800;
   text-transform: uppercase;
 }
 
@@ -6061,6 +6241,8 @@ code {
 }
 
 .notification-card-body {
+  display: flex;
+  gap: 10px;
   align-items: flex-start;
   padding: 10px;
   border: 2px solid var(--border);
@@ -6097,6 +6279,19 @@ code {
 
 .notification-card-actions {
   justify-content: flex-end;
+}
+
+.notification-server-mute {
+  align-items: center;
+}
+
+.notification-server-mute > div:nth-child(2) {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.notification-server-mute button {
+  flex: 0 0 auto;
 }
 
 .computer-config-list {

@@ -240,15 +240,7 @@ function renderMembersRail({ normalAgents }) {
 }
 
 function humansByJoinOrder() {
-  const cloudMembers = (appState.cloud?.members || [])
-    .filter((member) => (member.status || 'active') === 'active')
-    .sort((a, b) => new Date(a.joinedAt || a.createdAt || 0) - new Date(b.joinedAt || b.createdAt || 0));
-  if (cloudMembers.length) {
-    return cloudMembers
-      .map((member) => byId(appState.humans, member.humanId) || member.human)
-      .filter(Boolean);
-  }
-  return (appState.humans || []).filter((human) => human.status !== 'removed');
+  return workspaceHumans();
 }
 
 function renderComputersRail() {
@@ -333,7 +325,7 @@ function settingsNavItems() {
   return [
     { id: 'account', label: 'Account', icon: 'account' },
     { id: 'browser', label: 'Browser', icon: 'browser', meta: notificationStatusLabel() },
-    { id: 'server', label: 'Server', icon: 'server', meta: appState.connection?.mode || 'local' },
+    { id: 'server', label: 'Server', icon: 'server', meta: currentServerProfile().slug || '' },
     { id: 'system', label: 'System Config', icon: 'system', meta: fanoutConfigured ? 'LLM' : 'rules' },
     { id: 'release', label: 'Release Notes', icon: 'release' },
   ];
@@ -707,7 +699,7 @@ function renderInbox() {
 
 function renderMembersMain() {
   const agent = selectedAgentId ? byId(appState.agents, selectedAgentId) : null;
-  const human = selectedHumanId ? byId(appState.humans, selectedHumanId) : null;
+  const human = selectedHumanId ? humanByIdAny(selectedHumanId) : null;
   if (human) return renderHumanDetail(human);
   if (agent) return renderAgentDetail(agent);
   return `

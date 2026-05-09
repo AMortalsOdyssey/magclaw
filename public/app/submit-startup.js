@@ -350,6 +350,19 @@ document.addEventListener('submit', async (event) => {
       window.history.replaceState({}, '', '/');
       toast('Password reset');
     }
+    if (form.id === 'cloud-join-link-form') {
+      const result = await api('/api/cloud/join-links/accept', {
+        method: 'POST',
+        body: JSON.stringify({ token: data.get('joinToken') }),
+      });
+      const slug = String(result.server?.slug || result.workspace?.slug || '').trim();
+      activeView = 'space';
+      railTab = 'spaces';
+      selectedSpaceType = 'channel';
+      selectedSpaceId = appState?.channels?.[0]?.id || selectedSpaceId || 'chan_all';
+      if (slug && window.history?.replaceState) window.history.replaceState({}, '', `/s/${encodeURIComponent(slug)}`);
+      toast('Server joined');
+    }
     if (form.id === 'member-invite-form') {
       cloudInviteDraft = String(data.get('emailsDraft') || '');
       sanitizeMemberInviteTokens();
