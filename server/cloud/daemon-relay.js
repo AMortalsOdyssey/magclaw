@@ -426,6 +426,8 @@ export function createDaemonRelay(deps) {
         id: agent.id,
         name: agent.name,
         runtime: agent.runtime,
+        runtimeId: agent.runtimeId || null,
+        runtimeSessionId: agent.runtimeSessionId || null,
         model: agent.model,
         reasoningEffort: agent.reasoningEffort || null,
         workspace: agent.workspace || null,
@@ -441,12 +443,49 @@ export function createDaemonRelay(deps) {
     return result;
   }
 
+  async function restartAgent(agent, options = {}) {
+    const mode = ['restart', 'reset-session', 'full-reset'].includes(options.mode) ? options.mode : 'restart';
+    if (mode === 'reset-session' || mode === 'full-reset') {
+      agent.runtimeSessionId = null;
+      agent.runtimeLastTurnAt = null;
+    }
+    if (mode === 'full-reset') {
+      agent.runtimeSessionHome = null;
+      agent.runtimeConfigVersion = 0;
+      agent.runtimeLastStartedAt = null;
+      agent.workspacePath = null;
+    }
+    const result = queueAgentCommand(agent, 'agent:restart', {
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        runtime: agent.runtime,
+        runtimeId: agent.runtimeId || null,
+        runtimeSessionId: agent.runtimeSessionId || null,
+        model: agent.model,
+        reasoningEffort: agent.reasoningEffort || null,
+        workspace: agent.workspace || null,
+        envVars: safeArray(agent.envVars),
+      },
+      mode,
+      reason: options.reason || 'manual_restart',
+    });
+    if (result.queued) {
+      setAgentStatus(agent, result.sent ? 'starting' : 'waiting_for_computer', 'daemon_relay_restart', { forceEvent: true });
+      await persistState();
+      broadcastState();
+    }
+    return result;
+  }
+
   async function deliverToAgent(agent, deliveryMessage, workItem = null) {
     const result = queueAgentCommand(agent, 'agent:deliver', {
       agent: {
         id: agent.id,
         name: agent.name,
         runtime: agent.runtime,
+        runtimeId: agent.runtimeId || null,
+        runtimeSessionId: agent.runtimeSessionId || null,
         model: agent.model,
         reasoningEffort: agent.reasoningEffort || null,
         workspace: agent.workspace || null,
@@ -806,5 +845,6 @@ export function createDaemonRelay(deps) {
     revokeComputerToken,
     setHandlers,
     startAgent,
+    restartAgent,
   };
 }

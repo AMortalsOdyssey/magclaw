@@ -131,12 +131,15 @@ export function createSystemServices(deps) {
   }
   
   function runtimeSnapshot() {
+    const daemonPackageVersion = localDaemonPackageVersion();
     return {
       node: process.version,
       platform: `${os.platform()} ${os.arch()}`,
       host: os.hostname(),
       codexPath: state?.settings?.codexPath || defaultCodexPath(),
-      daemonPackageVersion: localDaemonPackageVersion(),
+      daemonPackageName: '@magclaw/daemon',
+      daemonPackageVersion,
+      daemonLatestVersion: latestDaemonPackageVersion(daemonPackageVersion),
     };
   }
 
@@ -147,6 +150,16 @@ export function createSystemServices(deps) {
     } catch {
       return '';
     }
+  }
+
+  function latestDaemonPackageVersion(fallback = '') {
+    return String(
+      process.env.MAGCLAW_DAEMON_LATEST_VERSION
+      || state?.settings?.daemonVersionControl?.latestVersion
+      || state?.settings?.daemonLatestVersion
+      || fallback
+      || '',
+    ).trim();
   }
   
   async function getRuntimeInfo() {

@@ -152,7 +152,10 @@ async function restartAgentFromControl(agent, mode = 'restart') {
       agentId: agent.id,
       mode: normalizedMode,
     });
-    return cloudRelay.startAgent(agent, { reason: `remote_${normalizedMode}` });
+    return cloudRelay.restartAgent(agent, {
+      mode: normalizedMode,
+      reason: `remote_${normalizedMode}`,
+    });
   }
   const stopped = await stopAgentProcessForControl(agent);
   if (normalizedMode === 'full-reset') {

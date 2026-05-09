@@ -25,6 +25,7 @@ const PACKAGE_JSON = (() => {
 export const DAEMON_VERSION = String(PACKAGE_JSON.version || '0.0.0');
 const CAPABILITIES = [
   'agent:start',
+  'agent:restart',
   'agent:deliver',
   'agent:stop',
   'agent:skills:list',
@@ -1058,6 +1059,9 @@ class MagClawDaemon {
       case 'agent:start':
         await this.handleAgentStart(message);
         break;
+      case 'agent:restart':
+        await this.handleAgentRestart(message);
+        break;
       case 'agent:deliver':
         await this.handleAgentDeliver(message);
         break;
@@ -1109,6 +1113,36 @@ class MagClawDaemon {
     const agent = message.payload?.agent || { id: message.agentId, name: message.agentId || 'Agent' };
     this.send({ type: 'agent:start:ack', commandId: message.commandId, agentId: agent.id, status: 'starting' });
     try {
+      const session = this.sessionFor(agent);
+      await session.start();
+    } catch (error) {
+      this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
+    }
+  }
+
+  async handleAgentRestart(message) {
+    const agent = message.payload?.agent || { id: message.agentId, name: message.agentId || 'Agent' };
+    const mode = ['restart', 'reset-session', 'full-reset'].includes(message.payload?.mode)
+      ? message.payload.mode
+      : 'restart';
+    this.send({ type: 'agent:ack', commandId: message.commandId, agentId: agent.id, status: 'starting' });
+    try {
+      const existing = this.sessions.get(agent.id);
+      if (existing) {
+        existing.stop();
+        this.sessions.delete(agent.id);
+      }
+      if (mode === 'reset-session' || mode === 'full-reset') {
+        agent.runtimeSessionId = null;
+      }
+      if (mode === 'full-reset') {
+        await rm(path.join(this.paths.agentsDir, safeFilePart(agent.id)), {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 80,
+        });
+      }
       const session = this.sessionFor(agent);
       await session.start();
     } catch (error) {

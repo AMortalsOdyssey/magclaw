@@ -153,6 +153,7 @@ async function readyPayload(config) {
     runningAgents: [],
     capabilities: [
       'agent:start',
+      'agent:restart',
       'agent:deliver',
       'agent:stop',
       'agent:skills:list',
@@ -191,6 +192,20 @@ async function handleCommand(socket, message, config) {
         agentId: message.agentId,
         status: 'idle',
         activity: { source: 'magclaw-daemon', note: 'start command accepted' },
+      });
+      break;
+    case 'agent:restart':
+      send(socket, {
+        type: 'agent:ack',
+        commandId: message.commandId,
+        agentId: message.agentId,
+        status: 'idle',
+      });
+      send(socket, {
+        type: 'agent:status',
+        agentId: message.agentId,
+        status: 'idle',
+        activity: { source: 'magclaw-daemon', note: 'restart command accepted' },
       });
       break;
     case 'agent:deliver':
