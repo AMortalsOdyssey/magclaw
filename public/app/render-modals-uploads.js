@@ -421,7 +421,7 @@ function renderEnvVarsList() {
 
 function runtimeOptionsForComputer(computerId) {
   const computer = byId(appState.computers, computerId) || appState.computers?.[0] || {};
-  const details = computerRuntimeDetails(computer);
+  const details = computerRuntimeDetails(computer, { includeLocalFallback: computer.connectedVia !== 'daemon' });
   const normalizeRuntimeOption = (runtime) => {
     const installedRuntime = installedRuntimes.find((item) => item.id === runtime.id || item.name === runtime.name);
     const models = runtime.models || installedRuntime?.models || [];
@@ -471,7 +471,21 @@ function renderAgentModal() {
       </div>
     `;
   }
-  const defaultComputer = agentFormState.computerId || appState.computers?.[0]?.id || '';
+  const agentComputers = (typeof sortComputersByAvailability === 'function'
+    ? sortComputersByAvailability(appState.computers || [])
+    : (appState.computers || [])).filter((computer) => !(typeof computerIsDisabled === 'function' && computerIsDisabled(computer)));
+  if (!agentComputers.length) {
+    return `
+      ${modalHeader('CREATE AGENT', 'Computer required')}
+      <div class="modal-form">
+        <div class="empty-box small">Enable or connect a Computer before creating cloud Agents.</div>
+        <button type="button" class="primary-btn" data-action="close-modal">Close</button>
+      </div>
+    `;
+  }
+  const defaultComputer = agentComputers.some((computer) => computer.id === agentFormState.computerId)
+    ? agentFormState.computerId
+    : agentComputers[0]?.id || '';
   const availableRuntimes = runtimeOptionsForComputer(defaultComputer);
   const selectableRuntimes = availableRuntimes.filter((rt) => rt.installed && rt.createSupported !== false);
   if (!selectableRuntimes.some((rt) => rt.id === selectedRuntimeId)) {
@@ -509,7 +523,7 @@ function renderAgentModal() {
       <label>
         <span>COMPUTER <span class="required">*</span></span>
         <select name="computerId" id="agent-computer-select">
-          ${(appState.computers || []).map((c) => `<option value="${c.id}" ${c.id === defaultComputer ? 'selected' : ''}>${escapeHtml(c.name || c.hostname || 'Computer')}${c.hostname && c.hostname !== c.name ? ` (${escapeHtml(c.hostname)})` : ''}</option>`).join('')}
+          ${agentComputers.map((c) => `<option value="${c.id}" ${c.id === defaultComputer ? 'selected' : ''}>${escapeHtml(c.name || c.hostname || 'Computer')}${c.hostname && c.hostname !== c.name ? ` (${escapeHtml(c.hostname)})` : ''}</option>`).join('')}
         </select>
       </label>
       <label>
@@ -531,6 +545,14 @@ function renderAgentModal() {
             return `<option value="${rt.id}" ${unavailable ? 'disabled' : ''} ${rt.id === selectedRuntimeId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
           }).join('') : '<option value="" disabled selected>No supported runtime on this computer</option>'}
         </select>
+        <div class="runtime-availability-list">
+          ${availableRuntimes.map((rt) => `
+            <span class="runtime-badge ${rt.installed && rt.createSupported !== false ? '' : 'muted'}">
+              ${escapeHtml(rt.name || runtimeNameForId(rt.id))}
+              ${rt.installed ? (rt.createSupported === false ? '<em>not supported yet</em>' : '') : '<em>not installed</em>'}
+            </span>
+          `).join('') || '<span class="runtime-badge muted">No runtimes reported</span>'}
+        </div>
       </div>
       <div class="form-field">
         <span>MODEL</span>

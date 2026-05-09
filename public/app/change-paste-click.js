@@ -1100,11 +1100,20 @@ document.addEventListener('click', async (event) => {
     if (action === 'scan-computer-workspaces') {
       toast('Workspace scan requested');
     }
-    if (action === 'delete-computer') {
-      if (!window.confirm('Delete this computer?')) return;
-      await api(`/api/computers/${encodeURIComponent(target.dataset.id || '')}`, { method: 'DELETE' });
-      selectedComputerId = null;
-      toast('Computer deleted');
+    if (action === 'disable-computer') {
+      if (!window.confirm('Disable this computer?')) return;
+      await api(`/api/computers/${encodeURIComponent(target.dataset.id || '')}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'disabled' }),
+      });
+      toast('Computer disabled');
+    }
+    if (action === 'enable-computer') {
+      await api(`/api/computers/${encodeURIComponent(target.dataset.id || '')}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'offline' }),
+      });
+      toast('Computer enabled');
     }
       if (action === 'confirm-cloud-auth-logout') {
         await api('/api/cloud/auth/logout', { method: 'POST', body: '{}' });

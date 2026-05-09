@@ -244,7 +244,9 @@ function humansByJoinOrder() {
 }
 
 function renderComputersRail() {
-  const computers = appState.computers || [];
+  const computers = typeof sortComputersByAvailability === 'function'
+    ? sortComputersByAvailability(appState.computers || [])
+    : (appState.computers || []);
   const canManageComputers = cloudCan('manage_computers');
   return `
     <div class="rail-section">
@@ -340,6 +342,7 @@ function settingsIcon(name, size = 20) {
     system: '<path d="M4 7h16"/><path d="M4 17h16"/><path d="M8 3v8"/><path d="M16 13v8"/>',
     release: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h6"/>',
     computer: '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>',
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>',
   };
   return `<svg class="settings-icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">${icons[name] || icons.system}</svg>`;
 }

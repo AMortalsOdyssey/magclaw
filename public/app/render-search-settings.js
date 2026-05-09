@@ -5,6 +5,8 @@ const searchTimeRangeOptions = [
   ['30d', 'Last 30 Days'],
 ];
 
+const MAGCLAW_DAEMON_PACKAGE_VERSION = '0.1.1';
+
 function searchTimeRangeLabel() {
   return searchTimeRangeOptions.find(([value]) => value === searchTimeRange)?.[1] || 'Any Time';
 }
@@ -250,7 +252,7 @@ function renderMissions() {
 }
 
 function renderComputers() {
-  const computers = appState.computers || [];
+  const computers = sortComputersByAvailability(appState.computers || []);
   const canManageComputers = cloudCan('manage_computers');
   const canManageAgents = cloudCan('manage_agents');
   void canManageComputers;
@@ -277,7 +279,50 @@ function renderComputers() {
   `;
 }
 
-function computerRuntimeDetails(computer = {}) {
+function computerIsDisabled(computer = {}) {
+  return String(computer.status || '').toLowerCase() === 'disabled' || Boolean(computer.disabledAt);
+}
+
+function computerIsConnected(computer = {}) {
+  if (computerIsDisabled(computer)) return false;
+  return presenceTone(computer.status || 'offline') === 'online' || String(computer.status || '').toLowerCase() === 'connected';
+}
+
+function computerCreatedMs(computer = {}) {
+  const value = Date.parse(computer.createdAt || '');
+  return Number.isFinite(value) ? value : 0;
+}
+
+function sortComputersByAvailability(computers = []) {
+  return [...computers].sort((a, b) => {
+    const disabledDelta = Number(computerIsDisabled(a)) - Number(computerIsDisabled(b));
+    if (disabledDelta) return disabledDelta;
+    const createdDelta = computerCreatedMs(a) - computerCreatedMs(b);
+    if (createdDelta) return createdDelta;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+}
+
+function fmtFullDateTime(value) {
+  if (!value) return '--';
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return '--';
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).replace(/\//g, '-');
+}
+
+function renderComputerIcon(computer = {}, size = 16) {
+  return `<span class="computer-avatar ${computerIsDisabled(computer) ? 'disabled' : ''}" aria-hidden="true">${settingsIcon('computer', size)}</span>`;
+}
+
+function computerRuntimeDetails(computer = {}, options = {}) {
   const known = [
     { id: 'claude-code', name: 'Claude Code' },
     { id: 'codex', name: 'Codex CLI' },
@@ -303,17 +348,26 @@ function computerRuntimeDetails(computer = {}) {
       installed: runtime.installed !== false,
     });
   }
-  for (const runtime of installedRuntimes || []) {
-    const id = String(runtime.id || runtime.name || '').toLowerCase();
-    if (!id) continue;
-    const base = merged.get(id) || {};
-    merged.set(id, {
-      ...base,
-      ...runtime,
-      id: runtime.id || base.id || id,
-      name: runtime.name || base.name || runtimeNameForId(id),
-      installed: runtime.installed !== false,
-    });
+  const hasDaemonDetails = Array.isArray(computer.runtimeDetails) && computer.runtimeDetails.length;
+  const runtimeHost = String(appState.runtime?.host || '').toLowerCase().replace(/\.local$/, '');
+  const computerNames = [computer.hostname, computer.localHostname, computer.name]
+    .map((value) => String(value || '').toLowerCase().replace(/\.local$/, ''))
+    .filter(Boolean);
+  const matchesLocalRuntimeHost = runtimeHost && computerNames.some((value) => value === runtimeHost || runtimeHost.startsWith(`${value}-`) || value.startsWith(`${runtimeHost}-`));
+  const includeLocalFallback = options.includeLocalFallback ?? (!hasDaemonDetails || computer.connectedVia !== 'daemon' || matchesLocalRuntimeHost);
+  if (includeLocalFallback) {
+    for (const runtime of installedRuntimes || []) {
+      const id = String(runtime.id || runtime.name || '').toLowerCase();
+      if (!id) continue;
+      const base = merged.get(id) || {};
+      merged.set(id, {
+        ...base,
+        ...runtime,
+        id: runtime.id || base.id || id,
+        name: runtime.name || base.name || runtimeNameForId(id),
+        installed: runtime.installed !== false,
+      });
+    }
   }
   return [
     ...known.map((item) => merged.get(item.id)).filter(Boolean),
@@ -339,8 +393,8 @@ function computerAgents(computerId) {
   return (appState.agents || []).filter((agent) => agent.computerId === computerId);
 }
 
-function renderComputerRuntimeBadges(computer = {}) {
-  const details = computerRuntimeDetails(computer);
+function renderComputerRuntimeBadges(computer = {}, options = {}) {
+  const details = computerRuntimeDetails(computer, options);
   if (!details.length) return '<span class="runtime-badge muted">No runtimes detected</span>';
   return details.map((runtime) => `
     <span class="runtime-badge ${runtime.installed === false ? 'muted' : ''}">
@@ -351,44 +405,93 @@ function renderComputerRuntimeBadges(computer = {}) {
   `).join('');
 }
 
+function runtimeConfigurationLabel(agent = {}) {
+  return [
+    agent.runtime || runtimeNameForId(agent.runtimeId || ''),
+    agent.model || '',
+    agent.reasoningEffort ? `reasoning ${agent.reasoningEffort}` : '',
+  ].filter(Boolean).join(' / ') || '--';
+}
+
+function displayDaemonVersion(...values) {
+  const invalid = new Set(['', '--', 'daemon', 'local-dev', 'manual']);
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (!invalid.has(text.toLowerCase())) return text;
+  }
+  return '--';
+}
+
+function renderComputerAgentCard(agent) {
+  const creator = typeof agentCreatorInfo === 'function' ? agentCreatorInfo(agent) : { name: agent.creatorName || '--' };
+  return `
+    <button class="computer-agent-card" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}">
+      <span class="dm-avatar-wrap">
+        ${getAvatarHtml(agent.id, 'agent', 'dm-avatar')}
+      </span>
+      <span class="computer-agent-main">
+        <strong>${escapeHtml(agent.name || 'Agent')}</strong>
+        <small>${escapeHtml(agent.description || runtimeConfigurationLabel(agent))}</small>
+      </span>
+      <span class="member-status-side">${avatarStatusDot(agentDisplayStatus(agent), 'Agent status')}</span>
+      <span class="computer-agent-tooltip" role="tooltip">
+        <span><b>Runtime Configuration</b>${escapeHtml(runtimeConfigurationLabel(agent))}</span>
+        <span><b>Created</b>${escapeHtml(fmtFullDateTime(agent.createdAt))}</span>
+        <span><b>Creator</b>${escapeHtml(creator.name || '--')}</span>
+      </span>
+    </button>
+  `;
+}
+
 function renderComputerDetail(computer) {
   const agents = computerAgents(computer.id);
   const currentCommand = latestPairingCommand?.computer?.id === computer.id ? latestPairingCommand.command : '';
-  const connected = presenceTone(computer.status || 'offline') === 'online' || String(computer.status || '').toLowerCase() === 'connected';
-  const installedCount = computerRuntimeDetails(computer).filter((runtime) => runtime.installed !== false).length;
-  const rawDaemonVersion = computer.daemonVersion || computer.version || '';
-  const daemonVersion = rawDaemonVersion && String(rawDaemonVersion).toLowerCase() !== 'local-dev'
-    ? rawDaemonVersion
-    : '--';
+  const connected = computerIsConnected(computer);
+  const disabled = computerIsDisabled(computer);
+  const runtimeDetails = computerRuntimeDetails(computer);
+  const installedCount = runtimeDetails.filter((runtime) => runtime.installed !== false).length;
+  const daemonVersion = displayDaemonVersion(
+    computer.daemonVersion,
+    computer.version,
+    appState.runtime?.daemonPackageVersion,
+    MAGCLAW_DAEMON_PACKAGE_VERSION,
+  );
+  const statusLabel = disabled ? 'disabled' : connected ? 'connected' : 'offline';
   return `
     <section class="computer-detail-page slock-computer-detail">
       <div class="pixel-panel cloud-card wide computer-detail-card computer-profile-card">
         <div class="computer-detail-header">
-          <span class="settings-page-icon computer-detail-icon">${settingsIcon('computer', 24)}</span>
+          ${renderComputerIcon(computer, 24)}
           <div>
             <h2>${escapeHtml(computer.name || computer.hostname || 'Computer')}</h2>
-            <p><span class="avatar-status-dot inline ${presenceClass(computer.status || 'offline')}"></span>${escapeHtml(connected ? 'connected' : 'offline')}</p>
+            <p><span class="avatar-status-dot inline ${presenceClass(disabled ? 'disabled' : computer.status || 'offline')}"></span>${escapeHtml(statusLabel)}</p>
             <small>${escapeHtml(computer.hostname || computer.localHostname || '')}</small>
           </div>
         </div>
       </div>
 
-      <div class="pixel-panel cloud-card wide computer-info-card slock-info-card">
+      <details class="pixel-panel cloud-card wide computer-name-card">
+        <summary>
+          <span class="computer-section-label">Name <span class="computer-edit-icon">${settingsIcon('edit', 12)}</span></span>
+          <strong>${escapeHtml(computer.name || computer.hostname || 'Computer')}</strong>
+        </summary>
         <form id="computer-name-form" class="computer-name-line" data-computer-id="${escapeHtml(computer.id)}">
-          <label><span>Name</span><input name="name" value="${escapeHtml(computer.name || '')}" /></label>
-          <button class="secondary-btn compact-btn" type="submit">Save Name</button>
+          <input name="name" value="${escapeHtml(computer.name || '')}" aria-label="Computer name" />
+          <button class="secondary-btn compact-btn" type="submit">Save</button>
         </form>
-        <div class="panel-title"><span>Info</span><span>${escapeHtml(connected ? 'online' : 'offline')}</span></div>
-        <div class="computer-info-list">
-          <div class="computer-info-row"><span>OS</span><strong>${escapeHtml([computer.os, computer.arch].filter(Boolean).join(' ') || '--')}</strong></div>
-          <div class="computer-info-row important"><span>Daemon Version</span><strong>${escapeHtml(daemonVersion)}</strong>${daemonVersion === '--' ? '<small>daemon</small>' : ''}</div>
-          <div class="computer-info-row"><span>Detected Runtimes</span><strong>${escapeHtml(installedCount)}</strong><small>${escapeHtml(installedCount === 1 ? 'runtime available' : 'runtimes available')}</small></div>
-          <div class="computer-info-row"><span>Created</span><strong>${escapeHtml(computer.createdAt ? fmtTime(computer.createdAt) : '--')}</strong><small>${escapeHtml(computer.lastSeenAt ? `seen ${fmtTime(computer.lastSeenAt)}` : 'not seen')}</small></div>
-        </div>
-        <div class="detected-runtime-list">${renderComputerRuntimeBadges(computer)}</div>
+      </details>
+
+      <div class="pixel-panel cloud-card wide computer-info-card slock-info-card">
+        <div class="computer-section-label">Info</div>
+        <dl class="computer-info-list">
+          <div class="computer-info-row"><dt>OS</dt><dd>${escapeHtml([computer.os, computer.arch].filter(Boolean).join(' ') || '--')}</dd></div>
+          <div class="computer-info-row important"><dt>Daemon Version</dt><dd>${escapeHtml(daemonVersion)}</dd></div>
+          <div class="computer-info-row runtime-row"><dt>Detected Runtimes</dt><dd><span class="runtime-count">${escapeHtml(installedCount)}</span><div class="detected-runtime-list">${renderComputerRuntimeBadges(computer)}</div></dd></div>
+          <div class="computer-info-row"><dt>Created</dt><dd>${escapeHtml(fmtFullDateTime(computer.createdAt))}</dd></div>
+        </dl>
       </div>
 
-      ${connected ? '' : `
+      ${connected || disabled ? '' : `
         <div class="pixel-panel cloud-card wide computer-connect-card">
           <div class="panel-title"><span>Connect Command</span><span>short lived</span></div>
           ${currentCommand ? `
@@ -402,29 +505,23 @@ function renderComputerDetail(computer) {
         </div>
       `}
 
-      <div class="pixel-panel cloud-card wide">
-        <div class="panel-title"><span>Agents on this computer</span><span>${agents.length}</span></div>
-        ${agents.length ? agents.map((agent) => renderAgentListItem(agent)).join('') : '<div class="empty-box small">No Agents are bound to this computer.</div>'}
+      <div class="pixel-panel cloud-card wide computer-agents-card">
+        <div class="panel-title"><span>Agents on this computer (${agents.length})</span></div>
+        ${agents.length ? `<div class="computer-agent-list">${agents.map((agent) => renderComputerAgentCard(agent)).join('')}</div>` : '<div class="empty-box small">No Agents are bound to this computer.</div>'}
         <div class="action-row">
-          <button class="secondary-btn" type="button" data-action="start-all-computer-agents" data-id="${escapeHtml(computer.id)}">Start All</button>
-          <button class="primary-btn" type="button" data-action="open-modal" data-modal="agent">+ Create</button>
+          <button class="secondary-btn" type="button" data-action="start-all-computer-agents" data-id="${escapeHtml(computer.id)}" ${disabled ? 'disabled' : ''}>Start All</button>
+          <button class="primary-btn" type="button" data-action="open-modal" data-modal="agent" ${disabled ? 'disabled' : ''}>+ Create</button>
         </div>
       </div>
 
-      <div class="pixel-panel cloud-card wide">
-        <div class="panel-title"><span>Agent Workspaces</span><span>scan</span></div>
-        <p class="muted-note">Scan checks workspace directories reported by this computer.</p>
-        <button class="secondary-btn" type="button" data-action="scan-computer-workspaces" data-id="${escapeHtml(computer.id)}">Scan</button>
-      </div>
-
-      <div class="pixel-panel cloud-card wide danger-card">
-        <div class="panel-title"><span>Actions</span><span>restricted</span></div>
+      <div class="pixel-panel cloud-card wide danger-card computer-actions-card">
+        <div class="panel-title"><span>Actions</span></div>
         <div class="danger-row">
           <div>
-            <strong>Delete Computer</strong>
-            <p>Permanently remove this computer. All agents must be deleted or migrated first.</p>
+            <strong>${disabled ? 'Enable Computer' : 'Disable Computer'}</strong>
+            <p>${disabled ? 'Allow this computer to reconnect and run Agents again.' : 'Stop this computer from reconnecting or receiving Agent work.'}</p>
           </div>
-          <button class="danger-btn" type="button" data-action="delete-computer" data-id="${escapeHtml(computer.id)}" ${agents.length ? 'disabled' : ''}>Delete Computer</button>
+          <button class="${disabled ? 'secondary-btn' : 'danger-btn'}" type="button" data-action="${disabled ? 'enable-computer' : 'disable-computer'}" data-id="${escapeHtml(computer.id)}">${disabled ? 'Enable Computer' : 'Disable Computer'}</button>
         </div>
       </div>
     </section>

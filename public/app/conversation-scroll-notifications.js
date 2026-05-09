@@ -208,6 +208,7 @@ function agentDisplayStatus(agent) {
 function presenceTone(status) {
   const value = String(status || '').toLowerCase();
   if (value === 'warming') return 'warming';
+  if (value === 'disabled') return 'disabled';
   if (['working', 'running', 'starting', 'thinking', 'busy'].includes(value)) return 'busy';
   if (['queued', 'pending'].includes(value)) return 'queued';
   if (['error', 'failed'].includes(value)) return 'error';

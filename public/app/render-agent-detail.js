@@ -107,6 +107,11 @@ function renderAgentInfoSection(agent) {
   const computer = byId(appState.computers, agent.computerId);
   const creator = agentCreatorInfo(agent);
   const runtimeBadges = computer ? renderComputerRuntimeBadges(computer) : '<span class="runtime-badge muted">No runtimes detected</span>';
+  const computerDisabled = typeof computerIsDisabled === 'function' ? computerIsDisabled(computer) : false;
+  const computerStatus = computerDisabled ? 'disabled' : (computer?.status || 'offline');
+  const daemonVersion = typeof displayDaemonVersion === 'function'
+    ? displayDaemonVersion(computer?.daemonVersion, computer?.version, appState.runtime?.daemonPackageVersion)
+    : (computer?.daemonVersion || computer?.version || appState.runtime?.daemonPackageVersion || '--');
   return `
     <section class="agent-profile-field agent-info-section">
       <span class="detail-label">Info</span>
@@ -114,8 +119,8 @@ function renderAgentInfoSection(agent) {
         <div class="agent-computer-line">
           <span class="agent-info-caption">Computer</span>
           <strong>${escapeHtml(computer?.name || agent.computerId || '--')}</strong>
-          <span class="avatar-status-dot inline ${presenceClass(computer?.status || 'offline')}"></span>
-          <small>${escapeHtml(computer?.status || 'Disconnected')}</small>
+          <span class="avatar-status-dot inline ${presenceClass(computerStatus)}"></span>
+          <small>${escapeHtml(computerStatus || 'Disconnected')}</small>
           ${computer ? `<button class="agent-computer-link" type="button" data-action="select-computer" data-id="${escapeHtml(computer.id)}">Details</button>` : ''}
         </div>
         <div class="agent-computer-meta-grid">
@@ -126,7 +131,7 @@ function renderAgentInfoSection(agent) {
           </div>
           <div>
             <span class="agent-info-caption">Daemon Version</span>
-            <strong>${escapeHtml(computer?.daemonVersion || '--')}</strong>
+            <strong>${escapeHtml(daemonVersion)}</strong>
             <small>${escapeHtml(computer?.connectedVia || 'daemon')}</small>
           </div>
           <div>
@@ -590,7 +595,7 @@ function renderComputerListItem(computer) {
   return `
     <button class="space-btn member-btn${active}" type="button" data-action="select-computer" data-id="${escapeHtml(computer.id)}">
       <span class="dm-avatar-wrap">
-        <span class="dm-avatar">PC</span>
+        ${typeof renderComputerIcon === 'function' ? renderComputerIcon(computer, 16) : `<span class="dm-avatar">${settingsIcon('computer', 16)}</span>`}
       </span>
       <div class="member-info">
         <span class="dm-name">${escapeHtml(computer.name)}</span>
