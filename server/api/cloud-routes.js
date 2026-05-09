@@ -364,6 +364,34 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
+  const consoleServerSwitchMatch = url.pathname.match(/^\/api\/console\/servers\/([^/]+)\/switch$/);
+  if (req.method === 'POST' && consoleServerSwitchMatch) {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.switchConsoleServer(decodeURIComponent(consoleServerSwitchMatch[1]), req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
+  const consoleServerDeleteMatch = url.pathname.match(/^\/api\/console\/servers\/([^/]+)$/);
+  if (req.method === 'DELETE' && consoleServerDeleteMatch) {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.deleteConsoleServer(decodeURIComponent(consoleServerDeleteMatch[1]), req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
   const consoleInviteMatch = url.pathname.match(/^\/api\/console\/invitations\/([^/]+)\/(accept|decline)$/);
   if (req.method === 'POST' && consoleInviteMatch) {
     if (!cloudAuth) {
@@ -466,6 +494,48 @@ export async function handleCloudApi(req, res, url, deps) {
 
   if (req.method === 'GET' && url.pathname === '/api/cloud/relay/status') {
     sendJson(res, 200, daemonRelay ? daemonRelay.publicRelayState() : { onlineComputerIds: [], daemonEvents: [] });
+    return true;
+  }
+
+  if (['POST', 'PATCH'].includes(req.method) && url.pathname === '/api/cloud/server/profile') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.updateServerProfile(body, req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/join-links') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.createJoinLink(body, req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 201, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
+  const revokeJoinLinkMatch = url.pathname.match(/^\/api\/cloud\/join-links\/([^/]+)\/revoke$/);
+  if (req.method === 'POST' && revokeJoinLinkMatch) {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.revokeJoinLink(decodeURIComponent(revokeJoinLinkMatch[1]), req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
     return true;
   }
 

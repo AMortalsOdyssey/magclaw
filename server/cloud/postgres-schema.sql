@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS cloud_workspaces (
   id TEXT PRIMARY KEY,
   slug TEXT NOT NULL,
   name TEXT NOT NULL,
+  avatar TEXT NOT NULL DEFAULT '',
+  onboarding_agent_id TEXT NOT NULL DEFAULT '',
+  new_agent_greeting_enabled BOOLEAN NOT NULL DEFAULT true,
   owner_user_id TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -58,6 +61,12 @@ CREATE TABLE IF NOT EXISTS cloud_workspaces (
 
 ALTER TABLE cloud_workspaces
   ADD COLUMN IF NOT EXISTS owner_user_id TEXT REFERENCES cloud_users(id) ON DELETE SET NULL;
+ALTER TABLE cloud_workspaces
+  ADD COLUMN IF NOT EXISTS avatar TEXT NOT NULL DEFAULT '';
+ALTER TABLE cloud_workspaces
+  ADD COLUMN IF NOT EXISTS onboarding_agent_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE cloud_workspaces
+  ADD COLUMN IF NOT EXISTS new_agent_greeting_enabled BOOLEAN NOT NULL DEFAULT true;
 
 CREATE UNIQUE INDEX IF NOT EXISTS cloud_workspaces_slug_uidx
   ON cloud_workspaces(slug);
@@ -202,6 +211,24 @@ CREATE INDEX IF NOT EXISTS cloud_password_resets_user_active_idx
 
 CREATE INDEX IF NOT EXISTS cloud_password_resets_workspace_idx
   ON cloud_password_resets(workspace_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS cloud_join_links (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  max_uses INTEGER NOT NULL DEFAULT 0,
+  used_count INTEGER NOT NULL DEFAULT 0,
+  expires_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ,
+  revoked_by TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
+  created_by TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS cloud_join_links_workspace_created_idx
+  ON cloud_join_links(workspace_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS cloud_computers (
   id TEXT PRIMARY KEY,

@@ -158,6 +158,63 @@ test('cloud health and readiness expose K8s-friendly storage checks', async () =
   }
 });
 
+test('server profile and join links are managed through cloud APIs', async () => {
+  const server = await startIsolatedServer({
+    MAGCLAW_ADMIN_NAME: 'Admin',
+    MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
+    MAGCLAW_ADMIN_PASSWORD: 'password123',
+  });
+  try {
+    const login = await request(server.baseUrl, '/api/cloud/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@example.com', password: 'password123' }),
+    });
+    const cookie = login.cookie;
+
+    const profile = await request(server.baseUrl, '/api/cloud/server/profile', {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        name: 'Renamed Server',
+        avatar: 'data:image/png;base64,ZmFrZQ==',
+        onboardingAgentId: 'agt_codex',
+        newAgentGreetingEnabled: false,
+      }),
+    });
+    assert.equal(profile.data.workspace.name, 'Renamed Server');
+    assert.equal(profile.data.workspace.avatar, 'data:image/png;base64,ZmFrZQ==');
+    assert.equal(profile.data.workspace.onboardingAgentId, 'agt_codex');
+    assert.equal(profile.data.workspace.newAgentGreetingEnabled, false);
+
+    const link = await request(server.baseUrl, '/api/cloud/join-links', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        maxUses: 3,
+        expiresAt: '2035-01-01T00:00:00.000Z',
+      }),
+    });
+    assert.equal(link.status, 201);
+    assert.match(link.data.joinLink.url, /\/join\/mc_join_/);
+    assert.equal(link.data.joinLink.maxUses, 3);
+    assert.equal(link.data.joinLink.usedCount, 0);
+
+    const state = await request(server.baseUrl, '/api/state', { cookie });
+    assert.equal(state.data.cloud.workspace.name, 'Renamed Server');
+    assert.equal(state.data.cloud.workspace.avatar, 'data:image/png;base64,ZmFrZQ==');
+    assert.equal(state.data.cloud.joinLinks.length, 1);
+
+    const revoked = await request(server.baseUrl, `/api/cloud/join-links/${encodeURIComponent(link.data.joinLink.id)}/revoke`, {
+      method: 'POST',
+      cookie,
+      body: '{}',
+    });
+    assert.ok(revoked.data.joinLink.revokedAt);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('public account registration and password reset use SMTP outbox without invite', async () => {
   const outbox = path.join(await mkdtemp(path.join(os.tmpdir(), 'magclaw-mail-')), 'outbox.jsonl');
   const server = await startIsolatedServer({
@@ -636,7 +693,7 @@ test('cloud roles enforce core member invite and removal boundaries', async () =
       method: 'PATCH',
       cookie: coreCookie,
       body: JSON.stringify({ role: 'admin' }),
-      expectStatus: 400,
+      expectStatus: 403,
     });
     await request(server.baseUrl, `/api/cloud/members/${core.data.member.id}`, {
       method: 'PATCH',

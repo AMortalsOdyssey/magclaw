@@ -180,6 +180,24 @@ function publicInvitation(invitation) {
   return { ...safe, status, metadata };
 }
 
+function publicJoinLink(link, rawToken = '', req = null) {
+  if (!link) return null;
+  const { tokenHash, ...safe } = link;
+  void tokenHash;
+  const expiresAt = safe.expiresAt ? new Date(safe.expiresAt).getTime() : 0;
+  const status = safe.revokedAt
+    ? 'revoked'
+    : expiresAt && expiresAt <= Date.now()
+      ? 'expired'
+      : safe.maxUses && Number(safe.usedCount || 0) >= Number(safe.maxUses)
+        ? 'exhausted'
+        : 'active';
+  const url = rawToken
+    ? `${publicLinkOrigin(req).replace(/\/+$/, '')}/join/${encodeURIComponent(rawToken)}`
+    : '';
+  return { ...safe, status, url };
+}
+
 function publicPasswordReset(reset, user = null) {
   if (!reset) return null;
   const { tokenHash, ...safe } = reset;
@@ -252,6 +270,7 @@ export function createCloudAuth(deps) {
     state.cloud.users = safeArray(state.cloud.users);
     state.cloud.sessions = safeArray(state.cloud.sessions);
     state.cloud.invitations = safeArray(state.cloud.invitations);
+    state.cloud.joinLinks = safeArray(state.cloud.joinLinks);
     state.cloud.passwordResetTokens = safeArray(state.cloud.passwordResetTokens);
     state.cloud.pairingTokens = safeArray(state.cloud.pairingTokens);
     state.cloud.computerTokens = safeArray(state.cloud.computerTokens);
@@ -341,6 +360,7 @@ export function createCloudAuth(deps) {
         const exists = [
           ...cloud.sessions,
           ...cloud.invitations,
+          ...cloud.joinLinks,
           ...cloud.passwordResetTokens,
           ...cloud.pairingTokens,
           ...cloud.computerTokens,
@@ -971,6 +991,9 @@ export function createCloudAuth(deps) {
         slug,
         name,
         ownerUserId: user.id,
+        avatar: '',
+        onboardingAgentId: '',
+        newAgentGreetingEnabled: true,
         createdAt,
         updatedAt: createdAt,
       };
@@ -991,6 +1014,158 @@ export function createCloudAuth(deps) {
       console.info(`[cloud-auth] console server created workspace=${workspace.id} slug=${workspace.slug} owner=${user.id}`);
       await persistCloudState();
       return { server: workspace, member: memberForUser(user.id, workspace.id) };
+    }
+
+    async function switchConsoleServer(slug, req) {
+      const user = requireAuthenticatedUser(req);
+      const normalizedSlug = String(slug || '').trim().toLowerCase();
+      const cloud = ensureCloudState();
+      const workspace = cloud.workspaces.find((item) => (
+        String(item.slug || item.id || '').toLowerCase() === normalizedSlug
+      ));
+      if (!workspace) {
+        const error = new Error('Server was not found.');
+        error.status = 404;
+        throw error;
+      }
+      const member = memberForUser(user.id, workspace.id);
+      if (!member || (member.status && member.status !== 'active')) {
+        const error = new Error('You are not a member of this server.');
+        error.status = 403;
+        throw error;
+      }
+      state.connection.workspaceId = workspace.id;
+      console.info(`[cloud-auth] console server switched workspace=${workspace.id} slug=${workspace.slug || workspace.id} user=${user.id}`);
+      await persistCloudState();
+      return { server: workspace, member };
+    }
+
+    async function deleteConsoleServer(slug, req) {
+      const auth = currentActor(req);
+      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
+        const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
+        error.status = auth ? 403 : 401;
+        throw error;
+      }
+      const normalizedSlug = String(slug || '').trim().toLowerCase();
+      const cloud = ensureCloudState();
+      const workspace = primaryWorkspace();
+      if (String(workspace.slug || workspace.id || '').toLowerCase() !== normalizedSlug) {
+        const error = new Error('Type the current server slug to delete it.');
+        error.status = 400;
+        throw error;
+      }
+      cloud.workspaces = cloud.workspaces.filter((item) => item.id !== workspace.id);
+      cloud.workspaceMembers = cloud.workspaceMembers.filter((item) => item.workspaceId !== workspace.id);
+      cloud.invitations = cloud.invitations.filter((item) => item.workspaceId !== workspace.id);
+      cloud.joinLinks = safeArray(cloud.joinLinks).filter((item) => item.workspaceId !== workspace.id);
+      cloud.pairingTokens = cloud.pairingTokens.filter((item) => item.workspaceId !== workspace.id);
+      cloud.computerTokens = cloud.computerTokens.filter((item) => item.workspaceId !== workspace.id);
+      const nextWorkspace = workspacesForUser(auth.user).find((item) => item.id !== workspace.id) || cloud.workspaces[0] || null;
+      state.connection.workspaceId = nextWorkspace?.id || 'local';
+      console.info(`[cloud-auth] console server deleted workspace=${workspace.id} slug=${workspace.slug || workspace.id} actor=${auth.user.id}`);
+      await persistCloudState();
+      return { deleted: workspace, nextWorkspace };
+    }
+
+    async function updateServerProfile(body, req) {
+      const auth = currentActor(req);
+      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
+        const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
+        error.status = auth ? 403 : 401;
+        throw error;
+      }
+      const workspace = primaryWorkspace();
+      const name = String(body.name ?? workspace.name ?? '').trim();
+      if (!name) {
+        const error = new Error('Server name is required.');
+        error.status = 400;
+        throw error;
+      }
+      const onboardingAgentId = body.onboardingAgentId === undefined
+        ? workspace.onboardingAgentId || ''
+        : String(body.onboardingAgentId || '').trim();
+      if (onboardingAgentId && !safeArray(state.agents).some((agent) => agent.id === onboardingAgentId)) {
+        const error = new Error('Onboarding agent was not found.');
+        error.status = 404;
+        throw error;
+      }
+      workspace.name = name;
+      if (body.avatar !== undefined) workspace.avatar = String(body.avatar || '');
+      workspace.onboardingAgentId = onboardingAgentId;
+      workspace.newAgentGreetingEnabled = body.newAgentGreetingEnabled === undefined
+        ? workspace.newAgentGreetingEnabled !== false
+        : Boolean(body.newAgentGreetingEnabled);
+      workspace.updatedAt = now();
+      console.info(`[cloud-auth] server profile updated workspace=${workspace.id} actor=${auth.user.id}`);
+      await persistCloudState();
+      return { workspace: { ...workspace } };
+    }
+
+    async function createJoinLink(body, req) {
+      const auth = currentActor(req);
+      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
+        const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
+        error.status = auth ? 403 : 401;
+        throw error;
+      }
+      const cloud = ensureCloudState();
+      const workspace = primaryWorkspace();
+      const rawMaxUses = Number(body.maxUses || 0);
+      const maxUses = Number.isFinite(rawMaxUses) && rawMaxUses > 0 ? Math.floor(rawMaxUses) : 0;
+      let expiresAt = null;
+      if (body.expiresAt) {
+        const expires = new Date(body.expiresAt);
+        if (Number.isNaN(expires.getTime())) {
+          const error = new Error('Join link expiry is invalid.');
+          error.status = 400;
+          throw error;
+        }
+        expiresAt = expires.toISOString();
+      }
+      const raw = uniqueCloudToken('mc_join');
+      const createdAt = now();
+      const joinLink = {
+        id: makeId('jlink'),
+        workspaceId: workspace.id,
+        tokenHash: sha256(raw),
+        maxUses,
+        usedCount: 0,
+        expiresAt,
+        revokedAt: null,
+        createdBy: auth.user.id,
+        createdAt,
+        updatedAt: createdAt,
+      };
+      cloud.joinLinks.push(joinLink);
+      console.info(`[cloud-auth] join link created workspace=${workspace.id} actor=${auth.user.id} maxUses=${maxUses}`);
+      await persistCloudState();
+      return { joinLink: publicJoinLink(joinLink, raw, req) };
+    }
+
+    async function revokeJoinLink(joinLinkId, req) {
+      const auth = currentActor(req);
+      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
+        const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
+        error.status = auth ? 403 : 401;
+        throw error;
+      }
+      const workspace = primaryWorkspace();
+      const joinLink = safeArray(ensureCloudState().joinLinks).find((item) => (
+        item.id === String(joinLinkId || '')
+        && item.workspaceId === workspace.id
+      ));
+      if (!joinLink) {
+        const error = new Error('Join link was not found.');
+        error.status = 404;
+        throw error;
+      }
+      joinLink.revokedAt = now();
+      joinLink.revokedBy = auth.user.id;
+      joinLink.updatedAt = joinLink.revokedAt;
+      console.info(`[cloud-auth] join link revoked id=${joinLink.id} actor=${auth.user.id}`);
+      await persistCloudState();
+      return { joinLink: publicJoinLink(joinLink) };
     }
 
     async function acceptConsoleInvitation(invitationId, req) {
@@ -1241,18 +1416,23 @@ export function createCloudAuth(deps) {
         throw error;
       }
       const role = normalizeCloudRole(body.role, null);
-      if (!role || role === 'admin') {
+      if (!role) {
         const error = new Error('Role is not allowed.');
         error.status = 400;
         throw error;
       }
       const previousRole = normalizeCloudRole(member.role);
-      if (previousRole === 'admin') {
-        const error = new Error('Admin role cannot be changed.');
+      if (role === 'admin' && normalizeCloudRole(auth.member.role) !== 'admin') {
+        const error = new Error('Only admins can promote another admin.');
         error.status = 403;
         throw error;
       }
-      if (!canUpdateMemberRole(auth.member.role, previousRole, role)) {
+      if (previousRole === 'admin' && role !== 'admin' && activeAdminCount(workspace.id) <= 1) {
+        const error = new Error('At least one admin must remain.');
+        error.status = 403;
+        throw error;
+      }
+      if (role !== 'admin' && !canUpdateMemberRole(auth.member.role, previousRole, role)) {
         const error = new Error('Workspace role is not allowed.');
         error.status = 403;
         throw error;
@@ -1544,6 +1724,9 @@ export function createCloudAuth(deps) {
         workspaces: ownConsoleState.workspaces,
         members: canSeeDirectory ? cloud.workspaceMembers.map(publicMember) : [],
         invitations: member ? cloud.invitations.map(publicInvitation) : ownConsoleState.invitations,
+        joinLinks: canManageCloud ? safeArray(cloud.joinLinks)
+          .filter((item) => item.workspaceId === primaryWorkspace()?.id)
+          .map((item) => publicJoinLink(item)) : [],
         myInvitations: ownConsoleState.invitations,
         systemNotifications: member ? safeArray(state.systemNotifications).map(publicSystemNotification) : [],
         pairingTokens: canManageCloud ? cloud.pairingTokens.map((item) => {
@@ -1570,7 +1753,8 @@ export function createCloudAuth(deps) {
       currentActor,
       currentUser,
     ensureConfiguredAdmin,
-    ensureCloudState,
+      ensureCloudState,
+    primaryWorkspace,
     initializeStorage,
     isLoginRequired,
     login,
@@ -1581,6 +1765,11 @@ export function createCloudAuth(deps) {
       acceptConsoleInvitation,
       declineConsoleInvitation,
       createConsoleServer,
+      switchConsoleServer,
+      deleteConsoleServer,
+      updateServerProfile,
+      createJoinLink,
+      revokeJoinLink,
       consoleStateForUser,
       invitationStatus,
       registerOpenAccount,
@@ -1593,6 +1782,7 @@ export function createCloudAuth(deps) {
       updateMemberRole,
       publicCloudState,
     publicInvitation,
+    publicJoinLink,
     requireUser,
     persistCloudState,
     sha256,

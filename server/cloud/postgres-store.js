@@ -68,7 +68,27 @@ function workspaceFromRow(row) {
     id: row.id,
     slug: row.slug,
     name: row.name,
+    avatar: row.avatar || '',
+    onboardingAgentId: row.onboarding_agent_id || '',
+    newAgentGreetingEnabled: row.new_agent_greeting_enabled !== false,
     ownerUserId: row.owner_user_id || null,
+    createdAt: requiredIso(row.created_at),
+    updatedAt: requiredIso(row.updated_at),
+    metadata: jsonObject(row.metadata),
+  };
+}
+
+function joinLinkFromRow(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    tokenHash: row.token_hash,
+    maxUses: Number(row.max_uses || 0),
+    usedCount: Number(row.used_count || 0),
+    expiresAt: iso(row.expires_at),
+    revokedAt: iso(row.revoked_at),
+    revokedBy: row.revoked_by || null,
+    createdBy: row.created_by || null,
     createdAt: requiredIso(row.created_at),
     updatedAt: requiredIso(row.updated_at),
     metadata: jsonObject(row.metadata),
@@ -293,11 +313,15 @@ export function createCloudPostgresStore(optionsInput = {}) {
         for (const workspace of safeArray(cloud.workspaces)) {
           await client.query(`
             INSERT INTO ${table('cloud_workspaces')}
-              (id, slug, name, owner_user_id, created_at, updated_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+              (id, slug, name, avatar, onboarding_agent_id, new_agent_greeting_enabled,
+               owner_user_id, created_at, updated_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
             ON CONFLICT (id) DO UPDATE SET
               slug = EXCLUDED.slug,
               name = EXCLUDED.name,
+              avatar = EXCLUDED.avatar,
+              onboarding_agent_id = EXCLUDED.onboarding_agent_id,
+              new_agent_greeting_enabled = EXCLUDED.new_agent_greeting_enabled,
               owner_user_id = EXCLUDED.owner_user_id,
               updated_at = EXCLUDED.updated_at,
               metadata = EXCLUDED.metadata
@@ -305,6 +329,9 @@ export function createCloudPostgresStore(optionsInput = {}) {
             workspace.id,
             workspace.slug || workspace.id,
             workspace.name || workspace.slug || workspace.id,
+            workspace.avatar || '',
+            workspace.onboardingAgentId || '',
+            workspace.newAgentGreetingEnabled !== false,
             workspace.ownerUserId || workspace.owner_user_id || null,
             requiredIso(workspace.createdAt),
             requiredIso(workspace.updatedAt || workspace.createdAt),
@@ -468,6 +495,38 @@ export function createCloudPostgresStore(optionsInput = {}) {
             iso(reset.revokedAt),
             requiredIso(reset.createdAt),
             JSON.stringify(jsonObject(reset.metadata)),
+          ]);
+        }
+
+        for (const joinLink of safeArray(cloud.joinLinks)) {
+          await client.query(`
+            INSERT INTO ${table('cloud_join_links')}
+              (id, workspace_id, token_hash, max_uses, used_count, expires_at,
+               revoked_at, revoked_by, created_by, created_at, updated_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+              workspace_id = EXCLUDED.workspace_id,
+              token_hash = EXCLUDED.token_hash,
+              max_uses = EXCLUDED.max_uses,
+              used_count = EXCLUDED.used_count,
+              expires_at = EXCLUDED.expires_at,
+              revoked_at = EXCLUDED.revoked_at,
+              revoked_by = EXCLUDED.revoked_by,
+              updated_at = EXCLUDED.updated_at,
+              metadata = EXCLUDED.metadata
+          `, [
+            joinLink.id,
+            joinLink.workspaceId,
+            joinLink.tokenHash,
+            Number(joinLink.maxUses || 0),
+            Number(joinLink.usedCount || 0),
+            iso(joinLink.expiresAt),
+            iso(joinLink.revokedAt),
+            joinLink.revokedBy || null,
+            joinLink.createdBy || null,
+            requiredIso(joinLink.createdAt),
+            requiredIso(joinLink.updatedAt || joinLink.createdAt),
+            JSON.stringify(jsonObject(joinLink.metadata)),
           ]);
         }
 
@@ -672,6 +731,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const sessions = await client.query(`SELECT * FROM ${table('cloud_sessions')} ORDER BY created_at ASC, id ASC`);
       const invitations = await client.query(`SELECT * FROM ${table('cloud_invitations')} ORDER BY created_at ASC, id ASC`);
       const passwordResets = await client.query(`SELECT * FROM ${table('cloud_password_resets')} ORDER BY created_at ASC, id ASC`);
+      const joinLinks = await client.query(`SELECT * FROM ${table('cloud_join_links')} ORDER BY created_at ASC, id ASC`);
       const computers = await client.query(`SELECT * FROM ${table('cloud_computers')} ORDER BY created_at ASC, id ASC`);
       const computerTokens = await client.query(`SELECT * FROM ${table('cloud_computer_tokens')} ORDER BY created_at ASC, id ASC`);
       const pairingTokens = await client.query(`SELECT * FROM ${table('cloud_pairing_tokens')} ORDER BY created_at ASC, id ASC`);
@@ -683,6 +743,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       cloud.sessions = sessions.rows.map(sessionFromRow);
       cloud.invitations = invitations.rows.map(invitationFromRow);
       cloud.passwordResetTokens = passwordResets.rows.map(passwordResetFromRow);
+      cloud.joinLinks = joinLinks.rows.map(joinLinkFromRow);
       cloud.computerTokens = computerTokens.rows.map(computerTokenFromRow);
       cloud.pairingTokens = pairingTokens.rows.map(pairingTokenFromRow);
       cloud.agentDeliveries = agentDeliveries.rows.map(agentDeliveryFromRow);

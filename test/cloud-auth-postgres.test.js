@@ -179,8 +179,27 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
       expectStatus: 409,
     });
 
+    await request(server.baseUrl, '/api/cloud/server/profile', {
+      method: 'PATCH',
+      cookie: openAccount.cookie,
+      body: JSON.stringify({
+        name: 'PG Team Renamed',
+        avatar: 'data:image/png;base64,cGc=',
+        onboardingAgentId: 'agt_codex',
+        newAgentGreetingEnabled: false,
+      }),
+    });
+    const joinLink = await request(server.baseUrl, '/api/cloud/join-links', {
+      method: 'POST',
+      cookie: openAccount.cookie,
+      body: JSON.stringify({ maxUses: 2, expiresAt: '2035-01-01T00:00:00.000Z' }),
+    });
+    assert.match(joinLink.data.joinLink.url, /\/join\/mc_join_/);
+
     const ownedServers = await request(server.baseUrl, '/api/console/servers', { cookie: openAccount.cookie });
     assert.deepEqual(ownedServers.data.servers.map((item) => item.slug), ['pg-team']);
+    assert.equal(ownedServers.data.servers[0].name, 'PG Team Renamed');
+    assert.equal(ownedServers.data.servers[0].avatar, 'data:image/png;base64,cGc=');
 
     const consoleInvitations = await request(server.baseUrl, '/api/console/invitations', {
       cookie: openAccount.cookie,
@@ -213,6 +232,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
     assert.equal(accepted.data.member.role, 'core_member');
     assert.ok(accepted.data.cloud.auth.currentMember);
     assert.deepEqual(accepted.data.console.workspaces.map((item) => item.slug).sort(), ['local', 'pg-team']);
+    assert.equal(accepted.data.cloud.joinLinks.length, 1);
 
     const servers = await request(server.baseUrl, '/api/console/servers', { cookie: openAccount.cookie });
     assert.deepEqual(servers.data.servers.map((item) => item.slug).sort(), ['local', 'pg-team']);
