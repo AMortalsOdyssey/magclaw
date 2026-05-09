@@ -2432,6 +2432,10 @@ test('work-like channel mentions route the agent response into the message threa
   await writeFile(fakeCodexPath, `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  process.stdout.write('codex-cli fake\\n');
+  process.exit(0);
+}
 if (args[0] === 'app-server') {
   let buffer = '';
   let turnCount = 0;
@@ -2478,7 +2482,7 @@ process.stdin.on('end', () => {
 });
 `);
   await chmod(fakeCodexPath, 0o755);
-  const server = await startIsolatedServer({ CODEX_PATH: fakeCodexPath });
+  const server = await startIsolatedServer({ MAGCLAW_CODEX_PATH: fakeCodexPath });
   try {
     const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
       method: 'POST',
@@ -2503,6 +2507,11 @@ process.stdin.on('end', () => {
     assert.equal(agentReply.spaceId, 'chan_all');
     assert.equal(finalState.messages.filter((message) => message.body === 'fake threaded response').length, 0);
     assert.equal(finalState.messages.find((message) => message.id === created.message.id).replyCount, replies.length);
+    assert.equal(finalState.settings.codexPath, fakeCodexPath);
+    assert.ok(finalState.events.some((event) => (
+      event.type === 'codex_path_repaired'
+      && event.agentId === 'agt_codex'
+    )));
   } finally {
     await server.stop();
     await rm(fakeCodexDir, { recursive: true, force: true });
