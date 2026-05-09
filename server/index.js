@@ -174,7 +174,7 @@ const CLOUD_PROTOCOL_VERSION = 1;
 const CODEX_HOME_CONFIG_VERSION = 7;
 const CODEX_FALLBACK_MODEL = 'gpt-5.5';
 const SQLITE_BACKED_STATE_KEYS = ['messages', 'replies', 'tasks', 'reminders', 'workItems', 'events'];
-const AGENT_BOOT_RESET_STATUSES = new Set(['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'error']);
+const AGENT_BOOT_RESET_STATUSES = new Set(['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming', 'error']);
 const CODEX_HOME_SHARED_ENTRIES = [
   'auth.json',
   'plugins',

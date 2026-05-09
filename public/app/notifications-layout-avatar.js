@@ -475,7 +475,7 @@ function maybeWarmAgent(agent, { spaceType = selectedSpaceType, spaceId = select
   if (!agent?.id) return;
   const runtime = String(agent.runtime || '').toLowerCase();
   if (runtime && !runtime.includes('codex')) return;
-  if (['thinking', 'working', 'starting', 'running', 'queued'].includes(String(agent.status || '').toLowerCase())) return;
+  if (['thinking', 'working', 'starting', 'running', 'queued', 'warming'].includes(String(agent.status || '').toLowerCase())) return;
   const key = agentWarmRequestKey(agent);
   if (agentWarmRequests.has(key)) return;
   agentWarmRequests.add(key);

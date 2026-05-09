@@ -13,16 +13,34 @@ function renderHeader(title, subtitle, actions = '') {
 function getChannelMembers(channelId) {
   const channel = byId(appState?.channels, channelId);
   if (!channel) return { agents: [], humans: [] };
+  const humansInWorkspace = typeof workspaceHumans === 'function'
+    ? workspaceHumans()
+    : (appState.humans || []).filter((human) => human.status !== 'removed');
   // "All" channel always includes all agents and humans
   if (channelId === 'chan_all') {
     return {
       agents: appState.agents || [],
-      humans: appState.humans || [],
+      humans: humansInWorkspace,
     };
   }
-  const memberIds = channel.memberIds || [];
+  const memberIds = [...new Set([...(channel.memberIds || []), ...(channel.humanIds || [])])];
+  const humanIds = new Set(memberIds.filter((id) => String(id).startsWith('hum_')));
   const agents = (appState.agents || []).filter((a) => memberIds.includes(a.id));
-  const humans = (appState.humans || []).filter((h) => memberIds.includes(h.id));
+  const humans = [];
+  const seenHumans = new Set();
+  for (const id of humanIds) {
+    const human = humansInWorkspace.find((item) => (
+      item.id === id
+      || item.cloudMemberId === id
+      || item.authUserId === id
+      || (id === 'hum_local' && typeof humanIsCurrent === 'function' && humanIsCurrent(item))
+    )) || (typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState.humans, id));
+    if (!human) continue;
+    const key = human.authUserId || human.email || human.id;
+    if (seenHumans.has(key)) continue;
+    seenHumans.add(key);
+    humans.push(human);
+  }
   return { agents, humans };
 }
 

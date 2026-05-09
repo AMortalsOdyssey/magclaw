@@ -118,13 +118,13 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
   proc.currentCodexRuntime = runtime;
   proc.status = 'running';
   if (isWarmup) proc.warmupActive = true;
-  setAgentStatus(agent, mode === 'steer' ? 'working' : 'thinking', isWarmup ? 'agent_warmup_started' : (mode === 'steer' ? 'agent_steered' : 'agent_turn_started'), {
+  setAgentStatus(agent, mode === 'steer' ? 'working' : (isWarmup ? 'warming' : 'thinking'), isWarmup ? 'agent_warmup_started' : (mode === 'steer' ? 'agent_steered' : 'agent_turn_started'), {
     activeWorkItemIds: normalizeIds(promptMessages.map((message) => message?.workItemId)),
     runtimeModel: runtime.model,
     runtimeReasoningEffort: runtime.reasoningEffort,
     runtimeOverrideReason: runtime.overrideReason,
   });
-  addAgentRuntimeActivityEvent(agent, proc, 'agent_runtime_activity', mode === 'steer' ? 'working' : 'thinking', isWarmup ? 'Hidden warmup turn started.' : (mode === 'steer' ? 'Queued message delivered to active runtime.' : 'Turn started.'), {
+  addAgentRuntimeActivityEvent(agent, proc, 'agent_runtime_activity', mode === 'steer' ? 'working' : (isWarmup ? 'warming' : 'thinking'), isWarmup ? 'Hidden warmup turn started.' : (mode === 'steer' ? 'Queued message delivered to active runtime.' : 'Turn started.'), {
     sessionId: proc.threadId,
     model: runtime.model,
     reasoningEffort: runtime.reasoningEffort || null,

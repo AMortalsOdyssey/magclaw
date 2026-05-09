@@ -271,7 +271,7 @@ function renderChannelMemberRow(member, type, isAllChannel) {
   const status = member.status || 'offline';
   const avatar = type === 'agent'
     ? getAvatarHtml(member.id, 'agent', 'dm-avatar member-avatar')
-    : `<span class="dm-avatar member-avatar">${escapeHtml(displayAvatar(member.id, 'human'))}</span>`;
+    : renderHumanAvatar(member, 'dm-avatar member-avatar');
   const canRemove = !isAllChannel && (type === 'agent' || member.id !== 'hum_local');
   const profile = type === 'agent' ? `
     <button class="member-profile-btn" type="button" data-action="select-agent" data-id="${escapeHtml(member.id)}">
@@ -303,7 +303,7 @@ function renderAddMemberCandidateGroup(title, items, type) {
       <div class="add-member-group-title">${escapeHtml(title)}</div>
       ${items.map((item) => `
         <button class="add-member-candidate" type="button" data-action="add-channel-member" data-member-id="${escapeHtml(item.id)}">
-          ${type === 'agent' ? getAvatarHtml(item.id, 'agent', 'dm-avatar member-avatar') : `<span class="dm-avatar member-avatar">${escapeHtml(displayAvatar(item.id, 'human'))}</span>`}
+          ${type === 'agent' ? getAvatarHtml(item.id, 'agent', 'dm-avatar member-avatar') : renderHumanAvatar(item, 'dm-avatar member-avatar')}
           <span class="add-member-candidate-main">
             <strong>${escapeHtml(item.name)}</strong>
             ${type === 'human' && item.email ? `<small>${escapeHtml(item.email)}</small>` : ''}
@@ -355,7 +355,7 @@ function renderAddChannelMemberModal() {
     return !q || haystack.includes(q);
   };
   const availableAgents = channelAssignableAgents().filter((a) => !memberIds.includes(a.id) && matches(a));
-  const availableHumans = (appState.humans || []).filter((h) => !memberIds.includes(h.id) && h.id !== 'hum_local' && matches(h));
+  const availableHumans = workspaceHumans().filter((h) => !memberIds.includes(h.id) && h.id !== 'hum_local' && matches(h));
   const hasCandidates = availableAgents.length || availableHumans.length;
 
   return `
@@ -379,7 +379,7 @@ function renderAddChannelMemberModal() {
 }
 
 function renderDmModal() {
-  const options = [...channelAssignableAgents(), ...(appState.humans || []).filter((human) => human.id !== 'hum_local')];
+  const options = [...channelAssignableAgents(), ...workspaceHumans().filter((human) => human.id !== currentHumanId())];
   return `
     ${modalHeader('Open DM', 'Direct control line')}
     <form id="dm-form" class="modal-form">

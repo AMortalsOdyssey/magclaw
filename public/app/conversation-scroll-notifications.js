@@ -196,8 +196,11 @@ function agentIsWarming(agent) {
   const status = String(agent?.status || '').toLowerCase();
   const mode = String(activity.mode || '').toLowerCase();
   const detail = String(activity.detail || '').toLowerCase();
-  return status === 'thinking'
-    && (activity.warmup === true || mode === 'warmup' || detail.includes('hidden warmup'));
+  return status === 'warming'
+    || status === 'warmup'
+    || status === 'warming-up'
+    || status === 'warming_up'
+    || (status === 'thinking' && (activity.warmup === true || mode === 'warmup' || detail.includes('hidden warmup')));
 }
 
 function agentDisplayStatus(agent) {

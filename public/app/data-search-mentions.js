@@ -520,6 +520,9 @@ function encodeComposerMentions(text, composerId) {
 }
 
 function mentionWorkspaceHumans() {
+  if (typeof workspaceHumans === 'function' && appState?.cloud?.members?.length) {
+    return workspaceHumans();
+  }
   const humans = new Map((appState.humans || []).map((human) => [human.id, human]));
   for (const member of appState.cloud?.members || []) {
     if ((member.status || 'active') !== 'active') continue;

@@ -427,6 +427,7 @@ function agentActivityTone(event) {
   const text = `${event?.type || ''} ${event?.message || ''} ${event?.raw?.type || ''}`.toLowerCase();
   if (text.includes('error') || text.includes('failed')) return 'error';
   if (text.includes('output') || text.includes('message')) return 'output';
+  if (text.includes('warming')) return 'warming';
   if (text.includes('thinking') || text.includes('working') || text.includes('running')) return 'busy';
   if (text.includes('idle') || text.includes('connected')) return 'online';
   return 'queued';

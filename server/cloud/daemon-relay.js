@@ -436,7 +436,10 @@ export function createDaemonRelay(deps) {
       reason: options.reason || 'manual',
     });
     if (result.queued) {
-      setAgentStatus(agent, result.sent ? 'starting' : 'waiting_for_computer', 'daemon_relay_start', { forceEvent: true });
+      const nextStatus = options.reason === 'warmup'
+        ? (result.sent ? 'warming' : 'waiting_for_computer')
+        : (result.sent ? 'starting' : 'waiting_for_computer');
+      setAgentStatus(agent, nextStatus, 'daemon_relay_start', { forceEvent: true });
       await persistState();
       broadcastState();
     }

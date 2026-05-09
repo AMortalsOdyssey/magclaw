@@ -524,6 +524,35 @@ test('thread mentions include active workspace humans outside the current channe
   assert.equal(candidates.some((item) => item.id === 'hum_removed'), false);
 });
 
+test('channel members use active workspace humans and profile avatars', async () => {
+  const source = await readFile(new URL('../public/app/render-space-chat-tasks.js', import.meta.url), 'utf8');
+  const modalSource = await readFile(new URL('../public/app/render-modals-uploads.js', import.meta.url), 'utf8');
+  const appState = {
+    agents: [{ id: 'agt_one', name: 'Agent One' }],
+    humans: [
+      { id: 'hum_legacy', name: 'Legacy Admin', status: 'online' },
+      { id: 'hum_current', name: 'Current User', status: 'online', avatar: 'data:image/png;base64,current' },
+    ],
+    channels: [{ id: 'chan_all', memberIds: ['agt_one', 'hum_legacy', 'hum_current'], humanIds: ['hum_legacy', 'hum_current'] }],
+  };
+  const context = {
+    appState,
+    byId(items, id) { return (items || []).find((item) => item.id === id) || null; },
+    workspaceHumans() { return [appState.humans[1]]; },
+    humanByIdAny(id) { return appState.humans.find((item) => item.id === id) || null; },
+    humanIsCurrent(human) { return human?.id === 'hum_current'; },
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+
+  const members = context.getChannelMembers('chan_all');
+
+  assert.deepEqual(members.humans.map((human) => human.id), ['hum_current']);
+  assert.match(modalSource, /renderHumanAvatar\(member, 'dm-avatar member-avatar'\)/);
+  assert.match(modalSource, /workspaceHumans\(\)\.filter/);
+  assert.match(await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8'), /return workspaceHumans\(\)/);
+});
+
 test('threads render newest first with display names instead of raw ids', async () => {
   const app = await readAppSource();
 
@@ -1055,6 +1084,7 @@ test('member rail lists keep status dots on the far right only in the agent tab'
 
 test('agent warmup renders as Warming with a distinct pink status dot', async () => {
   const app = await readAppSource();
+  const serverWarmSource = await readFile(new URL('../server/agent-runtime/app-server-turns.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderHumanListItem'));
   const profileSource = app.slice(app.indexOf('function renderAgentProfileTab'), app.indexOf('function renderAgentDmsTab'));
@@ -1062,6 +1092,7 @@ test('agent warmup renders as Warming with a distinct pink status dot', async ()
   assert.match(app, /function agentIsWarming\(agent\)/);
   assert.match(app, /agent\?\.runtimeActivity/);
   assert.match(app, /function agentDisplayStatus\(agent\)/);
+  assert.match(serverWarmSource, /isWarmup \? 'warming' : 'thinking'/);
   assert.match(app, /if \(agentIsWarming\(agent\)\) return 'warming'/);
   assert.match(app, /if \(value === 'warming'\) return 'Warming'/);
   assert.match(agentListSource, /const status = agentDisplayStatus\(agent\)/);

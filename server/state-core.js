@@ -772,7 +772,7 @@ export function createStateCore(deps) {
   }
   
   function agentStatusIsBusy(status) {
-    return ['starting', 'thinking', 'working', 'running', 'busy', 'queued'].includes(String(status || '').toLowerCase());
+    return ['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming'].includes(String(status || '').toLowerCase());
   }
 
   function runtimeProcessHasActiveWork(proc) {

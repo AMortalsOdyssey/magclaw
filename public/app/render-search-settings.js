@@ -1937,7 +1937,7 @@ function agentReasoningOptions(agent) {
 }
 
 function agentIsRunning(agent) {
-  return ['starting', 'thinking', 'working', 'running', 'busy', 'queued'].includes(String(agent?.status || '').toLowerCase());
+  return ['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming'].includes(String(agent?.status || '').toLowerCase());
 }
 
 function agentStatusLabel(agent) {
