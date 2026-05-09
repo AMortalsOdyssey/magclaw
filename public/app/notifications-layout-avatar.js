@@ -550,11 +550,12 @@ function updateAvatarCropPreview() {
   image.style.setProperty('--avatar-crop-scale', String(avatarCropState.scale));
 }
 
-async function openAvatarCropModal({ agentId, source, target = 'agent-detail' }) {
+async function openAvatarCropModal({ agentId, humanId, source, target = 'agent-detail' }) {
   const image = await loadAvatarImage(source);
   const { baseWidth, baseHeight } = avatarCropBaseSize(image.naturalWidth, image.naturalHeight);
   avatarCropState = clampAvatarCropOffset({
     agentId,
+    humanId,
     target,
     source,
     naturalWidth: image.naturalWidth,
@@ -616,6 +617,24 @@ async function uploadAgentAvatar(input) {
   const avatar = await readAvatarFileAsDataUrl(file);
   input.value = '';
   await openAvatarCropModal({ agentId, source: avatar, target });
+}
+
+async function uploadHumanAvatar(input) {
+  const humanId = input?.dataset?.id || selectedHumanId;
+  const file = input?.files?.[0];
+  if (!file) return;
+  if (file.size > AGENT_AVATAR_UPLOAD_MAX_BYTES) {
+    toast('Avatar must be 10 MB or smaller');
+    input.value = '';
+    return;
+  }
+  if (!humanId) {
+    input.value = '';
+    return;
+  }
+  const avatar = await readAvatarFileAsDataUrl(file);
+  input.value = '';
+  await openAvatarCropModal({ humanId, source: avatar, target: 'human-detail' });
 }
 
 function setProfileAvatarInput(value) {

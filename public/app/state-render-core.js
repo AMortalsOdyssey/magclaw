@@ -529,7 +529,9 @@ function workspaceHumans() {
   if (members.length) {
     const seen = new Set();
     const humans = [];
+    const hasNonLegacyMembers = members.some((member) => member.humanId !== 'hum_local');
     for (const member of members) {
+      if (hasNonLegacyMembers && member.humanId === 'hum_local' && member.userId !== appState?.cloud?.workspace?.ownerUserId) continue;
       const human = humanFromCloudMember(member);
       const key = member.userId || human.authUserId || human.email?.toLowerCase() || human.id;
       if (!key || seen.has(key)) continue;
@@ -543,6 +545,15 @@ function workspaceHumans() {
 
 function humanByIdAny(id) {
   const target = String(id || '');
+  if (target === 'hum_local' && appState?.cloud?.auth?.currentUser) {
+    const current = currentAccountHuman();
+    const visibleCurrent = workspaceHumans().find((human) => (
+      human.id === current.id
+      || human.authUserId === current.authUserId
+      || (human.email && current.email && human.email.toLowerCase() === current.email.toLowerCase())
+    ));
+    if (visibleCurrent) return visibleCurrent;
+  }
   return byId(appState?.humans, target)
     || workspaceHumans().find((human) => (
       human.id === target

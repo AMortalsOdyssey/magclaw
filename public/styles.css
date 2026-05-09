@@ -2168,20 +2168,20 @@ button:disabled {
   gap: 10px;
 }
 
-.human-info-grid {
+.human-info-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   border-top: 1px solid var(--settings-line, var(--border-faint));
-}
-
-.human-info-grid div {
-  display: grid;
-  gap: 4px;
-  padding: 10px 0;
   border-bottom: 1px solid var(--settings-line, var(--border-faint));
 }
 
-.human-info-grid span {
+.human-info-list div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+}
+
+.human-info-list span {
   color: var(--text-muted);
   font-size: 10px;
   font-weight: 900;
@@ -2189,10 +2189,65 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.human-info-grid strong {
+.human-info-list strong {
   color: var(--text-primary);
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+.human-info-list .role-pill {
+  width: fit-content;
+  padding: 3px 8px;
+  border: 2px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.1;
+}
+
+.human-profile-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0 16px;
+  border-bottom: 1px solid var(--settings-line, var(--border-faint));
+}
+
+.human-profile-hero h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.human-profile-hero small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.human-detail-avatar-large {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-pixel-sm);
+}
+
+.human-detail-avatar-large .agent-detail-avatar-preview,
+.human-detail-avatar-large img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.human-you-label {
+  color: var(--text-muted);
+  font-size: 0.9em;
+  font-style: normal;
+  font-weight: 700;
 }
 
 .server-admin-row,
@@ -7866,6 +7921,81 @@ code {
   gap: 5px;
 }
 
+.agent-compact-info {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(120px, 0.7fr) minmax(140px, 0.8fr) minmax(200px, 1fr);
+  gap: 12px 18px;
+  align-items: end;
+  padding: 10px 0;
+  border-top: 1px solid var(--settings-line, var(--border-faint));
+  border-bottom: 1px solid var(--settings-line, var(--border-faint));
+}
+
+.agent-compact-info > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.agent-computer-linkline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-computer-linkline:disabled {
+  cursor: default;
+}
+
+.agent-computer-linkline strong,
+.agent-compact-info strong {
+  min-width: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.agent-computer-linkline small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.daemon-inline {
+  color: var(--text-muted);
+}
+
+.daemon-version-value {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+  text-transform: none;
+}
+
+.daemon-version-value.update-available,
+.daemon-version-value.update-available small {
+  color: var(--danger);
+}
+
+.daemon-version-value small {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .agent-compact-info,
+  .human-info-list {
+    grid-template-columns: 1fr;
+  }
+}
+
 .agent-computer-link {
   border: 1px solid var(--border);
   background: var(--bg-elevated);
@@ -8233,24 +8363,6 @@ code {
 
 .member-info .dm-name {
   width: 100%;
-}
-
-.member-btn.human-role-admin .dm-name,
-.member-btn.human-role-admin .dm-avatar {
-  color: #ff5a5f;
-  border-color: #ff5a5f;
-}
-
-.member-btn.human-role-core_member .dm-name,
-.member-btn.human-role-core_member .dm-avatar {
-  color: #d4a017;
-  border-color: #d4a017;
-}
-
-.member-btn.human-role-member .dm-name,
-.member-btn.human-role-member .dm-avatar {
-  color: var(--text-primary);
-  border-color: var(--text-primary);
 }
 
 .system-notification-list {

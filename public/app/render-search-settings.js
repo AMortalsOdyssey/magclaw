@@ -422,6 +422,44 @@ function displayDaemonVersion(...values) {
   return '--';
 }
 
+function daemonVersionParts(value = '') {
+  const match = String(value || '').trim().match(/(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$/);
+  if (!match) return null;
+  return [Number(match[1] || 0), Number(match[2] || 0), Number(match[3] || 0)];
+}
+
+function compareDaemonVersions(current = '', latest = '') {
+  const currentParts = daemonVersionParts(current);
+  const latestParts = daemonVersionParts(latest);
+  if (!currentParts || !latestParts) return 0;
+  for (let index = 0; index < 3; index += 1) {
+    if (currentParts[index] !== latestParts[index]) return currentParts[index] - latestParts[index];
+  }
+  return 0;
+}
+
+function daemonLatestVersion() {
+  return displayDaemonVersion(
+    appState.runtime?.daemonLatestVersion,
+    appState.runtime?.daemonPackageVersion,
+    MAGCLAW_DAEMON_PACKAGE_VERSION,
+  );
+}
+
+function renderDaemonVersionValue(...values) {
+  const version = displayDaemonVersion(...values);
+  if (version === '--') return '<span class="daemon-version-value missing">--</span>';
+  const latest = daemonLatestVersion();
+  const label = version.startsWith('v') ? version : `v${version}`;
+  const updateAvailable = latest !== '--' && compareDaemonVersions(version, latest) < 0;
+  return `
+    <span class="daemon-version-value ${updateAvailable ? 'update-available' : ''}">
+      ${escapeHtml(label)}
+      ${updateAvailable ? '<small>(update available)</small>' : ''}
+    </span>
+  `;
+}
+
 function renderComputerAgentCard(agent) {
   const creator = typeof agentCreatorInfo === 'function' ? agentCreatorInfo(agent) : { name: agent.creatorName || '--' };
   return `
@@ -450,7 +488,7 @@ function renderComputerDetail(computer) {
   const disabled = computerIsDisabled(computer);
   const runtimeDetails = computerRuntimeDetails(computer);
   const installedCount = runtimeDetails.filter((runtime) => runtime.installed !== false).length;
-  const daemonVersion = displayDaemonVersion(
+  const daemonVersion = renderDaemonVersionValue(
     computer.daemonVersion,
     computer.version,
     appState.runtime?.daemonPackageVersion,
@@ -485,7 +523,7 @@ function renderComputerDetail(computer) {
         <div class="computer-section-label">Info</div>
         <dl class="computer-info-list">
           <div class="computer-info-row"><dt>OS</dt><dd>${escapeHtml([computer.os, computer.arch].filter(Boolean).join(' ') || '--')}</dd></div>
-          <div class="computer-info-row important"><dt>Daemon Version</dt><dd>${escapeHtml(daemonVersion)}</dd></div>
+          <div class="computer-info-row important"><dt>Daemon Version</dt><dd>${daemonVersion}</dd></div>
           <div class="computer-info-row runtime-row"><dt>Detected Runtimes</dt><dd><span class="runtime-count">${escapeHtml(installedCount)}</span><div class="detected-runtime-list">${renderComputerRuntimeBadges(computer)}</div></dd></div>
           <div class="computer-info-row"><dt>Created</dt><dd>${escapeHtml(fmtFullDateTime(computer.createdAt))}</dd></div>
         </dl>

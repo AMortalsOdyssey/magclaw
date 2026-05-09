@@ -166,6 +166,8 @@ async function prepareDocumentClick(event) {
     'open-agent-restart',
     'select-agent-restart-mode',
     'upload-agent-avatar',
+    'randomize-human-avatar',
+    'pick-human-avatar',
     'random-profile-avatar',
     'reset-profile-avatar',
     'reset-server-avatar',
@@ -335,7 +337,17 @@ async function prepareDocumentClick(event) {
         returnModal: null,
       });
       return;
-  }
+    }
+    if (action === 'pick-human-avatar') {
+      const human = humanByIdAny(target.dataset.id || selectedHumanId);
+      openAvatarPicker({
+        target: 'human-detail',
+        humanId: human?.id || '',
+        selectedAvatar: human?.avatar || '',
+        returnModal: null,
+      });
+      return;
+    }
   if (action === 'back-to-agent-modal' || action === 'confirm-avatar') {
     const picker = avatarPickerState || { target: 'agent-create', selectedAvatar: agentFormState.avatar, returnModal: 'agent' };
     if (action === 'confirm-avatar') {
@@ -365,13 +377,37 @@ async function prepareDocumentClick(event) {
         } catch (error) {
           toast(error.message);
         }
+      } else if (picker.target === 'human-detail' && picker.humanId) {
+        try {
+          await api(`/api/humans/${encodeURIComponent(picker.humanId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ avatar }),
+          });
+          toast('Avatar updated');
+        } catch (error) {
+          toast(error.message);
+        }
       }
     }
     modal = picker.returnModal || null;
     avatarPickerState = null;
     render();
-    if (picker.target === 'agent-detail' && action === 'confirm-avatar') {
+    if ((picker.target === 'agent-detail' || picker.target === 'human-detail') && action === 'confirm-avatar') {
       await refreshStateOrAuthGate().catch(() => {});
+    }
+    return;
+  }
+  if (action === 'randomize-human-avatar') {
+    const avatar = getRandomAvatar();
+    try {
+      await api(`/api/humans/${encodeURIComponent(target.dataset.id || selectedHumanId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ avatar }),
+      });
+      toast('Avatar updated');
+      await refreshStateOrAuthGate().catch(() => {});
+    } catch (error) {
+      toast(error.message);
     }
     return;
   }

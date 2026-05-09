@@ -106,46 +106,24 @@ function runtimeForAgent(agent) {
 function renderAgentInfoSection(agent) {
   const computer = byId(appState.computers, agent.computerId);
   const creator = agentCreatorInfo(agent);
-  const runtimeBadges = computer ? renderComputerRuntimeBadges(computer) : '<span class="runtime-badge muted">No runtimes detected</span>';
   const computerDisabled = typeof computerIsDisabled === 'function' ? computerIsDisabled(computer) : false;
   const computerStatus = computerDisabled ? 'disabled' : (computer?.status || 'offline');
-  const daemonVersion = typeof displayDaemonVersion === 'function'
-    ? displayDaemonVersion(computer?.daemonVersion, computer?.version, appState.runtime?.daemonPackageVersion)
-    : (computer?.daemonVersion || computer?.version || appState.runtime?.daemonPackageVersion || '--');
+  const daemonVersion = typeof renderDaemonVersionValue === 'function'
+    ? renderDaemonVersionValue(computer?.daemonVersion, computer?.version, appState.runtime?.daemonPackageVersion)
+    : escapeHtml(computer?.daemonVersion || computer?.version || appState.runtime?.daemonPackageVersion || '--');
   return `
     <section class="agent-profile-field agent-info-section">
       <span class="detail-label">Info</span>
-      <div class="agent-computer-card">
-        <div class="agent-computer-line">
+      <div class="agent-compact-info">
+        <div class="agent-compact-computer-row">
           <span class="agent-info-caption">Computer</span>
-          <strong>${escapeHtml(computer?.name || agent.computerId || '--')}</strong>
-          <span class="avatar-status-dot inline ${presenceClass(computerStatus)}"></span>
-          <small>${escapeHtml(computerStatus || 'Disconnected')}</small>
-          ${computer ? `<button class="agent-computer-link" type="button" data-action="select-computer" data-id="${escapeHtml(computer.id)}">Details</button>` : ''}
+          <button class="agent-computer-linkline" type="button" data-action="select-computer" data-id="${escapeHtml(computer?.id || '')}" ${computer ? '' : 'disabled'}>
+            <strong>${escapeHtml(computer?.name || agent.computerId || '--')}</strong>
+            <span class="avatar-status-dot inline ${presenceClass(computerStatus)}"></span>
+            <small>${escapeHtml(computerStatus === 'connected' ? 'Connected' : computerStatus || 'Disconnected')}</small>
+            <span class="daemon-inline">daemon ${daemonVersion}</span>
+          </button>
         </div>
-        <div class="agent-computer-meta-grid">
-          <div>
-            <span class="agent-info-caption">OS</span>
-            <strong>${escapeHtml(computer?.os || '--')}</strong>
-            <small>${escapeHtml(computer?.arch || computer?.hostname || '')}</small>
-          </div>
-          <div>
-            <span class="agent-info-caption">Daemon Version</span>
-            <strong>${escapeHtml(daemonVersion)}</strong>
-            <small>${escapeHtml(computer?.connectedVia || 'daemon')}</small>
-          </div>
-          <div>
-            <span class="agent-info-caption">Detected Runtimes</span>
-            <div class="agent-runtime-inline">${runtimeBadges}</div>
-          </div>
-          <div>
-            <span class="agent-info-caption">Last Seen</span>
-            <strong>${escapeHtml(computer?.lastSeenAt ? fmtTime(computer.lastSeenAt) : '--')}</strong>
-            <small>${escapeHtml(computer?.createdAt ? `Created ${fmtTime(computer.createdAt)}` : '')}</small>
-          </div>
-        </div>
-      </div>
-      <div class="agent-info-grid">
         <div>
           <span class="agent-info-caption">Created</span>
           <strong>${escapeHtml(formatAgentBorn(agent.createdAt))}</strong>
@@ -155,12 +133,8 @@ function renderAgentInfoSection(agent) {
           <strong>${escapeHtml(creator.name)}</strong>
         </div>
         <div>
-          <span class="agent-info-caption">Username</span>
-          <strong>${escapeHtml(creator.username)}</strong>
-        </div>
-        <div>
-          <span class="agent-info-caption">User ID</span>
-          <strong>${escapeHtml(creator.userId)}</strong>
+          <span class="agent-info-caption">User</span>
+          <strong>${escapeHtml(creator.username)} · ${escapeHtml(creator.userId)}</strong>
         </div>
       </div>
     </section>
@@ -401,7 +375,7 @@ function renderAgentProfileTab(agent) {
           <button class="secondary-btn disabled-action" type="button" data-action="agent-stop-unavailable" data-id="${escapeHtml(agent.id)}" aria-disabled="true">Stop Agent</button>
           ${agentIsRunning(agent)
             ? `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Restart / Reset</button>`
-            : `<button class="secondary-btn" type="button" data-action="start-agent" data-id="${escapeHtml(agent.id)}">Start Agent</button>`}
+            : `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Start / Restart</button>`}
           <button class="danger-btn" type="button" data-action="delete-agent" data-id="${escapeHtml(agent.id)}">Delete Agent</button>
         </div>
       </section>
@@ -507,7 +481,7 @@ function renderAgentDetail(agent) {
           <button class="secondary-btn disabled-action" type="button" data-action="agent-stop-unavailable" data-id="${escapeHtml(agent.id)}" aria-disabled="true">Stop Agent</button>
           ${running
               ? `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Restart</button>`
-              : `<button class="secondary-btn" type="button" data-action="start-agent" data-id="${escapeHtml(agent.id)}">Start Agent</button>`}
+              : `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Start / Restart</button>`}
           <button class="icon-btn small" type="button" data-action="close-agent-detail" aria-label="Close agent detail">×</button>
         </div>
       </div>
@@ -575,15 +549,15 @@ function renderAgentGroupsByComputer(agents = []) {
 }
 
 function renderHumanListItem(human) {
-  const role = human.role || 'member';
   const active = selectedHumanId === human.id ? ' active' : '';
+  const youLabel = humanIsCurrent(human) ? ' <em class="human-you-label">(you)</em>' : '';
   return `
-    <button class="space-btn member-btn human-role-${escapeHtml(role)}${active}" type="button" data-action="select-human" data-id="${escapeHtml(human.id)}">
+    <button class="space-btn member-btn${active}" type="button" data-action="select-human" data-id="${escapeHtml(human.id)}">
       <span class="dm-avatar-wrap">
         ${renderHumanAvatar(human, 'dm-avatar')}
       </span>
       <div class="member-info">
-        <span class="dm-name">${escapeHtml(human.name)}</span>
+        <span class="dm-name">${escapeHtml(human.name)}${youLabel}</span>
       </div>
       <span class="member-status-side">${avatarStatusDot(human.status, 'Human status')}</span>
     </button>
@@ -616,24 +590,76 @@ function cloudMemberForHuman(human) {
 }
 
 function humanCreatedAgents(human) {
+  const member = cloudMemberForHuman(human);
   return (appState.agents || []).filter((agent) => (
     agent.createdBy === human?.id
     || agent.createdByHumanId === human?.id
     || agent.ownerHumanId === human?.id
+    || agent.createdByUserId === human?.authUserId
+    || agent.createdByUserId === member?.userId
   ));
+}
+
+function humanIsCurrent(human = {}) {
+  const current = currentAccountHuman();
+  const currentEmail = String(current?.email || appState.cloud?.auth?.currentUser?.email || '').toLowerCase();
+  const humanEmail = String(human.email || '').toLowerCase();
+  return Boolean(
+    (current?.id && human.id === current.id)
+    || (current?.authUserId && human.authUserId === current.authUserId)
+    || (currentEmail && humanEmail && currentEmail === humanEmail)
+  );
+}
+
+function humanJoinedLabel(value) {
+  if (!value) return '--';
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return '--';
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${year}年${month}月${day}日 ${hour}:${minute}`;
+}
+
+function humanCanEditProfile(human = {}, member = null) {
+  return humanIsCurrent(human) || Boolean(member && cloudCan('manage_member_roles'));
+}
+
+function renderHumanAvatarEditor(human, member) {
+  if (!humanCanEditProfile(human, member)) return '';
+  return `
+    <section class="agent-profile-field human-avatar-edit">
+      <span class="detail-label">Avatar</span>
+      <div class="agent-avatar-edit-row">
+        <span class="agent-detail-avatar-frame">${renderHumanAvatar(human, 'agent-detail-avatar-preview')}</span>
+        <button class="secondary-btn" type="button" data-action="randomize-human-avatar" data-id="${escapeHtml(human.id)}">Random</button>
+        <button class="secondary-btn" type="button" data-action="pick-human-avatar" data-id="${escapeHtml(human.id)}">Browse</button>
+        <label class="secondary-btn file-btn">
+          Upload
+          <input class="visually-hidden human-avatar-upload" type="file" accept="image/*" data-id="${escapeHtml(human.id)}" />
+        </label>
+      </div>
+    </section>
+  `;
 }
 
 function renderHumanDetail(human) {
   const member = cloudMemberForHuman(human);
   const createdAgents = humanCreatedAgents(human);
   const email = human.email || member?.user?.email || member?.email || '';
+  const isCurrent = humanIsCurrent(human);
+  const role = member ? cloudMemberDisplayRole(member) : human.role || 'member';
+  const canManageThisMember = Boolean(member && !isCurrent && (cloudCan('manage_member_roles') || cloudCanRemoveMemberRole(role)));
+  const youLabel = isCurrent ? ' <em class="human-you-label">(you)</em>' : '';
   return `
     <section class="pixel-panel inspector-panel human-detail-page slock-profile-detail">
       <div class="agent-detail-topbar">
         <div class="agent-detail-title">
           <span class="agent-detail-avatar-frame mini">${renderHumanAvatar(human, 'agent-detail-avatar-preview')}</span>
           <div>
-            <strong>${escapeHtml(human.name || member?.user?.name || 'Human')}</strong>
+            <strong>${escapeHtml(human.name || member?.user?.name || 'Human')}${youLabel}</strong>
             <small>${escapeHtml(email || 'Server member')}</small>
           </div>
         </div>
@@ -642,38 +668,45 @@ function renderHumanDetail(human) {
         </div>
       </div>
       <div class="human-detail-grid">
+        <div class="human-profile-hero">
+          <span class="human-detail-avatar-large">${renderHumanAvatar(human, 'agent-detail-avatar-preview')}</span>
+          <div>
+            <h2>${escapeHtml(human.name || member?.user?.name || 'Human')}${youLabel}</h2>
+            <small>${escapeHtml(email || '')}</small>
+          </div>
+        </div>
+        ${renderHumanAvatarEditor(human, member)}
         <section class="agent-profile-field">
           <span class="detail-label">Description</span>
           <div class="agent-field-value ${human.description ? '' : 'muted'}">${escapeHtml(human.description || 'No description')}</div>
         </section>
         <section class="agent-profile-field human-info-section">
           <span class="detail-label">Info</span>
-          <div class="human-info-grid">
-            <div><span>Role</span><strong>${escapeHtml(cloudRoleLabel(member ? cloudMemberDisplayRole(member) : human.role || 'member'))}</strong></div>
+          <div class="human-info-list">
+            <div><span>Role</span><strong class="role-pill">${escapeHtml(cloudRoleLabel(role))}</strong></div>
             <div><span>Email</span><strong>${escapeHtml(email || '--')}</strong></div>
-            <div><span>Joined</span><strong>${escapeHtml(member?.joinedAt ? fmtTime(member.joinedAt) : human.joinedAt ? fmtTime(human.joinedAt) : human.createdAt ? fmtTime(human.createdAt) : '--')}</strong></div>
+            <div><span>Joined</span><strong>${escapeHtml(humanJoinedLabel(member?.joinedAt || human.joinedAt || human.createdAt))}</strong></div>
             <div><span>User ID</span><strong>${escapeHtml(member?.userId || human.authUserId || '--')}</strong></div>
           </div>
         </section>
-        <section class="agent-profile-field human-actions-section">
+        ${canManageThisMember ? `<section class="agent-profile-field human-actions-section">
           <span class="detail-label">Actions</span>
           <div class="agent-detail-actions">
-            <button class="secondary-btn" type="button" data-action="open-dm-with-human" data-id="${escapeHtml(human.id)}">Message</button>
-            ${member && cloudCan('remove_member') ? `<button class="danger-btn" type="button" data-action="open-member-action-confirm" data-id="${escapeHtml(member.id)}" data-member-action="remove">Remove Human</button>` : ''}
+            ${cloudCan('manage_member_roles') ? `<button class="secondary-btn" type="button" data-action="open-member-manage" data-id="${escapeHtml(member.id)}">Manage Role</button>` : ''}
+            ${cloudCanRemoveMemberRole(role) ? `<button class="danger-btn" type="button" data-action="open-member-action-confirm" data-id="${escapeHtml(member.id)}" data-member-action="remove">Remove Member</button>` : ''}
           </div>
-        </section>
+        </section>` : ''}
         <section class="agent-profile-field human-created-agents">
-          <span class="detail-label">Created Agents</span>
+          <span class="detail-label">Created Agents (${createdAgents.length})</span>
           ${createdAgents.length ? `
             <div class="human-created-agent-list">
-              ${createdAgents.map((agent) => `
-                <button class="created-agent-row" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}">
-                  ${getAvatarHtml(agent.id, 'agent', 'dm-avatar')}
-                  <span><strong>${escapeHtml(agent.name)}</strong><small>${escapeHtml(agent.runtime || agent.status || 'Agent')}</small></span>
-                </button>
-              `).join('')}
+              ${createdAgents.map((agent) => (
+                typeof renderComputerAgentCard === 'function'
+                  ? renderComputerAgentCard(agent)
+                  : `<button class="created-agent-row" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}">${escapeHtml(agent.name || 'Agent')}</button>`
+              )).join('')}
             </div>
-          ` : '<div class="agent-field-value muted">No agents created by this human yet.</div>'}
+          ` : '<div class="agent-field-value muted">No created agents</div>'}
         </section>
       </div>
     </section>

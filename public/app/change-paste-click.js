@@ -46,6 +46,10 @@ document.addEventListener('change', async (event) => {
     await uploadAgentAvatar(event.target).catch((error) => toast(error.message));
     return;
   }
+  if (event.target.matches?.('.human-avatar-upload')) {
+    await uploadHumanAvatar(event.target).catch((error) => toast(error.message));
+    return;
+  }
   const target = event.target;
   if (target.dataset?.action === 'update-cloud-member-role') {
     await api(`/api/cloud/members/${encodeURIComponent(target.dataset.id)}`, {
@@ -795,6 +799,7 @@ document.addEventListener('click', async (event) => {
         method: 'POST',
         body: JSON.stringify({ mode: agentRestartState.mode || 'restart' }),
       });
+      agentRestartState = { agentId: null, mode: 'restart' };
       modal = null;
       toast('Agent restart requested');
     }
@@ -948,6 +953,13 @@ document.addEventListener('click', async (event) => {
         });
         toast('Avatar updated');
       }
+      if (crop?.target === 'human-detail' && crop.humanId) {
+        await api(`/api/humans/${encodeURIComponent(crop.humanId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ avatar }),
+        });
+        toast('Avatar updated');
+      }
       if (crop?.target === 'agent-create') {
         agentFormState.avatar = avatar;
         toast('Avatar selected');
@@ -966,6 +978,7 @@ document.addEventListener('click', async (event) => {
       avatarCropState = null;
       modal = crop?.target === 'agent-create' ? 'agent' : null;
       render();
+      if (crop?.target === 'human-detail') await refreshStateOrAuthGate().catch(() => {});
       return;
     }
     if (action === 'remove-project') {

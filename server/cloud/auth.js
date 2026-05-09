@@ -146,6 +146,7 @@ function validatePassword(password) {
 }
 
 function configuredAdminCredentials() {
+  if (process.env.MAGCLAW_ALLOW_SIGNUPS === '1') return null;
   const email = normalizeEmail(process.env.MAGCLAW_ADMIN_EMAIL || '');
   const password = String(process.env.MAGCLAW_ADMIN_PASSWORD || '');
   if (!email || !password) return null;
@@ -249,6 +250,21 @@ export function createCloudAuth(deps) {
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
 
+  function cleanupLegacyConfiguredAdminMembers() {
+    if (process.env.MAGCLAW_ALLOW_SIGNUPS !== '1') return;
+    const cloud = state.cloud;
+    const removedAt = now();
+    for (const member of safeArray(cloud.workspaceMembers)) {
+      if (member.status && member.status !== 'active') continue;
+      if (member.humanId !== 'hum_local') continue;
+      const workspace = safeArray(cloud.workspaces).find((item) => item.id === member.workspaceId);
+      if (!workspace?.ownerUserId || workspace.ownerUserId === member.userId) continue;
+      member.status = 'removed';
+      member.removedAt = member.removedAt || removedAt;
+      member.updatedAt = removedAt;
+    }
+  }
+
   function ensureCloudState() {
     const createdAt = now();
     const workspaceId = String(state.connection?.workspaceId || 'local');
@@ -291,6 +307,7 @@ export function createCloudAuth(deps) {
       for (const human of state.humans) {
         human.role = normalizeCloudRole(human.role);
       }
+      cleanupLegacyConfiguredAdminMembers();
       return state.cloud;
     }
 
@@ -464,7 +481,11 @@ export function createCloudAuth(deps) {
 
   function humanForMember(member, user = null) {
     state.humans = safeArray(state.humans);
-    return state.humans.find((human) => human.id === member?.humanId)
+    const direct = state.humans.find((human) => human.id === member?.humanId);
+    if (direct && process.env.MAGCLAW_ALLOW_SIGNUPS === '1' && direct.id === 'hum_local' && user?.id && direct.authUserId !== user.id) {
+      return state.humans.find((human) => human.authUserId === user.id && human.status !== 'removed') || null;
+    }
+    return direct
       || (user ? state.humans.find((human) => human.authUserId === user.id && human.status !== 'removed') : null)
       || null;
   }
@@ -571,8 +592,10 @@ export function createCloudAuth(deps) {
       let human = options.humanId
         ? state.humans.find((item) => item.id === options.humanId)
         : null;
+      if (human && process.env.MAGCLAW_ALLOW_SIGNUPS === '1' && human.id === 'hum_local' && human.authUserId !== user.id) {
+        human = null;
+      }
       if (!human) human = state.humans.find((item) => item.authUserId === user.id);
-      if (!human && normalizedRole === 'admin') human = state.humans.find((item) => item.id === 'hum_local');
       if (!human) {
         human = state.humans.find((item) => (
           normalizeEmail(item.email) === user.email
@@ -710,7 +733,7 @@ export function createCloudAuth(deps) {
     }
       if (member) {
         const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, { humanId: member.humanId });
-        if (!member.humanId && human?.id) member.humanId = human.id;
+        if (human?.id && member.humanId !== human.id) member.humanId = human.id;
         markHumanPresence(human, 'online');
       }
     const issued = issueSession(user, req);
@@ -777,7 +800,7 @@ export function createCloudAuth(deps) {
       }
       const human = humanForMember(auth.member, auth.user)
         || ensureHumanForUser(auth.user, auth.member.role, { humanId: auth.member.humanId });
-      if (!auth.member.humanId && human?.id) auth.member.humanId = human.id;
+      if (human?.id && auth.member.humanId !== human.id) auth.member.humanId = human.id;
       const previousSeen = Date.parse(human.lastSeenAt || '');
       const changed = markHumanPresence(human, 'online');
       const shouldPersist = changed || !previousSeen || Date.now() - previousSeen > HUMAN_PRESENCE_PERSIST_INTERVAL_MS;
@@ -1719,7 +1742,7 @@ export function createCloudAuth(deps) {
       reset.consumedAt = completedAt;
       if (member) {
         const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, { humanId: member.humanId });
-        if (!member.humanId && human?.id) member.humanId = human.id;
+        if (human?.id && member.humanId !== human.id) member.humanId = human.id;
         markHumanPresence(human, 'online');
       }
       const issued = issueSession(user, req);

@@ -123,20 +123,23 @@ function renderAgentRestartModal() {
   const options = [
     {
       id: 'restart',
-      title: 'Restart',
-      body: 'Stop and restart the agent process. Keeps conversation history and workspace files.',
+      title: 'RESTART',
+      button: 'Restart',
+      body: 'Stop and restart the agent process. Keeps the runtime session and workspace files.',
       tone: 'info',
     },
     {
       id: 'reset-session',
-      title: 'Reset Session & Restart',
-      body: 'Clear conversation history and restart. Workspace files (MEMORY.md, notes/) are preserved.',
+      title: 'RESET SESSION & RESTART',
+      button: 'Reset Session & Restart',
+      body: 'Clear the runtime session and restart. Workspace files (MEMORY.md, notes/) are preserved.',
       tone: 'warning',
     },
     {
       id: 'full-reset',
-      title: 'Full Reset & Restart',
-      body: 'Clear conversation history, delete all workspace files, and restart from scratch.',
+      title: 'FULL RESET & RESTART',
+      button: 'Full Reset & Restart',
+      body: 'Clear the runtime session, delete all workspace files, and restart from scratch.',
       tone: 'danger',
     },
   ];
@@ -153,13 +156,12 @@ function renderAgentRestartModal() {
     </div>
     ${mode === 'full-reset' ? `
       <div class="agent-restart-warning">
-        <strong>This will permanently delete all workspace files including MEMORY.md and notes/.</strong>
-        <span>This cannot be undone.</span>
+        <strong>This will permanently delete all workspace files including MEMORY.md and notes/. This cannot be undone.</strong>
       </div>
     ` : ''}
     <div class="modal-actions confirm-stop-actions">
       <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
-      <button type="button" class="primary-btn ${active.tone === 'danger' ? 'danger-btn' : ''}" data-action="confirm-agent-restart">${escapeHtml(active.title)}</button>
+      <button type="button" class="primary-btn ${active.tone === 'danger' ? 'danger-btn' : ''}" data-action="confirm-agent-restart">${escapeHtml(active.button || active.title)}</button>
     </div>
   `;
 }
