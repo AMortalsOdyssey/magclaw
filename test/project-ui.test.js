@@ -1163,6 +1163,10 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.match(app, /type="file"[\s\S]*data-action="upload-agent-avatar"/);
   assert.match(app, /data-action="pick-agent-detail-avatar"/);
   assert.match(app, /data-action="start-agent"/);
+  assert.match(app, /Daemon Version/);
+  assert.match(app, /Detected Runtimes/);
+  assert.match(app, /renderComputerRuntimeBadges\(computer\)/);
+  assert.match(app, /data-action="select-computer" data-id="\$\{escapeHtml\(computer\.id\)\}"/);
   assert.match(app, /function renderAgentStartModal\(\)/);
   assert.match(app, /data-action="confirm-agent-start"/);
   assert.match(app, /data-action="open-agent-restart"/);
@@ -1182,6 +1186,8 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.match(styles, /\.agent-tool-pill/);
   assert.match(styles, /\.agent-inline-edit/);
   assert.match(styles, /\.agent-restart-option/);
+  assert.match(styles, /\.agent-computer-card/);
+  assert.match(styles, /\.agent-computer-meta-grid/);
 });
 
 test('sidebar settings and skill panels support collapsible MagClaw UI sections', async () => {

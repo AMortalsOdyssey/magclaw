@@ -53,14 +53,39 @@ function renderAgentAvatarEditor(agent) {
 function renderAgentInfoSection(agent) {
   const computer = byId(appState.computers, agent.computerId);
   const reasoningOptions = agentReasoningOptions(agent);
+  const runtimeBadges = computer ? renderComputerRuntimeBadges(computer) : '<span class="runtime-badge muted">No runtimes detected</span>';
   return `
     <section class="agent-profile-field agent-info-section">
       <span class="detail-label">Info</span>
-      <div class="agent-computer-line">
-        <span class="agent-info-caption">Computer</span>
-        <strong>${escapeHtml(computer?.name || agent.computerId || '--')}</strong>
-        <span class="avatar-status-dot inline ${presenceClass(computer?.status || 'offline')}"></span>
-        <small>${escapeHtml(computer?.status || 'Disconnected')}</small>
+      <div class="agent-computer-card">
+        <div class="agent-computer-line">
+          <span class="agent-info-caption">Computer</span>
+          <strong>${escapeHtml(computer?.name || agent.computerId || '--')}</strong>
+          <span class="avatar-status-dot inline ${presenceClass(computer?.status || 'offline')}"></span>
+          <small>${escapeHtml(computer?.status || 'Disconnected')}</small>
+          ${computer ? `<button class="agent-computer-link" type="button" data-action="select-computer" data-id="${escapeHtml(computer.id)}">Details</button>` : ''}
+        </div>
+        <div class="agent-computer-meta-grid">
+          <div>
+            <span class="agent-info-caption">OS</span>
+            <strong>${escapeHtml(computer?.os || '--')}</strong>
+            <small>${escapeHtml(computer?.arch || computer?.hostname || '')}</small>
+          </div>
+          <div>
+            <span class="agent-info-caption">Daemon Version</span>
+            <strong>${escapeHtml(computer?.daemonVersion || '--')}</strong>
+            <small>${escapeHtml(computer?.connectedVia || 'daemon')}</small>
+          </div>
+          <div>
+            <span class="agent-info-caption">Detected Runtimes</span>
+            <div class="agent-runtime-inline">${runtimeBadges}</div>
+          </div>
+          <div>
+            <span class="agent-info-caption">Last Seen</span>
+            <strong>${escapeHtml(computer?.lastSeenAt ? fmtTime(computer.lastSeenAt) : '--')}</strong>
+            <small>${escapeHtml(computer?.createdAt ? `Created ${fmtTime(computer.createdAt)}` : '')}</small>
+          </div>
+        </div>
       </div>
       <div class="agent-info-grid">
         <div>

@@ -7388,11 +7388,64 @@ code {
   gap: 12px;
 }
 
+.agent-computer-card {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 84%, var(--accent) 16%);
+}
+
 .agent-computer-line {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 5px;
+}
+
+.agent-computer-link {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.agent-computer-link:hover {
+  background: var(--accent);
+}
+
+.agent-computer-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.agent-computer-meta-grid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agent-computer-meta-grid strong,
+.agent-computer-meta-grid small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-computer-meta-grid small {
+  color: var(--text-secondary);
+}
+
+.agent-runtime-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-runtime-inline .runtime-badge {
+  width: fit-content;
 }
 
 .agent-info-caption {
