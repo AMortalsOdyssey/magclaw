@@ -264,7 +264,7 @@ document.addEventListener('submit', async (event) => {
         method: 'POST',
         body: JSON.stringify({
           maxUses: data.get('maxUses'),
-          expiresAt: data.get('expiresAt') ? new Date(data.get('expiresAt')).toISOString() : '',
+          expiresIn: data.get('expiresIn') || '24h',
         }),
       });
       form.reset();
@@ -281,7 +281,7 @@ document.addEventListener('submit', async (event) => {
       selectedHumanId = null;
       selectedComputerId = null;
       window.history.replaceState({}, '', '/console/servers');
-      toast('Server deleted');
+      toast('Server moved to Lost Space');
     }
     if (form.id === 'cloud-login-form') {
       cloudLoginDraftEmail = String(data.get('email') || '').trim();

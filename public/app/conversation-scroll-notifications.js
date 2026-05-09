@@ -204,6 +204,12 @@ function agentIsWarming(agent) {
 }
 
 function agentDisplayStatus(agent) {
+  if (!agent) return 'offline';
+  if (agent.deletedAt || agent.archivedAt) return 'deleted';
+  const computer = agent.computerId ? byId(appState?.computers, agent.computerId) : null;
+  if (agent.computerId && !computer && agent.computerId !== 'cmp_local') return 'deleted';
+  if (computer && typeof computerIsDisabled === 'function' && computerIsDisabled(computer)) return 'disabled';
+  if (computer?.deletedAt || computer?.archivedAt) return 'deleted';
   if (agentIsWarming(agent)) return 'warming';
   return agent?.status || 'offline';
 }
@@ -212,6 +218,7 @@ function presenceTone(status) {
   const value = String(status || '').toLowerCase();
   if (value === 'warming') return 'warming';
   if (value === 'disabled') return 'disabled';
+  if (value === 'deleted') return 'disabled';
   if (['working', 'running', 'starting', 'thinking', 'busy'].includes(value)) return 'busy';
   if (['queued', 'pending'].includes(value)) return 'queued';
   if (['error', 'failed'].includes(value)) return 'error';

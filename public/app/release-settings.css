@@ -1,0 +1,198 @@
+.settings-release {
+  display: grid;
+  align-self: start;
+  gap: 18px;
+  max-width: 880px;
+}
+
+.release-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+}
+
+.release-heading h3,
+.settings-release > h3 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.15;
+}
+
+.release-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.release-summary-card {
+  display: grid;
+  gap: 2px;
+  min-width: 136px;
+  padding: 9px 11px;
+  border: 1px solid var(--settings-line, var(--border-faint));
+  border-radius: 6px;
+  background: var(--panel-soft);
+}
+
+.release-summary-card span,
+.release-summary-card small {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.release-summary-card strong {
+  color: var(--accent);
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.settings-release-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.release-card,
+.release-day {
+  display: grid;
+  align-content: start;
+  align-items: start;
+  gap: 10px;
+}
+
+.release-version-card header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.release-card h3,
+.release-day h4 {
+  justify-self: start;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.release-version-card time {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.release-version-pill {
+  display: inline-grid;
+  min-width: 76px;
+  min-height: 34px;
+  place-items: center;
+  border: 1px solid var(--ink);
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.release-note-group {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.release-note-list {
+  display: grid;
+  gap: 8px;
+}
+
+.release-note-row {
+  display: block;
+  padding: 2px 0;
+}
+
+.release-note-row p {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.release-badge {
+  display: inline-grid;
+  align-self: start;
+  min-height: 22px;
+  place-items: center;
+  border: 1px solid var(--settings-line, var(--border-faint));
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.release-new {
+  background: #94d9f0;
+}
+
+.release-feature {
+  background: var(--accent);
+}
+
+.release-improved {
+  background: #b8ef77;
+}
+
+.release-fix {
+  background: #ffae76;
+}
+
+.settings-page .release-card {
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--settings-line);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.settings-page .release-badge {
+  min-height: 22px;
+  border-width: 1px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.settings-page .release-card h3 {
+  padding: 0;
+  font-size: 15px;
+}
+
+.settings-page .release-note-row p {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (max-width: 900px) {
+  .release-heading,
+  .release-note-group {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .release-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}

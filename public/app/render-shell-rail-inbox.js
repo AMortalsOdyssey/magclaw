@@ -91,9 +91,9 @@ function renderRail() {
       : railTab === 'spaces'
         ? renderChatRail({ channels, dms, inboxUnread: inbox.unreadCount, unreadThreads, openTasks, saved, spaceUnreadCounts })
         : renderMembersRail({ normalAgents });
-  const railClass = `rail collab-rail slock-rail${railMode === 'settings' ? ' settings-rail' : ''}${railMode === 'console' ? ' console-rail' : ''}`;
+  const railClass = `rail collab-rail magclaw-rail${railMode === 'settings' ? ' settings-rail' : ''}${railMode === 'console' ? ' console-rail' : ''}`;
   const leftRailHtml = `
-    <div class="slock-left-rail">
+    <div class="magclaw-left-rail">
       <div class="server-switcher-anchor">
         <button class="left-rail-avatar server-switcher-trigger" type="button" data-action="toggle-server-switcher" title="${escapeHtml(serverProfile.name || serverProfile.slug || 'Server')}" aria-label="Switch server">
           ${renderServerAvatar(serverProfile, 'left-rail-server-avatar')}
@@ -121,8 +121,8 @@ function renderRail() {
   if (activeView === 'console') {
     return `
       <aside class="${railClass}">
-        <div class="slock-sidebar">
-          <div class="slock-sidebar-header">
+        <div class="magclaw-sidebar">
+          <div class="magclaw-sidebar-header">
             <h2>${escapeHtml(railHeading)}</h2>
           </div>
           ${sidebarBody}
@@ -134,8 +134,8 @@ function renderRail() {
   return `
     <aside class="${railClass}">
       ${leftRailHtml}
-      <div class="slock-sidebar">
-        <div class="slock-sidebar-header">
+      <div class="magclaw-sidebar">
+        <div class="magclaw-sidebar-header">
           <h2>${escapeHtml(railHeading)}</h2>
         </div>
 
@@ -195,6 +195,9 @@ function renderServerSwitcherMenu() {
 }
 
 function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, saved, spaceUnreadCounts }) {
+  const dmPeers = dms
+    .map((dm) => dmPeerInfo(dm))
+    .filter(Boolean);
   return `
     <div class="nav-list">
       ${renderNavItem('search', 'Search', 'search', searchQuery ? '⌘K' : '⌘K')}
@@ -210,14 +213,10 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
     </div>
 
       <div class="rail-section">
-        ${renderRailSectionTitle('dms', 'DIRECT MESSAGES', dms.length, { modal: 'dm' })}
-        ${collapsedSidebarSections.dms ? '' : dms.map((dm) => {
-        const other = dm.participantIds.find((id) => id !== 'hum_local');
-        const agent = byId(appState.agents, other);
-        const human = byId(appState.humans, other);
-        const status = agent?.status || human?.status || '';
-        return renderDmItem(dm.id, displayName(other), status, agent?.avatar || human?.avatar, unreadCountForSpace(spaceUnreadCounts, 'dm', dm.id));
-        }).join('')}
+        ${renderRailSectionTitle('dms', 'DIRECT MESSAGES', dmPeers.length, { modal: 'dm' })}
+        ${collapsedSidebarSections.dms ? '' : dmPeers.map(({ dm, peer }) => (
+          renderDmItem(dm.id, peer.name, peer.status, peer.avatar, unreadCountForSpace(spaceUnreadCounts, 'dm', dm.id))
+        )).join('')}
       </div>
 
     `;
@@ -274,16 +273,18 @@ function renderSettingsRail() {
 function renderConsoleRail() {
   const pendingCount = consoleInvitationRows().filter((item) => item.status === 'pending').length;
   const serversCount = consoleServers().length;
+  const lostCount = consoleDeletedServers().length;
   const items = [
     { id: 'overview', label: 'Overview', meta: 'home' },
     { id: 'invitations', label: 'Invitations', meta: pendingCount ? `${pendingCount}` : '' },
     { id: 'servers', label: 'Servers', meta: `${serversCount}` },
+    { id: 'lost-space', label: 'Lost Space', meta: lostCount ? `${lostCount}` : '' },
   ];
   return `
     <nav class="settings-nav-list console-nav-list" aria-label="Console sections">
       ${items.map((item) => `
         <button class="settings-nav-item${consoleTab === item.id ? ' active' : ''}" type="button" data-action="set-console-tab" data-tab="${escapeHtml(item.id)}">
-          ${settingsIcon(item.id === 'servers' ? 'server' : item.id === 'invitations' ? 'members' : 'system', 20)}
+          ${settingsIcon(item.id === 'servers' ? 'server' : item.id === 'invitations' ? 'members' : item.id === 'lost-space' ? 'lost' : 'system', 20)}
           <span>${escapeHtml(item.label)}</span>
           ${item.meta ? `<em>${escapeHtml(item.meta)}</em>` : ''}
         </button>
@@ -329,6 +330,7 @@ function settingsNavItems() {
     { id: 'browser', label: 'Browser', icon: 'browser', meta: notificationStatusLabel() },
     { id: 'server', label: 'Server', icon: 'server', meta: currentServerProfile().slug || '' },
     { id: 'system', label: 'System Config', icon: 'system', meta: fanoutConfigured ? 'LLM' : 'rules' },
+    { id: 'lost-space', label: 'Lost Space', icon: 'lost' },
     { id: 'release', label: 'Release Notes', icon: 'release' },
   ];
 }
@@ -341,6 +343,7 @@ function settingsIcon(name, size = 20) {
     server: '<rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h6"/><path d="M9 12h6"/><path d="M9 17h.01"/><path d="M15 17h.01"/>',
     system: '<path d="M4 7h16"/><path d="M4 17h16"/><path d="M8 3v8"/><path d="M16 13v8"/>',
     release: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h6"/>',
+    lost: '<path d="M3 7h18"/><path d="M5 7l1 14h12l1-14"/><path d="M9 7V4h6v3"/><path d="M10 12h4"/><path d="M10 16h4"/>',
     computer: '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>',
     edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>',
   };
@@ -417,13 +420,44 @@ function renderSpaceButton(type, id, label, meta) {
 
 function currentDmPeer() {
   const dm = selectedSpaceType === 'dm' ? currentSpace() : null;
-  const participantIds = dm?.participantIds || [];
-  const peerId = participantIds.find((id) => id !== 'hum_local') || participantIds[0];
-  const agent = byId(appState?.agents, peerId);
-  if (agent) return { item: agent, type: 'agent', status: agent.status || 'offline', avatar: agent.avatar };
-  const human = byId(appState?.humans, peerId);
-  if (human) return { item: human, type: 'human', status: human.status || 'offline', avatar: human.avatar };
-  return null;
+  return dmPeerInfo(dm)?.peer || null;
+}
+
+function dmPeerInfo(dm) {
+  if (!dm) return null;
+  const participantIds = (dm.participantIds || []).map(String).filter(Boolean);
+  for (const id of participantIds) {
+    const agent = byId(appState?.agents, id);
+    if (agent && !agent.deletedAt && !agent.archivedAt) {
+      return {
+        dm,
+        peer: {
+          item: agent,
+          type: 'agent',
+          id: agent.id,
+          name: agent.name || displayName(agent.id),
+          status: agentDisplayStatus(agent),
+          avatar: agent.avatar || '',
+        },
+      };
+    }
+  }
+  const humans = participantIds
+    .map((id) => humanByIdAny(id))
+    .filter(Boolean);
+  const peerHuman = humans.find((human) => !humanMatchesCurrentAccount(human)) || null;
+  if (!peerHuman) return null;
+  return {
+    dm,
+    peer: {
+      item: peerHuman,
+      type: 'human',
+      id: peerHuman.id,
+      name: peerHuman.name || displayName(peerHuman.id),
+      status: peerHuman.status || 'offline',
+      avatar: peerHuman.avatar || peerHuman.avatarUrl || '',
+    },
+  };
 }
 
 function renderMain() {
@@ -623,7 +657,7 @@ function renderInboxItem(item) {
   const task = item.task || (message.taskId ? byId(appState.tasks, message.taskId) : null);
   const action = item.type === 'thread' ? 'open-inbox-item' : 'open-inbox-item';
   return `
-    <button class="thread-row slock-thread-row inbox-row inbox-${escapeHtml(item.type)}${active}${unread}" type="button" data-action="${action}" data-id="${escapeHtml(item.recordId)}" data-inbox-type="${escapeHtml(item.type)}">
+    <button class="thread-row magclaw-thread-row inbox-row inbox-${escapeHtml(item.type)}${active}${unread}" type="button" data-action="${action}" data-id="${escapeHtml(item.recordId)}" data-inbox-type="${escapeHtml(item.type)}">
       <span class="thread-row-avatar">
         ${renderThreadRowAvatar(item.previewRecord || message)}
       </span>
@@ -648,7 +682,7 @@ function renderInboxItem(item) {
 function renderWorkspaceActivityInboxItem(item) {
   const active = workspaceActivityDrawerOpen ? ' active' : '';
   return `
-    <button class="thread-row slock-thread-row inbox-row inbox-workspace${active}" type="button" data-action="open-workspace-activity">
+    <button class="thread-row magclaw-thread-row inbox-row inbox-workspace${active}" type="button" data-action="open-workspace-activity">
       <span class="thread-row-avatar workspace-activity-avatar">WA</span>
       <span class="thread-row-main">
         <span class="thread-row-meta-line">
@@ -691,7 +725,7 @@ function renderInbox() {
             </div>
             <span>${escapeHtml(visibleItems.length)} shown</span>
           </div>
-          <div class="list-panel thread-list-panel slock-thread-list inbox-list-panel">
+          <div class="list-panel thread-list-panel magclaw-thread-list inbox-list-panel">
             ${visibleItems.length ? visibleItems.map(renderInboxItem).join('') : '<div class="empty-box small">No inbox items for this filter.</div>'}
           </div>
         </section>

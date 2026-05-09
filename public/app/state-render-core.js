@@ -123,6 +123,7 @@ const HUMAN_PRESENCE_HEARTBEAT_MS = 30 * 1000;
 function consoleTabFromPath(path = window.location.pathname || '') {
   if (path.startsWith('/console/invitations')) return 'invitations';
   if (path.startsWith('/console/servers')) return 'servers';
+  if (path.startsWith('/console/lost-space')) return 'lost-space';
   if (path.startsWith('/console')) return 'overview';
   return '';
 }
@@ -193,6 +194,7 @@ function currentServerSlug() {
 function consolePath(tab = consoleTab) {
   if (tab === 'invitations') return '/console/invitations';
   if (tab === 'servers') return '/console/servers';
+  if (tab === 'lost-space') return '/console/lost-space';
   return '/console';
 }
 
@@ -487,8 +489,16 @@ function cloudRoleLabel(role) {
   }[String(role || 'member')] || 'Member';
 }
 
+function serverOwnerUserId(workspace = appState?.cloud?.workspace || {}) {
+  if (workspace?.ownerUserId) return workspace.ownerUserId;
+  const activeAdmins = (appState?.cloud?.members || [])
+    .filter((member) => member.workspaceId === workspace?.id && member.status !== 'removed' && member.role === 'admin')
+    .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0));
+  return activeAdmins[0]?.userId || '';
+}
+
 function cloudMemberDisplayRole(member = {}) {
-  const ownerUserId = appState?.cloud?.workspace?.ownerUserId || '';
+  const ownerUserId = serverOwnerUserId();
   if (ownerUserId && member?.userId === ownerUserId) return 'owner';
   return member?.role || 'member';
 }
@@ -503,6 +513,10 @@ function renderHumanAvatar(human = {}, cssClass = 'dm-avatar') {
   const avatar = String(human.avatar || human.avatarUrl || '').trim();
   if (avatar) return `<span class="${escapeHtml(cssClass)}"><img src="${escapeHtml(avatar)}" alt=""></span>`;
   return `<span class="${escapeHtml(cssClass)}">${escapeHtml(humanInitialFromName(human.name || human.email || human.id))}</span>`;
+}
+
+function humanBadgeHtml() {
+  return '<img class="human-script-badge" src="/brand/humans-script-badge.png" alt="humans" />';
 }
 
 function humanFromCloudMember(member = {}) {
@@ -530,9 +544,10 @@ function workspaceHumans() {
   if (members.length) {
     const seen = new Set();
     const humans = [];
+    const ownerUserId = serverOwnerUserId();
     const hasNonLegacyMembers = members.some((member) => member.humanId !== 'hum_local');
     for (const member of members) {
-      if (hasNonLegacyMembers && member.humanId === 'hum_local' && member.userId !== appState?.cloud?.workspace?.ownerUserId) continue;
+      if (hasNonLegacyMembers && member.humanId === 'hum_local' && member.userId !== ownerUserId) continue;
       const human = humanFromCloudMember(member);
       const key = member.userId || human.authUserId || human.email?.toLowerCase() || human.id;
       if (!key || seen.has(key)) continue;
@@ -587,6 +602,41 @@ function currentAccountHuman() {
   return byId(appState?.humans, 'hum_local')
     || appState?.humans?.[0]
     || {};
+}
+
+function currentHumanIdentityKeys() {
+  const human = currentAccountHuman();
+  const keys = new Set([
+    currentHumanId(),
+    human.id,
+    human.authUserId,
+    appState?.cloud?.auth?.currentUser?.id,
+    appState?.cloud?.auth?.currentMember?.humanId,
+  ].map((value) => String(value || '').trim()).filter(Boolean));
+  const email = String(human.email || appState?.cloud?.auth?.currentUser?.email || '').trim().toLowerCase();
+  if (email) keys.add(`email:${email}`);
+  return keys;
+}
+
+function humanIdentityKeys(human = {}) {
+  const keys = new Set([
+    human.id,
+    human.authUserId,
+    human.cloudMemberId,
+    human.cloudMember?.humanId,
+    human.cloudMember?.userId,
+  ].map((value) => String(value || '').trim()).filter(Boolean));
+  const email = String(human.email || human.cloudMember?.user?.email || human.cloudMember?.email || '').trim().toLowerCase();
+  if (email) keys.add(`email:${email}`);
+  return keys;
+}
+
+function humanMatchesCurrentAccount(human = {}) {
+  const currentKeys = currentHumanIdentityKeys();
+  for (const key of humanIdentityKeys(human)) {
+    if (currentKeys.has(key)) return true;
+  }
+  return false;
 }
 
 function cloudCapabilityLabels(capabilities = {}) {

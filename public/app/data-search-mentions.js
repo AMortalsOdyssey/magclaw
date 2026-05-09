@@ -118,6 +118,9 @@ function renderActorAvatar(authorId, authorType) {
 }
 
 function renderActorName(authorId, authorType) {
+  if (authorType === 'human') {
+    return `<strong class="human-author-name">${escapeHtml(displayName(authorId))}${humanBadgeHtml()}</strong>`;
+  }
   if (authorType !== 'agent') return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
   const agent = byId(appState?.agents, authorId);
   if (!agent) return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
@@ -194,7 +197,9 @@ function displayNameFromState(stateSnapshot, id) {
 function spaceNameFromState(stateSnapshot, spaceType, spaceId) {
   if (spaceType === 'channel') return `#${byId(stateSnapshot?.channels, spaceId)?.name || 'missing'}`;
   const dm = byId(stateSnapshot?.dms, spaceId);
-  const other = dm?.participantIds?.find((id) => id !== 'hum_local');
+  const other = typeof dmPeerInfo === 'function' && stateSnapshot === appState
+    ? dmPeerInfo(dm)?.peer?.id
+    : dm?.participantIds?.find((id) => id !== currentHumanId(stateSnapshot));
   return `@${displayNameFromState(stateSnapshot, other || 'unknown')}`;
 }
 
@@ -345,8 +350,9 @@ function searchEntityResults(query) {
     }
   }
   for (const dm of appState?.dms || []) {
-    const peerId = (dm.participantIds || []).find((id) => id !== 'hum_local') || dm.participantIds?.[0];
-    const label = displayName(peerId);
+    const peer = typeof dmPeerInfo === 'function' ? dmPeerInfo(dm)?.peer : null;
+    if (!peer) continue;
+    const label = peer.name || displayName(peer.id);
     const score = searchEntityScore(`${label} dm direct message`, query);
     if (score) {
       results.push({
@@ -688,8 +694,8 @@ function currentSpace() {
 function spaceName(spaceType, spaceId) {
   if (spaceType === 'channel') return `#${byId(appState?.channels, spaceId)?.name || 'missing'}`;
   const dm = byId(appState?.dms, spaceId);
-  const other = dm?.participantIds?.find((id) => id !== 'hum_local');
-  return `@${displayName(other || 'unknown')}`;
+  const peer = typeof dmPeerInfo === 'function' ? dmPeerInfo(dm)?.peer : null;
+  return `@${peer?.name || displayName(peer?.id || 'unknown')}`;
 }
 
 function recordSpaceName(record) {

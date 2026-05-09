@@ -3,6 +3,15 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 
+
+async function readStylesSource() {
+  const publicRoot = new URL('../public/', import.meta.url);
+  const entry = await readFile(new URL('styles.css', publicRoot), 'utf8');
+  const imports = [...entry.matchAll(/@import url\("\.\/([^"\)]+)"\);/g)].map((match) => match[1]);
+  const imported = await Promise.all(imports.map((name) => readFile(new URL(name, publicRoot), 'utf8')));
+  return [entry, ...imported].join('\n');
+}
+
 async function readAppSource() {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const appDir = new URL('../public/app/', import.meta.url);
@@ -78,7 +87,7 @@ test('computer and agent creation entrances honor cloud capabilities', async () 
 
 test('members page uses a join-ordered directory with invite modals', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const membersSettingsSource = app.slice(app.indexOf('function normalizeInviteEmailValue(value)'), app.indexOf('function renderCloudAuthGate('));
   const membersMainSource = app.slice(app.indexOf('function renderMembersMain()'));
   const modalSource = app.slice(app.indexOf('function renderModal()'), app.indexOf('function modalHeader('));
@@ -110,7 +119,7 @@ test('members page uses a join-ordered directory with invite modals', async () =
 
 test('members directory separates roles from top-centered manage actions', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const rowSource = app.slice(app.indexOf('function renderMemberRow(row)'), app.indexOf('function renderMemberInviteTrigger()'));
   const manageSource = app.slice(app.indexOf('function renderMemberManageModal()'), app.indexOf('function renderMemberRow(row)'));
   const modalSource = app.slice(app.indexOf('function renderModal()'), app.indexOf('function modalHeader('));
@@ -263,9 +272,9 @@ test('generated invitation links use the current browser origin for loopback API
   );
 });
 
-test('account profile uses a Slock-style waterfall layout with avatar picker controls', async () => {
+test('account profile uses a MagClaw-style waterfall layout with avatar picker controls', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));
 
   assert.match(accountSettingsSource, /account-waterfall/);
@@ -298,7 +307,7 @@ test('account profile uses a Slock-style waterfall layout with avatar picker con
 
 test('sign out uses a confirmation modal before logging out', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));
   const signOutModalSource = app.slice(app.indexOf('function renderSignOutConfirmModal()'), app.indexOf('function renderAgentStartModal()'));
 
@@ -330,7 +339,7 @@ test('cloud account settings use server-configured sign-in without owner bootstr
 
 test('cloud auth gate uses token context for invite and reset forms', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const authGateSource = app.slice(app.indexOf('function renderCloudAuthGate('), app.indexOf('function renderBrowserSettingsTab()'));
   const openRegisterSource = authGateSource.slice(authGateSource.indexOf('id="cloud-open-register-form"'), authGateSource.indexOf('id="cloud-forgot-form"'));
   const submitStyles = styles.slice(styles.indexOf('.cloud-login-submit {'), styles.indexOf('.cloud-login-switch {'));
@@ -368,7 +377,7 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.match(checkCardButtonStyles, /color: var\(--accent-text\);/);
   assert.match(checkIconStyles, /background: var\(--accent\);/);
   assert.match(checkIconStyles, /color: var\(--accent-text\);/);
-  assert.doesNotMatch(checkIconStyles, /#ffd743|--slock-sun|#FFD800/i);
+  assert.doesNotMatch(checkIconStyles, /#ffd743|--magclaw-sun|#FFD800/i);
   assert.doesNotMatch(authGateSource, /owner invite/);
   assert.doesNotMatch(authGateSource, /admin account configured|Admin access required|Admin login/i);
   assert.match(authGateSource, /Where humans and AI agents collaborate/);
@@ -441,7 +450,7 @@ test('cloud auth gate loads invite tokens from invite URLs', async () => {
 
 test('project picker keeps only the native folder action and polished chip icons', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.equal(app.includes('Add Workspace'), false);
   assert.equal(app.includes('add-default-workspace'), false);
@@ -454,7 +463,7 @@ test('project picker keeps only the native folder action and polished chip icons
 
 test('project chip paths stay readable with horizontal scrolling', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /class="project-chip-path"/);
   assert.match(styles, /\.project-chip-path \{/);
@@ -464,7 +473,7 @@ test('project chip paths stay readable with horizontal scrolling', async () => {
 
 test('project mentions show full local paths in the candidate list', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /absolutePath: item\.absolutePath/);
   assert.match(app, /item\.absolutePath \|\| item\.path/);
@@ -585,13 +594,15 @@ test('thread rows use the last reply actor avatar and prefix the preview with th
 
 test('chat rail keeps Threads and adds Inbox without a System notification tab', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const chatRailSource = app.slice(app.indexOf('function renderChatRail('), app.indexOf('function renderMembersRail('));
 
   assert.match(chatRailSource, /renderNavItem\('inbox', 'Inbox', 'inbox', inboxUnread \|\| '', \{ badgeKind: 'unread' \}\)/);
   assert.match(chatRailSource, /renderNavItem\('threads', 'Threads', 'message'/);
   assert.match(chatRailSource, /renderChannelItem\(channel, unreadCountForSpace\(spaceUnreadCounts, 'channel', channel\.id\)\)/);
-  assert.match(chatRailSource, /renderDmItem\(dm\.id, displayName\(other\), status, agent\?\.avatar \|\| human\?\.avatar, unreadCountForSpace\(spaceUnreadCounts, 'dm', dm\.id\)\)/);
+  assert.match(chatRailSource, /const dmPeers = dms/);
+  assert.match(chatRailSource, /\.map\(\(dm\) => dmPeerInfo\(dm\)\)/);
+  assert.match(chatRailSource, /renderDmItem\(dm\.id, peer\.name, peer\.status, peer\.avatar, unreadCountForSpace\(spaceUnreadCounts, 'dm', dm\.id\)\)/);
   assert.match(app, /function renderRailUnreadBadge\(count, label = 'unread messages'\)/);
   assert.match(app, /function buildSpaceUnreadCounts\(humanId = currentHumanId\(\), stateSnapshot = appState\)/);
   assert.match(app, /function markSpaceRead\(spaceType, spaceId\)/);
@@ -604,7 +615,7 @@ test('chat rail keeps Threads and adds Inbox without a System notification tab',
 
 test('inbox reuses thread rows and renders workspace activity drawer', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
   const drawerSource = app.slice(app.indexOf('function renderWorkspaceActivityDrawer()'), app.indexOf('function renderThreadDrawer(message)'));
 
@@ -620,7 +631,7 @@ test('inbox reuses thread rows and renders workspace activity drawer', async () 
   assert.match(app, /title="Open activity">LOG/);
   assert.match(renderSource, /workspaceActivity: workspaceActivityScrollSnapshot\(\)/);
   assert.match(renderSource, /restoreWorkspaceActivityScroll\(scrollSnapshot\.workspaceActivity\)/);
-  assert.match(app, /class="thread-row slock-thread-row inbox-row/);
+  assert.match(app, /class="thread-row magclaw-thread-row inbox-row/);
   assert.match(app, /data-action="open-workspace-activity"/);
   assert.match(drawerSource, /class="workspace-activity-title-trigger"/);
   assert.match(drawerSource, /class="workspace-activity-popover"/);
@@ -637,16 +648,16 @@ test('inbox reuses thread rows and renders workspace activity drawer', async () 
 });
 
 test('workspace uses dark icon rail, pink chat sidebar, and white main surfaces', async () => {
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const colorPass = styles.slice(styles.indexOf('Inbox redesign color pass'));
   const densityPass = styles.slice(styles.indexOf('Workspace density pass'));
 
-  assert.match(colorPass, /\.slock-left-rail,[\s\S]*\.rail-icon-only \{[\s\S]*background: var\(--magclaw-rail\)/);
-  assert.match(colorPass, /\.slock-sidebar,[\s\S]*background: var\(--bg-chat\)/);
+  assert.match(colorPass, /\.magclaw-left-rail,[\s\S]*\.rail-icon-only \{[\s\S]*background: var\(--magclaw-rail\)/);
+  assert.match(colorPass, /\.magclaw-sidebar,[\s\S]*background: var\(--bg-chat\)/);
   assert.match(colorPass, /\.workspace,[\s\S]*\.thread-list-panel,[\s\S]*\.search-results,[\s\S]*\.inbox-page[\s\S]*background: #ffffff/);
   assert.match(colorPass, /\.thread-row:hover,[\s\S]*background: var\(--accent-soft\)/);
   assert.match(densityPass, /\.collab-frame \{[\s\S]*font-family: -apple-system/);
-  assert.match(densityPass, /\.collab-frame \.slock-left-rail \{[\s\S]*border-right: 1px solid var\(--workspace-line-strong\)/);
+  assert.match(densityPass, /\.collab-frame \.magclaw-left-rail \{[\s\S]*border-right: 1px solid var\(--workspace-line-strong\)/);
   assert.match(densityPass, /\.collab-frame \.space-header,[\s\S]*\.collab-frame \.task-page-header,[\s\S]*\.collab-frame \.agent-detail-topbar,[\s\S]*border-bottom: 1px solid var\(--workspace-line-strong\)/);
   assert.match(densityPass, /\.collab-frame \.nav-item,[\s\S]*\.collab-frame \.space-btn \{[\s\S]*font-size: 13px/);
   assert.match(densityPass, /\.collab-frame \.computers-page > \.cloud-layout \{[\s\S]*padding: 0 20px 22px/);
@@ -659,14 +670,14 @@ test('messages and replies render markdown while preserving mention chips', asyn
   assert.match(app, /message-table/);
   assert.match(app, /renderMarkdownWithMentions\(message\.body \|\| '\(attachment\)'\)/);
   assert.match(app, /renderMarkdownWithMentions\(reply\.body \|\| '\(attachment\)'\)/);
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   assert.match(styles, /\.message-table/);
   assert.match(styles, /\.message-table-wrap/);
 });
 
 test('human mention chips use a distinct color from agent mentions', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /mention-identity mention-agent/);
   assert.match(app, /mention-human/);
@@ -677,7 +688,7 @@ test('human mention chips use a distinct color from agent mentions', async () =>
 
 test('channel mention chips render in yellow', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /mention-special\$\{channelClass\}/);
   assert.match(app, /mention-tag mention-channel/);
@@ -690,7 +701,7 @@ test('channel mention chips render in yellow', async () => {
 
 test('human messages and thread replies render agent pickup avatars from work items', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /const AGENT_RECEIPT_VISIBLE_LIMIT = 10/);
   assert.match(app, /function deliveryReceiptItemsForRecord\(record\)/);
@@ -711,7 +722,7 @@ test('human messages and thread replies render agent pickup avatars from work it
 
 test('task columns can be collapsed from the board header', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /let collapsedTaskColumns = readCollapsedTaskColumns\(\)/);
   assert.match(app, /const DEFAULT_COLLAPSED_TASK_COLUMNS = \{ done: true \}/);
@@ -760,7 +771,7 @@ test('agent born date shows a cake on same-month-day anniversaries only', async 
 
 test('agent messages and thread replies render live status dots on avatar corners', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /function agentStatusDot\(authorId, authorType\)/);
   assert.match(app, /renderAgentIdentityButton\(authorId, 'agent-avatar-button'\)\}\$\{agentStatusDot\(authorId, authorType\)\}/);
@@ -780,7 +791,7 @@ test('empty thread replies keep the count without rendering a no-replies placeho
 
 test('channel navigation hides the inspector until an agent, task, or thread is selected', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /const inspectorHtml = renderInspector\(\)/);
   assert.match(app, /inspectorHtml \? `[\s\S]*collab-inspector/);
@@ -793,7 +804,7 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
 
 test('members navigation opens the directory before drilling into agents', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const leftNavSource = app.slice(app.indexOf("if (action === 'set-left-nav')"), app.indexOf("if (action === 'select-agent')"));
   const setRailSource = app.slice(app.indexOf("if (action === 'set-rail-tab')"), app.indexOf("if (action === 'set-left-nav')"));
   const selectAgentSource = app.slice(app.indexOf("if (action === 'select-agent')"), app.indexOf("if (action === 'close-agent-detail')"));
@@ -817,7 +828,7 @@ test('members navigation opens the directory before drilling into agents', async
 
 test('message human avatars open right-side human details without changing the chat route', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const avatarSource = app.slice(app.indexOf('function renderHumanIdentityButton'), app.indexOf('function renderActorName'));
   const inspectorSource = app.slice(app.indexOf('function renderInspector()'), app.indexOf('function renderProjectFilePreview()'));
   const clickSource = app.slice(app.indexOf("if (action === 'select-human-inspector')"), app.indexOf("if (action === 'select-human')"));
@@ -835,9 +846,9 @@ test('message human avatars open right-side human details without changing the c
   assert.match(styles, /\.human-identity-button/);
 });
 
-test('dm chat and task empty states use Slock-style simple surfaces', async () => {
+test('dm chat and task empty states use MagClaw-style simple surfaces', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /function renderDmHeader\(\)/);
   assert.match(app, /data-action="select-agent" data-id="\$\{escapeHtml\(peer\.item\.id\)\}"/);
@@ -854,7 +865,7 @@ test('dm chat and task empty states use Slock-style simple surfaces', async () =
 test('create channel keeps agent members optional and manually selected', async () => {
   const app = await readAppSource();
   const channelModalSource = app.slice(app.indexOf('function renderChannelModal'), app.indexOf('function renderEditChannelModal'));
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /function agentCanJoinNewChannel\(agent\)/);
   assert.match(channelModalSource, /Members <small>\(optional\)<\/small>/);
@@ -932,7 +943,7 @@ test('workspace location and scroll position survive refreshes', async () => {
 
 test('task cards open their thread conversation and keep compact blocks without delete action', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const cardSource = app.slice(app.indexOf('function renderTaskCard'), app.indexOf('function renderTaskActionButtons'));
   const selectTaskSource = app.slice(app.indexOf("if (action === 'select-task')"), app.indexOf("if (action === 'close-task-detail')"));
 
@@ -950,9 +961,9 @@ test('task cards open their thread conversation and keep compact blocks without 
   assert.match(styles, /\.task-detail-panel/);
 });
 
-test('global task board follows Slock board list channel filtering without stopped task state', async () => {
+test('global task board follows MagClaw board list channel filtering without stopped task state', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const server = await readFile(new URL('../server/index.js', import.meta.url), 'utf8');
 
   assert.equal(app.includes("['stopped', 'Stopped']"), false);
@@ -976,7 +987,7 @@ test('global task board follows Slock board list channel filtering without stopp
 
 test('task status icons sync across messages threads saved and task detail', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const messageSource = app.slice(app.indexOf('function renderMessage'), app.indexOf('function renderComposer'));
   const threadsSource = app.slice(app.indexOf('function renderThreads'), app.indexOf('function renderSaved'));
   const savedSource = app.slice(app.indexOf('function renderSavedRecord'), app.indexOf('function renderSearch'));
@@ -1012,7 +1023,7 @@ test('task status icons sync across messages threads saved and task detail', asy
 
 test('search input preserves IME composition and updates results without full rerender', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const searchInputSource = app.slice(app.indexOf("if (event.target.id === 'search-input')"), app.indexOf("if (event.target.id === 'add-member-search')"));
 
   assert.match(app, /let searchIsComposing = false/);
@@ -1038,9 +1049,9 @@ test('search covers messages and replies with local ranking helpers', async () =
   assert.match(app, /function scrollToReply\(replyId\)/);
 });
 
-test('search page matches Slock shortcuts filters persistence and thread drawer behavior', async () => {
+test('search page matches MagClaw shortcuts filters persistence and thread drawer behavior', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const keydownSource = app.slice(app.indexOf("document.addEventListener('keydown'"), app.indexOf("document.addEventListener('pointerdown'"));
   const setViewSource = app.slice(app.indexOf("if (action === 'set-view')"), app.indexOf("if (action === 'set-rail-tab')"));
   const searchResultSource = app.slice(app.indexOf('function openSearchResult'), app.indexOf('function openSearchEntity'));
@@ -1065,7 +1076,7 @@ test('search page matches Slock shortcuts filters persistence and thread drawer 
 
 test('thread list rows keep the latest actor avatar at the far left', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const threadsSource = app.slice(app.indexOf('function renderThreads'), app.indexOf('function renderSaved'));
 
   assert.match(threadsSource, /class="thread-row-avatar"/);
@@ -1079,7 +1090,7 @@ test('thread list rows keep the latest actor avatar at the far left', async () =
 
 test('task filter popover closes on outside clicks and list cards fit their content', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /const clickedTaskChannelFilter = event\.target\.closest\('\.task-channel-filter'\)/);
   assert.match(app, /taskChannelMenuOpen && !clickedTaskChannelFilter/);
@@ -1091,7 +1102,7 @@ test('task filter popover closes on outside clicks and list cards fit their cont
 
 test('member rail lists keep status dots on the far right only in the agent tab', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderHumanListItem'));
   const humanListSource = app.slice(app.indexOf('function renderHumanListItem'), app.indexOf('function renderComputerListItem'));
   const computerListSource = app.slice(app.indexOf('function renderComputerListItem'), app.indexOf('function renderReply'));
@@ -1108,7 +1119,7 @@ test('member rail lists keep status dots on the far right only in the agent tab'
 test('agent warmup renders as Warming with a distinct pink status dot', async () => {
   const app = await readAppSource();
   const serverWarmSource = await readFile(new URL('../server/agent-runtime/app-server-turns.js', import.meta.url), 'utf8');
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderHumanListItem'));
   const profileSource = app.slice(app.indexOf('function renderAgentProfileTab'), app.indexOf('function renderAgentDmsTab'));
 
@@ -1120,7 +1131,7 @@ test('agent warmup renders as Warming with a distinct pink status dot', async ()
   assert.match(app, /if \(value === 'warming'\) return 'Warming'/);
   assert.match(agentListSource, /const status = agentDisplayStatus\(agent\)/);
   assert.match(profileSource, /presenceClass\(agentDisplayStatus\(agent\)\)/);
-  assert.match(styles, /\.avatar-status-dot\.status-warming \{[\s\S]*background: var\(--slock-pink\)/);
+  assert.match(styles, /\.avatar-status-dot\.status-warming \{[\s\S]*background: var\(--magclaw-pink\)/);
 });
 
 test('agent warmup is session-scoped and not retriggered by every state refresh', async () => {
@@ -1168,18 +1179,18 @@ test('agent detail opened from a thread returns to that thread when closed', asy
 
 test('selected thread rows keep the active highlight while the drawer is open', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /const active = threadMessageId === message\.id \? ' active' : ''/);
-  assert.match(app, /class="thread-row slock-thread-row\$\{active\}"/);
+  assert.match(app, /class="thread-row magclaw-thread-row\$\{active\}"/);
   assert.match(styles, /\.thread-row\.active/);
   assert.match(styles, /\.thread-list-panel/);
   assert.match(styles, /border: 1px solid #d4d1c8/);
 });
 
-test('messages use Slock-style hover save actions and saved messages open context', async () => {
+test('messages use MagClaw-style hover save actions and saved messages open context', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const openThreadSource = app.slice(app.indexOf("if (action === 'open-thread')"), app.indexOf("if (action === 'open-search-result'"));
 
   assert.match(app, /function renderMessageActions\(record, options = \{\}\)/);
@@ -1199,9 +1210,9 @@ test('messages use Slock-style hover save actions and saved messages open contex
   assert.match(styles, /\.saved-remove/);
 });
 
-test('agent identities are clickable and expose Slock-style hover summaries', async () => {
+test('agent identities are clickable and expose MagClaw-style hover summaries', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderHumanListItem'));
 
   assert.match(app, /function renderAgentHoverCard\(agent\)/);
@@ -1215,9 +1226,9 @@ test('agent identities are clickable and expose Slock-style hover summaries', as
   assert.equal(styles.includes('.member-btn:hover .agent-hover-card'), false);
 });
 
-test('agent detail uses Slock-style tabs with inline profile editing and runtime configuration', async () => {
+test('agent detail uses MagClaw-style tabs with inline profile editing and runtime configuration', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const profileSource = app.slice(app.indexOf('function renderAgentProfileTab(agent)'), app.indexOf('function renderAgentDmsTab(agent)'));
 
   assert.equal(app.includes('id="agent-detail-form"'), false);
@@ -1283,7 +1294,9 @@ test('agent detail uses Slock-style tabs with inline profile editing and runtime
 
 test('sidebar settings and skill panels support collapsible MagClaw UI sections', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const index = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
+  const releaseStyles = await readFile(new URL('../public/app/release-settings.css', import.meta.url), 'utf8');
 
   assert.match(app, /const SIDEBAR_SECTION_COLLAPSE_KEY = 'magclawSidebarSectionCollapse'/);
   assert.match(app, /const SKILL_SECTION_COLLAPSE_KEY = 'magclawSkillSectionCollapse'/);
@@ -1299,30 +1312,36 @@ test('sidebar settings and skill panels support collapsible MagClaw UI sections'
   assert.match(app, /data-action="set-settings-tab"/);
   assert.match(app, /System Config/);
   assert.match(app, /Release Notes/);
+  assert.match(app, /MAGCLAW_WEB_PACKAGE_VERSION = '0\.2\.0'/);
+  assert.match(app, /function renderReleaseVersionCard\(release\)/);
+  assert.match(app, /Versioned changelog/);
   assert.match(app, /Agent warmup/);
+  assert.match(index, /<link rel="stylesheet" href="\/app\/release-settings\.css" \/>/);
   assert.match(styles, /\.rail-collapse-btn/);
   assert.match(styles, /\.skill-collapse-btn/);
   assert.match(styles, /\.settings-nav-list/);
   assert.match(styles, /\.settings-page-header/);
-  assert.match(styles, /\.settings-release/);
-  assert.match(styles, /\.release-note-row/);
+  assert.match(releaseStyles, /\.settings-release/);
+  assert.match(releaseStyles, /\.release-version-card/);
+  assert.match(releaseStyles, /\.release-summary-card/);
+  assert.match(releaseStyles, /\.release-note-row/);
 });
 
 test('left rail and active shell controls use the MagClaw pink accent', async () => {
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(styles, /--magclaw-rail:\s*var\(--accent\)/);
   assert.match(styles, /--magclaw-rail-badge:\s*#FFE15A/);
-  assert.match(styles, /\.rail > \.slock-left-rail \{[\s\S]*?background:\s*var\(--magclaw-rail\)/);
+  assert.match(styles, /\.rail > \.magclaw-left-rail \{[\s\S]*?background:\s*var\(--magclaw-rail\)/);
   assert.match(styles, /\.left-rail-avatar \{[\s\S]*?color:\s*var\(--magclaw-rail\)/);
   assert.match(styles, /\.left-rail-btn em \{[\s\S]*?background:\s*var\(--magclaw-rail-badge\)[\s\S]*?color:\s*var\(--magclaw-rail-badge-text\)/);
   assert.match(styles, /\.agent-detail-tabs button\.active \{[\s\S]*?background:\s*var\(--accent\)/);
-  assert.equal(/background:\s*var\(--slock-sun\)/.test(styles), false);
+  assert.equal(/background:\s*var\(--magclaw-sun\)/.test(styles), false);
 });
 
 test('agent avatar uploads open a square crop modal and persist a cropped image', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /const AVATAR_CROP_SIZE = 256/);
   assert.match(app, /const AGENT_AVATAR_UPLOAD_MAX_BYTES = 10 \* 1024 \* 1024/);
@@ -1385,7 +1404,7 @@ test('create agent opens with a fresh form state every time', async () => {
 
 test('Fan-out API config owns the routing settings UI', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const railSource = app.slice(app.indexOf('function renderRail'), app.indexOf('function renderNavItem'));
   const submitSource = app.slice(app.indexOf("document.addEventListener('submit'"), app.indexOf('refreshState().then'));
 
@@ -1418,7 +1437,7 @@ test('Fan-out API config owns the routing settings UI', async () => {
 test('LLM fan-out decisions render one concise route toast only when LLM is used', async () => {
   const app = await readAppSource();
   const fanoutToast = await readFile(new URL('../public/fanout-toast.js', import.meta.url), 'utf8');
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /from '\.\/fanout-toast\.js'/);
   assert.match(app, /let fanoutDecisionCards = \[\]/);
@@ -1449,9 +1468,9 @@ test('LLM fan-out decisions render one concise route toast only when LLM is used
   assert.match(styles, /@keyframes fanoutToastOut/);
 });
 
-test('browser agent notifications can be enabled from a Slock-style prompt and settings card', async () => {
+test('browser agent notifications can be enabled from a MagClaw-style prompt and settings card', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /const NOTIFICATION_PREF_KEY = 'magclawNotificationPrefs'/);
   assert.match(app, /function renderNotificationPromptBanner\(\)/);
@@ -1471,7 +1490,7 @@ test('browser agent notifications can be enabled from a Slock-style prompt and s
 
 test('console has routed sections, invitation actions, and no human heartbeat', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /function consoleTabFromPath\(path = window\.location\.pathname \|\| ''\)/);
   assert.match(app, /path\.startsWith\('\/console\/invitations'\)/);
@@ -1490,8 +1509,8 @@ test('console has routed sections, invitation actions, and no human heartbeat', 
   assert.match(consoleSidebarSource, /railMode === 'console'[\s\S]*renderConsoleRail\(\)/);
   const consoleRailStart = app.indexOf("if (activeView === 'console') {");
   const consoleRailSource = app.slice(consoleRailStart, app.indexOf('return `\n    <aside class="${railClass}">', consoleRailStart));
-  assert.match(consoleRailSource, /slock-sidebar/);
-  assert.doesNotMatch(consoleRailSource, /leftRailHtml|slock-left-rail|runtime-chip/);
+  assert.match(consoleRailSource, /magclaw-sidebar/);
+  assert.doesNotMatch(consoleRailSource, /leftRailHtml|magclaw-left-rail|runtime-chip/);
   assert.match(app, /id="console-server-form"/);
   assert.match(app, /data-console-server-name/);
   assert.match(app, /data-console-server-slug/);
@@ -1511,9 +1530,9 @@ test('console has routed sections, invitation actions, and no human heartbeat', 
   assert.match(styles, /\.modal-form \.form-error/);
 });
 
-test('cloud server shell uses Slock-style switcher and removes local-only chrome', async () => {
+test('cloud server shell uses MagClaw-style switcher and removes local-only chrome', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const railSource = app.slice(app.indexOf('function renderRail()'), app.indexOf('function renderChatRail'));
   const settingsNavSource = app.slice(app.indexOf('function settingsNavItems()'), app.indexOf('function settingsIcon('));
 
@@ -1532,9 +1551,9 @@ test('cloud server shell uses Slock-style switcher and removes local-only chrome
   assert.match(styles, /\.console-switch-page/);
 });
 
-test('server settings, human detail, and computer detail mirror Slock structure', async () => {
+test('server settings, human detail, and computer detail mirror MagClaw structure', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
   const computerRailSource = app.slice(app.indexOf('function renderComputersRail()'), app.indexOf('function renderSettingsRail()'));
   const computerPageSource = app.slice(app.indexOf('function renderComputers()'), app.indexOf('function renderComputerConfigCard()'));
 
@@ -1588,7 +1607,7 @@ test('server settings, human detail, and computer detail mirror Slock structure'
 
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /function renderAgentWorkspaceTab\(agent\)/);
   assert.match(app, /class="agent-workspace-tab"/);
@@ -1604,7 +1623,7 @@ test('agent workspace tab has split tree and raw/preview markdown controls', asy
 
 test('agent activity tab renders newest first with second-level timestamps and a 5000 item cap', async () => {
   const app = await readAppSource();
-  const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const styles = await readStylesSource();
 
   assert.match(app, /const AGENT_ACTIVITY_EVENT_LIMIT = 5000/);
   assert.match(app, /function agentActivityEvents\(agent\)/);

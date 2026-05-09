@@ -427,7 +427,6 @@ document.addEventListener('click', async (event) => {
       modal = null;
       render();
       syncBrowserRouteForActiveView();
-      maybeWarmCurrentAgent();
       loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
     }
     if (action === 'select-human-inspector') {
@@ -625,7 +624,6 @@ document.addEventListener('click', async (event) => {
         selectedComputerId = null;
         selectedTaskId = null;
         render();
-        maybeWarmCurrentAgent();
       } else {
         const result = await api('/api/dms', {
           method: 'POST',
@@ -639,7 +637,6 @@ document.addEventListener('click', async (event) => {
         selectedHumanId = null;
         selectedComputerId = null;
         selectedTaskId = null;
-        maybeWarmAgent(byId(appState.agents, agentId), { spaceType: 'dm', spaceId: result.dm.id });
       }
       syncBrowserRouteForActiveView();
     }
@@ -674,7 +671,18 @@ document.addEventListener('click', async (event) => {
       clearAgentWorkspaceCaches(target.dataset.id);
       await api(`/api/agents/${target.dataset.id}`, { method: 'DELETE' });
       selectedAgentId = null;
-      toast('Agent deleted');
+      toast('Agent moved to Lost Space');
+    }
+    if (action === 'restore-agent') {
+      await api(`/api/agents/${encodeURIComponent(target.dataset.id || '')}/restore`, { method: 'POST', body: '{}' });
+      toast('Agent restored');
+    }
+    if (action === 'restore-console-server') {
+      await api(`/api/console/servers/${encodeURIComponent(target.dataset.slug || '')}/restore`, { method: 'POST', body: '{}' });
+      activeView = 'console';
+      consoleTab = 'servers';
+      railTab = 'console';
+      toast('Server restored');
     }
     if (action === 'select-space') {
       persistVisiblePaneScrolls();
@@ -697,7 +705,6 @@ document.addEventListener('click', async (event) => {
       markSpaceRead(selectedSpaceType, selectedSpaceId);
       render();
       syncBrowserRouteForActiveView();
-      maybeWarmCurrentAgent();
     }
     if (action === 'open-console-server') {
       const slug = target.dataset.slug || '';
@@ -883,6 +890,18 @@ document.addEventListener('click', async (event) => {
         }
         if (modal === 'member-reset-link') {
           memberResetLinkState = { email: '', link: '' };
+        }
+        if (modal === 'computer') {
+          const pendingComputer = latestPairingCommand?.computer || null;
+          const pendingStatus = String(pendingComputer?.status || '').toLowerCase();
+          if (pendingComputer?.id && pendingStatus === 'pairing') {
+            try {
+              await api(`/api/computers/${encodeURIComponent(pendingComputer.id)}`, { method: 'DELETE' });
+            } catch (error) {
+              console.warn('Failed to discard unpaired computer:', error);
+            }
+          }
+          latestPairingCommand = null;
         }
         let nextModal = null;
         if (modal === 'avatar-crop') {

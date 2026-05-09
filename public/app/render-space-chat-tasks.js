@@ -10,6 +10,11 @@ function renderHeader(title, subtitle, actions = '') {
   `;
 }
 
+function channelAgentIsActive(agent) {
+  if (typeof agentIsActiveInWorkspace === 'function') return agentIsActiveInWorkspace(agent);
+  return !agent?.deletedAt && !agent?.archivedAt && agent?.status !== 'deleted' && agent?.status !== 'disabled';
+}
+
 function getChannelMembers(channelId) {
   const channel = byId(appState?.channels, channelId);
   if (!channel) return { agents: [], humans: [] };
@@ -19,13 +24,13 @@ function getChannelMembers(channelId) {
   // "All" channel always includes all agents and humans
   if (channelId === 'chan_all') {
     return {
-      agents: appState.agents || [],
+      agents: (appState.agents || []).filter(channelAgentIsActive),
       humans: humansInWorkspace,
     };
   }
   const memberIds = [...new Set([...(channel.memberIds || []), ...(channel.humanIds || [])])];
   const humanIds = new Set(memberIds.filter((id) => String(id).startsWith('hum_')));
-  const agents = (appState.agents || []).filter((a) => memberIds.includes(a.id));
+  const agents = (appState.agents || []).filter((a) => memberIds.includes(a.id) && channelAgentIsActive(a));
   const humans = [];
   const seenHumans = new Set();
   for (const id of humanIds) {
@@ -520,7 +525,7 @@ function renderMessage(message, options = {}) {
   const replyCountChip = !options.compact && replyCount ? `<button class="reply-count-chip" type="button" data-action="open-thread" data-id="${escapeHtml(message.id)}">${replyActionLabel}</button>` : '';
   const footer = renderMessageFooter({ replyCountChip, receiptTray });
   return `
-    <article class="message-card slock-message author-${authorClass}${highlighted}${compact}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
+    <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
       ${renderActorAvatar(message.authorId, message.authorType)}
       <div class="message-body">
         <div class="message-meta">
@@ -766,7 +771,7 @@ function renderThreads() {
     .sort((a, b) => threadUpdatedAt(b) - threadUpdatedAt(a));
   return `
     ${renderHeader('Threads', 'Active reply trails', '')}
-    <section class="list-panel thread-list-panel slock-thread-list">
+    <section class="list-panel thread-list-panel magclaw-thread-list">
       ${threaded.length ? threaded.map((message) => {
         const replies = threadReplies(message.id);
         const lastReply = replies.at(-1);
@@ -775,7 +780,7 @@ function renderThreads() {
         const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
         const active = threadMessageId === message.id ? ' active' : '';
         return `
-        <button class="thread-row slock-thread-row${active}" type="button" data-action="open-thread" data-id="${message.id}">
+        <button class="thread-row magclaw-thread-row${active}" type="button" data-action="open-thread" data-id="${message.id}">
           <span class="thread-row-avatar">
             ${renderThreadRowAvatar(previewRecord)}
           </span>

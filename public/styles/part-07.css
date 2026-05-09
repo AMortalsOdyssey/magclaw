@@ -1,0 +1,1607 @@
+.workspace-activity-title-trigger:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+.workspace-activity-popover {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 80;
+  display: none;
+  width: min(460px, calc(100vw - 72px));
+  max-height: 280px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 38%, transparent);
+  border-radius: 6px;
+  background: linear-gradient(180deg, #ffffff 0%, #fff9fd 100%);
+  box-shadow: 0 14px 34px rgba(22, 20, 18, 0.16), 0 2px 6px rgba(22, 20, 18, 0.08);
+  color: var(--text-primary);
+  user-select: text;
+  white-space: normal;
+}
+
+.workspace-activity-row:nth-last-child(-n + 4) .workspace-activity-popover {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
+.workspace-activity-row:hover .workspace-activity-popover,
+.workspace-activity-title-wrap:focus-within .workspace-activity-popover {
+  display: grid;
+  gap: 9px;
+}
+
+.workspace-activity-popover-title {
+  font-size: 12.5px;
+  font-weight: 750;
+  line-height: 1.42;
+  overflow-wrap: anywhere;
+}
+
+.workspace-activity-popover-detail {
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border-faint) 72%, transparent);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.workspace-activity-row-head time,
+.workspace-activity-detail,
+.workspace-activity-tags {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.workspace-activity-detail {
+  margin: 4px 0;
+}
+
+.workspace-activity-tags {
+  display: flex;
+  gap: 6px;
+}
+
+.workspace-activity-tags span {
+  padding: 1px 5px;
+  border: 1px solid var(--border-faint);
+  background: #ffffff;
+}
+
+/* Workspace density pass: align Chat, Tasks, Members, and Computers with Settings. */
+.collab-frame {
+  --workspace-line: rgba(26, 26, 26, 0.22);
+  --workspace-line-strong: rgba(26, 26, 26, 0.48);
+  --workspace-muted-line: rgba(26, 26, 26, 0.13);
+  grid-template-columns: minmax(240px, min(var(--rail-width, 300px), 420px)) 4px minmax(360px, 1fr) 4px minmax(260px, min(var(--inspector-width, 340px), 40vw));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.collab-frame.no-inspector {
+  grid-template-columns: minmax(240px, min(var(--rail-width, 300px), 420px)) 4px minmax(360px, 1fr);
+}
+
+.collab-frame.task-focus {
+  grid-template-columns: 60px minmax(0, 1fr) 4px minmax(260px, min(var(--inspector-width, 340px), 40vw));
+}
+
+.collab-frame.task-focus.no-inspector {
+  grid-template-columns: 60px minmax(0, 1fr);
+}
+
+.collab-frame .rail-icon-only {
+  width: 60px;
+  min-width: 60px;
+}
+
+.collab-frame .magclaw-left-rail {
+  flex-basis: 60px;
+  width: 60px;
+  min-width: 60px;
+  gap: 10px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--workspace-line-strong);
+}
+
+.collab-frame .left-rail-avatar,
+.collab-frame .left-rail-btn {
+  width: 38px;
+  height: 38px;
+  min-height: 38px;
+  border-width: 1px;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.collab-frame .left-rail-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.collab-frame .left-rail-btn:hover,
+.collab-frame .left-rail-btn:focus-visible,
+.collab-frame .left-rail-btn.active {
+  border-color: var(--workspace-line-strong);
+  box-shadow: none;
+}
+
+.collab-frame .left-rail-btn em {
+  top: -5px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  border-width: 1px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+.collab-frame .magclaw-sidebar-header {
+  flex-basis: 60px;
+  min-height: 60px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--workspace-line-strong);
+}
+
+.collab-frame .magclaw-sidebar-header h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.collab-frame .rail-resizer,
+.collab-frame .inspector-resizer {
+  min-width: 4px;
+}
+
+.collab-frame .rail-resizer::before,
+.collab-frame .inspector-resizer::before {
+  left: 1px;
+  width: 1px;
+  background: var(--workspace-line-strong);
+}
+
+.collab-frame .nav-list {
+  gap: 2px;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--workspace-line-strong);
+}
+
+.collab-frame .nav-item,
+.collab-frame .space-btn {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.collab-frame .nav-item {
+  height: 32px;
+  padding: 0 8px;
+}
+
+.collab-frame .nav-item svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.8;
+}
+
+.collab-frame .nav-item em,
+.collab-frame .space-btn small {
+  font-size: 11px;
+}
+
+.collab-frame .nav-item:hover,
+.collab-frame .nav-item.active,
+.collab-frame .space-btn:hover,
+.collab-frame .space-btn.active {
+  border-color: var(--workspace-line-strong);
+  box-shadow: none;
+}
+
+.collab-frame .nav-item.active,
+.collab-frame .space-btn.active {
+  font-weight: 700;
+}
+
+.collab-frame .rail-section {
+  gap: 2px;
+  padding: 0 8px 8px;
+}
+
+.collab-frame .rail-title {
+  padding: 11px 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.collab-frame .rail-title button,
+.collab-frame .panel-title button,
+.collab-frame .modal-head button {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.collab-frame .rail-title button:hover,
+.collab-frame .panel-title button:hover,
+.collab-frame .modal-head button:hover {
+  box-shadow: none;
+}
+
+.collab-frame .rail-title .rail-collapse-btn {
+  border: 0;
+  border-radius: 0;
+}
+
+.collab-frame .runtime-chip {
+  gap: 8px;
+  margin: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--workspace-line-strong);
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.collab-frame .runtime-chip .status-dot,
+.collab-frame .status-dot {
+  width: 8px;
+  height: 8px;
+  border-width: 1px;
+}
+
+.collab-frame .dm-avatar,
+.collab-frame .avatar,
+.collab-frame .saved-avatar,
+.collab-frame .thread-list-avatar,
+.collab-frame .search-entity-icon,
+.collab-frame .task-page-icon,
+.collab-frame .agent-detail-avatar-frame {
+  border-width: 1px;
+  border-radius: 5px;
+  box-shadow: none;
+}
+
+.collab-frame .space-header,
+.collab-frame .dm-space-header,
+.collab-frame .task-page-header,
+.collab-frame .agent-detail-topbar,
+.collab-frame .search-topbar {
+  min-height: 60px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--workspace-line-strong);
+  box-shadow: none;
+}
+
+.collab-frame .space-header h2,
+.collab-frame .task-page-title h2,
+.collab-frame .agent-profile-hero h3 {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.collab-frame .eyebrow,
+.collab-frame .task-page-title small,
+.collab-frame .dm-peer-copy small,
+.collab-frame .agent-detail-title small,
+.collab-frame .detail-label,
+.collab-frame .panel-title,
+.collab-frame .search-summary,
+.collab-frame .search-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.collab-frame .dm-peer-copy strong,
+.collab-frame .agent-detail-title strong,
+.collab-frame .message-meta strong,
+.collab-frame .thread-row-main strong,
+.collab-frame .saved-row-text,
+.collab-frame .search-result-snippet,
+.collab-frame .task-card-title,
+.collab-frame .detail-value,
+.collab-frame .agent-field-value {
+  font-size: 13px;
+}
+
+.collab-frame .tabbar,
+.collab-frame .agent-detail-tabs {
+  border-bottom: 1px solid var(--workspace-line-strong);
+}
+
+.collab-frame .tabbar button,
+.collab-frame .agent-detail-tabs button {
+  min-height: 30px;
+  border-right-width: 1px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.collab-frame .pixel-panel,
+.collab-frame .task-column,
+.collab-frame .task-card,
+.collab-frame .thread-row,
+.collab-frame .saved-row,
+.collab-frame .search-result-card,
+.collab-frame .inbox-category-panel,
+.collab-frame .inbox-toolbar,
+.collab-frame .mode-card,
+.collab-frame .cloud-card,
+.collab-frame .computer-config-row,
+.collab-frame .skill-row,
+.collab-frame .agent-tool-pill,
+.collab-frame .runtime-badge,
+.collab-frame .task-proof span,
+.collab-frame .task-history span,
+.collab-frame .mission-mini,
+.collab-frame .goal-box,
+.collab-frame .contract-block,
+.collab-frame .terminal,
+.collab-frame .history-item,
+.collab-frame .project-strip,
+.collab-frame .project-chip {
+  border-width: 1px;
+  border-color: var(--workspace-line);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.collab-frame .pixel-panel:hover,
+.collab-frame .task-card:hover,
+.collab-frame .compact-task-card:hover,
+.collab-frame .compact-task-card.active,
+.collab-frame .thread-row:hover,
+.collab-frame .thread-row.active,
+.collab-frame .saved-row:hover,
+.collab-frame .saved-row.active,
+.collab-frame .search-result-card:hover,
+.collab-frame .search-result-card.active,
+.collab-frame .mode-card:hover,
+.collab-frame .mode-card.active {
+  box-shadow: none;
+}
+
+.collab-frame .primary-btn,
+.collab-frame .secondary-btn,
+.collab-frame .danger-btn,
+.collab-frame .file-btn,
+.collab-frame .channel-action,
+.collab-frame .task-view-toggle button,
+.collab-frame .task-channel-button,
+.collab-frame .task-filter button,
+.collab-frame .dm-task-filters button,
+.collab-frame .search-filter-btn,
+.collab-frame .search-clear-all,
+.collab-frame .search-load-more,
+.collab-frame .search-clear-btn,
+.collab-frame .message-icon-action,
+.collab-frame .task-actions button,
+.collab-frame .saved-remove,
+.collab-frame .workspace-activity-load,
+.collab-frame .agent-inline-actions button,
+.collab-frame .agent-header-actions button,
+.collab-frame .agent-workspace-sidebar-title button,
+.collab-frame .agent-workspace-file-actions button {
+  min-height: 32px;
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.collab-frame .primary-btn,
+.collab-frame .task-view-toggle button.active,
+.collab-frame .dm-task-filters button.active,
+.collab-frame .agent-detail-tabs button.active,
+.collab-frame .tabbar button.active {
+  font-weight: 700;
+}
+
+.collab-frame .channel-action {
+  min-width: 32px;
+  min-height: 30px;
+  transform: none;
+}
+
+.collab-frame .channel-action:hover,
+.collab-frame .channel-action:focus-visible,
+.collab-frame .channel-action:active {
+  box-shadow: none;
+  transform: none;
+}
+
+.collab-frame .channel-action::after {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+  font-weight: 700;
+}
+
+.collab-frame .channel-action::before {
+  border-left-width: 1px;
+  border-top-width: 1px;
+}
+
+.collab-frame input,
+.collab-frame textarea,
+.collab-frame select,
+.collab-frame .agent-inline-edit input,
+.collab-frame .agent-inline-edit textarea,
+.collab-frame .agent-env-row input,
+.collab-frame .agent-auto-select,
+.collab-frame .search-input-shell {
+  border-width: 1px;
+  border-color: var(--workspace-line-strong);
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.collab-frame input:focus,
+.collab-frame textarea:focus,
+.collab-frame select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.collab-frame .chat-composer {
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--workspace-line-strong);
+}
+
+.collab-frame .chat-composer textarea {
+  min-height: 54px;
+  max-height: 72px;
+  padding: 8px 10px;
+}
+
+.collab-frame .message-card {
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 8px;
+  padding: 5px 8px;
+  border-width: 1px;
+  border-radius: 6px;
+}
+
+.collab-frame .magclaw-message:hover,
+.collab-frame .magclaw-message.highlighted,
+.collab-frame .magclaw-message.focus-pulse {
+  border-color: var(--workspace-line-strong);
+  box-shadow: none;
+}
+
+.collab-frame .message-markdown pre,
+.collab-frame .message-markdown blockquote {
+  border-width: 1px;
+}
+
+.collab-frame .message-markdown blockquote {
+  border-left-width: 2px;
+}
+
+.collab-frame .task-page,
+.collab-frame .task-board,
+.collab-frame .task-list-view,
+.collab-frame .task-toolbar,
+.collab-frame .saved-page,
+.collab-frame .saved-list-panel,
+.collab-frame .search-page,
+.collab-frame .search-topbar,
+.collab-frame .search-filter-row,
+.collab-frame .search-results,
+.collab-frame .thread-list-panel,
+.collab-frame .computers-page,
+.collab-frame .computers-page > .cloud-layout,
+.collab-frame .agent-detail-shell,
+.collab-frame .agent-workspace-preview .markdown-preview,
+.collab-frame .agent-workspace-preview .text-file-preview {
+  background: #ffffff;
+}
+
+.collab-frame .task-toolbar,
+.collab-frame .dm-task-toolbar,
+.collab-frame .search-filter-row,
+.collab-frame .agent-detail-actions,
+.collab-frame .agent-profile-header,
+.collab-frame .agent-detail-tabs,
+.collab-frame .agent-workspace-sidebar,
+.collab-frame .agent-workspace-path,
+.collab-frame .agent-workspace-filebar {
+  border-color: var(--workspace-line-strong);
+  border-width: 1px;
+}
+
+.collab-frame .task-board {
+  gap: 12px;
+  padding: 14px 20px;
+}
+
+.collab-frame .task-column {
+  padding: 12px;
+}
+
+.collab-frame .task-card {
+  padding: 9px 10px;
+}
+
+.collab-frame .task-status-chip,
+.collab-frame .task-status-icon-badge,
+.collab-frame .task-inline-badge,
+.collab-frame .task-number,
+.collab-frame .thread-kind-badge,
+.collab-frame .search-result-meta em,
+.collab-frame .task-event-chip,
+.collab-frame .task-event-icon,
+.collab-frame .task-state-flow,
+.collab-frame .task-state-node > span,
+.collab-frame .inbox-unread-count,
+.collab-frame .workspace-activity-icon,
+.collab-frame .workspace-activity-avatar {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.collab-frame .task-action-btn,
+.collab-frame .thread-row-check {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.collab-frame .task-state-node.current > span {
+  box-shadow: 0 0 0 1px #e6b22f;
+}
+
+.collab-frame .task-state-node.current > span::before {
+  inset: -4px;
+}
+
+.collab-frame .search-top-icon,
+.collab-frame .settings-page-icon {
+  width: 36px;
+  height: 36px;
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.collab-frame .computers-page > .cloud-layout {
+  padding: 0 20px 22px;
+}
+
+.collab-frame .agent-profile-hero {
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.collab-frame .agent-detail-avatar-frame.hero-avatar {
+  width: 52px;
+  height: 52px;
+}
+
+.collab-frame .agent-profile-field,
+.collab-frame .skill-list-section,
+.collab-frame .agent-dm-row {
+  padding: 12px 18px;
+  border-bottom-color: var(--workspace-muted-line);
+}
+
+.collab-frame .agent-workspace-sidebar {
+  border-right-width: 1px;
+}
+
+.collab-frame .agent-hover-card,
+.collab-frame .task-hover-card,
+.collab-frame .search-time-menu,
+.collab-frame .mention-popup {
+  border-width: 1px;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+@media (max-width: 1200px) {
+  .collab-frame {
+    grid-template-columns: minmax(180px, min(var(--rail-width, 220px), 320px)) 4px minmax(300px, 1fr) 4px minmax(240px, min(var(--inspector-width, 320px), 38vw));
+  }
+
+  .collab-frame.no-inspector {
+    grid-template-columns: minmax(180px, min(var(--rail-width, 220px), 320px)) 4px minmax(300px, 1fr);
+  }
+}
+
+/* Settings density pass: Slack-like scale while preserving MagClaw colors. */
+.settings-rail,
+.settings-page,
+.computers-page {
+  --settings-line: rgba(26, 26, 26, 0.22);
+  --settings-line-strong: rgba(26, 26, 26, 0.48);
+  --settings-muted-line: rgba(26, 26, 26, 0.13);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.settings-rail .magclaw-left-rail {
+  flex-basis: 60px;
+  width: 60px;
+  min-width: 60px;
+  gap: 10px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--settings-line-strong);
+}
+
+.settings-rail .left-rail-avatar,
+.settings-rail .left-rail-btn {
+  width: 38px;
+  height: 38px;
+  min-height: 38px;
+  border-width: 1px;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.settings-rail .left-rail-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.settings-rail .left-rail-btn:hover,
+.settings-rail .left-rail-btn:focus-visible,
+.settings-rail .left-rail-btn.active {
+  border-color: var(--settings-line-strong);
+  box-shadow: none;
+}
+
+.settings-rail .left-rail-btn em {
+  top: -5px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  border-width: 1px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+.settings-rail .magclaw-sidebar-header {
+  flex-basis: 60px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--settings-line-strong);
+}
+
+.settings-rail .magclaw-sidebar-header h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.settings-layout-frame .rail-resizer {
+  min-width: 4px;
+}
+
+.settings-layout-frame .rail-resizer::before {
+  left: 1px;
+  width: 1px;
+  background: var(--settings-line-strong);
+}
+
+.settings-rail .runtime-chip {
+  gap: 8px;
+  margin: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--settings-line-strong);
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.settings-rail .runtime-chip .status-dot {
+  width: 8px;
+  height: 8px;
+  border-width: 1px;
+}
+
+.settings-nav-list {
+  gap: 2px;
+  padding: 12px 8px;
+}
+
+.settings-nav-item {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border-width: 1px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-nav-item .settings-icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.8;
+}
+
+.settings-nav-item em {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.settings-nav-item:hover,
+.settings-nav-item.active {
+  border-color: var(--settings-line-strong);
+  box-shadow: none;
+}
+
+.settings-nav-item.active {
+  font-weight: 700;
+}
+
+.settings-page {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  background: #ffffff;
+}
+
+.settings-page-header {
+  min-height: 60px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--settings-line-strong);
+}
+
+.settings-page-heading {
+  gap: 12px;
+}
+
+.settings-page-heading h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.settings-page-icon {
+  width: 36px;
+  height: 36px;
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.settings-page-icon .settings-icon {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.settings-section-label {
+  min-height: 38px;
+  gap: 8px;
+  padding: 10px 20px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.settings-section-label .settings-icon {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.75;
+}
+
+.settings-page-mobile-tabs {
+  display: none;
+}
+
+.settings-page > .cloud-layout,
+.settings-page > .settings-layout,
+.settings-page > .settings-release {
+  padding: 0 20px 22px;
+}
+
+.settings-layout,
+.account-layout,
+.account-grid {
+  gap: 12px;
+}
+
+.settings-page .pixel-panel,
+.settings-page .cloud-card,
+.settings-page .mode-card,
+.settings-page .account-meta-grid div,
+.settings-page .cloud-status div,
+.settings-page .boundary-grid div,
+.settings-page .computer-config-row,
+.settings-page .settings-permission-list,
+.settings-page .notification-card-body,
+.settings-page .release-card {
+  border: 1px solid var(--settings-line);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.settings-page .pixel-panel:hover,
+.settings-page .mode-card:hover,
+.settings-page .mode-card.active {
+  box-shadow: none;
+}
+
+.settings-page .cloud-card {
+  padding: 14px;
+}
+
+.account-layout {
+  max-width: 1040px;
+}
+
+.account-overview-card {
+  gap: 14px;
+  padding: 16px;
+}
+
+.account-profile-main {
+  gap: 12px;
+}
+
+.account-profile-main h3 {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.account-profile-main p {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.account-profile-main p:last-child {
+  margin-top: 3px;
+}
+
+.account-avatar-lg {
+  width: 56px;
+  height: 56px;
+  font-size: 18px;
+}
+
+.account-role-badge {
+  min-width: 126px;
+  gap: 2px;
+  padding: 9px 12px;
+  border-width: 1px;
+  border-color: var(--settings-line);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.account-role-badge span,
+.account-role-badge small {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.account-role-badge strong {
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.account-signout-btn {
+  align-self: center;
+  min-height: 34px;
+}
+
+.panel-title {
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.settings-account-avatar {
+  width: 52px;
+  height: 52px;
+  border-width: 1px;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 16px;
+}
+
+.profile-avatar-row {
+  gap: 10px;
+}
+
+.profile-avatar-row .settings-account-avatar {
+  width: 48px;
+  height: 48px;
+  font-size: 15px;
+}
+
+.account-avatar-actions {
+  gap: 6px;
+}
+
+.account-profile-form {
+  gap: 12px;
+}
+
+.account-meta-grid {
+  gap: 8px;
+}
+
+.account-meta-grid div {
+  gap: 2px;
+  padding: 9px 10px;
+}
+
+.account-meta-grid span,
+.account-meta-grid small {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.account-meta-grid strong {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.account-permission-chips {
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.account-permission-chips span {
+  padding: 3px 8px;
+  border-width: 1px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-page label,
+.settings-page .form-field {
+  gap: 5px;
+}
+
+.settings-page label span,
+.settings-page .form-field span {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.settings-page input,
+.settings-page textarea,
+.settings-page select {
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid var(--settings-line-strong);
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.settings-page textarea {
+  min-height: 78px;
+}
+
+.settings-page input:focus,
+.settings-page textarea:focus,
+.settings-page select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.settings-page .primary-btn,
+.settings-page .secondary-btn,
+.settings-page .danger-btn,
+.settings-page .file-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-page .primary-btn {
+  font-weight: 700;
+}
+
+.settings-page .primary-btn:hover,
+.settings-page .secondary-btn:hover,
+.settings-page .danger-btn:hover,
+.settings-page .file-btn:hover {
+  box-shadow: none;
+}
+
+.settings-page .computer-config-list {
+  gap: 8px;
+}
+
+.settings-page .computer-config-row {
+  padding: 10px;
+}
+
+.settings-page .computer-config-row strong,
+.settings-page .mode-card strong,
+.settings-page .boundary-grid strong {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.settings-page .computer-config-row span,
+.settings-page .computer-config-row small,
+.settings-page .mode-card span,
+.settings-page .boundary-grid p,
+.settings-page .cloud-status small,
+.settings-page .fanout-api-note {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-page .release-card {
+  gap: 12px;
+  padding: 16px;
+}
+
+.settings-page .release-card h3,
+.settings-page .release-badge {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.settings-page .release-card h3 {
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.settings-page .release-note-row p {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.settings-page .release-badge {
+  min-height: 22px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .account-overview-card {
+    align-items: stretch;
+  }
+
+  .account-role-badge,
+  .account-signout-btn {
+    width: auto;
+  }
+}
+
+@media (max-width: 700px) {
+  .settings-layout-frame.no-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-layout-frame .settings-rail,
+  .settings-layout-frame .rail-resizer {
+    display: none;
+  }
+
+  .settings-layout-frame .workspace {
+    min-width: 0;
+  }
+
+  .settings-page-header {
+    min-height: 54px;
+    padding: 9px 10px;
+  }
+
+  .settings-page-heading {
+    gap: 8px;
+  }
+
+  .settings-page-heading h2 {
+    font-size: 16px;
+  }
+
+  .settings-page-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .settings-page .action-row {
+    min-width: 0;
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+
+  .settings-section-label {
+    min-height: 34px;
+    padding: 8px 10px 6px;
+  }
+
+  .settings-page-mobile-tabs {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+    padding: 7px 10px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--settings-line);
+    background: #ffffff;
+  }
+
+  .settings-page-mobile-tabs button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+    padding: 0 9px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: #ffffff;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .settings-page-mobile-tabs button.active {
+    border-color: var(--settings-line-strong);
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .settings-page-mobile-tabs .settings-icon {
+    width: 14px;
+    height: 14px;
+    stroke-width: 1.75;
+  }
+
+  .settings-page > .cloud-layout,
+  .settings-page > .settings-layout,
+  .settings-page > .settings-release {
+    padding: 10px 10px 16px;
+  }
+
+  .account-overview-card {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .account-profile-main {
+    align-items: flex-start;
+  }
+
+  .account-role-badge,
+  .account-signout-btn {
+    width: 100%;
+  }
+
+  .account-avatar-actions {
+    align-items: flex-start;
+  }
+}
+
+.cloud-token-card {
+  gap: 18px;
+}
+
+.cloud-password-rule,
+.cloud-auth-legal {
+  color: #4e3e4a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.cloud-password-rule {
+  margin: -4px 0 0;
+}
+
+.cloud-auth-legal {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 8px;
+  width: min(100%, 500px);
+  text-align: center;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.cloud-auth-legal p,
+.cloud-auth-legal small {
+  margin: 0;
+}
+
+.cloud-auth-legal a {
+  color: #1d1022;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.cloud-auth-avatar-block {
+  display: grid;
+  gap: 7px;
+}
+
+.cloud-auth-avatar-label {
+  font-size: 11px;
+  font-weight: 900;
+  color: #5f4b5a;
+  text-transform: uppercase;
+}
+
+.cloud-auth-avatar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cloud-auth-avatar-preview,
+.member-avatar {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--settings-line-strong);
+  background: #1f5eff;
+  color: #fff;
+  font-weight: 800;
+}
+
+.cloud-auth-avatar-preview {
+  width: 46px;
+  height: 46px;
+  border-color: rgba(26, 0, 32, 0.42);
+  border-radius: 8px;
+  background: #1a0020;
+  box-shadow: 0 8px 18px rgba(26, 0, 32, 0.16);
+}
+
+.cloud-auth-avatar-row .secondary-btn {
+  border-color: rgba(26, 0, 32, 0.48);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: none;
+}
+
+.cloud-auth-avatar-row .secondary-btn:hover {
+  background: #ffeaf4;
+}
+
+.cloud-auth-avatar-preview img,
+.member-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.compact-btn {
+  min-height: 30px;
+  padding-inline: 10px;
+  white-space: nowrap;
+}
+
+.settings-page > .members-page {
+  padding: 0 20px 22px;
+}
+
+.members-page {
+  display: grid;
+  gap: 16px;
+  min-height: 100%;
+  padding: 22px 24px;
+  background: #ffffff;
+}
+
+.members-directory-shell {
+  align-content: start;
+}
+
+.members-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.members-page-header h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.member-directory-invite-btn {
+  min-width: 82px;
+  min-height: 36px;
+}
+
+.members-table-card {
+  overflow: hidden;
+  border: 1px solid var(--settings-line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.members-table-head,
+.members-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.7fr) minmax(92px, 0.65fr) minmax(132px, 0.8fr) minmax(120px, 0.65fr) minmax(92px, 0.45fr);
+  gap: 14px;
+  align-items: center;
+}
+
+.members-table-head {
+  min-height: 42px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--settings-line);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.members-table-body {
+  display: grid;
+}
+
+.members-row {
+  min-height: 58px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--settings-muted-line);
+}
+
+.members-row:first-child {
+  border-top: 0;
+}
+
+.members-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.member-avatar {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+}
+
+.members-person div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.members-person strong,
+.members-person small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.members-person small,
+.members-row > span {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.member-you {
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+
+.member-status-pill {
+  justify-self: start;
+  padding: 3px 8px;
+  border: 1px solid var(--settings-line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.member-status-pill.is-pending {
+  background: #ffffff;
+}
+
+.member-role-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.member-role-cell > span {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.member-role-cell select {
+  min-width: 132px;
+}
+
+.member-role-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--settings-line);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.member-manage-cell {
+  display: flex;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.member-manage-btn {
+  min-width: 82px;
+}
+
+.members-empty-action {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.members-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--settings-line);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.members-pagination label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.members-pagination input {
+  width: 68px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--settings-line-strong);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.modal-member-invite,
+.modal-member-invite-links,
+.modal-member-manage,
+.modal-member-action-confirm,
+.modal-member-reset-link {
+  width: min(420px, 100%);
+  padding: 28px 30px 24px;
+  border-radius: 8px;
+}
+
+.modal-member-invite-links {
+  width: min(560px, 100%);
+}
+
+.modal-member-manage-backdrop,
+.modal-member-action-confirm-backdrop,
+.modal-member-reset-link-backdrop {
+  place-items: start center;
+  padding-top: clamp(42px, 11vh, 92px);
+  background: rgba(0, 0, 0, 0.36);
+}
+
+.modal-member-manage,
+.modal-member-action-confirm,
+.modal-member-reset-link {
+  width: min(430px, calc(100vw - 40px));
+  background: #ffffff;
+  box-shadow: 5px 5px 0 var(--border);
+}
+
+.modal-member-invite .modal-head,
+.modal-member-invite-links .modal-head,
+.modal-member-manage .modal-head,
+.modal-member-action-confirm .modal-head,
+.modal-member-reset-link .modal-head {
+  margin-bottom: 12px;
+}
+
+.modal-member-invite .modal-head h3,
+.modal-member-invite-links .modal-head h3,
+.modal-member-manage .modal-head h3,
+.modal-member-action-confirm .modal-head h3,
+.modal-member-reset-link .modal-head h3 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.member-manage-modal {
+  display: grid;
+  gap: 16px;
+}
+
+.member-manage-summary {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--settings-line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.member-manage-summary .member-avatar {
+  width: 42px;
+  height: 42px;
+}
+
+.member-manage-summary div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.member-manage-summary strong,
+.member-manage-summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.member-manage-summary strong {
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.member-manage-summary span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.member-manage-summary em {
+  padding: 4px 8px;
+  border: 1px solid var(--settings-line);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+

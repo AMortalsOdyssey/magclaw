@@ -529,10 +529,12 @@ function renderAgentGroupsByComputer(agents = []) {
   const computers = appState.computers || [];
   const groups = new Map();
   for (const computer of computers) {
+    if (computerIsDisabled(computer) || computerIsDeleted(computer)) continue;
     groups.set(computer.id, { id: computer.id, label: computer.name || computer.hostname || 'Computer', meta: computer.status || '', agents: [] });
   }
   groups.set('unassigned', { id: 'unassigned', label: 'Unassigned', meta: '', agents: [] });
   for (const agent of agents) {
+    if (!agentIsActiveInWorkspace(agent)) continue;
     const key = agent.computerId && groups.has(agent.computerId) ? agent.computerId : 'unassigned';
     groups.get(key).agents.push(agent);
   }
@@ -558,7 +560,7 @@ function renderHumanListItem(human) {
         ${renderHumanAvatar(human, 'dm-avatar')}
       </span>
       <div class="member-info">
-        <span class="dm-name">${escapeHtml(human.name)}${youLabel}</span>
+        <span class="dm-name">${escapeHtml(human.name)}${youLabel}${humanBadgeHtml()}</span>
       </div>
       <span class="member-status-side">${avatarStatusDot(human.status, 'Human status')}</span>
     </button>
@@ -593,23 +595,19 @@ function cloudMemberForHuman(human) {
 function humanCreatedAgents(human) {
   const member = cloudMemberForHuman(human);
   return (appState.agents || []).filter((agent) => (
-    agent.createdBy === human?.id
-    || agent.createdByHumanId === human?.id
-    || agent.ownerHumanId === human?.id
-    || agent.createdByUserId === human?.authUserId
-    || agent.createdByUserId === member?.userId
+    !agentIsDeleted(agent)
+    && (
+      agent.createdBy === human?.id
+      || agent.createdByHumanId === human?.id
+      || agent.ownerHumanId === human?.id
+      || agent.createdByUserId === human?.authUserId
+      || agent.createdByUserId === member?.userId
+    )
   ));
 }
 
 function humanIsCurrent(human = {}) {
-  const current = currentAccountHuman();
-  const currentEmail = String(current?.email || appState.cloud?.auth?.currentUser?.email || '').toLowerCase();
-  const humanEmail = String(human.email || '').toLowerCase();
-  return Boolean(
-    (current?.id && human.id === current.id)
-    || (current?.authUserId && human.authUserId === current.authUserId)
-    || (currentEmail && humanEmail && currentEmail === humanEmail)
-  );
+  return humanMatchesCurrentAccount(human);
 }
 
 function humanJoinedLabel(value) {
@@ -687,12 +685,12 @@ function renderHumanDetail(human) {
   const canManageThisMember = Boolean(member && !isCurrent && (cloudCan('manage_member_roles') || cloudCanRemoveMemberRole(role)));
   const youLabel = isCurrent ? ' <em class="human-you-label">(you)</em>' : '';
   return `
-    <section class="pixel-panel inspector-panel human-detail-page slock-profile-detail">
+    <section class="pixel-panel inspector-panel human-detail-page magclaw-profile-detail">
       <div class="agent-detail-topbar">
         <div class="agent-detail-title">
           <span class="agent-detail-avatar-frame mini">${renderHumanAvatar(human, 'agent-detail-avatar-preview')}</span>
           <div>
-            <strong>${escapeHtml(human.name || member?.user?.name || 'Human')}${youLabel}</strong>
+            <strong class="human-detail-name">${escapeHtml(human.name || member?.user?.name || 'Human')}${youLabel}${humanBadgeHtml()}</strong>
             <small>${escapeHtml(email || 'Server member')}</small>
           </div>
         </div>
@@ -704,7 +702,7 @@ function renderHumanDetail(human) {
         <div class="human-profile-hero">
           <span class="human-detail-avatar-large">${renderHumanAvatar(human, 'agent-detail-avatar-preview')}</span>
           <div>
-            <h2>${escapeHtml(human.name || member?.user?.name || 'Human')}${youLabel}</h2>
+            <h2 class="human-detail-name">${escapeHtml(human.name || member?.user?.name || 'Human')}${youLabel}${humanBadgeHtml()}</h2>
             <small>${escapeHtml(email || '')}</small>
           </div>
         </div>
@@ -750,7 +748,7 @@ function renderReply(reply) {
   const receiptTray = renderAgentReceiptTray(reply);
   const footer = renderMessageFooter({ receiptTray });
   return `
-    <article class="message-card slock-message reply-card author-${authorClass}${highlighted}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
+    <article class="message-card magclaw-message reply-card author-${authorClass}${highlighted}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
       ${renderActorAvatar(reply.authorId, reply.authorType)}
       <div class="message-body">
         <div class="message-meta">

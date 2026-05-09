@@ -15,6 +15,8 @@ const appScripts = [
   '/app/render-shell-rail-inbox.js',
   '/app/render-space-chat-tasks.js',
   '/app/render-search-settings.js',
+  '/app/render-lost-space.js',
+  '/app/render-release-settings.js',
   '/app/render-agent-detail.js',
   '/app/render-modals-uploads.js',
   '/app/sync-events-keyboard.js',

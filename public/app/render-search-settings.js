@@ -6,6 +6,7 @@ const searchTimeRangeOptions = [
 ];
 
 const MAGCLAW_DAEMON_PACKAGE_VERSION = '0.1.1';
+const MAGCLAW_WEB_PACKAGE_VERSION = '0.2.0';
 
 function searchTimeRangeLabel() {
   return searchTimeRangeOptions.find(([value]) => value === searchTimeRange)?.[1] || 'Any Time';
@@ -283,8 +284,26 @@ function computerIsDisabled(computer = {}) {
   return String(computer.status || '').toLowerCase() === 'disabled' || Boolean(computer.disabledAt);
 }
 
+function computerIsDeleted(computer = {}) {
+  return Boolean(computer.deletedAt || computer.archivedAt) || String(computer.status || '').toLowerCase() === 'deleted';
+}
+
+function agentIsDeleted(agent = {}) {
+  return Boolean(agent.deletedAt || agent.archivedAt) || String(agent.status || '').toLowerCase() === 'deleted';
+}
+
+function agentComputerUnavailable(agent = {}) {
+  const computer = agent.computerId ? byId(appState?.computers, agent.computerId) : null;
+  if (agent.computerId && !computer && agent.computerId !== 'cmp_local') return true;
+  return Boolean(computer && (computerIsDisabled(computer) || computerIsDeleted(computer)));
+}
+
+function agentIsActiveInWorkspace(agent = {}) {
+  return Boolean(agent?.id) && !agentIsDeleted(agent) && !agentComputerUnavailable(agent);
+}
+
 function computerIsConnected(computer = {}) {
-  if (computerIsDisabled(computer)) return false;
+  if (computerIsDisabled(computer) || computerIsDeleted(computer)) return false;
   return presenceTone(computer.status || 'offline') === 'online' || String(computer.status || '').toLowerCase() === 'connected';
 }
 
@@ -390,7 +409,7 @@ function runtimeNameForId(id = '') {
 }
 
 function computerAgents(computerId) {
-  return (appState.agents || []).filter((agent) => agent.computerId === computerId);
+  return (appState.agents || []).filter((agent) => agent.computerId === computerId && !agentIsDeleted(agent));
 }
 
 function renderComputerRuntimeBadges(computer = {}, options = {}) {
@@ -496,7 +515,7 @@ function renderComputerDetail(computer) {
   );
   const statusLabel = disabled ? 'disabled' : connected ? 'connected' : 'offline';
   return `
-    <section class="computer-detail-page slock-computer-detail">
+    <section class="computer-detail-page magclaw-computer-detail">
       <div class="pixel-panel cloud-card wide computer-detail-card computer-profile-card">
         <div class="computer-detail-header">
           ${renderComputerIcon(computer, 24)}
@@ -519,7 +538,7 @@ function renderComputerDetail(computer) {
         </form>
       </details>
 
-      <div class="pixel-panel cloud-card wide computer-info-card slock-info-card">
+      <div class="pixel-panel cloud-card wide computer-info-card magclaw-info-card">
         <div class="computer-section-label">Info</div>
         <dl class="computer-info-list">
           <div class="computer-info-row"><dt>OS</dt><dd>${escapeHtml([computer.os, computer.arch].filter(Boolean).join(' ') || '--')}</dd></div>
@@ -631,6 +650,7 @@ function settingsPageMeta(tab = settingsTab) {
     server: { title: 'Server', icon: 'server', section: 'SERVER' },
     system: { title: 'System Config', icon: 'system', section: 'SYSTEM CONFIG' },
     members: { title: 'Members', icon: 'members', section: 'MEMBERS' },
+    'lost-space': { title: 'Lost Space', icon: 'lost', section: 'LOST SPACE' },
     release: { title: 'Release Notes', icon: 'release', section: "WHAT'S NEW" },
   };
   return metas[tab] || metas.account;
@@ -679,7 +699,7 @@ function renderAccountSettingsTab() {
     ` : '';
     return `
       <section class="settings-layout account-layout account-waterfall">
-        <div class="pixel-panel cloud-card account-overview-card account-slock-card">
+        <div class="pixel-panel cloud-card account-overview-card account-magclaw-card">
           <span class="settings-account-avatar account-avatar-lg">${profileAvatarInnerHtml({ human, avatar: profileValues.avatar, displayName: profileValues.displayName, cssClass: 'settings-account-avatar-inner' })}</span>
           <div class="account-profile-main">
             <div>
@@ -691,7 +711,7 @@ function renderAccountSettingsTab() {
           ${currentUser ? `<button class="secondary-btn account-signout-btn" type="button" data-action="open-modal" data-modal="confirm-sign-out">Sign Out</button>` : ''}
         </div>
         ${currentUser ? `
-          <form id="profile-form" class="pixel-panel cloud-card modal-form account-profile-form account-slock-card" data-human-id="${escapeHtml(human.id || '')}">
+          <form id="profile-form" class="pixel-panel cloud-card modal-form account-profile-form account-magclaw-card" data-human-id="${escapeHtml(human.id || '')}">
             <div class="panel-title"><span>Profile</span><span>${escapeHtml(currentUser.id || human.authUserId || '')}</span></div>
             <div class="profile-avatar-row">
               <span class="settings-account-avatar">${profileAvatarInnerHtml({ human, avatar: profileValues.avatar, displayName: profileValues.displayName, cssClass: 'settings-account-avatar-inner' })}</span>
@@ -708,7 +728,7 @@ function renderAccountSettingsTab() {
             <label><span>Description</span><textarea name="description" rows="3">${escapeHtml(profileValues.description || '')}</textarea></label>
             <button class="primary-btn" type="submit">Save</button>
           </form>
-          <div class="pixel-panel cloud-card account-slock-card account-session-card">
+          <div class="pixel-panel cloud-card account-magclaw-card account-session-card">
             <div class="panel-title"><span>Session</span><span>active</span></div>
             <p>Sign out of this browser. Your account and server memberships remain unchanged.</p>
             <button class="secondary-btn" type="button" data-action="open-modal" data-modal="confirm-sign-out">Log out</button>
@@ -1524,7 +1544,14 @@ function renderServerSettingsTab() {
           <p class="muted-note">Create a shareable link for people to join this server after signing in.</p>
           <div class="form-grid">
             <label><span>Max Uses</span><input name="maxUses" type="number" min="0" step="1" placeholder="Unlimited" /></label>
-            <label><span>Expires At</span><input name="expiresAt" type="datetime-local" /></label>
+            <label><span>Expires In</span><select name="expiresIn">
+              <option value="1h">1 hour</option>
+              <option value="12h">12 hours</option>
+              <option value="24h" selected>24 hours</option>
+              <option value="30d">1 month</option>
+              <option value="365d">1 year</option>
+              <option value="never">Never expires</option>
+            </select></label>
           </div>
           <button class="primary-btn" type="submit" ${canManage ? '' : 'disabled'}>Create Join Link</button>
         </form>
@@ -1556,13 +1583,17 @@ function renderServerSettingsTab() {
         </form>
       </div>
 
-      <div class="pixel-panel cloud-card danger-card">
+      <details class="pixel-panel cloud-card danger-card server-danger-accordion">
+        <summary>
+          <span>Danger Zone</span>
+          <small>Move this server to Lost Space</small>
+        </summary>
         <form id="delete-server-form" class="modal-form">
-          <div class="panel-title"><span>Danger Zone</span><span>delete server</span></div>
+          <p class="muted-note">This is a soft delete. Members, chats, Agents, Computers, invitations, and configuration are preserved, but Computers and Agents are disabled.</p>
           <label><span>Type slug to confirm</span><input name="slugConfirm" placeholder="${escapeHtml(server.slug || '')}" /></label>
-          <button class="danger-btn" type="submit" ${canManage ? '' : 'disabled'}>Delete Server</button>
+          <button class="danger-btn" type="submit" ${canManage ? '' : 'disabled'}>Move Server to Lost Space</button>
         </form>
-      </div>
+      </details>
     </section>
   `;
 }
@@ -1571,44 +1602,6 @@ function renderSystemSettingsTab() {
   return `
     <section class="cloud-layout">
       ${renderFanoutApiConfigCard()}
-    </section>
-  `;
-}
-
-function renderReleaseNotesSettingsTab() {
-  const groups = [
-    {
-      date: '2026-05-09',
-      notes: [
-        ['NEW', 'Cloud Console adds server switching, invitations, join links, and server-scoped settings.'],
-        ['IMPROVED', 'Computer and Human detail pages now follow the cloud server layout.'],
-        ['FIX', 'Server routes restore the selected member, computer, or settings page after refresh.'],
-      ],
-    },
-    {
-      date: '2026-05-04',
-      notes: [
-        ['NEW', 'Agent skill panels list MagClaw function calls, global Codex skills, plugin skills, and agent-local skills.'],
-        ['IMPROVED', 'Codex chat agents warm their app-server session in the background after startup.'],
-      ],
-    },
-  ];
-  return `
-    <section class="settings-release">
-      <h3>What's New</h3>
-      ${groups.map((group) => `
-        <article class="release-day">
-          <h4>${escapeHtml(group.date)}</h4>
-          <div class="release-note-list">
-            ${group.notes.map(([type, text]) => `
-              <div class="release-note-row">
-                <span class="release-badge release-${type.toLowerCase()}">${escapeHtml(type)}</span>
-                <p>${escapeHtml(text)}</p>
-              </div>
-            `).join('')}
-          </div>
-        </article>
-      `).join('')}
     </section>
   `;
 }
@@ -1717,11 +1710,15 @@ function renderConsole() {
     ? 'Invitations'
     : consoleTab === 'servers'
       ? 'Choose Server'
+      : consoleTab === 'lost-space'
+      ? 'Lost Space'
       : 'Console';
   const body = consoleTab === 'invitations'
     ? renderConsoleInvitations()
     : consoleTab === 'servers'
       ? renderConsoleServers()
+      : consoleTab === 'lost-space'
+      ? renderConsoleLostSpace()
       : renderConsoleOverview();
   return `
     <section class="settings-page console-page">
@@ -1744,8 +1741,10 @@ function renderCloud() {
       ? renderBrowserSettingsTab()
       : settingsTab === 'system'
         ? renderSystemSettingsTab()
-        : settingsTab === 'members'
+      : settingsTab === 'members'
         ? renderMembersSettingsTab()
+        : settingsTab === 'lost-space'
+        ? renderLostSpaceSettingsTab()
         : settingsTab === 'release'
           ? renderReleaseNotesSettingsTab()
           : renderServerSettingsTab();

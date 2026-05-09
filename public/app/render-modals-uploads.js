@@ -205,11 +205,11 @@ function renderProjectModal() {
 }
 
 function agentCanJoinNewChannel(agent) {
-  return !['offline', 'error'].includes(String(agent?.status || '').toLowerCase());
+  return agentIsActiveInWorkspace(agent) && !['offline', 'error', 'disabled', 'deleted'].includes(String(agentDisplayStatus(agent) || '').toLowerCase());
 }
 
 function channelAssignableAgents() {
-  return appState.agents || [];
+  return (appState.agents || []).filter(agentIsActiveInWorkspace);
 }
 
 function renderChannelModal() {
@@ -355,7 +355,7 @@ function renderAddChannelMemberModal() {
     return !q || haystack.includes(q);
   };
   const availableAgents = channelAssignableAgents().filter((a) => !memberIds.includes(a.id) && matches(a));
-  const availableHumans = workspaceHumans().filter((h) => !memberIds.includes(h.id) && h.id !== 'hum_local' && matches(h));
+  const availableHumans = workspaceHumans().filter((h) => !memberIds.includes(h.id) && !humanMatchesCurrentAccount(h) && matches(h));
   const hasCandidates = availableAgents.length || availableHumans.length;
 
   return `
@@ -379,7 +379,7 @@ function renderAddChannelMemberModal() {
 }
 
 function renderDmModal() {
-  const options = [...channelAssignableAgents(), ...workspaceHumans().filter((human) => human.id !== currentHumanId())];
+  const options = [...channelAssignableAgents(), ...workspaceHumans().filter((human) => !humanMatchesCurrentAccount(human))];
   return `
     ${modalHeader('Open DM', 'Direct control line')}
     <form id="dm-form" class="modal-form">
