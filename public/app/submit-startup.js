@@ -150,7 +150,9 @@ document.addEventListener('submit', async (event) => {
     }
     if (form.id === 'agent-form') {
       const selectedRuntime = runtimeOptionsForComputer(data.get('computerId')).find((rt) => rt.id === data.get('runtime'));
-      if (!selectedRuntime) throw new Error('Selected computer does not report a supported runtime.');
+      if (!selectedRuntime || selectedRuntime.installed === false || selectedRuntime.createSupported === false) {
+        throw new Error('Selected computer does not report a supported runtime.');
+      }
       // Filter out empty environment variables
       const envVars = agentFormState.envVars.filter((item) => item.key.trim());
       await api('/api/agents', {
@@ -169,6 +171,25 @@ document.addEventListener('submit', async (event) => {
       });
       resetAgentFormState();
       modal = null;
+    }
+    if (form.id === 'agent-runtime-config-form') {
+      const agentId = form.dataset.agentId || selectedAgentId;
+      const agent = byId(appState.agents, agentId);
+      if (!agent) throw new Error('Agent is missing.');
+      const runtime = runtimeOptionsForComputer(agent.computerId).find((rt) => rt.id === data.get('runtimeId'));
+      if (!runtime || runtime.installed === false || runtime.createSupported === false) {
+        throw new Error('Selected runtime is not available for this computer.');
+      }
+      await api(`/api/agents/${encodeURIComponent(agentId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          runtime: runtime.name || data.get('runtimeId'),
+          runtimeId: runtime.id || data.get('runtimeId'),
+          model: data.get('model') || null,
+          reasoningEffort: data.get('reasoningEffort') || null,
+        }),
+      });
+      toast('Runtime configuration saved. Restart agent to apply.');
     }
     if (form.id === 'computer-form') {
       await api('/api/computers', {

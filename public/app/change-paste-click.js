@@ -82,7 +82,8 @@ document.addEventListener('change', async (event) => {
     if (name === 'computerId') {
       saveAgentFormState();
       agentFormState.computerId = event.target.value;
-      const nextRuntime = runtimeOptionsForComputer(agentFormState.computerId)[0];
+      const nextRuntime = runtimeOptionsForComputer(agentFormState.computerId)
+        .find((runtime) => runtime.installed && runtime.createSupported !== false);
       selectedRuntimeId = nextRuntime?.id || '';
       agentFormState.model = '';
       agentFormState.reasoningEffort = '';

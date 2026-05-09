@@ -575,12 +575,11 @@ function buildInboxModel() {
     .filter((message) => message.authorType === 'agent' && !threadedMessageIds.has(message.id))
     .map((message) => buildDirectInboxItem(message, humanId));
   const activityRecords = workspaceActivityRecords();
-  const workspaceUnread = workspaceActivityUnreadCount(activityRecords, humanId);
   const workspacePreview = activityRecords.slice(-2).map((item) => item.title).join(' · ');
   const workspaceItem = {
     id: 'workspace-activity',
     type: 'workspace',
-    unreadCount: workspaceUnread,
+    unreadCount: 0,
     updatedAt: new Date(activityRecords.at(-1)?.createdAt || 0).getTime(),
     title: 'Workspace Activity',
     preview: workspacePreview || 'Members, computers, and system changes will appear here.',
@@ -588,9 +587,8 @@ function buildInboxModel() {
   };
   const normalItems = [...threadItems, ...directItems]
     .sort((a, b) => b.updatedAt - a.updatedAt);
-  const allItems = [...normalItems, workspaceItem]
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-  const unreadCount = allItems.reduce((sum, item) => sum + item.unreadCount, 0);
+  const allItems = [workspaceItem, ...normalItems];
+  const unreadCount = normalItems.reduce((sum, item) => sum + item.unreadCount, 0);
   return {
     humanId,
     normalItems,
@@ -598,7 +596,7 @@ function buildInboxModel() {
     threadItems,
     directItems,
     workspaceItem,
-    activeCount: allItems.length,
+    activeCount: normalItems.length,
     unreadCount,
   };
 }
@@ -617,7 +615,7 @@ function renderInboxCategoryButton(id, label, count) {
   return `
     <button class="inbox-category-btn${active}" type="button" data-action="set-inbox-category" data-category="${id}">
       <span>${escapeHtml(label)}</span>
-      <em>${escapeHtml(count)}</em>
+      ${count === null || count === undefined ? '' : `<em>${escapeHtml(count)}</em>`}
     </button>
   `;
 }
@@ -654,9 +652,8 @@ function renderInboxItem(item) {
 
 function renderWorkspaceActivityInboxItem(item) {
   const active = workspaceActivityDrawerOpen ? ' active' : '';
-  const unread = item.unreadCount ? ' unread' : '';
   return `
-    <button class="thread-row slock-thread-row inbox-row inbox-workspace${active}${unread}" type="button" data-action="open-workspace-activity">
+    <button class="thread-row slock-thread-row inbox-row inbox-workspace${active}" type="button" data-action="open-workspace-activity">
       <span class="thread-row-avatar workspace-activity-avatar">WA</span>
       <span class="thread-row-main">
         <span class="thread-row-meta-line">
@@ -667,8 +664,7 @@ function renderWorkspaceActivityInboxItem(item) {
         <small>${escapeHtml(item.preview)}</small>
       </span>
       <span class="thread-row-side">
-        ${item.unreadCount ? `<span class="inbox-unread-count">${escapeHtml(item.unreadCount)}</span>` : '<span>0</span>'}
-        <span class="thread-row-check" title="Open activity">✓</span>
+        <span class="thread-row-check" title="Open activity">LOG</span>
       </span>
     </button>
   `;
@@ -689,7 +685,7 @@ function renderInbox() {
           ${renderInboxCategoryButton('unread', 'Unread', model.unreadCount)}
           ${renderInboxCategoryButton('threads', 'Threads', model.threadItems.length)}
           ${renderInboxCategoryButton('direct', 'Direct Messages', model.directItems.length)}
-          ${renderInboxCategoryButton('workspace', 'Workspace Activity', model.workspaceItem.unreadCount || model.workspaceItem.records.length)}
+          ${renderInboxCategoryButton('workspace', 'Workspace Activity', null)}
         </aside>
         <section class="inbox-list-wrap">
           <div class="inbox-toolbar pixel-panel">

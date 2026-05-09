@@ -584,6 +584,11 @@ test('inbox reuses thread rows and renders workspace activity drawer', async () 
   assert.match(app, /function renderWorkspaceActivityDrawer\(\)/);
   assert.match(app, /function workspaceActivityScrollSnapshot\(\)/);
   assert.match(app, /function restoreWorkspaceActivityScroll\(snapshot\)/);
+  assert.match(app, /unreadCount: 0,[\s\S]*title: 'Workspace Activity'/);
+  assert.match(app, /const allItems = \[workspaceItem, \.\.\.normalItems\]/);
+  assert.match(app, /activeCount: normalItems\.length/);
+  assert.match(app, /renderInboxCategoryButton\('workspace', 'Workspace Activity', null\)/);
+  assert.match(app, /title="Open activity">LOG/);
   assert.match(renderSource, /workspaceActivity: workspaceActivityScrollSnapshot\(\)/);
   assert.match(renderSource, /restoreWorkspaceActivityScroll\(scrollSnapshot\.workspaceActivity\)/);
   assert.match(app, /class="thread-row slock-thread-row inbox-row/);
@@ -1133,9 +1138,10 @@ test('agent identities are clickable and expose Slock-style hover summaries', as
   assert.equal(styles.includes('.member-btn:hover .agent-hover-card'), false);
 });
 
-test('agent detail uses Slock-style tabs with inline profile editing and autosaved model controls', async () => {
+test('agent detail uses Slock-style tabs with inline profile editing and runtime configuration', async () => {
   const app = await readAppSource();
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const profileSource = app.slice(app.indexOf('function renderAgentProfileTab(agent)'), app.indexOf('function renderAgentDmsTab(agent)'));
 
   assert.equal(app.includes('id="agent-detail-form"'), false);
   assert.equal(app.includes('Save Profile'), false);
@@ -1152,12 +1158,16 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.match(app, /data-action="save-agent-field" data-field="\$\{escapeHtml\(field\)\}"/);
   assert.equal(app.includes('>Edit</button>'), false);
   assert.match(app, /maxlength="3000"[\s\S]*\$\{descriptionValue\.length\}\/3000/);
-  assert.match(app, /data-action="update-agent-model"/);
-  assert.match(app, /data-action="update-agent-reasoning"/);
-  assert.match(app, /'update-agent-model',/);
-  assert.match(app, /'update-agent-reasoning',/);
-  assert.match(app, /body: JSON\.stringify\(\{ model: target\.value \|\| null \}\)/);
-  assert.match(app, /body: JSON\.stringify\(\{ reasoningEffort: target\.value \|\| null \}\)/);
+  assert.match(app, /id="agent-runtime-config-form"/);
+  assert.match(app, /Runtime Configuration/);
+  assert.match(app, /RESTART TO APPLY RUNTIME CONFIGURATION/);
+  assert.match(app, /selectedAgentId \|\| activeView === 'members' \|\| activeView === 'computers'/);
+  assert.match(app, /form\.id === 'agent-runtime-config-form'/);
+  assert.match(app, /body: JSON\.stringify\(\{[\s\S]*runtimeId: runtime\.id \|\| data\.get\('runtimeId'\)/);
+  assert.match(app, /Environment Variables/);
+  assert.match(app, /Creator/);
+  assert.match(app, /Username/);
+  assert.match(app, /User ID/);
   assert.match(app, />Reasoning</);
   assert.equal(app.includes('>Thinking</span>'), false);
   assert.match(app, /type="file"[\s\S]*data-action="upload-agent-avatar"/);
@@ -1174,7 +1184,7 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.match(app, /function renderAgentRestartModal\(\)/);
   assert.match(app, /function renderAgentSkillsTab\(agent\)/);
   assert.match(app, /data-action="refresh-agent-skills"/);
-  assert.match(app, /Function Calls \/ Tools/);
+  assert.doesNotMatch(profileSource, /Function Calls \/ Tools/);
   assert.match(app, /renderAgentToolCapsules/);
   assert.match(app, /function agentSkillCount\(skills\)/);
   assert.match(app, /renderSkillCollapseButton\('profile-skills', 'Skills'\)/);
@@ -1188,6 +1198,8 @@ test('agent detail uses Slock-style tabs with inline profile editing and autosav
   assert.match(styles, /\.agent-restart-option/);
   assert.match(styles, /\.agent-computer-card/);
   assert.match(styles, /\.agent-computer-meta-grid/);
+  assert.match(styles, /\.agent-hero-status/);
+  assert.match(styles, /\.agent-runtime-config-form/);
 });
 
 test('sidebar settings and skill panels support collapsible MagClaw UI sections', async () => {
@@ -1469,6 +1481,8 @@ test('server settings, human detail, and computer detail mirror Slock structure'
   assert.doesNotMatch(computerRailSource, /Feature Entrances/);
   assert.doesNotMatch(computerPageSource, /Feature Entrances/);
   assert.match(app, /runtimeOptionsForComputer/);
+  assert.match(app, /computer\.connectedVia !== 'daemon'/);
+  assert.match(app, /seen\.has\(id\)/);
   assert.match(styles, /\.human-detail-page/);
   assert.match(styles, /\.computer-detail-page/);
   assert.match(styles, /\.server-profile-avatar/);

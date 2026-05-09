@@ -11,6 +11,7 @@ export async function handleAgentApi(req, res, url, deps) {
     agentParticipatesInChannels,
     broadcastState,
     clearAgentProcesses,
+    currentActor,
     ensureAgentWorkspace,
     findAgent,
     findChannel,
@@ -40,6 +41,7 @@ export async function handleAgentApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/agents') {
     const body = await readJson(req);
+    const actor = typeof currentActor === 'function' ? currentActor(req) : null;
     const agent = {
       id: makeId('agt'),
       name: String(body.name || 'New Agent').trim().slice(0, 80),
@@ -53,6 +55,10 @@ export async function handleAgentApi(req, res, url, deps) {
       reasoningEffort: body.reasoningEffort ? String(body.reasoningEffort) : null,
       envVars: Array.isArray(body.envVars) ? body.envVars : null,
       avatar: body.avatar ? String(body.avatar) : null,
+      createdByUserId: actor?.user?.id || '',
+      createdByHumanId: actor?.member?.humanId || '',
+      creatorName: actor?.user?.name || '',
+      creatorEmail: actor?.user?.email || '',
       statusUpdatedAt: now(),
       heartbeatAt: now(),
       createdAt: now(),
@@ -217,7 +223,7 @@ export async function handleAgentApi(req, res, url, deps) {
       return true;
     }
     const body = await readJson(req);
-    for (const key of ['name', 'description', 'runtime', 'model', 'computerId', 'workspace', 'reasoningEffort', 'avatar']) {
+    for (const key of ['name', 'description', 'runtime', 'runtimeId', 'model', 'computerId', 'workspace', 'reasoningEffort', 'avatar']) {
       if (body[key] !== undefined) agent[key] = String(body[key] || '').trim();
     }
     if (body.status !== undefined) setAgentStatus(agent, String(body.status || '').trim() || 'idle', 'agent_patch', { forceEvent: true });

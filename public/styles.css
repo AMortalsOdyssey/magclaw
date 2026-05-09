@@ -7140,6 +7140,10 @@ code {
 }
 
 .agent-profile-hero h3 {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   font-size: 18px;
 }
 
@@ -7150,6 +7154,17 @@ code {
   gap: 5px;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.agent-hero-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  font-size: 12px;
+  font-weight: 900;
 }
 
 .avatar-status-dot.inline {
@@ -7456,7 +7471,7 @@ code {
 
 .agent-info-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(90px, auto));
+  grid-template-columns: repeat(4, minmax(90px, auto));
   gap: 10px 16px;
   align-items: end;
   justify-content: start;
@@ -7472,6 +7487,42 @@ code {
   min-height: 28px;
   padding: 4px 8px;
   font-weight: 900;
+}
+
+.agent-runtime-config-section {
+  gap: 12px;
+}
+
+.runtime-restart-hint {
+  border: 1px solid var(--border);
+  background: #ffe9f5;
+  color: var(--accent-strong);
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.agent-runtime-config-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(180px, 1.3fr) minmax(120px, 0.8fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.agent-runtime-config-form label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.agent-runtime-config-form select {
+  width: 100%;
+}
+
+.primary-btn.compact {
+  min-height: 28px;
+  padding: 5px 12px;
 }
 
 .model-select {

@@ -1006,6 +1006,7 @@ function agentApiDeps() {
     agentParticipatesInChannels,
     broadcastState,
     clearAgentProcesses: () => agentProcesses.clear(),
+    currentActor: (req) => cloudAuth.currentActor(req),
     ensureAgentWorkspace,
     findAgent,
     findChannel,

@@ -17,6 +17,9 @@ async function refreshState() {
     appState = await api('/api/state');
   }
   startHumanPresenceHeartbeat();
+  if (!installedRuntimes.length && (selectedAgentId || activeView === 'members' || activeView === 'computers')) {
+    await loadInstalledRuntimes().catch(() => {});
+  }
   render();
   maybeWarmCurrentAgent();
 }

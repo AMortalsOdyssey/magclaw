@@ -293,7 +293,11 @@ function runtimeNameForId(id = '') {
   const labels = {
     codex: 'Codex CLI',
     'claude-code': 'Claude Code',
+    kimi: 'Kimi CLI',
+    cursor: 'Cursor CLI',
+    copilot: 'Copilot CLI',
     gemini: 'Gemini CLI',
+    opencode: 'OpenCode',
   };
   return labels[value] || value || 'Runtime';
 }

@@ -421,24 +421,34 @@ function renderEnvVarsList() {
 
 function runtimeOptionsForComputer(computerId) {
   const computer = byId(appState.computers, computerId) || appState.computers?.[0] || {};
-  const supported = new Set(['codex', 'claude-code']);
   const details = computerRuntimeDetails(computer);
-  const options = details
-    .filter((runtime) => supported.has(String(runtime.id || '').toLowerCase()))
-    .map((runtime) => {
-      const installedRuntime = installedRuntimes.find((item) => item.id === runtime.id || item.name === runtime.name);
-      return {
-        ...installedRuntime,
-        ...runtime,
-        name: runtime.name || installedRuntime?.name || runtimeNameForId(runtime.id),
-        installed: runtime.installed !== false,
-        modelNames: installedRuntime?.modelNames || installedRuntime?.models?.map((model) => ({ slug: model, name: model })) || [],
-        models: installedRuntime?.models || [],
-        defaultModel: installedRuntime?.defaultModel || '',
-        reasoningEffort: runtime.id === 'codex' ? (installedRuntime?.reasoningEffort || ['low', 'medium', 'high']) : [],
-        defaultReasoningEffort: installedRuntime?.defaultReasoningEffort || 'medium',
-      };
-    });
+  const normalizeRuntimeOption = (runtime) => {
+    const installedRuntime = installedRuntimes.find((item) => item.id === runtime.id || item.name === runtime.name);
+    const models = runtime.models || installedRuntime?.models || [];
+    const modelNames = runtime.modelNames || installedRuntime?.modelNames || models.map((model) => ({ slug: model, name: model }));
+    return {
+      ...installedRuntime,
+      ...runtime,
+      name: runtime.name || installedRuntime?.name || runtimeNameForId(runtime.id),
+      installed: runtime.installed !== false,
+      createSupported: runtime.createSupported !== false,
+      modelNames,
+      models,
+      defaultModel: runtime.defaultModel || installedRuntime?.defaultModel || models[0] || '',
+      reasoningEffort: runtime.reasoningEffort || installedRuntime?.reasoningEffort || [],
+      defaultReasoningEffort: runtime.defaultReasoningEffort || installedRuntime?.defaultReasoningEffort || 'medium',
+    };
+  };
+  const options = details.map(normalizeRuntimeOption);
+  if (!details.length || computer.connectedVia !== 'daemon') {
+    const seen = new Set(options.map((runtime) => String(runtime.id || '').toLowerCase()));
+    for (const runtime of installedRuntimes) {
+      const id = String(runtime.id || '').toLowerCase();
+      if (!id || seen.has(id)) continue;
+      options.push(normalizeRuntimeOption(runtime));
+      seen.add(id);
+    }
+  }
   return options;
 }
 
@@ -463,10 +473,11 @@ function renderAgentModal() {
   }
   const defaultComputer = agentFormState.computerId || appState.computers?.[0]?.id || '';
   const availableRuntimes = runtimeOptionsForComputer(defaultComputer);
-  if (!availableRuntimes.some((rt) => rt.id === selectedRuntimeId)) {
-    selectedRuntimeId = availableRuntimes[0]?.id || '';
+  const selectableRuntimes = availableRuntimes.filter((rt) => rt.installed && rt.createSupported !== false);
+  if (!selectableRuntimes.some((rt) => rt.id === selectedRuntimeId)) {
+    selectedRuntimeId = selectableRuntimes[0]?.id || '';
   }
-  const currentRuntime = availableRuntimes.find((rt) => rt.id === selectedRuntimeId) || availableRuntimes[0];
+  const currentRuntime = selectableRuntimes.find((rt) => rt.id === selectedRuntimeId) || selectableRuntimes[0];
   const models = currentRuntime?.models || [];
   const modelNames = currentRuntime?.modelNames || models.map(m => ({ slug: m, name: m }));
   const defaultModel = agentFormState.model || currentRuntime?.defaultModel || '';
@@ -498,7 +509,7 @@ function renderAgentModal() {
       <label>
         <span>COMPUTER <span class="required">*</span></span>
         <select name="computerId" id="agent-computer-select">
-          ${(appState.computers || []).map((c) => `<option value="${c.id}" ${c.id === defaultComputer ? 'selected' : ''}>${escapeHtml(c.name)} (${escapeHtml(c.name)})</option>`).join('')}
+          ${(appState.computers || []).map((c) => `<option value="${c.id}" ${c.id === defaultComputer ? 'selected' : ''}>${escapeHtml(c.name || c.hostname || 'Computer')}${c.hostname && c.hostname !== c.name ? ` (${escapeHtml(c.hostname)})` : ''}</option>`).join('')}
         </select>
       </label>
       <label>
@@ -514,10 +525,10 @@ function renderAgentModal() {
         <span>RUNTIME</span>
         <select name="runtime" id="agent-runtime-select">
           ${availableRuntimes.length ? availableRuntimes.map((rt) => {
-            const label = rt.installed
-              ? `${rt.name}${rt.version ? ` (${rt.version})` : ''}`
-              : `${rt.name} (not installed)`;
-            return `<option value="${rt.id}" ${!rt.installed ? 'disabled' : ''} ${rt.id === selectedRuntimeId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+            const unavailable = !rt.installed || rt.createSupported === false;
+            const suffix = !rt.installed ? ' (not installed)' : rt.createSupported === false ? ' (not supported yet)' : '';
+            const label = `${rt.name}${rt.version && rt.installed ? ` (${String(rt.version).split(/\r?\n/)[0]})` : ''}${suffix}`;
+            return `<option value="${rt.id}" ${unavailable ? 'disabled' : ''} ${rt.id === selectedRuntimeId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
           }).join('') : '<option value="" disabled selected>No supported runtime on this computer</option>'}
         </select>
       </div>

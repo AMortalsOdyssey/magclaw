@@ -292,24 +292,131 @@ function codexAppServerCapable(command, env = process.env) {
   return output.includes('app-server') || output.includes('listen') || output.includes('stdio');
 }
 
+function codexRuntimeModels(command, env = process.env) {
+  const fallback = {
+    models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+    modelNames: [
+      { slug: 'gpt-5.5', name: 'GPT-5.5' },
+      { slug: 'gpt-5.4', name: 'GPT-5.4' },
+      { slug: 'gpt-5.4-mini', name: 'GPT-5.4 Mini' },
+      { slug: 'gpt-5.3-codex', name: 'GPT-5.3 Codex' },
+    ],
+    defaultModel: 'gpt-5.5',
+    reasoningEffort: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'medium',
+  };
+  const result = commandOutput(command, ['debug', 'models'], { env, timeoutMs: 5000 });
+  if (!result.ok) return fallback;
+  try {
+    const data = JSON.parse(result.stdout || '{}');
+    const modelNames = [];
+    let defaultModel = '';
+    let reasoningEffort = [];
+    for (const model of Array.isArray(data.models) ? data.models : []) {
+      if (model.visibility && model.visibility !== 'list') continue;
+      const slug = String(model.slug || '').trim();
+      if (!slug) continue;
+      modelNames.push({ slug, name: model.display_name || model.name || slug });
+      if (!defaultModel) {
+        defaultModel = slug;
+        reasoningEffort = (Array.isArray(model.supported_reasoning_levels) ? model.supported_reasoning_levels : [])
+          .map((item) => String(item.effort || '').trim())
+          .filter(Boolean);
+      }
+    }
+    if (!modelNames.length) return fallback;
+    return {
+      models: modelNames.map((model) => model.slug),
+      modelNames,
+      defaultModel: defaultModel || modelNames[0].slug,
+      reasoningEffort: reasoningEffort.length ? reasoningEffort : fallback.reasoningEffort,
+      defaultReasoningEffort: 'medium',
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 export async function detectRuntimes(env = process.env) {
   const codexCommand = env.CODEX_PATH || env.MAGCLAW_CODEX_PATH || 'codex';
   const candidates = [
-    { id: 'codex', command: codexCommand },
-    { id: 'claude-code', command: env.CLAUDE_PATH || 'claude' },
-    { id: 'gemini', command: env.GEMINI_PATH || 'gemini' },
+    {
+      id: 'codex',
+      name: 'Codex CLI',
+      command: codexCommand,
+      createSupported: true,
+      modelsFor: (command) => codexRuntimeModels(command, env),
+    },
+    {
+      id: 'claude-code',
+      name: 'Claude Code',
+      command: env.CLAUDE_PATH || 'claude',
+      createSupported: true,
+      models: ['claude-sonnet-4-6', 'claude-opus-4-7', 'claude-haiku-4-5-20251001'],
+      defaultModel: 'claude-sonnet-4-6',
+    },
+    {
+      id: 'kimi',
+      name: 'Kimi CLI',
+      command: env.KIMI_PATH || 'kimi',
+      createSupported: false,
+      models: ['kimi-k2-0905', 'kimi-k2-turbo-preview'],
+      defaultModel: 'kimi-k2-0905',
+    },
+    {
+      id: 'cursor',
+      name: 'Cursor CLI',
+      command: env.CURSOR_PATH || 'cursor-agent',
+      createSupported: false,
+      models: ['auto'],
+      defaultModel: 'auto',
+    },
+    {
+      id: 'gemini',
+      name: 'Gemini CLI',
+      command: env.GEMINI_PATH || 'gemini',
+      createSupported: false,
+      models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+      defaultModel: 'gemini-2.5-pro',
+    },
+    {
+      id: 'copilot',
+      name: 'Copilot CLI',
+      command: env.COPILOT_PATH || 'copilot',
+      createSupported: false,
+      models: ['auto'],
+      defaultModel: 'auto',
+    },
+    {
+      id: 'opencode',
+      name: 'OpenCode',
+      command: env.OPENCODE_PATH || 'opencode',
+      createSupported: false,
+      models: ['auto'],
+      defaultModel: 'auto',
+    },
   ];
   return candidates.map((item) => {
     const pathValue = item.command.includes(path.sep) ? (existsSync(item.command) ? item.command : '') : commandExists(item.command, env);
     const installed = Boolean(pathValue);
     const version = installed ? runtimeVersion(item.command, env) : '';
+    const modelInfo = installed && item.modelsFor ? item.modelsFor(item.command) : {
+      models: item.models || [],
+      modelNames: (item.models || []).map((model) => ({ slug: model, name: model })),
+      defaultModel: item.defaultModel || item.models?.[0] || '',
+      reasoningEffort: [],
+      defaultReasoningEffort: '',
+    };
     return {
       id: item.id,
+      name: item.name,
       command: item.command,
       path: pathValue,
       installed,
       version,
+      createSupported: item.createSupported !== false,
       appServer: item.id === 'codex' && installed ? codexAppServerCapable(item.command, env) : false,
+      ...modelInfo,
     };
   });
 }

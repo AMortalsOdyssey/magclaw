@@ -219,6 +219,81 @@ export function createSystemServices(deps) {
       runtimes.push({ id: 'claude-code', name: 'Claude Code', installed: false });
     }
   
+    // Kimi CLI
+    try {
+      const kimiVersion = await execText('kimi', ['--version']);
+      runtimes.push({
+        id: 'kimi',
+        name: 'Kimi CLI',
+        path: 'kimi',
+        version: kimiVersion.trim(),
+        installed: true,
+        createSupported: false,
+        models: ['kimi-k2-0905', 'kimi-k2-turbo-preview'],
+        defaultModel: 'kimi-k2-0905',
+      });
+    } catch {
+      runtimes.push({ id: 'kimi', name: 'Kimi CLI', installed: false, createSupported: false });
+    }
+
+    // Cursor CLI
+    try {
+      let cursorPath = 'cursor-agent';
+      let cursorVersion = '';
+      try {
+        cursorVersion = await execText(cursorPath, ['--version']);
+      } catch {
+        cursorPath = 'cursor';
+        cursorVersion = await execText(cursorPath, ['--version']);
+      }
+      runtimes.push({
+        id: 'cursor',
+        name: 'Cursor CLI',
+        path: cursorPath,
+        version: cursorVersion.trim(),
+        installed: true,
+        createSupported: false,
+        models: ['auto'],
+        defaultModel: 'auto',
+      });
+    } catch {
+      runtimes.push({ id: 'cursor', name: 'Cursor CLI', installed: false, createSupported: false });
+    }
+
+    // Gemini CLI
+    try {
+      const geminiVersion = await execText('gemini', ['--version']);
+      runtimes.push({
+        id: 'gemini',
+        name: 'Gemini CLI',
+        path: 'gemini',
+        version: geminiVersion.trim(),
+        installed: true,
+        createSupported: false,
+        models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+        defaultModel: 'gemini-2.5-pro',
+      });
+    } catch {
+      runtimes.push({ id: 'gemini', name: 'Gemini CLI', installed: false, createSupported: false });
+    }
+
+    // Copilot CLI
+    try {
+      const copilotVersion = await execText('copilot', ['--version']);
+      runtimes.push({
+        id: 'copilot',
+        name: 'Copilot CLI',
+        path: 'copilot',
+        version: copilotVersion.trim(),
+        installed: true,
+        createSupported: false,
+        models: ['gpt-5', 'gpt-4.1', 'claude-sonnet-4.5'],
+        defaultModel: 'gpt-5',
+      });
+    } catch {
+      runtimes.push({ id: 'copilot', name: 'Copilot CLI', installed: false, createSupported: false });
+    }
+
     // OpenCode
     try {
       const openCodeVersion = await execText('opencode', ['--version']);
@@ -228,43 +303,12 @@ export function createSystemServices(deps) {
         path: 'opencode',
         version: openCodeVersion.trim(),
         installed: true,
+        createSupported: false,
         models: ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'],
         defaultModel: 'gpt-4o',
       });
     } catch {
-      runtimes.push({ id: 'opencode', name: 'OpenCode', installed: false });
-    }
-  
-    // Goose
-    try {
-      const gooseVersion = await execText('goose', ['--version']);
-      runtimes.push({
-        id: 'goose',
-        name: 'Goose',
-        path: 'goose',
-        version: gooseVersion.trim(),
-        installed: true,
-        models: ['gpt-4o', 'claude-3-opus', 'claude-3-sonnet'],
-        defaultModel: 'gpt-4o',
-      });
-    } catch {
-      runtimes.push({ id: 'goose', name: 'Goose', installed: false });
-    }
-  
-    // Aider
-    try {
-      const aiderVersion = await execText('aider', ['--version']);
-      runtimes.push({
-        id: 'aider',
-        name: 'Aider',
-        path: 'aider',
-        version: aiderVersion.trim(),
-        installed: true,
-        models: ['gpt-4o', 'claude-3-opus', 'claude-3-sonnet', 'deepseek-coder'],
-        defaultModel: 'gpt-4o',
-      });
-    } catch {
-      runtimes.push({ id: 'aider', name: 'Aider', installed: false });
+      runtimes.push({ id: 'opencode', name: 'OpenCode', installed: false, createSupported: false });
     }
   
     return runtimes;

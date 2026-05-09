@@ -72,12 +72,22 @@ process.exit(2);
     CODEX_PATH: fakeCodex,
     CLAUDE_PATH: path.join(tmp, 'missing-claude'),
     GEMINI_PATH: path.join(tmp, 'missing-gemini'),
+    KIMI_PATH: path.join(tmp, 'missing-kimi'),
+    CURSOR_PATH: path.join(tmp, 'missing-cursor'),
+    COPILOT_PATH: path.join(tmp, 'missing-copilot'),
+    OPENCODE_PATH: path.join(tmp, 'missing-opencode'),
   });
   const codex = runtimes.find((runtime) => runtime.id === 'codex');
   assert.equal(codex.installed, true);
   assert.equal(codex.appServer, true);
   assert.match(codex.version, /9\.9\.9/);
+  assert.ok(codex.models.includes('gpt-5.5'));
   assert.equal(runtimes.find((runtime) => runtime.id === 'claude-code').installed, false);
+  assert.ok(runtimes.find((runtime) => runtime.id === 'kimi'));
+  assert.ok(runtimes.find((runtime) => runtime.id === 'cursor'));
+  assert.ok(runtimes.find((runtime) => runtime.id === 'gemini'));
+  assert.ok(runtimes.find((runtime) => runtime.id === 'copilot'));
+  assert.ok(runtimes.find((runtime) => runtime.id === 'opencode'));
 });
 
 test('top-level daemon npm package dry-run excludes cloud server and deployment files', () => {

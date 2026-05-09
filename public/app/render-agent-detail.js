@@ -50,9 +50,62 @@ function renderAgentAvatarEditor(agent) {
   `;
 }
 
+function agentCreatorInfo(agent = {}) {
+  const members = appState.cloud?.members || [];
+  const byHuman = agent.createdByHumanId ? members.find((member) => member.humanId === agent.createdByHumanId) : null;
+  const byUser = agent.createdByUserId ? members.find((member) => member.userId === agent.createdByUserId) : null;
+  const member = byHuman || byUser || null;
+  const human = byId(appState.humans, agent.createdByHumanId || member?.humanId) || member?.human || null;
+  const user = member?.user || null;
+  return {
+    name: human?.displayName || human?.name || user?.name || agent.creatorName || '--',
+    username: user?.email || human?.email || agent.creatorEmail || '--',
+    userId: user?.id || agent.createdByUserId || '--',
+  };
+}
+
+function canonicalRuntimeId(value = '') {
+  const text = String(value || '').toLowerCase().trim().replace(/[\s_]+/g, '-');
+  if (!text) return '';
+  if (text === 'codex-cli' || text.startsWith('codex')) return 'codex';
+  if (text === 'claude' || text === 'claude-cli' || text === 'claude-code' || text.startsWith('claude-code')) return 'claude-code';
+  if (text === 'kimi-cli' || text.startsWith('kimi')) return 'kimi';
+  if (text === 'cursor-cli' || text === 'cursor-agent' || text.startsWith('cursor')) return 'cursor';
+  if (text === 'gemini-cli' || text.startsWith('gemini')) return 'gemini';
+  if (text === 'copilot-cli' || text.startsWith('copilot')) return 'copilot';
+  if (text.startsWith('opencode') || text === 'open-code') return 'opencode';
+  return text;
+}
+
+function runtimeOptionsForAgent(agent = {}) {
+  const options = runtimeOptionsForComputer(agent.computerId);
+  const currentId = canonicalRuntimeId(agent.runtimeId || agent.runtime || '');
+  if (currentId && !options.some((runtime) => canonicalRuntimeId(runtime.id || runtime.name || '') === currentId)) {
+    options.unshift({
+      id: currentId,
+      name: agent.runtime || runtimeNameForId(currentId),
+      installed: true,
+      createSupported: true,
+      models: agent.model ? [agent.model] : [],
+      modelNames: agent.model ? [{ slug: agent.model, name: agent.model }] : [],
+      defaultModel: agent.model || '',
+      reasoningEffort: agent.reasoningEffort ? [agent.reasoningEffort] : [],
+      defaultReasoningEffort: agent.reasoningEffort || '',
+    });
+  }
+  return options;
+}
+
+function runtimeForAgent(agent) {
+  const runtime = canonicalRuntimeId(agent?.runtimeId || agent?.runtime || '');
+  return runtimeOptionsForAgent(agent).find((rt) => (
+    canonicalRuntimeId(rt.id || rt.name || '') === runtime
+  )) || runtimeOptionsForAgent(agent).find((rt) => rt.installed && rt.createSupported !== false) || null;
+}
+
 function renderAgentInfoSection(agent) {
   const computer = byId(appState.computers, agent.computerId);
-  const reasoningOptions = agentReasoningOptions(agent);
+  const creator = agentCreatorInfo(agent);
   const runtimeBadges = computer ? renderComputerRuntimeBadges(computer) : '<span class="runtime-badge muted">No runtimes detected</span>';
   return `
     <section class="agent-profile-field agent-info-section">
@@ -89,26 +142,20 @@ function renderAgentInfoSection(agent) {
       </div>
       <div class="agent-info-grid">
         <div>
-          <span class="agent-info-caption">Runtime</span>
-          <span class="runtime-badge">${escapeHtml(agent.runtime || '--')}</span>
-        </div>
-        <label>
-          <span class="agent-info-caption">Model</span>
-          <select class="agent-auto-select model-select" data-action="update-agent-model" data-agent-id="${escapeHtml(agent.id)}">
-            ${agentModelOptions(agent)}
-          </select>
-        </label>
-        ${reasoningOptions ? `
-        <label>
-          <span class="agent-info-caption">Reasoning</span>
-          <select class="agent-auto-select reasoning-select" data-action="update-agent-reasoning" data-agent-id="${escapeHtml(agent.id)}">
-            ${agentReasoningOptions(agent)}
-          </select>
-        </label>
-        ` : ''}
-        <div>
-          <span class="agent-info-caption">Born</span>
+          <span class="agent-info-caption">Created</span>
           <strong>${escapeHtml(formatAgentBorn(agent.createdAt))}</strong>
+        </div>
+        <div>
+          <span class="agent-info-caption">Creator</span>
+          <strong>${escapeHtml(creator.name)}</strong>
+        </div>
+        <div>
+          <span class="agent-info-caption">Username</span>
+          <strong>${escapeHtml(creator.username)}</strong>
+        </div>
+        <div>
+          <span class="agent-info-caption">User ID</span>
+          <strong>${escapeHtml(creator.userId)}</strong>
         </div>
       </div>
     </section>
@@ -168,6 +215,64 @@ function renderAgentEnvVarsSection(agent) {
   `;
 }
 
+function runtimeModelOptionsForSelect(agent, runtime) {
+  const modelNames = runtime?.modelNames || (runtime?.models || []).map((model) => ({ slug: model, name: model }));
+  const current = agent?.model || runtime?.defaultModel || '';
+  const options = [...modelNames];
+  if (current && !options.some((model) => (typeof model === 'string' ? model : model.slug) === current)) {
+    options.unshift({ slug: current, name: current });
+  }
+  return options.map((model) => {
+    const slug = typeof model === 'string' ? model : model.slug;
+    const name = typeof model === 'string' ? model : model.name;
+    return `<option value="${escapeHtml(slug)}" ${slug === current ? 'selected' : ''}>${escapeHtml(name)}</option>`;
+  }).join('');
+}
+
+function renderAgentRuntimeConfigSection(agent) {
+  const runtimes = runtimeOptionsForAgent(agent);
+  const currentRuntime = runtimeForAgent(agent) || runtimes[0] || null;
+  const currentRuntimeId = currentRuntime?.id || agent.runtimeId || agent.runtime || '';
+  const efforts = currentRuntime?.reasoningEffort || [];
+  const currentEffort = agent.reasoningEffort || currentRuntime?.defaultReasoningEffort || '';
+  const effortOptions = currentEffort && !efforts.includes(currentEffort) ? [currentEffort, ...efforts] : efforts;
+  return `
+    <section class="agent-profile-field agent-runtime-config-section">
+      <div class="agent-field-head">
+        <span class="detail-label">Runtime Configuration</span>
+        <span class="runtime-restart-hint">RESTART TO APPLY RUNTIME CONFIGURATION</span>
+      </div>
+      <form id="agent-runtime-config-form" class="agent-runtime-config-form" data-agent-id="${escapeHtml(agent.id)}">
+        <label>
+          <span class="agent-info-caption">Runtime</span>
+          <select name="runtimeId" class="agent-auto-select runtime-select">
+            ${runtimes.map((runtime) => {
+              const disabled = runtime.installed === false || runtime.createSupported === false;
+              const suffix = runtime.installed === false ? ' (not installed)' : runtime.createSupported === false ? ' (not supported yet)' : '';
+              return `<option value="${escapeHtml(runtime.id)}" ${disabled ? 'disabled' : ''} ${runtime.id === currentRuntimeId ? 'selected' : ''}>${escapeHtml((runtime.name || runtimeNameForId(runtime.id)) + suffix)}</option>`;
+            }).join('')}
+          </select>
+        </label>
+        <label>
+          <span class="agent-info-caption">Model</span>
+          <select name="model" class="agent-auto-select model-select">
+            ${runtimeModelOptionsForSelect(agent, currentRuntime)}
+          </select>
+        </label>
+        ${effortOptions.length ? `
+        <label>
+          <span class="agent-info-caption">Reasoning</span>
+          <select name="reasoningEffort" class="agent-auto-select reasoning-select">
+            ${effortOptions.map((effort) => `<option value="${escapeHtml(effort)}" ${effort === currentEffort ? 'selected' : ''}>${escapeHtml(effort.charAt(0).toUpperCase() + effort.slice(1))}</option>`).join('')}
+          </select>
+        </label>
+        ` : ''}
+        <button class="primary-btn compact" type="submit">Save</button>
+      </form>
+    </section>
+  `;
+}
+
 function agentSkillsFor(agent) {
   return agentSkillsCache[agent.id] || null;
 }
@@ -208,13 +313,6 @@ function renderAgentCapabilitiesSection(agent) {
   const skills = agentSkillsFor(agent);
   const profileSkillsCollapsed = Boolean(collapsedSkillSections['profile-skills']);
   return `
-    <section class="agent-profile-field agent-capabilities-section">
-      <div class="agent-field-head">
-        <span class="detail-label">Function Calls / Tools</span>
-        <button class="agent-edit-pencil" type="button" data-action="refresh-agent-skills" data-agent-id="${escapeHtml(agent.id)}" aria-label="Rescan skills and tools" title="Rescan skills and tools">${refreshIcon()}</button>
-      </div>
-      ${!skills || skills.loading ? '<div class="agent-field-value muted">Loading tools...</div>' : renderAgentToolCapsules(skills.tools || [])}
-    </section>
     <section class="agent-profile-field agent-capabilities-section agent-skills-profile-section">
       <div class="agent-field-head agent-skills-profile-head">
         ${renderSkillCollapseButton('profile-skills', 'Skills')}
@@ -278,16 +376,20 @@ function renderAgentProfileTab(agent) {
       <div class="agent-profile-hero">
         <span class="agent-detail-avatar-frame hero-avatar">${getAvatarHtml(agent.id, 'agent', 'agent-detail-avatar-preview')}</span>
         <div>
-          <h3>${escapeHtml(agent.name)}</h3>
-          <p><span class="avatar-status-dot inline ${presenceClass(agentDisplayStatus(agent))}"></span>${escapeHtml(agentStatusLabel(agent))} <span>${escapeHtml(agentHandle(agent))}</span></p>
+          <h3>
+            <span>${escapeHtml(agent.name)}</span>
+            <span class="agent-hero-status"><span class="avatar-status-dot inline ${presenceClass(agentDisplayStatus(agent))}"></span>${escapeHtml(agentStatusLabel(agent))}</span>
+          </h3>
+          <p>${escapeHtml(agentHandle(agent))}</p>
         </div>
       </div>
       ${renderAgentAvatarEditor(agent)}
       ${renderAgentInlineField(agent, 'name', 'Display Name', { placeholder: 'Display name' })}
       ${renderAgentInlineField(agent, 'description', 'Description', { multiline: true, placeholder: 'Describe this agent...' })}
       ${renderAgentInfoSection(agent)}
-      ${renderAgentCapabilitiesSection(agent)}
+      ${renderAgentRuntimeConfigSection(agent)}
       ${renderAgentEnvVarsSection(agent)}
+      ${renderAgentCapabilitiesSection(agent)}
       <section class="agent-profile-field agent-actions-section">
         <span class="detail-label">Actions</span>
         <div class="agent-detail-actions">
