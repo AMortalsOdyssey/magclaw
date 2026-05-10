@@ -473,22 +473,31 @@ function renderAgentModal() {
       </div>
     `;
   }
-  const agentComputers = (typeof sortComputersByAvailability === 'function'
+  const computerOptions = (typeof sortComputersByAvailability === 'function'
     ? sortComputersByAvailability(appState.computers || [])
-    : (appState.computers || [])).filter((computer) => !(typeof computerIsDisabled === 'function' && computerIsDisabled(computer)));
-  if (!agentComputers.length) {
+    : (appState.computers || [])).filter((computer) => {
+      if (typeof computerIsDeleted === 'function' && computerIsDeleted(computer)) return false;
+      if (typeof computerIsDisabled === 'function' && computerIsDisabled(computer)) return false;
+      return true;
+    });
+  const connectedComputers = computerOptions.filter((computer) => (
+    typeof computerIsConnected === 'function'
+      ? computerIsConnected(computer)
+      : String(computer.status || '').toLowerCase() === 'connected'
+  ));
+  if (!computerOptions.length) {
     return `
       ${modalHeader('CREATE AGENT', 'Computer required')}
       <div class="modal-form">
-        <div class="empty-box small">Enable or connect a Computer before creating cloud Agents.</div>
+        <div class="empty-box small">Connect a Computer before creating cloud Agents.</div>
         <button type="button" class="primary-btn" data-action="close-modal">Close</button>
       </div>
     `;
   }
-  const defaultComputer = agentComputers.some((computer) => computer.id === agentFormState.computerId)
+  const defaultComputer = connectedComputers.some((computer) => computer.id === agentFormState.computerId)
     ? agentFormState.computerId
-    : agentComputers[0]?.id || '';
-  const availableRuntimes = runtimeOptionsForComputer(defaultComputer);
+    : connectedComputers[0]?.id || '';
+  const availableRuntimes = defaultComputer ? runtimeOptionsForComputer(defaultComputer) : [];
   const selectableRuntimes = availableRuntimes.filter((rt) => rt.installed && rt.createSupported !== false);
   if (!selectableRuntimes.some((rt) => rt.id === selectedRuntimeId)) {
     selectedRuntimeId = selectableRuntimes[0]?.id || '';
@@ -509,6 +518,7 @@ function renderAgentModal() {
   return `
     ${modalHeader('CREATE AGENT', 'Local runtime profile')}
     <form id="agent-form" class="modal-form">
+      ${connectedComputers.length ? '' : '<div class="empty-box small agent-computer-required">No connected Computer is available. Connect one first; offline Computers are shown below for reference.</div>'}
       <div class="avatar-picker">
         <span class="form-label">AVATAR</span>
         <div class="avatar-picker-row">
@@ -525,12 +535,18 @@ function renderAgentModal() {
       <label>
         <span>COMPUTER <span class="required">*</span></span>
         <select name="computerId" id="agent-computer-select">
-          ${agentComputers.map((c) => `<option value="${c.id}" ${c.id === defaultComputer ? 'selected' : ''}>${escapeHtml(c.name || c.hostname || 'Computer')}${c.hostname && c.hostname !== c.name ? ` (${escapeHtml(c.hostname)})` : ''}</option>`).join('')}
+          ${defaultComputer ? '<option value="" disabled>Select...</option>' : '<option value="" disabled selected>Select...</option>'}
+          ${computerOptions.map((c) => {
+            const connected = connectedComputers.some((computer) => computer.id === c.id);
+            const status = String(c.status || 'offline').toLowerCase();
+            const suffix = connected ? '' : ` (${status === 'connected' ? 'offline' : status || 'offline'})`;
+            return `<option value="${c.id}" ${connected ? '' : 'disabled'} ${c.id === defaultComputer ? 'selected' : ''}>${escapeHtml(c.name || c.hostname || 'Computer')}${c.hostname && c.hostname !== c.name ? ` (${escapeHtml(c.hostname)})` : ''}${escapeHtml(suffix)}</option>`;
+          }).join('')}
         </select>
       </label>
       <label>
         <span>NAME <span class="required">*</span></span>
-        <input name="name" placeholder="e.g. Alice" value="${escapeHtml(agentFormState.name)}" required />
+        <input name="name" placeholder="Musk" value="${escapeHtml(agentFormState.name)}" required />
       </label>
       <label>
         <span>DESCRIPTION <span class="optional">(optional)</span></span>
@@ -545,7 +561,7 @@ function renderAgentModal() {
             const suffix = !rt.installed ? ' (not installed)' : rt.createSupported === false ? ' (not supported yet)' : '';
             const label = `${rt.name}${rt.version && rt.installed ? ` (${String(rt.version).split(/\r?\n/)[0]})` : ''}${suffix}`;
             return `<option value="${rt.id}" ${unavailable ? 'disabled' : ''} ${rt.id === selectedRuntimeId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-          }).join('') : '<option value="" disabled selected>No supported runtime on this computer</option>'}
+          }).join('') : '<option value="" disabled selected>Select...</option>'}
         </select>
         <div class="runtime-availability-list">
           ${availableRuntimes.map((rt) => `
@@ -559,11 +575,11 @@ function renderAgentModal() {
       <div class="form-field">
         <span>MODEL</span>
         <select name="model" id="agent-model-select">
-          ${modelNames.map((m) => {
+          ${modelNames.length ? modelNames.map((m) => {
             const slug = typeof m === 'string' ? m : m.slug;
             const name = typeof m === 'string' ? m : m.name;
             return `<option value="${slug}" ${slug === defaultModel ? 'selected' : ''}>${escapeHtml(name)}</option>`;
-          }).join('')}
+          }).join('') : '<option value="" disabled selected>Select...</option>'}
         </select>
       </div>
       ${hasReasoningEffort ? `
@@ -587,7 +603,7 @@ function renderAgentModal() {
       </details>
       <div class="modal-actions">
         <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
-        <button class="primary-btn" type="submit" ${currentRuntime ? '' : 'disabled'}>Create Agent</button>
+        <button class="primary-btn" type="submit" ${currentRuntime && defaultComputer ? '' : 'disabled'}>Create Agent</button>
       </div>
     </form>
   `;
@@ -660,14 +676,22 @@ function renderComputerModal() {
   }
   const command = latestPairingCommand?.command || '';
   const connected = latestPairingCommand?.computer?.status === 'connected';
+  const usesLocalRepoPlaceholder = command.includes('MAGCLAW_REPO_DIR=');
   return `
-    ${modalHeader('CONNECT COMPUTER', 'Run this command on your computer to connect')}
+    ${modalHeader('CONNECT COMPUTER')}
     <div class="modal-form connect-computer-modal">
-      <div class="pair-command-box">
-        <span>Run this command on your computer to connect:</span>
-        <code>${escapeHtml(command || 'Generating command...')}</code>
-        ${command ? '<button class="secondary-btn" type="button" data-action="copy-pairing-command">Copy command</button>' : ''}
+      <div class="connect-command-intro">
+        <span class="connect-command-prompt" aria-hidden="true">&gt;_</span>
+        <strong>Run this command on your computer to connect:</strong>
       </div>
+      <div class="connect-command-shell">
+        <pre><code>${escapeHtml(command || 'Generating command...')}</code></pre>
+        ${command ? '<button class="connect-copy-btn" type="button" data-action="copy-pairing-command" aria-label="Copy command" title="Copy command"><span aria-hidden="true">⧉</span></button>' : ''}
+      </div>
+      <p class="connect-command-note">
+        ${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your local MagClaw checkout path before running. ' : ''}
+        Keep this process running — it maintains the connection between your computer and MagClaw.
+      </p>
       <div class="pairing-wait-box ${connected ? 'connected' : ''}">
         <span class="avatar-status-dot inline ${connected ? 'online' : 'queued'}"></span>
         <strong>${connected ? 'Computer connected.' : 'Waiting for computer to connect...'}</strong>
@@ -713,7 +737,7 @@ function saveAgentFormState() {
   if (!form) return;
   const data = new FormData(form);
   agentFormState.computerId = data.get('computerId') || '';
-  agentFormState.name = data.get('name') || '';
+  agentFormState.name = data.get('name') || 'Musk';
   agentFormState.description = data.get('description') || '';
   agentFormState.model = data.get('model') || '';
   agentFormState.reasoningEffort = data.get('reasoningEffort') || '';
@@ -723,7 +747,7 @@ function saveAgentFormState() {
 function resetAgentFormState() {
   agentFormState = {
     computerId: '',
-    name: '',
+    name: 'Musk',
     description: '',
     model: '',
     reasoningEffort: '',

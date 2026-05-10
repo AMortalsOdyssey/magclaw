@@ -910,6 +910,73 @@
 
 .connect-computer-modal {
   min-width: min(520px, 82vw);
+  gap: 14px;
+}
+
+.connect-command-intro {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.connect-command-prompt {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.connect-command-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+  align-items: center;
+}
+
+.connect-command-shell pre {
+  min-height: 94px;
+  max-height: 150px;
+  margin: 0;
+  overflow: auto;
+  padding: 14px;
+  border: 2px solid var(--border);
+  background: #060606;
+  color: #8df279;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+
+.connect-command-shell code {
+  color: inherit;
+  font: inherit;
+}
+
+.connect-copy-btn {
+  display: inline-grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 2px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-shadow: 3px 3px 0 var(--shadow);
+  cursor: pointer;
+}
+
+.connect-copy-btn:hover {
+  transform: translateY(-1px);
+}
+
+.connect-command-note {
+  margin: -2px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .pairing-wait-box {
@@ -918,7 +985,7 @@
   gap: 9px;
   padding: 14px;
   border: 2px solid var(--border);
-  background: #fff2c8;
+  background: #fff1d6;
 }
 
 .pairing-wait-box.connected {
@@ -1599,4 +1666,3 @@
   gap: 2px;
   min-width: 0;
 }
-

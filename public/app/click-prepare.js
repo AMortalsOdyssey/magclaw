@@ -211,8 +211,8 @@ async function prepareDocumentClick(event) {
   }
   if (action === 'copy-pairing-command') {
     if (latestPairingCommand?.command) {
-      await navigator.clipboard?.writeText(latestPairingCommand.command);
-      toast('Connect command copied');
+      const copied = await tryCopyTextToClipboard(latestPairingCommand.command);
+      toast(copied ? 'Connect command copied' : 'Copy is unavailable');
     }
     return;
   }

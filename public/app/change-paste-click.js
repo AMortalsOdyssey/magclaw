@@ -810,7 +810,10 @@ document.addEventListener('click', async (event) => {
       }
       if (modal === 'agent') {
         resetAgentFormState();
+        render();
         await loadInstalledRuntimes();
+        if (modal === 'agent') render();
+        return;
       }
       if (modal === 'computer' && cloudCan('manage_computers')) {
         latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {

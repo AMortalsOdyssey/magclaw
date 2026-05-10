@@ -101,16 +101,22 @@ export async function handleSystemApi(req, res, url, deps) {
   if (['POST', 'PATCH'].includes(req.method) && url.pathname === '/api/settings/fanout') {
     if (!requireSystemRole(['admin'])) return true;
     const body = await readJson(req);
-    updateFanoutApiConfig(body);
+    const workspace = cloudAuth?.primaryWorkspace?.() || null;
+    const fanoutApi = updateFanoutApiConfig(body, workspace);
     addSystemEvent('fanout_api_settings_updated', 'Fan-out API settings updated.', {
       configured: fanoutApiConfigured(),
-      baseUrl: state.settings.fanoutApi.baseUrl,
-      model: state.settings.fanoutApi.model,
-      fallbackModel: state.settings.fanoutApi.fallbackModel,
-      timeoutMs: state.settings.fanoutApi.timeoutMs,
-      hasApiKey: Boolean(state.settings.fanoutApi.apiKey),
+      workspaceId: workspace?.id || null,
+      baseUrl: fanoutApi.baseUrl,
+      model: fanoutApi.model,
+      fallbackModel: fanoutApi.fallbackModel,
+      timeoutMs: fanoutApi.timeoutMs,
+      hasApiKey: Boolean(fanoutApi.apiKey),
     });
-    await persistState();
+    if (cloudAuth?.persistCloudState) {
+      await cloudAuth.persistCloudState();
+    } else {
+      await persistState();
+    }
     broadcastState();
     sendJson(res, 200, publicState(req));
     return true;

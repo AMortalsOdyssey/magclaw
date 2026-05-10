@@ -1,13 +1,9 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const PAIR_TTL_MS = 1000 * 60 * 15;
 const MACHINE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 365;
 const MAX_DAEMON_EVENT_LOG = 300;
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '../..');
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -181,9 +177,10 @@ export function createDaemonRelay(deps) {
         .replaceAll('{serverName}', comment);
     }
     const useNpmCommand = String(process.env.MAGCLAW_DAEMON_COMMAND_MODE || '').toLowerCase() === 'npm';
+    const localRepoDir = process.env.MAGCLAW_DAEMON_LOCAL_REPO_PLACEHOLDER || '/path/to/magclaw';
     const launcher = useNpmCommand
       ? 'npx -y @magclaw/daemon@latest connect'
-      : `node ${shellArg(path.join(REPO_ROOT, 'daemon/bin/magclaw-daemon.js'))} connect`;
+      : `MAGCLAW_REPO_DIR=${shellArg(localRepoDir)}; node "$MAGCLAW_REPO_DIR/daemon/bin/magclaw-daemon.js" connect`;
     return [
       launcher,
       `--server-url ${shellArg(publicUrl)}`,

@@ -538,7 +538,7 @@ function renderAgentGroupsByComputer(agents = []) {
     const key = agent.computerId && groups.has(agent.computerId) ? agent.computerId : 'unassigned';
     groups.get(key).agents.push(agent);
   }
-  const visibleGroups = [...groups.values()].filter((group) => group.agents.length || group.id !== 'unassigned');
+  const visibleGroups = [...groups.values()].filter((group) => group.agents.length);
   if (!visibleGroups.length) return '<div class="empty-box small">No agents yet.</div>';
   return visibleGroups.map((group) => `
     <div class="agent-computer-group">

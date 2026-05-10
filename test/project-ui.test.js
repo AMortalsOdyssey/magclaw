@@ -40,7 +40,8 @@ test('members settings expose role-aware invitation controls', async () => {
 
   assert.match(app, /function cloudRoleAllows\(role, allowedRole\)/);
   assert.match(app, /function cloudCan\(capability\)/);
-  assert.match(railSource, /System Config[\s\S]*Release Notes/);
+  assert.doesNotMatch(railSource, /System Config/);
+  assert.match(railSource, /Server[\s\S]*Release Notes/);
   assert.doesNotMatch(railSource, /id: 'members'/);
   assert.match(membersSettingsSource, /id="member-invite-form"/);
   assert.match(membersSettingsSource, /memberInviteValidCount\(\)/);
@@ -1324,7 +1325,8 @@ test('sidebar settings and skill panels support collapsible MagClaw UI sections'
   assert.match(app, /function renderSettingsChrome\(body, actions = ''\)/);
   assert.match(app, /function renderComputersRail\(\)/);
   assert.match(app, /data-action="set-settings-tab"/);
-  assert.match(app, /System Config/);
+  assert.doesNotMatch(app, /id: 'system'/);
+  assert.doesNotMatch(app, /System Config/);
   assert.match(app, /Release Notes/);
   assert.match(app, /MAGCLAW_WEB_PACKAGE_VERSION = '0\.2\.0'/);
   assert.match(app, /function renderReleaseVersionCard\(release\)/);
@@ -1412,26 +1414,37 @@ test('create agent opens with a fresh form state every time', async () => {
   const app = await readAppSource();
 
   assert.match(app, /function resetAgentFormState\(\)/);
-  assert.match(app, /if \(modal === 'agent'\) \{\s*resetAgentFormState\(\);\s*await loadInstalledRuntimes\(\);/);
+  assert.match(app, /name: 'Musk'/);
+  assert.match(app, /placeholder="Musk"/);
+  assert.match(app, /Connect a Computer before creating cloud Agents/);
+  assert.match(app, /No connected Computer is available/);
+  assert.match(app, /const connectedComputers = computerOptions\.filter/);
+  assert.match(app, /<option value="\$\{c\.id\}" \$\{connected \? '' : 'disabled'\}/);
+  assert.match(app, /if \(modal === 'agent'\) \{\s*resetAgentFormState\(\);\s*render\(\);\s*await loadInstalledRuntimes\(\);\s*if \(modal === 'agent'\) render\(\);\s*return;/);
   assert.match(app, /if \(form\.id === 'agent-form'\)[\s\S]*resetAgentFormState\(\);\s*modal = null/);
 });
 
-test('Fan-out API config owns the routing settings UI', async () => {
+test('Fan-out API config is server-scoped in Server settings', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
   const railSource = app.slice(app.indexOf('function renderRail'), app.indexOf('function renderNavItem'));
   const submitSource = app.slice(app.indexOf("document.addEventListener('submit'"), app.indexOf('refreshState().then'));
+  const serverSettingsSource = app.slice(app.indexOf('function renderServerSettingsTab()'), app.indexOf('function consoleInvitationRows()'));
+  const fanoutSource = app.slice(app.indexOf('function renderFanoutApiConfigCard()'), app.indexOf('function settingsPageMeta'));
 
   assert.match(railSource, /const normalAgents = channelAssignableAgents\(\)/);
   assert.match(railSource, /renderAgentGroupsByComputer\(normalAgents\)/);
-  assert.match(railSource, /System Config/);
-  assert.match(app, /function renderSystemSettingsTab\(\)/);
-  assert.match(app, /settingsTab === 'system'/);
+  assert.doesNotMatch(railSource, /System Config/);
+  assert.doesNotMatch(app, /function renderSystemSettingsTab\(\)/);
+  assert.doesNotMatch(app, /id: 'system'/);
   assert.match(app, /function renderComputersRail\(\)/);
   assert.doesNotMatch(app.slice(app.indexOf('function renderComputersRail'), app.indexOf('function renderSettingsRail')), /Fan-out API/);
   assert.doesNotMatch(railSource, /renderNavItem\('cloud', 'System'/);
   assert.match(app, /function renderFanoutApiConfigCard\(\)/);
-  assert.match(app.slice(app.indexOf('function renderSystemSettingsTab'), app.indexOf('function renderReleaseNotesSettingsTab')), /renderFanoutApiConfigCard\(\)/);
+  assert.match(serverSettingsSource, /renderFanoutApiConfigCard\(\)/);
+  assert.match(fanoutSource, /cloudCan\('manage_system'\)/);
+  assert.match(fanoutSource, /Only Owner and Admin members can modify this server configuration/);
+  assert.match(fanoutSource, /Configure this server's supplemental LLM route/);
   assert.match(app, /id="fanout-config-form"/);
   assert.match(app, /Base URL/);
   assert.match(app, /Fallback Model/);

@@ -264,7 +264,6 @@ function renderSettingsRail() {
         <button class="settings-nav-item${settingsTab === item.id ? ' active' : ''}" type="button" data-action="set-settings-tab" data-tab="${escapeHtml(item.id)}">
           ${settingsIcon(item.icon, 20)}
           <span>${escapeHtml(item.label)}</span>
-          ${item.meta ? `<em>${escapeHtml(item.meta)}</em>` : ''}
         </button>
       `).join('')}
     </nav>
@@ -325,12 +324,10 @@ function renderRailSectionTitle(section, label, count, { modal = '' } = {}) {
 }
 
 function settingsNavItems() {
-  const fanoutConfigured = appState.settings?.fanoutApi?.configured;
   return [
     { id: 'account', label: 'Account', icon: 'account' },
     { id: 'browser', label: 'Browser', icon: 'browser', meta: notificationStatusLabel() },
     { id: 'server', label: 'Server', icon: 'server', meta: currentServerProfile().slug || '' },
-    { id: 'system', label: 'System Config', icon: 'system', meta: fanoutConfigured ? 'LLM' : 'rules' },
     { id: 'lost-space', label: 'Lost Space', icon: 'lost' },
     { id: 'language', label: 'Language', icon: 'language', meta: typeof magclawLanguageLabel === 'function' ? magclawLanguageLabel() : '' },
     { id: 'release', label: 'Release Notes', icon: 'release' },

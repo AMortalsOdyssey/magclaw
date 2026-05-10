@@ -1,11 +1,30 @@
 async function tryCopyTextToClipboard(text) {
   const value = String(text || '');
-  if (!value || !navigator.clipboard?.writeText) return false;
+  if (!value) return false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      // Fall through to the textarea copy path for browsers that block Clipboard API writes.
+    }
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, value.length);
   try {
-    await navigator.clipboard.writeText(value);
-    return true;
+    return Boolean(document.execCommand?.('copy'));
   } catch {
     return false;
+  } finally {
+    textarea.remove();
   }
 }
 

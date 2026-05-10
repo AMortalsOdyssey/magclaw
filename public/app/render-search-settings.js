@@ -617,28 +617,31 @@ function renderComputerConfigCard() {
 
 function renderFanoutApiConfigCard() {
   const config = appState.settings?.fanoutApi || {};
+  const canManageFanout = cloudCan('manage_system');
+  const disabled = canManageFanout ? '' : 'disabled';
   return `
     <div class="pixel-panel cloud-card fanout-config-card">
       <form id="fanout-config-form" class="modal-form">
-        <div class="panel-title"><span>Fan-out API</span></div>
-        <p class="fanout-api-note">Configure the supplemental LLM route used for ambiguous fan-out decisions.</p>
-        <label class="checkline"><input type="checkbox" name="enabled" ${config.enabled ? 'checked' : ''} /> Enable async LLM supplement for ambiguous routing</label>
-        <label><span>Base URL</span><input name="baseUrl" value="${escapeHtml(config.baseUrl || '')}" placeholder="https://model-api.skyengine.com.cn/v1" /></label>
-        <label><span>Model</span><input name="model" value="${escapeHtml(config.model || '')}" placeholder="qwen3.5-flash" /></label>
-        <label><span>Fallback Model</span><input name="fallbackModel" value="${escapeHtml(config.fallbackModel || '')}" placeholder="deepseek-v4-flash" /></label>
-        <label><span>Timeout</span><input name="timeoutMs" type="number" min="500" max="30000" step="500" value="${escapeHtml(config.timeoutMs || 5000)}" /></label>
+        <div class="panel-title"><span>Fan-out API</span><span>${config.configured ? 'configured' : 'rules'}</span></div>
+        <p class="fanout-api-note">Configure this server's supplemental LLM route for ambiguous fan-out decisions.</p>
+        ${canManageFanout ? '' : '<div class="empty-box small">Only Owner and Admin members can modify this server configuration.</div>'}
+        <label class="checkline"><input type="checkbox" name="enabled" ${config.enabled ? 'checked' : ''} ${disabled} /> Enable async LLM supplement for ambiguous routing</label>
+        <label><span>Base URL</span><input name="baseUrl" value="${escapeHtml(config.baseUrl || '')}" placeholder="https://model-api.skyengine.com.cn/v1" ${disabled} /></label>
+        <label><span>Model</span><input name="model" value="${escapeHtml(config.model || '')}" placeholder="qwen3.5-flash" ${disabled} /></label>
+        <label><span>Fallback Model</span><input name="fallbackModel" value="${escapeHtml(config.fallbackModel || '')}" placeholder="deepseek-v4-flash" ${disabled} /></label>
+        <label><span>Timeout</span><input name="timeoutMs" type="number" min="500" max="30000" step="500" value="${escapeHtml(config.timeoutMs || 5000)}" ${disabled} /></label>
         <label>
           <span>Force LLM Keywords</span>
-          <textarea name="forceKeywords" rows="3" placeholder="">${escapeHtml((config.forceKeywords || []).join('\n'))}</textarea>
+          <textarea name="forceKeywords" rows="3" placeholder="" ${disabled}>${escapeHtml((config.forceKeywords || []).join('\n'))}</textarea>
           <small>Optional. Matching messages still route by rules first, then queue an LLM supplement.</small>
         </label>
         <label>
           <span>API Key</span>
-          <input name="apiKey" type="password" autocomplete="off" placeholder="${escapeHtml(config.hasApiKey ? `${config.apiKeyPreview} configured - leave blank to keep` : 'paste API key')}" />
+          <input name="apiKey" type="password" autocomplete="off" placeholder="${escapeHtml(config.hasApiKey ? `${config.apiKeyPreview} configured - leave blank to keep` : 'paste API key')}" ${disabled} />
           <small>${escapeHtml(config.hasApiKey ? `Stored key preview: ${config.apiKeyPreview}` : 'No key stored yet.')}</small>
         </label>
-        ${config.hasApiKey ? '<label class="checkline"><input type="checkbox" name="clearApiKey" /> Clear saved API key</label>' : ''}
-        <button class="primary-btn" type="submit">Save Fan-out API</button>
+        ${config.hasApiKey ? `<label class="checkline"><input type="checkbox" name="clearApiKey" ${disabled} /> Clear saved API key</label>` : ''}
+        <button class="primary-btn" type="submit" ${disabled}>Save Fan-out API</button>
       </form>
     </div>
   `;
@@ -649,7 +652,6 @@ function settingsPageMeta(tab = settingsTab) {
     account: { title: 'Account', icon: 'account', section: 'ACCOUNT' },
     browser: { title: 'Browser', icon: 'browser', section: 'BROWSER' },
     server: { title: 'Server', icon: 'server', section: 'SERVER' },
-    system: { title: 'System Config', icon: 'system', section: 'SYSTEM CONFIG' },
     members: { title: 'Members', icon: 'members', section: 'MEMBERS' },
     'lost-space': { title: 'Lost Space', icon: 'lost', section: 'LOST SPACE' },
     language: { title: 'Language', icon: 'language', section: 'LANGUAGE' },
@@ -1586,6 +1588,8 @@ function renderServerSettingsTab() {
         </form>
       </div>
 
+      ${renderFanoutApiConfigCard()}
+
       <details class="pixel-panel cloud-card danger-card server-danger-accordion">
         <summary>
           <span>Danger Zone</span>
@@ -1597,14 +1601,6 @@ function renderServerSettingsTab() {
           <button class="danger-btn" type="submit" ${canManage ? '' : 'disabled'}>Move Server to Lost Space</button>
         </form>
       </details>
-    </section>
-  `;
-}
-
-function renderSystemSettingsTab() {
-  return `
-    <section class="cloud-layout">
-      ${renderFanoutApiConfigCard()}
     </section>
   `;
 }
@@ -1742,8 +1738,6 @@ function renderCloud() {
     ? renderAccountSettingsTab()
     : settingsTab === 'browser'
       ? renderBrowserSettingsTab()
-      : settingsTab === 'system'
-        ? renderSystemSettingsTab()
       : settingsTab === 'members'
         ? renderMembersSettingsTab()
         : settingsTab === 'lost-space'

@@ -572,7 +572,7 @@ test('environment admin login protects app APIs and supports invites end to end'
       body: JSON.stringify({ name: 'CI runner' }),
     });
     assert.match(pairing.data.pairToken, /^mc_pair_/);
-    assert.match(pairing.data.command, /node ".+daemon\/bin\/magclaw-daemon\.js" connect/);
+    assert.match(pairing.data.command, /MAGCLAW_REPO_DIR="\/path\/to\/magclaw"; node "\$MAGCLAW_REPO_DIR\/daemon\/bin\/magclaw-daemon\.js" connect/);
     assert.match(pairing.data.command, /--background/);
     assert.match(pairing.data.command, /--profile "?local"?/);
     assert.match(pairing.data.command, /# MagClaw|# local/);

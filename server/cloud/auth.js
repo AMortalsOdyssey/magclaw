@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { canInviteRole, canRemoveRole, canUpdateMemberRole, cloudCapabilitiesForRole, normalizeCloudRole, roleAllows } from './roles.js';
 import { parseCookies, publicLinkOrigin, requestOrigin, safeArray } from './auth-utils.js';
+import { normalizeFanoutApiConfig } from '../runtime-config.js';
 
 const SESSION_COOKIE = 'magclaw_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
@@ -400,6 +401,11 @@ export function createCloudAuth(deps) {
     return cloud.workspaces.find((workspace) => workspace.id === preferred && !workspace.deletedAt)
       || cloud.workspaces.find((workspace) => !workspace.deletedAt)
       || cloud.workspaces[0];
+  }
+
+  function applyWorkspaceScopedSettings(workspace = primaryWorkspace()) {
+    state.settings = state.settings || {};
+    state.settings.fanoutApi = normalizeFanoutApiConfig(workspace?.metadata?.fanoutApi || {});
   }
 
   function currentSession(req) {
@@ -1003,6 +1009,7 @@ export function createCloudAuth(deps) {
         createdAt,
       });
       state.connection.workspaceId = workspace.id;
+      applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] console server created workspace=${workspace.id} slug=${workspace.slug} owner=${user.id}`);
       await persistCloudState();
       return { server: workspace, member: memberForUser(user.id, workspace.id) };
@@ -1032,6 +1039,7 @@ export function createCloudAuth(deps) {
         throw error;
       }
       state.connection.workspaceId = workspace.id;
+      applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] console server switched workspace=${workspace.id} slug=${workspace.slug || workspace.id} user=${user.id}`);
       await persistCloudState();
       return { server: workspace, member };
@@ -1087,6 +1095,7 @@ export function createCloudAuth(deps) {
       }
       const nextWorkspace = workspacesForUser(auth.user).find((item) => item.id !== workspace.id) || null;
       state.connection.workspaceId = nextWorkspace?.id || 'local';
+      applyWorkspaceScopedSettings(nextWorkspace);
       console.info(`[cloud-auth] console server soft-deleted workspace=${workspace.id} slug=${workspace.slug || workspace.id} actor=${auth.user.id}`);
       await persistCloudState();
       return { deleted: workspace, nextWorkspace };
@@ -1132,6 +1141,7 @@ export function createCloudAuth(deps) {
         agent.updatedAt = restoredAt;
       }
       state.connection.workspaceId = workspace.id;
+      applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] console server restored workspace=${workspace.id} slug=${workspace.slug || workspace.id} user=${user.id}`);
       await persistCloudState();
       return { server: workspace, member };
@@ -1348,6 +1358,7 @@ export function createCloudAuth(deps) {
       }
       joinLink.updatedAt = joinedAt;
       state.connection.workspaceId = workspace.id;
+      applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] join link accepted workspace=${workspace.id} user=${user.id}`);
       await persistCloudState();
       return {

@@ -53,8 +53,12 @@ function routeDeps(overrides = {}) {
       res.data = data;
     },
     sseClients,
-    updateFanoutApiConfig: (body) => {
+    updateFanoutApiConfig: (body, workspace = null) => {
       state.settings.fanoutApi = { ...body };
+      if (workspace) {
+        workspace.metadata = { ...(workspace.metadata || {}), fanoutApi: { ...body } };
+      }
+      return state.settings.fanoutApi;
     },
     events,
     state,
@@ -103,4 +107,71 @@ test('system settings route updates runtime settings through injected state', as
   assert.equal(deps.state.settings.model, 'gpt-test');
   assert.equal(deps.state.settings.sandbox, 'read-only');
   assert.equal(deps.events[0].type, 'settings_updated');
+});
+
+test('fan-out settings route stores config on the active workspace', async () => {
+  const workspace = { id: 'wsp_test', metadata: {} };
+  let persistedCloud = false;
+  let persistedLocal = false;
+  const deps = routeDeps({
+    cloudAuth: {
+      isLoginRequired: () => false,
+      primaryWorkspace: () => workspace,
+      persistCloudState: async () => { persistedCloud = true; },
+    },
+    fanoutApiConfigured: (config = deps.state.settings.fanoutApi) => Boolean(config.enabled && config.baseUrl && config.model && config.apiKey),
+    persistState: async () => { persistedLocal = true; },
+    readJson: async () => ({
+      enabled: true,
+      baseUrl: 'https://models.example/v1',
+      model: 'qwen-test',
+      apiKey: 'secret',
+    }),
+  });
+  const res = makeResponse();
+
+  assert.equal(await handleSystemApi(
+    { method: 'PATCH', on: () => {} },
+    res,
+    new URL('http://local/api/settings/fanout'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(workspace.metadata.fanoutApi.model, 'qwen-test');
+  assert.equal(deps.state.settings.fanoutApi.baseUrl, 'https://models.example/v1');
+  assert.equal(deps.events[0].extra.workspaceId, 'wsp_test');
+  assert.equal(persistedCloud, true);
+  assert.equal(persistedLocal, false);
+});
+
+test('fan-out settings route requires an admin workspace role', async () => {
+  let updated = false;
+  const deps = routeDeps({
+    cloudAuth: {
+      isLoginRequired: () => true,
+      requireUser: (_req, res, sendError) => {
+        sendError(res, 403, 'Workspace role is not allowed.');
+        return null;
+      },
+      primaryWorkspace: () => ({ id: 'wsp_forbidden', metadata: {} }),
+    },
+    updateFanoutApiConfig: () => {
+      updated = true;
+      return {};
+    },
+    readJson: async () => ({ enabled: true, model: 'qwen-test' }),
+  });
+  const res = makeResponse();
+
+  assert.equal(await handleSystemApi(
+    { method: 'POST', on: () => {} },
+    res,
+    new URL('http://local/api/settings/fanout'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.error, 'Workspace role is not allowed.');
+  assert.equal(updated, false);
 });

@@ -13,6 +13,7 @@ const WORKSPACE_ACTIVITY_VISIBLE_STEP = 30;
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
 const MEMBERS_LAYOUT_MODES = new Set(['directory', 'channel', 'split', 'agent']);
 const initialUiState = readStoredUiState();
+canonicalizeLegacyRoutePath();
 const initialRouteState = routeStateFromLocation(window.location.pathname || '');
 
 let appState = null;
@@ -140,7 +141,8 @@ function routeStateFromLocation(path = window.location.pathname || '') {
   }
   const settingsMatch = value.match(/^\/s\/[^/]+\/settings\/([^/]+)/);
   if (settingsMatch) {
-    return { activeView: 'cloud', settingsTab: decodeURIComponent(settingsMatch[1] || 'server'), railTab: 'settings' };
+    const tab = decodeURIComponent(settingsMatch[1] || 'server');
+    return { activeView: 'cloud', settingsTab: tab === 'system' ? 'server' : tab, railTab: 'settings' };
   }
   const humanMatch = value.match(/^\/s\/[^/]+\/human\/([^/]+)/);
   if (humanMatch) {
@@ -170,6 +172,14 @@ function routeStateFromLocation(path = window.location.pathname || '') {
   }
   if (value.startsWith('/s/')) return { activeView: 'space', railTab: 'spaces' };
   return {};
+}
+
+function canonicalizeLegacyRoutePath() {
+  const path = window.location.pathname || '';
+  if (!/^\/s\/[^/]+\/settings\/system(?:\/|$)/.test(path)) return;
+  if (!window.history?.replaceState) return;
+  const nextPath = path.replace(/\/settings\/system(?:\/.*)?$/, '/settings/server');
+  window.history.replaceState({}, '', `${nextPath}${window.location.search || ''}${window.location.hash || ''}`);
 }
 
 function initialActiveViewFromLocation(savedView = 'space') {
@@ -216,7 +226,10 @@ function routePathForActiveView() {
     return `/s/${serverSlug}/members`;
   }
   if (activeView === 'tasks') return `/s/${serverSlug}/tasks`;
-  if (activeView === 'cloud') return `/s/${serverSlug}/settings/${encodeURIComponent(settingsTab || 'account')}`;
+  if (activeView === 'cloud') {
+    const safeSettingsTab = settingsTab === 'system' ? 'server' : (settingsTab || 'account');
+    return `/s/${serverSlug}/settings/${encodeURIComponent(safeSettingsTab)}`;
+  }
   return `/s/${serverSlug}`;
 }
 
@@ -265,7 +278,7 @@ let mentionPopup = {
 // Agent modal form state
 let agentFormState = {
   computerId: '',
-  name: '',
+  name: 'Musk',
   description: '',
   model: '',
   reasoningEffort: '',

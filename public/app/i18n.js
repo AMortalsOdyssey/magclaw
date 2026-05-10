@@ -104,7 +104,6 @@ const zhCnTranslations = {
   'This is a soft delete. Members, chats, Agents, Computers, invitations, and configuration are preserved, but Computers and Agents are disabled.': '这是软删除。成员、聊天、智能体、电脑、邀请和配置会被保留，但电脑和智能体会被禁用。',
   'Type slug to confirm': '输入标识确认',
   'Move Server to Lost Space': '移到失落空间',
-  'System Config': '系统配置',
   'Fan-out API': '分发 API',
   'Configure the supplemental LLM route used for ambiguous fan-out decisions.': '配置用于模糊分发判断的补充 LLM 路由。',
   'Enable async LLM supplement for ambiguous routing': '为模糊路由启用异步 LLM 补充判断',

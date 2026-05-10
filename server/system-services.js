@@ -49,7 +49,7 @@ export function createSystemServices(deps) {
         humans: [],
         routeEvents: [],
         systemNotifications: [],
-        settings: publicSettings(),
+        settings: publicSettings(cloud),
         connection: publicConnection(),
         cloud,
         releaseNotes: publicReleaseNotes(),
@@ -63,7 +63,7 @@ export function createSystemServices(deps) {
     const visibleDmIds = new Set(visibleDms.map((dm) => dm.id));
     return {
       ...currentState,
-      settings: publicSettings(),
+      settings: publicSettings(cloud),
       channels: (currentState.channels || []).filter((channel) => !channel.archived),
       dms: visibleDms,
       messages: (currentState.messages || []).filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId)),
@@ -76,8 +76,12 @@ export function createSystemServices(deps) {
     };
   }
   
-  function publicSettings() {
-    const fanoutApi = normalizeFanoutApiConfig(state?.settings?.fanoutApi || {});
+  function workspaceFanoutApiConfig(cloud = null) {
+    return cloud?.workspace?.metadata?.fanoutApi || null;
+  }
+
+  function publicSettings(cloud = null) {
+    const fanoutApi = normalizeFanoutApiConfig(workspaceFanoutApiConfig(cloud) || state?.settings?.fanoutApi || {});
     const { apiKey, ...settings } = state?.settings || {};
     void apiKey;
     return {
@@ -106,8 +110,8 @@ export function createSystemServices(deps) {
     };
   }
   
-  function updateFanoutApiConfig(body = {}) {
-    const current = normalizeFanoutApiConfig(state.settings?.fanoutApi || {});
+  function updateFanoutApiConfig(body = {}, workspace = null) {
+    const current = normalizeFanoutApiConfig(workspace?.metadata?.fanoutApi || state.settings?.fanoutApi || {});
     const next = {
       ...current,
       enabled: body.enabled !== undefined ? Boolean(body.enabled) : current.enabled,
@@ -122,7 +126,15 @@ export function createSystemServices(deps) {
     } else if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
       next.apiKey = body.apiKey.trim();
     }
-    state.settings.fanoutApi = normalizeFanoutApiConfig(next);
+    const normalized = normalizeFanoutApiConfig(next);
+    state.settings.fanoutApi = normalized;
+    if (workspace) {
+      workspace.metadata = {
+        ...(workspace.metadata || {}),
+        fanoutApi: normalized,
+      };
+      workspace.updatedAt = now();
+    }
     state.router = {
       ...(state.router || {}),
       mode: fanoutApiConfigured() ? 'llm_fanout' : 'rules_fallback',
@@ -130,7 +142,7 @@ export function createSystemServices(deps) {
       cardSource: 'workspace_markdown',
     };
     delete state.router.brainAgentId;
-    return state.settings.fanoutApi;
+    return normalized;
   }
   
   function runtimeSnapshot() {
