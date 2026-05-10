@@ -271,6 +271,10 @@ function persistUiState() {
 }
 
 function rememberMembersLayoutFromCurrent() {
+  if (activeView === 'members' && selectedHumanId) {
+    membersLayout = normalizeMembersLayout({ mode: 'human', humanId: selectedHumanId });
+    return membersLayout;
+  }
   if (activeView === 'members' && selectedAgentId) {
     membersLayout = normalizeMembersLayout({ mode: 'agent', agentId: selectedAgentId });
     return membersLayout;
@@ -289,6 +293,51 @@ function rememberMembersLayoutFromCurrent() {
   return membersLayout;
 }
 
+function firstMembersAgent() {
+  const agents = typeof channelAssignableAgents === 'function'
+    ? channelAssignableAgents()
+    : (appState?.agents || []).filter((agent) => (
+      typeof agentIsActiveInWorkspace === 'function' ? agentIsActiveInWorkspace(agent) : !agentIsDeleted(agent)
+    ));
+  return agents[0] || null;
+}
+
+function firstMembersHuman() {
+  const humans = typeof workspaceHumans === 'function'
+    ? workspaceHumans()
+    : (appState?.humans || []).filter((human) => human.status !== 'removed');
+  return humans[0] || null;
+}
+
+function selectMembersDefault() {
+  const agent = firstMembersAgent();
+  if (agent?.id) {
+    selectedAgentId = agent.id;
+    selectedHumanId = null;
+    selectedComputerId = null;
+    membersLayout = normalizeMembersLayout({ mode: 'agent', agentId: agent.id });
+    clearNonAgentInspectors();
+    return selectedAgentId;
+  }
+
+  const human = firstMembersHuman();
+  if (human?.id) {
+    selectedHumanId = human.id;
+    selectedAgentId = null;
+    selectedComputerId = null;
+    membersLayout = normalizeMembersLayout({ mode: 'human', humanId: human.id });
+    clearNonAgentInspectors();
+    return null;
+  }
+
+  selectedAgentId = null;
+  selectedHumanId = null;
+  selectedComputerId = null;
+  membersLayout = normalizeMembersLayout({ mode: 'directory' });
+  clearNonAgentInspectors();
+  return null;
+}
+
 function clearNonAgentInspectors() {
   threadMessageId = null;
   inspectorReturnThreadId = null;
@@ -302,28 +351,37 @@ function restoreMembersLayout() {
   railTab = 'members';
   membersLayout = normalizeMembersLayout(membersLayout);
   const restoredAgent = membersLayout.agentId ? byId(appState?.agents, membersLayout.agentId) : null;
+  const restoredHuman = membersLayout.humanId && typeof humanByIdAny === 'function'
+    ? humanByIdAny(membersLayout.humanId)
+    : null;
 
   if (membersLayout.mode === 'agent' && restoredAgent) {
     activeView = 'members';
     selectedAgentId = restoredAgent.id;
+    selectedHumanId = null;
     clearNonAgentInspectors();
     return selectedAgentId;
+  }
+
+  if (membersLayout.mode === 'human' && restoredHuman) {
+    activeView = 'members';
+    selectedHumanId = restoredHuman.id;
+    selectedAgentId = null;
+    selectedComputerId = null;
+    clearNonAgentInspectors();
+    return null;
   }
 
   if (membersLayout.mode === 'split' && restoredAgent) {
     activeView = 'space';
     selectedAgentId = restoredAgent.id;
+    selectedHumanId = null;
     clearNonAgentInspectors();
     return selectedAgentId;
   }
 
   activeView = 'members';
-  selectedAgentId = null;
-  selectedHumanId = null;
-  selectedComputerId = null;
-  clearNonAgentInspectors();
-  membersLayout = normalizeMembersLayout({ mode: 'directory' });
-  return null;
+  return selectMembersDefault();
 }
 
 function openMembersNav({ preserveSpace = false } = {}) {
@@ -335,8 +393,7 @@ function openMembersNav({ preserveSpace = false } = {}) {
   if (preserveSpace && activeView === 'space') {
     membersLayout = normalizeMembersLayout({ mode: 'channel' });
   } else {
-    activeView = 'members';
-    membersLayout = normalizeMembersLayout({ mode: 'directory' });
+    return restoreMembersLayout();
   }
   return null;
 }

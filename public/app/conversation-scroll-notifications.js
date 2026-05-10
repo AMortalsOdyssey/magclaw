@@ -745,7 +745,7 @@ function ensureSelection() {
     agentEnvEditState = null;
     selectedAgentWorkspaceFile = null;
   }
-  if (selectedHumanId && !byId(appState.humans, selectedHumanId)) {
+  if (selectedHumanId && !(typeof humanByIdAny === 'function' ? humanByIdAny(selectedHumanId) : byId(appState.humans, selectedHumanId))) {
     selectedHumanId = null;
   }
   if (selectedComputerId && !byId(appState.computers, selectedComputerId)) {
@@ -755,7 +755,10 @@ function ensureSelection() {
   if (membersLayout.agentId && !byId(appState.agents, membersLayout.agentId)) {
     membersLayout = normalizeMembersLayout({ mode: 'channel' });
   }
-  if (activeView === 'members' && !selectedAgentId) {
-    membersLayout = normalizeMembersLayout({ mode: 'directory' });
+  if (membersLayout.humanId && typeof humanByIdAny === 'function' && !humanByIdAny(membersLayout.humanId)) {
+    membersLayout = normalizeMembersLayout({ mode: 'channel' });
+  }
+  if (activeView === 'members' && !selectedAgentId && !selectedHumanId) {
+    selectMembersDefault();
   }
 }

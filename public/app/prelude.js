@@ -51,6 +51,8 @@ function readStoredUiState() {
     consoleTab: validConsoleTab,
     threadMessageId: parsed.threadMessageId ? String(parsed.threadMessageId) : null,
     selectedAgentId: parsed.selectedAgentId ? String(parsed.selectedAgentId) : null,
+    selectedHumanId: parsed.selectedHumanId ? String(parsed.selectedHumanId) : null,
+    selectedComputerId: parsed.selectedComputerId ? String(parsed.selectedComputerId) : null,
     membersLayout: normalizeMembersLayout(parsed.membersLayout),
   };
 }
@@ -58,9 +60,11 @@ function readStoredUiState() {
 function normalizeMembersLayout(value = {}) {
   const mode = MEMBERS_LAYOUT_MODES.has(value?.mode) ? value.mode : 'channel';
   const agentId = value?.agentId ? String(value.agentId) : null;
+  const humanId = value?.humanId ? String(value.humanId) : null;
   if ((mode === 'agent' || mode === 'split') && agentId) return { mode, agentId };
-  if (mode === 'directory') return { mode: 'directory', agentId: null };
-  return { mode: 'channel', agentId: null };
+  if (mode === 'human' && humanId) return { mode, agentId: null, humanId };
+  if (mode === 'directory') return { mode: 'directory', agentId: null, humanId: null };
+  return { mode: 'channel', agentId: null, humanId: null };
 }
 
 function readStoredPaneScrolls() {

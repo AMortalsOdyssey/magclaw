@@ -11,7 +11,7 @@ const NOTIFICATION_ICON = BRAND_FAVICON_SRC;
 const NOTIFICATION_PREVIEW_LIMIT = 140;
 const WORKSPACE_ACTIVITY_VISIBLE_STEP = 30;
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
-const MEMBERS_LAYOUT_MODES = new Set(['directory', 'channel', 'split', 'agent']);
+const MEMBERS_LAYOUT_MODES = new Set(['directory', 'channel', 'split', 'agent', 'human']);
 const initialUiState = readStoredUiState();
 canonicalizeLegacyRoutePath();
 const initialRouteState = routeStateFromLocation(window.location.pathname || '');
@@ -33,7 +33,13 @@ let workspaceActivityScrollToBottom = false;
 let selectedAgentId = initialRouteState.selectedAgentId || initialUiState.selectedAgentId || null; // selected agent for detail panel
 let selectedHumanId = initialRouteState.selectedHumanId || initialUiState.selectedHumanId || null;
 let selectedComputerId = initialRouteState.selectedComputerId || initialUiState.selectedComputerId || null;
-let membersLayout = normalizeMembersLayout(initialUiState.membersLayout);
+let membersLayout = normalizeMembersLayout(
+  initialRouteState.selectedHumanId
+    ? { mode: 'human', humanId: initialRouteState.selectedHumanId }
+    : initialRouteState.selectedAgentId
+      ? { mode: 'agent', agentId: initialRouteState.selectedAgentId }
+      : initialUiState.membersLayout
+);
 let selectedTaskId = null;
 let selectedSavedRecordId = null;
 let modal = null;

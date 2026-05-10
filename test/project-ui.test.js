@@ -817,23 +817,25 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
   assert.match(styles, /\.app-frame\.no-inspector/);
 });
 
-test('members navigation opens the directory before drilling into agents', async () => {
+test('members navigation restores the last detail and falls back to the first agent', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
   const leftNavSource = app.slice(app.indexOf("if (action === 'set-left-nav')"), app.indexOf("if (action === 'select-agent')"));
   const setRailSource = app.slice(app.indexOf("if (action === 'set-rail-tab')"), app.indexOf("if (action === 'set-left-nav')"));
   const selectAgentSource = app.slice(app.indexOf("if (action === 'select-agent')"), app.indexOf("if (action === 'close-agent-detail')"));
 
-  assert.match(app, /let membersLayout = normalizeMembersLayout\(initialUiState\.membersLayout\)/);
+  assert.match(app, /const MEMBERS_LAYOUT_MODES = new Set\(\['directory', 'channel', 'split', 'agent', 'human'\]\)/);
   assert.match(app, /function rememberMembersLayoutFromCurrent\(\)/);
   assert.match(app, /function restoreMembersLayout\(\)/);
+  assert.match(app, /function selectMembersDefault\(\)/);
   assert.match(app, /function openMembersNav\(\{ preserveSpace = false \} = \{\}\)/);
   assert.match(app, /if \(activeView === 'members'\) return renderMembersMain\(\)/);
   assert.match(app, /function renderInspector\(\) \{\s*if \(activeView === 'members'\) return '';/);
   assert.doesNotMatch(app, /if \(activeView === 'members' && !selectedAgentId\) \{\s*activeView = 'space'/);
   assert.match(leftNavSource, /const agentId = openMembersNav\(\{ preserveSpace: activeView === 'space' \}\)/);
   assert.match(setRailSource, /const agentId = openMembersNav\(\{ preserveSpace: activeView === 'space' \}\)/);
-  assert.match(app, /activeView = 'members';[\s\S]*membersLayout = normalizeMembersLayout\(\{ mode: 'directory'/);
+  assert.match(app, /membersLayout = normalizeMembersLayout\(\{ mode: 'human', humanId: selectedHumanId \}\)/);
+  assert.match(app, /membersLayout = normalizeMembersLayout\(\{ mode: 'agent', agentId: agent\.id \}\)/);
   assert.match(app, /membersLayout = normalizeMembersLayout\(\{ mode: 'channel' \}\)/);
   assert.doesNotMatch(leftNavSource, /channelAssignableAgents\(\)\[0\]/);
   assert.match(selectAgentSource, /if \(railTab === 'members'\) \{[\s\S]*activeView = 'members'[\s\S]*rememberMembersLayoutFromCurrent\(\)/);
@@ -1608,6 +1610,8 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /data-action="cancel-human-description"/);
   assert.match(app, /Created Agents/);
   assert.match(app, /Created Agents \(\$\{createdAgents\.length\}\)/);
+  assert.match(app, /const nameWithBadge = `\$\{displayName\}\$\{humanBadgeHtml\(\)\}\$\{youLabel\}`/);
+  assert.doesNotMatch(app, /<small>\$\{escapeHtml\(email \|\| 'Server member'\)\}<\/small>/);
   assert.doesNotMatch(app, /human-role-/);
   assert.match(app, /function renderAgentGroupsByComputer\(/);
   assert.match(app, /function renderComputerDetail\(/);

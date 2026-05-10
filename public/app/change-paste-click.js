@@ -470,6 +470,7 @@ document.addEventListener('click', async (event) => {
       selectedProjectFile = null;
       selectedAgentWorkspaceFile = null;
       modal = null;
+      rememberMembersLayoutFromCurrent();
       render();
       syncBrowserRouteForActiveView();
     }

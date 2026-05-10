@@ -560,7 +560,7 @@ function renderHumanListItem(human) {
         ${renderHumanAvatar(human, 'dm-avatar')}
       </span>
       <div class="member-info">
-        <span class="dm-name">${escapeHtml(human.name)}${youLabel}${humanBadgeHtml()}</span>
+        <span class="dm-name">${escapeHtml(human.name)}${humanBadgeHtml()}${youLabel}</span>
       </div>
       <span class="member-status-side">${avatarStatusDot(human.status, 'Human status')}</span>
     </button>
@@ -684,14 +684,15 @@ function renderHumanDetail(human) {
   const role = member ? cloudMemberDisplayRole(member) : human.role || 'member';
   const canManageThisMember = Boolean(member && !isCurrent && (cloudCan('manage_member_roles') || cloudCanRemoveMemberRole(role)));
   const youLabel = isCurrent ? ' <em class="human-you-label">(you)</em>' : '';
+  const displayName = escapeHtml(human.name || member?.user?.name || 'Human');
+  const nameWithBadge = `${displayName}${humanBadgeHtml()}${youLabel}`;
   return `
     <section class="pixel-panel inspector-panel human-detail-page magclaw-profile-detail">
       <div class="agent-detail-topbar">
         <div class="agent-detail-title">
           <span class="agent-detail-avatar-frame mini">${renderHumanAvatar(human, 'agent-detail-avatar-preview')}</span>
           <div>
-            <strong class="human-detail-name">${escapeHtml(human.name || member?.user?.name || 'Human')}${youLabel}${humanBadgeHtml()}</strong>
-            <small>${escapeHtml(email || 'Server member')}</small>
+            <strong class="human-detail-name">${nameWithBadge}</strong>
           </div>
         </div>
         <div class="agent-header-actions">
@@ -702,8 +703,7 @@ function renderHumanDetail(human) {
         <div class="human-profile-hero">
           <span class="human-detail-avatar-large">${renderHumanAvatar(human, 'agent-detail-avatar-preview')}</span>
           <div>
-            <h2 class="human-detail-name">${escapeHtml(human.name || member?.user?.name || 'Human')}${youLabel}${humanBadgeHtml()}</h2>
-            <small>${escapeHtml(email || '')}</small>
+            <h2 class="human-detail-name">${nameWithBadge}</h2>
           </div>
         </div>
         ${renderHumanAvatarEditor(human, member)}
