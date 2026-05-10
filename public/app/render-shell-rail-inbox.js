@@ -38,6 +38,7 @@ function render() {
     </div>
     ${modal ? renderModal() : ''}
   `;
+  if (typeof translatePage === 'function') translatePage(root);
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);
     restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
@@ -331,6 +332,7 @@ function settingsNavItems() {
     { id: 'server', label: 'Server', icon: 'server', meta: currentServerProfile().slug || '' },
     { id: 'system', label: 'System Config', icon: 'system', meta: fanoutConfigured ? 'LLM' : 'rules' },
     { id: 'lost-space', label: 'Lost Space', icon: 'lost' },
+    { id: 'language', label: 'Language', icon: 'language', meta: typeof magclawLanguageLabel === 'function' ? magclawLanguageLabel() : '' },
     { id: 'release', label: 'Release Notes', icon: 'release' },
   ];
 }
@@ -343,6 +345,7 @@ function settingsIcon(name, size = 20) {
     server: '<rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h6"/><path d="M9 12h6"/><path d="M9 17h.01"/><path d="M15 17h.01"/>',
     system: '<path d="M4 7h16"/><path d="M4 17h16"/><path d="M8 3v8"/><path d="M16 13v8"/>',
     release: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h6"/>',
+    language: '<path d="M3 5h12"/><path d="M9 3v2"/><path d="M5 5c1.2 4.4 3.7 7.4 8 9"/><path d="M13 5c-.9 3.2-2.7 5.8-5.4 7.8"/><path d="M14 21l4-9 4 9"/><path d="M15.5 18h5"/>',
     lost: '<path d="M3 7h18"/><path d="M5 7l1 14h12l1-14"/><path d="M9 7V4h6v3"/><path d="M10 12h4"/><path d="M10 16h4"/>',
     computer: '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>',
     edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>',

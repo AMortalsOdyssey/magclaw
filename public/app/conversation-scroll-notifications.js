@@ -594,7 +594,7 @@ function toast(message) {
     node.className = 'toast';
     document.body.appendChild(node);
   }
-  node.textContent = message;
+  node.textContent = typeof t === 'function' ? t(message) : message;
   node.classList.add('show');
   window.setTimeout(() => node.classList.remove('show'), 2600);
 }

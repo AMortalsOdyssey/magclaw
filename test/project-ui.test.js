@@ -433,10 +433,24 @@ test('login legal links have built-in terms and privacy pages', async () => {
   const terms = await readFile(new URL('../public/terms/index.html', import.meta.url), 'utf8');
   const privacy = await readFile(new URL('../public/privacy/index.html', import.meta.url), 'utf8');
 
-  assert.match(terms, /MagClaw Terms of Use/);
-  assert.match(terms, /© 2026 MagClaw\. All Rights Reserved\./);
-  assert.match(privacy, /MagClaw Privacy Policy/);
-  assert.match(privacy, /Password.*plain text|Passwords are never stored in plain text/);
+  assert.match(terms, /MagClaw 使用条款/);
+  assert.match(terms, /© 2026 MagClaw\. 版权所有。/);
+  assert.match(privacy, /MagClaw 隐私政策/);
+  assert.match(privacy, /密码绝不会以明文存储/);
+});
+
+test('settings exposes browser language switching and loads i18n before render chunks', async () => {
+  const app = await readAppSource();
+  const shellSource = app.slice(app.indexOf('function settingsNavItems()'), app.indexOf('function settingsIcon('));
+  const settingsSource = app.slice(app.indexOf('function settingsPageMeta'), app.indexOf('function renderAccountSettingsTab()'));
+  const i18nIndex = app.indexOf('/app/i18n.js');
+  const preludeIndex = app.indexOf('/app/prelude.js');
+
+  assert.ok(i18nIndex >= 0 && preludeIndex > i18nIndex);
+  assert.match(shellSource, /id: 'language'[\s\S]*label: 'Language'/);
+  assert.match(settingsSource, /language: \{ title: 'Language'/);
+  assert.match(app, /data-action="set-ui-language"/);
+  assert.match(app, /function renderLanguageSettingsTab\(\)/);
 });
 
 test('cloud auth gate loads invite tokens from invite URLs', async () => {

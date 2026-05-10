@@ -7,6 +7,7 @@ globalThis.buildFanoutDecisionCards = buildFanoutDecisionCards;
 globalThis.renderFanoutDecisionToastsHtml = renderFanoutDecisionToastsHtml;
 
 const appScripts = [
+  '/app/i18n.js',
   '/app/prelude.js',
   '/app/state-render-core.js',
   '/app/notifications-layout-avatar.js',

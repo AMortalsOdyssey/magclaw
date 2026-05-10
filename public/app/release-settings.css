@@ -185,6 +185,55 @@
   line-height: 1.45;
 }
 
+.language-settings-card {
+  display: grid;
+  gap: 14px;
+}
+
+.language-option-list {
+  display: grid;
+  gap: 10px;
+}
+
+.language-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--settings-line, var(--border-faint));
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.language-option.active {
+  border-color: var(--ink);
+  background: var(--accent-soft, #fff0f7);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+.language-option span {
+  display: grid;
+  gap: 4px;
+}
+
+.language-option strong {
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.language-option small,
+.language-option em {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+}
+
 @media (max-width: 900px) {
   .release-heading,
   .release-note-group {

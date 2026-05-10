@@ -46,6 +46,12 @@ function smtpB64(value) {
   return Buffer.from(String(value || ''), 'utf8').toString('base64');
 }
 
+function smtpHeaderValue(value) {
+  const text = String(value || '');
+  if (/^[\x00-\x7F]*$/.test(text)) return text;
+  return `=?UTF-8?B?${smtpB64(text)}?=`;
+}
+
 function smtpEscapeData(value) {
   return String(value || '').replace(/\r?\n/g, '\r\n').replace(/^\./gm, '..');
 }
@@ -55,7 +61,7 @@ function smtpMessage({ from, to, subject, text, html }) {
   return [
     `From: ${from}`,
     `To: ${to}`,
-    `Subject: ${subject}`,
+    `Subject: ${smtpHeaderValue(subject)}`,
     'MIME-Version: 1.0',
     `Content-Type: multipart/alternative; boundary="${boundary}"`,
     '',
@@ -177,7 +183,7 @@ export function createMailService(options = {}) {
   async function sendPasswordReset({ to, name, resetUrl }) {
     const email = String(to || '').trim();
     if (!email || !resetUrl) return { sent: false, reason: 'missing-recipient-or-url' };
-    const subject = 'Reset your MagClaw password';
+    const subject = '重置你的 MagClaw 密码';
     const safeName = htmlEscape(name || email.split('@')[0]);
     const safeUrl = htmlEscape(resetUrl);
     const safeLogoUrl = htmlEscape(resetEmailLogoUrl(env, resetUrl));
@@ -185,12 +191,12 @@ export function createMailService(options = {}) {
       ? `<img src="${safeLogoUrl}" width="56" height="56" alt="MagClaw" style="display:block;width:56px;height:56px;border:0;border-radius:14px;" />`
       : '<div style="width:56px;height:56px;border-radius:14px;background:#ff66cc;color:#1a0020;font-size:24px;font-weight:900;line-height:56px;text-align:center;">M</div>';
     const text = [
-      `Hey ${name || email.split('@')[0]},`,
+      `你好，${name || email.split('@')[0]}：`,
       '',
-      'Someone requested a password reset for your MagClaw account.',
-      `Reset password: ${resetUrl}`,
+      '有人请求重置你的 MagClaw 账户密码。',
+      `重置密码：${resetUrl}`,
       '',
-      'This link expires in 24 hours. If you did not request this, you can ignore this email.',
+      '此链接将在 24 小时后过期。如果这不是你本人发起的请求，可以忽略这封邮件。',
     ].join('\n');
     const html = `
       <div style="margin:0;padding:34px 18px;background:#fffaf7;color:#1d1022;font-family:Inter,Arial,sans-serif;">
@@ -200,14 +206,14 @@ export function createMailService(options = {}) {
             <div style="margin-top:10px;color:#7d6075;font-size:12px;font-weight:800;letter-spacing:0;text-transform:uppercase;">MagClaw</div>
           </div>
           <div style="border:2px solid #1a0020;border-radius:8px;background:#ffffff;box-shadow:5px 5px 0 #1a0020;padding:30px 30px 28px;">
-            <h1 style="margin:0 0 16px;color:#1d1022;font-size:26px;line-height:1.2;font-weight:800;">Reset your password</h1>
-            <p style="margin:0 0 14px;color:#4e3e4a;font-size:15px;line-height:1.55;">Hey ${safeName},</p>
-            <p style="margin:0 0 22px;color:#4e3e4a;font-size:15px;line-height:1.55;">Someone requested a password reset for your MagClaw account. Click the button below to set a new password:</p>
+            <h1 style="margin:0 0 16px;color:#1d1022;font-size:26px;line-height:1.2;font-weight:800;">重置你的密码</h1>
+            <p style="margin:0 0 14px;color:#4e3e4a;font-size:15px;line-height:1.55;">你好，${safeName}：</p>
+            <p style="margin:0 0 22px;color:#4e3e4a;font-size:15px;line-height:1.55;">有人请求重置你的 MagClaw 账户密码。点击下方按钮设置新密码：</p>
             <p style="margin:0 0 24px;">
-              <a href="${safeUrl}" style="display:inline-block;min-width:164px;background:#ff66cc;color:#1a0020;padding:13px 22px;border:2px solid #1a0020;border-radius:8px;box-shadow:3px 3px 0 #1a0020;text-align:center;text-decoration:none;font-size:15px;font-weight:900;line-height:1;">Reset Password</a>
+              <a href="${safeUrl}" style="display:inline-block;min-width:164px;background:#ff66cc;color:#1a0020;padding:13px 22px;border:2px solid #1a0020;border-radius:8px;box-shadow:3px 3px 0 #1a0020;text-align:center;text-decoration:none;font-size:15px;font-weight:900;line-height:1;">重置密码</a>
             </p>
-            <p style="margin:0 0 8px;color:#777;font-size:13px;line-height:1.45;">Or copy this link: <a href="${safeUrl}" style="color:#d93682;font-weight:800;text-decoration:underline;text-underline-offset:3px;">${safeUrl}</a></p>
-            <p style="margin:0;color:#777;font-size:13px;line-height:1.45;">This link expires in 24 hours. If you did not request this, you can safely ignore this email.</p>
+            <p style="margin:0 0 8px;color:#777;font-size:13px;line-height:1.45;">也可以复制此链接：<a href="${safeUrl}" style="color:#d93682;font-weight:800;text-decoration:underline;text-underline-offset:3px;">${safeUrl}</a></p>
+            <p style="margin:0;color:#777;font-size:13px;line-height:1.45;">此链接将在 24 小时后过期。如果这不是你本人发起的请求，可以安全地忽略这封邮件。</p>
           </div>
         </div>
       </div>

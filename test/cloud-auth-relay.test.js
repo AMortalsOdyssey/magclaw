@@ -132,8 +132,22 @@ async function waitFor(fn, timeoutMs = 5000) {
   throw new Error('timed out waiting for condition');
 }
 
-test('cloud deployment refuses to start without PostgreSQL', async () => {
-  const result = await launchExpectingExit({ MAGCLAW_DEPLOYMENT: 'cloud' });
+test('cloud deployment falls back to local state without PostgreSQL by default', async () => {
+  const server = await startIsolatedServer({ MAGCLAW_DEPLOYMENT: 'cloud' });
+  try {
+    const status = await request(server.baseUrl, '/api/cloud/auth/status');
+    assert.equal(status.data.auth.storageBackend, 'state');
+    const ready = await request(server.baseUrl, '/api/readyz');
+    assert.equal(ready.data.ok, true);
+    assert.equal(ready.data.storage.postgres.required, false);
+    assert.equal(ready.data.storage.postgres.backend, 'state');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('cloud deployment can require PostgreSQL explicitly', async () => {
+  const result = await launchExpectingExit({ MAGCLAW_DEPLOYMENT: 'cloud', MAGCLAW_REQUIRE_POSTGRES: '1' });
   assert.notEqual(result.code, 0);
   assert.match(result.output, /MAGCLAW_DATABASE_URL or DATABASE_URL is required/);
 });

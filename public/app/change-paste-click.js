@@ -176,6 +176,12 @@ document.addEventListener('click', async (event) => {
       render();
       syncBrowserRouteForActiveView();
     }
+    if (action === 'set-ui-language') {
+      if (typeof setMagclawLanguage === 'function') {
+        setMagclawLanguage(target.dataset.language || 'zh-CN');
+      }
+      return;
+    }
     if (action === 'set-console-tab') {
       consoleTab = target.dataset.tab || 'overview';
       activeView = 'console';

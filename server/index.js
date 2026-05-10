@@ -122,7 +122,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
-const DATA_DIR = path.resolve(process.env.MAGCLAW_DATA_DIR || path.join(os.homedir(), '.magclaw'));
+const LOCAL_FILE_STORAGE_FALLBACK = process.env.MAGCLAW_LOCAL_FILE_STORAGE_FALLBACK !== '0';
+const DEFAULT_DATA_DIR = process.env.MAGCLAW_DEPLOYMENT === 'cloud' && LOCAL_FILE_STORAGE_FALLBACK
+  ? path.join(ROOT, '.magclaw-local')
+  : path.join(os.homedir(), '.magclaw');
+const DATA_DIR = path.resolve(process.env.MAGCLAW_DATA_DIR || DEFAULT_DATA_DIR);
 
 function loadLocalServerEnv() {
   const envPath = path.join(DATA_DIR, 'server.env');
@@ -252,15 +256,90 @@ const {
   stateJsonSnapshot,
 } = stateCore;
 
+function envFlagEnabled(name) {
+  return /^(1|true|yes)$/i.test(String(process.env[name] || ''));
+}
+
+function postgresStrictlyRequired() {
+  return envFlagEnabled('MAGCLAW_REQUIRE_POSTGRES') || envFlagEnabled('MAGCLAW_DATABASE_REQUIRED');
+}
+
+function localStateFallbackInfo(reason = '') {
+  return {
+    ok: true,
+    enabled: false,
+    backend: 'state',
+    dataDir: DATA_DIR,
+    fallbackReason: reason,
+  };
+}
+
+function resilientCloudRepository(repository) {
+  if (!repository) return null;
+  let disabled = false;
+  let fallbackReason = '';
+
+  async function disable(error) {
+    fallbackReason = error?.message || String(error || 'PostgreSQL unavailable.');
+    disabled = true;
+    await repository.close?.().catch(() => {});
+    console.warn(`[cloud-postgres] ${fallbackReason}; using local file storage in ${DATA_DIR}.`);
+  }
+
+  return {
+    async close() {
+      await repository.close?.();
+    },
+    async initialize(stateSnapshot) {
+      if (disabled) return localStateFallbackInfo(fallbackReason);
+      try {
+        return await repository.initialize(stateSnapshot);
+      } catch (error) {
+        if (postgresStrictlyRequired()) throw error;
+        await disable(error);
+        return localStateFallbackInfo(fallbackReason);
+      }
+    },
+    isEnabled() {
+      return !disabled && Boolean(repository.isEnabled?.());
+    },
+    async loadIntoState(stateSnapshot) {
+      if (disabled) return;
+      try {
+        await repository.loadIntoState?.(stateSnapshot);
+      } catch (error) {
+        if (postgresStrictlyRequired()) throw error;
+        await disable(error);
+      }
+    },
+    async persistFromState(stateSnapshot) {
+      if (disabled) return;
+      try {
+        await repository.persistFromState?.(stateSnapshot);
+      } catch (error) {
+        if (postgresStrictlyRequired()) throw error;
+        await disable(error);
+      }
+    },
+    publicInfo() {
+      if (disabled) return localStateFallbackInfo(fallbackReason);
+      return repository.publicInfo?.() || { backend: 'postgres' };
+    },
+  };
+}
+
 async function createCloudRepositoryFromEnv() {
   if (!process.env.MAGCLAW_DATABASE_URL && !process.env.DATABASE_URL) {
-    if (process.env.MAGCLAW_DEPLOYMENT === 'cloud') {
+    if (process.env.MAGCLAW_DEPLOYMENT === 'cloud' && postgresStrictlyRequired()) {
       throw new Error('MAGCLAW_DATABASE_URL or DATABASE_URL is required when MAGCLAW_DEPLOYMENT=cloud.');
+    }
+    if (process.env.MAGCLAW_DEPLOYMENT === 'cloud') {
+      console.warn(`[cloud-postgres] database URL is not configured; using local file storage in ${DATA_DIR}.`);
     }
     return null;
   }
   const { createCloudPostgresStore } = await import('./cloud/postgres-store.js');
-  return createCloudPostgresStore();
+  return resilientCloudRepository(createCloudPostgresStore());
 }
 
 const cloudRepository = await createCloudRepositoryFromEnv();
@@ -383,7 +462,7 @@ async function deploymentHealth() {
   } catch (error) {
     attachmentProbe.error = error.message;
   }
-  const postgresRequired = process.env.MAGCLAW_DEPLOYMENT === 'cloud';
+  const postgresRequired = process.env.MAGCLAW_DEPLOYMENT === 'cloud' && postgresStrictlyRequired();
   const postgresConfigured = Boolean(process.env.MAGCLAW_DATABASE_URL || process.env.DATABASE_URL);
   return {
     ok: attachmentProbe.writable && (!postgresRequired || postgresConfigured),
@@ -394,6 +473,8 @@ async function deploymentHealth() {
         required: postgresRequired,
         configured: postgresConfigured,
         enabled: Boolean(cloudRepository?.isEnabled?.()),
+        fallback: !cloudRepository?.isEnabled?.(),
+        backend: cloudRepository?.isEnabled?.() ? 'postgres' : 'state',
       },
       attachments: attachmentProbe,
     },

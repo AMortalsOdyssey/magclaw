@@ -136,6 +136,7 @@ function updateSearchResults() {
   if (filters) filters.outerHTML = renderSearchFilters();
   const clearButton = document.querySelector('[data-search-clear]');
   if (clearButton) clearButton.hidden = !searchQuery.trim();
+  if (typeof translatePage === 'function') translatePage(document.querySelector('.search-page') || document.body);
 }
 
 function openSearchResult(record) {
@@ -651,6 +652,7 @@ function settingsPageMeta(tab = settingsTab) {
     system: { title: 'System Config', icon: 'system', section: 'SYSTEM CONFIG' },
     members: { title: 'Members', icon: 'members', section: 'MEMBERS' },
     'lost-space': { title: 'Lost Space', icon: 'lost', section: 'LOST SPACE' },
+    language: { title: 'Language', icon: 'language', section: 'LANGUAGE' },
     release: { title: 'Release Notes', icon: 'release', section: "WHAT'S NEW" },
   };
   return metas[tab] || metas.account;
@@ -1462,6 +1464,7 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
       </div>
     </main>
   `;
+  if (typeof translatePage === 'function') translatePage(root);
 }
 
 function renderBrowserSettingsTab() {
@@ -1745,6 +1748,8 @@ function renderCloud() {
         ? renderMembersSettingsTab()
         : settingsTab === 'lost-space'
         ? renderLostSpaceSettingsTab()
+        : settingsTab === 'language'
+          ? renderLanguageSettingsTab()
         : settingsTab === 'release'
           ? renderReleaseNotesSettingsTab()
           : renderServerSettingsTab();

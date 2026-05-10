@@ -39,7 +39,7 @@ function readStoredUiState() {
     : 'space';
   const validTab = ['chat', 'tasks'].includes(parsed.activeTab) ? parsed.activeTab : 'chat';
   const validRailTab = ['spaces', 'members', 'computers', 'settings'].includes(parsed.railTab) ? parsed.railTab : '';
-  const validSettingsTab = ['account', 'browser', 'server', 'system', 'members', 'lost-space', 'release'].includes(parsed.settingsTab) ? parsed.settingsTab : 'account';
+  const validSettingsTab = ['account', 'browser', 'server', 'system', 'members', 'lost-space', 'language', 'release'].includes(parsed.settingsTab) ? parsed.settingsTab : 'account';
   const validConsoleTab = ['overview', 'invitations', 'servers', 'lost-space'].includes(parsed.consoleTab) ? parsed.consoleTab : 'overview';
   return {
     selectedSpaceType: validSpaceType,

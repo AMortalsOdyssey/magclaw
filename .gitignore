@@ -12,6 +12,7 @@ dist
 dist-ssr
 *.local
 .magclaw
+.magclaw-local
 .npm-cache
 
 # Editor directories and files

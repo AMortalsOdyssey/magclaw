@@ -94,6 +94,7 @@ async function prepareDocumentClick(event) {
   const localOnlyActions = new Set([
     'set-view',
     'set-settings-tab',
+    'set-ui-language',
     'set-console-tab',
     'set-rail-tab',
     'toggle-sidebar-section',
