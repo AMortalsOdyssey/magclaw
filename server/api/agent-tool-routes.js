@@ -340,6 +340,36 @@ export async function handleAgentToolApi(req, res, url, deps) {
     // send_message is tied to the work item target so an Agent cannot post into
     // another channel or thread just by guessing a conversation id.
     const sourceMessage = findConversationRecord(workItem.sourceMessageId);
+    const previousResponse = workItem.lastResponseId ? findConversationRecord(workItem.lastResponseId) : null;
+    if (
+      previousResponse
+      && workItem.sendCount > 0
+      && workItem.lastSentTarget === target.label
+      && previousResponse.authorType === 'agent'
+      && previousResponse.authorId === agent.id
+      && String(previousResponse.body || '').trim() === content
+    ) {
+      addSystemEvent('agent_tool_send_message_deduped', `${agent.name} repeated the same routed message to ${target.label}.`, {
+        traceId,
+        agentId: agent.id,
+        workItemId: workItem.id,
+        target: target.label,
+        responseId: previousResponse.id,
+        durationMs: Date.now() - startedAt,
+      });
+      await persistState();
+      broadcastState();
+      sendJson(res, 200, {
+        ok: true,
+        deduped: true,
+        target: target.label,
+        workItemId: workItem.id,
+        workItem,
+        message: previousResponse,
+        text: `Message already sent to ${target.label}.`,
+      });
+      return true;
+    }
     try {
       const posted = await postAgentResponse(agent, target.spaceType, target.spaceId, content, target.parentMessageId || null, {
         sourceMessage,

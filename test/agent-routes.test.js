@@ -203,7 +203,9 @@ test('agent route group updates profile fields and removes channel membership on
   );
   assert.equal(deleteHandled, true);
   assert.equal(deleteRes.statusCode, 200);
-  assert.equal(deps.state.agents.length, 0);
+  assert.equal(deps.state.agents.length, 1);
+  assert.equal(deps.state.agents[0].status, 'deleted');
+  assert.match(deps.state.agents[0].deletedAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.deepEqual(deps.state.channels[1].agentIds, []);
   assert.deepEqual(deps.state.channels[1].memberIds, ['hum_local']);
 });

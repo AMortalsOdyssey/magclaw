@@ -91,9 +91,9 @@ export async function handleCloudApi(req, res, url, deps) {
             {
               method: 'POST',
               path: '/api/cloud/invitations/batch',
-              role: 'member',
+              role: 'admin',
               request: {
-                emails: ['member@example.com', 'core@example.com'],
+                emails: ['member@example.com', 'admin@example.com'],
                 role: 'member',
               },
               response: {
@@ -106,7 +106,7 @@ export async function handleCloudApi(req, res, url, deps) {
                   },
                 ],
               },
-              note: 'Target role must be member or core_member. Admin invitations are never allowed. Each request issues a fresh invitation token.',
+              note: 'Target role must be member or admin. Each request issues a fresh invitation token.',
             },
             {
               method: 'POST',
@@ -125,14 +125,14 @@ export async function handleCloudApi(req, res, url, deps) {
             {
               method: 'PATCH',
               path: '/api/cloud/members/:id',
-              role: 'core_member',
+              role: 'admin',
               request: {
-                role: 'core_member',
+                role: 'admin',
               },
               response: {
-                member: { id: 'wmem_...', role: 'core_member' },
+                member: { id: 'wmem_...', role: 'admin' },
               },
-              note: 'Only member and core_member are editable target roles; Admin rows are immutable.',
+              note: 'Admins can switch active members between Member and Admin. Owner rows are immutable.',
             },
           ],
         },
@@ -148,10 +148,10 @@ export async function handleCloudApi(req, res, url, deps) {
         { method: 'POST', path: '/api/cloud/auth/reset-password', role: 'guest' },
         { method: 'GET', path: '/api/cloud/admin/apis', role: 'admin' },
           { method: 'GET', path: '/api/cloud/invitations', role: 'member' },
-          { method: 'POST', path: '/api/cloud/invitations', role: 'member' },
-          { method: 'POST', path: '/api/cloud/invitations/batch', role: 'member' },
-          { method: 'PATCH', path: '/api/cloud/members/:id', role: 'core_member' },
-          { method: 'DELETE', path: '/api/cloud/members/:id', role: 'core_member' },
+          { method: 'POST', path: '/api/cloud/invitations', role: 'admin' },
+          { method: 'POST', path: '/api/cloud/invitations/batch', role: 'admin' },
+          { method: 'PATCH', path: '/api/cloud/members/:id', role: 'admin' },
+          { method: 'DELETE', path: '/api/cloud/members/:id', role: 'admin' },
           { method: 'POST', path: '/api/cloud/password-resets', role: 'admin' },
         { method: 'POST', path: '/api/settings', role: 'admin' },
         { method: 'POST', path: '/api/settings/fanout', role: 'admin' },
@@ -586,7 +586,8 @@ export async function handleCloudApi(req, res, url, deps) {
     const body = await readJson(req);
     const current = cloudAuth.currentUser(req);
     const result = daemonRelay.createPairingToken({ ...body, createdBy: current?.id || null }, req);
-    await persistState();
+    if (cloudAuth.persistCloudState) await cloudAuth.persistCloudState();
+    else await persistState();
     broadcastState();
     sendJson(res, 201, result);
     return true;

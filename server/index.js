@@ -493,6 +493,7 @@ const daemonRelay = createDaemonRelay({
   makeId,
   normalizeConversationRecord,
   now,
+  persistCloudState: cloudAuth.persistCloudState,
   persistState,
   port: PORT,
   root: ROOT,
@@ -953,7 +954,7 @@ function requiredRolesForAppApi(req, url) {
     || /^\/api\/agents\/[^/]+\/warm$/.test(url.pathname)
   )) return [];
   if (url.pathname === '/api/settings' || url.pathname === '/api/settings/fanout') return ['admin'];
-  return ['core_member'];
+  return ['admin'];
 }
 
 function requireAppApiAccess(req, res, url) {

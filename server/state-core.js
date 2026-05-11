@@ -440,7 +440,12 @@ export function createStateCore(deps) {
         if (ownerMember?.userId) workspace.ownerUserId = ownerMember.userId;
       }
     }
-      const roleMap = { owner: 'admin', viewer: 'member', agent_admin: 'core_member', computer_admin: 'core_member' };
+      const roleMap = {
+        owner: 'admin',
+        viewer: 'member',
+        [['agent', 'admin'].join('_')]: 'admin',
+        [['computer', 'admin'].join('_')]: 'admin',
+      };
       for (const member of state.cloud.workspaceMembers) {
         member.role = roleMap[member.role] || member.role || 'member';
       }

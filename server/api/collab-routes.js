@@ -40,7 +40,12 @@ export async function handleCollabApi(req, res, url, deps) {
       sendError(res, 409, 'Channel already exists.');
       return true;
     }
-    const humanIds = Array.isArray(body.humanIds) && body.humanIds.length ? body.humanIds.map(String) : ['hum_local'];
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    const creatorHumanId = auth?.member?.humanId || 'hum_local';
+    const humanIds = normalizeIds([
+      ...(Array.isArray(body.humanIds) && body.humanIds.length ? body.humanIds.map(String) : []),
+      creatorHumanId,
+    ]);
     const agentIds = Array.isArray(body.agentIds)
       ? body.agentIds.map(String).filter((id) => agentParticipatesInChannels(findAgent(id)))
       : [];
@@ -51,7 +56,7 @@ export async function handleCollabApi(req, res, url, deps) {
       id: makeId('chan'),
       name,
       description: String(body.description || '').trim(),
-      ownerId: String(body.ownerId || 'hum_local'),
+      ownerId: String(body.ownerId || creatorHumanId),
       humanIds,
       agentIds,
       memberIds,
@@ -271,6 +276,12 @@ export async function handleCollabApi(req, res, url, deps) {
       if (boundAgents.length) {
         sendError(res, 409, 'Delete or migrate agents before deleting this computer.');
         return true;
+      }
+      for (const pair of state.cloud?.pairingTokens || []) {
+        if (pair.computerId === computer.id && !pair.revokedAt && !pair.consumedAt) pair.revokedAt = now();
+      }
+      for (const token of state.cloud?.computerTokens || []) {
+        if (token.computerId === computer.id && !token.revokedAt) token.revokedAt = now();
       }
       state.computers = state.computers.filter((item) => item.id !== computer.id);
       addCollabEvent('computer_deleted', `Computer deleted: ${computer.name}`, { computerId: computer.id });

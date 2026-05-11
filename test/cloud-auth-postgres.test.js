@@ -139,7 +139,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
     const secondInvite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
       cookie: admin.cookie,
-      body: JSON.stringify({ email: 'console-pg@example.com', role: 'core_member' }),
+      body: JSON.stringify({ email: 'console-pg@example.com', role: 'admin' }),
     });
     assert.notEqual(firstInvite.data.invitation.id, secondInvite.data.invitation.id);
     assert.match(firstInvite.data.inviteToken, /^mc_inv_/);
@@ -229,7 +229,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
       body: '{}',
     });
     assert.equal(accepted.data.invitation.status, 'accepted');
-    assert.equal(accepted.data.member.role, 'core_member');
+    assert.equal(accepted.data.member.role, 'admin');
     assert.ok(accepted.data.cloud.auth.currentMember);
     assert.deepEqual(accepted.data.console.workspaces.map((item) => item.slug).sort(), ['local', 'pg-team']);
     assert.equal(accepted.data.cloud.joinLinks.length, 1);
@@ -272,7 +272,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
          WHERE u.normalized_email = $1`,
         ['console-pg@example.com'],
       );
-      assert.deepEqual(memberRows.rows.map((row) => row.role).sort(), ['admin', 'core_member']);
+      assert.deepEqual(memberRows.rows.map((row) => row.role).sort(), ['admin', 'admin']);
       assert.ok(memberRows.rows.every((row) => row.status === 'active'));
 
       const invitations = await client.query(
@@ -286,7 +286,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
       assert.equal(invitations.rows[0].role, 'member');
       assert.equal(invitations.rows[0].metadata.consoleAction, 'declined');
       assert.ok(invitations.rows[0].revoked_at);
-      assert.equal(invitations.rows[1].role, 'core_member');
+      assert.equal(invitations.rows[1].role, 'admin');
       assert.equal(invitations.rows[1].metadata.consoleAction, 'accepted');
       assert.ok(invitations.rows[1].accepted_at);
 
@@ -314,9 +314,9 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
       body: JSON.stringify({ email: 'console-pg@example.com', password: 'password123' }),
     });
     assert.equal(restartedMember.data.user.email, 'console-pg@example.com');
-    assert.equal(restartedMember.data.member.role, 'core_member');
+    assert.equal(restartedMember.data.member.role, 'admin');
     const restartedState = await request(server.baseUrl, '/api/state', { cookie: restartedMember.cookie });
-    assert.equal(restartedState.data.cloud.auth.currentMember.role, 'core_member');
+    assert.equal(restartedState.data.cloud.auth.currentMember.role, 'admin');
     assert.ok(restartedState.data.channels.length > 0);
   } finally {
     if (server) await server.stop();

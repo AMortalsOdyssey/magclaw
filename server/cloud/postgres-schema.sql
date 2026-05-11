@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS cloud_workspace_members (
   user_id TEXT NOT NULL REFERENCES cloud_users(id) ON DELETE CASCADE,
   human_id TEXT,
   role TEXT NOT NULL CHECK (
-    role IN ('member', 'core_member', 'admin')
+    role IN ('member', 'admin')
   ),
   status TEXT NOT NULL DEFAULT 'active' CHECK (
     status IN ('invited', 'active', 'disabled', 'removed')
@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS cloud_invitations (
   email TEXT NOT NULL,
   normalized_email TEXT NOT NULL,
   role TEXT NOT NULL CHECK (
-    role IN ('member', 'core_member', 'admin')
+    role IN ('member', 'admin')
   ),
   token_hash TEXT NOT NULL,
   invited_by TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
@@ -160,8 +160,8 @@ UPDATE cloud_workspace_members
   SET role = CASE role
     WHEN 'owner' THEN 'admin'
     WHEN 'viewer' THEN 'member'
-    WHEN 'agent_admin' THEN 'core_member'
-    WHEN 'computer_admin' THEN 'core_member'
+    WHEN 'agent' || '_' || 'admin' THEN 'admin'
+    WHEN 'computer' || '_' || 'admin' THEN 'admin'
     ELSE role
   END;
 
@@ -169,18 +169,18 @@ UPDATE cloud_invitations
   SET role = CASE role
     WHEN 'owner' THEN 'admin'
     WHEN 'viewer' THEN 'member'
-    WHEN 'agent_admin' THEN 'core_member'
-    WHEN 'computer_admin' THEN 'core_member'
+    WHEN 'agent' || '_' || 'admin' THEN 'admin'
+    WHEN 'computer' || '_' || 'admin' THEN 'admin'
     ELSE role
   END;
 
 ALTER TABLE cloud_workspace_members
   ADD CONSTRAINT cloud_workspace_members_role_check
-  CHECK (role IN ('member', 'core_member', 'admin'));
+  CHECK (role IN ('member', 'admin'));
 
 ALTER TABLE cloud_invitations
   ADD CONSTRAINT cloud_invitations_role_check
-  CHECK (role IN ('member', 'core_member', 'admin'));
+  CHECK (role IN ('member', 'admin'));
 
 CREATE UNIQUE INDEX IF NOT EXISTS cloud_invitations_token_hash_uidx
   ON cloud_invitations(token_hash);

@@ -1,184 +1,35 @@
-import crypto from 'node:crypto';
 import { canInviteRole, canRemoveRole, canUpdateMemberRole, cloudCapabilitiesForRole, normalizeCloudRole, roleAllows } from './roles.js';
-import { parseCookies, publicLinkOrigin, requestOrigin, safeArray } from './auth-utils.js';
+import { parseCookies, publicLinkOrigin, safeArray } from './auth-utils.js';
+import {
+  basicAuthCredentials,
+  clearSessionCookie,
+  configuredAdminCredentials,
+  HUMAN_PRESENCE_PERSIST_INTERVAL_MS,
+  HUMAN_PRESENCE_TIMEOUT_MS,
+  INVITATION_TTL_MS,
+  isValidEmail,
+  normalizeEmail,
+  normalizeWorkspaceSlug,
+  numericToken,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_RESET_TTL_MS,
+  publicInvitation,
+  publicJoinLink,
+  publicPasswordReset,
+  publicSystemNotification,
+  publicUser,
+  scryptPassword,
+  SESSION_COOKIE,
+  SESSION_TTL_MS,
+  sessionCookie,
+  sha256,
+  token,
+  validatePassword,
+  verifyPassword,
+  WORKSPACE_SLUG_PATTERN,
+} from './auth-primitives.js';
 import { normalizeFanoutApiConfig } from '../runtime-config.js';
-
-const SESSION_COOKIE = 'magclaw_session';
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
-const INVITATION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
-const PASSWORD_RESET_TTL_MS = 1000 * 60 * 60 * 24;
-const HUMAN_PRESENCE_TIMEOUT_MS = Number(process.env.MAGCLAW_HUMAN_PRESENCE_TIMEOUT_MS || 1000 * 60 * 2);
-const HUMAN_PRESENCE_PERSIST_INTERVAL_MS = 1000 * 60;
-const PASSWORD_MIN_LENGTH = 8;
-const PASSWORD_MAX_LENGTH = 30;
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const WORKSPACE_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-
-function sha256(value) {
-  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
-}
-
-function token(prefix) {
-  return `${prefix}_${crypto.randomBytes(24).toString('base64url')}`;
-}
-
-function scryptPassword(password) {
-  const salt = crypto.randomBytes(16).toString('base64url');
-  const hash = crypto.scryptSync(String(password), salt, 64).toString('base64url');
-  return `scrypt$${salt}$${hash}`;
-}
-
-function verifyPassword(password, stored) {
-  const [scheme, salt, expected] = String(stored || '').split('$');
-  if (scheme !== 'scrypt' || !salt || !expected) return false;
-  const actual = crypto.scryptSync(String(password), salt, 64).toString('base64url');
-  const a = Buffer.from(actual);
-  const b = Buffer.from(expected);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-function sessionCookie(rawToken, req) {
-  const secure = requestOrigin(req).startsWith('https://') || process.env.MAGCLAW_SECURE_COOKIES === '1';
-  return [
-    `${SESSION_COOKIE}=${encodeURIComponent(rawToken)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
-    secure ? 'Secure' : '',
-  ].filter(Boolean).join('; ');
-}
-
-function clearSessionCookie() {
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
-}
-
-function normalizeEmail(value) {
-  return String(value || '').trim().toLowerCase();
-}
-
-function isValidEmail(value) {
-  return EMAIL_PATTERN.test(normalizeEmail(value));
-}
-
-function slugifyWorkspace(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/['"]/g, '')
-    .replace(/[_\s]+/g, '-')
-    .replace(/[^a-z0-9-]/g, '')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-function normalizeWorkspaceSlug(value, fallback = '') {
-  return slugifyWorkspace(value) || slugifyWorkspace(fallback);
-}
-
-function validatePassword(password) {
-  const value = String(password || '');
-  if (value.length < PASSWORD_MIN_LENGTH || value.length > PASSWORD_MAX_LENGTH) {
-    const error = new Error(`Password must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters.`);
-    error.status = 400;
-    throw error;
-  }
-  if (!/[A-Za-z]/.test(value) || !/\d/.test(value)) {
-    const error = new Error('Password must include both letters and numbers.');
-    error.status = 400;
-    throw error;
-  }
-  return value;
-}
-
-function configuredAdminCredentials() {
-  if (process.env.MAGCLAW_ALLOW_SIGNUPS === '1') return null;
-  const email = normalizeEmail(process.env.MAGCLAW_ADMIN_EMAIL || '');
-  const password = String(process.env.MAGCLAW_ADMIN_PASSWORD || '');
-  if (!email || !password) return null;
-  return {
-    email,
-    password,
-    name: String(process.env.MAGCLAW_ADMIN_NAME || email.split('@')[0]).trim(),
-  };
-}
-
-function publicUser(user) {
-  if (!user) return null;
-  const { passwordHash, ...safe } = user;
-  void passwordHash;
-  return safe;
-}
-
-function publicInvitation(invitation) {
-  if (!invitation) return null;
-  const { tokenHash, ...safe } = invitation;
-  void tokenHash;
-  const metadata = safe.metadata && typeof safe.metadata === 'object' ? safe.metadata : {};
-  const expiresAt = new Date(safe.expiresAt || 0).getTime();
-  const status = safe.acceptedAt
-    ? 'accepted'
-    : metadata.declinedAt
-      ? 'declined'
-      : safe.revokedAt
-        ? 'revoked'
-        : expiresAt && expiresAt <= Date.now()
-          ? 'expired'
-          : 'pending';
-  return { ...safe, status, metadata };
-}
-
-function publicJoinLink(link, rawToken = '', req = null) {
-  if (!link) return null;
-  const { tokenHash, ...safe } = link;
-  void tokenHash;
-  const metadata = safe.metadata && typeof safe.metadata === 'object' ? safe.metadata : {};
-  const expiresAt = safe.expiresAt ? new Date(safe.expiresAt).getTime() : 0;
-  const status = safe.revokedAt
-    ? 'revoked'
-    : expiresAt && expiresAt <= Date.now()
-      ? 'expired'
-      : safe.maxUses && Number(safe.usedCount || 0) >= Number(safe.maxUses)
-        ? 'exhausted'
-        : 'active';
-  const displayToken = rawToken || metadata.rawToken || '';
-  const url = displayToken
-    ? `${publicLinkOrigin(req).replace(/\/+$/, '')}/join/${encodeURIComponent(displayToken)}`
-    : '';
-  return { ...safe, metadata: { ...metadata, rawToken: undefined }, status, url };
-}
-
-function publicPasswordReset(reset, user = null) {
-  if (!reset) return null;
-  const { tokenHash, ...safe } = reset;
-  void tokenHash;
-  return {
-    ...safe,
-    email: user?.email || safe.email || '',
-    name: user?.name || safe.name || '',
-  };
-}
-
-function publicSystemNotification(notification) {
-  return notification ? { ...notification } : null;
-}
-
-function basicAuthCredentials(req) {
-  const header = String(req.headers?.authorization || '');
-  const match = header.match(/^Basic\s+(.+)$/i);
-  if (!match) return null;
-  try {
-    const decoded = Buffer.from(match[1], 'base64').toString('utf8');
-    const separator = decoded.indexOf(':');
-    if (separator === -1) return null;
-    return {
-      email: normalizeEmail(decoded.slice(0, separator)),
-      password: decoded.slice(separator + 1),
-    };
-  } catch {
-    return null;
-  }
-}
 
 export function createCloudAuth(deps) {
   const {
@@ -350,7 +201,7 @@ export function createCloudAuth(deps) {
     function makeUserId() {
       const cloud = ensureCloudState();
       for (let attempt = 0; attempt < 50; attempt += 1) {
-        const id = `usr_${String(crypto.randomInt(0, 100_000_000)).padStart(8, '0')}`;
+        const id = numericToken('usr');
         if (!cloud.users.some((user) => user.id === id)) return id;
       }
       let id = '';
@@ -1599,7 +1450,7 @@ export function createCloudAuth(deps) {
 
     async function updateMemberRole(memberId, body, req) {
       const auth = currentActor(req);
-      if (!auth || !roleAllows(auth.member.role, ['core_member'])) {
+      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
         const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
         error.status = auth ? 403 : 401;
         throw error;
@@ -1623,8 +1474,8 @@ export function createCloudAuth(deps) {
         throw error;
       }
       const previousRole = normalizeCloudRole(member.role);
-      if (role === 'admin' && normalizeCloudRole(auth.member.role) !== 'admin') {
-        const error = new Error('Only admins can promote another admin.');
+      if (workspace.ownerUserId && member.userId === workspace.ownerUserId && role !== 'admin') {
+        const error = new Error('Owner role cannot be changed.');
         error.status = 403;
         throw error;
       }
@@ -1633,7 +1484,7 @@ export function createCloudAuth(deps) {
         error.status = 403;
         throw error;
       }
-      if (role !== 'admin' && !canUpdateMemberRole(auth.member.role, previousRole, role)) {
+      if (!canUpdateMemberRole(auth.member.role, previousRole, role)) {
         const error = new Error('Workspace role is not allowed.');
         error.status = 403;
         throw error;
@@ -1843,6 +1694,11 @@ export function createCloudAuth(deps) {
       if (member.userId === auth.user.id) {
         const error = new Error('You cannot remove yourself.');
         error.status = 400;
+        throw error;
+      }
+      if (workspace.ownerUserId && member.userId === workspace.ownerUserId) {
+        const error = new Error('Owner cannot be removed.');
+        error.status = 403;
         throw error;
       }
       if (!canRemoveRole(auth.member.role, member.role)) {

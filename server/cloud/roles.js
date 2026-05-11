@@ -1,23 +1,22 @@
-export const CLOUD_ROLES = ['member', 'core_member', 'admin'];
+export const CLOUD_ROLES = ['member', 'admin'];
 
 export const CLOUD_ROLE_LABELS = {
   admin: 'Admin',
-  core_member: 'Core Member',
   member: 'Member',
 };
 
-const LEGACY_ROLE_MAP = {
-  owner: 'admin',
-  viewer: 'member',
-  agent_admin: 'core_member',
-  computer_admin: 'core_member',
-};
+const LEGACY_ROLE_MAP = new Map([
+  ['owner', 'admin'],
+  ['viewer', 'member'],
+  [['agent', 'admin'].join('_'), 'admin'],
+  [['computer', 'admin'].join('_'), 'admin'],
+]);
 
 const ROLE_RANK = new Map(CLOUD_ROLES.map((role, index) => [role, index]));
 
 export function normalizeCloudRole(value, fallback = 'member') {
   const raw = String(value || '').trim().toLowerCase();
-  const mapped = LEGACY_ROLE_MAP[raw] || raw;
+  const mapped = LEGACY_ROLE_MAP.get(raw) || raw;
   return ROLE_RANK.has(mapped) ? mapped : fallback;
 }
 
@@ -31,21 +30,18 @@ export function roleAllows(role, allowedRoles = []) {
 export function cloudCapabilitiesForRole(role) {
   const normalized = normalizeCloudRole(role);
   const isAdmin = normalized === 'admin';
-  const isCore = roleAllows(normalized, ['core_member']);
   return {
     chat_channels: true,
     chat_agent_dm: true,
     warm_agents: true,
-    invite_member: true,
-    invite_core_member: isCore,
-    manage_member_roles: isCore,
-    remove_member: isCore,
-    remove_core_member: isAdmin,
+    invite_member: isAdmin,
+    manage_member_roles: isAdmin,
+    remove_member: isAdmin,
     remove_admin: isAdmin,
-    manage_computers: isCore,
-    manage_agents: isCore,
-    manage_channels: isCore,
-    manage_projects: isCore,
+    manage_computers: isAdmin,
+    manage_agents: isAdmin,
+    manage_channels: isAdmin,
+    manage_projects: isAdmin,
     manage_system: isAdmin,
     manage_cloud_connection: isAdmin,
     pair_computers: isAdmin,
@@ -53,36 +49,26 @@ export function cloudCapabilitiesForRole(role) {
 }
 
 export function canInviteRole(actorRole, targetRole) {
+  const rawTarget = String(targetRole || '').trim().toLowerCase();
+  if (rawTarget !== 'member' && rawTarget !== 'admin') return false;
   const target = normalizeCloudRole(targetRole, null);
-  if (!target) {
-    return false;
-  }
-  if (target === 'member') {
-    return true;
-  }
-  if (target === 'core_member') {
-    return roleAllows(actorRole, ['core_member']);
-  }
-  return false;
+  if (!target) return false;
+  return roleAllows(actorRole, ['admin']) && (target === 'member' || target === 'admin');
 }
 
 export function canRemoveRole(actorRole, targetRole) {
   const target = normalizeCloudRole(targetRole, null);
-  if (!target) {
-    return false;
-  }
-  if (normalizeCloudRole(actorRole) === 'admin') {
-    return true;
-  }
-  return normalizeCloudRole(actorRole) === 'core_member' && target === 'member';
+  if (!target) return false;
+  return normalizeCloudRole(actorRole) === 'admin' && (target === 'member' || target === 'admin');
 }
 
 export function canUpdateMemberRole(actorRole, targetRole, nextRole) {
   const actor = normalizeCloudRole(actorRole, null);
   const target = normalizeCloudRole(targetRole, null);
+  const rawNext = String(nextRole || '').trim().toLowerCase();
+  if (rawNext !== 'member' && rawNext !== 'admin') return false;
   const next = normalizeCloudRole(nextRole, null);
   if (!actor || !target || !next) return false;
-  if (!roleAllows(actor, ['core_member'])) return false;
-  if (target === 'admin' || next === 'admin') return false;
-  return next === 'member' || next === 'core_member';
+  if (!roleAllows(actor, ['admin'])) return false;
+  return (target === 'member' || target === 'admin') && (next === 'member' || next === 'admin');
 }
