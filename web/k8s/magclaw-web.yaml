@@ -3,18 +3,34 @@ kind: ConfigMap
 metadata:
   name: magclaw-web-config
 data:
-  HOST: "0.0.0.0"
-  PORT: "6543"
-  MAGCLAW_DEPLOYMENT: "cloud"
-  MAGCLAW_REQUIRE_LOGIN: "1"
-  MAGCLAW_ALLOW_SIGNUPS: "1"
-  MAGCLAW_ATTACHMENT_STORAGE: "pvc"
-  MAGCLAW_UPLOAD_DIR: "/var/lib/magclaw/uploads"
-  MAGCLAW_PUBLIC_URL: "https://magclaw.example.com"
-  MAGCLAW_MAIL_TRANSPORT: "smtp"
-  MAGCLAW_SMTP_HOST: "smtp.example.com"
-  MAGCLAW_SMTP_PORT: "465"
-  MAGCLAW_SMTP_SECURE: "1"
+  server.yaml: |
+    server:
+      host: "0.0.0.0"
+      port: 6543
+      public_url: "https://magclaw.example.com"
+      deployment: "cloud"
+      data_dir: "/var/lib/magclaw"
+      require_postgres: true
+    auth:
+      allow_signups: true
+      require_login: true
+    database:
+      postgres_url: "postgres://magclaw:change-me@postgres:5432/magclaw"
+      name: "magclaw_server"
+      schema: "magclaw"
+      maintenance_database: "postgres"
+      create: false
+    storage:
+      attachment_storage: "pvc"
+      upload_dir: ""
+      local_file_storage_fallback: true
+      write_state_json: false
+    email:
+      smtp_host: "smtp.example.com"
+      smtp_port: 465
+      smtp_tls: false
+      from_address: "noreply@example.com"
+      from_name: "MagClaw"
 ---
 apiVersion: v1
 kind: Secret
@@ -22,7 +38,6 @@ metadata:
   name: magclaw-web-secret
 type: Opaque
 stringData:
-  MAGCLAW_DATABASE_URL: "postgres://magclaw:change-me@postgres:5432/magclaw"
   MAGCLAW_SESSION_SECRET: "change-me"
   MAGCLAW_MAIL_FROM: "MagClaw <noreply@example.com>"
   MAGCLAW_SMTP_USER: "change-me"
@@ -63,11 +78,15 @@ spec:
             - name: http
               containerPort: 6543
           envFrom:
-            - configMapRef:
-                name: magclaw-web-config
             - secretRef:
                 name: magclaw-web-secret
+          env:
+            - name: MAGCLAW_CONFIG_FILE
+              value: /etc/magclaw/server.yaml
           volumeMounts:
+            - name: config
+              mountPath: /etc/magclaw
+              readOnly: true
             - name: uploads
               mountPath: /var/lib/magclaw/uploads
           livenessProbe:
@@ -83,6 +102,9 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
       volumes:
+        - name: config
+          configMap:
+            name: magclaw-web-config
         - name: uploads
           persistentVolumeClaim:
             claimName: magclaw-uploads

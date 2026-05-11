@@ -1,6 +1,6 @@
 -- MagClaw Cloud PostgreSQL schema v1.
 --
--- When MAGCLAW_DATABASE_URL or DATABASE_URL is configured, MagClaw uses this
+-- When MAGCLAW_DATABASE_URL is configured, MagClaw uses this
 -- schema for cloud auth and relay control-plane persistence: users, workspace
 -- memberships, invitations, browser sessions, computers, daemon tokens, and
 -- queued remote agent deliveries. Collaboration tables remain production-shaped
@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS cloud_users (
   name TEXT NOT NULL DEFAULT '',
   password_hash TEXT,
   avatar_url TEXT NOT NULL DEFAULT '',
+  language TEXT NOT NULL DEFAULT 'en',
   email_verified_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -20,6 +21,9 @@ CREATE TABLE IF NOT EXISTS cloud_users (
   disabled_at TIMESTAMPTZ,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+
+ALTER TABLE cloud_users
+  ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'en';
 
 DROP INDEX IF EXISTS cloud_users_normalized_email_uidx;
 
@@ -160,6 +164,7 @@ UPDATE cloud_workspace_members
   SET role = CASE role
     WHEN 'owner' THEN 'admin'
     WHEN 'viewer' THEN 'member'
+    WHEN 'core' || '_' || 'member' THEN 'member'
     WHEN 'agent' || '_' || 'admin' THEN 'admin'
     WHEN 'computer' || '_' || 'admin' THEN 'admin'
     ELSE role
@@ -169,6 +174,7 @@ UPDATE cloud_invitations
   SET role = CASE role
     WHEN 'owner' THEN 'admin'
     WHEN 'viewer' THEN 'member'
+    WHEN 'core' || '_' || 'member' THEN 'member'
     WHEN 'agent' || '_' || 'admin' THEN 'admin'
     WHEN 'computer' || '_' || 'admin' THEN 'admin'
     ELSE role
@@ -271,6 +277,28 @@ CREATE INDEX IF NOT EXISTS cloud_computers_workspace_status_idx
 
 CREATE INDEX IF NOT EXISTS cloud_computers_last_seen_idx
   ON cloud_computers(last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS cloud_humans (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  user_id TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
+  name TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT 'member',
+  status TEXT NOT NULL DEFAULT 'offline',
+  avatar TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  last_seen_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS cloud_humans_workspace_idx
+  ON cloud_humans(workspace_id, name);
+
+CREATE INDEX IF NOT EXISTS cloud_humans_user_idx
+  ON cloud_humans(user_id);
 
 CREATE TABLE IF NOT EXISTS cloud_computer_tokens (
   id TEXT PRIMARY KEY,
@@ -467,6 +495,20 @@ CREATE TABLE IF NOT EXISTS cloud_work_items (
 
 CREATE INDEX IF NOT EXISTS cloud_work_items_agent_status_idx
   ON cloud_work_items(agent_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS cloud_state_records (
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  id TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  PRIMARY KEY (workspace_id, kind, id)
+);
+
+CREATE INDEX IF NOT EXISTS cloud_state_records_kind_position_idx
+  ON cloud_state_records(workspace_id, kind, position);
 
 CREATE TABLE IF NOT EXISTS cloud_attachments (
   id TEXT PRIMARY KEY,

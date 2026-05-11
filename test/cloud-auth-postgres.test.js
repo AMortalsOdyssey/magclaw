@@ -46,7 +46,6 @@ async function launchIsolatedServer(tmp, schema) {
       MAGCLAW_DATA_DIR: path.join(tmp, '.magclaw'),
       MAGCLAW_UPLOAD_DIR: path.join(tmp, 'uploads'),
       MAGCLAW_ATTACHMENT_STORAGE: 'pvc',
-      DATABASE_URL: '',
       MAGCLAW_DATABASE_URL: TEST_DATABASE_URL,
       MAGCLAW_DATABASE: TEST_DATABASE,
       MAGCLAW_DATABASE_SCHEMA: schema,

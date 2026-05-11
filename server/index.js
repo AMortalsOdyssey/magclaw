@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { spawn, execFile } from 'node:child_process';
-import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   lstat,
   mkdir,
@@ -117,18 +117,20 @@ import { handleMissionApi } from './api/mission-routes.js';
 import { handleProjectApi } from './api/project-routes.js';
 import { handleSystemApi } from './api/system-routes.js';
 import { handleTaskApi } from './api/task-routes.js';
+import { applyServerYamlConfig } from './config-yaml.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const serverConfigLoad = applyServerYamlConfig({ root: ROOT, homeDir: os.homedir(), env: process.env });
 const LOCAL_FILE_STORAGE_FALLBACK = process.env.MAGCLAW_LOCAL_FILE_STORAGE_FALLBACK !== '0';
 const DEFAULT_DATA_DIR = process.env.MAGCLAW_DEPLOYMENT === 'cloud' && LOCAL_FILE_STORAGE_FALLBACK
   ? path.join(ROOT, '.magclaw-local')
   : path.join(os.homedir(), '.magclaw');
 const DATA_DIR = path.resolve(process.env.MAGCLAW_DATA_DIR || DEFAULT_DATA_DIR);
 
-function loadLocalServerEnv() {
+function loadLegacyServerEnv() {
   const envPath = path.join(DATA_DIR, 'server.env');
   if (!existsSync(envPath)) return;
   const lines = readFileSync(envPath, 'utf8').split(/\r?\n/);
@@ -147,13 +149,88 @@ function loadLocalServerEnv() {
   }
 }
 
-loadLocalServerEnv();
+if (!serverConfigLoad.loaded && process.env.MAGCLAW_ALLOW_LEGACY_SERVER_ENV === '1') {
+  loadLegacyServerEnv();
+}
 
-const ATTACHMENTS_DIR = path.resolve(process.env.MAGCLAW_UPLOAD_DIR || path.join(DATA_DIR, 'attachments'));
+const DEFAULT_PVC_UPLOAD_DIR = '/var/lib/magclaw/uploads';
+
+function probeWritableDirectory(dir) {
+  try {
+    mkdirSync(dir, { recursive: true });
+    const probePath = path.join(dir, '.magclaw-ready');
+    writeFileSync(probePath, new Date().toISOString());
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+function resolveAttachmentStorage() {
+  const requestedMode = String(process.env.MAGCLAW_ATTACHMENT_STORAGE || 'pvc').trim().toLowerCase();
+  const fallbackEnabled = process.env.MAGCLAW_LOCAL_FILE_STORAGE_FALLBACK !== '0';
+  const requestedUploadDir = String(process.env.MAGCLAW_UPLOAD_DIR || '').trim();
+  const pvcDir = path.resolve(requestedUploadDir || DEFAULT_PVC_UPLOAD_DIR);
+  const localDir = path.resolve(process.env.MAGCLAW_LOCAL_UPLOAD_DIR || path.join(DATA_DIR, 'attachments'));
+
+  if (requestedMode === 'local') {
+    const localProbe = probeWritableDirectory(localDir);
+    return {
+      mode: 'local',
+      requestedMode,
+      path: localDir,
+      pvcPath: pvcDir,
+      writable: localProbe.ok,
+      error: localProbe.error || '',
+    };
+  }
+
+  const pvcProbe = probeWritableDirectory(pvcDir);
+  if (pvcProbe.ok) {
+    return {
+      mode: 'pvc',
+      requestedMode,
+      path: pvcDir,
+      pvcPath: pvcDir,
+      writable: true,
+      error: '',
+    };
+  }
+
+  if (!fallbackEnabled) {
+    return {
+      mode: 'pvc',
+      requestedMode,
+      path: pvcDir,
+      pvcPath: pvcDir,
+      writable: false,
+      error: pvcProbe.error || 'PVC upload directory is not writable.',
+    };
+  }
+
+  const localProbe = probeWritableDirectory(localDir);
+  const fallbackReason = pvcProbe.error || 'PVC upload directory is not writable.';
+  console.warn(`[attachments] PVC upload directory ${pvcDir} is not available (${fallbackReason}); using local attachment storage at ${localDir}.`);
+  return {
+    mode: 'local',
+    requestedMode,
+    path: localDir,
+    pvcPath: pvcDir,
+    writable: localProbe.ok,
+    error: localProbe.error || '',
+    fallbackReason,
+  };
+}
+
+const ATTACHMENT_STORAGE = resolveAttachmentStorage();
+process.env.MAGCLAW_ATTACHMENT_STORAGE = ATTACHMENT_STORAGE.mode;
+process.env.MAGCLAW_UPLOAD_DIR = ATTACHMENT_STORAGE.path;
+const ATTACHMENTS_DIR = ATTACHMENT_STORAGE.path;
 const RUNS_DIR = path.join(DATA_DIR, 'runs');
 const AGENTS_DIR = path.join(DATA_DIR, 'agents');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const STATE_DB_FILE = path.join(DATA_DIR, 'state.sqlite');
+const WRITE_STATE_JSON = /^(1|true|yes)$/i.test(String(process.env.MAGCLAW_WRITE_STATE_JSON || ''));
 const SOURCE_CODEX_HOME = path.resolve(process.env.MAGCLAW_CODEX_HOME_SOURCE || process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
 const DEFAULT_PORT = 6543;
 const PORT = Number(process.env.PORT || DEFAULT_PORT);
@@ -232,6 +309,7 @@ const stateCore = createStateCore({
   SQLITE_BACKED_STATE_KEYS,
   STATE_DB_FILE,
   STATE_FILE,
+  WRITE_STATE_JSON,
 });
 const state = stateCore.state;
 const {
@@ -252,6 +330,7 @@ const {
   presenceHeartbeat,
   reconcileAgentStatusHeartbeats,
   resolveCodexRuntime,
+  setExternalStatePersister,
   setAgentStatus,
   stateJsonSnapshot,
 } = stateCore;
@@ -329,9 +408,9 @@ function resilientCloudRepository(repository) {
 }
 
 async function createCloudRepositoryFromEnv() {
-  if (!process.env.MAGCLAW_DATABASE_URL && !process.env.DATABASE_URL) {
+  if (!process.env.MAGCLAW_DATABASE_URL) {
     if (process.env.MAGCLAW_DEPLOYMENT === 'cloud' && postgresStrictlyRequired()) {
-      throw new Error('MAGCLAW_DATABASE_URL or DATABASE_URL is required when MAGCLAW_DEPLOYMENT=cloud.');
+      throw new Error('MAGCLAW_DATABASE_URL is required when MAGCLAW_DEPLOYMENT=cloud.');
     }
     if (process.env.MAGCLAW_DEPLOYMENT === 'cloud') {
       console.warn(`[cloud-postgres] database URL is not configured; using local file storage in ${DATA_DIR}.`);
@@ -448,10 +527,12 @@ const {
 } = conversationModel;
 
 async function deploymentHealth() {
-  const attachmentMode = process.env.MAGCLAW_ATTACHMENT_STORAGE || (process.env.MAGCLAW_UPLOAD_DIR ? 'pvc' : 'local');
   const attachmentProbe = {
-    mode: attachmentMode,
+    mode: ATTACHMENT_STORAGE.mode,
+    requestedMode: ATTACHMENT_STORAGE.requestedMode,
     path: ATTACHMENTS_DIR,
+    pvcPath: ATTACHMENT_STORAGE.pvcPath,
+    fallbackReason: ATTACHMENT_STORAGE.fallbackReason || '',
     writable: false,
   };
   try {
@@ -463,7 +544,7 @@ async function deploymentHealth() {
     attachmentProbe.error = error.message;
   }
   const postgresRequired = process.env.MAGCLAW_DEPLOYMENT === 'cloud' && postgresStrictlyRequired();
-  const postgresConfigured = Boolean(process.env.MAGCLAW_DATABASE_URL || process.env.DATABASE_URL);
+  const postgresConfigured = Boolean(process.env.MAGCLAW_DATABASE_URL);
   return {
     ok: attachmentProbe.writable && (!postgresRequired || postgresConfigured),
     service: 'magclaw-web',
@@ -1235,6 +1316,11 @@ async function handleRequest(req, res) {
 
 await ensureStorage();
 await cloudAuth.initializeStorage();
+setExternalStatePersister(async (stateSnapshot) => {
+  if (cloudRepository?.isEnabled?.()) {
+    await cloudRepository.persistFromState?.(stateSnapshot);
+  }
+});
 await cloudAuth.ensureConfiguredAdmin();
 
 const server = http.createServer(handleRequest);

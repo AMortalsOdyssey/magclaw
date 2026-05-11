@@ -30,7 +30,7 @@ export async function launchIsolatedServer(tmp, extraEnv = {}) {
       HOST: '127.0.0.1',
       CODEX_PATH: '/bin/false',
       MAGCLAW_DATA_DIR: path.join(tmp, '.magclaw'),
-      DATABASE_URL: '',
+      MAGCLAW_CONFIG_FILE: path.join(tmp, '.magclaw', 'server.yaml'),
       MAGCLAW_DATABASE_URL: '',
       ...extraEnv,
     },
@@ -206,4 +206,3 @@ export async function readSseEventFromReader(reader, decoder, expectedEvent, tim
   }
   throw new Error(`Timed out waiting for ${expectedEvent}`);
 }
-

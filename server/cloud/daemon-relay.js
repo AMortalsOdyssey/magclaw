@@ -205,8 +205,10 @@ export function createDaemonRelay(deps) {
     const expiresAt = new Date(Date.now() + Number(body.ttlMs || PAIR_TTL_MS)).toISOString();
     const computerName = String(body.name || body.label || os.hostname()).trim();
     let computer = null;
+    let provisional = false;
     if (body.computerId) computer = findComputer(String(body.computerId));
     if (!computer) {
+      provisional = true;
       computer = {
         id: makeId('cmp'),
         workspaceId: workspace.id,
@@ -223,7 +225,6 @@ export function createDaemonRelay(deps) {
         createdAt,
         updatedAt: createdAt,
       };
-      state.computers.push(computer);
     }
     const pair = {
       id: makeId('pair'),
@@ -236,11 +237,16 @@ export function createDaemonRelay(deps) {
       consumedAt: null,
       revokedAt: null,
       createdBy: body.createdBy || null,
+      metadata: provisional ? {
+        provisionalComputer: true,
+        computer: { ...computer },
+      } : {},
     };
     store.pairingTokens.push(pair);
     const command = connectCommand(raw, req);
     return {
       computer,
+      provisional,
       pairingToken: publicPairingToken(pair),
       pairToken: raw,
       command,
@@ -745,12 +751,25 @@ export function createDaemonRelay(deps) {
     if (rawPair) {
       const pair = validatePairToken(rawPair);
       if (!pair) return { error: 'Invalid or expired pair token.' };
-      const computer = findComputer(pair.computerId);
+      let computer = findComputer(pair.computerId);
       if (!computer) {
-        pair.revokedAt = now();
-        await persistAllState();
-        broadcastState();
-        return { error: 'Paired computer was not found.' };
+        const provisionalComputer = pair.metadata?.provisionalComputer && pair.metadata?.computer;
+        if (!provisionalComputer) {
+          pair.revokedAt = now();
+          await persistAllState();
+          broadcastState();
+          return { error: 'Paired computer was not found.' };
+        }
+        const createdAt = now();
+        computer = {
+          ...provisionalComputer,
+          id: pair.computerId,
+          workspaceId: pair.workspaceId,
+          status: 'pairing',
+          createdAt: provisionalComputer.createdAt || pair.createdAt || createdAt,
+          updatedAt: createdAt,
+        };
+        state.computers.push(computer);
       }
       if (computerIsDisabled(computer)) return { error: 'Computer is disabled.' };
       const issued = issueMachineToken(computer, pair);

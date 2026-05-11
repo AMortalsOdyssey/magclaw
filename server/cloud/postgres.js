@@ -53,7 +53,7 @@ export function databaseNameFromUrl(value, fallback = DEFAULT_DATABASE) {
 
 export function databaseUrlWithName(value, databaseName) {
   const normalized = normalizeDatabaseUrl(value);
-  if (!normalized) throw new Error('DATABASE_URL is required.');
+  if (!normalized) throw new Error('MAGCLAW_DATABASE_URL is required.');
   const url = new URL(normalized);
   url.pathname = `/${encodeURIComponent(assertIdentifier(databaseName, 'database'))}`;
   return url.toString();
@@ -62,7 +62,7 @@ export function databaseUrlWithName(value, databaseName) {
 export function parsePostgresArgs(argv = []) {
   const options = {
     command: 'migrate',
-    databaseUrl: process.env.DATABASE_URL || process.env.MAGCLAW_DATABASE_URL || '',
+    databaseUrl: process.env.MAGCLAW_DATABASE_URL || '',
     database: process.env.MAGCLAW_DATABASE || '',
     schema: process.env.MAGCLAW_DATABASE_SCHEMA || DEFAULT_SCHEMA,
     maintenanceDatabase: process.env.MAGCLAW_MAINTENANCE_DATABASE || DEFAULT_MAINTENANCE_DATABASE,
@@ -252,7 +252,7 @@ async function main() {
     console.log(helpText());
     return;
   }
-  if (!options.databaseUrl) throw new Error('DATABASE_URL or --database-url is required.');
+  if (!options.databaseUrl) throw new Error('MAGCLAW_DATABASE_URL or --database-url is required.');
   if (options.command === 'migrate') {
     const result = await migratePostgres(options);
     console.log(JSON.stringify({

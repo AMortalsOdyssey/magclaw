@@ -52,11 +52,13 @@ export function createStateCore(deps) {
     SQLITE_BACKED_STATE_KEYS,
     STATE_DB_FILE,
     STATE_FILE,
+    WRITE_STATE_JSON = false,
   } = deps;
 
   let state = null;
   let saveChain = Promise.resolve();
   let stateDb = null;
+  let externalStatePersister = null;
   const stateProxy = new Proxy({}, {
     get(_target, prop) { return state?.[prop]; },
     set(_target, prop, value) {
@@ -252,11 +254,22 @@ export function createStateCore(deps) {
     await mkdir(AGENTS_DIR, { recursive: true });
     await initializeStateDatabase();
   
+    const sqliteSnapshot = readSqliteStateSnapshot();
+    if (sqliteSnapshot) {
+      state = sqliteSnapshot;
+      migrateState();
+      hydrateSqliteBackedState();
+      migrateState();
+      await ensureAllAgentWorkspaces();
+      await persistState({ skipExternal: true });
+      return;
+    }
+
     if (!existsSync(STATE_FILE)) {
       state = defaultState();
       migrateState();
       await ensureAllAgentWorkspaces();
-      await persistState();
+      await persistState({ skipExternal: true });
       return;
     }
   
@@ -267,13 +280,13 @@ export function createStateCore(deps) {
       hydrateSqliteBackedState();
       migrateState();
       await ensureAllAgentWorkspaces();
-      await persistState();
+      await persistState({ skipExternal: true });
     } catch {
       state = defaultState();
       migrateState();
       addSystemEvent('state_recovered', 'State file was unreadable, Magclaw started with a clean state.');
       await ensureAllAgentWorkspaces();
-      await persistState();
+      await persistState({ skipExternal: true });
     }
   }
   
@@ -311,6 +324,30 @@ export function createStateCore(deps) {
     if (!sqliteBackedStateEnabled()) return 0;
     const row = stateDb.prepare('SELECT COUNT(*) AS count FROM state_records').get();
     return Number(row?.count || 0);
+  }
+
+  function readSqliteStateSnapshot() {
+    if (!sqliteBackedStateEnabled()) return null;
+    const row = stateDb.prepare('SELECT payload FROM state_records WHERE kind = ? AND id = ?').get('__state', 'snapshot');
+    if (!row?.payload) return null;
+    try {
+      return JSON.parse(row.payload);
+    } catch (error) {
+      console.warn(`SQLite state snapshot was unreadable; trying legacy state sources: ${error.message}`);
+      return null;
+    }
+  }
+
+  function writeSqliteStateSnapshot() {
+    if (!sqliteBackedStateEnabled() || !state) return;
+    const snapshot = JSON.stringify(stateFullSnapshot());
+    stateDb.prepare(`
+      INSERT INTO state_records (kind, id, position, created_at, updated_at, payload)
+      VALUES ('__state', 'snapshot', 0, ?, ?, ?)
+      ON CONFLICT(kind, id) DO UPDATE SET
+        updated_at = excluded.updated_at,
+        payload = excluded.payload
+    `).run(state.createdAt || now(), state.updatedAt || now(), snapshot);
   }
   
   function hasJsonBackedRecords(sourceState = state) {
@@ -674,20 +711,26 @@ export function createStateCore(deps) {
     }
   }
   
-  function persistState() {
+  function persistState(options = {}) {
     if (!state) return Promise.resolve();
     state.updatedAt = now();
-    const payload = JSON.stringify(stateJsonSnapshot(), null, 2);
     saveChain = saveChain.then(async () => {
       syncSqliteBackedState();
-      const tmp = `${STATE_FILE}.tmp`;
-      await writeFile(tmp, payload);
-      await rename(tmp, STATE_FILE);
+      writeSqliteStateSnapshot();
+      if (WRITE_STATE_JSON || !sqliteBackedStateEnabled()) {
+        const payload = JSON.stringify(stateJsonSnapshot(), null, 2);
+        const tmp = `${STATE_FILE}.tmp`;
+        await writeFile(tmp, payload);
+        await rename(tmp, STATE_FILE);
+      }
+      if (!options.skipExternal && externalStatePersister) {
+        await externalStatePersister(stateFullSnapshot());
+      }
     });
     return saveChain;
   }
-  
-  function stateJsonSnapshot() {
+
+  function decoratedSnapshot({ thinSqliteArrays = false } = {}) {
     const snapshot = {
       ...state,
       storage: {
@@ -695,12 +738,25 @@ export function createStateCore(deps) {
         sqliteEnabled: sqliteBackedStateEnabled(),
         sqliteFile: path.basename(STATE_DB_FILE),
         sqliteBackedKeys: SQLITE_BACKED_STATE_KEYS,
+        jsonSnapshotEnabled: WRITE_STATE_JSON,
       },
     };
-    if (sqliteBackedStateEnabled()) {
+    if (thinSqliteArrays && sqliteBackedStateEnabled()) {
       for (const key of SQLITE_BACKED_STATE_KEYS) snapshot[key] = [];
     }
     return snapshot;
+  }
+
+  function stateFullSnapshot() {
+    return decoratedSnapshot({ thinSqliteArrays: false });
+  }
+
+  function stateJsonSnapshot() {
+    return decoratedSnapshot({ thinSqliteArrays: true });
+  }
+
+  function setExternalStatePersister(persister) {
+    externalStatePersister = typeof persister === 'function' ? persister : null;
   }
   
   function addSystemEvent(type, message, extra = {}) {
@@ -875,8 +931,10 @@ export function createStateCore(deps) {
     presenceHeartbeat,
     reconcileAgentStatusHeartbeats,
     resolveCodexRuntime,
+    setExternalStatePersister,
     setAgentStatus,
     state: stateProxy,
+    stateFullSnapshot,
     stateJsonSnapshot,
   };
 }

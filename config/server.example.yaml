@@ -1,0 +1,52 @@
+# MagClaw Web Service configuration.
+# Copy to ~/.magclaw-server/server.yaml for local cloud-mode runs, or mount as
+# /etc/magclaw/server.yaml in containers.
+
+server:
+  host: "0.0.0.0"
+  port: 6543
+  public_url: "https://magclaw.example.com"
+  deployment: "cloud"
+  data_dir: "/var/lib/magclaw"
+  require_postgres: true
+
+auth:
+  allow_signups: true
+  require_login: true
+  session_secret: "replace-with-secret"
+
+database:
+  postgres_url: "postgres://magclaw:change-me@postgres:5432/magclaw"
+  name: "magclaw_server"
+  schema: "magclaw"
+  maintenance_database: "postgres"
+  create: false
+
+storage:
+  attachment_storage: "pvc"
+  # Optional. If omitted, MagClaw probes /var/lib/magclaw/uploads first.
+  upload_dir: ""
+  # Used when the PVC path is not mounted or writable.
+  local_upload_dir: ""
+  local_file_storage_fallback: true
+  write_state_json: false
+
+email:
+  smtp_host: "smtp.example.com"
+  smtp_port: 465
+  smtp_username: "noreply@example.com"
+  smtp_password: "replace-with-secret"
+  smtp_tls: false
+  from_address: "noreply@example.com"
+  from_name: "MagClaw"
+
+fanout_api:
+  enabled: false
+  base_url: ""
+  model: ""
+  fallback_model: ""
+  timeout_ms: 5000
+  api_key: ""
+
+runtime:
+  codex_home_source: "~/.codex"

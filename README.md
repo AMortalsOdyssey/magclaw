@@ -1,14 +1,14 @@
-# Magclaw Local
+# MagClaw
 
-Blue pixel mission control for local Codex runs.
+Blue pixel mission control for cloud/server-scoped agent collaboration.
 
-This MVP is intentionally local-first and dependency-free:
+This MVP can run as a local single-machine service or as the cloud Web Service:
 
 - Node built-in HTTP server
 - Static HTML/CSS/JS client
-- Lightweight state in `~/.magclaw/state.json`
-- Chat, thread, task, work-item, and event records in `~/.magclaw/state.sqlite` when Node's built-in SQLite is available
-- Local attachments in `~/.magclaw/attachments`
+- Cloud runtime data in PostgreSQL when `MAGCLAW_DATABASE_URL` is configured
+- Local fallback runtime data in `~/.magclaw-server/state.sqlite` when PostgreSQL is not configured
+- Attachments in `MAGCLAW_UPLOAD_DIR` so cloud deployments can mount a PVC
 - Codex agent conversations through `codex app-server --listen stdio://`
 - One-shot Codex mission runs still use `codex exec --json`
 - Server-Sent Events for live run updates
@@ -107,18 +107,31 @@ MAGCLAW_ADMIN_PASSWORD=replace-with-a-long-password \
 npm run dev
 ```
 
-For a single-machine local instance, the same variables may also live in the user-local `~/.magclaw/server.env` file. Set `MAGCLAW_DATA_DIR=/path/to/data` only when you intentionally want a different data root.
+For a single-machine local instance, copy `config/server.example.yaml` to
+`~/.magclaw-server/server.yaml`. Set `MAGCLAW_DATA_DIR=/path/to/data` only when
+you intentionally want a different data root. Legacy `server.env` files are not
+loaded unless `MAGCLAW_ALLOW_LEGACY_SERVER_ENV=1` is set.
+In containers, mount the same YAML shape at `/etc/magclaw/server.yaml`; the
+Docker images set `MAGCLAW_CONFIG_FILE` to that path by default.
 
-To persist cloud auth control-plane data in PostgreSQL, set a database URL before startup:
+To persist cloud runtime data in PostgreSQL, set a database URL before startup:
 
-```bash
-MAGCLAW_DATABASE_URL=postgresql://user:password@host:5432 \
-MAGCLAW_DATABASE=magclaw_cloud \
-MAGCLAW_DATABASE_SCHEMA=magclaw \
-npm run dev
+```yaml
+database:
+  postgres_url: "postgresql://user:password@host:5432/magclaw_cloud"
+  name: "magclaw_cloud"
+  schema: "magclaw"
 ```
 
-`postgresql+asyncpg://` URLs are accepted and normalized for Node's `pg` driver. When this is configured, MagClaw runs the cloud schema migration on startup and stores users, workspace members, invitations, and browser sessions in PostgreSQL instead of keeping those records only in `~/.magclaw/state.json`. The local state file remains as the single-machine fallback when no database URL is configured.
+`postgresql+asyncpg://` URLs are accepted and normalized for Node's `pg` driver.
+Local private runs can put the same connection string in
+`~/.magclaw-server/server.yaml` as `database.postgres_url`; container deployments
+can put it in the mounted `/etc/magclaw/server.yaml` ConfigMap.
+When this is configured, MagClaw runs the cloud schema migration on startup and
+stores users, sessions, servers, members, invitations, channels, DMs, messages,
+tasks, agents, computers, machine tokens, password resets, release notes, and
+attachment metadata in PostgreSQL. When no database URL is configured, the same
+Web Service falls back to local SQLite and initializes tables on first startup.
 
 Browser users sign in through `/api/cloud/auth/login`, which issues an HttpOnly session cookie. Automation and local `curl` calls can use HTTP Basic Auth for the same admin-protected APIs:
 

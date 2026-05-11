@@ -32,6 +32,10 @@ export function createSystemServices(deps) {
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
 
+  function records(value) {
+    return Array.isArray(value) ? value.filter(Boolean) : [];
+  }
+
   function publicState(req = null) {
     const currentState = getState() || {};
     const cloud = typeof publicCloudState === 'function' ? publicCloudState(req) : undefined;
@@ -57,17 +61,27 @@ export function createSystemServices(deps) {
         runningRunIds: [],
       };
     }
+    const channels = records(currentState.channels);
+    const dms = records(currentState.dms);
+    const messages = records(currentState.messages);
+    const replies = records(currentState.replies);
     const visibleDms = currentHumanId
-      ? (currentState.dms || []).filter((dm) => (dm.participantIds || []).includes(currentHumanId))
-      : (currentState.dms || []);
+      ? dms.filter((dm) => records(dm.participantIds).includes(currentHumanId))
+      : dms;
     const visibleDmIds = new Set(visibleDms.map((dm) => dm.id));
     return {
       ...currentState,
       settings: publicSettings(cloud),
-      channels: (currentState.channels || []).filter((channel) => !channel.archived),
+      channels: channels.filter((channel) => !channel.archived),
       dms: visibleDms,
-      messages: (currentState.messages || []).filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId)),
-      replies: (currentState.replies || []).filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId)),
+      messages: messages.filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId)),
+      replies: replies.filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId)),
+      tasks: records(currentState.tasks),
+      agents: records(currentState.agents),
+      computers: records(currentState.computers),
+      humans: records(currentState.humans),
+      routeEvents: records(currentState.routeEvents),
+      systemNotifications: records(currentState.systemNotifications),
       connection: publicConnection(),
       cloud,
       releaseNotes: publicReleaseNotes(),
