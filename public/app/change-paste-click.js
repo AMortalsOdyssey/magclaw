@@ -1,3 +1,18 @@
+async function generateFreshComputerPairingCommand(body = {}) {
+  latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  latestPairingCommand.provisional = !body.computerId;
+  computerPairingDisplayName = '';
+  try {
+    appState = await api('/api/state');
+  } catch (error) {
+    console.warn('Failed to refresh state after creating computer pairing command:', error);
+  }
+  return latestPairingCommand;
+}
+
 document.addEventListener('change', async (event) => {
   if (event.target.id === 'profile-avatar-library') {
     setProfileAvatarInput(event.target.value);
@@ -50,16 +65,6 @@ document.addEventListener('change', async (event) => {
     if (name === 'model') agentFormState.model = event.target.value;
     if (name === 'reasoningEffort') agentFormState.reasoningEffort = event.target.value;
   }
-  if (event.target.id === 'agent-runtime-select') {
-    // Save current form state
-    saveAgentFormState();
-    selectedRuntimeId = event.target.value;
-    // Reset model selection (runtime changed)
-    agentFormState.model = '';
-    agentFormState.reasoningEffort = '';
-    render();
-    return;
-  }
   if (event.target.name === 'asTask') {
     const composerId = event.target.closest('form')?.dataset.composerId;
     if (composerId) composerTaskFlags[composerId] = event.target.checked;
@@ -94,6 +99,35 @@ document.addEventListener('click', async (event) => {
   if (!prepared) return;
   const { action, target, localOnlyActions } = prepared;
   try {
+    if (action === 'select-agent-runtime') {
+      const form = target.closest('#agent-form');
+      if (!form || target.disabled) return;
+      saveAgentFormState();
+      const nextRuntimeId = target.dataset.value || '';
+      const runtime = runtimeOptionsForComputer(agentFormState.computerId).find((rt) => rt.id === nextRuntimeId);
+      if (!runtime || !runtime.installed || runtime.createSupported === false) return;
+      selectedRuntimeId = nextRuntimeId;
+      agentFormState.model = '';
+      agentFormState.reasoningEffort = '';
+      render();
+      return;
+    }
+    if (action === 'select-agent-model') {
+      const form = target.closest('#agent-form');
+      if (!form || target.disabled) return;
+      saveAgentFormState();
+      agentFormState.model = target.dataset.value || '';
+      render();
+      return;
+    }
+    if (action === 'select-agent-reasoning') {
+      const form = target.closest('#agent-form');
+      if (!form || target.disabled) return;
+      saveAgentFormState();
+      agentFormState.reasoningEffort = target.dataset.value || '';
+      render();
+      return;
+    }
     if (action === 'set-view') {
       if (railTab === 'members') rememberMembersLayoutFromCurrent();
       activeView = target.dataset.view;
@@ -135,7 +169,10 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'set-ui-language') {
       if (typeof setMagclawLanguage === 'function') {
-        setMagclawLanguage(target.dataset.language || 'zh-CN');
+        const language = setMagclawLanguage(target.dataset.language || 'zh-CN');
+        if (typeof persistMagclawAccountLanguage === 'function') {
+          await persistMagclawAccountLanguage(language).catch((error) => toast(error.message));
+        }
       }
       return;
     }
@@ -160,6 +197,7 @@ document.addEventListener('click', async (event) => {
       render();
     }
     if (action === 'reset-server-avatar') {
+      serverProfileAvatarDraft = '';
       const input = document.querySelector('[data-server-avatar-input]');
       if (input) input.value = '';
       const preview = document.querySelector('.server-profile-avatar');
@@ -792,10 +830,7 @@ document.addEventListener('click', async (event) => {
         return;
       }
       if (modal === 'computer' && cloudCan('manage_computers')) {
-        latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
-          method: 'POST',
-          body: JSON.stringify({ name: appState.runtime?.host || 'Computer' }),
-        });
+        await generateFreshComputerPairingCommand({ name: appState.runtime?.host || 'Computer' });
       }
       if (modal === 'member-invite') {
         cloudInviteEmails = [];
@@ -881,14 +916,23 @@ document.addEventListener('click', async (event) => {
           const liveComputer = pendingComputer?.id ? byId(appState.computers, pendingComputer.id) : null;
           const pairingComputer = liveComputer || pendingComputer;
           const pendingStatus = String(pairingComputer?.status || '').toLowerCase();
-          if (pairingComputer?.id && pendingStatus === 'pairing') {
+          const hasBoundAgents = (appState.agents || []).some((agent) => agent?.computerId === pairingComputer?.id && !agent.deletedAt);
+          const shouldDiscardPairingComputer = Boolean(
+            latestPairingCommand?.provisional
+            && pairingComputer?.id
+            && pendingStatus !== 'connected'
+            && !hasBoundAgents
+          );
+          if (shouldDiscardPairingComputer) {
             try {
               await api(`/api/computers/${encodeURIComponent(pairingComputer.id)}`, { method: 'DELETE' });
+              await refreshState();
             } catch (error) {
               console.warn('Failed to discard unpaired computer:', error);
             }
           }
           latestPairingCommand = null;
+          computerPairingDisplayName = '';
         }
         let nextModal = null;
         if (modal === 'avatar-crop') {
@@ -1068,7 +1112,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'cloud-local' || action === 'cloud-disconnect') {
       await api('/api/cloud/disconnect', { method: 'POST', body: '{}' });
-      toast('Local-only mode enabled');
+      toast('Offline mode enabled');
     }
     if (action === 'cloud-configure') {
       await api('/api/cloud/config', {
@@ -1085,28 +1129,22 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'cloud-push') {
       await api('/api/cloud/sync/push', { method: 'POST', body: '{}' });
-      toast('Local state pushed');
+      toast('State pushed');
     }
     if (action === 'cloud-pull') {
-      if (!window.confirm('Pull cloud state and replace the synced local state?')) return;
+      if (!window.confirm('Pull cloud state and replace the synced state?')) return;
       await api('/api/cloud/sync/pull', { method: 'POST', body: '{}' });
       toast('Cloud state pulled');
     }
     if (action === 'create-computer-pairing') {
-      latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
-        method: 'POST',
-        body: JSON.stringify({ name: appState.runtime?.host || 'Computer' }),
-      });
+      await generateFreshComputerPairingCommand({ name: appState.runtime?.host || 'Computer' });
       activeView = 'computers';
       railTab = 'computers';
       toast('Pairing command created');
     }
     if (action === 'regenerate-computer-command') {
       const computer = byId(appState.computers, target.dataset.id);
-      latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
-        method: 'POST',
-        body: JSON.stringify({ computerId: target.dataset.id, name: computer?.name || 'Computer' }),
-      });
+      await generateFreshComputerPairingCommand({ computerId: target.dataset.id, name: computer?.name || 'Computer' });
       selectedComputerId = target.dataset.id || selectedComputerId;
       activeView = 'computers';
       railTab = 'computers';
@@ -1117,10 +1155,7 @@ document.addEventListener('click', async (event) => {
       const body = selectedComputer && !computerIsDisabled(selectedComputer)
         ? { computerId: selectedComputer.id, name: selectedComputer.name || selectedComputer.hostname || 'Computer' }
         : { name: appState.runtime?.host || 'Computer' };
-      latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
+      await generateFreshComputerPairingCommand(body);
       modal = 'computer';
       renderShellOrModal();
       toast('Connect command regenerated');

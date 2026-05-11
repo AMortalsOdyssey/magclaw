@@ -1,5 +1,5 @@
 function byId(list, id) {
-  return (list || []).find((item) => item.id === id) || null;
+  return (list || []).find((item) => item?.id === id) || null;
 }
 
 function conversationRecord(id) {
@@ -28,11 +28,11 @@ function bytes(value) {
 }
 
 function shortId(id) {
-  return String(id || '').split('_').pop()?.slice(0, 6) || 'local';
+  return String(id || '').split('_').pop()?.slice(0, 6) || 'item';
 }
 
 function displayName(id) {
-  if (id === 'agt_codex') return 'Codex Local';
+  if (id === 'agt_codex') return 'Codex';
   const human = typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id);
   if (human) return human.name;
   const agent = byId(appState?.agents, id);
@@ -186,7 +186,7 @@ function plainActorText(text) {
 }
 
 function displayNameFromState(stateSnapshot, id) {
-  if (id === 'agt_codex') return 'Codex Local';
+  if (id === 'agt_codex') return 'Codex';
   const human = byId(stateSnapshot?.humans, id);
   if (human) return human.name;
   const agent = byId(stateSnapshot?.agents, id);

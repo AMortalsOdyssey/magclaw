@@ -255,21 +255,40 @@ document.addEventListener('submit', async (event) => {
       toast('Connection saved');
     }
     if (form.id === 'server-profile-form') {
-      await api('/api/cloud/server/profile', {
+      const avatar = serverProfileAvatarDraft === null ? data.get('avatar') : serverProfileAvatarDraft;
+      const result = await api('/api/cloud/server/profile', {
         method: 'PATCH',
         body: JSON.stringify({
+          workspaceSlug: currentServerSlug(),
           name: data.get('name'),
-          avatar: data.get('avatar'),
+          avatar,
           onboardingAgentId: data.get('onboardingAgentId') || currentServerProfile().onboardingAgentId || '',
           newAgentGreetingEnabled: data.get('newAgentGreetingEnabled') !== 'false',
         }),
       });
+      const workspace = result?.workspace;
+      if (workspace) {
+        appState.cloud = appState.cloud || {};
+        appState.cloud.workspace = workspace;
+        let matchedWorkspace = false;
+        appState.cloud.workspaces = (appState.cloud.workspaces || []).map((server) => {
+          const matched = server.id === workspace.id || server.slug === workspace.slug;
+          if (matched) matchedWorkspace = true;
+          return matched ? { ...server, ...workspace } : server;
+        });
+        if (!matchedWorkspace) appState.cloud.workspaces = [
+          ...(appState.cloud.workspaces || []),
+          workspace,
+        ];
+      }
+      serverProfileAvatarDraft = null;
       toast('Server profile saved');
     }
     if (form.id === 'server-onboarding-form') {
       await api('/api/cloud/server/profile', {
         method: 'PATCH',
         body: JSON.stringify({
+          workspaceSlug: currentServerSlug(),
           name: currentServerProfile().name,
           avatar: currentServerProfile().avatar || '',
           onboardingAgentId: data.get('onboardingAgentId') || '',
@@ -322,6 +341,7 @@ document.addEventListener('submit', async (event) => {
           name: data.get('name'),
           email: data.get('email'),
           password,
+          language: typeof magclawLanguage === 'function' ? magclawLanguage() : 'en',
         }),
       });
       activeView = 'console';
@@ -350,6 +370,7 @@ document.addEventListener('submit', async (event) => {
           name: data.get('name'),
           avatar: data.get('avatar'),
           password,
+          language: typeof magclawLanguage === 'function' ? magclawLanguage() : 'en',
         }),
       });
       window.history.replaceState({}, '', '/');
@@ -474,5 +495,5 @@ document.addEventListener('submit', async (event) => {
 
 render();
 refreshStateOrAuthGate().catch((error) => {
-  root.innerHTML = `<div class="boot">MAGCLAW LOCAL / ${escapeHtml(error.message)}</div>`;
+  root.innerHTML = `<div class="boot">MAGCLAW / ${escapeHtml(error.message)}</div>`;
 });

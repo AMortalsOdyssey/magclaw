@@ -237,7 +237,7 @@ function renderSearch() {
 function renderMissions() {
   const missions = appState.missions || [];
   return `
-    ${renderHeader('Codex Missions', 'Local runner history', '')}
+    ${renderHeader('Codex Missions', 'Runner history', '')}
     <section class="list-panel pixel-panel">
       ${missions.length ? missions.map((mission) => {
         const run = (appState.runs || []).find((item) => item.missionId === mission.id);
@@ -279,48 +279,6 @@ function renderComputers() {
       `}
     </section>
   `;
-}
-
-function computerIsDisabled(computer = {}) {
-  return String(computer.status || '').toLowerCase() === 'disabled' || Boolean(computer.disabledAt);
-}
-
-function computerIsDeleted(computer = {}) {
-  return Boolean(computer.deletedAt || computer.archivedAt) || String(computer.status || '').toLowerCase() === 'deleted';
-}
-
-function agentIsDeleted(agent = {}) {
-  return Boolean(agent.deletedAt || agent.archivedAt) || String(agent.status || '').toLowerCase() === 'deleted';
-}
-
-function agentComputerUnavailable(agent = {}) {
-  const computer = agent.computerId ? byId(appState?.computers, agent.computerId) : null;
-  if (agent.computerId && !computer && agent.computerId !== 'cmp_local') return true;
-  return Boolean(computer && (computerIsDisabled(computer) || computerIsDeleted(computer)));
-}
-
-function agentIsActiveInWorkspace(agent = {}) {
-  return Boolean(agent?.id) && !agentIsDeleted(agent) && !agentComputerUnavailable(agent);
-}
-
-function computerIsConnected(computer = {}) {
-  if (computerIsDisabled(computer) || computerIsDeleted(computer)) return false;
-  return presenceTone(computer.status || 'offline') === 'online' || String(computer.status || '').toLowerCase() === 'connected';
-}
-
-function computerCreatedMs(computer = {}) {
-  const value = Date.parse(computer.createdAt || '');
-  return Number.isFinite(value) ? value : 0;
-}
-
-function sortComputersByAvailability(computers = []) {
-  return [...computers].sort((a, b) => {
-    const disabledDelta = Number(computerIsDisabled(a)) - Number(computerIsDisabled(b));
-    if (disabledDelta) return disabledDelta;
-    const createdDelta = computerCreatedMs(a) - computerCreatedMs(b);
-    if (createdDelta) return createdDelta;
-    return String(a.id || '').localeCompare(String(b.id || ''));
-  });
 }
 
 function fmtFullDateTime(value) {
@@ -410,7 +368,7 @@ function runtimeNameForId(id = '') {
 }
 
 function computerAgents(computerId) {
-  return (appState.agents || []).filter((agent) => agent.computerId === computerId && !agentIsDeleted(agent));
+  return (appState.agents || []).filter((agent) => agent && agent.computerId === computerId && !agentIsDeleted(agent));
 }
 
 function renderComputerRuntimeBadges(computer = {}, options = {}) {
@@ -709,7 +667,7 @@ function renderAccountSettingsTab() {
             <div>
               <p class="eyebrow">Account</p>
               <h3>${escapeHtml(profileValues.displayName || currentUser?.name || 'You')}</h3>
-              <p>${escapeHtml(human.email || currentUser?.email || 'Local MagClaw user')}</p>
+              <p>${escapeHtml(human.email || currentUser?.email || 'MagClaw user')}</p>
             </div>
           </div>
           ${currentUser ? `<button class="secondary-btn account-signout-btn" type="button" data-action="open-modal" data-modal="confirm-sign-out">Sign Out</button>` : ''}
@@ -1289,7 +1247,7 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
     : '';
   const legalHtml = `
     <div class="cloud-auth-legal">
-      <p>使用即代表您同意我们的 <a href="/terms" target="_blank" rel="noreferrer">使用协议</a> 和 <a href="/privacy" target="_blank" rel="noreferrer">隐私政策</a></p>
+      <p>By using MagClaw, you agree to our <a href="/terms">Terms of Use</a> and <a href="/privacy">Privacy Policy</a></p>
       <small>© 2026 MagClaw. All Rights Reserved.</small>
     </div>
   `;
@@ -1388,7 +1346,10 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
         </form>`}
       </section>
     ` : '';
-  const loginPanel = auth.initialized ? `
+  const createAccountLink = auth.allowSignups
+    ? '<p class="cloud-login-switch">No account? <a href="/create-account" data-action="none">Create one</a></p>'
+    : '';
+  const loginPanel = `
       <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
         ${brandHtml}
         <div class="cloud-login-heading">
@@ -1402,18 +1363,8 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
           ${loginErrorHtml}
           <button class="primary-btn cloud-login-submit" type="submit">Sign in</button>
           <p class="cloud-login-switch"><a href="/forgot-password" data-action="none">Forgot password?</a></p>
-          <p class="cloud-login-switch">No account? <a href="/create-account" data-action="none">Create one</a></p>
+          ${createAccountLink}
         </form>
-      </section>
-    ` : `
-      <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
-        ${brandHtml}
-        <div class="cloud-login-heading">
-          <p>MagClaw</p>
-          <h1 id="cloud-login-title">Sign in is not ready</h1>
-          <span>Create the first account or configure sign-in on the server.</span>
-          <a class="primary-btn cloud-login-submit" href="/create-account">Create account</a>
-        </div>
       </section>
     `;
   const joinPanel = tokenContext.mode === 'join' ? `
@@ -1483,6 +1434,7 @@ function renderBrowserSettingsTab() {
 
 function renderServerSettingsTab() {
   const server = currentServerProfile();
+  const serverAvatar = serverProfileAvatarDraft === null ? (server.avatar || '') : serverProfileAvatarDraft;
   const members = appState.cloud?.members || [];
   const admins = members.filter((member) => (
     (member.status || 'active') === 'active'
@@ -1496,11 +1448,11 @@ function renderServerSettingsTab() {
     <section class="cloud-layout server-settings-layout">
       <div class="pixel-panel cloud-card wide">
         <form id="server-profile-form" class="modal-form server-profile-form">
-          <div class="panel-title"><span>Profile</span><span>/${escapeHtml(server.slug || server.id || 'local')}</span></div>
+          <div class="panel-title"><span>Profile</span><span>${displayServerSlug(server.slug || server.id) ? `/${escapeHtml(displayServerSlug(server.slug || server.id))}` : ''}</span></div>
           <div class="server-profile-row">
-            <span class="server-profile-avatar">${renderServerAvatar(server, 'server-profile-avatar-img')}</span>
+            <span class="server-profile-avatar">${renderServerAvatar({ ...server, avatar: serverAvatar }, 'server-profile-avatar-img')}</span>
             <div class="server-profile-avatar-actions">
-              <input type="hidden" name="avatar" value="${escapeHtml(server.avatar || '')}" data-server-avatar-input />
+              <input type="hidden" name="avatar" value="${escapeHtml(serverAvatar)}" data-server-avatar-input />
               <label class="secondary-btn file-btn">
                 Upload Avatar
                 <input id="server-avatar-file" class="visually-hidden" type="file" accept="image/*" data-avatar-upload-target="server-profile" />
@@ -1509,7 +1461,7 @@ function renderServerSettingsTab() {
             </div>
           </div>
           <label><span>Server Name</span><input name="name" value="${escapeHtml(server.name || '')}" ${canManage ? '' : 'disabled'} required /></label>
-          <label><span>URL Slug</span><input name="slug" value="${escapeHtml(server.slug || server.id || 'local')}" disabled /></label>
+          <label><span>URL Slug</span><input name="slug" value="${escapeHtml(displayServerSlug(server.slug || server.id))}" disabled /></label>
           <input type="hidden" name="onboardingAgentId" value="${escapeHtml(server.onboardingAgentId || '')}" />
           <input type="hidden" name="newAgentGreetingEnabled" value="${server.newAgentGreetingEnabled === false ? 'false' : 'true'}" />
           <button class="primary-btn" type="submit" ${canManage ? '' : 'disabled'}>Save Server</button>
@@ -1613,6 +1565,7 @@ function consoleInvitationRows() {
   const currentEmail = normalizeInviteEmailValue(appState?.cloud?.auth?.currentUser?.email || '');
   const rows = appState?.cloud?.myInvitations || appState?.cloud?.invitations || [];
   return rows
+    .filter(Boolean)
     .filter((item) => !currentEmail || normalizeInviteEmailValue(item.email || '') === currentEmail)
     .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0));
 }
@@ -1632,7 +1585,7 @@ function consoleServerPath(server = appState?.cloud?.workspace || {}) {
 
 function renderConsoleOverview() {
   const user = appState?.cloud?.auth?.currentUser || {};
-  const pendingCount = consoleInvitationRows().filter((item) => item.status === 'pending').length;
+  const pendingCount = consoleInvitationRows().filter((item) => item?.status === 'pending').length;
   const serversCount = consoleServers().length;
   return `
     <section class="console-grid">
@@ -1698,8 +1651,8 @@ function renderConsoleServers() {
       <div class="console-switch-list">
         ${servers.length ? servers.map((server) => `
           <button class="console-switch-server" type="button" data-action="open-console-server" data-slug="${escapeHtml(server.slug || server.id || 'local')}">
-            <strong>${escapeHtml(server.name || server.slug || server.id)}</strong>
-            <small>/${escapeHtml(server.slug || server.id || 'local')}</small>
+            <strong>${escapeHtml(server.name || displayServerSlug(server.slug || server.id) || 'Server')}</strong>
+            ${displayServerSlug(server.slug || server.id) ? `<small>/${escapeHtml(displayServerSlug(server.slug || server.id))}</small>` : ''}
           </button>
         `).join('') : '<div class="empty-box small">Choose a server to continue. If you do not have one yet, create a new server.</div>'}
       </div>

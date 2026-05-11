@@ -85,6 +85,37 @@ test('computer and agent creation entrances honor cloud capabilities', async () 
   assert.match(modalSource, /!cloudCan\('manage_computers'\)/);
 });
 
+test('computer connect modal creates a fresh command before rendering stale state', async () => {
+  const app = await readAppSource();
+  const modalSource = app.slice(app.indexOf('function pairingCommandIsUsable'), app.indexOf('function renderHumanModal()'));
+  const clickSource = app.slice(app.indexOf('async function generateFreshComputerPairingCommand'), app.indexOf("if (action === 'agent-stop-unavailable')"));
+  const closeModalSource = app.slice(app.indexOf("if (action === 'close-modal')"), app.indexOf("if (localOnlyActions.has(action))"));
+  const pairingActionsSource = app.slice(app.indexOf("if (action === 'create-computer-pairing')"), app.indexOf("if (action === 'copy-join-link')"));
+  const stateUpdateSource = app.slice(app.indexOf('function applyStateUpdate(nextState)'), app.indexOf('function applyRunEventUpdate'));
+
+  assert.match(app, /async function generateFreshComputerPairingCommand\(body = \{\}\)/);
+  assert.match(app, /appState = await api\('\/api\/state'\)/);
+  assert.match(clickSource, /await generateFreshComputerPairingCommand\(\{ name: appState\.runtime\?\.host \|\| 'Computer' \}\)/);
+  assert.match(pairingActionsSource, /await generateFreshComputerPairingCommand\(body\)/);
+  assert.match(modalSource, /function pairingCommandIsUsable/);
+  assert.match(modalSource, /function pairingCommandText/);
+  assert.match(modalSource, /id="computer-display-name-input"/);
+  assert.match(modalSource, /--display-name/);
+  assert.match(modalSource, /token\.consumedAt \|\| token\.revokedAt/);
+  assert.match(modalSource, /expiresAtMs <= Date\.now\(\)/);
+  assert.match(modalSource, /const stale = Boolean\(command && !pairingCommandIsUsable\(latestPairingCommand\)\)/);
+  assert.match(modalSource, /presenceClass\(connected \? 'connected' : stale \? 'offline' : 'queued'\)/);
+  assert.doesNotMatch(modalSource, /pendingComputerId && !liveComputer/);
+  assert.match(clickSource, /latestPairingCommand\.provisional = !body\.computerId/);
+  assert.match(clickSource, /computerPairingDisplayName = ''/);
+  assert.match(app, /'computer-display-name'/);
+  assert.match(closeModalSource, /shouldDiscardPairingComputer/);
+  assert.match(closeModalSource, /await refreshState\(\)/);
+  assert.match(app, /function computerPairingModalRenderSignature/);
+  assert.match(stateUpdateSource, /computerModalBefore !== computerPairingModalRenderSignature\(appState\)/);
+  assert.doesNotMatch(stateUpdateSource, /if \(modal === 'computer'\) render\(\);/);
+});
+
 test('members page uses a join-ordered directory with invite modals', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
@@ -356,6 +387,8 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.match(authGateSource, /id="cloud-reset-form"/);
   assert.match(authGateSource, /id="cloud-open-register-form"/);
   assert.match(authGateSource, /id="cloud-forgot-form"/);
+  assert.match(authGateSource, /id="cloud-login-form"/);
+  assert.doesNotMatch(authGateSource, /Sign in is not ready/);
   assert.match(openRegisterSource, /id="cloud-open-register-form" class="cloud-login-form" novalidate/);
   assert.doesNotMatch(openRegisterSource, /minlength|maxlength/);
   assert.match(app, /function assertCloudPasswordPolicy\(password\)/);
@@ -365,8 +398,13 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.doesNotMatch(authGateSource, /<span>Avatar<\/span>/);
   assert.doesNotMatch(authGateSource, /data-action="reset-cloud-auth-avatar"[\s\S]*Reset to Default/);
   assert.doesNotMatch(authGateSource, /<input type="hidden" name="email"/);
-  assert.match(authGateSource, /使用协议/);
-  assert.match(authGateSource, /隐私政策/);
+  assert.match(authGateSource, /By using MagClaw, you agree to our/);
+  assert.match(authGateSource, /Terms of Use/);
+  assert.match(authGateSource, /Privacy Policy/);
+  assert.match(authGateSource, /<a href="\/terms">Terms of Use<\/a>/);
+  assert.match(authGateSource, /<a href="\/privacy">Privacy Policy<\/a>/);
+  assert.doesNotMatch(authGateSource, /target="_blank"|rel="noreferrer"/);
+  assert.doesNotMatch(authGateSource, /使用即代表|使用协议|隐私政策/);
   assert.match(authGateSource, /© 2026 MagClaw\. All Rights Reserved\./);
   assert.match(submitStyles, /display: inline-flex;/);
   assert.match(submitStyles, /align-items: center;/);
@@ -450,6 +488,10 @@ test('settings exposes browser language switching and loads i18n before render c
   assert.match(shellSource, /id: 'language'[\s\S]*label: 'Language'/);
   assert.match(settingsSource, /language: \{ title: 'Language'/);
   assert.match(app, /data-action="set-ui-language"/);
+  assert.match(app, /persistMagclawAccountLanguage/);
+  assert.match(app, /\/api\/cloud\/auth\/preferences/);
+  assert.match(app, /applyMagclawAccountLanguage\(appState\)/);
+  assert.match(app, /Saved to your account when signed in\./);
   assert.match(app, /function renderLanguageSettingsTab\(\)/);
 });
 
@@ -616,7 +658,8 @@ test('chat rail keeps Threads and adds Inbox without a System notification tab',
   assert.match(chatRailSource, /renderChannelItem\(channel, unreadCountForSpace\(spaceUnreadCounts, 'channel', channel\.id\)\)/);
   assert.match(chatRailSource, /const dmPeers = dms/);
   assert.match(chatRailSource, /\.map\(\(dm\) => dmPeerInfo\(dm\)\)/);
-  assert.match(chatRailSource, /renderDmItem\(dm\.id, peer\.name, peer\.status, peer\.avatar, unreadCountForSpace\(spaceUnreadCounts, 'dm', dm\.id\)\)/);
+  assert.match(chatRailSource, /\.filter\(\(item\) => item\?\.dm\?\.id && item\?\.peer\)/);
+  assert.match(chatRailSource, /renderDmItem\(dm\.id, peer\.name \|\| displayName\(peer\.id\), peer\.status \|\| 'offline', peer\.avatar \|\| '', unreadCountForSpace\(spaceUnreadCounts, 'dm', dm\.id\)\)/);
   assert.match(app, /function renderRailUnreadBadge\(count, label = 'unread messages'\)/);
   assert.match(app, /function buildSpaceUnreadCounts\(humanId = currentHumanId\(\), stateSnapshot = appState\)/);
   assert.match(app, /function markSpaceRead\(spaceType, spaceId\)/);
@@ -1372,7 +1415,8 @@ test('agent avatar uploads open a square crop modal and persist a cropped image'
   assert.match(app, /target === 'agent-create'/);
   assert.match(app, /agentFormState\.avatar = avatar/);
   assert.match(app, /function avatarCropReturnModal\(crop\)/);
-  assert.match(app, /return crop\?\.target === 'agent-create' \? 'agent' : null/);
+  assert.match(app, /if \(crop\?\.target === 'agent-create'\) return 'agent'/);
+  assert.match(app, /return null/);
   assert.match(app, /data-action="avatar-crop-zoom-in"/);
   assert.match(app, /data-action="avatar-crop-zoom-out"/);
   assert.match(app, /data-action="confirm-avatar-crop"/);
@@ -1418,6 +1462,7 @@ test('create agent opens with a fresh form state every time', async () => {
   assert.match(app, /Connect a Computer before creating cloud Agents/);
   assert.match(app, /No connected Computer is available/);
   assert.match(app, /const connectedComputers = computerOptions\.filter/);
+  assert.match(app, /status === 'connected' \|\| status === 'offline'/);
   assert.match(app, /<option value="\$\{c\.id\}" \$\{connected \? '' : 'disabled'\}/);
   assert.match(app, /if \(modal === 'agent'\) \{\s*resetAgentFormState\(\);\s*render\(\);\s*await loadInstalledRuntimes\(\);\s*if \(modal === 'agent'\) render\(\);\s*return;/);
   assert.match(app, /if \(form\.id === 'agent-form'\)[\s\S]*resetAgentFormState\(\);\s*modal = null/);
@@ -1561,15 +1606,33 @@ test('cloud server shell uses MagClaw-style switcher and removes local-only chro
   const styles = await readStylesSource();
   const railSource = app.slice(app.indexOf('function renderRail()'), app.indexOf('function renderChatRail'));
   const settingsNavSource = app.slice(app.indexOf('function settingsNavItems()'), app.indexOf('function settingsIcon('));
+  const visibleLocalMarkers = [
+    'MAGCLAW LOCAL',
+    'Magclaw Local',
+    'Codex Local',
+    'Open Local Folder',
+    'Local collaboration',
+    'Local runtime profile',
+    'Local team placeholder',
+    'Local-only mode enabled',
+    'Local state pushed',
+    'Local MagClaw user',
+    'Local runner history',
+  ];
 
   assert.match(app, /let serverSwitcherOpen = false/);
   assert.match(app, /function currentServerProfile\(\)/);
+  assert.match(app, /function displayServerSlug\(value, fallback = ''\)/);
   assert.match(app, /function renderServerSwitcherMenu\(\)/);
   assert.match(railSource, /data-action="toggle-server-switcher"/);
   assert.match(railSource, /renderServerSwitcherMenu\(\)/);
   assert.match(app, /data-action="switch-server"/);
   assert.match(app, /data-action="open-console-server-switcher"/);
   assert.match(app, /Switch or create server/);
+  assert.match(app, /\.filter\(Boolean\)[\s\S]*normalizeInviteEmailValue\(item\.email/);
+  for (const marker of visibleLocalMarkers) {
+    assert.doesNotMatch(app, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
   assert.doesNotMatch(railSource, /runtime-chip/);
   assert.doesNotMatch(settingsNavSource, /id: 'members'/);
   assert.doesNotMatch(app, /Local Only[\s\S]*State, attachments, Codex runs/);
@@ -1591,6 +1654,11 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /let selectedComputerId = /);
   assert.match(app, /function renderServerSettingsTab\(\)/);
   assert.match(app, /id="server-profile-form"/);
+  assert.match(app, /let serverProfileAvatarDraft = null/);
+  assert.match(app, /workspaceSlug: currentServerSlug\(\)/);
+  assert.match(app, /serverProfileAvatarDraft === null \? \(server\.avatar \|\| ''\) : serverProfileAvatarDraft/);
+  assert.match(app, /serverProfileAvatarDraft = avatar/);
+  assert.match(app, /serverProfileAvatarDraft = null/);
   assert.match(app, /Join Links/);
   assert.match(app, /Onboarding Behavior/);
   assert.match(app, /Danger Zone/);
@@ -1612,6 +1680,8 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.doesNotMatch(app, /<small>\$\{escapeHtml\(email \|\| 'Server member'\)\}<\/small>/);
   assert.doesNotMatch(app, /human-role-/);
   assert.match(app, /function renderAgentGroupsByComputer\(/);
+  assert.match(app, /function agentIsDisabled\(agent = \{\}\)/);
+  assert.match(app, /agentIsActiveInWorkspace\(agent = \{\}\)[\s\S]*!agentIsDisabled\(agent\)/);
   assert.match(app, /function renderComputerDetail\(/);
   assert.match(app, /data-action="select-computer"/);
   assert.match(app, /Agents on this computer/);

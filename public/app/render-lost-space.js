@@ -48,7 +48,7 @@ function renderConsoleLostSpace() {
             <div>
               <p class="eyebrow">Deleted server</p>
               <h3>${escapeHtml(server.name || server.slug || server.id)}</h3>
-              <p>/${escapeHtml(server.slug || server.id || 'local')} · deleted ${escapeHtml(fmtFullDateTime(server.deletedAt))}</p>
+              <p>${displayServerSlug(server.slug || server.id) ? `/${escapeHtml(displayServerSlug(server.slug || server.id))} · ` : ''}deleted ${escapeHtml(fmtFullDateTime(server.deletedAt))}</p>
             </div>
             <button class="secondary-btn" type="button" data-action="restore-console-server" data-slug="${escapeHtml(server.slug || server.id || '')}">Restore Server</button>
           </article>

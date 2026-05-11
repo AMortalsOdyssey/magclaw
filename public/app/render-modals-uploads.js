@@ -172,7 +172,7 @@ function renderProjectModal() {
   return `
     ${modalHeader('Open Project', channel ? `#${channel.name}` : 'Channel project')}
     <div class="folder-picker-panel">
-      <button class="primary-btn" type="button" data-action="pick-project-folder">Open Local Folder</button>
+      <button class="primary-btn" type="button" data-action="pick-project-folder">Open Folder</button>
     </div>
     <details class="manual-project-path">
       <summary>Path</summary>
@@ -220,7 +220,7 @@ function renderChannelModal() {
     return `${agent.name || ''} ${agent.description || ''} ${agent.runtime || ''}`.toLowerCase().includes(query);
   });
   return `
-    ${modalHeader('Create Channel', 'Local collaboration')}
+    ${modalHeader('Create Channel', 'Collaboration')}
     <form id="channel-form" class="modal-form">
       <label><span>Name</span><input name="name" placeholder="frontend-war-room" required /></label>
       <label><span>Description</span><textarea name="description" rows="3"></textarea></label>
@@ -421,6 +421,39 @@ function renderEnvVarsList() {
   `).join('');
 }
 
+function renderAgentChoiceButtons({ name, action, options, currentValue, emptyLabel = 'Select...' }) {
+  if (!options.length) {
+    return `
+      <input type="hidden" name="${escapeHtml(name)}" value="" />
+      <div class="agent-choice-grid"><span class="agent-choice-empty">${escapeHtml(emptyLabel)}</span></div>
+    `;
+  }
+  const selected = options.some((option) => option.value === currentValue)
+    ? currentValue
+    : options.find((option) => !option.disabled)?.value || '';
+  return `
+    <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(selected)}" />
+    <div class="agent-choice-grid">
+      ${options.map((option) => {
+        const active = option.value === selected ? ' active' : '';
+        const disabled = option.disabled ? ' disabled' : '';
+        return `
+          <button
+            class="agent-choice-option${active}${disabled}"
+            type="button"
+            data-action="${escapeHtml(action)}"
+            data-value="${escapeHtml(option.value)}"
+            ${option.disabled ? 'disabled' : ''}
+          >
+            <span>${escapeHtml(option.label)}</span>
+            ${option.meta ? `<em>${escapeHtml(option.meta)}</em>` : ''}
+          </button>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
 function runtimeOptionsForComputer(computerId) {
   const computer = byId(appState.computers, computerId) || appState.computers?.[0] || {};
   const details = computerRuntimeDetails(computer, { includeLocalFallback: computer.connectedVia !== 'daemon' });
@@ -478,7 +511,8 @@ function renderAgentModal() {
     : (appState.computers || [])).filter((computer) => {
       if (typeof computerIsDeleted === 'function' && computerIsDeleted(computer)) return false;
       if (typeof computerIsDisabled === 'function' && computerIsDisabled(computer)) return false;
-      return true;
+      const status = String(computer.status || 'offline').toLowerCase();
+      return status === 'connected' || status === 'offline';
     });
   const connectedComputers = computerOptions.filter((computer) => (
     typeof computerIsConnected === 'function'
@@ -509,6 +543,27 @@ function renderAgentModal() {
   const hasReasoningEffort = Boolean(currentRuntime?.reasoningEffort?.length);
   const reasoningEfforts = currentRuntime?.reasoningEffort || [];
   const defaultReasoningEffort = agentFormState.reasoningEffort || currentRuntime?.defaultReasoningEffort || 'medium';
+  const runtimeChoices = availableRuntimes.map((rt) => ({
+    value: rt.id,
+    label: rt.name || runtimeNameForId(rt.id),
+    meta: !rt.installed
+      ? 'not installed'
+      : rt.createSupported === false
+        ? 'not supported yet'
+        : rt.version
+          ? String(rt.version).split(/\r?\n/)[0]
+          : '',
+    disabled: !rt.installed || rt.createSupported === false,
+  }));
+  const modelChoices = modelNames.map((m) => {
+    const slug = typeof m === 'string' ? m : m.slug;
+    const name = typeof m === 'string' ? m : m.name;
+    return { value: slug, label: name };
+  });
+  const reasoningChoices = reasoningEfforts.map((effort) => ({
+    value: effort,
+    label: effort.charAt(0).toUpperCase() + effort.slice(1),
+  }));
 
   // Initialize avatar if not set
   if (!agentFormState.avatar) {
@@ -516,7 +571,7 @@ function renderAgentModal() {
   }
 
   return `
-    ${modalHeader('CREATE AGENT', 'Local runtime profile')}
+    ${modalHeader('CREATE AGENT', 'Runtime profile')}
     <form id="agent-form" class="modal-form">
       ${connectedComputers.length ? '' : '<div class="empty-box small agent-computer-required">No connected Computer is available. Connect one first; offline Computers are shown below for reference.</div>'}
       <div class="avatar-picker">
@@ -555,39 +610,32 @@ function renderAgentModal() {
       </label>
       <div class="form-field">
         <span>RUNTIME</span>
-        <select name="runtime" id="agent-runtime-select">
-          ${availableRuntimes.length ? availableRuntimes.map((rt) => {
-            const unavailable = !rt.installed || rt.createSupported === false;
-            const suffix = !rt.installed ? ' (not installed)' : rt.createSupported === false ? ' (not supported yet)' : '';
-            const label = `${rt.name}${rt.version && rt.installed ? ` (${String(rt.version).split(/\r?\n/)[0]})` : ''}${suffix}`;
-            return `<option value="${rt.id}" ${unavailable ? 'disabled' : ''} ${rt.id === selectedRuntimeId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-          }).join('') : '<option value="" disabled selected>Select...</option>'}
-        </select>
-        <div class="runtime-availability-list">
-          ${availableRuntimes.map((rt) => `
-            <span class="runtime-badge ${rt.installed && rt.createSupported !== false ? '' : 'muted'}">
-              ${escapeHtml(rt.name || runtimeNameForId(rt.id))}
-              ${rt.installed ? (rt.createSupported === false ? '<em>not supported yet</em>' : '') : '<em>not installed</em>'}
-            </span>
-          `).join('') || '<span class="runtime-badge muted">No runtimes reported</span>'}
-        </div>
+        ${renderAgentChoiceButtons({
+          name: 'runtime',
+          action: 'select-agent-runtime',
+          options: runtimeChoices,
+          currentValue: selectedRuntimeId,
+          emptyLabel: 'No runtimes reported',
+        })}
       </div>
       <div class="form-field">
         <span>MODEL</span>
-        <select name="model" id="agent-model-select">
-          ${modelNames.length ? modelNames.map((m) => {
-            const slug = typeof m === 'string' ? m : m.slug;
-            const name = typeof m === 'string' ? m : m.name;
-            return `<option value="${slug}" ${slug === defaultModel ? 'selected' : ''}>${escapeHtml(name)}</option>`;
-          }).join('') : '<option value="" disabled selected>Select...</option>'}
-        </select>
+        ${renderAgentChoiceButtons({
+          name: 'model',
+          action: 'select-agent-model',
+          options: modelChoices,
+          currentValue: defaultModel,
+        })}
       </div>
       ${hasReasoningEffort ? `
       <div class="form-field">
         <span>REASONING EFFORT</span>
-        <select name="reasoningEffort" id="agent-reasoning-select">
-          ${reasoningEfforts.map((e) => `<option value="${e}" ${e === defaultReasoningEffort ? 'selected' : ''}>${escapeHtml(e.charAt(0).toUpperCase() + e.slice(1))}</option>`).join('')}
-        </select>
+        ${renderAgentChoiceButtons({
+          name: 'reasoningEffort',
+          action: 'select-agent-reasoning',
+          options: reasoningChoices,
+          currentValue: defaultReasoningEffort,
+        })}
       </div>
       ` : ''}
       <details class="advanced-section">
@@ -664,6 +712,39 @@ function renderAvatarCropModal() {
   `;
 }
 
+function pairingCommandIsUsable(pairingCommand = latestPairingCommand) {
+  if (!pairingCommand?.command) return false;
+  const token = pairingCommand.pairingToken || {};
+  if (token.consumedAt || token.revokedAt) return false;
+  if (token.expiresAt) {
+    const expiresAtMs = Date.parse(token.expiresAt);
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return false;
+  }
+  return true;
+}
+
+function pairingDisplayNameValue() {
+  return String(computerPairingDisplayName || latestPairingCommand?.displayName || '').slice(0, 30);
+}
+
+function pairingShellArg(value) {
+  return `"${String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, '\\$')
+    .replace(/`/g, '\\`')}"`;
+}
+
+function pairingCommandText(command = latestPairingCommand?.command || '') {
+  const displayName = pairingDisplayNameValue().trim();
+  if (!command || !displayName) return command || '';
+  const marker = ' # ';
+  const commentIndex = command.lastIndexOf(marker);
+  const body = commentIndex >= 0 ? command.slice(0, commentIndex) : command;
+  const comment = commentIndex >= 0 ? command.slice(commentIndex) : '';
+  return `${body} --display-name ${pairingShellArg(displayName)}${comment}`;
+}
+
 function renderComputerModal() {
   if (!cloudCan('manage_computers')) {
     return `
@@ -678,9 +759,11 @@ function renderComputerModal() {
   const pendingComputerId = latestPairingCommand?.computer?.id || '';
   const liveComputer = pendingComputerId ? byId(appState.computers, pendingComputerId) : null;
   const pairingComputer = liveComputer || latestPairingCommand?.computer || null;
-  const stale = Boolean(pendingComputerId && !liveComputer && Array.isArray(appState.computers));
+  const stale = Boolean(command && !pairingCommandIsUsable(latestPairingCommand));
   const connected = String(pairingComputer?.status || '').toLowerCase() === 'connected';
-  const usesLocalRepoPlaceholder = command.includes('MAGCLAW_REPO_DIR=');
+  const displayName = pairingDisplayNameValue();
+  const renderedCommand = pairingCommandText(command);
+  const usesLocalRepoPlaceholder = renderedCommand.includes('MAGCLAW_REPO_DIR=');
   return `
     ${modalHeader('CONNECT COMPUTER')}
     <div class="modal-form connect-computer-modal">
@@ -688,16 +771,21 @@ function renderComputerModal() {
         <span class="connect-command-prompt" aria-hidden="true">&gt;_</span>
         <strong>Run this command on your computer to connect:</strong>
       </div>
+      <label class="connect-display-name-field">
+        <span>Display name</span>
+        <input id="computer-display-name-input" data-action="computer-display-name" maxlength="30" value="${escapeHtml(displayName)}" placeholder="${escapeHtml(pairingComputer?.name || appState.runtime?.host || 'Computer')}" />
+        <small>Optional. This becomes the computer name after it connects.</small>
+      </label>
       <div class="connect-command-shell">
-        <pre><code>${escapeHtml(command || 'Generating command...')}</code></pre>
+        <pre><code>${escapeHtml(renderedCommand || 'Generating command...')}</code></pre>
         ${command ? '<button class="connect-copy-btn" type="button" data-action="copy-pairing-command" aria-label="Copy command" title="Copy command"><span aria-hidden="true">⧉</span></button>' : ''}
       </div>
       <p class="connect-command-note">
-        ${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your local MagClaw checkout path before running. ' : ''}
+        ${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your MagClaw checkout path before running. ' : ''}
         Keep this process running — it maintains the connection between your computer and MagClaw.
       </p>
       <div class="pairing-wait-box ${connected ? 'connected' : ''} ${stale ? 'stale' : ''}">
-        <span class="avatar-status-dot inline ${connected ? 'online' : stale ? 'offline' : 'queued'}"></span>
+        <span class="avatar-status-dot inline ${presenceClass(connected ? 'connected' : stale ? 'offline' : 'queued')}"></span>
         <strong>${connected ? 'Computer connected.' : stale ? 'This connect command is no longer valid.' : 'Waiting for computer to connect...'}</strong>
       </div>
       <div class="modal-actions">
@@ -714,7 +802,7 @@ function renderHumanModal() {
     return renderMemberInviteModal();
   }
   return `
-    ${modalHeader('Invite Human', 'Local team placeholder')}
+    ${modalHeader('Invite Human', 'Team placeholder')}
     <form id="human-form" class="modal-form">
       <label><span>Name</span><input name="name" placeholder="Teammate" /></label>
       <label><span>Email</span><input name="email" type="email" placeholder="person@example.com" /></label>

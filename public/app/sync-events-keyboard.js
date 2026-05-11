@@ -4,6 +4,7 @@ async function refreshState() {
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
   trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
   appState = nextState;
+  if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   const routeSlug = serverSlugFromPath();
   if (
     routeSlug
@@ -15,6 +16,7 @@ async function refreshState() {
     routeServerSwitchAttempted = true;
     await api(`/api/console/servers/${encodeURIComponent(routeSlug)}/switch`, { method: 'POST', body: '{}' });
     appState = await api('/api/state');
+    if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   }
   startHumanPresenceHeartbeat();
   if (!installedRuntimes.length && (selectedAgentId || activeView === 'members' || activeView === 'computers')) {
@@ -296,6 +298,21 @@ function patchActiveConversationSurface(scrollSnapshot, { allowInspector = false
   return true;
 }
 
+function computerPairingModalRenderSignature(stateSnapshot = appState) {
+  const pendingComputerId = latestPairingCommand?.computer?.id || '';
+  const command = latestPairingCommand?.command || '';
+  const liveComputer = pendingComputerId ? byId(stateSnapshot?.computers, pendingComputerId) : null;
+  const pairingComputer = liveComputer || latestPairingCommand?.computer || null;
+  return [
+    pendingComputerId,
+    command,
+    String(pairingComputer?.status || '').toLowerCase(),
+    pairingComputer?.daemonVersion || '',
+    pairingComputer?.lastSeenAt || '',
+    pairingCommandIsUsable(latestPairingCommand) ? 'usable' : 'stale',
+  ].join('|');
+}
+
 function applyStateUpdate(nextState) {
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete });
   trackAgentNotifications(nextState, { silent: !initialLoadComplete });
@@ -306,10 +323,15 @@ function applyStateUpdate(nextState) {
   const selectionBefore = `${selectedSpaceType}:${selectedSpaceId}`;
   const unreadBefore = railUnreadSignature();
   const activeConversationBefore = activeConversationSignature();
+  const computerModalBefore = modal === 'computer' ? computerPairingModalRenderSignature(appState) : '';
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
+  if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   startHumanPresenceHeartbeat();
-  if (modal) return;
+  if (modal) {
+    if (modal === 'computer' && computerModalBefore !== computerPairingModalRenderSignature(appState)) render();
+    return;
+  }
   ensureSelection();
   const selectionChanged = selectionBefore !== `${selectedSpaceType}:${selectedSpaceId}`;
   const unreadChanged = unreadBefore !== railUnreadSignature();
@@ -846,6 +868,13 @@ document.addEventListener('input', async (event) => {
     if (count) count.textContent = `${memberInviteValidCount()}/unlimited`;
     const submit = event.target.closest('form')?.querySelector('.member-invite-submit');
     if (submit) submit.disabled = memberInviteValidCount() === 0;
+    return;
+  }
+
+  if (event.target.id === 'computer-display-name-input') {
+    computerPairingDisplayName = String(event.target.value || '').slice(0, 30);
+    const code = document.querySelector('.connect-command-shell code');
+    if (code) code.textContent = pairingCommandText();
     return;
   }
 

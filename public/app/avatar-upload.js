@@ -201,6 +201,7 @@ async function applyCroppedAvatar(crop, avatar) {
     return;
   }
   if (crop?.target === 'server-profile') {
+    serverProfileAvatarDraft = avatar;
     const input = document.querySelector('[data-server-avatar-input]');
     if (input) input.value = avatar;
     const preview = document.querySelector('.server-profile-avatar');
@@ -210,7 +211,8 @@ async function applyCroppedAvatar(crop, avatar) {
 }
 
 function avatarCropReturnModal(crop) {
-  return crop?.target === 'agent-create' ? 'agent' : null;
+  if (crop?.target === 'agent-create') return 'agent';
+  return null;
 }
 
 async function confirmAvatarCropSelection() {

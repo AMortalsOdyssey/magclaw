@@ -1863,7 +1863,7 @@ async function buildConfig(flags, env = process.env) {
     token: pairToken ? '' : (flags.token || flags.machineToken || diskConfig.token || ''),
     pairToken,
     workspaceId: flags.workspaceId || flags.workspace || diskConfig.workspaceId || 'local',
-    name: flags.name || diskConfig.name || os.hostname(),
+    name: flags.displayName || flags.name || diskConfig.name || os.hostname(),
     fingerprint: flags.fingerprint || diskConfig.fingerprint || owner.fingerprint,
   };
 }

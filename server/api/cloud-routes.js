@@ -140,6 +140,7 @@ export async function handleCloudApi(req, res, url, deps) {
       endpoints: [
         { method: 'GET', path: '/api/cloud/auth/status', role: 'guest' },
         { method: 'POST', path: '/api/cloud/auth/login', role: 'guest' },
+        { method: 'PATCH', path: '/api/cloud/auth/preferences', role: 'member' },
         { method: 'POST', path: '/api/cloud/auth/logout', role: 'member' },
         { method: 'POST', path: '/api/cloud/auth/heartbeat', role: 'member' },
         { method: 'POST', path: '/api/cloud/auth/register', role: 'invite' },
@@ -186,6 +187,20 @@ export async function handleCloudApi(req, res, url, deps) {
     const body = await readJson(req);
     const result = await sendAction(() => cloudAuth.login(body, req, res));
     if (result) sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    return true;
+  }
+
+  if (['PATCH', 'POST'].includes(req.method) && url.pathname === '/api/cloud/auth/preferences') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => cloudAuth.updateUserPreferences(body, req));
+    if (result) {
+      broadcastState();
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
     return true;
   }
 

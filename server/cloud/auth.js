@@ -31,6 +31,13 @@ import {
 } from './auth-primitives.js';
 import { normalizeFanoutApiConfig } from '../runtime-config.js';
 
+function normalizeLanguagePreference(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'zh' || raw === 'zh-cn' || raw === 'cn' || raw === 'chinese') return 'zh-CN';
+  if (raw === 'en' || raw === 'en-us' || raw === 'english') return 'en';
+  return 'en';
+}
+
 export function createCloudAuth(deps) {
   const {
     cloudRepository = null,
@@ -84,6 +91,9 @@ export function createCloudAuth(deps) {
     }
     state.cloud.workspaceMembers = safeArray(state.cloud.workspaceMembers);
     state.cloud.users = safeArray(state.cloud.users);
+    for (const user of state.cloud.users) {
+      user.language = normalizeLanguagePreference(user.language);
+    }
     state.cloud.sessions = safeArray(state.cloud.sessions);
     state.cloud.invitations = safeArray(state.cloud.invitations);
     state.cloud.joinLinks = safeArray(state.cloud.joinLinks);
@@ -239,7 +249,7 @@ export function createCloudAuth(deps) {
   async function persistCloudState() {
     try {
       if (cloudRepository?.isEnabled?.()) await cloudRepository.persistFromState(getState());
-      await persistState();
+      await persistState({ skipExternal: true });
     } catch (error) {
       if (cloudRepository?.isEnabled?.()) await cloudRepository.loadIntoState(getState()).catch(() => {});
       throw error;
@@ -252,6 +262,15 @@ export function createCloudAuth(deps) {
     return cloud.workspaces.find((workspace) => workspace.id === preferred && !workspace.deletedAt)
       || cloud.workspaces.find((workspace) => !workspace.deletedAt)
       || cloud.workspaces[0];
+  }
+
+  function workspaceForSlug(slug) {
+    const normalized = String(slug || '').trim().toLowerCase();
+    if (!normalized) return primaryWorkspace();
+    return ensureCloudState().workspaces.find((workspace) => (
+      !workspace.deletedAt
+      && String(workspace.slug || workspace.id || '').toLowerCase() === normalized
+    )) || null;
   }
 
   function applyWorkspaceScopedSettings(workspace = primaryWorkspace()) {
@@ -469,6 +488,7 @@ export function createCloudAuth(deps) {
         email: credentials.email,
         name: credentials.name || credentials.email.split('@')[0],
         passwordHash: scryptPassword(credentials.password),
+        language: 'en',
         emailVerifiedAt: now(),
         createdAt: now(),
         updatedAt: now(),
@@ -580,6 +600,7 @@ export function createCloudAuth(deps) {
         name: String(body.name || email.split('@')[0]).trim(),
         passwordHash: scryptPassword(password),
         avatarUrl: '',
+        language: normalizeLanguagePreference(body.language),
         emailVerifiedAt: null,
         createdAt,
         updatedAt: createdAt,
@@ -999,13 +1020,24 @@ export function createCloudAuth(deps) {
     }
 
     async function updateServerProfile(body, req) {
-      const auth = currentActor(req);
-      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
-        const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
-        error.status = auth ? 403 : 401;
+      const user = currentUser(req);
+      if (!user) {
+        const error = new Error('Login is required.');
+        error.status = 401;
         throw error;
       }
-      const workspace = primaryWorkspace();
+      const workspace = workspaceForSlug(body.workspaceSlug || body.slug || body.workspaceId);
+      if (!workspace) {
+        const error = new Error('Server was not found.');
+        error.status = 404;
+        throw error;
+      }
+      const member = memberForUser(user.id, workspace.id);
+      if (!member || normalizeCloudRole(member.role) !== 'admin') {
+        const error = new Error('Workspace role is not allowed.');
+        error.status = 403;
+        throw error;
+      }
       const name = String(body.name ?? workspace.name ?? '').trim();
       if (!name) {
         const error = new Error('Server name is required.');
@@ -1027,7 +1059,7 @@ export function createCloudAuth(deps) {
         ? workspace.newAgentGreetingEnabled !== false
         : Boolean(body.newAgentGreetingEnabled);
       workspace.updatedAt = now();
-      console.info(`[cloud-auth] server profile updated workspace=${workspace.id} actor=${auth.user.id}`);
+      console.info(`[cloud-auth] server profile updated workspace=${workspace.id} actor=${user.id}`);
       await persistCloudState();
       return { workspace: { ...workspace } };
     }
@@ -1347,7 +1379,7 @@ export function createCloudAuth(deps) {
       };
     }
 
-    async function registerWithInvite(body, req, res) {
+	    async function registerWithInvite(body, req, res) {
       const cloud = ensureCloudState();
       const workspace = primaryWorkspace();
       const raw = String(body.inviteToken || body.token || '').trim();
@@ -1385,9 +1417,10 @@ export function createCloudAuth(deps) {
         id: makeUserId(),
         email: finalEmail,
         name: String(body.name || finalEmail.split('@')[0]).trim(),
-        passwordHash: scryptPassword(password),
-        avatarUrl: String(body.avatarUrl || body.avatar || '').trim(),
-        emailVerifiedAt: invitation ? now() : null,
+	        passwordHash: scryptPassword(password),
+	        avatarUrl: String(body.avatarUrl || body.avatar || '').trim(),
+	        language: normalizeLanguagePreference(body.language),
+	        emailVerifiedAt: invitation ? now() : null,
         createdAt: now(),
         updatedAt: now(),
         lastLoginAt: null,
@@ -1427,8 +1460,26 @@ export function createCloudAuth(deps) {
       const issued = issueSession(user, req);
       await persistCloudState();
       res.setHeader('Set-Cookie', issued.cookie);
-      return { user: publicUser(user), member: memberForUser(user.id, workspace.id), workspace };
-    }
+	      return { user: publicUser(user), member: memberForUser(user.id, workspace.id), workspace };
+	    }
+
+	    async function updateUserPreferences(body, req) {
+	      const user = requireAuthenticatedUser(req);
+	      let changed = false;
+	      if (Object.prototype.hasOwnProperty.call(body || {}, 'language')) {
+	        const nextLanguage = normalizeLanguagePreference(body.language);
+	        if (user.language !== nextLanguage) {
+	          user.language = nextLanguage;
+	          changed = true;
+	        }
+	      }
+	      if (changed) {
+	        user.updatedAt = now();
+	        console.info(`[cloud-auth] user preferences updated user=${user.id}`);
+	        await persistCloudState();
+	      }
+	      return { user: publicUser(user) };
+	    }
 
     function publicMember(member) {
       if (!member) return null;
@@ -1843,9 +1894,10 @@ export function createCloudAuth(deps) {
       requestPasswordReset,
       resetStatus,
       resetPassword,
-      removeMember,
-      updateMemberRole,
-      publicCloudState,
+	      removeMember,
+	      updateMemberRole,
+	      updateUserPreferences,
+	      publicCloudState,
     publicInvitation,
     publicJoinLink,
     requireUser,

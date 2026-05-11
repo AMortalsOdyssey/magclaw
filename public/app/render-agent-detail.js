@@ -281,7 +281,7 @@ function renderSkillCollapseButton(sectionKey, title) {
 function renderAgentSkillSections(skills, { compact = false } = {}) {
   return `
     <div class="agent-skill-section-stack ${compact ? 'compact' : ''}">
-      ${renderSkillList('Agent-Isolated Skills', skills?.workspace || [], 'No agent-local skills installed yet.', 'agent-skills')}
+      ${renderSkillList('Agent-Isolated Skills', skills?.workspace || [], 'No agent skills installed yet.', 'agent-skills')}
       ${renderSkillList('Global Codex Skills', skills?.global || [], 'No global Codex skills found.', 'global-skills')}
       ${renderSkillList('Plugin Skills', skills?.plugin || [], 'No plugin skills found.', 'plugin-skills')}
     </div>

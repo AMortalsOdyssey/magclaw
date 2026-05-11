@@ -1,6 +1,6 @@
 function render() {
   if (!appState) {
-    root.innerHTML = '<div class="boot">MAGCLAW LOCAL / BOOTING</div>';
+    root.innerHTML = '<div class="boot">MAGCLAW / BOOTING</div>';
     return;
   }
   if (shouldDeferProfileFormRender()) {
@@ -57,7 +57,7 @@ function renderRail() {
   const inbox = buildInboxModel();
   const spaceUnreadCounts = buildSpaceUnreadCounts(inbox.humanId);
   const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0 || message.taskId).length;
-  const openTasks = (appState.tasks || []).filter((task) => !taskIsClosedStatus(task.status)).length;
+  const openTasks = (appState.tasks || []).filter((task) => task && !taskIsClosedStatus(task.status)).length;
   const saved = savedRecords().length;
   const normalAgents = channelAssignableAgents();
   const serverProfile = currentServerProfile();
@@ -96,7 +96,7 @@ function renderRail() {
   const leftRailHtml = `
     <div class="magclaw-left-rail">
       <div class="server-switcher-anchor">
-        <button class="left-rail-avatar server-switcher-trigger" type="button" data-action="toggle-server-switcher" title="${escapeHtml(serverProfile.name || serverProfile.slug || 'Server')}" aria-label="Switch server">
+        <button class="left-rail-avatar server-switcher-trigger" type="button" data-action="toggle-server-switcher" title="${escapeHtml(serverProfile.name || displayServerSlug(serverProfile.slug) || 'Server')}" aria-label="Switch server">
           ${renderServerAvatar(serverProfile, 'left-rail-server-avatar')}
         </button>
         ${renderServerSwitcherMenu()}
@@ -175,13 +175,14 @@ function renderServerSwitcherMenu() {
       <div class="server-switcher-list">
         ${servers.length ? servers.map((server) => {
           const slug = String(server.slug || server.id || 'local');
+          const labelSlug = displayServerSlug(slug);
           const active = slug === currentSlug ? ' active' : '';
           return `
             <button class="server-switcher-row${active}" type="button" data-action="switch-server" data-slug="${escapeHtml(slug)}" role="menuitem">
               ${active ? '<span class="server-switcher-check">✓</span>' : '<span class="server-switcher-check"></span>'}
               <span>
-                <strong>${escapeHtml(server.name || slug)}</strong>
-                <small>/${escapeHtml(slug)}</small>
+                <strong>${escapeHtml(server.name || displayServerSlug(slug) || 'Server')}</strong>
+                ${labelSlug ? `<small>/${escapeHtml(labelSlug)}</small>` : ''}
               </span>
             </button>
           `;
@@ -198,7 +199,7 @@ function renderServerSwitcherMenu() {
 function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, saved, spaceUnreadCounts }) {
   const dmPeers = dms
     .map((dm) => dmPeerInfo(dm))
-    .filter(Boolean);
+    .filter((item) => item?.dm?.id && item?.peer);
   return `
     <div class="nav-list">
       ${renderNavItem('search', 'Search', 'search', searchQuery ? '⌘K' : '⌘K')}
@@ -216,7 +217,7 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
       <div class="rail-section">
         ${renderRailSectionTitle('dms', 'DIRECT MESSAGES', dmPeers.length, { modal: 'dm' })}
         ${collapsedSidebarSections.dms ? '' : dmPeers.map(({ dm, peer }) => (
-          renderDmItem(dm.id, peer.name, peer.status, peer.avatar, unreadCountForSpace(spaceUnreadCounts, 'dm', dm.id))
+          renderDmItem(dm.id, peer.name || displayName(peer.id), peer.status || 'offline', peer.avatar || '', unreadCountForSpace(spaceUnreadCounts, 'dm', dm.id))
         )).join('')}
       </div>
 
@@ -271,7 +272,7 @@ function renderSettingsRail() {
 }
 
 function renderConsoleRail() {
-  const pendingCount = consoleInvitationRows().filter((item) => item.status === 'pending').length;
+  const pendingCount = consoleInvitationRows().filter((item) => item?.status === 'pending').length;
   const serversCount = consoleServers().length;
   const lostCount = consoleDeletedServers().length;
   const items = [
@@ -385,15 +386,16 @@ function renderChannelItem(channel, unreadCount = 0) {
 
 function renderDmItem(id, name, status, avatar, unreadCount = 0) {
   const active = activeView === 'space' && selectedSpaceType === 'dm' && selectedSpaceId === id ? ' active' : '';
-  const initials = name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
+  const label = String(name || 'Unknown').trim() || 'Unknown';
+  const initials = label.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
   return `
     <button class="space-btn dm-btn${active}" type="button" data-action="select-space" data-type="dm" data-id="${id}">
       <span class="dm-avatar-wrap">
         <span class="dm-avatar">${avatar ? `<img src="${escapeHtml(avatar)}" alt="">` : escapeHtml(initials)}</span>
         ${avatarStatusDot(status, 'DM status')}
       </span>
-      <span class="dm-name">${escapeHtml(name)}</span>
-      ${renderRailUnreadBadge(unreadCount, `unread direct messages from ${name}`)}
+      <span class="dm-name">${escapeHtml(label)}</span>
+      ${renderRailUnreadBadge(unreadCount, `unread direct messages from ${label}`)}
     </button>
   `;
 }
@@ -428,7 +430,7 @@ function dmPeerInfo(dm) {
   const participantIds = (dm.participantIds || []).map(String).filter(Boolean);
   for (const id of participantIds) {
     const agent = byId(appState?.agents, id);
-    if (agent && !agent.deletedAt && !agent.archivedAt) {
+    if (agent && (typeof agentIsActiveInWorkspace === 'function' ? agentIsActiveInWorkspace(agent) : !agent.deletedAt && !agent.archivedAt)) {
       return {
         dm,
         peer: {

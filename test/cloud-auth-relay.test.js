@@ -18,7 +18,7 @@ async function launchIsolatedServer(tmp, extraEnv = {}) {
       HOST: '127.0.0.1',
       CODEX_PATH: '/bin/false',
       MAGCLAW_DATA_DIR: path.join(tmp, '.magclaw'),
-      DATABASE_URL: '',
+      MAGCLAW_CONFIG_FILE: path.join(tmp, '.magclaw', 'server.yaml'),
       MAGCLAW_DATABASE_URL: '',
       ...extraEnv,
     },
@@ -80,7 +80,7 @@ async function launchExpectingExit(extraEnv = {}) {
       HOST: '127.0.0.1',
       CODEX_PATH: '/bin/false',
       MAGCLAW_DATA_DIR: path.join(tmp, '.magclaw'),
-      DATABASE_URL: '',
+      MAGCLAW_CONFIG_FILE: path.join(tmp, '.magclaw', 'server.yaml'),
       MAGCLAW_DATABASE_URL: '',
       ...extraEnv,
     },
@@ -149,7 +149,7 @@ test('cloud deployment falls back to local state without PostgreSQL by default',
 test('cloud deployment can require PostgreSQL explicitly', async () => {
   const result = await launchExpectingExit({ MAGCLAW_DEPLOYMENT: 'cloud', MAGCLAW_REQUIRE_POSTGRES: '1' });
   assert.notEqual(result.code, 0);
-  assert.match(result.output, /MAGCLAW_DATABASE_URL or DATABASE_URL is required/);
+  assert.match(result.output, /MAGCLAW_DATABASE_URL is required/);
 });
 
 test('cloud health and readiness expose K8s-friendly storage checks', async () => {
@@ -199,6 +199,36 @@ test('server profile and join links are managed through cloud APIs', async () =>
     assert.equal(profile.data.workspace.avatar, 'data:image/png;base64,ZmFrZQ==');
     assert.equal(profile.data.workspace.onboardingAgentId, 'agt_codex');
     assert.equal(profile.data.workspace.newAgentGreetingEnabled, false);
+
+    const created = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ name: 'Second Server', slug: 'second-server' }),
+    });
+    await request(server.baseUrl, '/api/cloud/server/profile', {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        workspaceSlug: 'second-server',
+        name: 'Second Renamed',
+        avatar: 'data:image/png;base64,c2Vjb25k',
+      }),
+    });
+    const switched = await request(server.baseUrl, `/api/console/servers/${created.data.server.slug}/switch`, {
+      method: 'POST',
+      cookie,
+      body: '{}',
+    });
+    assert.equal(switched.data.server.name, 'Second Renamed');
+    assert.equal(switched.data.server.avatar, 'data:image/png;base64,c2Vjb25k');
+    await request(server.baseUrl, '/api/console/servers/local/switch', {
+      method: 'POST',
+      cookie,
+      body: '{}',
+    });
+    const originalState = await request(server.baseUrl, '/api/state', { cookie });
+    assert.equal(originalState.data.cloud.workspace.name, 'Renamed Server');
+    assert.equal(originalState.data.cloud.workspace.avatar, 'data:image/png;base64,ZmFrZQ==');
 
     const link = await request(server.baseUrl, '/api/cloud/join-links', {
       method: 'POST',
@@ -447,9 +477,17 @@ test('environment admin login protects app APIs and supports invites end to end'
 
     const adminState = await request(server.baseUrl, '/api/state', { cookie: adminCookie });
     assert.equal(adminState.data.cloud.auth.currentUser.email, 'admin@example.com');
+    assert.equal(adminState.data.cloud.auth.currentUser.language, 'en');
     assert.equal(adminState.data.cloud.auth.currentMember.role, 'admin');
     assert.equal(adminState.data.cloud.auth.sessionTtlMs, 1000 * 60 * 60 * 24 * 14);
     assert.match(adminState.data.cloud.auth.sessionExpiresAt, /^\d{4}-\d{2}-\d{2}T/);
+    const adminPreferences = await request(server.baseUrl, '/api/cloud/auth/preferences', {
+      method: 'PATCH',
+      cookie: adminCookie,
+      body: JSON.stringify({ language: 'zh-CN' }),
+    });
+    assert.equal(adminPreferences.data.user.language, 'zh-CN');
+    assert.equal(adminPreferences.data.cloud.auth.currentUser.language, 'zh-CN');
     const adminPresence = await request(server.baseUrl, '/api/cloud/auth/heartbeat', {
       method: 'POST',
       cookie: adminCookie,
@@ -576,6 +614,9 @@ test('environment admin login protects app APIs and supports invites end to end'
     assert.doesNotMatch(pairing.data.command, /--background/);
     assert.match(pairing.data.command, /--profile "?local"?/);
     assert.match(pairing.data.command, /# MagClaw|# local/);
+    assert.equal(pairing.data.provisional, true);
+    const prePairState = await request(server.baseUrl, '/api/state', { cookie: adminCookie });
+    assert.equal(prePairState.data.computers.some((item) => item.id === pairing.data.computer.id), false);
 
     const daemonConfig = path.join(server.tmp, 'daemon.json');
     daemon = spawn(process.execPath, [

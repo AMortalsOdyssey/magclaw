@@ -35,6 +35,17 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
   assert.equal(parsed.flags.serverUrl, 'https://example.test');
   assert.equal(parsed.flags.pairToken, 'mc_pair_test');
   assert.equal(parsed.flags.background, true);
+
+  const named = parseCli([
+    'node',
+    'magclaw-daemon',
+    'connect',
+    '--pair-token',
+    'mc_pair_test',
+    '--display-name',
+    'Studio Mac',
+  ]);
+  assert.equal(named.flags.displayName, 'Studio Mac');
 });
 
 test('daemon machine fingerprint is stable inside a server profile', async () => {

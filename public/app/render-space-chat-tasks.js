@@ -52,7 +52,7 @@ function getChannelMembers(channelId) {
 
 function renderSpace() {
   const space = currentSpace();
-  if (!space) return renderHeader('No conversation', 'Local', '');
+  if (!space) return renderHeader('No conversation', 'MagClaw', '');
   if (selectedSpaceType === 'dm') {
     return `
       ${renderDmHeader()}

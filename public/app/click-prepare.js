@@ -152,6 +152,7 @@ async function prepareDocumentClick(event) {
     'open-modal',
     'close-modal',
     'copy-pairing-command',
+    'computer-display-name',
     'open-thread',
     'open-search-result',
     'open-search-entity',
@@ -212,7 +213,7 @@ async function prepareDocumentClick(event) {
   }
   if (action === 'copy-pairing-command') {
     if (latestPairingCommand?.command) {
-      const copied = await tryCopyTextToClipboard(latestPairingCommand.command);
+      const copied = await tryCopyTextToClipboard(pairingCommandText());
       toast(copied ? 'Connect command copied' : 'Copy is unavailable');
     }
     return;

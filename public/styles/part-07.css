@@ -456,6 +456,26 @@
   box-shadow: 0 0 0 1px var(--accent);
 }
 
+.collab-frame .agent-choice-grid {
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 6px;
+}
+
+.collab-frame .agent-choice-option,
+.collab-frame .agent-choice-empty {
+  border-width: 1px;
+  border-color: var(--workspace-line-strong);
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.collab-frame .agent-choice-option:hover,
+.collab-frame .agent-choice-option:focus-visible,
+.collab-frame .agent-choice-option.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 .collab-frame .chat-composer {
   gap: 8px;
   padding: 10px 12px;
@@ -1604,4 +1624,3 @@
   font-weight: 800;
   white-space: nowrap;
 }
-

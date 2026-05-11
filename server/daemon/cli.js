@@ -312,6 +312,7 @@ async function main() {
     token: args.token || args.machineToken || diskConfig.token || '',
     pairToken: args.pairToken || '',
     workspace: args.workspace || diskConfig.workspace || 'local',
+    name: args.displayName || args.name || diskConfig.name || os.hostname(),
   };
   if (!config.pairToken && !config.token) {
     throw new Error('Run with --pair-token for first pairing, or --token after pairing.');

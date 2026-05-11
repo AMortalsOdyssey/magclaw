@@ -7,10 +7,9 @@ const MAGCLAW_LANGUAGES = [
 ];
 
 const zhCnTranslations = {
-  'MagClaw Local': 'MagClaw 本地版',
   'MagClaw Privacy Policy': 'MagClaw 隐私政策',
   'MagClaw Terms of Use': 'MagClaw 使用条款',
-  'MAGCLAW LOCAL / BOOTING': 'MAGCLAW 本地版 / 启动中',
+  'MAGCLAW / BOOTING': 'MAGCLAW / 启动中',
   'Account': '账户',
   'Sign-in Account': '登录账户',
   'server config': '服务器配置',
@@ -154,8 +153,6 @@ const zhCnTranslations = {
   'Release Notes are grouped by Web Service version with release dates instead of daily buckets.': '更新日志按 Web 服务版本和发布日期分组，而不是按日期桶分组。',
   'Cloud mode no longer depends on preset admin accounts or invite-only registration.': '云模式不再依赖预设管理员账户或仅邀请注册。',
   'Agent identity, warmup recovery, and direct-message delivery now use server-scoped cloud users.': '智能体身份、预热恢复和私信投递现在使用服务器作用域的云用户。',
-  'Local collaboration baseline': '本地协作基线',
-  'Local Channels, Direct Messages, Tasks, Agents, and Computer views form the first collaboration surface.': '本地频道、私信、任务、智能体和电脑视图构成第一版协作界面。',
   'Codex CLI agents can run from isolated workspaces with project references and task handoff.': 'Codex CLI 智能体可以在隔离工作区运行，并支持项目引用和任务交接。',
   'The MagClaw shell introduced persistent rails, settings pages, and searchable collaboration history.': 'MagClaw 外壳加入了持久侧栏、设置页面和可搜索的协作历史。',
   'Cloud daemon profile and runtime reporting': '云守护进程档案与运行时上报',
@@ -165,7 +162,7 @@ const zhCnTranslations = {
   'Codex path repair and model metadata make Agent creation match the selected Computer capabilities.': 'Codex 路径修复和模型元数据让智能体创建匹配所选电脑能力。',
   'Unsupported runtime starts now fail with an error state instead of leaving Agents thinking forever.': '不支持的运行时启动现在会进入错误状态，不再让智能体一直停在思考中。',
   'Initial daemon package boundary': '初始守护进程包边界',
-  'The local daemon can be installed independently and connected to a cloud server profile.': '本地守护进程可以独立安装，并连接到云服务器档案。',
+  'The daemon can be installed independently and connected to a cloud server profile.': '守护进程可以独立安装，并连接到云服务器档案。',
   'Search': '搜索',
   'Search everything': '搜索全部内容',
   'Search channels, DIRECT MESSAGES, people, agents, and message history.': '搜索频道、私信、成员、智能体和消息历史。',
@@ -183,7 +180,7 @@ const zhCnTranslations = {
   'Load More': '加载更多',
   'Clear search': '清除搜索',
   'Codex Missions': 'Codex 任务运行',
-  'Local runner history': '本地运行历史',
+  'Runner history': '运行历史',
   'No Codex missions yet. Use Run Codex from a task.': '还没有 Codex 任务运行。可以从任务里点击“运行 Codex”。',
   'Computers': '电脑',
   'COMPUTERS': '电脑',
@@ -206,7 +203,7 @@ const zhCnTranslations = {
   'No servers yet': '还没有服务器',
   'Switch or create server': '切换或创建服务器',
   'No conversation': '没有会话',
-  'Local': '本地',
+  'MagClaw': 'MagClaw',
   'CHAT': '聊天',
   'TASKS': '任务',
   'Channel': '频道',
@@ -296,7 +293,6 @@ const zhCnTranslations = {
   'Agent-Isolated Skills': '智能体隔离技能',
   'Global Codex Skills': '全局 Codex 技能',
   'Plugin Skills': '插件技能',
-  'No agent-local skills installed yet.': '尚未安装智能体本地技能。',
   'No global Codex skills found.': '未找到全局 Codex 技能。',
   'No plugin skills found.': '未找到插件技能。',
   'Skills': '技能',
@@ -395,7 +391,6 @@ const zhCnTranslations = {
   'Forgot password?': '忘记密码？',
   'No account?': '没有账户？',
   'Create one': '创建一个',
-  'Sign in is not ready': '登录尚未就绪',
   'Create the first account or configure sign-in on the server.': '创建第一个账户，或在服务器端配置登录。',
   'Join server': '加入服务器',
   'Use this link to join a MagClaw server.': '使用此链接加入 MagClaw 服务器。',
@@ -404,9 +399,7 @@ const zhCnTranslations = {
   'Open Server': '打开服务器',
   'Join Server': '加入服务器',
   'Sign in or create an account, then return to join this server.': '请登录或创建账户，然后返回加入此服务器。',
-  '使用即代表您同意我们的': '使用即代表您同意我们的',
-  '使用协议': '使用协议',
-  '隐私政策': '隐私政策',
+  'By using MagClaw, you agree to our': '使用即代表您同意我们的',
   'All Rights Reserved.': '版权所有。',
   'Create Server': '创建服务器',
   'Server name': '服务器名称',
@@ -429,14 +422,14 @@ const zhCnTranslations = {
   'This will permanently delete all workspace files including MEMORY.md and notes/. This cannot be undone.': '这会永久删除所有工作区文件，包括 MEMORY.md 和 notes/。此操作无法撤销。',
   'Open Project': '打开项目',
   'Channel project': '频道项目',
-  'Open Local Folder': '打开本地文件夹',
+  'Open Folder': '打开文件夹',
   'Path': '路径',
   'Folder path': '文件夹路径',
   'Optional display name': '可选显示名称',
   'Add Path': '添加路径',
   'No folders added yet.': '还没有添加文件夹。',
   'Create Channel': '创建频道',
-  'Local collaboration': '本地协作',
+  'Collaboration': '协作',
   'Members': '成员',
   '(optional)': '（可选）',
   'Search members by name': '按名称搜索成员',
@@ -468,7 +461,7 @@ const zhCnTranslations = {
   'Computer required': '需要电脑',
   'Connect a Computer before creating cloud Agents.': '创建云智能体前，请先连接一台电脑。',
   'Enable or connect a Computer before creating cloud Agents.': '创建云智能体前，请先启用或连接一台电脑。',
-  'Local runtime profile': '本地运行时档案',
+  'Runtime profile': '运行时档案',
   'AVATAR': '头像',
   'COMPUTER': '电脑',
   'NAME': '名称',
@@ -506,7 +499,7 @@ const zhCnTranslations = {
   'Computer connected.': '电脑已连接。',
   'Waiting for computer to connect...': '正在等待电脑连接...',
   'Done': '完成',
-  'Local team placeholder': '本地团队占位',
+  'Team placeholder': '团队占位',
   'Teammate': '队友',
   'Invite': '邀请',
   'Choose Server': '选择服务器',
@@ -597,10 +590,10 @@ const zhCnTranslations = {
   'Task approved': '任务已批准',
   'Task reopened': '任务已重新打开',
   'Codex mission started': 'Codex 任务已启动',
-  'Local-only mode enabled': '已启用仅本地模式',
+  'Offline mode enabled': '已启用离线模式',
   'Cloud mode configured': '云模式已配置',
   'Cloud endpoint paired': '云端点已配对',
-  'Local state pushed': '本地状态已推送',
+  'State pushed': '状态已推送',
   'Cloud state pulled': '云状态已拉取',
   'Pairing command created': '配对命令已创建',
   'Connect command regenerated': '连接命令已重新生成',
@@ -633,7 +626,7 @@ const zhCnTranslations = {
   'Remove invalid email:': '请移除无效邮箱：',
   'Cloud account flow': '云账户流程',
   'Privacy Policy': '隐私政策',
-  'Terms of Use': '使用条款',
+  'Terms of Use': '使用协议',
 };
 
 const zhCnRules = [
@@ -702,6 +695,11 @@ function magclawLanguage() {
 
 function magclawLanguageLabel(language = currentMagclawLanguage) {
   return MAGCLAW_LANGUAGES.find((item) => item.id === language)?.label || language;
+}
+
+function magclawAccountLanguage(state = typeof appState !== 'undefined' ? appState : null) {
+  const user = state?.cloud?.auth?.currentUser;
+  return user?.language || user?.metadata?.language || '';
 }
 
 function translateEnglishText(value) {
@@ -779,22 +777,49 @@ function startMagclawTranslationObserver() {
   });
 }
 
-function setMagclawLanguage(language) {
+function setMagclawLanguage(language, options = {}) {
+  const notify = options.notify !== false;
+  const rerender = options.rerender !== false;
+  const persistLocal = options.persistLocal !== false;
   const next = normalizeMagclawLanguage(language);
-  if (next === currentMagclawLanguage) return;
+  const changed = next !== currentMagclawLanguage;
+  if (!changed) return next;
   currentMagclawLanguage = next;
-  try {
-    localStorage.setItem(MAGCLAW_LANGUAGE_KEY, next);
-  } catch {
-    // Keep the in-memory language if browser storage is unavailable.
+  if (persistLocal) {
+    try {
+      localStorage.setItem(MAGCLAW_LANGUAGE_KEY, next);
+    } catch {
+      // Keep the in-memory language if browser storage is unavailable.
+    }
   }
   document.documentElement.lang = next === 'zh-CN' ? 'zh-CN' : 'en';
-  if (typeof render === 'function' && typeof appState !== 'undefined' && appState) {
+  if (rerender && typeof render === 'function' && typeof appState !== 'undefined' && appState) {
     render();
   } else if (next === 'zh-CN') {
     translatePage(document.body);
   }
-  if (typeof toast === 'function') toast(next === 'zh-CN' ? '界面语言已切换为中文' : 'Interface language set to English');
+  if (notify && typeof toast === 'function') toast(next === 'zh-CN' ? '界面语言已切换为中文' : 'Interface language set to English');
+  return next;
+}
+
+function applyMagclawAccountLanguage(state = typeof appState !== 'undefined' ? appState : null) {
+  const accountLanguage = magclawAccountLanguage(state);
+  if (!accountLanguage) return false;
+  setMagclawLanguage(accountLanguage, { notify: false, rerender: false });
+  return true;
+}
+
+async function persistMagclawAccountLanguage(language) {
+  if (!(typeof appState !== 'undefined' && appState?.cloud?.auth?.currentUser)) return null;
+  const next = normalizeMagclawLanguage(language);
+  const result = await api('/api/cloud/auth/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify({ language: next }),
+  });
+  if (result?.cloud && typeof appState !== 'undefined' && appState) {
+    appState = { ...appState, cloud: result.cloud };
+  }
+  return result;
 }
 
 function renderLanguageSettingsTab() {
@@ -818,7 +843,7 @@ function renderLanguageSettingsTab() {
             `;
           }).join('')}
         </div>
-        <small class="form-hint">Applied instantly in this browser.</small>
+        <small class="form-hint">Saved to your account when signed in.</small>
       </div>
     </section>
   `;

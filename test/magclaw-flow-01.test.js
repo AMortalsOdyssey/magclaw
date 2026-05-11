@@ -154,7 +154,7 @@ test('dm thread replies dispatch to the private agent for pickup receipts', asyn
   }
 });
 
-test('chat and task records are persisted in SQLite instead of the JSON state file', async (t) => {
+test('chat and task records are persisted in SQLite without a JSON state file by default', async (t) => {
   let DatabaseSync;
   try {
     ({ DatabaseSync } = await import('node:sqlite'));
@@ -180,20 +180,20 @@ test('chat and task records are persisted in SQLite instead of the JSON state fi
     assert.ok(apiState.tasks.some((task) => task.id === created.task.id));
     assert.ok(apiState.messages.find((message) => message.id === created.message.id)?.savedBy.includes('hum_local'));
 
-    const stateFile = JSON.parse(await readFile(path.join(server.tmp, '.magclaw', 'state.json'), 'utf8'));
-    assert.deepEqual(stateFile.messages, []);
-    assert.deepEqual(stateFile.replies, []);
-    assert.deepEqual(stateFile.tasks, []);
-    assert.deepEqual(stateFile.workItems, []);
-    assert.deepEqual(stateFile.events, []);
+    await assert.rejects(
+      () => readFile(path.join(server.tmp, '.magclaw', 'state.json'), 'utf8'),
+      /ENOENT/,
+    );
 
     await lstat(path.join(server.tmp, '.magclaw', 'state.sqlite'));
     const db = new DatabaseSync(path.join(server.tmp, '.magclaw', 'state.sqlite'));
     try {
       const messages = db.prepare("SELECT COUNT(*) AS count FROM state_records WHERE kind = 'messages'").get();
       const tasks = db.prepare("SELECT COUNT(*) AS count FROM state_records WHERE kind = 'tasks'").get();
+      const snapshot = db.prepare("SELECT COUNT(*) AS count FROM state_records WHERE kind = '__state' AND id = 'snapshot'").get();
       assert.ok(Number(messages.count) >= 2);
       assert.ok(Number(tasks.count) >= 1);
+      assert.equal(Number(snapshot.count), 1);
     } finally {
       db.close();
     }
@@ -282,7 +282,7 @@ test('Codex agents never persist the unsupported default model sentinel', async 
 });
 
 test('stale runtime statuses reset to idle when the local server restarts', async () => {
-  let server = await startIsolatedServer();
+  let server = await startIsolatedServer({ MAGCLAW_WRITE_STATE_JSON: '1' });
   const tmp = server.tmp;
   let cleaned = false;
   try {
@@ -315,7 +315,7 @@ test('stale runtime statuses reset to idle when the local server restarts', asyn
       activeTurnIds: ['turn_idle_stale'],
     };
     await writeFile(stateFile, JSON.stringify(savedState, null, 2));
-    server = await launchIsolatedServer(tmp);
+    server = await launchIsolatedServer(tmp, { MAGCLAW_WRITE_STATE_JSON: '1' });
 
     const state = await request(server.baseUrl, '/api/state');
     const agent = state.agents.find((item) => item.id === 'agt_codex');

@@ -95,6 +95,7 @@ let humanDescriptionEditState = { humanId: null };
 let settingsTab = initialRouteState.settingsTab || initialUiState.settingsTab || 'account';
 let consoleTab = initialRouteState.consoleTab || consoleTabFromPath() || initialUiState.consoleTab || 'overview';
 let latestPairingCommand = null;
+let computerPairingDisplayName = '';
 let serverSwitcherOpen = false;
 let latestInvitationLink = null;
 let cloudInviteEmails = [];
@@ -109,6 +110,7 @@ let profileFormIsComposing = false;
 let pendingProfileFormRender = false;
 let cloudAuthAvatar = '';
 let cloudAuthAvatarToken = '';
+let serverProfileAvatarDraft = null;
 let collapsedSidebarSections = readJsonStorage(SIDEBAR_SECTION_COLLAPSE_KEY, {});
 let collapsedSkillSections = readJsonStorage(SKILL_SECTION_COLLAPSE_KEY, {});
 let avatarCropState = null;
@@ -211,6 +213,12 @@ function currentServerSlug() {
   const workspace = appState?.cloud?.workspace || appState?.cloud?.workspaces?.[0] || {};
   const slug = String(workspace.slug || workspace.id || appState?.connection?.workspaceId || 'local').trim();
   return slug || 'local';
+}
+
+function displayServerSlug(value, fallback = '') {
+  const slug = String(value || '').trim();
+  if (!slug || slug.toLowerCase() === 'local') return fallback;
+  return slug;
 }
 
 function consolePath(tab = consoleTab) {
@@ -558,7 +566,7 @@ function humanFromCloudMember(member = {}) {
 
 function workspaceHumans() {
   const members = (appState?.cloud?.members || [])
-    .filter((member) => (member.status || 'active') === 'active')
+    .filter((member) => member && (member.status || 'active') === 'active')
     .sort((a, b) => new Date(a.joinedAt || a.createdAt || 0) - new Date(b.joinedAt || b.createdAt || 0));
   if (members.length) {
     const seen = new Set();
@@ -575,7 +583,7 @@ function workspaceHumans() {
     }
     return humans;
   }
-  return (appState?.humans || []).filter((human) => human.status !== 'removed');
+  return (appState?.humans || []).filter((human) => human && human.status !== 'removed');
 }
 
 function humanByIdAny(id) {

@@ -14,6 +14,7 @@ const appScripts = [
   '/app/avatar-upload.js',
   '/app/data-search-mentions.js',
   '/app/conversation-scroll-notifications.js',
+  '/app/computer-status-helpers.js',
   '/app/render-shell-rail-inbox.js',
   '/app/render-space-chat-tasks.js',
   '/app/render-search-settings.js',
@@ -54,5 +55,5 @@ try {
 } catch (error) {
   console.error('Failed to boot MagClaw app:', error);
   const root = document.querySelector('#root');
-  if (root) root.innerHTML = '<div class="boot">MAGCLAW LOCAL / ' + escapeBootError(error.message) + '</div>';
+  if (root) root.innerHTML = '<div class="boot">MAGCLAW / ' + escapeBootError(error.message) + '</div>';
 }
