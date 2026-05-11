@@ -12,6 +12,12 @@ const NOTIFICATION_PREVIEW_LIMIT = 140;
 const WORKSPACE_ACTIVITY_VISIBLE_STEP = 30;
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
 const MEMBERS_LAYOUT_MODES = new Set(['directory', 'channel', 'split', 'agent', 'human']);
+const CLOUD_ROLE_HIERARCHY = ['member', 'admin'];
+const CLOUD_ROLE_LABELS = {
+  owner: 'Owner',
+  admin: 'Admin',
+  member: 'Member',
+};
 const initialUiState = readStoredUiState();
 canonicalizeLegacyRoutePath();
 const initialRouteState = routeStateFromLocation(window.location.pathname || '');
@@ -284,7 +290,7 @@ let mentionPopup = {
 // Agent modal form state
 let agentFormState = {
   computerId: '',
-  name: 'Musk',
+  name: '',
   description: '',
   model: '',
   reasoningEffort: '',
@@ -486,9 +492,8 @@ function escapeHtml(value) {
 }
 
 function cloudRoleAllows(role, allowedRole) {
-  const hierarchy = ['member', 'core_member', 'admin'];
-  const roleIndex = hierarchy.indexOf(String(role || 'member'));
-  const allowedIndex = hierarchy.indexOf(String(allowedRole || 'member'));
+  const roleIndex = CLOUD_ROLE_HIERARCHY.indexOf(String(role || 'member'));
+  const allowedIndex = CLOUD_ROLE_HIERARCHY.indexOf(String(allowedRole || 'member'));
   return roleIndex >= 0 && allowedIndex >= 0 && roleIndex >= allowedIndex;
 }
 
@@ -500,12 +505,7 @@ function cloudCan(capability) {
 }
 
 function cloudRoleLabel(role) {
-  return {
-    owner: 'Owner',
-    admin: 'Admin',
-    core_member: 'Core Member',
-    member: 'Member',
-  }[String(role || 'member')] || 'Member';
+  return CLOUD_ROLE_LABELS[String(role || 'member')] || CLOUD_ROLE_LABELS.member;
 }
 
 function serverOwnerUserId(workspace = appState?.cloud?.workspace || {}) {
@@ -664,7 +664,6 @@ function cloudCapabilityLabels(capabilities = {}) {
     ['chat_agent_dm', 'Agent DMs'],
     ['warm_agents', 'Agent warmup'],
     ['invite_member', 'Invite members'],
-    ['invite_core_member', 'Invite core members'],
     ['manage_agents', 'Manage agents'],
     ['manage_computers', 'Add computers'],
     ['pair_computers', 'Pair computers'],
@@ -682,7 +681,7 @@ function humanPresenceText(human) {
 function cloudInviteRoleOptions() {
   const options = [];
   if (cloudCan('invite_member')) options.push(['member', 'Member']);
-  if (cloudCan('invite_core_member')) options.push(['core_member', 'Core Member']);
+  if (cloudCan('manage_member_roles')) options.push(['admin', 'Admin']);
   return options;
 }
 
@@ -690,14 +689,14 @@ function cloudMemberManageRoleOptions() {
   const options = [];
   if (!cloudCan('manage_member_roles')) return options;
   options.push(['member', 'Member']);
-  if (cloudCan('invite_core_member')) options.push(['core_member', 'Core Member']);
+  options.push(['admin', 'Admin']);
   return options;
 }
 
 function cloudCanRemoveMemberRole(role) {
   const normalized = String(role || 'member');
+  if (normalized === 'owner') return false;
   if (normalized === 'admin') return cloudCan('remove_admin');
-  if (normalized === 'core_member') return cloudCan('remove_core_member');
   return cloudCan('remove_member');
 }
 

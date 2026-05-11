@@ -54,19 +54,18 @@ test('members settings expose role-aware invitation controls', async () => {
   assert.match(app, /function cloudMemberManageRoleOptions\(\)/);
   const inviteRoleOptionsSource = app.slice(app.indexOf('function cloudInviteRoleOptions()'), app.indexOf('function cloudMemberManageRoleOptions'));
   const manageRoleOptionsSource = app.slice(app.indexOf('function cloudMemberManageRoleOptions()'), app.indexOf('function cloudCanRemoveMemberRole'));
-  assert.doesNotMatch(inviteRoleOptionsSource, /invite_admin|admin', 'Admin'/);
-  assert.match(inviteRoleOptionsSource, /options\.push\(\['member', 'Member'\]\)[\s\S]*options\.push\(\['core_member', 'Core Member'\]\)/);
-  assert.doesNotMatch(manageRoleOptionsSource, /admin', 'Admin'/);
+  assert.doesNotMatch(inviteRoleOptionsSource, /invite_admin/);
+  assert.match(inviteRoleOptionsSource, /options\.push\(\['member', 'Member'\]\)[\s\S]*options\.push\(\['admin', 'Admin'\]\)/);
+  assert.match(manageRoleOptionsSource, /options\.push\(\['member', 'Member'\]\)[\s\S]*options\.push\(\['admin', 'Admin'\]\)/);
   assert.match(manageRoleOptionsSource, /manage_member_roles/);
   assert.match(app, /let latestInvitationLink = null/);
   assert.match(app, /let cloudGeneratedLinks = \[\]/);
   assert.match(app, /function generatedLinkText\(item\)/);
   assert.match(app, /async function tryCopyTextToClipboard\(text\)[\s\S]*catch/);
   assert.match(app, /tryCopyTextToClipboard\(generatedLinksText\(\)\)/);
-  assert.match(app, /'core_member', 'Core Member'/);
+  assert.match(app, /'admin', 'Admin'/);
   assert.match(app, /'member', 'Member'/);
   assert.match(membersSettingsSource, /member-role-badge/);
-  assert.doesNotMatch(membersSettingsSource, /optionRole\) => `<option value="\$\{optionRole\}"[\s\S]*admin/);
   assert.doesNotMatch(accountSettingsSource, /id="cloud-invite-form"|Workspace Members/);
   assert.doesNotMatch(accountSettingsSource, /value="viewer"|value="agent_admin"|value="computer_admin"|value="owner"/);
 });
@@ -1372,7 +1371,8 @@ test('agent avatar uploads open a square crop modal and persist a cropped image'
   assert.match(app, /data-target="agent-create"/);
   assert.match(app, /target === 'agent-create'/);
   assert.match(app, /agentFormState\.avatar = avatar/);
-  assert.match(app, /modal = crop\?\.target === 'agent-create' \? 'agent' : null/);
+  assert.match(app, /function avatarCropReturnModal\(crop\)/);
+  assert.match(app, /return crop\?\.target === 'agent-create' \? 'agent' : null/);
   assert.match(app, /data-action="avatar-crop-zoom-in"/);
   assert.match(app, /data-action="avatar-crop-zoom-out"/);
   assert.match(app, /data-action="confirm-avatar-crop"/);
@@ -1386,17 +1386,14 @@ test('agent avatar uploads open a square crop modal and persist a cropped image'
 
 test('join avatar upload reuses the avatar crop confirmation flow', async () => {
   const app = await readAppSource();
-  const uploadSource = app.slice(
-    app.indexOf("if (event.target.id === 'cloud-auth-avatar-file')"),
-    app.indexOf("if (event.target.matches?.('.agent-avatar-upload')"),
-  );
   const cropSource = app.slice(
-    app.indexOf("if (action === 'confirm-avatar-crop')"),
-    app.indexOf("if (action === 'remove-project')"),
+    app.indexOf('async function applyCroppedAvatar'),
+    app.indexOf('function avatarCropReturnModal'),
   );
 
-  assert.match(uploadSource, /const avatar = await readAvatarFileAsDataUrl\(file\)/);
-  assert.match(uploadSource, /openAvatarCropModal\(\{ source: avatar, target: 'cloud-auth' \}\)/);
+  assert.match(app, /input\?\.id === 'cloud-auth-avatar-file' \? 'cloud-auth' : ''/);
+  assert.match(app, /const avatar = await readAvatarFileAsDataUrl\(file\)/);
+  assert.match(app, /await openAvatarCropModal\(\{ \.\.\.context, source: avatar \}\)/);
   assert.match(cropSource, /crop\?\.target === 'cloud-auth'/);
   assert.match(cropSource, /cloudAuthAvatar = avatar/);
 });
@@ -1416,8 +1413,8 @@ test('create agent opens with a fresh form state every time', async () => {
   const app = await readAppSource();
 
   assert.match(app, /function resetAgentFormState\(\)/);
-  assert.match(app, /name: 'Musk'/);
-  assert.match(app, /placeholder="Musk"/);
+  assert.match(app, /name: ''/);
+  assert.match(app, /placeholder="e\.g\. Kael"/);
   assert.match(app, /Connect a Computer before creating cloud Agents/);
   assert.match(app, /No connected Computer is available/);
   assert.match(app, /const connectedComputers = computerOptions\.filter/);
@@ -1610,7 +1607,8 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /data-action="cancel-human-description"/);
   assert.match(app, /Created Agents/);
   assert.match(app, /Created Agents \(\$\{createdAgents\.length\}\)/);
-  assert.match(app, /const nameWithBadge = `\$\{displayName\}\$\{humanBadgeHtml\(\)\}\$\{youLabel\}`/);
+  assert.match(app, /const nameWithYouLabel = `\$\{displayName\}\$\{youLabel\}`/);
+  assert.doesNotMatch(app, /const nameWithBadge = `\$\{displayName\}\$\{humanBadgeHtml\(\)\}\$\{youLabel\}`/);
   assert.doesNotMatch(app, /<small>\$\{escapeHtml\(email \|\| 'Server member'\)\}<\/small>/);
   assert.doesNotMatch(app, /human-role-/);
   assert.match(app, /function renderAgentGroupsByComputer\(/);

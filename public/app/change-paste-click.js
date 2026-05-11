@@ -3,51 +3,8 @@ document.addEventListener('change', async (event) => {
     setProfileAvatarInput(event.target.value);
     return;
   }
-  if (event.target.id === 'profile-avatar-file') {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (file.size > AGENT_AVATAR_UPLOAD_MAX_BYTES) {
-      toast('Avatar must be 10 MB or smaller');
-      event.target.value = '';
-      return;
-    }
-    const avatar = await readAvatarFileAsDataUrl(file);
-    event.target.value = '';
-    setProfileAvatarInput(avatar);
-    return;
-  }
-  if (event.target.id === 'cloud-auth-avatar-file') {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (file.size > AGENT_AVATAR_UPLOAD_MAX_BYTES) {
-      toast('Avatar must be 10 MB or smaller');
-      event.target.value = '';
-      return;
-    }
-    const avatar = await readAvatarFileAsDataUrl(file);
-    event.target.value = '';
-    await openAvatarCropModal({ source: avatar, target: 'cloud-auth' });
-    return;
-  }
-  if (event.target.id === 'server-avatar-file') {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (file.size > AGENT_AVATAR_UPLOAD_MAX_BYTES) {
-      toast('Avatar must be 10 MB or smaller');
-      event.target.value = '';
-      return;
-    }
-    const avatar = await readAvatarFileAsDataUrl(file);
-    event.target.value = '';
-    await openAvatarCropModal({ source: avatar, target: 'server-profile' });
-    return;
-  }
-  if (event.target.matches?.('.agent-avatar-upload')) {
-    await uploadAgentAvatar(event.target).catch((error) => toast(error.message));
-    return;
-  }
-  if (event.target.matches?.('.human-avatar-upload')) {
-    await uploadHumanAvatar(event.target).catch((error) => toast(error.message));
+  if (event.target.matches?.('[data-avatar-upload-target], .agent-avatar-upload, .human-avatar-upload, #profile-avatar-file, #cloud-auth-avatar-file, #server-avatar-file')) {
+    await uploadAvatarFromInput(event.target).catch((error) => toast(error.message));
     return;
   }
   const target = event.target;
@@ -510,6 +467,24 @@ document.addEventListener('click', async (event) => {
       agentEnvEditState = null;
       render();
     }
+    if (action === 'close-human-detail') {
+      if (activeView === 'members') {
+        selectedHumanId = null;
+        humanDescriptionEditState = { humanId: null };
+        activeView = 'space';
+        membersLayout = normalizeMembersLayout({ mode: 'channel' });
+        render();
+        syncBrowserRouteForActiveView();
+        return;
+      }
+      if (inspectorReturnThreadId && byId(appState.messages, inspectorReturnThreadId)) {
+        threadMessageId = inspectorReturnThreadId;
+      }
+      inspectorReturnThreadId = null;
+      selectedHumanId = null;
+      humanDescriptionEditState = { humanId: null };
+      render();
+    }
     if (action === 'set-agent-detail-tab') {
       agentDetailTab = target.dataset.tab || 'profile';
       agentDetailEditState = { field: null };
@@ -903,10 +878,12 @@ document.addEventListener('click', async (event) => {
         }
         if (modal === 'computer') {
           const pendingComputer = latestPairingCommand?.computer || null;
-          const pendingStatus = String(pendingComputer?.status || '').toLowerCase();
-          if (pendingComputer?.id && pendingStatus === 'pairing') {
+          const liveComputer = pendingComputer?.id ? byId(appState.computers, pendingComputer.id) : null;
+          const pairingComputer = liveComputer || pendingComputer;
+          const pendingStatus = String(pairingComputer?.status || '').toLowerCase();
+          if (pairingComputer?.id && pendingStatus === 'pairing') {
             try {
-              await api(`/api/computers/${encodeURIComponent(pendingComputer.id)}`, { method: 'DELETE' });
+              await api(`/api/computers/${encodeURIComponent(pairingComputer.id)}`, { method: 'DELETE' });
             } catch (error) {
               console.warn('Failed to discard unpaired computer:', error);
             }
@@ -1018,41 +995,7 @@ document.addEventListener('click', async (event) => {
       render();
     }
     if (action === 'confirm-avatar-crop') {
-      const crop = avatarCropState;
-      const avatar = await drawCroppedAvatarToDataUrl(crop);
-      if (crop?.target === 'agent-detail' && crop.agentId) {
-        await api(`/api/agents/${encodeURIComponent(crop.agentId)}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ avatar }),
-        });
-        toast('Avatar updated');
-      }
-      if (crop?.target === 'human-detail' && crop.humanId) {
-        await api(`/api/humans/${encodeURIComponent(crop.humanId)}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ avatar }),
-        });
-        toast('Avatar updated');
-      }
-      if (crop?.target === 'agent-create') {
-        agentFormState.avatar = avatar;
-        toast('Avatar selected');
-      }
-      if (crop?.target === 'cloud-auth') {
-        cloudAuthAvatar = avatar;
-        toast('Avatar selected');
-      }
-      if (crop?.target === 'server-profile') {
-        const input = document.querySelector('[data-server-avatar-input]');
-        if (input) input.value = avatar;
-        const preview = document.querySelector('.server-profile-avatar');
-        if (preview) preview.innerHTML = `<img class="server-profile-avatar-img" src="${escapeHtml(avatar)}" alt="">`;
-        toast('Server avatar selected');
-      }
-      avatarCropState = null;
-      modal = crop?.target === 'agent-create' ? 'agent' : null;
-      render();
-      if (crop?.target === 'human-detail') await refreshStateOrAuthGate().catch(() => {});
+      await confirmAvatarCropSelection();
       return;
     }
     if (action === 'remove-project') {
@@ -1169,6 +1112,19 @@ document.addEventListener('click', async (event) => {
       railTab = 'computers';
       toast('Connect command regenerated');
     }
+    if (action === 'refresh-computer-pairing-command') {
+      const selectedComputer = selectedComputerId ? byId(appState.computers, selectedComputerId) : null;
+      const body = selectedComputer && !computerIsDisabled(selectedComputer)
+        ? { computerId: selectedComputer.id, name: selectedComputer.name || selectedComputer.hostname || 'Computer' }
+        : { name: appState.runtime?.host || 'Computer' };
+      latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      modal = 'computer';
+      renderShellOrModal();
+      toast('Connect command regenerated');
+    }
     if (action === 'copy-join-link') {
       const copied = await tryCopyTextToClipboard(target.dataset.url || '');
       toast(copied ? 'Join link copied' : 'Copy is unavailable');
@@ -1193,6 +1149,8 @@ document.addEventListener('click', async (event) => {
         method: 'PATCH',
         body: JSON.stringify({ status: 'disabled' }),
       });
+      await refreshState();
+      renderShellOrModal();
       toast('Computer disabled');
     }
     if (action === 'enable-computer') {
@@ -1200,6 +1158,8 @@ document.addEventListener('click', async (event) => {
         method: 'PATCH',
         body: JSON.stringify({ status: 'offline' }),
       });
+      await refreshState();
+      renderShellOrModal();
       toast('Computer enabled');
     }
       if (action === 'confirm-cloud-auth-logout') {

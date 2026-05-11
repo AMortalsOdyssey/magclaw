@@ -11,6 +11,7 @@ const appScripts = [
   '/app/prelude.js',
   '/app/state-render-core.js',
   '/app/notifications-layout-avatar.js',
+  '/app/avatar-upload.js',
   '/app/data-search-mentions.js',
   '/app/conversation-scroll-notifications.js',
   '/app/render-shell-rail-inbox.js',

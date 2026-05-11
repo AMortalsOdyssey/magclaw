@@ -1,9 +1,9 @@
 const MAGCLAW_LANGUAGE_KEY = 'magclawLanguage';
-const MAGCLAW_DEFAULT_LANGUAGE = 'zh-CN';
+const MAGCLAW_DEFAULT_LANGUAGE = 'en';
 
 const MAGCLAW_LANGUAGES = [
-  { id: 'zh-CN', label: '中文', detail: '简体中文' },
   { id: 'en', label: 'English', detail: 'Original English' },
+  { id: 'zh-CN', label: '中文', detail: '简体中文' },
 ];
 
 const zhCnTranslations = {
@@ -67,7 +67,6 @@ const zhCnTranslations = {
   'Admin': '管理员',
   'Owner': '所有者',
   'Member': '成员',
-  'Core Member': '核心成员',
   'No admins found.': '未找到管理员。',
   'Pending Invites': '待处理邀请',
   'No pending invites.': '没有待处理邀请。',

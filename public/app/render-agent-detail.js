@@ -43,7 +43,7 @@ function renderAgentAvatarEditor(agent) {
         <button class="secondary-btn" type="button" data-action="pick-agent-detail-avatar" data-id="${escapeHtml(agent.id)}">Browse</button>
         <label class="secondary-btn file-btn">
           Upload
-          <input class="visually-hidden agent-avatar-upload" type="file" accept="image/*" data-action="upload-agent-avatar" data-id="${escapeHtml(agent.id)}" />
+          <input class="visually-hidden agent-avatar-upload" type="file" accept="image/*" data-action="upload-agent-avatar" data-avatar-upload-target="agent-detail" data-id="${escapeHtml(agent.id)}" />
         </label>
       </div>
     </section>
@@ -560,7 +560,7 @@ function renderHumanListItem(human) {
         ${renderHumanAvatar(human, 'dm-avatar')}
       </span>
       <div class="member-info">
-        <span class="dm-name">${escapeHtml(human.name)}${humanBadgeHtml()}${youLabel}</span>
+        <span class="dm-name">${escapeHtml(human.name)}${youLabel}</span>
       </div>
       <span class="member-status-side">${avatarStatusDot(human.status, 'Human status')}</span>
     </button>
@@ -637,7 +637,7 @@ function renderHumanAvatarEditor(human, member) {
         <button class="secondary-btn" type="button" data-action="pick-human-avatar" data-id="${escapeHtml(human.id)}">Browse</button>
         <label class="secondary-btn file-btn">
           Upload
-          <input class="visually-hidden human-avatar-upload" type="file" accept="image/*" data-id="${escapeHtml(human.id)}" />
+          <input class="visually-hidden human-avatar-upload" type="file" accept="image/*" data-avatar-upload-target="human-detail" data-id="${escapeHtml(human.id)}" />
         </label>
       </div>
     </section>
@@ -682,30 +682,25 @@ function renderHumanDetail(human) {
   const email = human.email || member?.user?.email || member?.email || '';
   const isCurrent = humanIsCurrent(human);
   const role = member ? cloudMemberDisplayRole(member) : human.role || 'member';
-  const canManageThisMember = Boolean(member && !isCurrent && (cloudCan('manage_member_roles') || cloudCanRemoveMemberRole(role)));
+  const canManageThisMember = Boolean(member && !isCurrent && role !== 'owner' && (cloudCan('manage_member_roles') || cloudCanRemoveMemberRole(role)));
   const youLabel = isCurrent ? ' <em class="human-you-label">(you)</em>' : '';
   const displayName = escapeHtml(human.name || member?.user?.name || 'Human');
-  const nameWithBadge = `${displayName}${humanBadgeHtml()}${youLabel}`;
+  const nameWithYouLabel = `${displayName}${youLabel}`;
   return `
-    <section class="pixel-panel inspector-panel human-detail-page magclaw-profile-detail">
+    <section class="pixel-panel inspector-panel human-detail-page magclaw-profile-detail ${isCurrent ? 'is-current-human' : 'is-other-human'}">
       <div class="agent-detail-topbar">
         <div class="agent-detail-title">
           <span class="agent-detail-avatar-frame mini">${renderHumanAvatar(human, 'agent-detail-avatar-preview')}</span>
           <div>
-            <strong class="human-detail-name">${nameWithBadge}</strong>
+            <strong class="human-detail-name">${nameWithYouLabel}</strong>
           </div>
         </div>
         <div class="agent-header-actions">
           <button class="secondary-btn" type="button" data-action="open-dm-with-human" data-id="${escapeHtml(human.id)}">Message</button>
+          <button class="icon-btn small" type="button" data-action="close-human-detail" aria-label="Close human detail">×</button>
         </div>
       </div>
       <div class="human-detail-grid">
-        <div class="human-profile-hero">
-          <span class="human-detail-avatar-large">${renderHumanAvatar(human, 'agent-detail-avatar-preview')}</span>
-          <div>
-            <h2 class="human-detail-name">${nameWithBadge}</h2>
-          </div>
-        </div>
         ${renderHumanAvatarEditor(human, member)}
         ${renderHumanDescriptionField(human, member)}
         <section class="agent-profile-field human-info-section">

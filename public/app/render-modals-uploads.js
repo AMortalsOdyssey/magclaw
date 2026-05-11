@@ -528,7 +528,7 @@ function renderAgentModal() {
           <button type="button" class="secondary-btn" data-action="pick-avatar">Browse</button>
           <label class="secondary-btn file-btn">
             Upload
-            <input class="visually-hidden agent-avatar-upload" type="file" accept="image/*" data-action="upload-agent-avatar" data-target="agent-create" />
+            <input class="visually-hidden agent-avatar-upload" type="file" accept="image/*" data-action="upload-agent-avatar" data-avatar-upload-target="agent-create" data-target="agent-create" />
           </label>
         </div>
       </div>
@@ -546,7 +546,7 @@ function renderAgentModal() {
       </label>
       <label>
         <span>NAME <span class="required">*</span></span>
-        <input name="name" placeholder="Musk" value="${escapeHtml(agentFormState.name)}" required />
+        <input name="name" placeholder="e.g. Kael" value="${escapeHtml(agentFormState.name)}" required />
       </label>
       <label>
         <span>DESCRIPTION <span class="optional">(optional)</span></span>
@@ -675,7 +675,11 @@ function renderComputerModal() {
     `;
   }
   const command = latestPairingCommand?.command || '';
-  const connected = latestPairingCommand?.computer?.status === 'connected';
+  const pendingComputerId = latestPairingCommand?.computer?.id || '';
+  const liveComputer = pendingComputerId ? byId(appState.computers, pendingComputerId) : null;
+  const pairingComputer = liveComputer || latestPairingCommand?.computer || null;
+  const stale = Boolean(pendingComputerId && !liveComputer && Array.isArray(appState.computers));
+  const connected = String(pairingComputer?.status || '').toLowerCase() === 'connected';
   const usesLocalRepoPlaceholder = command.includes('MAGCLAW_REPO_DIR=');
   return `
     ${modalHeader('CONNECT COMPUTER')}
@@ -692,11 +696,12 @@ function renderComputerModal() {
         ${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your local MagClaw checkout path before running. ' : ''}
         Keep this process running — it maintains the connection between your computer and MagClaw.
       </p>
-      <div class="pairing-wait-box ${connected ? 'connected' : ''}">
-        <span class="avatar-status-dot inline ${connected ? 'online' : 'queued'}"></span>
-        <strong>${connected ? 'Computer connected.' : 'Waiting for computer to connect...'}</strong>
+      <div class="pairing-wait-box ${connected ? 'connected' : ''} ${stale ? 'stale' : ''}">
+        <span class="avatar-status-dot inline ${connected ? 'online' : stale ? 'offline' : 'queued'}"></span>
+        <strong>${connected ? 'Computer connected.' : stale ? 'This connect command is no longer valid.' : 'Waiting for computer to connect...'}</strong>
       </div>
       <div class="modal-actions">
+        ${stale ? '<button type="button" class="secondary-btn" data-action="refresh-computer-pairing-command">Generate New Command</button>' : ''}
         <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
         <button type="button" class="primary-btn" data-action="close-modal" ${connected ? '' : 'disabled'}>Done</button>
       </div>
@@ -737,7 +742,7 @@ function saveAgentFormState() {
   if (!form) return;
   const data = new FormData(form);
   agentFormState.computerId = data.get('computerId') || '';
-  agentFormState.name = data.get('name') || 'Musk';
+  agentFormState.name = data.get('name') || '';
   agentFormState.description = data.get('description') || '';
   agentFormState.model = data.get('model') || '';
   agentFormState.reasoningEffort = data.get('reasoningEffort') || '';
@@ -747,7 +752,7 @@ function saveAgentFormState() {
 function resetAgentFormState() {
   agentFormState = {
     computerId: '',
-    name: 'Musk',
+    name: '',
     description: '',
     model: '',
     reasoningEffort: '',

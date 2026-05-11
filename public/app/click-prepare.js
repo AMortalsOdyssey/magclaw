@@ -105,6 +105,7 @@ async function prepareDocumentClick(event) {
     'select-human',
     'select-computer',
     'close-agent-detail',
+    'close-human-detail',
     'set-agent-detail-tab',
     'toggle-agent-skill-section',
     'edit-agent-field',

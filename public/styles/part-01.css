@@ -804,6 +804,7 @@ p {
   box-shadow: none;
   color: inherit;
   cursor: pointer;
+  padding: 0;
 }
 
 .dm-peer-button:hover strong,
@@ -1597,4 +1598,3 @@ button:disabled {
   font-size: 13px;
   line-height: 1;
 }
-

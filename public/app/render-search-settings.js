@@ -723,7 +723,7 @@ function renderAccountSettingsTab() {
               <div class="account-avatar-actions">
                 <button class="secondary-btn" type="button" data-action="random-profile-avatar">Random</button>
                 <button class="secondary-btn" type="button" data-action="pick-profile-avatar">Browse</button>
-                <label class="secondary-btn profile-upload-btn">Upload<input id="profile-avatar-file" class="visually-hidden" type="file" accept="image/*" /></label>
+                <label class="secondary-btn profile-upload-btn">Upload<input id="profile-avatar-file" class="visually-hidden" type="file" accept="image/*" data-avatar-upload-target="profile" /></label>
                 <button class="secondary-btn" type="button" data-action="reset-profile-avatar">Reset to Default</button>
               </div>
             </div>
@@ -1042,8 +1042,8 @@ function renderMemberInviteModal() {
             `).join('')}
             <textarea id="member-invite-input" name="emailsDraft" rows="3" placeholder="name@example.com">${escapeHtml(cloudInviteDraft)}</textarea>
           </div>
-          <span id="member-invite-count" class="member-invite-count">${escapeHtml(count)}/unlimited</span>
         </div>
+        <div class="member-invite-count-row"><span id="member-invite-count" class="member-invite-count">${escapeHtml(count)}/unlimited</span></div>
         <label class="member-invite-role"><span>Role</span><select name="role">
           ${inviteRoleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')}
         </select></label>
@@ -1074,10 +1074,12 @@ function renderMemberManageModal() {
   const member = memberManageTarget();
   if (!member) return modalHeader('Manage member', 'Member not found');
   const role = member.role || 'member';
+  const displayRole = cloudMemberDisplayRole(member);
   const isAdminRow = role === 'admin';
+  const isOwnerRow = displayRole === 'owner';
   const isCurrent = auth.currentMember?.id === member.id;
   const roleOptions = cloudMemberManageRoleOptions();
-  const canManageRole = Boolean(roleOptions.length) && !isAdminRow && !isCurrent;
+  const canManageRole = Boolean(roleOptions.length) && !isOwnerRow && !isCurrent;
   const canResetPassword = auth.currentMember?.role === 'admin' && !isAdminRow && !isCurrent;
   const canRemove = cloudCanRemoveMemberRole(role) && !isAdminRow && !isCurrent;
   return `
@@ -1199,8 +1201,10 @@ function renderMemberRow(row) {
   const member = row.member;
   const role = member.role || 'member';
   const isCurrent = currentMember?.id === member.id;
+  const displayRole = cloudMemberDisplayRole(member);
   const isAdminRow = role === 'admin';
-  const canManageRole = cloudCan('manage_member_roles') && !isAdminRow && !isCurrent;
+  const isOwnerRow = displayRole === 'owner';
+  const canManageRole = cloudCan('manage_member_roles') && !isOwnerRow && !isCurrent;
   const canResetPassword = auth.currentMember?.role === 'admin' && !isAdminRow && !isCurrent;
   const canRemove = cloudCanRemoveMemberRole(role) && !isAdminRow && !isCurrent;
   const canManage = canManageRole || canResetPassword || canRemove;
@@ -1499,7 +1503,7 @@ function renderServerSettingsTab() {
               <input type="hidden" name="avatar" value="${escapeHtml(server.avatar || '')}" data-server-avatar-input />
               <label class="secondary-btn file-btn">
                 Upload Avatar
-                <input id="server-avatar-file" class="visually-hidden" type="file" accept="image/*" />
+                <input id="server-avatar-file" class="visually-hidden" type="file" accept="image/*" data-avatar-upload-target="server-profile" />
               </label>
               <button class="secondary-btn" type="button" data-action="reset-server-avatar">Use Initial</button>
             </div>

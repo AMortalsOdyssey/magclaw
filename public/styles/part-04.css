@@ -582,10 +582,6 @@
   color: #D91F2D;
 }
 
-.account-role-badge.role-core_member strong {
-  color: #9A6A00;
-}
-
 .account-signout-btn {
   align-self: stretch;
 }
@@ -1590,13 +1586,7 @@ code {
   color: #ff5a5f;
 }
 
-.cloud-member-row.role-core_member strong,
-.cloud-member-row.role-core_member .cloud-member-swatch {
-  color: #d4a017;
-}
-
 .cloud-member-row.role-member strong,
 .cloud-member-row.role-member .cloud-member-swatch {
   color: var(--text-primary);
 }
-
