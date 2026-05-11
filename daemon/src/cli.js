@@ -3,7 +3,7 @@ import https from 'node:https';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { chmod, mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, readlink, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,8 @@ const PACKAGE_JSON = (() => {
   }
 })();
 export const DAEMON_VERSION = String(PACKAGE_JSON.version || '0.0.0');
+const SOURCE_CODEX_HOME = path.resolve(process.env.MAGCLAW_CODEX_HOME_SOURCE || process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
+const CODEX_HOME_SHARED_ENTRIES = ['auth.json', 'plugins', 'vendor_imports'];
 const CAPABILITIES = [
   'agent:start',
   'agent:restart',
@@ -240,6 +242,7 @@ async function readProfile(profile, env = process.env) {
 async function saveProfile(profile, config, env = process.env) {
   const paths = profilePaths(profile, env);
   const owner = await ensureMachineFingerprint(paths.profile, env);
+  const pairToken = config.pairToken || '';
   const safeConfig = {
     profile: paths.profile,
     serverUrl: String(config.serverUrl || DEFAULT_SERVER_URL).replace(/\/+$/, ''),
@@ -247,8 +250,8 @@ async function saveProfile(profile, config, env = process.env) {
     computerId: config.computerId || null,
     name: config.name || os.hostname(),
     fingerprint: config.fingerprint || owner.fingerprint,
-    token: config.token || '',
-    pairToken: config.pairToken || '',
+    token: pairToken ? '' : (config.token || ''),
+    pairToken,
     createdAt: config.createdAt || now(),
     updatedAt: now(),
   };
@@ -526,11 +529,11 @@ function tomlArray(values) {
   return `[${values.map((value) => tomlString(value)).join(',')}]`;
 }
 
-function codexMcpArgs({ agentId, serverUrl }) {
+function codexMcpArgs({ agentId, serverUrl, tokenFile }) {
   return [
     '-c', 'wire_api="responses"',
     '-c', `mcp_servers.magclaw.command=${tomlString(process.execPath)}`,
-    '-c', `mcp_servers.magclaw.args=${tomlArray([MCP_BRIDGE_PATH, '--agent-id', agentId, '--base-url', serverUrl])}`,
+    '-c', `mcp_servers.magclaw.args=${tomlArray([MCP_BRIDGE_PATH, '--agent-id', agentId, '--base-url', serverUrl, '--token-file', tokenFile])}`,
     '-c', 'mcp_servers.magclaw.startup_timeout_sec=30',
     '-c', 'mcp_servers.magclaw.tool_timeout_sec=120',
     '-c', 'mcp_servers.magclaw.enabled=true',
@@ -542,12 +545,16 @@ function deliveryPrompt(agent, message = {}, workItem = null) {
   const target = message.target || (message.spaceType && message.spaceId
     ? `${message.spaceType}:${message.spaceId}${message.parentMessageId ? `:${message.parentMessageId}` : ''}`
     : '#all');
+  const workItemId = workItem?.id || message.workItemId || '';
   const workItemLine = workItem?.id || message.workItemId
-    ? `Work item id: ${workItem?.id || message.workItemId}`
+    ? `Work item id: ${workItemId}`
     : 'Work item id: none';
   return [
     `You are ${agent.name || agent.id}, a MagClaw remote agent running on this local computer.`,
-    'Use the MagClaw MCP tools when you need to read history, send a routed reply, manage tasks, write memory, or schedule reminders.',
+    'You must respond to the incoming message unless it is purely informational and clearly needs no reply.',
+    'For ordinary channel or DM chat where Work item id is none, do not call send_message; finish with the exact reply text and MagClaw will post it back to the source conversation.',
+    'When a real Work item id is provided, use the MagClaw MCP send_message tool with that workItemId and the exact conversation target.',
+    'Use the other MagClaw MCP tools only when you need to read history, manage tasks, write memory, or schedule reminders.',
     `Agent id: ${agent.id}`,
     `Conversation target: ${target}`,
     workItemLine,
@@ -557,6 +564,109 @@ function deliveryPrompt(agent, message = {}, workItem = null) {
     'Incoming message:',
     String(message.body || message.content || '').trim() || '(empty)',
   ].filter(Boolean).join('\n');
+}
+
+function parseToolArguments(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function codexToolCallId(item) {
+  return String(item?.id || item?.callId || item?.call_id || item?.itemId || item?.item_id || '');
+}
+
+function codexToolName(item) {
+  const tool = item?.tool;
+  return String(
+    item?.name
+    || item?.toolName
+    || item?.tool_name
+    || (typeof tool === 'string' ? tool : tool?.name)
+    || item?.function?.name
+    || item?.call?.name
+    || ''
+  );
+}
+
+function codexToolNameMatches(name, expected) {
+  const value = String(name || '').trim();
+  if (!value || !expected) return false;
+  return value === expected
+    || value.endsWith(`.${expected}`)
+    || value.endsWith(`/${expected}`)
+    || value.endsWith(`:${expected}`)
+    || value.endsWith(`__${expected}`);
+}
+
+function codexToolArguments(item) {
+  const candidates = [
+    item?.arguments,
+    item?.args,
+    item?.input,
+    item?.params?.arguments,
+    item?.params?.input,
+    item?.toolInput,
+    item?.tool_input,
+    item?.function?.arguments,
+    item?.call?.arguments,
+  ];
+  for (const candidate of candidates) {
+    const parsed = parseToolArguments(candidate);
+    if (Object.keys(parsed).length) return parsed;
+  }
+  return {};
+}
+
+function canonicalMagClawToolName(name) {
+  const tools = [
+    'send_message',
+    'read_history',
+    'search_messages',
+    'search_agent_memory',
+    'read_agent_memory',
+    'write_memory',
+    'list_tasks',
+    'create_tasks',
+    'claim_tasks',
+    'update_task_status',
+    'schedule_reminder',
+    'list_reminders',
+    'cancel_reminder',
+  ];
+  return tools.find((tool) => codexToolNameMatches(name, tool)) || '';
+}
+
+function dynamicToolContentResult(text) {
+  return {
+    contentItems: [
+      { type: 'inputText', text: String(text || '') },
+    ],
+  };
+}
+
+function jsonText(value) {
+  if (typeof value?.text === 'string' && value.text.trim()) return value.text;
+  return JSON.stringify(value ?? {}, null, 2);
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function toolCallSignature(name, args = {}) {
+  return `${String(name || '').trim()}|${stableJson(args || {})}`;
 }
 
 function agentRuntimeKind(agent = {}) {
@@ -574,6 +684,27 @@ function agentEnvironment(agent = {}, env = process.env) {
     output[key] = String(item.value || '');
   }
   return output;
+}
+
+async function ensureSymlinkedCodexHomeEntry(codexHome, entryName) {
+  const source = path.join(SOURCE_CODEX_HOME, entryName);
+  if (!existsSync(source)) return;
+  const target = path.join(codexHome, entryName);
+  try {
+    const existing = await lstat(target);
+    if (existing.isSymbolicLink()) {
+      const current = await readlink(target);
+      const resolved = path.resolve(path.dirname(target), current);
+      if (resolved === source) return;
+      await unlink(target);
+    } else {
+      return;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const sourceStat = await stat(source);
+  await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
 }
 
 class CodexAgentSession {
@@ -595,6 +726,11 @@ class CodexAgentSession {
     this.status = 'offline';
     this.started = false;
     this.pendingPrompts = [];
+    this.activeDeliveryId = '';
+    this.completedToolCallIds = new Set();
+    this.activeTurnToolSignatures = new Set();
+    this.activeTurnUsedSendMessage = false;
+    this.codexMessageQueue = Promise.resolve();
   }
 
   agentDir() {
@@ -612,8 +748,11 @@ class CodexAgentSession {
   async prepare() {
     await mkdir(this.codexHome(), { recursive: true });
     await mkdir(this.workspace(), { recursive: true });
+    await Promise.all(CODEX_HOME_SHARED_ENTRIES.map((entry) => ensureSymlinkedCodexHomeEntry(this.codexHome(), entry)));
     await writeFile(path.join(this.codexHome(), 'config.toml'), [
       'wire_api = "responses"',
+      '',
+      '[features]',
       'memories = false',
       'plugins = true',
       '',
@@ -636,6 +775,7 @@ class CodexAgentSession {
       type: 'agent:status',
       agentId: this.agent.id,
       status,
+      deliveryId: this.activeDeliveryId || null,
       sessionId: this.threadId || null,
       activity: activity || {
         source: '@magclaw/daemon',
@@ -659,6 +799,210 @@ class CodexAgentSession {
     this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
   }
 
+  sendResponse(id, result = {}) {
+    if (!this.child?.stdin?.writable || id === undefined || id === null) return false;
+    this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
+    return true;
+  }
+
+  sendErrorResponse(id, code, message, data = null) {
+    if (!this.child?.stdin?.writable || id === undefined || id === null) return false;
+    this.child.stdin.write(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code,
+        message: String(message || 'Request failed.'),
+        ...(data ? { data } : {}),
+      },
+    })}\n`);
+    return true;
+  }
+
+  async requestMagClawTool(pathname, { method = 'GET', query = {}, body = null } = {}) {
+    const url = new URL(`${this.serverUrl.replace(/\/+$/, '')}${pathname}`);
+    for (const [key, value] of Object.entries(query || {})) {
+      if (value === undefined || value === null || value === '') continue;
+      url.searchParams.set(key, String(value));
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: {
+          ...(body ? { 'content-type': 'application/json' } : {}),
+          authorization: `Bearer ${this.token}`,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = { text };
+      }
+      if (!response.ok) {
+        const error = new Error(data?.error || data?.message || text || `HTTP ${response.status}`);
+        error.status = response.status;
+        error.data = data;
+        throw error;
+      }
+      return data;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  executeMagClawTool(name, rawArgs = {}) {
+    const args = { ...rawArgs, agentId: rawArgs.agentId || this.agent.id };
+    switch (name) {
+      case 'send_message':
+        return this.requestMagClawTool('/api/agent-tools/messages/send', {
+          method: 'POST',
+          body: {
+            agentId: args.agentId,
+            workItemId: args.workItemId || args.work_item_id,
+            target: args.target,
+            content: args.content,
+          },
+        });
+      case 'read_history':
+        return this.requestMagClawTool('/api/agent-tools/history', {
+          query: {
+            agentId: args.agentId,
+            target: args.target || args.channel,
+            limit: args.limit,
+            around: args.around,
+            before: args.before,
+            after: args.after,
+          },
+        });
+      case 'search_messages':
+        return this.requestMagClawTool('/api/agent-tools/search', {
+          query: {
+            agentId: args.agentId,
+            query: args.query || args.q,
+            target: args.target || args.channel,
+            limit: args.limit,
+          },
+        });
+      case 'search_agent_memory':
+        return this.requestMagClawTool('/api/agent-tools/memory/search', {
+          query: {
+            agentId: args.agentId,
+            query: args.query || args.q,
+            targetAgentId: args.targetAgentId || args.targetAgent,
+            limit: args.limit,
+          },
+        });
+      case 'read_agent_memory':
+        return this.requestMagClawTool('/api/agent-tools/memory/read', {
+          query: {
+            agentId: args.agentId,
+            targetAgentId: args.targetAgentId || args.targetAgent,
+            path: args.path || 'MEMORY.md',
+          },
+        });
+      case 'write_memory':
+        return this.requestMagClawTool('/api/agent-tools/memory', {
+          method: 'POST',
+          body: args,
+        });
+      case 'list_tasks':
+        return this.requestMagClawTool('/api/agent-tools/tasks', {
+          query: {
+            agentId: args.agentId,
+            channel: args.channel,
+            target: args.target,
+            status: args.status,
+            assigneeId: args.assigneeId,
+            limit: args.limit,
+          },
+        });
+      case 'create_tasks':
+        return this.requestMagClawTool('/api/agent-tools/tasks', {
+          method: 'POST',
+          body: args,
+        });
+      case 'claim_tasks':
+        return this.requestMagClawTool('/api/agent-tools/tasks/claim', {
+          method: 'POST',
+          body: args,
+        });
+      case 'update_task_status':
+        return this.requestMagClawTool('/api/agent-tools/tasks/update', {
+          method: 'POST',
+          body: args,
+        });
+      case 'schedule_reminder':
+        return this.requestMagClawTool('/api/agent-tools/reminders', {
+          method: 'POST',
+          body: args,
+        });
+      case 'list_reminders':
+        return this.requestMagClawTool('/api/agent-tools/reminders', {
+          query: {
+            agentId: args.agentId,
+            status: args.status,
+            limit: args.limit,
+          },
+        });
+      case 'cancel_reminder':
+        return this.requestMagClawTool('/api/agent-tools/reminders/cancel', {
+          method: 'POST',
+          body: args,
+        });
+      default:
+        throw new Error(`Unsupported MagClaw tool: ${name || '(unnamed)'}`);
+    }
+  }
+
+  async executeCodexToolItem(item = {}, requestId = null, params = {}) {
+    const callId = codexToolCallId(item) || String(params.callId || params.call_id || '');
+    const name = canonicalMagClawToolName(codexToolName(item));
+    if (!name) return false;
+    const textArgs = parseToolArguments(params.inputText || params.input_text);
+    const args = Object.keys(codexToolArguments(item)).length
+      ? codexToolArguments(item)
+      : textArgs;
+    const signature = toolCallSignature(name, args);
+    if ((callId && this.completedToolCallIds.has(callId)) || this.activeTurnToolSignatures.has(signature)) {
+      if (requestId !== null && requestId !== undefined) this.sendResponse(requestId, dynamicToolContentResult('Already handled.'));
+      return true;
+    }
+    this.activeTurnToolSignatures.add(signature);
+    this.send({
+      type: 'agent:activity',
+      agentId: this.agent.id,
+      status: 'working',
+      activity: { source: 'magclaw-tool', tool: name, at: now() },
+    });
+    try {
+      const data = await this.executeMagClawTool(name, args);
+      if (callId) this.completedToolCallIds.add(callId);
+      if (name === 'send_message') this.activeTurnUsedSendMessage = true;
+      if (requestId !== null && requestId !== undefined) {
+        this.sendResponse(requestId, dynamicToolContentResult(jsonText(data)));
+      }
+      return true;
+    } catch (error) {
+      this.activeTurnToolSignatures.delete(signature);
+      if (requestId !== null && requestId !== undefined) {
+        this.sendErrorResponse(requestId, error.status || -32000, error.message || 'Tool call failed.', error.data || null);
+        return true;
+      }
+      this.send({
+        type: 'agent:error',
+        agentId: this.agent.id,
+        error: error.message || 'Tool call failed.',
+      });
+      return true;
+    }
+  }
+
   async start() {
     if (this.started) return;
     await this.prepare();
@@ -666,6 +1010,7 @@ class CodexAgentSession {
     const args = ['app-server', ...codexMcpArgs({
       agentId: this.agent.id,
       serverUrl: this.serverUrl,
+      tokenFile: this.paths.config,
     }), '--listen', 'stdio://'];
     this.child = spawn(codexCommand, args, {
       cwd: this.workspace(),
@@ -718,18 +1063,21 @@ class CodexAgentSession {
     this.sendRequest(method, params);
   }
 
-  async deliver(message = {}, workItem = null) {
+  async deliver(message = {}, workItem = null, deliveryId = '') {
     const prompt = deliveryPrompt(this.agent, message, workItem);
     if (!this.started) await this.start();
     if (!this.threadId) {
-      this.pendingPrompts.push({ prompt, message, workItem });
+      this.pendingPrompts.push({ prompt, message, workItem, deliveryId });
       return;
     }
-    this.startTurn(prompt, message, workItem);
+    this.startTurn(prompt, message, workItem, deliveryId);
   }
 
-  startTurn(prompt, message = {}, workItem = null) {
+  startTurn(prompt, message = {}, workItem = null, deliveryId = '') {
     if (!this.threadId) return false;
+    this.activeDeliveryId = deliveryId || '';
+    this.activeTurnToolSignatures = new Set();
+    this.activeTurnUsedSendMessage = false;
     const model = this.agent.model || undefined;
     const effort = this.agent.reasoningEffort || undefined;
     const params = {
@@ -760,14 +1108,24 @@ class CodexAgentSession {
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        this.handleCodexMessage(JSON.parse(line));
+        const payload = JSON.parse(line);
+        this.codexMessageQueue = this.codexMessageQueue
+          .then(() => this.handleCodexMessage(payload))
+          .catch((error) => {
+            this.send({ type: 'agent:activity', agentId: this.agent.id, status: this.status, activity: { source: 'codex-stdout', error: error.message, at: now() } });
+          });
       } catch (error) {
-        this.send({ type: 'agent:activity', agentId: this.agent.id, status: this.status, activity: { source: 'codex-stdout', error: error.message, at: now() } });
+        this.send({
+          type: 'agent:activity',
+          agentId: this.agent.id,
+          status: this.status,
+          activity: { source: 'codex-stdout', error: error.message, at: now() },
+        });
       }
     }
   }
 
-  handleCodexMessage(message) {
+  async handleCodexMessage(message) {
     if (message.id !== undefined && (message.result || message.error)) {
       const pending = this.pending.get(message.id);
       this.pending.delete(message.id);
@@ -781,7 +1139,7 @@ class CodexAgentSession {
         this.send({ type: 'agent:session', agentId: this.agent.id, status: 'idle', sessionId: this.threadId });
         this.sendStatus('idle', { source: '@magclaw/daemon', detail: 'Codex session ready', at: now() });
         const queued = this.pendingPrompts.splice(0);
-        for (const item of queued) this.startTurn(item.prompt, item.message, item.workItem);
+        for (const item of queued) this.startTurn(item.prompt, item.message, item.workItem, item.deliveryId);
       } else if (pending?.method === 'turn/start' || pending?.method === 'turn/steer') {
         this.activeTurnId = message.result?.turn?.id || message.result?.turnId || this.activeTurnId;
       }
@@ -790,6 +1148,17 @@ class CodexAgentSession {
 
     const method = message.method || '';
     const params = message.params || {};
+    if (method && message.id !== undefined && message.id !== null) {
+      if (method === 'item/tool/call') {
+        const handled = await this.executeCodexToolItem(params.item || params, message.id, params);
+        if (!handled) this.sendErrorResponse(message.id, -32602, `Unsupported dynamic tool request: ${codexToolName(params.item || params) || '(unnamed)'}`);
+        return;
+      }
+      if (method === 'mcpServer/elicitation/request') {
+        this.sendResponse(message.id, { action: 'accept' });
+        return;
+      }
+    }
     if (method === 'thread/started') {
       this.threadId = params.thread?.id || params.threadId || this.threadId;
       this.send({ type: 'agent:session', agentId: this.agent.id, status: 'idle', sessionId: this.threadId });
@@ -811,16 +1180,19 @@ class CodexAgentSession {
       return;
     }
     if (method === 'item/completed') {
-      const text = params.item?.text || params.item?.message || params.text || '';
+      const item = params.item || {};
+      if (await this.executeCodexToolItem(item, null, params)) return;
+      const text = item?.text || item?.message || params.text || '';
       if (text) this.responseBuffer += String(text);
       return;
     }
     if (method === 'turn/completed' || method === 'turn/failed') {
       const body = this.responseBuffer.trim();
-      if (body && method === 'turn/completed') {
+      if (body && method === 'turn/completed' && !this.activeTurnUsedSendMessage) {
         this.send({
           type: 'agent:message',
           agentId: this.agent.id,
+          deliveryId: this.activeDeliveryId || null,
           payload: {
             body,
             message: this.lastSourceMessage || null,
@@ -833,11 +1205,13 @@ class CodexAgentSession {
       }
       this.responseBuffer = '';
       this.activeTurnId = '';
+      this.activeTurnUsedSendMessage = false;
       this.sendStatus(method === 'turn/completed' ? 'idle' : 'error', {
         source: '@magclaw/daemon',
         detail: method === 'turn/completed' ? 'Turn completed' : 'Turn failed',
         at: now(),
       });
+      this.activeDeliveryId = '';
       return;
     }
     this.send({
@@ -1155,7 +1529,7 @@ class MagClawDaemon {
     try {
       const session = this.sessionFor(agent);
       this.send({ type: 'agent:deliver:ack', commandId: message.commandId, agentId: agent.id, status: 'queued' });
-      await session.deliver(message.payload?.message || {}, message.payload?.workItem || null);
+      await session.deliver(message.payload?.message || {}, message.payload?.workItem || null, message.commandId || '');
     } catch (error) {
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
     }
@@ -1251,22 +1625,29 @@ async function writeLauncher(profile, env = process.env) {
   const paths = profilePaths(profile, env);
   await mkdir(paths.runDir, { recursive: true });
   const npmPath = commandExists('npm', env);
+  const nodeDir = path.dirname(process.execPath);
+  const npmDir = npmPath ? path.dirname(npmPath) : '';
+  const useNpmLauncher = String(env.MAGCLAW_DAEMON_COMMAND_MODE || '').toLowerCase() === 'npm' && Boolean(npmPath);
   const launcher = path.join(paths.runDir, 'launcher.js');
   const fallbackBin = executablePath();
   const code = [
     '#!/usr/bin/env node',
     "const { spawn } = require('node:child_process');",
     `const npmPath = ${JSON.stringify(npmPath)};`,
+    `const useNpmLauncher = ${JSON.stringify(useNpmLauncher)};`,
+    `const nodeDir = ${JSON.stringify(nodeDir)};`,
+    `const npmDir = ${JSON.stringify(npmDir)};`,
     `const fallbackBin = ${JSON.stringify(fallbackBin)};`,
     `const profile = ${JSON.stringify(paths.profile)};`,
     `const daemonHome = ${JSON.stringify(daemonRoot(env))};`,
-    'const command = npmPath || process.execPath;',
-    "const args = npmPath",
+    'const command = useNpmLauncher ? npmPath : process.execPath;',
+    "const args = useNpmLauncher",
     "  ? ['exec', '--yes', '--package', '@magclaw/daemon@latest', '--', 'magclaw-daemon', 'connect', '--profile', profile]",
     "  : [fallbackBin, 'connect', '--profile', profile];",
+    "const launchPath = [nodeDir, npmDir, process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].filter(Boolean).join(':');",
     'const child = spawn(command, args, {',
     "  stdio: 'inherit',",
-    '  env: { ...process.env, MAGCLAW_DAEMON_HOME: daemonHome },',
+    '  env: { ...process.env, MAGCLAW_DAEMON_HOME: daemonHome, PATH: launchPath },',
     '});',
     "child.on('exit', (code, signal) => {",
     '  if (signal) process.kill(process.pid, signal);',
@@ -1473,13 +1854,14 @@ async function buildConfig(flags, env = process.env) {
   const diskConfig = await readProfile(flags.profile, env);
   const profile = flags.profile || diskConfig.profile || DEFAULT_PROFILE;
   const owner = await ensureMachineFingerprint(profile, env);
+  const pairToken = flags.pairToken || diskConfig.pairToken || '';
   return {
     ...diskConfig,
     ...flags,
     profile,
     serverUrl: String(flags.serverUrl || diskConfig.serverUrl || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL).replace(/\/+$/, ''),
-    token: flags.token || flags.machineToken || diskConfig.token || '',
-    pairToken: flags.pairToken || diskConfig.pairToken || '',
+    token: pairToken ? '' : (flags.token || flags.machineToken || diskConfig.token || ''),
+    pairToken,
     workspaceId: flags.workspaceId || flags.workspace || diskConfig.workspaceId || 'local',
     name: flags.name || diskConfig.name || os.hostname(),
     fingerprint: flags.fingerprint || diskConfig.fingerprint || owner.fingerprint,

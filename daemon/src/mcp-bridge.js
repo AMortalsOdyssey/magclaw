@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // MCP stdio bridge used by cloud-connected daemon agents. It forwards MagClaw
 // tool calls to the cloud server with the daemon machine token.
+import { readFileSync } from 'node:fs';
 
 function parseArgs(argv) {
   const options = {
     agentId: '',
     baseUrl: process.env.MAGCLAW_SERVER_URL || 'http://127.0.0.1:6543',
     token: process.env.MAGCLAW_MACHINE_TOKEN || '',
+    tokenFile: '',
   };
   for (let index = 2; index < argv.length; index += 1) {
     const item = argv[index];
@@ -20,6 +22,9 @@ function parseArgs(argv) {
     } else if (item === '--token') {
       options.token = next || options.token;
       index += 1;
+    } else if (item === '--token-file') {
+      options.tokenFile = next || '';
+      index += 1;
     }
   }
   options.baseUrl = String(options.baseUrl || '').replace(/\/+$/, '');
@@ -28,6 +33,17 @@ function parseArgs(argv) {
 
 const options = parseArgs(process.argv);
 let buffer = '';
+
+function machineToken() {
+  if (options.token) return options.token;
+  if (!options.tokenFile) return '';
+  try {
+    const config = JSON.parse(readFileSync(options.tokenFile, 'utf8'));
+    return String(config.token || config.machineToken || '');
+  } catch {
+    return '';
+  }
+}
 
 function schema(properties, required = []) {
   return {
@@ -210,11 +226,12 @@ function queryString(params = {}) {
 }
 
 async function request(pathname, { method = 'GET', query = {}, body = null } = {}) {
+  const token = machineToken();
   const response = await fetch(`${options.baseUrl}${pathname}${queryString(query)}`, {
     method,
     headers: {
       ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });

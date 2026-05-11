@@ -120,6 +120,7 @@ export function createDaemonRelay(deps) {
     makeId,
     normalizeConversationRecord,
     now,
+    persistCloudState = null,
     persistState,
     port,
     setAgentStatus,
@@ -133,6 +134,10 @@ export function createDaemonRelay(deps) {
   const handlers = {
     onAgentMessage: null,
   };
+
+  function persistAllState() {
+    return (persistCloudState || persistState)();
+  }
 
   function cloud() {
     return cloudAuth.ensureCloudState();
@@ -186,7 +191,6 @@ export function createDaemonRelay(deps) {
       `--server-url ${shellArg(publicUrl)}`,
       `--pair-token ${shellArg(pairToken)}`,
       `--profile ${shellArg(profile)}`,
-      '--background',
       `# ${comment}`,
     ].join(' ');
   }
@@ -270,7 +274,7 @@ export function createDaemonRelay(deps) {
     const at = now();
     tokenRecord.lastUsedAt = at;
     computer.lastSeenAt = at;
-    persistState().catch(() => {});
+    persistAllState().catch(() => {});
     return {
       type: 'daemon',
       workspaceId: tokenRecord.workspaceId || computer.workspaceId || null,
@@ -330,7 +334,7 @@ export function createDaemonRelay(deps) {
     recordDaemonEvent('computer_disconnected', `Computer disconnected: ${computer?.name || connection.computerId}`, {
       computerId: connection.computerId,
     });
-    persistState().then(broadcastState).catch(() => {});
+    persistAllState().then(broadcastState).catch(() => {});
   }
 
   function adoptConnection(connection, computer, tokenRecord) {
@@ -358,7 +362,7 @@ export function createDaemonRelay(deps) {
     for (const delivery of pending) {
       sendDelivery(delivery);
     }
-    if (pending.length) await persistState();
+    if (pending.length) await persistAllState();
   }
 
   function nextDeliverySeq(agentId, computerId) {
@@ -383,6 +387,17 @@ export function createDaemonRelay(deps) {
       delivery.updatedAt = now();
     }
     return ok;
+  }
+
+  function markDeliveryFinished(id, status = 'completed', error = '') {
+    if (!id) return null;
+    const delivery = safeArray(cloud().agentDeliveries).find((item) => item.id === id);
+    if (!delivery) return null;
+    delivery.status = status;
+    delivery.completedAt = delivery.completedAt || now();
+    delivery.updatedAt = now();
+    delivery.error = error || '';
+    return delivery;
   }
 
   function agentShouldUseRelay(agent) {
@@ -445,7 +460,7 @@ export function createDaemonRelay(deps) {
         ? (result.sent ? 'warming' : 'waiting_for_computer')
         : (result.sent ? 'starting' : 'waiting_for_computer');
       setAgentStatus(agent, nextStatus, 'daemon_relay_start', { forceEvent: true });
-      await persistState();
+      await persistAllState();
       broadcastState();
     }
     return result;
@@ -480,7 +495,7 @@ export function createDaemonRelay(deps) {
     });
     if (result.queued) {
       setAgentStatus(agent, result.sent ? 'starting' : 'waiting_for_computer', 'daemon_relay_restart', { forceEvent: true });
-      await persistState();
+      await persistAllState();
       broadcastState();
     }
     return result;
@@ -508,7 +523,7 @@ export function createDaemonRelay(deps) {
       workItem.updatedAt = now();
     }
     setAgentStatus(agent, result.sent ? 'queued' : 'waiting_for_computer', 'daemon_relay_delivery', { forceEvent: true });
-    await persistState();
+    await persistAllState();
     broadcastState();
     return true;
   }
@@ -525,7 +540,7 @@ export function createDaemonRelay(deps) {
       send(connection, { type: 'token:revoked' });
       connection.socket.end();
     }
-    await persistState();
+    await persistAllState();
     broadcastState();
     return { revoked: matches.map(publicComputerToken) };
   }
@@ -542,7 +557,7 @@ export function createDaemonRelay(deps) {
         error: 'This computer is disabled in MagClaw Cloud.',
       });
       connection.socket.end();
-      await persistState();
+      await persistAllState();
       broadcastState();
       return;
     }
@@ -570,7 +585,7 @@ export function createDaemonRelay(deps) {
       time: now(),
     });
     await replayQueued(computer.id);
-    await persistState();
+    await persistAllState();
     broadcastState();
   }
 
@@ -585,7 +600,7 @@ export function createDaemonRelay(deps) {
     }
     const agent = delivery ? findAgent(delivery.agentId) : findAgent(message.agentId);
     if (agent && message.status) setAgentStatus(agent, String(message.status), 'daemon_relay_ack');
-    await persistState();
+    await persistAllState();
     broadcastState();
   }
 
@@ -593,10 +608,16 @@ export function createDaemonRelay(deps) {
     const agent = findAgent(message.agentId);
     if (!agent) return;
     setAgentStatus(agent, String(message.status || 'idle'), 'daemon_status', { forceEvent: true });
+    const nextStatus = String(message.status || '').toLowerCase();
+    if (message.deliveryId && ['idle', 'offline'].includes(nextStatus)) {
+      markDeliveryFinished(message.deliveryId, 'completed');
+    } else if (message.deliveryId && nextStatus === 'error') {
+      markDeliveryFinished(message.deliveryId, 'error', message.activity?.error || message.activity?.detail || 'Agent delivery failed.');
+    }
     if (message.sessionId !== undefined) agent.runtimeSessionId = message.sessionId || null;
     agent.runtimeActivity = message.activity || agent.runtimeActivity || null;
     agent.heartbeatAt = now();
-    await persistState();
+    await persistAllState();
     broadcastState();
   }
 
@@ -606,7 +627,7 @@ export function createDaemonRelay(deps) {
     if (message.status) setAgentStatus(agent, String(message.status), 'daemon_activity', { forceEvent: true });
     agent.runtimeActivity = message.activity || agent.runtimeActivity || null;
     agent.heartbeatAt = now();
-    await persistState();
+    await persistAllState();
     broadcastState();
   }
 
@@ -614,6 +635,7 @@ export function createDaemonRelay(deps) {
     const agent = findAgent(message.agentId);
     if (!agent) return;
     const payload = message.payload || message;
+    markDeliveryFinished(message.deliveryId || payload.deliveryId || null, 'completed');
     if (handlers.onAgentMessage) {
       await handlers.onAgentMessage({
         agent,
@@ -638,7 +660,7 @@ export function createDaemonRelay(deps) {
         createdAt: now(),
         updatedAt: now(),
       }));
-      await persistState();
+      await persistAllState();
       broadcastState();
     }
   }
@@ -661,7 +683,7 @@ export function createDaemonRelay(deps) {
       case 'pong':
         if (computer) {
           computer.lastSeenAt = now();
-          await persistState();
+          await persistAllState();
         }
         break;
       case 'agent:start:ack':
@@ -687,7 +709,7 @@ export function createDaemonRelay(deps) {
           commandId: message.commandId || null,
           resultType: message.type,
         });
-        await persistState();
+        await persistAllState();
         broadcastState();
         break;
       case 'agent:error':
@@ -695,6 +717,7 @@ export function createDaemonRelay(deps) {
           const agent = findAgent(message.agentId);
           if (agent) {
             setAgentStatus(agent, 'error', 'daemon_error', { forceEvent: true });
+            markDeliveryFinished(message.commandId || message.deliveryId || null, 'error', String(message.error || 'Agent error'));
             agent.runtimeActivity = {
               source: '@magclaw/daemon',
               error: String(message.error || 'Agent error'),
@@ -707,7 +730,7 @@ export function createDaemonRelay(deps) {
           agentId: message.agentId || null,
           computerId: connection.computerId,
         });
-        await persistState();
+        await persistAllState();
         broadcastState();
         break;
       default:
@@ -723,7 +746,12 @@ export function createDaemonRelay(deps) {
       const pair = validatePairToken(rawPair);
       if (!pair) return { error: 'Invalid or expired pair token.' };
       const computer = findComputer(pair.computerId);
-      if (!computer) return { error: 'Paired computer was not found.' };
+      if (!computer) {
+        pair.revokedAt = now();
+        await persistAllState();
+        broadcastState();
+        return { error: 'Paired computer was not found.' };
+      }
       if (computerIsDisabled(computer)) return { error: 'Computer is disabled.' };
       const issued = issueMachineToken(computer, pair);
       pair.consumedAt = now();
@@ -796,7 +824,7 @@ export function createDaemonRelay(deps) {
     recordDaemonEvent('computer_connected', `Computer connected: ${auth.computer.name}`, {
       computerId: auth.computer.id,
     });
-    await persistState();
+    await persistAllState();
     broadcastState();
 
     socket.on('data', (chunk) => {

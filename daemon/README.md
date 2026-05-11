@@ -5,7 +5,7 @@ Local daemon for connecting a user's computer to MagClaw Cloud.
 Typical pairing command:
 
 ```sh
-npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --pair-token mc_pair_xxx --profile my-server --background # my-server
+npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --pair-token mc_pair_xxx --profile my-server # my-server
 ```
 
 The daemon stores cloud profiles and machine tokens under:
@@ -21,8 +21,9 @@ connect to multiple Servers without pretending to be different hardware.
 It does not use the localhost MagClaw state files under `~/.magclaw/state.json`,
 `~/.magclaw/state.sqlite`, or `~/.magclaw/agents`.
 
-When `--background` is used, the installed launcher keeps the profile path
-stable and runs the latest npm package on service start.
+Foreground mode is the default pairing flow. When `--background` is used
+manually, the installed launcher keeps the profile path stable and runs the
+latest npm package on service start.
 
 ## Commands
 

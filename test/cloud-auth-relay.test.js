@@ -324,7 +324,7 @@ test('console invitations stay repeatable and resolve per logged-in user', async
     const second = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
       cookie: owner.cookie,
-      body: JSON.stringify({ email: 'console-user@example.com', role: 'core_member' }),
+      body: JSON.stringify({ email: 'console-user@example.com', role: 'admin' }),
     });
     assert.notEqual(first.data.invitation.id, second.data.invitation.id);
     await request(server.baseUrl, `/api/cloud/auth/invitation-status?token=${encodeURIComponent(first.data.inviteToken)}`);
@@ -361,7 +361,7 @@ test('console invitations stay repeatable and resolve per logged-in user', async
       body: '{}',
     });
     assert.equal(accepted.data.invitation.status, 'accepted');
-    assert.equal(accepted.data.member.role, 'core_member');
+    assert.equal(accepted.data.member.role, 'admin');
     assert.ok(accepted.data.cloud.auth.currentMember);
   } finally {
     await server.stop();
@@ -428,8 +428,8 @@ test('environment admin login protects app APIs and supports invites end to end'
     assert.ok(membersApiModule.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations/batch' && item.response.invitations[0].inviteUrl));
     assert.ok(membersApiModule.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/password-resets' && item.response.resetUrl));
     assert.ok(membersApiModule.endpoints.some((item) => item.method === 'PATCH' && item.path === '/api/cloud/members/:id'));
-    assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations' && item.role === 'member'));
-    assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations/batch' && item.role === 'member'));
+    assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations' && item.role === 'admin'));
+    assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/invitations/batch' && item.role === 'admin'));
     assert.ok(adminApis.data.endpoints.some((item) => item.method === 'POST' && item.path === '/api/cloud/password-resets' && item.role === 'admin'));
     assert.ok(adminApis.data.endpoints.some((item) => item.path === '/api/settings/fanout' && item.role === 'admin'));
 
@@ -483,12 +483,12 @@ test('environment admin login protects app APIs and supports invites end to end'
     assert.equal(member.data.member.role, 'member');
     const memberCookie = member.cookie;
 
-    const memberInviteResult = await request(server.baseUrl, '/api/cloud/invitations', {
+    await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
       cookie: memberCookie,
       body: JSON.stringify({ email: 'another@example.com', role: 'member' }),
+      expectStatus: 403,
     });
-    assert.equal(memberInviteResult.data.invitation.role, 'member');
     await request(server.baseUrl, '/api/settings', {
       method: 'POST',
       cookie: memberCookie,
@@ -573,7 +573,7 @@ test('environment admin login protects app APIs and supports invites end to end'
     });
     assert.match(pairing.data.pairToken, /^mc_pair_/);
     assert.match(pairing.data.command, /MAGCLAW_REPO_DIR="\/path\/to\/magclaw"; node "\$MAGCLAW_REPO_DIR\/daemon\/bin\/magclaw-daemon\.js" connect/);
-    assert.match(pairing.data.command, /--background/);
+    assert.doesNotMatch(pairing.data.command, /--background/);
     assert.match(pairing.data.command, /--profile "?local"?/);
     assert.match(pairing.data.command, /# MagClaw|# local/);
 
@@ -621,7 +621,7 @@ test('environment admin login protects app APIs and supports invites end to end'
   }
 });
 
-test('cloud roles enforce core member invite and removal boundaries', async () => {
+test('cloud roles enforce admin invite and removal boundaries', async () => {
   const server = await startIsolatedServer({
     MAGCLAW_ADMIN_NAME: 'Admin',
     MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
@@ -634,62 +634,48 @@ test('cloud roles enforce core member invite and removal boundaries', async () =
     });
     const adminCookie = admin.cookie;
 
-    await request(server.baseUrl, '/api/cloud/invitations', {
+    const delegatedAdminInvite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
       cookie: adminCookie,
-      body: JSON.stringify({ email: 'bad-admin@example.com', role: 'admin' }),
-      expectStatus: 403,
+      body: JSON.stringify({ email: 'delegated-admin@example.com', role: 'admin' }),
     });
-
-    const coreInvite = await request(server.baseUrl, '/api/cloud/invitations', {
-      method: 'POST',
-      cookie: adminCookie,
-      body: JSON.stringify({ email: 'core@example.com', role: 'core_member' }),
-    });
-    const core = await request(server.baseUrl, '/api/cloud/auth/register', {
+    const delegatedAdmin = await request(server.baseUrl, '/api/cloud/auth/register', {
       method: 'POST',
       body: JSON.stringify({
-        inviteToken: coreInvite.data.inviteToken,
-        email: 'core@example.com',
-        name: 'Core',
+        inviteToken: delegatedAdminInvite.data.inviteToken,
+        email: 'delegated-admin@example.com',
+        name: 'Delegated Admin',
         password: 'password123',
       }),
     });
-    assert.equal(core.data.member.role, 'core_member');
-    assert.match(core.data.user.id, /^usr_\d{8}$/);
-    const coreCookie = core.cookie;
+    assert.equal(delegatedAdmin.data.member.role, 'admin');
+    assert.match(delegatedAdmin.data.user.id, /^usr_\d{8}$/);
+    const delegatedAdminCookie = delegatedAdmin.cookie;
 
-      const invitedCore = await request(server.baseUrl, '/api/cloud/invitations', {
-        method: 'POST',
-        cookie: coreCookie,
-        body: JSON.stringify({ email: 'core-two@example.com', role: 'core_member' }),
-      });
-      assert.equal(invitedCore.data.invitation.role, 'core_member');
-      const coreTwo = await request(server.baseUrl, '/api/cloud/auth/register', {
-        method: 'POST',
-        body: JSON.stringify({
-          inviteToken: invitedCore.data.inviteToken,
-          email: 'core-two@example.com',
-          name: 'Core Two',
-          password: 'password123',
-        }),
-      });
+    const secondAdminInvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: delegatedAdminCookie,
+      body: JSON.stringify({ email: 'second-admin@example.com', role: 'admin' }),
+    });
+    assert.equal(secondAdminInvite.data.invitation.role, 'admin');
+    const secondAdmin = await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: secondAdminInvite.data.inviteToken,
+        email: 'second-admin@example.com',
+        name: 'Second Admin',
+        password: 'password123',
+      }),
+    });
     await request(server.baseUrl, `/api/cloud/members/${admin.data.member.id}`, {
       method: 'PATCH',
       cookie: adminCookie,
       body: JSON.stringify({ role: 'member' }),
       expectStatus: 403,
     });
-    await request(server.baseUrl, '/api/cloud/invitations', {
-      method: 'POST',
-      cookie: coreCookie,
-      body: JSON.stringify({ email: 'bad-admin@example.com', role: 'admin' }),
-      expectStatus: 403,
-    });
-
     const memberInvite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
-      cookie: coreCookie,
+      cookie: delegatedAdminCookie,
       body: JSON.stringify({ email: 'member@example.com', role: 'member' }),
     });
     const member = await request(server.baseUrl, '/api/cloud/auth/register', {
@@ -706,50 +692,44 @@ test('cloud roles enforce core member invite and removal boundaries', async () =
     const oldMemberHumanId = member.data.member.humanId;
     const memberCookie = member.cookie;
 
-    const corePromotesMember = await request(server.baseUrl, `/api/cloud/members/${member.data.member.id}`, {
+    const adminPromotesMember = await request(server.baseUrl, `/api/cloud/members/${member.data.member.id}`, {
       method: 'PATCH',
-      cookie: coreCookie,
-      body: JSON.stringify({ role: 'core_member' }),
+      cookie: delegatedAdminCookie,
+      body: JSON.stringify({ role: 'admin' }),
     });
-    assert.equal(corePromotesMember.data.member.role, 'core_member');
+    assert.equal(adminPromotesMember.data.member.role, 'admin');
     const adminDemotesMember = await request(server.baseUrl, `/api/cloud/members/${member.data.member.id}`, {
       method: 'PATCH',
       cookie: adminCookie,
       body: JSON.stringify({ role: 'member' }),
     });
     assert.equal(adminDemotesMember.data.member.role, 'member');
-    await request(server.baseUrl, `/api/cloud/members/${member.data.member.id}`, {
-      method: 'PATCH',
-      cookie: coreCookie,
-      body: JSON.stringify({ role: 'admin' }),
-      expectStatus: 403,
-    });
-    await request(server.baseUrl, `/api/cloud/members/${core.data.member.id}`, {
+    await request(server.baseUrl, `/api/cloud/members/${delegatedAdmin.data.member.id}`, {
       method: 'PATCH',
       cookie: memberCookie,
       body: JSON.stringify({ role: 'member' }),
       expectStatus: 403,
     });
 
-    const memberInvitesMember = await request(server.baseUrl, '/api/cloud/invitations', {
-      method: 'POST',
-      cookie: memberCookie,
-      body: JSON.stringify({ email: 'friend@example.com', role: 'member' }),
-    });
-    assert.equal(memberInvitesMember.data.invitation.role, 'member');
     await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
       cookie: memberCookie,
-      body: JSON.stringify({ email: 'bad-core@example.com', role: 'core_member' }),
+      body: JSON.stringify({ email: 'friend@example.com', role: 'member' }),
+      expectStatus: 403,
+    });
+    await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: memberCookie,
+      body: JSON.stringify({ email: 'bad-admin@example.com', role: 'admin' }),
       expectStatus: 403,
     });
 
     const computer = await request(server.baseUrl, '/api/computers', {
       method: 'POST',
-      cookie: coreCookie,
-      body: JSON.stringify({ name: 'Core runner' }),
+      cookie: delegatedAdminCookie,
+      body: JSON.stringify({ name: 'Admin runner' }),
     });
-    assert.equal(computer.data.computer.name, 'Core runner');
+    assert.equal(computer.data.computer.name, 'Admin runner');
     await request(server.baseUrl, '/api/computers', {
       method: 'POST',
       cookie: memberCookie,
@@ -758,14 +738,13 @@ test('cloud roles enforce core member invite and removal boundaries', async () =
     });
     await request(server.baseUrl, '/api/settings', {
       method: 'POST',
-      cookie: coreCookie,
-      body: JSON.stringify({ model: 'core-probe' }),
-      expectStatus: 403,
+      cookie: delegatedAdminCookie,
+      body: JSON.stringify({ model: 'admin-probe' }),
     });
 
     const removed = await request(server.baseUrl, `/api/cloud/members/${member.data.member.id}`, {
       method: 'DELETE',
-      cookie: coreCookie,
+      cookie: delegatedAdminCookie,
       body: JSON.stringify({}),
     });
     assert.equal(removed.data.member.status, 'removed');
@@ -775,16 +754,16 @@ test('cloud roles enforce core member invite and removal boundaries', async () =
       expectStatus: 401,
     });
 
-      await request(server.baseUrl, `/api/cloud/members/${coreTwo.data.member.id}`, {
-        method: 'DELETE',
-        cookie: coreCookie,
-        body: JSON.stringify({}),
-      expectStatus: 403,
+    const removedAdmin = await request(server.baseUrl, `/api/cloud/members/${secondAdmin.data.member.id}`, {
+      method: 'DELETE',
+      cookie: delegatedAdminCookie,
+      body: JSON.stringify({}),
     });
+    assert.equal(removedAdmin.data.member.status, 'removed');
 
     const reinvite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
-      cookie: coreCookie,
+      cookie: delegatedAdminCookie,
       body: JSON.stringify({ email: 'member@example.com', role: 'member' }),
     });
     const rejoined = await request(server.baseUrl, '/api/cloud/auth/register', {
@@ -848,7 +827,7 @@ test('cloud invite registration and admin password reset flows enforce tokens an
     await request(server.baseUrl, '/api/cloud/invitations/batch', {
       method: 'POST',
       cookie: adminCookie,
-      body: JSON.stringify({ emails: ['bad-admin@example.com'], role: 'admin' }),
+      body: JSON.stringify({ emails: ['bad-role@example.com'], role: 'superadmin' }),
       expectStatus: 403,
     });
 
@@ -877,7 +856,7 @@ test('cloud invite registration and admin password reset flows enforce tokens an
       method: 'POST',
       body: JSON.stringify({
         inviteToken: tamperInvite.data.inviteToken,
-        role: 'core_member',
+        role: 'admin',
         name: 'Changed Role',
         password: 'password123',
       }),
