@@ -607,6 +607,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
   let pool = options.pool || null;
   let initialized = false;
   let migration = null;
+  let persistQueue = Promise.resolve();
 
   function table(name) {
     return tableName(schema, name);
@@ -971,7 +972,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     }
   }
 
-  async function persistFromState(state) {
+  async function persistFromStateNow(state) {
     const cloud = state.cloud || {};
     await withClient(async (client) => {
       await client.query('BEGIN');
@@ -1396,6 +1397,155 @@ export function createCloudPostgresStore(optionsInput = {}) {
     });
   }
 
+  function persistFromState(state) {
+    const next = persistQueue.then(
+      () => persistFromStateNow(state),
+      () => persistFromStateNow(state),
+    );
+    persistQueue = next.catch(() => {});
+    return next;
+  }
+
+  async function persistAuthFromState(state) {
+    const cloud = state.cloud || {};
+    await withClient(async (client) => {
+      await client.query('BEGIN');
+      try {
+        for (const user of safeArray(cloud.users)) {
+          await client.query(`
+            INSERT INTO ${table('cloud_users')}
+              (id, email, normalized_email, name, password_hash, avatar_url,
+               language, email_verified_at, created_at, updated_at, last_login_at,
+               disabled_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+              email = EXCLUDED.email,
+              normalized_email = EXCLUDED.normalized_email,
+              name = EXCLUDED.name,
+              password_hash = EXCLUDED.password_hash,
+              avatar_url = EXCLUDED.avatar_url,
+              language = EXCLUDED.language,
+              email_verified_at = EXCLUDED.email_verified_at,
+              updated_at = EXCLUDED.updated_at,
+              last_login_at = EXCLUDED.last_login_at,
+              disabled_at = EXCLUDED.disabled_at,
+              metadata = EXCLUDED.metadata
+          `, [
+            user.id,
+            user.email,
+            normalizeEmail(user.email),
+            user.name || '',
+            user.passwordHash || null,
+            user.avatarUrl || '',
+            user.language || 'en',
+            iso(user.emailVerifiedAt),
+            requiredIso(user.createdAt),
+            requiredIso(user.updatedAt || user.createdAt),
+            iso(user.lastLoginAt),
+            iso(user.disabledAt),
+            JSON.stringify(jsonObject(user.metadata)),
+          ]);
+        }
+
+        for (const workspace of safeArray(cloud.workspaces)) {
+          await client.query(`
+            INSERT INTO ${table('cloud_workspaces')}
+              (id, slug, name, avatar, onboarding_agent_id, new_agent_greeting_enabled,
+               owner_user_id, deleted_at, created_at, updated_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+              slug = EXCLUDED.slug,
+              name = EXCLUDED.name,
+              avatar = EXCLUDED.avatar,
+              onboarding_agent_id = EXCLUDED.onboarding_agent_id,
+              new_agent_greeting_enabled = EXCLUDED.new_agent_greeting_enabled,
+              owner_user_id = EXCLUDED.owner_user_id,
+              deleted_at = EXCLUDED.deleted_at,
+              updated_at = EXCLUDED.updated_at,
+              metadata = EXCLUDED.metadata
+          `, [
+            workspace.id,
+            workspace.slug || workspace.id,
+            workspace.name || workspace.slug || workspace.id,
+            workspace.avatar || '',
+            workspace.onboardingAgentId || '',
+            workspace.newAgentGreetingEnabled !== false,
+            workspace.ownerUserId || workspace.owner_user_id || null,
+            iso(workspace.deletedAt),
+            requiredIso(workspace.createdAt),
+            requiredIso(workspace.updatedAt || workspace.createdAt),
+            JSON.stringify(jsonObject(workspace.metadata)),
+          ]);
+        }
+
+        for (const member of safeArray(cloud.workspaceMembers)) {
+          await client.query(`
+            INSERT INTO ${table('cloud_workspace_members')}
+              (id, workspace_id, user_id, human_id, role, status, joined_at,
+               created_at, updated_at, removed_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+              workspace_id = EXCLUDED.workspace_id,
+              user_id = EXCLUDED.user_id,
+              human_id = EXCLUDED.human_id,
+              role = EXCLUDED.role,
+              status = EXCLUDED.status,
+              joined_at = EXCLUDED.joined_at,
+              updated_at = EXCLUDED.updated_at,
+              removed_at = EXCLUDED.removed_at,
+              metadata = EXCLUDED.metadata
+          `, [
+            member.id,
+            member.workspaceId,
+            member.userId,
+            member.humanId || null,
+            member.role || 'member',
+            member.status || 'active',
+            iso(member.joinedAt),
+            requiredIso(member.createdAt),
+            requiredIso(member.updatedAt || member.createdAt),
+            iso(member.removedAt),
+            JSON.stringify(jsonObject(member.metadata)),
+          ]);
+        }
+
+        for (const session of safeArray(cloud.sessions)) {
+          await client.query(`
+            INSERT INTO ${table('cloud_sessions')}
+              (id, user_id, token_hash, created_at, expires_at, user_agent,
+               ip_hash, revoked_at, last_seen_at, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+              user_id = EXCLUDED.user_id,
+              token_hash = EXCLUDED.token_hash,
+              expires_at = EXCLUDED.expires_at,
+              user_agent = EXCLUDED.user_agent,
+              ip_hash = EXCLUDED.ip_hash,
+              revoked_at = EXCLUDED.revoked_at,
+              last_seen_at = EXCLUDED.last_seen_at,
+              metadata = EXCLUDED.metadata
+          `, [
+            session.id,
+            session.userId,
+            session.tokenHash,
+            requiredIso(session.createdAt),
+            requiredIso(session.expiresAt),
+            session.userAgent || '',
+            session.ipHash || '',
+            iso(session.revokedAt),
+            iso(session.lastSeenAt),
+            JSON.stringify(jsonObject(session.metadata)),
+          ]);
+        }
+
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      }
+    });
+  }
+
   async function loadIntoState(state) {
     const cloud = state.cloud || {};
     await withClient(async (client) => {
@@ -1489,6 +1639,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     initialize,
     isEnabled: () => true,
     loadIntoState,
+    persistAuthFromState,
     persistFromState,
     publicInfo: () => ({
       backend: 'postgres',

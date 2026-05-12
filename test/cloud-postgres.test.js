@@ -334,3 +334,64 @@ test('postgres store upserts duplicate residual state records without crashing',
   assert.equal(stateRecordInserts[1].params[2], 'route_duplicate');
   assert.equal(JSON.parse(stateRecordInserts[1].params[6]).choice, 'latest');
 });
+
+test('postgres store persists auth state without flushing runtime records', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  await store.persistAuthFromState({
+    routeEvents: [{ id: 'route_auth_should_skip', workspaceId: 'wsp_main', createdAt }],
+    cloud: {
+      workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
+      users: [{
+        id: 'usr_auth',
+        email: 'auth@example.test',
+        name: 'Auth User',
+        passwordHash: 'hash',
+        language: 'en',
+        createdAt,
+        updatedAt: createdAt,
+        lastLoginAt: createdAt,
+      }],
+      workspaceMembers: [{
+        id: 'wmem_auth',
+        workspaceId: 'wsp_main',
+        userId: 'usr_auth',
+        role: 'admin',
+        status: 'active',
+        joinedAt: createdAt,
+        createdAt,
+        updatedAt: createdAt,
+      }],
+      sessions: [{
+        id: 'sess_auth',
+        userId: 'usr_auth',
+        tokenHash: 'session_hash',
+        createdAt,
+        expiresAt: '2026-05-26T00:00:00.000Z',
+      }],
+    },
+  });
+  const sqlText = queries.map((query) => query.sql).join('\n');
+  for (const table of ['cloud_users', 'cloud_workspaces', 'cloud_workspace_members', 'cloud_sessions']) {
+    assert.match(sqlText, new RegExp(`INSERT INTO "magclaw"\\."${table}"`));
+  }
+  assert.doesNotMatch(sqlText, /cloud_state_records/);
+  assert.doesNotMatch(sqlText, /cloud_route_events/);
+});

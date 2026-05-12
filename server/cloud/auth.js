@@ -256,6 +256,27 @@ export function createCloudAuth(deps) {
     }
   }
 
+  async function persistAuthState() {
+    if (cloudRepository?.isEnabled?.() && typeof cloudRepository.persistAuthFromState === 'function') {
+      await cloudRepository.persistAuthFromState(getState());
+      await persistState({ skipExternal: true });
+      return;
+    }
+    await persistCloudState();
+  }
+
+  function persistCloudStateSoon(reason = 'cloud-auth') {
+    persistCloudState().catch((error) => {
+      console.error(`[cloud-auth] background persist failed reason=${reason}`, error);
+    });
+  }
+
+  function persistAuthStateSoon(reason = 'cloud-auth') {
+    persistAuthState().catch((error) => {
+      console.error(`[cloud-auth] background auth persist failed reason=${reason}`, error);
+    });
+  }
+
   function primaryWorkspace() {
     const cloud = ensureCloudState();
     const preferred = String(state.connection?.workspaceId || 'local');
@@ -569,7 +590,7 @@ export function createCloudAuth(deps) {
         markHumanPresence(human, 'online');
       }
     const issued = issueSession(user, req);
-      await persistCloudState();
+      persistAuthStateSoon('login');
       res.setHeader('Set-Cookie', issued.cookie);
       return { user: publicUser(user), member, workspace: primaryWorkspace() };
     }
@@ -609,7 +630,7 @@ export function createCloudAuth(deps) {
       cloud.users.push(user);
       console.info(`[cloud-auth] open account registered email=${email} user=${user.id}`);
       const issued = issueSession(user, req);
-      await persistCloudState();
+      persistAuthStateSoon('register-open-account');
       res.setHeader('Set-Cookie', issued.cookie);
       return { user: publicUser(user), member: null, workspace: null };
     }
@@ -620,7 +641,7 @@ export function createCloudAuth(deps) {
     if (session) session.revokedAt = now();
     if (auth) markHumanPresence(humanForMember(auth.member, auth.user), 'offline');
     res.setHeader('Set-Cookie', clearSessionCookie());
-    await persistCloudState();
+    persistAuthStateSoon('logout');
     return { ok: true };
   }
 
