@@ -97,22 +97,20 @@ npm run dev
 
 `MAGCLAW_AUTO_SYNC=1` enables automatic push after local state changes. Manual `Pair / Probe`, `Push Local`, and `Pull Cloud` remain available in the Cloud panel.
 
-Cloud sync v1 is intentionally a snapshot protocol. It syncs collaboration state and metadata; attachment binary files, Codex process control, shell access, secrets and local filesystem reads stay on the local runner. When `MAGCLAW_DEPLOYMENT=cloud` or `MAGCLAW_REQUIRE_LOGIN=1` is set, the web app and core APIs require a configured admin login before state, channels, tasks, settings, or events can be read.
+Cloud sync v1 is intentionally a snapshot protocol. It syncs collaboration state and metadata; attachment binary files, Codex process control, shell access, secrets and local filesystem reads stay on the local runner. When `MAGCLAW_DEPLOYMENT=cloud` or `MAGCLAW_REQUIRE_LOGIN=1` is set, the web app and core APIs require users to sign in before state, channels, tasks, settings, or events can be read.
 
-Set the first admin from server-side environment variables:
-
-```bash
-MAGCLAW_ADMIN_EMAIL=admin@example.com \
-MAGCLAW_ADMIN_PASSWORD=replace-with-a-long-password \
-npm run dev
-```
+Cloud accounts are created through public registration. After signing up, a user
+creates a server in the console; that user becomes the server owner and receives
+the admin role for that server. Owners and admins can then invite other users as
+members or admins from the member settings.
 
 For a single-machine local instance, copy `config/server.example.yaml` to
 `~/.magclaw-server/server.yaml`. Set `MAGCLAW_DATA_DIR=/path/to/data` only when
 you intentionally want a different data root. Legacy `server.env` files are not
 loaded unless `MAGCLAW_ALLOW_LEGACY_SERVER_ENV=1` is set.
 In containers, mount the same YAML shape at `/etc/magclaw/server.yaml`; the
-Docker images set `MAGCLAW_CONFIG_FILE` to that path by default.
+server checks that path by default, so no config-path environment variable is
+required.
 
 To persist cloud runtime data in PostgreSQL, set a database URL before startup:
 
@@ -133,11 +131,11 @@ tasks, agents, computers, machine tokens, password resets, release notes, and
 attachment metadata in PostgreSQL. When no database URL is configured, the same
 Web Service falls back to local SQLite and initializes tables on first startup.
 
-Browser users sign in through `/api/cloud/auth/login`, which issues an HttpOnly session cookie. Automation and local `curl` calls can use HTTP Basic Auth for the same admin-protected APIs:
+Browser users sign in through `/api/cloud/auth/login`, which issues an HttpOnly session cookie. Automation and local `curl` calls can use HTTP Basic Auth for the same role-protected APIs with any account that is an admin member of the target server:
 
 ```bash
-curl -u admin@example.com:replace-with-a-long-password http://127.0.0.1:6543/api/cloud/admin/apis
-curl -u admin@example.com:replace-with-a-long-password -X POST http://127.0.0.1:6543/api/cloud/invitations \
+curl -u owner@example.com:replace-with-a-long-password http://127.0.0.1:6543/api/cloud/admin/apis
+curl -u owner@example.com:replace-with-a-long-password -X POST http://127.0.0.1:6543/api/cloud/invitations \
   -H 'content-type: application/json' \
   -d '{"email":"member@example.com","role":"member"}'
 ```

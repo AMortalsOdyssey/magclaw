@@ -52,6 +52,7 @@ export function createStateCore(deps) {
     SQLITE_BACKED_STATE_KEYS,
     STATE_DB_FILE,
     STATE_FILE,
+    USE_SQLITE_STATE = true,
     WRITE_STATE_JSON = false,
   } = deps;
 
@@ -59,6 +60,7 @@ export function createStateCore(deps) {
   let saveChain = Promise.resolve();
   let stateDb = null;
   let externalStatePersister = null;
+  const LOCAL_STATE_PERSISTENCE_ENABLED = USE_SQLITE_STATE || WRITE_STATE_JSON;
   const stateProxy = new Proxy({}, {
     get(_target, prop) { return state?.[prop]; },
     set(_target, prop, value) {
@@ -252,6 +254,13 @@ export function createStateCore(deps) {
     await mkdir(RUNS_DIR, { recursive: true });
     await mkdir(AGENTS_DIR, { recursive: true });
     await initializeStateDatabase();
+
+    if (!LOCAL_STATE_PERSISTENCE_ENABLED) {
+      state = defaultState();
+      migrateState();
+      await ensureAllAgentWorkspaces();
+      return;
+    }
   
     const sqliteSnapshot = readSqliteStateSnapshot();
     if (sqliteSnapshot) {
@@ -290,6 +299,10 @@ export function createStateCore(deps) {
   }
   
   async function initializeStateDatabase() {
+    if (!USE_SQLITE_STATE) {
+      stateDb = null;
+      return;
+    }
     try {
       const { DatabaseSync } = await import('node:sqlite');
       const db = new DatabaseSync(STATE_DB_FILE);
@@ -716,7 +729,7 @@ export function createStateCore(deps) {
     saveChain = saveChain.then(async () => {
       syncSqliteBackedState();
       writeSqliteStateSnapshot();
-      if (WRITE_STATE_JSON || !sqliteBackedStateEnabled()) {
+      if (WRITE_STATE_JSON || (!sqliteBackedStateEnabled() && LOCAL_STATE_PERSISTENCE_ENABLED)) {
         const payload = JSON.stringify(stateJsonSnapshot(), null, 2);
         const tmp = `${STATE_FILE}.tmp`;
         await writeFile(tmp, payload);
@@ -738,6 +751,7 @@ export function createStateCore(deps) {
         sqliteFile: path.basename(STATE_DB_FILE),
         sqliteBackedKeys: SQLITE_BACKED_STATE_KEYS,
         jsonSnapshotEnabled: WRITE_STATE_JSON,
+        localPersistence: sqliteBackedStateEnabled() ? 'sqlite' : (WRITE_STATE_JSON ? 'json' : 'memory'),
       },
     };
     if (thinSqliteArrays && sqliteBackedStateEnabled()) {

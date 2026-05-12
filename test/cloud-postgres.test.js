@@ -491,7 +491,7 @@ test('postgres store persists login auth operation with narrow monotonic writes'
   assert.doesNotMatch(queries.map((query) => query.sql).join('\n'), /cloud_state_records/);
 });
 
-test('postgres store persists configured admin password update as a narrow auth operation', async () => {
+test('postgres store persists password updates as narrow auth operations', async () => {
   const queries = [];
   const pool = {
     async connect() {
@@ -528,46 +528,6 @@ test('postgres store persists configured admin password update as a narrow auth 
   assert.doesNotMatch(queries.map((query) => query.sql).join('\n'), /cloud_sessions/);
 });
 
-test('postgres store can explicitly restore a configured admin user', async () => {
-  const queries = [];
-  const pool = {
-    async connect() {
-      return {
-        async query(sql, params = []) {
-          queries.push({ sql, params });
-          return { rows: [] };
-        },
-        release() {},
-      };
-    },
-  };
-  const store = createStore({
-    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
-    database: 'magclaw_cloud',
-    schema: 'magclaw',
-    pool,
-  });
-
-  await store.persistAuthOperation({
-    type: 'configured-admin-sync',
-    user: {
-      id: 'usr_admin',
-      email: 'admin@example.test',
-      name: 'Admin',
-      passwordHash: 'admin_hash',
-      language: 'en',
-      emailVerifiedAt: '2026-05-12T01:00:00.000Z',
-      createdAt: '2026-05-12T00:00:00.000Z',
-      updatedAt: '2026-05-12T01:00:00.000Z',
-      disabledAt: null,
-    },
-  });
-
-  const userUpsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_users"'));
-  assert.match(userUpsert?.sql || '', /disabled_at = EXCLUDED\.disabled_at/);
-  assert.equal(userUpsert?.params[0], 'usr_admin');
-  assert.equal(userUpsert?.params[11], null);
-});
 
 test('postgres store persists password reset completion without reviving consumed tokens', async () => {
   const queries = [];

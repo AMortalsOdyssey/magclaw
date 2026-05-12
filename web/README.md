@@ -10,11 +10,13 @@ here so production configuration is separated from the local daemon package.
   set in `server.yaml`; local single-node runs fall back to SQLite only when
   PostgreSQL is not required.
 - The preferred config source is `server.yaml` mounted at `/etc/magclaw/server.yaml`
-  or stored locally at `~/.magclaw-server/server.yaml`. The Docker image sets
-  `MAGCLAW_CONFIG_FILE=/etc/magclaw/server.yaml`.
+  or stored locally at `~/.magclaw-server/server.yaml`. The server checks those
+  paths by default, so container deployments do not need a config-path
+  environment variable.
 - Runtime YAML, including the current PostgreSQL URL, belongs in the ConfigMap.
-- Session and SMTP credentials can stay in a Secret until they are moved into
-  the same YAML contract.
+- Cloud users register accounts directly, create servers from the console, and
+  become the owner/admin of the servers they create. There is no configured
+  admin bootstrap path.
 - Attachments probe the PVC default `/var/lib/magclaw/uploads` first; if it is
   not mounted or writable and local fallback is enabled, the Web Service logs a
   warning and uses local attachment storage while PostgreSQL stores only

@@ -724,46 +724,6 @@ export function createCloudPostgresStore(optionsInput = {}) {
     ]);
   }
 
-  async function syncConfiguredAdminUser(client, user) {
-    if (!user?.id) return;
-    await client.query(`
-      INSERT INTO ${table('cloud_users')}
-        (id, email, normalized_email, name, password_hash, avatar_url,
-         language, email_verified_at, created_at, updated_at, last_login_at,
-         disabled_at, metadata)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
-      ON CONFLICT (id) DO UPDATE SET
-        email = EXCLUDED.email,
-        normalized_email = EXCLUDED.normalized_email,
-        name = EXCLUDED.name,
-        password_hash = COALESCE(EXCLUDED.password_hash, ${table('cloud_users')}.password_hash),
-        avatar_url = EXCLUDED.avatar_url,
-        language = EXCLUDED.language,
-        email_verified_at = COALESCE(EXCLUDED.email_verified_at, ${table('cloud_users')}.email_verified_at),
-        updated_at = GREATEST(COALESCE(${table('cloud_users')}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
-        last_login_at = CASE
-          WHEN EXCLUDED.last_login_at IS NULL THEN ${table('cloud_users')}.last_login_at
-          ELSE GREATEST(COALESCE(${table('cloud_users')}.last_login_at, EXCLUDED.last_login_at), EXCLUDED.last_login_at)
-        END,
-        disabled_at = EXCLUDED.disabled_at,
-        metadata = ${table('cloud_users')}.metadata || EXCLUDED.metadata
-    `, [
-      user.id,
-      user.email,
-      normalizeEmail(user.email),
-      user.name || '',
-      user.passwordHash || null,
-      user.avatarUrl || '',
-      user.language || 'en',
-      iso(user.emailVerifiedAt),
-      requiredIso(user.createdAt),
-      requiredIso(user.updatedAt || user.createdAt),
-      iso(user.lastLoginAt),
-      iso(user.disabledAt),
-      JSON.stringify(jsonObject(user.metadata)),
-    ]);
-  }
-
   async function upsertSession(client, session) {
     if (!session?.id) return;
     await client.query(`
@@ -1623,9 +1583,6 @@ export function createCloudPostgresStore(optionsInput = {}) {
           case 'register-open-account':
             await upsertUserSnapshot(client, operation.user);
             await upsertSession(client, operation.session);
-            break;
-          case 'configured-admin-sync':
-            await syncConfiguredAdminUser(client, operation.user);
             break;
           case 'login':
             await updateLoginUser(client, operation.user);

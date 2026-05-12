@@ -49,9 +49,6 @@ async function launchIsolatedServer(tmp, schema) {
       MAGCLAW_DATABASE_URL: TEST_DATABASE_URL,
       MAGCLAW_DATABASE: TEST_DATABASE,
       MAGCLAW_DATABASE_SCHEMA: schema,
-      MAGCLAW_ADMIN_NAME: 'Admin',
-      MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
-      MAGCLAW_ADMIN_PASSWORD: 'password123',
       MAGCLAW_MAIL_TRANSPORT: 'file',
       MAGCLAW_MAIL_OUTBOX: path.join(tmp, '.magclaw', 'outbox.jsonl'),
       MAGCLAW_MAIL_FROM: 'MagClaw <noreply@example.com>',
@@ -121,22 +118,33 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
     server = await launchIsolatedServer(tmp, schema);
     const initial = await request(server.baseUrl, '/api/cloud/auth/status');
     assert.equal(initial.data.auth.storageBackend, 'postgres');
-    assert.equal(initial.data.auth.initialized, true);
+    assert.equal(initial.data.auth.initialized, false);
 
-    const admin = await request(server.baseUrl, '/api/auth/login', {
+    const adminAccount = await request(server.baseUrl, '/api/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ email: 'admin@example.com', password: 'password123' }),
+      body: JSON.stringify({
+        name: 'Admin',
+        email: 'admin@example.com',
+        password: 'password123',
+      }),
     });
-    assert.match(admin.cookie, /magclaw_session=/);
+    assert.match(adminAccount.cookie, /magclaw_session=/);
+    const adminServer = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: adminAccount.cookie,
+      body: JSON.stringify({ name: 'Admin Team', slug: 'admin-team' }),
+    });
+    assert.equal(adminServer.data.member.role, 'admin');
+    const adminCookie = adminAccount.cookie;
 
     const firstInvite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
-      cookie: admin.cookie,
+      cookie: adminCookie,
       body: JSON.stringify({ email: 'console-pg@example.com', role: 'member' }),
     });
     const secondInvite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
-      cookie: admin.cookie,
+      cookie: adminCookie,
       body: JSON.stringify({ email: 'console-pg@example.com', role: 'admin' }),
     });
     assert.notEqual(firstInvite.data.invitation.id, secondInvite.data.invitation.id);
@@ -228,11 +236,11 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
     assert.equal(accepted.data.invitation.status, 'accepted');
     assert.equal(accepted.data.member.role, 'admin');
     assert.ok(accepted.data.cloud.auth.currentMember);
-    assert.deepEqual(accepted.data.console.workspaces.map((item) => item.slug).sort(), ['local', 'pg-team']);
+    assert.deepEqual(accepted.data.console.workspaces.map((item) => item.slug).sort(), ['admin-team', 'pg-team']);
     assert.equal(accepted.data.cloud.joinLinks.length, 1);
 
     const servers = await request(server.baseUrl, '/api/console/servers', { cookie: openAccount.cookie });
-    assert.deepEqual(servers.data.servers.map((item) => item.slug).sort(), ['local', 'pg-team']);
+    assert.deepEqual(servers.data.servers.map((item) => item.slug).sort(), ['admin-team', 'pg-team']);
 
     const forgot = await request(server.baseUrl, '/api/auth/forgot-password', {
       method: 'POST',
@@ -314,7 +322,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
     assert.equal(restartedMember.data.member.role, 'admin');
     const restartedState = await request(server.baseUrl, '/api/state', { cookie: restartedMember.cookie });
     assert.equal(restartedState.data.cloud.auth.currentMember.role, 'admin');
-    assert.deepEqual(restartedState.data.cloud.workspaces.map((item) => item.slug).sort(), ['local', 'pg-team']);
+    assert.deepEqual(restartedState.data.cloud.workspaces.map((item) => item.slug).sort(), ['admin-team', 'pg-team']);
   } finally {
     if (server) await server.stop();
     await dropSchema(schema);

@@ -21,26 +21,17 @@ data:
       create: false
     storage:
       attachment_storage: "pvc"
-      upload_dir: ""
+      upload_dir: "/var/lib/magclaw/uploads"
       local_file_storage_fallback: true
       write_state_json: false
     email:
       smtp_host: "smtp.example.com"
       smtp_port: 465
       smtp_tls: false
+      smtp_username: "change-me"
+      smtp_password: "change-me"
       from_address: "noreply@example.com"
       from_name: "MagClaw"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: magclaw-web-secret
-type: Opaque
-stringData:
-  MAGCLAW_SESSION_SECRET: "change-me"
-  MAGCLAW_MAIL_FROM: "MagClaw <noreply@example.com>"
-  MAGCLAW_SMTP_USER: "change-me"
-  MAGCLAW_SMTP_PASSWORD: "change-me"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -76,12 +67,6 @@ spec:
           ports:
             - name: http
               containerPort: 6543
-          envFrom:
-            - secretRef:
-                name: magclaw-web-secret
-          env:
-            - name: MAGCLAW_CONFIG_FILE
-              value: /etc/magclaw/server.yaml
           volumeMounts:
             - name: config
               mountPath: /etc/magclaw

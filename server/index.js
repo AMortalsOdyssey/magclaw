@@ -274,6 +274,23 @@ const agentProcesses = new Map(); // agentId -> { child, sessionId, status, inbo
 const sseClients = new Set();
 const agentCardCache = new Map();
 
+function envFlagEnabled(name) {
+  return /^(1|true|yes)$/i.test(String(process.env[name] || ''));
+}
+
+function postgresStrictlyRequired() {
+  return envFlagEnabled('MAGCLAW_REQUIRE_POSTGRES') || envFlagEnabled('MAGCLAW_DATABASE_REQUIRED');
+}
+
+function localSqliteStateEnabled() {
+  return !(process.env.MAGCLAW_DATABASE_URL && postgresStrictlyRequired());
+}
+
+const USE_SQLITE_STATE = localSqliteStateEnabled();
+if (!USE_SQLITE_STATE) {
+  console.info('[state] PostgreSQL is required and configured; local SQLite state store is disabled.');
+}
+
 function now() {
   return new Date().toISOString();
 }
@@ -309,6 +326,7 @@ const stateCore = createStateCore({
   SQLITE_BACKED_STATE_KEYS,
   STATE_DB_FILE,
   STATE_FILE,
+  USE_SQLITE_STATE,
   WRITE_STATE_JSON,
 });
 const state = stateCore.state;
@@ -334,14 +352,6 @@ const {
   setAgentStatus,
   stateJsonSnapshot,
 } = stateCore;
-
-function envFlagEnabled(name) {
-  return /^(1|true|yes)$/i.test(String(process.env[name] || ''));
-}
-
-function postgresStrictlyRequired() {
-  return envFlagEnabled('MAGCLAW_REQUIRE_POSTGRES') || envFlagEnabled('MAGCLAW_DATABASE_REQUIRED');
-}
 
 function localStateFallbackInfo(reason = '') {
   return {
@@ -1355,7 +1365,6 @@ setExternalStatePersister(async (stateSnapshot) => {
     await cloudRepository.persistFromState?.(stateSnapshot);
   }
 });
-await cloudAuth.ensureConfiguredAdmin();
 
 const server = http.createServer(handleRequest);
 server.on('upgrade', (req, socket) => {

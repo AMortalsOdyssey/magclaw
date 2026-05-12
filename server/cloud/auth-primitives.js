@@ -96,17 +96,6 @@ export function validatePassword(password) {
   return value;
 }
 
-export function configuredAdminCredentials() {
-  const email = normalizeEmail(process.env.MAGCLAW_ADMIN_EMAIL || '');
-  const password = String(process.env.MAGCLAW_ADMIN_PASSWORD || '');
-  if (!email || !password) return null;
-  return {
-    email,
-    password,
-    name: String(process.env.MAGCLAW_ADMIN_NAME || email.split('@')[0]).trim(),
-  };
-}
-
 export function publicUser(user) {
   if (!user) return null;
   const { passwordHash, ...safe } = user;

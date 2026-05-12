@@ -3,7 +3,6 @@ import { parseCookies, publicLinkOrigin, safeArray } from './auth-utils.js';
 import {
   basicAuthCredentials,
   clearSessionCookie,
-  configuredAdminCredentials,
   HUMAN_PRESENCE_PERSIST_INTERVAL_MS,
   HUMAN_PRESENCE_TIMEOUT_MS,
   INVITATION_TTL_MS,
@@ -11,8 +10,6 @@ import {
   normalizeEmail,
   normalizeWorkspaceSlug,
   numericToken,
-  PASSWORD_MAX_LENGTH,
-  PASSWORD_MIN_LENGTH,
   PASSWORD_RESET_TTL_MS,
   publicInvitation,
   publicJoinLink,
@@ -284,13 +281,6 @@ export function createCloudAuth(deps) {
     };
   }
 
-  function configuredAdminUserRecord(user) {
-    return {
-      ...authUserRecord(user),
-      disabledAt: user.disabledAt || null,
-    };
-  }
-
   function removeArrayItem(items, item) {
     const index = items.indexOf(item);
     if (index >= 0) items.splice(index, 1);
@@ -441,7 +431,6 @@ export function createCloudAuth(deps) {
     const cloud = ensureCloudState();
     return process.env.MAGCLAW_REQUIRE_LOGIN === '1'
       || process.env.MAGCLAW_DEPLOYMENT === 'cloud'
-      || Boolean(configuredAdminCredentials())
       || cloud.users.length > 0;
   }
 
@@ -546,106 +535,6 @@ export function createCloudAuth(deps) {
     allChannel.humanIds = normalizeIds([...(allChannel.humanIds || []), human.id]);
     allChannel.memberIds = normalizeIds([...(allChannel.memberIds || []), human.id]);
     allChannel.updatedAt = now();
-  }
-
-  async function ensureConfiguredAdmin() {
-    const credentials = configuredAdminCredentials();
-    if (!credentials) return { configured: false };
-    try {
-      validatePassword(credentials.password);
-    } catch {
-      const error = new Error(`MAGCLAW_ADMIN_PASSWORD must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters and include letters and numbers.`);
-      error.status = 500;
-      throw error;
-    }
-
-    const cloud = ensureCloudState();
-    const workspace = primaryWorkspace();
-    let changed = false;
-    let adminUserNeedsSync = false;
-    const adminMember = cloud.workspaceMembers.find((member) => member.workspaceId === workspace.id && member.role === 'admin');
-    let user = cloud.users.find((item) => item.email === credentials.email)
-      || cloud.users.find((item) => item.id === adminMember?.userId);
-
-      if (!user) {
-        user = {
-          id: makeUserId(),
-        email: credentials.email,
-        name: credentials.name || credentials.email.split('@')[0],
-        passwordHash: scryptPassword(credentials.password),
-        language: 'en',
-        emailVerifiedAt: now(),
-        createdAt: now(),
-        updatedAt: now(),
-        lastLoginAt: null,
-      };
-      cloud.users.push(user);
-      changed = true;
-    }
-
-    if (user.email !== credentials.email) {
-      user.email = credentials.email;
-      changed = true;
-    }
-    if (credentials.name && user.name !== credentials.name) {
-      user.name = credentials.name;
-      changed = true;
-    }
-      if (!user.emailVerifiedAt) {
-        user.emailVerifiedAt = now();
-        changed = true;
-      }
-      if (user.disabledAt) {
-        delete user.disabledAt;
-        adminUserNeedsSync = true;
-        changed = true;
-      }
-    if (!verifyPassword(credentials.password, user.passwordHash)) {
-      user.passwordHash = scryptPassword(credentials.password);
-      adminUserNeedsSync = true;
-      changed = true;
-    }
-    if (changed) user.updatedAt = now();
-
-    const human = ensureHumanForUser(user, 'admin');
-    addHumanToAllChannel(human);
-    let member = memberForUser(user.id, workspace.id);
-    if (!member) {
-      member = {
-        id: makeId('wmem'),
-        workspaceId: workspace.id,
-        userId: user.id,
-        humanId: human.id,
-        role: 'admin',
-        status: 'active',
-        joinedAt: now(),
-        createdAt: now(),
-      };
-      cloud.workspaceMembers.push(member);
-      changed = true;
-    } else {
-      for (const [key, value] of Object.entries({ humanId: human.id, role: 'admin', status: 'active' })) {
-        if (member[key] !== value) {
-          member[key] = value;
-          changed = true;
-        }
-      }
-      if (!member.joinedAt) {
-        member.joinedAt = now();
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      await persistCloudState();
-      if (adminUserNeedsSync && cloudRepository?.isEnabled?.()) {
-        await persistAuthOperation({
-          type: 'configured-admin-sync',
-          user: configuredAdminUserRecord(user),
-        });
-      }
-    }
-    return { configured: true, user: publicUser(user), member, workspace };
   }
 
     async function login(body, req, res) {
@@ -1013,7 +902,8 @@ export function createCloudAuth(deps) {
       state.connection.workspaceId = workspace.id;
       applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] console server created workspace=${workspace.id} slug=${workspace.slug} owner=${user.id}`);
-      await persistCloudState();
+      persistAuthStateSoon('console-server-create');
+      persistCloudStateSoon('console-server-create');
       return { server: workspace, member: memberForUser(user.id, workspace.id) };
     }
 
@@ -1043,7 +933,7 @@ export function createCloudAuth(deps) {
       state.connection.workspaceId = workspace.id;
       applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] console server switched workspace=${workspace.id} slug=${workspace.slug || workspace.id} user=${user.id}`);
-      await persistCloudState();
+      persistCloudStateSoon('console-server-switch');
       return { server: workspace, member };
     }
 
@@ -2016,7 +1906,6 @@ export function createCloudAuth(deps) {
         schemaVersion: cloud.schemaVersion,
         auth: {
         initialized: cloud.users.length > 0,
-        adminConfigured: Boolean(configuredAdminCredentials()),
         loginRequired: isLoginRequired(),
         passwordLogin: true,
           storageBackend: storageBackend(),
@@ -2060,7 +1949,6 @@ export function createCloudAuth(deps) {
       close: () => cloudRepository?.close?.(),
       currentActor,
       currentUser,
-    ensureConfiguredAdmin,
       ensureCloudState,
     primaryWorkspace,
     initializeStorage,

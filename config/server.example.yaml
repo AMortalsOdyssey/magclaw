@@ -12,7 +12,6 @@ server:
 
 auth:
   require_login: true
-  session_secret: "replace-with-secret"
 
 database:
   postgres_url: "postgres://magclaw:change-me@postgres:5432/magclaw"

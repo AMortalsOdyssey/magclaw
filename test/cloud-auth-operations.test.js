@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createCloudAuth } from '../server/cloud/auth.js';
-import { scryptPassword, verifyPassword } from '../server/cloud/auth-primitives.js';
+import { SESSION_COOKIE, sha256, scryptPassword } from '../server/cloud/auth-primitives.js';
 
 function makeAuth(repository, initialState = {}) {
   let id = 0;
@@ -153,76 +153,160 @@ test('login persists a narrow auth operation before issuing a session cookie', a
   assert.match(res.headers[0][1], /magclaw_session=/);
 });
 
-test('configured admin password refresh persists an explicit admin sync operation', async (t) => {
-  const previousEnv = {
-    MAGCLAW_ADMIN_EMAIL: process.env.MAGCLAW_ADMIN_EMAIL,
-    MAGCLAW_ADMIN_PASSWORD: process.env.MAGCLAW_ADMIN_PASSWORD,
-    MAGCLAW_ADMIN_NAME: process.env.MAGCLAW_ADMIN_NAME,
-  };
-  t.after(() => {
-    for (const [key, value] of Object.entries(previousEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+test('console server switch returns before full cloud persistence completes', async () => {
+  let persistStarted = false;
+  let persistCompleted = false;
+  let releasePersist;
+  const persistStartedPromise = new Promise((resolve) => {
+    releasePersist = () => {
+      persistCompleted = true;
+      resolve();
+    };
   });
-  process.env.MAGCLAW_ADMIN_EMAIL = 'admin@example.test';
-  process.env.MAGCLAW_ADMIN_PASSWORD = 'newpass123';
-  process.env.MAGCLAW_ADMIN_NAME = 'Admin';
-
-  const calls = [];
   const repository = {
     isEnabled: () => true,
     async persistFromState() {
-      calls.push({ type: 'state' });
-    },
-    async persistAuthOperation(operation) {
-      calls.push({ type: 'auth', operation });
+      persistStarted = true;
+      await persistStartedPromise;
     },
   };
   const createdAt = '2026-05-12T00:00:00.000Z';
+  const token = 'switch-session-token';
   const { auth, state } = makeAuth(repository, {
+    connection: { workspaceId: 'wsp_local' },
     cloud: {
       users: [{
-        id: 'usr_admin',
-        email: 'admin@example.test',
-        name: 'Admin',
-        passwordHash: scryptPassword('oldpass123'),
+        id: 'usr_switch',
+        email: 'switch@example.test',
+        name: 'Switch User',
+        passwordHash: scryptPassword('password123'),
         language: 'en',
-        emailVerifiedAt: createdAt,
-        disabledAt: createdAt,
         createdAt,
         updatedAt: createdAt,
       }],
-      workspaceMembers: [{
-        id: 'wmem_admin',
-        workspaceId: 'local',
-        userId: 'usr_admin',
-        humanId: 'hum_admin',
-        role: 'admin',
-        status: 'active',
-        joinedAt: createdAt,
+      sessions: [{
+        id: 'ses_switch',
+        userId: 'usr_switch',
+        tokenHash: sha256(token),
         createdAt,
-        updatedAt: createdAt,
+        expiresAt: '2026-05-26T00:00:00.000Z',
       }],
+      workspaces: [
+        { id: 'wsp_local', slug: 'local', name: 'Local', createdAt, updatedAt: createdAt },
+        { id: 'wsp_second', slug: 'second-team', name: 'Second Team', createdAt, updatedAt: createdAt },
+      ],
+      workspaceMembers: [
+        { id: 'wmem_local', workspaceId: 'wsp_local', userId: 'usr_switch', humanId: 'hum_switch', role: 'admin', status: 'active', joinedAt: createdAt, createdAt },
+        { id: 'wmem_second', workspaceId: 'wsp_second', userId: 'usr_switch', humanId: 'hum_switch', role: 'admin', status: 'active', joinedAt: createdAt, createdAt },
+      ],
     },
     humans: [{
-      id: 'hum_admin',
-      userId: 'usr_admin',
-      workspaceId: 'local',
-      name: 'Admin',
+      id: 'hum_switch',
+      userId: 'usr_switch',
+      workspaceId: 'wsp_local',
+      name: 'Switch User',
+      email: 'switch@example.test',
       role: 'admin',
+      status: 'online',
       createdAt,
       updatedAt: createdAt,
     }],
   });
+  auth.ensureCloudState();
 
-  await auth.ensureConfiguredAdmin();
+  const result = await Promise.race([
+    auth.switchConsoleServer('second-team', request(`${SESSION_COOKIE}=${token}`)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('switch waited for persistence')), 25)),
+  ]);
 
-  assert.deepEqual(calls.map((call) => call.type), ['state', 'auth']);
-  assert.equal(calls[1].operation.type, 'configured-admin-sync');
-  assert.equal(calls[1].operation.user.id, 'usr_admin');
-  assert.equal(calls[1].operation.user.disabledAt, null);
-  assert.equal(verifyPassword('newpass123', calls[1].operation.user.passwordHash), true);
-  assert.equal(verifyPassword('newpass123', state.cloud.users[0].passwordHash), true);
-  assert.equal(state.cloud.users[0].disabledAt, undefined);
+  assert.equal(result.server.id, 'wsp_second');
+  assert.equal(state.connection.workspaceId, 'wsp_second');
+  assert.equal(persistStarted, true);
+  assert.equal(persistCompleted, false);
+
+  releasePersist();
+  await persistStartedPromise;
+});
+
+test('console server creation returns before full cloud persistence completes', async () => {
+  let authPersistStarted = false;
+  let fullPersistStarted = false;
+  let releaseAuthPersist;
+  let releaseFullPersist;
+  const authPersistPromise = new Promise((resolve) => {
+    releaseAuthPersist = () => resolve();
+  });
+  const fullPersistPromise = new Promise((resolve) => {
+    releaseFullPersist = () => resolve();
+  });
+  const repository = {
+    isEnabled: () => true,
+    async persistAuthFromState() {
+      authPersistStarted = true;
+      await authPersistPromise;
+    },
+    async persistFromState() {
+      fullPersistStarted = true;
+      await fullPersistPromise;
+    },
+  };
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  const token = 'create-session-token';
+  const { auth, state } = makeAuth(repository, {
+    connection: { workspaceId: 'wsp_local' },
+    cloud: {
+      users: [{
+        id: 'usr_create',
+        email: 'create@example.test',
+        name: 'Create User',
+        passwordHash: scryptPassword('password123'),
+        language: 'en',
+        createdAt,
+        updatedAt: createdAt,
+      }],
+      sessions: [{
+        id: 'ses_create',
+        userId: 'usr_create',
+        tokenHash: sha256(token),
+        createdAt,
+        expiresAt: '2026-05-26T00:00:00.000Z',
+      }],
+      workspaces: [
+        { id: 'wsp_local', slug: 'local', name: 'Local', createdAt, updatedAt: createdAt },
+      ],
+      workspaceMembers: [
+        { id: 'wmem_local', workspaceId: 'wsp_local', userId: 'usr_create', humanId: 'hum_create', role: 'admin', status: 'active', joinedAt: createdAt, createdAt },
+      ],
+    },
+    humans: [{
+      id: 'hum_create',
+      userId: 'usr_create',
+      workspaceId: 'wsp_local',
+      name: 'Create User',
+      email: 'create@example.test',
+      role: 'admin',
+      status: 'online',
+      createdAt,
+      updatedAt: createdAt,
+    }],
+  });
+  auth.ensureCloudState();
+
+  const result = await Promise.race([
+    auth.createConsoleServer(
+      { name: 'Created Team', slug: 'created-team' },
+      request(`${SESSION_COOKIE}=${token}`),
+    ),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('create waited for full persistence')), 25)),
+  ]);
+
+  assert.equal(result.server.slug, 'created-team');
+  assert.equal(state.connection.workspaceId, result.server.id);
+  assert.equal(state.cloud.workspaces.some((workspace) => workspace.slug === 'created-team'), true);
+  assert.equal(authPersistStarted, true);
+  assert.equal(fullPersistStarted, true);
+
+  releaseAuthPersist();
+  releaseFullPersist();
+  await Promise.all([authPersistPromise, fullPersistPromise]);
 });

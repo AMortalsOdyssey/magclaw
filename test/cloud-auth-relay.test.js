@@ -121,6 +121,31 @@ async function request(baseUrl, pathname, options = {}) {
   return { data, cookie: response.headers.get('set-cookie') || '', status: response.status };
 }
 
+async function registerOwnerServer(server, options = {}) {
+  const {
+    name = 'Admin',
+    email = 'admin@example.com',
+    password = 'password123',
+    serverName = 'Admin Team',
+    slug = 'admin-team',
+  } = options;
+  const account = await request(server.baseUrl, '/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ name, email, password }),
+  });
+  const created = await request(server.baseUrl, '/api/console/servers', {
+    method: 'POST',
+    cookie: account.cookie,
+    body: JSON.stringify({ name: serverName, slug }),
+  });
+  return {
+    account,
+    cookie: account.cookie,
+    server: created.data.server,
+    member: created.data.member,
+  };
+}
+
 async function waitFor(fn, timeoutMs = 5000) {
   const started = Date.now();
   let last = null;
@@ -173,17 +198,10 @@ test('cloud health and readiness expose K8s-friendly storage checks', async () =
 });
 
 test('server profile and join links are managed through cloud APIs', async () => {
-  const server = await startIsolatedServer({
-    MAGCLAW_ADMIN_NAME: 'Admin',
-    MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
-    MAGCLAW_ADMIN_PASSWORD: 'password123',
-  });
+  const server = await startIsolatedServer();
   try {
-    const login = await request(server.baseUrl, '/api/cloud/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email: 'admin@example.com', password: 'password123' }),
-    });
-    const cookie = login.cookie;
+    const owner = await registerOwnerServer(server);
+    const cookie = owner.cookie;
 
     const profile = await request(server.baseUrl, '/api/cloud/server/profile', {
       method: 'PATCH',
@@ -221,7 +239,7 @@ test('server profile and join links are managed through cloud APIs', async () =>
     });
     assert.equal(switched.data.server.name, 'Second Renamed');
     assert.equal(switched.data.server.avatar, 'data:image/png;base64,c2Vjb25k');
-    await request(server.baseUrl, '/api/console/servers/local/switch', {
+    await request(server.baseUrl, `/api/console/servers/${owner.server.slug}/switch`, {
       method: 'POST',
       cookie,
       body: '{}',
@@ -402,17 +420,12 @@ test('console invitations stay repeatable and resolve per logged-in user', async
   }
 });
 
-test('environment admin login protects app APIs and supports invites end to end', async () => {
-  const server = await startIsolatedServer({
-    MAGCLAW_ADMIN_NAME: 'Admin',
-    MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
-    MAGCLAW_ADMIN_PASSWORD: 'password123',
-  });
+test('owner registration protects app APIs and supports invites end to end', async () => {
+  const server = await startIsolatedServer();
   let daemon = null;
   try {
     const initial = await request(server.baseUrl, '/api/cloud/auth/status');
-    assert.equal(initial.data.auth.initialized, true);
-    assert.equal(initial.data.auth.adminConfigured, true);
+    assert.equal(initial.data.auth.initialized, false);
     assert.equal('ownerConfigured' in initial.data.auth, false);
     assert.equal(initial.data.auth.currentUser, null);
 
@@ -425,6 +438,8 @@ test('environment admin login protects app APIs and supports invites end to end'
       }),
       expectStatus: 404,
     });
+
+    const owner = await registerOwnerServer(server);
 
     await request(server.baseUrl, '/api/state', { expectStatus: 401 });
     await request(server.baseUrl, '/api/events', { expectStatus: 401 });
@@ -477,6 +492,7 @@ test('environment admin login protects app APIs and supports invites end to end'
     assert.equal(admin.data.user.email, 'admin@example.com');
     assert.equal(admin.data.member.role, 'admin');
     const adminCookie = admin.cookie;
+    assert.equal(owner.member.role, 'admin');
     assert.match(adminCookie, /magclaw_session=/);
 
     const adminState = await request(server.baseUrl, '/api/state', { cookie: adminCookie });
@@ -616,8 +632,8 @@ test('environment admin login protects app APIs and supports invites end to end'
     assert.match(pairing.data.pairToken, /^mc_pair_/);
     assert.match(pairing.data.command, /MAGCLAW_REPO_DIR="\/path\/to\/magclaw"; node "\$MAGCLAW_REPO_DIR\/daemon\/bin\/magclaw-daemon\.js" connect/);
     assert.doesNotMatch(pairing.data.command, /--background/);
-    assert.match(pairing.data.command, /--profile "?local"?/);
-    assert.match(pairing.data.command, /# MagClaw|# local/);
+    assert.match(pairing.data.command, /--profile "?admin-team"?/);
+    assert.match(pairing.data.command, /# Admin Team/);
     assert.equal(pairing.data.provisional, true);
     const prePairState = await request(server.baseUrl, '/api/state', { cookie: adminCookie });
     assert.equal(prePairState.data.computers.some((item) => item.id === pairing.data.computer.id), false);
@@ -667,16 +683,9 @@ test('environment admin login protects app APIs and supports invites end to end'
 });
 
 test('cloud roles enforce admin invite and removal boundaries', async () => {
-  const server = await startIsolatedServer({
-    MAGCLAW_ADMIN_NAME: 'Admin',
-    MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
-    MAGCLAW_ADMIN_PASSWORD: 'password123',
-  });
+  const server = await startIsolatedServer();
   try {
-    const admin = await request(server.baseUrl, '/api/cloud/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email: 'admin@example.com', password: 'password123' }),
-    });
+    const admin = await registerOwnerServer(server);
     const adminCookie = admin.cookie;
 
     const delegatedAdminInvite = await request(server.baseUrl, '/api/cloud/invitations', {
@@ -712,7 +721,7 @@ test('cloud roles enforce admin invite and removal boundaries', async () => {
         password: 'password123',
       }),
     });
-    await request(server.baseUrl, `/api/cloud/members/${admin.data.member.id}`, {
+    await request(server.baseUrl, `/api/cloud/members/${admin.member.id}`, {
       method: 'PATCH',
       cookie: adminCookie,
       body: JSON.stringify({ role: 'member' }),
@@ -829,16 +838,9 @@ test('cloud roles enforce admin invite and removal boundaries', async () => {
 });
 
 test('cloud invite registration and admin password reset flows enforce tokens and password policy', async () => {
-  const server = await startIsolatedServer({
-    MAGCLAW_ADMIN_NAME: 'Admin',
-    MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
-    MAGCLAW_ADMIN_PASSWORD: 'password123',
-  });
+  const server = await startIsolatedServer();
   try {
-    const admin = await request(server.baseUrl, '/api/cloud/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email: 'admin@example.com', password: 'password123' }),
-    });
+    const admin = await registerOwnerServer(server);
     const adminCookie = admin.cookie;
 
     const batch = await request(server.baseUrl, '/api/cloud/invitations/batch', {

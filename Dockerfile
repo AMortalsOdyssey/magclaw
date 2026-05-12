@@ -4,7 +4,6 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
-ENV MAGCLAW_CONFIG_FILE=/etc/magclaw/server.yaml
 ENV MAGCLAW_DATA_DIR=/var/lib/magclaw
 ENV MAGCLAW_UPLOAD_DIR=/var/lib/magclaw/uploads
 
