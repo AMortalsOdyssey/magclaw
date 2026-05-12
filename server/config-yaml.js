@@ -76,6 +76,10 @@ function joinNameAndAddress(name, address) {
   return cleanName ? `${cleanName} <${cleanAddress}>` : cleanAddress;
 }
 
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
 export function candidateConfigPaths({ env = process.env, homeDir = os.homedir() } = {}) {
   const explicit = [
     env.MAGCLAW_CONFIG,
@@ -99,18 +103,19 @@ export function applyServerYamlConfig(options = {}) {
   const server = config.server || {};
   const database = config.database || config.postgres || {};
   const storage = config.storage || {};
-  const auth = config.auth || {};
   const email = config.email || config.smtp || {};
-  const fanout = config.fanout_api || config.fanoutApi || {};
   const runtime = config.runtime || {};
+  const rawLocalFileStorageFallback = pick(storage.local_file_storage_fallback, storage.localFileStorageFallback);
+  const localFileStorageFallback = objectValue(rawLocalFileStorageFallback);
+  const localFileStorageFallbackEnabled = Object.keys(localFileStorageFallback).length
+    ? pick(localFileStorageFallback.enabled, localFileStorageFallback.enable)
+    : rawLocalFileStorageFallback;
 
   setEnv(env, 'HOST', server.host);
   setEnv(env, 'PORT', server.port);
   setEnv(env, 'MAGCLAW_PUBLIC_URL', pick(server.public_url, server.publicUrl));
   setEnv(env, 'MAGCLAW_DEPLOYMENT', server.deployment);
-  setEnv(env, 'MAGCLAW_DATA_DIR', pick(server.data_dir, server.dataDir));
   setEnv(env, 'MAGCLAW_REQUIRE_POSTGRES', pick(server.require_postgres, server.requirePostgres));
-  setEnv(env, 'MAGCLAW_REQUIRE_LOGIN', pick(auth.require_login, auth.requireLogin));
 
   setEnv(env, 'MAGCLAW_DATABASE_URL', pick(database.url, database.postgres_url, database.postgresUrl, database.connection_string, database.connectionString));
   setEnv(env, 'MAGCLAW_DATABASE', pick(database.name, database.database));
@@ -120,8 +125,19 @@ export function applyServerYamlConfig(options = {}) {
 
   setEnv(env, 'MAGCLAW_ATTACHMENT_STORAGE', pick(storage.attachment_storage, storage.attachmentStorage));
   setEnv(env, 'MAGCLAW_UPLOAD_DIR', pick(storage.upload_dir, storage.uploadDir));
-  setEnv(env, 'MAGCLAW_LOCAL_UPLOAD_DIR', pick(storage.local_upload_dir, storage.localUploadDir));
-  setEnv(env, 'MAGCLAW_LOCAL_FILE_STORAGE_FALLBACK', pick(storage.local_file_storage_fallback, storage.localFileStorageFallback));
+  setEnv(env, 'MAGCLAW_LOCAL_UPLOAD_DIR', pick(
+    localFileStorageFallback.dir,
+    localFileStorageFallback.path,
+    localFileStorageFallback.upload_dir,
+    localFileStorageFallback.uploadDir,
+    storage.local_file_storage_fallback_dir,
+    storage.localFileStorageFallbackDir,
+    storage.local_upload_dir,
+    storage.localUploadDir,
+  ));
+  setEnv(env, 'MAGCLAW_LOCAL_FILE_STORAGE_FALLBACK', pick(
+    localFileStorageFallbackEnabled,
+  ));
   setEnv(env, 'MAGCLAW_WRITE_STATE_JSON', pick(storage.write_state_json, storage.writeStateJson));
 
   setEnv(env, 'MAGCLAW_MAIL_TRANSPORT', email.transport);
@@ -133,13 +149,6 @@ export function applyServerYamlConfig(options = {}) {
   setEnv(env, 'MAGCLAW_SMTP_STARTTLS', email.smtp_tls ?? email.starttls);
   setEnv(env, 'MAGCLAW_MAIL_FROM', pick(email.from, joinNameAndAddress(email.from_name, email.from_address)));
   setEnv(env, 'MAGCLAW_MAIL_LOGO_URL', pick(email.logo_url, email.logoUrl));
-
-  setEnv(env, 'MAGCLAW_FANOUT_API_ENABLED', fanout.enabled);
-  setEnv(env, 'MAGCLAW_FANOUT_API_BASE_URL', pick(fanout.base_url, fanout.baseUrl));
-  setEnv(env, 'MAGCLAW_FANOUT_API_KEY', pick(fanout.api_key, fanout.apiKey));
-  setEnv(env, 'MAGCLAW_FANOUT_API_MODEL', fanout.model);
-  setEnv(env, 'MAGCLAW_FANOUT_API_FALLBACK_MODEL', pick(fanout.fallback_model, fanout.fallbackModel));
-  setEnv(env, 'MAGCLAW_FANOUT_TIMEOUT_MS', pick(fanout.timeout_ms, fanout.timeoutMs));
 
   setEnv(env, 'CODEX_MODEL', pick(runtime.codex_model, runtime.codexModel));
   setEnv(env, 'CODEX_PATH', pick(runtime.codex_path, runtime.codexPath));

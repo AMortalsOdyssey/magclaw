@@ -7,11 +7,7 @@ server:
   port: 6543
   public_url: "https://magclaw.example.com"
   deployment: "cloud"
-  data_dir: "/var/lib/magclaw"
   require_postgres: true
-
-auth:
-  require_login: true
 
 database:
   postgres_url: "postgres://magclaw:change-me@postgres:5432/magclaw"
@@ -24,9 +20,7 @@ storage:
   attachment_storage: "pvc"
   # Optional. If omitted, MagClaw probes /var/lib/magclaw/uploads first.
   upload_dir: ""
-  # Used when the PVC path is not mounted or writable.
-  local_upload_dir: ""
-  local_file_storage_fallback: true
+  local_file_storage_fallback: false
   write_state_json: false
 
 email:
@@ -37,14 +31,6 @@ email:
   smtp_tls: false
   from_address: "noreply@example.com"
   from_name: "MagClaw"
-
-fanout_api:
-  enabled: false
-  base_url: ""
-  model: ""
-  fallback_model: ""
-  timeout_ms: 5000
-  api_key: ""
 
 runtime:
   codex_home_source: "~/.codex"

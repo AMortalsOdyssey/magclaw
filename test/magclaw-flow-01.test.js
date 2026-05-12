@@ -1408,6 +1408,7 @@ test('Fan-out API config is masked globally and drives LLM card routing when nee
         baseUrl: `${mock.baseUrl}/v1`,
         apiKey: 'secret-test-key',
         model: 'test-router',
+        fallbackModel: 'deepseek-v4-flash',
       }),
     });
 

@@ -429,9 +429,7 @@ export function createCloudAuth(deps) {
 
   function isLoginRequired() {
     const cloud = ensureCloudState();
-    return process.env.MAGCLAW_REQUIRE_LOGIN === '1'
-      || process.env.MAGCLAW_DEPLOYMENT === 'cloud'
-      || cloud.users.length > 0;
+    return process.env.MAGCLAW_DEPLOYMENT === 'cloud' || cloud.users.length > 0;
   }
 
     function requireUser(req, res, sendError, allowedRoles = []) {

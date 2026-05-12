@@ -9,10 +9,7 @@ data:
       port: 6543
       public_url: "https://magclaw.example.com"
       deployment: "cloud"
-      data_dir: "/var/lib/magclaw"
       require_postgres: true
-    auth:
-      require_login: true
     database:
       postgres_url: "postgres://magclaw:change-me@postgres:5432/magclaw"
       name: "magclaw_server"
@@ -21,8 +18,7 @@ data:
       create: false
     storage:
       attachment_storage: "pvc"
-      upload_dir: "/var/lib/magclaw/uploads"
-      local_file_storage_fallback: true
+      local_file_storage_fallback: false
       write_state_json: false
     email:
       smtp_host: "smtp.example.com"

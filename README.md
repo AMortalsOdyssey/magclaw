@@ -97,7 +97,7 @@ npm run dev
 
 `MAGCLAW_AUTO_SYNC=1` enables automatic push after local state changes. Manual `Pair / Probe`, `Push Local`, and `Pull Cloud` remain available in the Cloud panel.
 
-Cloud sync v1 is intentionally a snapshot protocol. It syncs collaboration state and metadata; attachment binary files, Codex process control, shell access, secrets and local filesystem reads stay on the local runner. When `MAGCLAW_DEPLOYMENT=cloud` or `MAGCLAW_REQUIRE_LOGIN=1` is set, the web app and core APIs require users to sign in before state, channels, tasks, settings, or events can be read.
+Cloud sync v1 is intentionally a snapshot protocol. It syncs collaboration state and metadata; attachment binary files, Codex process control, shell access, secrets and local filesystem reads stay on the local runner. When `MAGCLAW_DEPLOYMENT=cloud` is set, the web app and core APIs require users to sign in before state, channels, tasks, settings, or events can be read.
 
 Cloud accounts are created through public registration. After signing up, a user
 creates a server in the console; that user becomes the server owner and receives
@@ -105,9 +105,10 @@ the admin role for that server. Owners and admins can then invite other users as
 members or admins from the member settings.
 
 For a single-machine local instance, copy `config/server.example.yaml` to
-`~/.magclaw-server/server.yaml`. Set `MAGCLAW_DATA_DIR=/path/to/data` only when
-you intentionally want a different data root. Legacy `server.env` files are not
-loaded unless `MAGCLAW_ALLOW_LEGACY_SERVER_ENV=1` is set.
+`~/.magclaw-server/server.yaml`. Set `MAGCLAW_DATA_DIR=/path/to/data` as a
+deployment environment variable only when you intentionally want a different
+runtime root. Attachment fallback paths belong under `storage.local_file_storage_fallback`.
+Legacy `server.env` files are not loaded unless `MAGCLAW_ALLOW_LEGACY_SERVER_ENV=1` is set.
 In containers, mount the same YAML shape at `/etc/magclaw/server.yaml`; the
 server checks that path by default, so no config-path environment variable is
 required.

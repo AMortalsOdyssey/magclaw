@@ -10,9 +10,6 @@ import {
 import { autoTaskMessageIntent, taskCreationIntent } from './intents.js';
 import { normalizeIds } from './mentions.js';
 import {
-  DEFAULT_FANOUT_API_BASE_URL,
-  DEFAULT_FANOUT_API_FALLBACK_MODEL,
-  DEFAULT_FANOUT_API_MODEL,
   fanoutApiConfigReady,
   normalizeChatRuntimeConfig,
   normalizeCloudUrl,
@@ -95,14 +92,7 @@ export function createStateCore(deps) {
         defaultWorkspace: ROOT,
         model: process.env.CODEX_MODEL || '',
         sandbox: process.env.CODEX_SANDBOX || 'workspace-write',
-        fanoutApi: {
-          enabled: process.env.MAGCLAW_FANOUT_API_ENABLED === '1',
-          baseUrl: normalizeCloudUrl(process.env.MAGCLAW_FANOUT_API_BASE_URL || DEFAULT_FANOUT_API_BASE_URL),
-          apiKey: process.env.MAGCLAW_FANOUT_API_KEY || '',
-          model: process.env.MAGCLAW_FANOUT_API_MODEL || DEFAULT_FANOUT_API_MODEL,
-          fallbackModel: process.env.MAGCLAW_FANOUT_API_FALLBACK_MODEL || DEFAULT_FANOUT_API_FALLBACK_MODEL,
-          timeoutMs: FANOUT_API_TIMEOUT_MS,
-        },
+        fanoutApi: normalizeFanoutApiConfig({}),
         chatRuntime: normalizeChatRuntimeConfig({
           enabled: process.env.MAGCLAW_CHAT_FAST_RUNTIME !== '0',
           model: process.env.MAGCLAW_CHAT_MODEL || process.env.MAGCLAW_FAST_CHAT_MODEL || '',
