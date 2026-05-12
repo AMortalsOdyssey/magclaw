@@ -61,6 +61,19 @@ function metadataWithState(record) {
   };
 }
 
+async function upsertStateRecord(client, tableName, values) {
+  await client.query(`
+    INSERT INTO ${tableName}
+      (workspace_id, kind, id, position, created_at, updated_at, payload)
+    VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+    ON CONFLICT (workspace_id, kind, id) DO UPDATE SET
+      position = EXCLUDED.position,
+      created_at = COALESCE(${tableName}.created_at, EXCLUDED.created_at),
+      updated_at = COALESCE(EXCLUDED.updated_at, ${tableName}.updated_at),
+      payload = EXCLUDED.payload
+  `, values);
+}
+
 function recordFromMetadata(row, base = {}) {
   const metadata = jsonObject(row.metadata);
   const source = jsonObject(metadata.state);
@@ -930,11 +943,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         const workspaceId = workspaceIdFor(record, state, cloud);
         if (!workspaceId) continue;
         const id = record?.id || `${key}_${position}`;
-        await client.query(`
-          INSERT INTO ${table('cloud_state_records')}
-            (workspace_id, kind, id, position, created_at, updated_at, payload)
-          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-        `, [
+        await upsertStateRecord(client, table('cloud_state_records'), [
           workspaceId,
           key,
           id,
@@ -950,11 +959,15 @@ export function createCloudPostgresStore(optionsInput = {}) {
       if (!value || typeof value !== 'object') continue;
       const workspaceId = workspaceIdFor(value, state, cloud);
       if (!workspaceId) continue;
-      await client.query(`
-        INSERT INTO ${table('cloud_state_records')}
-          (workspace_id, kind, id, position, created_at, updated_at, payload)
-        VALUES ($1, $2, 'value', 0, NULL, NULL, $3::jsonb)
-      `, [workspaceId, key, JSON.stringify(value)]);
+      await upsertStateRecord(client, table('cloud_state_records'), [
+        workspaceId,
+        key,
+        'value',
+        0,
+        null,
+        null,
+        JSON.stringify(value),
+      ]);
     }
   }
 

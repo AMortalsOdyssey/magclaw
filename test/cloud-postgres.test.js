@@ -291,3 +291,46 @@ test('postgres store persists relay computers tokens deliveries and daemon event
     assert.match(sqlText, new RegExp(`INSERT INTO "magclaw"\\."${table}"`));
   }
 });
+
+test('postgres store upserts duplicate residual state records without crashing', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  await store.persistFromState({
+    routeEvents: [
+      { id: 'route_duplicate', workspaceId: 'wsp_main', choice: 'first', createdAt },
+      { id: 'route_duplicate', workspaceId: 'wsp_main', choice: 'latest', createdAt },
+    ],
+    cloud: {
+      workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
+      users: [],
+      workspaceMembers: [],
+      sessions: [],
+      invitations: [],
+      passwordResetTokens: [],
+    },
+  });
+  const stateRecordInserts = queries.filter((query) => (
+    query.sql.includes('INSERT INTO "magclaw"."cloud_state_records"')
+  ));
+  assert.equal(stateRecordInserts.length, 2);
+  assert.match(stateRecordInserts[0].sql, /ON CONFLICT \(workspace_id, kind, id\) DO UPDATE SET/);
+  assert.equal(stateRecordInserts[1].params[2], 'route_duplicate');
+  assert.equal(JSON.parse(stateRecordInserts[1].params[6]).choice, 'latest');
+});
