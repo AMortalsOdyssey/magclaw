@@ -128,7 +128,6 @@ export function createStateCore(deps) {
       cloud: {
         schemaVersion: 1,
         auth: {
-          allowSignups: process.env.MAGCLAW_ALLOW_SIGNUPS === '1',
           passwordLogin: true,
         },
         workspaces: [

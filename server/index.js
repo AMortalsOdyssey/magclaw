@@ -353,6 +353,10 @@ function localStateFallbackInfo(reason = '') {
   };
 }
 
+function isPostgresIntegrityError(error) {
+  return ['23503', '23505', '23514'].includes(String(error?.code || ''));
+}
+
 function resilientCloudRepository(repository) {
   if (!repository) return null;
   let disabled = false;
@@ -387,7 +391,7 @@ function resilientCloudRepository(repository) {
       try {
         await repository.loadIntoState?.(stateSnapshot);
       } catch (error) {
-        if (postgresStrictlyRequired()) throw error;
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
         await disable(error);
       }
     },
@@ -396,7 +400,37 @@ function resilientCloudRepository(repository) {
       try {
         await repository.persistFromState?.(stateSnapshot);
       } catch (error) {
-        if (postgresStrictlyRequired()) throw error;
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
+        await disable(error);
+      }
+    },
+    async persistAuthFromState(stateSnapshot) {
+      if (disabled) return;
+      try {
+        if (typeof repository.persistAuthFromState === 'function') {
+          await repository.persistAuthFromState(stateSnapshot);
+        } else {
+          await repository.persistFromState?.(stateSnapshot);
+        }
+      } catch (error) {
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
+        await disable(error);
+      }
+    },
+    async persistAuthOperation(operation) {
+      if (disabled) return;
+      try {
+        if (typeof repository.persistAuthOperation === 'function') {
+          await repository.persistAuthOperation(operation);
+        } else if (operation?.stateSnapshot && typeof repository.persistAuthFromState === 'function') {
+          await repository.persistAuthFromState(operation.stateSnapshot);
+        } else if (operation?.stateSnapshot && typeof repository.persistFromState === 'function') {
+          await repository.persistFromState(operation.stateSnapshot);
+        } else {
+          throw new Error('Cloud repository does not support auth operation persistence.');
+        }
+      } catch (error) {
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
         await disable(error);
       }
     },

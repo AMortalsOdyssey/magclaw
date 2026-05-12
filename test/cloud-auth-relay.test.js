@@ -262,7 +262,6 @@ test('server profile and join links are managed through cloud APIs', async () =>
 test('public account registration and password reset use SMTP outbox without invite', async () => {
   const outbox = path.join(await mkdtemp(path.join(os.tmpdir(), 'magclaw-mail-')), 'outbox.jsonl');
   const server = await startIsolatedServer({
-    MAGCLAW_ALLOW_SIGNUPS: '1',
     MAGCLAW_MAIL_TRANSPORT: 'file',
     MAGCLAW_MAIL_OUTBOX: outbox,
     MAGCLAW_MAIL_FROM: 'MagClaw <noreply@example.com>',
@@ -298,6 +297,13 @@ test('public account registration and password reset use SMTP outbox without inv
       expectStatus: 409,
     });
     assert.equal(duplicateServer.data.error, 'Server slug is already taken.');
+    const shortSlug = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: created.cookie,
+      body: JSON.stringify({ name: 'Short Team', slug: 'abcd' }),
+      expectStatus: 400,
+    });
+    assert.equal(shortSlug.data.error, 'Server slug must be 5-63 lowercase letters, numbers, or hyphens.');
     const secondServer = await request(server.baseUrl, '/api/console/servers', {
       method: 'POST',
       cookie: created.cookie,
@@ -329,9 +335,7 @@ test('public account registration and password reset use SMTP outbox without inv
 });
 
 test('console invitations stay repeatable and resolve per logged-in user', async () => {
-  const server = await startIsolatedServer({
-    MAGCLAW_ALLOW_SIGNUPS: '1',
-  });
+  const server = await startIsolatedServer();
   try {
     const owner = await request(server.baseUrl, '/api/auth/register', {
       method: 'POST',

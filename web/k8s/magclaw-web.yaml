@@ -12,7 +12,6 @@ data:
       data_dir: "/var/lib/magclaw"
       require_postgres: true
     auth:
-      allow_signups: true
       require_login: true
     database:
       postgres_url: "postgres://magclaw:change-me@postgres:5432/magclaw"

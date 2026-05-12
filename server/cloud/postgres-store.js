@@ -117,11 +117,21 @@ function workspaceIds(cloud) {
 }
 
 function defaultWorkspaceId(state, cloud) {
-  return state?.connection?.workspaceId || cloud?.auth?.currentWorkspaceId || cloud?.workspaces?.[0]?.id || '';
+  const ids = new Set(workspaceIds(cloud));
+  if (!ids.size) return '';
+  return [
+    state?.connection?.workspaceId,
+    cloud?.auth?.currentWorkspaceId,
+    cloud?.workspaces?.[0]?.id,
+  ].find((id) => id && ids.has(id)) || '';
 }
 
 function workspaceIdFor(record, state, cloud) {
-  return record?.workspaceId || record?.workspace_id || defaultWorkspaceId(state, cloud);
+  const ids = new Set(workspaceIds(cloud));
+  if (!ids.size) return '';
+  const explicit = record?.workspaceId || record?.workspace_id;
+  if (explicit) return ids.has(explicit) ? explicit : '';
+  return defaultWorkspaceId(state, cloud);
 }
 
 function userIdForHuman(human, cloud) {
@@ -625,6 +635,187 @@ export function createCloudPostgresStore(optionsInput = {}) {
     }
   }
 
+  function cloneRecord(value) {
+    return value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+  }
+
+  function snapshotAuthOperation(operation) {
+    return {
+      type: operation?.type,
+      user: cloneRecord(operation?.user),
+      session: cloneRecord(operation?.session),
+      reset: cloneRecord(operation?.reset),
+      sessions: safeArray(operation?.sessions).map(cloneRecord),
+      passwordResetTokens: safeArray(operation?.passwordResetTokens).map(cloneRecord),
+    };
+  }
+
+  async function upsertUserSnapshot(client, user) {
+    if (!user?.id) return;
+    await client.query(`
+      INSERT INTO ${table('cloud_users')}
+        (id, email, normalized_email, name, password_hash, avatar_url,
+         language, email_verified_at, created_at, updated_at, last_login_at,
+         disabled_at, metadata)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+      ON CONFLICT (id) DO UPDATE SET
+        email = EXCLUDED.email,
+        normalized_email = EXCLUDED.normalized_email,
+        name = EXCLUDED.name,
+        password_hash = COALESCE(${table('cloud_users')}.password_hash, EXCLUDED.password_hash),
+        avatar_url = EXCLUDED.avatar_url,
+        language = EXCLUDED.language,
+        email_verified_at = COALESCE(${table('cloud_users')}.email_verified_at, EXCLUDED.email_verified_at),
+        updated_at = GREATEST(COALESCE(${table('cloud_users')}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
+        last_login_at = CASE
+          WHEN EXCLUDED.last_login_at IS NULL THEN ${table('cloud_users')}.last_login_at
+          ELSE GREATEST(COALESCE(${table('cloud_users')}.last_login_at, EXCLUDED.last_login_at), EXCLUDED.last_login_at)
+        END,
+        disabled_at = COALESCE(${table('cloud_users')}.disabled_at, EXCLUDED.disabled_at),
+        metadata = ${table('cloud_users')}.metadata || EXCLUDED.metadata
+    `, [
+      user.id,
+      user.email,
+      normalizeEmail(user.email),
+      user.name || '',
+      user.passwordHash || null,
+      user.avatarUrl || '',
+      user.language || 'en',
+      iso(user.emailVerifiedAt),
+      requiredIso(user.createdAt),
+      requiredIso(user.updatedAt || user.createdAt),
+      iso(user.lastLoginAt),
+      iso(user.disabledAt),
+      JSON.stringify(jsonObject(user.metadata)),
+    ]);
+  }
+
+  async function updateLoginUser(client, user) {
+    if (!user?.id || !iso(user.lastLoginAt)) return;
+    await client.query(`
+      UPDATE ${table('cloud_users')}
+      SET
+        last_login_at = GREATEST(COALESCE(last_login_at, $2), $2),
+        updated_at = GREATEST(COALESCE(updated_at, $2), $2)
+      WHERE id = $1 AND disabled_at IS NULL
+    `, [user.id, iso(user.lastLoginAt)]);
+  }
+
+  async function updateUserPassword(client, user) {
+    if (!user?.id || typeof user.passwordHash !== 'string') return;
+    const updatedAt = requiredIso(user.updatedAt || user.lastLoginAt);
+    await client.query(`
+      UPDATE ${table('cloud_users')}
+      SET
+        password_hash = $2,
+        email_verified_at = COALESCE(${table('cloud_users')}.email_verified_at, $3),
+        updated_at = GREATEST(COALESCE(${table('cloud_users')}.updated_at, $4), $4),
+        last_login_at = CASE
+          WHEN $5::timestamptz IS NULL THEN ${table('cloud_users')}.last_login_at
+          ELSE GREATEST(COALESCE(${table('cloud_users')}.last_login_at, $5), $5)
+        END
+      WHERE id = $1 AND disabled_at IS NULL
+    `, [
+      user.id,
+      user.passwordHash,
+      iso(user.emailVerifiedAt),
+      updatedAt,
+      iso(user.lastLoginAt),
+    ]);
+  }
+
+  async function syncConfiguredAdminUser(client, user) {
+    if (!user?.id) return;
+    await client.query(`
+      INSERT INTO ${table('cloud_users')}
+        (id, email, normalized_email, name, password_hash, avatar_url,
+         language, email_verified_at, created_at, updated_at, last_login_at,
+         disabled_at, metadata)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+      ON CONFLICT (id) DO UPDATE SET
+        email = EXCLUDED.email,
+        normalized_email = EXCLUDED.normalized_email,
+        name = EXCLUDED.name,
+        password_hash = COALESCE(EXCLUDED.password_hash, ${table('cloud_users')}.password_hash),
+        avatar_url = EXCLUDED.avatar_url,
+        language = EXCLUDED.language,
+        email_verified_at = COALESCE(EXCLUDED.email_verified_at, ${table('cloud_users')}.email_verified_at),
+        updated_at = GREATEST(COALESCE(${table('cloud_users')}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
+        last_login_at = CASE
+          WHEN EXCLUDED.last_login_at IS NULL THEN ${table('cloud_users')}.last_login_at
+          ELSE GREATEST(COALESCE(${table('cloud_users')}.last_login_at, EXCLUDED.last_login_at), EXCLUDED.last_login_at)
+        END,
+        disabled_at = EXCLUDED.disabled_at,
+        metadata = ${table('cloud_users')}.metadata || EXCLUDED.metadata
+    `, [
+      user.id,
+      user.email,
+      normalizeEmail(user.email),
+      user.name || '',
+      user.passwordHash || null,
+      user.avatarUrl || '',
+      user.language || 'en',
+      iso(user.emailVerifiedAt),
+      requiredIso(user.createdAt),
+      requiredIso(user.updatedAt || user.createdAt),
+      iso(user.lastLoginAt),
+      iso(user.disabledAt),
+      JSON.stringify(jsonObject(user.metadata)),
+    ]);
+  }
+
+  async function upsertSession(client, session) {
+    if (!session?.id) return;
+    await client.query(`
+      INSERT INTO ${table('cloud_sessions')}
+        (id, user_id, token_hash, created_at, expires_at, user_agent,
+         ip_hash, revoked_at, last_seen_at, metadata)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+      ON CONFLICT (id) DO UPDATE SET
+        expires_at = LEAST(${table('cloud_sessions')}.expires_at, EXCLUDED.expires_at),
+        revoked_at = COALESCE(${table('cloud_sessions')}.revoked_at, EXCLUDED.revoked_at),
+        last_seen_at = COALESCE(EXCLUDED.last_seen_at, ${table('cloud_sessions')}.last_seen_at),
+        metadata = ${table('cloud_sessions')}.metadata || EXCLUDED.metadata
+    `, [
+      session.id,
+      session.userId,
+      session.tokenHash,
+      requiredIso(session.createdAt),
+      requiredIso(session.expiresAt),
+      session.userAgent || '',
+      session.ipHash || '',
+      iso(session.revokedAt),
+      iso(session.lastSeenAt),
+      JSON.stringify(jsonObject(session.metadata)),
+    ]);
+  }
+
+  async function upsertPasswordReset(client, reset) {
+    if (!reset?.id) return;
+    await client.query(`
+      INSERT INTO ${table('cloud_password_resets')}
+        (id, workspace_id, user_id, token_hash, created_by, expires_at,
+         consumed_at, revoked_at, created_at, metadata)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+      ON CONFLICT (id) DO UPDATE SET
+        expires_at = LEAST(${table('cloud_password_resets')}.expires_at, EXCLUDED.expires_at),
+        consumed_at = COALESCE(${table('cloud_password_resets')}.consumed_at, EXCLUDED.consumed_at),
+        revoked_at = COALESCE(${table('cloud_password_resets')}.revoked_at, EXCLUDED.revoked_at),
+        metadata = ${table('cloud_password_resets')}.metadata || EXCLUDED.metadata
+    `, [
+      reset.id,
+      reset.workspaceId,
+      reset.userId,
+      reset.tokenHash,
+      reset.createdBy || null,
+      requiredIso(reset.expiresAt),
+      iso(reset.consumedAt),
+      iso(reset.revokedAt),
+      requiredIso(reset.createdAt),
+      JSON.stringify(jsonObject(reset.metadata)),
+    ]);
+  }
+
   async function isEmpty(client) {
     const result = await client.query(`
       SELECT
@@ -980,38 +1171,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         await persistReleaseNotesFromState(client, state);
 
         for (const user of safeArray(cloud.users)) {
-          await client.query(`
-            INSERT INTO ${table('cloud_users')}
-              (id, email, normalized_email, name, password_hash, avatar_url,
-               language, email_verified_at, created_at, updated_at, last_login_at, disabled_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              email = EXCLUDED.email,
-              normalized_email = EXCLUDED.normalized_email,
-              name = EXCLUDED.name,
-              password_hash = EXCLUDED.password_hash,
-              avatar_url = EXCLUDED.avatar_url,
-              language = EXCLUDED.language,
-              email_verified_at = EXCLUDED.email_verified_at,
-              updated_at = EXCLUDED.updated_at,
-              last_login_at = EXCLUDED.last_login_at,
-              disabled_at = EXCLUDED.disabled_at,
-              metadata = EXCLUDED.metadata
-          `, [
-            user.id,
-            user.email,
-            normalizeEmail(user.email),
-            user.name || '',
-            user.passwordHash || null,
-            user.avatarUrl || '',
-            user.language || 'en',
-            iso(user.emailVerifiedAt),
-            requiredIso(user.createdAt),
-            requiredIso(user.updatedAt || user.createdAt),
-            iso(user.lastLoginAt),
-            iso(user.disabledAt),
-            JSON.stringify(jsonObject(user.metadata)),
-          ]);
+          await upsertUserSnapshot(client, user);
         }
 
         for (const workspace of safeArray(cloud.workspaces)) {
@@ -1077,32 +1237,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         }
 
         for (const session of safeArray(cloud.sessions)) {
-          await client.query(`
-            INSERT INTO ${table('cloud_sessions')}
-              (id, user_id, token_hash, created_at, expires_at, user_agent,
-               ip_hash, revoked_at, last_seen_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              user_id = EXCLUDED.user_id,
-              token_hash = EXCLUDED.token_hash,
-              expires_at = EXCLUDED.expires_at,
-              user_agent = EXCLUDED.user_agent,
-              ip_hash = EXCLUDED.ip_hash,
-              revoked_at = EXCLUDED.revoked_at,
-              last_seen_at = EXCLUDED.last_seen_at,
-              metadata = EXCLUDED.metadata
-          `, [
-            session.id,
-            session.userId,
-            session.tokenHash,
-            requiredIso(session.createdAt),
-            requiredIso(session.expiresAt),
-            session.userAgent || '',
-            session.ipHash || '',
-            iso(session.revokedAt),
-            iso(session.lastSeenAt),
-            JSON.stringify(jsonObject(session.metadata)),
-          ]);
+          await upsertSession(client, session);
         }
 
         for (const invitation of safeArray(cloud.invitations)) {
@@ -1143,32 +1278,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         }
 
         for (const reset of safeArray(cloud.passwordResetTokens)) {
-          await client.query(`
-            INSERT INTO ${table('cloud_password_resets')}
-              (id, workspace_id, user_id, token_hash, created_by, expires_at,
-               consumed_at, revoked_at, created_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              workspace_id = EXCLUDED.workspace_id,
-              user_id = EXCLUDED.user_id,
-              token_hash = EXCLUDED.token_hash,
-              created_by = EXCLUDED.created_by,
-              expires_at = EXCLUDED.expires_at,
-              consumed_at = EXCLUDED.consumed_at,
-              revoked_at = EXCLUDED.revoked_at,
-              metadata = EXCLUDED.metadata
-          `, [
-            reset.id,
-            reset.workspaceId,
-            reset.userId,
-            reset.tokenHash,
-            reset.createdBy || null,
-            requiredIso(reset.expiresAt),
-            iso(reset.consumedAt),
-            iso(reset.revokedAt),
-            requiredIso(reset.createdAt),
-            JSON.stringify(jsonObject(reset.metadata)),
-          ]);
+          await upsertPasswordReset(client, reset);
         }
 
         for (const joinLink of safeArray(cloud.joinLinks)) {
@@ -1398,56 +1508,34 @@ export function createCloudPostgresStore(optionsInput = {}) {
   }
 
   function persistFromState(state) {
+    const snapshot = cloneRecord(state);
     const next = persistQueue.then(
-      () => persistFromStateNow(state),
-      () => persistFromStateNow(state),
+      () => persistFromStateNow(snapshot),
+      () => persistFromStateNow(snapshot),
     );
     persistQueue = next.catch(() => {});
     return next;
   }
 
-  async function persistAuthFromState(state) {
+  async function persistAuthFromStateNow(state) {
     const cloud = state.cloud || {};
+    const users = safeArray(cloud.users).map(cloneRecord);
+    const workspaces = safeArray(cloud.workspaces).map(cloneRecord);
+    const workspaceMembers = safeArray(cloud.workspaceMembers).map(cloneRecord);
+    const sessions = safeArray(cloud.sessions).map(cloneRecord);
+
     await withClient(async (client) => {
       await client.query('BEGIN');
       try {
-        for (const user of safeArray(cloud.users)) {
-          await client.query(`
-            INSERT INTO ${table('cloud_users')}
-              (id, email, normalized_email, name, password_hash, avatar_url,
-               language, email_verified_at, created_at, updated_at, last_login_at,
-               disabled_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              email = EXCLUDED.email,
-              normalized_email = EXCLUDED.normalized_email,
-              name = EXCLUDED.name,
-              password_hash = EXCLUDED.password_hash,
-              avatar_url = EXCLUDED.avatar_url,
-              language = EXCLUDED.language,
-              email_verified_at = EXCLUDED.email_verified_at,
-              updated_at = EXCLUDED.updated_at,
-              last_login_at = EXCLUDED.last_login_at,
-              disabled_at = EXCLUDED.disabled_at,
-              metadata = EXCLUDED.metadata
-          `, [
-            user.id,
-            user.email,
-            normalizeEmail(user.email),
-            user.name || '',
-            user.passwordHash || null,
-            user.avatarUrl || '',
-            user.language || 'en',
-            iso(user.emailVerifiedAt),
-            requiredIso(user.createdAt),
-            requiredIso(user.updatedAt || user.createdAt),
-            iso(user.lastLoginAt),
-            iso(user.disabledAt),
-            JSON.stringify(jsonObject(user.metadata)),
-          ]);
+        for (const user of users) {
+          await upsertUserSnapshot(client, user);
         }
 
-        for (const workspace of safeArray(cloud.workspaces)) {
+        for (const session of sessions) {
+          await upsertSession(client, session);
+        }
+
+        for (const workspace of workspaces) {
           await client.query(`
             INSERT INTO ${table('cloud_workspaces')}
               (id, slug, name, avatar, onboarding_agent_id, new_agent_greeting_enabled,
@@ -1478,7 +1566,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           ]);
         }
 
-        for (const member of safeArray(cloud.workspaceMembers)) {
+        for (const member of workspaceMembers) {
           await client.query(`
             INSERT INTO ${table('cloud_workspace_members')}
               (id, workspace_id, user_id, human_id, role, status, joined_at,
@@ -1509,41 +1597,80 @@ export function createCloudPostgresStore(optionsInput = {}) {
           ]);
         }
 
-        for (const session of safeArray(cloud.sessions)) {
-          await client.query(`
-            INSERT INTO ${table('cloud_sessions')}
-              (id, user_id, token_hash, created_at, expires_at, user_agent,
-               ip_hash, revoked_at, last_seen_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              user_id = EXCLUDED.user_id,
-              token_hash = EXCLUDED.token_hash,
-              expires_at = EXCLUDED.expires_at,
-              user_agent = EXCLUDED.user_agent,
-              ip_hash = EXCLUDED.ip_hash,
-              revoked_at = EXCLUDED.revoked_at,
-              last_seen_at = EXCLUDED.last_seen_at,
-              metadata = EXCLUDED.metadata
-          `, [
-            session.id,
-            session.userId,
-            session.tokenHash,
-            requiredIso(session.createdAt),
-            requiredIso(session.expiresAt),
-            session.userAgent || '',
-            session.ipHash || '',
-            iso(session.revokedAt),
-            iso(session.lastSeenAt),
-            JSON.stringify(jsonObject(session.metadata)),
-          ]);
-        }
-
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK');
         throw error;
       }
     });
+  }
+
+  function persistAuthFromState(state) {
+    const snapshot = cloneRecord(state);
+    const next = persistQueue.then(
+      () => persistAuthFromStateNow(snapshot),
+      () => persistAuthFromStateNow(snapshot),
+    );
+    persistQueue = next.catch(() => {});
+    return next;
+  }
+
+  async function persistAuthOperationNow(operation) {
+    await withClient(async (client) => {
+      await client.query('BEGIN');
+      try {
+        switch (operation.type) {
+          case 'register-open-account':
+            await upsertUserSnapshot(client, operation.user);
+            await upsertSession(client, operation.session);
+            break;
+          case 'configured-admin-sync':
+            await syncConfiguredAdminUser(client, operation.user);
+            break;
+          case 'login':
+            await updateLoginUser(client, operation.user);
+            await upsertSession(client, operation.session);
+            break;
+          case 'password-update':
+            await updateUserPassword(client, operation.user);
+            break;
+          case 'logout':
+            await upsertSession(client, operation.session);
+            break;
+          case 'password-reset-request':
+            await updateUserPassword(client, operation.user);
+            for (const reset of operation.passwordResetTokens) {
+              await upsertPasswordReset(client, reset);
+            }
+            if (operation.reset) await upsertPasswordReset(client, operation.reset);
+            for (const session of operation.sessions) {
+              await upsertSession(client, session);
+            }
+            break;
+          case 'password-reset-complete':
+            await updateUserPassword(client, operation.user);
+            await upsertPasswordReset(client, operation.reset);
+            await upsertSession(client, operation.session);
+            break;
+          default:
+            throw new Error(`Unsupported auth operation: ${operation.type || 'unknown'}`);
+        }
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      }
+    });
+  }
+
+  function persistAuthOperation(operation) {
+    const snapshot = snapshotAuthOperation(operation);
+    const next = persistQueue.then(
+      () => persistAuthOperationNow(snapshot),
+      () => persistAuthOperationNow(snapshot),
+    );
+    persistQueue = next.catch(() => {});
+    return next;
   }
 
   async function loadIntoState(state) {
@@ -1639,6 +1766,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     initialize,
     isEnabled: () => true,
     loadIntoState,
+    persistAuthOperation,
     persistAuthFromState,
     persistFromState,
     publicInfo: () => ({

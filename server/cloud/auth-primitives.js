@@ -9,6 +9,8 @@ export const HUMAN_PRESENCE_TIMEOUT_MS = Number(process.env.MAGCLAW_HUMAN_PRESEN
 export const HUMAN_PRESENCE_PERSIST_INTERVAL_MS = 1000 * 60;
 export const PASSWORD_MIN_LENGTH = 8;
 export const PASSWORD_MAX_LENGTH = 30;
+export const WORKSPACE_SLUG_MIN_LENGTH = 5;
+export const WORKSPACE_SLUG_MAX_LENGTH = 63;
 export const WORKSPACE_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -95,7 +97,6 @@ export function validatePassword(password) {
 }
 
 export function configuredAdminCredentials() {
-  if (process.env.MAGCLAW_ALLOW_SIGNUPS === '1') return null;
   const email = normalizeEmail(process.env.MAGCLAW_ADMIN_EMAIL || '');
   const password = String(process.env.MAGCLAW_ADMIN_PASSWORD || '');
   if (!email || !password) return null;

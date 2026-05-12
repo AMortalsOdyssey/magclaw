@@ -111,7 +111,6 @@ export function applyServerYamlConfig(options = {}) {
   setEnv(env, 'MAGCLAW_DATA_DIR', pick(server.data_dir, server.dataDir));
   setEnv(env, 'MAGCLAW_REQUIRE_POSTGRES', pick(server.require_postgres, server.requirePostgres));
   setEnv(env, 'MAGCLAW_REQUIRE_LOGIN', pick(auth.require_login, auth.requireLogin));
-  setEnv(env, 'MAGCLAW_ALLOW_SIGNUPS', pick(auth.allow_signups, auth.allowSignups));
   setEnv(env, 'MAGCLAW_SESSION_SECRET', pick(auth.session_secret, auth.sessionSecret));
 
   setEnv(env, 'MAGCLAW_DATABASE_URL', pick(database.url, database.postgres_url, database.postgresUrl, database.connection_string, database.connectionString));

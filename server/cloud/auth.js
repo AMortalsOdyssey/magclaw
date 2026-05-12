@@ -27,6 +27,8 @@ import {
   token,
   validatePassword,
   verifyPassword,
+  WORKSPACE_SLUG_MAX_LENGTH,
+  WORKSPACE_SLUG_MIN_LENGTH,
   WORKSPACE_SLUG_PATTERN,
 } from './auth-primitives.js';
 import { normalizeFanoutApiConfig } from '../runtime-config.js';
@@ -55,7 +57,6 @@ export function createCloudAuth(deps) {
   });
 
   function cleanupLegacyConfiguredAdminMembers() {
-    if (process.env.MAGCLAW_ALLOW_SIGNUPS !== '1') return;
     const cloud = state.cloud;
     const removedAt = now();
     for (const member of safeArray(cloud.workspaceMembers)) {
@@ -76,9 +77,9 @@ export function createCloudAuth(deps) {
     state.cloud.schemaVersion = Number(state.cloud.schemaVersion || 1);
     state.cloud.auth = {
       ...(state.cloud.auth || {}),
-      allowSignups: process.env.MAGCLAW_ALLOW_SIGNUPS === '1',
       passwordLogin: true,
     };
+    delete state.cloud.auth.allowSignups;
     delete state.cloud.auth.ownerInviteOnly;
     state.cloud.workspaces = safeArray(state.cloud.workspaces);
     if (!state.cloud.workspaces.length) {
@@ -251,7 +252,69 @@ export function createCloudAuth(deps) {
       if (cloudRepository?.isEnabled?.()) await cloudRepository.persistFromState(getState());
       await persistState({ skipExternal: true });
     } catch (error) {
-      if (cloudRepository?.isEnabled?.()) await cloudRepository.loadIntoState(getState()).catch(() => {});
+      if (cloudRepository?.isEnabled?.() && typeof cloudRepository.loadIntoState === 'function') {
+        await cloudRepository.loadIntoState(getState()).catch(() => {});
+      }
+      throw error;
+    }
+  }
+
+  function cloneRecord(value) {
+    return value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+  }
+
+  function authUserRecord(user) {
+    return cloneRecord(user);
+  }
+
+  function loginUserRecord(user) {
+    return {
+      id: user.id,
+      lastLoginAt: user.lastLoginAt,
+    };
+  }
+
+  function passwordUserRecord(user) {
+    return {
+      id: user.id,
+      passwordHash: user.passwordHash,
+      emailVerifiedAt: user.emailVerifiedAt || null,
+      updatedAt: user.updatedAt,
+      lastLoginAt: user.lastLoginAt || null,
+    };
+  }
+
+  function configuredAdminUserRecord(user) {
+    return {
+      ...authUserRecord(user),
+      disabledAt: user.disabledAt || null,
+    };
+  }
+
+  function removeArrayItem(items, item) {
+    const index = items.indexOf(item);
+    if (index >= 0) items.splice(index, 1);
+  }
+
+  async function persistAuthOperation(operation) {
+    try {
+      if (cloudRepository?.isEnabled?.() && typeof cloudRepository.persistAuthOperation === 'function') {
+        const payload = cloneRecord(operation);
+        payload.stateSnapshot = cloneRecord(getState());
+        await cloudRepository.persistAuthOperation(payload);
+        await persistState({ skipExternal: true });
+        return;
+      }
+      if (cloudRepository?.isEnabled?.() && typeof cloudRepository.persistAuthFromState === 'function') {
+        await cloudRepository.persistAuthFromState(cloneRecord(getState()));
+        await persistState({ skipExternal: true });
+        return;
+      }
+      await persistCloudState();
+    } catch (error) {
+      if (cloudRepository?.isEnabled?.() && typeof cloudRepository.loadIntoState === 'function') {
+        await cloudRepository.loadIntoState(getState()).catch(() => {});
+      }
       throw error;
     }
   }
@@ -334,7 +397,7 @@ export function createCloudAuth(deps) {
   function humanForMember(member, user = null) {
     state.humans = safeArray(state.humans);
     const direct = state.humans.find((human) => human.id === member?.humanId);
-    if (direct && process.env.MAGCLAW_ALLOW_SIGNUPS === '1' && direct.id === 'hum_local' && user?.id && direct.authUserId !== user.id) {
+    if (direct && direct.id === 'hum_local' && user?.id && direct.authUserId !== user.id) {
       return state.humans.find((human) => human.authUserId === user.id && human.status !== 'removed') || null;
     }
     return direct
@@ -444,7 +507,7 @@ export function createCloudAuth(deps) {
       let human = options.humanId
         ? state.humans.find((item) => item.id === options.humanId)
         : null;
-      if (human && process.env.MAGCLAW_ALLOW_SIGNUPS === '1' && human.id === 'hum_local' && human.authUserId !== user.id) {
+      if (human && human.id === 'hum_local' && human.authUserId !== user.id) {
         human = null;
       }
       if (!human) human = state.humans.find((item) => item.authUserId === user.id);
@@ -499,6 +562,7 @@ export function createCloudAuth(deps) {
     const cloud = ensureCloudState();
     const workspace = primaryWorkspace();
     let changed = false;
+    let adminUserNeedsSync = false;
     const adminMember = cloud.workspaceMembers.find((member) => member.workspaceId === workspace.id && member.role === 'admin');
     let user = cloud.users.find((item) => item.email === credentials.email)
       || cloud.users.find((item) => item.id === adminMember?.userId);
@@ -533,10 +597,12 @@ export function createCloudAuth(deps) {
       }
       if (user.disabledAt) {
         delete user.disabledAt;
+        adminUserNeedsSync = true;
         changed = true;
       }
     if (!verifyPassword(credentials.password, user.passwordHash)) {
       user.passwordHash = scryptPassword(credentials.password);
+      adminUserNeedsSync = true;
       changed = true;
     }
     if (changed) user.updatedAt = now();
@@ -570,7 +636,15 @@ export function createCloudAuth(deps) {
       }
     }
 
-    if (changed) await persistCloudState();
+    if (changed) {
+      await persistCloudState();
+      if (adminUserNeedsSync && cloudRepository?.isEnabled?.()) {
+        await persistAuthOperation({
+          type: 'configured-admin-sync',
+          user: configuredAdminUserRecord(user),
+        });
+      }
+    }
     return { configured: true, user: publicUser(user), member, workspace };
   }
 
@@ -589,19 +663,26 @@ export function createCloudAuth(deps) {
         if (human?.id && member.humanId !== human.id) member.humanId = human.id;
         markHumanPresence(human, 'online');
       }
-    const issued = issueSession(user, req);
-      persistAuthStateSoon('login');
+      const previousLastLoginAt = user.lastLoginAt || null;
+      const issued = issueSession(user, req);
+      try {
+        await persistAuthOperation({
+          type: 'login',
+          user: loginUserRecord(user),
+          session: cloneRecord(issued.session),
+        });
+      } catch (error) {
+        removeArrayItem(cloud.sessions, issued.session);
+        user.lastLoginAt = previousLastLoginAt;
+        console.error(`[cloud-auth] login persist failed user=${user.id}`, error);
+        throw error;
+      }
       res.setHeader('Set-Cookie', issued.cookie);
       return { user: publicUser(user), member, workspace: primaryWorkspace() };
     }
 
     async function registerOpenAccount(body, req, res) {
       const cloud = ensureCloudState();
-      if (!cloud.auth.allowSignups) {
-        const error = new Error('Account creation is disabled.');
-        error.status = 403;
-        throw error;
-      }
       const email = normalizeEmail(body.email);
       if (!isValidEmail(email)) {
         const error = new Error('A valid email is required.');
@@ -630,7 +711,23 @@ export function createCloudAuth(deps) {
       cloud.users.push(user);
       console.info(`[cloud-auth] open account registered email=${email} user=${user.id}`);
       const issued = issueSession(user, req);
-      persistAuthStateSoon('register-open-account');
+      try {
+        await persistAuthOperation({
+          type: 'register-open-account',
+          user: authUserRecord(user),
+          session: cloneRecord(issued.session),
+        });
+      } catch (error) {
+        removeArrayItem(cloud.sessions, issued.session);
+        removeArrayItem(cloud.users, user);
+        console.error(`[cloud-auth] open account persist failed email=${email} user=${user.id}`, error);
+        if (error?.code === '23505') {
+          const duplicate = new Error('User already exists.');
+          duplicate.status = 409;
+          throw duplicate;
+        }
+        throw error;
+      }
       res.setHeader('Set-Cookie', issued.cookie);
       return { user: publicUser(user), member: null, workspace: null };
     }
@@ -638,10 +735,22 @@ export function createCloudAuth(deps) {
   async function logout(req, res) {
     const auth = currentActor(req);
     const session = currentSession(req);
+    const previousRevokedAt = session?.revokedAt || null;
     if (session) session.revokedAt = now();
     if (auth) markHumanPresence(humanForMember(auth.member, auth.user), 'offline');
+    if (session) {
+      try {
+        await persistAuthOperation({
+          type: 'logout',
+          session: cloneRecord(session),
+        });
+      } catch (error) {
+        session.revokedAt = previousRevokedAt;
+        console.error(`[cloud-auth] logout persist failed session=${session.id}`, error);
+        throw error;
+      }
+    }
     res.setHeader('Set-Cookie', clearSessionCookie());
-    persistAuthStateSoon('logout');
     return { ok: true };
   }
 
@@ -866,8 +975,8 @@ export function createCloudAuth(deps) {
         throw error;
       }
       const slug = normalizeWorkspaceSlug(body.slug, name);
-      if (slug.length < 2 || slug.length > 63 || !WORKSPACE_SLUG_PATTERN.test(slug)) {
-        const error = new Error('Server slug must be 2-63 lowercase letters, numbers, or hyphens.');
+      if (slug.length < WORKSPACE_SLUG_MIN_LENGTH || slug.length > WORKSPACE_SLUG_MAX_LENGTH || !WORKSPACE_SLUG_PATTERN.test(slug)) {
+        const error = new Error(`Server slug must be ${WORKSPACE_SLUG_MIN_LENGTH}-${WORKSPACE_SLUG_MAX_LENGTH} lowercase letters, numbers, or hyphens.`);
         error.status = 400;
         throw error;
       }
@@ -1406,11 +1515,6 @@ export function createCloudAuth(deps) {
       const raw = String(body.inviteToken || body.token || '').trim();
       const email = normalizeEmail(body.email);
       const invitation = raw ? invitationForToken(raw) : null;
-      if (!invitation && !cloud.auth.allowSignups) {
-        const error = new Error('A valid invitation token is required.');
-        error.status = 403;
-        throw error;
-      }
       if (invitation) assertInvitationCanBeAccepted(invitation);
       if (invitation && Object.prototype.hasOwnProperty.call(body, 'role')) {
         const error = new Error('Role is controlled by the invitation.');
@@ -1642,6 +1746,14 @@ export function createCloudAuth(deps) {
         throw error;
       }
       const createdAt = now();
+      const previousPasswordHash = user.passwordHash;
+      const previousUpdatedAt = user.updatedAt;
+      const previousResetState = cloud.passwordResetTokens
+        .filter((item) => item.userId === user.id && item.workspaceId === workspace.id)
+        .map((item) => ({ item, revokedAt: item.revokedAt || null }));
+      const previousSessionState = cloud.sessions
+        .filter((session) => session.userId === user.id)
+        .map((session) => ({ session, revokedAt: session.revokedAt || null }));
       const revokedCount = revokeActivePasswordResetsForUser(user.id, workspace.id, { actorUserId: auth.user.id, revokedAt: createdAt });
       if (revokedCount) console.info(`[cloud-auth] revoked previous password resets user=${user.id} count=${revokedCount} actor=${auth.user.id}`);
       const raw = uniqueCloudToken('mc_reset');
@@ -1662,7 +1774,7 @@ export function createCloudAuth(deps) {
       for (const session of cloud.sessions) {
         if (session.userId === user.id && !session.revokedAt) session.revokedAt = createdAt;
       }
-      systemNotification('member_password_reset', {
+      const notification = systemNotification('member_password_reset', {
         actorUserId: auth.user.id,
         actorHumanId: auth.member.humanId,
         targetUserId: user.id,
@@ -1671,7 +1783,32 @@ export function createCloudAuth(deps) {
         message: `${auth.user.name || auth.user.email} reset a member password.`,
       });
       console.info(`[cloud-auth] password reset created user=${user.id} actor=${auth.user.id}`);
-      await persistCloudState();
+      try {
+        await persistAuthOperation({
+          type: 'password-reset-request',
+          user: passwordUserRecord(user),
+          passwordResetTokens: cloud.passwordResetTokens
+            .filter((item) => item.userId === user.id && item.workspaceId === workspace.id)
+            .map(cloneRecord),
+          sessions: cloud.sessions
+            .filter((session) => session.userId === user.id && session.revokedAt === createdAt)
+            .map(cloneRecord),
+        });
+      } catch (error) {
+        removeArrayItem(cloud.passwordResetTokens, reset);
+        removeArrayItem(state.systemNotifications, notification);
+        user.passwordHash = previousPasswordHash;
+        user.updatedAt = previousUpdatedAt;
+        for (const entry of previousResetState) entry.item.revokedAt = entry.revokedAt;
+        for (const entry of previousSessionState) entry.session.revokedAt = entry.revokedAt;
+        console.error(`[cloud-auth] password reset create persist failed user=${user.id} actor=${auth.user.id}`, error);
+        throw error;
+      }
+      try {
+        await persistCloudState();
+      } catch (error) {
+        console.error(`[cloud-auth] password reset notification persist failed user=${user.id} actor=${auth.user.id}`, error);
+      }
       return {
         reset: publicPasswordReset(reset, user),
         email: user.email,
@@ -1699,6 +1836,10 @@ export function createCloudAuth(deps) {
       }
       const workspace = primaryWorkspace();
       const createdAt = now();
+      const cloud = ensureCloudState();
+      const previousResetState = cloud.passwordResetTokens
+        .filter((item) => item.userId === user.id && item.workspaceId === workspace.id)
+        .map((item) => ({ item, revokedAt: item.revokedAt || null }));
       const revokedCount = revokeActivePasswordResetsForUser(user.id, workspace.id, { actorUserId: null, revokedAt: createdAt });
       if (revokedCount) console.info(`[cloud-auth] revoked previous password resets user=${user.id} count=${revokedCount} actor=self-service`);
       const raw = uniqueCloudToken('mc_reset');
@@ -1713,8 +1854,21 @@ export function createCloudAuth(deps) {
         revokedAt: null,
         createdAt,
       };
-      ensureCloudState().passwordResetTokens.push(reset);
-      await persistCloudState();
+      cloud.passwordResetTokens.push(reset);
+      try {
+        await persistAuthOperation({
+          type: 'password-reset-request',
+          user: { id: user.id },
+          passwordResetTokens: cloud.passwordResetTokens
+            .filter((item) => item.userId === user.id && item.workspaceId === workspace.id)
+            .map(cloneRecord),
+        });
+      } catch (error) {
+        removeArrayItem(cloud.passwordResetTokens, reset);
+        for (const entry of previousResetState) entry.item.revokedAt = entry.revokedAt;
+        console.error(`[cloud-auth] password reset request persist failed user=${user.id}`, error);
+        throw error;
+      }
       const resetUrl = resetUrlForToken(raw, req);
       const sent = mailService
         ? await mailService.sendPasswordReset({ to: user.email, name: user.name, resetUrl })
@@ -1728,9 +1882,14 @@ export function createCloudAuth(deps) {
       const { reset, user, member } = assertPasswordResetCanBeUsed(passwordResetForToken(resetToken));
       const password = validatePassword(body.password);
       const completedAt = now();
+      const previousPasswordHash = user.passwordHash;
+      const previousEmailVerifiedAt = user.emailVerifiedAt || null;
+      const previousUpdatedAt = user.updatedAt;
+      const previousLastLoginAt = user.lastLoginAt || null;
       user.passwordHash = scryptPassword(password);
       user.emailVerifiedAt = user.emailVerifiedAt || completedAt;
       user.updatedAt = completedAt;
+      const previousConsumedAt = reset.consumedAt || null;
       reset.consumedAt = completedAt;
       if (member) {
         const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, { humanId: member.humanId });
@@ -1739,7 +1898,23 @@ export function createCloudAuth(deps) {
       }
       const issued = issueSession(user, req);
       console.info(`[cloud-auth] password reset completed user=${user.id}`);
-      await persistCloudState();
+      try {
+        await persistAuthOperation({
+          type: 'password-reset-complete',
+          user: passwordUserRecord(user),
+          reset: cloneRecord(reset),
+          session: cloneRecord(issued.session),
+        });
+      } catch (error) {
+        removeArrayItem(ensureCloudState().sessions, issued.session);
+        user.passwordHash = previousPasswordHash;
+        user.emailVerifiedAt = previousEmailVerifiedAt;
+        user.updatedAt = previousUpdatedAt;
+        user.lastLoginAt = previousLastLoginAt;
+        reset.consumedAt = previousConsumedAt;
+        console.error(`[cloud-auth] password reset complete persist failed user=${user.id}`, error);
+        throw error;
+      }
       res.setHeader('Set-Cookie', issued.cookie);
       return { user: publicUser(user), member, workspace: primaryWorkspace() };
     }
@@ -1843,7 +2018,6 @@ export function createCloudAuth(deps) {
         initialized: cloud.users.length > 0,
         adminConfigured: Boolean(configuredAdminCredentials()),
         loginRequired: isLoginRequired(),
-        allowSignups: Boolean(cloud.auth.allowSignups),
         passwordLogin: true,
           storageBackend: storageBackend(),
           currentUser: publicUser(user),

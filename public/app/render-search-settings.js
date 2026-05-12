@@ -1346,9 +1346,7 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
         </form>`}
       </section>
     ` : '';
-  const createAccountLink = auth.allowSignups
-    ? '<p class="cloud-login-switch">No account? <a href="/create-account" data-action="none">Create one</a></p>'
-    : '';
+  const createAccountLink = '<p class="cloud-login-switch">No account? <a href="/create-account" data-action="none">Create one</a></p>';
   const loginPanel = `
       <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
         ${brandHtml}

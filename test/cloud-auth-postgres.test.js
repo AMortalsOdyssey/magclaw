@@ -52,7 +52,6 @@ async function launchIsolatedServer(tmp, schema) {
       MAGCLAW_ADMIN_NAME: 'Admin',
       MAGCLAW_ADMIN_EMAIL: 'admin@example.com',
       MAGCLAW_ADMIN_PASSWORD: 'password123',
-      MAGCLAW_ALLOW_SIGNUPS: '1',
       MAGCLAW_MAIL_TRANSPORT: 'file',
       MAGCLAW_MAIL_OUTBOX: path.join(tmp, '.magclaw', 'outbox.jsonl'),
       MAGCLAW_MAIL_FROM: 'MagClaw <noreply@example.com>',
@@ -67,7 +66,7 @@ async function launchIsolatedServer(tmp, schema) {
   child.stderr.on('data', (chunk) => { output += chunk.toString(); });
   let stopped = false;
 
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
     try {
       const response = await fetch(`${baseUrl}/api/cloud/auth/status`);
       if (response.ok) {
@@ -184,7 +183,6 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
       body: JSON.stringify({
         name: 'PG Team Renamed',
         avatar: 'data:image/png;base64,cGc=',
-        onboardingAgentId: 'agt_codex',
         newAgentGreetingEnabled: false,
       }),
     });
@@ -316,7 +314,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
     assert.equal(restartedMember.data.member.role, 'admin');
     const restartedState = await request(server.baseUrl, '/api/state', { cookie: restartedMember.cookie });
     assert.equal(restartedState.data.cloud.auth.currentMember.role, 'admin');
-    assert.ok(restartedState.data.channels.length > 0);
+    assert.deepEqual(restartedState.data.cloud.workspaces.map((item) => item.slug).sort(), ['local', 'pg-team']);
   } finally {
     if (server) await server.stop();
     await dropSchema(schema);

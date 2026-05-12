@@ -316,6 +316,7 @@ test('postgres store upserts duplicate residual state records without crashing',
     routeEvents: [
       { id: 'route_duplicate', workspaceId: 'wsp_main', choice: 'first', createdAt },
       { id: 'route_duplicate', workspaceId: 'wsp_main', choice: 'latest', createdAt },
+      { id: 'route_orphan', workspaceId: 'wsp_missing', choice: 'fallback', createdAt },
     ],
     cloud: {
       workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
@@ -333,6 +334,8 @@ test('postgres store upserts duplicate residual state records without crashing',
   assert.match(stateRecordInserts[0].sql, /ON CONFLICT \(workspace_id, kind, id\) DO UPDATE SET/);
   assert.equal(stateRecordInserts[1].params[2], 'route_duplicate');
   assert.equal(JSON.parse(stateRecordInserts[1].params[6]).choice, 'latest');
+  const orphanInsert = stateRecordInserts.find((query) => query.params[2] === 'route_orphan');
+  assert.equal(orphanInsert, undefined);
 });
 
 test('postgres store persists auth state without flushing runtime records', async () => {
@@ -394,4 +397,232 @@ test('postgres store persists auth state without flushing runtime records', asyn
   }
   assert.doesNotMatch(sqlText, /cloud_state_records/);
   assert.doesNotMatch(sqlText, /cloud_route_events/);
+});
+
+test('postgres store snapshots auth state before async connection waits', async () => {
+  const queries = [];
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  const state = {
+    cloud: {
+      workspaces: [{ id: 'wsp_snapshot', slug: 'snapshot', name: 'Snapshot', createdAt, updatedAt: createdAt }],
+      users: [{
+        id: 'usr_snapshot',
+        email: 'snapshot@example.test',
+        name: 'Snapshot User',
+        passwordHash: 'hash',
+        language: 'en',
+        createdAt,
+        updatedAt: createdAt,
+      }],
+      workspaceMembers: [],
+      sessions: [],
+    },
+  };
+  const pool = {
+    async connect() {
+      state.cloud.users = [];
+      state.cloud.workspaces = [];
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  await store.persistAuthFromState(state);
+  const userInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_users"'));
+  const workspaceInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_workspaces"'));
+  assert.equal(userInsert?.params[0], 'usr_snapshot');
+  assert.equal(workspaceInsert?.params[0], 'wsp_snapshot');
+});
+
+test('postgres store persists login auth operation with narrow monotonic writes', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+
+  await store.persistAuthOperation({
+    type: 'login',
+    user: {
+      id: 'usr_login',
+      lastLoginAt: '2026-05-12T01:00:00.000Z',
+    },
+    session: {
+      id: 'sess_login',
+      userId: 'usr_login',
+      tokenHash: 'token_hash',
+      createdAt: '2026-05-12T01:00:00.000Z',
+      expiresAt: '2026-06-11T01:00:00.000Z',
+      userAgent: 'node-test',
+      ipHash: 'ip_hash',
+      revokedAt: null,
+    },
+  });
+
+  const userUpdate = queries.find((query) => query.sql.includes('UPDATE "magclaw"."cloud_users"'));
+  const sessionUpsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_sessions"'));
+  assert.ok(userUpdate);
+  assert.doesNotMatch(userUpdate.sql, /password_hash/);
+  assert.ok(sessionUpsert);
+  assert.match(sessionUpsert.sql, /revoked_at = COALESCE\("magclaw"\."cloud_sessions"\.revoked_at, EXCLUDED\.revoked_at\)/);
+  assert.doesNotMatch(queries.map((query) => query.sql).join('\n'), /cloud_state_records/);
+});
+
+test('postgres store persists configured admin password update as a narrow auth operation', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+
+  await store.persistAuthOperation({
+    type: 'password-update',
+    user: {
+      id: 'usr_admin',
+      passwordHash: 'new_admin_hash',
+      emailVerifiedAt: '2026-05-12T01:00:00.000Z',
+      updatedAt: '2026-05-12T01:00:00.000Z',
+    },
+  });
+
+  const userUpdate = queries.find((query) => query.sql.includes('UPDATE "magclaw"."cloud_users"'));
+  assert.match(userUpdate?.sql || '', /password_hash = \$2/);
+  assert.equal(userUpdate?.params[0], 'usr_admin');
+  assert.equal(userUpdate?.params[1], 'new_admin_hash');
+  assert.doesNotMatch(queries.map((query) => query.sql).join('\n'), /cloud_sessions/);
+});
+
+test('postgres store can explicitly restore a configured admin user', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+
+  await store.persistAuthOperation({
+    type: 'configured-admin-sync',
+    user: {
+      id: 'usr_admin',
+      email: 'admin@example.test',
+      name: 'Admin',
+      passwordHash: 'admin_hash',
+      language: 'en',
+      emailVerifiedAt: '2026-05-12T01:00:00.000Z',
+      createdAt: '2026-05-12T00:00:00.000Z',
+      updatedAt: '2026-05-12T01:00:00.000Z',
+      disabledAt: null,
+    },
+  });
+
+  const userUpsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_users"'));
+  assert.match(userUpsert?.sql || '', /disabled_at = EXCLUDED\.disabled_at/);
+  assert.equal(userUpsert?.params[0], 'usr_admin');
+  assert.equal(userUpsert?.params[11], null);
+});
+
+test('postgres store persists password reset completion without reviving consumed tokens', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+
+  await store.persistAuthOperation({
+    type: 'password-reset-complete',
+    user: {
+      id: 'usr_reset',
+      passwordHash: 'new_hash',
+      emailVerifiedAt: '2026-05-12T01:00:00.000Z',
+      updatedAt: '2026-05-12T01:00:00.000Z',
+    },
+    reset: {
+      id: 'preset_1',
+      workspaceId: 'wsp_main',
+      userId: 'usr_reset',
+      tokenHash: 'reset_hash',
+      createdBy: null,
+      expiresAt: '2026-05-12T02:00:00.000Z',
+      consumedAt: '2026-05-12T01:00:00.000Z',
+      revokedAt: null,
+      createdAt: '2026-05-12T00:00:00.000Z',
+    },
+    session: {
+      id: 'sess_reset',
+      userId: 'usr_reset',
+      tokenHash: 'token_hash',
+      createdAt: '2026-05-12T01:00:00.000Z',
+      expiresAt: '2026-06-11T01:00:00.000Z',
+      userAgent: 'node-test',
+      ipHash: 'ip_hash',
+      revokedAt: null,
+    },
+  });
+
+  const userUpdate = queries.find((query) => query.sql.includes('UPDATE "magclaw"."cloud_users"'));
+  const resetUpsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_password_resets"'));
+  assert.match(userUpdate?.sql || '', /password_hash = \$2/);
+  assert.match(resetUpsert?.sql || '', /consumed_at = COALESCE\("magclaw"\."cloud_password_resets"\.consumed_at, EXCLUDED\.consumed_at\)/);
+  assert.match(resetUpsert?.sql || '', /revoked_at = COALESCE\("magclaw"\."cloud_password_resets"\.revoked_at, EXCLUDED\.revoked_at\)/);
 });
