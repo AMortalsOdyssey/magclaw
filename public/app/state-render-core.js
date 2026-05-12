@@ -96,6 +96,7 @@ let settingsTab = initialRouteState.settingsTab || initialUiState.settingsTab ||
 let consoleTab = initialRouteState.consoleTab || consoleTabFromPath() || initialUiState.consoleTab || 'overview';
 let latestPairingCommand = null;
 let computerPairingDisplayName = '';
+let computerPairingCommandError = '';
 let serverSwitcherOpen = false;
 let latestInvitationLink = null;
 let cloudInviteEmails = [];

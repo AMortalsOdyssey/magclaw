@@ -99,12 +99,18 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(pairingActionsSource, /await generateFreshComputerPairingCommand\(body\)/);
   assert.match(modalSource, /function pairingCommandIsUsable/);
   assert.match(modalSource, /function pairingCommandText/);
+  assert.match(modalSource, /function pairingCommandDisplayText/);
   assert.match(modalSource, /id="computer-display-name-input"/);
   assert.match(modalSource, /--display-name/);
+  assert.match(app, /let computerPairingCommandError = ''/);
+  assert.match(app, /code\.textContent = pairingCommandDisplayText\(\)/);
+  assert.match(modalSource, /computerPairingCommandError \|\| 'Generating command\.\.\.'/);
+  assert.match(clickSource, /if \(modal === 'computer'\) renderShellOrModal\(\)/);
+  assert.match(clickSource, /render\(\);\s*await generateFreshComputerPairingCommand\(\{ name: appState\.runtime\?\.host \|\| 'Computer' \}\)/);
   assert.match(modalSource, /token\.consumedAt \|\| token\.revokedAt/);
   assert.match(modalSource, /expiresAtMs <= Date\.now\(\)/);
   assert.match(modalSource, /const stale = Boolean\(command && !pairingCommandIsUsable\(latestPairingCommand\)\)/);
-  assert.match(modalSource, /presenceClass\(connected \? 'connected' : stale \? 'offline' : 'queued'\)/);
+  assert.match(modalSource, /presenceClass\(connected \? 'connected' : \(stale \|\| commandError\) \? 'offline' : 'queued'\)/);
   assert.doesNotMatch(modalSource, /pendingComputerId && !liveComputer/);
   assert.match(clickSource, /latestPairingCommand\.provisional = !body\.computerId/);
   assert.match(clickSource, /computerPairingDisplayName = ''/);
@@ -373,6 +379,7 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   const styles = await readStylesSource();
   const authGateSource = app.slice(app.indexOf('function renderCloudAuthGate('), app.indexOf('function renderBrowserSettingsTab()'));
   const openRegisterSource = authGateSource.slice(authGateSource.indexOf('id="cloud-open-register-form"'), authGateSource.indexOf('id="cloud-forgot-form"'));
+  const loginFormSource = authGateSource.slice(authGateSource.indexOf('id="cloud-login-form"'), authGateSource.indexOf('id="cloud-join-link-form"'));
   const submitStyles = styles.slice(styles.indexOf('.cloud-login-submit {'), styles.indexOf('.cloud-login-switch {'));
   const checkCardButtonStyles = styles.slice(styles.indexOf('.cloud-check-email-card .cloud-login-submit {'), styles.indexOf('.cloud-check-icon {'));
   const checkIconStyles = styles.slice(styles.indexOf('.cloud-check-icon {'), styles.indexOf('.console-page {'));
@@ -390,6 +397,7 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.match(authGateSource, /id="cloud-login-form"/);
   assert.doesNotMatch(authGateSource, /Sign in is not ready/);
   assert.match(openRegisterSource, /id="cloud-open-register-form" class="cloud-login-form" novalidate/);
+  assert.match(loginFormSource, /id="cloud-login-form" class="cloud-login-form" novalidate/);
   assert.doesNotMatch(openRegisterSource, /minlength|maxlength/);
   assert.match(app, /function assertCloudPasswordPolicy\(password\)/);
   assert.match(app, /const password = assertCloudPasswordPolicy\(data\.get\('password'\)\)/);
@@ -401,6 +409,9 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.match(authGateSource, /By using MagClaw, you agree to our/);
   assert.match(authGateSource, /Terms of Use/);
   assert.match(authGateSource, /Privacy Policy/);
+  assert.match(app, /'By using MagClaw, you agree to our': '使用即代表您同意我们的'/);
+  assert.match(app, /'Terms of Use': '使用条款'/);
+  assert.match(app, /'and': '和'/);
   assert.match(authGateSource, /<a href="\/terms">Terms of Use<\/a>/);
   assert.match(authGateSource, /<a href="\/privacy">Privacy Policy<\/a>/);
   assert.doesNotMatch(authGateSource, /target="_blank"|rel="noreferrer"/);
@@ -423,6 +434,9 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.match(authGateSource, /role="alert" aria-live="polite"/);
   assert.match(authGateSource, /value="\$\{escapeHtml\(cloudLoginDraftEmail\)\}"/);
   assert.match(app, /Email or password is incorrect/);
+  assert.match(app, /function validateCloudLoginForm\(form, data\)/);
+  assert.match(app, /throw new Error\('Email is required\.'\)/);
+  assert.match(app, /throw new Error\('Password is required\.'\)/);
   assert.match(app, /showCloudAuthGate\(error, \{ interactive: true \}\)/);
   assert.match(app, /const BRAND_LOGO_SRC = '\/brand\/magclaw-logo\.png'/);
   assert.match(authGateSource, /<img src="\$\{BRAND_LOGO_SRC\}" alt="" \/>/);
@@ -467,14 +481,82 @@ test('browser favicon and shared brand assets use the selected Modular Claw logo
   );
 });
 
-test('login legal links have built-in terms and privacy pages', async () => {
+test('login legal links have localized built-in terms and privacy pages', async () => {
   const terms = await readFile(new URL('../public/terms/index.html', import.meta.url), 'utf8');
   const privacy = await readFile(new URL('../public/privacy/index.html', import.meta.url), 'utf8');
+  const legalLanguage = await readFile(new URL('../public/legal-language.js', import.meta.url), 'utf8');
 
+  assert.match(terms, /<html lang="en">/);
+  assert.match(terms, /<title>MagClaw Terms of Use<\/title>/);
+  assert.match(terms, /data-legal-title-en="MagClaw Terms of Use"/);
+  assert.match(terms, /data-legal-title-zh="MagClaw 使用条款"/);
+  assert.match(terms, /data-legal-copy="en"/);
+  assert.match(terms, /<h1>Terms of Use<\/h1>/);
+  assert.match(terms, /Workspace Access/);
   assert.match(terms, /MagClaw 使用条款/);
+  assert.match(terms, /data-legal-copy="zh-CN" hidden/);
   assert.match(terms, /© 2026 MagClaw\. 版权所有。/);
+
+  assert.match(privacy, /<html lang="en">/);
+  assert.match(privacy, /<title>MagClaw Privacy Policy<\/title>/);
+  assert.match(privacy, /data-legal-title-en="MagClaw Privacy Policy"/);
+  assert.match(privacy, /data-legal-title-zh="MagClaw 隐私政策"/);
+  assert.match(privacy, /data-legal-copy="en"/);
+  assert.match(privacy, /<h1>Privacy Policy<\/h1>/);
+  assert.match(privacy, /Passwords are never stored in plaintext/);
   assert.match(privacy, /MagClaw 隐私政策/);
+  assert.match(privacy, /data-legal-copy="zh-CN" hidden/);
   assert.match(privacy, /密码绝不会以明文存储/);
+
+  assert.match(terms, /<script src="\/legal-language\.js" defer><\/script>/);
+  assert.match(privacy, /<script src="\/legal-language\.js" defer><\/script>/);
+  assert.match(legalLanguage, /MAGCLAW_LANGUAGE_KEY = 'magclawLanguage'/);
+  assert.match(legalLanguage, /localStorage\.getItem\(MAGCLAW_LANGUAGE_KEY\)/);
+  assert.match(legalLanguage, /\[data-legal-copy\]/);
+});
+
+test('legal page language script follows stored MagClaw language', async () => {
+  const legalLanguage = await readFile(new URL('../public/legal-language.js', import.meta.url), 'utf8');
+  const sections = [
+    { dataset: { legalCopy: 'en' }, hidden: false },
+    { dataset: { legalCopy: 'zh-CN' }, hidden: true },
+  ];
+  const listeners = {};
+  const context = {
+    URLSearchParams,
+    document: {
+      documentElement: { lang: 'en' },
+      title: 'MagClaw Terms of Use',
+      body: {
+        dataset: {
+          legalTitleEn: 'MagClaw Terms of Use',
+          legalTitleZh: 'MagClaw 使用条款',
+        },
+      },
+      querySelectorAll(selector) {
+        return selector === '[data-legal-copy]' ? sections : [];
+      },
+    },
+    localStorage: {
+      getItem(key) {
+        return key === 'magclawLanguage' ? 'zh-CN' : '';
+      },
+    },
+    window: {
+      location: { search: '' },
+      addEventListener(type, callback) {
+        listeners[type] = callback;
+      },
+    },
+  };
+
+  vm.runInNewContext(legalLanguage, context);
+
+  assert.equal(context.document.documentElement.lang, 'zh-CN');
+  assert.equal(context.document.title, 'MagClaw 使用条款');
+  assert.equal(sections[0].hidden, true);
+  assert.equal(sections[1].hidden, false);
+  assert.equal(typeof listeners.storage, 'function');
 });
 
 test('settings exposes browser language switching and loads i18n before render chunks', async () => {
@@ -1580,6 +1662,8 @@ test('console has routed sections, invitation actions, and no human heartbeat', 
   assert.match(consoleSidebarSource, /railMode === 'console'[\s\S]*renderConsoleRail\(\)/);
   const consoleRailStart = app.indexOf("if (activeView === 'console') {");
   const consoleRailSource = app.slice(consoleRailStart, app.indexOf('return `\n    <aside class="${railClass}">', consoleRailStart));
+  const consoleServerSubmitStart = app.indexOf("if (form.id === 'console-server-form') {");
+  const consoleServerSubmitSource = app.slice(consoleServerSubmitStart, app.indexOf("if (form.id === 'fanout-config-form')", consoleServerSubmitStart));
   assert.match(consoleRailSource, /magclaw-sidebar/);
   assert.doesNotMatch(consoleRailSource, /leftRailHtml|magclaw-left-rail|runtime-chip/);
   assert.match(app, /id="console-server-form"/);
@@ -1588,20 +1672,25 @@ test('console has routed sections, invitation actions, and no human heartbeat', 
   assert.match(app, /data-auto-slug="1"/);
   assert.match(app, /minlength="5"/);
   assert.match(app, /Slug must be at least 5 characters/);
-  assert.match(app, /function validateConsoleServerForm\(form\)/);
+  assert.match(app, /function validateConsoleServerForm\(form, \{ report = true \} = \{\}\)/);
   assert.match(app, /function consoleServerSlugFromName\(value\)/);
   assert.match(app, /syncConsoleServerSlug\(consoleServerForm\)/);
   assert.match(app, /event\.target\.dataset\.autoSlug = '0'/);
   assert.match(app, /setConsoleServerFormError\(form, message\)/);
   assert.match(app, /This URL slug is already taken\./);
-  assert.match(app, /let appFlash = null/);
-  assert.match(app, /function renderAppFlashBanner\(\)/);
+  assert.doesNotMatch(consoleServerSubmitSource, /appFlash\s*=/);
+  assert.match(consoleServerSubmitSource, /window\.history\.replaceState\(\{\}, '', `\/s\/\$\{encodeURIComponent\(slug\)\}\/channels\/\$\{encodeURIComponent\(selectedSpaceId\)\}`\)/);
+  assert.match(consoleServerSubmitSource, /await refreshStateOrAuthGate\(\);\s*skipFinalRefresh = true;\s*toast\(serverCreatedToastMessage\(serverName, slug\)\)/);
+  assert.match(consoleServerSubmitSource, /toast\(serverCreatedToastMessage\(serverName, slug\)\)/);
   assert.match(app, /Server created/);
+  assert.match(app, /setTimeout\(\(\) => node\.classList\.remove\('show'\), 3000\)/);
   assert.match(app, /data-modal="server-create"/);
   assert.match(app, /\/api\/console\/servers/);
   assert.match(app, /Choose a server to continue\. If you do not have one yet, create a new server\./);
   assert.doesNotMatch(app, /console-create-server" type="button" disabled/);
-  assert.match(styles, /\.app-flash/);
+  assert.match(styles, /\.toast \{[\s\S]*z-index: 120/);
+  assert.match(styles, /\.toast \{[\s\S]*border: 2px solid var\(--accent\)/);
+  assert.match(styles, /\.toast \{[\s\S]*background: var\(--accent-soft\)/);
   assert.match(styles, /\.console-page/);
   assert.match(styles, /\.console-grid/);
   assert.match(styles, /\.console-row/);

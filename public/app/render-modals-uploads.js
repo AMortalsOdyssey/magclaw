@@ -745,6 +745,10 @@ function pairingCommandText(command = latestPairingCommand?.command || '') {
   return `${body} --display-name ${pairingShellArg(displayName)}${comment}`;
 }
 
+function pairingCommandDisplayText(command = latestPairingCommand?.command || '') {
+  return pairingCommandText(command) || computerPairingCommandError || 'Generating command...';
+}
+
 function renderComputerModal() {
   if (!cloudCan('manage_computers')) {
     return `
@@ -763,6 +767,8 @@ function renderComputerModal() {
   const connected = String(pairingComputer?.status || '').toLowerCase() === 'connected';
   const displayName = pairingDisplayNameValue();
   const renderedCommand = pairingCommandText(command);
+  const commandError = Boolean(!command && computerPairingCommandError);
+  const commandStatusText = commandError ? 'Could not create connect command.' : 'Waiting for computer to connect...';
   const usesLocalRepoPlaceholder = renderedCommand.includes('MAGCLAW_REPO_DIR=');
   return `
     ${modalHeader('CONNECT COMPUTER')}
@@ -777,19 +783,19 @@ function renderComputerModal() {
         <small>Optional. This becomes the computer name after it connects.</small>
       </label>
       <div class="connect-command-shell">
-        <pre><code>${escapeHtml(renderedCommand || 'Generating command...')}</code></pre>
+        <pre><code>${escapeHtml(pairingCommandDisplayText(command))}</code></pre>
         ${command ? '<button class="connect-copy-btn" type="button" data-action="copy-pairing-command" aria-label="Copy command" title="Copy command"><span aria-hidden="true">⧉</span></button>' : ''}
       </div>
       <p class="connect-command-note">
         ${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your MagClaw checkout path before running. ' : ''}
         Keep this process running — it maintains the connection between your computer and MagClaw.
       </p>
-      <div class="pairing-wait-box ${connected ? 'connected' : ''} ${stale ? 'stale' : ''}">
-        <span class="avatar-status-dot inline ${presenceClass(connected ? 'connected' : stale ? 'offline' : 'queued')}"></span>
-        <strong>${connected ? 'Computer connected.' : stale ? 'This connect command is no longer valid.' : 'Waiting for computer to connect...'}</strong>
+      <div class="pairing-wait-box ${connected ? 'connected' : ''} ${stale || commandError ? 'stale' : ''}">
+        <span class="avatar-status-dot inline ${presenceClass(connected ? 'connected' : (stale || commandError) ? 'offline' : 'queued')}"></span>
+        <strong>${connected ? 'Computer connected.' : stale ? 'This connect command is no longer valid.' : commandStatusText}</strong>
       </div>
       <div class="modal-actions">
-        ${stale ? '<button type="button" class="secondary-btn" data-action="refresh-computer-pairing-command">Generate New Command</button>' : ''}
+        ${stale || commandError ? '<button type="button" class="secondary-btn" data-action="refresh-computer-pairing-command">Generate New Command</button>' : ''}
         <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
         <button type="button" class="primary-btn" data-action="close-modal" ${connected ? '' : 'disabled'}>Done</button>
       </div>

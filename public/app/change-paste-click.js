@@ -1,16 +1,35 @@
 async function generateFreshComputerPairingCommand(body = {}) {
-  latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
-  latestPairingCommand.provisional = !body.computerId;
-  computerPairingDisplayName = '';
+  computerPairingCommandError = '';
+  try {
+    latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    latestPairingCommand.provisional = !body.computerId;
+    try {
+      appState = await api('/api/state');
+    } catch (error) {
+      console.warn('Failed to refresh state after creating computer pairing command:', error);
+    }
+    return latestPairingCommand;
+  } catch (error) {
+    computerPairingCommandError = error.message || 'Failed to create connect command.';
+    if (modal === 'computer') renderShellOrModal();
+    throw error;
+  }
+}
+
+async function switchConsoleServerAndLoadState(slug) {
+  if (!slug) throw new Error('Server slug is missing.');
+  const result = await api(`/api/console/servers/${encodeURIComponent(slug)}/switch`, { method: 'POST', body: '{}' });
   try {
     appState = await api('/api/state');
+    if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   } catch (error) {
-    console.warn('Failed to refresh state after creating computer pairing command:', error);
+    if (result?.cloud && appState) appState = { ...appState, cloud: result.cloud };
+    console.warn('Failed to refresh state after switching server:', error);
   }
-  return latestPairingCommand;
+  return result;
 }
 
 document.addEventListener('change', async (event) => {
@@ -224,8 +243,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'switch-server') {
       const slug = target.dataset.slug || '';
-      if (!slug) throw new Error('Server slug is missing.');
-      await api(`/api/console/servers/${encodeURIComponent(slug)}/switch`, { method: 'POST', body: '{}' });
+      await switchConsoleServerAndLoadState(slug);
       serverSwitcherOpen = false;
       activeView = 'space';
       railTab = 'spaces';
@@ -728,9 +746,8 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'open-console-server') {
       const slug = target.dataset.slug || '';
-      if (slug) {
-        await api(`/api/console/servers/${encodeURIComponent(slug)}/switch`, { method: 'POST', body: '{}' });
-      }
+      await switchConsoleServerAndLoadState(slug);
+      serverSwitcherOpen = false;
       activeView = 'space';
       railTab = 'spaces';
       selectedSpaceType = 'channel';
@@ -830,7 +847,13 @@ document.addEventListener('click', async (event) => {
         return;
       }
       if (modal === 'computer' && cloudCan('manage_computers')) {
+        latestPairingCommand = null;
+        computerPairingDisplayName = '';
+        computerPairingCommandError = '';
+        render();
         await generateFreshComputerPairingCommand({ name: appState.runtime?.host || 'Computer' });
+        if (modal === 'computer') render();
+        return;
       }
       if (modal === 'member-invite') {
         cloudInviteEmails = [];
@@ -933,6 +956,7 @@ document.addEventListener('click', async (event) => {
           }
           latestPairingCommand = null;
           computerPairingDisplayName = '';
+          computerPairingCommandError = '';
         }
         let nextModal = null;
         if (modal === 'avatar-crop') {
@@ -1137,6 +1161,7 @@ document.addEventListener('click', async (event) => {
       toast('Cloud state pulled');
     }
     if (action === 'create-computer-pairing') {
+      computerPairingCommandError = '';
       await generateFreshComputerPairingCommand({ name: appState.runtime?.host || 'Computer' });
       activeView = 'computers';
       railTab = 'computers';
@@ -1144,6 +1169,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'regenerate-computer-command') {
       const computer = byId(appState.computers, target.dataset.id);
+      computerPairingCommandError = '';
       await generateFreshComputerPairingCommand({ computerId: target.dataset.id, name: computer?.name || 'Computer' });
       selectedComputerId = target.dataset.id || selectedComputerId;
       activeView = 'computers';
@@ -1155,6 +1181,8 @@ document.addEventListener('click', async (event) => {
       const body = selectedComputer && !computerIsDisabled(selectedComputer)
         ? { computerId: selectedComputer.id, name: selectedComputer.name || selectedComputer.hostname || 'Computer' }
         : { name: appState.runtime?.host || 'Computer' };
+      computerPairingCommandError = '';
+      renderShellOrModal();
       await generateFreshComputerPairingCommand(body);
       modal = 'computer';
       renderShellOrModal();

@@ -400,6 +400,7 @@ const zhCnTranslations = {
   'Join Server': '加入服务器',
   'Sign in or create an account, then return to join this server.': '请登录或创建账户，然后返回加入此服务器。',
   'By using MagClaw, you agree to our': '使用即代表您同意我们的',
+  'and': '和',
   'All Rights Reserved.': '版权所有。',
   'Create Server': '创建服务器',
   'Server name': '服务器名称',
@@ -625,6 +626,8 @@ const zhCnTranslations = {
   'File referenced from project': '已引用项目文件',
   'Folder referenced from project': '已引用项目文件夹',
   'Email or password is incorrect.': '邮箱或密码不正确。',
+  'Email is required.': '邮箱必填。',
+  'Password is required.': '密码必填。',
   'User already registered.': '用户已注册。',
   'Invitation link already used.': '邀请链接已被使用。',
   'This link is no longer available.': '此链接已不可用。',
@@ -632,7 +635,7 @@ const zhCnTranslations = {
   'Remove invalid email:': '请移除无效邮箱：',
   'Cloud account flow': '云账户流程',
   'Privacy Policy': '隐私政策',
-  'Terms of Use': '使用协议',
+  'Terms of Use': '使用条款',
 };
 
 const zhCnRules = [

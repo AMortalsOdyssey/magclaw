@@ -596,7 +596,7 @@ function toast(message) {
   }
   node.textContent = typeof t === 'function' ? t(message) : message;
   node.classList.add('show');
-  window.setTimeout(() => node.classList.remove('show'), 2600);
+  window.setTimeout(() => node.classList.remove('show'), 3000);
 }
 
 function renderFanoutDecisionToasts() {

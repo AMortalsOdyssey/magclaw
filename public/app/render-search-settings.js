@@ -1355,7 +1355,7 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
           <h1 id="cloud-login-title">Sign in</h1>
           <span>Where humans and AI agents collaborate.</span>
         </div>
-        <form id="cloud-login-form" class="cloud-login-form">
+        <form id="cloud-login-form" class="cloud-login-form" novalidate>
           <label class="cloud-login-field"><span>Email</span><input name="email" type="email" autocomplete="email" value="${escapeHtml(cloudLoginDraftEmail)}" required /></label>
           <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="current-password" placeholder="Password" required /></label>
           ${loginErrorHtml}

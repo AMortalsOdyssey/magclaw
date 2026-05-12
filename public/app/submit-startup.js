@@ -36,6 +36,20 @@ function assertCloudPasswordPolicy(password) {
   return value;
 }
 
+function validateCloudLoginForm(form, data) {
+  const email = String(data.get('email') || '').trim();
+  const password = String(data.get('password') || '');
+  if (!email) throw new Error('Email is required.');
+  if (!password) throw new Error('Password is required.');
+  return { email, password };
+}
+
+function serverCreatedToastMessage(serverName, slug) {
+  const name = String(serverName || 'Server').trim() || 'Server';
+  const cleanSlug = String(slug || '').trim();
+  return cleanSlug ? `Server created: ${name} /${cleanSlug}` : `Server created: ${name}`;
+}
+
 document.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
@@ -323,11 +337,12 @@ document.addEventListener('submit', async (event) => {
     }
     if (form.id === 'cloud-login-form') {
       cloudLoginDraftEmail = String(data.get('email') || '').trim();
+      const credentials = validateCloudLoginForm(form, data);
       await api('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({
-          email: cloudLoginDraftEmail,
-          password: data.get('password'),
+          email: credentials.email,
+          password: credentials.password,
         }),
       });
       cloudLoginDraftEmail = '';
@@ -459,11 +474,6 @@ document.addEventListener('submit', async (event) => {
       });
       const slug = String(result.server?.slug || '').trim();
       const serverName = String(result.server?.name || data.get('name') || 'Server').trim();
-      appFlash = {
-        tone: 'success',
-        message: 'Server created',
-        detail: slug ? `${serverName} /${slug}` : serverName,
-      };
       modal = null;
       activeView = 'space';
       railTab = 'spaces';
@@ -474,8 +484,12 @@ document.addEventListener('submit', async (event) => {
       selectedAgentId = null;
       selectedTaskId = null;
       workspaceActivityDrawerOpen = false;
-      if (slug && window.history?.replaceState) window.history.replaceState({}, '', `/s/${encodeURIComponent(slug)}`);
-      toast('Server created');
+      if (slug && window.history?.replaceState) {
+        window.history.replaceState({}, '', `/s/${encodeURIComponent(slug)}/channels/${encodeURIComponent(selectedSpaceId)}`);
+      }
+      await refreshStateOrAuthGate();
+      skipFinalRefresh = true;
+      toast(serverCreatedToastMessage(serverName, slug));
     }
     if (form.id === 'fanout-config-form') {
       await api('/api/settings/fanout', {
@@ -485,7 +499,7 @@ document.addEventListener('submit', async (event) => {
       toast('Fan-out API saved');
     }
   } catch (error) {
-    if (form.id === 'cloud-login-form' && error.status === 401) {
+    if (form.id === 'cloud-login-form') {
       skipFinalRefresh = true;
       await showCloudAuthGate(error, { interactive: true });
     } else if (form.id === 'console-server-form') {

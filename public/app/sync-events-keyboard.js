@@ -749,7 +749,7 @@ function consoleServerSlugValidationMessage(slug) {
   return '';
 }
 
-function validateConsoleServerForm(form) {
+function validateConsoleServerForm(form, { report = true } = {}) {
   const nameInput = form?.querySelector?.('[data-console-server-name]');
   const slugInput = form?.querySelector?.('[data-console-server-slug]');
   if (!nameInput || !slugInput) return true;
@@ -760,7 +760,7 @@ function validateConsoleServerForm(form) {
   slugInput.setCustomValidity?.(name ? message : '');
   if (message) {
     setConsoleServerFormError(form, message);
-    (name ? slugInput : nameInput).reportValidity?.();
+    if (report) (name ? slugInput : nameInput).reportValidity?.();
     return false;
   }
   clearConsoleServerFormError(form);
@@ -807,7 +807,7 @@ document.addEventListener('input', async (event) => {
       if (!event.isComposing && event.inputType !== 'insertCompositionText') {
         syncConsoleServerSlug(consoleServerForm);
       }
-      validateConsoleServerForm(consoleServerForm);
+      validateConsoleServerForm(consoleServerForm, { report: false });
       return;
     }
     if (event.target.matches?.('[data-console-server-slug]')) {
@@ -815,7 +815,7 @@ document.addEventListener('input', async (event) => {
       const normalized = consoleServerSlugFromName(event.target.value);
       if (event.target.value !== normalized) event.target.value = normalized;
       if (!normalized) syncConsoleServerSlug(consoleServerForm, { force: true });
-      validateConsoleServerForm(consoleServerForm);
+      validateConsoleServerForm(consoleServerForm, { report: false });
       return;
     }
   }
@@ -907,7 +907,7 @@ document.addEventListener('input', async (event) => {
   if (event.target.id === 'computer-display-name-input') {
     computerPairingDisplayName = String(event.target.value || '').slice(0, 30);
     const code = document.querySelector('.connect-command-shell code');
-    if (code) code.textContent = pairingCommandText();
+    if (code) code.textContent = pairingCommandDisplayText();
     return;
   }
 
