@@ -95,6 +95,7 @@ async function prepareDocumentClick(event) {
     'set-view',
     'set-settings-tab',
     'set-ui-language',
+    'dismiss-app-flash',
     'set-console-tab',
     'set-rail-tab',
     'toggle-sidebar-section',
@@ -216,6 +217,11 @@ async function prepareDocumentClick(event) {
       const copied = await tryCopyTextToClipboard(pairingCommandText());
       toast(copied ? 'Connect command copied' : 'Copy is unavailable');
     }
+    return;
+  }
+  if (action === 'dismiss-app-flash') {
+    appFlash = null;
+    render();
     return;
   }
   if (action === 'toggle-server-notification-mute') {

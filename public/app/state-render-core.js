@@ -105,6 +105,7 @@ let memberDirectoryPage = 1;
 let memberManageState = { memberId: null };
 let memberActionConfirmState = { memberId: null, action: null };
 let memberResetLinkState = { email: '', link: '' };
+let appFlash = null;
 let profileFormDraft = null;
 let profileFormIsComposing = false;
 let pendingProfileFormRender = false;

@@ -709,6 +709,10 @@ function updateMentionPopupSelection() {
   });
 }
 
+const CONSOLE_SERVER_SLUG_MIN_LENGTH = 5;
+const CONSOLE_SERVER_SLUG_MAX_LENGTH = 63;
+const CONSOLE_SERVER_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+
 function consoleServerSlugFromName(value) {
   return String(value || '')
     .trim()
@@ -734,6 +738,33 @@ function setConsoleServerFormError(form, message) {
   if (!errorNode) return;
   errorNode.textContent = message;
   errorNode.hidden = false;
+}
+
+function consoleServerSlugValidationMessage(slug) {
+  const value = String(slug || '').trim();
+  if (!value) return 'URL slug is required.';
+  if (value.length < CONSOLE_SERVER_SLUG_MIN_LENGTH) return 'Slug must be at least 5 characters.';
+  if (value.length > CONSOLE_SERVER_SLUG_MAX_LENGTH) return 'Slug must be 63 characters or fewer.';
+  if (!CONSOLE_SERVER_SLUG_PATTERN.test(value)) return 'Use lowercase letters, numbers, and hyphens. Slugs cannot start or end with a hyphen.';
+  return '';
+}
+
+function validateConsoleServerForm(form) {
+  const nameInput = form?.querySelector?.('[data-console-server-name]');
+  const slugInput = form?.querySelector?.('[data-console-server-slug]');
+  if (!nameInput || !slugInput) return true;
+  const name = String(nameInput.value || '').trim();
+  const slug = String(slugInput.value || '').trim();
+  const message = name ? consoleServerSlugValidationMessage(slug) : 'Server name is required.';
+  nameInput.setCustomValidity?.(name ? '' : message);
+  slugInput.setCustomValidity?.(name ? message : '');
+  if (message) {
+    setConsoleServerFormError(form, message);
+    (name ? slugInput : nameInput).reportValidity?.();
+    return false;
+  }
+  clearConsoleServerFormError(form);
+  return true;
 }
 
 function syncConsoleServerSlug(form, { force = false } = {}) {
@@ -776,6 +807,7 @@ document.addEventListener('input', async (event) => {
       if (!event.isComposing && event.inputType !== 'insertCompositionText') {
         syncConsoleServerSlug(consoleServerForm);
       }
+      validateConsoleServerForm(consoleServerForm);
       return;
     }
     if (event.target.matches?.('[data-console-server-slug]')) {
@@ -783,6 +815,7 @@ document.addEventListener('input', async (event) => {
       const normalized = consoleServerSlugFromName(event.target.value);
       if (event.target.value !== normalized) event.target.value = normalized;
       if (!normalized) syncConsoleServerSlug(consoleServerForm, { force: true });
+      validateConsoleServerForm(consoleServerForm);
       return;
     }
   }

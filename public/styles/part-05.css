@@ -356,6 +356,50 @@
   transform: translateY(0);
 }
 
+.app-flash {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 90;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: min(430px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 2px solid var(--success);
+  background: #f2fff5;
+  color: var(--text-primary);
+  box-shadow: var(--shadow-pixel);
+}
+
+.app-flash strong,
+.app-flash span {
+  display: block;
+}
+
+.app-flash strong {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.app-flash span {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.app-flash-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--border);
+  background: #ffffff;
+  color: var(--text-primary);
+  font-weight: 900;
+  line-height: 1;
+}
+
 .fanout-toast-stack {
   position: fixed;
   top: 16px;

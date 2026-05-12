@@ -1,3 +1,17 @@
+function renderAppFlashBanner() {
+  if (!appFlash?.message) return '';
+  const tone = String(appFlash.tone || 'info').replace(/[^a-z0-9-]/gi, '');
+  return `
+    <div class="app-flash app-flash-${escapeHtml(tone)}" role="status" aria-live="polite">
+      <div>
+        <strong>${escapeHtml(appFlash.message)}</strong>
+        ${appFlash.detail ? `<span>${escapeHtml(appFlash.detail)}</span>` : ''}
+      </div>
+      <button class="app-flash-close" type="button" data-action="dismiss-app-flash" aria-label="Dismiss notification">×</button>
+    </div>
+  `;
+}
+
 function render() {
   if (!appState) {
     root.innerHTML = '<div class="boot">MAGCLAW / BOOTING</div>';
@@ -18,11 +32,13 @@ function render() {
   persistUiState();
   const inspectorHtml = renderInspector();
   const notificationBanner = renderNotificationPromptBanner();
+  const appFlashBanner = renderAppFlashBanner();
   const taskFocusLayout = activeView === 'tasks';
   const settingsLayout = activeView === 'cloud' || activeView === 'console';
   const consoleLayout = activeView === 'console';
   root.innerHTML = `
     ${notificationBanner}
+    ${appFlashBanner}
     <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${taskFocusLayout ? ' task-focus' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${consoleLayout ? ' console-layout-frame' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
       ${renderRail()}
       ${taskFocusLayout ? '' : '<div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>'}

@@ -446,6 +446,10 @@ document.addEventListener('submit', async (event) => {
     }
     if (form.id === 'console-server-form') {
       syncConsoleServerSlug(form);
+      if (!validateConsoleServerForm(form)) {
+        skipFinalRefresh = true;
+        return;
+      }
       const result = await api('/api/console/servers', {
         method: 'POST',
         body: JSON.stringify({
@@ -454,6 +458,12 @@ document.addEventListener('submit', async (event) => {
         }),
       });
       const slug = String(result.server?.slug || '').trim();
+      const serverName = String(result.server?.name || data.get('name') || 'Server').trim();
+      appFlash = {
+        tone: 'success',
+        message: 'Server created',
+        detail: slug ? `${serverName} /${slug}` : serverName,
+      };
       modal = null;
       activeView = 'space';
       railTab = 'spaces';
