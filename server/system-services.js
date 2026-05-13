@@ -205,6 +205,8 @@ export function createSystemServices(deps) {
   }
 
   function localDaemonPackageVersion() {
+    const envVersion = String(process.env.MAGCLAW_DAEMON_VERSION || '').trim();
+    if (envVersion) return envVersion;
     try {
       const pkg = JSON.parse(readFileSync(path.join(ROOT, 'daemon', 'package.json'), 'utf8'));
       return String(pkg.version || '');

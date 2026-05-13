@@ -5,7 +5,7 @@ const searchTimeRangeOptions = [
   ['30d', 'Last 30 Days'],
 ];
 
-const MAGCLAW_DAEMON_PACKAGE_VERSION = '0.1.1';
+const MAGCLAW_DAEMON_PACKAGE_VERSION = '0.1.2';
 const MAGCLAW_WEB_PACKAGE_VERSION = '0.2.0';
 
 function searchTimeRangeLabel() {

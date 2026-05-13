@@ -91,12 +91,18 @@ test('computer connect modal creates a fresh command before rendering stale stat
   const clickSource = app.slice(app.indexOf('async function generateFreshComputerPairingCommand'), app.indexOf("if (action === 'agent-stop-unavailable')"));
   const closeModalSource = app.slice(app.indexOf("if (action === 'close-modal')"), app.indexOf("if (localOnlyActions.has(action))"));
   const pairingActionsSource = app.slice(app.indexOf("if (action === 'create-computer-pairing')"), app.indexOf("if (action === 'copy-join-link')"));
+  const regenerateActionSource = app.slice(app.indexOf("if (action === 'regenerate-computer-command')"), app.indexOf("if (action === 'refresh-computer-pairing-command')"));
+  const refreshActionSource = app.slice(app.indexOf("if (action === 'refresh-computer-pairing-command')"), app.indexOf("if (action === 'copy-join-link')"));
   const stateUpdateSource = app.slice(app.indexOf('function applyStateUpdate(nextState)'), app.indexOf('function applyRunEventUpdate'));
 
   assert.match(app, /async function generateFreshComputerPairingCommand\(body = \{\}\)/);
+  assert.match(app, /latestPairingCommand\.displayName = requestedDisplayName/);
   assert.match(app, /appState = await api\('\/api\/state'\)/);
-  assert.match(clickSource, /await generateFreshComputerPairingCommand\(\{ name: appState\.runtime\?\.host \|\| 'Computer' \}\)/);
+  assert.match(clickSource, /await generateFreshComputerPairingCommand\(\{ name: defaultComputerPairingName\(\) \}\)/);
   assert.match(pairingActionsSource, /await generateFreshComputerPairingCommand\(body\)/);
+  assert.match(regenerateActionSource, /modal = 'computer'/);
+  assert.match(regenerateActionSource, /displayName:/);
+  assert.match(refreshActionSource, /computerPairingDisplayName\.trim\(\)/);
   assert.match(modalSource, /function pairingCommandIsUsable/);
   assert.match(modalSource, /function pairingCommandText/);
   assert.match(modalSource, /function pairingCommandDisplayText/);
@@ -106,7 +112,9 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(app, /code\.textContent = pairingCommandDisplayText\(\)/);
   assert.match(modalSource, /computerPairingCommandError \|\| 'Generating command\.\.\.'/);
   assert.match(clickSource, /if \(modal === 'computer'\) renderShellOrModal\(\)/);
-  assert.match(clickSource, /render\(\);\s*await generateFreshComputerPairingCommand\(\{ name: appState\.runtime\?\.host \|\| 'Computer' \}\)/);
+  assert.match(clickSource, /render\(\);\s*await generateFreshComputerPairingCommand\(\{ name: defaultComputerPairingName\(\) \}\)/);
+  assert.match(modalSource, /function defaultComputerPairingName/);
+  assert.match(modalSource, /computerNameLooksLikeCloudHost/);
   assert.match(modalSource, /token\.consumedAt \|\| token\.revokedAt/);
   assert.match(modalSource, /expiresAtMs <= Date\.now\(\)/);
   assert.match(modalSource, /const stale = Boolean\(command && !pairingCommandIsUsable\(latestPairingCommand\)\)/);

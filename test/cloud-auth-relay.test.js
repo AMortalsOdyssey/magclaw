@@ -635,10 +635,12 @@ test('owner registration protects app APIs and supports invites end to end', asy
     assert.match(pairing.data.command, /--profile "?admin-team"?/);
     assert.match(pairing.data.command, /# Admin Team/);
     assert.equal(pairing.data.provisional, true);
+    assert.equal(pairing.data.displayName, 'CI runner');
     const prePairState = await request(server.baseUrl, '/api/state', { cookie: adminCookie });
     const pendingComputer = prePairState.data.computers.find((item) => item.id === pairing.data.computer.id);
     assert.equal(pendingComputer?.status, 'pairing');
     assert.equal(pendingComputer?.connectedVia, 'daemon');
+    assert.equal(pendingComputer?.name, 'CI runner');
 
     const daemonConfig = path.join(server.tmp, 'daemon.json');
     daemon = spawn(process.execPath, [
@@ -699,6 +701,27 @@ test('cloud pairing command can use the domain-friendly npm daemon launcher', as
     assert.match(pairing.data.command, /^npx -y @magclaw\/daemon@latest connect /);
     assert.match(pairing.data.command, /--server-url "?https:\/\/magclaw\.example\.test"?/);
     assert.doesNotMatch(pairing.data.command, /MAGCLAW_REPO_DIR/);
+    assert.equal(pairing.data.displayName, 'Cloud runner');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('cloud pairing command carries the requested computer display name', async () => {
+  const server = await startIsolatedServer({
+    MAGCLAW_DAEMON_COMMAND_MODE: 'npm',
+    MAGCLAW_PUBLIC_URL: 'https://magclaw.example.test',
+  });
+  try {
+    const admin = await registerOwnerServer(server);
+    const pairing = await request(server.baseUrl, '/api/cloud/computers/pairing-tokens', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ displayName: 'Studio Mac' }),
+    });
+    assert.equal(pairing.data.displayName, 'Studio Mac');
+    assert.equal(pairing.data.computer.name, 'Studio Mac');
+    assert.match(pairing.data.command, /--display-name "?Studio Mac"?/);
   } finally {
     await server.stop();
   }

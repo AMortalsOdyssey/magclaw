@@ -727,6 +727,16 @@ function pairingDisplayNameValue() {
   return String(computerPairingDisplayName || latestPairingCommand?.displayName || '').slice(0, 30);
 }
 
+function computerNameLooksLikeCloudHost(value = '') {
+  return /^magclaw-web-[a-z0-9-]+$/i.test(String(value || '').trim());
+}
+
+function defaultComputerPairingName(computer = null) {
+  const name = String(computer?.name || computer?.hostname || '').trim();
+  if (name && !computerNameLooksLikeCloudHost(name)) return name.slice(0, 30);
+  return 'My computer';
+}
+
 function pairingShellArg(value) {
   return `"${String(value || '')
     .replace(/\\/g, '\\\\')
@@ -742,7 +752,8 @@ function pairingCommandText(command = latestPairingCommand?.command || '') {
   const commentIndex = command.lastIndexOf(marker);
   const body = commentIndex >= 0 ? command.slice(0, commentIndex) : command;
   const comment = commentIndex >= 0 ? command.slice(commentIndex) : '';
-  return `${body} --display-name ${pairingShellArg(displayName)}${comment}`;
+  const bodyWithoutDisplayName = body.replace(/\s--display-name\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s]+)/, '');
+  return `${bodyWithoutDisplayName} --display-name ${pairingShellArg(displayName)}${comment}`;
 }
 
 function pairingCommandDisplayText(command = latestPairingCommand?.command || '') {
@@ -779,7 +790,7 @@ function renderComputerModal() {
       </div>
       <label class="connect-display-name-field">
         <span>Display name</span>
-        <input id="computer-display-name-input" data-action="computer-display-name" maxlength="30" value="${escapeHtml(displayName)}" placeholder="${escapeHtml(pairingComputer?.name || appState.runtime?.host || 'Computer')}" />
+        <input id="computer-display-name-input" data-action="computer-display-name" maxlength="30" value="${escapeHtml(displayName)}" placeholder="${escapeHtml(defaultComputerPairingName(pairingComputer))}" />
         <small>Optional. This becomes the computer name after it connects.</small>
       </label>
       <div class="connect-command-shell">

@@ -88,6 +88,14 @@ function shellArg(value) {
   return JSON.stringify(String(value || ''));
 }
 
+function normalizeDisplayName(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) return text.slice(0, 120);
+  }
+  return '';
+}
+
 function bearerToken(req) {
   const header = String(req.headers?.authorization || '');
   const match = header.match(/^Bearer\s+(.+)$/i);
@@ -166,19 +174,21 @@ export function createDaemonRelay(deps) {
     return process.env.MAGCLAW_PUBLIC_URL || `${proto}://${requestHost}`;
   }
 
-  function connectCommand(pairToken, req) {
+  function connectCommand(pairToken, req, options = {}) {
     const publicUrl = publicUrlFromRequest(req);
     const workspace = typeof cloudAuth.primaryWorkspace === 'function'
       ? cloudAuth.primaryWorkspace()
       : (cloud().workspaces[0] || {});
     const profile = String(workspace.slug || workspace.id || 'local').trim() || 'local';
     const comment = String(workspace.name || workspace.slug || workspace.id || 'local').trim() || profile;
+    const displayName = normalizeDisplayName(options.displayName);
     const template = process.env.MAGCLAW_DAEMON_CONNECT_COMMAND || '';
     if (template) {
       return template
         .replaceAll('{serverUrl}', publicUrl)
         .replaceAll('{pairToken}', pairToken)
         .replaceAll('{profile}', profile)
+        .replaceAll('{displayName}', displayName)
         .replaceAll('{serverName}', comment);
     }
     const commandMode = String(process.env.MAGCLAW_DAEMON_COMMAND_MODE || 'local-repo').trim().toLowerCase();
@@ -196,8 +206,9 @@ export function createDaemonRelay(deps) {
       `--server-url ${shellArg(publicUrl)}`,
       `--pair-token ${shellArg(pairToken)}`,
       `--profile ${shellArg(profile)}`,
+      displayName ? `--display-name ${shellArg(displayName)}` : '',
       `# ${comment}`,
-    ].join(' ');
+    ].filter(Boolean).join(' ');
   }
 
   function createPairingToken(body = {}, req) {
@@ -208,7 +219,8 @@ export function createDaemonRelay(deps) {
     const raw = cloudAuth.token('mc_pair');
     const createdAt = now();
     const expiresAt = new Date(Date.now() + Number(body.ttlMs || PAIR_TTL_MS)).toISOString();
-    const computerName = String(body.name || body.label || os.hostname()).trim();
+    const requestedDisplayName = normalizeDisplayName(body.displayName, body.name);
+    const computerName = normalizeDisplayName(requestedDisplayName, body.label, 'My computer');
     let computer = null;
     let provisional = false;
     if (body.computerId) computer = findComputer(String(body.computerId));
@@ -244,15 +256,19 @@ export function createDaemonRelay(deps) {
       consumedAt: null,
       revokedAt: null,
       createdBy: body.createdBy || null,
-      metadata: {},
+      metadata: {
+        ...(requestedDisplayName ? { displayName: requestedDisplayName } : {}),
+      },
     };
     store.pairingTokens.push(pair);
-    const command = connectCommand(raw, req);
+    const displayName = requestedDisplayName || computerName || computer.name || 'My computer';
+    const command = connectCommand(raw, req, { displayName });
     return {
       computer,
       provisional,
       pairingToken: publicPairingToken(pair),
       pairToken: raw,
+      displayName,
       command,
       wsUrl: `${toWsUrl(publicUrlFromRequest(req))}/daemon/connect?pair_token=${encodeURIComponent(raw)}`,
     };

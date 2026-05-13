@@ -1,10 +1,12 @@
 async function generateFreshComputerPairingCommand(body = {}) {
   computerPairingCommandError = '';
+  const requestedDisplayName = String(body.displayName || body.name || body.label || '').trim();
   try {
     latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
       method: 'POST',
       body: JSON.stringify(body),
     });
+    latestPairingCommand.displayName = requestedDisplayName || latestPairingCommand.displayName || '';
     latestPairingCommand.provisional = !body.computerId;
     try {
       appState = await api('/api/state');
@@ -851,7 +853,7 @@ document.addEventListener('click', async (event) => {
         computerPairingDisplayName = '';
         computerPairingCommandError = '';
         render();
-        await generateFreshComputerPairingCommand({ name: appState.runtime?.host || 'Computer' });
+        await generateFreshComputerPairingCommand({ name: defaultComputerPairingName() });
         if (modal === 'computer') render();
         return;
       }
@@ -1162,25 +1164,33 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'create-computer-pairing') {
       computerPairingCommandError = '';
-      await generateFreshComputerPairingCommand({ name: appState.runtime?.host || 'Computer' });
+      await generateFreshComputerPairingCommand({ name: defaultComputerPairingName() });
       activeView = 'computers';
       railTab = 'computers';
       toast('Pairing command created');
     }
     if (action === 'regenerate-computer-command') {
       const computer = byId(appState.computers, target.dataset.id);
-      computerPairingCommandError = '';
-      await generateFreshComputerPairingCommand({ computerId: target.dataset.id, name: computer?.name || 'Computer' });
+      const displayName = defaultComputerPairingName(computer);
       selectedComputerId = target.dataset.id || selectedComputerId;
       activeView = 'computers';
       railTab = 'computers';
+      modal = 'computer';
+      latestPairingCommand = null;
+      computerPairingDisplayName = displayName;
+      computerPairingCommandError = '';
+      renderShellOrModal();
+      await generateFreshComputerPairingCommand({ computerId: target.dataset.id, name: displayName, displayName: displayName });
+      if (modal === 'computer') renderShellOrModal();
       toast('Connect command regenerated');
     }
     if (action === 'refresh-computer-pairing-command') {
       const selectedComputer = selectedComputerId ? byId(appState.computers, selectedComputerId) : null;
+      const typedDisplayName = computerPairingDisplayName.trim();
+      const displayName = typedDisplayName || defaultComputerPairingName(selectedComputer);
       const body = selectedComputer && !computerIsDisabled(selectedComputer)
-        ? { computerId: selectedComputer.id, name: selectedComputer.name || selectedComputer.hostname || 'Computer' }
-        : { name: appState.runtime?.host || 'Computer' };
+        ? { computerId: selectedComputer.id, name: displayName, displayName: displayName }
+        : { name: displayName, displayName: displayName };
       computerPairingCommandError = '';
       renderShellOrModal();
       await generateFreshComputerPairingCommand(body);

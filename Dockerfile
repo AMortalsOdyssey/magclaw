@@ -12,6 +12,7 @@ RUN npm ci --omit=dev
 
 COPY server ./server
 COPY public ./public
+COPY daemon/package.json ./daemon/package.json
 
 RUN mkdir -p /etc/magclaw /var/lib/magclaw/uploads
 
