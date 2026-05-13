@@ -1200,8 +1200,6 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const cloud = state.cloud || {};
     await withClient(async (client) => {
       await withTransaction(client, 'persistFromState', async () => {
-        await persistReleaseNotesFromState(client, state);
-
         for (const user of safeArray(cloud.users)) {
           await upsertUserSnapshot(client, user);
         }
@@ -1538,6 +1536,13 @@ export function createCloudPostgresStore(optionsInput = {}) {
         }
 
         for (const event of safeArray(cloud.daemonEvents)) {
+          const eventComputerId = event.computerId || event.meta?.computerId || null;
+          const persistedComputerId = eventComputerId && computerIdsForPersist.has(eventComputerId)
+            ? eventComputerId
+            : null;
+          if (eventComputerId && !persistedComputerId) {
+            console.warn(`[postgres-store] clearing orphan daemon event computer reference event=${event.id || 'unknown'} computer=${eventComputerId}`);
+          }
           await client.query(`
             INSERT INTO ${table('cloud_daemon_events')}
               (id, workspace_id, computer_id, type, message, meta, created_at)
@@ -1551,7 +1556,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           `, [
             event.id,
             event.workspaceId || event.meta?.workspaceId || cloud.workspaces?.[0]?.id || null,
-            event.computerId || event.meta?.computerId || null,
+            persistedComputerId,
             event.type,
             event.message || '',
             JSON.stringify(jsonObject(event.meta)),
