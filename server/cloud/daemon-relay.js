@@ -225,6 +225,8 @@ export function createDaemonRelay(deps) {
         createdAt,
         updatedAt: createdAt,
       };
+      state.computers.push(computer);
+      console.info(`[daemon-relay] pairing computer created computer=${computer.id} workspace=${workspace.id}`);
     }
     const pair = {
       id: makeId('pair'),
@@ -237,10 +239,7 @@ export function createDaemonRelay(deps) {
       consumedAt: null,
       revokedAt: null,
       createdBy: body.createdBy || null,
-      metadata: provisional ? {
-        provisionalComputer: true,
-        computer: { ...computer },
-      } : {},
+      metadata: {},
     };
     store.pairingTokens.push(pair);
     const command = connectCommand(raw, req);

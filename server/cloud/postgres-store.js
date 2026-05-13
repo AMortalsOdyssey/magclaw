@@ -1311,7 +1311,27 @@ export function createCloudPostgresStore(optionsInput = {}) {
           ]);
         }
 
-        for (const computer of safeArray(state.computers)) {
+        const computersForPersist = [...safeArray(state.computers)];
+        const computerIdsForPersist = new Set(computersForPersist.map((computer) => computer?.id).filter(Boolean));
+        for (const pair of safeArray(cloud.pairingTokens)) {
+          const provisionalComputer = pair?.metadata?.provisionalComputer && jsonObject(pair.metadata.computer);
+          if (!pair?.computerId || !provisionalComputer?.id || computerIdsForPersist.has(pair.computerId)) continue;
+          const workspaceId = pair.workspaceId || provisionalComputer.workspaceId || cloud.workspaces?.[0]?.id;
+          if (!workspaceId) continue;
+          computersForPersist.push({
+            ...provisionalComputer,
+            id: pair.computerId,
+            workspaceId,
+            status: provisionalComputer.status || 'pairing',
+            connectedVia: provisionalComputer.connectedVia || 'daemon',
+            createdAt: provisionalComputer.createdAt || pair.createdAt,
+            updatedAt: provisionalComputer.updatedAt || pair.createdAt,
+          });
+          computerIdsForPersist.add(pair.computerId);
+          console.warn(`[postgres-store] restored provisional pairing computer computer=${pair.computerId} workspace=${workspaceId}`);
+        }
+
+        for (const computer of computersForPersist) {
           const workspaceId = computer.workspaceId || cloud.workspaces?.[0]?.id;
           if (!workspaceId) continue;
           await client.query(`

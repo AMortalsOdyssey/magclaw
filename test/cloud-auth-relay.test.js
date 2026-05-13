@@ -636,7 +636,9 @@ test('owner registration protects app APIs and supports invites end to end', asy
     assert.match(pairing.data.command, /# Admin Team/);
     assert.equal(pairing.data.provisional, true);
     const prePairState = await request(server.baseUrl, '/api/state', { cookie: adminCookie });
-    assert.equal(prePairState.data.computers.some((item) => item.id === pairing.data.computer.id), false);
+    const pendingComputer = prePairState.data.computers.find((item) => item.id === pairing.data.computer.id);
+    assert.equal(pendingComputer?.status, 'pairing');
+    assert.equal(pendingComputer?.connectedVia, 'daemon');
 
     const daemonConfig = path.join(server.tmp, 'daemon.json');
     daemon = spawn(process.execPath, [

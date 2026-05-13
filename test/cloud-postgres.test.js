@@ -336,6 +336,74 @@ test('postgres store persists relay computers tokens deliveries and daemon event
   }
 });
 
+test('postgres store restores legacy provisional computers before pairing tokens', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-07T00:00:00.000Z';
+  await store.persistFromState({
+    computers: [],
+    cloud: {
+      workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
+      users: [],
+      workspaceMembers: [],
+      sessions: [],
+      invitations: [],
+      passwordResetTokens: [],
+      computerTokens: [],
+      pairingTokens: [{
+        id: 'pair_pending',
+        workspaceId: 'wsp_main',
+        computerId: 'cmp_pending',
+        label: 'Pending runner',
+        tokenHash: 'hash_pending_pair',
+        createdAt,
+        expiresAt: '2026-05-07T00:15:00.000Z',
+        metadata: {
+          provisionalComputer: true,
+          computer: {
+            id: 'cmp_pending',
+            workspaceId: 'wsp_main',
+            name: 'Pending runner',
+            status: 'pairing',
+            connectedVia: 'daemon',
+            createdAt,
+            updatedAt: createdAt,
+          },
+        },
+      }],
+      agentDeliveries: [],
+      daemonEvents: [],
+    },
+  });
+  const computerInsertIndex = queries.findIndex((query) => (
+    query.sql.includes('INSERT INTO "magclaw"."cloud_computers"')
+    && query.params[0] === 'cmp_pending'
+  ));
+  const pairingInsertIndex = queries.findIndex((query) => (
+    query.sql.includes('INSERT INTO "magclaw"."cloud_pairing_tokens"')
+    && query.params[0] === 'pair_pending'
+  ));
+  assert.notEqual(computerInsertIndex, -1);
+  assert.notEqual(pairingInsertIndex, -1);
+  assert.ok(computerInsertIndex < pairingInsertIndex);
+});
+
 test('postgres store upserts duplicate residual state records without crashing', async () => {
   const queries = [];
   const pool = {
