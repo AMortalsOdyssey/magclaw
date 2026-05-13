@@ -246,7 +246,7 @@ function agentStatusDot(authorId, authorType) {
 
 function humanStatusDot(authorId, authorType) {
   if (authorType !== 'human') return '';
-  const human = byId(appState?.humans, authorId);
+  const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
   return avatarStatusDot(human?.status || 'offline', 'Human status');
 }
 

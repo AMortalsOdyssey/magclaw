@@ -414,7 +414,11 @@ function applyPresenceHeartbeat(heartbeat) {
 
 function connectEvents() {
   if (eventSource) return;
-  eventSource = new EventSource('/api/events');
+  const serverSlug = String(serverSlugFromPath() || currentServerSlug() || '').trim();
+  const eventPath = serverSlug
+    ? `/api/events?serverSlug=${encodeURIComponent(serverSlug)}`
+    : '/api/events';
+  eventSource = new EventSource(eventPath);
   eventSource.addEventListener('state', (event) => {
     applyStateUpdate(JSON.parse(event.data));
   });

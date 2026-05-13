@@ -387,7 +387,6 @@ export async function handleCloudApi(req, res, url, deps) {
     }
     const result = await sendAction(() => cloudAuth.switchConsoleServer(decodeURIComponent(consoleServerSwitchMatch[1]), req));
     if (result) {
-      broadcastState();
       sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
     }
     return true;
@@ -601,8 +600,14 @@ export async function handleCloudApi(req, res, url, deps) {
     const body = await readJson(req);
     const current = cloudAuth.currentUser(req);
     const result = daemonRelay.createPairingToken({ ...body, createdBy: current?.id || null }, req);
-    if (cloudAuth.persistCloudState) await cloudAuth.persistCloudState();
-    else await persistState();
+    if (cloudAuth.persistCloudState) {
+      await cloudAuth.persistCloudState({
+        workspaceId: result.computer?.workspaceId || result.workspace?.id || '',
+        reason: 'cloud_pairing_token_created',
+      });
+    } else {
+      await persistState();
+    }
     broadcastState();
     sendJson(res, 201, result);
     return true;

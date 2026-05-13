@@ -826,10 +826,10 @@ export function createStateCore(deps) {
     }
   }
   
-  function broadcastState() {
+  function broadcastState(options = {}) {
     broadcast('state', (req) => publicState(req));
     broadcastHeartbeat();
-    queueCloudPush('state_changed');
+    if (!options.skipCloudPush) queueCloudPush('state_changed');
   }
   
   function presenceHeartbeat() {

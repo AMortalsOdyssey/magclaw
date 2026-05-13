@@ -369,8 +369,8 @@ export async function handleCollabApi(req, res, url, deps) {
       }
       const auth = typeof currentActor === 'function' ? currentActor(req) : null;
       const ownsHuman = auth && (auth.member?.humanId === human.id || auth.user?.id === human.authUserId);
-      if (auth && !ownsHuman && auth.member?.role !== 'admin') {
-        sendError(res, 403, 'Workspace role is not allowed.');
+      if (auth && !ownsHuman) {
+        sendError(res, 403, 'Only the profile owner can update personal information.');
         return true;
       }
       if (auth && auth.user?.id === human.authUserId && !auth.member?.humanId) auth.member.humanId = human.id;

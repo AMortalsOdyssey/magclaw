@@ -825,6 +825,196 @@ test('postgres store can persist a single workspace runtime snapshot', async () 
   assert.equal(queries.some((query) => query.params?.includes?.('chan_one') || query.params?.includes?.('msg_one')), true);
 });
 
+test('postgres store publishes and listens for realtime invalidation events', async () => {
+  const queries = [];
+  const listenerClient = new EventEmitter();
+  listenerClient.query = async (sql, params = []) => {
+    queries.push({ sql, params });
+    return { rows: [] };
+  };
+  listenerClient.release = () => {};
+  const pool = {
+    async connect() {
+      return listenerClient;
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    realtimeChannel: 'magclaw_realtime_test',
+    pool,
+  });
+
+  await store.publishRealtimeEvent({
+    sourceId: 'rt_source',
+    workspaceId: 'wsp_main',
+    reason: 'workspace_state_changed',
+  });
+  const notify = queries.find((query) => query.sql.includes('pg_notify'));
+  assert.ok(notify);
+  assert.equal(notify.params[0], 'magclaw_realtime_test');
+  assert.equal(JSON.parse(notify.params[1]).workspaceId, 'wsp_main');
+
+  const events = [];
+  const stop = await store.subscribeRealtimeEvents((event) => events.push(event));
+  assert.ok(queries.some((query) => /LISTEN "magclaw_realtime_test"/.test(query.sql)));
+  listenerClient.emit('notification', {
+    channel: 'magclaw_realtime_test',
+    payload: JSON.stringify({ sourceId: 'rt_other', workspaceId: 'wsp_main', reason: 'test' }),
+  });
+  assert.equal(events[0].workspaceId, 'wsp_main');
+  await stop();
+  assert.ok(queries.some((query) => /UNLISTEN "magclaw_realtime_test"/.test(query.sql)));
+});
+
+test('postgres store reloads a single workspace without replacing other workspace rows', async () => {
+  const queries = [];
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          if (sql.includes('cloud_humans')) {
+            return { rows: [{ id: 'hum_one_new', workspace_id: 'wsp_one', user_id: 'usr_one', name: 'One New', email: 'one@example.test', role: 'member', status: 'offline', avatar: '', description: '', created_at: createdAt, updated_at: createdAt }] };
+          }
+          if (sql.includes('cloud_channels')) {
+            return { rows: [{ id: 'chan_one_new', workspace_id: 'wsp_one', name: 'one-new', description: '', archived_at: null, created_at: createdAt, updated_at: createdAt, metadata: { state: { humanIds: ['hum_one_new'], memberIds: ['hum_one_new'] } } }] };
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const state = {
+    humans: [
+      { id: 'hum_one_old', workspaceId: 'wsp_one', name: 'Old One' },
+      { id: 'hum_two', workspaceId: 'wsp_two', name: 'Two' },
+    ],
+    computers: [],
+    agents: [],
+    channels: [
+      { id: 'chan_one_old', workspaceId: 'wsp_one', name: 'old-one' },
+      { id: 'chan_two', workspaceId: 'wsp_two', name: 'two' },
+    ],
+    dms: [],
+    messages: [],
+    replies: [],
+    tasks: [],
+    workItems: [],
+    attachments: [],
+    reminders: [],
+    missions: [],
+    runs: [],
+    projects: [],
+  };
+  await store.loadWorkspaceIntoState(state, 'wsp_one');
+  assert.equal(state.humans.some((human) => human.id === 'hum_one_old'), false);
+  assert.equal(state.channels.some((channel) => channel.id === 'chan_one_old'), false);
+  assert.equal(state.humans.some((human) => human.id === 'hum_two'), true);
+  assert.equal(state.channels.some((channel) => channel.id === 'chan_two'), true);
+  assert.equal(state.humans.some((human) => human.id === 'hum_one_new'), true);
+  assert.equal(state.channels.some((channel) => channel.id === 'chan_one_new'), true);
+  assert.ok(queries.some((query) => query.sql.includes('cloud_humans') && query.params[0] === 'wsp_one'));
+});
+
+test('postgres store reloads auth directory without clobbering active workspace', async () => {
+  const queries = [];
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const rowsForTable = {
+    cloud_workspaces: [{
+      id: 'wsp_auth',
+      slug: 'auth',
+      name: 'Auth Workspace',
+      owner_user_id: 'usr_auth',
+      created_at: createdAt,
+      updated_at: createdAt,
+    }],
+    cloud_users: [{
+      id: 'usr_auth',
+      email: 'auth@example.test',
+      name: 'Auth User',
+      password_hash: 'hash',
+      language: 'en',
+      created_at: createdAt,
+      updated_at: createdAt,
+    }],
+    cloud_workspace_members: [{
+      id: 'wmem_auth',
+      workspace_id: 'wsp_auth',
+      user_id: 'usr_auth',
+      human_id: 'hum_auth',
+      role: 'admin',
+      status: 'active',
+      joined_at: createdAt,
+      created_at: createdAt,
+      updated_at: createdAt,
+    }],
+    cloud_sessions: [{
+      id: 'sess_auth',
+      user_id: 'usr_auth',
+      token_hash: 'hash_session',
+      created_at: createdAt,
+      expires_at: '2026-05-26T00:00:00.000Z',
+    }],
+    cloud_computers: [{
+      id: 'cmp_auth',
+      workspace_id: 'wsp_auth',
+      name: 'Auth Runner',
+      status: 'connected',
+      connected_via: 'daemon',
+      runtime_ids: [],
+      runtime_details: [],
+      capabilities: [],
+      running_agents: [],
+      created_at: createdAt,
+      updated_at: createdAt,
+    }],
+  };
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          const match = String(sql).match(/FROM "magclaw"\."([^"]+)"/);
+          return { rows: match ? (rowsForTable[match[1]] || []) : [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const state = {
+    connection: { workspaceId: 'wsp_active' },
+    cloud: { workspaces: [{ id: 'wsp_active', slug: 'active', name: 'Active' }] },
+    channels: [{ id: 'chan_active', workspaceId: 'wsp_active', name: 'all' }],
+  };
+
+  await store.loadAuthIntoState(state);
+
+  assert.equal(state.connection.workspaceId, 'wsp_active');
+  assert.equal(state.channels[0].id, 'chan_active');
+  assert.equal(state.cloud.workspaces[0].id, 'wsp_auth');
+  assert.equal(state.cloud.users[0].id, 'usr_auth');
+  assert.equal(state.cloud.workspaceMembers[0].humanId, 'hum_auth');
+  assert.equal(state.computers[0].id, 'cmp_auth');
+  assert.equal(queries.some((query) => query.sql.includes('cloud_state_records')), false);
+  assert.equal(queries.some((query) => query.sql.includes('cloud_messages')), false);
+});
+
 test('postgres store persists auth state without flushing runtime records', async () => {
   const queries = [];
   const pool = {

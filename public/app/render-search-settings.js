@@ -1544,7 +1544,7 @@ function renderServerSettingsTab() {
 
       ${renderFanoutApiConfigCard()}
 
-      <details class="pixel-panel cloud-card danger-card server-danger-accordion">
+      <details class="pixel-panel cloud-card danger-card server-danger-accordion" open>
         <summary>
           <span>Danger Zone</span>
           <small>Move this server to Lost Space</small>

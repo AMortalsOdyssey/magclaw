@@ -623,7 +623,7 @@ function humanJoinedLabel(value) {
 }
 
 function humanCanEditProfile(human = {}, member = null) {
-  return humanIsCurrent(human) || Boolean(member && cloudCan('manage_member_roles'));
+  return humanIsCurrent(human);
 }
 
 function renderHumanAvatarEditor(human, member) {

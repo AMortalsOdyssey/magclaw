@@ -46,6 +46,7 @@ export function createCloudAuth(deps) {
     makeId,
     now,
     persistState,
+    realtimeSourceId = '',
   } = deps;
 
   const state = new Proxy({}, {
@@ -272,14 +273,25 @@ export function createCloudAuth(deps) {
     return { ...result, backend: 'postgres' };
   }
 
-  async function persistCloudState() {
+  async function persistCloudState(options = {}) {
     try {
+      const workspaceId = String(options.workspaceId || options.workspace?.id || '').trim();
+      const reason = String(options.reason || 'cloud_auth_changed');
       if (cloudRepository?.isEnabled?.()) {
         if (typeof cloudRepository.persistAuthFromState === 'function') {
           await cloudRepository.persistAuthFromState(getState());
         } else {
           await cloudRepository.persistFromState(getState());
         }
+        if (workspaceId && typeof cloudRepository.persistWorkspaceFromState === 'function') {
+          await cloudRepository.persistWorkspaceFromState(getState(), workspaceId);
+        }
+        await cloudRepository.publishRealtimeEvent?.({
+          ...(realtimeSourceId ? { sourceId: realtimeSourceId } : {}),
+          reason,
+          authReload: true,
+          ...(workspaceId ? { workspaceId } : {}),
+        });
       }
       await persistState({ skipExternal: true });
     } catch (error) {
@@ -327,11 +339,21 @@ export function createCloudAuth(deps) {
         payload.stateSnapshot = cloneRecord(getState());
         await cloudRepository.persistAuthOperation(payload);
         await persistState({ skipExternal: true });
+        await cloudRepository.publishRealtimeEvent?.({
+          ...(realtimeSourceId ? { sourceId: realtimeSourceId } : {}),
+          reason: `cloud_auth_${operation?.type || 'operation'}`,
+          authReload: true,
+        });
         return;
       }
       if (cloudRepository?.isEnabled?.() && typeof cloudRepository.persistAuthFromState === 'function') {
         await cloudRepository.persistAuthFromState(cloneRecord(getState()));
         await persistState({ skipExternal: true });
+        await cloudRepository.publishRealtimeEvent?.({
+          ...(realtimeSourceId ? { sourceId: realtimeSourceId } : {}),
+          reason: 'cloud_auth_changed',
+          authReload: true,
+        });
         return;
       }
       await persistCloudState();
@@ -343,13 +365,8 @@ export function createCloudAuth(deps) {
     }
   }
 
-  async function persistAuthState() {
-    if (cloudRepository?.isEnabled?.() && typeof cloudRepository.persistAuthFromState === 'function') {
-      await cloudRepository.persistAuthFromState(getState());
-      await persistState({ skipExternal: true });
-      return;
-    }
-    await persistCloudState();
+  async function persistAuthState(options = {}) {
+    await persistCloudState(options);
   }
 
   function persistCloudStateSoon(reason = 'cloud-auth') {
@@ -370,6 +387,38 @@ export function createCloudAuth(deps) {
     return cloud.workspaces.find((workspace) => workspace.id === preferred && !workspace.deletedAt)
       || cloud.workspaces.find((workspace) => !workspace.deletedAt)
       || cloud.workspaces[0];
+  }
+
+  function requestWorkspaceRef(req) {
+    const headers = req?.headers || {};
+    const headerRef = String(
+      headers['x-magclaw-workspace-id']
+      || headers['x-magclaw-server-slug']
+      || '',
+    ).trim();
+    if (headerRef) return headerRef;
+    try {
+      const url = new URL(req?.url || '/', 'http://magclaw.local');
+      const queryRef = String(url.searchParams.get('workspaceId') || url.searchParams.get('serverSlug') || '').trim();
+      if (queryRef) return queryRef;
+      const pathSlug = String(url.pathname || '').match(/^\/s\/([^/]+)/)?.[1] || '';
+      if (pathSlug) return decodeURIComponent(pathSlug);
+    } catch {
+      // Ignore malformed request URLs and fall back to the process default.
+    }
+    return '';
+  }
+
+  function workspaceForRequest(req) {
+    const ref = requestWorkspaceRef(req).toLowerCase();
+    if (!ref) return primaryWorkspace();
+    return ensureCloudState().workspaces.find((workspace) => (
+      !workspace.deletedAt
+      && (
+        String(workspace.id || '').toLowerCase() === ref
+        || String(workspace.slug || '').toLowerCase() === ref
+      )
+    )) || primaryWorkspace();
   }
 
   function workspaceForSlug(slug) {
@@ -457,7 +506,8 @@ export function createCloudAuth(deps) {
 
     function currentActor(req) {
       const user = currentUser(req);
-      const member = user ? memberForUser(user.id) : null;
+      const workspace = workspaceForRequest(req);
+      const member = user ? memberForUser(user.id, workspace?.id) : null;
       return user && member ? { user, member } : null;
     }
 
@@ -845,7 +895,7 @@ export function createCloudAuth(deps) {
     async function createInvitation(body, req) {
       const auth = requireInviteActor(req);
       const result = createInvitationRecord(auth, body, req);
-      await persistCloudState();
+      await persistCloudState({ workspaceId: auth.member.workspaceId, reason: 'cloud_invitation_created' });
       return result;
     }
 
@@ -863,7 +913,7 @@ export function createCloudAuth(deps) {
         const result = createInvitationRecord(auth, { ...body, email, role }, req);
         return { ...result.invitation, inviteToken: result.inviteToken, inviteUrl: result.inviteUrl };
       });
-      await persistCloudState();
+      await persistCloudState({ workspaceId: auth.member.workspaceId, reason: 'cloud_invitations_created' });
       return { invitations };
     }
 
@@ -957,8 +1007,7 @@ export function createCloudAuth(deps) {
       };
       cloud.workspaces.push(workspace);
       const human = ensureHumanForUser(user, 'admin', { workspaceId: workspace.id });
-      addHumanToAllChannel(human);
-      cloud.workspaceMembers.push({
+      const member = {
         id: makeId('wmem'),
         workspaceId: workspace.id,
         userId: user.id,
@@ -967,13 +1016,14 @@ export function createCloudAuth(deps) {
         status: 'active',
         joinedAt: createdAt,
         createdAt,
-      });
+      };
+      cloud.workspaceMembers.push(member);
+      addHumanToAllChannel(human);
       state.connection.workspaceId = workspace.id;
       applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] console server created workspace=${workspace.id} slug=${workspace.slug} owner=${user.id}`);
-      persistAuthStateSoon('console-server-create');
-      persistCloudStateSoon('console-server-create');
-      return { server: workspace, member: memberForUser(user.id, workspace.id) };
+      await persistAuthState({ workspaceId: workspace.id, reason: 'console_server_created' });
+      return { server: workspace, member };
     }
 
     async function switchConsoleServer(slug, req) {
@@ -1002,7 +1052,6 @@ export function createCloudAuth(deps) {
       state.connection.workspaceId = workspace.id;
       applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] console server switched workspace=${workspace.id} slug=${workspace.slug || workspace.id} user=${user.id}`);
-      persistCloudStateSoon('console-server-switch');
       return { server: workspace, member };
     }
 
@@ -1058,7 +1107,7 @@ export function createCloudAuth(deps) {
       state.connection.workspaceId = nextWorkspace?.id || 'local';
       applyWorkspaceScopedSettings(nextWorkspace);
       console.info(`[cloud-auth] console server soft-deleted workspace=${workspace.id} slug=${workspace.slug || workspace.id} actor=${auth.user.id}`);
-      await persistCloudState();
+      await persistCloudState({ workspaceId: workspace.id, reason: 'console_server_deleted' });
       return { deleted: workspace, nextWorkspace };
     }
 
@@ -1104,7 +1153,7 @@ export function createCloudAuth(deps) {
       state.connection.workspaceId = workspace.id;
       applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] console server restored workspace=${workspace.id} slug=${workspace.slug || workspace.id} user=${user.id}`);
-      await persistCloudState();
+      await persistCloudState({ workspaceId: workspace.id, reason: 'console_server_restored' });
       return { server: workspace, member };
     }
 
@@ -1332,7 +1381,7 @@ export function createCloudAuth(deps) {
       state.connection.workspaceId = workspace.id;
       applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] join link accepted workspace=${workspace.id} user=${user.id}`);
-      await persistCloudState();
+      await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_join_link_accepted' });
       return {
         server: workspace,
         workspace,
@@ -1394,7 +1443,7 @@ export function createCloudAuth(deps) {
         targetRole: role,
         message: `${user.name || user.email} accepted an invitation from Console.`,
       });
-      await persistCloudState();
+      await persistCloudState({ workspaceId: invitation.workspaceId, reason: 'cloud_invitation_accepted' });
       return {
         invitation: publicInvitation(invitation),
         member: publicMember(member),
@@ -1550,7 +1599,7 @@ export function createCloudAuth(deps) {
       });
       console.info(`[cloud-auth] invitation accepted email=${user.email} role=${role} user=${user.id}`);
       const issued = issueSession(user, req);
-      await persistCloudState();
+      await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_invite_registration' });
       res.setHeader('Set-Cookie', issued.cookie);
 	      return { user: publicUser(user), member: memberForUser(user.id, workspace.id), workspace };
 	    }
@@ -1649,7 +1698,7 @@ export function createCloudAuth(deps) {
         message: `${auth.user.name || auth.user.email} changed a member role from ${previousRole} to ${role}.`,
       });
       console.info(`[cloud-auth] member role changed member=${member.id} from=${previousRole} to=${role} actor=${auth.user.id}`);
-      await persistCloudState();
+      await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_member_role_changed' });
       return { member: publicMember(member) };
     }
 
@@ -1772,7 +1821,7 @@ export function createCloudAuth(deps) {
         throw error;
       }
       try {
-        await persistCloudState();
+        await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_password_reset_requested' });
       } catch (error) {
         console.error(`[cloud-auth] password reset notification persist failed user=${user.id} actor=${auth.user.id}`, error);
       }
@@ -1964,14 +2013,14 @@ export function createCloudAuth(deps) {
         targetRole: normalizeCloudRole(member.role),
         message: `${auth.user.name || auth.user.email} removed a member from the workspace.`,
       });
-      await persistCloudState();
+      await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_member_removed' });
       return { member: publicMember(member) };
     }
 
     function publicCloudState(req) {
       const cloud = ensureCloudState();
       refreshHumanPresence();
-      const workspace = primaryWorkspace();
+      const workspace = req ? workspaceForRequest(req) : primaryWorkspace();
       const user = req ? currentUser(req) : null;
       const member = user ? memberForUser(user.id, workspace?.id) : null;
       const session = req ? currentSession(req) : null;
@@ -2031,6 +2080,7 @@ export function createCloudAuth(deps) {
       currentUser,
       ensureCloudState,
     primaryWorkspace,
+    workspaceForRequest,
     initializeStorage,
     isLoginRequired,
     login,

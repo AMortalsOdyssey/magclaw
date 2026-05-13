@@ -1316,12 +1316,22 @@ test('codex agent startup repairs stale configured Codex paths before spawning',
 test('message rows re-render when author presence changes from heartbeat', async () => {
   const app = await readAppSource();
   const renderKeySource = app.slice(app.indexOf('function renderRecordKey'), app.indexOf('function renderSystemEvent'));
+  const humanStatusSource = app.slice(app.indexOf('function humanStatusDot'), app.indexOf('function attachmentLinks'));
 
   assert.match(renderKeySource, /authorStatus: author\?\.status \|\| ''/);
   assert.match(renderKeySource, /record\?\.authorType === 'agent'/);
   assert.match(app, /function applyPresenceHeartbeat\(heartbeat\)/);
   assert.match(app, /const incomingHumansById = new Map/);
   assert.match(app, /humans,\n    updatedAt: heartbeat\.updatedAt/);
+  assert.match(humanStatusSource, /humanByIdAny\(authorId\)/);
+});
+
+test('mention candidates hide deleted agents', async () => {
+  const app = await readAppSource();
+  const mentionSource = app.slice(app.indexOf('function getMentionCandidates'), app.indexOf('async function getProjectMentionCandidates'));
+
+  assert.match(mentionSource, /agentIsActiveInWorkspace\(agent\)/);
+  assert.match(mentionSource, /String\(agent\?\.status \|\| ''\)\.toLowerCase\(\) !== 'deleted'/);
 });
 
 test('agent detail opened from a thread returns to that thread when closed', async () => {
@@ -1800,6 +1810,7 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /Join Links/);
   assert.match(app, /Onboarding Behavior/);
   assert.match(app, /Danger Zone/);
+  assert.match(app, /<details class="pixel-panel cloud-card danger-card server-danger-accordion" open>/);
   assert.match(app, /function renderHumanDetail\(/);
   assert.match(app, /data-action="select-human"/);
   assert.match(app, /human-you-label/);
@@ -1807,6 +1818,9 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /data-action="pick-human-avatar"/);
   assert.match(app, /class="visually-hidden human-avatar-upload"/);
   assert.match(app, /function renderHumanDescriptionField\(/);
+  const humanCanEditSource = app.slice(app.indexOf('function humanCanEditProfile'), app.indexOf('function renderHumanAvatarEditor'));
+  assert.match(humanCanEditSource, /return humanIsCurrent\(human\)/);
+  assert.doesNotMatch(humanCanEditSource, /manage_member_roles/);
   assert.match(app, /data-action="edit-human-description"/);
   assert.match(app, /class="agent-inline-edit human-description-edit"/);
   assert.match(app, /data-action="save-human-description"/);

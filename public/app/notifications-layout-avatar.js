@@ -496,10 +496,16 @@ function appFrameStyle() {
 }
 
 function api(path, options = {}) {
+  const serverSlug = String(
+    (typeof serverSlugFromPath === 'function' && serverSlugFromPath())
+    || (typeof currentServerSlug === 'function' && currentServerSlug())
+    || '',
+  ).trim();
   return fetch(path, {
     ...options,
     headers: {
       'content-type': 'application/json',
+      ...(serverSlug ? { 'x-magclaw-server-slug': serverSlug } : {}),
       ...(options.headers || {}),
     },
   }).then(async (response) => {

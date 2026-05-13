@@ -290,9 +290,14 @@ export function createDaemonRelay(deps) {
 
   function createPairingToken(body = {}, req) {
     const store = cloud();
-    const workspace = typeof cloudAuth.primaryWorkspace === 'function'
-      ? cloudAuth.primaryWorkspace()
-      : store.workspaces[0];
+    const workspace = (req && typeof cloudAuth.workspaceForRequest === 'function'
+      ? cloudAuth.workspaceForRequest(req)
+      : null)
+      || (
+        typeof cloudAuth.primaryWorkspace === 'function'
+          ? cloudAuth.primaryWorkspace()
+          : store.workspaces[0]
+      );
     const raw = cloudAuth.token('mc_pair');
     const createdAt = now();
     const expiresAt = new Date(Date.now() + Number(body.ttlMs || PAIR_TTL_MS)).toISOString();

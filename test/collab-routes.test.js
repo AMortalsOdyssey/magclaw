@@ -206,3 +206,29 @@ test('collab route group opens reusable DMs and invites humans into all', async 
   assert.equal(humanRes.statusCode, 201);
   assert.equal(deps.state.channels[0].humanIds.includes(humanRes.data.human.id), true);
 });
+
+test('collab route group only lets humans edit their own profile fields', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_admin', email: 'admin@example.test' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_admin', role: 'admin' },
+    }),
+    readJson: async () => ({ description: 'edited by admin' }),
+  });
+  deps.state.humans.push({
+    id: 'hum_other',
+    workspaceId: 'wsp_main',
+    authUserId: 'usr_other',
+    name: 'Other',
+    description: 'private',
+  });
+  const res = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/humans/hum_other'),
+    deps,
+  ), true);
+  assert.equal(res.statusCode, 403);
+  assert.equal(deps.state.humans.find((human) => human.id === 'hum_other').description, 'private');
+});

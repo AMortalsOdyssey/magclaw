@@ -65,6 +65,13 @@ function parsePositiveInteger(value, fallback) {
   return Math.trunc(parsed);
 }
 
+function realtimeChannelName(value, schema = DEFAULT_SCHEMA) {
+  const explicit = String(value || '').trim();
+  const raw = explicit || `magclaw_realtime_${schema || DEFAULT_SCHEMA}`;
+  const normalized = raw.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^([^a-zA-Z_])/, '_$1');
+  return (normalized || 'magclaw_realtime').slice(0, 63);
+}
+
 function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -684,7 +691,11 @@ export function createCloudPostgresStore(optionsInput = {}) {
   const poolMax = parsePositiveInteger(options.poolMax || process.env.MAGCLAW_DATABASE_POOL_MAX, 10);
   const runtimeOptions = normalizePostgresRuntimeOptions(options.runtimeOptions || postgresRuntimeOptionsFromEnv());
   const applicationName = options.applicationName || process.env.MAGCLAW_DATABASE_APPLICATION_NAME || 'magclaw-web';
+  const realtimeChannel = realtimeChannelName(options.realtimeChannel || process.env.MAGCLAW_REALTIME_CHANNEL, schema);
   let pool = options.pool || null;
+  let realtimeClient = null;
+  let realtimeStopper = null;
+  let realtimeReconnectTimer = null;
   let initialized = false;
   let migration = null;
   let persistQueue = Promise.resolve();
@@ -701,6 +712,22 @@ export function createCloudPostgresStore(optionsInput = {}) {
   }
 
   attachPoolErrorHandler(pool);
+
+  function clearRealtimeReconnect() {
+    if (!realtimeReconnectTimer) return;
+    clearTimeout(realtimeReconnectTimer);
+    realtimeReconnectTimer = null;
+  }
+
+  function releaseRealtimeClient(client) {
+    if (!client) return;
+    if (realtimeClient === client) realtimeClient = null;
+    try {
+      client.release?.();
+    } catch {
+      // Listener shutdown/reconnect cleanup should never block app shutdown.
+    }
+  }
 
   function table(name) {
     return tableName(schema, name);
@@ -740,6 +767,119 @@ export function createCloudPostgresStore(optionsInput = {}) {
       console.error(`[cloud-postgres] ${label} transaction failed`, error);
       throw error;
     }
+  }
+
+  async function publishRealtimeEvent(payload = {}) {
+    const event = {
+      version: 1,
+      type: 'state_changed',
+      createdAt: requiredIso(),
+      ...jsonObject(payload),
+    };
+    const body = JSON.stringify(event);
+    const compactBody = body.length <= 7900
+      ? body
+      : JSON.stringify({
+        version: event.version,
+        type: event.type,
+        sourceId: event.sourceId || null,
+        workspaceId: event.workspaceId || null,
+        reason: event.reason || 'state_changed',
+        createdAt: event.createdAt,
+      });
+    await withClient((client) => client.query('SELECT pg_notify($1, $2)', [realtimeChannel, compactBody]));
+  }
+
+  async function subscribeRealtimeEvents(onEvent) {
+    if (typeof onEvent !== 'function') return async () => {};
+    if (realtimeStopper) await realtimeStopper();
+
+    let stopped = false;
+    let connecting = false;
+
+    const scheduleReconnect = (reason = 'unknown') => {
+      if (stopped || realtimeReconnectTimer) return;
+      realtimeReconnectTimer = setTimeout(() => {
+        realtimeReconnectTimer = null;
+        connect().catch((error) => {
+          console.warn(`[cloud-postgres] realtime reconnect failed reason=${reason} message=${postgresPoolErrorMessage(error)}`);
+          scheduleReconnect('retry_failed');
+        });
+      }, 1000);
+      realtimeReconnectTimer.unref?.();
+    };
+
+    const connect = async () => {
+      if (stopped || connecting || realtimeClient) return;
+      connecting = true;
+      let client = null;
+      try {
+        if (!pool) {
+          pool = new Pool({
+            connectionString: databaseUrlWithName(databaseUrl, database),
+            max: poolMax,
+            connectionTimeoutMillis: runtimeOptions.connectTimeoutMs,
+          });
+          attachPoolErrorHandler(pool);
+        }
+        client = await pool.connect();
+        await configurePostgresSession(client, runtimeOptions, { applicationName: `${applicationName}-realtime` });
+        const handleNotification = (message) => {
+          if (message?.channel !== realtimeChannel) return;
+          let event = {};
+          try {
+            event = message.payload ? JSON.parse(message.payload) : {};
+          } catch {
+            event = { payload: message.payload || '' };
+          }
+          onEvent({
+            type: event.type || 'state_changed',
+            channel: message.channel,
+            createdAt: event.createdAt || requiredIso(),
+            ...jsonObject(event),
+          });
+        };
+        const handleDisconnect = (error) => {
+          if (stopped) return;
+          if (error) {
+            console.warn(`[cloud-postgres] realtime listener disconnected code=${postgresPoolErrorCode(error)} message=${postgresPoolErrorMessage(error)}`);
+          }
+          releaseRealtimeClient(client);
+          scheduleReconnect(error ? 'error' : 'end');
+        };
+        client.on?.('notification', handleNotification);
+        client.on?.('error', handleDisconnect);
+        client.on?.('end', () => handleDisconnect(null));
+        await client.query(`LISTEN ${quoteIdent(realtimeChannel)}`);
+        realtimeClient = client;
+        console.info(`[cloud-postgres] realtime listener active channel=${realtimeChannel}`);
+      } catch (error) {
+        releaseRealtimeClient(client);
+        throw error;
+      } finally {
+        connecting = false;
+      }
+    };
+
+    const stop = async () => {
+      stopped = true;
+      clearRealtimeReconnect();
+      const client = realtimeClient;
+      realtimeClient = null;
+      if (client) {
+        try {
+          await client.query(`UNLISTEN ${quoteIdent(realtimeChannel)}`);
+        } catch {
+          // Best-effort shutdown only.
+        }
+        releaseRealtimeClient(client);
+      }
+      if (realtimeStopper === stop) realtimeStopper = null;
+    };
+
+    realtimeStopper = stop;
+    await connect();
+    return stop;
   }
 
   function cloneRecord(value) {
@@ -2348,6 +2488,88 @@ export function createCloudPostgresStore(optionsInput = {}) {
     });
   }
 
+  async function loadAuthIntoState(state) {
+    const cloud = state.cloud || {};
+    await withClient(async (client) => {
+      const workspaces = await client.query(`SELECT * FROM ${table('cloud_workspaces')} ORDER BY created_at ASC, id ASC`);
+      const users = await client.query(`SELECT * FROM ${table('cloud_users')} ORDER BY created_at ASC, id ASC`);
+      const members = await client.query(`SELECT * FROM ${table('cloud_workspace_members')} ORDER BY created_at ASC, id ASC`);
+      const sessions = await client.query(`SELECT * FROM ${table('cloud_sessions')} ORDER BY created_at ASC, id ASC`);
+      const invitations = await client.query(`SELECT * FROM ${table('cloud_invitations')} ORDER BY created_at ASC, id ASC`);
+      const passwordResets = await client.query(`SELECT * FROM ${table('cloud_password_resets')} ORDER BY created_at ASC, id ASC`);
+      const joinLinks = await client.query(`SELECT * FROM ${table('cloud_join_links')} ORDER BY created_at ASC, id ASC`);
+      const computers = await client.query(`SELECT * FROM ${table('cloud_computers')} ORDER BY created_at ASC, id ASC`);
+      const computerTokens = await client.query(`SELECT * FROM ${table('cloud_computer_tokens')} ORDER BY created_at ASC, id ASC`);
+      const pairingTokens = await client.query(`SELECT * FROM ${table('cloud_pairing_tokens')} ORDER BY created_at ASC, id ASC`);
+      const agentDeliveries = await client.query(`SELECT * FROM ${table('cloud_agent_deliveries')} ORDER BY created_at ASC, id ASC`);
+
+      cloud.schemaVersion = Number(cloud.schemaVersion || 1);
+      cloud.auth = {
+        ...(cloud.auth || {}),
+        passwordLogin: true,
+      };
+      cloud.workspaces = workspaces.rows.map(workspaceFromRow);
+      cloud.users = users.rows.map(userFromRow);
+      cloud.workspaceMembers = members.rows.map(memberFromRow);
+      cloud.sessions = sessions.rows.map(sessionFromRow);
+      cloud.invitations = invitations.rows.map(invitationFromRow);
+      cloud.passwordResetTokens = passwordResets.rows.map(passwordResetFromRow);
+      cloud.joinLinks = joinLinks.rows.map(joinLinkFromRow);
+      cloud.computerTokens = computerTokens.rows.map(computerTokenFromRow);
+      cloud.pairingTokens = pairingTokens.rows.map(pairingTokenFromRow);
+      cloud.agentDeliveries = agentDeliveries.rows.map(agentDeliveryFromRow);
+      cloud.daemonEvents = [];
+      state.computers = computers.rows.map(computerFromRow);
+      state.cloud = cloud;
+      state.updatedAt = requiredIso();
+    });
+  }
+
+  async function loadWorkspaceIntoState(state, workspaceId) {
+    const scopedWorkspaceId = String(workspaceId || '').trim();
+    if (!scopedWorkspaceId) {
+      await loadIntoState(state);
+      return;
+    }
+    const replaceWorkspaceRows = (key, rows) => {
+      const existing = safeArray(state[key]).filter((item) => String(item?.workspaceId || '') !== scopedWorkspaceId);
+      state[key] = [...existing, ...rows];
+    };
+    await withClient(async (client) => {
+      const humans = await client.query(`SELECT * FROM ${table('cloud_humans')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const computers = await client.query(`SELECT * FROM ${table('cloud_computers')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const agents = await client.query(`SELECT * FROM ${table('cloud_agents')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const channels = await client.query(`SELECT * FROM ${table('cloud_channels')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const dms = await client.query(`SELECT * FROM ${table('cloud_dms')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const messages = await client.query(`SELECT * FROM ${table('cloud_messages')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const replies = await client.query(`SELECT * FROM ${table('cloud_replies')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const tasks = await client.query(`SELECT * FROM ${table('cloud_tasks')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const workItems = await client.query(`SELECT * FROM ${table('cloud_work_items')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const attachments = await client.query(`SELECT * FROM ${table('cloud_attachments')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const stateRecords = await client.query(
+        `SELECT * FROM ${table('cloud_state_records')} WHERE workspace_id = $1 ORDER BY kind ASC, position ASC, id ASC`,
+        [scopedWorkspaceId],
+      );
+      replaceWorkspaceRows('humans', humans.rows.map(humanFromRow));
+      replaceWorkspaceRows('computers', computers.rows.map(computerFromRow));
+      replaceWorkspaceRows('agents', agents.rows.map(agentFromRow));
+      replaceWorkspaceRows('channels', channels.rows.map(channelFromRow));
+      replaceWorkspaceRows('dms', dms.rows.map(dmFromRow));
+      replaceWorkspaceRows('messages', messages.rows.map(messageFromRow));
+      replaceWorkspaceRows('replies', replies.rows.map(replyFromRow));
+      replaceWorkspaceRows('tasks', tasks.rows.map(taskFromRow));
+      replaceWorkspaceRows('workItems', workItems.rows.map(workItemFromRow));
+      replaceWorkspaceRows('attachments', attachments.rows.map(attachmentFromRow));
+      for (const kind of DURABLE_STATE_RECORD_ARRAY_KEYS) {
+        const rows = stateRecords.rows
+          .filter((row) => row.kind === kind)
+          .map((row) => ({ ...jsonObject(row.payload), workspaceId: row.workspace_id }));
+        replaceWorkspaceRows(kind, rows);
+      }
+      state.updatedAt = requiredIso();
+    });
+  }
+
   async function initialize(state) {
     if (initialized) return { ok: true, enabled: true, migration, database, schema };
     migration = await migratePostgres({
@@ -2369,6 +2591,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
   }
 
   async function close() {
+    if (realtimeStopper) await realtimeStopper();
+    clearRealtimeReconnect();
     if (pool && !options.pool) await pool.end();
     pool = null;
     initialized = false;
@@ -2379,10 +2603,14 @@ export function createCloudPostgresStore(optionsInput = {}) {
     initialize,
     isEnabled: () => true,
     loadIntoState,
+    loadAuthIntoState,
+    loadWorkspaceIntoState,
+    publishRealtimeEvent,
     persistAuthOperation,
     persistAuthFromState,
     persistFromState,
     persistWorkspaceFromState,
+    subscribeRealtimeEvents,
     publicInfo: () => ({
       backend: 'postgres',
       database,

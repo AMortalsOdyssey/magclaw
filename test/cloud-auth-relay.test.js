@@ -749,6 +749,43 @@ test('cloud pairing command carries the requested computer display name', async 
   }
 });
 
+test('cloud pairing tokens use the request-scoped server instead of the process default', async () => {
+  const server = await startIsolatedServer({ MAGCLAW_DEPLOYMENT: 'cloud' });
+  try {
+    const admin = await registerOwnerServer(server);
+    const second = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ name: 'Second Team', slug: 'second-team' }),
+    });
+
+    const pairing = await request(server.baseUrl, '/api/cloud/computers/pairing-tokens', {
+      method: 'POST',
+      cookie: admin.cookie,
+      headers: { 'x-magclaw-server-slug': 'second-team' },
+      body: JSON.stringify({ displayName: 'Second runner' }),
+    });
+
+    assert.equal(pairing.data.computer.workspaceId, second.data.server.id);
+    assert.match(pairing.data.command, /--profile "?second-team"?/);
+    assert.match(pairing.data.command, /# Second Team/);
+
+    const secondState = await request(server.baseUrl, '/api/state?serverSlug=second-team', {
+      cookie: admin.cookie,
+      headers: { 'x-magclaw-server-slug': 'second-team' },
+    });
+    assert.ok(secondState.data.computers.some((computer) => computer.id === pairing.data.computer.id));
+
+    const firstState = await request(server.baseUrl, '/api/state?serverSlug=admin-team', {
+      cookie: admin.cookie,
+      headers: { 'x-magclaw-server-slug': 'admin-team' },
+    });
+    assert.equal(firstState.data.computers.some((computer) => computer.id === pairing.data.computer.id), false);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('cloud roles enforce admin invite and removal boundaries', async () => {
   const server = await startIsolatedServer();
   try {

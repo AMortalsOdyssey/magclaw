@@ -475,6 +475,50 @@ function resilientCloudRepository(repository) {
         await disable(error);
       }
     },
+    async loadAuthIntoState(stateSnapshot) {
+      if (disabled) return;
+      try {
+        if (typeof repository.loadAuthIntoState === 'function') {
+          await repository.loadAuthIntoState(stateSnapshot);
+        } else {
+          await repository.loadIntoState?.(stateSnapshot);
+        }
+      } catch (error) {
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
+        await disable(error);
+      }
+    },
+    async loadWorkspaceIntoState(stateSnapshot, workspaceId) {
+      if (disabled) return;
+      try {
+        if (typeof repository.loadWorkspaceIntoState === 'function') {
+          await repository.loadWorkspaceIntoState(stateSnapshot, workspaceId);
+        } else {
+          await repository.loadIntoState?.(stateSnapshot);
+        }
+      } catch (error) {
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
+        await disable(error);
+      }
+    },
+    async publishRealtimeEvent(payload) {
+      if (disabled || typeof repository.publishRealtimeEvent !== 'function') return;
+      try {
+        await repository.publishRealtimeEvent(payload);
+      } catch (error) {
+        console.warn(`[cloud-postgres] realtime notify failed message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
+      }
+    },
+    async subscribeRealtimeEvents(onEvent) {
+      if (disabled || typeof repository.subscribeRealtimeEvents !== 'function') return async () => {};
+      try {
+        return await repository.subscribeRealtimeEvents(onEvent);
+      } catch (error) {
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
+        console.warn(`[cloud-postgres] realtime listener unavailable message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
+        return async () => {};
+      }
+    },
     async persistFromState(stateSnapshot) {
       if (disabled) return;
       try {
@@ -549,6 +593,66 @@ async function createCloudRepositoryFromEnv() {
 }
 
 const cloudRepository = await createCloudRepositoryFromEnv();
+const REALTIME_SOURCE_ID = makeId('rt');
+let realtimeReloadTimer = null;
+let realtimeReloadRunning = false;
+let realtimeAuthReloadPending = false;
+let realtimeFullReloadPending = false;
+const realtimeWorkspaceReloads = new Set();
+
+function scheduleRealtimeReload(event = {}) {
+  if (!cloudRepository?.isEnabled?.()) return;
+  if (event.sourceId && event.sourceId === REALTIME_SOURCE_ID) return;
+  if (event.authReload) realtimeAuthReloadPending = true;
+  const workspaceId = String(event.workspaceId || '').trim();
+  if (workspaceId && !event.fullReload) {
+    realtimeWorkspaceReloads.add(workspaceId);
+  } else if (event.fullReload) {
+    realtimeFullReloadPending = true;
+  }
+  if (!event.authReload && !workspaceId && !event.fullReload) realtimeFullReloadPending = true;
+  if (realtimeReloadTimer || realtimeReloadRunning) return;
+  realtimeReloadTimer = setTimeout(flushRealtimeReload, 50);
+  realtimeReloadTimer.unref?.();
+}
+
+async function flushRealtimeReload() {
+  realtimeReloadTimer = null;
+  if (realtimeReloadRunning) return;
+  realtimeReloadRunning = true;
+  const authReload = realtimeAuthReloadPending;
+  const fullReload = realtimeFullReloadPending;
+  const workspaceIds = [...realtimeWorkspaceReloads];
+  realtimeAuthReloadPending = false;
+  realtimeFullReloadPending = false;
+  realtimeWorkspaceReloads.clear();
+  try {
+    if (fullReload) {
+      await cloudRepository.loadIntoState?.(state);
+    } else {
+      if (authReload) {
+        await cloudRepository.loadAuthIntoState?.(state);
+      }
+      if (typeof cloudRepository.loadWorkspaceIntoState === 'function') {
+        for (const workspaceId of workspaceIds) {
+          await cloudRepository.loadWorkspaceIntoState(state, workspaceId);
+        }
+      } else if (workspaceIds.length) {
+        await cloudRepository.loadIntoState?.(state);
+      }
+    }
+    broadcastState({ skipCloudPush: true });
+  } catch (error) {
+    console.warn(`[cloud-postgres] realtime reload failed message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
+  } finally {
+    realtimeReloadRunning = false;
+    if (realtimeAuthReloadPending || realtimeFullReloadPending || realtimeWorkspaceReloads.size) {
+      realtimeReloadTimer = setTimeout(flushRealtimeReload, 50);
+      realtimeReloadTimer.unref?.();
+    }
+  }
+}
+
 const mailService = createMailService();
 const cloudAuth = createCloudAuth({
   cloudRepository,
@@ -558,6 +662,7 @@ const cloudAuth = createCloudAuth({
   normalizeIds,
   now,
   persistState,
+  realtimeSourceId: REALTIME_SOURCE_ID,
 });
 
 const serverIo = createServerIo({
@@ -1443,14 +1548,29 @@ async function handleRequest(req, res) {
 
 await ensureStorage();
 await cloudAuth.initializeStorage();
+if (cloudRepository?.isEnabled?.() && typeof cloudRepository.subscribeRealtimeEvents === 'function') {
+  await cloudRepository.subscribeRealtimeEvents(scheduleRealtimeReload).catch((error) => {
+    console.warn(`[cloud-postgres] realtime listener startup failed message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
+  });
+}
 setExternalStatePersister(async (stateSnapshot, options = {}) => {
   if (cloudRepository?.isEnabled?.()) {
     const workspaceId = String(options.workspaceId || options.externalWorkspaceId || '').trim();
     if (workspaceId && typeof cloudRepository.persistWorkspaceFromState === 'function') {
       await cloudRepository.persistWorkspaceFromState(stateSnapshot, workspaceId);
+      await cloudRepository.publishRealtimeEvent?.({
+        sourceId: REALTIME_SOURCE_ID,
+        workspaceId,
+        reason: options.reason || 'workspace_state_changed',
+      });
       return;
     }
     await cloudRepository.persistFromState?.(stateSnapshot);
+    await cloudRepository.publishRealtimeEvent?.({
+      sourceId: REALTIME_SOURCE_ID,
+      reason: options.reason || 'state_changed',
+      fullReload: true,
+    });
   }
 });
 
@@ -1533,6 +1653,7 @@ function shutdown() {
   server.close(async () => {
     try {
       await cloudAuth.close?.();
+      await cloudRepository?.close?.();
     } finally {
       clearTimeout(forceExit);
       process.exit(0);

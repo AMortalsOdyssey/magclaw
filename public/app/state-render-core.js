@@ -593,6 +593,12 @@ function workspaceHumans() {
 
 function humanByIdAny(id) {
   const target = String(id || '');
+  const cloudHuman = workspaceHumans().find((human) => (
+    human.id === target
+    || human.cloudMemberId === target
+    || human.authUserId === target
+  ));
+  if (cloudHuman && target !== 'hum_local') return cloudHuman;
   if (target === 'hum_local' && appState?.cloud?.auth?.currentUser) {
     const current = currentAccountHuman();
     const visibleCurrent = workspaceHumans().find((human) => (
@@ -602,13 +608,7 @@ function humanByIdAny(id) {
     ));
     if (visibleCurrent) return visibleCurrent;
   }
-  return byId(appState?.humans, target)
-    || workspaceHumans().find((human) => (
-      human.id === target
-      || human.cloudMemberId === target
-      || human.authUserId === target
-    ))
-    || null;
+  return byId(appState?.humans, target) || cloudHuman || null;
 }
 
 function currentAccountHuman() {

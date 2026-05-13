@@ -584,7 +584,11 @@ function getMentionCandidates(query, spaceType = selectedSpaceType, spaceId = se
     };
   const inIds = new Set([...inMembers.agents.map((a) => a.id), ...inMembers.humans.map((h) => h.id)]);
   const allItems = [
-    ...(appState.agents || []).map((agent) => ({
+    ...(appState.agents || []).filter((agent) => (
+      typeof agentIsActiveInWorkspace === 'function'
+        ? agentIsActiveInWorkspace(agent)
+        : !agent?.deletedAt && !agent?.archivedAt && String(agent?.status || '').toLowerCase() !== 'deleted'
+    )).map((agent) => ({
       id: agent.id,
       name: agent.name,
       type: 'agent',

@@ -34,11 +34,12 @@ function makeAuth(repository, initialState = {}) {
   return { auth, state };
 }
 
-function request(cookie = '') {
+function request(cookie = '', headers = {}) {
   return {
     headers: {
       cookie,
       'user-agent': 'node-test',
+      ...headers,
     },
     socket: { remoteAddress: '127.0.0.1' },
   };
@@ -153,21 +154,12 @@ test('login persists a narrow auth operation before issuing a session cookie', a
   assert.match(res.headers[0][1], /magclaw_session=/);
 });
 
-test('console server switch returns before full cloud persistence completes', async () => {
+test('console server switch stays local to the handling process', async () => {
   let persistStarted = false;
-  let persistCompleted = false;
-  let releasePersist;
-  const persistStartedPromise = new Promise((resolve) => {
-    releasePersist = () => {
-      persistCompleted = true;
-      resolve();
-    };
-  });
   const repository = {
     isEnabled: () => true,
     async persistFromState() {
       persistStarted = true;
-      await persistStartedPromise;
     },
   };
   const createdAt = '2026-05-12T00:00:00.000Z';
@@ -214,40 +206,89 @@ test('console server switch returns before full cloud persistence completes', as
   });
   auth.ensureCloudState();
 
-  const result = await Promise.race([
-    auth.switchConsoleServer('second-team', request(`${SESSION_COOKIE}=${token}`)),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('switch waited for persistence')), 25)),
-  ]);
+  const result = await auth.switchConsoleServer('second-team', request(`${SESSION_COOKIE}=${token}`));
 
   assert.equal(result.server.id, 'wsp_second');
   assert.equal(state.connection.workspaceId, 'wsp_second');
-  assert.equal(persistStarted, true);
-  assert.equal(persistCompleted, false);
-
-  releasePersist();
-  await persistStartedPromise;
+  assert.equal(persistStarted, false);
 });
 
-test('console server creation returns before full cloud persistence completes', async () => {
+test('request workspace headers scope current actor and public cloud state', async () => {
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  const token = 'header-session-token';
+  const { auth, state } = makeAuth(null, {
+    connection: { workspaceId: 'wsp_local' },
+    cloud: {
+      users: [{
+        id: 'usr_header',
+        email: 'header@example.test',
+        name: 'Header User',
+        passwordHash: scryptPassword('password123'),
+        language: 'en',
+        createdAt,
+        updatedAt: createdAt,
+      }],
+      sessions: [{
+        id: 'ses_header',
+        userId: 'usr_header',
+        tokenHash: sha256(token),
+        createdAt,
+        expiresAt: '2026-05-26T00:00:00.000Z',
+      }],
+      workspaces: [
+        { id: 'wsp_local', slug: 'local', name: 'Local', createdAt, updatedAt: createdAt },
+        { id: 'wsp_second', slug: 'second-team', name: 'Second Team', createdAt, updatedAt: createdAt },
+      ],
+      workspaceMembers: [
+        { id: 'wmem_local', workspaceId: 'wsp_local', userId: 'usr_header', humanId: 'hum_local', role: 'member', status: 'active', joinedAt: createdAt, createdAt },
+        { id: 'wmem_second', workspaceId: 'wsp_second', userId: 'usr_header', humanId: 'hum_second', role: 'admin', status: 'active', joinedAt: createdAt, createdAt },
+      ],
+    },
+  });
+  auth.ensureCloudState();
+
+  const req = request(`${SESSION_COOKIE}=${token}`, { 'x-magclaw-server-slug': 'second-team' });
+  const actor = auth.currentActor(req);
+  const cloud = auth.publicCloudState(req);
+
+  assert.equal(actor.member.workspaceId, 'wsp_second');
+  assert.equal(actor.member.role, 'admin');
+  assert.equal(cloud.workspace.id, 'wsp_second');
+  assert.equal(cloud.auth.currentMember.workspaceId, 'wsp_second');
+  assert.equal(state.connection.workspaceId, 'wsp_local');
+});
+
+test('console server creation waits for auth persistence before returning', async () => {
   let authPersistStarted = false;
-  let fullPersistStarted = false;
+  let workspacePersistStarted = false;
+  let workspacePersistedId = '';
   let releaseAuthPersist;
-  let releaseFullPersist;
+  let releaseWorkspacePersist;
   const authPersistPromise = new Promise((resolve) => {
     releaseAuthPersist = () => resolve();
   });
-  const fullPersistPromise = new Promise((resolve) => {
-    releaseFullPersist = () => resolve();
+  const workspacePersistPromise = new Promise((resolve) => {
+    releaseWorkspacePersist = () => resolve();
   });
+  const realtimeEvents = [];
   const repository = {
     isEnabled: () => true,
     async persistAuthFromState() {
       authPersistStarted = true;
       await authPersistPromise;
     },
+    async persistWorkspaceFromState(snapshot, workspaceId) {
+      workspacePersistStarted = true;
+      workspacePersistedId = workspaceId;
+      const allChannel = snapshot.channels.find((channel) => channel.workspaceId === workspaceId && channel.name === 'all');
+      assert.ok(allChannel, 'workspace persistence must include the default all channel');
+      await workspacePersistPromise;
+    },
     async persistFromState() {
-      fullPersistStarted = true;
-      await fullPersistPromise;
+      throw new Error('full persistence should be owned by the route broadcast path');
+    },
+    async publishRealtimeEvent(event) {
+      realtimeEvents.push(event);
     },
   };
   const createdAt = '2026-05-12T00:00:00.000Z';
@@ -292,25 +333,38 @@ test('console server creation returns before full cloud persistence completes', 
   });
   auth.ensureCloudState();
 
-  const result = await Promise.race([
-    auth.createConsoleServer(
-      { name: 'Created Team', slug: 'created-team' },
-      request(`${SESSION_COOKIE}=${token}`),
-    ),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('create waited for full persistence')), 25)),
-  ]);
+  let settled = false;
+  const creation = auth.createConsoleServer(
+    { name: 'Created Team', slug: 'created-team' },
+    request(`${SESSION_COOKIE}=${token}`),
+  ).then((value) => {
+    settled = true;
+    return value;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(authPersistStarted, true);
+  assert.equal(workspacePersistStarted, false);
+  assert.equal(settled, false);
+  releaseAuthPersist();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(workspacePersistStarted, true);
+  assert.equal(settled, false);
+  releaseWorkspacePersist();
+  const result = await creation;
 
   assert.equal(result.server.slug, 'created-team');
+  assert.equal(result.member.workspaceId, result.server.id);
   assert.equal(state.connection.workspaceId, result.server.id);
   assert.equal(state.cloud.workspaces.some((workspace) => workspace.slug === 'created-team'), true);
+  assert.equal(workspacePersistedId, result.server.id);
   const allChannel = state.channels.find((channel) => channel.workspaceId === result.server.id && channel.name === 'all');
   assert.ok(allChannel, 'new console servers must get a workspace-scoped all channel');
   assert.equal(allChannel.locked, true);
   assert.equal(allChannel.humanIds.includes(result.member.humanId), true);
+  assert.deepEqual(realtimeEvents.at(-1), {
+    reason: 'console_server_created',
+    authReload: true,
+    workspaceId: result.server.id,
+  });
   assert.equal(authPersistStarted, true);
-  assert.equal(fullPersistStarted, false);
-
-  releaseAuthPersist();
-  releaseFullPersist();
-  await Promise.all([authPersistPromise, fullPersistPromise]);
 });

@@ -216,6 +216,8 @@ export function createConversationModel(deps) {
   function knownMentionEntries() {
     const entries = [];
     for (const agent of state.agents || []) {
+      const agentStatus = String(agent?.status || '').toLowerCase();
+      if (agent?.deletedAt || agent?.archivedAt || agentStatus === 'deleted' || agentStatus === 'disabled') continue;
       entries.push([visibleMentionLabel(agent), agent.id]);
     }
     for (const human of workspaceHumans()) {

@@ -22,7 +22,10 @@ function getChannelMembers(channelId) {
     ? workspaceHumans()
     : (appState.humans || []).filter((human) => human.status !== 'removed');
   // "All" channel always includes all agents and humans
-  if (isAllChannel(channel)) {
+  const allChannel = typeof isAllChannel === 'function'
+    ? isAllChannel(channel)
+    : (channel.id === 'chan_all' || String(channel.name || '').toLowerCase() === 'all');
+  if (allChannel) {
     return {
       agents: (appState.agents || []).filter(channelAgentIsActive),
       humans: humansInWorkspace,
