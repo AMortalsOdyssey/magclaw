@@ -65,23 +65,43 @@ export function createSystemServices(deps) {
     const dms = records(currentState.dms);
     const messages = records(currentState.messages);
     const replies = records(currentState.replies);
+    const activeWorkspaceId = cloud?.auth?.currentMember?.workspaceId || cloud?.workspace?.id || '';
+    const scopeToWorkspace = Boolean(cloud?.auth?.currentUser && cloud?.auth?.currentMember && activeWorkspaceId);
+    const keepLegacyUnscopedRecords = cloud?.auth?.storageBackend !== 'postgres';
+    const inCurrentWorkspace = (record) => (
+      !scopeToWorkspace
+      || String(record?.workspaceId || '') === String(activeWorkspaceId)
+      || (!record?.workspaceId && keepLegacyUnscopedRecords)
+    );
+    const scopedChannels = channels.filter(inCurrentWorkspace);
+    const scopedDms = dms.filter(inCurrentWorkspace);
+    const scopedMessages = messages.filter(inCurrentWorkspace);
+    const scopedReplies = replies.filter(inCurrentWorkspace);
+    const scopedRecords = (key) => records(currentState[key]).filter(inCurrentWorkspace);
     const visibleDms = currentHumanId
-      ? dms.filter((dm) => records(dm.participantIds).includes(currentHumanId))
-      : dms;
+      ? scopedDms.filter((dm) => records(dm.participantIds).includes(currentHumanId))
+      : scopedDms;
     const visibleDmIds = new Set(visibleDms.map((dm) => dm.id));
     return {
       ...currentState,
       settings: publicSettings(cloud),
-      channels: channels.filter((channel) => !channel.archived),
+      channels: scopedChannels.filter((channel) => !channel.archived),
       dms: visibleDms,
-      messages: messages.filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId)),
-      replies: replies.filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId)),
-      tasks: records(currentState.tasks),
-      agents: records(currentState.agents),
-      computers: records(currentState.computers),
-      humans: records(currentState.humans),
-      routeEvents: records(currentState.routeEvents),
-      systemNotifications: records(currentState.systemNotifications),
+      messages: scopedMessages.filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId)),
+      replies: scopedReplies.filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId)),
+      tasks: scopedRecords('tasks'),
+      agents: scopedRecords('agents'),
+      computers: scopedRecords('computers'),
+      humans: scopedRecords('humans'),
+      reminders: scopedRecords('reminders'),
+      missions: scopedRecords('missions'),
+      runs: scopedRecords('runs'),
+      attachments: scopedRecords('attachments'),
+      projects: scopedRecords('projects'),
+      workItems: scopedRecords('workItems'),
+      events: scopedRecords('events'),
+      routeEvents: scopedRecords('routeEvents'),
+      systemNotifications: scopedRecords('systemNotifications'),
       connection: publicConnection(),
       cloud,
       releaseNotes: publicReleaseNotes(),

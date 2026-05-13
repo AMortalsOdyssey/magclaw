@@ -244,9 +244,12 @@ export async function handleCollabApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/computers') {
     const body = await readJson(req);
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    const workspaceId = auth?.member?.workspaceId || state.connection?.workspaceId || 'local';
     const createdAt = now();
     const computer = {
       id: makeId('cmp'),
+      workspaceId,
       name: String(body.name || os.hostname()).trim(),
       os: String(body.os || `${os.platform()} ${os.arch()}`),
       daemonVersion: String(body.daemonVersion || ''),

@@ -308,6 +308,13 @@ test('public account registration and password reset use SMTP outbox without inv
     assert.equal(serverCreated.data.server.name, 'Free Team');
     assert.equal(serverCreated.data.server.slug, 'free-team');
     assert.equal(serverCreated.data.member.role, 'admin');
+    const firstServerComputer = await request(server.baseUrl, '/api/computers', {
+      method: 'POST',
+      cookie: created.cookie,
+      body: JSON.stringify({ name: 'Free Team computer' }),
+    });
+    assert.equal(firstServerComputer.status, 201);
+    assert.equal(firstServerComputer.data.computer.workspaceId, serverCreated.data.server.id);
     const duplicateServer = await request(server.baseUrl, '/api/console/servers', {
       method: 'POST',
       cookie: created.cookie,
@@ -330,7 +337,22 @@ test('public account registration and password reset use SMTP outbox without inv
     assert.equal(secondServer.status, 201);
     const scopedState = await request(server.baseUrl, '/api/state', { cookie: created.cookie });
     assert.equal(scopedState.data.cloud.workspace.slug, 'second-team');
+    assert.equal(
+      scopedState.data.computers.some((computer) => computer.id === firstServerComputer.data.computer.id),
+      false,
+    );
     assert.deepEqual(scopedState.data.cloud.members.map((member) => member.workspaceId), [secondServer.data.server.id]);
+
+    await request(server.baseUrl, `/api/console/servers/${serverCreated.data.server.slug}/switch`, {
+      method: 'POST',
+      cookie: created.cookie,
+      body: '{}',
+    });
+    const firstServerState = await request(server.baseUrl, '/api/state', { cookie: created.cookie });
+    assert.equal(
+      firstServerState.data.computers.some((computer) => computer.id === firstServerComputer.data.computer.id),
+      true,
+    );
 
     const forgot = await request(server.baseUrl, '/api/auth/forgot-password', {
       method: 'POST',
