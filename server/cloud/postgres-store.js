@@ -17,9 +17,21 @@ import {
 import { normalizeReleaseNotes, RELEASE_COMPONENTS } from '../release-notes.js';
 
 const TRANSIENT_POSTGRES_PERSIST_ERROR_CODES = new Set(['55P03', '40001', '40P01']);
+const STATE_RECORD_PERSIST_LIMITS = Object.freeze({
+  events: 300,
+  routeEvents: 300,
+  systemNotifications: 300,
+});
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function stateRecordsForPersistence(key, value) {
+  const records = safeArray(value);
+  const limit = STATE_RECORD_PERSIST_LIMITS[key] || 0;
+  if (!limit || records.length <= limit) return records;
+  return records.slice(records.length - limit);
 }
 
 function normalizeEmail(value) {
@@ -1162,7 +1174,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const residualArrayKeys = ['events', 'routeEvents', 'reminders', 'missions', 'runs', 'projects', 'systemNotifications'];
     const residualObjectKeys = ['settings', 'connection', 'router', 'inboxReads'];
     for (const key of residualArrayKeys) {
-      const records = safeArray(state[key]);
+      const records = stateRecordsForPersistence(key, state[key]);
       for (let position = 0; position < records.length; position += 1) {
         const record = records[position];
         const workspaceId = workspaceIdFor(record, state, cloud);
