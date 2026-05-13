@@ -425,6 +425,82 @@ test('postgres store restores legacy provisional computers before pairing tokens
   assert.ok(computerInsertIndex < pairingInsertIndex);
 });
 
+test('postgres store retries full-state persistence after transient lock timeout', async () => {
+  const queries = [];
+  let releaseNoteFailures = 0;
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          if (
+            sql.includes('INSERT INTO "magclaw"."cloud_release_notes"')
+            && releaseNoteFailures === 0
+          ) {
+            releaseNoteFailures += 1;
+            throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const previousError = console.error;
+  const previousWarn = console.warn;
+  console.error = () => {};
+  console.warn = () => {};
+  try {
+    await store.persistFromState({
+      cloud: {
+        workspaces: [{ id: 'wsp_retry', slug: 'retry', name: 'Retry', createdAt, updatedAt: createdAt }],
+        users: [],
+        workspaceMembers: [],
+        sessions: [],
+        invitations: [],
+        passwordResetTokens: [],
+      },
+      releaseNotes: {
+        web: {
+          currentVersion: '0.2.1',
+          latestVersion: '0.2.1',
+          releases: [{
+            version: '0.2.1',
+            date: '2026-05-13',
+            title: 'Retry release',
+            features: ['Retry transient lock timeout'],
+            fixes: [],
+            improved: [],
+          }],
+        },
+        daemon: {
+          currentVersion: '0.1.2',
+          latestVersion: '0.1.2',
+          releases: [],
+        },
+      },
+    });
+  } finally {
+    console.error = previousError;
+    console.warn = previousWarn;
+  }
+  assert.equal(releaseNoteFailures, 1);
+  assert.equal(queries.filter((query) => query.sql === 'BEGIN').length, 2);
+  assert.equal(queries.filter((query) => query.sql === 'ROLLBACK').length, 1);
+  assert.equal(queries.filter((query) => query.sql === 'COMMIT').length, 1);
+  assert.ok(queries.some((query) => (
+    query.sql.includes('INSERT INTO "magclaw"."cloud_workspaces"')
+    && query.params[0] === 'wsp_retry'
+  )));
+});
+
 test('postgres store skips orphan computer tokens and pairing tokens', async () => {
   const queries = [];
   const pool = {

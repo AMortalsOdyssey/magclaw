@@ -1592,7 +1592,7 @@ class MagClawDaemon {
         },
       });
       this.request = req;
-      req.on('upgrade', (res, socket) => {
+      req.on('upgrade', (res, socket, head = Buffer.alloc(0)) => {
         if (this.request === req) this.request = null;
         if (res.statusCode !== 101) {
           socket.destroy();
@@ -1606,7 +1606,7 @@ class MagClawDaemon {
         }
         this.socket = socket;
         const connection = { socket, buffer: Buffer.alloc(0) };
-        socket.on('data', (chunk) => {
+        const handleChunk = (chunk) => {
           for (const frame of decodeFrames(connection, chunk)) {
             if (frame.opcode === 0x8) {
               socket.end();
@@ -1621,7 +1621,9 @@ class MagClawDaemon {
               console.error(`Invalid server frame: ${error.message}`);
             }
           }
-        });
+        };
+        socket.on('data', handleChunk);
+        if (head.length) handleChunk(head);
         socket.on('close', () => finish(resolve));
         socket.on('end', () => finish(resolve));
         socket.on('error', (error) => {

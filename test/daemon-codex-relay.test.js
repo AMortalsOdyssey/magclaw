@@ -106,22 +106,24 @@ async function startRelay(options = {}) {
     assert.equal(url.pathname, '/daemon/connect');
     assert.equal(url.searchParams.get('pair_token'), 'mc_pair_test');
     const key = String(req.headers['sec-websocket-key'] || '');
-    socket.write([
+    const welcomeFrame = encodeServerFrame({
+      type: 'pairing:accepted',
+      computerId: 'cmp_remote_test',
+      workspaceId: 'wsp_test',
+      machineToken: 'mc_machine_test',
+    });
+    const handshake = Buffer.from([
       'HTTP/1.1 101 Switching Protocols',
       'Upgrade: websocket',
       'Connection: Upgrade',
       `Sec-WebSocket-Accept: ${websocketAcceptKey(key)}`,
       '\r\n',
     ].join('\r\n'));
+    socket.write(options.welcomeInUpgradeHead ? Buffer.concat([handshake, welcomeFrame]) : handshake);
     activeSocket = socket;
     sockets.add(socket);
     const connection = { buffer: Buffer.alloc(0) };
-    socket.write(encodeServerFrame({
-      type: 'pairing:accepted',
-      computerId: 'cmp_remote_test',
-      workspaceId: 'wsp_test',
-      machineToken: 'mc_machine_test',
-    }));
+    if (!options.welcomeInUpgradeHead) socket.write(welcomeFrame);
     socket.on('data', (chunk) => {
       for (const frame of decodeClientFrames(connection, chunk)) {
         if (frame.opcode !== 0x1) continue;
@@ -221,7 +223,7 @@ process.stdin.on('data', (chunk) => {
 });
 `);
   await chmod(fakeCodex, 0o755);
-  const relay = await startRelay();
+  const relay = await startRelay({ welcomeInUpgradeHead: true });
   const daemon = spawn(process.execPath, [
     DAEMON_BIN,
     'connect',

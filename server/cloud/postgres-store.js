@@ -16,6 +16,8 @@ import {
 } from './postgres.js';
 import { normalizeReleaseNotes, RELEASE_COMPONENTS } from '../release-notes.js';
 
+const TRANSIENT_POSTGRES_PERSIST_ERROR_CODES = new Set(['55P03', '40001', '40P01']);
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -59,12 +61,22 @@ function parsePositiveInteger(value, fallback) {
   return Math.trunc(parsed);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function postgresPoolErrorCode(error) {
   return String(error?.code || error?.errno || 'UNKNOWN');
 }
 
 function postgresPoolErrorMessage(error) {
   return String(error?.message || error || 'PostgreSQL pool error').replace(/\s+/g, ' ').slice(0, 300);
+}
+
+function isTransientPostgresPersistError(error) {
+  return TRANSIENT_POSTGRES_PERSIST_ERROR_CODES.has(postgresPoolErrorCode(error));
 }
 
 function stripStateMetadata(value) {
@@ -1551,11 +1563,29 @@ export function createCloudPostgresStore(optionsInput = {}) {
     });
   }
 
+  async function persistFromStateWithRetry(state) {
+    const retryDelaysMs = [250, 750, 1500];
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await persistFromStateNow(state);
+      } catch (error) {
+        if (!isTransientPostgresPersistError(error) || attempt >= retryDelaysMs.length) throw error;
+        const delayMs = retryDelaysMs[attempt];
+        console.warn(
+          `[cloud-postgres] retrying persistFromState after transient error `
+          + `attempt=${attempt + 1} code=${postgresPoolErrorCode(error)} delayMs=${delayMs} `
+          + `message=${postgresPoolErrorMessage(error)}`,
+        );
+        await sleep(delayMs);
+      }
+    }
+  }
+
   function persistFromState(state) {
     const snapshot = cloneRecord(state);
     const next = persistQueue.then(
-      () => persistFromStateNow(snapshot),
-      () => persistFromStateNow(snapshot),
+      () => persistFromStateWithRetry(snapshot),
+      () => persistFromStateWithRetry(snapshot),
     );
     persistQueue = next.catch(() => {});
     return next;
