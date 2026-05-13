@@ -519,7 +519,7 @@ function workspaceActivityDetail(item = {}) {
   return parts.join(' · ');
 }
 
-function workspaceActivityRecords() {
+function liveWorkspaceActivityRecords() {
   const records = [];
   for (const item of appState?.events || []) {
     const type = item.type || 'system_event';
@@ -562,6 +562,10 @@ function workspaceActivityRecords() {
   return records
     .filter((item) => item.id && item.createdAt && !seen.has(item.id) && seen.add(item.id))
     .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+}
+
+function workspaceActivityRecords() {
+  return mergeWorkspaceActivityCache(liveWorkspaceActivityRecords());
 }
 
 function workspaceActivityUnreadCount(records = workspaceActivityRecords(), humanId = currentHumanId()) {

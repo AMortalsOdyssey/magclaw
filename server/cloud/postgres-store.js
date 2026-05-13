@@ -17,21 +17,13 @@ import {
 import { normalizeReleaseNotes, RELEASE_COMPONENTS } from '../release-notes.js';
 
 const TRANSIENT_POSTGRES_PERSIST_ERROR_CODES = new Set(['55P03', '40001', '40P01']);
-const STATE_RECORD_PERSIST_LIMITS = Object.freeze({
-  events: 300,
-  routeEvents: 300,
-  systemNotifications: 300,
-});
+const DURABLE_STATE_RECORD_ARRAY_KEYS = Object.freeze(['reminders', 'missions', 'runs', 'projects']);
+const DURABLE_STATE_RECORD_OBJECT_KEYS = Object.freeze(['settings', 'connection', 'router']);
+const EPHEMERAL_STATE_RECORD_KEYS = new Set(['events', 'routeEvents', 'systemNotifications', 'inboxReads']);
+const EPHEMERAL_STATE_RECORD_KEY_LIST = Object.freeze([...EPHEMERAL_STATE_RECORD_KEYS]);
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
-}
-
-function stateRecordsForPersistence(key, value) {
-  const records = safeArray(value);
-  const limit = STATE_RECORD_PERSIST_LIMITS[key] || 0;
-  if (!limit || records.length <= limit) return records;
-  return records.slice(records.length - limit);
 }
 
 function normalizeEmail(value) {
@@ -555,18 +547,6 @@ function agentDeliveryFromRow(row) {
   };
 }
 
-function daemonEventFromRow(row) {
-  return {
-    id: row.id,
-    workspaceId: row.workspace_id || null,
-    computerId: row.computer_id || null,
-    type: row.type,
-    message: row.message || '',
-    meta: jsonObject(row.meta),
-    createdAt: requiredIso(row.created_at),
-  };
-}
-
 function releaseNoteRowId(component, version, category, position) {
   return [component, version, category, position]
     .map((part) => String(part || '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, ''))
@@ -903,8 +883,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
         (SELECT COUNT(*)::int FROM ${table('cloud_humans')}) AS humans,
         (SELECT COUNT(*)::int FROM ${table('cloud_agents')}) AS agents,
         (SELECT COUNT(*)::int FROM ${table('cloud_messages')}) AS messages,
-        (SELECT COUNT(*)::int FROM ${table('cloud_state_records')}) AS state_records
-    `);
+        (SELECT COUNT(*)::int FROM ${table('cloud_state_records')} WHERE NOT (kind = ANY($1::text[]))) AS state_records
+    `, [EPHEMERAL_STATE_RECORD_KEY_LIST]);
     const row = firstRow(result);
     return Number(row?.humans || 0) === 0
       && Number(row?.agents || 0) === 0
@@ -1171,10 +1151,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
       ]);
     }
 
-    const residualArrayKeys = ['events', 'routeEvents', 'reminders', 'missions', 'runs', 'projects', 'systemNotifications'];
-    const residualObjectKeys = ['settings', 'connection', 'router', 'inboxReads'];
-    for (const key of residualArrayKeys) {
-      const records = stateRecordsForPersistence(key, state[key]);
+    for (const key of DURABLE_STATE_RECORD_ARRAY_KEYS) {
+      const records = safeArray(state[key]);
       for (let position = 0; position < records.length; position += 1) {
         const record = records[position];
         const workspaceId = workspaceIdFor(record, state, cloud);
@@ -1191,7 +1169,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         ]);
       }
     }
-    for (const key of residualObjectKeys) {
+    for (const key of DURABLE_STATE_RECORD_OBJECT_KEYS) {
       const value = state[key];
       if (!value || typeof value !== 'object') continue;
       const workspaceId = workspaceIdFor(value, state, cloud);
@@ -1205,6 +1183,19 @@ export function createCloudPostgresStore(optionsInput = {}) {
         null,
         JSON.stringify(value),
       ]);
+    }
+  }
+
+  async function pruneEphemeralActivityRows(client) {
+    const stateRecords = await client.query(
+      `DELETE FROM ${table('cloud_state_records')} WHERE kind = ANY($1::text[])`,
+      [EPHEMERAL_STATE_RECORD_KEY_LIST],
+    );
+    const daemonEvents = await client.query(`DELETE FROM ${table('cloud_daemon_events')}`);
+    const stateRecordCount = Number(stateRecords?.rowCount || 0);
+    const daemonEventCount = Number(daemonEvents?.rowCount || 0);
+    if (stateRecordCount || daemonEventCount) {
+      console.info(`[cloud-postgres] pruned ephemeral activity rows stateRecords=${stateRecordCount} daemonEvents=${daemonEventCount}`);
     }
   }
 
@@ -1547,35 +1538,6 @@ export function createCloudPostgresStore(optionsInput = {}) {
           ]);
         }
 
-        for (const event of safeArray(cloud.daemonEvents)) {
-          const eventComputerId = event.computerId || event.meta?.computerId || null;
-          const persistedComputerId = eventComputerId && computerIdsForPersist.has(eventComputerId)
-            ? eventComputerId
-            : null;
-          if (eventComputerId && !persistedComputerId) {
-            console.warn(`[postgres-store] clearing orphan daemon event computer reference event=${event.id || 'unknown'} computer=${eventComputerId}`);
-          }
-          await client.query(`
-            INSERT INTO ${table('cloud_daemon_events')}
-              (id, workspace_id, computer_id, type, message, meta, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
-            ON CONFLICT (id) DO UPDATE SET
-              workspace_id = EXCLUDED.workspace_id,
-              computer_id = EXCLUDED.computer_id,
-              type = EXCLUDED.type,
-              message = EXCLUDED.message,
-              meta = EXCLUDED.meta
-          `, [
-            event.id,
-            event.workspaceId || event.meta?.workspaceId || cloud.workspaces?.[0]?.id || null,
-            persistedComputerId,
-            event.type,
-            event.message || '',
-            JSON.stringify(jsonObject(event.meta)),
-            requiredIso(event.createdAt),
-          ]);
-        }
-
       });
     });
   }
@@ -1775,7 +1737,6 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const computerTokens = await client.query(`SELECT * FROM ${table('cloud_computer_tokens')} ORDER BY created_at ASC, id ASC`);
       const pairingTokens = await client.query(`SELECT * FROM ${table('cloud_pairing_tokens')} ORDER BY created_at ASC, id ASC`);
       const agentDeliveries = await client.query(`SELECT * FROM ${table('cloud_agent_deliveries')} ORDER BY created_at ASC, id ASC`);
-      const daemonEvents = await client.query(`SELECT * FROM ${table('cloud_daemon_events')} ORDER BY created_at DESC, id DESC LIMIT 300`);
       const releaseNotes = await client.query(`SELECT * FROM ${table('cloud_release_notes')} ORDER BY component ASC, released_at DESC, version DESC, category ASC, position ASC`);
       cloud.workspaces = workspaces.rows.map(workspaceFromRow);
       cloud.users = users.rows.map(userFromRow);
@@ -1787,7 +1748,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       cloud.computerTokens = computerTokens.rows.map(computerTokenFromRow);
       cloud.pairingTokens = pairingTokens.rows.map(pairingTokenFromRow);
       cloud.agentDeliveries = agentDeliveries.rows.map(agentDeliveryFromRow);
-      cloud.daemonEvents = daemonEvents.rows.map(daemonEventFromRow);
+      cloud.daemonEvents = [];
       const loadedComputers = computers.rows.map(computerFromRow);
       state.humans = humans.rows.map(humanFromRow);
       state.computers = loadedComputers;
@@ -1799,10 +1760,15 @@ export function createCloudPostgresStore(optionsInput = {}) {
       state.tasks = tasks.rows.map(taskFromRow);
       state.workItems = workItems.rows.map(workItemFromRow);
       state.attachments = attachments.rows.map(attachmentFromRow);
-      const objectKeys = new Set(['settings', 'connection', 'router', 'inboxReads']);
+      state.events = [];
+      state.routeEvents = [];
+      state.systemNotifications = [];
+      state.inboxReads = {};
+      const objectKeys = new Set(DURABLE_STATE_RECORD_OBJECT_KEYS);
       for (const row of stateRecords.rows) {
         const kind = row.kind;
         if (!kind) continue;
+        if (EPHEMERAL_STATE_RECORD_KEYS.has(kind)) continue;
         if (objectKeys.has(kind) && row.id === 'value') {
           state[kind] = jsonObject(row.payload);
           continue;
@@ -1827,6 +1793,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     });
     await withClient(async (client) => {
       await persistReleaseNotesFromState(client, state);
+      await pruneEphemeralActivityRows(client);
     });
     await loadIntoState(state);
     initialized = true;

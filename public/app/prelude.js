@@ -15,6 +15,118 @@ function writeJsonStorage(key, value) {
   }
 }
 
+function workspaceActivityCacheScope() {
+  const pathSlug = String(window.location.pathname || '').match(/^\/s\/([^/]+)/)?.[1] || '';
+  const workspaceId = String(appState?.connection?.workspaceId || appState?.cloud?.workspaces?.[0]?.id || '').trim();
+  const workspaceKey = workspaceId && !(workspaceId === 'local' && pathSlug) ? workspaceId : '';
+  const serverKey = workspaceKey || pathSlug || 'local';
+  const scope = [window.location.host, serverKey].filter(Boolean).join(':') || 'local';
+  return encodeURIComponent(scope);
+}
+
+function workspaceActivityCacheStorageKey() {
+  const baseKey = typeof WORKSPACE_ACTIVITY_CACHE_KEY === 'string'
+    ? WORKSPACE_ACTIVITY_CACHE_KEY
+    : 'magclawWorkspaceActivityCache';
+  return `${baseKey}:${workspaceActivityCacheScope()}`;
+}
+
+function workspaceActivityReadStorageKey(humanId = '') {
+  const baseKey = typeof WORKSPACE_ACTIVITY_READ_KEY === 'string'
+    ? WORKSPACE_ACTIVITY_READ_KEY
+    : 'magclawWorkspaceActivityReadAt';
+  return `${baseKey}:${workspaceActivityCacheScope()}:${encodeURIComponent(String(humanId || 'local'))}`;
+}
+
+function workspaceActivityCacheLimit() {
+  const limit = Number(typeof WORKSPACE_ACTIVITY_CACHE_LIMIT === 'number' ? WORKSPACE_ACTIVITY_CACHE_LIMIT : 300);
+  return Number.isFinite(limit) && limit > 0 ? limit : 300;
+}
+
+function normalizeWorkspaceActivityCacheRecord(record = {}) {
+  if (!record || typeof record !== 'object') return null;
+  const id = String(record.id || '').trim();
+  const parsedCreatedAt = Date.parse(record.createdAt || '');
+  if (!id || !Number.isFinite(parsedCreatedAt)) return null;
+  return {
+    id,
+    source: String(record.source || 'event').slice(0, 40),
+    kind: String(record.kind || 'system').slice(0, 40),
+    type: String(record.type || 'activity').slice(0, 120),
+    title: String(record.title || record.type || 'Workspace activity').slice(0, 300),
+    detail: String(record.detail || '').slice(0, 600),
+    createdAt: new Date(parsedCreatedAt).toISOString(),
+  };
+}
+
+function readWorkspaceActivityCache() {
+  const parsed = readJsonStorage(workspaceActivityCacheStorageKey(), {});
+  const records = Array.isArray(parsed) ? parsed : parsed.records;
+  return (Array.isArray(records) ? records : [])
+    .map(normalizeWorkspaceActivityCacheRecord)
+    .filter(Boolean)
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
+
+function writeWorkspaceActivityCache(records = []) {
+  const byId = new Map();
+  for (const record of records) {
+    const normalized = normalizeWorkspaceActivityCacheRecord(record);
+    if (normalized) byId.set(normalized.id, normalized);
+  }
+  const limited = [...byId.values()]
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .slice(-workspaceActivityCacheLimit());
+  writeJsonStorage(workspaceActivityCacheStorageKey(), {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    records: limited,
+  });
+  return limited;
+}
+
+function mergeWorkspaceActivityCache(records = []) {
+  const cached = readWorkspaceActivityCache();
+  const byId = new Map(cached.map((record) => [record.id, record]));
+  let changed = false;
+  for (const record of records) {
+    const normalized = normalizeWorkspaceActivityCacheRecord(record);
+    if (!normalized) continue;
+    const previous = byId.get(normalized.id);
+    if (!previous || JSON.stringify(previous) !== JSON.stringify(normalized)) {
+      byId.set(normalized.id, normalized);
+      changed = true;
+    }
+  }
+  const merged = [...byId.values()]
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .slice(-workspaceActivityCacheLimit());
+  if (changed || merged.length !== cached.length) {
+    return writeWorkspaceActivityCache(merged);
+  }
+  return merged;
+}
+
+function readStoredWorkspaceActivityReadAt(humanId = '') {
+  try {
+    const value = localStorage.getItem(workspaceActivityReadStorageKey(humanId)) || '';
+    return Number.isFinite(Date.parse(value)) ? value : '';
+  } catch {
+    return '';
+  }
+}
+
+function writeStoredWorkspaceActivityReadAt(humanId = '', value = '') {
+  const parsed = Date.parse(value || '');
+  if (!Number.isFinite(parsed)) return false;
+  try {
+    localStorage.setItem(workspaceActivityReadStorageKey(humanId), new Date(parsed).toISOString());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function normalizeNotificationPrefs(value = {}) {
   const mutedServerSlugs = Array.isArray(value.mutedServerSlugs)
     ? value.mutedServerSlugs.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)

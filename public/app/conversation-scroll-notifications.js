@@ -133,11 +133,14 @@ function markRecordsReadLocally(recordIds = [], humanId = currentHumanId()) {
 }
 
 function workspaceActivityReadAt(humanId = currentHumanId()) {
-  return appState?.inboxReads?.[humanId]?.workspaceActivityReadAt || '';
+  return readStoredWorkspaceActivityReadAt(humanId)
+    || appState?.inboxReads?.[humanId]?.workspaceActivityReadAt
+    || '';
 }
 
 function setWorkspaceActivityReadAtLocally(value, humanId = currentHumanId()) {
   if (!appState || !value) return;
+  writeStoredWorkspaceActivityReadAt(humanId, value);
   appState.inboxReads = appState.inboxReads && typeof appState.inboxReads === 'object' ? appState.inboxReads : {};
   appState.inboxReads[humanId] = {
     ...(appState.inboxReads[humanId] || {}),
@@ -147,14 +150,14 @@ function setWorkspaceActivityReadAtLocally(value, humanId = currentHumanId()) {
 
 async function markInboxRead({ recordIds = [], workspaceActivityReadAt: activityReadAt = null } = {}) {
   const humanId = currentHumanId();
-  markRecordsReadLocally(recordIds, humanId);
+  const ids = [...new Set((recordIds || []).map(String).filter(Boolean))];
+  markRecordsReadLocally(ids, humanId);
   if (activityReadAt) setWorkspaceActivityReadAtLocally(activityReadAt, humanId);
-  if (!recordIds.length && !activityReadAt) return null;
+  if (!ids.length) return null;
   return api('/api/inbox/read', {
     method: 'POST',
     body: JSON.stringify({
-      recordIds,
-      workspaceActivityReadAt: activityReadAt,
+      recordIds: ids,
     }),
   });
 }

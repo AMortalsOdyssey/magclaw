@@ -65,7 +65,7 @@ test('save endpoint toggles both channel messages and thread replies', async () 
   }
 });
 
-test('inbox read endpoint marks agent messages, replies, and workspace activity read', async () => {
+test('inbox read endpoint marks agent messages and replies while leaving workspace activity local', async () => {
   const server = await startIsolatedServer();
   try {
     const agentMessage = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
@@ -104,7 +104,7 @@ test('inbox read endpoint marks agent messages, replies, and workspace activity 
     const state = await request(server.baseUrl, '/api/state');
     assert.ok(state.messages.find((message) => message.id === agentMessage.message.id)?.readBy.includes('hum_local'));
     assert.ok(state.replies.find((reply) => reply.id === agentReply.reply.id)?.readBy.includes('hum_local'));
-    assert.equal(state.inboxReads.hum_local.workspaceActivityReadAt, readAt);
+    assert.equal(state.inboxReads.hum_local.workspaceActivityReadAt, undefined);
   } finally {
     await server.stop();
   }

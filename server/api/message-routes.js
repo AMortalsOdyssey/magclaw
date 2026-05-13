@@ -160,6 +160,17 @@ export async function handleMessageApi(req, res, url, deps) {
     const recordIds = Array.isArray(body.recordIds)
       ? [...new Set(body.recordIds.map(String).filter(Boolean))].slice(0, 500)
       : [];
+    if (!recordIds.length) {
+      if (body.workspaceActivityReadAt !== undefined) {
+        console.info('[inbox] workspace activity read acknowledged locally', { humanId });
+      }
+      sendJson(res, 200, {
+        ok: true,
+        readRecordIds: [],
+        inboxReads: state.inboxReads?.[humanId] || {},
+      });
+      return true;
+    }
     const readState = ensureInboxReadState(humanId);
     let changed = false;
     const markedRecordIds = [];
@@ -169,19 +180,10 @@ export async function handleMessageApi(req, res, url, deps) {
       if (markConversationRecordRead(record, humanId)) changed = true;
       markedRecordIds.push(record.id);
     }
-    if (body.workspaceActivityReadAt !== undefined) {
-      const parsed = Date.parse(body.workspaceActivityReadAt || '');
-      const readAt = parsed ? new Date(parsed).toISOString() : now();
-      if (readState.workspaceActivityReadAt !== readAt) {
-        readState.workspaceActivityReadAt = readAt;
-        changed = true;
-      }
-    }
     readState.updatedAt = now();
     console.info('[inbox] mark read', {
       humanId,
       recordCount: markedRecordIds.length,
-      workspaceActivityReadAt: readState.workspaceActivityReadAt || null,
     });
     if (changed) {
       await persistState();

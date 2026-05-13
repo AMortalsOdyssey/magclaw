@@ -151,7 +151,7 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
   assert.doesNotMatch(sql, /\buid\b/);
 });
 
-test('postgres store persists relay computers tokens deliveries and daemon events', async () => {
+test('postgres store persists relay core state without durable activity logs', async () => {
   const queries = [];
   const pool = {
     async connect() {
@@ -266,7 +266,23 @@ test('postgres store persists relay computers tokens deliveries and daemon event
       mimeType: 'text/plain',
       createdAt,
     }],
+    projects: [{
+      id: 'proj_remote',
+      workspaceId: 'wsp_main',
+      name: 'Remote project',
+      path: '/repo',
+      createdAt,
+      updatedAt: createdAt,
+    }],
     events: [{ id: 'evt_remote', workspaceId: 'wsp_main', type: 'test', createdAt }],
+    routeEvents: [{ id: 'route_remote', workspaceId: 'wsp_main', type: 'fanout', createdAt }],
+    systemNotifications: [{ id: 'notif_remote', workspaceId: 'wsp_main', type: 'member_notice', createdAt }],
+    inboxReads: {
+      hum_owner: {
+        workspaceActivityReadAt: createdAt,
+        updatedAt: createdAt,
+      },
+    },
     cloud: {
       workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
       users: [],
@@ -350,11 +366,14 @@ test('postgres store persists relay computers tokens deliveries and daemon event
     'cloud_computer_tokens',
     'cloud_pairing_tokens',
     'cloud_agent_deliveries',
-    'cloud_daemon_events',
-    'cloud_release_notes',
   ]) {
     assert.match(sqlText, new RegExp(`INSERT INTO "magclaw"\\."${table}"`));
   }
+  assert.doesNotMatch(sqlText, /cloud_daemon_events/);
+  assert.doesNotMatch(sqlText, /cloud_release_notes/);
+  const serializedParams = JSON.stringify(queries.map((query) => query.params));
+  assert.match(serializedParams, /proj_remote/);
+  assert.doesNotMatch(serializedParams, /evt_remote|route_remote|notif_remote|devt_remote|workspaceActivityReadAt/);
 });
 
 test('postgres store restores legacy provisional computers before pairing tokens', async () => {
@@ -427,17 +446,18 @@ test('postgres store restores legacy provisional computers before pairing tokens
 
 test('postgres store retries full-state persistence after transient lock timeout', async () => {
   const queries = [];
-  let releaseNoteFailures = 0;
+  let workspaceFailures = 0;
   const pool = {
     async connect() {
       return {
         async query(sql, params = []) {
           queries.push({ sql, params });
           if (
-            sql.includes('INSERT INTO "magclaw"."cloud_release_notes"')
-            && releaseNoteFailures === 0
+            sql.includes('INSERT INTO "magclaw"."cloud_workspaces"')
+            && params[0] === 'wsp_retry'
+            && workspaceFailures === 0
           ) {
-            releaseNoteFailures += 1;
+            workspaceFailures += 1;
             throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
           }
           return { rows: [] };
@@ -491,7 +511,7 @@ test('postgres store retries full-state persistence after transient lock timeout
     console.error = previousError;
     console.warn = previousWarn;
   }
-  assert.equal(releaseNoteFailures, 1);
+  assert.equal(workspaceFailures, 1);
   assert.equal(queries.filter((query) => query.sql === 'BEGIN').length, 2);
   assert.equal(queries.filter((query) => query.sql === 'ROLLBACK').length, 1);
   assert.equal(queries.filter((query) => query.sql === 'COMMIT').length, 1);
@@ -572,7 +592,7 @@ test('postgres store skips orphan computer tokens and pairing tokens', async () 
   )), false);
 });
 
-test('postgres store upserts duplicate residual state records without crashing', async () => {
+test('postgres store upserts duplicate durable state records without crashing', async () => {
   const queries = [];
   const pool = {
     async connect() {
@@ -593,10 +613,10 @@ test('postgres store upserts duplicate residual state records without crashing',
   });
   const createdAt = '2026-05-12T00:00:00.000Z';
   await store.persistFromState({
-    routeEvents: [
-      { id: 'route_duplicate', workspaceId: 'wsp_main', choice: 'first', createdAt },
-      { id: 'route_duplicate', workspaceId: 'wsp_main', choice: 'latest', createdAt },
-      { id: 'route_orphan', workspaceId: 'wsp_missing', choice: 'fallback', createdAt },
+    projects: [
+      { id: 'project_duplicate', workspaceId: 'wsp_main', name: 'first', createdAt, updatedAt: createdAt },
+      { id: 'project_duplicate', workspaceId: 'wsp_main', name: 'latest', createdAt, updatedAt: createdAt },
+      { id: 'project_orphan', workspaceId: 'wsp_missing', name: 'fallback', createdAt, updatedAt: createdAt },
     ],
     cloud: {
       workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
@@ -612,9 +632,10 @@ test('postgres store upserts duplicate residual state records without crashing',
   ));
   assert.equal(stateRecordInserts.length, 2);
   assert.match(stateRecordInserts[0].sql, /ON CONFLICT \(workspace_id, kind, id\) DO UPDATE SET/);
-  assert.equal(stateRecordInserts[1].params[2], 'route_duplicate');
-  assert.equal(JSON.parse(stateRecordInserts[1].params[6]).choice, 'latest');
-  const orphanInsert = stateRecordInserts.find((query) => query.params[2] === 'route_orphan');
+  assert.equal(stateRecordInserts[1].params[1], 'projects');
+  assert.equal(stateRecordInserts[1].params[2], 'project_duplicate');
+  assert.equal(JSON.parse(stateRecordInserts[1].params[6]).name, 'latest');
+  const orphanInsert = stateRecordInserts.find((query) => query.params[2] === 'project_orphan');
   assert.equal(orphanInsert, undefined);
 });
 

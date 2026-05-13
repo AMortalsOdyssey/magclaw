@@ -18,29 +18,40 @@ export function createCloudSync(deps) {
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
 
+  const SNAPSHOT_ARRAY_KEYS = Object.freeze([
+    'humans',
+    'computers',
+    'agents',
+    'channels',
+    'dms',
+    'messages',
+    'replies',
+    'tasks',
+    'reminders',
+    'missions',
+    'runs',
+    'attachments',
+    'projects',
+    'workItems',
+  ]);
+
   function cloudSnapshot() {
-      const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'reminders', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events', 'systemNotifications'];
     const snapshot = {
       version: state.version,
       exportedAt: now(),
       workspaceId: state.connection?.workspaceId || 'local',
       protocolVersion: CLOUD_PROTOCOL_VERSION,
       router: state.router || {},
-      inboxReads: state.inboxReads && typeof state.inboxReads === 'object' ? state.inboxReads : {},
     };
-    for (const key of allowedKeys) {
+    for (const key of SNAPSHOT_ARRAY_KEYS) {
       snapshot[key] = Array.isArray(state[key]) ? state[key] : [];
     }
     return snapshot;
   }
   
   function applyCloudSnapshot(snapshot) {
-      const allowedKeys = ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'reminders', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events', 'systemNotifications'];
-    for (const key of allowedKeys) {
+    for (const key of SNAPSHOT_ARRAY_KEYS) {
       if (Array.isArray(snapshot?.[key])) state[key] = snapshot[key];
-    }
-    if (snapshot?.inboxReads && typeof snapshot.inboxReads === 'object' && !Array.isArray(snapshot.inboxReads)) {
-      state.inboxReads = snapshot.inboxReads;
     }
     if (snapshot?.router && typeof snapshot.router === 'object') state.router = snapshot.router;
     migrateState();
