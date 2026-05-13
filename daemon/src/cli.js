@@ -116,6 +116,14 @@ function pidIsRunning(pid) {
   if (!Number.isInteger(value) || value <= 0) return false;
   try {
     process.kill(value, 0);
+    if (process.platform !== 'win32') {
+      const status = spawnSync('ps', ['-p', String(value), '-o', 'stat='], {
+        encoding: 'utf8',
+        timeout: 1000,
+      });
+      const state = String(status.stdout || '').trim();
+      if (status.status === 0 && /^Z/i.test(state)) return false;
+    }
     return true;
   } catch (error) {
     return error?.code === 'EPERM';
@@ -1373,6 +1381,7 @@ class MagClawDaemon {
     this.config = config;
     this.paths = profilePaths(config.profile, env);
     this.socket = null;
+    this.request = null;
     this.sessions = new Map();
     this.closed = false;
   }
@@ -1546,19 +1555,33 @@ class MagClawDaemon {
   }
 
   close() {
+    if (this.closed) return;
     this.closed = true;
     for (const session of this.sessions.values()) session.stop();
     this.sessions.clear();
-    if (this.socket && !this.socket.destroyed) this.socket.end();
+    if (this.request) {
+      this.request.destroy(new Error('MagClaw daemon is shutting down.'));
+      this.request = null;
+    }
+    if (this.socket && !this.socket.destroyed) this.socket.destroy();
+    this.socket = null;
   }
 
   async connectOnce() {
+    if (this.closed) return;
     const url = toWebSocketUrl(this.config.serverUrl, this.config);
     const requestModule = url.protocol === 'wss:' ? https : http;
     const requestUrl = new URL(url.href.replace(/^ws/, 'http'));
     const key = crypto.randomBytes(16).toString('base64');
     console.log(`Connecting MagClaw daemon profile "${this.paths.profile}" to ${this.config.serverUrl}...`);
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        if (this.request === req) this.request = null;
+        callback(value);
+      };
       const req = requestModule.request(requestUrl, {
         method: 'GET',
         headers: {
@@ -1568,9 +1591,17 @@ class MagClawDaemon {
           'Sec-WebSocket-Key': key,
         },
       });
+      this.request = req;
       req.on('upgrade', (res, socket) => {
+        if (this.request === req) this.request = null;
         if (res.statusCode !== 101) {
-          reject(new Error(`WebSocket upgrade failed: ${res.statusCode}`));
+          socket.destroy();
+          finish(reject, new Error(`WebSocket upgrade failed: ${res.statusCode}`));
+          return;
+        }
+        if (this.closed) {
+          socket.destroy();
+          finish(resolve);
           return;
         }
         this.socket = socket;
@@ -1591,16 +1622,27 @@ class MagClawDaemon {
             }
           }
         });
-        socket.on('close', () => resolve());
-        socket.on('end', () => resolve());
-        socket.on('error', reject);
+        socket.on('close', () => finish(resolve));
+        socket.on('end', () => finish(resolve));
+        socket.on('error', (error) => {
+          if (this.closed) finish(resolve);
+          else finish(reject, error);
+        });
       });
       req.on('response', (res) => {
         let body = '';
         res.on('data', (chunk) => { body += chunk.toString(); });
-        res.on('end', () => reject(new Error(body || `HTTP ${res.statusCode}`)));
+        res.on('end', () => {
+          finish(reject, new Error(body || `HTTP ${res.statusCode}`));
+        });
       });
-      req.on('error', reject);
+      req.on('error', (error) => {
+        if (this.closed) finish(resolve);
+        else finish(reject, error);
+      });
+      req.setTimeout(30_000, () => {
+        req.destroy(new Error('WebSocket upgrade timed out.'));
+      });
       req.end();
     });
   }
@@ -1763,30 +1805,91 @@ async function startBackground(profile, env = process.env) {
   return { ok: false, mode: 'foreground', message: 'Background daemon is only automated on macOS launchd and Linux user systemd.' };
 }
 
-function stopBackground(profile) {
+async function waitForPidExit(pid, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!pidIsRunning(pid)) return true;
+    await sleep(100);
+  }
+  return !pidIsRunning(pid);
+}
+
+async function stopActiveDaemon(profile, env = process.env) {
+  const active = await activeDaemonLock(profile, env);
+  const pid = Number(active?.pid);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { ok: true, running: false };
+  }
+  if (pid === process.pid) {
+    return { ok: false, running: true, pid, error: 'Refusing to stop the current process.' };
+  }
+
+  let signal = 'SIGTERM';
+  try {
+    process.kill(pid, signal);
+  } catch (error) {
+    if (error?.code === 'ESRCH') {
+      await rm(active.lockFile, { force: true }).catch(() => {});
+      return { ok: true, running: false, pid, staleLockRemoved: true };
+    }
+    return { ok: false, running: true, pid, error: error.message };
+  }
+
+  let stopped = await waitForPidExit(pid);
+  if (!stopped) {
+    signal = 'SIGKILL';
+    try {
+      process.kill(pid, signal);
+      stopped = await waitForPidExit(pid, 1000);
+    } catch (error) {
+      if (error?.code === 'ESRCH') stopped = true;
+      else return { ok: false, running: true, pid, signal, error: error.message };
+    }
+  }
+
+  if (stopped) {
+    await rm(active.lockFile, { force: true }).catch(() => {});
+  }
+  return { ok: stopped, running: !stopped, pid, signal };
+}
+
+function stopBackground(profile, env = process.env) {
   if (process.platform === 'darwin') {
-    const paths = profilePaths(profile);
+    const paths = profilePaths(profile, env);
     const label = launchAgentLabel(paths.profile);
     const plist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
     spawnSync('launchctl', ['bootout', `gui/${process.getuid()}`, plist], { stdio: 'ignore' });
     return { ok: true, mode: 'launchd', label, file: plist };
   }
   if (process.platform === 'linux') {
-    const serviceName = systemdServiceName(profile);
+    const paths = profilePaths(profile, env);
+    const serviceName = systemdServiceName(paths.profile);
     const result = spawnSync('systemctl', ['--user', 'disable', '--now', serviceName], { encoding: 'utf8' });
     return { ok: result.status === 0, mode: 'systemd', serviceName, error: result.stderr || '' };
   }
   return { ok: false, mode: 'foreground' };
 }
 
-async function uninstallBackground(profile) {
-  const stopped = stopBackground(profile);
+async function stopDaemon(profile, env = process.env) {
+  const background = stopBackground(profile, env);
+  const processResult = await stopActiveDaemon(profile, env);
+  const backgroundRequired = background.mode !== 'foreground';
+  return {
+    ok: Boolean(processResult.ok && (!backgroundRequired || background.ok)),
+    background,
+    process: processResult,
+  };
+}
+
+async function uninstallBackground(profile, env = process.env) {
+  const stopped = await stopDaemon(profile, env);
   if (process.platform === 'darwin') {
-    const paths = profilePaths(profile);
+    const paths = profilePaths(profile, env);
     const plist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${launchAgentLabel(paths.profile)}.plist`);
     await rm(plist, { force: true });
   } else if (process.platform === 'linux') {
-    await rm(path.join(os.homedir(), '.config', 'systemd', 'user', systemdServiceName(profile)), { force: true });
+    const paths = profilePaths(profile, env);
+    await rm(path.join(os.homedir(), '.config', 'systemd', 'user', systemdServiceName(paths.profile)), { force: true });
     spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
   }
   return stopped;
@@ -1868,6 +1971,28 @@ async function buildConfig(flags, env = process.env) {
   };
 }
 
+async function runForegroundDaemon(config, env = process.env) {
+  const releaseLock = await acquireDaemonLock(config.profile, config, env);
+  const daemon = new MagClawDaemon(config, env);
+  let forceExitTimer = null;
+  const shutdown = (signal) => {
+    process.exitCode = signal === 'SIGINT' ? 130 : 143;
+    daemon.close();
+    forceExitTimer ||= setTimeout(() => process.exit(process.exitCode || 1), 5000);
+    forceExitTimer.unref?.();
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+  try {
+    await daemon.runForever();
+  } finally {
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.off('SIGINT', shutdown);
+    process.off('SIGTERM', shutdown);
+    await releaseLock();
+  }
+}
+
 async function runConnect(flags, env = process.env) {
   const config = await buildConfig(flags, env);
   if (!config.pairToken && !config.token) {
@@ -1879,33 +2004,11 @@ async function runConnect(flags, env = process.env) {
     printJson(result);
     if (!result.ok) {
       console.log('Falling back to foreground mode.');
-      const releaseLock = await acquireDaemonLock(config.profile, config, env);
-      const daemon = new MagClawDaemon(config, env);
-      const shutdown = () => daemon.close();
-      process.once('SIGINT', shutdown);
-      process.once('SIGTERM', shutdown);
-      try {
-        await daemon.runForever();
-      } finally {
-        process.off('SIGINT', shutdown);
-        process.off('SIGTERM', shutdown);
-        await releaseLock();
-      }
+      await runForegroundDaemon(config, env);
     }
     return;
   }
-  const releaseLock = await acquireDaemonLock(config.profile, config, env);
-  const daemon = new MagClawDaemon(config, env);
-  const shutdown = () => daemon.close();
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
-  try {
-    await daemon.runForever();
-  } finally {
-    process.off('SIGINT', shutdown);
-    process.off('SIGTERM', shutdown);
-    await releaseLock();
-  }
+  await runForegroundDaemon(config, env);
 }
 
 export async function main(argv = process.argv, env = process.env) {
@@ -1921,7 +2024,7 @@ export async function main(argv = process.argv, env = process.env) {
       break;
     }
     case 'stop':
-      printJson(stopBackground(flags.profile));
+      printJson(await stopDaemon(flags.profile, env));
       break;
     case 'status':
       printJson(await status(flags.profile));
@@ -1933,7 +2036,7 @@ export async function main(argv = process.argv, env = process.env) {
       printJson(await doctor(env));
       break;
     case 'uninstall':
-      printJson(await uninstallBackground(flags.profile));
+      printJson(await uninstallBackground(flags.profile, env));
       break;
     default:
       throw new Error(`Unknown command: ${command}`);

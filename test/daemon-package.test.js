@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import crypto from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -12,6 +14,78 @@ import {
 } from '../daemon/src/cli.js';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
+const DAEMON_BIN = path.join(ROOT, 'daemon', 'bin', 'magclaw-daemon.js');
+const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+async function startHoldingWebSocketServer() {
+  const sockets = new Set();
+  const server = http.createServer((_req, res) => {
+    res.writeHead(404);
+    res.end();
+  });
+  server.on('upgrade', (req, socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+    const accept = crypto
+      .createHash('sha1')
+      .update(`${req.headers['sec-websocket-key']}${WEBSOCKET_GUID}`)
+      .digest('base64');
+    socket.write([
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      `Sec-WebSocket-Accept: ${accept}`,
+      '',
+      '',
+    ].join('\r\n'));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    baseUrl: `http://127.0.0.1:${server.address().port}`,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await Promise.race([
+        new Promise((resolve) => server.close(resolve)),
+        new Promise((resolve) => setTimeout(resolve, 500)),
+      ]);
+    },
+  };
+}
+
+function waitForOutput(child, pattern, timeoutMs = 3000) {
+  let output = '';
+  const append = (chunk) => {
+    output += chunk.toString();
+  };
+  child.stdout.on('data', append);
+  child.stderr.on('data', append);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${pattern}: ${output}`)), timeoutMs);
+    const check = () => {
+      if (!pattern.test(output)) return;
+      clearTimeout(timer);
+      child.stdout.off('data', check);
+      child.stderr.off('data', check);
+      resolve(output);
+    };
+    child.stdout.on('data', check);
+    child.stderr.on('data', check);
+  });
+}
+
+function waitForExit(child, timeoutMs = 3000) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Timed out waiting for daemon exit.')), timeoutMs);
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal });
+    });
+  });
+}
 
 test('daemon profiles are isolated from localhost MagClaw state', () => {
   const env = { MAGCLAW_DAEMON_HOME: path.join(os.tmpdir(), 'magclaw-daemon-test') };
@@ -118,4 +192,94 @@ test('top-level daemon npm package dry-run excludes cloud server and deployment 
   assert.equal(files.some((file) => file.startsWith('shared/')), false);
   assert.equal(files.includes('Dockerfile'), false);
   assert.equal(files.includes('kizuna.json'), false);
+});
+
+test('foreground daemon exits and clears its lock on SIGINT', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-sigint-'));
+  const server = await startHoldingWebSocketServer();
+  let child = null;
+  let exitPromise = null;
+  try {
+    child = spawn(process.execPath, [
+      DAEMON_BIN,
+      'connect',
+      '--server-url',
+      server.baseUrl,
+      '--pair-token',
+      'mc_pair_test',
+      '--profile',
+      'sigint-test',
+    ], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    exitPromise = waitForExit(child);
+    await waitForOutput(child, /Connecting MagClaw daemon profile "sigint-test"/);
+    child.kill('SIGINT');
+    const exit = await exitPromise;
+    assert.equal(exit.code, 130);
+    assert.equal(exit.signal, null);
+
+    const status = spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'status',
+      '--profile',
+      'sigint-test',
+    ], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(status.status, 0, status.stderr || status.stdout);
+    assert.equal(JSON.parse(status.stdout).running, false);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await exitPromise?.catch(() => {});
+    await server.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('stop command stops a foreground daemon for the selected profile', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-stop-'));
+  const server = await startHoldingWebSocketServer();
+  let child = null;
+  let exitPromise = null;
+  try {
+    child = spawn(process.execPath, [
+      DAEMON_BIN,
+      'connect',
+      '--server-url',
+      server.baseUrl,
+      '--pair-token',
+      'mc_pair_test',
+      '--profile',
+      'stop-test',
+    ], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    exitPromise = waitForExit(child);
+    await waitForOutput(child, /Connecting MagClaw daemon profile "stop-test"/);
+
+    const stopped = spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'stop',
+      '--profile',
+      'stop-test',
+    ], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(stopped.status, 0, stopped.stderr || stopped.stdout);
+    const payload = JSON.parse(stopped.stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.process.pid, child.pid);
+    assert.equal(payload.process.running, false);
+    await exitPromise;
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await exitPromise?.catch(() => {});
+    await server.close();
+    await rm(home, { recursive: true, force: true });
+  }
 });
