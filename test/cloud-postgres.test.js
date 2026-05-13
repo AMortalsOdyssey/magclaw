@@ -178,6 +178,7 @@ test('postgres store persists relay core state without durable activity logs', a
       name: 'Owner',
       email: 'owner@example.test',
       role: 'owner',
+      status: 'online',
       createdAt,
     }],
     computers: [{
@@ -198,7 +199,7 @@ test('postgres store persists relay core state without durable activity logs', a
       name: 'Remote Agent',
       runtime: 'codex',
       model: 'gpt-5.5',
-      status: 'idle',
+      status: 'busy',
       createdAt,
       updatedAt: createdAt,
     }],
@@ -374,6 +375,13 @@ test('postgres store persists relay core state without durable activity logs', a
   const serializedParams = JSON.stringify(queries.map((query) => query.params));
   assert.match(serializedParams, /proj_remote/);
   assert.doesNotMatch(serializedParams, /evt_remote|route_remote|notif_remote|devt_remote|workspaceActivityReadAt/);
+  const computerInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_computers"') && query.params[0] === 'cmp_remote');
+  const humanInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_humans"') && query.params[0] === 'hum_owner');
+  const agentInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_agents"') && query.params[0] === 'agt_remote');
+  assert.equal(computerInsert.params[7], 'offline');
+  assert.equal(humanInsert.params[6], 'offline');
+  assert.equal(agentInsert.params[9], 'idle');
+  assert.equal(JSON.parse(agentInsert.params[15]).state.status, 'idle');
 });
 
 test('postgres store restores legacy provisional computers before pairing tokens', async () => {
@@ -764,13 +772,57 @@ test('postgres store upserts duplicate durable state records without crashing', 
   const stateRecordInserts = queries.filter((query) => (
     query.sql.includes('INSERT INTO "magclaw"."cloud_state_records"')
   ));
-  assert.equal(stateRecordInserts.length, 2);
+  assert.equal(stateRecordInserts.length, 1);
   assert.match(stateRecordInserts[0].sql, /ON CONFLICT \(workspace_id, kind, id\) DO UPDATE SET/);
-  assert.equal(stateRecordInserts[1].params[1], 'projects');
-  assert.equal(stateRecordInserts[1].params[2], 'project_duplicate');
-  assert.equal(JSON.parse(stateRecordInserts[1].params[6]).name, 'latest');
+  assert.equal(stateRecordInserts[0].params[1], 'projects');
+  assert.equal(stateRecordInserts[0].params[2], 'project_duplicate');
+  assert.equal(JSON.parse(stateRecordInserts[0].params[6]).name, 'latest');
   const orphanInsert = stateRecordInserts.find((query) => query.params[2] === 'project_orphan');
   assert.equal(orphanInsert, undefined);
+});
+
+test('postgres store can persist a single workspace runtime snapshot', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  await store.persistWorkspaceFromState({
+    cloud: {
+      workspaces: [
+        { id: 'wsp_one', slug: 'one', name: 'One', createdAt, updatedAt: createdAt },
+        { id: 'wsp_two', slug: 'two', name: 'Two', createdAt, updatedAt: createdAt },
+      ],
+    },
+    channels: [
+      { id: 'chan_one', workspaceId: 'wsp_one', name: 'one', createdAt, updatedAt: createdAt },
+      { id: 'chan_two', workspaceId: 'wsp_two', name: 'two', createdAt, updatedAt: createdAt },
+    ],
+    messages: [
+      { id: 'msg_one', workspaceId: 'wsp_one', spaceType: 'channel', spaceId: 'chan_one', authorType: 'human', authorId: 'hum_one', body: 'one', createdAt, updatedAt: createdAt },
+      { id: 'msg_two', workspaceId: 'wsp_two', spaceType: 'channel', spaceId: 'chan_two', authorType: 'human', authorId: 'hum_two', body: 'two', createdAt, updatedAt: createdAt },
+    ],
+  }, 'wsp_one');
+
+  const deleteQueries = queries.filter((query) => query.sql.includes('DELETE FROM "magclaw"'));
+  assert.ok(deleteQueries.length);
+  for (const query of deleteQueries) assert.deepEqual(query.params[0], ['wsp_one']);
+  assert.equal(queries.some((query) => query.params?.includes?.('chan_two') || query.params?.includes?.('msg_two')), false);
+  assert.equal(queries.some((query) => query.params?.includes?.('chan_one') || query.params?.includes?.('msg_one')), true);
 });
 
 test('postgres store persists auth state without flushing runtime records', async () => {

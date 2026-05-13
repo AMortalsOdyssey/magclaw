@@ -3,6 +3,7 @@
 // messages, thread replies, saved toggles, and message-to-task promotion. The
 // delivery/routing helpers are injected so the route remains a thin workflow
 // coordinator rather than a second Agent runtime implementation.
+import { findWorkspaceAllChannel } from '../workspace-defaults.js';
 
 export async function handleMessageApi(req, res, url, deps) {
   const {
@@ -124,6 +125,21 @@ export async function handleMessageApi(req, res, url, deps) {
     const humanId = auth.member?.humanId;
     const dm = state.dms.find((item) => item.id === spaceId);
     return Boolean(humanId && dm?.participantIds?.includes(humanId));
+  }
+
+  function workspaceIdForSpace(spaceType, spaceId, req) {
+    const target = spaceType === 'channel'
+      ? state.channels.find((channel) => channel.id === spaceId)
+      : state.dms.find((dm) => dm.id === spaceId);
+    if (target?.workspaceId) return target.workspaceId;
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    return String(auth?.member?.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local').trim();
+  }
+
+  function resolveSpaceId(spaceType, spaceId, req) {
+    if (spaceType !== 'channel' || spaceId !== 'chan_all') return spaceId;
+    const workspaceId = workspaceIdForSpace(spaceType, spaceId, req);
+    return findWorkspaceAllChannel(state, workspaceId)?.id || spaceId;
   }
 
   function messageAuthor(req, body = {}) {
@@ -327,7 +343,8 @@ export async function handleMessageApi(req, res, url, deps) {
   const messageMatch = url.pathname.match(/^\/api\/spaces\/(channel|dm)\/([^/]+)\/messages$/);
   if (req.method === 'POST' && messageMatch) {
     const body = await readJson(req);
-    const [, spaceType, spaceId] = messageMatch;
+    const [, spaceType, rawSpaceId] = messageMatch;
+    const spaceId = resolveSpaceId(spaceType, rawSpaceId, req);
     const targetExists = spaceType === 'channel'
       ? state.channels.some((channel) => channel.id === spaceId)
       : state.dms.some((dm) => dm.id === spaceId);
@@ -347,8 +364,10 @@ export async function handleMessageApi(req, res, url, deps) {
     }
     const mentions = extractMentions(text);
     const author = messageAuthor(req, body);
+    const workspaceId = workspaceIdForSpace(spaceType, spaceId, req);
     const message = normalizeConversationRecord({
       id: makeId('msg'),
+      workspaceId,
       spaceType,
       spaceId,
       authorType: author.authorType,
@@ -495,6 +514,7 @@ export async function handleMessageApi(req, res, url, deps) {
     const author = messageAuthor(req, body);
     const reply = normalizeConversationRecord({
       id: makeId('rep'),
+      workspaceId: message.workspaceId || workspaceIdForSpace(message.spaceType, message.spaceId, req),
       parentMessageId: message.id,
       spaceType: message.spaceType,
       spaceId: message.spaceId,

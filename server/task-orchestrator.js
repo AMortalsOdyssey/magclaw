@@ -60,6 +60,7 @@ export function createTaskOrchestrator(deps) {
     const result = createTaskMessage({
       title,
       body,
+      workspaceId: parent.workspaceId || reply.workspaceId || state.connection?.workspaceId || 'local',
       spaceType: parent.spaceType,
       spaceId: parent.spaceId,
       authorType: 'agent',
@@ -71,6 +72,7 @@ export function createTaskOrchestrator(deps) {
     claimTask(result.task, agent.id, { force: true });
     const ack = normalizeConversationRecord({
       id: makeId('rep'),
+      workspaceId: parent.workspaceId || reply.workspaceId || result.task.workspaceId || state.connection?.workspaceId || 'local',
       parentMessageId: parent.id,
       spaceType: parent.spaceType,
       spaceId: parent.spaceId,
@@ -122,6 +124,7 @@ export function createTaskOrchestrator(deps) {
   
     const message = normalizeConversationRecord({
       id: makeId('msg'),
+      workspaceId: task.workspaceId || state.connection?.workspaceId || 'local',
       spaceType: task.spaceType,
       spaceId: task.spaceId,
       authorType: String(task.createdBy || '').startsWith('agt_') ? 'agent' : 'human',

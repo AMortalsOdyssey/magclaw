@@ -22,7 +22,7 @@ function getChannelMembers(channelId) {
     ? workspaceHumans()
     : (appState.humans || []).filter((human) => human.status !== 'removed');
   // "All" channel always includes all agents and humans
-  if (channelId === 'chan_all') {
+  if (isAllChannel(channel)) {
     return {
       agents: (appState.agents || []).filter(channelAgentIsActive),
       humans: humansInWorkspace,
@@ -66,12 +66,12 @@ function renderSpace() {
   const title = spaceName(selectedSpaceType, selectedSpaceId);
   const members = selectedSpaceType === 'channel' ? getChannelMembers(selectedSpaceId) : null;
   const memberCount = members ? members.agents.length + members.humans.length : 0;
-  const isAllChannel = selectedSpaceType === 'channel' && selectedSpaceId === 'chan_all';
+  const allChannelSelected = selectedSpaceType === 'channel' && isAllChannel(space);
   const actions = selectedSpaceType === 'channel' ? `
     <button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>
     <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
     <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
-    ${isAllChannel ? '' : `<button class="channel-action channel-action-leave" type="button" data-action="leave-channel" data-tooltip="Leave channel" aria-label="Leave channel">${channelActionIcon('leave')}<span>Leave</span></button>`}
+    ${allChannelSelected ? '' : `<button class="channel-action channel-action-leave" type="button" data-action="leave-channel" data-tooltip="Leave channel" aria-label="Leave channel">${channelActionIcon('leave')}<span>Leave</span></button>`}
     <button class="channel-action channel-action-members" type="button" data-action="open-modal" data-modal="channel-members" data-tooltip="Members" aria-label="View ${memberCount} participants">${channelActionIcon('members')}<strong>${memberCount}</strong></button>
     <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" title="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" aria-label="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)">${channelActionIcon('stop')}</button>
   ` : `

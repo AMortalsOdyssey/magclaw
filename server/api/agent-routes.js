@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { findWorkspaceAllChannel } from '../workspace-defaults.js';
 
 // Agent control API routes.
 // These endpoints mutate Agent records or control local Agent processes. The
@@ -71,7 +72,7 @@ export async function handleAgentApi(req, res, url, deps) {
     // tab immediately after Agent creation without a second initialization pass.
     await ensureAgentWorkspace(agent);
 
-    const allChannel = findChannel('chan_all');
+    const allChannel = findWorkspaceAllChannel(state, workspaceId) || findChannel('chan_all');
     if (allChannel && agentParticipatesInChannels(agent)) {
       allChannel.agentIds = normalizeIds([...(allChannel.agentIds || []), agent.id]);
       allChannel.memberIds = normalizeIds([...(allChannel.memberIds || []), agent.id]);
@@ -191,7 +192,8 @@ export async function handleAgentApi(req, res, url, deps) {
     agent.status = 'idle';
     agent.statusUpdatedAt = restoredAt;
     agent.updatedAt = restoredAt;
-    const allChannel = findChannel('chan_all');
+    const allChannel = findWorkspaceAllChannel(state, agent.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local')
+      || findChannel('chan_all');
     if (allChannel && agentParticipatesInChannels(agent)) {
       allChannel.agentIds = normalizeIds([...(allChannel.agentIds || []), agent.id]);
       allChannel.memberIds = normalizeIds([...(allChannel.memberIds || []), agent.id]);

@@ -86,11 +86,57 @@ test('collab route group creates channels with synced membership fields and an a
   assert.equal(deps.memoryUpdates[0].trigger, 'channel_membership_changed');
 });
 
+test('collab route group stamps cloud channels and DMs with the current workspace', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_owner', email: 'owner@example.test' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_owner', role: 'admin' },
+    }),
+    readJson: async () => ({
+      name: 'Cloud Room',
+      agentIds: ['agt_one'],
+    }),
+  });
+  const channelRes = makeResponse();
+  await handleCollabApi(
+    { method: 'POST' },
+    channelRes,
+    new URL('http://local/api/channels'),
+    deps,
+  );
+
+  assert.equal(channelRes.statusCode, 201);
+  assert.equal(channelRes.data.channel.workspaceId, 'wsp_main');
+  assert.equal(channelRes.data.channel.humanIds.includes('hum_owner'), true);
+  assert.equal(deps.state.messages[0].workspaceId, 'wsp_main');
+
+  deps.readJson = async () => ({ participantId: 'agt_one' });
+  const dmRes = makeResponse();
+  await handleCollabApi(
+    { method: 'POST' },
+    dmRes,
+    new URL('http://local/api/dms'),
+    deps,
+  );
+
+  assert.equal(dmRes.statusCode, 200);
+  assert.equal(dmRes.data.dm.workspaceId, 'wsp_main');
+  assert.deepEqual(dmRes.data.dm.participantIds, ['hum_owner', 'agt_one']);
+});
+
 test('collab route group manages channel members across legacy and canonical fields', async () => {
   const deps = routeDeps({
     readJson: async () => ({ memberId: 'agt_one' }),
   });
-  const channel = deps.state.channels[0];
+  deps.state.channels.push({
+    id: 'chan_side',
+    name: 'side',
+    humanIds: ['hum_local'],
+    agentIds: [],
+    memberIds: ['hum_local'],
+    archived: false,
+  });
+  const channel = deps.state.channels.at(-1);
   channel.memberIds = ['hum_local'];
   channel.agentIds = [];
 
@@ -98,7 +144,7 @@ test('collab route group manages channel members across legacy and canonical fie
   assert.equal(await handleCollabApi(
     { method: 'POST' },
     addRes,
-    new URL('http://local/api/channels/chan_all/members'),
+    new URL('http://local/api/channels/chan_side/members'),
     deps,
   ), true);
   assert.deepEqual(channel.memberIds, ['hum_local', 'agt_one']);
@@ -108,11 +154,24 @@ test('collab route group manages channel members across legacy and canonical fie
   assert.equal(await handleCollabApi(
     { method: 'DELETE' },
     removeRes,
-    new URL('http://local/api/channels/chan_all/members/agt_one'),
+    new URL('http://local/api/channels/chan_side/members/agt_one'),
     deps,
   ), true);
   assert.deepEqual(channel.memberIds, ['hum_local']);
   assert.deepEqual(channel.agentIds, []);
+});
+
+test('collab route group keeps all-channel membership locked', async () => {
+  const deps = routeDeps();
+  const removeRes = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'DELETE' },
+    removeRes,
+    new URL('http://local/api/channels/chan_all/members/agt_one'),
+    deps,
+  ), true);
+  assert.equal(removeRes.statusCode, 400);
+  assert.equal(deps.state.channels[0].memberIds.includes('agt_one'), true);
 });
 
 test('collab route group opens reusable DMs and invites humans into all', async () => {

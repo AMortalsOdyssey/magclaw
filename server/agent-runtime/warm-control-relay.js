@@ -114,7 +114,7 @@ async function startAgentFromControl(agent) {
   if (cloudRelay?.agentShouldUseRelay?.(agent)) {
     return cloudRelay.startAgent(agent, { reason: 'manual_start' });
   }
-  return startAgentProcess(agent, 'channel', 'chan_all', []);
+  return startAgentProcess(agent, 'channel', defaultChannelId(), []);
 }
 
 async function warmAgentFromControl(agent, { spaceType = 'channel', spaceId = 'chan_all' } = {}) {
@@ -128,7 +128,7 @@ async function warmAgentFromControl(agent, { spaceType = 'channel', spaceId = 'c
   }
   let proc = agentProcesses.get(agent.id);
   const normalizedSpaceType = spaceType === 'dm' ? 'dm' : 'channel';
-  const normalizedSpaceId = String(spaceId || (normalizedSpaceType === 'channel' ? 'chan_all' : '') || 'chan_all');
+  const normalizedSpaceId = String(spaceId || (normalizedSpaceType === 'channel' ? defaultChannelId() : '') || defaultChannelId());
   if (!proc || proc.child?.killed || proc.stopRequested) {
     proc = await startAgentProcess(agent, normalizedSpaceType, normalizedSpaceId, []);
   } else if (!codexProcessHasActiveTurn(proc)) {
@@ -143,6 +143,16 @@ async function warmAgentFromControl(agent, { spaceType = 'channel', spaceId = 'c
     warming: Boolean(scheduled || proc?.warmupRequestedAt || proc?.warmupActive),
     status: proc?.status || agent.status || 'idle',
   };
+}
+
+function defaultChannelId() {
+  const workspaceId = state.connection?.workspaceId || state.cloud?.workspace?.id || 'local';
+  const allChannel = state.channels?.find((channel) => (
+    (channel.locked || channel.defaultChannel || channel.id === 'chan_all' || channel.name === 'all')
+    && (channel.workspaceId || 'local') === workspaceId
+    && !channel.archived
+  ));
+  return allChannel?.id || state.channels?.[0]?.id || 'chan_all';
 }
 
 async function restartAgentFromControl(agent, mode = 'restart') {
@@ -284,11 +294,24 @@ function inferTaskIdForDelivery(message, parentMessageId) {
   return task?.id || null;
 }
 
+function workspaceIdForSpace(spaceType, spaceId, fallbackRecord = null, agent = null) {
+  const target = spaceType === 'channel'
+    ? state.channels?.find((channel) => channel.id === spaceId)
+    : state.dms?.find((dm) => dm.id === spaceId);
+  return fallbackRecord?.workspaceId
+    || target?.workspaceId
+    || agent?.workspaceId
+    || state.connection?.workspaceId
+    || state.cloud?.workspace?.id
+    || 'local';
+}
+
 function createWorkItemForDelivery(agent, message, { spaceType, spaceId, parentMessageId = null, suppressTaskContext = false } = {}) {
   state.workItems = Array.isArray(state.workItems) ? state.workItems : [];
   const target = targetForConversation(spaceType, spaceId, parentMessageId);
   const item = {
     id: makeId('wi'),
+    workspaceId: workspaceIdForSpace(spaceType, spaceId, message, agent),
     agentId: agent.id,
     sourceMessageId: message.id,
     parentMessageId: parentMessageId || null,
@@ -379,6 +402,7 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
     const parent = findMessage(parentMessageId);
     const reply = normalizeConversationRecord({
       id: makeId('rep'),
+      workspaceId: parent.workspaceId || options.sourceMessage?.workspaceId || workspaceIdForSpace(parent.spaceType || spaceType, parent.spaceId || spaceId, null, agent),
       parentMessageId,
       spaceType: parent.spaceType || spaceType,
       spaceId: parent.spaceId || spaceId,
@@ -402,6 +426,7 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
 
   const message = normalizeConversationRecord({
     id: makeId('msg'),
+    workspaceId: options.sourceMessage?.workspaceId || workspaceIdForSpace(spaceType, spaceId, null, agent),
     spaceType,
     spaceId,
     authorType: 'agent',

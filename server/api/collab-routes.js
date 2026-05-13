@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { ensureWorkspaceAllChannel, isWorkspaceAllChannel } from '../workspace-defaults.js';
 
 // Collaboration object API routes.
 // Channels, DMs, computers, and humans are the durable workspace directory
@@ -29,6 +30,15 @@ export async function handleCollabApi(req, res, url, deps) {
   } = deps;
   const state = getState();
 
+  function actorContext(req) {
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    return {
+      auth,
+      workspaceId: String(auth?.member?.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local').trim(),
+      humanId: auth?.member?.humanId || 'hum_local',
+    };
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/channels') {
     const body = await readJson(req);
     const name = normalizeName(body.name, 'new-channel');
@@ -36,12 +46,15 @@ export async function handleCollabApi(req, res, url, deps) {
       sendError(res, 400, 'Channel name is required.');
       return true;
     }
-    if (state.channels.some((channel) => channel.name === name && !channel.archived)) {
+    const { workspaceId, humanId: creatorHumanId } = actorContext(req);
+    if (state.channels.some((channel) => (
+      channel.name === name
+      && !channel.archived
+      && (channel.workspaceId || 'local') === workspaceId
+    ))) {
       sendError(res, 409, 'Channel already exists.');
       return true;
     }
-    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
-    const creatorHumanId = auth?.member?.humanId || 'hum_local';
     const humanIds = normalizeIds([
       ...(Array.isArray(body.humanIds) && body.humanIds.length ? body.humanIds.map(String) : []),
       creatorHumanId,
@@ -54,6 +67,7 @@ export async function handleCollabApi(req, res, url, deps) {
     const memberIds = [...new Set([...humanIds, ...agentIds])];
     const channel = {
       id: makeId('chan'),
+      workspaceId,
       name,
       description: String(body.description || '').trim(),
       ownerId: String(body.ownerId || creatorHumanId),
@@ -69,6 +83,7 @@ export async function handleCollabApi(req, res, url, deps) {
     // record, which keeps thread/search/task rendering paths consistent.
     state.messages.push(normalizeConversationRecord({
       id: makeId('msg'),
+      workspaceId,
       spaceType: 'channel',
       spaceId: channel.id,
       authorType: 'system',
@@ -171,6 +186,10 @@ export async function handleCollabApi(req, res, url, deps) {
       sendError(res, 404, 'Channel not found.');
       return true;
     }
+    if (isWorkspaceAllChannel(channel)) {
+      sendError(res, 400, 'Cannot remove members from the #all channel.');
+      return true;
+    }
     const memberId = channelMemberRemoveMatch[2];
     // Remove from all membership representations so future route decisions and
     // older UI filters observe the same channel membership.
@@ -194,7 +213,7 @@ export async function handleCollabApi(req, res, url, deps) {
       sendError(res, 404, 'Channel not found.');
       return true;
     }
-    if (channel.id === 'chan_all') {
+    if (channel.id === 'chan_all' || isWorkspaceAllChannel(channel)) {
       sendError(res, 400, 'Cannot leave the #all channel.');
       return true;
     }
@@ -218,10 +237,11 @@ export async function handleCollabApi(req, res, url, deps) {
       sendError(res, 400, 'Participant is required.');
       return true;
     }
-    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
-    const humanId = auth?.member?.humanId || 'hum_local';
+    const { workspaceId, humanId } = actorContext(req);
     let dm = state.dms.find((item) => (
-      item.participantIds.includes(humanId)
+      (item.workspaceId || 'local') === workspaceId
+      && Array.isArray(item.participantIds)
+      && item.participantIds.includes(humanId)
       && item.participantIds.includes(participantId)
     ));
     if (!dm) {
@@ -229,6 +249,7 @@ export async function handleCollabApi(req, res, url, deps) {
       // keeps a private conversation with the same Agent.
       dm = {
         id: makeId('dm'),
+        workspaceId,
         participantIds: [humanId, participantId],
         createdAt: now(),
         updatedAt: now(),
@@ -375,11 +396,13 @@ export async function handleCollabApi(req, res, url, deps) {
       return true;
     }
 
-    if (req.method === 'POST' && url.pathname === '/api/humans') {
+  if (req.method === 'POST' && url.pathname === '/api/humans') {
     const body = await readJson(req);
+    const { workspaceId } = actorContext(req);
     const email = String(body.email || '').trim();
     const human = {
       id: makeId('hum'),
+      workspaceId,
       name: String(body.name || email.split('@')[0] || 'Human').trim(),
       email,
       role: body.role || 'member',
@@ -387,7 +410,14 @@ export async function handleCollabApi(req, res, url, deps) {
       createdAt: now(),
     };
     state.humans.push(human);
-    const allChannel = findChannel('chan_all');
+    const allChannel = ensureWorkspaceAllChannel({
+      state,
+      workspaceId,
+      humanIds: [human.id],
+      makeId,
+      now,
+      normalizeIds,
+    }).channel;
     if (allChannel) {
       // New humans join #all by default so the shared workspace remains visible
       // without a separate invitation flow.

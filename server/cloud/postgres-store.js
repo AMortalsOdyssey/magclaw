@@ -89,10 +89,13 @@ function stripStateMetadata(value) {
   return metadata;
 }
 
-function metadataWithState(record) {
+function metadataWithState(record, durableOverrides = {}) {
   return {
     ...jsonObject(record?.metadata),
-    state: jsonObject(record),
+    state: {
+      ...jsonObject(record),
+      ...jsonObject(durableOverrides),
+    },
   };
 }
 
@@ -124,12 +127,20 @@ function recordFromMetadata(row, base = {}) {
 
 function computerStatus(value) {
   const status = String(value || '').trim();
-  return ['pairing', 'connected', 'offline', 'disabled'].includes(status) ? status : 'offline';
+  if (status === 'disabled' || status === 'pairing') return status;
+  return 'offline';
 }
 
 function agentStatus(value) {
-  const status = String(value || '').trim();
-  return status || 'offline';
+  const status = String(value || '').trim().toLowerCase();
+  if (status === 'disabled' || status === 'deleted' || status === 'offline') return status;
+  return 'idle';
+}
+
+function humanStatus(value) {
+  const status = String(value || '').trim().toLowerCase();
+  if (status === 'invited' || status === 'removed' || status === 'disabled') return status;
+  return 'offline';
 }
 
 const TRANSIENT_AGENT_LOAD_STATUSES = new Set(['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming', 'error']);
@@ -923,14 +934,60 @@ export function createCloudPostgresStore(optionsInput = {}) {
       && Number(row?.state_records || 0) === 0;
   }
 
-  async function replaceWorkspaceRuntimeRows(client, state, cloud) {
-    const ids = workspaceIds(cloud);
+  async function batchInsertRows(client, tableName, columns, rows, casts = {}, suffix = '') {
+    if (!rows.length) return;
+    const params = [];
+    const values = rows.map((row) => {
+      const placeholders = row.map((value, index) => {
+        params.push(value);
+        const column = columns[index];
+        return `$${params.length}${casts[column] || ''}`;
+      });
+      return `(${placeholders.join(', ')})`;
+    });
+    await client.query(`
+      INSERT INTO ${table(tableName)}
+        (${columns.join(', ')})
+      VALUES ${values.join(',\n')}
+      ${suffix}
+    `, params);
+  }
+
+  async function batchUpsertStateRecords(client, rows) {
+    const deduped = new Map();
+    for (const row of rows) {
+      deduped.set(`${row[0]}\0${row[1]}\0${row[2]}`, row);
+    }
+    await batchInsertRows(client, 'cloud_state_records', [
+      'workspace_id',
+      'kind',
+      'id',
+      'position',
+      'created_at',
+      'updated_at',
+      'payload',
+    ], [...deduped.values()], { payload: '::jsonb' }, `
+      ON CONFLICT (workspace_id, kind, id) DO UPDATE SET
+        position = EXCLUDED.position,
+        created_at = EXCLUDED.created_at,
+        updated_at = EXCLUDED.updated_at,
+        payload = EXCLUDED.payload
+    `);
+  }
+
+  async function replaceWorkspaceRuntimeRows(client, state, cloud, scopeWorkspaceIds = null) {
+    const allWorkspaceIds = workspaceIds(cloud);
+    const requestedIds = safeArray(scopeWorkspaceIds).map(String).filter(Boolean);
+    const ids = requestedIds.length
+      ? requestedIds.filter((id) => allWorkspaceIds.includes(id))
+      : allWorkspaceIds;
     if (!ids.length) return;
+    const inScope = (workspaceId) => ids.includes(String(workspaceId || ''));
     const computerIds = new Set(safeArray(state.computers).map((computer) => computer.id).filter(Boolean));
     const agentIds = new Set(safeArray(state.agents).map((agent) => agent.id).filter(Boolean));
     const taskIds = new Set(safeArray(state.tasks).map((task) => task.id).filter(Boolean));
     const messageIds = new Set(safeArray(state.messages).map((message) => message.id).filter(Boolean));
-    for (const tableToClear of [
+    const runtimeTables = [
       'cloud_state_records',
       'cloud_work_items',
       'cloud_tasks',
@@ -941,45 +998,54 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'cloud_agents',
       'cloud_humans',
       'cloud_attachments',
-    ]) {
-      await client.query(`DELETE FROM ${table(tableToClear)} WHERE workspace_id = ANY($1::text[])`, [ids]);
-    }
+    ];
+    await client.query(`
+      WITH ${runtimeTables.map((tableToClear, index) => `
+        cleared_${index} AS (
+          DELETE FROM ${table(tableToClear)}
+          WHERE workspace_id = ANY($1::text[])
+          RETURNING 1
+        )`).join(',')}
+      SELECT 1
+    `, [ids]);
+
+    const humanRows = [];
+    const agentRows = [];
+    const channelRows = [];
+    const dmRows = [];
+    const messageRows = [];
+    const replyRows = [];
+    const taskRows = [];
+    const workItemRows = [];
+    const attachmentRows = [];
+    const stateRecordRows = [];
 
     for (const human of safeArray(state.humans)) {
       const workspaceId = workspaceIdFor(human, state, cloud);
-      if (!workspaceId) continue;
-      await client.query(`
-        INSERT INTO ${table('cloud_humans')}
-          (id, workspace_id, user_id, name, email, role, status, avatar,
-           description, last_seen_at, created_at, updated_at, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
-      `, [
+      if (!workspaceId || !inScope(workspaceId)) continue;
+      const durableStatus = humanStatus(human.status);
+      humanRows.push([
         human.id,
         workspaceId,
         userIdForHuman(human, cloud),
         human.name || '',
         human.email || '',
         roleForHuman(human, cloud),
-        human.status || 'offline',
+        durableStatus,
         human.avatar || human.avatarUrl || '',
         human.description || '',
         iso(human.lastSeenAt || human.presenceUpdatedAt),
         requiredIso(human.createdAt),
         requiredIso(human.updatedAt || human.createdAt),
-        JSON.stringify(metadataWithState(human)),
+        JSON.stringify(metadataWithState(human, { status: durableStatus })),
       ]);
     }
 
     for (const agent of safeArray(state.agents)) {
       const workspaceId = workspaceIdFor(agent, state, cloud);
-      if (!workspaceId) continue;
-      await client.query(`
-        INSERT INTO ${table('cloud_agents')}
-          (id, workspace_id, computer_id, name, handle, description, runtime,
-           model, reasoning_effort, status, workspace_path, created_by,
-           created_at, updated_at, status_updated_at, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
-      `, [
+      if (!workspaceId || !inScope(workspaceId)) continue;
+      const durableStatus = agentStatus(agent.status);
+      agentRows.push([
         agent.id,
         workspaceId,
         computerIds.has(agent.computerId) ? agent.computerId : null,
@@ -989,24 +1055,24 @@ export function createCloudPostgresStore(optionsInput = {}) {
         agent.runtimeId || agent.runtime || '',
         agent.model || '',
         agent.reasoningEffort || '',
-        agentStatus(agent.status),
+        durableStatus,
         agent.workspacePath || agent.workspace || '',
         agent.createdByUserId || null,
         requiredIso(agent.createdAt),
         requiredIso(agent.updatedAt || agent.createdAt),
         iso(agent.statusUpdatedAt),
-        JSON.stringify(metadataWithState(agent)),
+        JSON.stringify(metadataWithState(agent, {
+          status: durableStatus,
+          activeWorkItemIds: [],
+          runtimeActivity: null,
+        })),
       ]);
     }
 
     for (const channel of safeArray(state.channels)) {
       const workspaceId = workspaceIdFor(channel, state, cloud);
-      if (!workspaceId) continue;
-      await client.query(`
-        INSERT INTO ${table('cloud_channels')}
-          (id, workspace_id, name, description, archived_at, created_at, updated_at, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-      `, [
+      if (!workspaceId || !inScope(workspaceId)) continue;
+      channelRows.push([
         channel.id,
         workspaceId,
         channel.name || channel.id,
@@ -1020,12 +1086,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
     for (const dm of safeArray(state.dms)) {
       const workspaceId = workspaceIdFor(dm, state, cloud);
-      if (!workspaceId) continue;
-      await client.query(`
-        INSERT INTO ${table('cloud_dms')}
-          (id, workspace_id, participant_ids, created_at, updated_at, metadata)
-        VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb)
-      `, [
+      if (!workspaceId || !inScope(workspaceId)) continue;
+      dmRows.push([
         dm.id,
         workspaceId,
         JSON.stringify(safeArray(dm.participantIds)),
@@ -1037,15 +1099,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
     for (const message of safeArray(state.messages)) {
       const workspaceId = workspaceIdFor(message, state, cloud);
-      if (!workspaceId) continue;
-      await client.query(`
-        INSERT INTO ${table('cloud_messages')}
-          (id, workspace_id, space_type, space_id, author_type, author_id, body,
-           attachment_ids, mentioned_agent_ids, mentioned_human_ids, reply_count,
-           saved_by, read_by, created_at, updated_at, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb,
-          $11, $12::jsonb, $13::jsonb, $14, $15, $16::jsonb)
-      `, [
+      if (!workspaceId || !inScope(workspaceId)) continue;
+      messageRows.push([
         message.id,
         workspaceId,
         spaceType(message.spaceType),
@@ -1067,15 +1122,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
     for (const reply of safeArray(state.replies)) {
       const workspaceId = workspaceIdFor(reply, state, cloud);
-      if (!workspaceId || !reply.parentMessageId || !messageIds.has(reply.parentMessageId)) continue;
-      await client.query(`
-        INSERT INTO ${table('cloud_replies')}
-          (id, workspace_id, parent_message_id, author_type, author_id, body,
-           attachment_ids, mentioned_agent_ids, mentioned_human_ids, saved_by,
-           read_by, created_at, updated_at, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb,
-          $10::jsonb, $11::jsonb, $12, $13, $14::jsonb)
-      `, [
+      if (!workspaceId || !inScope(workspaceId) || !reply.parentMessageId || !messageIds.has(reply.parentMessageId)) continue;
+      replyRows.push([
         reply.id,
         workspaceId,
         reply.parentMessageId,
@@ -1095,17 +1143,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
     for (const task of safeArray(state.tasks)) {
       const workspaceId = workspaceIdFor(task, state, cloud);
-      if (!workspaceId) continue;
-      await client.query(`
-        INSERT INTO ${table('cloud_tasks')}
-          (id, workspace_id, number, space_type, space_id, title, body, status,
-           created_by, claimed_by, claimed_at, review_requested_at, completed_at,
-           source_message_id, source_reply_id, thread_message_id, assignee_ids,
-           attachment_ids, local_references, history, created_at, updated_at, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-          $14, $15, $16, $17::jsonb, $18::jsonb, $19::jsonb, $20::jsonb,
-          $21, $22, $23::jsonb)
-      `, [
+      if (!workspaceId || !inScope(workspaceId)) continue;
+      taskRows.push([
         task.id,
         workspaceId,
         task.number || null,
@@ -1134,13 +1173,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
     for (const item of safeArray(state.workItems)) {
       const workspaceId = workspaceIdFor(item, state, cloud);
-      if (!workspaceId) continue;
-      await client.query(`
-        INSERT INTO ${table('cloud_work_items')}
-          (id, workspace_id, agent_id, task_id, message_id, parent_message_id,
-           status, target, payload, send_count, created_at, updated_at, completed_at, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14::jsonb)
-      `, [
+      if (!workspaceId || !inScope(workspaceId)) continue;
+      workItemRows.push([
         item.id,
         workspaceId,
         agentIds.has(item.agentId) ? item.agentId : null,
@@ -1160,13 +1194,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
     for (const attachment of safeArray(state.attachments)) {
       const workspaceId = workspaceIdFor(attachment, state, cloud);
-      if (!workspaceId) continue;
-      await client.query(`
-        INSERT INTO ${table('cloud_attachments')}
-          (id, workspace_id, storage_key, storage_mode, filename, mime_type,
-           size_bytes, checksum_sha256, source, created_by, created_at, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
-      `, [
+      if (!workspaceId || !inScope(workspaceId)) continue;
+      attachmentRows.push([
         attachment.id,
         workspaceId,
         attachment.storageKey || attachment.path || attachment.url || attachment.id,
@@ -1187,9 +1216,9 @@ export function createCloudPostgresStore(optionsInput = {}) {
       for (let position = 0; position < records.length; position += 1) {
         const record = records[position];
         const workspaceId = workspaceIdFor(record, state, cloud);
-        if (!workspaceId) continue;
+        if (!workspaceId || !inScope(workspaceId)) continue;
         const id = record?.id || `${key}_${position}`;
-        await upsertStateRecord(client, table('cloud_state_records'), [
+        stateRecordRows.push([
           workspaceId,
           key,
           id,
@@ -1204,8 +1233,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const value = state[key];
       if (!value || typeof value !== 'object') continue;
       const workspaceId = workspaceIdFor(value, state, cloud);
-      if (!workspaceId) continue;
-      await upsertStateRecord(client, table('cloud_state_records'), [
+      if (!workspaceId || !inScope(workspaceId)) continue;
+      stateRecordRows.push([
         workspaceId,
         key,
         'value',
@@ -1215,6 +1244,168 @@ export function createCloudPostgresStore(optionsInput = {}) {
         JSON.stringify(value),
       ]);
     }
+
+    await batchInsertRows(client, 'cloud_humans', [
+      'id',
+      'workspace_id',
+      'user_id',
+      'name',
+      'email',
+      'role',
+      'status',
+      'avatar',
+      'description',
+      'last_seen_at',
+      'created_at',
+      'updated_at',
+      'metadata',
+    ], humanRows, { metadata: '::jsonb' });
+    await batchInsertRows(client, 'cloud_agents', [
+      'id',
+      'workspace_id',
+      'computer_id',
+      'name',
+      'handle',
+      'description',
+      'runtime',
+      'model',
+      'reasoning_effort',
+      'status',
+      'workspace_path',
+      'created_by',
+      'created_at',
+      'updated_at',
+      'status_updated_at',
+      'metadata',
+    ], agentRows, { metadata: '::jsonb' });
+    await batchInsertRows(client, 'cloud_channels', [
+      'id',
+      'workspace_id',
+      'name',
+      'description',
+      'archived_at',
+      'created_at',
+      'updated_at',
+      'metadata',
+    ], channelRows, { metadata: '::jsonb' });
+    await batchInsertRows(client, 'cloud_dms', [
+      'id',
+      'workspace_id',
+      'participant_ids',
+      'created_at',
+      'updated_at',
+      'metadata',
+    ], dmRows, { participant_ids: '::jsonb', metadata: '::jsonb' });
+    await batchInsertRows(client, 'cloud_messages', [
+      'id',
+      'workspace_id',
+      'space_type',
+      'space_id',
+      'author_type',
+      'author_id',
+      'body',
+      'attachment_ids',
+      'mentioned_agent_ids',
+      'mentioned_human_ids',
+      'reply_count',
+      'saved_by',
+      'read_by',
+      'created_at',
+      'updated_at',
+      'metadata',
+    ], messageRows, {
+      attachment_ids: '::jsonb',
+      mentioned_agent_ids: '::jsonb',
+      mentioned_human_ids: '::jsonb',
+      saved_by: '::jsonb',
+      read_by: '::jsonb',
+      metadata: '::jsonb',
+    });
+    await batchInsertRows(client, 'cloud_replies', [
+      'id',
+      'workspace_id',
+      'parent_message_id',
+      'author_type',
+      'author_id',
+      'body',
+      'attachment_ids',
+      'mentioned_agent_ids',
+      'mentioned_human_ids',
+      'saved_by',
+      'read_by',
+      'created_at',
+      'updated_at',
+      'metadata',
+    ], replyRows, {
+      attachment_ids: '::jsonb',
+      mentioned_agent_ids: '::jsonb',
+      mentioned_human_ids: '::jsonb',
+      saved_by: '::jsonb',
+      read_by: '::jsonb',
+      metadata: '::jsonb',
+    });
+    await batchInsertRows(client, 'cloud_tasks', [
+      'id',
+      'workspace_id',
+      'number',
+      'space_type',
+      'space_id',
+      'title',
+      'body',
+      'status',
+      'created_by',
+      'claimed_by',
+      'claimed_at',
+      'review_requested_at',
+      'completed_at',
+      'source_message_id',
+      'source_reply_id',
+      'thread_message_id',
+      'assignee_ids',
+      'attachment_ids',
+      'local_references',
+      'history',
+      'created_at',
+      'updated_at',
+      'metadata',
+    ], taskRows, {
+      assignee_ids: '::jsonb',
+      attachment_ids: '::jsonb',
+      local_references: '::jsonb',
+      history: '::jsonb',
+      metadata: '::jsonb',
+    });
+    await batchInsertRows(client, 'cloud_work_items', [
+      'id',
+      'workspace_id',
+      'agent_id',
+      'task_id',
+      'message_id',
+      'parent_message_id',
+      'status',
+      'target',
+      'payload',
+      'send_count',
+      'created_at',
+      'updated_at',
+      'completed_at',
+      'metadata',
+    ], workItemRows, { target: '::jsonb', payload: '::jsonb', metadata: '::jsonb' });
+    await batchInsertRows(client, 'cloud_attachments', [
+      'id',
+      'workspace_id',
+      'storage_key',
+      'storage_mode',
+      'filename',
+      'mime_type',
+      'size_bytes',
+      'checksum_sha256',
+      'source',
+      'created_by',
+      'created_at',
+      'metadata',
+    ], attachmentRows, { metadata: '::jsonb' });
+    await batchUpsertStateRecords(client, stateRecordRows);
   }
 
   async function pruneEphemeralActivityRows(client) {
@@ -1300,9 +1491,35 @@ export function createCloudPostgresStore(optionsInput = {}) {
           ]);
         }
 
-        for (const session of safeArray(cloud.sessions)) {
-          await upsertSession(client, session);
-        }
+        await batchInsertRows(client, 'cloud_sessions', [
+          'id',
+          'user_id',
+          'token_hash',
+          'created_at',
+          'expires_at',
+          'user_agent',
+          'ip_hash',
+          'revoked_at',
+          'last_seen_at',
+          'metadata',
+        ], safeArray(cloud.sessions).filter((session) => session?.id).map((session) => [
+          session.id,
+          session.userId,
+          session.tokenHash,
+          requiredIso(session.createdAt),
+          requiredIso(session.expiresAt),
+          session.userAgent || '',
+          session.ipHash || '',
+          iso(session.revokedAt),
+          iso(session.lastSeenAt),
+          JSON.stringify(jsonObject(session.metadata)),
+        ]), { metadata: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            expires_at = LEAST(${table('cloud_sessions')}.expires_at, EXCLUDED.expires_at),
+            revoked_at = COALESCE(${table('cloud_sessions')}.revoked_at, EXCLUDED.revoked_at),
+            last_seen_at = COALESCE(EXCLUDED.last_seen_at, ${table('cloud_sessions')}.last_seen_at),
+            metadata = ${table('cloud_sessions')}.metadata || EXCLUDED.metadata
+        `);
 
         for (const invitation of safeArray(cloud.invitations)) {
           await client.query(`
@@ -1406,38 +1623,11 @@ export function createCloudPostgresStore(optionsInput = {}) {
           `, [workspaceIdsForPersist, [...computerIdsForPersist]]);
         }
 
+        const computerRows = [];
         for (const computer of computersForPersist) {
           const workspaceId = computer.workspaceId || cloud.workspaces?.[0]?.id;
           if (!workspaceId) continue;
-          await client.query(`
-            INSERT INTO ${table('cloud_computers')}
-              (id, workspace_id, name, hostname, os, arch, daemon_version,
-               status, connected_via, runtime_ids, runtime_details, capabilities, running_agents,
-               machine_fingerprint, created_by, created_at, updated_at, last_seen_at, daemon_connected_at,
-               disconnected_at, disabled_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb,
-              $12::jsonb, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              workspace_id = EXCLUDED.workspace_id,
-              name = EXCLUDED.name,
-              hostname = EXCLUDED.hostname,
-              os = EXCLUDED.os,
-              arch = EXCLUDED.arch,
-              daemon_version = EXCLUDED.daemon_version,
-              status = EXCLUDED.status,
-              connected_via = EXCLUDED.connected_via,
-              runtime_ids = EXCLUDED.runtime_ids,
-              runtime_details = EXCLUDED.runtime_details,
-              capabilities = EXCLUDED.capabilities,
-              running_agents = EXCLUDED.running_agents,
-              machine_fingerprint = EXCLUDED.machine_fingerprint,
-              updated_at = EXCLUDED.updated_at,
-              last_seen_at = EXCLUDED.last_seen_at,
-              daemon_connected_at = EXCLUDED.daemon_connected_at,
-              disconnected_at = EXCLUDED.disconnected_at,
-              disabled_at = EXCLUDED.disabled_at,
-              metadata = EXCLUDED.metadata
-          `, [
+          computerRows.push([
             computer.id,
             workspaceId,
             computer.name || computer.hostname || computer.id,
@@ -1462,29 +1652,67 @@ export function createCloudPostgresStore(optionsInput = {}) {
             JSON.stringify(jsonObject(computer.metadata)),
           ]);
         }
+        await batchInsertRows(client, 'cloud_computers', [
+          'id',
+          'workspace_id',
+          'name',
+          'hostname',
+          'os',
+          'arch',
+          'daemon_version',
+          'status',
+          'connected_via',
+          'runtime_ids',
+          'runtime_details',
+          'capabilities',
+          'running_agents',
+          'machine_fingerprint',
+          'created_by',
+          'created_at',
+          'updated_at',
+          'last_seen_at',
+          'daemon_connected_at',
+          'disconnected_at',
+          'disabled_at',
+          'metadata',
+        ], computerRows, {
+          runtime_ids: '::jsonb',
+          runtime_details: '::jsonb',
+          capabilities: '::jsonb',
+          running_agents: '::jsonb',
+          metadata: '::jsonb',
+        }, `
+          ON CONFLICT (id) DO UPDATE SET
+            workspace_id = EXCLUDED.workspace_id,
+            name = EXCLUDED.name,
+            hostname = EXCLUDED.hostname,
+            os = EXCLUDED.os,
+            arch = EXCLUDED.arch,
+            daemon_version = EXCLUDED.daemon_version,
+            status = EXCLUDED.status,
+            connected_via = EXCLUDED.connected_via,
+            runtime_ids = EXCLUDED.runtime_ids,
+            runtime_details = EXCLUDED.runtime_details,
+            capabilities = EXCLUDED.capabilities,
+            running_agents = EXCLUDED.running_agents,
+            machine_fingerprint = EXCLUDED.machine_fingerprint,
+            updated_at = EXCLUDED.updated_at,
+            last_seen_at = EXCLUDED.last_seen_at,
+            daemon_connected_at = EXCLUDED.daemon_connected_at,
+            disconnected_at = EXCLUDED.disconnected_at,
+            disabled_at = EXCLUDED.disabled_at,
+            metadata = EXCLUDED.metadata
+        `);
 
         await replaceWorkspaceRuntimeRows(client, state, cloud);
 
+        const computerTokenRows = [];
         for (const token of safeArray(cloud.computerTokens)) {
           if (!token?.computerId || !computerIdsForPersist.has(token.computerId)) {
             console.warn(`[postgres-store] skipping orphan computer token token=${token.id || 'unknown'} computer=${token.computerId}`);
             continue;
           }
-          await client.query(`
-            INSERT INTO ${table('cloud_computer_tokens')}
-              (id, workspace_id, computer_id, label, token_hash, created_at,
-               last_used_at, expires_at, revoked_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              workspace_id = EXCLUDED.workspace_id,
-              computer_id = EXCLUDED.computer_id,
-              label = EXCLUDED.label,
-              token_hash = EXCLUDED.token_hash,
-              last_used_at = EXCLUDED.last_used_at,
-              expires_at = EXCLUDED.expires_at,
-              revoked_at = EXCLUDED.revoked_at,
-              metadata = EXCLUDED.metadata
-          `, [
+          computerTokenRows.push([
             token.id,
             token.workspaceId || cloud.workspaces?.[0]?.id,
             token.computerId,
@@ -1497,28 +1725,36 @@ export function createCloudPostgresStore(optionsInput = {}) {
             JSON.stringify(jsonObject(token.metadata)),
           ]);
         }
+        await batchInsertRows(client, 'cloud_computer_tokens', [
+          'id',
+          'workspace_id',
+          'computer_id',
+          'label',
+          'token_hash',
+          'created_at',
+          'last_used_at',
+          'expires_at',
+          'revoked_at',
+          'metadata',
+        ], computerTokenRows, { metadata: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            workspace_id = EXCLUDED.workspace_id,
+            computer_id = EXCLUDED.computer_id,
+            label = EXCLUDED.label,
+            token_hash = EXCLUDED.token_hash,
+            last_used_at = EXCLUDED.last_used_at,
+            expires_at = EXCLUDED.expires_at,
+            revoked_at = EXCLUDED.revoked_at,
+            metadata = EXCLUDED.metadata
+        `);
 
+        const pairingTokenRows = [];
         for (const pair of safeArray(cloud.pairingTokens)) {
           if (!pair?.computerId || !computerIdsForPersist.has(pair.computerId)) {
             console.warn(`[postgres-store] skipping orphan pairing token token=${pair.id || 'unknown'} computer=${pair.computerId}`);
             continue;
           }
-          await client.query(`
-            INSERT INTO ${table('cloud_pairing_tokens')}
-              (id, workspace_id, computer_id, label, token_hash, created_by,
-               created_at, expires_at, consumed_at, revoked_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              workspace_id = EXCLUDED.workspace_id,
-              computer_id = EXCLUDED.computer_id,
-              label = EXCLUDED.label,
-              token_hash = EXCLUDED.token_hash,
-              created_by = EXCLUDED.created_by,
-              expires_at = EXCLUDED.expires_at,
-              consumed_at = EXCLUDED.consumed_at,
-              revoked_at = EXCLUDED.revoked_at,
-              metadata = EXCLUDED.metadata
-          `, [
+          pairingTokenRows.push([
             pair.id,
             pair.workspaceId || cloud.workspaces?.[0]?.id,
             pair.computerId,
@@ -1532,32 +1768,34 @@ export function createCloudPostgresStore(optionsInput = {}) {
             JSON.stringify(jsonObject(pair.metadata)),
           ]);
         }
+        await batchInsertRows(client, 'cloud_pairing_tokens', [
+          'id',
+          'workspace_id',
+          'computer_id',
+          'label',
+          'token_hash',
+          'created_by',
+          'created_at',
+          'expires_at',
+          'consumed_at',
+          'revoked_at',
+          'metadata',
+        ], pairingTokenRows, { metadata: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            workspace_id = EXCLUDED.workspace_id,
+            computer_id = EXCLUDED.computer_id,
+            label = EXCLUDED.label,
+            token_hash = EXCLUDED.token_hash,
+            created_by = EXCLUDED.created_by,
+            expires_at = EXCLUDED.expires_at,
+            consumed_at = EXCLUDED.consumed_at,
+            revoked_at = EXCLUDED.revoked_at,
+            metadata = EXCLUDED.metadata
+        `);
 
+        const deliveryRows = [];
         for (const delivery of safeArray(cloud.agentDeliveries)) {
-          await client.query(`
-            INSERT INTO ${table('cloud_agent_deliveries')}
-              (id, workspace_id, agent_id, computer_id, message_id, work_item_id,
-               seq, type, command_type, status, attempts, payload, error,
-               created_at, updated_at, sent_at, acked_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-              $12::jsonb, $13, $14, $15, $16, $17)
-            ON CONFLICT (id) DO UPDATE SET
-              workspace_id = EXCLUDED.workspace_id,
-              agent_id = EXCLUDED.agent_id,
-              computer_id = EXCLUDED.computer_id,
-              message_id = EXCLUDED.message_id,
-              work_item_id = EXCLUDED.work_item_id,
-              seq = EXCLUDED.seq,
-              type = EXCLUDED.type,
-              command_type = EXCLUDED.command_type,
-              status = EXCLUDED.status,
-              attempts = EXCLUDED.attempts,
-              payload = EXCLUDED.payload,
-              error = EXCLUDED.error,
-              updated_at = EXCLUDED.updated_at,
-              sent_at = EXCLUDED.sent_at,
-              acked_at = EXCLUDED.acked_at
-          `, [
+          deliveryRows.push([
             delivery.id,
             delivery.workspaceId || cloud.workspaces?.[0]?.id,
             delivery.agentId,
@@ -1577,7 +1815,54 @@ export function createCloudPostgresStore(optionsInput = {}) {
             iso(delivery.ackedAt),
           ]);
         }
+        await batchInsertRows(client, 'cloud_agent_deliveries', [
+          'id',
+          'workspace_id',
+          'agent_id',
+          'computer_id',
+          'message_id',
+          'work_item_id',
+          'seq',
+          'type',
+          'command_type',
+          'status',
+          'attempts',
+          'payload',
+          'error',
+          'created_at',
+          'updated_at',
+          'sent_at',
+          'acked_at',
+        ], deliveryRows, { payload: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            workspace_id = EXCLUDED.workspace_id,
+            agent_id = EXCLUDED.agent_id,
+            computer_id = EXCLUDED.computer_id,
+            message_id = EXCLUDED.message_id,
+            work_item_id = EXCLUDED.work_item_id,
+            seq = EXCLUDED.seq,
+            type = EXCLUDED.type,
+            command_type = EXCLUDED.command_type,
+            status = EXCLUDED.status,
+            attempts = EXCLUDED.attempts,
+            payload = EXCLUDED.payload,
+            error = EXCLUDED.error,
+            updated_at = EXCLUDED.updated_at,
+            sent_at = EXCLUDED.sent_at,
+            acked_at = EXCLUDED.acked_at
+        `);
 
+      });
+    });
+  }
+
+  async function persistWorkspaceFromStateNow(state, workspaceId) {
+    const cloud = state.cloud || {};
+    const cleanWorkspaceId = String(workspaceId || '').trim();
+    if (!cleanWorkspaceId) return;
+    await withClient(async (client) => {
+      await withTransaction(client, 'persistWorkspaceFromState', async () => {
+        await replaceWorkspaceRuntimeRows(client, state, cloud, [cleanWorkspaceId]);
       });
     });
   }
@@ -1610,6 +1895,17 @@ export function createCloudPostgresStore(optionsInput = {}) {
     return next;
   }
 
+  function persistWorkspaceFromState(state, workspaceId) {
+    const snapshot = cloneRecord(state);
+    const cleanWorkspaceId = String(workspaceId || '').trim();
+    const next = persistQueue.then(
+      () => persistWorkspaceFromStateNow(snapshot, cleanWorkspaceId),
+      () => persistWorkspaceFromStateNow(snapshot, cleanWorkspaceId),
+    );
+    persistQueue = next.catch(() => {});
+    return next;
+  }
+
   async function persistAuthFromStateNow(state) {
     const cloud = state.cloud || {};
     const users = safeArray(cloud.users).map(cloneRecord);
@@ -1619,75 +1915,303 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
     await withClient(async (client) => {
       await withTransaction(client, 'persistAuthFromState', async () => {
-        for (const user of users) {
-          await upsertUserSnapshot(client, user);
-        }
+        await batchInsertRows(client, 'cloud_users', [
+          'id',
+          'email',
+          'normalized_email',
+          'name',
+          'password_hash',
+          'avatar_url',
+          'language',
+          'email_verified_at',
+          'created_at',
+          'updated_at',
+          'last_login_at',
+          'disabled_at',
+          'metadata',
+        ], users.filter((user) => user?.id).map((user) => [
+          user.id,
+          user.email,
+          normalizeEmail(user.email),
+          user.name || '',
+          user.passwordHash || null,
+          user.avatarUrl || '',
+          user.language || 'en',
+          iso(user.emailVerifiedAt),
+          requiredIso(user.createdAt),
+          requiredIso(user.updatedAt || user.createdAt),
+          iso(user.lastLoginAt),
+          iso(user.disabledAt),
+          JSON.stringify(jsonObject(user.metadata)),
+        ]), { metadata: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            email = EXCLUDED.email,
+            normalized_email = EXCLUDED.normalized_email,
+            name = EXCLUDED.name,
+            password_hash = COALESCE(${table('cloud_users')}.password_hash, EXCLUDED.password_hash),
+            avatar_url = EXCLUDED.avatar_url,
+            language = EXCLUDED.language,
+            email_verified_at = COALESCE(${table('cloud_users')}.email_verified_at, EXCLUDED.email_verified_at),
+            updated_at = GREATEST(COALESCE(${table('cloud_users')}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
+            last_login_at = CASE
+              WHEN EXCLUDED.last_login_at IS NULL THEN ${table('cloud_users')}.last_login_at
+              ELSE GREATEST(COALESCE(${table('cloud_users')}.last_login_at, EXCLUDED.last_login_at), EXCLUDED.last_login_at)
+            END,
+            disabled_at = COALESCE(${table('cloud_users')}.disabled_at, EXCLUDED.disabled_at),
+            metadata = ${table('cloud_users')}.metadata || EXCLUDED.metadata
+        `);
 
-        for (const session of sessions) {
-          await upsertSession(client, session);
-        }
+        await batchInsertRows(client, 'cloud_sessions', [
+          'id',
+          'user_id',
+          'token_hash',
+          'created_at',
+          'expires_at',
+          'user_agent',
+          'ip_hash',
+          'revoked_at',
+          'last_seen_at',
+          'metadata',
+        ], sessions.filter((session) => session?.id).map((session) => [
+          session.id,
+          session.userId,
+          session.tokenHash,
+          requiredIso(session.createdAt),
+          requiredIso(session.expiresAt),
+          session.userAgent || '',
+          session.ipHash || '',
+          iso(session.revokedAt),
+          iso(session.lastSeenAt),
+          JSON.stringify(jsonObject(session.metadata)),
+        ]), { metadata: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            expires_at = LEAST(${table('cloud_sessions')}.expires_at, EXCLUDED.expires_at),
+            revoked_at = COALESCE(${table('cloud_sessions')}.revoked_at, EXCLUDED.revoked_at),
+            last_seen_at = COALESCE(EXCLUDED.last_seen_at, ${table('cloud_sessions')}.last_seen_at),
+            metadata = ${table('cloud_sessions')}.metadata || EXCLUDED.metadata
+        `);
 
-        for (const workspace of workspaces) {
-          await client.query(`
-            INSERT INTO ${table('cloud_workspaces')}
-              (id, slug, name, avatar, onboarding_agent_id, new_agent_greeting_enabled,
-               owner_user_id, deleted_at, created_at, updated_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              slug = EXCLUDED.slug,
-              name = EXCLUDED.name,
-              avatar = EXCLUDED.avatar,
-              onboarding_agent_id = EXCLUDED.onboarding_agent_id,
-              new_agent_greeting_enabled = EXCLUDED.new_agent_greeting_enabled,
-              owner_user_id = EXCLUDED.owner_user_id,
-              deleted_at = EXCLUDED.deleted_at,
-              updated_at = EXCLUDED.updated_at,
-              metadata = EXCLUDED.metadata
-          `, [
-            workspace.id,
-            workspace.slug || workspace.id,
-            workspace.name || workspace.slug || workspace.id,
-            workspace.avatar || '',
-            workspace.onboardingAgentId || '',
-            workspace.newAgentGreetingEnabled !== false,
-            workspace.ownerUserId || workspace.owner_user_id || null,
-            iso(workspace.deletedAt),
-            requiredIso(workspace.createdAt),
-            requiredIso(workspace.updatedAt || workspace.createdAt),
-            JSON.stringify(jsonObject(workspace.metadata)),
-          ]);
-        }
+        await batchInsertRows(client, 'cloud_workspaces', [
+          'id',
+          'slug',
+          'name',
+          'avatar',
+          'onboarding_agent_id',
+          'new_agent_greeting_enabled',
+          'owner_user_id',
+          'deleted_at',
+          'created_at',
+          'updated_at',
+          'metadata',
+        ], workspaces.filter((workspace) => workspace?.id).map((workspace) => [
+          workspace.id,
+          workspace.slug || workspace.id,
+          workspace.name || workspace.slug || workspace.id,
+          workspace.avatar || '',
+          workspace.onboardingAgentId || '',
+          workspace.newAgentGreetingEnabled !== false,
+          workspace.ownerUserId || workspace.owner_user_id || null,
+          iso(workspace.deletedAt),
+          requiredIso(workspace.createdAt),
+          requiredIso(workspace.updatedAt || workspace.createdAt),
+          JSON.stringify(jsonObject(workspace.metadata)),
+        ]), { metadata: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            slug = EXCLUDED.slug,
+            name = EXCLUDED.name,
+            avatar = EXCLUDED.avatar,
+            onboarding_agent_id = EXCLUDED.onboarding_agent_id,
+            new_agent_greeting_enabled = EXCLUDED.new_agent_greeting_enabled,
+            owner_user_id = EXCLUDED.owner_user_id,
+            deleted_at = EXCLUDED.deleted_at,
+            updated_at = EXCLUDED.updated_at,
+            metadata = EXCLUDED.metadata
+        `);
 
-        for (const member of workspaceMembers) {
-          await client.query(`
-            INSERT INTO ${table('cloud_workspace_members')}
-              (id, workspace_id, user_id, human_id, role, status, joined_at,
-               created_at, updated_at, removed_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
-            ON CONFLICT (id) DO UPDATE SET
-              workspace_id = EXCLUDED.workspace_id,
-              user_id = EXCLUDED.user_id,
-              human_id = EXCLUDED.human_id,
-              role = EXCLUDED.role,
-              status = EXCLUDED.status,
-              joined_at = EXCLUDED.joined_at,
-              updated_at = EXCLUDED.updated_at,
-              removed_at = EXCLUDED.removed_at,
-              metadata = EXCLUDED.metadata
-          `, [
-            member.id,
-            member.workspaceId,
-            member.userId,
-            member.humanId || null,
-            member.role || 'member',
-            member.status || 'active',
-            iso(member.joinedAt),
-            requiredIso(member.createdAt),
-            requiredIso(member.updatedAt || member.createdAt),
-            iso(member.removedAt),
-            JSON.stringify(jsonObject(member.metadata)),
-          ]);
-        }
+        await batchInsertRows(client, 'cloud_workspace_members', [
+          'id',
+          'workspace_id',
+          'user_id',
+          'human_id',
+          'role',
+          'status',
+          'joined_at',
+          'created_at',
+          'updated_at',
+          'removed_at',
+          'metadata',
+        ], workspaceMembers.filter((member) => member?.id).map((member) => [
+          member.id,
+          member.workspaceId,
+          member.userId,
+          member.humanId || null,
+          member.role || 'member',
+          member.status || 'active',
+          iso(member.joinedAt),
+          requiredIso(member.createdAt),
+          requiredIso(member.updatedAt || member.createdAt),
+          iso(member.removedAt),
+          JSON.stringify(jsonObject(member.metadata)),
+        ]), { metadata: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            workspace_id = EXCLUDED.workspace_id,
+            user_id = EXCLUDED.user_id,
+            human_id = EXCLUDED.human_id,
+            role = EXCLUDED.role,
+            status = EXCLUDED.status,
+            joined_at = EXCLUDED.joined_at,
+            updated_at = EXCLUDED.updated_at,
+            removed_at = EXCLUDED.removed_at,
+            metadata = EXCLUDED.metadata
+        `);
+
+        const computersForAuth = safeArray(state.computers);
+        const computerIdsForAuth = new Set(computersForAuth.map((computer) => computer?.id).filter(Boolean));
+        await batchInsertRows(client, 'cloud_computers', [
+          'id',
+          'workspace_id',
+          'name',
+          'hostname',
+          'os',
+          'arch',
+          'daemon_version',
+          'status',
+          'connected_via',
+          'runtime_ids',
+          'runtime_details',
+          'capabilities',
+          'running_agents',
+          'machine_fingerprint',
+          'created_by',
+          'created_at',
+          'updated_at',
+          'last_seen_at',
+          'daemon_connected_at',
+          'disconnected_at',
+          'disabled_at',
+          'metadata',
+        ], computersForAuth.filter((computer) => computer?.id && (computer.workspaceId || cloud.workspaces?.[0]?.id)).map((computer) => [
+          computer.id,
+          computer.workspaceId || cloud.workspaces?.[0]?.id,
+          computer.name || computer.hostname || computer.id,
+          computer.hostname || '',
+          computer.os || '',
+          computer.arch || '',
+          computer.daemonVersion || '',
+          computerStatus(computer.status),
+          computer.connectedVia || 'daemon',
+          JSON.stringify(safeArray(computer.runtimeIds)),
+          JSON.stringify(safeArray(computer.runtimeDetails)),
+          JSON.stringify(safeArray(computer.capabilities)),
+          JSON.stringify(safeArray(computer.runningAgents)),
+          computer.machineFingerprint || computer.fingerprint || '',
+          computer.createdBy || null,
+          requiredIso(computer.createdAt),
+          requiredIso(computer.updatedAt || computer.createdAt),
+          iso(computer.lastSeenAt),
+          iso(computer.daemonConnectedAt),
+          iso(computer.disconnectedAt),
+          iso(computer.disabledAt),
+          JSON.stringify(jsonObject(computer.metadata)),
+        ]), {
+          runtime_ids: '::jsonb',
+          runtime_details: '::jsonb',
+          capabilities: '::jsonb',
+          running_agents: '::jsonb',
+          metadata: '::jsonb',
+        }, `
+          ON CONFLICT (id) DO UPDATE SET
+            workspace_id = EXCLUDED.workspace_id,
+            name = EXCLUDED.name,
+            hostname = EXCLUDED.hostname,
+            os = EXCLUDED.os,
+            arch = EXCLUDED.arch,
+            daemon_version = EXCLUDED.daemon_version,
+            status = EXCLUDED.status,
+            connected_via = EXCLUDED.connected_via,
+            runtime_ids = EXCLUDED.runtime_ids,
+            runtime_details = EXCLUDED.runtime_details,
+            capabilities = EXCLUDED.capabilities,
+            running_agents = EXCLUDED.running_agents,
+            machine_fingerprint = EXCLUDED.machine_fingerprint,
+            updated_at = EXCLUDED.updated_at,
+            last_seen_at = EXCLUDED.last_seen_at,
+            daemon_connected_at = EXCLUDED.daemon_connected_at,
+            disconnected_at = EXCLUDED.disconnected_at,
+            disabled_at = EXCLUDED.disabled_at,
+            metadata = EXCLUDED.metadata
+        `);
+
+        await batchInsertRows(client, 'cloud_computer_tokens', [
+          'id',
+          'workspace_id',
+          'computer_id',
+          'label',
+          'token_hash',
+          'created_at',
+          'last_used_at',
+          'expires_at',
+          'revoked_at',
+          'metadata',
+        ], safeArray(cloud.computerTokens).filter((token) => token?.id && computerIdsForAuth.has(token.computerId)).map((token) => [
+          token.id,
+          token.workspaceId || cloud.workspaces?.[0]?.id,
+          token.computerId,
+          token.label || '',
+          token.tokenHash,
+          requiredIso(token.createdAt),
+          iso(token.lastUsedAt),
+          iso(token.expiresAt),
+          iso(token.revokedAt),
+          JSON.stringify(jsonObject(token.metadata)),
+        ]), { metadata: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            workspace_id = EXCLUDED.workspace_id,
+            computer_id = EXCLUDED.computer_id,
+            label = EXCLUDED.label,
+            token_hash = EXCLUDED.token_hash,
+            last_used_at = EXCLUDED.last_used_at,
+            expires_at = EXCLUDED.expires_at,
+            revoked_at = EXCLUDED.revoked_at,
+            metadata = EXCLUDED.metadata
+        `);
+
+        await batchInsertRows(client, 'cloud_pairing_tokens', [
+          'id',
+          'workspace_id',
+          'computer_id',
+          'label',
+          'token_hash',
+          'created_by',
+          'created_at',
+          'expires_at',
+          'consumed_at',
+          'revoked_at',
+          'metadata',
+        ], safeArray(cloud.pairingTokens).filter((pair) => pair?.id && computerIdsForAuth.has(pair.computerId)).map((pair) => [
+          pair.id,
+          pair.workspaceId || cloud.workspaces?.[0]?.id,
+          pair.computerId,
+          pair.label || '',
+          pair.tokenHash,
+          pair.createdBy || null,
+          requiredIso(pair.createdAt),
+          requiredIso(pair.expiresAt),
+          iso(pair.consumedAt),
+          iso(pair.revokedAt),
+          JSON.stringify(jsonObject(pair.metadata)),
+        ]), { metadata: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            workspace_id = EXCLUDED.workspace_id,
+            computer_id = EXCLUDED.computer_id,
+            label = EXCLUDED.label,
+            token_hash = EXCLUDED.token_hash,
+            created_by = EXCLUDED.created_by,
+            expires_at = EXCLUDED.expires_at,
+            consumed_at = EXCLUDED.consumed_at,
+            revoked_at = EXCLUDED.revoked_at,
+            metadata = EXCLUDED.metadata
+        `);
 
       });
     });
@@ -1858,6 +2382,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     persistAuthOperation,
     persistAuthFromState,
     persistFromState,
+    persistWorkspaceFromState,
     publicInfo: () => ({
       backend: 'postgres',
       database,

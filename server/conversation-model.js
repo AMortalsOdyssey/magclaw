@@ -5,6 +5,7 @@ import {
   mentionTokenForId,
   normalizeIds,
 } from './mentions.js';
+import { findWorkspaceAllChannel } from './workspace-defaults.js';
 
 // Conversation model helpers.
 // This module keeps lookup, mention rendering, scope matching, and task-thread
@@ -43,7 +44,8 @@ export function createConversationModel(deps) {
   
   function selectedDefaultSpaceId(spaceType) {
     if (spaceType === 'dm') return state.dms?.[0]?.id || '';
-    return state.channels?.[0]?.id || 'chan_all';
+    const workspaceId = state.connection?.workspaceId || state.cloud?.workspace?.id || 'local';
+    return findWorkspaceAllChannel(state, workspaceId)?.id || state.channels?.[0]?.id || 'chan_all';
   }
   
   function findMessage(id) {
@@ -65,6 +67,10 @@ export function createConversationModel(deps) {
   function findChannelByRef(ref) {
     const raw = String(ref || '').trim().replace(/^#/, '');
     if (!raw) return null;
+    if (raw === 'all' || raw === 'chan_all') {
+      const workspaceId = state.connection?.workspaceId || state.cloud?.workspace?.id || 'local';
+      return findWorkspaceAllChannel(state, workspaceId) || state.channels.find((channel) => channel.id === 'chan_all') || null;
+    }
     return state.channels.find((channel) => (
       channel.id === raw
       || channel.name === raw
@@ -301,7 +307,7 @@ export function createConversationModel(deps) {
     if (rawChannel) {
       if (rawChannel.startsWith('#')) {
         const name = rawChannel.slice(1);
-        const channel = state.channels.find((item) => item.name === name || item.id === name || item.id.startsWith(name));
+        const channel = findChannelByRef(name);
         if (!channel) throw httpError(404, `Channel not found: ${rawChannel}`);
         return { spaceType: 'channel', spaceId: channel.id, label: `#${channel.name}` };
       }
@@ -481,6 +487,7 @@ export function createConversationModel(deps) {
   
   function addTaskTimelineMessage(task, body, eventType) {
     return addSystemMessage(task.spaceType, task.spaceId, body, {
+      workspaceId: task.workspaceId || state.connection?.workspaceId || 'local',
       eventType: eventType || 'task_event',
       taskId: task.id,
     });

@@ -318,7 +318,7 @@ function renderAddMemberCandidateGroup(title, items, type) {
 function renderChannelMembersModal() {
   const channel = selectedSpaceType === 'channel' ? currentSpace() : null;
   const members = getChannelMembers(selectedSpaceId);
-  const isAllChannel = channel?.id === 'chan_all';
+  const allChannel = isAllChannel(channel);
   const total = members.agents.length + members.humans.length;
 
   return `
@@ -327,19 +327,19 @@ function renderChannelMembersModal() {
       <div class="members-section">
         <div class="members-section-title">Agents</div>
         <div class="members-list">
-          ${members.agents.length ? members.agents.map((agent) => renderChannelMemberRow(agent, 'agent', isAllChannel)).join('') : '<div class="empty-box small">No agents in this channel</div>'}
+          ${members.agents.length ? members.agents.map((agent) => renderChannelMemberRow(agent, 'agent', allChannel)).join('') : '<div class="empty-box small">No agents in this channel</div>'}
         </div>
       </div>
 
       <div class="members-section">
         <div class="members-section-title">Humans</div>
         <div class="members-list">
-          ${members.humans.length ? members.humans.map((human) => renderChannelMemberRow(human, 'human', isAllChannel)).join('') : '<div class="empty-box small">No humans in this channel</div>'}
+          ${members.humans.length ? members.humans.map((human) => renderChannelMemberRow(human, 'human', allChannel)).join('') : '<div class="empty-box small">No humans in this channel</div>'}
         </div>
       </div>
 
       <div class="members-actions">
-        ${!isAllChannel ? `<button class="member-add-btn" type="button" data-action="open-modal" data-modal="add-channel-member">+ Add Member</button>` : ''}
+        ${!allChannel ? `<button class="member-add-btn" type="button" data-action="open-modal" data-modal="add-channel-member">+ Add Member</button>` : ''}
       </div>
     </div>
   `;

@@ -2,6 +2,21 @@ function byId(list, id) {
   return (list || []).find((item) => item?.id === id) || null;
 }
 
+function isAllChannel(channelOrId) {
+  const channel = typeof channelOrId === 'string' ? byId(appState?.channels, channelOrId) : channelOrId;
+  return Boolean(channel && (
+    channel.id === 'chan_all'
+    || channel.locked
+    || channel.defaultChannel
+    || String(channel.name || '').toLowerCase() === 'all'
+  ));
+}
+
+function defaultChannelIdFromState() {
+  const allChannel = (appState?.channels || []).find((channel) => isAllChannel(channel) && !channel.archived);
+  return allChannel?.id || appState?.channels?.[0]?.id || 'chan_all';
+}
+
 function conversationRecord(id) {
   return byId(appState?.messages, id) || byId(appState?.replies, id);
 }

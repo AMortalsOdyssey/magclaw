@@ -261,7 +261,7 @@ document.addEventListener('click', async (event) => {
       activeView = 'space';
       railTab = 'spaces';
       selectedSpaceType = 'channel';
-      selectedSpaceId = appState.channels?.[0]?.id || selectedSpaceId || 'chan_all';
+      selectedSpaceId = defaultChannelIdFromState() || selectedSpaceId || 'chan_all';
       threadMessageId = null;
       workspaceActivityDrawerOpen = false;
       inspectorReturnThreadId = null;
@@ -764,7 +764,7 @@ document.addEventListener('click', async (event) => {
       activeView = 'space';
       railTab = 'spaces';
       selectedSpaceType = 'channel';
-      selectedSpaceId = appState.channels?.[0]?.id || selectedSpaceId || 'chan_all';
+      selectedSpaceId = defaultChannelIdFromState() || selectedSpaceId || 'chan_all';
       threadMessageId = null;
       selectedAgentId = null;
       selectedHumanId = null;
@@ -1311,7 +1311,7 @@ document.addEventListener('click', async (event) => {
       if (!window.confirm('Leave this channel?')) return;
       await api(`/api/channels/${selectedSpaceId}/leave`, { method: 'POST', body: '{}' });
       selectedSpaceType = 'channel';
-      selectedSpaceId = 'chan_all';
+      selectedSpaceId = defaultChannelIdFromState();
       modal = null;
       toast('Left channel');
     }

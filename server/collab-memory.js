@@ -244,6 +244,7 @@ export function createCollabMemoryManager(deps) {
     if (!parent) return null;
     const reply = normalizeConversationRecord({
       id: makeId('rep'),
+      workspaceId: parent.workspaceId || state.connection?.workspaceId || 'local',
       parentMessageId,
       spaceType: parent.spaceType,
       spaceId: parent.spaceId,

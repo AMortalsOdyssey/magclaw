@@ -29,6 +29,7 @@ import {
   WORKSPACE_SLUG_PATTERN,
 } from './auth-primitives.js';
 import { normalizeFanoutApiConfig } from '../runtime-config.js';
+import { ensureWorkspaceAllChannel } from '../workspace-defaults.js';
 
 function normalizeLanguagePreference(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -45,7 +46,6 @@ export function createCloudAuth(deps) {
     makeId,
     now,
     persistState,
-    normalizeIds,
   } = deps;
 
   const state = new Proxy({}, {
@@ -108,6 +108,9 @@ export function createCloudAuth(deps) {
       for (const invitation of state.cloud.invitations) {
         invitation.role = normalizeCloudRole(invitation.role);
       }
+      state.agents = safeArray(state.agents);
+      state.channels = safeArray(state.channels);
+      state.messages = safeArray(state.messages);
       state.humans = safeArray(state.humans);
       for (const human of state.humans) {
         human.role = normalizeCloudRole(human.role);
@@ -120,6 +123,31 @@ export function createCloudAuth(deps) {
             .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0))[0];
           if (ownerMember?.userId) workspace.ownerUserId = ownerMember.userId;
         }
+        const activeHumanIds = state.cloud.workspaceMembers
+          .filter((member) => (
+            member.workspaceId === workspace.id
+            && member.status !== 'removed'
+            && member.humanId
+          ))
+          .map((member) => member.humanId);
+        const workspaceAgentIds = state.agents
+          .filter((agent) => (
+            agent?.id
+            && !agent.deletedAt
+            && !agent.archivedAt
+            && String(agent.status || '').toLowerCase() !== 'disabled'
+            && agent.workspaceId === workspace.id
+          ))
+          .map((agent) => agent.id);
+        ensureWorkspaceAllChannel({
+          state,
+          workspaceId: workspace.id,
+          workspace,
+          humanIds: activeHumanIds,
+          agentIds: workspaceAgentIds,
+          makeId,
+          now,
+        });
       }
       cleanupLegacyConfiguredAdminMembers();
       return state.cloud;
@@ -246,7 +274,13 @@ export function createCloudAuth(deps) {
 
   async function persistCloudState() {
     try {
-      if (cloudRepository?.isEnabled?.()) await cloudRepository.persistFromState(getState());
+      if (cloudRepository?.isEnabled?.()) {
+        if (typeof cloudRepository.persistAuthFromState === 'function') {
+          await cloudRepository.persistAuthFromState(getState());
+        } else {
+          await cloudRepository.persistFromState(getState());
+        }
+      }
       await persistState({ skipExternal: true });
     } catch (error) {
       if (cloudRepository?.isEnabled?.() && typeof cloudRepository.loadIntoState === 'function') {
@@ -491,23 +525,47 @@ export function createCloudAuth(deps) {
     function ensureHumanForUser(user, role = 'member', options = {}) {
       state.humans = safeArray(state.humans);
       const normalizedRole = normalizeCloudRole(role);
+      const workspaceId = String(options.workspaceId || state.connection?.workspaceId || primaryWorkspace()?.id || 'local').trim();
       let human = options.humanId
         ? state.humans.find((item) => item.id === options.humanId)
         : null;
       if (human && human.id === 'hum_local' && human.authUserId !== user.id) {
         human = null;
       }
-      if (!human) human = state.humans.find((item) => item.authUserId === user.id);
+      if (human?.workspaceId && human.workspaceId !== workspaceId && !options.humanId) human = null;
+      if (!human) {
+        human = state.humans.find((item) => (
+          item.authUserId === user.id
+          && item.workspaceId === workspaceId
+          && item.status !== 'removed'
+        ));
+      }
+      if (!human) {
+        human = state.humans.find((item) => (
+          item.userId === user.id
+          && item.workspaceId === workspaceId
+          && item.status !== 'removed'
+        ));
+      }
+      if (!human) {
+        human = state.humans.find((item) => (
+          item.authUserId === user.id
+          && !item.workspaceId
+          && item.status !== 'removed'
+        ));
+      }
       if (!human) {
         human = state.humans.find((item) => (
           normalizeEmail(item.email) === user.email
           && item.status !== 'removed'
           && !item.authUserId
+          && (!item.workspaceId || item.workspaceId === workspaceId)
         ));
       }
       if (!human) {
         human = {
           id: makeId('hum'),
+          workspaceId,
           name: user.name || user.email.split('@')[0],
           email: user.email,
           role: normalizedRole,
@@ -515,8 +573,10 @@ export function createCloudAuth(deps) {
           createdAt: now(),
         };
       state.humans.push(human);
-    }
+      }
       human.authUserId = user.id;
+      human.userId = human.userId || user.id;
+      if (!human.workspaceId) human.workspaceId = workspaceId;
       human.name = user.name || human.name || user.email.split('@')[0];
       human.email = user.email;
       human.role = normalizedRole;
@@ -528,11 +588,14 @@ export function createCloudAuth(deps) {
     }
 
   function addHumanToAllChannel(human) {
-    const allChannel = safeArray(state.channels).find((channel) => channel.id === 'chan_all');
-    if (!allChannel || !human?.id) return;
-    allChannel.humanIds = normalizeIds([...(allChannel.humanIds || []), human.id]);
-    allChannel.memberIds = normalizeIds([...(allChannel.memberIds || []), human.id]);
-    allChannel.updatedAt = now();
+    if (!human?.id) return null;
+    return ensureWorkspaceAllChannel({
+      state,
+      workspaceId: human.workspaceId || state.connection?.workspaceId || primaryWorkspace()?.id || 'local',
+      humanIds: [human.id],
+      makeId,
+      now,
+    }).channel;
   }
 
     async function login(body, req, res) {
@@ -546,7 +609,10 @@ export function createCloudAuth(deps) {
         throw error;
     }
       if (member) {
-        const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, { humanId: member.humanId });
+        const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, {
+          humanId: member.humanId,
+          workspaceId: member.workspaceId,
+        });
         if (human?.id && member.humanId !== human.id) member.humanId = human.id;
         markHumanPresence(human, 'online');
       }
@@ -649,12 +715,15 @@ export function createCloudAuth(deps) {
         throw error;
       }
       const human = humanForMember(auth.member, auth.user)
-        || ensureHumanForUser(auth.user, auth.member.role, { humanId: auth.member.humanId });
+        || ensureHumanForUser(auth.user, auth.member.role, {
+          humanId: auth.member.humanId,
+          workspaceId: auth.member.workspaceId,
+        });
       if (human?.id && auth.member.humanId !== human.id) auth.member.humanId = human.id;
       const previousSeen = Date.parse(human.lastSeenAt || '');
       const changed = markHumanPresence(human, 'online');
       const shouldPersist = changed || !previousSeen || Date.now() - previousSeen > HUMAN_PRESENCE_PERSIST_INTERVAL_MS;
-      if (shouldPersist) await persistCloudState();
+      if (shouldPersist) await persistState({ workspaceId: auth.member.workspaceId });
       return { human, member: auth.member, timeoutMs: HUMAN_PRESENCE_TIMEOUT_MS };
     }
 
@@ -727,6 +796,7 @@ export function createCloudAuth(deps) {
       if (!human) {
         human = {
           id: makeId('hum'),
+          workspaceId: workspace.id,
           name: String(body.name || email.split('@')[0]).trim(),
           email,
           role,
@@ -736,6 +806,7 @@ export function createCloudAuth(deps) {
         state.humans.push(human);
         addHumanToAllChannel(human);
       } else if (!registeredUser) {
+        if (!human.workspaceId) human.workspaceId = workspace.id;
         human.role = role;
         human.status = 'invited';
         human.updatedAt = now();
@@ -885,7 +956,7 @@ export function createCloudAuth(deps) {
         updatedAt: createdAt,
       };
       cloud.workspaces.push(workspace);
-      const human = ensureHumanForUser(user, 'admin');
+      const human = ensureHumanForUser(user, 'admin', { workspaceId: workspace.id });
       addHumanToAllChannel(human);
       cloud.workspaceMembers.push({
         id: makeId('wmem'),
@@ -1237,7 +1308,7 @@ export function createCloudAuth(deps) {
       const joinedAt = now();
       let member = memberForUser(user.id, workspace.id);
       if (!member) {
-        const human = ensureHumanForUser(user, 'member');
+        const human = ensureHumanForUser(user, 'member', { workspaceId: workspace.id });
         addHumanToAllChannel(human);
         member = {
           id: makeId('wmem'),
@@ -1278,7 +1349,10 @@ export function createCloudAuth(deps) {
       const role = normalizeCloudRole(invitation.role || 'member');
       let member = memberForUser(user.id, invitation.workspaceId);
       if (!member) {
-        const human = ensureHumanForUser(user, role, { humanId: invitation.humanId });
+        const human = ensureHumanForUser(user, role, {
+          humanId: invitation.humanId,
+          workspaceId: invitation.workspaceId,
+        });
         if (human) {
           human.role = role;
           human.status = 'online';
@@ -1399,11 +1473,13 @@ export function createCloudAuth(deps) {
 
 	    async function registerWithInvite(body, req, res) {
       const cloud = ensureCloudState();
-      const workspace = primaryWorkspace();
       const raw = String(body.inviteToken || body.token || '').trim();
       const email = normalizeEmail(body.email);
       const invitation = raw ? invitationForToken(raw) : null;
       if (invitation) assertInvitationCanBeAccepted(invitation);
+      const workspace = invitation
+        ? ensureCloudState().workspaces.find((item) => item.id === invitation.workspaceId) || primaryWorkspace()
+        : primaryWorkspace();
       if (invitation && Object.prototype.hasOwnProperty.call(body, 'role')) {
         const error = new Error('Role is controlled by the invitation.');
         error.status = 400;
@@ -1440,7 +1516,10 @@ export function createCloudAuth(deps) {
       };
       cloud.users.push(user);
       const role = normalizeCloudRole(invitation?.role || 'member');
-      const human = ensureHumanForUser(user, role, { humanId: invitation?.humanId });
+      const human = ensureHumanForUser(user, role, {
+        humanId: invitation?.humanId,
+        workspaceId: workspace.id,
+      });
       if (user.avatarUrl) {
         human.avatarUrl = user.avatarUrl;
         human.avatar = user.avatarUrl;
@@ -1780,7 +1859,10 @@ export function createCloudAuth(deps) {
       const previousConsumedAt = reset.consumedAt || null;
       reset.consumedAt = completedAt;
       if (member) {
-        const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, { humanId: member.humanId });
+        const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, {
+          humanId: member.humanId,
+          workspaceId: member.workspaceId,
+        });
         if (human?.id && member.humanId !== human.id) member.humanId = human.id;
         markHumanPresence(human, 'online');
       }

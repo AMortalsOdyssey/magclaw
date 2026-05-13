@@ -303,8 +303,12 @@ test('console server creation returns before full cloud persistence completes', 
   assert.equal(result.server.slug, 'created-team');
   assert.equal(state.connection.workspaceId, result.server.id);
   assert.equal(state.cloud.workspaces.some((workspace) => workspace.slug === 'created-team'), true);
+  const allChannel = state.channels.find((channel) => channel.workspaceId === result.server.id && channel.name === 'all');
+  assert.ok(allChannel, 'new console servers must get a workspace-scoped all channel');
+  assert.equal(allChannel.locked, true);
+  assert.equal(allChannel.humanIds.includes(result.member.humanId), true);
   assert.equal(authPersistStarted, true);
-  assert.equal(fullPersistStarted, true);
+  assert.equal(fullPersistStarted, false);
 
   releaseAuthPersist();
   releaseFullPersist();

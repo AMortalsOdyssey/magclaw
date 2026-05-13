@@ -138,6 +138,37 @@ test('agent route group stamps new cloud agents with the current workspace', asy
   assert.equal(res.data.agent.createdByHumanId, 'hum_owner');
 });
 
+test('agent route group joins new cloud agents to the workspace all channel', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_owner', name: 'Owner', email: 'owner@example.test' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_owner' },
+    }),
+    readJson: async () => ({
+      name: 'Workspace Agent',
+      runtime: 'Codex CLI',
+      runtimeId: 'codex',
+      computerId: 'cmp_remote',
+    }),
+  });
+  deps.state.channels = [
+    { id: 'chan_all', workspaceId: 'wsp_other', name: 'all', agentIds: [], memberIds: ['hum_other'] },
+    { id: 'chan_workspace_all', workspaceId: 'wsp_main', name: 'all', locked: true, agentIds: [], memberIds: ['hum_owner'] },
+  ];
+  const res = makeResponse();
+  await handleAgentApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/agents'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 201);
+  assert.deepEqual(deps.state.channels[0].agentIds, []);
+  assert.deepEqual(deps.state.channels[1].agentIds, ['agt_new']);
+  assert.deepEqual(deps.state.channels[1].memberIds, ['hum_owner', 'agt_new']);
+});
+
 test('agent route group starts only when no process is already running', async () => {
   let startCalls = 0;
   const deps = routeDeps({

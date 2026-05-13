@@ -730,11 +730,11 @@ function trackFanoutRouteEvents(nextState, { silent = false } = {}) {
 function ensureSelection() {
   if (!appState) return;
   if (!byId(appState.channels, selectedSpaceId) && selectedSpaceType === 'channel') {
-    selectedSpaceId = appState.channels[0]?.id || 'chan_all';
+    selectedSpaceId = defaultChannelIdFromState();
   }
   if (!byId(appState.dms, selectedSpaceId) && selectedSpaceType === 'dm') {
     selectedSpaceType = 'channel';
-    selectedSpaceId = appState.channels[0]?.id || 'chan_all';
+    selectedSpaceId = defaultChannelIdFromState();
   }
   if (selectedTaskId && !byId(appState.tasks, selectedTaskId)) {
     selectedTaskId = null;

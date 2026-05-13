@@ -726,7 +726,16 @@ export function createStateCore(deps) {
         await rename(tmp, STATE_FILE);
       }
       if (!options.skipExternal && externalStatePersister) {
-        await externalStatePersister(stateFullSnapshot());
+        const workspaceId = options.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || '';
+        const externalWrite = Promise.resolve()
+          .then(() => externalStatePersister(stateFullSnapshot(), { ...options, workspaceId }));
+        if (options.awaitExternal) {
+          await externalWrite;
+        } else {
+          externalWrite.catch((error) => {
+            console.error('[state] background external persist failed', error);
+          });
+        }
       }
     });
     return saveChain;

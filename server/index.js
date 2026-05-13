@@ -484,6 +484,19 @@ function resilientCloudRepository(repository) {
         await disable(error);
       }
     },
+    async persistWorkspaceFromState(stateSnapshot, workspaceId) {
+      if (disabled) return;
+      try {
+        if (typeof repository.persistWorkspaceFromState === 'function') {
+          await repository.persistWorkspaceFromState(stateSnapshot, workspaceId);
+        } else {
+          await repository.persistFromState?.(stateSnapshot);
+        }
+      } catch (error) {
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
+        await disable(error);
+      }
+    },
     async persistAuthFromState(stateSnapshot) {
       if (disabled) return;
       try {
@@ -1430,8 +1443,13 @@ async function handleRequest(req, res) {
 
 await ensureStorage();
 await cloudAuth.initializeStorage();
-setExternalStatePersister(async (stateSnapshot) => {
+setExternalStatePersister(async (stateSnapshot, options = {}) => {
   if (cloudRepository?.isEnabled?.()) {
+    const workspaceId = String(options.workspaceId || options.externalWorkspaceId || '').trim();
+    if (workspaceId && typeof cloudRepository.persistWorkspaceFromState === 'function') {
+      await cloudRepository.persistWorkspaceFromState(stateSnapshot, workspaceId);
+      return;
+    }
     await cloudRepository.persistFromState?.(stateSnapshot);
   }
 });

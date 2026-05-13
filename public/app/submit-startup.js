@@ -414,7 +414,7 @@ document.addEventListener('submit', async (event) => {
       activeView = 'space';
       railTab = 'spaces';
       selectedSpaceType = 'channel';
-      selectedSpaceId = appState?.channels?.[0]?.id || selectedSpaceId || 'chan_all';
+      selectedSpaceId = defaultChannelIdFromState() || selectedSpaceId || 'chan_all';
       if (slug && window.history?.replaceState) window.history.replaceState({}, '', `/s/${encodeURIComponent(slug)}`);
       toast('Server joined');
     }
@@ -479,7 +479,7 @@ document.addEventListener('submit', async (event) => {
       railTab = 'spaces';
       consoleTab = 'servers';
       selectedSpaceType = 'channel';
-      selectedSpaceId = appState?.channels?.[0]?.id || selectedSpaceId || 'chan_all';
+      selectedSpaceId = defaultChannelIdFromState() || selectedSpaceId || 'chan_all';
       threadMessageId = null;
       selectedAgentId = null;
       selectedTaskId = null;

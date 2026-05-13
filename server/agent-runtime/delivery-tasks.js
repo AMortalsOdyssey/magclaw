@@ -80,6 +80,13 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
   await startAgentProcess(agent, spaceType, spaceId, deliveryMessage);
 }
 
+function workspaceIdForSpace(spaceType, spaceId) {
+  const target = spaceType === 'channel'
+    ? state.channels?.find((channel) => channel.id === spaceId)
+    : state.dms?.find((dm) => dm.id === spaceId);
+  return target?.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local';
+}
+
 function createTaskFromMessage(message, title, options = {}) {
   if (message.taskId) {
     const existing = findTask(message.taskId);
@@ -93,6 +100,7 @@ function createTaskFromMessage(message, title, options = {}) {
     number: nextTaskNumber(message.spaceType, message.spaceId),
     title: String(title || message.body || 'Untitled task').trim().slice(0, 180),
     body: String(options.body ?? message.body ?? '').trim(),
+    workspaceId: message.workspaceId || options.workspaceId || workspaceIdForSpace(message.spaceType, message.spaceId),
     status: String(options.status || 'todo'),
     spaceType: message.spaceType,
     spaceId: message.spaceId,
@@ -123,11 +131,13 @@ function createTaskFromMessage(message, title, options = {}) {
   return task;
 }
 
-function createTaskMessage({ title, body = '', spaceType, spaceId, authorType = 'human', authorId = 'hum_local', assigneeIds = [], attachmentIds = [], sourceMessageId = null, sourceReplyId = null, status = 'todo' }) {
+function createTaskMessage({ title, body = '', spaceType, spaceId, workspaceId = null, authorType = 'human', authorId = 'hum_local', assigneeIds = [], attachmentIds = [], sourceMessageId = null, sourceReplyId = null, status = 'todo' }) {
   const taskTitle = String(title || '').trim().slice(0, 180);
   if (!taskTitle) throw httpError(400, 'Task title is required.');
+  const taskWorkspaceId = workspaceId || workspaceIdForSpace(spaceType, spaceId);
   const message = normalizeConversationRecord({
     id: makeId('msg'),
+    workspaceId: taskWorkspaceId,
     spaceType,
     spaceId,
     authorType,
@@ -146,6 +156,7 @@ function createTaskMessage({ title, body = '', spaceType, spaceId, authorType = 
   const task = createTaskFromMessage(message, taskTitle, {
     body,
     status,
+    workspaceId: taskWorkspaceId,
     assigneeIds,
     sourceMessageId: sourceMessageId || message.id,
     sourceReplyId,

@@ -752,6 +752,7 @@ export function createDaemonRelay(deps) {
     } else {
       state.messages.push(normalizeConversationRecord({
         id: makeId('msg'),
+        workspaceId: payload.workspaceId || payload.message?.workspaceId || agent.workspaceId || state.connection?.workspaceId || 'local',
         spaceType: payload.spaceType || 'channel',
         spaceId: payload.spaceId || 'chan_all',
         authorType: 'agent',

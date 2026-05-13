@@ -15,6 +15,7 @@ import { fanoutApiEndpoint, fanoutApiResponseText, parseFanoutApiJson } from './
 import { escapeRegExp, normalizeIds } from './mentions.js';
 import { safePathWithin } from './path-utils.js';
 import { normalizeFanoutApiConfig } from './runtime-config.js';
+import { isWorkspaceAllChannel } from './workspace-defaults.js';
 
 // Fan-out routing and Agent-card dispatch.
 // This is the first stop for investigating why a message reached an Agent:
@@ -276,14 +277,25 @@ export function createRoutingEngine(deps) {
   
   function channelAgentIds(channel) {
     if (!channel) return [];
-    if (channel.id === 'chan_all') return state.agents.filter(agentParticipatesInChannels).map((agent) => agent.id);
+    if (isWorkspaceAllChannel(channel)) {
+      const workspaceId = channel.workspaceId || state.connection?.workspaceId || 'local';
+      return state.agents
+        .filter((agent) => (agent.workspaceId || 'local') === workspaceId)
+        .filter(agentParticipatesInChannels)
+        .map((agent) => agent.id);
+    }
     return normalizeIds([...(channel.agentIds || []), ...(channel.memberIds || []).filter((id) => id.startsWith('agt_'))])
       .filter((id) => agentParticipatesInChannels(findAgent(id)));
   }
   
   function channelHumanIds(channel) {
     if (!channel) return [];
-    if (channel.id === 'chan_all') return state.humans.map((human) => human.id);
+    if (isWorkspaceAllChannel(channel)) {
+      const workspaceId = channel.workspaceId || state.connection?.workspaceId || 'local';
+      return state.humans
+        .filter((human) => (human.workspaceId || 'local') === workspaceId)
+        .map((human) => human.id);
+    }
     return normalizeIds([...(channel.humanIds || []), ...(channel.memberIds || []).filter((id) => id.startsWith('hum_'))]);
   }
   
