@@ -43,7 +43,7 @@ function createRelay() {
     events: [],
   };
   let nextId = 0;
-  return createDaemonRelay({
+  const relay = createDaemonRelay({
     addSystemEvent: () => {},
     broadcastState: () => {},
     cloudAuth: {
@@ -63,10 +63,11 @@ function createRelay() {
     port: 6543,
     setAgentStatus: () => {},
   });
+  return { cloud, relay, state };
 }
 
 test('daemon relay consumes socket reset during websocket authentication', async () => {
-  const relay = createRelay();
+  const { relay } = createRelay();
   const socket = new FakeSocket();
   const req = {
     url: '/daemon/connect?pair_token=mc_pair_missing',
@@ -82,4 +83,57 @@ test('daemon relay consumes socket reset during websocket authentication', async
   assert.doesNotThrow(() => socket.emit('error', reset));
   assert.equal(await upgrade, true);
   assert.match(socket.writes.join(''), /401 Unauthorized/);
+});
+
+test('daemon relay status omits events for deleted computers', () => {
+  const { cloud, relay, state } = createRelay();
+  state.computers.push({
+    id: 'cmp_live',
+    workspaceId: 'wsp_test',
+    name: 'Live computer',
+    status: 'connected',
+  });
+  cloud.daemonEvents.push(
+    {
+      id: 'devt_live',
+      workspaceId: 'wsp_test',
+      computerId: 'cmp_live',
+      type: 'computer_connected',
+      message: 'Computer connected: Live computer',
+      meta: { computerId: 'cmp_live', workspaceId: 'wsp_test' },
+      createdAt: '2026-05-13T00:00:00.000Z',
+    },
+    {
+      id: 'devt_deleted',
+      workspaceId: 'wsp_test',
+      computerId: null,
+      type: 'computer_connected',
+      message: 'Computer connected: deleted pod',
+      meta: { computerId: 'cmp_deleted', workspaceId: 'wsp_test' },
+      createdAt: '2026-05-13T00:00:01.000Z',
+    },
+    {
+      id: 'devt_other_workspace',
+      workspaceId: 'wsp_other',
+      computerId: null,
+      type: 'computer_connected',
+      message: 'Computer connected: other workspace',
+      meta: { workspaceId: 'wsp_other' },
+      createdAt: '2026-05-13T00:00:02.000Z',
+    },
+    {
+      id: 'devt_note',
+      workspaceId: 'wsp_test',
+      computerId: null,
+      type: 'relay_note',
+      message: 'Relay note',
+      meta: { workspaceId: 'wsp_test' },
+      createdAt: '2026-05-13T00:00:03.000Z',
+    },
+  );
+
+  assert.deepEqual(
+    relay.publicRelayState().daemonEvents.map((event) => event.id),
+    ['devt_live', 'devt_note'],
+  );
 });

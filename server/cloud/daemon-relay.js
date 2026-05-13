@@ -197,18 +197,49 @@ export function createDaemonRelay(deps) {
     return cloudAuth.ensureCloudState();
   }
 
+  function primaryWorkspaceId() {
+    const workspace = typeof cloudAuth.primaryWorkspace === 'function'
+      ? cloudAuth.primaryWorkspace()
+      : cloud().workspaces?.[0];
+    return workspace?.id || null;
+  }
+
+  function daemonEventComputerId(event = {}) {
+    return String(event.computerId || event.meta?.computerId || '').trim();
+  }
+
+  function daemonEventWorkspaceId(event = {}) {
+    const explicit = String(event.workspaceId || event.meta?.workspaceId || '').trim();
+    if (explicit) return explicit;
+    const computerId = daemonEventComputerId(event);
+    if (computerId) {
+      const computer = findComputer(computerId);
+      if (computer?.workspaceId) return computer.workspaceId;
+    }
+    return primaryWorkspaceId();
+  }
+
   function recordDaemonEvent(type, message, meta = {}) {
+    const computerId = String(meta.computerId || '').trim();
+    const computer = computerId ? findComputer(computerId) : null;
+    const workspaceId = String(meta.workspaceId || computer?.workspaceId || primaryWorkspaceId() || '').trim();
+    const safeMeta = {
+      ...meta,
+      ...(workspaceId ? { workspaceId } : {}),
+    };
     const event = {
       id: makeId('devt'),
+      workspaceId: workspaceId || null,
+      computerId: computerId || null,
       type,
       message,
-      meta,
+      meta: safeMeta,
       createdAt: now(),
     };
     const store = cloud();
     store.daemonEvents.unshift(event);
     store.daemonEvents = store.daemonEvents.slice(0, MAX_DAEMON_EVENT_LOG);
-    addSystemEvent(type, message, meta);
+    addSystemEvent(type, message, safeMeta);
     return event;
   }
 
@@ -950,9 +981,18 @@ export function createDaemonRelay(deps) {
   }
 
   function publicRelayState() {
+    const workspaceId = primaryWorkspaceId();
+    const daemonEvents = safeArray(cloud().daemonEvents)
+      .filter((event) => {
+        const eventWorkspaceId = daemonEventWorkspaceId(event);
+        if (workspaceId && eventWorkspaceId && eventWorkspaceId !== workspaceId) return false;
+        const computerId = daemonEventComputerId(event);
+        return !computerId || Boolean(findComputer(computerId));
+      })
+      .slice(0, 50);
     return {
       onlineComputerIds: [...connections.keys()].filter((computerId) => !computerIsDisabled(findComputer(computerId))),
-      daemonEvents: safeArray(cloud().daemonEvents).slice(0, 50),
+      daemonEvents,
     };
   }
 
