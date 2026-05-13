@@ -125,6 +125,13 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(app, /'computer-display-name'/);
   assert.match(closeModalSource, /shouldDiscardPairingComputer/);
   assert.match(closeModalSource, /await refreshState\(\)/);
+  assert.ok(
+    closeModalSource.indexOf('await refreshState()') < closeModalSource.indexOf('const liveComputer'),
+    'computer modal close must refresh server state before deciding whether the provisional computer is still unpaired',
+  );
+  assert.match(closeModalSource, /let refreshedPairingState = false/);
+  assert.match(closeModalSource, /refreshedPairingState = true/);
+  assert.match(closeModalSource, /&& refreshedPairingState/);
   assert.match(app, /function computerPairingModalRenderSignature/);
   assert.match(stateUpdateSource, /computerModalBefore !== computerPairingModalRenderSignature\(appState\)/);
   assert.doesNotMatch(stateUpdateSource, /if \(modal === 'computer'\) render\(\);/);

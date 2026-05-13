@@ -592,6 +592,63 @@ test('postgres store skips orphan computer tokens and pairing tokens', async () 
   )), false);
 });
 
+test('postgres store deletes computers absent from the in-memory workspace snapshot', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  await store.persistFromState({
+    computers: [{
+      id: 'cmp_keep',
+      workspaceId: 'wsp_main',
+      name: 'Keep runner',
+      status: 'connected',
+      connectedVia: 'daemon',
+      runtimeIds: [],
+      createdAt,
+      updatedAt: createdAt,
+    }],
+    cloud: {
+      workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
+      users: [],
+      workspaceMembers: [],
+      sessions: [],
+      invitations: [],
+      passwordResetTokens: [],
+      computerTokens: [],
+      pairingTokens: [],
+      agentDeliveries: [],
+      daemonEvents: [],
+    },
+  });
+  const deleteQuery = queries.find((query) => (
+    query.sql.includes('DELETE FROM "magclaw"."cloud_computers"')
+  ));
+  assert.ok(deleteQuery, 'expected stale cloud computer rows to be removed during snapshot persistence');
+  assert.deepEqual(deleteQuery.params, [['wsp_main'], ['cmp_keep']]);
+  const deleteIndex = queries.indexOf(deleteQuery);
+  const insertIndex = queries.findIndex((query) => (
+    query.sql.includes('INSERT INTO "magclaw"."cloud_computers"')
+    && query.params[0] === 'cmp_keep'
+  ));
+  assert.ok(deleteIndex >= 0 && insertIndex > deleteIndex, 'stale deletion should run before current computer upserts');
+});
+
 test('postgres store upserts duplicate durable state records without crashing', async () => {
   const queries = [];
   const pool = {

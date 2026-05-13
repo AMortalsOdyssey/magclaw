@@ -938,12 +938,22 @@ document.addEventListener('click', async (event) => {
         }
         if (modal === 'computer') {
           const pendingComputer = latestPairingCommand?.computer || null;
+          let refreshedPairingState = false;
+          if (latestPairingCommand?.provisional && pendingComputer?.id) {
+            try {
+              await refreshState();
+              refreshedPairingState = true;
+            } catch (error) {
+              console.warn('Failed to refresh computer pairing state before closing modal:', error);
+            }
+          }
           const liveComputer = pendingComputer?.id ? byId(appState.computers, pendingComputer.id) : null;
           const pairingComputer = liveComputer || pendingComputer;
           const pendingStatus = String(pairingComputer?.status || '').toLowerCase();
           const hasBoundAgents = (appState.agents || []).some((agent) => agent?.computerId === pairingComputer?.id && !agent.deletedAt);
           const shouldDiscardPairingComputer = Boolean(
             latestPairingCommand?.provisional
+            && refreshedPairingState
             && pairingComputer?.id
             && pendingStatus !== 'connected'
             && !hasBoundAgents

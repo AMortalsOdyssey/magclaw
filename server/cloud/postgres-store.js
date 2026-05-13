@@ -1366,6 +1366,15 @@ export function createCloudPostgresStore(optionsInput = {}) {
           console.warn(`[postgres-store] restored provisional pairing computer computer=${pair.computerId} workspace=${workspaceId}`);
         }
 
+        const workspaceIdsForPersist = workspaceIds(cloud);
+        if (workspaceIdsForPersist.length) {
+          await client.query(`
+            DELETE FROM ${table('cloud_computers')}
+            WHERE workspace_id = ANY($1::text[])
+              AND NOT (id = ANY($2::text[]))
+          `, [workspaceIdsForPersist, [...computerIdsForPersist]]);
+        }
+
         for (const computer of computersForPersist) {
           const workspaceId = computer.workspaceId || cloud.workspaces?.[0]?.id;
           if (!workspaceId) continue;
