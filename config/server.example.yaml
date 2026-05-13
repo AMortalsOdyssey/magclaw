@@ -15,6 +15,12 @@ database:
   schema: "magclaw"
   maintenance_database: "postgres"
   create: false
+  lock_timeout_ms: 10000
+  statement_timeout_ms: 120000
+  idle_in_transaction_timeout_ms: 30000
+  startup_lock_timeout_ms: 30000
+  connect_timeout_ms: 10000
+  pool_max: 10
 
 storage:
   attachment_storage: "pvc"

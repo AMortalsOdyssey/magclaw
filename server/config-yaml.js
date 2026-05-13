@@ -122,6 +122,20 @@ export function applyServerYamlConfig(options = {}) {
   setEnv(env, 'MAGCLAW_DATABASE_SCHEMA', database.schema);
   setEnv(env, 'MAGCLAW_MAINTENANCE_DATABASE', pick(database.maintenance_database, database.maintenanceDatabase));
   setEnv(env, 'MAGCLAW_DATABASE_CREATE', database.create);
+  setEnv(env, 'MAGCLAW_DATABASE_LOCK_TIMEOUT_MS', pick(database.lock_timeout_ms, database.lockTimeoutMs));
+  setEnv(env, 'MAGCLAW_DATABASE_STATEMENT_TIMEOUT_MS', pick(database.statement_timeout_ms, database.statementTimeoutMs));
+  setEnv(env, 'MAGCLAW_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS', pick(
+    database.idle_in_transaction_timeout_ms,
+    database.idleInTransactionTimeoutMs,
+    database.idle_in_transaction_session_timeout_ms,
+    database.idleInTransactionSessionTimeoutMs,
+  ));
+  setEnv(env, 'MAGCLAW_DATABASE_STARTUP_LOCK_TIMEOUT_MS', pick(
+    database.startup_lock_timeout_ms,
+    database.startupLockTimeoutMs,
+  ));
+  setEnv(env, 'MAGCLAW_DATABASE_CONNECT_TIMEOUT_MS', pick(database.connect_timeout_ms, database.connectTimeoutMs));
+  setEnv(env, 'MAGCLAW_DATABASE_POOL_MAX', pick(database.pool_max, database.poolMax));
 
   setEnv(env, 'MAGCLAW_ATTACHMENT_STORAGE', pick(storage.attachment_storage, storage.attachmentStorage));
   setEnv(env, 'MAGCLAW_UPLOAD_DIR', pick(storage.upload_dir, storage.uploadDir));

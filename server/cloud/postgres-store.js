@@ -3,10 +3,14 @@ import {
   DEFAULT_DATABASE,
   DEFAULT_MAINTENANCE_DATABASE,
   DEFAULT_SCHEMA,
+  applyLocalPostgresTimeouts,
+  configurePostgresSession,
   databaseNameFromUrl,
   databaseUrlWithName,
   migratePostgres,
   normalizeDatabaseUrl,
+  normalizePostgresRuntimeOptions,
+  postgresRuntimeOptionsFromEnv,
   quoteIdent,
   redactDatabaseUrl,
 } from './postgres.js';
@@ -46,6 +50,13 @@ function dateOnly(value) {
 
 function jsonObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function parsePositiveInteger(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.trunc(parsed);
 }
 
 function stripStateMetadata(value) {
@@ -599,6 +610,8 @@ export function cloudPostgresOptionsFromEnv(env = process.env) {
     schema: env.MAGCLAW_DATABASE_SCHEMA || DEFAULT_SCHEMA,
     maintenanceDatabase: env.MAGCLAW_MAINTENANCE_DATABASE || DEFAULT_MAINTENANCE_DATABASE,
     createDatabase: env.MAGCLAW_DATABASE_CREATE !== '0',
+    poolMax: env.MAGCLAW_DATABASE_POOL_MAX,
+    runtimeOptions: postgresRuntimeOptionsFromEnv(env),
   };
 }
 
@@ -614,6 +627,9 @@ export function createCloudPostgresStore(optionsInput = {}) {
   const schema = options.schema || DEFAULT_SCHEMA;
   const maintenanceDatabase = options.maintenanceDatabase || DEFAULT_MAINTENANCE_DATABASE;
   const createDatabase = options.createDatabase !== false;
+  const poolMax = parsePositiveInteger(options.poolMax || process.env.MAGCLAW_DATABASE_POOL_MAX, 10);
+  const runtimeOptions = normalizePostgresRuntimeOptions(options.runtimeOptions || postgresRuntimeOptionsFromEnv());
+  const applicationName = options.applicationName || process.env.MAGCLAW_DATABASE_APPLICATION_NAME || 'magclaw-web';
   let pool = options.pool || null;
   let initialized = false;
   let migration = null;
@@ -625,13 +641,36 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
   async function withClient(fn) {
     if (!pool) {
-      pool = new Pool({ connectionString: databaseUrlWithName(databaseUrl, database) });
+      pool = new Pool({
+        connectionString: databaseUrlWithName(databaseUrl, database),
+        max: poolMax,
+        connectionTimeoutMillis: runtimeOptions.connectTimeoutMs,
+      });
     }
     const client = await pool.connect();
     try {
+      await configurePostgresSession(client, runtimeOptions, { applicationName });
       return await fn(client);
     } finally {
       client.release();
+    }
+  }
+
+  async function withTransaction(client, label, fn) {
+    await client.query('BEGIN');
+    try {
+      await applyLocalPostgresTimeouts(client, runtimeOptions);
+      const result = await fn();
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error(`[cloud-postgres] failed to rollback ${label} transaction`, rollbackError);
+      }
+      console.error(`[cloud-postgres] ${label} transaction failed`, error);
+      throw error;
     }
   }
 
@@ -1126,8 +1165,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
   async function persistFromStateNow(state) {
     const cloud = state.cloud || {};
     await withClient(async (client) => {
-      await client.query('BEGIN');
-      try {
+      await withTransaction(client, 'persistFromState', async () => {
         await persistReleaseNotesFromState(client, state);
 
         for (const user of safeArray(cloud.users)) {
@@ -1459,11 +1497,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           ]);
         }
 
-        await client.query('COMMIT');
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      }
+      });
     });
   }
 
@@ -1485,8 +1519,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const sessions = safeArray(cloud.sessions).map(cloneRecord);
 
     await withClient(async (client) => {
-      await client.query('BEGIN');
-      try {
+      await withTransaction(client, 'persistAuthFromState', async () => {
         for (const user of users) {
           await upsertUserSnapshot(client, user);
         }
@@ -1557,11 +1590,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           ]);
         }
 
-        await client.query('COMMIT');
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      }
+      });
     });
   }
 
@@ -1577,8 +1606,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
   async function persistAuthOperationNow(operation) {
     await withClient(async (client) => {
-      await client.query('BEGIN');
-      try {
+      await withTransaction(client, 'persistAuthOperation', async () => {
         switch (operation.type) {
           case 'register-open-account':
             await upsertUserSnapshot(client, operation.user);
@@ -1612,11 +1640,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           default:
             throw new Error(`Unsupported auth operation: ${operation.type || 'unknown'}`);
         }
-        await client.query('COMMIT');
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      }
+      });
     });
   }
 
@@ -1702,6 +1726,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       schema,
       maintenanceDatabase,
       createDatabase,
+      runtimeOptions,
     });
     await withClient(async (client) => {
       await persistReleaseNotesFromState(client, state);

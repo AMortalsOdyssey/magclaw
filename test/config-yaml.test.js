@@ -19,6 +19,12 @@ auth:
   require_login: true
 database:
   postgres_url: "postgresql://user:pass@db:5432/magclaw"
+  lock_timeout_ms: 1234
+  statement_timeout_ms: 5678
+  idle_in_transaction_timeout_ms: 4321
+  startup_lock_timeout_ms: 8765
+  connect_timeout_ms: 2222
+  pool_max: 7
 storage:
   attachment_storage: "pvc"
   local_file_storage_fallback:
@@ -37,6 +43,12 @@ fanout_api:
 
   assert.equal(result.loaded, true);
   assert.equal(env.MAGCLAW_DATABASE_URL, 'postgresql://user:pass@db:5432/magclaw');
+  assert.equal(env.MAGCLAW_DATABASE_LOCK_TIMEOUT_MS, '1234');
+  assert.equal(env.MAGCLAW_DATABASE_STATEMENT_TIMEOUT_MS, '5678');
+  assert.equal(env.MAGCLAW_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS, '4321');
+  assert.equal(env.MAGCLAW_DATABASE_STARTUP_LOCK_TIMEOUT_MS, '8765');
+  assert.equal(env.MAGCLAW_DATABASE_CONNECT_TIMEOUT_MS, '2222');
+  assert.equal(env.MAGCLAW_DATABASE_POOL_MAX, '7');
   assert.equal(env.MAGCLAW_ATTACHMENT_STORAGE, 'pvc');
   assert.equal(env.MAGCLAW_LOCAL_FILE_STORAGE_FALLBACK, '1');
   assert.equal(env.MAGCLAW_LOCAL_UPLOAD_DIR, '/tmp/magclaw-fallback');

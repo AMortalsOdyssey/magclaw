@@ -5,9 +5,13 @@ import {
   databaseUrlWithName,
   loadSchemaSql,
   normalizeDatabaseUrl,
+  normalizePostgresRuntimeOptions,
   parsePostgresArgs,
+  postgresAdvisoryLockKey,
+  postgresRuntimeOptionsFromEnv,
   quoteIdent,
   redactDatabaseUrl,
+  withPostgresAdvisoryLock,
 } from '../server/cloud/postgres.js';
 import { createCloudPostgresStore as createStore } from '../server/cloud/postgres-store.js';
 
@@ -49,6 +53,46 @@ test('postgres CLI args validate database and schema identifiers', () => {
     /schema must contain only letters/,
   );
   assert.equal(quoteIdent('cloud_users'), '"cloud_users"');
+});
+
+test('postgres runtime options parse timeouts and advisory lock serializes startup work', async () => {
+  assert.deepEqual(postgresRuntimeOptionsFromEnv({
+    MAGCLAW_DATABASE_LOCK_TIMEOUT_MS: '1234',
+    MAGCLAW_DATABASE_STATEMENT_TIMEOUT_MS: '5678',
+    MAGCLAW_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS: '4321',
+    MAGCLAW_DATABASE_STARTUP_LOCK_TIMEOUT_MS: '8765',
+    MAGCLAW_DATABASE_CONNECT_TIMEOUT_MS: '2222',
+  }), {
+    lockTimeoutMs: 1234,
+    statementTimeoutMs: 5678,
+    idleInTransactionSessionTimeoutMs: 4321,
+    startupLockTimeoutMs: 8765,
+    connectTimeoutMs: 2222,
+  });
+  assert.equal(normalizePostgresRuntimeOptions({ lockTimeoutMs: -1 }).lockTimeoutMs, 10_000);
+
+  const lockKey = postgresAdvisoryLockKey('migration', 'magclaw_cloud', 'magclaw');
+  assert.equal(lockKey.length, 2);
+  const calls = [];
+  let tries = 0;
+  const client = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (sql.includes('pg_try_advisory_lock')) {
+        tries += 1;
+        return { rows: [{ locked: tries > 1 }] };
+      }
+      if (sql.includes('pg_advisory_unlock')) return { rows: [{ unlocked: true }] };
+      return { rows: [] };
+    },
+  };
+  const result = await withPostgresAdvisoryLock(client, lockKey, async () => 'locked', {
+    timeoutMs: 500,
+    retryMs: 100,
+  });
+  assert.equal(result, 'locked');
+  assert.equal(tries, 2);
+  assert.ok(calls.some((call) => call.sql.includes('pg_advisory_unlock')));
 });
 
 test('postgres schema covers auth, relay, collaboration, attachments, and audit tables', async () => {

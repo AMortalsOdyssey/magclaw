@@ -7,6 +7,131 @@ export const MIGRATION_ID = '20260506_cloud_base';
 export const DEFAULT_DATABASE = 'magclaw_cloud';
 export const DEFAULT_SCHEMA = 'magclaw';
 export const DEFAULT_MAINTENANCE_DATABASE = 'postgres';
+export const DEFAULT_POSTGRES_RUNTIME_OPTIONS = Object.freeze({
+  lockTimeoutMs: 10_000,
+  statementTimeoutMs: 120_000,
+  idleInTransactionSessionTimeoutMs: 30_000,
+  startupLockTimeoutMs: 30_000,
+  connectTimeoutMs: 10_000,
+});
+
+function parseNonNegativeInteger(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.trunc(parsed);
+}
+
+function timeoutValue(ms) {
+  return `${Math.max(0, Math.trunc(ms))}ms`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+export function normalizePostgresRuntimeOptions(options = {}) {
+  return {
+    lockTimeoutMs: parseNonNegativeInteger(options.lockTimeoutMs, DEFAULT_POSTGRES_RUNTIME_OPTIONS.lockTimeoutMs),
+    statementTimeoutMs: parseNonNegativeInteger(
+      options.statementTimeoutMs,
+      DEFAULT_POSTGRES_RUNTIME_OPTIONS.statementTimeoutMs,
+    ),
+    idleInTransactionSessionTimeoutMs: parseNonNegativeInteger(
+      options.idleInTransactionSessionTimeoutMs,
+      DEFAULT_POSTGRES_RUNTIME_OPTIONS.idleInTransactionSessionTimeoutMs,
+    ),
+    startupLockTimeoutMs: parseNonNegativeInteger(
+      options.startupLockTimeoutMs,
+      DEFAULT_POSTGRES_RUNTIME_OPTIONS.startupLockTimeoutMs,
+    ),
+    connectTimeoutMs: parseNonNegativeInteger(options.connectTimeoutMs, DEFAULT_POSTGRES_RUNTIME_OPTIONS.connectTimeoutMs),
+  };
+}
+
+export function postgresRuntimeOptionsFromEnv(env = process.env) {
+  return normalizePostgresRuntimeOptions({
+    lockTimeoutMs: env.MAGCLAW_DATABASE_LOCK_TIMEOUT_MS,
+    statementTimeoutMs: env.MAGCLAW_DATABASE_STATEMENT_TIMEOUT_MS,
+    idleInTransactionSessionTimeoutMs: env.MAGCLAW_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS
+      || env.MAGCLAW_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS,
+    startupLockTimeoutMs: env.MAGCLAW_DATABASE_STARTUP_LOCK_TIMEOUT_MS,
+    connectTimeoutMs: env.MAGCLAW_DATABASE_CONNECT_TIMEOUT_MS,
+  });
+}
+
+export function postgresAdvisoryLockKey(scope, database, schema) {
+  const digest = crypto
+    .createHash('sha256')
+    .update(`magclaw:${scope}:${database}:${schema}`)
+    .digest();
+  return [digest.readInt32BE(0), digest.readInt32BE(4)];
+}
+
+export async function configurePostgresSession(client, runtimeOptions = {}, context = {}) {
+  const options = normalizePostgresRuntimeOptions(runtimeOptions);
+  if (context.applicationName) {
+    await client.query('SELECT set_config($1, $2, false)', ['application_name', context.applicationName]);
+  }
+  await client.query('SELECT set_config($1, $2, false)', ['lock_timeout', timeoutValue(options.lockTimeoutMs)]);
+  await client.query('SELECT set_config($1, $2, false)', ['statement_timeout', timeoutValue(options.statementTimeoutMs)]);
+  await client.query('SELECT set_config($1, $2, false)', [
+    'idle_in_transaction_session_timeout',
+    timeoutValue(options.idleInTransactionSessionTimeoutMs),
+  ]);
+}
+
+export async function applyLocalPostgresTimeouts(client, runtimeOptions = {}) {
+  const options = normalizePostgresRuntimeOptions(runtimeOptions);
+  await client.query('SELECT set_config($1, $2, true)', ['lock_timeout', timeoutValue(options.lockTimeoutMs)]);
+  await client.query('SELECT set_config($1, $2, true)', ['statement_timeout', timeoutValue(options.statementTimeoutMs)]);
+  await client.query('SELECT set_config($1, $2, true)', [
+    'idle_in_transaction_session_timeout',
+    timeoutValue(options.idleInTransactionSessionTimeoutMs),
+  ]);
+}
+
+export async function withPostgresAdvisoryLock(client, lockKey, fn, options = {}) {
+  const [leftKey, rightKey] = lockKey;
+  const timeoutMs = parseNonNegativeInteger(options.timeoutMs, DEFAULT_POSTGRES_RUNTIME_OPTIONS.startupLockTimeoutMs);
+  const retryMs = Math.max(100, parseNonNegativeInteger(options.retryMs, 250));
+  const deadline = Date.now() + timeoutMs;
+  let waitLogged = false;
+  let acquired = false;
+
+  while (!acquired) {
+    const result = await client.query(
+      'SELECT pg_try_advisory_lock($1::int, $2::int) AS locked',
+      [leftKey, rightKey],
+    );
+    acquired = result.rows[0]?.locked === true;
+    if (acquired) break;
+
+    if (!waitLogged && options.label) {
+      console.warn(`[cloud-postgres] waiting for ${options.label} advisory lock`);
+      waitLogged = true;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${options.label || 'postgres'} advisory lock after ${timeoutMs}ms.`);
+    }
+    await sleep(Math.min(retryMs, Math.max(0, deadline - Date.now())));
+  }
+
+  try {
+    if (waitLogged && options.label) console.info(`[cloud-postgres] acquired ${options.label} advisory lock`);
+    return await fn();
+  } finally {
+    const result = await client.query(
+      'SELECT pg_advisory_unlock($1::int, $2::int) AS unlocked',
+      [leftKey, rightKey],
+    );
+    if (result.rows[0]?.unlocked !== true && options.label) {
+      console.warn(`[cloud-postgres] ${options.label} advisory lock was not held during release`);
+    }
+  }
+}
 
 function assertIdentifier(value, label) {
   const name = String(value || '').trim();
@@ -104,16 +229,21 @@ function checksumSql(sql) {
   return crypto.createHash('sha256').update(sql).digest('hex');
 }
 
-function clientFor(connectionString) {
-  return new Client({ connectionString });
+function clientFor(connectionString, runtimeOptions = {}) {
+  const options = normalizePostgresRuntimeOptions(runtimeOptions);
+  return new Client({
+    connectionString,
+    connectionTimeoutMillis: options.connectTimeoutMs,
+  });
 }
 
-async function ensureDatabase(options) {
+async function ensureDatabase(options, runtimeOptions) {
   if (!options.createDatabase) return { created: false, exists: null };
   const maintenanceUrl = databaseUrlWithName(options.databaseUrl, options.maintenanceDatabase);
-  const client = clientFor(maintenanceUrl);
+  const client = clientFor(maintenanceUrl, runtimeOptions);
   await client.connect();
   try {
+    await configurePostgresSession(client, runtimeOptions, { applicationName: 'magclaw-maintenance' });
     const existing = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [options.database]);
     if (existing.rowCount > 0) return { created: false, exists: true };
     await client.query(`CREATE DATABASE ${quoteIdent(options.database)}`);
@@ -144,40 +274,55 @@ export async function migratePostgres(optionsInput = {}) {
   options.schema = assertIdentifier(options.schema || DEFAULT_SCHEMA, 'schema');
   options.maintenanceDatabase = assertIdentifier(options.maintenanceDatabase || DEFAULT_MAINTENANCE_DATABASE, 'maintenance database');
 
-  const databaseResult = await ensureDatabase(options);
+  const runtimeOptions = normalizePostgresRuntimeOptions(options.runtimeOptions || postgresRuntimeOptionsFromEnv());
+  const databaseResult = await ensureDatabase(options, runtimeOptions);
   const schemaSql = await loadSchemaSql();
   const checksum = checksumSql(schemaSql);
   const targetUrl = databaseUrlWithName(options.databaseUrl, options.database);
-  const client = clientFor(targetUrl);
+  const client = clientFor(targetUrl, runtimeOptions);
   await client.connect();
   try {
-    await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(options.schema)}`);
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS ${quoteIdent(options.schema)}.magclaw_migrations (
-        id TEXT PRIMARY KEY,
-        checksum TEXT NOT NULL,
-        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `);
+    await configurePostgresSession(client, runtimeOptions, { applicationName: 'magclaw-migration' });
+    let checksumChanged = false;
+    const migrationLockKey = postgresAdvisoryLockKey('migration', options.database, options.schema);
+    await withPostgresAdvisoryLock(
+      client,
+      migrationLockKey,
+      async () => {
+        await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(options.schema)}`);
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS ${quoteIdent(options.schema)}.magclaw_migrations (
+            id TEXT PRIMARY KEY,
+            checksum TEXT NOT NULL,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          )
+        `);
 
-    const previous = await migrationStatus(client, options.schema, MIGRATION_ID);
-    const checksumChanged = Boolean(previous && previous.checksum !== checksum);
+        const previous = await migrationStatus(client, options.schema, MIGRATION_ID);
+        checksumChanged = Boolean(previous && previous.checksum !== checksum);
 
-    await client.query('BEGIN');
-    try {
-      await client.query(`SET LOCAL search_path TO ${quoteIdent(options.schema)}, public`);
-      await client.query(schemaSql);
-      await client.query(
-        `INSERT INTO ${quoteIdent(options.schema)}.magclaw_migrations (id, checksum)
-         VALUES ($1, $2)
-         ON CONFLICT (id) DO UPDATE SET checksum = EXCLUDED.checksum`,
-        [MIGRATION_ID, checksum],
-      );
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    }
+        await client.query('BEGIN');
+        try {
+          await applyLocalPostgresTimeouts(client, runtimeOptions);
+          await client.query(`SET LOCAL search_path TO ${quoteIdent(options.schema)}, public`);
+          await client.query(schemaSql);
+          await client.query(
+            `INSERT INTO ${quoteIdent(options.schema)}.magclaw_migrations (id, checksum)
+             VALUES ($1, $2)
+             ON CONFLICT (id) DO UPDATE SET checksum = EXCLUDED.checksum`,
+            [MIGRATION_ID, checksum],
+          );
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        }
+      },
+      {
+        label: `migration database=${options.database} schema=${options.schema}`,
+        timeoutMs: runtimeOptions.startupLockTimeoutMs,
+      },
+    );
 
     const tableCount = await client.query(`
       SELECT COUNT(*)::int AS count
@@ -214,9 +359,11 @@ export async function postgresStatus(optionsInput = {}) {
     'database',
   );
   options.schema = assertIdentifier(options.schema || DEFAULT_SCHEMA, 'schema');
-  const client = clientFor(databaseUrlWithName(options.databaseUrl, options.database));
+  const runtimeOptions = normalizePostgresRuntimeOptions(options.runtimeOptions || postgresRuntimeOptionsFromEnv());
+  const client = clientFor(databaseUrlWithName(options.databaseUrl, options.database), runtimeOptions);
   await client.connect();
   try {
+    await configurePostgresSession(client, runtimeOptions, { applicationName: 'magclaw-status' });
     const tables = await client.query(`
       SELECT table_name
       FROM information_schema.tables
