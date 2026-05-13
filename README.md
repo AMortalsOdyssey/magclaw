@@ -112,6 +112,9 @@ Legacy `server.env` files are not loaded unless `MAGCLAW_ALLOW_LEGACY_SERVER_ENV
 In containers, mount the same YAML shape at `/etc/magclaw/server.yaml`; the
 server checks that path by default, so no config-path environment variable is
 required.
+Set `daemon.connect_command_mode` to `npm` for cloud/domain deployments so the
+Connect Computer modal shows `npx -y @magclaw/daemon@latest connect`; set it to
+`local-repo` when you want the command to run from a local source checkout.
 
 To persist cloud runtime data in PostgreSQL, set a database URL before startup:
 

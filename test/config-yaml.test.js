@@ -30,6 +30,10 @@ storage:
   local_file_storage_fallback:
     enabled: true
     dir: "/tmp/magclaw-fallback"
+daemon:
+  connect_command:
+    mode: "npm"
+    local_repo_placeholder: "/workspace/magclaw"
 fanout_api:
   enabled: true
   base_url: "https://models.example/v1"
@@ -52,6 +56,8 @@ fanout_api:
   assert.equal(env.MAGCLAW_ATTACHMENT_STORAGE, 'pvc');
   assert.equal(env.MAGCLAW_LOCAL_FILE_STORAGE_FALLBACK, '1');
   assert.equal(env.MAGCLAW_LOCAL_UPLOAD_DIR, '/tmp/magclaw-fallback');
+  assert.equal(env.MAGCLAW_DAEMON_COMMAND_MODE, 'npm');
+  assert.equal(env.MAGCLAW_DAEMON_LOCAL_REPO_PLACEHOLDER, '/workspace/magclaw');
   assert.equal(env.MAGCLAW_REQUIRE_LOGIN, undefined);
   assert.equal(env.MAGCLAW_DATA_DIR, undefined);
   assert.equal(env.MAGCLAW_FANOUT_API_ENABLED, undefined);

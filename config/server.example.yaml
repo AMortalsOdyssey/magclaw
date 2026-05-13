@@ -29,6 +29,12 @@ storage:
   local_file_storage_fallback: false
   write_state_json: false
 
+daemon:
+  # local-repo shows: MAGCLAW_REPO_DIR=...; node .../daemon/bin/magclaw-daemon.js
+  # npm shows: npx -y @magclaw/daemon@latest connect
+  connect_command_mode: "npm"
+  local_repo_placeholder: "/path/to/magclaw"
+
 email:
   smtp_host: "smtp.example.com"
   smtp_port: 465

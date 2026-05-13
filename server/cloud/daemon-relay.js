@@ -181,7 +181,12 @@ export function createDaemonRelay(deps) {
         .replaceAll('{profile}', profile)
         .replaceAll('{serverName}', comment);
     }
-    const useNpmCommand = String(process.env.MAGCLAW_DAEMON_COMMAND_MODE || '').toLowerCase() === 'npm';
+    const commandMode = String(process.env.MAGCLAW_DAEMON_COMMAND_MODE || 'local-repo').trim().toLowerCase();
+    const useNpmCommand = ['npm', 'npx', 'package', 'cloud', 'remote'].includes(commandMode);
+    const useLocalRepoCommand = ['', 'local', 'local-repo', 'repo', 'source'].includes(commandMode);
+    if (!useNpmCommand && !useLocalRepoCommand) {
+      console.warn(`[daemon-relay] unknown daemon command mode mode=${commandMode}; falling back to local-repo`);
+    }
     const localRepoDir = process.env.MAGCLAW_DAEMON_LOCAL_REPO_PLACEHOLDER || '/path/to/magclaw';
     const launcher = useNpmCommand
       ? 'npx -y @magclaw/daemon@latest connect'

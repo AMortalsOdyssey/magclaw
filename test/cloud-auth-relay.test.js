@@ -684,6 +684,26 @@ test('owner registration protects app APIs and supports invites end to end', asy
   }
 });
 
+test('cloud pairing command can use the domain-friendly npm daemon launcher', async () => {
+  const server = await startIsolatedServer({
+    MAGCLAW_DAEMON_COMMAND_MODE: 'npm',
+    MAGCLAW_PUBLIC_URL: 'https://magclaw.example.test',
+  });
+  try {
+    const admin = await registerOwnerServer(server);
+    const pairing = await request(server.baseUrl, '/api/cloud/computers/pairing-tokens', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ name: 'Cloud runner' }),
+    });
+    assert.match(pairing.data.command, /^npx -y @magclaw\/daemon@latest connect /);
+    assert.match(pairing.data.command, /--server-url "?https:\/\/magclaw\.example\.test"?/);
+    assert.doesNotMatch(pairing.data.command, /MAGCLAW_REPO_DIR/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('cloud roles enforce admin invite and removal boundaries', async () => {
   const server = await startIsolatedServer();
   try {

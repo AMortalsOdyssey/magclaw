@@ -105,6 +105,12 @@ export function applyServerYamlConfig(options = {}) {
   const storage = config.storage || {};
   const email = config.email || config.smtp || {};
   const runtime = config.runtime || {};
+  const daemon = config.daemon || {};
+  const rawDaemonConnectCommand = pick(daemon.connect_command, daemon.connectCommand);
+  const daemonConnectCommand = objectValue(rawDaemonConnectCommand);
+  const daemonConnectCommandTemplate = typeof rawDaemonConnectCommand === 'string'
+    ? rawDaemonConnectCommand
+    : pick(daemonConnectCommand.template, daemonConnectCommand.command);
   const rawLocalFileStorageFallback = pick(storage.local_file_storage_fallback, storage.localFileStorageFallback);
   const localFileStorageFallback = objectValue(rawLocalFileStorageFallback);
   const localFileStorageFallbackEnabled = Object.keys(localFileStorageFallback).length
@@ -168,6 +174,31 @@ export function applyServerYamlConfig(options = {}) {
   setEnv(env, 'CODEX_PATH', pick(runtime.codex_path, runtime.codexPath));
   setEnv(env, 'MAGCLAW_CHAT_MODEL', pick(runtime.chat_model, runtime.chatModel));
   setEnv(env, 'MAGCLAW_CHAT_REASONING', pick(runtime.chat_reasoning, runtime.chatReasoning));
+
+  setEnv(env, 'MAGCLAW_DAEMON_COMMAND_MODE', pick(
+    daemon.command_mode,
+    daemon.commandMode,
+    daemon.connect_command_mode,
+    daemon.connectCommandMode,
+    daemonConnectCommand.mode,
+    daemonConnectCommand.command_mode,
+    daemonConnectCommand.commandMode,
+  ));
+  setEnv(env, 'MAGCLAW_DAEMON_LOCAL_REPO_PLACEHOLDER', pick(
+    daemon.local_repo_placeholder,
+    daemon.localRepoPlaceholder,
+    daemon.local_repo_dir,
+    daemon.localRepoDir,
+    daemonConnectCommand.local_repo_placeholder,
+    daemonConnectCommand.localRepoPlaceholder,
+    daemonConnectCommand.local_repo_dir,
+    daemonConnectCommand.localRepoDir,
+  ));
+  setEnv(env, 'MAGCLAW_DAEMON_CONNECT_COMMAND', pick(
+    daemon.connect_command_template,
+    daemon.connectCommandTemplate,
+    daemonConnectCommandTemplate,
+  ));
 
   return { loaded: true, config, path: configPath };
 }

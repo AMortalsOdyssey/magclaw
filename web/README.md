@@ -14,6 +14,9 @@ here so production configuration is separated from the local daemon package.
   paths by default, so container deployments do not need a config-path
   environment variable.
 - Runtime YAML, including the current PostgreSQL URL, belongs in the ConfigMap.
+- `daemon.connect_command_mode` controls the Connect Computer command shape:
+  use `npm` for domain/cloud deployments and `local-repo` for source-checkout
+  development commands.
 - Cloud users register accounts directly, create servers from the console, and
   become the owner/admin of the servers they create. There is no configured
   admin bootstrap path.
