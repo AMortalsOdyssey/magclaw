@@ -1391,6 +1391,10 @@ export function createCloudPostgresStore(optionsInput = {}) {
         await replaceWorkspaceRuntimeRows(client, state, cloud);
 
         for (const token of safeArray(cloud.computerTokens)) {
+          if (!token?.computerId || !computerIdsForPersist.has(token.computerId)) {
+            console.warn(`[postgres-store] skipping orphan computer token token=${token.id || 'unknown'} computer=${token.computerId}`);
+            continue;
+          }
           await client.query(`
             INSERT INTO ${table('cloud_computer_tokens')}
               (id, workspace_id, computer_id, label, token_hash, created_at,
@@ -1420,6 +1424,10 @@ export function createCloudPostgresStore(optionsInput = {}) {
         }
 
         for (const pair of safeArray(cloud.pairingTokens)) {
+          if (!pair?.computerId || !computerIdsForPersist.has(pair.computerId)) {
+            console.warn(`[postgres-store] skipping orphan pairing token token=${pair.id || 'unknown'} computer=${pair.computerId}`);
+            continue;
+          }
           await client.query(`
             INSERT INTO ${table('cloud_pairing_tokens')}
               (id, workspace_id, computer_id, label, token_hash, created_by,

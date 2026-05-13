@@ -404,6 +404,77 @@ test('postgres store restores legacy provisional computers before pairing tokens
   assert.ok(computerInsertIndex < pairingInsertIndex);
 });
 
+test('postgres store skips orphan computer tokens and pairing tokens', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-07T00:00:00.000Z';
+  await store.persistFromState({
+    computers: [{
+      id: 'cmp_present',
+      workspaceId: 'wsp_main',
+      name: 'Present runner',
+      status: 'offline',
+      connectedVia: 'daemon',
+      runtimeIds: [],
+      createdAt,
+      updatedAt: createdAt,
+    }],
+    cloud: {
+      workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
+      users: [],
+      workspaceMembers: [],
+      sessions: [],
+      invitations: [],
+      passwordResetTokens: [],
+      computerTokens: [{
+        id: 'ctok_orphan',
+        workspaceId: 'wsp_main',
+        computerId: 'cmp_missing',
+        label: 'Orphan machine token',
+        tokenHash: 'hash_orphan_machine',
+        createdAt,
+        revokedAt: createdAt,
+      }],
+      pairingTokens: [{
+        id: 'pair_orphan',
+        workspaceId: 'wsp_main',
+        computerId: 'cmp_missing',
+        label: 'Orphan pair token',
+        tokenHash: 'hash_orphan_pair',
+        createdAt,
+        expiresAt: '2026-05-07T00:15:00.000Z',
+        revokedAt: createdAt,
+      }],
+      agentDeliveries: [],
+      daemonEvents: [],
+    },
+  });
+  assert.equal(queries.some((query) => (
+    query.sql.includes('INSERT INTO "magclaw"."cloud_computer_tokens"')
+    && query.params[0] === 'ctok_orphan'
+  )), false);
+  assert.equal(queries.some((query) => (
+    query.sql.includes('INSERT INTO "magclaw"."cloud_pairing_tokens"')
+    && query.params[0] === 'pair_orphan'
+  )), false);
+});
+
 test('postgres store upserts duplicate residual state records without crashing', async () => {
   const queries = [];
   const pool = {
