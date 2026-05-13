@@ -274,6 +274,76 @@ const agentProcesses = new Map(); // agentId -> { child, sessionId, status, inbo
 const sseClients = new Set();
 const agentCardCache = new Map();
 
+function decodeMountInfoPath(value) {
+  return String(value || '').replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8)));
+}
+
+function mountInfoForPath(targetPath) {
+  if (process.platform !== 'linux') return null;
+  const normalizedTarget = path.resolve(targetPath);
+  try {
+    const lines = readFileSync('/proc/self/mountinfo', 'utf8').split(/\r?\n/);
+    let best = null;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const separatorIndex = line.indexOf(' - ');
+      if (separatorIndex < 0) continue;
+      const left = line.slice(0, separatorIndex).split(' ');
+      const right = line.slice(separatorIndex + 3).split(' ');
+      const mountPoint = path.resolve(decodeMountInfoPath(left[4] || ''));
+      const rootMount = mountPoint === path.parse(mountPoint).root;
+      const belowMount = rootMount
+        ? normalizedTarget.startsWith(mountPoint)
+        : normalizedTarget.startsWith(`${mountPoint}${path.sep}`);
+      if (normalizedTarget !== mountPoint && !belowMount) {
+        continue;
+      }
+      if (best && mountPoint.length <= best.mountPoint.length) continue;
+      best = {
+        mountPoint,
+        exact: normalizedTarget === mountPoint,
+        fsType: right[0] || 'unknown',
+        source: right[1] || 'unknown',
+      };
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
+function storageStartupSummary() {
+  const mount = mountInfoForPath(ATTACHMENTS_DIR);
+  const parts = [
+    `mode=${ATTACHMENT_STORAGE.mode}`,
+    `path=${ATTACHMENTS_DIR}`,
+    `requested=${ATTACHMENT_STORAGE.requestedMode}`,
+    `writable=${ATTACHMENT_STORAGE.writable ? 'yes' : 'no'}`,
+    `pvcPath=${ATTACHMENT_STORAGE.pvcPath}`,
+  ];
+  if (mount) {
+    parts.push(`mount=${mount.mountPoint}`, `mountExact=${mount.exact ? 'yes' : 'no'}`, `fs=${mount.fsType}`, `source=${mount.source}`);
+  } else if (process.platform === 'linux') {
+    parts.push('mount=not-detected');
+  }
+  if (ATTACHMENT_STORAGE.fallbackReason) parts.push(`fallback="${ATTACHMENT_STORAGE.fallbackReason}"`);
+  if (ATTACHMENT_STORAGE.error) parts.push(`error="${ATTACHMENT_STORAGE.error}"`);
+  return parts.join(' ');
+}
+
+function logStorageStartupSummary() {
+  console.log(`Data directory: ${DATA_DIR}`);
+  const message = `[storage] Attachments: ${storageStartupSummary()}`;
+  if (ATTACHMENT_STORAGE.writable) {
+    console.log(message);
+  } else {
+    console.warn(message);
+  }
+  if (ATTACHMENT_STORAGE.mode === 'pvc') {
+    console.log(`[storage] PVC attachments enabled at ${ATTACHMENT_STORAGE.pvcPath}`);
+  }
+}
+
 function envFlagEnabled(name) {
   return /^(1|true|yes)$/i.test(String(process.env[name] || ''));
 }
@@ -1427,7 +1497,7 @@ server.listen(PORT, HOST, () => {
   });
   persistState().then(broadcastState);
   console.log(`Magclaw local is running at http://${HOST}:${PORT}`);
-  console.log(`Data directory: ${DATA_DIR}`);
+  logStorageStartupSummary();
 });
 
 let shutdownStarted = false;
