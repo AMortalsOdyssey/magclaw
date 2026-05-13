@@ -421,36 +421,24 @@ function renderEnvVarsList() {
   `).join('');
 }
 
-function renderAgentChoiceButtons({ name, action, options, currentValue, emptyLabel = 'Select...' }) {
+function renderAgentChoiceSelect({ name, options, currentValue, emptyLabel = 'Select...' }) {
   if (!options.length) {
     return `
-      <input type="hidden" name="${escapeHtml(name)}" value="" />
-      <div class="agent-choice-grid"><span class="agent-choice-empty">${escapeHtml(emptyLabel)}</span></div>
+      <select name="${escapeHtml(name)}" class="agent-auto-select ${escapeHtml(name)}-select" disabled>
+        <option value="">${escapeHtml(emptyLabel)}</option>
+      </select>
     `;
   }
-  const selected = options.some((option) => option.value === currentValue)
+  const selected = options.some((option) => option.value === currentValue && !option.disabled)
     ? currentValue
     : options.find((option) => !option.disabled)?.value || '';
   return `
-    <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(selected)}" />
-    <div class="agent-choice-grid">
+    <select name="${escapeHtml(name)}" class="agent-auto-select ${escapeHtml(name)}-select">
       ${options.map((option) => {
-        const active = option.value === selected ? ' active' : '';
-        const disabled = option.disabled ? ' disabled' : '';
-        return `
-          <button
-            class="agent-choice-option${active}${disabled}"
-            type="button"
-            data-action="${escapeHtml(action)}"
-            data-value="${escapeHtml(option.value)}"
-            ${option.disabled ? 'disabled' : ''}
-          >
-            <span>${escapeHtml(option.label)}</span>
-            ${option.meta ? `<em>${escapeHtml(option.meta)}</em>` : ''}
-          </button>
-        `;
+        const label = option.meta ? `${option.label} - ${option.meta}` : option.label;
+        return `<option value="${escapeHtml(option.value)}" ${option.disabled ? 'disabled' : ''} ${option.value === selected ? 'selected' : ''}>${escapeHtml(label)}</option>`;
       }).join('')}
-    </div>
+    </select>
   `;
 }
 
@@ -610,9 +598,8 @@ function renderAgentModal() {
       </label>
       <div class="form-field">
         <span>RUNTIME</span>
-        ${renderAgentChoiceButtons({
+        ${renderAgentChoiceSelect({
           name: 'runtime',
-          action: 'select-agent-runtime',
           options: runtimeChoices,
           currentValue: selectedRuntimeId,
           emptyLabel: 'No runtimes reported',
@@ -620,9 +607,8 @@ function renderAgentModal() {
       </div>
       <div class="form-field">
         <span>MODEL</span>
-        ${renderAgentChoiceButtons({
+        ${renderAgentChoiceSelect({
           name: 'model',
-          action: 'select-agent-model',
           options: modelChoices,
           currentValue: defaultModel,
         })}
@@ -630,9 +616,8 @@ function renderAgentModal() {
       ${hasReasoningEffort ? `
       <div class="form-field">
         <span>REASONING EFFORT</span>
-        ${renderAgentChoiceButtons({
+        ${renderAgentChoiceSelect({
           name: 'reasoningEffort',
-          action: 'select-agent-reasoning',
           options: reasoningChoices,
           currentValue: defaultReasoningEffort,
         })}

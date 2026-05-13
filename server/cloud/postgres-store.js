@@ -132,6 +132,37 @@ function agentStatus(value) {
   return status || 'offline';
 }
 
+const TRANSIENT_AGENT_LOAD_STATUSES = new Set(['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming', 'error']);
+
+function resetTransientRuntimeStateAfterLoad(state, loadedAt = requiredIso()) {
+  for (const computer of safeArray(state.computers)) {
+    const status = String(computer.status || '').toLowerCase();
+    const connectedVia = String(computer.connectedVia || '').toLowerCase();
+    if (status === 'connected' && connectedVia === 'daemon') {
+      computer.status = 'offline';
+      computer.disconnectedAt = computer.disconnectedAt || loadedAt;
+      computer.updatedAt = loadedAt;
+    }
+  }
+  for (const human of safeArray(state.humans)) {
+    if (String(human.status || '').toLowerCase() === 'online') {
+      human.status = 'offline';
+      human.presenceUpdatedAt = loadedAt;
+      human.updatedAt = loadedAt;
+    }
+  }
+  for (const agent of safeArray(state.agents)) {
+    if (TRANSIENT_AGENT_LOAD_STATUSES.has(String(agent.status || '').toLowerCase())) {
+      agent.status = 'idle';
+      agent.statusUpdatedAt = loadedAt;
+      agent.heartbeatAt = loadedAt;
+      agent.activeWorkItemIds = [];
+      agent.runtimeActivity = null;
+      agent.updatedAt = loadedAt;
+    }
+  }
+}
+
 function taskStatus(value) {
   const status = String(value || '').trim();
   return ['todo', 'in_progress', 'in_review', 'done'].includes(status) ? status : 'todo';
@@ -1722,7 +1753,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     return next;
   }
 
-  async function loadIntoState(state) {
+  async function loadIntoState(state, loadOptions = {}) {
     const cloud = state.cloud || {};
     await withClient(async (client) => {
       const workspaces = await client.query(`SELECT * FROM ${table('cloud_workspaces')} ORDER BY created_at ASC, id ASC`);
@@ -1785,6 +1816,9 @@ export function createCloudPostgresStore(optionsInput = {}) {
         if (!Array.isArray(state[kind])) state[kind] = [];
         state[kind].push(row.payload);
       }
+      if (loadOptions.resetTransientRuntimeState) {
+        resetTransientRuntimeStateAfterLoad(state, loadOptions.loadedAt || requiredIso());
+      }
       state.releaseNotes = releaseNotesFromRows(releaseNotes.rows, state.releaseNotes);
       state.cloud = cloud;
     });
@@ -1804,7 +1838,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       await persistReleaseNotesFromState(client, state);
       await pruneEphemeralActivityRows(client);
     });
-    await loadIntoState(state);
+    await loadIntoState(state, { resetTransientRuntimeState: true });
     initialized = true;
     console.info(`[cloud-postgres] connected database=${database} schema=${schema}`);
     return { ok: true, enabled: true, migration, database, schema };

@@ -109,6 +109,35 @@ test('agent route group creates agents, seeds workspace, and joins all', async (
   assert.deepEqual(deps.state.channels[0].memberIds, ['hum_local', 'agt_new']);
 });
 
+test('agent route group stamps new cloud agents with the current workspace', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_owner', name: 'Owner', email: 'owner@example.test' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_owner' },
+    }),
+    readJson: async () => ({
+      name: 'Workspace Agent',
+      runtime: 'Codex CLI',
+      runtimeId: 'codex',
+      model: 'gpt-5.5',
+      computerId: 'cmp_remote',
+    }),
+  });
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/agents'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.data.agent.workspaceId, 'wsp_main');
+  assert.equal(deps.state.agents.at(-1).workspaceId, 'wsp_main');
+  assert.equal(res.data.agent.createdByHumanId, 'hum_owner');
+});
+
 test('agent route group starts only when no process is already running', async () => {
   let startCalls = 0;
   const deps = routeDeps({

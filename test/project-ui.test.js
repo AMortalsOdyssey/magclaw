@@ -1496,6 +1496,33 @@ test('left rail and active shell controls use the MagClaw pink accent', async ()
   assert.equal(/background:\s*var\(--magclaw-sun\)/.test(styles), false);
 });
 
+test('agent create modal uses native selects for runtime, model, and reasoning choices', async () => {
+  const app = await readAppSource();
+  const agentModalSource = app.slice(
+    app.indexOf('function renderAgentModal()'),
+    app.indexOf('function renderAvatarPickerModal()'),
+  );
+  const selectSource = app.slice(
+    app.indexOf('function renderAgentChoiceSelect'),
+    app.indexOf('function runtimeOptionsForComputer'),
+  );
+  const changeSource = app.slice(
+    app.indexOf("// Save agent form select state"),
+    app.indexOf("if (event.target.name === 'asTask')"),
+  );
+
+  assert.match(selectSource, /<select name="\$\{escapeHtml\(name\)\}"/);
+  assert.match(agentModalSource, /renderAgentChoiceSelect\(\{[\s\S]*name: 'runtime'/);
+  assert.match(agentModalSource, /renderAgentChoiceSelect\(\{[\s\S]*name: 'model'/);
+  assert.match(agentModalSource, /renderAgentChoiceSelect\(\{[\s\S]*name: 'reasoningEffort'/);
+  assert.doesNotMatch(app, /renderAgentChoiceButtons/);
+  assert.doesNotMatch(app, /agent-choice-grid|agent-choice-option|agent-choice-empty/);
+  assert.doesNotMatch(agentModalSource, /renderAgentChoiceButtons/);
+  assert.doesNotMatch(agentModalSource, /agent-choice-grid/);
+  assert.match(changeSource, /if \(name === 'runtime'\)/);
+  assert.match(changeSource, /selectedRuntimeId = runtime \? nextRuntimeId : ''/);
+});
+
 test('agent avatar uploads open a square crop modal and persist a cropped image', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();

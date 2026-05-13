@@ -83,6 +83,17 @@ document.addEventListener('change', async (event) => {
       render();
       return;
     }
+    if (name === 'runtime') {
+      saveAgentFormState();
+      const nextRuntimeId = event.target.value;
+      const runtime = runtimeOptionsForComputer(agentFormState.computerId)
+        .find((item) => item.id === nextRuntimeId && item.installed && item.createSupported !== false);
+      selectedRuntimeId = runtime ? nextRuntimeId : '';
+      agentFormState.model = '';
+      agentFormState.reasoningEffort = '';
+      render();
+      return;
+    }
     if (name === 'model') agentFormState.model = event.target.value;
     if (name === 'reasoningEffort') agentFormState.reasoningEffort = event.target.value;
   }

@@ -649,6 +649,83 @@ test('postgres store deletes computers absent from the in-memory workspace snaps
   assert.ok(deleteIndex >= 0 && insertIndex > deleteIndex, 'stale deletion should run before current computer upserts');
 });
 
+test('postgres store can reset transient online state when loading a fresh server process', async () => {
+  const createdAt = '2026-05-13T10:01:53.000Z';
+  const rowsForTable = {
+    cloud_workspaces: [{
+      id: 'wsp_main',
+      slug: 'main',
+      name: 'Main',
+      created_at: createdAt,
+      updated_at: createdAt,
+    }],
+    cloud_humans: [{
+      id: 'hum_owner',
+      workspace_id: 'wsp_main',
+      user_id: 'usr_owner',
+      name: 'Owner',
+      email: 'owner@example.test',
+      role: 'owner',
+      status: 'online',
+      last_seen_at: createdAt,
+      created_at: createdAt,
+      updated_at: createdAt,
+    }],
+    cloud_computers: [{
+      id: 'cmp_remote',
+      workspace_id: 'wsp_main',
+      name: 'Remote Mac',
+      status: 'connected',
+      connected_via: 'daemon',
+      runtime_ids: ['codex'],
+      created_at: createdAt,
+      updated_at: createdAt,
+      last_seen_at: createdAt,
+      daemon_connected_at: createdAt,
+    }],
+    cloud_agents: [{
+      id: 'agt_remote',
+      workspace_id: 'wsp_main',
+      computer_id: 'cmp_remote',
+      name: 'Remote Agent',
+      runtime: 'codex',
+      model: 'gpt-5.5',
+      reasoning_effort: 'medium',
+      status: 'busy',
+      created_at: createdAt,
+      updated_at: createdAt,
+      status_updated_at: createdAt,
+    }],
+  };
+  const pool = {
+    async connect() {
+      return {
+        async query(sql) {
+          const match = String(sql).match(/FROM "magclaw"\."([^"]+)"/);
+          return { rows: match ? (rowsForTable[match[1]] || []) : [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const state = {};
+  await store.loadIntoState(state, { resetTransientRuntimeState: true, loadedAt: '2026-05-13T10:26:00.000Z' });
+
+  assert.equal(state.computers[0].status, 'offline');
+  assert.equal(state.computers[0].disconnectedAt, '2026-05-13T10:26:00.000Z');
+  assert.equal(state.humans[0].status, 'offline');
+  assert.equal(state.humans[0].presenceUpdatedAt, '2026-05-13T10:26:00.000Z');
+  assert.equal(state.agents[0].status, 'idle');
+  assert.deepEqual(state.agents[0].activeWorkItemIds, []);
+  assert.equal(state.agents[0].runtimeActivity, null);
+});
+
 test('postgres store upserts duplicate durable state records without crashing', async () => {
   const queries = [];
   const pool = {

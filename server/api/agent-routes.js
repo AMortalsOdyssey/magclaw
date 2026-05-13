@@ -42,8 +42,10 @@ export async function handleAgentApi(req, res, url, deps) {
   if (req.method === 'POST' && url.pathname === '/api/agents') {
     const body = await readJson(req);
     const actor = typeof currentActor === 'function' ? currentActor(req) : null;
+    const workspaceId = String(actor?.member?.workspaceId || body.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || '').trim();
     const agent = {
       id: makeId('agt'),
+      ...(workspaceId ? { workspaceId } : {}),
       name: String(body.name || 'New Agent').trim().slice(0, 80),
       description: String(body.description || '').trim(),
       runtime: String(body.runtime || 'Codex CLI'),
