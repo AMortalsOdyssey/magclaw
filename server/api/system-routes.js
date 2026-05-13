@@ -5,6 +5,11 @@ import path from 'node:path';
 // settings, and Fan-out API settings. Keeping these routes together makes the
 // main dispatcher easier to scan before deeper Agent/task routing begins.
 
+function expectedStreamClose(error) {
+  const code = String(error?.code || error?.errno || '');
+  return code === 'ECONNRESET' || code === 'EPIPE' || code === 'ERR_STREAM_PREMATURE_CLOSE';
+}
+
 export async function handleSystemApi(req, res, url, deps) {
   const {
     addSystemEvent,
@@ -75,7 +80,17 @@ export async function handleSystemApi(req, res, url, deps) {
     res.write(`event: state\ndata: ${JSON.stringify(publicState(req))}\n\n`);
     res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat())}\n\n`);
     sseClients.add(res);
-    req.on('close', () => sseClients.delete(res));
+    const cleanup = () => sseClients.delete(res);
+    req.on('close', cleanup);
+    req.on('error', cleanup);
+    res.on('close', cleanup);
+    res.on('error', (error) => {
+      cleanup();
+      if (expectedStreamClose(error)) return;
+      const code = String(error?.code || error?.errno || 'UNKNOWN');
+      const message = String(error?.message || error || 'SSE stream error').replace(/\s+/g, ' ').slice(0, 300);
+      console.warn(`[system-api] sse stream error code=${code} message=${message}`);
+    });
     return true;
   }
 

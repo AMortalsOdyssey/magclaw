@@ -59,6 +59,14 @@ function parsePositiveInteger(value, fallback) {
   return Math.trunc(parsed);
 }
 
+function postgresPoolErrorCode(error) {
+  return String(error?.code || error?.errno || 'UNKNOWN');
+}
+
+function postgresPoolErrorMessage(error) {
+  return String(error?.message || error || 'PostgreSQL pool error').replace(/\s+/g, ' ').slice(0, 300);
+}
+
 function stripStateMetadata(value) {
   const metadata = { ...jsonObject(value) };
   delete metadata.state;
@@ -634,6 +642,19 @@ export function createCloudPostgresStore(optionsInput = {}) {
   let initialized = false;
   let migration = null;
   let persistQueue = Promise.resolve();
+  const poolsWithErrorHandler = new WeakSet();
+
+  function attachPoolErrorHandler(nextPool) {
+    if (!nextPool || typeof nextPool.on !== 'function') return;
+    if (poolsWithErrorHandler.has(nextPool)) return;
+    poolsWithErrorHandler.add(nextPool);
+    nextPool.on('error', (error) => {
+      const code = postgresPoolErrorCode(error);
+      console.warn(`[cloud-postgres] idle client error code=${code} message=${postgresPoolErrorMessage(error)}`);
+    });
+  }
+
+  attachPoolErrorHandler(pool);
 
   function table(name) {
     return tableName(schema, name);
@@ -646,6 +667,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         max: poolMax,
         connectionTimeoutMillis: runtimeOptions.connectTimeoutMs,
       });
+      attachPoolErrorHandler(pool);
     }
     const client = await pool.connect();
     try {

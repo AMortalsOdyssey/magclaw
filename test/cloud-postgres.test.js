@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import {
   databaseNameFromUrl,
@@ -14,6 +15,26 @@ import {
   withPostgresAdvisoryLock,
 } from '../server/cloud/postgres.js';
 import { createCloudPostgresStore as createStore } from '../server/cloud/postgres-store.js';
+
+test('postgres store consumes idle pool connection errors', () => {
+  const pool = new EventEmitter();
+  const previousWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    createStore({
+      databaseUrl: 'postgresql://user:secret@example.test:5432/magclaw_cloud',
+      pool,
+    });
+    const error = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    assert.doesNotThrow(() => pool.emit('error', error));
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /cloud-postgres/);
+    assert.match(warnings[0], /ECONNRESET/);
+  } finally {
+    console.warn = previousWarn;
+  }
+});
 
 test('postgres URL helpers accept asyncpg URLs without exposing secrets', () => {
   const asyncpgUrl = 'postgresql+asyncpg://user:secret@example.test:5432';

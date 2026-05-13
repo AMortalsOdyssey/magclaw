@@ -1366,16 +1366,47 @@ setExternalStatePersister(async (stateSnapshot) => {
   }
 });
 
+function expectedSocketClose(error) {
+  const code = String(error?.code || error?.errno || '');
+  return code === 'ECONNRESET' || code === 'EPIPE' || code === 'ERR_STREAM_PREMATURE_CLOSE';
+}
+
+function upgradeRequestPath(req) {
+  try {
+    return new URL(req.url || '/', `http://${req.headers.host || `${HOST}:${PORT}`}`).pathname;
+  } catch {
+    return 'unknown';
+  }
+}
+
+function safeUpgradeEnd(socket, response) {
+  try {
+    if (socket?.destroyed) return;
+    socket.end(response);
+  } catch {
+    try {
+      socket?.destroy?.();
+    } catch {
+      // Ignore cleanup failures on already-reset sockets.
+    }
+  }
+}
+
 const server = http.createServer(handleRequest);
 server.on('upgrade', (req, socket) => {
+  socket.on('error', (error) => {
+    if (expectedSocketClose(error)) return;
+    const code = String(error?.code || error?.errno || 'UNKNOWN');
+    const message = String(error?.message || error || 'Upgrade socket error').replace(/\s+/g, ' ').slice(0, 300);
+    console.warn(`[server] upgrade socket error path=${upgradeRequestPath(req)} code=${code} message=${message}`);
+  });
   daemonRelay.handleUpgrade(req, socket).then((handled) => {
     if (!handled) {
-      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
-      socket.destroy();
+      safeUpgradeEnd(socket, 'HTTP/1.1 404 Not Found\r\n\r\n');
     }
   }).catch((error) => {
-    socket.write('HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\n');
-    socket.end(error.message || 'WebSocket upgrade failed.');
+    const message = String(error?.message || 'WebSocket upgrade failed.').replace(/[\r\n]+/g, ' ');
+    safeUpgradeEnd(socket, `HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\n${message}`);
   });
 });
 const heartbeatTimer = setInterval(() => {

@@ -794,12 +794,26 @@ export function createStateCore(deps) {
       state.events = state.events.slice(state.events.length - 1200);
     }
   }
+
+  function expectedStreamClose(error) {
+    const code = String(error?.code || error?.errno || '');
+    return code === 'ECONNRESET' || code === 'EPIPE' || code === 'ERR_STREAM_PREMATURE_CLOSE';
+  }
   
   function broadcast(type, payload) {
     for (const res of sseClients) {
       const body = typeof payload === 'function' ? payload(res.magclawRequest || null) : payload;
       const packet = `event: ${type}\ndata: ${JSON.stringify(body)}\n\n`;
-      res.write(packet);
+      try {
+        res.write(packet);
+      } catch (error) {
+        sseClients.delete(res);
+        if (!expectedStreamClose(error)) {
+          const code = String(error?.code || error?.errno || 'UNKNOWN');
+          const message = String(error?.message || error || 'SSE broadcast error').replace(/\s+/g, ' ').slice(0, 300);
+          console.warn(`[state-core] sse broadcast error code=${code} message=${message}`);
+        }
+      }
     }
   }
   

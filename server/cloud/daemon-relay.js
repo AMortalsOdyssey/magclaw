@@ -116,6 +116,52 @@ function publicPairingToken(item) {
   return safe;
 }
 
+function expectedSocketClose(error) {
+  const code = String(error?.code || error?.errno || '');
+  return code === 'ECONNRESET' || code === 'EPIPE' || code === 'ERR_STREAM_PREMATURE_CLOSE';
+}
+
+function socketErrorCode(error) {
+  return String(error?.code || error?.errno || 'UNKNOWN');
+}
+
+function socketErrorMessage(error) {
+  return String(error?.message || error || 'Socket error').replace(/\s+/g, ' ').slice(0, 300);
+}
+
+function safeSocketWrite(socket, chunk) {
+  try {
+    if (socket?.destroyed) return false;
+    socket.write(chunk);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeSocketEnd(socket, chunk = '') {
+  try {
+    if (socket?.destroyed) return false;
+    socket.end(chunk);
+    return true;
+  } catch {
+    try {
+      socket?.destroy?.();
+    } catch {
+      // Ignore cleanup failures on already-reset sockets.
+    }
+    return false;
+  }
+}
+
+function safeSocketDestroy(socket) {
+  try {
+    socket?.destroy?.();
+  } catch {
+    // Ignore cleanup failures on already-reset sockets.
+  }
+}
+
 export function createDaemonRelay(deps) {
   const {
     addSystemEvent,
@@ -827,28 +873,38 @@ export function createDaemonRelay(deps) {
   async function handleUpgrade(req, socket) {
     const url = new URL(req.url || '/', `http://${req.headers.host || `${host}:${port}`}`);
     if (url.pathname !== '/daemon/connect') return false;
+    let connection = null;
+    socket.on('error', (error) => {
+      if (connection) {
+        markComputerDisconnected(connection);
+        return;
+      }
+      if (!expectedSocketClose(error)) {
+        console.warn(`[daemon-relay] websocket socket error before connection code=${socketErrorCode(error)} message=${socketErrorMessage(error)}`);
+      }
+    });
     const key = String(req.headers['sec-websocket-key'] || '');
     if (!key) {
-      socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
-      socket.destroy();
+      safeSocketWrite(socket, 'HTTP/1.1 400 Bad Request\r\n\r\n');
+      safeSocketDestroy(socket);
       return true;
     }
     const auth = await authenticateConnection(req, url);
     if (auth.error) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\n');
-      socket.end(auth.error);
+      safeSocketEnd(socket, `HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\n${auth.error}`);
       return true;
     }
 
-    socket.write([
+    const accepted = safeSocketWrite(socket, [
       'HTTP/1.1 101 Switching Protocols',
       'Upgrade: websocket',
       'Connection: Upgrade',
       `Sec-WebSocket-Accept: ${websocketAcceptKey(key)}`,
       '\r\n',
     ].join('\r\n'));
+    if (!accepted) return true;
 
-    const connection = {
+    connection = {
       id: makeId('ws'),
       socket,
       buffer: Buffer.alloc(0),
@@ -870,7 +926,7 @@ export function createDaemonRelay(deps) {
       for (const frame of decodeFrames(connection, chunk)) {
         if (frame.opcode === 0x8) {
           connection.closed = true;
-          socket.end();
+          safeSocketEnd(socket);
           return;
         }
         if (frame.opcode === 0x9) {
@@ -886,7 +942,6 @@ export function createDaemonRelay(deps) {
     });
     socket.on('close', () => markComputerDisconnected(connection));
     socket.on('end', () => markComputerDisconnected(connection));
-    socket.on('error', () => markComputerDisconnected(connection));
     return true;
   }
 
