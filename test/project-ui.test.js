@@ -130,10 +130,17 @@ test('computer connect modal creates a fresh command before rendering stale stat
   const regenerateActionSource = app.slice(app.indexOf("if (action === 'regenerate-computer-command')"), app.indexOf("if (action === 'refresh-computer-pairing-command')"));
   const refreshActionSource = app.slice(app.indexOf("if (action === 'refresh-computer-pairing-command')"), app.indexOf("if (action === 'copy-join-link')"));
   const stateUpdateSource = app.slice(app.indexOf('function applyStateUpdate(nextState)'), app.indexOf('function applyRunEventUpdate'));
+  const offlineCommandSource = app.slice(app.indexOf('function selectedOfflineComputerForCommand'), app.indexOf('async function switchConsoleServerAndLoadState'));
 
   assert.match(app, /async function generateFreshComputerPairingCommand\(body = \{\}\)/);
   assert.match(app, /latestPairingCommand\.displayName = requestedDisplayName/);
   assert.match(app, /appState = await api\('\/api\/state'\)/);
+  assert.match(app, /let offlineComputerCommandRequestKey = ''/);
+  assert.match(app, /window\.setTimeout\(ensureOfflineComputerConnectCommand, 0\)/);
+  assert.match(offlineCommandSource, /activeView !== 'computers'/);
+  assert.match(offlineCommandSource, /String\(computer\.status \|\| ''\)\.toLowerCase\(\) === 'connected'/);
+  assert.match(offlineCommandSource, /pairingCommandIsUsable\(latestPairingCommand\)/);
+  assert.match(offlineCommandSource, /await generateFreshComputerPairingCommand\(\{ computerId: computer\.id, name: displayName, displayName \}\)/);
   assert.match(clickSource, /await generateFreshComputerPairingCommand\(\{ name: defaultComputerPairingName\(\) \}\)/);
   assert.match(pairingActionsSource, /await generateFreshComputerPairingCommand\(body\)/);
   assert.match(regenerateActionSource, /modal = 'computer'/);

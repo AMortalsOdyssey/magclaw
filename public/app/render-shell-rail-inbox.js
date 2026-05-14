@@ -57,6 +57,9 @@ function render() {
     ${modal ? renderModal() : ''}
   `;
   if (typeof translatePage === 'function') translatePage(root);
+  if (typeof ensureOfflineComputerConnectCommand === 'function') {
+    window.setTimeout(ensureOfflineComputerConnectCommand, 0);
+  }
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);
     restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);

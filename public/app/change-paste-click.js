@@ -21,6 +21,40 @@ async function generateFreshComputerPairingCommand(body = {}) {
   }
 }
 
+function selectedOfflineComputerForCommand() {
+  if (modal || activeView !== 'computers' || !selectedComputerId) return null;
+  const computer = byId(appState?.computers, selectedComputerId);
+  if (!computer || computerIsDisabled(computer) || computerIsDeleted(computer)) return null;
+  if (String(computer.status || '').toLowerCase() === 'connected') return null;
+  if (latestPairingCommand?.computer?.id === computer.id && pairingCommandIsUsable(latestPairingCommand)) return null;
+  return computer;
+}
+
+async function ensureOfflineComputerConnectCommand() {
+  if (offlineComputerCommandInFlight) return;
+  const computer = selectedOfflineComputerForCommand();
+  if (!computer) return;
+  const requestKey = [
+    currentServerSlug(),
+    computer.id,
+    computer.status || 'offline',
+    computer.updatedAt || '',
+    computer.lastSeenAt || '',
+  ].join('|');
+  if (offlineComputerCommandRequestKey === requestKey) return;
+  offlineComputerCommandRequestKey = requestKey;
+  offlineComputerCommandInFlight = true;
+  const displayName = defaultComputerPairingName(computer);
+  try {
+    await generateFreshComputerPairingCommand({ computerId: computer.id, name: displayName, displayName });
+    if (!modal && activeView === 'computers' && selectedComputerId === computer.id) render();
+  } catch (error) {
+    console.warn('Failed to generate offline computer connect command:', error);
+  } finally {
+    offlineComputerCommandInFlight = false;
+  }
+}
+
 async function switchConsoleServerAndLoadState(slug) {
   if (!slug) throw new Error('Server slug is missing.');
   const result = await api(`/api/console/servers/${encodeURIComponent(slug)}/switch`, { method: 'POST', body: '{}' });
