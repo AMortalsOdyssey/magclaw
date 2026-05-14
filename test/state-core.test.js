@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { lstat, mkdtemp, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -52,6 +52,32 @@ test('state core can skip local SQLite and JSON persistence for PostgreSQL-backe
     const snapshot = core.stateFullSnapshot();
     assert.equal(snapshot.storage.sqliteEnabled, false);
     assert.equal(snapshot.storage.jsonSnapshotEnabled, false);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('state core writes activity events to JSONL and restores recent activity tail', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-activity-'));
+  const activityDir = path.join(tmp, 'activity-logs');
+  try {
+    const first = makeStateCore(tmp, {
+      USE_SQLITE_STATE: false,
+      ACTIVITY_LOG_DIR: activityDir,
+    });
+    await first.ensureStorage();
+    first.addSystemEvent('activity_probe', 'Activity persisted.', { agentId: 'agt_codex' });
+    await first.flushActivityLog();
+
+    const logText = await readFile(path.join(activityDir, 'activity-2026-05-12.jsonl'), 'utf8');
+    assert.match(logText, /activity_probe/);
+
+    const second = makeStateCore(tmp, {
+      USE_SQLITE_STATE: false,
+      ACTIVITY_LOG_DIR: activityDir,
+    });
+    await second.ensureStorage();
+    assert.ok(second.stateFullSnapshot().events.some((event) => event.type === 'activity_probe' && event.agentId === 'agt_codex'));
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

@@ -77,15 +77,71 @@ export function createCollabMemoryManager(deps) {
     if (kind === 'preference') return 'preference';
     return 'memory';
   }
+
+  const SECTION_HEADINGS = new Map([
+    ['Recent Work', '近期工作'],
+    ['Capabilities', '能力'],
+    ['Key Knowledge', '知识索引'],
+    ['Strengths And Skills', '优势与技能'],
+    ['Style Adaptations', '语气适配'],
+    ['User Preferences', '用户偏好'],
+    ['Memory Writebacks', '记忆写入记录'],
+    ['Channel Memory', '频道记忆'],
+    ['Observed Collaboration', '协作观察'],
+  ]);
+
+  const SECTION_ALIASES = new Map([
+    ['Recent Work', ['近期工作']],
+    ['Capabilities', ['能力', 'Skills', '技能']],
+    ['Key Knowledge', ['知识索引', 'Knowledge Index']],
+    ['Strengths And Skills', ['优势与技能', 'Skills', '技能']],
+    ['Style Adaptations', ['语气适配']],
+    ['User Preferences', ['用户偏好']],
+    ['Memory Writebacks', ['记忆写入记录']],
+    ['Channel Memory', ['频道记忆']],
+    ['Observed Collaboration', ['协作观察']],
+  ]);
+
+  function preferredSectionHeading(heading) {
+    return SECTION_HEADINGS.get(heading) || heading;
+  }
+
+  function sectionHeadingAliases(heading) {
+    return [heading, ...(SECTION_ALIASES.get(heading) || [])]
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  const PLACEHOLDER_BULLETS = [
+    /No recent durable work has been recorded yet/i,
+    /No open work has been recorded yet/i,
+    /No completed work has been recorded yet/i,
+    /No durable decisions have been recorded yet/i,
+    /No active task has been recorded yet/i,
+    /Before a long task or context-heavy handoff/i,
+    /暂无近期可复用记录/,
+    /暂无经过真实任务验证的稳定能力/,
+    /暂无需要跨回合延续的任务/,
+    /暂无进行中的长期工作/,
+    /暂无已完成的长期工作/,
+    /暂无需要长期保留的决策/,
+    /根据真实完成的任务补充/,
+  ];
   
   function upsertMarkdownBullet(content, heading, bullet, maxItems = 10) {
     const lines = String(content || '').split(/\r?\n/);
-    const headingLine = `## ${heading}`;
-    let headingIndex = lines.findIndex((line) => line.trim().toLowerCase() === headingLine.toLowerCase());
+    const preferredHeading = preferredSectionHeading(heading);
+    const headingLine = `## ${preferredHeading}`;
+    const aliases = sectionHeadingAliases(heading);
+    let headingIndex = lines.findIndex((line) => {
+      const match = line.trim().match(/^##\s+(.+?)\s*$/);
+      return match && aliases.includes(match[1].trim().toLowerCase());
+    });
     if (headingIndex === -1) {
       const suffix = lines.length && lines[lines.length - 1].trim() ? ['', headingLine, bullet] : [headingLine, bullet];
       return [...lines, ...suffix].join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
     }
+    lines[headingIndex] = headingLine;
     let endIndex = lines.length;
     for (let index = headingIndex + 1; index < lines.length; index += 1) {
       if (/^#{1,6}\s+/.test(lines[index])) {
@@ -98,6 +154,7 @@ export function createCollabMemoryManager(deps) {
     const after = lines.slice(endIndex);
     const bullets = [bullet, ...section.filter((line) => line.trim() !== bullet.trim())]
       .filter((line) => line.trim().startsWith('- '))
+      .filter((line) => !PLACEHOLDER_BULLETS.some((pattern) => pattern.test(line)))
       .slice(0, maxItems);
     return [...before, ...bullets, '', ...after].join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
   }
@@ -146,12 +203,12 @@ export function createCollabMemoryManager(deps) {
     }
 
     if (kind === 'communication_style') {
-      await updateAgentMemorySection(agent, 'Key Knowledge', '- `notes/communication-style.md` - user-requested speaking styles and tone adaptations.', 12);
+      await updateAgentMemorySection(agent, 'Key Knowledge', '- `notes/communication-style.md` - 用户指定的语气、表达风格和适配规则。', 12);
       await appendAgentMemoryNote(agent, 'notes/communication-style.md', 'Style Adaptations', detail);
       return;
     }
 
-    await updateAgentMemorySection(agent, 'Key Knowledge', '- `notes/user-preferences.md` - durable user preferences and requested defaults.', 12);
+    await updateAgentMemorySection(agent, 'Key Knowledge', '- `notes/user-preferences.md` - 长期用户偏好和明确要求的默认做法。', 12);
     await appendAgentMemoryNote(agent, 'notes/user-preferences.md', 'User Preferences', detail);
   }
   

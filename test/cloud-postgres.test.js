@@ -143,9 +143,10 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     assert.match(sql, /\bmachine_fingerprint\b/);
     assert.match(sql, /\bruntime_details\b/);
     assert.match(sql, /\bstorage_mode\b/);
-    assert.match(sql, /component IN \('web', 'daemon'\)/);
-    assert.match(sql, /role IN \('member', 'admin'\)/);
-    assert.match(sql, /WHEN 'owner' THEN 'admin'/);
+  assert.match(sql, /component IN \('web', 'daemon'\)/);
+  assert.match(sql, /role IN \('member', 'admin'\)/);
+  assert.match(sql, /status IN \('todo', 'in_progress', 'in_review', 'done', 'closed'\)/);
+  assert.match(sql, /WHEN 'owner' THEN 'admin'/);
     assert.match(sql, /cloud_users_active_normalized_email_uidx/);
   assert.match(sql, /WHERE disabled_at IS NULL/);
   assert.doesNotMatch(sql, /\buid\b/);
@@ -245,7 +246,7 @@ test('postgres store persists relay core state without durable activity logs', a
       spaceType: 'dm',
       spaceId: 'dm_remote',
       title: 'Ship it',
-      status: 'todo',
+      status: 'closed',
       createdAt,
       updatedAt: createdAt,
     }],
@@ -378,10 +379,12 @@ test('postgres store persists relay core state without durable activity logs', a
   const computerInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_computers"') && query.params[0] === 'cmp_remote');
   const humanInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_humans"') && query.params[0] === 'hum_owner');
   const agentInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_agents"') && query.params[0] === 'agt_remote');
+  const taskInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_tasks"') && query.params[0] === 'task_remote');
   assert.equal(computerInsert.params[7], 'offline');
   assert.equal(humanInsert.params[6], 'offline');
   assert.equal(agentInsert.params[9], 'idle');
   assert.equal(JSON.parse(agentInsert.params[15]).state.status, 'idle');
+  assert.equal(taskInsert.params[7], 'closed');
 });
 
 test('postgres store restores legacy provisional computers before pairing tokens', async () => {

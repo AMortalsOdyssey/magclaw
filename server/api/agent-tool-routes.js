@@ -25,6 +25,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     makeId,
     markWorkItemResponded,
     normalizeIds,
+    now,
     persistState,
     postAgentResponse,
     readAgentHistory,
@@ -43,6 +44,32 @@ export async function handleAgentToolApi(req, res, url, deps) {
     workItemTargetMatches,
   } = deps;
   const state = getState();
+
+  function resolveProposalChannel(body = {}) {
+    const channelRef = String(body.channelId || body.channel_id || '').trim();
+    if (channelRef) {
+      const channel = (state.channels || []).find((item) => item.id === channelRef || item.id.startsWith(channelRef));
+      if (!channel) throw httpError(404, `Channel not found: ${channelRef}`);
+      return channel;
+    }
+    const space = resolveConversationSpace(body);
+    if (space.spaceType !== 'channel') throw httpError(400, 'Channel member proposals require a channel target.');
+    return (state.channels || []).find((item) => item.id === space.spaceId);
+  }
+
+  function findMember(id) {
+    return (state.humans || []).find((human) => human.id === id)
+      || (state.agents || []).find((agent) => agent.id === id)
+      || null;
+  }
+
+  function channelHasMember(channel, memberId) {
+    return [
+      ...(Array.isArray(channel.memberIds) ? channel.memberIds : []),
+      ...(Array.isArray(channel.humanIds) ? channel.humanIds : []),
+      ...(Array.isArray(channel.agentIds) ? channel.agentIds : []),
+    ].includes(memberId);
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/agent-tools/reminders') {
     const agentId = url.searchParams.get('agentId') || '';
@@ -400,6 +427,87 @@ export async function handleAgentToolApi(req, res, url, deps) {
         target: target.label,
       });
     }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agent-tools/channel-member-proposals') {
+    const body = await readJson(req);
+    const agent = findAgent(String(body.agentId || ''));
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    let channel;
+    try {
+      channel = resolveProposalChannel(body);
+      if (!channel) throw httpError(404, 'Channel not found.');
+      if (!channelHasMember(channel, agent.id)) {
+        throw httpError(403, 'Agent can only propose members for channels it belongs to.');
+      }
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+      return true;
+    }
+    const requestedMemberIds = normalizeIds([
+      ...(Array.isArray(body.memberIds) ? body.memberIds : []),
+      ...(Array.isArray(body.member_ids) ? body.member_ids : []),
+      ...(body.memberId ? [body.memberId] : []),
+    ]);
+    const memberIds = requestedMemberIds
+      .filter((id) => findMember(id))
+      .filter((id) => !channelHasMember(channel, id));
+    if (!memberIds.length) {
+      sendError(res, 400, 'No eligible non-channel members were proposed.');
+      return true;
+    }
+    const signature = memberIds.slice().sort().join('|');
+    const existing = (state.channelMemberProposals || []).find((proposal) => (
+      proposal.status === 'pending'
+      && proposal.channelId === channel.id
+      && proposal.proposedBy === agent.id
+      && normalizeIds(proposal.memberIds).sort().join('|') === signature
+    ));
+    if (existing) {
+      sendJson(res, 200, {
+        ok: true,
+        deduped: true,
+        proposal: existing,
+        text: `Proposal already pending for #${channel.name}.`,
+      });
+      return true;
+    }
+    const createdAt = now();
+    const proposal = {
+      id: makeId('prop'),
+      workspaceId: channel.workspaceId || state.connection?.workspaceId || 'local',
+      channelId: channel.id,
+      proposedBy: agent.id,
+      memberIds,
+      reason: String(body.reason || body.body || '').trim() || 'Agent suggested adding these members to the channel.',
+      status: 'pending',
+      reviewerId: null,
+      sourceMessageId: body.messageId || body.sourceMessageId || null,
+      createdAt,
+      updatedAt: createdAt,
+      reviewedAt: null,
+      acceptedAt: null,
+      declinedAt: null,
+    };
+    state.channelMemberProposals = Array.isArray(state.channelMemberProposals) ? state.channelMemberProposals : [];
+    state.channelMemberProposals.unshift(proposal);
+    addSystemEvent('channel_member_proposal_created', `${agent.name} proposed adding ${memberIds.length} member(s) to #${channel.name}.`, {
+      agentId: agent.id,
+      channelId: channel.id,
+      proposalId: proposal.id,
+      memberIds,
+    });
+    await persistState();
+    broadcastState();
+    sendJson(res, 201, {
+      ok: true,
+      proposal,
+      text: `Suggested ${memberIds.length} member(s) for #${channel.name}. Waiting for human review.`,
+    });
     return true;
   }
 

@@ -49,10 +49,15 @@ export function createTaskOrchestrator(deps) {
     return task;
   }
   
-  function createTaskFromThreadIntent(parent, reply, agent) {
+  function createTaskFromThreadIntent(parent, reply, agent, options = {}) {
     const title = titleFromThreadTaskIntent(parent, reply);
+    const targetHumanIds = normalizeIds(options.targetHumanIds || []);
+    const targetHumans = targetHumanIds
+      .map((id) => displayActor(id))
+      .filter(Boolean);
     const body = [
       `Created from thread in ${spaceDisplayName(parent.spaceType, parent.spaceId)}.`,
+      targetHumans.length ? `Human target(s): ${targetHumans.join(', ')}.` : '',
       '',
       `Parent: ${renderMentionsForAgent(parent.body || '')}`,
       `Trigger: ${renderMentionsForAgent(reply.body || '')}`,
@@ -66,6 +71,7 @@ export function createTaskOrchestrator(deps) {
       authorType: 'agent',
       authorId: agent.id,
       assigneeIds: [agent.id],
+      mentionedHumanIds: targetHumanIds,
       sourceMessageId: parent.id,
       sourceReplyId: reply.id,
     });
@@ -173,15 +179,15 @@ export function createTaskOrchestrator(deps) {
       return { changed: false, stoppedRuns: [], stoppedAgents: [], stoppedWorkItems: [] };
     }
     const stoppedAt = now();
-    task.status = 'done';
-    task.completedAt = task.completedAt || stoppedAt;
+    task.status = 'closed';
+    task.closedAt = task.closedAt || stoppedAt;
     task.endIntentAt = task.endIntentAt || stoppedAt;
     task.stoppedAt = task.stoppedAt || stoppedAt;
     task.reviewRequestedAt = null;
     task.updatedAt = now();
-    addTaskHistory(task, 'stopped_done_from_thread', 'Task stopped from thread intent and marked Done.', actorId || 'hum_local', { replyId });
-    addTaskTimelineMessage(task, `✓ ${displayActor(actorId)} stopped ${taskLabel(task)} and moved it to Done`, 'task_done');
-    addCollabEvent('task_stopped_done_from_thread', `${displayActor(actorId)} stopped ${taskLabel(task)} from its thread and marked it Done.`, {
+    addTaskHistory(task, 'stopped_closed_from_thread', 'Task stopped from thread intent and marked Closed.', actorId || 'hum_local', { replyId });
+    addTaskTimelineMessage(task, `× ${displayActor(actorId)} stopped ${taskLabel(task)} and moved it to Closed`, 'task_closed');
+    addCollabEvent('task_stopped_closed_from_thread', `${displayActor(actorId)} stopped ${taskLabel(task)} from its thread and marked it Closed.`, {
       taskId: task.id,
       actorId: actorId || 'hum_local',
       replyId,

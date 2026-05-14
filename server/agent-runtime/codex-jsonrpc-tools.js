@@ -248,6 +248,15 @@ async function executeMagClawLocalTool(agent, name, args = {}) {
       },
     });
   }
+  if (tool === 'propose_channel_members') {
+    return requestMagClawLocalTool('/api/agent-tools/channel-member-proposals', {
+      method: 'POST',
+      body: {
+        ...args,
+        agentId: args.agentId || agentId,
+      },
+    });
+  }
   throw new Error(`Unsupported MagClaw tool: ${tool}`);
 }
 

@@ -4,6 +4,7 @@
 // delivery/routing helpers are injected so the route remains a thin workflow
 // coordinator rather than a second Agent runtime implementation.
 import { findWorkspaceAllChannel } from '../workspace-defaults.js';
+import { firstActorReferenceIndex, textReferencesActor } from '../mentions.js';
 
 export async function handleMessageApi(req, res, url, deps) {
   const {
@@ -17,6 +18,7 @@ export async function handleMessageApi(req, res, url, deps) {
     availabilityFollowupIntent,
     broadcastState,
     channelAgentIds,
+    channelHumanIds,
     createOrClaimTaskForMessage,
     createTaskFromMessage,
     createTaskFromThreadIntent,
@@ -26,12 +28,14 @@ export async function handleMessageApi(req, res, url, deps) {
     findAgent,
     findChannel,
     findConversationRecord,
+    findHuman,
     findMessage,
     findTaskForThreadMessage,
     finishTaskFromThread,
     getState,
     inferAgentMemoryWriteback,
     makeId,
+    normalizeIds,
     normalizeConversationRecord,
     now,
     persistState,
@@ -48,6 +52,7 @@ export async function handleMessageApi(req, res, url, deps) {
     taskEndIntent,
     taskStopIntent,
     taskThreadDeliveryMessage,
+    textAddressesAgent,
     userPreferenceIntent,
   } = deps;
   const state = getState();
@@ -106,6 +111,18 @@ export async function handleMessageApi(req, res, url, deps) {
       seen.add(agent.id);
       return true;
     });
+  }
+
+  function actorsNamedInText(actors, text, matcher = textReferencesActor) {
+    return (actors || [])
+      .map((actor, fallbackIndex) => ({
+        actor,
+        fallbackIndex,
+        index: firstActorReferenceIndex(actor, text),
+      }))
+      .filter((item) => item.index >= 0 && matcher(item.actor, text))
+      .sort((a, b) => a.index - b.index || a.fallbackIndex - b.fallbackIndex)
+      .map((item) => item.actor);
   }
 
   function dmAgent(spaceId) {
@@ -544,7 +561,7 @@ export async function handleMessageApi(req, res, url, deps) {
     if (reply.authorType === 'human' && linkedTask && taskStopIntent(text)) {
       stopResult = stopTaskFromThread(linkedTask, reply.authorId, reply.id);
       stoppedThreadTask = linkedTask;
-      addSystemReply(message.id, 'Task marked done from thread stop request.');
+      addSystemReply(message.id, 'Task closed from thread stop request.');
     } else if (reply.authorType === 'human' && linkedTask && taskEndIntent(text)) {
       finishTaskFromThread(linkedTask, reply.authorId, reply.id);
       endedThreadTask = linkedTask;
@@ -555,15 +572,25 @@ export async function handleMessageApi(req, res, url, deps) {
       const channelAgents = channel
         ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
         : [];
+      const channelHumans = channel
+        ? channelHumanIds(channel).map(id => findHuman(id)).filter(Boolean)
+        : [];
+      const naturalAgentIds = actorsNamedInText(channelAgents, text, textAddressesAgent).map((agent) => agent.id);
+      const naturalHumanIds = actorsNamedInText(channelHumans, text, textReferencesActor)
+        .map((human) => human.id)
+        .filter((id) => id !== reply.authorId);
       const preferredAgentIds = [
         ...(mentions.agents || []),
+        ...naturalAgentIds,
         ...(linkedTask?.claimedBy ? [linkedTask.claimedBy] : []),
         ...(linkedTask?.assigneeIds || []),
         ...(message.mentionedAgentIds || []),
       ];
       const agent = pickAvailableAgent(channelAgents, preferredAgentIds);
       if (agent) {
-        const created = createTaskFromThreadIntent(message, reply, agent);
+        const created = createTaskFromThreadIntent(message, reply, agent, {
+          targetHumanIds: normalizeIds([...(mentions.humans || []), ...naturalHumanIds]),
+        });
         createdThreadTask = created.task;
         createdThreadTaskMessage = created.message;
       }

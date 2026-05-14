@@ -228,6 +228,7 @@ process.env.MAGCLAW_UPLOAD_DIR = ATTACHMENT_STORAGE.path;
 const ATTACHMENTS_DIR = ATTACHMENT_STORAGE.path;
 const RUNS_DIR = path.join(DATA_DIR, 'runs');
 const AGENTS_DIR = path.join(DATA_DIR, 'agents');
+const ACTIVITY_LOG_DIR = path.join(DATA_DIR, 'activity-logs');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const STATE_DB_FILE = path.join(DATA_DIR, 'state.sqlite');
 const WRITE_STATE_JSON = /^(1|true|yes)$/i.test(String(process.env.MAGCLAW_WRITE_STATE_JSON || ''));
@@ -385,6 +386,7 @@ const stateCore = createStateCore({
   AGENT_BOOT_RESET_STATUSES,
   AGENT_STATUS_STALE_MS,
   AGENTS_DIR,
+  ACTIVITY_LOG_DIR,
   ATTACHMENTS_DIR,
   CLOUD_PROTOCOL_VERSION,
   CODEX_FALLBACK_MODEL,
@@ -1328,6 +1330,7 @@ function agentToolApiDeps() {
     makeId,
     markWorkItemResponded,
     normalizeIds,
+    now,
     persistState,
     postAgentResponse,
     readAgentHistory,
@@ -1442,6 +1445,7 @@ function messageApiDeps() {
     availabilityFollowupIntent,
     broadcastState,
     channelAgentIds,
+    channelHumanIds,
     createOrClaimTaskForMessage,
     createTaskFromMessage,
     createTaskFromThreadIntent,
@@ -1451,12 +1455,14 @@ function messageApiDeps() {
     findAgent,
     findChannel,
     findConversationRecord,
+    findHuman,
     findMessage,
     findTaskForThreadMessage,
     finishTaskFromThread,
     getState: () => state,
     inferAgentMemoryWriteback,
     makeId,
+    normalizeIds,
     normalizeConversationRecord,
     now,
     persistState,
@@ -1473,6 +1479,7 @@ function messageApiDeps() {
     taskEndIntent,
     taskStopIntent,
     taskThreadDeliveryMessage,
+    textAddressesAgent,
     userPreferenceIntent,
   };
 }

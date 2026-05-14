@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createActivityLog } from './activity-log.js';
 import { defaultReleaseNotes, normalizeReleaseNotes } from './release-notes.js';
 import {
   codexRuntimeOverrideForDelivery as codexRuntimeOverrideForDeliveryBase,
@@ -37,6 +38,7 @@ export function createStateCore(deps) {
     AGENT_BOOT_RESET_STATUSES,
     AGENT_STATUS_STALE_MS,
     AGENTS_DIR,
+    ACTIVITY_LOG_DIR = '',
     ATTACHMENTS_DIR,
     CLOUD_PROTOCOL_VERSION,
     CODEX_FALLBACK_MODEL,
@@ -57,6 +59,10 @@ export function createStateCore(deps) {
   let saveChain = Promise.resolve();
   let stateDb = null;
   let externalStatePersister = null;
+  const activityLog = createActivityLog({
+    dir: ACTIVITY_LOG_DIR || path.join(ROOT, 'activity-logs'),
+    now,
+  });
   const LOCAL_STATE_PERSISTENCE_ENABLED = USE_SQLITE_STATE || WRITE_STATE_JSON;
   const stateProxy = new Proxy({}, {
     get(_target, prop) { return state?.[prop]; },
@@ -231,6 +237,7 @@ export function createStateCore(deps) {
       runs: [],
       attachments: [],
       projects: [],
+      channelMemberProposals: [],
       workItems: [],
         routeEvents: [],
         events: [],
@@ -238,6 +245,26 @@ export function createStateCore(deps) {
         inboxReads: {},
       };
     }
+
+  async function mergeActivityTail() {
+    if (!state) return;
+    const tail = await activityLog.readTail(1200).catch((error) => {
+      console.warn(`[activity-log] startup tail read failed: ${error.message}`);
+      return [];
+    });
+    if (!tail.length) return;
+    const seen = new Set((Array.isArray(state.events) ? state.events : []).map((event) => event?.id).filter(Boolean));
+    const restored = tail.filter((event) => event?.id && !seen.has(event.id));
+    if (!restored.length) return;
+    state.events = [...(Array.isArray(state.events) ? state.events : []), ...restored]
+      .sort((a, b) => {
+        const left = Date.parse(a.createdAt || '');
+        const right = Date.parse(b.createdAt || '');
+        if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
+        return String(a.id || '').localeCompare(String(b.id || ''));
+      });
+    trimEvents();
+  }
   
   async function ensureStorage() {
     await mkdir(ATTACHMENTS_DIR, { recursive: true });
@@ -248,6 +275,7 @@ export function createStateCore(deps) {
     if (!LOCAL_STATE_PERSISTENCE_ENABLED) {
       state = defaultState();
       migrateState();
+      await mergeActivityTail();
       await ensureAllAgentWorkspaces();
       return;
     }
@@ -258,6 +286,7 @@ export function createStateCore(deps) {
       migrateState();
       hydrateSqliteBackedState();
       migrateState();
+      await mergeActivityTail();
       await ensureAllAgentWorkspaces();
       await persistState({ skipExternal: true });
       return;
@@ -266,6 +295,7 @@ export function createStateCore(deps) {
     if (!existsSync(STATE_FILE)) {
       state = defaultState();
       migrateState();
+      await mergeActivityTail();
       await ensureAllAgentWorkspaces();
       await persistState({ skipExternal: true });
       return;
@@ -277,12 +307,14 @@ export function createStateCore(deps) {
       migrateJsonBackedStateToSqlite();
       hydrateSqliteBackedState();
       migrateState();
+      await mergeActivityTail();
       await ensureAllAgentWorkspaces();
       await persistState({ skipExternal: true });
     } catch {
       state = defaultState();
       migrateState();
       addSystemEvent('state_recovered', 'State file was unreadable, Magclaw started with a clean state.');
+      await mergeActivityTail();
       await ensureAllAgentWorkspaces();
       await persistState({ skipExternal: true });
     }
@@ -491,7 +523,7 @@ export function createStateCore(deps) {
       for (const invitation of state.cloud.invitations) {
         invitation.role = roleMap[invitation.role] || invitation.role || 'member';
       }
-      for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'reminders', 'missions', 'runs', 'attachments', 'projects', 'workItems', 'routeEvents', 'events', 'systemNotifications']) {
+      for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'reminders', 'missions', 'runs', 'attachments', 'projects', 'channelMemberProposals', 'workItems', 'routeEvents', 'events', 'systemNotifications']) {
         if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
       }
     state.inboxReads = state.inboxReads && typeof state.inboxReads === 'object' && !Array.isArray(state.inboxReads)
@@ -596,15 +628,32 @@ export function createStateCore(deps) {
       task.completedAt = task.completedAt || null;
       task.stoppedAt = task.stoppedAt || null;
       if (task.status === 'stopped') {
-        const closedAt = task.completedAt || task.stoppedAt || task.updatedAt || task.createdAt || now();
-        task.status = 'done';
-        task.completedAt = closedAt;
+        const closedAt = task.closedAt || task.stoppedAt || task.updatedAt || task.createdAt || now();
+        task.status = 'closed';
+        task.closedAt = closedAt;
         task.endIntentAt = task.endIntentAt || closedAt;
         task.reviewRequestedAt = null;
       }
+      if (!['todo', 'in_progress', 'in_review', 'done', 'closed'].includes(task.status)) task.status = 'todo';
       task.endIntentAt = task.endIntentAt || null;
+      task.closedAt = task.closedAt || null;
       task.runIds = Array.isArray(task.runIds) ? task.runIds : [];
       task.localReferences = Array.isArray(task.localReferences) ? task.localReferences : extractLocalReferences(task.body || '');
+    }
+    for (const proposal of state.channelMemberProposals) {
+      proposal.id = proposal.id || makeId('prop');
+      proposal.workspaceId = proposal.workspaceId || state.connection?.workspaceId || 'local';
+      proposal.channelId = proposal.channelId || proposal.spaceId || null;
+      proposal.memberIds = normalizeIds(proposal.memberIds || (proposal.memberId ? [proposal.memberId] : []));
+      proposal.proposedBy = proposal.proposedBy || proposal.agentId || null;
+      proposal.reason = String(proposal.reason || '').trim();
+      proposal.status = ['pending', 'accepted', 'declined'].includes(proposal.status) ? proposal.status : 'pending';
+      proposal.reviewerId = proposal.reviewerId || null;
+      proposal.createdAt = proposal.createdAt || now();
+      proposal.updatedAt = proposal.updatedAt || proposal.createdAt;
+      proposal.reviewedAt = proposal.reviewedAt || null;
+      proposal.acceptedAt = proposal.acceptedAt || null;
+      proposal.declinedAt = proposal.declinedAt || null;
     }
     for (const task of tasksByCreation) {
       const key = taskScopeKey(task.spaceType, task.spaceId);
@@ -773,14 +822,17 @@ export function createStateCore(deps) {
   
   function addSystemEvent(type, message, extra = {}) {
     if (!state) return;
-    state.events.push({
+    const event = {
       id: makeId('evt'),
       type,
       message,
       createdAt: now(),
       ...extra,
-    });
+    };
+    state.events.push(event);
     trimEvents();
+    activityLog.append(event).catch(() => {});
+    return event;
   }
   
   function addRunEvent(runId, type, message, extra = {}) {
@@ -794,6 +846,7 @@ export function createStateCore(deps) {
     };
     state.events.push(event);
     trimEvents();
+    activityLog.append(event).catch(() => {});
     broadcast('run-event', event);
     return event;
   }
@@ -957,6 +1010,7 @@ export function createStateCore(deps) {
     presenceHeartbeat,
     reconcileAgentStatusHeartbeats,
     resolveCodexRuntime,
+    flushActivityLog: () => activityLog.flush(),
     setExternalStatePersister,
     setAgentStatus,
     state: stateProxy,

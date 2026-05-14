@@ -371,15 +371,27 @@ export function createRoutingEngine(deps) {
     return directlyNamedOther ? null : parentAgent;
   }
   
+  const MARKDOWN_SECTION_ALIASES = new Map([
+    ['Role', ['角色']],
+    ['Capabilities', ['能力', 'Skills', '技能']],
+    ['Strengths And Skills', ['优势与技能', 'Skills', '技能']],
+    ['Key Knowledge', ['知识索引', 'Knowledge Index']],
+    ['Active Context', ['当前上下文']],
+    ['Collaboration Rules', ['协作规则']],
+    ['Response Boundaries', ['回复边界']],
+  ]);
+
   function markdownSection(content, heading) {
     const lines = String(content || '').split(/\r?\n/);
-    const target = String(heading || '').trim().toLowerCase();
+    const targets = [heading, ...(MARKDOWN_SECTION_ALIASES.get(heading) || [])]
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter(Boolean);
     let start = -1;
     let level = 0;
     for (let index = 0; index < lines.length; index += 1) {
       const match = lines[index].match(/^(#{1,6})\s+(.+?)\s*$/);
       if (!match) continue;
-      if (match[2].trim().toLowerCase() === target) {
+      if (targets.includes(match[2].trim().toLowerCase())) {
         start = index + 1;
         level = match[1].length;
         break;

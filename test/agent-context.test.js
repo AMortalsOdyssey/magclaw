@@ -190,3 +190,71 @@ test('agent context pack renders required peer memory search grounding', () => {
   assert.match(rendered, /@韩立 \(agt_han\) MEMORY\.md:14; matched=旅游: 解决旅游/);
   assert.match(rendered, /For agent capability or suitability questions, use the peer memory search results above first/);
 });
+
+test('workspace all context expands cloud workspace humans and agents', () => {
+  const state = {
+    connection: { workspaceId: 'wsp_test22222' },
+    cloud: {
+      users: [
+        { id: 'usr_jjjj', name: 'JJJJ', email: 'jjjj@example.test' },
+      ],
+      workspaceMembers: [
+        { id: 'wmem_jjjj', workspaceId: 'wsp_test22222', userId: 'usr_jjjj', humanId: 'hum_jjjj', role: 'owner', status: 'active' },
+      ],
+    },
+    humans: [
+      { id: 'hum_bobo', workspaceId: 'wsp_test22222', name: 'bobo126126', role: 'admin', status: 'online' },
+    ],
+    agents: [
+      { id: 'agt_smile', workspaceId: 'wsp_test22222', name: '😊', description: 'general helper', status: 'idle' },
+      { id: 'agt_el', workspaceId: 'wsp_test22222', name: 'EL', description: 'engineering lead', status: 'idle' },
+      { id: 'agt_other', workspaceId: 'wsp_other', name: 'Other', description: 'outside', status: 'idle' },
+    ],
+    channels: [{
+      id: 'chan_f1b4e205ff',
+      workspaceId: 'wsp_test22222',
+      name: 'all',
+      description: 'Default server-wide channel.',
+      locked: true,
+      defaultChannel: true,
+      humanIds: ['hum_bobo'],
+      agentIds: ['agt_smile'],
+      memberIds: ['hum_bobo', 'agt_smile'],
+    }],
+    dms: [],
+    messages: [{
+      id: 'msg_current',
+      workspaceId: 'wsp_test22222',
+      spaceType: 'channel',
+      spaceId: 'chan_f1b4e205ff',
+      authorType: 'human',
+      authorId: 'hum_bobo',
+      body: 'EL，你知道我们这个 channel 里还有谁在吗？',
+      attachmentIds: [],
+      createdAt: '2026-05-14T02:31:21.000Z',
+    }],
+    replies: [],
+    tasks: [],
+    attachments: [],
+  };
+
+  const pack = buildAgentContextPack({
+    state,
+    agentId: 'agt_el',
+    spaceType: 'channel',
+    spaceId: 'chan_f1b4e205ff',
+    currentMessage: state.messages[0],
+  });
+
+  assert.deepEqual(
+    pack.participants.map((item) => [item.name, item.type]),
+    [['bobo126126', 'human'], ['JJJJ', 'human'], ['😊', 'agent'], ['EL', 'agent']],
+  );
+  assert.equal(pack.space.visibility, 'public');
+  assert.equal(pack.space.defaultChannel, true);
+
+  const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_el' });
+  assert.match(rendered, /Space: Channel \(public, default workspace channel\)/);
+  assert.match(rendered, /Participants: @bobo126126 - admin, @JJJJ - owner, @😊 - general helper, @EL \(you\) - engineering lead/);
+  assert.doesNotMatch(rendered, /@Other/);
+});

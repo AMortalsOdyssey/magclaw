@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, cp, lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -149,54 +149,6 @@ test('dm thread replies dispatch to the private agent for pickup receipts', asyn
     const workItem = finalState.workItems.find((item) => item.sourceMessageId === reply.reply.id);
     assert.equal(workItem.agentId, 'agt_codex');
     assert.equal(workItem.target, `dm:${dm.id}:${parent.message.id}`);
-  } finally {
-    await server.stop();
-  }
-});
-
-test('chat and task records are persisted in SQLite without a JSON state file by default', async (t) => {
-  let DatabaseSync;
-  try {
-    ({ DatabaseSync } = await import('node:sqlite'));
-  } catch {
-    t.skip('Node built-in SQLite is unavailable in this runtime');
-    return;
-  }
-
-  const server = await startIsolatedServer();
-  try {
-    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
-      method: 'POST',
-      body: JSON.stringify({
-        body: '<@agt_codex> 请把这个保存成任务',
-        attachmentIds: [],
-        asTask: true,
-      }),
-    });
-    await request(server.baseUrl, `/api/messages/${created.message.id}/save`, { method: 'POST', body: '{}' });
-
-    const apiState = await request(server.baseUrl, '/api/state');
-    assert.ok(apiState.messages.some((message) => message.id === created.message.id));
-    assert.ok(apiState.tasks.some((task) => task.id === created.task.id));
-    assert.ok(apiState.messages.find((message) => message.id === created.message.id)?.savedBy.includes('hum_local'));
-
-    await assert.rejects(
-      () => readFile(path.join(server.tmp, '.magclaw', 'state.json'), 'utf8'),
-      /ENOENT/,
-    );
-
-    await lstat(path.join(server.tmp, '.magclaw', 'state.sqlite'));
-    const db = new DatabaseSync(path.join(server.tmp, '.magclaw', 'state.sqlite'));
-    try {
-      const messages = db.prepare("SELECT COUNT(*) AS count FROM state_records WHERE kind = 'messages'").get();
-      const tasks = db.prepare("SELECT COUNT(*) AS count FROM state_records WHERE kind = 'tasks'").get();
-      const snapshot = db.prepare("SELECT COUNT(*) AS count FROM state_records WHERE kind = '__state' AND id = 'snapshot'").get();
-      assert.ok(Number(messages.count) >= 2);
-      assert.ok(Number(tasks.count) >= 1);
-      assert.equal(Number(snapshot.count), 1);
-    } finally {
-      db.close();
-    }
   } finally {
     await server.stop();
   }
@@ -606,7 +558,7 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
-test('thread stop intent marks that task done and lets other queued work continue', async () => {
+test('thread stop intent marks that task closed and lets other queued work continue', async () => {
   const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-thread-stop-'));
   const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
   const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
@@ -706,7 +658,7 @@ process.stdin.on('data', (chunk) => {
         attachmentIds: [],
       }),
     });
-    assert.equal(stopped.stoppedTask.status, 'done');
+    assert.equal(stopped.stoppedTask.status, 'closed');
 
     const finalState = await waitFor(async () => {
       const snapshot = await request(server.baseUrl, '/api/state');
@@ -722,11 +674,11 @@ process.stdin.on('data', (chunk) => {
 
     assert.ok(finalState);
     const task = finalState.tasks.find((item) => item.id === taskMessage.task.id);
-    assert.equal(task.status, 'done');
-    assert.match(task.completedAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.ok(task.history.some((item) => item.type === 'stopped_done_from_thread'));
+    assert.equal(task.status, 'closed');
+    assert.match(task.closedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.ok(task.history.some((item) => item.type === 'stopped_closed_from_thread'));
     const taskReplies = finalState.replies.filter((reply) => reply.parentMessageId === taskMessage.message.id);
-    assert.ok(taskReplies.some((reply) => reply.body === 'Task marked done from thread stop request.'));
+    assert.ok(taskReplies.some((reply) => reply.body === 'Task closed from thread stop request.'));
     const stoppedItem = finalState.workItems.find((item) => item.sourceMessageId === taskMessage.message.id);
     const otherItem = finalState.workItems.find((item) => item.sourceMessageId === otherMessage.message.id);
     assert.equal(stoppedItem?.status, 'stopped');
@@ -1694,5 +1646,54 @@ test('thread replies use Fan-out API routing when multiple agent participants ar
   } finally {
     await server.stop();
     await mock.stop();
+  }
+});
+
+test('thread task creation honors natural-language agent and human names', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { human: jjjj } = await request(server.baseUrl, '/api/humans', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'JJJJ', email: 'jjjj@example.test' }),
+    });
+    const { agent: smile } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: '😊', description: 'general helper', runtime: 'Codex CLI' }),
+    });
+    const { agent: el } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'EL', description: 'engineering lead', runtime: 'Codex CLI' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'thread-owner-routing',
+        description: 'thread task owner routing',
+        humanIds: [jjjj.id],
+        agentIds: [smile.id, el.id],
+      }),
+    });
+    const parent = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: 'JJJJ 晚上好', attachmentIds: [] }),
+    });
+
+    const reply = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({ body: 'EL，你开启一个任务，去和 JJJJ 沟通吧', attachmentIds: [] }),
+    });
+
+    assert.equal(reply.createdTask.claimedBy, el.id);
+    assert.deepEqual(reply.createdTask.assigneeIds, [el.id]);
+    assert.deepEqual(reply.createdTaskMessage.mentionedAgentIds, [el.id]);
+    assert.deepEqual(reply.createdTaskMessage.mentionedHumanIds, [jjjj.id]);
+    assert.match(reply.createdTask.body, /Human target\(s\): JJJJ/);
+
+    const state = await request(server.baseUrl, '/api/state');
+    assert.ok(state.replies.some((item) => item.parentMessageId === parent.message.id
+      && item.authorId === el.id
+      && item.body.includes('已创建并 claim')));
+  } finally {
+    await server.stop();
   }
 });

@@ -4,6 +4,8 @@ import os from 'node:os';
 const PAIR_TTL_MS = 1000 * 60 * 15;
 const MACHINE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 365;
 const MAX_DAEMON_EVENT_LOG = 300;
+const SENT_DELIVERY_RETRY_TTL_MS = Math.max(1000, Number(process.env.MAGCLAW_DAEMON_SENT_RETRY_TTL_MS || 1000 * 60 * 2));
+const ACTIVE_DELIVERY_STATUSES = new Set(['queued', 'sent', 'acked']);
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -188,6 +190,27 @@ export function createDaemonRelay(deps) {
   const handlers = {
     onAgentMessage: null,
   };
+
+  function nowMs() {
+    const parsed = Date.parse(now());
+    return Number.isFinite(parsed) ? parsed : Date.now();
+  }
+
+  function deliveryRetryReady(delivery) {
+    if (delivery.status === 'queued') return true;
+    if (delivery.status !== 'sent') return false;
+    if (delivery.ackedAt) return false;
+    const sentAt = Date.parse(delivery.sentAt || delivery.updatedAt || delivery.createdAt || '');
+    if (!Number.isFinite(sentAt)) return true;
+    return nowMs() - sentAt >= SENT_DELIVERY_RETRY_TTL_MS;
+  }
+
+  function activeDeliveryMatches(delivery, agentId, messageId, workItemId) {
+    if (!delivery || delivery.agentId !== agentId || !ACTIVE_DELIVERY_STATUSES.has(delivery.status)) return false;
+    if (workItemId && delivery.workItemId === workItemId) return true;
+    if (messageId && delivery.messageId === messageId) return true;
+    return Boolean(workItemId && messageId && delivery.workItemId === workItemId && delivery.messageId === messageId);
+  }
 
   function persistAllState() {
     return (persistCloudState || persistState)();
@@ -465,7 +488,7 @@ export function createDaemonRelay(deps) {
 
   async function replayQueued(computerId) {
     const pending = safeArray(cloud().agentDeliveries)
-      .filter((delivery) => delivery.computerId === computerId && ['queued', 'sent'].includes(delivery.status))
+      .filter((delivery) => delivery.computerId === computerId && deliveryRetryReady(delivery))
       .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
     for (const delivery of pending) {
       sendDelivery(delivery);
@@ -524,13 +547,32 @@ export function createDaemonRelay(deps) {
     if (!computer) return { queued: false, error: 'Computer not found.' };
     if (computerIsDisabled(computer)) return { queued: false, error: 'Computer is disabled.' };
     const workspace = store.workspaces[0];
+    const messageId = payload.message?.id || payload.messageId || null;
+    const workItemId = payload.workItem?.id || payload.workItemId || null;
+    if (commandType === 'agent:deliver') {
+      const existing = safeArray(store.agentDeliveries).find((delivery) => (
+        delivery.commandType === commandType
+        && delivery.computerId === computer.id
+        && activeDeliveryMatches(delivery, agent.id, messageId, workItemId)
+      ));
+      if (existing) {
+        recordDaemonEvent('agent_delivery_deduped', `Skipped duplicate delivery for ${agent.name}.`, {
+          agentId: agent.id,
+          computerId: computer.id,
+          deliveryId: existing.id,
+          messageId,
+          workItemId,
+        });
+        return { queued: true, sent: existing.status === 'sent', delivery: existing, deduped: true };
+      }
+    }
     const delivery = {
       id: makeId('adl'),
       workspaceId: workspace.id,
       agentId: agent.id,
       computerId: computer.id,
-      messageId: payload.message?.id || payload.messageId || null,
-      workItemId: payload.workItem?.id || payload.workItemId || null,
+      messageId,
+      workItemId,
       seq: nextDeliverySeq(agent.id, computer.id),
       type: commandType,
       commandType,
@@ -626,6 +668,15 @@ export function createDaemonRelay(deps) {
       workItem,
     });
     if (!result.queued) return false;
+    if (result.deduped) {
+      if (workItem) {
+        workItem.status = result.sent ? 'sent_remote' : 'queued_remote';
+        workItem.updatedAt = now();
+      }
+      await persistAllState();
+      broadcastState();
+      return true;
+    }
     if (workItem) {
       workItem.status = result.sent ? 'sent_remote' : 'queued_remote';
       workItem.updatedAt = now();
@@ -705,6 +756,13 @@ export function createDaemonRelay(deps) {
       delivery.ackedAt = now();
       delivery.updatedAt = now();
       delivery.error = '';
+      recordDaemonEvent('agent_delivery_acked', `Daemon acknowledged ${delivery.commandType || delivery.type}.`, {
+        agentId: delivery.agentId,
+        computerId: delivery.computerId,
+        deliveryId: delivery.id,
+        messageId: delivery.messageId || null,
+        workItemId: delivery.workItemId || null,
+      });
     }
     const agent = delivery ? findAgent(delivery.agentId) : findAgent(message.agentId);
     if (agent && message.status) setAgentStatus(agent, String(message.status), 'daemon_relay_ack');
@@ -735,6 +793,12 @@ export function createDaemonRelay(deps) {
     if (message.status) setAgentStatus(agent, String(message.status), 'daemon_activity', { forceEvent: true });
     agent.runtimeActivity = message.activity || agent.runtimeActivity || null;
     agent.heartbeatAt = now();
+    recordDaemonEvent('agent_activity', `${agent.name} reported daemon activity.`, {
+      agentId: agent.id,
+      computerId: message.computerId || agent.computerId || null,
+      activity: message.activity || null,
+      deliveryId: message.deliveryId || null,
+    });
     await persistAllState();
     broadcastState();
   }

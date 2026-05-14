@@ -29,6 +29,43 @@ export function isMentionBoundaryChar(char) {
   return !isAsciiMentionWordChar(char);
 }
 
+function actorAliases(actor) {
+  return normalizeIds([actor?.name, actor?.displayName, actor?.email]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean));
+}
+
+export function textReferencesActor(actor, text) {
+  const raw = String(text || '');
+  const compactRaw = raw.replace(/\s+/g, '');
+  for (const alias of actorAliases(actor)) {
+    const value = String(alias || '').trim();
+    if (!value) continue;
+    if (/^[A-Za-z0-9_.-]+$/.test(value)) {
+      const pattern = new RegExp(`(^|[^A-Za-z0-9_.-])@?${escapeRegExp(value)}(?=$|[^A-Za-z0-9_.-])`, 'i');
+      if (pattern.test(raw)) return true;
+    } else if (compactRaw.toLowerCase().includes(value.replace(/\s+/g, '').toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function firstActorReferenceIndex(actor, text) {
+  const raw = String(text || '');
+  const compactRaw = raw.replace(/\s+/g, '');
+  let best = Infinity;
+  for (const alias of actorAliases(actor)) {
+    const value = String(alias || '').trim();
+    if (!value) continue;
+    const haystack = /^[A-Za-z0-9_.-]+$/.test(value) ? raw.toLowerCase() : compactRaw.toLowerCase();
+    const needle = (/^[A-Za-z0-9_.-]+$/.test(value) ? value : value.replace(/\s+/g, '')).toLowerCase();
+    const index = haystack.indexOf(needle);
+    if (index >= 0 && index < best) best = index;
+  }
+  return Number.isFinite(best) ? best : -1;
+}
+
 export function extractMentionTokens(text, { findAgent = null, findHuman = null } = {}) {
   const mentions = {
     agents: [],

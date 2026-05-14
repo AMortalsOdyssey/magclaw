@@ -79,7 +79,7 @@ function routeDeps(overrides = {}) {
       res.data = data;
     },
     startCodexRun: () => {},
-    taskIsClosed: (task) => ['done', 'stopped', 'stopped'].includes(task.status),
+    taskIsClosed: (task) => ['done', 'closed', 'stopped'].includes(task.status),
     taskLabel: (task) => `#${task.number || task.id}`,
   };
   return { ...deps, ...overrides, state };
@@ -133,6 +133,80 @@ test('task route group rejects done transition before review', async () => {
   assert.equal(handled, true);
   assert.equal(res.statusCode, 409);
   assert.equal(deps.state.tasks[0].status, 'todo');
+});
+
+test('task route group closes tasks without review and keeps closed terminal', async () => {
+  const deps = routeDeps({ readJson: async () => ({ status: 'closed' }) });
+  const res = makeResponse();
+  const handled = await handleTaskApi(
+    { method: 'PATCH' },
+    res,
+    new URL('http://local/api/tasks/task_1'),
+    deps,
+  );
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(deps.state.tasks[0].status, 'closed');
+  assert.equal(deps.state.tasks[0].closedAt, deps.now());
+  assert.ok(deps.state.tasks[0].history.some((item) => item.type === 'closed'));
+
+  const claimRes = makeResponse();
+  await handleTaskApi(
+    { method: 'POST' },
+    claimRes,
+    new URL('http://local/api/tasks/task_1/claim'),
+    {
+      ...deps,
+      claimTask: (task) => {
+        if (deps.taskIsClosed(task)) {
+          const error = new Error('Closed task cannot be claimed.');
+          error.status = 409;
+          throw error;
+        }
+      },
+      readJson: async () => ({ actorId: 'agt_codex' }),
+    },
+  );
+  assert.equal(claimRes.statusCode, 409);
+
+  const runRes = makeResponse();
+  await handleTaskApi(
+    { method: 'POST' },
+    runRes,
+    new URL('http://local/api/tasks/task_1/run-codex'),
+    deps,
+  );
+  assert.equal(runRes.statusCode, 409);
+
+  const reopenRes = makeResponse();
+  await handleTaskApi(
+    { method: 'POST' },
+    reopenRes,
+    new URL('http://local/api/tasks/task_1/reopen'),
+    deps,
+  );
+  assert.equal(reopenRes.statusCode, 200);
+  assert.equal(deps.state.tasks[0].status, 'todo');
+  assert.equal(deps.state.tasks[0].closedAt, null);
+});
+
+test('task route group supports explicit close endpoint', async () => {
+  const deps = routeDeps();
+  deps.state.tasks[0].status = 'in_progress';
+  deps.state.tasks[0].claimedBy = 'agt_codex';
+  deps.state.tasks[0].reviewRequestedAt = deps.now();
+  const res = makeResponse();
+  const handled = await handleTaskApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/tasks/task_1/close'),
+    deps,
+  );
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.task.status, 'closed');
+  assert.equal(res.data.task.reviewRequestedAt, null);
+  assert.equal(res.data.task.closedAt, deps.now());
 });
 
 test('task route group auto-claims work before starting a Codex run', async () => {

@@ -32,6 +32,24 @@ export async function handleTaskApi(req, res, url, deps) {
     taskLabel,
   } = deps;
   const state = getState();
+  const allowedTaskStatuses = new Set(['todo', 'in_progress', 'in_review', 'done', 'closed']);
+
+  function closeTask(task, actorId = 'hum_local', reason = 'Task closed.') {
+    if (!task) return null;
+    if (task.status === 'closed') return task;
+    const closedAt = now();
+    task.status = 'closed';
+    task.closedAt = closedAt;
+    task.endIntentAt = task.endIntentAt || closedAt;
+    task.reviewRequestedAt = null;
+    task.updatedAt = closedAt;
+    addTaskHistory(task, 'closed', reason, actorId);
+    const thread = ensureTaskThread(task);
+    addSystemReply(thread.id, 'Task closed.');
+    addTaskTimelineMessage(task, `× ${displayActor(actorId)} closed ${taskLabel(task)}`, 'task_closed');
+    addCollabEvent('task_closed', `Task closed: ${task.title}`, { taskId: task.id, actorId });
+    return task;
+  }
 
   if (req.method === 'POST' && url.pathname === '/api/tasks') {
     const body = await readJson(req);
@@ -189,12 +207,32 @@ export async function handleTaskApi(req, res, url, deps) {
     task.claimedAt = null;
     task.reviewRequestedAt = null;
     task.completedAt = null;
+    task.closedAt = null;
     task.endIntentAt = null;
     task.stoppedAt = null;
     addTaskHistory(task, 'reopened', 'Task reopened by human.');
     const thread = ensureTaskThread(task);
     addSystemReply(thread.id, 'Task reopened.');
     addTaskTimelineMessage(task, `↩ ${displayActor('hum_local')} reopened ${taskLabel(task)}`, 'task_reopened');
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, { task });
+    return true;
+  }
+
+  const closeMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/close$/);
+  if (req.method === 'POST' && closeMatch) {
+    const task = findTask(closeMatch[1]);
+    if (!task) {
+      sendError(res, 404, 'Task not found.');
+      return true;
+    }
+    if (task.status === 'done') {
+      sendError(res, 409, 'Done task cannot be closed. Reopen it first if this work should be canceled.');
+      return true;
+    }
+    const body = await readJson(req);
+    closeTask(task, String(body.actorId || 'hum_local'), String(body.reason || 'Task closed by human.'));
     await persistState();
     broadcastState();
     sendJson(res, 200, { task });
@@ -285,13 +323,35 @@ export async function handleTaskApi(req, res, url, deps) {
     if (body.body !== undefined) task.body = String(body.body || '').trim();
     if (body.status !== undefined && body.status !== task.status) {
       const nextStatus = String(body.status || task.status);
+      if (!allowedTaskStatuses.has(nextStatus)) {
+        sendError(res, 400, 'Unsupported task status.');
+        return true;
+      }
       if (nextStatus === 'done' && task.status !== 'in_review') {
         sendError(res, 409, 'Task must be in review before done.');
         return true;
       }
+      if (nextStatus === 'closed') {
+        closeTask(task, 'hum_local', String(body.reason || 'Task closed by human.'));
+        await persistState();
+        broadcastState();
+        sendJson(res, 200, { task });
+        return true;
+      }
       task.status = nextStatus;
-      if (nextStatus === 'in_review') task.reviewRequestedAt = now();
-      if (nextStatus === 'done') task.completedAt = now();
+      if (nextStatus === 'todo' || nextStatus === 'in_progress') {
+        task.reviewRequestedAt = null;
+        task.completedAt = null;
+        task.closedAt = null;
+      }
+      if (nextStatus === 'in_review') {
+        task.reviewRequestedAt = now();
+        task.closedAt = null;
+      }
+      if (nextStatus === 'done') {
+        task.completedAt = now();
+        task.closedAt = null;
+      }
       addTaskHistory(task, 'status_changed', `Status changed to ${nextStatus}.`);
       if (nextStatus === 'in_review') addTaskTimelineMessage(task, `👀 ${displayActor('hum_local')} moved ${taskLabel(task)} to In Review`, 'task_review');
       if (nextStatus === 'done') addTaskTimelineMessage(task, `✅ ${displayActor('hum_local')} moved ${taskLabel(task)} to Done`, 'task_done');

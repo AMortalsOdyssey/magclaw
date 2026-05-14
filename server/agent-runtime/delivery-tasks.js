@@ -114,6 +114,7 @@ function createTaskFromMessage(message, title, options = {}) {
     claimedAt: null,
     reviewRequestedAt: null,
     completedAt: null,
+    closedAt: null,
     endIntentAt: null,
     runIds: [],
     attachmentIds: Array.isArray(message.attachmentIds) ? message.attachmentIds : [],
@@ -131,7 +132,7 @@ function createTaskFromMessage(message, title, options = {}) {
   return task;
 }
 
-function createTaskMessage({ title, body = '', spaceType, spaceId, workspaceId = null, authorType = 'human', authorId = 'hum_local', assigneeIds = [], attachmentIds = [], sourceMessageId = null, sourceReplyId = null, status = 'todo' }) {
+function createTaskMessage({ title, body = '', spaceType, spaceId, workspaceId = null, authorType = 'human', authorId = 'hum_local', assigneeIds = [], mentionedHumanIds = [], attachmentIds = [], sourceMessageId = null, sourceReplyId = null, status = 'todo' }) {
   const taskTitle = String(title || '').trim().slice(0, 180);
   if (!taskTitle) throw httpError(400, 'Task title is required.');
   const taskWorkspaceId = workspaceId || workspaceIdForSpace(spaceType, spaceId);
@@ -145,7 +146,7 @@ function createTaskMessage({ title, body = '', spaceType, spaceId, workspaceId =
     body: taskTitle,
     attachmentIds: normalizeIds(attachmentIds),
     mentionedAgentIds: normalizeIds(assigneeIds),
-    mentionedHumanIds: [],
+    mentionedHumanIds: normalizeIds(mentionedHumanIds),
     readBy: authorType === 'human' ? ['hum_local'] : [],
     replyCount: 0,
     savedBy: [],
@@ -223,7 +224,7 @@ function findTaskForAgentTool(body, space = null) {
 
 function updateTaskForAgent(task, agent, nextStatus, options = {}) {
   const status = String(nextStatus || '').trim();
-  if (!['todo', 'in_progress', 'in_review', 'done'].includes(status)) {
+  if (!['todo', 'in_progress', 'in_review', 'done', 'closed'].includes(status)) {
     throw httpError(400, 'Unsupported task status.');
   }
   if (task.claimedBy && task.claimedBy !== agent.id && !options.force) {
@@ -244,25 +245,36 @@ function updateTaskForAgent(task, agent, nextStatus, options = {}) {
   if (status === 'in_progress') {
     task.reviewRequestedAt = null;
     task.completedAt = null;
+    task.closedAt = null;
     addTaskHistory(task, 'agent_in_progress', 'Agent moved task to In Progress.', agent.id);
     addSystemReply(ensureTaskThread(task).id, `${agent.name} moved this task to In Progress.`);
     addTaskTimelineMessage(task, `📌 ${displayActor(agent.id)} moved ${taskLabel(task)} to In Progress`, 'task_claimed');
   } else if (status === 'in_review') {
     task.reviewRequestedAt = task.reviewRequestedAt || now();
     task.completedAt = null;
+    task.closedAt = null;
     addTaskHistory(task, 'agent_review_requested', 'Agent requested review.', agent.id);
     addSystemReply(ensureTaskThread(task).id, `${agent.name} requested review.`);
     addTaskTimelineMessage(task, `👀 ${displayActor(agent.id)} moved ${taskLabel(task)} to In Review`, 'task_review');
     scheduleAgentMemoryWriteback(agent, 'task_in_review', { task });
   } else if (status === 'done') {
     task.completedAt = task.completedAt || now();
+    task.closedAt = null;
     addTaskHistory(task, 'agent_done', 'Agent marked task done.', agent.id);
     addSystemReply(ensureTaskThread(task).id, `${agent.name} marked this task done.`);
     addTaskTimelineMessage(task, `✅ ${displayActor(agent.id)} moved ${taskLabel(task)} to Done`, 'task_done');
     scheduleAgentMemoryWriteback(agent, 'task_done', { task });
+  } else if (status === 'closed') {
+    task.closedAt = task.closedAt || now();
+    task.reviewRequestedAt = null;
+    addTaskHistory(task, 'agent_closed', 'Agent closed the task.', agent.id);
+    addSystemReply(ensureTaskThread(task).id, `${agent.name} closed this task.`);
+    addTaskTimelineMessage(task, `× ${displayActor(agent.id)} moved ${taskLabel(task)} to Closed`, 'task_closed');
+    scheduleAgentMemoryWriteback(agent, 'task_closed', { task });
   } else if (status === 'todo') {
     task.reviewRequestedAt = null;
     task.completedAt = null;
+    task.closedAt = null;
     addTaskHistory(task, 'agent_todo', 'Agent moved task back to Todo.', agent.id);
     addSystemReply(ensureTaskThread(task).id, `${agent.name} moved this task back to Todo.`);
   }

@@ -39,6 +39,37 @@ export async function handleCollabApi(req, res, url, deps) {
     };
   }
 
+  function scheduleChannelMemoryWriteback(channel) {
+    for (const agentId of normalizeIds(channel.agentIds || [])) {
+      const agent = findAgent(agentId);
+      if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
+    }
+  }
+
+  function addMemberToChannel(channel, memberId) {
+    if (memberId.startsWith('agt_') && !agentParticipatesInChannels(findAgent(memberId))) {
+      const error = new Error('Agent cannot be added as a channel member.');
+      error.status = 400;
+      throw error;
+    }
+    channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds : [];
+    const changed = !channel.memberIds.includes(memberId);
+    if (!channel.memberIds.includes(memberId)) channel.memberIds.push(memberId);
+    if (memberId.startsWith('agt_')) {
+      channel.agentIds = Array.isArray(channel.agentIds) ? channel.agentIds : [];
+      if (!channel.agentIds.includes(memberId)) channel.agentIds.push(memberId);
+    } else if (memberId.startsWith('hum_')) {
+      channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds : [];
+      if (!channel.humanIds.includes(memberId)) channel.humanIds.push(memberId);
+    }
+    if (changed) {
+      channel.updatedAt = now();
+      addCollabEvent('channel_member_added', `Member added to #${channel.name}`, { channelId: channel.id, memberId });
+      scheduleChannelMemoryWriteback(channel);
+    }
+    return changed;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/channels') {
     const body = await readJson(req);
     const name = normalizeName(body.name, 'new-channel');
@@ -152,30 +183,87 @@ export async function handleCollabApi(req, res, url, deps) {
       sendError(res, 400, 'Member ID is required.');
       return true;
     }
-    if (memberId.startsWith('agt_') && !agentParticipatesInChannels(findAgent(memberId))) {
-      sendError(res, 400, 'Agent cannot be added as a channel member.');
+    try {
+      if (addMemberToChannel(channel, memberId)) {
+        await persistState();
+        broadcastState();
+      }
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
       return true;
     }
-    channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds : [];
-    if (!channel.memberIds.includes(memberId)) {
-      channel.memberIds.push(memberId);
-      // Preserve backward compatibility with code paths that still query
-      // channel.agentIds/channel.humanIds instead of channel.memberIds.
-      if (memberId.startsWith('agt_')) {
-        channel.agentIds = Array.isArray(channel.agentIds) ? channel.agentIds : [];
-        if (!channel.agentIds.includes(memberId)) channel.agentIds.push(memberId);
-      } else if (memberId.startsWith('hum_')) {
-        channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds : [];
-        if (!channel.humanIds.includes(memberId)) channel.humanIds.push(memberId);
-      }
-      channel.updatedAt = now();
-      addCollabEvent('channel_member_added', `Member added to #${channel.name}`, { channelId: channel.id, memberId });
-      const agent = memberId.startsWith('agt_') ? findAgent(memberId) : null;
-      if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
-      await persistState();
-      broadcastState();
-    }
     sendJson(res, 200, { channel });
+    return true;
+  }
+
+  const proposalReviewMatch = url.pathname.match(/^\/api\/channel-member-proposals\/([^/]+)\/(accept|decline)$/);
+  if (req.method === 'POST' && proposalReviewMatch) {
+    const proposal = (state.channelMemberProposals || []).find((item) => item.id === proposalReviewMatch[1]);
+    if (!proposal) {
+      sendError(res, 404, 'Proposal not found.');
+      return true;
+    }
+    if (proposal.status !== 'pending') {
+      sendError(res, 409, 'Proposal has already been reviewed.');
+      return true;
+    }
+    const channel = findChannel(proposal.channelId);
+    if (!channel) {
+      sendError(res, 404, 'Channel not found.');
+      return true;
+    }
+    const body = await readJson(req);
+    const reviewerId = String(body.reviewerId || actorContext(req).humanId || 'hum_local');
+    const reviewedAt = now();
+    const memberIds = normalizeIds(proposal.memberIds);
+    if (proposalReviewMatch[2] === 'accept') {
+      try {
+        for (const memberId of memberIds) addMemberToChannel(channel, memberId);
+      } catch (error) {
+        sendError(res, error.status || 400, error.message);
+        return true;
+      }
+      proposal.status = 'accepted';
+      proposal.acceptedAt = reviewedAt;
+      addCollabEvent('channel_member_proposal_accepted', `Member proposal accepted for #${channel.name}`, {
+        proposalId: proposal.id,
+        channelId: channel.id,
+        memberIds,
+        reviewerId,
+      });
+    } else {
+      proposal.status = 'declined';
+      proposal.declinedAt = reviewedAt;
+      addCollabEvent('channel_member_proposal_declined', `Member proposal declined for #${channel.name}`, {
+        proposalId: proposal.id,
+        channelId: channel.id,
+        memberIds,
+        reviewerId,
+      });
+    }
+    proposal.reviewerId = reviewerId;
+    proposal.reviewedAt = reviewedAt;
+    proposal.updatedAt = reviewedAt;
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, { proposal, channel });
+    return true;
+  }
+
+  const proposalPatchMatch = url.pathname.match(/^\/api\/channel-member-proposals\/([^/]+)$/);
+  if (['PATCH', 'POST'].includes(req.method) && proposalPatchMatch) {
+    const body = await readJson(req);
+    const action = String(body.status || body.action || '').toLowerCase();
+    const nextUrl = new URL(url.href);
+    if (['accepted', 'accept'].includes(action)) {
+      nextUrl.pathname = `/api/channel-member-proposals/${proposalPatchMatch[1]}/accept`;
+      return handleCollabApi(req, res, nextUrl, { ...deps, readJson: async () => body });
+    }
+    if (['declined', 'decline'].includes(action)) {
+      nextUrl.pathname = `/api/channel-member-proposals/${proposalPatchMatch[1]}/decline`;
+      return handleCollabApi(req, res, nextUrl, { ...deps, readJson: async () => body });
+    }
+    sendError(res, 400, 'Proposal status must be accepted or declined.');
     return true;
   }
 

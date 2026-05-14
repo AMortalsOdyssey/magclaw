@@ -401,7 +401,7 @@ export function createConversationModel(deps) {
   }
   
   function taskIsClosed(task) {
-    return task?.status === 'done';
+    return ['done', 'closed'].includes(task?.status);
   }
   
   function taskThreadRecordIds(task) {

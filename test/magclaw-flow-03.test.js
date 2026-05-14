@@ -532,6 +532,30 @@ test('agent tool task update enforces claimed ownership and status transitions',
     assert.equal(done.task.status, 'done');
     assert.match(done.task.completedAt, /^\d{4}-\d{2}-\d{2}T/);
 
+    const closedTask = await request(server.baseUrl, '/api/tasks', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Agent can terminate a claimed task',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        assigneeId: 'agt_codex',
+      }),
+    });
+    await request(server.baseUrl, `/api/tasks/${closedTask.task.id}/claim`, {
+      method: 'POST',
+      body: JSON.stringify({ actorId: 'agt_codex' }),
+    });
+    const closed = await request(server.baseUrl, '/api/agent-tools/tasks/update', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: 'agt_codex',
+        taskId: closedTask.task.id,
+        status: 'closed',
+      }),
+    });
+    assert.equal(closed.task.status, 'closed');
+    assert.match(closed.task.closedAt, /^\d{4}-\d{2}-\d{2}T/);
+
     const otherAgent = await request(server.baseUrl, '/api/agents', {
       method: 'POST',
       body: JSON.stringify({ name: 'Other Worker', runtime: 'Codex CLI' }),
@@ -565,6 +589,56 @@ test('agent tool task update enforces claimed ownership and status transitions',
     const task = finalState.tasks.find((item) => item.id === created.task.id);
     assert.ok(task.history.some((item) => item.type === 'agent_review_requested'));
     assert.ok(task.history.some((item) => item.type === 'agent_done'));
+    const terminalTask = finalState.tasks.find((item) => item.id === closedTask.task.id);
+    assert.ok(terminalTask.history.some((item) => item.type === 'agent_closed'));
+  } finally {
+    await server.stop();
+  }
+});
+
+test('agent proposes channel members and human review accepts the membership change', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { human } = await request(server.baseUrl, '/api/humans', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Future Member', email: 'future@example.test' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'proposal-review',
+        description: 'proposal review channel',
+        humanIds: [],
+        agentIds: ['agt_codex'],
+      }),
+    });
+
+    const proposed = await request(server.baseUrl, '/api/agent-tools/channel-member-proposals', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: 'agt_codex',
+        channelId: channel.id,
+        memberIds: [human.id],
+        reason: 'Need Future Member to approve the deployment details.',
+      }),
+    });
+    assert.equal(proposed.proposal.status, 'pending');
+    assert.deepEqual(proposed.proposal.memberIds, [human.id]);
+
+    const accepted = await request(server.baseUrl, `/api/channel-member-proposals/${proposed.proposal.id}/accept`, {
+      method: 'POST',
+      body: JSON.stringify({ reviewerId: 'hum_local' }),
+    });
+    assert.equal(accepted.proposal.status, 'accepted');
+    assert.ok(accepted.channel.memberIds.includes(human.id));
+
+    const state = await request(server.baseUrl, '/api/state');
+    const proposal = state.channelMemberProposals.find((item) => item.id === proposed.proposal.id);
+    const liveChannel = state.channels.find((item) => item.id === channel.id);
+    assert.equal(proposal.status, 'accepted');
+    assert.ok(liveChannel.humanIds.includes(human.id));
+    assert.ok(state.events.some((event) => event.type === 'channel_member_proposal_created' && event.proposalId === proposal.id));
+    assert.ok(state.events.some((event) => event.type === 'channel_member_proposal_accepted' && event.proposalId === proposal.id));
   } finally {
     await server.stop();
   }

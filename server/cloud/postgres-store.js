@@ -183,7 +183,7 @@ function resetTransientRuntimeStateAfterLoad(state, loadedAt = requiredIso()) {
 
 function taskStatus(value) {
   const status = String(value || '').trim();
-  return ['todo', 'in_progress', 'in_review', 'done'].includes(status) ? status : 'todo';
+  return ['todo', 'in_progress', 'in_review', 'done', 'closed'].includes(status) ? status : 'todo';
 }
 
 function authorType(value) {

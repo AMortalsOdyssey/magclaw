@@ -38,6 +38,8 @@ function summarizeToolArgs(name, args = {}) {
   if (args.reminderId || args.id) summary.reminderId = args.reminderId || args.id;
   if (args.taskNumber) summary.taskNumber = args.taskNumber;
   if (args.status || args.nextStatus) summary.status = args.status || args.nextStatus;
+  if (args.channelId) summary.channelId = args.channelId;
+  if (Array.isArray(args.memberIds)) summary.memberCount = args.memberIds.length;
   if (args.content || args.summary || args.body || args.title) {
     summary.contentLength = String(args.content || args.summary || args.body || args.title || '').trim().length;
   }
@@ -214,9 +216,20 @@ const tools = [
       taskId: { type: 'string', description: 'Task id.' },
       taskNumber: { type: 'number', description: 'Task number in channel.' },
       channel: { type: 'string', description: 'Channel label/name/id for taskNumber lookup.' },
-      status: { type: 'string', description: 'Next status, e.g. in_progress, in_review, done.' },
+      status: { type: 'string', description: 'Next status, e.g. in_progress, in_review, done, closed.' },
       force: { type: 'boolean', description: 'Allow updating unclaimed task when appropriate.' },
     }, ['status']),
+  },
+  {
+    name: 'propose_channel_members',
+    description: 'Suggest adding workspace members to the current channel. Humans must accept or decline the proposal before members are added.',
+    inputSchema: schema({
+      channelId: { type: 'string', description: 'Channel id.' },
+      channel: { type: 'string', description: 'Channel label/name/id alternative.' },
+      memberIds: { type: 'array', items: { type: 'string' }, description: 'Human or agent ids to suggest adding.' },
+      reason: { type: 'string', description: 'Why these members are needed.' },
+      messageId: { type: 'string', description: 'Optional source message id.' },
+    }, ['memberIds', 'reason']),
   },
 ];
 
@@ -394,6 +407,18 @@ async function callTool(name, args = {}) {
         channel: args.channel,
         status: args.status || args.nextStatus,
         force: args.force,
+      }),
+    });
+  }
+  if (name === 'propose_channel_members') {
+    return request('/api/agent-tools/channel-member-proposals', {
+      method: 'POST',
+      body: withAgentId({
+        channelId: args.channelId,
+        channel: args.channel,
+        memberIds: args.memberIds,
+        reason: args.reason,
+        messageId: args.messageId,
       }),
     });
   }

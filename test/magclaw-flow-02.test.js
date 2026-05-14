@@ -39,7 +39,7 @@ test('memory writeback hooks update MEMORY and notes for task progress and user 
       return memory.includes('测试方案') && workLog.includes('task_in_review')
         ? { memory, workLog }
         : null;
-    });
+    }, 8000);
     assert.match(progressWriteback.memory, /测试方案/);
     assert.doesNotMatch(progressWriteback.memory, /task_in_review/);
     assert.match(progressWriteback.workLog, /测试方案/);
@@ -69,8 +69,8 @@ test('memory writeback hooks update MEMORY and notes for task progress and user 
         ? { memory, profile }
         : null;
     });
-    assert.match(capabilityWriteback.memory, /## Capabilities/);
-    assert.match(capabilityWriteback.profile, /Strengths And Skills/);
+    assert.match(capabilityWriteback.memory, /## 能力/);
+    assert.match(capabilityWriteback.profile, /优势与技能/);
 
     await request(server.baseUrl, `/api/spaces/dm/${dm.id}/messages`, {
       method: 'POST',
@@ -84,7 +84,7 @@ test('memory writeback hooks update MEMORY and notes for task progress and user 
         : null;
     });
     assert.match(styleWriteback.memory, /communication-style/);
-    assert.match(styleWriteback.style, /Style Adaptations/);
+    assert.match(styleWriteback.style, /语气适配/);
 
     const parent = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
       method: 'POST',
@@ -498,10 +498,11 @@ test('agent workspace is seeded and exposed as a read-only file tree', async () 
     const memory = await request(server.baseUrl, '/api/agents/agt_codex/workspace/file?path=MEMORY.md');
     assert.equal(memory.file.previewKind, 'markdown');
     assert.match(memory.file.content, /# Codex Local/);
-    assert.match(memory.file.content, /## Key Knowledge/);
+    assert.match(memory.file.content, /## 知识索引/);
     assert.match(memory.file.content, /notes\/profile\.md/);
     assert.match(memory.file.content, /notes\/work-log\.md/);
-    assert.match(memory.file.content, /## Active Context/);
+    assert.match(memory.file.content, /## 当前上下文/);
+    assert.doesNotMatch(memory.file.content, /## Collaboration Rules/);
     assert.match(memory.file.absolutePath, /\.magclaw\/agents\/agt_codex\/MEMORY\.md$/);
 
     const notes = await request(server.baseUrl, '/api/agents/agt_codex/workspace?path=notes');

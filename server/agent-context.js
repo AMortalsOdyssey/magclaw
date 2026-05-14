@@ -2,6 +2,7 @@
 // Delivery code uses this to provide the current message plus bounded recent
 // channel/thread/task/attachment context without dumping the entire workspace
 // into every Codex turn.
+import { isWorkspaceAllChannel } from './workspace-defaults.js';
 
 const DEFAULT_LIMITS = {
   recentMessages: 12,
@@ -18,8 +19,46 @@ function byId(items, id) {
   return asArray(items).find((item) => item?.id === id) || null;
 }
 
+function humansForWorkspace(state, workspaceId) {
+  const targetWorkspaceId = String(workspaceId || state?.connection?.workspaceId || 'local');
+  const humans = new Map();
+  for (const human of asArray(state?.humans)) {
+    const humanWorkspaceId = String(human?.workspaceId || 'local');
+    if (humanWorkspaceId === targetWorkspaceId || (!human?.workspaceId && targetWorkspaceId === 'local')) {
+      humans.set(human.id, human);
+    }
+  }
+  const usersById = new Map(asArray(state?.cloud?.users).map((user) => [user.id, user]));
+  for (const member of asArray(state?.cloud?.workspaceMembers)) {
+    if ((member.status || 'active') !== 'active') continue;
+    if (String(member.workspaceId || 'local') !== targetWorkspaceId) continue;
+    if (!member.humanId || humans.has(member.humanId)) continue;
+    const user = usersById.get(member.userId) || {};
+    humans.set(member.humanId, {
+      id: member.humanId,
+      workspaceId: member.workspaceId,
+      name: user.name || user.email?.split('@')[0] || member.humanId.replace(/^hum_/, ''),
+      email: user.email || '',
+      role: member.role || 'member',
+      status: 'offline',
+    });
+  }
+  return [...humans.values()];
+}
+
+function agentsForWorkspace(state, workspaceId) {
+  const targetWorkspaceId = String(workspaceId || state?.connection?.workspaceId || 'local');
+  return asArray(state?.agents).filter((agent) => {
+    const agentWorkspaceId = String(agent?.workspaceId || 'local');
+    return agentWorkspaceId === targetWorkspaceId || (!agent?.workspaceId && targetWorkspaceId === 'local');
+  });
+}
+
 function actorById(state, id) {
-  return byId(state?.agents, id) || byId(state?.humans, id) || null;
+  return byId(state?.agents, id)
+    || byId(state?.humans, id)
+    || humansForWorkspace(state).find((human) => human.id === id)
+    || null;
 }
 
 function actorName(state, id) {
@@ -29,6 +68,7 @@ function actorName(state, id) {
 function actorType(state, id) {
   if (byId(state?.agents, id)) return 'agent';
   if (byId(state?.humans, id)) return 'human';
+  if (humansForWorkspace(state).some((human) => human.id === id)) return 'human';
   return id === 'system' ? 'system' : 'unknown';
 }
 
@@ -74,6 +114,13 @@ function participantIdsForSpace(state, spaceType, spaceId) {
   const space = spaceRecord(state, spaceType, spaceId);
   if (!space) return [];
   if (spaceType === 'channel') {
+    if (isWorkspaceAllChannel(space)) {
+      const workspaceId = space.workspaceId || state?.connection?.workspaceId || 'local';
+      return [
+        ...humansForWorkspace(state, workspaceId).map((human) => human.id),
+        ...agentsForWorkspace(state, workspaceId).map((agent) => agent.id),
+      ];
+    }
     return [
       ...asArray(space.memberIds),
       ...asArray(space.humanIds),
@@ -96,6 +143,36 @@ function participantsForSpace(state, spaceType, spaceId) {
     role: actor.role || actor.description || actor.runtime || '',
     status: actor.status || '',
   }));
+}
+
+function suggestedMembersForSpace(state, spaceType, spaceId, targetAgentId) {
+  if (spaceType !== 'channel') return [];
+  const space = spaceRecord(state, spaceType, spaceId);
+  if (!space || isWorkspaceAllChannel(space)) return [];
+  const workspaceId = space.workspaceId || state?.connection?.workspaceId || 'local';
+  const existing = new Set(participantIdsForSpace(state, spaceType, spaceId));
+  return uniqueById([
+    ...humansForWorkspace(state, workspaceId).filter((human) => !existing.has(human.id)),
+    ...agentsForWorkspace(state, workspaceId).filter((agent) => agent.id !== targetAgentId && !existing.has(agent.id)),
+  ])
+    .slice(0, 20)
+    .map((actor) => ({
+      id: actor.id,
+      name: actor.name,
+      type: actorType(state, actor.id),
+      email: actor.email || '',
+      role: actor.role || actor.description || actor.runtime || '',
+      status: actor.status || '',
+    }));
+}
+
+function spaceVisibility(spaceType, space) {
+  if (spaceType === 'dm') return 'private';
+  const raw = String(space?.visibility || space?.privacy || '').trim().toLowerCase();
+  if (['public', 'secret', 'private'].includes(raw)) return raw;
+  if (space?.secret) return 'secret';
+  if (space?.private || space?.isPrivate) return 'private';
+  return 'public';
 }
 
 function sanitizeRecord(record) {
@@ -155,7 +232,7 @@ function threadContextFor(state, parentMessageId, currentMessage, limit) {
 }
 
 function taskMatchesContext(task, { spaceType, spaceId, messageIds }) {
-  if (task?.spaceType === spaceType && task?.spaceId === spaceId && task.status !== 'done') return true;
+  if (task?.spaceType === spaceType && task?.spaceId === spaceId && !['done', 'closed'].includes(task.status)) return true;
   const ids = new Set(messageIds);
   return [
     task?.messageId,
@@ -233,8 +310,12 @@ export function buildAgentContextPack({
       name: space?.name || spaceName(state, spaceType, spaceId),
       label: spaceName(state, spaceType, spaceId),
       description: space?.description || '',
+      visibility: spaceVisibility(spaceType, space),
+      workspaceId: space?.workspaceId || state?.connection?.workspaceId || 'local',
+      defaultChannel: Boolean(spaceType === 'channel' && isWorkspaceAllChannel(space)),
     },
     participants: participantsForSpace(state, spaceType, spaceId),
+    suggestedMembers: suggestedMembersForSpace(state, spaceType, spaceId, agentId),
     currentMessage: current,
     workItem: workItem ? {
       id: workItem.id,
@@ -294,6 +375,17 @@ function renderParticipants(pack) {
       return `@${item.name}${self}${role}`;
     })
     .join(', ');
+}
+
+function renderSuggestedMembers(pack) {
+  const members = asArray(pack.suggestedMembers);
+  if (!members.length) return '- (none)';
+  return members
+    .map((item) => {
+      const detail = [item.type, item.email, item.role].filter(Boolean).join('; ');
+      return `- @${item.name} (${item.id}${detail ? `; ${detail}` : ''})`;
+    })
+    .join('\n');
 }
 
 function renderTasks(state, tasks) {
@@ -361,7 +453,12 @@ function renderHistoryToolHints(pack) {
   }
   if (asArray(pack.tasks).some((task) => ['todo', 'in_progress', 'in_review'].includes(task.status))) {
     hints.push(
-      `- update_task(taskId="<task_id>", status="in_review|done"): curl -sS -X POST ${baseUrl}/api/agent-tools/tasks/update -H 'content-type: application/json' -d '${JSON.stringify({ agentId, taskId: '<task_id>', status: 'in_review' })}'`,
+      `- update_task(taskId="<task_id>", status="in_review|done|closed"): curl -sS -X POST ${baseUrl}/api/agent-tools/tasks/update -H 'content-type: application/json' -d '${JSON.stringify({ agentId, taskId: '<task_id>', status: 'in_review' })}'`,
+    );
+  }
+  if (pack.space.type === 'channel' && asArray(pack.suggestedMembers).length) {
+    hints.push(
+      `- propose_channel_members(channelId="${pack.space.id}", memberIds=["hum_xxx"], reason="..."): curl -sS -X POST ${baseUrl}/api/agent-tools/channel-member-proposals -H 'content-type: application/json' -d '${JSON.stringify({ agentId, channelId: pack.space.id, memberIds: ['hum_xxx'], reason: 'Why this member is needed.' })}'`,
     );
   }
   hints.push(
@@ -380,8 +477,13 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
   };
   const lines = [
     `Context snapshot for ${pack.space.label}`,
+    `- Space: ${pack.space.type === 'dm' ? 'Direct message' : 'Channel'} (${pack.space.visibility || 'public'}${pack.space.defaultChannel ? ', default workspace channel' : ''})`,
+    pack.space.workspaceId ? `- Workspace: ${pack.space.workspaceId}` : '',
     pack.space.description ? `- Channel description: ${pack.space.description}` : '',
     `- Participants: ${renderParticipants(pack) || '(none)'}`,
+    pack.space.type === 'channel' && !pack.space.defaultChannel
+      ? `- Workspace members you may suggest adding with human review:\n${renderSuggestedMembers(pack)}`
+      : '',
     '',
     'Current message:',
     messageLine(sourceState, pack.currentMessage, targetAgentId),

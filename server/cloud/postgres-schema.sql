@@ -450,7 +450,7 @@ CREATE TABLE IF NOT EXISTS cloud_tasks (
   title TEXT NOT NULL,
   body TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'todo' CHECK (
-    status IN ('todo', 'in_progress', 'in_review', 'done')
+    status IN ('todo', 'in_progress', 'in_review', 'done', 'closed')
   ),
   created_by TEXT NOT NULL DEFAULT '',
   claimed_by TEXT NOT NULL DEFAULT '',
@@ -472,6 +472,13 @@ CREATE TABLE IF NOT EXISTS cloud_tasks (
 CREATE UNIQUE INDEX IF NOT EXISTS cloud_tasks_space_number_uidx
   ON cloud_tasks(workspace_id, space_type, space_id, number)
   WHERE number IS NOT NULL;
+
+ALTER TABLE cloud_tasks
+  DROP CONSTRAINT IF EXISTS cloud_tasks_status_check;
+
+ALTER TABLE cloud_tasks
+  ADD CONSTRAINT cloud_tasks_status_check
+  CHECK (status IN ('todo', 'in_progress', 'in_review', 'done', 'closed'));
 
 CREATE INDEX IF NOT EXISTS cloud_tasks_status_idx
   ON cloud_tasks(workspace_id, status, updated_at DESC);
