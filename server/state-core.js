@@ -51,6 +51,7 @@ export function createStateCore(deps) {
     SQLITE_BACKED_STATE_KEYS,
     STATE_DB_FILE,
     STATE_FILE,
+    STATE_BROADCAST_DEBOUNCE_MS = 80,
     USE_SQLITE_STATE = true,
     WRITE_STATE_JSON = false,
   } = deps;
@@ -59,6 +60,11 @@ export function createStateCore(deps) {
   let saveChain = Promise.resolve();
   let stateDb = null;
   let externalStatePersister = null;
+  let stateBroadcastTimer = null;
+  const stateBroadcastDebounceMs = (() => {
+    const parsed = Number(STATE_BROADCAST_DEBOUNCE_MS);
+    return Number.isFinite(parsed) ? Math.min(1000, Math.max(0, parsed)) : 80;
+  })();
   const activityLog = createActivityLog({
     dir: ACTIVITY_LOG_DIR || path.join(ROOT, 'activity-logs'),
     now,
@@ -878,13 +884,36 @@ export function createStateCore(deps) {
       }
     }
   }
-  
-  function broadcastState(options = {}) {
+
+  function flushStateBroadcast() {
+    if (stateBroadcastTimer) {
+      clearTimeout(stateBroadcastTimer);
+      stateBroadcastTimer = null;
+    }
+    if (!sseClients.size) return;
     broadcast('state', (req) => publicState(req));
     broadcastHeartbeat();
+  }
+
+  function scheduleStateBroadcast(options = {}) {
+    if (!sseClients.size) return;
+    if (options.immediate || stateBroadcastDebounceMs <= 0) {
+      flushStateBroadcast();
+      return;
+    }
+    if (stateBroadcastTimer) return;
+    stateBroadcastTimer = setTimeout(() => {
+      stateBroadcastTimer = null;
+      flushStateBroadcast();
+    }, stateBroadcastDebounceMs);
+    stateBroadcastTimer.unref?.();
+  }
+
+  function broadcastState(options = {}) {
+    scheduleStateBroadcast(options);
     if (!options.skipCloudPush) queueCloudPush('state_changed');
   }
-  
+
   function presenceHeartbeat() {
     const humanCutoff = Date.now() - HUMAN_PRESENCE_TIMEOUT_MS;
     const humanPresence = (human) => {

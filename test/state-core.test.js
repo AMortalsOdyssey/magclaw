@@ -39,6 +39,22 @@ function makeStateCore(tmp, overrides = {}) {
   });
 }
 
+function fakeSseClient(req = {}) {
+  const client = {
+    magclawRequest: req,
+    writes: [],
+    write(packet) {
+      this.writes.push(packet);
+      return true;
+    },
+  };
+  return client;
+}
+
+function ssePackets(client, eventName) {
+  return client.writes.filter((packet) => packet.startsWith(`event: ${eventName}\n`));
+}
+
 test('state core can skip local SQLite and JSON persistence for PostgreSQL-backed cloud mode', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-'));
   const core = makeStateCore(tmp, { USE_SQLITE_STATE: false });
@@ -78,6 +94,48 @@ test('state core writes activity events to JSONL and restores recent activity ta
     });
     await second.ensureStorage();
     assert.ok(second.stateFullSnapshot().events.some((event) => event.type === 'activity_probe' && event.agentId === 'agt_codex'));
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('state core coalesces burst state broadcasts for SSE clients', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-sse-'));
+  const sseClients = new Set();
+  const cloudPushes = [];
+  let snapshotSeq = 0;
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    STATE_BROADCAST_DEBOUNCE_MS: 20,
+    sseClients,
+    publicState: (req) => ({
+      requestId: req?.requestId || '',
+      snapshotSeq: snapshotSeq += 1,
+    }),
+    queueCloudPush: (reason) => cloudPushes.push(reason),
+  });
+  const firstClient = fakeSseClient({ requestId: 'first' });
+  const secondClient = fakeSseClient({ requestId: 'second' });
+  sseClients.add(firstClient);
+  sseClients.add(secondClient);
+
+  try {
+    await core.ensureStorage();
+    core.broadcastState();
+    core.broadcastState();
+    core.broadcastState();
+
+    assert.equal(ssePackets(firstClient, 'state').length, 0);
+    assert.deepEqual(cloudPushes, ['state_changed', 'state_changed', 'state_changed']);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    assert.equal(ssePackets(firstClient, 'state').length, 1);
+    assert.equal(ssePackets(firstClient, 'heartbeat').length, 1);
+    assert.equal(ssePackets(secondClient, 'state').length, 1);
+    assert.equal(ssePackets(secondClient, 'heartbeat').length, 1);
+    assert.match(ssePackets(firstClient, 'state')[0], /"requestId":"first"/);
+    assert.match(ssePackets(secondClient, 'state')[0], /"requestId":"second"/);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
