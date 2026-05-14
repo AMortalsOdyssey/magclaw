@@ -50,6 +50,85 @@ function serverCreatedToastMessage(serverName, slug) {
   return cleanSlug ? `Server created: ${name} /${cleanSlug}` : `Server created: ${name}`;
 }
 
+function sortConversationRecords(records = []) {
+  return [...records].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+}
+
+function upsertConversationRecord(records = [], record = null) {
+  if (!record?.id) return records || [];
+  const next = [...(records || [])];
+  const index = next.findIndex((item) => item?.id === record.id);
+  if (index >= 0) {
+    next[index] = { ...next[index], ...record };
+    return sortConversationRecords(next);
+  }
+  next.push(record);
+  return sortConversationRecords(next);
+}
+
+function upsertStateRecord(records = [], record = null) {
+  if (!record?.id) return records || [];
+  const next = [...(records || [])];
+  const index = next.findIndex((item) => item?.id === record.id);
+  if (index >= 0) {
+    next[index] = { ...next[index], ...record };
+  } else {
+    next.unshift(record);
+  }
+  return next;
+}
+
+function mergeSubmittedReplyParent(messages = [], reply = null, replyWasPresent = false) {
+  if (!reply?.parentMessageId || replyWasPresent) return messages;
+  return (messages || []).map((message) => {
+    if (message?.id !== reply.parentMessageId) return message;
+    return {
+      ...message,
+      replyCount: Number(message.replyCount || 0) + 1,
+      updatedAt: reply.createdAt || reply.updatedAt || message.updatedAt,
+    };
+  });
+}
+
+function applySubmittedConversationResult(result = {}) {
+  if (!appState || typeof applyStateUpdate !== 'function') return false;
+  let changed = false;
+  const nextState = {
+    ...appState,
+    messages: [...(appState.messages || [])],
+    replies: [...(appState.replies || [])],
+    tasks: [...(appState.tasks || [])],
+  };
+  const taskRecords = [
+    result.task,
+    result.createdTask,
+    result.endedTask,
+    result.stoppedTask,
+  ].filter(Boolean);
+
+  for (const task of taskRecords) {
+    nextState.tasks = upsertStateRecord(nextState.tasks, task);
+    changed = true;
+  }
+  if (result.message) {
+    nextState.messages = upsertConversationRecord(nextState.messages, result.message);
+    changed = true;
+  }
+  if (result.createdTaskMessage) {
+    nextState.messages = upsertConversationRecord(nextState.messages, result.createdTaskMessage);
+    changed = true;
+  }
+  if (result.reply) {
+    const replyWasPresent = nextState.replies.some((item) => item?.id === result.reply.id);
+    nextState.replies = upsertConversationRecord(nextState.replies, result.reply);
+    nextState.messages = mergeSubmittedReplyParent(nextState.messages, result.reply, replyWasPresent);
+    changed = true;
+  }
+  if (!changed) return false;
+  applyStateUpdate(nextState);
+  return true;
+}
+
 document.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
@@ -81,6 +160,7 @@ document.addEventListener('submit', async (event) => {
         throw error;
       }
       if (shouldOpenTaskThread && result.message?.id) threadMessageId = result.message.id;
+      applySubmittedConversationResult(result);
       requestPaneBottomScroll('main');
       submittedBottomTarget = '#message-list';
       focusComposerId = shouldOpenTaskThread && result.message?.id ? composerIdFor('thread', result.message.id) : composerId;
@@ -92,8 +172,9 @@ document.addEventListener('submit', async (event) => {
       const attachmentIds = stagedFor(composerId).ids;
       const replySnapshot = snapshotComposerState(form, composerId);
       clearComposerForSubmit(form, composerId);
+      let result;
       try {
-        await api(`/api/messages/${threadMessageId}/replies`, {
+        result = await api(`/api/messages/${threadMessageId}/replies`, {
           method: 'POST',
           body: JSON.stringify({ body: encodeComposerMentions(rawBody, composerId), attachmentIds }),
         });
@@ -101,6 +182,7 @@ document.addEventListener('submit', async (event) => {
         restoreComposerAfterFailedSubmit(form, composerId, replySnapshot);
         throw error;
       }
+      applySubmittedConversationResult(result);
       requestPaneBottomScroll('thread');
       submittedBottomTarget = '#thread-context';
       focusComposerId = composerId;

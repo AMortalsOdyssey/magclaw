@@ -34,6 +34,7 @@ const suites = {
     'test/release-notes.test.js',
     'test/reminder-scheduler.test.js',
     'test/state-core.test.js',
+    'test/submit-startup-sync.test.js',
     'test/system-routes.test.js',
     'test/task-routes.test.js',
     'test/ui-sse-render.test.js',
@@ -42,6 +43,7 @@ const suites = {
     'test/console-server-form.test.js',
     'test/console-server-navigation.test.js',
     'test/project-ui.test.js',
+    'test/submit-startup-sync.test.js',
     'test/ui-sse-render.test.js',
   ],
   flow: [
