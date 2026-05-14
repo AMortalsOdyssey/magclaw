@@ -32,6 +32,26 @@ test('project remove buttons render as icons instead of rem text', async () => {
   assert.match(app, /class="project-remove-icon"/);
 });
 
+test('task board exposes closed state and member proposal review controls', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const taskSource = app.slice(app.indexOf('const taskColumns = ['), app.indexOf('function renderTaskDetail'));
+  const modalSource = app.slice(app.indexOf('function renderChannelMembersModal()'), app.indexOf('function renderAddChannelMemberModal()'));
+  const clickSource = app.slice(app.indexOf("if (action === 'task-claim')"), app.indexOf("if (action === 'leave-channel')"));
+
+  assert.match(taskSource, /\['closed', 'Closed'\]/);
+  assert.match(taskSource, /function taskIsClosedStatus\(status\)[\s\S]*status === 'closed'/);
+  assert.match(taskSource, /data-action="task-close"/);
+  assert.match(clickSource, /\/api\/tasks\/\$\{target\.dataset\.id\}\/close/);
+  assert.match(app, /channelMemberProposals/);
+  assert.match(app, /data-action="accept-member-proposal"/);
+  assert.match(app, /data-action="decline-member-proposal"/);
+  assert.match(app, /\/api\/channel-member-proposals\/\$\{proposalId\}\/accept/);
+  assert.match(app, /\/api\/channel-member-proposals\/\$\{proposalId\}\/decline/);
+  assert.match(styles, /\.task-status-closed/);
+  assert.match(styles, /\.member-proposal-card/);
+});
+
 test('members settings expose role-aware invitation controls', async () => {
   const app = await readAppSource();
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));

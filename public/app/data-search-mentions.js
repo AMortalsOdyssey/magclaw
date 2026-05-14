@@ -132,9 +132,16 @@ function renderActorAvatar(authorId, authorType) {
   return `<div class="avatar">${getAvatarHtml(authorId, authorType, 'avatar-inner')}${humanStatusDot(authorId, authorType)}</div>`;
 }
 
+function renderHumanYouLabel(human) {
+  if (!human || typeof humanMatchesCurrentAccount !== 'function') return '';
+  return humanMatchesCurrentAccount(human) ? '<em class="human-you-label">(you)</em>' : '';
+}
+
 function renderActorName(authorId, authorType) {
   if (authorType === 'human') {
-    return `<strong class="human-author-name">${escapeHtml(displayName(authorId))}${humanBadgeHtml()}</strong>`;
+    const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
+    const youLabel = renderHumanYouLabel(human);
+    return `<strong class="human-author-name">${escapeHtml(displayName(authorId))}${youLabel}${humanBadgeHtml()}</strong>`;
   }
   if (authorType !== 'agent') return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
   const agent = byId(appState?.agents, authorId);

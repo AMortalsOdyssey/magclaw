@@ -689,6 +689,7 @@ function renderTaskActionButtons(task, options = {}) {
   const canReview = task.status === 'in_progress' && Boolean(task.claimedBy);
   const canApprove = task.status === 'in_review';
   const canRun = !taskIsClosedStatus(task.status) && (!task.claimedBy || task.claimedBy === 'agt_codex');
+  const canClose = !taskIsClosedStatus(task.status);
   const includeThread = options.includeThread !== false;
   const thread = taskThreadMessage(task);
   return `
@@ -697,6 +698,7 @@ function renderTaskActionButtons(task, options = {}) {
     ${canRun ? `<button class="task-action-btn tone-run" type="button" data-action="run-task-codex" data-id="${escapeHtml(task.id)}">Run Codex</button>` : ''}
     ${canReview ? `<button class="task-action-btn tone-review" type="button" data-action="task-review" data-id="${escapeHtml(task.id)}">Review</button>` : ''}
     ${canApprove ? `<button class="task-action-btn tone-done" type="button" data-action="task-approve" data-id="${escapeHtml(task.id)}">Done</button>` : ''}
+    ${canClose ? `<button class="task-action-btn tone-close" type="button" data-action="task-close" data-id="${escapeHtml(task.id)}">Close</button>` : ''}
     ${taskIsClosedStatus(task.status) ? `<button class="task-action-btn tone-reopen" type="button" data-action="task-reopen" data-id="${escapeHtml(task.id)}">Reopen</button>` : ''}
     ${includeThread && thread ? `<button class="task-action-btn tone-thread" type="button" data-action="open-thread" data-id="${escapeHtml(thread.id)}">Thread</button>` : ''}
   `;

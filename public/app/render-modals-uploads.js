@@ -315,15 +315,53 @@ function renderAddMemberCandidateGroup(title, items, type) {
   `;
 }
 
+function channelMemberProposalCards(channelId) {
+  const channelMemberProposals = Array.isArray(appState?.channelMemberProposals) ? appState.channelMemberProposals : [];
+  return channelMemberProposals
+    .filter((proposal) => proposal.channelId === channelId && proposal.status === 'pending')
+    .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0));
+}
+
+function renderMemberProposalCard(proposal) {
+  const proposer = displayName(proposal.proposedBy || 'agent');
+  const members = (proposal.memberIds || [])
+    .map((id) => (typeof humanByIdAny === 'function' ? humanByIdAny(id) : null) || byId(appState.agents, id) || { id, name: displayName(id) })
+    .filter(Boolean);
+  return `
+    <div class="member-proposal-card">
+      <div class="member-proposal-main">
+        <span class="member-proposal-kicker">Agent suggestion</span>
+        <strong>${escapeHtml(proposer)} wants to add ${escapeHtml(members.map((member) => member.name || displayName(member.id)).join(', '))}</strong>
+        <p>${escapeHtml(proposal.reason || 'No reason provided.')}</p>
+        <small>${escapeHtml(fmtTime(proposal.createdAt))}</small>
+      </div>
+      <div class="member-proposal-actions">
+        <button class="secondary-btn compact-btn" type="button" data-action="decline-member-proposal" data-proposal-id="${escapeHtml(proposal.id)}">Decline</button>
+        <button class="primary-btn compact-btn" type="button" data-action="accept-member-proposal" data-proposal-id="${escapeHtml(proposal.id)}">Accept</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderChannelMembersModal() {
   const channel = selectedSpaceType === 'channel' ? currentSpace() : null;
   const members = getChannelMembers(selectedSpaceId);
   const allChannel = isAllChannel(channel);
   const total = members.agents.length + members.humans.length;
+  const proposals = channelMemberProposalCards(selectedSpaceId);
 
   return `
     ${modalHeader(`MEMBERS (${total})`)}
     <div class="members-modal-content">
+      ${proposals.length ? `
+        <div class="members-section member-proposals-section">
+          <div class="members-section-title">Pending suggestions <em>${proposals.length}</em></div>
+          <div class="member-proposal-list">
+            ${proposals.map(renderMemberProposalCard).join('')}
+          </div>
+        </div>
+      ` : ''}
+
       <div class="members-section">
         <div class="members-section-title">Agents</div>
         <div class="members-list">

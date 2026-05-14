@@ -320,7 +320,7 @@
 
 .task-board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(220px, 1fr));
+  grid-template-columns: repeat(5, minmax(220px, 1fr));
   align-items: start;
   align-content: start;
   gap: 16px;
@@ -418,6 +418,10 @@
 
 .task-status-done {
   background: #9bd979;
+}
+
+.task-status-closed {
+  background: #d8d2c8;
 }
 
 .task-status-symbol {
@@ -1604,4 +1608,3 @@
   overflow: auto;
   background: var(--bg-chat);
 }
-

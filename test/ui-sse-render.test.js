@@ -73,3 +73,24 @@ test('state SSE updates do not send an immediate presence heartbeat on every eve
   assert.match(heartbeatSource, /if \(!humanPresenceTimer\) \{[\s\S]*sendHumanPresenceHeartbeat\(\);[\s\S]*\}/);
   assert.doesNotMatch(heartbeatSource.replace(/if \(!humanPresenceTimer\) \{[\s\S]*?\n  \}/, ''), /sendHumanPresenceHeartbeat\(\)/);
 });
+
+test('current human authors are marked and human inspector can return to the active thread', async () => {
+  const app = await readAppSource();
+  const actorNameSource = app.slice(
+    app.indexOf('function renderHumanYouLabel(human)'),
+    app.indexOf('// Parse <@id> and <!special> mentions into styled spans for display'),
+  );
+  const humanInspectorSource = app.slice(
+    app.indexOf("if (action === 'select-human-inspector')"),
+    app.indexOf("if (action === 'select-human')"),
+  );
+
+  assert.match(actorNameSource, /function renderHumanYouLabel\(human\)/);
+  assert.match(actorNameSource, /humanMatchesCurrentAccount\(human\) \? '<em class="human-you-label">\(you\)<\/em>'/);
+  assert.match(actorNameSource, /\$\{escapeHtml\(displayName\(authorId\)\)\}\$\{youLabel\}\$\{humanBadgeHtml\(\)\}/);
+  assert.match(humanInspectorSource, /if \(threadMessageId\) inspectorReturnThreadId = threadMessageId;/);
+  assert.ok(
+    humanInspectorSource.indexOf('inspectorReturnThreadId = threadMessageId') < humanInspectorSource.indexOf('threadMessageId = null'),
+    'human inspector must remember the thread before replacing it with the detail panel',
+  );
+});

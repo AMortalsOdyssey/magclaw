@@ -462,6 +462,7 @@ document.addEventListener('click', async (event) => {
       loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
     }
     if (action === 'select-human-inspector') {
+      if (threadMessageId) inspectorReturnThreadId = threadMessageId;
       selectedHumanId = target.dataset.id;
       selectedAgentId = null;
       selectedComputerId = null;
@@ -1148,6 +1149,10 @@ document.addEventListener('click', async (event) => {
       await api(`/api/tasks/${target.dataset.id}/approve`, { method: 'POST', body: '{}' });
       toast('Task approved');
     }
+    if (action === 'task-close') {
+      await api(`/api/tasks/${target.dataset.id}/close`, { method: 'POST', body: '{}' });
+      toast('Task closed');
+    }
     if (action === 'task-reopen') {
       await api(`/api/tasks/${target.dataset.id}/reopen`, { method: 'POST', body: '{}' });
       toast('Task reopened');
@@ -1329,6 +1334,21 @@ document.addEventListener('click', async (event) => {
         });
         modal = 'add-channel-member';
         toast('Member added');
+      }
+    }
+    if (action === 'accept-member-proposal' || action === 'decline-member-proposal') {
+      const proposalId = target.dataset.proposalId;
+      if (proposalId) {
+        const reviewAction = action === 'accept-member-proposal' ? 'accept' : 'decline';
+        const reviewPath = action === 'accept-member-proposal'
+          ? `/api/channel-member-proposals/${proposalId}/accept`
+          : `/api/channel-member-proposals/${proposalId}/decline`;
+        await api(reviewPath, {
+          method: 'POST',
+          body: JSON.stringify({ reviewerId: 'hum_local' }),
+        });
+        modal = 'channel-members';
+        toast(reviewAction === 'accept' ? 'Member proposal accepted' : 'Member proposal declined');
       }
     }
   } catch (error) {

@@ -111,6 +111,10 @@
   background: #b9e484;
 }
 
+.task-action-btn.tone-close {
+  background: #d8d2c8;
+}
+
 .task-action-btn.tone-reopen {
   background: #f4c27c;
 }

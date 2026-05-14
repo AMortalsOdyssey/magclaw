@@ -368,10 +368,11 @@ const taskColumns = [
   ['in_progress', 'In Progress'],
   ['in_review', 'In Review'],
   ['done', 'Done'],
+  ['closed', 'Closed'],
 ];
 
 function taskIsClosedStatus(status) {
-  return status === 'done';
+  return status === 'done' || status === 'closed';
 }
 
 const taskStatusMeta = {
@@ -379,6 +380,7 @@ const taskStatusMeta = {
   in_progress: { label: 'In Progress', icon: '↻', tone: 'in_progress' },
   in_review: { label: 'In Review', icon: '👀', tone: 'in_review' },
   done: { label: 'Done', icon: '✓', tone: 'done' },
+  closed: { label: 'Closed', icon: '×', tone: 'closed' },
 };
 
 function taskStatusInfo(status) {
@@ -478,11 +480,14 @@ function renderThreadRowAvatar(record) {
 
 function renderTaskStateFlow(task) {
   const status = taskStatusMeta[task?.status] ? task.status : 'todo';
-  const currentIndex = Math.max(0, taskColumns.findIndex(([value]) => value === status));
+  const flowColumns = status === 'closed'
+    ? taskColumns.filter(([value]) => value !== 'done')
+    : taskColumns.filter(([value]) => value !== 'closed');
+  const currentIndex = Math.max(0, flowColumns.findIndex(([value]) => value === status));
   return `
     <div class="task-state-flow" aria-label="Task status: ${escapeHtml(taskStatusLabel(status))}">
-      ${taskColumns.map(([value]) => {
-        const index = taskColumns.findIndex(([item]) => item === value);
+      ${flowColumns.map(([value]) => {
+        const index = flowColumns.findIndex(([item]) => item === value);
         const state = index < currentIndex ? 'complete' : (index === currentIndex ? 'current' : 'pending');
         return `
           <span class="task-state-node ${state} task-status-${escapeHtml(taskStatusClass(value))}" title="${escapeHtml(taskStatusLabel(value))}">
