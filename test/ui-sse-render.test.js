@@ -61,6 +61,22 @@ test('unread count changes do not force full render before active chat patching'
   assert.match(applyStateSource, /if \(selectionChanged\) \{\s*render\(\);\s*return;\s*\}[\s\S]*if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;[\s\S]*if \(patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: activeConversationChanged \|\| unreadChanged \}\)\) return;/);
 });
 
+test('run-event SSE updates do not repaint active chat panes or force scroll restore', async () => {
+  const app = await readAppSource();
+  const runEventSource = app.slice(
+    app.indexOf('function applyRunEventUpdate(incoming)'),
+    app.indexOf('function applyPresenceHeartbeat(heartbeat)'),
+  );
+
+  assert.match(runEventSource, /function applyRunEventUpdate\(incoming\)/);
+  assert.doesNotMatch(runEventSource, /rememberPinnedBottomBeforeStateChange/);
+  assert.doesNotMatch(runEventSource, /patchActiveThreadSurface/);
+  assert.doesNotMatch(runEventSource, /patchActiveConversationSurface/);
+  assert.match(runEventSource, /patchRailSurface\(\)/);
+  assert.match(runEventSource, /workspaceActivityDrawerOpen/);
+  assert.match(runEventSource, /selectedAgentId/);
+});
+
 test('state SSE updates do not send an immediate presence heartbeat on every event', async () => {
   const app = await readAppSource();
   const heartbeatSource = app.slice(

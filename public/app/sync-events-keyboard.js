@@ -348,16 +348,13 @@ function applyStateUpdate(nextState) {
 
 function applyRunEventUpdate(incoming) {
   if (!appState || appState.events.some((item) => item.id === incoming.id)) return;
-  const scrollSnapshot = {
-    main: paneScrollSnapshot('main'),
-    thread: paneScrollSnapshot('thread'),
-  };
-  rememberPinnedBottomBeforeStateChange();
   appState.events.push(incoming);
   if (modal) return;
-  if (patchActiveThreadSurface(scrollSnapshot)) return;
-  if (patchActiveConversationSurface(scrollSnapshot)) return;
-  render();
+  if (workspaceActivityDrawerOpen || selectedAgentId) {
+    render();
+    return;
+  }
+  patchRailSurface();
 }
 
 function applyPresenceHeartbeat(heartbeat) {
