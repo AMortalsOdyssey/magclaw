@@ -5,7 +5,7 @@ Local daemon for connecting a user's computer to MagClaw Cloud.
 Typical connect command:
 
 ```sh
-npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --api-key mc_machine_xxx --profile my-server # my-server
+npx @magclaw/daemon@latest --server-url https://magclaw.example.com --api-key mc_machine_xxx --profile my-server # my-server
 ```
 
 The daemon stores cloud profiles and machine tokens under:
@@ -30,7 +30,7 @@ latest npm package on service start.
 Foreground mode:
 
 ```sh
-npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --api-key mc_machine_xxx
+npx @magclaw/daemon@latest --server-url https://magclaw.example.com --api-key mc_machine_xxx
 ```
 
 Keep this terminal open. Press `Ctrl+C` to stop.
@@ -38,21 +38,21 @@ Keep this terminal open. Press `Ctrl+C` to stop.
 Background mode:
 
 ```sh
-npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --api-key mc_machine_xxx --background
+npx @magclaw/daemon@latest --server-url https://magclaw.example.com --api-key mc_machine_xxx --background
 ```
 
 Stop a background daemon:
 
 ```sh
-npx -y @magclaw/daemon@latest stop --profile default
+npx @magclaw/daemon@latest stop --profile default
 ```
 
 Inspect or remove it:
 
 ```sh
-npx -y @magclaw/daemon@latest status --profile default
-npx -y @magclaw/daemon@latest logs --profile default
-npx -y @magclaw/daemon@latest uninstall --profile default
+npx @magclaw/daemon@latest status --profile default
+npx @magclaw/daemon@latest logs --profile default
+npx @magclaw/daemon@latest uninstall --profile default
 ```
 
 Only one daemon process may run on a computer at a time. A second foreground

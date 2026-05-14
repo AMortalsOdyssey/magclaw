@@ -31,7 +31,7 @@ storage:
 
 daemon:
   # local-repo shows: MAGCLAW_REPO_DIR=...; node .../daemon/bin/magclaw-daemon.js
-  # npm shows: npx -y @magclaw/daemon@latest connect
+  # npm shows: npx @magclaw/daemon@latest
   connect_command_mode: "npm"
   local_repo_placeholder: "/path/to/magclaw"
 

@@ -127,12 +127,12 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
   const apiKey = parseCli([
     'node',
     'magclaw-daemon',
-    'connect',
     '--server-url',
     'https://example.test',
     '--api-key',
     'mc_machine_test',
   ]);
+  assert.equal(apiKey.command, 'connect');
   assert.equal(apiKey.flags.apiKey, 'mc_machine_test');
 });
 

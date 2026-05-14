@@ -4,7 +4,10 @@
   "description": "Local MagClaw daemon that connects a user's computer to MagClaw Cloud.",
   "type": "module",
   "bin": {
-    "magclaw-daemon": "./bin/magclaw-daemon.js"
+    "magclaw-daemon": "bin/magclaw-daemon.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "bin/",
