@@ -191,7 +191,7 @@ const tools = [
   },
   {
     name: 'create_tasks',
-    description: 'Create one or more MagClaw tasks in a channel/DM and optionally claim them.',
+    description: 'Create one or more MagClaw tasks in a channel/DM and optionally claim them. Include sourceMessageId from the current message when available so retries reuse the same task.',
     inputSchema: schema({
       channel: { type: 'string', description: 'Channel label/name/id, such as #all.' },
       target: { type: 'string', description: 'Conversation target alternative to channel.' },
@@ -206,9 +206,11 @@ const tools = [
           assigneeIds: { type: 'array', items: { type: 'string' } },
           sourceMessageId: { type: 'string' },
           sourceReplyId: { type: 'string' },
+          allowDuplicate: { type: 'boolean' },
         }, ['title']),
       },
       claim: { type: 'boolean', description: 'Whether this agent should claim the created tasks.' },
+      allowDuplicate: { type: 'boolean', description: 'Set true only when intentionally creating another matching task.' },
       assigneeId: { type: 'string', description: 'Optional assignee id.' },
       assigneeIds: { type: 'array', items: { type: 'string' } },
       sourceMessageId: { type: 'string' },

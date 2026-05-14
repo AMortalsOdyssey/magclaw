@@ -28,9 +28,25 @@ function routeDeps(overrides = {}) {
       return task;
     },
     createTaskFromMessage: (message, title) => ({ id: 'task_from_message', title, sourceMessageId: message.id }),
-    createTaskMessage: ({ title, assigneeIds }) => {
-      const task = { id: 'task_1', number: 1, title, status: 'todo', assigneeIds };
-      const message = { id: 'msg_task_1', taskId: task.id };
+    createTaskMessage: ({ title, assigneeIds, spaceType = 'channel', spaceId = 'chan_all', authorId = agent.id, sourceMessageId = null, sourceReplyId = null }) => {
+      const taskNumber = state.tasks.length + 1;
+      const task = {
+        id: `task_${taskNumber}`,
+        number: taskNumber,
+        title,
+        status: 'todo',
+        assigneeIds,
+        createdBy: authorId,
+        spaceType,
+        spaceId,
+        sourceMessageId: sourceMessageId || `msg_task_${taskNumber}`,
+        sourceReplyId,
+        createdAt: `2026-05-14T00:00:0${taskNumber}.000Z`,
+        updatedAt: `2026-05-14T00:00:0${taskNumber}.000Z`,
+      };
+      const message = { id: `msg_task_${taskNumber}`, taskId: task.id, authorType: 'agent', authorId, spaceType, spaceId };
+      state.tasks.unshift(task);
+      state.messages.push(message);
       return { task, message };
     },
     createReminder: (input) => {
@@ -65,6 +81,7 @@ function routeDeps(overrides = {}) {
     httpError: (status, message) => Object.assign(new Error(message), { status }),
     markWorkItemResponded: () => {},
     normalizeIds: (items) => [...new Set((items || []).filter(Boolean).map(String))],
+    now: () => '2026-05-14T00:01:00.000Z',
     persistState: async () => {},
     postAgentResponse: async () => ({ id: 'rep_1' }),
     readAgentHistory: () => ({ ok: true, target: '#all', messages: [] }),
@@ -210,6 +227,41 @@ test('agent tool task creation merges assignees and can claim created work', asy
   assert.equal(res.statusCode, 201);
   assert.deepEqual(res.data.tasks[0].task.assigneeIds, ['agt_two', 'agt_one']);
   assert.equal(res.data.tasks[0].task.claimedBy, 'agt_one');
+});
+
+test('agent tool task creation reuses an immediate duplicate from the same agent and target', async () => {
+  let payload = {
+    agentId: 'agt_one',
+    target: '#all',
+    title: '调研一个产品',
+    claim: true,
+  };
+  const deps = routeDeps({
+    readJson: async () => payload,
+  });
+
+  const firstRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'POST' },
+    firstRes,
+    new URL('http://local/api/agent-tools/tasks'),
+    deps,
+  ), true);
+  assert.equal(firstRes.statusCode, 201);
+  assert.equal(deps.state.tasks.length, 1);
+
+  payload = { ...payload };
+  const secondRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'POST' },
+    secondRes,
+    new URL('http://local/api/agent-tools/tasks'),
+    deps,
+  ), true);
+  assert.equal(secondRes.statusCode, 200);
+  assert.equal(deps.state.tasks.length, 1);
+  assert.equal(secondRes.data.tasks[0].task.id, firstRes.data.tasks[0].task.id);
+  assert.equal(secondRes.data.tasks[0].reused, true);
 });
 
 test('agent tool memory endpoint records controlled memory writebacks', async () => {

@@ -44,6 +44,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     workItemTargetMatches,
   } = deps;
   const state = getState();
+  const TASK_CREATE_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
 
   function headerValue(name) {
     const headers = req.headers || {};
@@ -77,6 +78,67 @@ export async function handleAgentToolApi(req, res, url, deps) {
 
   function runtimeLabel(agent) {
     return compactText(agent?.runtimeId || agent?.runtime || agent?.model || 'unknown', 80);
+  }
+
+  function normalizedTaskText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function taskTimeMs(task) {
+    const value = task?.createdAt || task?.updatedAt || '';
+    const ms = new Date(value).getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  }
+
+  function currentTimeMs() {
+    const value = typeof now === 'function' ? now() : new Date().toISOString();
+    const ms = new Date(value).getTime();
+    return Number.isFinite(ms) ? ms : Date.now();
+  }
+
+  function taskBodyMatches(task, bodyText) {
+    const requested = normalizedTaskText(bodyText);
+    const existing = normalizedTaskText(task?.body || '');
+    if (!requested && !existing) return true;
+    if (!requested || !existing) return false;
+    return requested === existing;
+  }
+
+  function taskIsReusable(task) {
+    return Boolean(task && !['done', 'closed', 'stopped'].includes(String(task.status || '').toLowerCase()));
+  }
+
+  function duplicateTaskResult(task, space, reused = true) {
+    return {
+      task,
+      message: findMessage(task.messageId) || null,
+      taskNumber: task.number,
+      messageId: task.messageId || null,
+      title: task.title,
+      threadTarget: `${space.label}:${task.threadMessageId || task.messageId || task.id}`,
+      reused,
+    };
+  }
+
+  function findDuplicateAgentTask({ agent, space, title, bodyText = '', sourceMessageId = '', sourceReplyId = '' }) {
+    const normalizedTitle = normalizedTaskText(title);
+    if (!normalizedTitle) return null;
+    const sourceId = String(sourceMessageId || '').trim();
+    const replyId = String(sourceReplyId || '').trim();
+    const requestMs = currentTimeMs();
+    return (state.tasks || []).find((task) => {
+      if (!taskIsReusable(task)) return false;
+      if (task.spaceType !== space.spaceType || task.spaceId !== space.spaceId) return false;
+      if (normalizedTaskText(task.title) !== normalizedTitle) return false;
+      if (!taskBodyMatches(task, bodyText)) return false;
+      if (sourceId || replyId) {
+        return String(task.sourceMessageId || '') === sourceId
+          && String(task.sourceReplyId || '') === replyId;
+      }
+      if (String(task.createdBy || '') !== agent.id) return false;
+      const ageMs = requestMs - taskTimeMs(task);
+      return ageMs >= 0 && ageMs <= TASK_CREATE_DEDUPE_WINDOW_MS;
+    }) || null;
   }
 
   function findHumanName(id) {
@@ -811,6 +873,8 @@ export async function handleAgentToolApi(req, res, url, deps) {
       ? body.tasks
       : [{ title: body.title, body: body.body }];
     const created = [];
+    let createdCount = 0;
+    let reusedCount = 0;
     try {
       for (const input of taskInputs) {
         // Task creation accepts both per-item and request-level assignee fields
@@ -822,18 +886,41 @@ export async function handleAgentToolApi(req, res, url, deps) {
           ...(body.assigneeId ? [body.assigneeId] : []),
           ...(body.claim ? [agent.id] : []),
         ]);
+        const title = input.title;
+        const bodyText = String(input.body ?? body.body ?? '').trim();
+        const sourceMessageId = input.sourceMessageId || body.sourceMessageId || null;
+        const sourceReplyId = input.sourceReplyId || body.sourceReplyId || null;
+        const duplicate = input.allowDuplicate === true || body.allowDuplicate === true
+          ? null
+          : findDuplicateAgentTask({
+            agent,
+            space,
+            title,
+            bodyText,
+            sourceMessageId,
+            sourceReplyId,
+          });
+        if (duplicate) {
+          if (body.claim && (!duplicate.claimedBy || duplicate.claimedBy === agent.id || body.force === true)) {
+            claimTask(duplicate, agent.id, { force: body.force });
+          }
+          reusedCount += 1;
+          created.push(duplicateTaskResult(duplicate, space, true));
+          continue;
+        }
         const { message, task } = createTaskMessage({
-          title: input.title,
-          body: String(input.body ?? body.body ?? '').trim(),
+          title,
+          body: bodyText,
           ...space,
           authorType: 'agent',
           authorId: agent.id,
           assigneeIds,
           attachmentIds: Array.isArray(input.attachmentIds) ? input.attachmentIds : (Array.isArray(body.attachmentIds) ? body.attachmentIds : []),
-          sourceMessageId: input.sourceMessageId || body.sourceMessageId || null,
-          sourceReplyId: input.sourceReplyId || body.sourceReplyId || null,
+          sourceMessageId,
+          sourceReplyId,
         });
         if (body.claim) claimTask(task, agent.id, { force: body.force });
+        createdCount += 1;
         created.push({
           task,
           message,
@@ -841,26 +928,34 @@ export async function handleAgentToolApi(req, res, url, deps) {
           messageId: message.id,
           title: task.title,
           threadTarget: `${space.label}:${message.id}`,
+          reused: false,
         });
       }
     } catch (error) {
       sendError(res, error.status || 400, error.message);
       return true;
     }
-    addSystemEvent('agent_tool_create_tasks', `${agent.name} created ${created.length} task(s).`, {
+    addSystemEvent('agent_tool_create_tasks', `${agent.name} created ${createdCount} task(s) and reused ${reusedCount} existing task(s).`, {
       agentId: agent.id,
       taskIds: created.map((item) => item.task.id),
+      createdTaskIds: created.filter((item) => !item.reused).map((item) => item.task.id),
+      reusedTaskIds: created.filter((item) => item.reused).map((item) => item.task.id),
       spaceType: space.spaceType,
       spaceId: space.spaceId,
     });
     await persistState();
     broadcastState();
-    sendJson(res, 201, {
+    const summary = createdCount && reusedCount
+      ? `Created ${createdCount} and reused ${reusedCount} task(s) in ${space.label}:`
+      : (createdCount
+        ? `Created ${createdCount} task(s) in ${space.label}:`
+        : `Reused ${reusedCount} existing task(s) in ${space.label}:`);
+    sendJson(res, createdCount ? 201 : 200, {
       ok: true,
       tasks: created,
       text: [
-        `Created ${created.length} task(s) in ${space.label}:`,
-        ...created.map((item) => `${taskLabel(item.task)} msg=${item.messageId} "${item.title}"`),
+        summary,
+        ...created.map((item) => `${taskLabel(item.task)} msg=${item.messageId}${item.reused ? ' reused=true' : ''} "${item.title}"`),
         '',
         'To follow up, reply in:',
         ...created.map((item) => `${taskLabel(item.task)} -> ${item.threadTarget}`),
