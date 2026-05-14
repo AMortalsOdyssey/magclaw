@@ -1430,6 +1430,7 @@ function agentApiDeps() {
     persistState,
     readAgentWorkspaceFile,
     readJson,
+    requestAgentSkills: (...args) => daemonRelay.requestAgentSkills(...args),
     restartAgentFromControl,
     root: ROOT,
     sendError,

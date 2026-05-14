@@ -38,6 +38,7 @@ function routeDeps(overrides = {}) {
     findChannel: (id) => state.channels.find((channel) => channel.id === id),
     getState: () => state,
     hasAgentProcess: () => false,
+    listAgentSkills: async () => ({ global: [], workspace: [], plugin: [], tools: [] }),
     listAgentWorkspace: async () => ({ entries: [] }),
     makeId: (prefix) => `${prefix}_new`,
     normalizeCodexModelName: (model, fallback) => String(model || fallback || ''),
@@ -385,4 +386,37 @@ test('agent route group updates profile fields and removes channel membership on
   assert.match(deps.state.agents[0].deletedAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.deepEqual(deps.state.channels[1].agentIds, []);
   assert.deepEqual(deps.state.channels[1].memberIds, ['hum_local']);
+});
+
+test('agent skills route requests daemon skills for remote agents', async () => {
+  let requestedAgentId = '';
+  const deps = routeDeps({
+    requestAgentSkills: async (agent) => {
+      requestedAgentId = agent.id;
+      return {
+        agent: { id: agent.id, name: agent.name },
+        global: [{ name: 'itinerary-scout' }],
+        workspace: [],
+        plugin: [],
+        tools: ['send_message'],
+      };
+    },
+    listAgentSkills: async () => {
+      throw new Error('local skill scan should not run for connected remote agents');
+    },
+  });
+  deps.state.agents[0].computerId = 'cmp_remote';
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/api/agents/agt_1/skills'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(requestedAgentId, 'agt_1');
+  assert.equal(res.data.global[0].name, 'itinerary-scout');
+  assert.deepEqual(res.data.tools, ['send_message']);
 });

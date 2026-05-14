@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -218,6 +218,16 @@ async function startRelay(options = {}) {
 
 test('npm daemon pairs, starts fake Codex app-server, and returns an agent message', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-relay-'));
+  const sourceHome = path.join(tmp, 'source-codex-home');
+  await mkdir(path.join(sourceHome, 'skills', 'itinerary-scout'), { recursive: true });
+  await writeFile(path.join(sourceHome, 'skills', 'itinerary-scout', 'SKILL.md'), [
+    '---',
+    'name: itinerary-scout',
+    'description: Finds practical travel routes.',
+    '---',
+    '',
+    '# Itinerary Scout',
+  ].join('\n'));
   const fakeCodex = path.join(tmp, 'codex-fake.js');
   const logPath = path.join(tmp, 'codex-log.jsonl');
   await writeFile(fakeCodex, `#!/usr/bin/env node
@@ -277,6 +287,7 @@ process.stdin.on('data', (chunk) => {
     env: {
       ...process.env,
       MAGCLAW_DAEMON_HOME: path.join(tmp, 'daemon-home'),
+      MAGCLAW_CODEX_HOME_SOURCE: sourceHome,
       CODEX_PATH: fakeCodex,
       FAKE_CODEX_LOG: logPath,
     },
@@ -290,6 +301,11 @@ process.stdin.on('data', (chunk) => {
     assert.equal(message.payload.spaceId, 'chan_all');
     assert.ok(relay.messages.some((item) => item.type === 'agent:deliver:ack' && item.commandId === 'adl_test'));
     assert.ok(relay.messages.some((item) => item.type === 'agent:session' && item.sessionId === 'thread_remote_fake'));
+    relay.send({ type: 'agent:skills:list', commandId: 'skills_test', agentId: 'agt_remote' });
+    const skillResult = await waitFor(() => relay.messages.find((item) => item.type === 'agent:skills:list_result'));
+    assert.equal(skillResult.commandId, 'skills_test');
+    assert.ok(skillResult.skills.global.some((skill) => skill.name === 'itinerary-scout'));
+    assert.ok(skillResult.skills.tools.includes('send_message'));
 
     const saved = JSON.parse(await readFile(path.join(tmp, 'daemon-home', 'profiles', 'cloud-test', 'config.json'), 'utf8'));
     assert.equal(saved.token, 'mc_machine_test');
@@ -322,7 +338,7 @@ process.stdin.on('data', (chunk) => {
     assert.match(appServer.env.CODEX_HOME, /daemon-home\/profiles\/cloud-test\/agents\/agt_remote\/codex-home$/);
     const agentCodexConfig = await readFile(path.join(appServer.env.CODEX_HOME, 'config.toml'), 'utf8');
     assert.match(agentCodexConfig, /wire_api\s*=\s*"responses"/);
-    assert.match(agentCodexConfig, new RegExp(`\\[projects\\.${JSON.stringify(os.homedir()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]`));
+    assert.match(agentCodexConfig, new RegExp(`\\[projects\\.${JSON.stringify(sourceHome).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]`));
     assert.match(agentCodexConfig, /trust_level\s*=\s*"trusted"/);
     assert.ok(appServer.args.some((arg) => String(arg).includes('mcp_servers.magclaw.args')));
     assert.equal(appServer.args.some((arg) => String(arg).includes('mc_machine_test')), false);

@@ -45,6 +45,19 @@ const WEB_RELEASES = [
 
 const DAEMON_RELEASES = [
   {
+    version: '0.1.6',
+    date: '2026-05-14',
+    title: 'Workspace replies and remote skills',
+    features: [
+      'Cloud-connected daemon agents now expose linked global Codex skills plus agent-isolated skill install folders.',
+    ],
+    improved: [],
+    fixes: [
+      'Agent replies to #all threads now resolve the requested workspace before validating the target channel.',
+      'Agent mention chips inside chat messages now open the Agent detail panel.',
+    ],
+  },
+  {
     version: '0.1.5',
     date: '2026-05-14',
     title: 'Codex runtime trust config',

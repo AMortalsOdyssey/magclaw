@@ -1,6 +1,6 @@
 {
   "name": "@magclaw/daemon",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Local MagClaw daemon that connects a user's computer to MagClaw Cloud.",
   "type": "module",
   "bin": {

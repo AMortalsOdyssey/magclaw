@@ -3,7 +3,7 @@ import https from 'node:https';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { chmod, lstat, mkdir, open, readFile, readlink, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -998,6 +998,220 @@ async function ensureSymlinkedCodexHomeEntry(codexHome, entryName) {
   await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
 }
 
+function toPosixPath(value) {
+  return String(value || '').split(path.sep).join('/');
+}
+
+async function linkPathEntry(source, target) {
+  if (!source || !existsSync(source)) return false;
+  if (path.resolve(source) === path.resolve(target)) return false;
+  try {
+    const existing = await lstat(target);
+    if (existing.isSymbolicLink()) {
+      const current = await readlink(target);
+      const resolved = path.resolve(path.dirname(target), current);
+      if (resolved === source) return true;
+      await unlink(target);
+    } else {
+      return false;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const sourceStat = await stat(source);
+  await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
+  return true;
+}
+
+async function globalSkillRoots() {
+  const candidates = [
+    path.join(SOURCE_CODEX_HOME, 'skills'),
+    path.join(os.homedir(), '.agents', 'skills'),
+  ];
+  const roots = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    const resolved = await realpath(candidate).catch(() => path.resolve(candidate));
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    roots.push(candidate);
+  }
+  return roots;
+}
+
+async function syncGlobalSkillsIntoAgentHome(codexHome, workspace) {
+  const targetSkillsRoot = path.join(codexHome, 'skills');
+  await mkdir(targetSkillsRoot, { recursive: true });
+  const roots = await globalSkillRoots();
+  for (const sourceSkillsRoot of [...roots].reverse()) {
+    const entries = await readdir(sourceSkillsRoot, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const source = path.join(sourceSkillsRoot, entry.name);
+      if (entry.name === '.system' && (entry.isDirectory() || entry.isSymbolicLink())) {
+        const targetSystemRoot = path.join(targetSkillsRoot, '.system');
+        await mkdir(targetSystemRoot, { recursive: true });
+        const systemEntries = await readdir(source, { withFileTypes: true }).catch(() => []);
+        for (const systemEntry of systemEntries) {
+          const systemSource = path.join(source, systemEntry.name);
+          const systemTarget = path.join(targetSystemRoot, systemEntry.name);
+          await linkPathEntry(systemSource, systemTarget).catch(() => {});
+        }
+        continue;
+      }
+      if (!entry.isDirectory() && !entry.isSymbolicLink() && !entry.isFile()) continue;
+      await linkPathEntry(source, path.join(targetSkillsRoot, entry.name)).catch(() => {});
+    }
+  }
+
+  const workspaceSkillsLink = path.join(workspace, 'skills');
+  await linkPathEntry(targetSkillsRoot, workspaceSkillsLink).catch(() => {});
+}
+
+function firstFrontmatterValue(content, keys) {
+  const match = String(content || '').match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+  if (!match) return '';
+  const lines = match[1].split(/\r?\n/);
+  for (const key of keys) {
+    const line = lines.find((item) => item.toLowerCase().startsWith(`${key.toLowerCase()}:`));
+    if (!line) continue;
+    return line.slice(line.indexOf(':') + 1).trim().replace(/^['"]|['"]$/g, '');
+  }
+  return '';
+}
+
+function firstMarkdownParagraph(content) {
+  return String(content || '')
+    .replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '')
+    .split(/\n\s*\n/g)
+    .map((block) => block.replace(/^#+\s+.*$/gm, '').replace(/\s+/g, ' ').trim())
+    .find(Boolean) || '';
+}
+
+function skillNameFromPath(absPath) {
+  const parent = path.basename(path.dirname(absPath));
+  const base = path.basename(absPath, path.extname(absPath));
+  return base === 'SKILL' ? parent : base;
+}
+
+function shortenSkillPath(absPath, { agentRoot = '', codexHome = '' } = {}) {
+  const resolved = path.resolve(absPath);
+  const sourceHome = path.resolve(SOURCE_CODEX_HOME);
+  const home = os.homedir();
+  if (agentRoot && resolved.startsWith(path.resolve(agentRoot))) return toPosixPath(path.relative(agentRoot, resolved));
+  if (codexHome && resolved.startsWith(path.resolve(codexHome))) return toPosixPath(path.relative(codexHome, resolved));
+  if (resolved.startsWith(sourceHome)) return toPosixPath(path.join('~/.codex', path.relative(sourceHome, resolved)));
+  if (resolved.startsWith(home)) return toPosixPath(path.join('~', path.relative(home, resolved)));
+  return resolved;
+}
+
+async function parseSkillFile(filePath, scope, context = {}) {
+  const content = await readFile(filePath, 'utf8').catch(() => '');
+  const resolvedFilePath = await realpath(filePath).catch(() => filePath);
+  const name = firstFrontmatterValue(content, ['name', 'title']) || skillNameFromPath(filePath);
+  const description = firstFrontmatterValue(content, ['description', 'summary', 'short_description', 'short-description'])
+    || firstMarkdownParagraph(content)
+    || 'No description provided.';
+  const pluginMatch = resolvedFilePath.match(new RegExp(`${path.sep}plugins${path.sep}cache${path.sep}([^${path.sep}]+)${path.sep}`));
+  const shortPath = shortenSkillPath(resolvedFilePath, context);
+  return {
+    id: `${scope}:${shortPath}`,
+    name,
+    description: description.slice(0, 500),
+    path: shortPath,
+    absolutePath: resolvedFilePath,
+    scope,
+    kind: path.basename(filePath) === 'SKILL.md' ? 'skill' : 'command',
+    plugin: pluginMatch?.[1] || '',
+  };
+}
+
+async function scanSkillsDir(root, scope, context = {}) {
+  const skills = [];
+  if (!root || !existsSync(root)) return skills;
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') && entry.name !== '.system') continue;
+    const abs = path.join(root, entry.name);
+    if (entry.isDirectory() || entry.isSymbolicLink()) {
+      const skillFile = path.join(abs, 'SKILL.md');
+      if (existsSync(skillFile)) {
+        skills.push(await parseSkillFile(skillFile, scope, context));
+        continue;
+      }
+      if (entry.name === '.system') skills.push(...await scanSkillsDir(abs, 'system', context));
+    } else if (entry.isFile() && /\.md$/i.test(entry.name)) {
+      skills.push(await parseSkillFile(abs, scope === 'agent' ? 'agent' : 'command', context));
+    }
+  }
+  return skills;
+}
+
+async function findPluginSkillFiles(root, { maxEntries = 400 } = {}) {
+  const found = [];
+  async function walk(dir, depth = 0) {
+    if (found.length >= maxEntries || depth > 8 || !existsSync(dir)) return;
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (found.length >= maxEntries) break;
+      if (entry.name.startsWith('.')) continue;
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory() || entry.isSymbolicLink()) {
+        if (entry.name === 'skills') {
+          const skillDirs = await readdir(abs, { withFileTypes: true }).catch(() => []);
+          for (const skillDir of skillDirs) {
+            const skillFile = path.join(abs, skillDir.name, 'SKILL.md');
+            if ((skillDir.isDirectory() || skillDir.isSymbolicLink()) && existsSync(skillFile)) found.push(skillFile);
+          }
+          continue;
+        }
+        await walk(abs, depth + 1);
+      }
+    }
+  }
+  await walk(root);
+  return found;
+}
+
+async function resolvedRoots(paths) {
+  const roots = [];
+  for (const item of paths) {
+    if (!item || !existsSync(item)) continue;
+    roots.push(await realpath(item).catch(() => path.resolve(item)));
+  }
+  return roots;
+}
+
+function uniqueSkills(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = `${item.scope}:${item.name}:${item.path}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+}
+
+function daemonSkillTools() {
+  return [
+    'send_message',
+    'read_history',
+    'search_messages',
+    'search_agent_memory',
+    'read_agent_memory',
+    'list_agents',
+    'read_agent_profile',
+    'write_memory',
+    'list_tasks',
+    'create_tasks',
+    'claim_tasks',
+    'update_task_status',
+    'schedule_reminder',
+    'list_reminders',
+    'cancel_reminder',
+  ];
+}
+
 function codexTrustedProjectPaths() {
   const home = path.resolve(os.homedir());
   const sourceCodexHome = path.resolve(SOURCE_CODEX_HOME);
@@ -1061,6 +1275,7 @@ class CodexAgentSession {
     await mkdir(this.codexHome(), { recursive: true });
     await mkdir(this.workspace(), { recursive: true });
     await Promise.all(CODEX_HOME_SHARED_ENTRIES.map((entry) => ensureSymlinkedCodexHomeEntry(this.codexHome(), entry)));
+    await syncGlobalSkillsIntoAgentHome(this.codexHome(), this.workspace());
     await writeFile(path.join(this.codexHome(), 'config.toml'), [
       'wire_api = "responses"',
       '',
@@ -1078,8 +1293,48 @@ class CodexAgentSession {
       '',
       'This workspace is isolated for a MagClaw cloud-connected agent.',
       'Do not assume files from the user localhost MagClaw instance are present here.',
+      'Global Codex skills are linked into `./skills` for read-only reuse when available.',
+      'Agent-specific skills can be installed under `./skills/<skill-name>/SKILL.md`; this path belongs to this agent only.',
       '',
     ].join('\n'));
+  }
+
+  async listSkills() {
+    await this.prepare();
+    const context = {
+      agentRoot: this.agentDir(),
+      codexHome: this.codexHome(),
+    };
+    const roots = await globalSkillRoots();
+    const globalSkills = [];
+    for (const root of roots) globalSkills.push(...await scanSkillsDir(root, 'global', context));
+    const globalResolvedRoots = await resolvedRoots(roots);
+    const agentRoots = [
+      path.join(this.codexHome(), 'skills'),
+      path.join(this.agentDir(), '.codex', 'skills'),
+      path.join(this.agentDir(), '.agents', 'skills'),
+    ];
+    const agentSkills = [];
+    for (const root of agentRoots) agentSkills.push(...await scanSkillsDir(root, 'agent', context));
+    const workspaceSkills = agentSkills.filter((skill) => {
+      const resolved = path.resolve(skill.absolutePath);
+      return !globalResolvedRoots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
+    });
+    const pluginFiles = await findPluginSkillFiles(path.join(SOURCE_CODEX_HOME, 'plugins', 'cache'));
+    const pluginSkills = [];
+    for (const file of pluginFiles) pluginSkills.push(await parseSkillFile(file, 'plugin', context));
+    return {
+      agent: {
+        id: this.agent.id,
+        name: this.agent.name || this.agent.id,
+        codexHome: this.codexHome(),
+        workspacePath: this.workspace(),
+      },
+      global: uniqueSkills(globalSkills),
+      workspace: uniqueSkills(workspaceSkills),
+      plugin: uniqueSkills(pluginSkills),
+      tools: daemonSkillTools(),
+    };
   }
 
   sendStatus(status, activity = null) {
@@ -1926,8 +2181,7 @@ class MagClawDaemon {
         this.handleAgentActivityProbe(message);
         break;
       case 'agent:skills:list':
-        this.send({ type: 'agent:skills:list_result', commandId: message.commandId, agentId: message.agentId, skills: [] });
-        this.send({ type: 'agent:ack', commandId: message.commandId, agentId: message.agentId, status: 'idle' });
+        await this.handleAgentSkillsList(message);
         break;
       case 'machine:runtime_models:detect':
         this.send({ type: 'machine:runtime_models:result', commandId: message.commandId, runtimes: await detectRuntimes(this.env) });
@@ -1940,6 +2194,22 @@ class MagClawDaemon {
       default:
         logWarning('network', `Unhandled server frame: ${message.type || 'unknown'}`);
         break;
+    }
+  }
+
+  async handleAgentSkillsList(message) {
+    const existing = message.agentId ? this.sessions.get(message.agentId) : null;
+    const agent = existing?.agent || message.payload?.agent || { id: message.agentId, name: message.agentId || 'Agent', runtime: 'codex' };
+    try {
+      const session = existing || this.sessionFor(agent);
+      const skills = typeof session.listSkills === 'function'
+        ? await session.listSkills()
+        : { agent: { id: agent.id, name: agent.name || agent.id }, global: [], workspace: [], plugin: [], tools: [] };
+      this.send({ type: 'agent:skills:list_result', commandId: message.commandId, agentId: agent.id, skills });
+      this.send({ type: 'agent:ack', commandId: message.commandId, agentId: agent.id, status: session.status || 'idle' });
+    } catch (error) {
+      this.send({ type: 'agent:skills:list_result', commandId: message.commandId, agentId: agent.id, skills: { agent: { id: agent.id, name: agent.name || agent.id }, global: [], workspace: [], plugin: [], tools: [], error: error.message } });
+      this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
     }
   }
 

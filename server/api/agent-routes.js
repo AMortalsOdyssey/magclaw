@@ -59,6 +59,7 @@ export async function handleAgentApi(req, res, url, deps) {
     persistState,
     readAgentWorkspaceFile,
     readJson,
+    requestAgentSkills,
     restartAgentFromControl,
     root,
     sendError,
@@ -280,6 +281,21 @@ export async function handleAgentApi(req, res, url, deps) {
       return true;
     }
     try {
+      if (typeof requestAgentSkills === 'function' && agent.computerId && agent.computerId !== 'cmp_local') {
+        try {
+          sendJson(res, 200, await requestAgentSkills(agent));
+          return true;
+        } catch (error) {
+          if (agent.skillSnapshot) {
+            sendJson(res, 200, {
+              ...agent.skillSnapshot,
+              stale: true,
+              refreshError: error.message,
+            });
+            return true;
+          }
+        }
+      }
       sendJson(res, 200, await listAgentSkills(agent));
     } catch (error) {
       sendError(res, error.status || 500, error.message);

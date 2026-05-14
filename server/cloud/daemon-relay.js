@@ -190,6 +190,7 @@ export function createDaemonRelay(deps) {
   });
   const connections = new Map();
   const pendingActivityProbes = new Map();
+  const pendingSkillRequests = new Map();
   const handlers = {
     onAgentMessage: null,
   };
@@ -516,6 +517,58 @@ export function createDaemonRelay(deps) {
 
   function sendToComputer(computerId, payload) {
     return send(connections.get(computerId), payload);
+  }
+
+  function requestAgentSkills(agent, { timeoutMs = 5_000 } = {}) {
+    return new Promise((resolve, reject) => {
+      if (!agent?.id) {
+        reject(new Error('Agent is required.'));
+        return;
+      }
+      if (!agentShouldUseRelay(agent)) {
+        reject(new Error('Agent is not connected through a daemon.'));
+        return;
+      }
+      const connection = connections.get(agent.computerId);
+      if (!connection || connection.closed || connection.socket?.destroyed) {
+        reject(new Error('Agent daemon is not connected.'));
+        return;
+      }
+      const commandId = makeId('ask');
+      const timer = setTimeout(() => {
+        pendingSkillRequests.delete(commandId);
+        reject(new Error('Timed out waiting for daemon skills.'));
+      }, Math.max(250, Number(timeoutMs) || 5_000));
+      timer.unref?.();
+      pendingSkillRequests.set(commandId, {
+        agentId: agent.id,
+        resolve,
+        reject,
+        timer,
+      });
+      const sent = send(connection, {
+        type: 'agent:skills:list',
+        commandId,
+        agentId: agent.id,
+        payload: {
+          agent: {
+            id: agent.id,
+            name: agent.name,
+            description: agent.description || '',
+            runtime: agent.runtime,
+            runtimeId: agent.runtimeId || null,
+            model: agent.model || '',
+            reasoningEffort: agent.reasoningEffort || null,
+            envVars: safeArray(agent.envVars),
+          },
+        },
+      });
+      if (!sent) {
+        clearTimeout(timer);
+        pendingSkillRequests.delete(commandId);
+        reject(new Error('Could not send skills request to daemon.'));
+      }
+    });
   }
 
   function stopConnectionTimers(connection) {
@@ -1172,6 +1225,32 @@ export function createDaemonRelay(deps) {
         await handleAgentMessage(message);
         break;
       case 'agent:skills:list_result':
+        {
+          const agent = findAgent(message.agentId);
+          if (agent) {
+            agent.skillSnapshot = {
+              ...(message.skills && typeof message.skills === 'object' ? message.skills : {}),
+              loading: false,
+              updatedAt: now(),
+              computerId: connection.computerId,
+            };
+          }
+          const pending = pendingSkillRequests.get(message.commandId);
+          if (pending) {
+            clearTimeout(pending.timer);
+            pendingSkillRequests.delete(message.commandId);
+            pending.resolve(agent?.skillSnapshot || message.skills || {});
+          }
+        }
+        recordDaemonEvent('daemon_result', `Daemon returned ${message.type}.`, {
+          computerId: connection.computerId,
+          agentId: message.agentId || null,
+          commandId: message.commandId || null,
+          resultType: message.type,
+        });
+        await persistAllState();
+        broadcastState();
+        break;
       case 'machine:runtime_models:result':
         recordDaemonEvent('daemon_result', `Daemon returned ${message.type}.`, {
           computerId: connection.computerId,
@@ -1387,6 +1466,7 @@ export function createDaemonRelay(deps) {
     handleUpgrade,
     probeStaleAgentHeartbeats,
     publicRelayState,
+    requestAgentSkills,
     revokeComputerToken,
     setHandlers,
     startAgent,

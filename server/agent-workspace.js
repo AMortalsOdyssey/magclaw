@@ -167,43 +167,68 @@ export function createAgentWorkspaceManager(deps) {
     await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
   }
 
+  async function globalSkillRoots() {
+    const candidates = [
+      path.join(SOURCE_CODEX_HOME, 'skills'),
+      path.join(os.homedir(), '.agents', 'skills'),
+    ];
+    const roots = [];
+    const seen = new Set();
+    for (const candidate of candidates) {
+      if (!existsSync(candidate)) continue;
+      const resolved = await realpath(candidate).catch(() => path.resolve(candidate));
+      if (seen.has(resolved)) continue;
+      seen.add(resolved);
+      roots.push(candidate);
+    }
+    return roots;
+  }
+
   async function syncSourceSkillsIntoAgentHome(codexHome, agent) {
-    const sourceSkillsRoot = path.join(SOURCE_CODEX_HOME, 'skills');
-    if (!existsSync(sourceSkillsRoot)) return;
     const targetSkillsRoot = path.join(codexHome, 'skills');
     await mkdir(targetSkillsRoot, { recursive: true });
-    const entries = await readdir(sourceSkillsRoot, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
-      const source = path.join(sourceSkillsRoot, entry.name);
-      if (entry.name === '.system' && (entry.isDirectory() || entry.isSymbolicLink())) {
-        const targetSystemRoot = path.join(targetSkillsRoot, '.system');
-        await mkdir(targetSystemRoot, { recursive: true });
-        const systemEntries = await readdir(source, { withFileTypes: true }).catch(() => []);
-        for (const systemEntry of systemEntries) {
-          const systemSource = path.join(source, systemEntry.name);
-          const systemTarget = path.join(targetSystemRoot, systemEntry.name);
-          await linkSkillEntry(systemSource, systemTarget).catch((error) => {
-            addSystemEvent('agent_skill_link_skipped', `Could not link system skill ${systemEntry.name}: ${error.message}`, {
-              agentId: agent?.id,
-              source: systemSource,
-              target: systemTarget,
+    const roots = await globalSkillRoots();
+    for (const sourceSkillsRoot of [...roots].reverse()) {
+      const entries = await readdir(sourceSkillsRoot, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        const source = path.join(sourceSkillsRoot, entry.name);
+        if (entry.name === '.system' && (entry.isDirectory() || entry.isSymbolicLink())) {
+          const targetSystemRoot = path.join(targetSkillsRoot, '.system');
+          await mkdir(targetSystemRoot, { recursive: true });
+          const systemEntries = await readdir(source, { withFileTypes: true }).catch(() => []);
+          for (const systemEntry of systemEntries) {
+            const systemSource = path.join(source, systemEntry.name);
+            const systemTarget = path.join(targetSystemRoot, systemEntry.name);
+            await linkSkillEntry(systemSource, systemTarget).catch((error) => {
+              addSystemEvent('agent_skill_link_skipped', `Could not link system skill ${systemEntry.name}: ${error.message}`, {
+                agentId: agent?.id,
+                source: systemSource,
+                target: systemTarget,
+              });
             });
-          });
+          }
+          continue;
         }
-        continue;
-      }
-      if (!entry.isDirectory() && !entry.isSymbolicLink() && !entry.isFile()) continue;
-      const target = path.join(targetSkillsRoot, entry.name);
-      await linkSkillEntry(source, target).catch((error) => {
-        addSystemEvent('agent_skill_link_skipped', `Could not link skill ${entry.name}: ${error.message}`, {
-          agentId: agent?.id,
-          source,
-          target,
+        if (!entry.isDirectory() && !entry.isSymbolicLink() && !entry.isFile()) continue;
+        const target = path.join(targetSkillsRoot, entry.name);
+        await linkSkillEntry(source, target).catch((error) => {
+          addSystemEvent('agent_skill_link_skipped', `Could not link skill ${entry.name}: ${error.message}`, {
+            agentId: agent?.id,
+            source,
+            target,
+          });
         });
-      });
+      }
     }
+    const workspaceSkills = path.join(agentDataDir(agent), 'workspace', 'skills');
+    await linkSkillEntry(targetSkillsRoot, workspaceSkills).catch((error) => {
+      addSystemEvent('agent_skill_link_skipped', `Could not link workspace skills: ${error.message}`, {
+        agentId: agent?.id,
+        source: targetSkillsRoot,
+        target: workspaceSkills,
+      });
+    });
   }
-  
   async function prepareAgentCodexHome(agent) {
     const codexHome = agentCodexHomeDir(agent);
     await mkdir(codexHome, { recursive: true });
@@ -365,19 +390,20 @@ export function createAgentWorkspaceManager(deps) {
     await ensureAgentWorkspace(agent);
     const codexHome = agentCodexHomeDir(agent);
     const agentRoot = agentDataDir(agent);
-    const sourceSkillsRoot = path.join(SOURCE_CODEX_HOME, 'skills');
-    const globalSkills = [
-      ...await scanSkillsDir(sourceSkillsRoot, agent, { source: 'global' }),
-      ...await scanSkillsDir(path.join(sourceSkillsRoot, '.system'), agent, { source: 'system' }),
-      ...await scanSkillsDir(path.join(os.homedir(), '.agents', 'skills'), agent, { source: 'global' }),
-    ];
+    const roots = await globalSkillRoots();
+    const globalSkills = [];
+    for (const root of roots) globalSkills.push(...await scanSkillsDir(root, agent, { source: 'global' }));
+    const globalResolvedRoots = [];
+    for (const root of roots) {
+      globalResolvedRoots.push(await realpath(root).catch(() => path.resolve(root)));
+    }
     const agentSkills = [
       ...await scanSkillsDir(path.join(codexHome, 'skills'), agent, { source: 'agent' }),
       ...await scanSkillsDir(path.join(agentRoot, '.codex', 'skills'), agent, { source: 'agent' }),
       ...await scanSkillsDir(path.join(agentRoot, '.agents', 'skills'), agent, { source: 'agent' }),
     ].filter((skill) => {
-      const sourceRoot = path.resolve(sourceSkillsRoot);
-      return skill.scope === 'agent' && !path.resolve(skill.absolutePath).startsWith(sourceRoot);
+      const resolved = path.resolve(skill.absolutePath);
+      return skill.scope === 'agent' && !globalResolvedRoots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
     });
     const pluginFiles = await findPluginSkillFiles(path.join(SOURCE_CODEX_HOME, 'plugins', 'cache'));
     const pluginSkills = [];
