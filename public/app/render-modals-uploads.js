@@ -821,7 +821,7 @@ function renderComputerModal() {
       </label>
       <div class="connect-command-shell">
         <pre><code>${escapeHtml(pairingCommandDisplayText(command))}</code></pre>
-        ${command ? '<button class="connect-copy-btn" type="button" data-action="copy-pairing-command" aria-label="Copy command" title="Copy command"><span aria-hidden="true">⧉</span></button>' : ''}
+        ${command ? pairingCommandCopyButtonHtml() : ''}
       </div>
       <p class="connect-command-note">
         ${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your MagClaw checkout path before running. ' : ''}

@@ -225,6 +225,16 @@ async function prepareDocumentClick(event) {
   if (action === 'copy-pairing-command') {
     if (latestPairingCommand?.command) {
       const copied = await tryCopyTextToClipboard(pairingCommandText());
+      if (copied) {
+        pairingCommandCopyAcknowledged = true;
+        if (pairingCommandCopyResetTimer) window.clearTimeout(pairingCommandCopyResetTimer);
+        render();
+        pairingCommandCopyResetTimer = window.setTimeout(() => {
+          pairingCommandCopyAcknowledged = false;
+          pairingCommandCopyResetTimer = null;
+          render();
+        }, 1600);
+      }
       toast(copied ? 'Connect command copied' : 'Copy is unavailable');
     }
     return;

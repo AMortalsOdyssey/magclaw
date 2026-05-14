@@ -102,6 +102,8 @@ let consoleTab = initialRouteState.consoleTab || consoleTabFromPath() || initial
 let latestPairingCommand = null;
 let computerPairingDisplayName = '';
 let computerPairingCommandError = '';
+let pairingCommandCopyAcknowledged = false;
+let pairingCommandCopyResetTimer = null;
 let offlineComputerCommandRequestKey = '';
 let offlineComputerCommandInFlight = false;
 let serverSwitcherOpen = false;
@@ -229,6 +231,16 @@ function displayServerSlug(value, fallback = '') {
   const slug = String(value || '').trim();
   if (!slug || slug.toLowerCase() === 'local') return fallback;
   return slug;
+}
+
+function pairingCommandCopyButtonHtml(extraClass = '') {
+  const copied = Boolean(pairingCommandCopyAcknowledged);
+  const label = copied ? 'Command copied' : 'Copy command';
+  return `
+    <button class="connect-copy-btn ${copied ? 'is-copied' : ''} ${escapeHtml(extraClass)}" type="button" data-action="copy-pairing-command" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
+      <span aria-hidden="true">${copied ? '✓' : '⧉'}</span>
+    </button>
+  `;
 }
 
 function consolePath(tab = consoleTab) {

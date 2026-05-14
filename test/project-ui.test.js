@@ -1429,8 +1429,11 @@ test('agent warmup renders as Warming with a distinct pink status dot', async ()
   assert.match(app, /function agentDisplayStatus\(agent\)/);
   assert.match(serverWarmSource, /isWarmup \? 'warming' : 'thinking'/);
   assert.match(app, /if \(agentIsWarming\(agent\)\) return 'warming'/);
+  assert.match(app, /!computerIsConnected\(computer\)/);
+  assert.match(app, /waiting_for_computer/);
   assert.doesNotMatch(app, /agent\.computerId && !computer && agent\.computerId !== 'cmp_local'[\s\S]*return 'deleted'/);
   assert.match(app, /if \(value === 'warming'\) return 'Warming'/);
+  assert.match(app, /return 'Waiting for computer'/);
   assert.match(agentListSource, /const status = agentDisplayStatus\(agent\)/);
   assert.match(profileSource, /presenceClass\(agentDisplayStatus\(agent\)\)/);
   assert.match(styles, /\.avatar-status-dot\.status-warming \{[\s\S]*background: var\(--magclaw-pink\)/);
@@ -2004,9 +2007,13 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /Agents on this computer/);
   assert.match(app, /Agents on this computer \(\$\{agents\.length\}\)/);
   assert.match(app, /computer-agent-tooltip/);
-  assert.match(app, /data-action="regenerate-computer-command"/);
-  assert.match(app, /<span>Connect Command<\/span><span>api key<\/span>/);
-  assert.match(app, /Generate a fresh API-key command when you need to reconnect this computer\./);
+  assert.match(app, /data-action="generate-computer-command"/);
+  assert.match(app, /function pairingCommandCopyButtonHtml/);
+  assert.match(app, /computer-connect-command-shell/);
+  assert.match(app, /Generate Connect Command/);
+  assert.match(app, /pairingCommandCopyAcknowledged/);
+  assert.doesNotMatch(app, /<span>Connect Command<\/span><span>api key<\/span>/);
+  assert.doesNotMatch(app, /Generate a fresh API-key command when you need to reconnect this computer\./);
   assert.doesNotMatch(app, /<span>Connect Command<\/span><span>short lived<\/span>/);
   assert.doesNotMatch(app, /Generate a fresh one-time command when you need to reconnect this computer\./);
   assert.match(app, /function renderDaemonVersionValue/);

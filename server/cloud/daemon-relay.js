@@ -340,10 +340,21 @@ export function createDaemonRelay(deps) {
       || {};
   }
 
+  function safeDaemonProfilePart(value, fallback = 'local') {
+    const text = String(value || '').trim() || fallback;
+    return text.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 80) || fallback;
+  }
+
+  function daemonProfileForConnection(workspace, computer = null) {
+    const workspacePart = safeDaemonProfilePart(workspace?.slug || workspace?.id || 'local');
+    const computerPart = computer?.id ? safeDaemonProfilePart(computer.id, '') : '';
+    return computerPart ? `${workspacePart}-${computerPart}`.slice(0, 80) : workspacePart;
+  }
+
   function connectCommand(credential, req, options = {}) {
     const publicUrl = publicUrlFromRequest(req);
     const workspace = options.workspace || workspaceForRequest(req);
-    const profile = String(workspace.slug || workspace.id || 'local').trim() || 'local';
+    const profile = daemonProfileForConnection(workspace, options.computer);
     const comment = String(workspace.name || workspace.slug || workspace.id || 'local').trim() || profile;
     const displayName = normalizeDisplayName(options.displayName);
     const credentialFlag = options.credentialFlag || 'api-key';
@@ -369,8 +380,8 @@ export function createDaemonRelay(deps) {
     }
     const localRepoDir = process.env.MAGCLAW_DAEMON_LOCAL_REPO_PLACEHOLDER || '/path/to/magclaw';
     const launcher = useNpmCommand
-      ? 'npx -y @magclaw/daemon@latest connect'
-      : `MAGCLAW_REPO_DIR=${shellArg(localRepoDir)}; node "$MAGCLAW_REPO_DIR/daemon/bin/magclaw-daemon.js" connect`;
+      ? 'npx @magclaw/daemon@latest'
+      : `MAGCLAW_REPO_DIR=${shellArg(localRepoDir)}; node "$MAGCLAW_REPO_DIR/daemon/bin/magclaw-daemon.js"`;
     return [
       launcher,
       `--server-url ${shellArg(publicUrl)}`,
@@ -417,7 +428,7 @@ export function createDaemonRelay(deps) {
       createdAt,
     });
     const displayName = requestedDisplayName || computerName || computer.name || 'My computer';
-    const command = connectCommand(issued.raw, req, { displayName, workspace, credentialFlag: 'api-key' });
+    const command = connectCommand(issued.raw, req, { displayName, workspace, computer, credentialFlag: 'api-key' });
     return {
       computer,
       provisional,
@@ -561,6 +572,71 @@ export function createDaemonRelay(deps) {
     return ['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming'].includes(String(status || '').toLowerCase());
   }
 
+  function agentIsUnavailable(agent) {
+    const status = String(agent?.status || '').toLowerCase();
+    return !agent
+      || Boolean(agent.deletedAt || agent.archivedAt || agent.disabledAt)
+      || status === 'deleted'
+      || status === 'disabled';
+  }
+
+  function deliveryWaitsForComputer(delivery, computerId, agentId = '') {
+    if (!delivery || delivery.computerId !== computerId) return false;
+    if (agentId && delivery.agentId !== agentId) return false;
+    return ['queued', 'sent'].includes(String(delivery.status || '').toLowerCase()) && !delivery.ackedAt;
+  }
+
+  function agentHasQueuedComputerDelivery(agent, computerId) {
+    return safeArray(cloud().agentDeliveries).some((delivery) => deliveryWaitsForComputer(delivery, computerId, agent.id));
+  }
+
+  function statusForReplayedDelivery(delivery) {
+    const type = String(delivery?.commandType || delivery?.type || '');
+    if (type === 'agent:start') return delivery?.payload?.reason === 'warmup' ? 'warming' : 'starting';
+    if (type === 'agent:restart') return 'starting';
+    return 'queued';
+  }
+
+  function markAgentStatusForDelivery(delivery, reason) {
+    const agent = findAgent(delivery?.agentId);
+    if (agentIsUnavailable(agent)) return false;
+    setAgentStatus(agent, statusForReplayedDelivery(delivery), reason, {
+      forceEvent: true,
+      event: { computerId: delivery.computerId, deliveryId: delivery.id },
+    });
+    return true;
+  }
+
+  function markAgentsForComputerDisconnected(computerId) {
+    let changed = 0;
+    for (const agent of safeArray(state.agents)) {
+      if (agentIsUnavailable(agent) || agent.computerId !== computerId) continue;
+      const nextStatus = agentHasQueuedComputerDelivery(agent, computerId) ? 'waiting_for_computer' : 'offline';
+      if (agent.status === nextStatus) continue;
+      setAgentStatus(agent, nextStatus, 'daemon_computer_disconnected', {
+        forceEvent: true,
+        event: { computerId },
+      });
+      changed += 1;
+    }
+    return changed;
+  }
+
+  function markAgentsForComputerReady(computerId) {
+    let changed = 0;
+    for (const agent of safeArray(state.agents)) {
+      if (agentIsUnavailable(agent) || agent.computerId !== computerId) continue;
+      if (agentHasQueuedComputerDelivery(agent, computerId)) continue;
+      if (!['offline', 'waiting_for_computer'].includes(String(agent.status || '').toLowerCase())) continue;
+      setAgentStatus(agent, 'idle', 'daemon_computer_ready', {
+        forceEvent: true,
+        event: { computerId },
+      });
+      changed += 1;
+    }
+    return changed;
+  }
+
   function probeStaleAgentHeartbeats() {
     const threshold = nowMs() - Math.max(1000, Number(AGENT_STATUS_STALE_MS || 45_000));
     let waitingForProbe = false;
@@ -639,6 +715,13 @@ export function createDaemonRelay(deps) {
         deliveryIds: requeued.map((delivery) => delivery.id),
       });
     }
+    const affectedAgents = markAgentsForComputerDisconnected(connection.computerId);
+    if (affectedAgents) {
+      recordDaemonEvent('agent_computer_offline', `Marked ${affectedAgents} Agent${affectedAgents === 1 ? '' : 's'} offline because the computer disconnected.`, {
+        computerId: connection.computerId,
+        affectedAgents,
+      });
+    }
     recordDaemonEvent('computer_disconnected', `Computer disconnected: ${computer?.name || connection.computerId}`, {
       computerId: connection.computerId,
     });
@@ -669,10 +752,15 @@ export function createDaemonRelay(deps) {
     const pending = safeArray(cloud().agentDeliveries)
       .filter((delivery) => delivery.computerId === computerId && deliveryRetryReady(delivery))
       .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+    const replayed = [];
     for (const delivery of pending) {
-      sendDelivery(delivery);
+      if (sendDelivery(delivery)) {
+        replayed.push(delivery);
+        markAgentStatusForDelivery(delivery, 'daemon_replay_queued_delivery');
+      }
     }
     if (pending.length) await persistAllState();
+    return replayed;
   }
 
   function nextDeliverySeq(agentId, computerId) {
@@ -937,6 +1025,7 @@ export function createDaemonRelay(deps) {
       time: now(),
     });
     await replayQueued(computer.id);
+    markAgentsForComputerReady(computer.id);
     await persistAllState();
     broadcastState();
   }

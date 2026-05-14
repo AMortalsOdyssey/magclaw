@@ -638,11 +638,11 @@ test('owner registration protects app APIs and supports invites end to end', asy
       body: JSON.stringify({ name: 'CI runner' }),
     });
     assert.match(pairing.data.apiKey, /^mc_machine_/);
-    assert.match(pairing.data.command, /MAGCLAW_REPO_DIR="\/path\/to\/magclaw"; node "\$MAGCLAW_REPO_DIR\/daemon\/bin\/magclaw-daemon\.js" connect/);
+    assert.match(pairing.data.command, /MAGCLAW_REPO_DIR="\/path\/to\/magclaw"; node "\$MAGCLAW_REPO_DIR\/daemon\/bin\/magclaw-daemon\.js"/);
     assert.match(pairing.data.command, /--api-key "?mc_machine_/);
     assert.doesNotMatch(pairing.data.command, /--pair-token/);
     assert.doesNotMatch(pairing.data.command, /--background/);
-    assert.match(pairing.data.command, /--profile "?admin-team"?/);
+    assert.match(pairing.data.command, /--profile "?admin-team-cmp_/);
     assert.match(pairing.data.command, /# Admin Team/);
     assert.equal(pairing.data.provisional, true);
     assert.equal(pairing.data.displayName, 'CI runner');
@@ -677,6 +677,20 @@ test('owner registration protects app APIs and supports invites end to end', asy
     assert.ok((pairedComputer.runtimeIds || []).includes('codex'));
     const saved = JSON.parse(await readFile(daemonConfig, 'utf8'));
     assert.equal(saved.token, pairing.data.apiKey);
+    const remoteAgent = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({
+        name: 'Remote Queue Agent',
+        computerId: pairedComputer.id,
+        runtime: 'Codex CLI',
+      }),
+    });
+    const remoteDm = await request(server.baseUrl, '/api/dms', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ participantId: remoteAgent.data.agent.id }),
+    });
     daemon.kill('SIGINT');
     await Promise.race([
       new Promise((resolve) => daemon.once('exit', resolve)),
@@ -687,7 +701,24 @@ test('owner registration protects app APIs and supports invites end to end', asy
     await waitFor(async () => {
       const snapshot = (await request(server.baseUrl, '/api/state', { cookie: adminCookie })).data;
       const computer = snapshot.computers.find((item) => item.id === pairing.data.computer.id);
-      return computer?.status === 'offline' ? snapshot : null;
+      const agent = snapshot.agents.find((item) => item.id === remoteAgent.data.agent.id);
+      return computer?.status === 'offline' && agent?.status === 'offline' ? snapshot : null;
+    });
+
+    const offlineMessage = await request(server.baseUrl, `/api/spaces/dm/${remoteDm.data.dm.id}/messages`, {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ body: 'Queue this while the computer is offline.' }),
+    });
+
+    await waitFor(async () => {
+      const snapshot = (await request(server.baseUrl, '/api/state', { cookie: adminCookie })).data;
+      const agent = snapshot.agents.find((item) => item.id === remoteAgent.data.agent.id);
+      const delivery = snapshot.cloud.agentDeliveries.find((item) => (
+        item.agentId === remoteAgent.data.agent.id
+        && item.messageId === offlineMessage.data.message.id
+      ));
+      return agent?.status === 'waiting_for_computer' && delivery?.status === 'queued' ? snapshot : null;
     });
 
     daemon = spawn(process.execPath, [
@@ -706,7 +737,12 @@ test('owner registration protects app APIs and supports invites end to end', asy
     await waitFor(async () => {
       const snapshot = (await request(server.baseUrl, '/api/state', { cookie: adminCookie })).data;
       const computer = snapshot.computers.find((item) => item.id === pairing.data.computer.id);
-      return computer?.status === 'connected' ? snapshot : null;
+      const agent = snapshot.agents.find((item) => item.id === remoteAgent.data.agent.id);
+      const delivery = snapshot.cloud.agentDeliveries.find((item) => (
+        item.agentId === remoteAgent.data.agent.id
+        && item.messageId === offlineMessage.data.message.id
+      ));
+      return computer?.status === 'connected' && agent?.status === 'idle' && delivery?.status === 'acked' ? snapshot : null;
     });
 
     await request(server.baseUrl, '/api/agent-tools/history?agentId=agt_codex', {
@@ -719,10 +755,18 @@ test('owner registration protects app APIs and supports invites end to end', asy
   } finally {
     if (daemon) {
       daemon.kill('SIGINT');
-      await Promise.race([
+      const exited = await Promise.race([
         new Promise((resolve) => daemon.once('exit', resolve)),
-        new Promise((resolve) => setTimeout(resolve, 500)),
+        new Promise((resolve) => setTimeout(() => resolve(false), 1500)),
       ]);
+      if (exited === false) {
+        daemon.kill('SIGKILL');
+        await Promise.race([
+          new Promise((resolve) => daemon.once('exit', resolve)),
+          new Promise((resolve) => setTimeout(resolve, 500)),
+        ]);
+      }
+      daemon = null;
     }
     await server.stop();
   }
@@ -740,7 +784,7 @@ test('cloud pairing command can use the domain-friendly npm daemon launcher', as
       cookie: admin.cookie,
       body: JSON.stringify({ name: 'Cloud runner' }),
     });
-    assert.match(pairing.data.command, /^npx -y @magclaw\/daemon@latest connect /);
+    assert.match(pairing.data.command, /^npx @magclaw\/daemon@latest /);
     assert.match(pairing.data.command, /--server-url "?https:\/\/magclaw\.example\.test"?/);
     assert.match(pairing.data.command, /--api-key "?mc_machine_/);
     assert.doesNotMatch(pairing.data.command, /--pair-token/);
@@ -808,7 +852,7 @@ test('cloud pairing tokens use the request-scoped server instead of the process 
     });
 
     assert.equal(pairing.data.computer.workspaceId, second.data.server.id);
-    assert.match(pairing.data.command, /--profile "?second-team"?/);
+    assert.match(pairing.data.command, /--profile "?second-team-cmp_/);
     assert.match(pairing.data.command, /# Second Team/);
     assert.match(pairing.data.command, /--api-key "?mc_machine_/);
     assert.doesNotMatch(pairing.data.command, /--pair-token/);

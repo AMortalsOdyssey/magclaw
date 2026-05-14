@@ -913,13 +913,37 @@
   padding: 16px;
 }
 
-.computer-connect-card .pair-command-box {
-  align-items: stretch;
+.computer-connect-card {
+  display: grid;
+  gap: 10px;
 }
 
-.computer-connect-card code {
+.connect-command-shell.computer-connect-command-shell {
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 8px;
+}
+
+.connect-command-shell.computer-connect-command-shell pre {
+  min-height: 50px;
+  max-height: 112px;
+  padding: 10px 12px;
+  font-size: 11px;
+}
+
+.connect-command-shell.computer-connect-command-shell .connect-copy-btn {
+  width: 36px;
+  height: 36px;
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+
+.generate-connect-command-btn {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 8px 13px;
   font-size: 12px;
-  line-height: 1.5;
 }
 
 .danger-row {
@@ -1016,6 +1040,11 @@
 
 .connect-copy-btn:hover {
   transform: translateY(-1px);
+}
+
+.connect-copy-btn.is-copied {
+  background: #e7ffe9;
+  color: var(--success);
 }
 
 .connect-command-note {

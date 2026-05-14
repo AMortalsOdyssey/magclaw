@@ -462,6 +462,7 @@ function renderComputerAgentCard(agent) {
 function renderComputerDetail(computer) {
   const agents = computerAgents(computer.id);
   const currentCommand = latestPairingCommand?.computer?.id === computer.id ? latestPairingCommand.command : '';
+  const renderedCommand = currentCommand ? pairingCommandText(currentCommand) : '';
   const connected = computerIsConnected(computer);
   const disabled = computerIsDisabled(computer);
   const runtimeDetails = computerRuntimeDetails(computer);
@@ -509,15 +510,20 @@ function renderComputerDetail(computer) {
 
       ${connected || disabled ? '' : `
         <div class="pixel-panel cloud-card wide computer-connect-card">
-          <div class="panel-title"><span>Connect Command</span><span>api key</span></div>
+          <div class="panel-title"><span>${currentCommand ? 'Connect Command' : 'Connection'}</span></div>
           ${currentCommand ? `
-            <div class="pair-command-box">
-              <code>${escapeHtml(currentCommand)}</code>
-              <button class="secondary-btn compact-btn" type="button" data-action="copy-pairing-command">Copy command</button>
+            <div class="connect-command-shell computer-connect-command-shell">
+              <pre><code>${escapeHtml(renderedCommand)}</code></pre>
+              ${pairingCommandCopyButtonHtml('computer-connect-copy')}
             </div>
-            <p class="muted-note">Keep this process running. It maintains the connection between your computer and MagClaw.</p>
-          ` : '<div class="empty-box small">Generate a fresh API-key command when you need to reconnect this computer.</div>'}
-          <button class="secondary-btn" type="button" data-action="regenerate-computer-command" data-id="${escapeHtml(computer.id)}">${currentCommand ? 'Regenerate command' : 'Connect'}</button>
+            <p class="muted-note">Keep this process running — it maintains the connection between your computer and MagClaw.</p>
+          ` : `
+            <button class="primary-btn generate-connect-command-btn" type="button" data-action="generate-computer-command" data-id="${escapeHtml(computer.id)}" ${offlineComputerCommandInFlight ? 'disabled' : ''}>
+              <span aria-hidden="true">↻</span>
+              <span>${offlineComputerCommandInFlight ? 'Generating...' : 'Generate Connect Command'}</span>
+            </button>
+            ${computerPairingCommandError ? `<p class="muted-note error-text">${escapeHtml(computerPairingCommandError)}</p>` : ''}
+          `}
         </div>
       `}
 
@@ -1902,6 +1908,7 @@ function agentStatusLabel(agent) {
   const status = agentDisplayStatus(agent);
   const value = String(status || 'offline').toLowerCase();
   if (value === 'warming') return 'Warming';
+  if (value === 'waiting_for_computer') return 'Waiting for computer';
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 

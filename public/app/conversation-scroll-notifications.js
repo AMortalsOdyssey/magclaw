@@ -213,6 +213,10 @@ function agentDisplayStatus(agent) {
   if (computer && typeof computerIsDisabled === 'function' && computerIsDisabled(computer)) return 'disabled';
   if (computer?.deletedAt || computer?.archivedAt) return 'deleted';
   if (agentIsWarming(agent)) return 'warming';
+  if (computer && agent.computerId !== 'cmp_local' && typeof computerIsConnected === 'function' && !computerIsConnected(computer)) {
+    const status = String(agent?.status || '').toLowerCase();
+    if (!['waiting_for_computer', 'queued', 'starting', 'thinking', 'working', 'running', 'busy', 'warming', 'error'].includes(status)) return 'offline';
+  }
   return agent?.status || 'offline';
 }
 
@@ -222,7 +226,7 @@ function presenceTone(status) {
   if (value === 'disabled') return 'disabled';
   if (value === 'deleted') return 'disabled';
   if (['working', 'running', 'starting', 'thinking', 'busy'].includes(value)) return 'busy';
-  if (['queued', 'pending'].includes(value)) return 'queued';
+  if (['queued', 'pending', 'waiting_for_computer'].includes(value)) return 'queued';
   if (['error', 'failed'].includes(value)) return 'error';
   if (['online', 'idle', 'connected'].includes(value)) return 'online';
   return 'offline';

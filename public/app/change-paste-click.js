@@ -1,5 +1,10 @@
 async function generateFreshComputerPairingCommand(body = {}) {
   computerPairingCommandError = '';
+  pairingCommandCopyAcknowledged = false;
+  if (pairingCommandCopyResetTimer) {
+    window.clearTimeout(pairingCommandCopyResetTimer);
+    pairingCommandCopyResetTimer = null;
+  }
   const requestedDisplayName = String(body.displayName || body.name || body.label || '').trim();
   try {
     latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
@@ -1247,6 +1252,20 @@ document.addEventListener('click', async (event) => {
       activeView = 'computers';
       railTab = 'computers';
       toast('Pairing command created');
+    }
+    if (action === 'generate-computer-command') {
+      const computer = byId(appState.computers, target.dataset.id);
+      const displayName = defaultComputerPairingName(computer);
+      selectedComputerId = target.dataset.id || selectedComputerId;
+      activeView = 'computers';
+      railTab = 'computers';
+      latestPairingCommand = null;
+      computerPairingDisplayName = displayName;
+      computerPairingCommandError = '';
+      render();
+      await generateFreshComputerPairingCommand({ computerId: target.dataset.id, name: displayName, displayName: displayName });
+      render();
+      toast('Connect command generated');
     }
     if (action === 'regenerate-computer-command') {
       const computer = byId(appState.computers, target.dataset.id);
