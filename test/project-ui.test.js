@@ -204,6 +204,19 @@ test('computer name editor survives realtime rerenders', async () => {
   assert.match(updateSource, /captureComputerNameFieldDraft\(\)/);
 });
 
+test('agent creation guard prevents duplicate submit rerenders', async () => {
+  const app = await readAppSource();
+  const stateSource = app.slice(app.indexOf('let selectedComputerId'), app.indexOf('let serverSwitcherOpen'));
+  const submitSource = app.slice(app.indexOf("if (form.id === 'agent-form')"), app.indexOf("if (form.id === 'agent-runtime-config-form')"));
+  const modalSource = app.slice(app.indexOf('function renderAgentModal()'), app.indexOf('function renderAvatarPickerModal()'));
+
+  assert.match(stateSource, /let agentCreateInFlight = false/);
+  assert.match(modalSource, /agentCreateInFlight \? 'Creating\.\.\.' : 'Create Agent'/);
+  assert.match(submitSource, /if \(agentCreateInFlight\)/);
+  assert.match(submitSource, /agentCreateInFlight = true/);
+  assert.match(submitSource, /agentCreateInFlight = false/);
+});
+
 test('members page uses a join-ordered directory with invite modals', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();

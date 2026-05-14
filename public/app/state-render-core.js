@@ -98,6 +98,7 @@ let agentDetailTab = 'profile';
 let agentDetailEditState = { field: null };
 let agentDetailFieldDraft = null;
 let agentEnvEditState = null;
+let agentCreateInFlight = false;
 let humanDescriptionEditState = { humanId: null };
 let settingsTab = initialRouteState.settingsTab || initialUiState.settingsTab || 'account';
 let consoleTab = initialRouteState.consoleTab || consoleTabFromPath() || initialUiState.consoleTab || 'overview';

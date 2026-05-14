@@ -290,28 +290,39 @@ document.addEventListener('submit', async (event) => {
       activeTab = 'tasks';
     }
     if (form.id === 'agent-form') {
-      const selectedRuntime = runtimeOptionsForComputer(data.get('computerId')).find((rt) => rt.id === data.get('runtime'));
-      if (!selectedRuntime || selectedRuntime.installed === false || selectedRuntime.createSupported === false) {
-        throw new Error('Selected computer does not report a supported runtime.');
+      if (agentCreateInFlight) {
+        skipFinalRefresh = true;
+        toast('Agent creation already in progress');
+        return;
       }
-      // Filter out empty environment variables
-      const envVars = agentFormState.envVars.filter((item) => item.key.trim());
-      await api('/api/agents', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: data.get('name'),
-          description: data.get('description'),
-          runtime: selectedRuntime?.name || data.get('runtime'),
-          runtimeId: selectedRuntime?.id || data.get('runtime'),
-          model: data.get('model'),
-          computerId: data.get('computerId'),
-          reasoningEffort: data.get('reasoningEffort') || null,
-          envVars: envVars.length ? envVars : null,
-          avatar: data.get('avatar') || agentFormState.avatar || getRandomAvatar(),
-        }),
-      });
-      resetAgentFormState();
-      modal = null;
+      agentCreateInFlight = true;
+      if (modal === 'agent') renderShellOrModal();
+      try {
+        const selectedRuntime = runtimeOptionsForComputer(data.get('computerId')).find((rt) => rt.id === data.get('runtime'));
+        if (!selectedRuntime || selectedRuntime.installed === false || selectedRuntime.createSupported === false) {
+          throw new Error('Selected computer does not report a supported runtime.');
+        }
+        // Filter out empty environment variables
+        const envVars = agentFormState.envVars.filter((item) => item.key.trim());
+        await api('/api/agents', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: data.get('name'),
+            description: data.get('description'),
+            runtime: selectedRuntime?.name || data.get('runtime'),
+            runtimeId: selectedRuntime?.id || data.get('runtime'),
+            model: data.get('model'),
+            computerId: data.get('computerId'),
+            reasoningEffort: data.get('reasoningEffort') || null,
+            envVars: envVars.length ? envVars : null,
+            avatar: data.get('avatar') || agentFormState.avatar || getRandomAvatar(),
+          }),
+        });
+        resetAgentFormState();
+        modal = null;
+      } finally {
+        agentCreateInFlight = false;
+      }
     }
     if (form.id === 'agent-runtime-config-form') {
       const agentId = form.dataset.agentId || selectedAgentId;

@@ -169,6 +169,123 @@ test('agent route group joins new cloud agents to the workspace all channel', as
   assert.deepEqual(deps.state.channels[1].memberIds, ['hum_owner', 'agt_new']);
 });
 
+test('agent route group rejects duplicate agent names in the same workspace after trimming spaces', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_owner', name: 'Owner', email: 'owner@example.test' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_owner' },
+    }),
+    readJson: async () => ({
+      name: ' Bui lder ',
+      runtime: 'Codex CLI',
+      runtimeId: 'codex',
+      computerId: 'cmp_remote',
+    }),
+  });
+  deps.state.agents.push({
+    id: 'agt_builder',
+    workspaceId: 'wsp_main',
+    name: 'Builder',
+    status: 'deleted',
+    deletedAt: '2026-05-01T00:00:00.000Z',
+  });
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/agents'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 409);
+  assert.match(res.error, /Agent name already exists/i);
+  assert.equal(deps.state.agents.filter((agent) => agent.name.replace(/\s+/g, '') === 'Builder').length, 1);
+});
+
+test('agent route group allows differently cased names in the same workspace', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_owner', name: 'Owner', email: 'owner@example.test' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_owner' },
+    }),
+    readJson: async () => ({
+      name: 'builder',
+      runtime: 'Codex CLI',
+      runtimeId: 'codex',
+      computerId: 'cmp_remote',
+    }),
+  });
+  deps.state.agents.push({
+    id: 'agt_builder',
+    workspaceId: 'wsp_main',
+    name: 'Builder',
+    status: 'disabled',
+  });
+  const res = makeResponse();
+  await handleAgentApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/agents'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.data.agent.name, 'builder');
+});
+
+test('agent route group generates a new agent id when makeId collides', async () => {
+  const ids = ['agt_1', 'agt_unique'];
+  const deps = routeDeps({
+    makeId: () => ids.shift(),
+    readJson: async () => ({
+      name: 'Unique Agent',
+      runtime: 'Codex CLI',
+      runtimeId: 'codex',
+      computerId: 'cmp_remote',
+    }),
+  });
+  const res = makeResponse();
+  await handleAgentApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/agents'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.data.agent.id, 'agt_unique');
+  assert.equal(deps.state.agents.filter((agent) => agent.id === 'agt_1').length, 1);
+});
+
+test('agent route group rejects renaming to another agent name in the same workspace', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_owner', name: 'Owner', email: 'owner@example.test' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_owner' },
+    }),
+    readJson: async () => ({ name: 'Al pha' }),
+  });
+  deps.state.agents[0].workspaceId = 'wsp_main';
+  deps.state.agents.push({
+    id: 'agt_alpha',
+    workspaceId: 'wsp_main',
+    name: 'Alpha',
+    status: 'disabled',
+  });
+  const res = makeResponse();
+  await handleAgentApi(
+    { method: 'PATCH' },
+    res,
+    new URL('http://local/api/agents/agt_1'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 409);
+  assert.match(res.error, /Agent name already exists/i);
+  assert.equal(deps.state.agents[0].name, 'Ada');
+});
+
 test('agent route group starts only when no process is already running', async () => {
   let startCalls = 0;
   const deps = routeDeps({

@@ -593,6 +593,8 @@ function renderAgentModal() {
     value: effort,
     label: effort.charAt(0).toUpperCase() + effort.slice(1),
   }));
+  const createAgentDisabled = !currentRuntime || !defaultComputer || agentCreateInFlight;
+  const createAgentLabel = agentCreateInFlight ? 'Creating...' : 'Create Agent';
 
   // Initialize avatar if not set
   if (!agentFormState.avatar) {
@@ -677,7 +679,7 @@ function renderAgentModal() {
       </details>
       <div class="modal-actions">
         <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
-        <button class="primary-btn" type="submit" ${currentRuntime && defaultComputer ? '' : 'disabled'}>Create Agent</button>
+        <button class="primary-btn" type="submit" ${createAgentDisabled ? 'disabled' : ''}>${createAgentLabel}</button>
       </div>
     </form>
   `;

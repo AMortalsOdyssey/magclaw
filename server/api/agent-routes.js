@@ -6,6 +6,38 @@ import { findWorkspaceAllChannel } from '../workspace-defaults.js';
 // actual runtime/session helpers remain injected so this module stays focused
 // on HTTP validation, state updates, and preserving legacy membership fields.
 
+function normalizeAgentName(value, fallback = '') {
+  return String(value || fallback || '').trim().slice(0, 80);
+}
+
+function agentNameUniqueKey(value) {
+  return normalizeAgentName(value).replace(/\s+/g, '');
+}
+
+function agentWorkspaceKey(agent = {}, fallback = 'local') {
+  return String(agent.workspaceId || fallback || 'local').trim() || 'local';
+}
+
+function findAgentNameConflict(state, workspaceId, name, excludeAgentId = '') {
+  const key = agentNameUniqueKey(name);
+  if (!key) return null;
+  const workspaceKey = String(workspaceId || 'local').trim() || 'local';
+  return (state.agents || []).find((agent) => (
+    agent
+    && agent.id !== excludeAgentId
+    && agentWorkspaceKey(agent, workspaceKey) === workspaceKey
+    && agentNameUniqueKey(agent.name) === key
+  )) || null;
+}
+
+function makeUniqueAgentId(makeId, state) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const id = makeId('agt');
+    if (!(state.agents || []).some((agent) => agent?.id === id)) return id;
+  }
+  throw new Error('Could not allocate a unique Agent ID.');
+}
+
 export async function handleAgentApi(req, res, url, deps) {
   const {
     addCollabEvent,
@@ -44,10 +76,28 @@ export async function handleAgentApi(req, res, url, deps) {
     const body = await readJson(req);
     const actor = typeof currentActor === 'function' ? currentActor(req) : null;
     const workspaceId = String(actor?.member?.workspaceId || body.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || '').trim();
+    const name = normalizeAgentName(body.name, 'New Agent');
+    if (!name) {
+      sendError(res, 400, 'Agent name is required.');
+      return true;
+    }
+    const conflict = findAgentNameConflict(state, workspaceId || 'local', name);
+    if (conflict) {
+      sendError(res, 409, 'Agent name already exists in this server.');
+      return true;
+    }
+    let agentId = '';
+    try {
+      agentId = makeUniqueAgentId(makeId, state);
+    } catch (error) {
+      console.error('[agents] failed to allocate Agent ID', error);
+      sendError(res, 500, error.message);
+      return true;
+    }
     const agent = {
-      id: makeId('agt'),
+      id: agentId,
       ...(workspaceId ? { workspaceId } : {}),
-      name: String(body.name || 'New Agent').trim().slice(0, 80),
+      name,
       description: String(body.description || '').trim(),
       runtime: String(body.runtime || 'Codex CLI'),
       runtimeId: body.runtimeId ? String(body.runtimeId) : '',
@@ -261,7 +311,21 @@ export async function handleAgentApi(req, res, url, deps) {
       return true;
     }
     const body = await readJson(req);
-    for (const key of ['name', 'description', 'runtime', 'runtimeId', 'model', 'computerId', 'workspace', 'reasoningEffort', 'avatar']) {
+    if (body.name !== undefined) {
+      const name = normalizeAgentName(body.name);
+      if (!name) {
+        sendError(res, 400, 'Agent name is required.');
+        return true;
+      }
+      const workspaceId = agent.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local';
+      const conflict = findAgentNameConflict(state, workspaceId, name, agent.id);
+      if (conflict) {
+        sendError(res, 409, 'Agent name already exists in this server.');
+        return true;
+      }
+      agent.name = name;
+    }
+    for (const key of ['description', 'runtime', 'runtimeId', 'model', 'computerId', 'workspace', 'reasoningEffort', 'avatar']) {
       if (body[key] !== undefined) agent[key] = String(body[key] || '').trim();
     }
     if (body.status !== undefined) setAgentStatus(agent, String(body.status || '').trim() || 'idle', 'agent_patch', { forceEvent: true });
