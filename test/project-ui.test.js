@@ -180,6 +180,30 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.doesNotMatch(stateUpdateSource, /if \(modal === 'computer'\) render\(\);/);
 });
 
+test('computer name editor survives realtime rerenders', async () => {
+  const app = await readAppSource();
+  const stateSource = app.slice(app.indexOf('let selectedComputerId'), app.indexOf('let serverSwitcherOpen'));
+  const computerSource = app.slice(app.indexOf('function renderComputerDetail'), app.indexOf('function renderComputerConfigCard()'));
+  const clickSource = app.slice(app.indexOf("if (action === 'edit-computer-name'"), app.indexOf("if (action === 'open-agent-restart'"));
+  const inputSource = app.slice(app.indexOf("document.addEventListener('input'"));
+  const updateSource = app.slice(app.indexOf('function applyStateUpdate'), app.indexOf('function applyRunEventUpdate'));
+
+  assert.match(stateSource, /let computerNameEditState = \{ computerId: null \}/);
+  assert.match(stateSource, /let computerNameFieldDraft = null/);
+  assert.match(app, /function computerNameEditIsActive\(\)/);
+  assert.match(app, /function captureComputerNameFieldDraft/);
+  assert.match(app, /function computerNameFieldValueForRender/);
+  assert.match(computerSource, /const nameIsEditing = computerNameEditState\?\.computerId === computer\.id/);
+  assert.match(computerSource, /data-action="edit-computer-name"/);
+  assert.match(computerSource, /data-action="cancel-computer-name"/);
+  assert.doesNotMatch(computerSource, /<details class="pixel-panel cloud-card wide computer-name-card">/);
+  assert.match(clickSource, /computerNameEditState = \{ computerId: target\.dataset\.id \|\| selectedComputerId \}/);
+  assert.match(clickSource, /clearComputerNameFieldDraft\(\)/);
+  assert.match(inputSource, /computer-name-line/);
+  assert.match(updateSource, /computerNameEditIsActive\(\)/);
+  assert.match(updateSource, /captureComputerNameFieldDraft\(\)/);
+});
+
 test('members page uses a join-ordered directory with invite modals', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();

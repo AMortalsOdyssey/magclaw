@@ -23,8 +23,10 @@ function render() {
   }
   captureProfileFormDraft();
   captureAgentDetailFieldDraft();
+  captureComputerNameFieldDraft();
   const profileFocus = profileFormFocusSnapshot();
   const agentDetailFocus = agentDetailFieldFocusSnapshot();
+  const computerNameFocus = computerNameFieldFocusSnapshot();
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
@@ -65,6 +67,7 @@ function render() {
     restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
     restoreProfileFormFocus(profileFocus);
     restoreAgentDetailFieldFocus(agentDetailFocus);
+    restoreComputerNameFieldFocus(computerNameFocus);
     restorePendingComposerFocus();
     if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
       workspaceActivityScrollToBottom = false;

@@ -280,6 +280,72 @@ function agentDetailInlineEditIsActive() {
   );
 }
 
+function computerNameInlineEdit() {
+  return document.querySelector('.computer-name-line[data-computer-id]');
+}
+
+function captureComputerNameFieldDraft(editor = computerNameInlineEdit()) {
+  if (!editor) return computerNameFieldDraft;
+  const input = editor.querySelector('input[name="name"]');
+  if (!input) return computerNameFieldDraft;
+  computerNameFieldDraft = {
+    computerId: editor.dataset.computerId || selectedComputerId || '',
+    value: input.value || '',
+  };
+  return computerNameFieldDraft;
+}
+
+function clearComputerNameFieldDraft() {
+  computerNameFieldDraft = null;
+}
+
+function computerNameFieldValueForRender(computer = {}, fallback = '') {
+  if (
+    computerNameFieldDraft
+    && computerNameFieldDraft.computerId === computer.id
+    && computerNameEditState?.computerId === computer.id
+  ) {
+    return computerNameFieldDraft.value;
+  }
+  return fallback;
+}
+
+function computerNameFieldFocusSnapshot() {
+  const active = document.activeElement;
+  const editor = active?.closest?.('.computer-name-line[data-computer-id]');
+  if (!editor || active?.name !== 'name') return null;
+  return {
+    computerId: editor.dataset.computerId || '',
+    selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+    selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+    selectionDirection: active.selectionDirection || 'none',
+  };
+}
+
+function restoreComputerNameFieldFocus(snapshot) {
+  if (!snapshot) return;
+  const editor = document.querySelector(`.computer-name-line[data-computer-id="${CSS.escape(snapshot.computerId)}"]`);
+  const target = editor?.querySelector('input[name="name"]');
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  if (
+    typeof target.setSelectionRange === 'function'
+    && snapshot.selectionStart !== null
+    && snapshot.selectionEnd !== null
+  ) {
+    target.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd, snapshot.selectionDirection);
+  }
+}
+
+function computerNameEditIsActive() {
+  return Boolean(
+    activeView === 'computers'
+    && selectedComputerId
+    && computerNameEditState?.computerId
+    && computerNameInlineEdit()
+  );
+}
+
 function captureProfileFormDraft(form = document.getElementById('profile-form')) {
   if (!form) return profileFormDraft;
   profileFormDraft = {

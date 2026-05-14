@@ -545,6 +545,8 @@ document.addEventListener('click', async (event) => {
       selectedAgentId = null;
       selectedHumanId = null;
       humanDescriptionEditState = { humanId: null };
+      clearComputerNameFieldDraft();
+      computerNameEditState = { computerId: null };
       activeView = 'computers';
       railTab = 'computers';
       threadMessageId = null;
@@ -555,6 +557,16 @@ document.addEventListener('click', async (event) => {
       modal = null;
       render();
       syncBrowserRouteForActiveView();
+    }
+    if (action === 'edit-computer-name') {
+      clearComputerNameFieldDraft();
+      computerNameEditState = { computerId: target.dataset.id || selectedComputerId };
+      render();
+    }
+    if (action === 'cancel-computer-name') {
+      clearComputerNameFieldDraft();
+      computerNameEditState = { computerId: null };
+      render();
     }
     if (action === 'close-agent-detail') {
       if (activeView === 'members') {

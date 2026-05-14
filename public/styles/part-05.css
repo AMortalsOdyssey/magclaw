@@ -835,13 +835,17 @@
   padding: 13px 14px;
 }
 
-.computer-name-card summary {
+.computer-name-card summary,
+.computer-name-head {
   display: grid;
   grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
-  cursor: pointer;
   list-style: none;
+}
+
+.computer-name-card summary {
+  cursor: pointer;
 }
 
 .computer-name-card summary::-webkit-details-marker {
@@ -859,12 +863,21 @@
 
 .computer-edit-icon {
   display: inline-flex;
+  border: 0;
+  padding: 0;
+  background: transparent;
   margin-left: 4px;
   color: var(--text-muted);
+  cursor: pointer;
   vertical-align: -2px;
 }
 
-.computer-name-card summary strong {
+.computer-edit-icon:hover {
+  color: var(--accent);
+}
+
+.computer-name-card summary strong,
+.computer-name-head strong {
   color: var(--text-primary);
   font-size: 13px;
   line-height: 1.35;
@@ -877,6 +890,12 @@
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--settings-line, var(--border-faint));
+}
+
+.computer-name-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .computer-info-list {

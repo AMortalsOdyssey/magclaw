@@ -474,29 +474,40 @@ function renderComputerDetail(computer) {
     MAGCLAW_DAEMON_PACKAGE_VERSION,
   );
   const statusLabel = disabled ? 'disabled' : connected ? 'connected' : 'offline';
+  const nameIsEditing = computerNameEditState?.computerId === computer.id;
+  const displayName = computer.name || computer.hostname || 'Computer';
+  const nameDraft = computerNameFieldValueForRender(computer, computer.name || '');
   return `
     <section class="computer-detail-page magclaw-computer-detail">
       <div class="pixel-panel cloud-card wide computer-detail-card computer-profile-card">
         <div class="computer-detail-header">
           ${renderComputerIcon(computer, 24)}
           <div>
-            <h2>${escapeHtml(computer.name || computer.hostname || 'Computer')}</h2>
+            <h2>${escapeHtml(displayName)}</h2>
             <p><span class="avatar-status-dot inline ${presenceClass(disabled ? 'disabled' : computer.status || 'offline')}"></span>${escapeHtml(statusLabel)}</p>
             <small>${escapeHtml(computer.hostname || computer.localHostname || '')}</small>
           </div>
         </div>
       </div>
 
-      <details class="pixel-panel cloud-card wide computer-name-card">
-        <summary>
-          <span class="computer-section-label">Name <span class="computer-edit-icon">${settingsIcon('edit', 12)}</span></span>
-          <strong>${escapeHtml(computer.name || computer.hostname || 'Computer')}</strong>
-        </summary>
-        <form id="computer-name-form" class="computer-name-line" data-computer-id="${escapeHtml(computer.id)}">
-          <input name="name" value="${escapeHtml(computer.name || '')}" aria-label="Computer name" />
-          <button class="secondary-btn compact-btn" type="submit">Save</button>
-        </form>
-      </details>
+      <section class="pixel-panel cloud-card wide computer-name-card">
+        <div class="computer-name-head">
+          <span class="computer-section-label">
+            Name
+            <button class="computer-edit-icon" type="button" data-action="edit-computer-name" data-id="${escapeHtml(computer.id)}" aria-label="Edit computer name" title="Edit computer name">${settingsIcon('edit', 12)}</button>
+          </span>
+          <strong>${escapeHtml(displayName)}</strong>
+        </div>
+        ${nameIsEditing ? `
+          <form id="computer-name-form" class="computer-name-line" data-computer-id="${escapeHtml(computer.id)}">
+            <input name="name" value="${escapeHtml(nameDraft)}" aria-label="Computer name" />
+            <div class="computer-name-actions">
+              <button class="secondary-btn compact-btn" type="submit">Save</button>
+              <button class="secondary-btn compact-btn" type="button" data-action="cancel-computer-name">Cancel</button>
+            </div>
+          </form>
+        ` : ''}
+      </section>
 
       <div class="pixel-panel cloud-card wide computer-info-card magclaw-info-card">
         <div class="computer-section-label">Info</div>

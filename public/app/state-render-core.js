@@ -42,6 +42,8 @@ let workspaceActivityScrollToBottom = false;
 let selectedAgentId = initialRouteState.selectedAgentId || initialUiState.selectedAgentId || null; // selected agent for detail panel
 let selectedHumanId = initialRouteState.selectedHumanId || initialUiState.selectedHumanId || null;
 let selectedComputerId = initialRouteState.selectedComputerId || initialUiState.selectedComputerId || null;
+let computerNameEditState = { computerId: null };
+let computerNameFieldDraft = null;
 let membersLayout = normalizeMembersLayout(
   initialRouteState.selectedHumanId
     ? { mode: 'human', humanId: initialRouteState.selectedHumanId }

@@ -346,6 +346,8 @@ document.addEventListener('submit', async (event) => {
         method: 'PATCH',
         body: JSON.stringify({ name: data.get('name') }),
       });
+      clearComputerNameFieldDraft();
+      computerNameEditState = { computerId: null };
       toast('Computer name saved');
     }
       if (form.id === 'human-form') {

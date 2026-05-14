@@ -470,6 +470,12 @@ function applyStateUpdate(nextState) {
   if (pendingServerProfilePatchSignature && pendingServerProfilePatchSignature !== serverProfileAfter) {
     pendingServerProfilePatchSignature = '';
   }
+  if (computerNameEditIsActive()) {
+    captureComputerNameFieldDraft();
+    if (unreadChanged) patchRailSurface();
+    window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
+    return;
+  }
   if (agentDetailInlineEditIsActive()) {
     captureAgentDetailFieldDraft();
     if (unreadChanged) patchRailSurface();
@@ -487,6 +493,10 @@ function applyRunEventUpdate(incoming) {
   appState.events.push(incoming);
   if (modal) return;
   if (agentDetailInlineEditIsActive()) {
+    patchRailSurface();
+    return;
+  }
+  if (computerNameEditIsActive()) {
     patchRailSurface();
     return;
   }
@@ -933,6 +943,10 @@ document.addEventListener('input', async (event) => {
   }
   if (event.target.closest?.('.agent-inline-edit[data-agent-id][data-field]')) {
     captureAgentDetailFieldDraft(event.target.closest('.agent-inline-edit'));
+    return;
+  }
+  if (event.target.closest?.('.computer-name-line[data-computer-id]')) {
+    captureComputerNameFieldDraft(event.target.closest('.computer-name-line'));
     return;
   }
 
