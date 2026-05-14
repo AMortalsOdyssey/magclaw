@@ -650,10 +650,89 @@ test('project mentions show full local paths in the candidate list', async () =>
 
   assert.match(app, /absolutePath: item\.absolutePath/);
   assert.match(app, /item\.absolutePath \|\| item\.path/);
-  assert.match(app, /class="mention-handle" title="\$\{escapeHtml\(handle\)\}"/);
-  assert.match(styles, /grid-template-columns: 28px 8px minmax\(120px, 0\.55fr\) minmax\(260px, 1\.45fr\)/);
+  assert.match(app, /class="mention-handle mention-detail" title="\$\{escapeHtml\(detail\)\}"/);
+  assert.match(styles, /grid-template-columns: 28px 8px minmax\(104px, 0\.46fr\) minmax\(160px, 0\.54fr\)/);
   assert.match(styles, /\.mention-type-file \.mention-handle,\n\.mention-type-folder \.mention-handle/);
   assert.match(styles, /overflow-wrap: anywhere/);
+});
+
+test('mention popup differentiates humans and agents without the channel heading', async () => {
+  const source = await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8');
+  const appState = {
+    agents: [
+      {
+        id: 'agt_codex',
+        name: 'Ka',
+        runtime: 'codex',
+        description: 'Handles code changes and release checks',
+        status: 'online',
+        createdAt: '2026-01-02T00:00:00.000Z',
+      },
+    ],
+    humans: [
+      {
+        id: 'hum_recent',
+        name: 'JJJJ',
+        email: 'jjjj@example.test',
+        status: 'online',
+        avatarUrl: 'data:image/png;base64,real-avatar',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    channels: [{ id: 'chan_all', name: 'all', memberIds: ['agt_codex', 'hum_recent'], humanIds: ['hum_recent'], agentIds: ['agt_codex'] }],
+    messages: [{ id: 'msg_recent', authorId: 'hum_recent', spaceType: 'channel', spaceId: 'chan_all', createdAt: '2026-01-03T00:00:00.000Z' }],
+    replies: [],
+    projects: [],
+  };
+  const context = {
+    BRAND_LOGO_SRC: '',
+    appState,
+    selectedSpaceType: 'channel',
+    selectedSpaceId: 'chan_all',
+    mentionPopup: {
+      active: false,
+      items: [],
+      selectedIndex: 0,
+      composerId: 'composer',
+    },
+    escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    },
+    presenceClass(status) {
+      return `status-${status || 'offline'}`;
+    },
+    humanBadgeHtml() {
+      return '<img class="human-script-badge" src="/brand/humans-script-badge.png" alt="humans" />';
+    },
+    getChannelMembers() {
+      return {
+        agents: appState.agents,
+        humans: appState.humans,
+      };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+
+  const candidates = context.getMentionCandidates('', 'channel', 'chan_all');
+  context.mentionPopup = {
+    active: true,
+    items: candidates,
+    selectedIndex: 0,
+    composerId: 'composer',
+  };
+  const html = context.renderMentionPopup();
+
+  assert.doesNotMatch(html, /PEOPLE IN THIS CHANNEL/);
+  assert.match(html, /human-script-badge/);
+  assert.match(html, /data:image\/png;base64,real-avatar/);
+  assert.match(html, /Codex · Handles code changes and release checks/);
+  assert.equal(context.getMentionCandidates('codex', 'channel', 'chan_all')[0].id, 'agt_codex');
 });
 
 test('thread mentions include active workspace humans outside the current channel', async () => {
@@ -880,6 +959,8 @@ test('human messages and thread replies render agent pickup avatars from work it
   assert.match(app, /const AGENT_RECEIPT_VISIBLE_LIMIT = 10/);
   assert.match(app, /function deliveryReceiptItemsForRecord\(record\)/);
   assert.match(app, /item\?\.sourceMessageId === record\.id/);
+  assert.match(app, /record\.authorId === currentHumanId\(\)/);
+  assert.match(app, /humanMatchesCurrentAccount\(human \|\| \{ id: record\.authorId \}\)/);
   assert.match(app, /function renderAgentReceiptTray\(record\)/);
   assert.match(app, /function renderMessageFooter\(\{ replyCountChip = '', receiptTray = '' \} = \{\}\)/);
   assert.match(app, /record\.authorType === 'agent'/);
@@ -1006,20 +1087,30 @@ test('message human avatars open right-side human details without changing the c
   const app = await readAppSource();
   const styles = await readStylesSource();
   const avatarSource = app.slice(app.indexOf('function renderHumanIdentityButton'), app.indexOf('function renderActorName'));
+  const actorNameSource = app.slice(app.indexOf('function renderActorName'), app.indexOf('// Parse <@id>'));
   const inspectorSource = app.slice(app.indexOf('function renderInspector()'), app.indexOf('function renderProjectFilePreview()'));
   const clickSource = app.slice(app.indexOf("if (action === 'select-human-inspector')"), app.indexOf("if (action === 'select-human')"));
   const subtitleSource = app.slice(app.indexOf('function actorSubtitle'), app.indexOf('function renderMentionChips'));
 
   assert.match(avatarSource, /data-action="select-human-inspector"/);
+  assert.match(avatarSource, /renderHumanHoverCard\(human\)/);
+  assert.match(actorNameSource, /class="human-author-name"/);
+  assert.match(actorNameSource, /data-action="select-human-inspector"/);
+  assert.match(actorNameSource, /<strong>@\$\{escapeHtml\(displayName\(authorId\)\)\}<\/strong>/);
+  assert.match(actorNameSource, /renderHumanHoverCard\(human\)/);
   assert.match(clickSource, /if \(activeView !== 'space'\)/);
   assert.match(clickSource, /if \(activeView === 'members'\) syncBrowserRouteForActiveView\(\)/);
   assert.match(inspectorSource, /if \(selectedHumanId\)/);
   assert.match(subtitleSource, /humanByIdAny/);
   assert.match(subtitleSource, /cloudMemberForHuman/);
   assert.match(subtitleSource, /cloudMemberDisplayRole/);
+  assert.match(subtitleSource, /agentSubtitle\(agent\)/);
+  assert.match(app, /agent\.description \? `\$\{agent\.description\} · \$\{runtimeConfigurationLabel\(agent\)\}`/);
   assert.doesNotMatch(subtitleSource, /channelOwnerId[\s\S]*admin/);
   assert.match(styles, /\.avatar\.human-avatar-cell/);
   assert.match(styles, /\.human-identity-button/);
+  assert.match(styles, /\.human-author-name/);
+  assert.match(styles, /\.agent-hover-detail/);
 });
 
 test('dm chat and task empty states use MagClaw-style simple surfaces', async () => {
@@ -1304,6 +1395,7 @@ test('agent warmup renders as Warming with a distinct pink status dot', async ()
   assert.match(app, /function agentDisplayStatus\(agent\)/);
   assert.match(serverWarmSource, /isWarmup \? 'warming' : 'thinking'/);
   assert.match(app, /if \(agentIsWarming\(agent\)\) return 'warming'/);
+  assert.doesNotMatch(app, /agent\.computerId && !computer && agent\.computerId !== 'cmp_local'[\s\S]*return 'deleted'/);
   assert.match(app, /if \(value === 'warming'\) return 'Warming'/);
   assert.match(agentListSource, /const status = agentDisplayStatus\(agent\)/);
   assert.match(profileSource, /presenceClass\(agentDisplayStatus\(agent\)\)/);

@@ -10,8 +10,8 @@ test('agent context pack includes recent channel messages, current message, task
   const state = {
     humans: [{ id: 'hum_local', name: 'You', role: 'admin' }],
     agents: [
-      { id: 'agt_333', name: '333', description: 'solver', status: 'idle' },
-      { id: 'agt_ccc', name: 'CCC', description: 'reviewer', status: 'idle' },
+      { id: 'agt_333', name: '333', description: 'solver', runtime: 'codex', status: 'idle' },
+      { id: 'agt_ccc', name: 'CCC', description: 'reviewer', runtime: 'claude-code', status: 'idle' },
     ],
     channels: [{
       id: 'chan_all',
@@ -111,6 +111,8 @@ test('agent context pack includes recent channel messages, current message, task
 
   assert.equal(pack.space.name, 'all');
   assert.deepEqual(pack.participants.map((item) => item.name), ['You', '333', 'CCC']);
+  assert.equal(pack.participants.find((item) => item.name === '333').description, 'solver');
+  assert.equal(pack.participants.find((item) => item.name === '333').runtime, 'codex');
   assert.equal(pack.currentMessage.id, 'msg_current');
   assert.ok(pack.recentMessages.some((item) => item.id === 'msg_1'));
   assert.ok(pack.recentMessages.some((item) => item.id === 'msg_2'));
@@ -121,7 +123,7 @@ test('agent context pack includes recent channel messages, current message, task
 
   const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_333' });
   assert.match(rendered, /Context snapshot for #all/);
-  assert.match(rendered, /Participants: @You - admin, @333 \(you\) - solver, @CCC - reviewer/);
+  assert.match(rendered, /Participants: @You - human; role=admin, @333 \(you\) - agent; runtime=codex; status=idle; description=solver, @CCC - agent; runtime=claude-code; status=idle; description=reviewer/);
   assert.match(rendered, /\[msg=msg_1 .* @You: @CCC 你叫什么/);
   assert.match(rendered, /\[msg=msg_2 .* @CCC: 我叫 CCC。/);
   assert.match(rendered, /Current message/);
@@ -255,6 +257,6 @@ test('workspace all context expands cloud workspace humans and agents', () => {
 
   const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_el' });
   assert.match(rendered, /Space: Channel \(public, default workspace channel\)/);
-  assert.match(rendered, /Participants: @bobo126126 - admin, @JJJJ - owner, @😊 - general helper, @EL \(you\) - engineering lead/);
+  assert.match(rendered, /Participants: @bobo126126 - human; role=admin; status=online, @JJJJ - human; role=owner; status=offline, @😊 - agent; status=idle; description=general helper, @EL \(you\) - agent; status=idle; description=engineering lead/);
   assert.doesNotMatch(rendered, /@Other/);
 });

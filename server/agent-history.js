@@ -50,40 +50,49 @@ function spaceLabel(state, spaceType, spaceId) {
   return `${spaceType || 'space'}:${spaceId || ''}`;
 }
 
-function findMessageByRef(state, ref) {
+function recordInWorkspace(record, workspaceId = '', stateWorkspaceId = '') {
+  const target = String(workspaceId || '').trim();
+  if (!target) return true;
+  const recordWorkspace = String(record?.workspaceId || '').trim();
+  if (recordWorkspace) return recordWorkspace === target;
+  const fallbackWorkspace = String(stateWorkspaceId || '').trim();
+  return Boolean(fallbackWorkspace && fallbackWorkspace === target);
+}
+
+function findMessageByRef(state, ref, workspaceId = '') {
   const value = String(ref || '').trim();
   if (!value) return null;
-  return asArray(state?.messages).find((message) => (
+  return asArray(state?.messages).filter((message) => recordInWorkspace(message, workspaceId, state?.connection?.workspaceId)).find((message) => (
     message.id === value
     || message.id.startsWith(value)
     || message.id.split('_').pop()?.startsWith(value)
   )) || null;
 }
 
-function findReplyByRef(state, ref) {
+function findReplyByRef(state, ref, workspaceId = '') {
   const value = String(ref || '').trim();
   if (!value) return null;
-  return asArray(state?.replies).find((reply) => (
+  return asArray(state?.replies).filter((reply) => recordInWorkspace(reply, workspaceId, state?.connection?.workspaceId)).find((reply) => (
     reply.id === value
     || reply.id.startsWith(value)
     || reply.id.split('_').pop()?.startsWith(value)
   )) || null;
 }
 
-function findChannelByRef(state, ref) {
+function findChannelByRef(state, ref, workspaceId = '') {
   const value = String(ref || '').trim().replace(/^#/, '');
   if (!value) return null;
-  return asArray(state?.channels).find((channel) => (
+  return asArray(state?.channels).filter((channel) => recordInWorkspace(channel, workspaceId, state?.connection?.workspaceId)).find((channel) => (
     channel.id === value
     || channel.name === value
     || channel.id.startsWith(value)
   )) || null;
 }
 
-function findDmByRef(state, ref) {
+function findDmByRef(state, ref, workspaceId = '') {
   const value = String(ref || '').trim().replace(/^dm:/, '').replace(/^@/, '');
   if (!value) return null;
-  return asArray(state?.dms).find((dm) => {
+  return asArray(state?.dms).filter((dm) => recordInWorkspace(dm, workspaceId, state?.connection?.workspaceId)).find((dm) => {
     if (dm.id === value || dm.id.startsWith(value)) return true;
     return asArray(dm.participantIds).some((id) => {
       if (id === 'hum_local') return false;
@@ -93,21 +102,22 @@ function findDmByRef(state, ref) {
   }) || null;
 }
 
-function resolveHistoryTarget(state, rawTarget) {
+function resolveHistoryTarget(state, rawTarget, options = {}) {
+  const workspaceId = String(options.workspaceId || '').trim();
   const target = String(rawTarget || '#all').trim() || '#all';
   const threadOnly = target.match(/^thread:(.+)$/i);
   if (threadOnly) {
-    const parent = findMessageByRef(state, threadOnly[1]);
+    const parent = findMessageByRef(state, threadOnly[1], workspaceId);
     if (!parent) return { error: `Thread target not found: ${target}` };
     return { kind: 'thread', spaceType: parent.spaceType, spaceId: parent.spaceId, parent };
   }
 
   const channelMatch = target.match(/^#([^:]+)(?::(.+))?$/);
   if (channelMatch) {
-    const channel = findChannelByRef(state, channelMatch[1]);
+    const channel = findChannelByRef(state, channelMatch[1], workspaceId);
     if (!channel) return { error: `Channel not found: ${target}` };
     if (channelMatch[2]) {
-      const parent = findMessageByRef(state, channelMatch[2]);
+      const parent = findMessageByRef(state, channelMatch[2], workspaceId);
       if (!parent || parent.spaceType !== 'channel' || parent.spaceId !== channel.id) {
         return { error: `Thread target not found: ${target}` };
       }
@@ -118,10 +128,10 @@ function resolveHistoryTarget(state, rawTarget) {
 
   const dmMatch = target.match(/^dm:([^:]+)(?::(.+))?$/i);
   if (dmMatch) {
-    const dm = findDmByRef(state, dmMatch[1]);
+    const dm = findDmByRef(state, dmMatch[1], workspaceId);
     if (!dm) return { error: `DM not found: ${target}` };
     if (dmMatch[2]) {
-      const parent = findMessageByRef(state, dmMatch[2]);
+      const parent = findMessageByRef(state, dmMatch[2], workspaceId);
       if (!parent || parent.spaceType !== 'dm' || parent.spaceId !== dm.id) {
         return { error: `Thread target not found: ${target}` };
       }
@@ -130,10 +140,10 @@ function resolveHistoryTarget(state, rawTarget) {
     return { kind: 'dm', spaceType: 'dm', spaceId: dm.id };
   }
 
-  const parent = findMessageByRef(state, target);
+  const parent = findMessageByRef(state, target, workspaceId);
   if (parent) return { kind: 'thread', spaceType: parent.spaceType, spaceId: parent.spaceId, parent };
 
-  const channel = findChannelByRef(state, target);
+  const channel = findChannelByRef(state, target, workspaceId);
   if (channel) return { kind: 'channel', spaceType: 'channel', spaceId: channel.id };
 
   return { error: `History target not found: ${target}` };
@@ -191,12 +201,16 @@ function normalizeRecord(state, record, targetLabel) {
 
 export function readAgentHistory(state, options = {}) {
   const limit = clampLimit(options.limit, DEFAULT_HISTORY_LIMIT, MAX_HISTORY_LIMIT);
-  const resolved = resolveHistoryTarget(state, options.target || '#all');
+  const workspaceId = String(options.workspaceId || '').trim();
+  const resolved = resolveHistoryTarget(state, options.target || '#all', { workspaceId });
   if (resolved.error) return { ok: false, error: resolved.error, messages: [] };
 
   if (resolved.kind === 'thread') {
     const label = `${spaceLabel(state, resolved.spaceType, resolved.spaceId)}:${resolved.parent.id}`;
-    const replies = sortByCreatedAt(asArray(state?.replies).filter((reply) => reply.parentMessageId === resolved.parent.id));
+    const replies = sortByCreatedAt(asArray(state?.replies).filter((reply) => (
+      reply.parentMessageId === resolved.parent.id
+      && recordInWorkspace(reply, workspaceId, state?.connection?.workspaceId)
+    )));
     const records = [resolved.parent, ...replies];
     return {
       ok: true,
@@ -210,6 +224,7 @@ export function readAgentHistory(state, options = {}) {
   const label = spaceLabel(state, resolved.spaceType, resolved.spaceId);
   const records = sortByCreatedAt(asArray(state?.messages).filter((message) => (
     message.spaceType === resolved.spaceType && message.spaceId === resolved.spaceId
+    && recordInWorkspace(message, workspaceId, state?.connection?.workspaceId)
   )));
   return {
     ok: true,
@@ -236,19 +251,30 @@ export function searchAgentMessageHistory(state, options = {}) {
   const query = String(options.query || '').trim();
   const limit = clampLimit(options.limit, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT);
   if (!query) return { ok: false, error: 'Search query cannot be empty.', results: [] };
-  const resolved = resolveHistoryTarget(state, options.target || '#all');
+  const workspaceId = String(options.workspaceId || '').trim();
+  const resolved = resolveHistoryTarget(state, options.target || '#all', { workspaceId });
   if (resolved.error) return { ok: false, error: resolved.error, results: [] };
   const q = query.toLowerCase();
 
-  const spaceFilter = (record) => record.spaceType === resolved.spaceType && record.spaceId === resolved.spaceId;
+  const spaceFilter = (record) => (
+    record.spaceType === resolved.spaceType
+    && record.spaceId === resolved.spaceId
+    && recordInWorkspace(record, workspaceId, state?.connection?.workspaceId)
+  );
   let records = [];
   if (resolved.kind === 'thread') {
-    records = [resolved.parent, ...asArray(state?.replies).filter((reply) => reply.parentMessageId === resolved.parent.id)];
+    records = [
+      resolved.parent,
+      ...asArray(state?.replies).filter((reply) => (
+        reply.parentMessageId === resolved.parent.id
+        && recordInWorkspace(reply, workspaceId, state?.connection?.workspaceId)
+      )),
+    ];
   } else {
     const parentIds = new Set(asArray(state?.messages).filter(spaceFilter).map((message) => message.id));
     records = [
       ...asArray(state?.messages).filter(spaceFilter),
-      ...asArray(state?.replies).filter((reply) => parentIds.has(reply.parentMessageId)),
+      ...asArray(state?.replies).filter((reply) => parentIds.has(reply.parentMessageId) && recordInWorkspace(reply, workspaceId, state?.connection?.workspaceId)),
     ];
   }
 
@@ -256,7 +282,7 @@ export function searchAgentMessageHistory(state, options = {}) {
     .filter((record) => recordSearchText(record).includes(q))
     .slice(0, limit)
     .map((record) => {
-      const parent = record.parentMessageId ? findMessageByRef(state, record.parentMessageId) : record;
+      const parent = record.parentMessageId ? findMessageByRef(state, record.parentMessageId, workspaceId) : record;
       const target = record.parentMessageId
         ? `${spaceLabel(state, parent?.spaceType || record.spaceType, parent?.spaceId || record.spaceId)}:${parent?.id || record.parentMessageId}`
         : spaceLabel(state, record.spaceType, record.spaceId);

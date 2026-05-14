@@ -141,6 +141,7 @@ async function startRelay(options = {}) {
               agent: {
                 id: options.agent?.id || 'agt_remote',
                 name: options.agent?.name || 'Remote Codex',
+                description: options.agent?.description || 'Remote agent that loves concise jokes',
                 runtime: options.agent?.runtime || 'codex',
                 model: options.agent?.model || 'gpt-test',
                 reasoningEffort: 'low',
@@ -152,6 +153,33 @@ async function startRelay(options = {}) {
                 spaceId: 'chan_all',
                 parentMessageId: null,
                 workItemId: 'wi_test',
+                contextPack: {
+                  targetAgentId: options.agent?.id || 'agt_remote',
+                  space: { type: 'channel', id: 'chan_all', label: '#all', visibility: 'public' },
+                  participants: [
+                    { id: 'hum_test', name: 'Human', type: 'human', role: 'owner', status: 'online' },
+                    {
+                      id: options.agent?.id || 'agt_remote',
+                      name: options.agent?.name || 'Remote Codex',
+                      type: 'agent',
+                      description: options.agent?.description || 'Remote agent that loves concise jokes',
+                      runtime: options.agent?.runtime || 'codex',
+                      status: 'idle',
+                    },
+                    { id: 'agt_ka', name: 'KA', type: 'agent', description: 'Likes telling jokes', runtime: 'codex', status: 'idle' },
+                  ],
+                  currentMessage: {
+                    id: 'msg_test',
+                    authorType: 'human',
+                    authorId: 'hum_test',
+                    body: 'Who is good at jokes?',
+                    mentionedAgentIds: [],
+                    createdAt: '2026-05-14T06:13:30.000Z',
+                  },
+                  recentMessages: [],
+                  tasks: [],
+                  peerMemorySearch: { required: false, results: [] },
+                },
               },
               workItem: { id: 'wi_test' },
             },
@@ -283,6 +311,12 @@ process.stdin.on('data', (chunk) => {
     assert.ok(appServer.args.some((arg) => String(arg).includes('mcp_servers.magclaw.args')));
     assert.equal(appServer.args.some((arg) => String(arg).includes('mc_machine_test')), false);
     assert.ok(entries.some((entry) => entry.method === 'turn/start'));
+    const turnStart = entries.find((entry) => entry.method === 'turn/start');
+    const promptText = turnStart.params.input[0].text;
+    assert.match(promptText, /Agent description: Remote agent that loves concise jokes/);
+    assert.match(promptText, /Participants shown: @Human - human; role=owner; status=online, @Remote Codex \(you\) - agent; runtime=codex; status=idle; description=Remote agent that loves concise jokes, @KA - agent; runtime=codex; status=idle; description=Likes telling jokes/);
+    assert.match(promptText, /Progressive context tools: list_agents, read_agent_profile, read_history/);
+    assert.match(promptText, /Current message:\n\[msg=msg_test .* @Human: Who is good at jokes\?/);
   } finally {
     daemon.kill('SIGINT');
     await Promise.race([

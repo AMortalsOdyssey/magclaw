@@ -83,9 +83,39 @@ function agentHandle(agent) {
   return `@${String(agent?.name || 'agent').replace(/\s+/g, '')}`;
 }
 
+function detailValue(value, fallback = '-') {
+  const text = String(value || '').trim();
+  return text || fallback;
+}
+
+function agentRuntimeLabel(agent) {
+  return typeof runtimeConfigurationLabel === 'function'
+    ? runtimeConfigurationLabel(agent)
+    : (agent?.runtime || agent?.runtimeId || 'Agent');
+}
+
+function actorCreatorLabel(item) {
+  return detailValue(
+    item?.creatorName
+    || item?.createdByName
+    || item?.cloudMember?.createdByName
+    || (item?.createdBy ? displayName(item.createdBy) : ''),
+  );
+}
+
+function renderHoverDetail(label, value) {
+  return `
+    <span class="agent-hover-detail">
+      <b>${escapeHtml(label)}</b>
+      <span>${escapeHtml(detailValue(value))}</span>
+    </span>
+  `;
+}
+
 function renderAgentHoverCard(agent) {
   const status = agent ? agentDisplayStatus(agent) : 'offline';
-  const description = agent?.description || agent?.runtime || 'Agent';
+  const description = agent?.description || 'Agent';
+  const runtime = agentRuntimeLabel(agent);
   return `
     <span class="agent-hover-card" role="tooltip">
       <span class="agent-hover-head">
@@ -97,6 +127,13 @@ function renderAgentHoverCard(agent) {
         </span>
       </span>
       <span class="agent-hover-description">${escapeHtml(description)}</span>
+      <span class="agent-hover-details">
+        ${renderHoverDetail('Name', agent?.name || '')}
+        ${renderHoverDetail('Description', description)}
+        ${renderHoverDetail('Runtime', runtime)}
+        ${renderHoverDetail('Creator', actorCreatorLabel(agent))}
+        ${renderHoverDetail('Created', agent?.createdAt ? fmtTime(agent.createdAt) : '')}
+      </span>
     </span>
   `;
 }
@@ -118,7 +155,37 @@ function renderHumanIdentityButton(humanId, className = '') {
   return `
     <button class="human-identity-button ${className}" type="button" data-action="select-human-inspector" data-id="${escapeHtml(human.id)}" aria-label="View ${escapeHtml(human.name || 'Human')}">
       ${getAvatarHtml(human.id, 'human', 'avatar-inner')}
+      ${renderHumanHoverCard(human)}
     </button>
+  `;
+}
+
+function humanRoleLabel(human) {
+  const member = human && typeof cloudMemberForHuman === 'function' ? cloudMemberForHuman(human) : null;
+  return member && typeof cloudMemberDisplayRole === 'function'
+    ? cloudMemberDisplayRole(member)
+    : (human?.role || 'Human');
+}
+
+function renderHumanHoverCard(human) {
+  const role = humanRoleLabel(human);
+  return `
+    <span class="agent-hover-card human-hover-card" role="tooltip">
+      <span class="agent-hover-head">
+        ${getAvatarHtml(human.id, 'human', 'dm-avatar member-avatar')}
+        <span class="agent-hover-title">
+          <strong>${escapeHtml(human.name || 'Human')}</strong>
+          <span>${escapeHtml(role)}</span>
+          ${human.email ? `<small>${escapeHtml(human.email)}</small>` : ''}
+        </span>
+      </span>
+      <span class="agent-hover-details">
+        ${renderHoverDetail('Name', human.name || 'Human')}
+        ${renderHoverDetail('Role', role)}
+        ${renderHoverDetail('Creator', actorCreatorLabel(human))}
+        ${renderHoverDetail('Created', human.createdAt ? fmtTime(human.createdAt) : '')}
+      </span>
+    </span>
   `;
 }
 
@@ -141,14 +208,19 @@ function renderActorName(authorId, authorType) {
   if (authorType === 'human') {
     const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
     const youLabel = renderHumanYouLabel(human);
-    return `<strong class="human-author-name">${escapeHtml(displayName(authorId))}${youLabel}${humanBadgeHtml()}</strong>`;
+    return `
+      <button class="human-author-name" type="button" data-action="select-human-inspector" data-id="${escapeHtml(authorId)}">
+        <strong>@${escapeHtml(displayName(authorId))}</strong>${youLabel}${humanBadgeHtml()}
+        ${human ? renderHumanHoverCard(human) : ''}
+      </button>
+    `;
   }
   if (authorType !== 'agent') return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
   const agent = byId(appState?.agents, authorId);
   if (!agent) return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
   return `
     <button class="agent-author-name" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}">
-      <strong>${escapeHtml(agent.name)}</strong>
+      <strong>@${escapeHtml(agent.name)}</strong>
       ${renderAgentHoverCard(agent)}
     </button>
   `;
@@ -465,7 +537,8 @@ function highlightSearchText(text, query) {
 }
 
 function mentionAvatar(item) {
-  if (item.type === 'agent' && item.avatar) return `<img src="${escapeHtml(item.avatar)}" class="mention-avatar" alt="" />`;
+  const avatar = ['agent', 'human'].includes(item.type) ? String(item.avatar || item.avatarUrl || '').trim() : '';
+  if (avatar) return `<img src="${escapeHtml(avatar)}" class="mention-avatar" alt="" />`;
   if (item.type === 'file') return '<span class="mention-avatar-text mention-file-avatar">FILE</span>';
   if (item.type === 'folder') return '<span class="mention-avatar-text mention-folder-avatar">DIR</span>';
   return `<span class="mention-avatar-text">${escapeHtml(item.name.slice(0, 2).toUpperCase())}</span>`;
@@ -479,6 +552,139 @@ function mentionHandle(item) {
 
 function mentionDisplay(item) {
   return `@${item.name}`;
+}
+
+function mentionRuntimeLabel(item = {}) {
+  const raw = String(item.runtime || item.runtimeId || '').trim();
+  if (!raw) return '';
+  const normalized = raw.toLowerCase();
+  const labels = {
+    codex: 'Codex',
+    'claude-code': 'Claude Code',
+    kimi: 'Kimi',
+    cursor: 'Cursor',
+    copilot: 'Copilot',
+    gemini: 'Gemini',
+    opencode: 'OpenCode',
+  };
+  if (labels[normalized]) return labels[normalized];
+  if (typeof runtimeNameForId === 'function') return runtimeNameForId(raw).replace(/\s+CLI$/i, '');
+  return raw.replace(/[-_]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function mentionDetailText(item, handle) {
+  if (item.type === 'agent') {
+    return [mentionRuntimeLabel(item), item.description || ''].filter(Boolean).join(' · ') || handle;
+  }
+  if (item.type === 'file' || item.type === 'folder') return handle;
+  return handle;
+}
+
+function mentionHumanBadgeHtml() {
+  return typeof humanBadgeHtml === 'function' ? humanBadgeHtml() : '';
+}
+
+function mentionNameHtml(item) {
+  return `
+    <span class="mention-name-text">${escapeHtml(item.name)}</span>
+    ${item.type === 'human' ? mentionHumanBadgeHtml() : ''}
+  `;
+}
+
+function mentionSearchValue(item) {
+  return [
+    item.name,
+    mentionHandle(item),
+    item.handle,
+    item.runtime,
+    item.runtimeId,
+    item.description,
+    item.absolutePath,
+    item.path,
+    item.projectName,
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function mentionQueryScore(item, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return 8;
+  const name = String(item.name || '').toLowerCase();
+  const handle = mentionHandle(item).toLowerCase().replace(/^@/, '');
+  const runtime = String(item.runtime || item.runtimeId || '').toLowerCase();
+  const description = String(item.description || '').toLowerCase();
+  if (name === q || handle === q) return 0;
+  if (name.startsWith(q) || handle.startsWith(q)) return 1;
+  if (name.includes(q) || handle.includes(q)) return 2;
+  if (runtime === q || runtime.startsWith(q)) return 3;
+  if (runtime.includes(q) || description.includes(q)) return 4;
+  if (mentionSearchValue(item).includes(q)) return 5;
+  return 9;
+}
+
+function mentionGroupPriority(group) {
+  const priorities = { in: 0, out: 1, folders: 2, files: 3 };
+  return priorities[group] ?? 9;
+}
+
+function mentionTypePriority(item) {
+  const priorities = { agent: 0, human: 1, folder: 2, file: 3 };
+  return priorities[item.type] ?? 9;
+}
+
+function mentionStatusPriority(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (['online', 'thinking', 'working', 'running', 'busy', 'warming'].includes(normalized)) return 0;
+  if (['queued', 'starting'].includes(normalized)) return 1;
+  if (['idle', 'offline'].includes(normalized)) return 2;
+  return 3;
+}
+
+function mentionRecordMatchesSpace(record, spaceType, spaceId) {
+  if (!record) return false;
+  if (record.spaceType === spaceType && record.spaceId === spaceId) return true;
+  if (!record.parentMessageId) return false;
+  const parent = byId(appState?.messages, record.parentMessageId);
+  return parent?.spaceType === spaceType && parent?.spaceId === spaceId;
+}
+
+function mentionRecentActorIndexes(spaceType, spaceId) {
+  const indexes = new Map();
+  const records = [...(appState?.messages || []), ...(appState?.replies || [])]
+    .filter((record) => mentionRecordMatchesSpace(record, spaceType, spaceId))
+    .sort((a, b) => Date.parse(b.createdAt || b.updatedAt || 0) - Date.parse(a.createdAt || a.updatedAt || 0))
+    .slice(0, 80);
+  let index = 0;
+  for (const record of records) {
+    const ids = [
+      record.authorId,
+      ...(record.mentionedAgentIds || []),
+      ...(record.mentionedHumanIds || []),
+    ].filter(Boolean);
+    for (const id of ids) {
+      if (!indexes.has(id)) indexes.set(id, index);
+    }
+    index += 1;
+  }
+  return indexes;
+}
+
+function sortMentionItems(items, query, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  const recentIndexes = mentionRecentActorIndexes(spaceType, spaceId);
+  return [...items].sort((a, b) => {
+    const queryDiff = mentionQueryScore(a, query) - mentionQueryScore(b, query);
+    if (queryDiff) return queryDiff;
+    const groupDiff = mentionGroupPriority(a.group) - mentionGroupPriority(b.group);
+    if (groupDiff) return groupDiff;
+    const recentDiff = (recentIndexes.get(a.id) ?? 9999) - (recentIndexes.get(b.id) ?? 9999);
+    if (recentDiff) return recentDiff;
+    const typeDiff = mentionTypePriority(a) - mentionTypePriority(b);
+    if (typeDiff) return typeDiff;
+    const statusDiff = mentionStatusPriority(a.status) - mentionStatusPriority(b.status);
+    if (statusDiff) return statusDiff;
+    const joinedDiff = Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0);
+    if (joinedDiff) return joinedDiff;
+    return String(a.name || '').localeCompare(String(b.name || ''));
+  });
 }
 
 function decodeReferencePath(value) {
@@ -601,24 +807,28 @@ function getMentionCandidates(query, spaceType = selectedSpaceType, spaceId = se
       type: 'agent',
       avatar: agent.avatar,
       status: agent.status || 'offline',
-      description: agent.description || agent.runtime || 'Agent',
+      runtime: agent.runtime || agent.runtimeId || '',
+      runtimeId: agent.runtimeId || '',
+      description: agent.description || '',
+      createdAt: agent.createdAt || '',
       group: inIds.has(agent.id) ? 'in' : 'out',
     })),
     ...mentionWorkspaceHumans().map((human) => ({
       id: human.id,
       name: human.name,
       type: 'human',
-      avatar: human.avatar,
+      avatar: human.avatar || human.avatarUrl || '',
       status: human.status || 'offline',
       handle: human.email ? human.email.split('@')[0] : human.id.replace(/^hum_/, ''),
-      description: human.role || 'Human',
+      description: human.description || human.role || 'Human',
+      joinedAt: human.joinedAt || human.createdAt || '',
+      createdAt: human.createdAt || '',
       group: inIds.has(human.id) ? 'in' : 'out',
     })),
   ];
   const q = String(query || '').toLowerCase();
-  return allItems
-    .filter((item) => !q || item.name.toLowerCase().includes(q) || mentionHandle(item).toLowerCase().includes(q))
-    .sort((a, b) => (a.group === b.group ? a.name.localeCompare(b.name) : a.group === 'in' ? -1 : 1));
+  const filtered = allItems.filter((item) => !q || mentionSearchValue(item).includes(q));
+  return sortMentionItems(filtered, q, spaceType, spaceId);
 }
 
 async function getProjectMentionCandidates(query, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
@@ -656,35 +866,30 @@ function findMentionTrigger(value, caretPosition) {
 
 function renderMentionPopup() {
   if (!mentionPopup.active || !mentionPopup.items.length) return '';
-  const groups = [
-    ['in', 'PEOPLE IN THIS CHANNEL'],
-    ['folders', 'FOLDERS'],
-    ['files', 'FILES'],
-    ['out', 'OTHER PEOPLE'],
-  ];
-  let cursor = 0;
+  const labels = {
+    folders: 'FOLDERS',
+    files: 'FILES',
+    out: 'OTHER PEOPLE',
+  };
+  let previousGroup = '';
   return `
     <div class="mention-popup" id="mention-popup" data-composer-id="${escapeHtml(mentionPopup.composerId || '')}">
-      ${groups.map(([group, label]) => {
-        const items = mentionPopup.items.filter((item) => item.group === group);
-        if (!items.length) return '';
-        const section = `
-          <div class="mention-section-title">${escapeHtml(label)}</div>
-          ${items.map((item) => {
-            const idx = cursor;
-            const handle = mentionHandle(item);
-            cursor += 1;
-            return `
-              <div class="mention-item mention-type-${escapeHtml(item.type)} ${idx === mentionPopup.selectedIndex ? 'selected' : ''}" data-mention-idx="${idx}">
-                ${mentionAvatar(item)}
-                <span class="mention-status ${item.type === 'file' ? 'mention-status-file' : item.type === 'folder' ? 'mention-status-folder' : presenceClass(item.status)}"></span>
-                <span class="mention-name">${escapeHtml(item.name)}</span>
-                <span class="mention-handle" title="${escapeHtml(handle)}">${escapeHtml(handle)}</span>
-              </div>
-            `;
-          }).join('')}
+      ${mentionPopup.items.map((item, idx) => {
+        const handle = mentionHandle(item);
+        const detail = mentionDetailText(item, handle);
+        const sectionTitle = item.group !== previousGroup && labels[item.group]
+          ? `<div class="mention-section-title">${escapeHtml(labels[item.group])}</div>`
+          : '';
+        previousGroup = item.group;
+        return `
+          ${sectionTitle}
+          <div class="mention-item mention-type-${escapeHtml(item.type)} ${idx === mentionPopup.selectedIndex ? 'selected' : ''}" data-mention-idx="${idx}">
+            ${mentionAvatar(item)}
+            <span class="mention-status ${item.type === 'file' ? 'mention-status-file' : item.type === 'folder' ? 'mention-status-folder' : presenceClass(item.status)}"></span>
+            <span class="mention-name" title="${escapeHtml(item.name)}">${mentionNameHtml(item)}</span>
+            <span class="mention-handle mention-detail" title="${escapeHtml(detail)}">${escapeHtml(detail)}</span>
+          </div>
         `;
-        return section;
       }).join('')}
     </div>
   `;

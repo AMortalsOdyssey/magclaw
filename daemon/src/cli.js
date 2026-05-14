@@ -549,7 +549,157 @@ function codexMcpArgs({ agentId, serverUrl, tokenFile }) {
   ];
 }
 
-function deliveryPrompt(agent, message = {}, workItem = null) {
+function contextArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function contextText(value, limit = 1200) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+
+function contextSnippet(value, limit = 240) {
+  const text = contextText(value, limit);
+  return text.length >= limit ? `${text.slice(0, Math.max(0, limit - 3)).trim()}...` : text;
+}
+
+function contextActorName(pack, id) {
+  const value = String(id || '').trim();
+  if (!value) return 'unknown';
+  const actor = contextArray(pack?.participants).find((item) => item.id === value)
+    || contextArray(pack?.suggestedMembers).find((item) => item.id === value);
+  return actor?.name || value;
+}
+
+function renderContextMentions(pack, text) {
+  return String(text || '').replace(/<@([^>]+)>/g, (_, id) => `@${contextActorName(pack, id)}`);
+}
+
+function renderContextParticipant(item = {}, targetAgentId = '') {
+  const self = item.id === targetAgentId ? ' (you)' : '';
+  const details = [
+    item.type || '',
+    item.role ? `role=${item.role}` : '',
+    item.runtime ? `runtime=${item.runtime}` : '',
+    item.status ? `status=${item.status}` : '',
+    item.description ? `description=${contextSnippet(item.description, 96)}` : '',
+  ].filter(Boolean).join('; ');
+  return `@${item.name || item.id}${self}${details ? ` - ${details}` : ''}`;
+}
+
+function renderContextMessage(pack, record = {}, targetAgentId = '') {
+  const addressed = contextArray(record.mentionedAgentIds).includes(targetAgentId) ? ' mentioned you' : '';
+  const bits = [
+    record.id ? `msg=${record.id}` : '',
+    record.parentMessageId ? `parent=${record.parentMessageId}` : '',
+    record.workItemId ? `workItem=${record.workItemId}` : '',
+    record.taskId ? `task=${record.taskId}` : '',
+    record.createdAt ? `time=${String(record.createdAt).replace('T', ' ').slice(0, 16)}` : '',
+    record.authorType ? `type=${record.authorType}` : '',
+  ].filter(Boolean).join(' ');
+  return `[${bits}] @${contextActorName(pack, record.authorId)}${addressed}: ${renderContextMentions(pack, contextSnippet(record.body, 420))}`;
+}
+
+function renderContextTasks(pack) {
+  const tasks = contextArray(pack?.tasks);
+  if (!tasks.length) return '- (none)';
+  return tasks.map((task) => {
+    const assignees = contextArray(task.assigneeIds).map((id) => `@${contextActorName(pack, id)}`).join(', ');
+    return `- task #${task.number || '?'} [${task.status || 'todo'}] ${contextText(task.title, 240)}${assignees ? ` (assignees: ${assignees})` : ''}`;
+  }).join('\n');
+}
+
+function renderContextPeerMemory(pack) {
+  const search = pack?.peerMemorySearch;
+  if (!search?.required && !contextArray(search?.results).length) return '';
+  const lines = [
+    'Peer memory search:',
+    `- Required: ${search.required ? 'yes' : 'no'}`,
+    search.reason ? `- Reason: ${contextText(search.reason, 240)}` : '',
+    search.query ? `- Query: ${contextText(search.query, 240)}` : '',
+  ].filter(Boolean);
+  const results = contextArray(search.results);
+  if (!results.length) {
+    lines.push('- Results: no matches.');
+  } else {
+    lines.push('- Results:');
+    for (const item of results.slice(0, 3)) {
+      lines.push(`  - @${item.agentName || item.agentId}: ${contextSnippet(item.preview, 220)}`);
+    }
+    if (results.length > 3) lines.push(`  - ${results.length - 3} more result(s) omitted; call search_agent_memory/read_agent_memory if needed.`);
+  }
+  return lines.join('\n');
+}
+
+function compactContextParticipants(pack, targetAgentId = '') {
+  const participants = contextArray(pack?.participants);
+  const importantIds = new Set([
+    targetAgentId,
+    pack?.currentMessage?.authorId,
+    ...contextArray(pack?.currentMessage?.mentionedAgentIds),
+    ...contextArray(pack?.currentMessage?.mentionedHumanIds),
+  ].filter(Boolean));
+  for (const record of contextArray(pack?.recentMessages).slice(-4)) {
+    if (record?.authorId) importantIds.add(record.authorId);
+    for (const id of contextArray(record?.mentionedAgentIds)) importantIds.add(id);
+    for (const id of contextArray(record?.mentionedHumanIds)) importantIds.add(id);
+  }
+  const selected = [];
+  for (const item of participants) {
+    if (importantIds.has(item.id)) selected.push(item);
+  }
+  for (const item of participants) {
+    if (selected.length >= 10) break;
+    if (!selected.some((existing) => existing.id === item.id)) selected.push(item);
+  }
+  const selectedIds = new Set(selected.map((item) => item.id));
+  return {
+    total: participants.length,
+    selected: participants.filter((item) => selectedIds.has(item.id)),
+    omitted: Math.max(0, participants.length - selected.length),
+  };
+}
+
+function renderRemoteAgentContextPack(pack, targetAgentId = '') {
+  if (!pack?.currentMessage) return '';
+  const recent = contextArray(pack.recentMessages).slice(-4);
+  const participants = compactContextParticipants(pack, targetAgentId);
+  const lines = [
+    `Context snapshot for ${pack.space?.label || pack.space?.name || pack.space?.id || 'conversation'}`,
+    `- Space: ${pack.space?.type || 'space'} (${pack.space?.visibility || 'public'}${pack.space?.defaultChannel ? ', default workspace channel' : ''})`,
+    pack.space?.description ? `- Channel description: ${contextSnippet(pack.space.description, 180)}` : '',
+    `- Participants shown: ${participants.selected.map((item) => renderContextParticipant(item, targetAgentId)).join(', ') || '(none)'}`,
+    participants.omitted ? `- Participants omitted: ${participants.omitted}. Use list_agents/read_agent_profile or search_agent_memory when a broader roster or specialties matter.` : '',
+    '',
+    'Current message:',
+    renderContextMessage(pack, pack.currentMessage, targetAgentId),
+    '',
+    'Recent visible messages (oldest to newest):',
+    recent.length ? recent.map((record) => renderContextMessage(pack, record, targetAgentId)).join('\n') : '- (none)',
+  ];
+  if (pack.thread?.parentMessage) {
+    lines.push(
+      '',
+      'Thread context:',
+      renderContextMessage(pack, pack.thread.parentMessage, targetAgentId),
+      contextArray(pack.thread.recentReplies).length
+        ? contextArray(pack.thread.recentReplies).slice(-3).map((record) => renderContextMessage(pack, record, targetAgentId)).join('\n')
+        : '- (no earlier thread replies)',
+    );
+  }
+  lines.push(
+    '',
+    'Relevant tasks:',
+    renderContextTasks(pack),
+    '',
+    renderContextPeerMemory(pack),
+    '',
+    'Progressive context tools: list_agents, read_agent_profile, read_history, search_messages, search_agent_memory, read_agent_memory, and list_tasks are available through MagClaw MCP.',
+    'Use this compact snapshot first. Call the tools only when the answer depends on omitted participants, deeper history, memory, or task details.',
+  );
+  return lines.filter(Boolean).join('\n');
+}
+
+export function deliveryPrompt(agent, message = {}, workItem = null) {
   const target = message.target || (message.spaceType && message.spaceId
     ? `${message.spaceType}:${message.spaceId}${message.parentMessageId ? `:${message.parentMessageId}` : ''}`
     : '#all');
@@ -559,15 +709,18 @@ function deliveryPrompt(agent, message = {}, workItem = null) {
     : 'Work item id: none';
   return [
     `You are ${agent.name || agent.id}, a MagClaw remote agent running on this local computer.`,
+    agent.runtime ? `Runtime: ${agent.runtime}` : '',
+    agent.description ? `Agent description: ${contextSnippet(agent.description, 180)}` : '',
     'You must respond to the incoming message unless it is purely informational and clearly needs no reply.',
     'For ordinary channel or DM chat where Work item id is none, do not call send_message; finish with the exact reply text and MagClaw will post it back to the source conversation.',
     'When a real Work item id is provided, use the MagClaw MCP send_message tool with that workItemId and the exact conversation target.',
-    'Use the other MagClaw MCP tools only when you need to read history, manage tasks, write memory, or schedule reminders.',
+    'Use the other MagClaw MCP tools only when you need to inspect omitted roster details, read history, search messages or memory, manage tasks, write memory, or schedule reminders.',
     `Agent id: ${agent.id}`,
     `Conversation target: ${target}`,
     workItemLine,
     message.parentMessageId ? `Parent message id: ${message.parentMessageId}` : '',
     message.id ? `Source message id: ${message.id}` : '',
+    renderRemoteAgentContextPack(message.contextPack, agent.id),
     '',
     'Incoming message:',
     String(message.body || message.content || '').trim() || '(empty)',
@@ -639,6 +792,8 @@ function canonicalMagClawToolName(name) {
     'search_messages',
     'search_agent_memory',
     'read_agent_memory',
+    'list_agents',
+    'read_agent_profile',
     'write_memory',
     'list_tasks',
     'create_tasks',
@@ -841,6 +996,7 @@ class CodexAgentSession {
         headers: {
           ...(body ? { 'content-type': 'application/json' } : {}),
           authorization: `Bearer ${this.token}`,
+          ...(this.config.workspaceId ? { 'x-magclaw-workspace-id': this.config.workspaceId } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
@@ -912,6 +1068,22 @@ class CodexAgentSession {
             agentId: args.agentId,
             targetAgentId: args.targetAgentId || args.targetAgent,
             path: args.path || 'MEMORY.md',
+          },
+        });
+      case 'list_agents':
+        return this.requestMagClawTool('/api/agent-tools/agents', {
+          query: {
+            agentId: args.agentId,
+            query: args.query || args.q,
+            target: args.target || args.channel,
+            limit: args.limit,
+          },
+        });
+      case 'read_agent_profile':
+        return this.requestMagClawTool('/api/agent-tools/agents/read', {
+          query: {
+            agentId: args.agentId,
+            targetAgentId: args.targetAgentId || args.targetAgent,
           },
         });
       case 'write_memory':

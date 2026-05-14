@@ -1358,6 +1358,7 @@ button:disabled {
 .agent-identity-button,
 .human-identity-button,
 .agent-author-name,
+.human-author-name,
 .member-profile-btn {
   position: relative;
   border: 0;
@@ -1377,15 +1378,20 @@ button:disabled {
   cursor: pointer;
 }
 
-.agent-author-name {
+.agent-author-name,
+.human-author-name {
   display: inline-flex;
   align-items: center;
   min-width: 0;
   padding: 0;
+  gap: 3px;
+  cursor: pointer;
 }
 
 .agent-author-name:hover,
-.agent-author-name:focus-visible {
+.agent-author-name:focus-visible,
+.human-author-name:hover,
+.human-author-name:focus-visible {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -1407,8 +1413,14 @@ button:disabled {
 
 .agent-identity-button:hover .agent-hover-card,
 .agent-identity-button:focus-visible .agent-hover-card,
+.human-identity-button:hover .agent-hover-card,
+.human-identity-button:focus-visible .agent-hover-card,
 .agent-author-name:hover .agent-hover-card,
-.agent-author-name:focus-visible .agent-hover-card {
+.agent-author-name:focus-visible .agent-hover-card,
+.human-author-name:hover .agent-hover-card,
+.human-author-name:focus-visible .agent-hover-card,
+.member-profile-btn:hover .agent-hover-card,
+.member-profile-btn:focus-visible .agent-hover-card {
   display: grid;
   gap: 7px;
 }
@@ -1479,6 +1491,33 @@ button:disabled {
 .agent-hover-description {
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.agent-hover-details {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-hover-detail {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.agent-hover-detail b {
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.agent-hover-detail span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dm-avatar.avatar-img {

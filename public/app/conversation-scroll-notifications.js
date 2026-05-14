@@ -210,7 +210,6 @@ function agentDisplayStatus(agent) {
   if (!agent) return 'offline';
   if (agent.deletedAt || agent.archivedAt) return 'deleted';
   const computer = agent.computerId ? byId(appState?.computers, agent.computerId) : null;
-  if (agent.computerId && !computer && agent.computerId !== 'cmp_local') return 'deleted';
   if (computer && typeof computerIsDisabled === 'function' && computerIsDisabled(computer)) return 'disabled';
   if (computer?.deletedAt || computer?.archivedAt) return 'deleted';
   if (agentIsWarming(agent)) return 'warming';

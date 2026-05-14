@@ -114,6 +114,24 @@ const tools = [
     }, ['targetAgentId']),
   },
   {
+    name: 'list_agents',
+    description: 'List compact MagClaw agent profiles visible in the current server or channel.',
+    inputSchema: schema({
+      query: { type: 'string', description: 'Optional name, runtime, status, or description search text.' },
+      target: { type: 'string', description: 'Optional channel/DM target such as #all.' },
+      channel: { type: 'string', description: 'Channel label/name/id alternative to target.' },
+      limit: { type: 'number', description: 'Maximum agents to return.' },
+    }),
+  },
+  {
+    name: 'read_agent_profile',
+    description: 'Read a concise MagClaw agent profile with runtime, description, channels, and safe public fields.',
+    inputSchema: schema({
+      targetAgentId: { type: 'string', description: 'Target agent id or name.' },
+      targetAgent: { type: 'string', description: 'Target agent id or name.' },
+    }),
+  },
+  {
     name: 'write_memory',
     description: 'Record a concise durable memory for yourself. Use for explicit remember/learn requests or proven specialties/preferences.',
     inputSchema: schema({
@@ -339,6 +357,22 @@ async function callTool(name, args = {}) {
       query: withAgentId({
         targetAgentId: args.targetAgentId || args.targetAgent,
         path: args.path,
+      }),
+    });
+  }
+  if (name === 'list_agents') {
+    return request('/api/agent-tools/agents', {
+      query: withAgentId({
+        query: args.query || args.q,
+        target: args.target || args.channel,
+        limit: args.limit,
+      }),
+    });
+  }
+  if (name === 'read_agent_profile') {
+    return request('/api/agent-tools/agents/read', {
+      query: withAgentId({
+        targetAgentId: args.targetAgentId || args.targetAgent,
       }),
     });
   }

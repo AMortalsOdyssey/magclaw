@@ -144,10 +144,16 @@ test('agent tool reminders can schedule, list, and cancel timed reminders', asyn
 });
 
 test('agent tool route group formats bounded history reads', async () => {
-  const deps = routeDeps();
+  let historyOptions = null;
+  const deps = routeDeps({
+    readAgentHistory: (_state, options) => {
+      historyOptions = options;
+      return { ok: true, target: '#all', messages: [] };
+    },
+  });
   const res = makeResponse();
   const handled = await handleAgentToolApi(
-    { method: 'GET' },
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
     res,
     new URL('http://local/api/agent-tools/history?agentId=agt_one&target=%23all'),
     deps,
@@ -155,6 +161,7 @@ test('agent tool route group formats bounded history reads', async () => {
   assert.equal(handled, true);
   assert.equal(res.statusCode, 200);
   assert.equal(res.data.text, 'formatted history');
+  assert.equal(historyOptions.workspaceId, 'wsp_test');
   assert.equal(deps.events[0].type, 'agent_history_read');
 });
 
@@ -229,6 +236,7 @@ test('agent tool memory endpoint records controlled memory writebacks', async ()
 });
 
 test('agent tool memory search and read expose peer notes through controlled APIs', async () => {
+  let memorySearchOptions = null;
   const deps = routeDeps({
     searchAgentMemory: async (query, options) => ({
       ok: true,
@@ -254,11 +262,31 @@ test('agent tool memory search and read expose peer notes through controlled API
       },
     }),
   });
-  deps.state.agents.push({ id: 'agt_two', name: 'Bug Fixer' });
+  deps.searchAgentMemory = async (query, options) => {
+    memorySearchOptions = options;
+    return {
+      ok: true,
+      query,
+      terms: ['bug', '修复'],
+      results: [{
+        agentId: 'agt_two',
+        agentName: 'Bug Fixer',
+        agentDescription: 'General helper',
+        path: 'notes/work-log.md',
+        line: 4,
+        score: 8,
+        matchedTerms: ['bug', '修复'],
+        preview: '- 修复登录 bug 并补测试',
+      }],
+      truncated: false,
+      options,
+    };
+  };
+  deps.state.agents.push({ id: 'agt_two', name: 'Bug Fixer', workspaceId: 'wsp_test' });
 
   const searchRes = makeResponse();
   assert.equal(await handleAgentToolApi(
-    { method: 'GET' },
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
     searchRes,
     new URL('http://local/api/agent-tools/memory/search?agentId=agt_one&q=bug%20%E4%BF%AE%E5%A4%8D&limit=5'),
     deps,
@@ -266,14 +294,87 @@ test('agent tool memory search and read expose peer notes through controlled API
   assert.equal(searchRes.statusCode, 200);
   assert.equal(searchRes.data.results[0].agentId, 'agt_two');
   assert.match(searchRes.data.text, /notes\/work-log\.md:4/);
+  assert.equal(memorySearchOptions.workspaceId, 'wsp_test');
 
   const readRes = makeResponse();
   assert.equal(await handleAgentToolApi(
-    { method: 'GET' },
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
     readRes,
     new URL('http://local/api/agent-tools/memory/read?agentId=agt_one&targetAgentId=agt_two&path=notes/work-log.md'),
     deps,
   ), true);
   assert.equal(readRes.statusCode, 200);
   assert.match(readRes.data.text, /修复登录 bug/);
+});
+
+test('agent tool APIs list and read workspace-scoped agent profiles', async () => {
+  const deps = routeDeps();
+  deps.state.connection = { workspaceId: 'wsp_fallback' };
+  deps.state.channels = [
+    {
+      id: 'chan_one',
+      name: 'all',
+      workspaceId: 'wsp_test',
+      memberIds: ['hum_local', 'agt_one', 'agt_two'],
+      agentIds: ['agt_one', 'agt_two'],
+    },
+    {
+      id: 'chan_other',
+      name: 'all',
+      workspaceId: 'wsp_other',
+      memberIds: ['agt_three'],
+      agentIds: ['agt_three'],
+    },
+  ];
+  deps.state.agents.push(
+    {
+      id: 'agt_two',
+      name: 'Bug Fixer',
+      description: 'Finds narrow regressions and explains exact fixes.',
+      runtime: 'codex',
+      runtimeId: 'Codex',
+      ownerId: 'hum_local',
+      createdAt: '2026-05-14T08:00:00.000Z',
+      workspaceId: 'wsp_test',
+    },
+    {
+      id: 'agt_three',
+      name: 'Other Workspace',
+      description: 'Should stay hidden from this daemon.',
+      runtime: 'codex',
+      workspaceId: 'wsp_other',
+    },
+  );
+
+  const listRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
+    listRes,
+    new URL('http://local/api/agent-tools/agents?agentId=agt_one&target=%23all&limit=10'),
+    deps,
+  ), true);
+  assert.equal(listRes.statusCode, 200);
+  assert.deepEqual(listRes.data.agents.map((agent) => agent.id), ['agt_two']);
+  assert.match(listRes.data.text, /@Bug Fixer/);
+  assert.doesNotMatch(listRes.data.text, /Other Workspace/);
+
+  const readRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
+    readRes,
+    new URL('http://local/api/agent-tools/agents/read?agentId=agt_one&targetAgent=Bug%20Fixer'),
+    deps,
+  ), true);
+  assert.equal(readRes.statusCode, 200);
+  assert.equal(readRes.data.agent.id, 'agt_two');
+  assert.match(readRes.data.text, /Runtime: Codex/);
+
+  const hiddenRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
+    hiddenRes,
+    new URL('http://local/api/agent-tools/agents/read?agentId=agt_one&targetAgent=Other%20Workspace'),
+    deps,
+  ), true);
+  assert.equal(hiddenRes.statusCode, 404);
 });

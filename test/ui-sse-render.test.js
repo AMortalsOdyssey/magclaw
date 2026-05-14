@@ -87,7 +87,7 @@ test('current human authors are marked and human inspector can return to the act
 
   assert.match(actorNameSource, /function renderHumanYouLabel\(human\)/);
   assert.match(actorNameSource, /humanMatchesCurrentAccount\(human\) \? '<em class="human-you-label">\(you\)<\/em>'/);
-  assert.match(actorNameSource, /\$\{escapeHtml\(displayName\(authorId\)\)\}\$\{youLabel\}\$\{humanBadgeHtml\(\)\}/);
+  assert.match(actorNameSource, /<strong>@\$\{escapeHtml\(displayName\(authorId\)\)\}<\/strong>\$\{youLabel\}\$\{humanBadgeHtml\(\)\}/);
   assert.match(humanInspectorSource, /if \(threadMessageId\) inspectorReturnThreadId = threadMessageId;/);
   assert.ok(
     humanInspectorSource.indexOf('inspectorReturnThreadId = threadMessageId') < humanInspectorSource.indexOf('threadMessageId = null'),

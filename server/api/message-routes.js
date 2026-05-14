@@ -305,6 +305,10 @@ export async function handleMessageApi(req, res, url, deps) {
         limit: 12,
         purpose: 'agent_discovery',
         excludePaths: ['notes/work-log.md', 'notes/agents.md'],
+        workspaceId: message?.workspaceId
+          || (message?.spaceType === 'channel' ? findChannel(message.spaceId)?.workspaceId : '')
+          || state.connection?.workspaceId
+          || '',
       });
     } catch (error) {
       addSystemEvent('agent_peer_memory_search_error', `Peer memory search failed: ${error.message}`, {

@@ -283,10 +283,13 @@ function renderChannelMemberRow(member, type, isAllChannel) {
       ${renderAgentHoverCard(member)}
     </button>
   ` : `
-    ${avatar}
-    <span class="member-main">
-      <strong class="member-name">${escapeHtml(member.name)}</strong>
-    </span>
+    <button class="member-profile-btn" type="button" data-action="select-human-inspector" data-id="${escapeHtml(member.id)}">
+      ${avatar}
+      <span class="member-main">
+        <strong class="member-name">@${escapeHtml(member.name)}</strong>
+      </span>
+      ${renderHumanHoverCard(member)}
+    </button>
   `;
   return `
     <div class="member-list-item member-list-item-${type}">

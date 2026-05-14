@@ -447,7 +447,7 @@ function renderComputerAgentCard(agent) {
       </span>
       <span class="computer-agent-main">
         <strong>${escapeHtml(agent.name || 'Agent')}</strong>
-        <small>${escapeHtml(agent.description || runtimeConfigurationLabel(agent))}</small>
+        <small>${escapeHtml(agent.description ? `${agent.description} · ${runtimeConfigurationLabel(agent)}` : runtimeConfigurationLabel(agent))}</small>
       </span>
       <span class="member-status-side">${avatarStatusDot(agentDisplayStatus(agent), 'Agent status')}</span>
       <span class="computer-agent-tooltip" role="tooltip">

@@ -199,6 +199,24 @@ async function executeMagClawLocalTool(agent, name, args = {}) {
       },
     });
   }
+  if (tool === 'list_agents') {
+    return requestMagClawLocalTool('/api/agent-tools/agents', {
+      query: {
+        agentId,
+        query: args.query || args.q,
+        target: args.target || args.channel,
+        limit: args.limit,
+      },
+    });
+  }
+  if (tool === 'read_agent_profile') {
+    return requestMagClawLocalTool('/api/agent-tools/agents/read', {
+      query: {
+        agentId,
+        targetAgentId: args.targetAgentId || args.targetAgent,
+      },
+    });
+  }
   if (tool === 'write_memory') {
     return requestMagClawLocalTool('/api/agent-tools/memory', {
       method: 'POST',

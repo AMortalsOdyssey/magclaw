@@ -380,6 +380,8 @@ export function createAgentWorkspaceManager(deps) {
         'search_messages',
         'search_agent_memory',
         'read_agent_memory',
+        'list_agents',
+        'read_agent_profile',
         'write_memory',
         'list_tasks',
         'create_tasks',
@@ -996,9 +998,13 @@ export function createAgentWorkspaceManager(deps) {
     if (!terms.length) {
       return { ok: false, query: String(query || ''), results: [], text: 'Memory search query is required.' };
     }
-    const targetAgents = options.targetAgentId
-      ? (state.agents || []).filter((agent) => agent.id === options.targetAgentId || agent.name === options.targetAgentId)
+    const workspaceId = String(options.workspaceId || '').trim();
+    const workspaceScopedAgents = workspaceId
+      ? (state.agents || []).filter((agent) => String(agent?.workspaceId || 'local') === workspaceId)
       : (state.agents || []);
+    const targetAgents = options.targetAgentId
+      ? workspaceScopedAgents.filter((agent) => agent.id === options.targetAgentId || agent.name === options.targetAgentId)
+      : workspaceScopedAgents;
     const results = [];
     for (const agent of targetAgents) {
       if (!agent?.id) continue;

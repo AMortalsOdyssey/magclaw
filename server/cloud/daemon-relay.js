@@ -220,6 +220,47 @@ export function createDaemonRelay(deps) {
     return cloudAuth.ensureCloudState();
   }
 
+  function findWorkItemRecord(id) {
+    const value = String(id || '').trim();
+    if (!value) return null;
+    return safeArray(state.workItems).find((item) => item.id === value) || null;
+  }
+
+  function markWorkItemDeliveredFromDelivery(delivery) {
+    const item = findWorkItemRecord(delivery?.workItemId);
+    if (!item || item.status === 'stopped' || item.status === 'responded') return false;
+    item.status = 'delivered';
+    item.deliveryMode = 'daemon';
+    item.deliveredAt = item.deliveredAt || now();
+    item.updatedAt = now();
+    return true;
+  }
+
+  function compactLogText(value, limit = 120) {
+    return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
+  }
+
+  function contextPackLogSummary(pack) {
+    const participants = safeArray(pack?.participants);
+    return {
+      hasContextPack: Boolean(pack),
+      participantCount: participants.length,
+      participants: participants.map((item) => ({
+        id: item.id,
+        name: item.name,
+        type: item.type,
+        runtime: item.runtime || '',
+        status: item.status || '',
+        description: compactLogText(item.description || item.role || ''),
+      })),
+      recentMessages: safeArray(pack?.recentMessages).length,
+      threadReplies: safeArray(pack?.thread?.recentReplies).length,
+      tasks: safeArray(pack?.tasks).length,
+      peerMemoryRequired: Boolean(pack?.peerMemorySearch?.required),
+      peerMemoryResults: safeArray(pack?.peerMemorySearch?.results).length,
+    };
+  }
+
   function primaryWorkspaceId() {
     const workspace = typeof cloudAuth.primaryWorkspace === 'function'
       ? cloudAuth.primaryWorkspace()
@@ -595,6 +636,7 @@ export function createDaemonRelay(deps) {
       agent: {
         id: agent.id,
         name: agent.name,
+        description: agent.description || '',
         runtime: agent.runtime,
         runtimeId: agent.runtimeId || null,
         runtimeSessionId: agent.runtimeSessionId || null,
@@ -632,6 +674,7 @@ export function createDaemonRelay(deps) {
       agent: {
         id: agent.id,
         name: agent.name,
+        description: agent.description || '',
         runtime: agent.runtime,
         runtimeId: agent.runtimeId || null,
         runtimeSessionId: agent.runtimeSessionId || null,
@@ -656,6 +699,7 @@ export function createDaemonRelay(deps) {
       agent: {
         id: agent.id,
         name: agent.name,
+        description: agent.description || '',
         runtime: agent.runtime,
         runtimeId: agent.runtimeId || null,
         runtimeSessionId: agent.runtimeSessionId || null,
@@ -668,6 +712,17 @@ export function createDaemonRelay(deps) {
       workItem,
     });
     if (!result.queued) return false;
+    console.info('[daemon-relay] agent_delivery_queued', JSON.stringify({
+      deliveryId: result.delivery?.id || null,
+      deduped: Boolean(result.deduped),
+      sent: Boolean(result.sent),
+      agentId: agent.id,
+      agentName: agent.name,
+      runtime: agent.runtime || '',
+      messageId: deliveryMessage?.id || null,
+      workItemId: workItem?.id || deliveryMessage?.workItemId || null,
+      ...contextPackLogSummary(deliveryMessage?.contextPack),
+    }));
     if (result.deduped) {
       if (workItem) {
         workItem.status = result.sent ? 'sent_remote' : 'queued_remote';
@@ -756,6 +811,7 @@ export function createDaemonRelay(deps) {
       delivery.ackedAt = now();
       delivery.updatedAt = now();
       delivery.error = '';
+      markWorkItemDeliveredFromDelivery(delivery);
       recordDaemonEvent('agent_delivery_acked', `Daemon acknowledged ${delivery.commandType || delivery.type}.`, {
         agentId: delivery.agentId,
         computerId: delivery.computerId,

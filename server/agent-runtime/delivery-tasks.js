@@ -1,3 +1,35 @@
+function compactLogText(value, limit = 120) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+
+function deliveryContextLogSummary(agent, contextPack) {
+  const participants = Array.isArray(contextPack?.participants) ? contextPack.participants : [];
+  const target = participants.find((item) => item.id === agent?.id) || {};
+  return {
+    space: contextPack?.space ? `${contextPack.space.type}:${contextPack.space.id}` : null,
+    spaceName: contextPack?.space?.label || contextPack?.space?.name || null,
+    targetAgent: {
+      id: agent?.id || null,
+      name: agent?.name || null,
+      runtime: agent?.runtime || target.runtime || null,
+      description: compactLogText(agent?.description || target.description || ''),
+    },
+    participants: participants.map((item) => ({
+      id: item.id,
+      name: item.name,
+      type: item.type,
+      runtime: item.runtime || null,
+      status: item.status || null,
+      description: compactLogText(item.description || item.role || ''),
+    })),
+    recentMessages: Array.isArray(contextPack?.recentMessages) ? contextPack.recentMessages.length : 0,
+    threadReplies: Array.isArray(contextPack?.thread?.recentReplies) ? contextPack.thread.recentReplies.length : 0,
+    tasks: Array.isArray(contextPack?.tasks) ? contextPack.tasks.length : 0,
+    peerMemoryRequired: Boolean(contextPack?.peerMemorySearch?.required),
+    peerMemoryResults: Array.isArray(contextPack?.peerMemorySearch?.results) ? contextPack.peerMemorySearch.results.length : 0,
+  };
+}
+
 async function deliverMessageToAgent(agent, spaceType, spaceId, message, options = {}) {
   const parentMessageId = options.parentMessageId || message.parentMessageId || (shouldStartThreadForAgentDelivery(message) ? message.id : null);
   const suppressTaskContext = options.suppressTaskContext === true || message.suppressTaskContext === true;
@@ -32,6 +64,13 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
     ...(runtimeOverride ? { runtimeOverride } : {}),
     ...(parentMessageId ? { parentMessageId } : {}),
   };
+  console.info('[agent-delivery] context_pack', JSON.stringify({
+    messageId: message.id || null,
+    workItemId: workItem.id,
+    parentMessageId,
+    cloudRelay: Boolean(cloudRelay?.agentShouldUseRelay?.(agent)),
+    ...deliveryContextLogSummary(agent, contextPack),
+  }));
   if (cloudRelay?.agentShouldUseRelay?.(agent)) {
     await cloudRelay.deliverToAgent(agent, deliveryMessage, workItem);
     return;

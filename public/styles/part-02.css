@@ -1285,7 +1285,7 @@
 
 .mention-item {
   display: grid;
-  grid-template-columns: 28px 8px minmax(120px, 0.55fr) minmax(260px, 1.45fr);
+  grid-template-columns: 28px 8px minmax(104px, 0.46fr) minmax(160px, 0.54fr);
   align-items: center;
   gap: 8px;
   min-height: 36px;
@@ -1368,12 +1368,28 @@
 
 .mention-name {
   min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 700;
   font-size: 14px;
   color: var(--text-primary);
+}
+
+.mention-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-name .human-script-badge {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 10px;
+  margin-left: 0;
+  margin-top: -3px;
 }
 
 .mention-handle {
@@ -1385,6 +1401,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mention-type-agent .mention-detail {
+  font-family: inherit;
+  text-align: left;
 }
 
 .mention-type-file .mention-handle,

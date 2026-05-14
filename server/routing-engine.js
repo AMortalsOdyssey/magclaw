@@ -744,6 +744,7 @@ export function createRoutingEngine(deps) {
       id: card.id,
       name: card.name,
       description: card.description,
+      runtime: card.runtime || '',
       status: card.status,
       channels: card.channels || [],
       channelMember,
@@ -790,6 +791,8 @@ export function createRoutingEngine(deps) {
           id: agent.id,
           name: agent.name,
           description: agent.description || '',
+          runtime: agent.runtime || '',
+          runtimeId: agent.runtimeId || '',
           status: agent.status || '',
         })),
       linkedTask: linkedTask ? {
@@ -823,6 +826,8 @@ export function createRoutingEngine(deps) {
         id: agent.id,
         name: agent.name,
         description: agent.description || '',
+        runtime: agent.runtime || '',
+        runtimeId: agent.runtimeId || '',
         status: agent.status || '',
       })),
       agentCards: [...(allCards?.values?.() || [])].map((card) => serializeFanoutCard(card, channelAgentIds)),
@@ -1300,6 +1305,30 @@ export function createRoutingEngine(deps) {
       llmLatencyMs: event.llmLatencyMs,
       llmModel: event.llmModel,
     });
+    console.info('[routing-engine] route_decision', JSON.stringify({
+      routeEventId: event.id,
+      messageId: event.messageId,
+      parentMessageId: event.parentMessageId,
+      spaceType: event.spaceType,
+      spaceId: event.spaceId,
+      mode: event.mode,
+      strategy: event.strategy,
+      llmUsed: event.llmUsed,
+      llmModel: event.llmModel || null,
+      confidence: event.confidence,
+      reason: String(event.reason || '').slice(0, 240),
+      targetAgents: event.targetAgentIds.map((id) => {
+        const agent = findAgent(id);
+        return {
+          id,
+          name: agent?.name || id,
+          runtime: agent?.runtime || '',
+          status: agent?.status || '',
+          description: compactMarkdownText(agent?.description || '', 160),
+        };
+      }),
+      claimantAgentId: event.claimantAgentId || null,
+    }));
     return event;
   }
   

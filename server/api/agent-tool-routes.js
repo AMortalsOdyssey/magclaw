@@ -45,6 +45,127 @@ export async function handleAgentToolApi(req, res, url, deps) {
   } = deps;
   const state = getState();
 
+  function headerValue(name) {
+    const headers = req.headers || {};
+    const lower = name.toLowerCase();
+    return headers[name] || headers[lower] || '';
+  }
+
+  function requestWorkspaceId() {
+    return String(
+      req.daemonAuth?.workspaceId
+      || headerValue('x-magclaw-workspace-id')
+      || state.connection?.workspaceId
+      || '',
+    ).trim();
+  }
+
+  function workspaceMatches(record, workspaceId = requestWorkspaceId()) {
+    const target = String(workspaceId || '').trim();
+    if (!target) return true;
+    const recordWorkspace = String(record?.workspaceId || '').trim();
+    if (recordWorkspace) return recordWorkspace === target;
+    const stateWorkspace = String(state.connection?.workspaceId || '').trim();
+    return Boolean(stateWorkspace && stateWorkspace === target);
+  }
+
+  function compactText(value, limit = 240) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length <= limit) return text;
+    return `${text.slice(0, Math.max(0, limit - 1)).trim()}...`;
+  }
+
+  function runtimeLabel(agent) {
+    return compactText(agent?.runtimeId || agent?.runtime || agent?.model || 'unknown', 80);
+  }
+
+  function findHumanName(id) {
+    return (state.humans || []).find((human) => human.id === id)?.name || '';
+  }
+
+  function agentChannelNames(agent, workspaceId = requestWorkspaceId()) {
+    if (!agent?.id) return [];
+    return (state.channels || [])
+      .filter((channel) => workspaceMatches(channel, workspaceId))
+      .filter((channel) => channelHasMember(channel, agent.id))
+      .map((channel) => `#${channel.name || channel.id}`)
+      .slice(0, 12);
+  }
+
+  function publicAgentSummary(agent, { detailed = false } = {}) {
+    const creatorId = agent.ownerId || agent.createdBy || agent.creatorId || '';
+    return {
+      id: agent.id,
+      name: agent.name || agent.id,
+      description: compactText(agent.description || '', detailed ? 1200 : 260),
+      runtime: agent.runtime || '',
+      runtimeId: agent.runtimeId || '',
+      runtimeLabel: runtimeLabel(agent),
+      status: agent.status || '',
+      model: compactText(agent.model || agent.defaultModel || '', 120),
+      reasoningEffort: agent.reasoningEffort || '',
+      systemRole: compactText(agent.systemRole || agent.role || '', detailed ? 500 : 160),
+      creatorId,
+      creatorName: findHumanName(creatorId) || displayActor(creatorId) || creatorId || '',
+      createdAt: agent.createdAt || '',
+      updatedAt: agent.updatedAt || '',
+      channels: agentChannelNames(agent),
+    };
+  }
+
+  function renderAgentSummaryLine(agent) {
+    const summary = publicAgentSummary(agent);
+    const pieces = [
+      `@${summary.name} (${summary.id})`,
+      `runtime=${summary.runtimeLabel}`,
+      summary.status ? `status=${summary.status}` : '',
+      summary.description ? `desc=${summary.description}` : '',
+      summary.channels?.length ? `channels=${summary.channels.join(',')}` : '',
+    ].filter(Boolean);
+    return `- ${pieces.join(' | ')}`;
+  }
+
+  function renderAgentProfile(summary) {
+    return [
+      `@${summary.name} (${summary.id})`,
+      `Runtime: ${summary.runtimeLabel}`,
+      summary.status ? `Status: ${summary.status}` : '',
+      summary.description ? `Description: ${summary.description}` : '',
+      summary.systemRole ? `Role: ${summary.systemRole}` : '',
+      summary.model ? `Model: ${summary.model}` : '',
+      summary.reasoningEffort ? `Reasoning: ${summary.reasoningEffort}` : '',
+      summary.creatorName ? `Creator: ${summary.creatorName}` : '',
+      summary.createdAt ? `Created: ${summary.createdAt}` : '',
+      summary.updatedAt ? `Updated: ${summary.updatedAt}` : '',
+      summary.channels?.length ? `Channels: ${summary.channels.join(', ')}` : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  function targetChannelFromQuery(workspaceId = requestWorkspaceId()) {
+    const raw = String(url.searchParams.get('target') || url.searchParams.get('channel') || '').trim();
+    if (!raw) return null;
+    const channelRef = raw.match(/^#([^:]+)(?::.+)?$/)?.[1] || raw.replace(/^#/, '').split(':')[0];
+    return (state.channels || []).find((channel) => (
+      workspaceMatches(channel, workspaceId)
+      && (channel.id === channelRef || channel.id.startsWith(channelRef) || channel.name === channelRef)
+    )) || null;
+  }
+
+  function workspaceAgents(workspaceId = requestWorkspaceId()) {
+    return (state.agents || []).filter((agent) => workspaceMatches(agent, workspaceId));
+  }
+
+  function findWorkspaceAgent(ref, workspaceId = requestWorkspaceId()) {
+    const value = String(ref || '').trim();
+    if (!value) return null;
+    return workspaceAgents(workspaceId).find((agent) => (
+      agent.id === value
+      || agent.id.startsWith(value)
+      || agent.name === value
+      || `@${agent.name}` === value
+    )) || null;
+  }
+
   function resolveProposalChannel(body = {}) {
     const channelRef = String(body.channelId || body.channel_id || '').trim();
     if (channelRef) {
@@ -152,17 +273,95 @@ export async function handleAgentToolApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/agents') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const workspaceId = requestWorkspaceId();
+    const query = compactText(url.searchParams.get('q') || url.searchParams.get('query') || '', 120).toLowerCase();
+    const limit = Math.max(1, Math.min(50, Number(url.searchParams.get('limit') || 20)));
+    const channel = targetChannelFromQuery(workspaceId);
+    const channelAgentIds = channel
+      ? new Set([
+        ...(Array.isArray(channel.agentIds) ? channel.agentIds : []),
+        ...(Array.isArray(channel.memberIds) ? channel.memberIds : []),
+      ])
+      : null;
+    const agents = workspaceAgents(workspaceId)
+      .filter((agent) => agent.id !== agentId)
+      .filter((agent) => !channelAgentIds || channelAgentIds.has(agent.id))
+      .filter((agent) => {
+        if (!query) return true;
+        return [
+          agent.name,
+          agent.id,
+          agent.description,
+          agent.runtime,
+          agent.runtimeId,
+          agent.model,
+          agent.systemRole,
+        ].some((value) => String(value || '').toLowerCase().includes(query));
+      })
+      .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)))
+      .slice(0, limit);
+    addSystemEvent('agent_profiles_listed', `${displayActor(agentId) || 'Agent'} listed agent profiles.`, {
+      agentId,
+      workspaceId: workspaceId || null,
+      target: channel ? `#${channel.name || channel.id}` : null,
+      query: query || null,
+      resultCount: agents.length,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      workspaceId: workspaceId || null,
+      count: agents.length,
+      agents: agents.map((agent) => publicAgentSummary(agent)),
+      text: agents.length
+        ? [
+          `Agent profiles${channel ? ` in #${channel.name || channel.id}` : ''}:`,
+          ...agents.map(renderAgentSummaryLine),
+        ].join('\n')
+        : `No matching agents${channel ? ` in #${channel.name || channel.id}` : ''}.`,
+    });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/agents/read') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const workspaceId = requestWorkspaceId();
+    const targetAgentRef = url.searchParams.get('targetAgentId') || url.searchParams.get('targetAgent') || '';
+    const targetAgent = findWorkspaceAgent(targetAgentRef, workspaceId);
+    if (!targetAgent) {
+      sendError(res, 404, 'Target agent not found.');
+      return true;
+    }
+    const summary = publicAgentSummary(targetAgent, { detailed: true });
+    addSystemEvent('agent_profile_read', `${displayActor(agentId) || 'Agent'} read ${targetAgent.name} profile.`, {
+      agentId,
+      workspaceId: workspaceId || null,
+      targetAgentId: targetAgent.id,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      workspaceId: workspaceId || null,
+      agent: summary,
+      text: renderAgentProfile(summary),
+    });
+    return true;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/agent-tools/history') {
     const agentId = url.searchParams.get('agentId') || '';
+    const workspaceId = requestWorkspaceId();
     const history = readAgentHistory(state, {
       target: url.searchParams.get('target') || url.searchParams.get('channel') || '#all',
       limit: url.searchParams.get('limit') || undefined,
       around: url.searchParams.get('around') || undefined,
       before: url.searchParams.get('before') || undefined,
       after: url.searchParams.get('after') || undefined,
+      workspaceId,
     });
     addSystemEvent('agent_history_read', `${displayActor(agentId) || 'Agent'} read ${history.target || 'history'}.`, {
       agentId,
+      workspaceId: workspaceId || null,
       target: history.target || url.searchParams.get('target') || '#all',
       ok: Boolean(history.ok),
     });
@@ -175,13 +374,16 @@ export async function handleAgentToolApi(req, res, url, deps) {
 
   if (req.method === 'GET' && url.pathname === '/api/agent-tools/search') {
     const agentId = url.searchParams.get('agentId') || '';
+    const workspaceId = requestWorkspaceId();
     const search = searchAgentMessageHistory(state, {
       query: url.searchParams.get('q') || url.searchParams.get('query') || '',
       target: url.searchParams.get('target') || url.searchParams.get('channel') || '#all',
       limit: url.searchParams.get('limit') || undefined,
+      workspaceId,
     });
     addSystemEvent('agent_history_search', `${displayActor(agentId) || 'Agent'} searched message history.`, {
       agentId,
+      workspaceId: workspaceId || null,
       query: url.searchParams.get('q') || url.searchParams.get('query') || '',
       target: url.searchParams.get('target') || '#all',
       ok: Boolean(search.ok),
@@ -208,13 +410,16 @@ export async function handleAgentToolApi(req, res, url, deps) {
 
   if (req.method === 'GET' && url.pathname === '/api/agent-tools/memory/search') {
     const agentId = url.searchParams.get('agentId') || '';
+    const workspaceId = requestWorkspaceId();
     const targetAgentId = url.searchParams.get('targetAgentId') || url.searchParams.get('targetAgent') || '';
     const search = await searchAgentMemory(url.searchParams.get('q') || url.searchParams.get('query') || '', {
       targetAgentId,
       limit: url.searchParams.get('limit') || undefined,
+      workspaceId,
     });
     addSystemEvent('agent_memory_search', `${displayActor(agentId) || 'Agent'} searched agent memory.`, {
       agentId,
+      workspaceId: workspaceId || null,
       query: search.query || '',
       targetAgentId: targetAgentId || null,
       resultCount: search.results?.length || 0,
@@ -229,8 +434,13 @@ export async function handleAgentToolApi(req, res, url, deps) {
 
   if (req.method === 'GET' && url.pathname === '/api/agent-tools/memory/read') {
     const agentId = url.searchParams.get('agentId') || '';
+    const workspaceId = requestWorkspaceId();
     const targetAgentRef = url.searchParams.get('targetAgentId') || url.searchParams.get('targetAgent') || '';
-    const targetAgent = findAgent(targetAgentRef) || (state.agents || []).find((agent) => agent.name === targetAgentRef);
+    const targetAgent = findWorkspaceAgent(targetAgentRef, workspaceId)
+      || (() => {
+        const agent = findAgent(targetAgentRef);
+        return agent && workspaceMatches(agent, workspaceId) ? agent : null;
+      })();
     if (!targetAgent) {
       sendError(res, 404, 'Target agent not found.');
       return true;
@@ -239,6 +449,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       const file = await readAgentMemoryFile(targetAgent, url.searchParams.get('path') || 'MEMORY.md');
       addSystemEvent('agent_memory_read', `${displayActor(agentId) || 'Agent'} read ${targetAgent.name} memory.`, {
         agentId,
+        workspaceId: workspaceId || null,
         targetAgentId: targetAgent.id,
         path: file.file.path,
       });

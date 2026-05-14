@@ -846,7 +846,7 @@ document.addEventListener('input', async (event) => {
         console.warn('Project mention search failed', error);
       }
       if (lookupSeq !== mentionLookupSeq) return;
-      const items = [...peopleItems, ...projectItems];
+      const items = sortMentionItems([...peopleItems, ...projectItems], query, spaceType, spaceId);
       mentionPopup = {
         active: items.length > 0,
         query,

@@ -113,3 +113,58 @@ test('agent history tools read channel, read thread, and search visible messages
   assert.equal(search.results[1].target, '#all:msg_parent');
   assert.match(search.results[1].next, /read_history\(target="#all:msg_parent", around="rep_1"/);
 });
+
+test('agent history tools scope duplicate channel names by workspace id', () => {
+  const state = {
+    humans: [{ id: 'hum_local', name: 'You' }],
+    agents: [{ id: 'agt_one', name: 'One', workspaceId: 'wsp_one' }],
+    channels: [
+      { id: 'chan_one_all', name: 'all', workspaceId: 'wsp_one', memberIds: ['hum_local', 'agt_one'] },
+      { id: 'chan_two_all', name: 'all', workspaceId: 'wsp_two', memberIds: ['hum_local'] },
+    ],
+    dms: [],
+    messages: [
+      {
+        id: 'msg_one',
+        workspaceId: 'wsp_one',
+        spaceType: 'channel',
+        spaceId: 'chan_one_all',
+        authorType: 'human',
+        authorId: 'hum_local',
+        body: 'workspace one schema note',
+        createdAt: '2026-05-14T01:00:00.000Z',
+      },
+      {
+        id: 'msg_two',
+        workspaceId: 'wsp_two',
+        spaceType: 'channel',
+        spaceId: 'chan_two_all',
+        authorType: 'human',
+        authorId: 'hum_local',
+        body: 'workspace two schema note',
+        createdAt: '2026-05-14T02:00:00.000Z',
+      },
+    ],
+    replies: [
+      {
+        id: 'rep_two',
+        workspaceId: 'wsp_two',
+        parentMessageId: 'msg_two',
+        spaceType: 'channel',
+        spaceId: 'chan_two_all',
+        authorType: 'human',
+        authorId: 'hum_local',
+        body: 'workspace two reply schema',
+        createdAt: '2026-05-14T02:01:00.000Z',
+      },
+    ],
+    tasks: [],
+  };
+
+  const one = readAgentHistory(state, { target: '#all', workspaceId: 'wsp_one', limit: 10 });
+  assert.deepEqual(one.messages.map((message) => message.id), ['msg_one']);
+
+  const twoSearch = searchAgentMessageHistory(state, { query: 'schema', target: '#all', workspaceId: 'wsp_two', limit: 10 });
+  assert.deepEqual(twoSearch.results.map((message) => message.id), ['msg_two', 'rep_two']);
+  assert.equal(twoSearch.results[1].target, '#all:msg_two');
+});

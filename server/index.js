@@ -1173,7 +1173,11 @@ const {
 
 daemonRelay.setHandlers({
   onAgentMessage: async ({ agent, body, spaceType, spaceId, parentMessageId, sourceMessage }) => {
-    await postAgentResponse(agent, spaceType, spaceId, body, parentMessageId, { sourceMessage });
+    const posted = await postAgentResponse(agent, spaceType, spaceId, body, parentMessageId, { sourceMessage });
+    if (markFallbackResponseWorkItem(sourceMessage, posted)) {
+      await persistState();
+      broadcastState();
+    }
   },
 });
 

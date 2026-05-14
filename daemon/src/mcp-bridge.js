@@ -33,16 +33,38 @@ function parseArgs(argv) {
 
 const options = parseArgs(process.argv);
 let buffer = '';
+let cachedMachineConfig = null;
+
+function machineConfig() {
+  if (cachedMachineConfig) return cachedMachineConfig;
+  cachedMachineConfig = {};
+  if (!options.tokenFile) return cachedMachineConfig;
+  try {
+    cachedMachineConfig = JSON.parse(readFileSync(options.tokenFile, 'utf8')) || {};
+  } catch {
+    cachedMachineConfig = {};
+  }
+  return cachedMachineConfig;
+}
 
 function machineToken() {
   if (options.token) return options.token;
-  if (!options.tokenFile) return '';
-  try {
-    const config = JSON.parse(readFileSync(options.tokenFile, 'utf8'));
-    return String(config.token || config.machineToken || '');
-  } catch {
-    return '';
-  }
+  return String(machineConfig().token || machineConfig().machineToken || '');
+}
+
+function workspaceId() {
+  const config = machineConfig();
+  return String(config.workspaceId || config.workspace || '');
+}
+
+function machineHeaders(body) {
+  const token = machineToken();
+  const workspace = workspaceId();
+  return {
+    ...(body ? { 'content-type': 'application/json' } : {}),
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+    ...(workspace ? { 'x-magclaw-workspace-id': workspace } : {}),
+  };
 }
 
 function schema(properties, required = []) {
@@ -100,6 +122,24 @@ const tools = [
       targetAgentId: { type: 'string' },
       path: { type: 'string' },
     }, ['targetAgentId']),
+  },
+  {
+    name: 'list_agents',
+    description: 'List compact MagClaw agent profiles visible in the current server or channel.',
+    inputSchema: schema({
+      query: { type: 'string' },
+      target: { type: 'string' },
+      channel: { type: 'string' },
+      limit: { type: 'number' },
+    }),
+  },
+  {
+    name: 'read_agent_profile',
+    description: 'Read a concise MagClaw agent profile with runtime, description, channels, and safe public fields.',
+    inputSchema: schema({
+      targetAgentId: { type: 'string' },
+      targetAgent: { type: 'string' },
+    }),
   },
   {
     name: 'write_memory',
@@ -226,13 +266,9 @@ function queryString(params = {}) {
 }
 
 async function request(pathname, { method = 'GET', query = {}, body = null } = {}) {
-  const token = machineToken();
   const response = await fetch(`${options.baseUrl}${pathname}${queryString(query)}`, {
     method,
-    headers: {
-      ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
+    headers: machineHeaders(body),
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await response.text();
@@ -299,6 +335,22 @@ async function callTool(name, rawArgs = {}) {
           agentId: args.agentId,
           targetAgentId: args.targetAgentId || args.targetAgent,
           path: args.path || 'MEMORY.md',
+        },
+      });
+    case 'list_agents':
+      return request('/api/agent-tools/agents', {
+        query: {
+          agentId: args.agentId,
+          query: args.query || args.q,
+          target: args.target || args.channel,
+          limit: args.limit,
+        },
+      });
+    case 'read_agent_profile':
+      return request('/api/agent-tools/agents/read', {
+        query: {
+          agentId: args.agentId,
+          targetAgentId: args.targetAgentId || args.targetAgent,
         },
       });
     case 'write_memory':

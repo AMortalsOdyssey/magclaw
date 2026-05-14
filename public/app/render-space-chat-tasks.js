@@ -250,10 +250,21 @@ function renderDmTasks(tasks) {
   `;
 }
 
+function agentSubtitle(agent) {
+  if (!agent) return 'Agent';
+  const runtime = typeof runtimeConfigurationLabel === 'function'
+    ? runtimeConfigurationLabel(agent)
+    : (agent.runtime || 'Agent');
+  const description = String(agent.description || '').trim();
+  return description && runtime
+    ? `${description} · ${runtime}`
+    : (description || runtime || 'Agent');
+}
+
 function actorSubtitle(authorId, authorType, message) {
   if (authorType === 'agent') {
     const agent = byId(appState.agents, authorId);
-    return agent?.description || agent?.runtime || 'Agent';
+    return agentSubtitle(agent);
   }
   if (authorType === 'human') {
     const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState.humans, authorId);
@@ -297,7 +308,14 @@ function agentReceiptTime(item) {
 
 function deliveryReceiptItemsForRecord(record) {
   if (!record?.id) return [];
-  const canShowReceipts = (record.authorType === 'human' && record.authorId === 'hum_local')
+  const human = record.authorType === 'human'
+    ? (typeof humanByIdAny === 'function' ? humanByIdAny(record.authorId) : byId(appState?.humans, record.authorId))
+    : null;
+  const canShowReceipts = (record.authorType === 'human' && (
+    record.authorId === 'hum_local'
+    || record.authorId === currentHumanId()
+    || humanMatchesCurrentAccount(human || { id: record.authorId })
+  ))
     || record.authorType === 'agent';
   if (!canShowReceipts) return [];
   const firstOrder = new Map();

@@ -97,6 +97,12 @@ function takeLast(records, limit) {
   return records.slice(Math.max(0, records.length - value));
 }
 
+function compactText(value, limit = 240) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3)).trim()}...`;
+}
+
 function spaceRecord(state, spaceType, spaceId) {
   if (spaceType === 'channel') return byId(state?.channels, spaceId);
   if (spaceType === 'dm') return byId(state?.dms, spaceId);
@@ -140,8 +146,13 @@ function participantsForSpace(state, spaceType, spaceId) {
     id: actor.id,
     name: actor.name,
     type: actorType(state, actor.id),
-    role: actor.role || actor.description || actor.runtime || '',
+    role: actor.role || '',
+    description: actor.description || '',
+    runtime: actor.runtime || '',
+    runtimeId: actor.runtimeId || '',
     status: actor.status || '',
+    creator: actor.creatorName || actor.createdByName || actor.createdBy || '',
+    createdAt: actor.createdAt || '',
   }));
 }
 
@@ -161,8 +172,13 @@ function suggestedMembersForSpace(state, spaceType, spaceId, targetAgentId) {
       name: actor.name,
       type: actorType(state, actor.id),
       email: actor.email || '',
-      role: actor.role || actor.description || actor.runtime || '',
+      role: actor.role || '',
+      description: actor.description || '',
+      runtime: actor.runtime || '',
+      runtimeId: actor.runtimeId || '',
       status: actor.status || '',
+      creator: actor.creatorName || actor.createdByName || actor.createdBy || '',
+      createdAt: actor.createdAt || '',
     }));
 }
 
@@ -364,15 +380,50 @@ function messageLine(state, record, targetAgentId) {
     `time=${renderTime(record.createdAt)}`,
     `type=${record.authorType}`,
   ].filter(Boolean).join(' ');
-  return `[${header}] ${renderActor(state, record.authorId)}${addressed}: ${renderMentions(state, record.body)}${refText}`;
+  return `[${header}] ${renderActor(state, record.authorId)}${addressed}: ${renderMentions(state, compactText(record.body, 420))}${refText}`;
 }
 
-function renderParticipants(pack) {
-  return asArray(pack.participants)
+function compactParticipants(pack, targetAgentId = pack?.targetAgentId) {
+  const participants = asArray(pack.participants);
+  const importantIds = new Set([
+    targetAgentId,
+    pack?.currentMessage?.authorId,
+    ...asArray(pack?.currentMessage?.mentionedAgentIds),
+    ...asArray(pack?.currentMessage?.mentionedHumanIds),
+  ].filter(Boolean));
+  for (const record of asArray(pack?.recentMessages).slice(-4)) {
+    if (record?.authorId) importantIds.add(record.authorId);
+    for (const id of asArray(record?.mentionedAgentIds)) importantIds.add(id);
+    for (const id of asArray(record?.mentionedHumanIds)) importantIds.add(id);
+  }
+  const selected = [];
+  for (const item of participants) {
+    if (importantIds.has(item.id)) selected.push(item);
+  }
+  for (const item of participants) {
+    if (selected.length >= 10) break;
+    if (!selected.some((existing) => existing.id === item.id)) selected.push(item);
+  }
+  const selectedIds = new Set(selected.map((item) => item.id));
+  return {
+    total: participants.length,
+    selected: participants.filter((item) => selectedIds.has(item.id)),
+    omitted: Math.max(0, participants.length - selected.length),
+  };
+}
+
+function renderParticipants(pack, targetAgentId = pack?.targetAgentId) {
+  return compactParticipants(pack, targetAgentId).selected
     .map((item) => {
-      const self = item.id === pack.targetAgentId ? ' (you)' : '';
-      const role = item.role ? ` - ${item.role}` : '';
-      return `@${item.name}${self}${role}`;
+      const self = item.id === targetAgentId ? ' (you)' : '';
+      const details = [
+        item.type || '',
+        item.role ? `role=${item.role}` : '',
+        item.runtime ? `runtime=${item.runtime}` : '',
+        item.status ? `status=${item.status}` : '',
+        item.description ? `description=${compactText(item.description, 96)}` : '',
+      ].filter(Boolean);
+      return `@${item.name}${self}${details.length ? ` - ${details.join('; ')}` : ''}`;
     })
     .join(', ');
 }
@@ -382,7 +433,14 @@ function renderSuggestedMembers(pack) {
   if (!members.length) return '- (none)';
   return members
     .map((item) => {
-      const detail = [item.type, item.email, item.role].filter(Boolean).join('; ');
+      const detail = [
+        item.type,
+        item.email,
+        item.role ? `role=${item.role}` : '',
+        item.runtime ? `runtime=${item.runtime}` : '',
+        item.status ? `status=${item.status}` : '',
+        item.description ? `description=${item.description}` : '',
+      ].filter(Boolean).join('; ');
       return `- @${item.name} (${item.id}${detail ? `; ${detail}` : ''})`;
     })
     .join('\n');
@@ -441,6 +499,8 @@ function renderHistoryToolHints(pack) {
   const hints = [
     'Progressive history tools:',
     '- The recent context above is only a compact snapshot. Do not assume it is the whole conversation.',
+    `- list_agents(target="${target}", limit=10): curl -s "${baseUrl}/api/agent-tools/agents?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&limit=10"`,
+    `- read_agent_profile(targetAgentId="agt_xxx"): curl -s "${baseUrl}/api/agent-tools/agents/read?agentId=${encodeURIComponent(agentId)}&targetAgentId=agt_xxx"`,
     `- read_history(target="${target}", limit=30): curl -s "${baseUrl}/api/agent-tools/history?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&limit=30"`,
     `- search_message_history(query="<query>", target="${target}", limit=10): curl -s "${baseUrl}/api/agent-tools/search?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&q=<query>&limit=10"`,
     `- search_agent_memory(query="<query>", limit=10): curl -s "${baseUrl}/api/agent-tools/memory/search?agentId=${encodeURIComponent(agentId)}&q=<query>&limit=10"`,
@@ -475,12 +535,16 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
     agents: pack.participants.filter((item) => item.type === 'agent'),
     humans: pack.participants.filter((item) => item.type === 'human'),
   };
+  const participants = compactParticipants(pack, targetAgentId);
+  const recentMessages = pack.recentMessages.slice(-4);
+  const recentReplies = pack.thread?.recentReplies?.slice(-3) || [];
   const lines = [
     `Context snapshot for ${pack.space.label}`,
     `- Space: ${pack.space.type === 'dm' ? 'Direct message' : 'Channel'} (${pack.space.visibility || 'public'}${pack.space.defaultChannel ? ', default workspace channel' : ''})`,
     pack.space.workspaceId ? `- Workspace: ${pack.space.workspaceId}` : '',
-    pack.space.description ? `- Channel description: ${pack.space.description}` : '',
-    `- Participants: ${renderParticipants(pack) || '(none)'}`,
+    pack.space.description ? `- Channel description: ${compactText(pack.space.description, 180)}` : '',
+    `- Participants: ${renderParticipants(pack, targetAgentId) || '(none)'}`,
+    participants.omitted ? `- Participants omitted: ${participants.omitted}. Use list_agents/read_agent_profile or search_agent_memory when a broader roster or specialties matter.` : '',
     pack.space.type === 'channel' && !pack.space.defaultChannel
       ? `- Workspace members you may suggest adding with human review:\n${renderSuggestedMembers(pack)}`
       : '',
@@ -489,8 +553,8 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
     messageLine(sourceState, pack.currentMessage, targetAgentId),
     '',
     `Recent ${pack.space.type === 'dm' ? 'DM' : 'channel'} messages (oldest to newest):`,
-    pack.recentMessages.length
-      ? pack.recentMessages.map((record) => messageLine(sourceState, record, targetAgentId)).join('\n')
+    recentMessages.length
+      ? recentMessages.map((record) => messageLine(sourceState, record, targetAgentId)).join('\n')
       : '- (none)',
   ];
 
@@ -501,8 +565,8 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
       'Parent message:',
       messageLine(sourceState, pack.thread.parentMessage, targetAgentId),
       'Recent thread replies (oldest to newest):',
-      pack.thread.recentReplies.length
-        ? pack.thread.recentReplies.map((record) => messageLine(sourceState, record, targetAgentId)).join('\n')
+      recentReplies.length
+        ? recentReplies.map((record) => messageLine(sourceState, record, targetAgentId)).join('\n')
         : '- (no earlier thread replies)',
     );
   }
