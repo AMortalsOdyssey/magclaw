@@ -9,7 +9,8 @@ This project follows the global Codex rules plus the project-specific rules belo
 3. Keep root-level project rules concise. Put detailed testing changes in `TESTING.md`.
 4. When committing for this project, commit directly on `main` unless the user explicitly asks for a branch. Split dirty work into small logical commits, use `jianghaibo <jianghaibo@52tt.com>`, and do not add `Co-Authored-By`.
 5. When the user asks to publish for cloud deployment or AMO verification, push `main` to both `gitlab` and `origin` after verification, then confirm both remote heads match the local commit.
-6. When summarizing implemented features into Obsidian, update the MagClaw feature changelog first, then run the conversation recap workflow if requested.
+6. For GitHub `origin` repository operations in this project, use the `AMO` GitHub account to pull/fetch and push; do not assume the GitLab identity applies to GitHub.
+7. When summarizing implemented features into Obsidian, update the MagClaw feature changelog first, then run the conversation recap workflow if requested.
 
 ## Feature Changelog
 
