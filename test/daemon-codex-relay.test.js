@@ -155,7 +155,7 @@ async function startRelay(options = {}) {
                 workItemId: 'wi_test',
                 contextPack: {
                   targetAgentId: options.agent?.id || 'agt_remote',
-                  space: { type: 'channel', id: 'chan_all', label: '#all', visibility: 'public' },
+                  space: { type: 'channel', id: 'chan_all', label: '#all', visibility: 'public', defaultChannel: false },
                   participants: [
                     { id: 'hum_test', name: 'Human', type: 'human', role: 'owner', status: 'online' },
                     {
@@ -167,6 +167,10 @@ async function startRelay(options = {}) {
                       status: 'idle',
                     },
                     { id: 'agt_ka', name: 'KA', type: 'agent', description: 'Likes telling jokes', runtime: 'codex', status: 'idle' },
+                  ],
+                  suggestedMembers: [
+                    { id: 'agt_research', name: 'Research', type: 'agent', description: 'Finds background information', runtime: 'codex', status: 'idle' },
+                    { id: 'agt_design', name: 'Design', type: 'agent', description: 'Reviews visual flows', runtime: 'claude-code', status: 'idle' },
                   ],
                   currentMessage: {
                     id: 'msg_test',
@@ -323,10 +327,15 @@ process.stdin.on('data', (chunk) => {
     const promptText = turnStart.params.input[0].text;
     assert.match(promptText, /Agent description: Remote agent that loves concise jokes/);
     assert.match(promptText, /Participants shown: @Human - human; role=owner; status=online, @Remote Codex \(you\) - agent; runtime=codex; status=idle; description=Remote agent that loves concise jokes, @KA - agent; runtime=codex; status=idle; description=Likes telling jokes/);
+    assert.match(promptText, /Server members not in this channel yet:/);
+    assert.match(promptText, /Agents available to suggest adding:[\s\S]*@Research - agent; runtime=codex; status=idle; description=Finds background information/);
+    assert.match(promptText, /These are server-scoped members across connected computers/);
     assert.match(promptText, /Recent channel activity/);
     assert.match(promptText, /@KA joined this channel/);
     assert.match(promptText, /Use channel activity to resolve implicit references/);
     assert.match(promptText, /Progressive context tools: list_agents, read_agent_profile, read_history/);
+    assert.match(promptText, /call list_agents without a target for the server-wide agent roster/);
+    assert.match(promptText, /MAGCLAW_MACHINE_TOKEN/);
     assert.match(promptText, /Current message:\n\[msg=msg_test .* @Human: Who is good at jokes\?/);
   } finally {
     daemon.kill('SIGINT');

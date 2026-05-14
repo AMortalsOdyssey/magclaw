@@ -178,6 +178,7 @@ test('daemon sends a periodic heartbeat while the websocket is connected', async
 
 test('daemon agent starts and stream activity use Slock-style bounded scheduling', async () => {
   const daemonSource = await readFile(new URL('../daemon/src/cli.js', import.meta.url), 'utf8');
+  const mcpBridgeSource = await readFile(new URL('../daemon/src/mcp-bridge.js', import.meta.url), 'utf8');
 
   assert.match(daemonSource, /DEFAULT_MAX_CONCURRENT_AGENT_STARTS = 5/);
   assert.match(daemonSource, /DEFAULT_AGENT_START_INTERVAL_MS = 500/);
@@ -190,6 +191,8 @@ test('daemon agent starts and stream activity use Slock-style bounded scheduling
   assert.match(daemonSource, /flushCodexStreamActivity\(\)/);
   assert.match(daemonSource, /propose_channel_members/);
   assert.match(daemonSource, /\/api\/agent-tools\/channel-member-proposals/);
+  assert.match(mcpBridgeSource, /name: 'propose_channel_members'/);
+  assert.match(mcpBridgeSource, /\/api\/agent-tools\/channel-member-proposals/);
 });
 
 test('daemon machine fingerprint is stable inside a server profile', async () => {

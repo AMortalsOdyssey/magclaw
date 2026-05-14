@@ -202,6 +202,17 @@ const tools = [
     }, ['status']),
   },
   {
+    name: 'propose_channel_members',
+    description: 'Suggest adding server members to a MagClaw channel for human review.',
+    inputSchema: schema({
+      channelId: { type: 'string' },
+      channel: { type: 'string' },
+      memberIds: { type: 'array', items: { type: 'string' } },
+      memberId: { type: 'string' },
+      reason: { type: 'string' },
+    }, ['reason']),
+  },
+  {
     name: 'schedule_reminder',
     description: 'Schedule a one-time MagClaw reminder.',
     inputSchema: schema({
@@ -383,6 +394,16 @@ async function callTool(name, rawArgs = {}) {
       return request('/api/agent-tools/tasks/update', {
         method: 'POST',
         body: args,
+      });
+    case 'propose_channel_members':
+      return request('/api/agent-tools/channel-member-proposals', {
+        method: 'POST',
+        body: {
+          agentId: args.agentId,
+          channelId: args.channelId || args.channel_id || args.channel,
+          memberIds: args.memberIds || args.member_ids || (args.memberId ? [args.memberId] : undefined),
+          reason: args.reason,
+        },
       });
     case 'schedule_reminder':
       return request('/api/agent-tools/reminders', {

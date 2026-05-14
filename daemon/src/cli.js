@@ -722,6 +722,34 @@ function renderContextPeerMemory(pack) {
   return lines.join('\n');
 }
 
+function renderContextSuggestedMembers(pack) {
+  const members = contextArray(pack?.suggestedMembers);
+  if (!members.length) return '';
+  const agentLines = [];
+  const humanLines = [];
+  for (const item of members.slice(0, 20)) {
+    const details = [
+      item.type || '',
+      item.role ? `role=${item.role}` : '',
+      item.runtime ? `runtime=${item.runtime}` : '',
+      item.status ? `status=${item.status}` : '',
+      item.description ? `description=${contextSnippet(item.description, 120)}` : '',
+    ].filter(Boolean).join('; ');
+    const line = `- @${item.name || item.id}${details ? ` - ${details}` : ''}`;
+    if (item.type === 'agent') agentLines.push(line);
+    else humanLines.push(line);
+  }
+  const lines = [
+    'Server members not in this channel yet:',
+    agentLines.length ? '- Agents available to suggest adding:' : '',
+    ...agentLines,
+    humanLines.length ? '- Humans available to suggest adding:' : '',
+    ...humanLines,
+    'These are server-scoped members across connected computers; they are valid candidates for human-reviewed channel-member proposals.',
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
 function compactContextParticipants(pack, targetAgentId = '') {
   const participants = contextArray(pack?.participants);
   const importantIds = new Set([
@@ -761,6 +789,7 @@ function renderRemoteAgentContextPack(pack, targetAgentId = '') {
     pack.space?.description ? `- Channel description: ${contextSnippet(pack.space.description, 180)}` : '',
     `- Participants shown: ${participants.selected.map((item) => renderContextParticipant(item, targetAgentId)).join(', ') || '(none)'}`,
     participants.omitted ? `- Participants omitted: ${participants.omitted}. Use list_agents/read_agent_profile or search_agent_memory when a broader roster or specialties matter.` : '',
+    pack.space?.type === 'channel' && !pack.space?.defaultChannel ? renderContextSuggestedMembers(pack) : '',
     '',
     'Current message:',
     renderContextMessage(pack, pack.currentMessage, targetAgentId),
@@ -790,6 +819,7 @@ function renderRemoteAgentContextPack(pack, targetAgentId = '') {
     renderContextPeerMemory(pack),
     '',
     'Progressive context tools: list_agents, read_agent_profile, read_history, search_messages, search_agent_memory, read_agent_memory, and list_tasks are available through MagClaw MCP.',
+    'For "who can we bring in" or agent suitability questions, use the server member list above first; call list_agents without a target for the server-wide agent roster, because target filters to the current channel.',
     'Use this compact snapshot first. Call the tools only when the answer depends on omitted participants, deeper history, memory, or task details.',
   );
   return lines.filter(Boolean).join('\n');
@@ -811,6 +841,7 @@ export function deliveryPrompt(agent, message = {}, workItem = null) {
     'For ordinary channel or DM chat where Work item id is none, do not call send_message; finish with the exact reply text and MagClaw will post it back to the source conversation.',
     'When a real Work item id is provided, use the MagClaw MCP send_message tool with that workItemId and the exact conversation target.',
     'Use the other MagClaw MCP tools only when you need to inspect omitted roster details, read history, search messages or memory, manage tasks, write memory, or schedule reminders.',
+    'The daemon already provides the MagClaw MCP bridge and MAGCLAW_MACHINE_TOKEN. Prefer MCP tools; if you fall back to shell curl for /api/agent-tools/*, include `-H "authorization: Bearer $MAGCLAW_MACHINE_TOKEN"` and do not claim the machine token is missing.',
     `Agent id: ${agent.id}`,
     `Conversation target: ${target}`,
     workItemLine,
