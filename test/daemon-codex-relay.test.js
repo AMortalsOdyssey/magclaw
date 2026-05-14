@@ -177,6 +177,14 @@ async function startRelay(options = {}) {
                     createdAt: '2026-05-14T06:13:30.000Z',
                   },
                   recentMessages: [],
+                  recentEvents: [{
+                    id: 'evt_remote_join',
+                    type: 'channel_member_added',
+                    channelId: 'chan_all',
+                    memberId: 'agt_ka',
+                    message: 'Member added to #all',
+                    createdAt: '2026-05-14T06:13:00.000Z',
+                  }],
                   tasks: [],
                   peerMemorySearch: { required: false, results: [] },
                 },
@@ -315,6 +323,9 @@ process.stdin.on('data', (chunk) => {
     const promptText = turnStart.params.input[0].text;
     assert.match(promptText, /Agent description: Remote agent that loves concise jokes/);
     assert.match(promptText, /Participants shown: @Human - human; role=owner; status=online, @Remote Codex \(you\) - agent; runtime=codex; status=idle; description=Remote agent that loves concise jokes, @KA - agent; runtime=codex; status=idle; description=Likes telling jokes/);
+    assert.match(promptText, /Recent channel activity/);
+    assert.match(promptText, /@KA joined this channel/);
+    assert.match(promptText, /Use channel activity to resolve implicit references/);
     assert.match(promptText, /Progressive context tools: list_agents, read_agent_profile, read_history/);
     assert.match(promptText, /Current message:\n\[msg=msg_test .* @Human: Who is good at jokes\?/);
   } finally {

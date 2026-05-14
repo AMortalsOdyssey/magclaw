@@ -97,6 +97,14 @@ test('agent context pack includes recent channel messages, current message, task
       bytes: 1234,
       path: '/tmp/note.png',
     }],
+    events: [{
+      id: 'evt_join',
+      type: 'channel_member_added',
+      channelId: 'chan_all',
+      memberId: 'agt_ccc',
+      message: 'Member added to #all',
+      createdAt: '2026-04-27T10:02:45.000Z',
+    }],
   };
 
   const pack = buildAgentContextPack({
@@ -118,6 +126,7 @@ test('agent context pack includes recent channel messages, current message, task
   assert.ok(pack.recentMessages.some((item) => item.id === 'msg_2'));
   assert.equal(pack.thread.parentMessage.id, 'msg_parent');
   assert.equal(pack.thread.recentReplies[0].id, 'rep_1');
+  assert.equal(pack.recentEvents[0].type, 'channel_member_added');
   assert.equal(pack.tasks[0].number, 7);
   assert.equal(pack.attachments[0].id, 'att_1');
 
@@ -128,6 +137,9 @@ test('agent context pack includes recent channel messages, current message, task
   assert.match(rendered, /\[msg=msg_2 .* @CCC: 我叫 CCC。/);
   assert.match(rendered, /Current message/);
   assert.match(rendered, /@333 我刚才问 CCC 什么问题/);
+  assert.match(rendered, /Recent channel activity/);
+  assert.match(rendered, /@CCC joined chan_all/);
+  assert.match(rendered, /Use channel activity to resolve implicit references/);
   assert.match(rendered, /Thread context/);
   assert.match(rendered, /task #7 \[in_progress\] 做一下任务/);
   assert.match(rendered, /note\.png image\/png 1234 bytes/);

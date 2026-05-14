@@ -1522,12 +1522,17 @@ test('agent identities are clickable and expose MagClaw-style hover summaries', 
 
   assert.match(app, /function renderAgentHoverCard\(agent\)/);
   assert.match(app, /function renderAgentIdentityButton\(agentId, className = ''\)/);
+  assert.match(app, /function positionIdentityHoverCard\(trigger\)/);
+  assert.match(app, /handleIdentityHoverCardPointerOver/);
   assert.match(app, /data-action="select-agent" data-id="\$\{escapeHtml\(agent\.id\)\}"/);
   assert.match(app, /data-agent-author-id="\$\{escapeHtml\(message\.authorId\)\}"/);
   assert.match(app, /data-agent-author-id="\$\{escapeHtml\(reply\.authorId\)\}"/);
   assert.equal(agentListSource.includes('renderAgentHoverCard'), false);
   assert.match(styles, /\.agent-hover-card/);
   assert.match(styles, /\.agent-hover-status-dot/);
+  assert.match(styles, /\.agent-hover-card \{[\s\S]*position: fixed/);
+  assert.match(styles, /--agent-hover-x/);
+  assert.match(styles, /visibility: hidden/);
   assert.equal(styles.includes('.member-btn:hover .agent-hover-card'), false);
 });
 

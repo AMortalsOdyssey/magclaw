@@ -1397,17 +1397,21 @@ button:disabled {
 }
 
 .agent-hover-card {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 40;
-  display: none;
+  position: fixed;
+  top: var(--agent-hover-y, -9999px);
+  left: var(--agent-hover-x, -9999px);
+  z-index: 80;
+  display: grid;
+  gap: 7px;
+  visibility: hidden;
+  opacity: 0;
   width: min(248px, 70vw);
   padding: 8px;
   border: 2px solid var(--border);
   background: var(--bg-card);
   box-shadow: var(--shadow-pixel);
   color: var(--text-primary);
+  contain: layout paint style;
   pointer-events: none;
 }
 
@@ -1421,8 +1425,8 @@ button:disabled {
 .human-author-name:focus-visible .agent-hover-card,
 .member-profile-btn:hover .agent-hover-card,
 .member-profile-btn:focus-visible .agent-hover-card {
-  display: grid;
-  gap: 7px;
+  visibility: visible;
+  opacity: 1;
 }
 
 .agent-hover-head {

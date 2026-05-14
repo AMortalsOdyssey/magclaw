@@ -663,6 +663,40 @@ function renderContextTasks(pack) {
   }).join('\n');
 }
 
+function renderContextEventMembers(pack, event = {}) {
+  const ids = [
+    ...contextArray(event.memberIds),
+    event.memberId,
+  ].filter(Boolean);
+  const uniqueIds = [...new Set(ids.map(String))];
+  return uniqueIds.map((id) => `@${contextActorName(pack, id)}`).join(', ');
+}
+
+function renderContextEvent(pack, event = {}) {
+  const bits = [
+    event.id ? `event=${event.id}` : '',
+    event.type ? `type=${event.type}` : '',
+    event.createdAt ? `time=${String(event.createdAt).replace('T', ' ').slice(0, 16)}` : '',
+  ].filter(Boolean).join(' ');
+  const members = renderContextEventMembers(pack, event);
+  if (event.type === 'channel_member_added' && members) {
+    return `[${bits}] ${members} joined this channel.`;
+  }
+  if (event.type === 'channel_member_removed' && members) {
+    return `[${bits}] ${members} left or was removed from this channel.`;
+  }
+  if (event.type === 'channel_member_proposal_accepted' && members) {
+    return `[${bits}] Human review accepted adding ${members} to this channel.`;
+  }
+  return `[${bits}] ${renderContextMentions(pack, contextSnippet(event.message, 300))}`;
+}
+
+function renderContextEvents(pack) {
+  const events = contextArray(pack?.recentEvents);
+  if (!events.length) return '- (none)';
+  return events.map((event) => renderContextEvent(pack, event)).join('\n');
+}
+
 function renderContextPeerMemory(pack) {
   const search = pack?.peerMemorySearch;
   if (!search?.required && !contextArray(search?.results).length) return '';
@@ -727,6 +761,10 @@ function renderRemoteAgentContextPack(pack, targetAgentId = '') {
     '',
     'Current message:',
     renderContextMessage(pack, pack.currentMessage, targetAgentId),
+    '',
+    'Recent channel activity (oldest to newest):',
+    renderContextEvents(pack),
+    'Use channel activity to resolve implicit references like "the new agent", "he", "she", "that member", or "刚加入的那位" before replying.',
     '',
     'Recent visible messages (oldest to newest):',
     recent.length ? recent.map((record) => renderContextMessage(pack, record, targetAgentId)).join('\n') : '- (none)',

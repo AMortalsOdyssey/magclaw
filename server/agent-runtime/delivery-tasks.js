@@ -27,6 +27,7 @@ function deliveryContextLogSummary(agent, contextPack) {
     })),
     recentMessages: Array.isArray(contextPack?.recentMessages) ? contextPack.recentMessages.length : 0,
     threadReplies: Array.isArray(contextPack?.thread?.recentReplies) ? contextPack.thread.recentReplies.length : 0,
+    recentEvents: Array.isArray(contextPack?.recentEvents) ? contextPack.recentEvents.length : 0,
     tasks: Array.isArray(contextPack?.tasks) ? contextPack.tasks.length : 0,
     peerMemoryRequired: Boolean(contextPack?.peerMemorySearch?.required),
     peerMemoryResults: Array.isArray(contextPack?.peerMemorySearch?.results) ? contextPack.peerMemorySearch.results.length : 0,

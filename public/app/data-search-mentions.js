@@ -189,6 +189,92 @@ function renderHumanHoverCard(human) {
   `;
 }
 
+const identityHoverTriggerSelector = [
+  '.agent-identity-button',
+  '.human-identity-button',
+  '.agent-author-name',
+  '.human-author-name',
+  '.member-profile-btn',
+].join(',');
+const identityHoverScrollEventName = 'scroll';
+
+let activeIdentityHoverTrigger = null;
+
+function identityHoverTriggerFromEvent(event) {
+  const trigger = event?.target?.closest?.(identityHoverTriggerSelector);
+  if (!trigger || !trigger.querySelector?.('.agent-hover-card')) return null;
+  return trigger;
+}
+
+function positionIdentityHoverCard(trigger) {
+  const card = trigger?.querySelector?.('.agent-hover-card');
+  if (!card || typeof card.getBoundingClientRect !== 'function') return;
+  const triggerRect = trigger.getBoundingClientRect();
+  const cardRect = card.getBoundingClientRect();
+  const margin = 8;
+  const gap = 8;
+  const viewportWidth = window.innerWidth || document.documentElement?.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement?.clientHeight || 0;
+  const cardWidth = cardRect.width || card.offsetWidth || 248;
+  const cardHeight = cardRect.height || card.offsetHeight || 160;
+  let left = triggerRect.left;
+  let top = triggerRect.bottom + gap;
+  if (top + cardHeight + margin > viewportHeight && triggerRect.top - gap - cardHeight >= margin) {
+    top = triggerRect.top - gap - cardHeight;
+  }
+  if (left + cardWidth + margin > viewportWidth) left = viewportWidth - cardWidth - margin;
+  if (top + cardHeight + margin > viewportHeight) top = viewportHeight - cardHeight - margin;
+  left = Math.max(margin, left);
+  top = Math.max(margin, top);
+  card.style.setProperty('--agent-hover-x', `${Math.round(left)}px`);
+  card.style.setProperty('--agent-hover-y', `${Math.round(top)}px`);
+}
+
+function refreshActiveIdentityHoverCard() {
+  if (!activeIdentityHoverTrigger) return;
+  if (!document.contains(activeIdentityHoverTrigger)) {
+    activeIdentityHoverTrigger = null;
+    return;
+  }
+  positionIdentityHoverCard(activeIdentityHoverTrigger);
+}
+
+function handleIdentityHoverCardPointerOver(event) {
+  const trigger = identityHoverTriggerFromEvent(event);
+  if (!trigger) return;
+  if (event.relatedTarget && trigger.contains(event.relatedTarget)) return;
+  activeIdentityHoverTrigger = trigger;
+  positionIdentityHoverCard(trigger);
+}
+
+function handleIdentityHoverCardFocusIn(event) {
+  const trigger = identityHoverTriggerFromEvent(event);
+  if (!trigger) return;
+  activeIdentityHoverTrigger = trigger;
+  positionIdentityHoverCard(trigger);
+}
+
+function handleIdentityHoverCardPointerOut(event) {
+  const trigger = activeIdentityHoverTrigger;
+  if (!trigger || (event.relatedTarget && trigger.contains(event.relatedTarget))) return;
+  activeIdentityHoverTrigger = null;
+}
+
+function handleIdentityHoverCardFocusOut(event) {
+  const trigger = activeIdentityHoverTrigger;
+  if (!trigger || (event.relatedTarget && trigger.contains(event.relatedTarget))) return;
+  activeIdentityHoverTrigger = null;
+}
+
+if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+  document.addEventListener('pointerover', handleIdentityHoverCardPointerOver);
+  document.addEventListener('pointerout', handleIdentityHoverCardPointerOut);
+  document.addEventListener('focusin', handleIdentityHoverCardFocusIn);
+  document.addEventListener('focusout', handleIdentityHoverCardFocusOut);
+  document.addEventListener(identityHoverScrollEventName, refreshActiveIdentityHoverCard, true);
+  window.addEventListener('resize', refreshActiveIdentityHoverCard);
+}
+
 function renderActorAvatar(authorId, authorType) {
   if (authorType === 'agent') {
     return `<div class="avatar agent-avatar-cell">${renderAgentIdentityButton(authorId, 'agent-avatar-button')}${agentStatusDot(authorId, authorType)}</div>`;

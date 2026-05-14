@@ -266,6 +266,7 @@ export function createDaemonRelay(deps) {
       })),
       recentMessages: safeArray(pack?.recentMessages).length,
       threadReplies: safeArray(pack?.thread?.recentReplies).length,
+      recentEvents: safeArray(pack?.recentEvents).length,
       tasks: safeArray(pack?.tasks).length,
       peerMemoryRequired: Boolean(pack?.peerMemorySearch?.required),
       peerMemoryResults: safeArray(pack?.peerMemorySearch?.results).length,

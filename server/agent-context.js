@@ -7,6 +7,7 @@ import { isWorkspaceAllChannel } from './workspace-defaults.js';
 const DEFAULT_LIMITS = {
   recentMessages: 12,
   threadReplies: 8,
+  recentEvents: 8,
   tasks: 8,
   attachments: 10,
 };
@@ -294,6 +295,43 @@ function attachmentsForContext(state, records, limit) {
     }));
 }
 
+function sanitizeEvent(event) {
+  if (!event) return null;
+  return {
+    id: event.id,
+    type: String(event.type || ''),
+    message: String(event.message || ''),
+    channelId: event.channelId || null,
+    spaceType: event.spaceType || null,
+    spaceId: event.spaceId || null,
+    memberId: event.memberId || null,
+    memberIds: asArray(event.memberIds).map(String),
+    agentId: event.agentId || null,
+    actorId: event.actorId || event.reviewerId || event.createdBy || null,
+    proposalId: event.proposalId || null,
+    createdAt: event.createdAt || '',
+  };
+}
+
+function eventBelongsToSpace(event, spaceType, spaceId) {
+  if (!event) return false;
+  if (event.spaceType && event.spaceId) return event.spaceType === spaceType && event.spaceId === spaceId;
+  if (spaceType === 'channel') return event.channelId === spaceId;
+  return false;
+}
+
+function recentEventsForSpace(state, spaceType, spaceId, currentMessage, limit) {
+  const currentTime = currentMessage?.createdAt ? new Date(currentMessage.createdAt).getTime() : null;
+  const records = sortByCreatedAt(asArray(state?.events).filter((event) => eventBelongsToSpace(event, spaceType, spaceId)));
+  const visible = Number.isFinite(currentTime)
+    ? records.filter((event) => {
+      const eventTime = new Date(event.createdAt || 0).getTime();
+      return !Number.isFinite(eventTime) || eventTime <= currentTime;
+    })
+    : records;
+  return takeLast(visible, limit).map(sanitizeEvent).filter(Boolean);
+}
+
 export function buildAgentContextPack({
   state,
   agentId,
@@ -341,6 +379,7 @@ export function buildAgentContextPack({
     } : null,
     recentMessages,
     thread,
+    recentEvents: recentEventsForSpace(state, spaceType, spaceId, current, effectiveLimits.recentEvents),
     tasks: tasksForContext(state, spaceType, spaceId, visibleRecords, effectiveLimits.tasks),
     attachments: attachmentsForContext(state, visibleRecords, effectiveLimits.attachments),
     peerMemorySearch,
@@ -464,6 +503,40 @@ function renderAttachments(attachments) {
     .join('\n');
 }
 
+function renderEventMemberList(state, event) {
+  const ids = uniqueById([
+    ...asArray(event?.memberIds).map((id) => ({ id })),
+    event?.memberId ? { id: event.memberId } : null,
+  ].filter(Boolean)).map((item) => item.id);
+  if (!ids.length) return '';
+  return ids.map((id) => renderActor(state, id)).join(', ');
+}
+
+function eventLine(state, event) {
+  const header = [
+    `event=${event.id}`,
+    event.type ? `type=${event.type}` : '',
+    `time=${renderTime(event.createdAt)}`,
+  ].filter(Boolean).join(' ');
+  const members = renderEventMemberList(state, event);
+  if (event.type === 'channel_member_added' && members) {
+    return `[${header}] ${members} joined ${event.channelId || 'this channel'}.`;
+  }
+  if (event.type === 'channel_member_removed' && members) {
+    return `[${header}] ${members} left or was removed from ${event.channelId || 'this channel'}.`;
+  }
+  if (event.type === 'channel_member_proposal_accepted' && members) {
+    return `[${header}] Human review accepted adding ${members} to this channel.`;
+  }
+  return `[${header}] ${renderMentions(state, compactText(event.message, 300))}`;
+}
+
+function renderRecentEvents(state, events) {
+  const records = asArray(events);
+  if (!records.length) return '- (none)';
+  return records.map((event) => eventLine(state, event)).join('\n');
+}
+
 function renderPeerMemorySearch(search) {
   if (!search?.required && !search?.results?.length) return '';
   const lines = [
@@ -551,6 +624,10 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
     '',
     'Current message:',
     messageLine(sourceState, pack.currentMessage, targetAgentId),
+    '',
+    'Recent channel activity (oldest to newest):',
+    renderRecentEvents(sourceState, pack.recentEvents),
+    'Use channel activity to resolve implicit references like "the new agent", "he", "she", "that member", or "刚加入的那位" before replying.',
     '',
     `Recent ${pack.space.type === 'dm' ? 'DM' : 'channel'} messages (oldest to newest):`,
     recentMessages.length
