@@ -54,6 +54,20 @@ test('task board exposes closed state and member proposal review controls', asyn
   assert.match(styles, /\.member-proposal-card/);
 });
 
+test('unjoined channels render read-only chat controls with a join action', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+
+  assert.match(app, /function currentUserIsChannelMember\(channelOrId\)/);
+  assert.match(app, /function renderChannelJoinPanel\(channelOrId/);
+  assert.match(app, /data-action="join-channel"/);
+  assert.match(app, /\/api\/channels\/\$\{encodeURIComponent\(channelId\)\}\/join/);
+  assert.match(app, /Join this channel before sending messages/);
+  assert.match(app, /Join this channel before replying in the thread/);
+  assert.match(styles, /\.channel-join-panel/);
+  assert.match(styles, /\.channel-join-btn/);
+});
+
 test('members settings expose role-aware invitation controls', async () => {
   const app = await readAppSource();
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));

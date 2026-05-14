@@ -158,6 +158,9 @@ document.addEventListener('submit', async (event) => {
 
   try {
     if (form.id === 'message-form') {
+      if (selectedSpaceType === 'channel' && !currentUserIsChannelMember(selectedSpaceId)) {
+        throw new Error('Join this channel before sending messages.');
+      }
       const composerId = form.dataset.composerId || composerIdFor('message');
       const rawBody = composerDrafts[composerId] ?? data.get('body');
       const shouldOpenTaskThread = Boolean(composerTaskFlags[composerId] ?? data.get('asTask'));
@@ -186,6 +189,10 @@ document.addEventListener('submit', async (event) => {
       toast('Message sent');
     }
     if (form.id === 'reply-form') {
+      const parentMessage = byId(appState?.messages, threadMessageId);
+      if (parentMessage?.spaceType === 'channel' && !currentUserIsChannelMember(parentMessage.spaceId)) {
+        throw new Error('Join this channel before replying in the thread.');
+      }
       const composerId = form.dataset.composerId || composerIdFor('thread', threadMessageId);
       const rawBody = composerDrafts[composerId] ?? data.get('body');
       const attachmentIds = stagedFor(composerId).ids;

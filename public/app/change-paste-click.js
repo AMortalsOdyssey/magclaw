@@ -1339,6 +1339,18 @@ document.addEventListener('click', async (event) => {
       modal = null;
       toast('Left channel');
     }
+    if (action === 'join-channel') {
+      const channelId = target.dataset.id || selectedSpaceId;
+      if (!channelId) throw new Error('Channel is missing.');
+      await api(`/api/channels/${encodeURIComponent(channelId)}/join`, { method: 'POST', body: '{}' });
+      selectedSpaceType = 'channel';
+      selectedSpaceId = channelId;
+      activeView = 'space';
+      modal = null;
+      toast('Channel joined');
+      render();
+      syncBrowserRouteForActiveView();
+    }
     if (action === 'remove-channel-member') {
       const memberId = target.dataset.memberId;
       await api(`/api/channels/${selectedSpaceId}/members/${memberId}`, { method: 'DELETE' });

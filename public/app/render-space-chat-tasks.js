@@ -53,6 +53,44 @@ function getChannelMembers(channelId) {
   return { agents, humans };
 }
 
+function channelMemberIdSet(channel) {
+  return new Set([
+    ...(Array.isArray(channel?.memberIds) ? channel.memberIds : []),
+    ...(Array.isArray(channel?.humanIds) ? channel.humanIds : []),
+  ].map(String).filter(Boolean));
+}
+
+function currentUserIsChannelMember(channelOrId) {
+  const channel = typeof channelOrId === 'string' ? byId(appState?.channels, channelOrId) : channelOrId;
+  if (!channel) return false;
+  if (isAllChannel(channel)) return true;
+  const memberIds = channelMemberIdSet(channel);
+  const currentKeys = typeof currentHumanIdentityKeys === 'function'
+    ? currentHumanIdentityKeys()
+    : new Set([currentHumanId()]);
+  for (const key of currentKeys) {
+    if (memberIds.has(String(key))) return true;
+  }
+  return false;
+}
+
+function currentChannelIsReadOnly() {
+  return selectedSpaceType === 'channel' && !currentUserIsChannelMember(currentSpace());
+}
+
+function renderChannelJoinPanel(channelOrId, options = {}) {
+  const channel = typeof channelOrId === 'string' ? byId(appState?.channels, channelOrId) : channelOrId;
+  if (!channel || isAllChannel(channel)) return '';
+  const label = options.thread ? `Join #${channel.name} to reply` : `Join #${channel.name}`;
+  return `
+    <div class="channel-join-panel${options.thread ? ' thread-join-panel' : ''}">
+      <button class="primary-btn channel-join-btn" type="button" data-action="join-channel" data-id="${escapeHtml(channel.id)}">
+        ${channelActionIcon('join')}<span>${escapeHtml(label)}</span>
+      </button>
+    </div>
+  `;
+}
+
 function renderSpace() {
   const space = currentSpace();
   if (!space) return renderHeader('No conversation', 'MagClaw', '');
@@ -70,13 +108,16 @@ function renderSpace() {
   const members = selectedSpaceType === 'channel' ? getChannelMembers(selectedSpaceId) : null;
   const memberCount = members ? members.agents.length + members.humans.length : 0;
   const allChannelSelected = selectedSpaceType === 'channel' && isAllChannel(space);
+  const canWriteChannel = selectedSpaceType !== 'channel' || currentUserIsChannelMember(space);
   const actions = selectedSpaceType === 'channel' ? `
-    <button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>
-    <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
-    <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
-    ${allChannelSelected ? '' : `<button class="channel-action channel-action-leave" type="button" data-action="leave-channel" data-tooltip="Leave channel" aria-label="Leave channel">${channelActionIcon('leave')}<span>Leave</span></button>`}
+    ${canWriteChannel ? `
+      <button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>
+      <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
+      <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
+      ${allChannelSelected ? '' : `<button class="channel-action channel-action-leave" type="button" data-action="leave-channel" data-tooltip="Leave channel" aria-label="Leave channel">${channelActionIcon('leave')}<span>Leave</span></button>`}
+    ` : ''}
     <button class="channel-action channel-action-members" type="button" data-action="open-modal" data-modal="channel-members" data-tooltip="Members" aria-label="View ${memberCount} participants">${channelActionIcon('members')}<strong>${memberCount}</strong></button>
-    <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" title="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" aria-label="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)">${channelActionIcon('stop')}</button>
+    ${canWriteChannel ? `<button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" title="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" aria-label="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)">${channelActionIcon('stop')}</button>` : ''}
   ` : `
     <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
     <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)" title="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)" aria-label="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)">${channelActionIcon('stop')}</button>
@@ -88,7 +129,7 @@ function renderSpace() {
       <button class="${activeTab === 'chat' ? 'active' : ''}" type="button" data-action="set-tab" data-tab="chat">CHAT</button>
       <button class="${activeTab === 'tasks' ? 'active' : ''}" type="button" data-action="set-tab" data-tab="tasks">TASKS</button>
     </div>
-    ${selectedSpaceType === 'channel' ? renderProjectStrip() : ''}
+    ${selectedSpaceType === 'channel' ? renderProjectStrip({ canWrite: canWriteChannel }) : ''}
     ${activeTab === 'tasks' ? renderTaskBoard(spaceTasks()) : renderChat()}
   `;
 }
@@ -119,13 +160,14 @@ function renderDmHeader() {
   `;
 }
 
-function renderProjectStrip() {
+function renderProjectStrip(options = {}) {
   const projects = projectsForSpace();
+  const canWrite = options.canWrite !== false;
   return `
     <section class="project-strip pixel-panel">
       <div class="project-strip-title">
         <span>Projects</span>
-        <button type="button" data-action="open-modal" data-modal="project">Add Folder</button>
+        ${canWrite ? '<button type="button" data-action="open-modal" data-modal="project">Add Folder</button>' : ''}
       </div>
       <div class="project-chip-row">
         ${projects.length ? projects.map((project) => `
@@ -204,6 +246,7 @@ function renderProjectTree(project, relPath = '', depth = 0) {
 function renderChat() {
   const messages = spaceMessages();
   const composerId = composerIdFor('message');
+  const readOnlyChannel = currentChannelIsReadOnly();
   return `
     <section class="chat-panel pixel-panel">
       <div class="message-area">
@@ -212,7 +255,9 @@ function renderChat() {
         </div>
         ${backBottomButton('main', 'main-back-bottom')}
       </div>
-      ${renderComposer({ id: composerId, kind: 'message', placeholder: `Message ${spaceName(selectedSpaceType, selectedSpaceId)}`, showTaskToggle: true })}
+      ${readOnlyChannel
+        ? renderChannelJoinPanel(selectedSpaceId)
+        : renderComposer({ id: composerId, kind: 'message', placeholder: `Message ${spaceName(selectedSpaceType, selectedSpaceId)}`, showTaskToggle: true })}
     </section>
   `;
 }
@@ -508,10 +553,13 @@ function renderMessageActions(record, options = {}) {
   const saved = record.savedBy?.includes('hum_local');
   const threadContext = Boolean(options.threadContext || options.compact || record.parentMessageId);
   const saveLabel = saved ? 'Remove from saved' : 'Save message';
+  const threadActionLabel = record?.spaceType === 'channel' && !currentUserIsChannelMember(record.spaceId)
+    ? 'View thread'
+    : 'Reply in thread';
   return `
     <div class="message-hover-actions${threadContext ? ' thread-only' : ''}">
       ${threadContext ? '' : `
-        <button class="message-icon-action" type="button" data-action="open-thread" data-id="${escapeHtml(record.id)}" title="Reply in thread" aria-label="Reply in thread">
+        <button class="message-icon-action" type="button" data-action="open-thread" data-id="${escapeHtml(record.id)}" title="${escapeHtml(threadActionLabel)}" aria-label="${escapeHtml(threadActionLabel)}">
           ${replyThreadIcon()}
         </button>
       `}
@@ -702,6 +750,7 @@ function renderTaskCard(task) {
 }
 
 function renderTaskActionButtons(task, options = {}) {
+  const canWriteTask = task?.spaceType !== 'channel' || currentUserIsChannelMember(task.spaceId);
   const canClaim = !taskIsClosedStatus(task.status) && !task.claimedBy;
   const canUnclaim = !taskIsClosedStatus(task.status) && Boolean(task.claimedBy);
   const canReview = task.status === 'in_progress' && Boolean(task.claimedBy);
@@ -710,6 +759,11 @@ function renderTaskActionButtons(task, options = {}) {
   const canClose = !taskIsClosedStatus(task.status);
   const includeThread = options.includeThread !== false;
   const thread = taskThreadMessage(task);
+  if (!canWriteTask) {
+    return includeThread && thread
+      ? `<button class="task-action-btn tone-thread" type="button" data-action="open-thread" data-id="${escapeHtml(thread.id)}">Thread</button>`
+      : '';
+  }
   return `
     ${canClaim ? `<button class="task-action-btn tone-claim" type="button" data-action="task-claim" data-id="${escapeHtml(task.id)}">Claim</button>` : ''}
     ${canUnclaim ? `<button class="task-action-btn tone-neutral" type="button" data-action="task-unclaim" data-id="${escapeHtml(task.id)}">Unclaim</button>` : ''}

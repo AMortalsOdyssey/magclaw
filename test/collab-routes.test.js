@@ -161,6 +161,47 @@ test('collab route group manages channel members across legacy and canonical fie
   assert.deepEqual(channel.agentIds, []);
 });
 
+test('collab route group lets the current human join and leave a channel', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_cloud', email: 'cloud@example.test' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_cloud', role: 'member' },
+    }),
+  });
+  deps.state.channels.push({
+    id: 'chan_cloud',
+    workspaceId: 'wsp_main',
+    name: 'cloud',
+    humanIds: [],
+    agentIds: [],
+    memberIds: [],
+    archived: false,
+  });
+  const channel = deps.state.channels.at(-1);
+
+  const joinRes = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'POST' },
+    joinRes,
+    new URL('http://local/api/channels/chan_cloud/join'),
+    deps,
+  ), true);
+  assert.equal(joinRes.statusCode, 200);
+  assert.deepEqual(channel.memberIds, ['hum_cloud']);
+  assert.deepEqual(channel.humanIds, ['hum_cloud']);
+
+  const leaveRes = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'POST' },
+    leaveRes,
+    new URL('http://local/api/channels/chan_cloud/leave'),
+    deps,
+  ), true);
+  assert.equal(leaveRes.statusCode, 200);
+  assert.deepEqual(channel.memberIds, []);
+  assert.deepEqual(channel.humanIds, []);
+});
+
 test('collab route group keeps all-channel membership locked', async () => {
   const deps = routeDeps();
   const removeRes = makeResponse();

@@ -214,6 +214,55 @@ test('new channels leave agent members optional and selected members fan out lik
   }
 });
 
+test('channel messages and thread replies require joining the channel first', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'join-gated-room', description: 'membership gate' }),
+    });
+    const parent = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: 'member parent message', attachmentIds: [] }),
+    });
+
+    await request(server.baseUrl, `/api/channels/${channel.id}/leave`, { method: 'POST', body: '{}' });
+
+    const blockedMessage = await fetch(`${server.baseUrl}/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'non-member should not send', attachmentIds: [] }),
+    });
+    const blockedMessageBody = await blockedMessage.json();
+    assert.equal(blockedMessage.status, 403);
+    assert.match(blockedMessageBody.error, /Join this channel/);
+
+    const blockedReply = await fetch(`${server.baseUrl}/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'non-member should not reply', attachmentIds: [] }),
+    });
+    const blockedReplyBody = await blockedReply.json();
+    assert.equal(blockedReply.status, 403);
+    assert.match(blockedReplyBody.error, /Join this channel/);
+
+    const joined = await request(server.baseUrl, `/api/channels/${channel.id}/join`, { method: 'POST', body: '{}' });
+    assert.equal(joined.channel.memberIds.includes('hum_local'), true);
+    const joinedMessage = await request(server.baseUrl, `/api/spaces/channel/${channel.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: 'joined message', attachmentIds: [] }),
+    });
+    const joinedReply = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({ body: 'joined reply', attachmentIds: [] }),
+    });
+    assert.equal(joinedMessage.message.body, 'joined message');
+    assert.equal(joinedReply.reply.body, 'joined reply');
+  } finally {
+    await server.stop();
+  }
+});
+
 test('Codex agents never persist the unsupported default model sentinel', async () => {
   const server = await startIsolatedServer({ CODEX_MODEL: '' });
   try {

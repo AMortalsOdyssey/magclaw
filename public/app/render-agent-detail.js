@@ -818,6 +818,7 @@ function renderThreadDrawer(message) {
   const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
   const composerId = composerIdFor('thread', message.id);
   const replyWord = replies.length === 1 ? 'reply' : 'replies';
+  const canReply = message.spaceType !== 'channel' || currentUserIsChannelMember(message.spaceId);
   return `
     <section class="pixel-panel inspector-panel thread-drawer">
       <div class="thread-head">
@@ -850,9 +851,11 @@ function renderThreadDrawer(message) {
       </div>
       <div class="thread-tools">
         <span>${replies.length} ${replyWord}</span>
-        ${task ? renderTaskInlineBadge(task, { showAssignee: false }) : ''}
+        ${task ? renderTaskInlineBadge(task, { showAssignee: false, interactive: canReply }) : ''}
       </div>
-      ${renderComposer({ id: composerId, kind: 'thread', placeholder: 'Message thread' })}
+      ${canReply
+        ? renderComposer({ id: composerId, kind: 'thread', placeholder: 'Message thread' })
+        : renderChannelJoinPanel(message.spaceId, { thread: true })}
     </section>
   `;
 }

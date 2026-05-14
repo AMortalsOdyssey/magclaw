@@ -3,7 +3,7 @@
 // messages, thread replies, saved toggles, and message-to-task promotion. The
 // delivery/routing helpers are injected so the route remains a thin workflow
 // coordinator rather than a second Agent runtime implementation.
-import { findWorkspaceAllChannel } from '../workspace-defaults.js';
+import { findWorkspaceAllChannel, isWorkspaceAllChannel } from '../workspace-defaults.js';
 import { firstActorReferenceIndex, textReferencesActor } from '../mentions.js';
 
 export async function handleMessageApi(req, res, url, deps) {
@@ -142,6 +142,29 @@ export async function handleMessageApi(req, res, url, deps) {
     const humanId = auth.member?.humanId;
     const dm = state.dms.find((item) => item.id === spaceId);
     return Boolean(humanId && dm?.participantIds?.includes(humanId));
+  }
+
+  function channelHasHuman(channel, humanId) {
+    if (!channel || !humanId) return false;
+    if (isWorkspaceAllChannel(channel)) return true;
+    const ids = new Set([
+      ...(Array.isArray(channel.memberIds) ? channel.memberIds : []),
+      ...(Array.isArray(channel.humanIds) ? channel.humanIds : []),
+    ].map(String));
+    return ids.has(String(humanId));
+  }
+
+  function canWriteChannel(req, channel, author) {
+    if (author?.authorType !== 'human') return true;
+    const humanId = author.authorId || currentHumanId(req);
+    const allowed = channelHasHuman(channel, humanId);
+    if (!allowed) {
+      console.info('[message] rejected non-member channel write', {
+        channelId: channel?.id || '',
+        humanId,
+      });
+    }
+    return allowed;
   }
 
   function workspaceIdForSpace(spaceType, spaceId, req) {
@@ -385,6 +408,11 @@ export async function handleMessageApi(req, res, url, deps) {
     }
     const mentions = extractMentions(text);
     const author = messageAuthor(req, body);
+    const channel = spaceType === 'channel' ? findChannel(spaceId) : null;
+    if (spaceType === 'channel' && !canWriteChannel(req, channel, author)) {
+      sendError(res, 403, 'Join this channel before sending messages.');
+      return true;
+    }
     const workspaceId = workspaceIdForSpace(spaceType, spaceId, req);
     const message = normalizeConversationRecord({
       id: makeId('msg'),
@@ -415,7 +443,6 @@ export async function handleMessageApi(req, res, url, deps) {
     let respondingAgents = [];
     let routeDecision = null;
     if (message.authorType === 'human' && spaceType === 'channel') {
-      const channel = findChannel(spaceId);
       if (channel) {
         const channelAgents = channelAgentIds(channel)
           .map(id => findAgent(id))
@@ -533,6 +560,11 @@ export async function handleMessageApi(req, res, url, deps) {
     }
     const mentions = extractMentions(text);
     const author = messageAuthor(req, body);
+    const parentChannel = message.spaceType === 'channel' ? findChannel(message.spaceId) : null;
+    if (message.spaceType === 'channel' && !canWriteChannel(req, parentChannel, author)) {
+      sendError(res, 403, 'Join this channel before replying in the thread.');
+      return true;
+    }
     const reply = normalizeConversationRecord({
       id: makeId('rep'),
       workspaceId: message.workspaceId || workspaceIdForSpace(message.spaceType, message.spaceId, req),

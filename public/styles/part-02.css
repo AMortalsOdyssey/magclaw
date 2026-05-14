@@ -1168,6 +1168,32 @@
   box-shadow: none;
 }
 
+.channel-join-panel {
+  display: grid;
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-top: 2px solid var(--border);
+  background: var(--bg-card);
+}
+
+.channel-join-btn {
+  min-height: 40px;
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.channel-join-btn svg {
+  flex: 0 0 auto;
+}
+
+.thread-join-panel {
+  padding: 8px 12px;
+}
+
 .icon-btn {
   font-size: 17px;
   font-weight: 900;

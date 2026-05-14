@@ -70,6 +70,20 @@ export async function handleCollabApi(req, res, url, deps) {
     return changed;
   }
 
+  function removeMemberFromChannel(channel, memberId) {
+    const previousMemberIds = Array.isArray(channel.memberIds) ? channel.memberIds.map(String) : [];
+    const previousAgentIds = Array.isArray(channel.agentIds) ? channel.agentIds.map(String) : [];
+    const previousHumanIds = Array.isArray(channel.humanIds) ? channel.humanIds.map(String) : [];
+    channel.memberIds = previousMemberIds.filter((id) => id !== memberId);
+    channel.agentIds = previousAgentIds.filter((id) => id !== memberId);
+    channel.humanIds = previousHumanIds.filter((id) => id !== memberId);
+    return (
+      channel.memberIds.length !== previousMemberIds.length
+      || channel.agentIds.length !== previousAgentIds.length
+      || channel.humanIds.length !== previousHumanIds.length
+    );
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/channels') {
     const body = await readJson(req);
     const name = normalizeName(body.name, 'new-channel');
@@ -196,6 +210,35 @@ export async function handleCollabApi(req, res, url, deps) {
     return true;
   }
 
+  const channelJoinMatch = url.pathname.match(/^\/api\/channels\/([^/]+)\/join$/);
+  if (req.method === 'POST' && channelJoinMatch) {
+    const channel = findChannel(channelJoinMatch[1]);
+    if (!channel) {
+      sendError(res, 404, 'Channel not found.');
+      return true;
+    }
+    if (channel.archived) {
+      sendError(res, 400, 'Archived channels cannot be joined.');
+      return true;
+    }
+    const { humanId } = actorContext(req);
+    if (!humanId) {
+      sendError(res, 403, 'Human membership is required to join a channel.');
+      return true;
+    }
+    try {
+      if (addMemberToChannel(channel, humanId)) {
+        await persistState();
+        broadcastState();
+      }
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+      return true;
+    }
+    sendJson(res, 200, { channel, joined: true });
+    return true;
+  }
+
   const proposalReviewMatch = url.pathname.match(/^\/api\/channel-member-proposals\/([^/]+)\/(accept|decline)$/);
   if (req.method === 'POST' && proposalReviewMatch) {
     const proposal = (state.channelMemberProposals || []).find((item) => item.id === proposalReviewMatch[1]);
@@ -281,15 +324,14 @@ export async function handleCollabApi(req, res, url, deps) {
     const memberId = channelMemberRemoveMatch[2];
     // Remove from all membership representations so future route decisions and
     // older UI filters observe the same channel membership.
-    channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds.filter((id) => id !== memberId) : [];
-    channel.agentIds = Array.isArray(channel.agentIds) ? channel.agentIds.filter((id) => id !== memberId) : [];
-    channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds.filter((id) => id !== memberId) : [];
-    channel.updatedAt = now();
-    addCollabEvent('channel_member_removed', `Member removed from #${channel.name}`, { channelId: channel.id, memberId });
-    const agent = memberId.startsWith('agt_') ? findAgent(memberId) : null;
-    if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
-    await persistState();
-    broadcastState();
+    if (removeMemberFromChannel(channel, memberId)) {
+      channel.updatedAt = now();
+      addCollabEvent('channel_member_removed', `Member removed from #${channel.name}`, { channelId: channel.id, memberId });
+      const agent = memberId.startsWith('agt_') ? findAgent(memberId) : null;
+      if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
+      await persistState();
+      broadcastState();
+    }
     sendJson(res, 200, { channel });
     return true;
   }
@@ -305,15 +347,13 @@ export async function handleCollabApi(req, res, url, deps) {
       sendError(res, 400, 'Cannot leave the #all channel.');
       return true;
     }
-    const memberId = 'hum_local';
-    // Leaving a channel is local-human only for now; team-wide removal should
-    // continue to use the explicit member DELETE endpoint above.
-    channel.memberIds = Array.isArray(channel.memberIds) ? channel.memberIds.filter((id) => id !== memberId) : [];
-    channel.humanIds = Array.isArray(channel.humanIds) ? channel.humanIds.filter((id) => id !== memberId) : [];
-    channel.updatedAt = now();
-    addCollabEvent('channel_left', `Left #${channel.name}`, { channelId: channel.id, memberId });
-    await persistState();
-    broadcastState();
+    const memberId = actorContext(req).humanId || 'hum_local';
+    if (removeMemberFromChannel(channel, memberId)) {
+      channel.updatedAt = now();
+      addCollabEvent('channel_left', `Left #${channel.name}`, { channelId: channel.id, memberId });
+      await persistState();
+      broadcastState();
+    }
     sendJson(res, 200, { channel });
     return true;
   }
