@@ -804,6 +804,7 @@ async function deploymentHealth() {
 
 const daemonRelay = createDaemonRelay({
   addSystemEvent,
+  AGENT_STATUS_STALE_MS,
   broadcastState,
   cloudAuth,
   findAgent,
@@ -1634,6 +1635,11 @@ server.on('upgrade', (req, socket) => {
   });
 });
 const heartbeatTimer = setInterval(() => {
+  const daemonActivityProbe = daemonRelay.probeStaleAgentHeartbeats?.();
+  if (daemonActivityProbe?.waitingForProbe) {
+    if (daemonActivityProbe.changed) persistState().then(broadcastState).catch(() => {});
+    return;
+  }
   if (reconcileAgentStatusHeartbeats()) {
     persistState().then(broadcastState).catch(() => {});
     return;

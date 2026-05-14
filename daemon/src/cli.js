@@ -11,6 +11,12 @@ import { fileURLToPath } from 'node:url';
 export const DEFAULT_PROFILE = 'default';
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
 const DEFAULT_DAEMON_HEARTBEAT_MS = 25_000;
+const DEFAULT_DAEMON_INBOUND_WATCHDOG_MS = 70_000;
+const DEFAULT_DAEMON_RECONNECT_MIN_MS = 1_000;
+const DEFAULT_DAEMON_RECONNECT_MAX_MS = 30_000;
+const DEFAULT_MAX_CONCURRENT_AGENT_STARTS = 5;
+const DEFAULT_AGENT_START_INTERVAL_MS = 500;
+const DEFAULT_TRAJECTORY_COALESCE_MS = 350;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,6 +89,12 @@ function logError(category, message) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function envInteger(env, name, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
+  const parsed = Number(env?.[name]);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
 function safeProfileName(value) {
@@ -937,6 +949,9 @@ class CodexAgentSession {
     this.activeTurnToolSignatures = new Set();
     this.activeTurnUsedSendMessage = false;
     this.codexMessageQueue = Promise.resolve();
+    this.streamActivityTimer = null;
+    this.pendingStreamActivity = null;
+    this.trajectoryCoalesceMs = envInteger(this.env, 'MAGCLAW_DAEMON_TRAJECTORY_COALESCE_MS', DEFAULT_TRAJECTORY_COALESCE_MS, { min: 0, max: 5_000 });
   }
 
   agentDir() {
@@ -1023,6 +1038,35 @@ class CodexAgentSession {
       },
     })}\n`);
     return true;
+  }
+
+  queueCodexStreamActivity() {
+    this.pendingStreamActivity = {
+      type: 'agent:activity',
+      agentId: this.agent.id,
+      status: 'working',
+      activity: { source: 'codex-stream', chars: this.responseBuffer.length, at: now() },
+    };
+    if (this.trajectoryCoalesceMs <= 0) {
+      this.flushCodexStreamActivity();
+      return;
+    }
+    if (this.streamActivityTimer) return;
+    this.streamActivityTimer = setTimeout(() => {
+      this.streamActivityTimer = null;
+      this.flushCodexStreamActivity();
+    }, this.trajectoryCoalesceMs);
+    this.streamActivityTimer.unref?.();
+  }
+
+  flushCodexStreamActivity() {
+    if (this.streamActivityTimer) {
+      clearTimeout(this.streamActivityTimer);
+      this.streamActivityTimer = null;
+    }
+    const payload = this.pendingStreamActivity;
+    this.pendingStreamActivity = null;
+    if (payload) this.send(payload);
   }
 
   async requestMagClawTool(pathname, { method = 'GET', query = {}, body = null } = {}) {
@@ -1268,6 +1312,7 @@ class CodexAgentSession {
       this.sendStatus('error', { source: '@magclaw/daemon', error: error.message, at: now() });
     });
     this.child.on('close', (code, signal) => {
+      this.flushCodexStreamActivity();
       this.started = false;
       this.child = null;
       const stopped = this.status === 'stopping';
@@ -1394,12 +1439,7 @@ class CodexAgentSession {
     }
     if (method === 'item/agentMessage/delta' || method === 'response/output_text/delta') {
       this.responseBuffer += String(params.delta || params.text || '');
-      this.send({
-        type: 'agent:activity',
-        agentId: this.agent.id,
-        status: 'working',
-        activity: { source: 'codex-stream', chars: this.responseBuffer.length, at: now() },
-      });
+      this.queueCodexStreamActivity();
       return;
     }
     if (method === 'item/completed') {
@@ -1410,6 +1450,7 @@ class CodexAgentSession {
       return;
     }
     if (method === 'turn/completed' || method === 'turn/failed') {
+      this.flushCodexStreamActivity();
       const body = this.responseBuffer.trim();
       if (body && method === 'turn/completed' && !this.activeTurnUsedSendMessage) {
         this.send({
@@ -1447,6 +1488,7 @@ class CodexAgentSession {
 
   stop() {
     this.status = 'stopping';
+    this.flushCodexStreamActivity();
     if (this.child) this.child.kill('SIGTERM');
   }
 }
@@ -1600,7 +1642,22 @@ class MagClawDaemon {
     this.sessions = new Map();
     this.closed = false;
     this.heartbeatTimer = null;
-    this.heartbeatIntervalMs = Math.max(5000, Number(env.MAGCLAW_DAEMON_HEARTBEAT_MS || DEFAULT_DAEMON_HEARTBEAT_MS) || DEFAULT_DAEMON_HEARTBEAT_MS);
+    this.inboundWatchdogTimer = null;
+    this.lastInboundAt = null;
+    this.lastInboundKind = '';
+    this.reconnectDelayMs = envInteger(env, 'MAGCLAW_DAEMON_RECONNECT_MIN_MS', DEFAULT_DAEMON_RECONNECT_MIN_MS, { min: 100, max: 60_000 });
+    this.reconnectMinMs = this.reconnectDelayMs;
+    this.reconnectMaxMs = envInteger(env, 'MAGCLAW_DAEMON_RECONNECT_MAX_MS', DEFAULT_DAEMON_RECONNECT_MAX_MS, { min: this.reconnectMinMs, max: 5 * 60_000 });
+    this.heartbeatIntervalMs = envInteger(env, 'MAGCLAW_DAEMON_HEARTBEAT_MS', DEFAULT_DAEMON_HEARTBEAT_MS, { min: 5_000, max: 5 * 60_000 });
+    this.inboundWatchdogMs = envInteger(env, 'MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS', DEFAULT_DAEMON_INBOUND_WATCHDOG_MS, { min: 0, max: 10 * 60_000 });
+    this.maxConcurrentAgentStarts = envInteger(env, 'MAGCLAW_DAEMON_MAX_CONCURRENT_AGENT_STARTS', DEFAULT_MAX_CONCURRENT_AGENT_STARTS, { min: 1, max: 100 });
+    this.agentStartIntervalMs = envInteger(env, 'MAGCLAW_DAEMON_AGENT_START_INTERVAL_MS', DEFAULT_AGENT_START_INTERVAL_MS, { min: 0, max: 60_000 });
+    this.agentStartQueue = [];
+    this.agentStartPromises = new Map();
+    this.agentStartPumpTimer = null;
+    this.activeAgentStartCount = 0;
+    this.lastAgentStartAt = 0;
+    this.lastAgentStartAgentId = '';
   }
 
   send(payload) {
@@ -1656,6 +1713,78 @@ class MagClawDaemon {
     this.heartbeatTimer = null;
   }
 
+  clearInboundWatchdog() {
+    if (!this.inboundWatchdogTimer) return;
+    clearTimeout(this.inboundWatchdogTimer);
+    this.inboundWatchdogTimer = null;
+  }
+
+  resetInboundWatchdog() {
+    this.clearInboundWatchdog();
+    if (!this.inboundWatchdogMs || this.closed || !this.socket || this.socket.destroyed) return;
+    this.inboundWatchdogTimer = setTimeout(() => {
+      const ageMs = this.lastInboundAt ? Date.now() - this.lastInboundAt : this.inboundWatchdogMs;
+      logWarning('network', `No inbound daemon traffic for ${Math.round(ageMs / 1000)}s; reconnecting.`);
+      this.socket?.destroy(new Error('Inbound watchdog timed out.'));
+    }, this.inboundWatchdogMs);
+    this.inboundWatchdogTimer.unref?.();
+  }
+
+  markInbound(kind) {
+    this.lastInboundAt = Date.now();
+    this.lastInboundKind = String(kind || 'message');
+    this.resetInboundWatchdog();
+  }
+
+  enqueueAgentStart(agentId, startFn) {
+    const key = String(agentId || '').trim();
+    if (!key) return Promise.resolve().then(startFn);
+    const existing = this.agentStartPromises.get(key);
+    if (existing) return existing;
+    const promise = new Promise((resolve, reject) => {
+      this.agentStartQueue.push({ agentId: key, startFn, resolve, reject });
+      logInfo('agent', `Agent start queued (${key}); queue=${this.agentStartQueue.length}, active=${this.activeAgentStartCount}, max=${this.maxConcurrentAgentStarts}.`);
+      this.pumpAgentStartQueue();
+    });
+    this.agentStartPromises.set(key, promise);
+    promise.then(
+      () => this.agentStartPromises.delete(key),
+      () => this.agentStartPromises.delete(key),
+    );
+    return promise;
+  }
+
+  pumpAgentStartQueue() {
+    if (this.agentStartPumpTimer) return;
+    if (!this.agentStartQueue.length) return;
+    if (this.activeAgentStartCount >= this.maxConcurrentAgentStarts) return;
+    const next = this.agentStartQueue[0];
+    const rateLimited = next?.agentId !== this.lastAgentStartAgentId;
+    const elapsed = Date.now() - this.lastAgentStartAt;
+    const waitMs = rateLimited ? Math.max(0, this.agentStartIntervalMs - elapsed) : 0;
+    if (waitMs > 0) {
+      this.agentStartPumpTimer = setTimeout(() => {
+        this.agentStartPumpTimer = null;
+        this.pumpAgentStartQueue();
+      }, waitMs);
+      this.agentStartPumpTimer.unref?.();
+      return;
+    }
+    const item = this.agentStartQueue.shift();
+    if (!item) return;
+    this.activeAgentStartCount += 1;
+    this.lastAgentStartAt = Date.now();
+    this.lastAgentStartAgentId = item.agentId;
+    logInfo('agent', `Agent start dequeued (${item.agentId}); queue=${this.agentStartQueue.length}, active=${this.activeAgentStartCount}.`);
+    Promise.resolve()
+      .then(item.startFn)
+      .then(item.resolve, item.reject)
+      .finally(() => {
+        this.activeAgentStartCount = Math.max(0, this.activeAgentStartCount - 1);
+        this.pumpAgentStartQueue();
+      });
+  }
+
   async handleFrame(message) {
     switch (message.type) {
       case 'pairing:accepted':
@@ -1690,6 +1819,9 @@ class MagClawDaemon {
         break;
       case 'agent:stop':
         await this.handleAgentStop(message);
+        break;
+      case 'agent:activity_probe':
+        this.handleAgentActivityProbe(message);
         break;
       case 'agent:skills:list':
         this.send({ type: 'agent:skills:list_result', commandId: message.commandId, agentId: message.agentId, skills: [] });
@@ -1737,7 +1869,7 @@ class MagClawDaemon {
     this.send({ type: 'agent:start:ack', commandId: message.commandId, agentId: agent.id, status: 'starting' });
     try {
       const session = this.sessionFor(agent);
-      await session.start();
+      await this.enqueueAgentStart(agent.id, () => session.start());
     } catch (error) {
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
     }
@@ -1767,7 +1899,7 @@ class MagClawDaemon {
         });
       }
       const session = this.sessionFor(agent);
-      await session.start();
+      await this.enqueueAgentStart(agent.id, () => session.start());
     } catch (error) {
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
     }
@@ -1778,6 +1910,7 @@ class MagClawDaemon {
     try {
       const session = this.sessionFor(agent);
       this.send({ type: 'agent:deliver:ack', commandId: message.commandId, agentId: agent.id, status: 'queued' });
+      if (!session.started) await this.enqueueAgentStart(agent.id, () => session.start());
       await session.deliver(message.payload?.message || {}, message.payload?.workItem || null, message.commandId || '');
     } catch (error) {
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
@@ -1794,12 +1927,40 @@ class MagClawDaemon {
     this.send({ type: 'agent:ack', commandId: message.commandId, agentId, status: 'offline' });
   }
 
+  handleAgentActivityProbe(message) {
+    const agentId = message.agentId || message.payload?.agentId;
+    const session = this.sessions.get(agentId);
+    const status = session?.status || 'offline';
+    this.send({
+      type: 'agent:activity',
+      agentId,
+      status,
+      probeId: message.probeId || null,
+      activity: {
+        source: '@magclaw/daemon',
+        detail: session ? `Current daemon runtime status: ${status}` : 'Agent not running on this computer',
+        probeId: message.probeId || null,
+        at: now(),
+      },
+    });
+  }
+
   close() {
     if (this.closed) return;
     this.closed = true;
     for (const session of this.sessions.values()) session.stop();
     this.sessions.clear();
     this.stopHeartbeat();
+    this.clearInboundWatchdog();
+    if (this.agentStartPumpTimer) {
+      clearTimeout(this.agentStartPumpTimer);
+      this.agentStartPumpTimer = null;
+    }
+    const queuedStarts = this.agentStartQueue.splice(0);
+    for (const item of queuedStarts) {
+      item.resolve?.();
+    }
+    this.agentStartPromises.clear();
     if (this.request) {
       this.request.destroy(new Error('MagClaw daemon is shutting down.'));
       this.request = null;
@@ -1821,6 +1982,8 @@ class MagClawDaemon {
         if (settled) return;
         settled = true;
         this.stopHeartbeat();
+        this.clearInboundWatchdog();
+        if (this.socket && this.socket.destroyed) this.socket = null;
         if (this.request === req) this.request = null;
         callback(value);
       };
@@ -1847,14 +2010,18 @@ class MagClawDaemon {
           return;
         }
         this.socket = socket;
+        this.reconnectDelayMs = this.reconnectMinMs;
+        this.markInbound('websocket_open');
         this.startHeartbeat();
         const connection = { socket, buffer: Buffer.alloc(0) };
         const handleChunk = (chunk) => {
           for (const frame of decodeFrames(connection, chunk)) {
             if (frame.opcode === 0x8) {
+              this.markInbound('websocket_close');
               socket.end();
               return;
             }
+            this.markInbound(frame.opcode === 0x1 ? 'message' : `opcode_${frame.opcode}`);
             if (frame.opcode !== 0x1) continue;
             try {
               this.handleFrame(JSON.parse(frame.text)).catch((error) => {
@@ -1867,9 +2034,16 @@ class MagClawDaemon {
         };
         socket.on('data', handleChunk);
         if (head.length) handleChunk(head);
-        socket.on('close', () => finish(resolve));
-        socket.on('end', () => finish(resolve));
+        socket.on('close', () => {
+          if (this.socket === socket) this.socket = null;
+          finish(resolve);
+        });
+        socket.on('end', () => {
+          if (this.socket === socket) this.socket = null;
+          finish(resolve);
+        });
         socket.on('error', (error) => {
+          if (this.socket === socket) this.socket = null;
           if (this.closed) finish(resolve);
           else finish(reject, error);
         });
@@ -1899,7 +2073,12 @@ class MagClawDaemon {
       } catch (error) {
         logError('daemon', `MagClaw daemon connection failed: ${error.message}`);
       }
-      if (!this.closed) await sleep(2000);
+      if (!this.closed) {
+        const delayMs = this.reconnectDelayMs;
+        logInfo('daemon', `Reconnecting in ${delayMs}ms.`);
+        await sleep(delayMs);
+        this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.reconnectMaxMs);
+      }
     }
   }
 }

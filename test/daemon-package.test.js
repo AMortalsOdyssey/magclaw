@@ -139,8 +139,33 @@ test('daemon sends a periodic heartbeat while the websocket is connected', async
   assert.match(daemonSource, /type: 'heartbeat'/);
   assert.match(daemonSource, /startHeartbeat\(\)/);
   assert.match(daemonSource, /this\.heartbeatIntervalMs/);
+  assert.match(daemonSource, /MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS/);
+  assert.match(daemonSource, /resetInboundWatchdog\(\)/);
+  assert.match(daemonSource, /No inbound daemon traffic/);
+  assert.match(daemonSource, /MAGCLAW_DAEMON_RECONNECT_MAX_MS/);
+  assert.match(daemonSource, /agent:activity_probe/);
+  assert.match(daemonSource, /handleAgentActivityProbe\(message\)/);
   assert.match(relaySource, /case 'heartbeat':/);
+  assert.match(relaySource, /MAGCLAW_DAEMON_PING_MS/);
+  assert.match(relaySource, /MAGCLAW_DAEMON_ACTIVITY_PROBE_TIMEOUT_MS/);
+  assert.match(relaySource, /startConnectionPing\(connection\)/);
+  assert.match(relaySource, /probeStaleAgentHeartbeats\(\)/);
+  assert.match(relaySource, /case 'pong':/);
   assert.match(relaySource, /computer\.status = 'connected'/);
+});
+
+test('daemon agent starts and stream activity use Slock-style bounded scheduling', async () => {
+  const daemonSource = await readFile(new URL('../daemon/src/cli.js', import.meta.url), 'utf8');
+
+  assert.match(daemonSource, /DEFAULT_MAX_CONCURRENT_AGENT_STARTS = 5/);
+  assert.match(daemonSource, /DEFAULT_AGENT_START_INTERVAL_MS = 500/);
+  assert.match(daemonSource, /MAGCLAW_DAEMON_MAX_CONCURRENT_AGENT_STARTS/);
+  assert.match(daemonSource, /enqueueAgentStart\(agent\.id/);
+  assert.match(daemonSource, /pumpAgentStartQueue\(\)/);
+  assert.match(daemonSource, /DEFAULT_TRAJECTORY_COALESCE_MS = 350/);
+  assert.match(daemonSource, /MAGCLAW_DAEMON_TRAJECTORY_COALESCE_MS/);
+  assert.match(daemonSource, /queueCodexStreamActivity\(\)/);
+  assert.match(daemonSource, /flushCodexStreamActivity\(\)/);
 });
 
 test('daemon machine fingerprint is stable inside a server profile', async () => {

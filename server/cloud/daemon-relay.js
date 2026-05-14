@@ -5,7 +5,16 @@ const PAIR_TTL_MS = 1000 * 60 * 15;
 const MACHINE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 365;
 const MAX_DAEMON_EVENT_LOG = 300;
 const SENT_DELIVERY_RETRY_TTL_MS = Math.max(1000, Number(process.env.MAGCLAW_DAEMON_SENT_RETRY_TTL_MS || 1000 * 60 * 2));
+const DAEMON_PING_MS = readMsEnv('MAGCLAW_DAEMON_PING_MS', 30_000, { min: 0, max: 10 * 60_000 });
+const DAEMON_INBOUND_WATCHDOG_MS = readMsEnv('MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS', 70_000, { min: 0, max: 10 * 60_000 });
+const ACTIVITY_PROBE_TIMEOUT_MS = readMsEnv('MAGCLAW_DAEMON_ACTIVITY_PROBE_TIMEOUT_MS', 5_000, { min: 250, max: 60_000 });
 const ACTIVE_DELIVERY_STATUSES = new Set(['queued', 'sent', 'acked']);
+
+function readMsEnv(name, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -167,6 +176,7 @@ function safeSocketDestroy(socket) {
 export function createDaemonRelay(deps) {
   const {
     addSystemEvent,
+    AGENT_STATUS_STALE_MS = 45_000,
     broadcastState,
     cloudAuth,
     findAgent,
@@ -187,6 +197,7 @@ export function createDaemonRelay(deps) {
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
   const connections = new Map();
+  const pendingActivityProbes = new Map();
   const handlers = {
     onAgentMessage: null,
   };
@@ -488,14 +499,115 @@ export function createDaemonRelay(deps) {
     return send(connections.get(computerId), payload);
   }
 
+  function stopConnectionTimers(connection) {
+    if (!connection) return;
+    if (connection.pingTimer) {
+      clearInterval(connection.pingTimer);
+      connection.pingTimer = null;
+    }
+    if (connection.watchdogTimer) {
+      clearTimeout(connection.watchdogTimer);
+      connection.watchdogTimer = null;
+    }
+  }
+
+  function refreshConnectionWatchdog(connection) {
+    if (!connection || connection.closed) return;
+    connection.lastSeenAt = now();
+    connection.lastInboundAtMs = nowMs();
+    if (!DAEMON_INBOUND_WATCHDOG_MS) return;
+    if (connection.watchdogTimer) clearTimeout(connection.watchdogTimer);
+    connection.watchdogTimer = setTimeout(() => {
+      if (connection.closed) return;
+      const computer = findComputer(connection.computerId);
+      recordDaemonEvent('computer_watchdog_timeout', `Computer connection timed out: ${computer?.name || connection.computerId || 'unknown'}`, {
+        computerId: connection.computerId,
+        lastSeenAt: connection.lastSeenAt || null,
+      });
+      safeSocketDestroy(connection.socket);
+    }, DAEMON_INBOUND_WATCHDOG_MS);
+    connection.watchdogTimer.unref?.();
+  }
+
+  function startConnectionPing(connection) {
+    if (!connection || !DAEMON_PING_MS) return;
+    if (connection.pingTimer) clearInterval(connection.pingTimer);
+    connection.pingTimer = setInterval(() => {
+      if (connection.closed || connection.socket?.destroyed) {
+        stopConnectionTimers(connection);
+        return;
+      }
+      if (!send(connection, { type: 'ping', time: now() })) {
+        stopConnectionTimers(connection);
+        safeSocketDestroy(connection.socket);
+      }
+    }, DAEMON_PING_MS);
+    connection.pingTimer.unref?.();
+  }
+
   function computerIsDisabled(computer) {
     return String(computer?.status || '').toLowerCase() === 'disabled' || Boolean(computer?.disabledAt);
+  }
+
+  function agentStatusIsBusy(status) {
+    return ['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming'].includes(String(status || '').toLowerCase());
+  }
+
+  function probeStaleAgentHeartbeats() {
+    const threshold = nowMs() - Math.max(1000, Number(AGENT_STATUS_STALE_MS || 45_000));
+    let waitingForProbe = false;
+    let changed = false;
+    for (const agent of safeArray(state.agents)) {
+      if (!agentStatusIsBusy(agent.status)) {
+        pendingActivityProbes.delete(agent.id);
+        continue;
+      }
+      if (!agentShouldUseRelay(agent)) continue;
+      const connection = connections.get(agent.computerId);
+      if (!connection || connection.closed || connection.socket?.destroyed) continue;
+      const updatedAt = Date.parse(agent.heartbeatAt || agent.statusUpdatedAt || agent.updatedAt || agent.createdAt || '');
+      if (Number.isFinite(updatedAt) && updatedAt >= threshold) {
+        pendingActivityProbes.delete(agent.id);
+        continue;
+      }
+      const pending = pendingActivityProbes.get(agent.id);
+      if (pending && nowMs() < pending.deadlineMs) {
+        waitingForProbe = true;
+        continue;
+      }
+      if (pending) {
+        pendingActivityProbes.delete(agent.id);
+        continue;
+      }
+      const probeId = makeId('aprb');
+      if (!send(connection, {
+        type: 'agent:activity_probe',
+        agentId: agent.id,
+        probeId,
+        purpose: 'stale_status_check',
+      })) continue;
+      pendingActivityProbes.set(agent.id, {
+        probeId,
+        sentAtMs: nowMs(),
+        deadlineMs: nowMs() + ACTIVITY_PROBE_TIMEOUT_MS,
+      });
+      waitingForProbe = true;
+      changed = true;
+      recordDaemonEvent('activity_probe', `Probing ${agent.name} daemon activity before stale recovery.`, {
+        agentId: agent.id,
+        computerId: agent.computerId,
+        probeId,
+      });
+    }
+    return { waitingForProbe, changed };
   }
 
   function markComputerDisconnected(connection) {
     if (!connection?.computerId) return;
     if (connection.disconnected) return;
     connection.disconnected = true;
+    connection.closed = true;
+    stopConnectionTimers(connection);
     if (connections.get(connection.computerId) === connection) connections.delete(connection.computerId);
     const computer = findComputer(connection.computerId);
     if (computer) {
@@ -513,6 +625,8 @@ export function createDaemonRelay(deps) {
     const previous = connections.get(computer.id);
     if (previous && previous !== connection) {
       previous.disconnected = true;
+      previous.closed = true;
+      stopConnectionTimers(previous);
       previous.socket.end();
     }
     connection.computerId = computer.id;
@@ -829,6 +943,7 @@ export function createDaemonRelay(deps) {
   async function handleAgentStatus(message) {
     const agent = findAgent(message.agentId);
     if (!agent) return;
+    if (message.probeId) pendingActivityProbes.delete(agent.id);
     setAgentStatus(agent, String(message.status || 'idle'), 'daemon_status', { forceEvent: true });
     const nextStatus = String(message.status || '').toLowerCase();
     if (message.deliveryId && ['idle', 'offline'].includes(nextStatus)) {
@@ -846,6 +961,7 @@ export function createDaemonRelay(deps) {
   async function handleAgentActivity(message) {
     const agent = findAgent(message.agentId);
     if (!agent) return;
+    if (message.probeId) pendingActivityProbes.delete(agent.id);
     if (message.status) setAgentStatus(agent, String(message.status), 'daemon_activity', { forceEvent: true });
     agent.runtimeActivity = message.activity || agent.runtimeActivity || null;
     agent.heartbeatAt = now();
@@ -903,6 +1019,7 @@ export function createDaemonRelay(deps) {
       return;
     }
     connection.lastSeenAt = now();
+    refreshConnectionWatchdog(connection);
     const computer = findComputer(connection.computerId);
     if (computer) computer.lastSeenAt = now();
     switch (message.type) {
@@ -1081,8 +1198,13 @@ export function createDaemonRelay(deps) {
       workspaceId: null,
       tokenId: null,
       lastSeenAt: now(),
+      lastInboundAtMs: nowMs(),
+      pingTimer: null,
+      watchdogTimer: null,
     };
     adoptConnection(connection, auth.computer, auth.tokenRecord);
+    refreshConnectionWatchdog(connection);
+    startConnectionPing(connection);
     send(connection, auth.welcome);
     recordDaemonEvent('computer_connected', `Computer connected: ${auth.computer.name}`, {
       computerId: auth.computer.id,
@@ -1094,10 +1216,12 @@ export function createDaemonRelay(deps) {
       for (const frame of decodeFrames(connection, chunk)) {
         if (frame.opcode === 0x8) {
           connection.closed = true;
+          stopConnectionTimers(connection);
           safeSocketEnd(socket);
           return;
         }
         if (frame.opcode === 0x9) {
+          refreshConnectionWatchdog(connection);
           send(connection, { type: 'pong', time: now() });
           continue;
         }
@@ -1148,6 +1272,7 @@ export function createDaemonRelay(deps) {
     deliverToAgent,
     disconnectComputer,
     handleUpgrade,
+    probeStaleAgentHeartbeats,
     publicRelayState,
     revokeComputerToken,
     setHandlers,
