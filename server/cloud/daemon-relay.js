@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
 
-const PAIR_TTL_MS = 1000 * 60 * 15;
 const MACHINE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 365;
 const MAX_DAEMON_EVENT_LOG = 300;
 const SENT_DELIVERY_RETRY_TTL_MS = Math.max(1000, Number(process.env.MAGCLAW_DAEMON_SENT_RETRY_TTL_MS || 1000 * 60 * 2));
@@ -114,13 +113,6 @@ function bearerToken(req) {
 }
 
 function publicComputerToken(item) {
-  if (!item) return null;
-  const { tokenHash, ...safe } = item;
-  void tokenHash;
-  return safe;
-}
-
-function publicPairingToken(item) {
   if (!item) return null;
   const { tokenHash, ...safe } = item;
   void tokenHash;
@@ -247,6 +239,15 @@ export function createDaemonRelay(deps) {
     return true;
   }
 
+  function markWorkItemQueuedFromDelivery(delivery) {
+    const item = findWorkItemRecord(delivery?.workItemId);
+    if (!item || item.status === 'stopped' || item.status === 'responded') return false;
+    item.status = 'queued_remote';
+    item.deliveryMode = 'daemon';
+    item.updatedAt = now();
+    return true;
+  }
+
   function compactLogText(value, limit = 120) {
     return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
   }
@@ -327,22 +328,38 @@ export function createDaemonRelay(deps) {
     return process.env.MAGCLAW_PUBLIC_URL || `${proto}://${requestHost}`;
   }
 
-  function connectCommand(pairToken, req, options = {}) {
+  function workspaceForRequest(req) {
+    return (req && typeof cloudAuth.workspaceForRequest === 'function'
+      ? cloudAuth.workspaceForRequest(req)
+      : null)
+      || (
+        typeof cloudAuth.primaryWorkspace === 'function'
+          ? cloudAuth.primaryWorkspace()
+          : cloud().workspaces[0]
+      )
+      || {};
+  }
+
+  function connectCommand(credential, req, options = {}) {
     const publicUrl = publicUrlFromRequest(req);
-    const workspace = typeof cloudAuth.primaryWorkspace === 'function'
-      ? cloudAuth.primaryWorkspace()
-      : (cloud().workspaces[0] || {});
+    const workspace = options.workspace || workspaceForRequest(req);
     const profile = String(workspace.slug || workspace.id || 'local').trim() || 'local';
     const comment = String(workspace.name || workspace.slug || workspace.id || 'local').trim() || profile;
     const displayName = normalizeDisplayName(options.displayName);
+    const credentialFlag = options.credentialFlag || 'api-key';
     const template = process.env.MAGCLAW_DAEMON_CONNECT_COMMAND || '';
     if (template) {
-      return template
+      const rendered = template
         .replaceAll('{serverUrl}', publicUrl)
-        .replaceAll('{pairToken}', pairToken)
+        .replaceAll('{apiKey}', credential)
+        .replaceAll('{machineToken}', credential)
+        .replaceAll('{pairToken}', credential)
+        .replaceAll('{credential}', credential)
+        .replaceAll('{credentialFlag}', `--${credentialFlag}`)
         .replaceAll('{profile}', profile)
         .replaceAll('{displayName}', displayName)
         .replaceAll('{serverName}', comment);
+      return credentialFlag === 'api-key' ? rendered.replace(/--pair-token\b/g, '--api-key') : rendered;
     }
     const commandMode = String(process.env.MAGCLAW_DAEMON_COMMAND_MODE || 'local-repo').trim().toLowerCase();
     const useNpmCommand = ['npm', 'npx', 'package', 'cloud', 'remote'].includes(commandMode);
@@ -357,7 +374,7 @@ export function createDaemonRelay(deps) {
     return [
       launcher,
       `--server-url ${shellArg(publicUrl)}`,
-      `--pair-token ${shellArg(pairToken)}`,
+      `--${credentialFlag} ${shellArg(credential)}`,
       `--profile ${shellArg(profile)}`,
       displayName ? `--display-name ${shellArg(displayName)}` : '',
       `# ${comment}`,
@@ -365,18 +382,8 @@ export function createDaemonRelay(deps) {
   }
 
   function createPairingToken(body = {}, req) {
-    const store = cloud();
-    const workspace = (req && typeof cloudAuth.workspaceForRequest === 'function'
-      ? cloudAuth.workspaceForRequest(req)
-      : null)
-      || (
-        typeof cloudAuth.primaryWorkspace === 'function'
-          ? cloudAuth.primaryWorkspace()
-          : store.workspaces[0]
-      );
-    const raw = cloudAuth.token('mc_pair');
+    const workspace = workspaceForRequest(req);
     const createdAt = now();
-    const expiresAt = new Date(Date.now() + Number(body.ttlMs || PAIR_TTL_MS)).toISOString();
     const requestedDisplayName = normalizeDisplayName(body.displayName, body.name);
     const computerName = normalizeDisplayName(requestedDisplayName, body.label, 'My computer');
     let computer = null;
@@ -401,34 +408,34 @@ export function createDaemonRelay(deps) {
         updatedAt: createdAt,
       };
       state.computers.push(computer);
-      console.info(`[daemon-relay] pairing computer created computer=${computer.id} workspace=${workspace.id}`);
+      console.info(`[daemon-relay] connection computer created computer=${computer.id} workspace=${workspace.id}`);
     }
-    const pair = {
-      id: makeId('pair'),
+    const tokenLabel = String(body.label || computer.name || 'daemon api key').trim();
+    const issued = issueMachineToken(computer, {
       workspaceId: workspace.id,
-      computerId: computer.id,
-      label: String(body.label || computer.name || 'Computer pairing').trim(),
-      tokenHash: cloudAuth.sha256(raw),
+      label: tokenLabel,
       createdAt,
-      expiresAt,
-      consumedAt: null,
-      revokedAt: null,
-      createdBy: body.createdBy || null,
-      metadata: {
-        ...(requestedDisplayName ? { displayName: requestedDisplayName } : {}),
-      },
-    };
-    store.pairingTokens.push(pair);
+    });
     const displayName = requestedDisplayName || computerName || computer.name || 'My computer';
-    const command = connectCommand(raw, req, { displayName });
+    const command = connectCommand(issued.raw, req, { displayName, workspace, credentialFlag: 'api-key' });
     return {
       computer,
       provisional,
-      pairingToken: publicPairingToken(pair),
-      pairToken: raw,
+      pairingToken: null,
+      pairToken: '',
+      machineToken: issued.raw,
+      apiKey: issued.raw,
+      machineTokenRecord: {
+        id: issued.record.id,
+        computerId: issued.record.computerId,
+        workspaceId: issued.record.workspaceId,
+        label: issued.record.label,
+        createdAt: issued.record.createdAt,
+        expiresAt: issued.record.expiresAt,
+      },
       displayName,
       command,
-      wsUrl: `${toWsUrl(publicUrlFromRequest(req))}/daemon/connect?pair_token=${encodeURIComponent(raw)}`,
+      wsUrl: `${toWsUrl(publicUrlFromRequest(req))}/daemon/connect?token=${encodeURIComponent(issued.raw)}`,
     };
   }
 
@@ -467,14 +474,14 @@ export function createDaemonRelay(deps) {
     };
   }
 
-  function issueMachineToken(computer, pair) {
+  function issueMachineToken(computer, source = {}) {
     const raw = cloudAuth.token('mc_machine');
-    const createdAt = now();
+    const createdAt = source.createdAt || now();
     const record = {
       id: makeId('ctok'),
-      workspaceId: pair.workspaceId,
+      workspaceId: source.workspaceId || source.workspace?.id || computer.workspaceId || cloud().workspaces[0]?.id || null,
       computerId: computer.id,
-      label: pair.label || computer.name || 'daemon token',
+      label: source.label || computer.name || 'daemon token',
       tokenHash: cloudAuth.sha256(raw),
       createdAt,
       lastUsedAt: createdAt,
@@ -615,6 +622,22 @@ export function createDaemonRelay(deps) {
       if (!computerIsDisabled(computer)) computer.status = 'offline';
       computer.disconnectedAt = now();
       computer.updatedAt = now();
+    }
+    const requeued = [];
+    for (const delivery of safeArray(cloud().agentDeliveries)) {
+      if (delivery.computerId !== connection.computerId) continue;
+      if (delivery.status !== 'sent' || delivery.ackedAt) continue;
+      delivery.status = 'queued';
+      delivery.error = 'Connection dropped before daemon acknowledgement.';
+      delivery.updatedAt = now();
+      requeued.push(delivery);
+      markWorkItemQueuedFromDelivery(delivery);
+    }
+    if (requeued.length) {
+      recordDaemonEvent('agent_delivery_requeued', `Requeued ${requeued.length} unacknowledged daemon delivery${requeued.length === 1 ? '' : 'ies'}.`, {
+        computerId: connection.computerId,
+        deliveryIds: requeued.map((delivery) => delivery.id),
+      });
     }
     recordDaemonEvent('computer_disconnected', `Computer disconnected: ${computer?.name || connection.computerId}`, {
       computerId: connection.computerId,
@@ -1099,7 +1122,7 @@ export function createDaemonRelay(deps) {
 
   async function authenticateConnection(req, url) {
     const rawPair = String(url.searchParams.get('pair_token') || url.searchParams.get('pairToken') || '').trim();
-    const rawToken = String(url.searchParams.get('token') || url.searchParams.get('key') || '').trim();
+    const rawToken = String(url.searchParams.get('token') || url.searchParams.get('api_key') || url.searchParams.get('apiKey') || url.searchParams.get('key') || '').trim();
     if (rawPair) {
       const pair = validatePairToken(rawPair);
       if (!pair) return { error: 'Invalid or expired pair token.' };

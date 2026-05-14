@@ -68,8 +68,11 @@ function wsUrl(serverUrl, args) {
       ? `ws://${base.slice('http://'.length)}`
       : base;
   const url = new URL(`${wsBase}/daemon/connect`);
-  if (args.pairToken) url.searchParams.set('pair_token', args.pairToken);
-  else url.searchParams.set('token', args.token);
+  const token = String(args.token || args.apiKey || args.machineToken || '').trim();
+  const pairToken = String(args.pairToken || '').trim();
+  if (token) url.searchParams.set('token', token);
+  else if (pairToken) url.searchParams.set('pair_token', pairToken);
+  else url.searchParams.set('token', '');
   if (args.workspace) url.searchParams.set('workspace', args.workspace);
   return url;
 }
@@ -175,6 +178,7 @@ async function handleCommand(socket, message, config) {
     case 'connected':
       config.computerId = message.computerId || config.computerId;
       config.workspaceId = message.workspaceId || config.workspaceId;
+      await saveConfig(config.args, config);
       send(socket, await readyPayload(config));
       break;
     case 'ping':
@@ -304,18 +308,19 @@ async function connect(config) {
 async function main() {
   const args = parseArgs(process.argv);
   const diskConfig = await readConfig(args).catch(() => ({}));
+  const token = String(args.token || args.apiKey || args.machineToken || diskConfig.token || '').trim();
   const config = {
     ...diskConfig,
     ...args,
     args,
     serverUrl: args.serverUrl || diskConfig.serverUrl || process.env.MAGCLAW_PUBLIC_URL || 'http://127.0.0.1:6543',
-    token: args.token || args.machineToken || diskConfig.token || '',
-    pairToken: args.pairToken || '',
+    token,
+    pairToken: token ? '' : (args.pairToken || diskConfig.pairToken || ''),
     workspace: args.workspace || diskConfig.workspace || 'local',
     name: args.displayName || args.name || diskConfig.name || os.hostname(),
   };
   if (!config.pairToken && !config.token) {
-    throw new Error('Run with --pair-token for first pairing, or --token after pairing.');
+    throw new Error('Run with --api-key, --pair-token for legacy pairing, or --token after pairing.');
   }
   console.log(`Connecting MagClaw daemon to ${config.serverUrl}...`);
   await connect(config);

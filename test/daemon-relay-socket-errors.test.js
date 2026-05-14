@@ -256,6 +256,86 @@ test('daemon relay ready only replays queued deliveries and waits before retryin
   assert.equal(cloud.agentDeliveries.find((item) => item.id === 'adl_sent').attempts, 1);
 });
 
+test('daemon relay requeues unacked sent deliveries when the socket disconnects', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_existing';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+  });
+  state.workItems = [{
+    id: 'wi_sent',
+    workspaceId: 'wsp_test',
+    agentId: 'agt_remote',
+    status: 'sent_remote',
+    target: '#all',
+  }];
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+  cloud.agentDeliveries.push({
+    id: 'adl_sent',
+    workspaceId: 'wsp_test',
+    agentId: 'agt_remote',
+    computerId: 'cmp_remote',
+    workItemId: 'wi_sent',
+    seq: 1,
+    type: 'agent:deliver',
+    commandType: 'agent:deliver',
+    status: 'sent',
+    sentAt: '2026-05-13T00:00:00.000Z',
+    payload: { message: { id: 'msg_sent' } },
+    attempts: 1,
+    createdAt: '2026-05-13T00:00:00.000Z',
+    updatedAt: '2026-05-13T00:00:00.000Z',
+  });
+
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.example.test',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+  socket.emit('close');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const delivery = cloud.agentDeliveries.find((item) => item.id === 'adl_sent');
+  assert.equal(delivery.status, 'queued');
+  assert.match(delivery.error, /Connection dropped before daemon acknowledgement/);
+  assert.equal(state.workItems[0].status, 'queued_remote');
+  assert.ok(cloud.daemonEvents.some((event) => event.type === 'agent_delivery_requeued'));
+
+  const nextSocket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.example.test',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, nextSocket), true);
+  nextSocket.emit('data', encodeFrame({ type: 'ready', runtimes: ['codex'] }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const deliveredIds = decodeServerMessages(nextSocket)
+    .filter((message) => message.type === 'agent:deliver')
+    .map((message) => message.commandId);
+  assert.deepEqual(deliveredIds, ['adl_sent']);
+  assert.equal(delivery.status, 'sent');
+  assert.equal(delivery.attempts, 2);
+});
+
 test('daemon relay dedupes active agent deliveries by work item, message, and agent', async () => {
   const { cloud, relay, state } = createRelay();
   state.computers.push({

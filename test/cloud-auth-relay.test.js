@@ -637,8 +637,10 @@ test('owner registration protects app APIs and supports invites end to end', asy
       cookie: adminCookie,
       body: JSON.stringify({ name: 'CI runner' }),
     });
-    assert.match(pairing.data.pairToken, /^mc_pair_/);
+    assert.match(pairing.data.apiKey, /^mc_machine_/);
     assert.match(pairing.data.command, /MAGCLAW_REPO_DIR="\/path\/to\/magclaw"; node "\$MAGCLAW_REPO_DIR\/daemon\/bin\/magclaw-daemon\.js" connect/);
+    assert.match(pairing.data.command, /--api-key "?mc_machine_/);
+    assert.doesNotMatch(pairing.data.command, /--pair-token/);
     assert.doesNotMatch(pairing.data.command, /--background/);
     assert.match(pairing.data.command, /--profile "?admin-team"?/);
     assert.match(pairing.data.command, /# Admin Team/);
@@ -655,8 +657,8 @@ test('owner registration protects app APIs and supports invites end to end', asy
       'server/daemon/cli.js',
       '--server-url',
       server.baseUrl,
-      '--pair-token',
-      pairing.data.pairToken,
+      '--api-key',
+      pairing.data.apiKey,
       '--config',
       daemonConfig,
     ], {
@@ -674,7 +676,39 @@ test('owner registration protects app APIs and supports invites end to end', asy
     assert.equal(pairedComputer.connectedVia, 'daemon');
     assert.ok((pairedComputer.runtimeIds || []).includes('codex'));
     const saved = JSON.parse(await readFile(daemonConfig, 'utf8'));
-    assert.match(saved.token, /^mc_machine_/);
+    assert.equal(saved.token, pairing.data.apiKey);
+    daemon.kill('SIGINT');
+    await Promise.race([
+      new Promise((resolve) => daemon.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 1000)),
+    ]);
+    daemon = null;
+
+    await waitFor(async () => {
+      const snapshot = (await request(server.baseUrl, '/api/state', { cookie: adminCookie })).data;
+      const computer = snapshot.computers.find((item) => item.id === pairing.data.computer.id);
+      return computer?.status === 'offline' ? snapshot : null;
+    });
+
+    daemon = spawn(process.execPath, [
+      'server/daemon/cli.js',
+      '--server-url',
+      server.baseUrl,
+      '--api-key',
+      pairing.data.apiKey,
+      '--config',
+      daemonConfig,
+    ], {
+      cwd: server.tmp,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    await waitFor(async () => {
+      const snapshot = (await request(server.baseUrl, '/api/state', { cookie: adminCookie })).data;
+      const computer = snapshot.computers.find((item) => item.id === pairing.data.computer.id);
+      return computer?.status === 'connected' ? snapshot : null;
+    });
+
     await request(server.baseUrl, '/api/agent-tools/history?agentId=agt_codex', {
       expectStatus: 401,
     });
@@ -708,6 +742,8 @@ test('cloud pairing command can use the domain-friendly npm daemon launcher', as
     });
     assert.match(pairing.data.command, /^npx -y @magclaw\/daemon@latest connect /);
     assert.match(pairing.data.command, /--server-url "?https:\/\/magclaw\.example\.test"?/);
+    assert.match(pairing.data.command, /--api-key "?mc_machine_/);
+    assert.doesNotMatch(pairing.data.command, /--pair-token/);
     assert.doesNotMatch(pairing.data.command, /MAGCLAW_REPO_DIR/);
     assert.equal(pairing.data.displayName, 'Cloud runner');
   } finally {
@@ -735,6 +771,25 @@ test('cloud pairing command carries the requested computer display name', async 
   }
 });
 
+test('legacy daemon command templates are upgraded to machine API keys', async () => {
+  const server = await startIsolatedServer({
+    MAGCLAW_DAEMON_CONNECT_COMMAND: 'custom-connect --server-url {serverUrl} --pair-token {pairToken} --profile {profile} # {serverName}',
+  });
+  try {
+    const admin = await registerOwnerServer(server);
+    const pairing = await request(server.baseUrl, '/api/cloud/computers/pairing-tokens', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ name: 'Template runner' }),
+    });
+    assert.match(pairing.data.command, /custom-connect/);
+    assert.match(pairing.data.command, /--api-key mc_machine_/);
+    assert.doesNotMatch(pairing.data.command, /--pair-token/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('cloud pairing tokens use the request-scoped server instead of the process default', async () => {
   const server = await startIsolatedServer({ MAGCLAW_DEPLOYMENT: 'cloud' });
   try {
@@ -755,6 +810,8 @@ test('cloud pairing tokens use the request-scoped server instead of the process 
     assert.equal(pairing.data.computer.workspaceId, second.data.server.id);
     assert.match(pairing.data.command, /--profile "?second-team"?/);
     assert.match(pairing.data.command, /# Second Team/);
+    assert.match(pairing.data.command, /--api-key "?mc_machine_/);
+    assert.doesNotMatch(pairing.data.command, /--pair-token/);
 
     const secondState = await request(server.baseUrl, '/api/state?serverSlug=second-team', {
       cookie: admin.cookie,

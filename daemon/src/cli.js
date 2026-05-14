@@ -515,7 +515,7 @@ export async function detectRuntimes(env = process.env) {
   });
 }
 
-function toWebSocketUrl(serverUrl, config = {}) {
+export function toWebSocketUrl(serverUrl, config = {}) {
   const base = String(serverUrl || DEFAULT_SERVER_URL).replace(/\/+$/, '');
   const wsBase = base.startsWith('https://')
     ? `wss://${base.slice('https://'.length)}`
@@ -523,8 +523,11 @@ function toWebSocketUrl(serverUrl, config = {}) {
       ? `ws://${base.slice('http://'.length)}`
       : base;
   const url = new URL(`${wsBase}/daemon/connect`);
-  if (config.pairToken) url.searchParams.set('pair_token', config.pairToken);
-  else url.searchParams.set('token', config.token || config.machineToken || '');
+  const token = String(config.token || config.machineToken || config.apiKey || '').trim();
+  const pairToken = String(config.pairToken || '').trim();
+  if (token) url.searchParams.set('token', token);
+  else if (pairToken) url.searchParams.set('pair_token', pairToken);
+  else url.searchParams.set('token', '');
   return url;
 }
 
@@ -892,6 +895,7 @@ function canonicalMagClawToolName(name) {
     'create_tasks',
     'claim_tasks',
     'update_task_status',
+    'propose_channel_members',
     'schedule_reminder',
     'list_reminders',
     'cancel_reminder',
@@ -964,12 +968,13 @@ async function ensureSymlinkedCodexHomeEntry(codexHome, entryName) {
 }
 
 class CodexAgentSession {
-  constructor({ agent, profile, paths, serverUrl, token, send, env = process.env }) {
+  constructor({ agent, profile, paths, serverUrl, token, workspaceId, send, env = process.env }) {
     this.agent = agent;
     this.profile = profile;
     this.paths = paths;
     this.serverUrl = serverUrl;
     this.token = token;
+    this.workspaceId = workspaceId || 'local';
     this.send = send;
     this.env = env;
     this.child = null;
@@ -1121,7 +1126,7 @@ class CodexAgentSession {
         headers: {
           ...(body ? { 'content-type': 'application/json' } : {}),
           authorization: `Bearer ${this.token}`,
-          ...(this.config.workspaceId ? { 'x-magclaw-workspace-id': this.config.workspaceId } : {}),
+          ...(this.workspaceId ? { 'x-magclaw-workspace-id': this.workspaceId } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
@@ -1241,6 +1246,16 @@ class CodexAgentSession {
         return this.requestMagClawTool('/api/agent-tools/tasks/update', {
           method: 'POST',
           body: args,
+        });
+      case 'propose_channel_members':
+        return this.requestMagClawTool('/api/agent-tools/channel-member-proposals', {
+          method: 'POST',
+          body: {
+            agentId: args.agentId,
+            channelId: args.channelId || args.channel_id || args.channel,
+            memberIds: args.memberIds || args.member_ids || (args.memberId ? [args.memberId] : undefined),
+            reason: args.reason,
+          },
         });
       case 'schedule_reminder':
         return this.requestMagClawTool('/api/agent-tools/reminders', {
@@ -1895,6 +1910,7 @@ class MagClawDaemon {
       paths: this.paths,
       serverUrl: this.config.serverUrl,
       token: this.config.token,
+      workspaceId: this.config.workspaceId || 'local',
       send: (payload) => this.send(payload),
       env: this.env,
     });
@@ -2009,6 +2025,7 @@ class MagClawDaemon {
 
   async connectOnce() {
     if (this.closed) return;
+    await this.refreshConfigFromDisk();
     const url = toWebSocketUrl(this.config.serverUrl, this.config);
     const requestModule = url.protocol === 'wss:' ? https : http;
     const requestUrl = new URL(url.href.replace(/^ws/, 'http'));
@@ -2118,6 +2135,20 @@ class MagClawDaemon {
         this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.reconnectMaxMs);
       }
     }
+  }
+
+  async refreshConfigFromDisk() {
+    const diskConfig = await readProfile(this.paths.profile, this.env);
+    const token = String(this.config.token || diskConfig.token || diskConfig.machineToken || diskConfig.apiKey || '').trim();
+    const pairToken = token ? '' : String(this.config.pairToken || diskConfig.pairToken || '').trim();
+    this.config = {
+      ...diskConfig,
+      ...this.config,
+      profile: this.paths.profile,
+      token,
+      pairToken,
+      workspaceId: this.config.workspaceId || diskConfig.workspaceId || 'local',
+    };
   }
 }
 
@@ -2420,13 +2451,15 @@ async function buildConfig(flags, env = process.env) {
   const diskConfig = await readProfile(flags.profile, env);
   const profile = flags.profile || diskConfig.profile || DEFAULT_PROFILE;
   const owner = await ensureMachineFingerprint(profile, env);
-  const pairToken = flags.pairToken || diskConfig.pairToken || '';
+  const apiKey = flags.apiKey || flags.machineToken || flags.token || '';
+  const token = String(apiKey || diskConfig.token || diskConfig.machineToken || '').trim();
+  const pairToken = token ? '' : (flags.pairToken || diskConfig.pairToken || '');
   return {
     ...diskConfig,
     ...flags,
     profile,
     serverUrl: String(flags.serverUrl || diskConfig.serverUrl || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL).replace(/\/+$/, ''),
-    token: pairToken ? '' : (flags.token || flags.machineToken || diskConfig.token || ''),
+    token,
     pairToken,
     workspaceId: flags.workspaceId || flags.workspace || diskConfig.workspaceId || 'local',
     name: flags.displayName || flags.name || diskConfig.name || os.hostname(),
@@ -2459,7 +2492,7 @@ async function runForegroundDaemon(config, env = process.env) {
 async function runConnect(flags, env = process.env) {
   const config = await buildConfig(flags, env);
   if (!config.pairToken && !config.token) {
-    throw new Error('Run connect with --pair-token for first pairing, or use a saved profile with a machine token.');
+    throw new Error('Run connect with --api-key, --pair-token for legacy pairing, or use a saved profile with a machine token.');
   }
   await saveProfile(config.profile, config, env);
   if (flags.background) {

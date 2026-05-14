@@ -64,7 +64,7 @@ const DAEMON_RELEASES = [
     title: 'Cloud daemon profile and runtime reporting',
     features: [
       'Daemon reports its package version, machine fingerprint, profile, and detected runtime details to MagClaw Cloud.',
-      'Computer pairing stores a fixed machine token after the one-time connect command succeeds.',
+      'Computer connect commands use a fixed machine API key so the same command can reconnect after the daemon stops.',
     ],
     improved: [
       'Runtime detection covers Claude Code, Codex CLI, Kimi CLI, Cursor CLI, Gemini CLI, Copilot CLI, and OpenCode.',

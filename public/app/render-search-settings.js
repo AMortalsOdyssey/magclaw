@@ -509,14 +509,14 @@ function renderComputerDetail(computer) {
 
       ${connected || disabled ? '' : `
         <div class="pixel-panel cloud-card wide computer-connect-card">
-          <div class="panel-title"><span>Connect Command</span><span>short lived</span></div>
+          <div class="panel-title"><span>Connect Command</span><span>api key</span></div>
           ${currentCommand ? `
             <div class="pair-command-box">
               <code>${escapeHtml(currentCommand)}</code>
               <button class="secondary-btn compact-btn" type="button" data-action="copy-pairing-command">Copy command</button>
             </div>
             <p class="muted-note">Keep this process running. It maintains the connection between your computer and MagClaw.</p>
-          ` : '<div class="empty-box small">Generate a fresh one-time command when you need to reconnect this computer.</div>'}
+          ` : '<div class="empty-box small">Generate a fresh API-key command when you need to reconnect this computer.</div>'}
           <button class="secondary-btn" type="button" data-action="regenerate-computer-command" data-id="${escapeHtml(computer.id)}">${currentCommand ? 'Regenerate command' : 'Connect'}</button>
         </div>
       `}

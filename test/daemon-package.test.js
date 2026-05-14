@@ -13,6 +13,7 @@ import {
   formatDaemonLogLine,
   parseCli,
   profilePaths,
+  toWebSocketUrl,
 } from '../daemon/src/cli.js';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
@@ -122,6 +123,17 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
     'Studio Mac',
   ]);
   assert.equal(named.flags.displayName, 'Studio Mac');
+
+  const apiKey = parseCli([
+    'node',
+    'magclaw-daemon',
+    'connect',
+    '--server-url',
+    'https://example.test',
+    '--api-key',
+    'mc_machine_test',
+  ]);
+  assert.equal(apiKey.flags.apiKey, 'mc_machine_test');
 });
 
 test('daemon version and foreground log lines are structured', () => {
@@ -130,6 +142,16 @@ test('daemon version and foreground log lines are structured', () => {
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
   );
+});
+
+test('daemon websocket auth prefers durable api keys over stale pair tokens', () => {
+  const url = toWebSocketUrl('https://magclaw.example.test', {
+    token: 'mc_machine_test',
+    pairToken: 'mc_pair_stale',
+  });
+  assert.equal(url.protocol, 'wss:');
+  assert.equal(url.searchParams.get('token'), 'mc_machine_test');
+  assert.equal(url.searchParams.get('pair_token'), null);
 });
 
 test('daemon sends a periodic heartbeat while the websocket is connected', async () => {
@@ -166,6 +188,8 @@ test('daemon agent starts and stream activity use Slock-style bounded scheduling
   assert.match(daemonSource, /MAGCLAW_DAEMON_TRAJECTORY_COALESCE_MS/);
   assert.match(daemonSource, /queueCodexStreamActivity\(\)/);
   assert.match(daemonSource, /flushCodexStreamActivity\(\)/);
+  assert.match(daemonSource, /propose_channel_members/);
+  assert.match(daemonSource, /\/api\/agent-tools\/channel-member-proposals/);
 });
 
 test('daemon machine fingerprint is stable inside a server profile', async () => {

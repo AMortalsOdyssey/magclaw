@@ -2,10 +2,10 @@
 
 Local daemon for connecting a user's computer to MagClaw Cloud.
 
-Typical pairing command:
+Typical connect command:
 
 ```sh
-npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --pair-token mc_pair_xxx --profile my-server # my-server
+npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --api-key mc_machine_xxx --profile my-server # my-server
 ```
 
 The daemon stores cloud profiles and machine tokens under:
@@ -14,14 +14,14 @@ The daemon stores cloud profiles and machine tokens under:
 ~/.magclaw/daemon/profiles/<profile>/
 ```
 
-Each profile has a fixed machine token after pairing. The daemon also writes an
+Each profile has a fixed machine token after connecting. The daemon also writes an
 `owner.json` file with a stable physical-machine fingerprint so the same Mac can
 connect to multiple Servers without pretending to be different hardware.
 
 It does not use the localhost MagClaw state files under `~/.magclaw/state.json`,
 `~/.magclaw/state.sqlite`, or `~/.magclaw/agents`.
 
-Foreground mode is the default pairing flow. When `--background` is used
+Foreground mode is the default connection flow. When `--background` is used
 manually, the installed launcher keeps the profile path stable and runs the
 latest npm package on service start.
 
@@ -30,7 +30,7 @@ latest npm package on service start.
 Foreground mode:
 
 ```sh
-npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --pair-token mc_pair_xxx
+npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --api-key mc_machine_xxx
 ```
 
 Keep this terminal open. Press `Ctrl+C` to stop.
@@ -38,7 +38,7 @@ Keep this terminal open. Press `Ctrl+C` to stop.
 Background mode:
 
 ```sh
-npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --pair-token mc_pair_xxx --background
+npx -y @magclaw/daemon@latest connect --server-url https://magclaw.example.com --api-key mc_machine_xxx --background
 ```
 
 Stop a background daemon:

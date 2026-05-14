@@ -16,7 +16,9 @@ here so production configuration is separated from the local daemon package.
 - Runtime YAML, including the current PostgreSQL URL, belongs in the ConfigMap.
 - `daemon.connect_command_mode` controls the Connect Computer command shape:
   use `npm` for domain/cloud deployments and `local-repo` for source-checkout
-  development commands.
+  development commands. Generated commands use a per-computer `--api-key`
+  machine credential so they can reconnect the same computer after the daemon
+  stops.
 - Cloud users register accounts directly, create servers from the console, and
   become the owner/admin of the servers they create. There is no configured
   admin bootstrap path.

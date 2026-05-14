@@ -157,7 +157,7 @@ const zhCnTranslations = {
   'The MagClaw shell introduced persistent rails, settings pages, and searchable collaboration history.': 'MagClaw 外壳加入了持久侧栏、设置页面和可搜索的协作历史。',
   'Cloud daemon profile and runtime reporting': '云守护进程档案与运行时上报',
   'Daemon reports its package version, machine fingerprint, profile, and detected runtime details to MagClaw Cloud.': '守护进程会向 MagClaw Cloud 上报包版本、机器指纹、档案和检测到的运行时详情。',
-  'Computer pairing stores a fixed machine token after the one-time connect command succeeds.': '一次性连接命令成功后，电脑配对会保存固定机器令牌。',
+  'Computer connect commands use a fixed machine API key so the same command can reconnect after the daemon stops.': '电脑连接命令使用固定机器 API Key，守护进程停止后同一条命令也可以重新连接。',
   'Runtime detection covers Claude Code, Codex CLI, Kimi CLI, Cursor CLI, Gemini CLI, Copilot CLI, and OpenCode.': '运行时检测覆盖 Claude Code、Codex CLI、Kimi CLI、Cursor CLI、Gemini CLI、Copilot CLI 和 OpenCode。',
   'Codex path repair and model metadata make Agent creation match the selected Computer capabilities.': 'Codex 路径修复和模型元数据让智能体创建匹配所选电脑能力。',
   'Unsupported runtime starts now fail with an error state instead of leaving Agents thinking forever.': '不支持的运行时启动现在会进入错误状态，不再让智能体一直停在思考中。',

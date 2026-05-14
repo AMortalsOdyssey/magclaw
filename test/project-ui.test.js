@@ -1998,6 +1998,10 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /Agents on this computer \(\$\{agents\.length\}\)/);
   assert.match(app, /computer-agent-tooltip/);
   assert.match(app, /data-action="regenerate-computer-command"/);
+  assert.match(app, /<span>Connect Command<\/span><span>api key<\/span>/);
+  assert.match(app, /Generate a fresh API-key command when you need to reconnect this computer\./);
+  assert.doesNotMatch(app, /<span>Connect Command<\/span><span>short lived<\/span>/);
+  assert.doesNotMatch(app, /Generate a fresh one-time command when you need to reconnect this computer\./);
   assert.match(app, /function renderDaemonVersionValue/);
   assert.match(app, /update available/);
   assert.match(app, /function sortComputersByAvailability/);
