@@ -4,6 +4,7 @@
 // tool calls, so agents can use server capabilities without shelling out to curl.
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:6543';
+const TASK_STATUS_VALUES = ['todo', 'in_progress', 'in_review', 'done', 'closed'];
 
 function parseArgs(argv) {
   const options = {
@@ -151,7 +152,7 @@ const tools = [
     inputSchema: schema({
       channel: { type: 'string', description: 'Optional channel name or id.' },
       target: { type: 'string', description: 'Optional target label such as #all.' },
-      status: { type: 'string', description: 'Optional task status.' },
+      status: { type: 'string', enum: TASK_STATUS_VALUES, description: 'Optional canonical task status: todo, in_progress, in_review, done, or closed.' },
       assigneeId: { type: 'string', description: 'Optional assignee id. Use "me" for this agent.' },
       limit: { type: 'number', description: 'Maximum tasks to return.' },
     }),
@@ -236,7 +237,7 @@ const tools = [
       taskId: { type: 'string', description: 'Task id.' },
       taskNumber: { type: 'number', description: 'Task number in channel.' },
       channel: { type: 'string', description: 'Channel label/name/id for taskNumber lookup.' },
-      status: { type: 'string', description: 'Next status, e.g. in_progress, in_review, done, closed.' },
+      status: { type: 'string', enum: TASK_STATUS_VALUES, description: 'Next canonical task status: todo, in_progress, in_review, done, or closed.' },
       force: { type: 'boolean', description: 'Allow updating unclaimed task when appropriate.' },
     }, ['status']),
   },

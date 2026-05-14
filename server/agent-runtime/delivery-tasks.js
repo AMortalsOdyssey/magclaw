@@ -1,3 +1,6 @@
+const TASK_STATUS_VALUES = ['todo', 'in_progress', 'in_review', 'done', 'closed'];
+const TASK_STATUS_ERROR = `Unsupported task status. Use one of: ${TASK_STATUS_VALUES.join(', ')}.`;
+
 function compactLogText(value, limit = 120) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
 }
@@ -263,8 +266,8 @@ function findTaskForAgentTool(body, space = null) {
 
 function updateTaskForAgent(task, agent, nextStatus, options = {}) {
   const status = String(nextStatus || '').trim();
-  if (!['todo', 'in_progress', 'in_review', 'done', 'closed'].includes(status)) {
-    throw httpError(400, 'Unsupported task status.');
+  if (!TASK_STATUS_VALUES.includes(status)) {
+    throw httpError(400, TASK_STATUS_ERROR);
   }
   if (task.claimedBy && task.claimedBy !== agent.id && !options.force) {
     throw httpError(409, `Task is already claimed by ${task.claimedBy}.`);

@@ -1,5 +1,8 @@
 import path from 'node:path';
 
+const TASK_STATUS_VALUES = ['todo', 'in_progress', 'in_review', 'done', 'closed'];
+const TASK_STATUS_ERROR = `Unsupported task status. Use one of: ${TASK_STATUS_VALUES.join(', ')}.`;
+
 // Task lifecycle API routes.
 // This module owns human-facing task state transitions. The lower-level helpers
 // still live in index.js for now, but the route decisions are grouped here so
@@ -32,7 +35,7 @@ export async function handleTaskApi(req, res, url, deps) {
     taskLabel,
   } = deps;
   const state = getState();
-  const allowedTaskStatuses = new Set(['todo', 'in_progress', 'in_review', 'done', 'closed']);
+  const allowedTaskStatuses = new Set(TASK_STATUS_VALUES);
 
   function closeTask(task, actorId = 'hum_local', reason = 'Task closed.') {
     if (!task) return null;
@@ -324,7 +327,7 @@ export async function handleTaskApi(req, res, url, deps) {
     if (body.status !== undefined && body.status !== task.status) {
       const nextStatus = String(body.status || task.status);
       if (!allowedTaskStatuses.has(nextStatus)) {
-        sendError(res, 400, 'Unsupported task status.');
+        sendError(res, 400, TASK_STATUS_ERROR);
         return true;
       }
       if (nextStatus === 'done' && task.status !== 'in_review') {

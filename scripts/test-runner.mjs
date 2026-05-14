@@ -26,6 +26,7 @@ const suites = {
     'test/fanout-api.test.js',
     'test/fanout-toast.test.js',
     'test/intents.test.js',
+    'test/magclaw-mcp-schema.test.js',
     'test/mentions.test.js',
     'test/mission-routes.test.js',
     'test/path-utils.test.js',
