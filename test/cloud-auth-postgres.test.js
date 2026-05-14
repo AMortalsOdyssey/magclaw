@@ -52,7 +52,7 @@ async function launchIsolatedServer(tmp, schema) {
       MAGCLAW_MAIL_TRANSPORT: 'file',
       MAGCLAW_MAIL_OUTBOX: path.join(tmp, '.magclaw', 'outbox.jsonl'),
       MAGCLAW_MAIL_FROM: 'MagClaw <noreply@example.com>',
-      MAGCLAW_PUBLIC_URL: 'https://pg.magclaw.example',
+      MAGCLAW_PUBLIC_URL: 'https://magclaw.multiego.me',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

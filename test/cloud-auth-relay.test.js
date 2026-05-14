@@ -269,7 +269,7 @@ test('public account registration and password reset use SMTP outbox without inv
     MAGCLAW_MAIL_TRANSPORT: 'file',
     MAGCLAW_MAIL_OUTBOX: outbox,
     MAGCLAW_MAIL_FROM: 'MagClaw <noreply@example.com>',
-    MAGCLAW_PUBLIC_URL: 'https://cloud.magclaw.example',
+    MAGCLAW_PUBLIC_URL: 'https://magclaw.multiego.me',
   });
   try {
     const created = await request(server.baseUrl, '/api/auth/register', {
@@ -350,8 +350,8 @@ test('public account registration and password reset use SMTP outbox without inv
     const lines = (await readFile(outbox, 'utf8')).trim().split('\n');
     const message = JSON.parse(lines.at(-1));
     assert.equal(message.to, 'free@example.com');
-    assert.match(message.html, /https:\/\/cloud\.magclaw\.example\/reset-password\?token=mc_reset_/);
-    assert.match(message.html, /https:\/\/cloud\.magclaw\.example\/brand\/magclaw-logo\.png/);
+    assert.match(message.html, /https:\/\/magclaw\.multiego\.me\/reset-password\?token=mc_reset_/);
+    assert.match(message.html, /https:\/\/magclaw\.multiego\.me\/brand\/magclaw-logo\.png/);
     assert.match(message.html, /background:#ff66cc/);
     assert.doesNotMatch(message.html, /#ffd743|#FFD800|--magclaw-sun/i);
   } finally {
@@ -775,7 +775,7 @@ test('owner registration protects app APIs and supports invites end to end', asy
 test('cloud pairing command can use the domain-friendly npm daemon launcher', async () => {
   const server = await startIsolatedServer({
     MAGCLAW_DAEMON_COMMAND_MODE: 'npm',
-    MAGCLAW_PUBLIC_URL: 'https://magclaw.example.test',
+    MAGCLAW_PUBLIC_URL: 'https://magclaw.multiego.me',
   });
   try {
     const admin = await registerOwnerServer(server);
@@ -785,7 +785,7 @@ test('cloud pairing command can use the domain-friendly npm daemon launcher', as
       body: JSON.stringify({ name: 'Cloud runner' }),
     });
     assert.match(pairing.data.command, /^npx @magclaw\/daemon@latest /);
-    assert.match(pairing.data.command, /--server-url "?https:\/\/magclaw\.example\.test"?/);
+    assert.match(pairing.data.command, /--server-url "?https:\/\/magclaw\.multiego\.me"?/);
     assert.match(pairing.data.command, /--api-key "?mc_machine_/);
     assert.doesNotMatch(pairing.data.command, /--pair-token/);
     assert.doesNotMatch(pairing.data.command, /MAGCLAW_REPO_DIR/);
@@ -798,7 +798,7 @@ test('cloud pairing command can use the domain-friendly npm daemon launcher', as
 test('cloud pairing command carries the requested computer display name', async () => {
   const server = await startIsolatedServer({
     MAGCLAW_DAEMON_COMMAND_MODE: 'npm',
-    MAGCLAW_PUBLIC_URL: 'https://magclaw.example.test',
+    MAGCLAW_PUBLIC_URL: 'https://magclaw.multiego.me',
   });
   try {
     const admin = await registerOwnerServer(server);
@@ -1058,10 +1058,10 @@ test('cloud invite registration and admin password reset flows enforce tokens an
     const browserOriginInvite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
       cookie: adminCookie,
-      headers: { origin: 'https://cloud.magclaw.example' },
+      headers: { origin: 'https://magclaw.multiego.me' },
       body: JSON.stringify({ email: 'browser-origin@example.com', role: 'member' }),
     });
-    assert.match(browserOriginInvite.data.inviteUrl, /^https:\/\/cloud\.magclaw\.example\/activate\?email=browser-origin%40example\.com&token=mc_inv_/);
+    assert.match(browserOriginInvite.data.inviteUrl, /^https:\/\/magclaw\.multiego\.me\/activate\?email=browser-origin%40example\.com&token=mc_inv_/);
     await request(server.baseUrl, '/api/cloud/invitations/batch', {
       method: 'POST',
       cookie: adminCookie,

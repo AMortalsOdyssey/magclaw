@@ -45,6 +45,16 @@ const WEB_RELEASES = [
 
 const DAEMON_RELEASES = [
   {
+    version: '0.1.4',
+    date: '2026-05-14',
+    title: 'Production domain npm examples',
+    features: [],
+    improved: [
+      'Daemon npm examples now use the production MagClaw domain.',
+    ],
+    fixes: [],
+  },
+  {
     version: '0.1.3',
     date: '2026-05-14',
     title: 'Daemon heartbeat and structured logs',

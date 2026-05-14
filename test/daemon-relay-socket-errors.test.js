@@ -120,7 +120,7 @@ test('daemon relay consumes socket reset during websocket authentication', async
   const req = {
     url: '/daemon/connect?pair_token=mc_pair_missing',
     headers: {
-      host: 'magclaw.example.test',
+      host: 'magclaw.multiego.me',
       'sec-websocket-key': 'test-key',
     },
     socket: {},
@@ -239,7 +239,7 @@ test('daemon relay ready only replays queued deliveries and waits before retryin
   const req = {
     url: `/daemon/connect?token=${rawToken}`,
     headers: {
-      host: 'magclaw.example.test',
+      host: 'magclaw.multiego.me',
       'sec-websocket-key': 'test-key',
     },
     socket: {},
@@ -302,7 +302,7 @@ test('daemon relay requeues unacked sent deliveries when the socket disconnects'
   assert.equal(await relay.handleUpgrade({
     url: `/daemon/connect?token=${rawToken}`,
     headers: {
-      host: 'magclaw.example.test',
+      host: 'magclaw.multiego.me',
       'sec-websocket-key': 'test-key',
     },
     socket: {},
@@ -320,7 +320,7 @@ test('daemon relay requeues unacked sent deliveries when the socket disconnects'
   assert.equal(await relay.handleUpgrade({
     url: `/daemon/connect?token=${rawToken}`,
     headers: {
-      host: 'magclaw.example.test',
+      host: 'magclaw.multiego.me',
       'sec-websocket-key': 'test-key',
     },
     socket: {},

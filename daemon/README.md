@@ -5,7 +5,7 @@ Local daemon for connecting a user's computer to MagClaw Cloud.
 Typical connect command:
 
 ```sh
-npx @magclaw/daemon@latest --server-url https://magclaw.example.com --api-key mc_machine_xxx --profile my-server # my-server
+npx @magclaw/daemon@latest --server-url https://magclaw.multiego.me --api-key mc_machine_xxx --profile my-server # my-server
 ```
 
 The daemon stores cloud profiles and machine tokens under:
@@ -30,7 +30,7 @@ latest npm package on service start.
 Foreground mode:
 
 ```sh
-npx @magclaw/daemon@latest --server-url https://magclaw.example.com --api-key mc_machine_xxx
+npx @magclaw/daemon@latest --server-url https://magclaw.multiego.me --api-key mc_machine_xxx
 ```
 
 Keep this terminal open. Press `Ctrl+C` to stop.
@@ -38,7 +38,7 @@ Keep this terminal open. Press `Ctrl+C` to stop.
 Background mode:
 
 ```sh
-npx @magclaw/daemon@latest --server-url https://magclaw.example.com --api-key mc_machine_xxx --background
+npx @magclaw/daemon@latest --server-url https://magclaw.multiego.me --api-key mc_machine_xxx --background
 ```
 
 Stop a background daemon:

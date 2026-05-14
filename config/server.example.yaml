@@ -5,7 +5,7 @@
 server:
   host: "0.0.0.0"
   port: 6543
-  public_url: "https://magclaw.example.com"
+  public_url: "https://magclaw.multiego.me"
   deployment: "cloud"
   require_postgres: true
 

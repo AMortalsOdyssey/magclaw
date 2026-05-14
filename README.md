@@ -80,7 +80,7 @@ Then on a local machine, open the Cloud panel and set:
 
 ```text
 Mode: cloud
-Control Plane URL: https://your-host.example.com
+Control Plane URL: https://magclaw.multiego.me
 Workspace ID: your-team-or-project
 Access Token: change-me
 ```
@@ -89,7 +89,7 @@ For CLI startup, the equivalent local runner environment variables are:
 
 ```bash
 MAGCLAW_MODE=cloud \
-MAGCLAW_CLOUD_URL=https://your-host.example.com \
+MAGCLAW_CLOUD_URL=https://magclaw.multiego.me \
 MAGCLAW_WORKSPACE_ID=your-team-or-project \
 MAGCLAW_CLOUD_TOKEN=change-me \
 npm run dev

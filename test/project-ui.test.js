@@ -347,7 +347,7 @@ test('generated invitation links use the current browser origin for loopback API
     URL,
     window: {
       location: {
-        origin: 'https://cloud.magclaw.example',
+        origin: 'https://magclaw.multiego.me',
       },
     },
   };
@@ -356,15 +356,15 @@ test('generated invitation links use the current browser origin for loopback API
 
   assert.equal(
     context.inviteLinkForCurrentOrigin('http://127.0.0.1:6543/activate?email=a%40example.com&token=mc_inv_123'),
-    'https://cloud.magclaw.example/activate?email=a%40example.com&token=mc_inv_123',
+    'https://magclaw.multiego.me/activate?email=a%40example.com&token=mc_inv_123',
   );
   assert.equal(
     context.inviteLinkForCurrentOrigin('http://localhost:6543/activate?email=a%40example.com&token=mc_inv_123'),
-    'https://cloud.magclaw.example/activate?email=a%40example.com&token=mc_inv_123',
+    'https://magclaw.multiego.me/activate?email=a%40example.com&token=mc_inv_123',
   );
   assert.equal(
-    context.inviteLinkForCurrentOrigin('https://public.magclaw.example/activate?email=a%40example.com&token=mc_inv_123'),
-    'https://public.magclaw.example/activate?email=a%40example.com&token=mc_inv_123',
+    context.inviteLinkForCurrentOrigin('https://magclaw.multiego.me/activate?email=a%40example.com&token=mc_inv_123'),
+    'https://magclaw.multiego.me/activate?email=a%40example.com&token=mc_inv_123',
   );
 });
 

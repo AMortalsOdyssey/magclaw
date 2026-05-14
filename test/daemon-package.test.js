@@ -137,7 +137,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.3');
+  assert.equal(DAEMON_VERSION, '0.1.4');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -145,7 +145,7 @@ test('daemon version and foreground log lines are structured', () => {
 });
 
 test('daemon websocket auth prefers durable api keys over stale pair tokens', () => {
-  const url = toWebSocketUrl('https://magclaw.example.test', {
+  const url = toWebSocketUrl('https://magclaw.multiego.me', {
     token: 'mc_machine_test',
     pairToken: 'mc_pair_stale',
   });
