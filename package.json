@@ -7,6 +7,12 @@
   "scripts": {
     "dev": "node server/index.js",
     "start": "node server/index.js",
+    "test": "node scripts/test-runner.mjs quick",
+    "test:quick": "node scripts/test-runner.mjs quick",
+    "test:ui": "node scripts/test-runner.mjs ui",
+    "test:flow": "node scripts/test-runner.mjs flow",
+    "test:pg": "node scripts/test-runner.mjs pg",
+    "test:all": "node scripts/test-runner.mjs all",
     "check": "node --check server/index.js",
     "cloud:db:init": "node server/cloud/postgres.js migrate",
     "cloud:db:status": "node server/cloud/postgres.js status",
