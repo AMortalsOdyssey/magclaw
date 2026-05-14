@@ -513,7 +513,7 @@ function renderHistoryToolHints(pack) {
   }
   if (asArray(pack.tasks).some((task) => ['todo', 'in_progress', 'in_review'].includes(task.status))) {
     hints.push(
-      `- update_task(taskId="<task_id>", status="todo|in_progress|in_review|done|closed"): curl -sS -X POST ${baseUrl}/api/agent-tools/tasks/update -H 'content-type: application/json' -d '${JSON.stringify({ agentId, taskId: '<task_id>', status: 'in_review' })}'. Do not use synonyms such as completed.`,
+      `- update_task(taskId="<task_id>", status="todo|in_progress|in_review|done|closed"): curl -sS -X POST ${baseUrl}/api/agent-tools/tasks/update -H 'content-type: application/json' -d '${JSON.stringify({ agentId, taskId: '<task_id>', status: 'in_review' })}'. Use done only for completed/accepted work; use closed for close/stop/cancel requests. If closing an unclaimed task, include force=true instead of claiming it first. Do not use synonyms such as completed.`,
     );
   }
   if (pack.space.type === 'channel' && asArray(pack.suggestedMembers).length) {

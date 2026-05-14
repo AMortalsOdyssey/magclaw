@@ -129,6 +129,25 @@ function applySubmittedConversationResult(result = {}) {
   return true;
 }
 
+function mergeServerWorkspaceProfile(workspace) {
+  if (!workspace || !appState) return false;
+  appState.cloud = appState.cloud || {};
+  appState.cloud.workspace = { ...(appState.cloud.workspace || {}), ...workspace };
+  let matchedWorkspace = false;
+  appState.cloud.workspaces = (appState.cloud.workspaces || []).map((server) => {
+    const matched = server.id === workspace.id || server.slug === workspace.slug;
+    if (matched) matchedWorkspace = true;
+    return matched ? { ...server, ...workspace } : server;
+  });
+  if (!matchedWorkspace) {
+    appState.cloud.workspaces = [
+      ...(appState.cloud.workspaces || []),
+      workspace,
+    ];
+  }
+  return true;
+}
+
 document.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
@@ -363,19 +382,15 @@ document.addEventListener('submit', async (event) => {
         }),
       });
       const workspace = result?.workspace;
-      if (workspace) {
-        appState.cloud = appState.cloud || {};
-        appState.cloud.workspace = workspace;
-        let matchedWorkspace = false;
-        appState.cloud.workspaces = (appState.cloud.workspaces || []).map((server) => {
-          const matched = server.id === workspace.id || server.slug === workspace.slug;
-          if (matched) matchedWorkspace = true;
-          return matched ? { ...server, ...workspace } : server;
+      if (mergeServerWorkspaceProfile(workspace)) {
+        pendingServerProfilePatchSignature = serverProfilePatchSignature();
+        patchRailSurface();
+        patchServerProfileSettingsSurface();
+        patchOpenThreadDrawerSurface({
+          main: paneScrollSnapshot('main'),
+          thread: paneScrollSnapshot('thread'),
         });
-        if (!matchedWorkspace) appState.cloud.workspaces = [
-          ...(appState.cloud.workspaces || []),
-          workspace,
-        ];
+        skipFinalRefresh = true;
       }
       serverProfileAvatarDraft = null;
       toast('Server profile saved');

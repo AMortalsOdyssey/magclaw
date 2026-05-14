@@ -572,10 +572,12 @@ document.addEventListener('click', async (event) => {
       render();
     }
     if (action === 'edit-agent-field') {
+      clearAgentDetailFieldDraft();
       agentDetailEditState = { field: target.dataset.field };
       render();
     }
     if (action === 'cancel-agent-field') {
+      clearAgentDetailFieldDraft();
       agentDetailEditState = { field: null };
       render();
     }
@@ -595,6 +597,7 @@ document.addEventListener('click', async (event) => {
         method: 'PATCH',
         body: JSON.stringify({ [field]: value }),
       });
+      clearAgentDetailFieldDraft();
       agentDetailEditState = { field: null };
       toast('Agent updated');
     }
@@ -1128,6 +1131,22 @@ document.addEventListener('click', async (event) => {
           scrollToMessage(record.id);
         }
       }
+    }
+    if (action === 'toggle-task-status-menu') {
+      const taskId = target.dataset.id || '';
+      openTaskStatusMenuId = openTaskStatusMenuId === taskId ? null : taskId;
+      render();
+    }
+    if (action === 'task-status-set') {
+      const taskId = target.dataset.id || '';
+      const nextStatus = target.dataset.status || '';
+      if (!taskId || !taskColumns.some(([status]) => status === nextStatus)) throw new Error('Task status is invalid.');
+      openTaskStatusMenuId = null;
+      await api(`/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      toast(`Task moved to ${taskStatusLabel(nextStatus)}`);
     }
     if (action === 'message-task') {
       await api(`/api/messages/${target.dataset.id}/task`, { method: 'POST', body: '{}' });

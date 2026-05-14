@@ -208,6 +208,78 @@ function restoreProfileFormFocus(snapshot) {
   }
 }
 
+function agentDetailInlineEdit() {
+  return document.querySelector('.agent-inline-edit[data-agent-id][data-field]');
+}
+
+function captureAgentDetailFieldDraft(editor = agentDetailInlineEdit()) {
+  if (!editor) return agentDetailFieldDraft;
+  const field = editor.dataset.field || '';
+  const input = editor.querySelector('input[name], textarea[name]');
+  if (!field || !input) return agentDetailFieldDraft;
+  agentDetailFieldDraft = {
+    agentId: editor.dataset.agentId || selectedAgentId || '',
+    field,
+    value: input.value || '',
+  };
+  return agentDetailFieldDraft;
+}
+
+function clearAgentDetailFieldDraft() {
+  agentDetailFieldDraft = null;
+}
+
+function agentDetailFieldValueForRender(agent = {}, field = '', fallback = '') {
+  if (
+    agentDetailFieldDraft
+    && agentDetailFieldDraft.agentId === agent.id
+    && agentDetailFieldDraft.field === field
+    && agentDetailEditState?.field === field
+  ) {
+    return agentDetailFieldDraft.value;
+  }
+  return fallback;
+}
+
+function agentDetailFieldFocusSnapshot() {
+  const active = document.activeElement;
+  const editor = active?.closest?.('.agent-inline-edit[data-agent-id][data-field]');
+  if (!editor || !['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return null;
+  return {
+    agentId: editor.dataset.agentId || '',
+    field: editor.dataset.field || active.name || '',
+    name: active.name || '',
+    selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+    selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+    selectionDirection: active.selectionDirection || 'none',
+  };
+}
+
+function restoreAgentDetailFieldFocus(snapshot) {
+  if (!snapshot) return;
+  const selector = `.agent-inline-edit[data-agent-id="${CSS.escape(snapshot.agentId)}"][data-field="${CSS.escape(snapshot.field)}"]`;
+  const editor = document.querySelector(selector);
+  const target = editor?.querySelector(`[name="${CSS.escape(snapshot.name || snapshot.field)}"]`);
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  if (
+    typeof target.setSelectionRange === 'function'
+    && snapshot.selectionStart !== null
+    && snapshot.selectionEnd !== null
+  ) {
+    target.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd, snapshot.selectionDirection);
+  }
+}
+
+function agentDetailInlineEditIsActive() {
+  return Boolean(
+    activeView === 'members'
+    && selectedAgentId
+    && agentDetailEditState?.field
+    && agentDetailInlineEdit()
+  );
+}
+
 function captureProfileFormDraft(form = document.getElementById('profile-form')) {
   if (!form) return profileFormDraft;
   profileFormDraft = {

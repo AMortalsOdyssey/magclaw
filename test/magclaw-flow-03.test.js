@@ -531,6 +531,15 @@ test('agent tool task update enforces claimed ownership and status transitions',
     });
     assert.equal(done.task.status, 'done');
     assert.match(done.task.completedAt, /^\d{4}-\d{2}-\d{2}T/);
+    const doneAgain = await request(server.baseUrl, '/api/agent-tools/tasks/update', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: 'agt_codex',
+        taskId: created.task.id,
+        status: 'done',
+      }),
+    });
+    assert.equal(doneAgain.task.status, 'done');
 
     const closedTask = await request(server.baseUrl, '/api/tasks', {
       method: 'POST',
@@ -589,6 +598,7 @@ test('agent tool task update enforces claimed ownership and status transitions',
     const task = finalState.tasks.find((item) => item.id === created.task.id);
     assert.ok(task.history.some((item) => item.type === 'agent_review_requested'));
     assert.ok(task.history.some((item) => item.type === 'agent_done'));
+    assert.equal(task.history.filter((item) => item.type === 'agent_done').length, 1);
     const terminalTask = finalState.tasks.find((item) => item.id === closedTask.task.id);
     assert.ok(terminalTask.history.some((item) => item.type === 'agent_closed'));
   } finally {

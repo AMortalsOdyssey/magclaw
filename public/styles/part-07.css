@@ -606,7 +606,7 @@
 }
 
 .collab-frame .agent-hover-card,
-.collab-frame .task-hover-card,
+.collab-frame .task-status-menu,
 .collab-frame .search-time-menu,
 .collab-frame .mention-popup {
   border-width: 1px;

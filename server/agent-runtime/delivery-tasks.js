@@ -282,6 +282,9 @@ function updateTaskForAgent(task, agent, nextStatus, options = {}) {
     task.assigneeIds = normalizeIds([...(task.assigneeIds || []), agent.id]);
   }
   const previousStatus = task.status;
+  if (previousStatus === status) {
+    return task;
+  }
   task.status = status;
   task.updatedAt = now();
   if (status === 'in_progress') {

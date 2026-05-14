@@ -22,7 +22,9 @@ function render() {
     return;
   }
   captureProfileFormDraft();
+  captureAgentDetailFieldDraft();
   const profileFocus = profileFormFocusSnapshot();
+  const agentDetailFocus = agentDetailFieldFocusSnapshot();
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
@@ -59,6 +61,7 @@ function render() {
     restorePaneScrolls(scrollSnapshot);
     restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
     restoreProfileFormFocus(profileFocus);
+    restoreAgentDetailFieldFocus(agentDetailFocus);
     restorePendingComposerFocus();
     if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
       workspaceActivityScrollToBottom = false;
@@ -118,8 +121,8 @@ function renderRail() {
         ${renderServerSwitcherMenu()}
       </div>
       ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', inbox.unreadCount || '')}
-      ${renderLeftRailButton('tasks', railMode, 'Tasks', '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', openTasks || '')}
-      ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>', normalAgents.length || '')}
+      ${renderLeftRailButton('tasks', railMode, 'Tasks', '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>')}
+      ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>')}
       ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>')}
       <span class="left-rail-spacer"></span>
       ${renderLeftRailButton('console', railMode, 'Console', '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 8h8"/><path d="M8 12h4"/><path d="M14 12h2"/><path d="M8 16h8"/>')}
@@ -196,6 +199,7 @@ function renderServerSwitcherMenu() {
           return `
             <button class="server-switcher-row${active}" type="button" data-action="switch-server" data-slug="${escapeHtml(slug)}" role="menuitem">
               ${active ? '<span class="server-switcher-check">✓</span>' : '<span class="server-switcher-check"></span>'}
+              ${renderServerAvatar(server, 'server-switcher-avatar')}
               <span>
                 <strong>${escapeHtml(server.name || displayServerSlug(slug) || 'Server')}</strong>
                 ${labelSlug ? `<small>/${escapeHtml(labelSlug)}</small>` : ''}

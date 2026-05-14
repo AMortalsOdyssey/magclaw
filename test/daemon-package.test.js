@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  DAEMON_VERSION,
   detectRuntimes,
   ensureMachineFingerprint,
+  formatDaemonLogLine,
   parseCli,
   profilePaths,
 } from '../daemon/src/cli.js';
@@ -120,6 +122,25 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
     'Studio Mac',
   ]);
   assert.equal(named.flags.displayName, 'Studio Mac');
+});
+
+test('daemon version and foreground log lines are structured', () => {
+  assert.equal(DAEMON_VERSION, '0.1.3');
+  assert.equal(
+    formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
+    '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
+  );
+});
+
+test('daemon sends a periodic heartbeat while the websocket is connected', async () => {
+  const daemonSource = await readFile(new URL('../daemon/src/cli.js', import.meta.url), 'utf8');
+  const relaySource = await readFile(new URL('../server/cloud/daemon-relay.js', import.meta.url), 'utf8');
+
+  assert.match(daemonSource, /type: 'heartbeat'/);
+  assert.match(daemonSource, /startHeartbeat\(\)/);
+  assert.match(daemonSource, /this\.heartbeatIntervalMs/);
+  assert.match(relaySource, /case 'heartbeat':/);
+  assert.match(relaySource, /computer\.status = 'connected'/);
 });
 
 test('daemon machine fingerprint is stable inside a server profile', async () => {

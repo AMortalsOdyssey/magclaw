@@ -192,7 +192,7 @@ const tools = [
   },
   {
     name: 'update_task_status',
-    description: 'Update a claimed MagClaw task status.',
+    description: 'Update a claimed MagClaw task status. Use done for ready/accepted work and closed for close, stop, cancel, or terminated work.',
     inputSchema: schema({
       taskId: { type: 'string' },
       taskNumber: { type: 'number' },

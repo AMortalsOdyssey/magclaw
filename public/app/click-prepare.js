@@ -64,6 +64,7 @@ async function prepareDocumentClick(event) {
     return;
   }
   const clickedTaskChannelFilter = event.target.closest('.task-channel-filter');
+  const clickedTaskStatusMenu = event.target.closest('.task-inline-badge');
   const clickedSearchFilter = event.target.closest('.search-time-filter');
   const clickedServerSwitcher = event.target.closest('.server-switcher-anchor');
   const target = event.target.closest('[data-action]');
@@ -81,6 +82,13 @@ async function prepareDocumentClick(event) {
       return;
     }
   }
+  if (openTaskStatusMenuId && !clickedTaskStatusMenu) {
+    openTaskStatusMenuId = null;
+    if (!target) {
+      render();
+      return;
+    }
+  }
   if (searchTimeMenuOpen && !clickedSearchFilter) {
     searchTimeMenuOpen = false;
     if (activeView === 'search') {
@@ -91,6 +99,7 @@ async function prepareDocumentClick(event) {
   if (!target) return;
   const action = target.dataset.action;
   if (action === 'none') return;
+  if (action === 'update-cloud-member-role' && target.matches?.('select')) return;
   const localOnlyActions = new Set([
     'set-view',
     'set-settings-tab',
@@ -147,6 +156,7 @@ async function prepareDocumentClick(event) {
     'toggle-task-channel-menu',
     'toggle-task-channel-filter',
     'clear-task-channel-filters',
+    'toggle-task-status-menu',
     'toggle-task-column',
     'select-task',
     'close-task-detail',

@@ -915,6 +915,17 @@ export function createDaemonRelay(deps) {
           await persistAllState();
         }
         break;
+      case 'heartbeat':
+        if (computer) {
+          if (!computerIsDisabled(computer)) computer.status = 'connected';
+          if (message.daemonVersion) computer.daemonVersion = String(message.daemonVersion);
+          computer.runningAgents = safeArray(message.runningAgents);
+          computer.lastSeenAt = now();
+          computer.updatedAt = now();
+          await persistAllState();
+          broadcastState();
+        }
+        break;
       case 'agent:start:ack':
       case 'agent:deliver:ack':
       case 'agent:ack':

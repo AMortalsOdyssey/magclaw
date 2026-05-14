@@ -58,7 +58,7 @@ test('unread count changes do not force full render before active chat patching'
   assert.match(app, /const unreadChanged = unreadBefore !== railUnreadSignature\(\)/);
   assert.doesNotMatch(beforePatchSource, /selectionChanged \|\| unreadChanged/);
   assert.doesNotMatch(beforePatchSource, /if \([^{]*unreadChanged[^{]*\) \{\s*render\(\)/);
-  assert.match(applyStateSource, /if \(selectionChanged\) \{\s*render\(\);\s*return;\s*\}[\s\S]*if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;[\s\S]*if \(patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: activeConversationChanged \|\| unreadChanged \}\)\) return;/);
+  assert.match(applyStateSource, /if \(selectionChanged\) \{[\s\S]*render\(\);\s*return;\s*\}[\s\S]*if \(serverProfileOnlyChanged \|\| serverProfileEcho\) \{[\s\S]*return;\s*\}[\s\S]*if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;[\s\S]*if \(patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: activeConversationChanged \|\| unreadChanged \}\)\) return;/);
 });
 
 test('run-event SSE updates do not repaint active chat panes or force scroll restore', async () => {

@@ -20,7 +20,10 @@ import {
 
 test('task lifecycle and durable work intents stay explainable', () => {
   assert.equal(taskStopIntent('停掉这个任务'), true);
+  assert.equal(taskStopIntent('关闭这个任务'), true);
+  assert.equal(taskStopIntent('close this task'), true);
   assert.equal(taskEndIntent('这个任务完成了'), true);
+  assert.equal(taskEndIntent('关闭这个任务'), false);
   assert.equal(taskCreationIntent('把这条消息转成任务'), true);
   assert.equal(autoTaskMessageIntent('帮我修复这个 bug 并验证'), true);
   assert.equal(autoTaskMessageIntent('查一下今天上海天气'), false);

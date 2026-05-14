@@ -356,6 +356,8 @@ export async function handleTaskApi(req, res, url, deps) {
         task.closedAt = null;
       }
       addTaskHistory(task, 'status_changed', `Status changed to ${nextStatus}.`);
+      if (nextStatus === 'todo') addTaskTimelineMessage(task, `↩ ${displayActor('hum_local')} moved ${taskLabel(task)} to Todo`, 'task_reopened');
+      if (nextStatus === 'in_progress') addTaskTimelineMessage(task, `📌 ${displayActor('hum_local')} moved ${taskLabel(task)} to In Progress`, 'task_progress');
       if (nextStatus === 'in_review') addTaskTimelineMessage(task, `👀 ${displayActor('hum_local')} moved ${taskLabel(task)} to In Review`, 'task_review');
       if (nextStatus === 'done') addTaskTimelineMessage(task, `✅ ${displayActor('hum_local')} moved ${taskLabel(task)} to Done`, 'task_done');
     }

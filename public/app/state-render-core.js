@@ -13,7 +13,7 @@ const WORKSPACE_ACTIVITY_VISIBLE_STEP = 30;
 const WORKSPACE_ACTIVITY_CACHE_KEY = 'magclawWorkspaceActivityCache';
 const WORKSPACE_ACTIVITY_CACHE_LIMIT = 300;
 const WORKSPACE_ACTIVITY_READ_KEY = 'magclawWorkspaceActivityReadAt';
-const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true };
+const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true, closed: true };
 const MEMBERS_LAYOUT_MODES = new Set(['directory', 'channel', 'split', 'agent', 'human']);
 const CLOUD_ROLE_HIERARCHY = ['member', 'admin'];
 const CLOUD_ROLE_LABELS = {
@@ -67,6 +67,7 @@ let taskFilter = 'all';
 let taskViewMode = 'board';
 let taskChannelFilterIds = [];
 let taskChannelMenuOpen = false;
+let openTaskStatusMenuId = null;
 let collapsedTaskColumns = readCollapsedTaskColumns();
 let stagedByComposer = {};
 let composerDrafts = {};
@@ -93,6 +94,7 @@ let agentSkillsCache = {};
 let agentWarmRequests = new Set();
 let agentDetailTab = 'profile';
 let agentDetailEditState = { field: null };
+let agentDetailFieldDraft = null;
 let agentEnvEditState = null;
 let humanDescriptionEditState = { humanId: null };
 let settingsTab = initialRouteState.settingsTab || initialUiState.settingsTab || 'account';
@@ -116,6 +118,7 @@ let pendingProfileFormRender = false;
 let cloudAuthAvatar = '';
 let cloudAuthAvatarToken = '';
 let serverProfileAvatarDraft = null;
+let pendingServerProfilePatchSignature = '';
 let collapsedSidebarSections = readJsonStorage(SIDEBAR_SECTION_COLLAPSE_KEY, {});
 let collapsedSkillSections = readJsonStorage(SKILL_SECTION_COLLAPSE_KEY, {});
 let avatarCropState = null;
@@ -425,18 +428,27 @@ function taskAssigneeLabel(task) {
   return assigneeIds[0] ? displayName(assigneeIds[0]) : '';
 }
 
-function renderTaskHoverCard(task) {
+function taskStatusMenuDisabledReason(task, status) {
+  if (!task || task.status === status) return 'Current status';
+  if (status === 'done' && task.status !== 'in_review') return 'Move to In Review before Done';
+  return '';
+}
+
+function renderTaskStatusMenu(task) {
   if (!task) return '';
-  const number = task.number || shortId(task.id);
-  const assigneeIds = task.assigneeIds?.length ? task.assigneeIds : (task.assigneeId ? [task.assigneeId] : []);
-  const assignees = assigneeIds.length ? assigneeIds.map(displayName).join(', ') : 'unassigned';
-  const creator = task.createdBy ? displayName(task.createdBy) : 'Unknown';
   return `
-    <span class="task-hover-card" role="tooltip">
-      <strong>#${escapeHtml(number)} ${escapeHtml(taskStatusLabel(task.status))}</strong>
-      <span>${escapeHtml(plainMentionText(task.title || 'Untitled task')).slice(0, 92)}</span>
-      <small>${escapeHtml(spaceName(task.spaceType, task.spaceId))} · ${fmtTime(task.updatedAt || task.createdAt)}</small>
-      <small>creator @${escapeHtml(creator)} · assignee @${escapeHtml(assignees)}</small>
+    <span class="task-status-menu" role="menu" aria-label="Change task status">
+      ${taskColumns.map(([status, label]) => {
+        const current = task.status === status;
+        const disabledReason = taskStatusMenuDisabledReason(task, status);
+        const disabled = disabledReason ? ' disabled aria-disabled="true"' : '';
+        return `
+          <button class="task-status-menu-item${current ? ' current' : ''}" type="button" role="menuitem" data-action="task-status-set" data-id="${escapeHtml(task.id)}" data-status="${escapeHtml(status)}" title="${escapeHtml(disabledReason || `Move to ${label}`)}"${disabled}>
+            <span>${current ? '✓' : ''}</span>
+            <strong>${escapeHtml(label)}</strong>
+          </button>
+        `;
+      }).join('')}
     </span>
   `;
 }
@@ -446,20 +458,28 @@ function renderTaskInlineBadge(task, options = {}) {
   const number = task.number || shortId(task.id);
   const assignee = taskAssigneeLabel(task);
   const showAssignee = options.showAssignee !== false && assignee;
-  const showHover = options.hover !== false;
+  const interactive = options.interactive !== false;
+  const isOpen = interactive && openTaskStatusMenuId === task.id;
   const label = `Task #${number} · ${taskStatusLabel(task.status)}${assignee ? ` · @${assignee}` : ''}`;
+  const badgeBody = `
+    ${renderTaskStatusBadge(task.status, { compact: true })}
+    <span>#${escapeHtml(number)}</span>
+    ${showAssignee ? `<span>@${escapeHtml(assignee)}</span>` : ''}
+  `;
   return `
-    <span class="task-inline-badge task-status-${escapeHtml(taskStatusClass(task.status))}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
-      ${renderTaskStatusBadge(task.status, { compact: true })}
-      <span>#${escapeHtml(number)}</span>
-      ${showAssignee ? `<span>@${escapeHtml(assignee)}</span>` : ''}
-      ${showHover ? renderTaskHoverCard(task) : ''}
+    <span class="task-inline-badge task-status-${escapeHtml(taskStatusClass(task.status))}${interactive ? ' interactive' : ' static'}${isOpen ? ' open' : ''}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
+      ${interactive ? `
+        <button class="task-inline-trigger" type="button" data-action="toggle-task-status-menu" data-id="${escapeHtml(task.id)}" aria-haspopup="menu" aria-expanded="${isOpen ? 'true' : 'false'}" title="${escapeHtml(label)}">
+          ${badgeBody}
+        </button>
+        ${renderTaskStatusMenu(task)}
+      ` : badgeBody}
     </span>
   `;
 }
 
 function renderThreadKindBadge(message, task) {
-  if (task) return renderTaskInlineBadge(task);
+  if (task) return renderTaskInlineBadge(task, { interactive: false });
   return `
     <span class="thread-kind-badge" title="Channel thread" aria-label="Channel thread">
       <span>↩</span>
@@ -480,15 +500,15 @@ function renderThreadRowAvatar(record) {
 
 function renderTaskStateFlow(task) {
   const status = taskStatusMeta[task?.status] ? task.status : 'todo';
-  const flowColumns = status === 'closed'
-    ? taskColumns.filter(([value]) => value !== 'done')
-    : taskColumns.filter(([value]) => value !== 'closed');
+  const flowColumns = taskColumns;
   const currentIndex = Math.max(0, flowColumns.findIndex(([value]) => value === status));
   return `
     <div class="task-state-flow" aria-label="Task status: ${escapeHtml(taskStatusLabel(status))}">
       ${flowColumns.map(([value]) => {
         const index = flowColumns.findIndex(([item]) => item === value);
-        const state = index < currentIndex ? 'complete' : (index === currentIndex ? 'current' : 'pending');
+        const state = value === status
+          ? 'current'
+          : (status !== 'closed' && index < currentIndex ? 'complete' : 'pending');
         return `
           <span class="task-state-node ${state} task-status-${escapeHtml(taskStatusClass(value))}" title="${escapeHtml(taskStatusLabel(value))}">
             <span>${escapeHtml(taskStatusIcon(value))}</span>

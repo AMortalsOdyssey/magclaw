@@ -1,5 +1,6 @@
 function renderAgentInlineField(agent, field, label, { multiline = false, placeholder = '' } = {}) {
-  const value = String(agent?.[field] || '');
+  const storedValue = String(agent?.[field] || '');
+  const value = agentDetailFieldValueForRender(agent, field, storedValue);
   const isEditing = agentDetailEditState?.field === field;
   if (!isEditing) {
     const displayValue = value || (field === 'description' ? 'No description' : '--');
@@ -877,6 +878,7 @@ function renderTaskLifecycle(task) {
 
 function taskHistoryIcon(type) {
   const value = String(type || '');
+  if (value.includes('closed') || value.includes('close')) return '×';
   if (value.includes('done') || value.includes('ended') || value.includes('approve')) return '✓';
   if (value.includes('review')) return '👀';
   if (value.includes('claim')) return '↗';

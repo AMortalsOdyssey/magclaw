@@ -690,7 +690,7 @@ function renderTaskCard(task) {
     <button class="task-card compact-task-card${active}" type="button" data-action="select-task" data-id="${escapeHtml(task.id)}">
       <div class="task-card-head">
         <span>${escapeHtml(spaceName(task.spaceType, task.spaceId))}</span>
-        ${renderTaskInlineBadge(task, { showAssignee: false, hover: false })}
+        ${renderTaskInlineBadge(task, { showAssignee: false, hover: false, interactive: false })}
       </div>
       <strong class="task-card-title">${escapeHtml(plainMentionText(task.title || 'Untitled task'))}</strong>
       <div class="task-card-foot">
@@ -860,7 +860,7 @@ function renderSavedRecord(record) {
         <span class="saved-row-body">
           <span class="saved-row-meta">
             <strong>${escapeHtml(recordSpaceName(record))}</strong>
-            ${task ? renderTaskInlineBadge(task, { showAssignee: false }) : (isThreadRecord ? '<em>thread</em>' : '')}
+            ${task ? renderTaskInlineBadge(task, { showAssignee: false, interactive: false }) : (isThreadRecord ? '<em>thread</em>' : '')}
             <span>${escapeHtml(displayName(record.authorId))}</span>
             <time>${fmtTime(record.createdAt)}</time>
           </span>

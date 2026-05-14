@@ -437,7 +437,6 @@
 .server-switcher-row,
 .server-switcher-create {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
   gap: 8px;
   align-items: center;
   width: 100%;
@@ -448,6 +447,14 @@
   background: #ffffff;
   color: var(--text-primary);
   text-align: left;
+}
+
+.server-switcher-row {
+  grid-template-columns: 20px 34px minmax(0, 1fr);
+}
+
+.server-switcher-create {
+  grid-template-columns: 22px minmax(0, 1fr);
 }
 
 .server-switcher-row.active,
@@ -472,6 +479,20 @@
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.server-switcher-avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 800;
+  object-fit: cover;
 }
 
 .server-switcher-check {

@@ -45,6 +45,20 @@ const WEB_RELEASES = [
 
 const DAEMON_RELEASES = [
   {
+    version: '0.1.3',
+    date: '2026-05-14',
+    title: 'Daemon heartbeat and structured logs',
+    features: [
+      'Daemon sends a periodic heartbeat while connected so Computer status stays online through idle periods.',
+    ],
+    improved: [
+      'Foreground daemon logs now include local timestamp, level, and category on every daemon-owned line.',
+    ],
+    fixes: [
+      'Idle daemon connections are kept active instead of relying only on reconnect attempts.',
+    ],
+  },
+  {
     version: '0.1.1',
     date: '2026-05-09',
     title: 'Cloud daemon profile and runtime reporting',

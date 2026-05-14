@@ -12,10 +12,13 @@ export function taskStopIntent(text) {
   if (!value) return false;
   return [
     /停(掉|止|下|一下)?这个(任务|会话|thread|对话)/,
+    /(关闭|关掉)(这个|该|本)?(任务|会话|thread|对话)/,
+    /这个(任务|会话|thread|对话).*(关闭|关掉)/,
     /这个(任务|会话|thread|对话).*(停掉|停止|暂停|取消|不要继续|别继续)/,
     /取消这个(任务|会话|thread|对话)/,
     /不要继续.*(这个|这条)?.*(任务|会话|thread|对话)/,
     /别(做|继续).*(这个|这条)?.*(任务|会话|thread|对话)/,
+    /\b(close)\b.*\b(task|thread|work)\b/i,
     /\b(stop|cancel|abort)\b.*\b(task|thread|work)\b/i,
   ].some((pattern) => pattern.test(value));
 }

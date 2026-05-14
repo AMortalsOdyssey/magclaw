@@ -5,7 +5,7 @@ const searchTimeRangeOptions = [
   ['30d', 'Last 30 Days'],
 ];
 
-const MAGCLAW_DAEMON_PACKAGE_VERSION = '0.1.2';
+const MAGCLAW_DAEMON_PACKAGE_VERSION = '0.1.3';
 const MAGCLAW_WEB_PACKAGE_VERSION = '0.2.0';
 
 function searchTimeRangeLabel() {
@@ -43,7 +43,7 @@ function renderSearchResult(record) {
       <span class="search-result-meta">
         <strong>${escapeHtml(recordSpaceName(record))}</strong>
         ${isReply ? '<em>thread</em>' : ''}
-        ${task ? renderTaskInlineBadge(task, { showAssignee: false }) : ''}
+        ${task ? renderTaskInlineBadge(task, { showAssignee: false, interactive: false }) : ''}
         <span>${escapeHtml(displayName(record.authorId))}</span>
         <time>${fmtTime(record.createdAt)}</time>
       </span>

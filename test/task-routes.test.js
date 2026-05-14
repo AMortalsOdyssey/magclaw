@@ -135,6 +135,33 @@ test('task route group rejects done transition before review', async () => {
   assert.equal(deps.state.tasks[0].status, 'todo');
 });
 
+test('task route group records direct manual status transitions in the task timeline', async () => {
+  const timeline = [];
+  const deps = routeDeps({
+    addTaskTimelineMessage: (task, body, eventType) => {
+      timeline.push({ taskId: task.id, body, eventType });
+    },
+    readJson: async () => ({ status: 'in_progress' }),
+  });
+  const res = makeResponse();
+  const handled = await handleTaskApi(
+    { method: 'PATCH' },
+    res,
+    new URL('http://local/api/tasks/task_1'),
+    deps,
+  );
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(deps.state.tasks[0].status, 'in_progress');
+  assert.equal(deps.state.tasks[0].updatedAt, deps.now());
+  assert.deepEqual(timeline, [{
+    taskId: 'task_1',
+    body: '📌 hum_local moved #1 to In Progress',
+    eventType: 'task_progress',
+  }]);
+  assert.ok(deps.state.tasks[0].history.some((item) => item.type === 'status_changed'));
+});
+
 test('task route group closes tasks without review and keeps closed terminal', async () => {
   const deps = routeDeps({ readJson: async () => ({ status: 'closed' }) });
   const res = makeResponse();

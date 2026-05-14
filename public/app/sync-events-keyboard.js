@@ -241,8 +241,73 @@ function activeConversationSignature(stateSnapshot = appState) {
     .join('|');
 }
 
-function patchActiveThreadSurface(scrollSnapshot) {
-  if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
+function currentServerProfileFromState(stateSnapshot = appState) {
+  const cloud = stateSnapshot?.cloud || {};
+  const targetSlug = String(serverSlugFromPath() || cloud.workspace?.slug || cloud.workspace?.id || stateSnapshot?.connection?.workspaceId || '').trim();
+  return (cloud.workspaces || []).find((server) => (
+    targetSlug
+    && String(server.slug || server.id || '') === targetSlug
+  ))
+    || cloud.workspace
+    || {};
+}
+
+function serverProfilePatchSignature(stateSnapshot = appState) {
+  const server = currentServerProfileFromState(stateSnapshot);
+  return JSON.stringify([
+    server?.id || '',
+    server?.slug || '',
+    server?.name || '',
+    server?.avatar || '',
+    server?.onboardingAgentId || '',
+    server?.newAgentGreetingEnabled === false ? 'false' : 'true',
+    server?.updatedAt || '',
+  ]);
+}
+
+function serverSettingsSupportSignature(stateSnapshot = appState) {
+  const cloud = stateSnapshot?.cloud || {};
+  const canManage = Boolean(cloud.auth?.capabilities?.manage_cloud_connection);
+  const members = (cloud.members || []).map((member) => [
+    member?.id || '',
+    member?.workspaceId || '',
+    member?.role || '',
+    member?.status || '',
+    member?.user?.id || '',
+    member?.user?.name || '',
+    member?.user?.email || '',
+  ]);
+  const invitations = (cloud.invitations || []).map((item) => [
+    item?.id || '',
+    item?.workspaceId || '',
+    item?.email || '',
+    item?.role || '',
+    item?.status || '',
+    item?.acceptedAt || '',
+    item?.declinedAt || '',
+    item?.createdAt || '',
+  ]);
+  const joinLinks = (cloud.joinLinks || []).map((item) => [
+    item?.id || '',
+    item?.workspaceId || '',
+    item?.url || '',
+    item?.status || '',
+    item?.usedCount || 0,
+    item?.maxUses || '',
+    item?.expiresAt || '',
+    item?.revokedAt || '',
+  ]);
+  const agents = (stateSnapshot?.agents || []).map((agent) => [
+    agent?.id || '',
+    agent?.workspaceId || '',
+    agent?.name || '',
+    agent?.disabledAt || '',
+    agent?.deletedAt || '',
+  ]);
+  return JSON.stringify({ canManage, members, invitations, joinLinks, agents });
+}
+
+function patchOpenThreadDrawerSurface(scrollSnapshot) {
   if (!threadMessageId || selectedProjectFile || selectedAgentId || selectedTaskId) return false;
   const message = byId(appState.messages, threadMessageId);
   const context = document.querySelector('#thread-context');
@@ -281,6 +346,11 @@ function patchActiveThreadSurface(scrollSnapshot) {
   return true;
 }
 
+function patchActiveThreadSurface(scrollSnapshot) {
+  if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
+  return patchOpenThreadDrawerSurface(scrollSnapshot);
+}
+
 function patchActiveConversationSurface(scrollSnapshot, { allowInspector = false } = {}) {
   if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
   const inspectorOpen = selectedProjectFile || selectedAgentId || selectedTaskId;
@@ -295,6 +365,37 @@ function patchActiveConversationSurface(scrollSnapshot, { allowInspector = false
   syncRecordList(list, spaceMessages(), renderMessage, 'messageId', emptyHtml);
   patchRailSurface();
   window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
+  return true;
+}
+
+function patchServerProfileSettingsSurface() {
+  if (activeView !== 'cloud' || settingsTab !== 'server') return false;
+  const profileForm = document.getElementById('server-profile-form');
+  if (!profileForm) return false;
+  const server = currentServerProfile();
+  const avatar = serverProfileAvatarDraft === null ? (server.avatar || '') : serverProfileAvatarDraft;
+  const avatarPreview = profileForm.querySelector('.server-profile-avatar');
+  if (avatarPreview) {
+    avatarPreview.innerHTML = renderServerAvatar({ ...server, avatar }, 'server-profile-avatar-img');
+  }
+  const avatarInput = profileForm.querySelector('[data-server-avatar-input]');
+  if (avatarInput) avatarInput.value = avatar;
+  const nameInput = profileForm.querySelector('input[name="name"]');
+  if (nameInput && document.activeElement !== nameInput) nameInput.value = server.name || '';
+  const onboardingInput = profileForm.querySelector('input[name="onboardingAgentId"]');
+  if (onboardingInput) onboardingInput.value = server.onboardingAgentId || '';
+  const greetingInput = profileForm.querySelector('input[name="newAgentGreetingEnabled"]');
+  if (greetingInput) greetingInput.value = server.newAgentGreetingEnabled === false ? 'false' : 'true';
+
+  const onboardingForm = document.getElementById('server-onboarding-form');
+  if (onboardingForm) {
+    const select = onboardingForm.querySelector('select[name="onboardingAgentId"]');
+    if (select && document.activeElement !== select) select.value = server.onboardingAgentId || '';
+    const checkbox = onboardingForm.querySelector('input[name="newAgentGreetingEnabled"]');
+    if (checkbox) checkbox.checked = server.newAgentGreetingEnabled !== false;
+    const mode = onboardingForm.querySelector('.panel-title span:last-child');
+    if (mode) mode.textContent = server.newAgentGreetingEnabled === false ? 'quiet' : 'greeting';
+  }
   return true;
 }
 
@@ -323,6 +424,8 @@ function applyStateUpdate(nextState) {
   const selectionBefore = `${selectedSpaceType}:${selectedSpaceId}`;
   const unreadBefore = railUnreadSignature();
   const activeConversationBefore = activeConversationSignature();
+  const serverProfileBefore = serverProfilePatchSignature();
+  const serverSettingsSupportBefore = serverSettingsSupportSignature();
   const computerModalBefore = modal === 'computer' ? computerPairingModalRenderSignature(appState) : '';
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
@@ -336,8 +439,41 @@ function applyStateUpdate(nextState) {
   const selectionChanged = selectionBefore !== `${selectedSpaceType}:${selectedSpaceId}`;
   const unreadChanged = unreadBefore !== railUnreadSignature();
   const activeConversationChanged = activeConversationBefore !== activeConversationSignature();
+  const serverProfileAfter = serverProfilePatchSignature();
+  const serverProfileOnlyChanged = activeView === 'cloud'
+    && settingsTab === 'server'
+    && serverProfileBefore !== serverProfileAfter
+    && serverSettingsSupportBefore === serverSettingsSupportSignature()
+    && !selectionChanged
+    && !unreadChanged
+    && !activeConversationChanged;
+  const serverProfileEcho = activeView === 'cloud'
+    && settingsTab === 'server'
+    && pendingServerProfilePatchSignature
+    && pendingServerProfilePatchSignature === serverProfileAfter
+    && serverSettingsSupportBefore === serverSettingsSupportSignature()
+    && !selectionChanged
+    && !unreadChanged
+    && !activeConversationChanged;
   if (selectionChanged) {
+    pendingServerProfilePatchSignature = '';
     render();
+    return;
+  }
+  if (serverProfileOnlyChanged || serverProfileEcho) {
+    pendingServerProfilePatchSignature = '';
+    patchRailSurface();
+    patchServerProfileSettingsSurface();
+    patchOpenThreadDrawerSurface(scrollSnapshot);
+    return;
+  }
+  if (pendingServerProfilePatchSignature && pendingServerProfilePatchSignature !== serverProfileAfter) {
+    pendingServerProfilePatchSignature = '';
+  }
+  if (agentDetailInlineEditIsActive()) {
+    captureAgentDetailFieldDraft();
+    if (unreadChanged) patchRailSurface();
+    window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
     return;
   }
   if (patchActiveThreadSurface(scrollSnapshot)) return;
@@ -350,6 +486,10 @@ function applyRunEventUpdate(incoming) {
   if (!appState || appState.events.some((item) => item.id === incoming.id)) return;
   appState.events.push(incoming);
   if (modal) return;
+  if (agentDetailInlineEditIsActive()) {
+    patchRailSurface();
+    return;
+  }
   if (workspaceActivityDrawerOpen || selectedAgentId) {
     render();
     return;
@@ -786,8 +926,13 @@ document.addEventListener('input', async (event) => {
   }
 
   if (event.target.matches?.('[data-agent-description-input]')) {
+    captureAgentDetailFieldDraft(event.target.closest('.agent-inline-edit'));
     const count = event.target.closest('.agent-inline-edit')?.querySelector('[data-agent-description-count]');
     if (count) count.textContent = `${event.target.value.length}/3000`;
+    return;
+  }
+  if (event.target.closest?.('.agent-inline-edit[data-agent-id][data-field]')) {
+    captureAgentDetailFieldDraft(event.target.closest('.agent-inline-edit'));
     return;
   }
 

@@ -41,6 +41,8 @@ test('task board exposes closed state and member proposal review controls', asyn
 
   assert.match(taskSource, /\['closed', 'Closed'\]/);
   assert.match(taskSource, /function taskIsClosedStatus\(status\)[\s\S]*status === 'closed'/);
+  assert.match(taskSource, /const flowColumns = taskColumns/);
+  assert.match(taskSource, /status !== 'closed' && index < currentIndex/);
   assert.match(taskSource, /data-action="task-close"/);
   assert.match(clickSource, /\/api\/tasks\/\$\{target\.dataset\.id\}\/close/);
   assert.match(app, /channelMemberProposals/);
@@ -216,6 +218,7 @@ test('members directory separates roles from top-centered manage actions', async
   assert.match(manageSource, /data-action="open-member-action-confirm"[\s\S]*data-member-action="remove"/);
   assert.doesNotMatch(manageSource, /reset-cloud-member-password|remove-cloud-member/);
   assert.match(app, /if \(action === 'update-cloud-member-role'\)/);
+  assert.match(app, /action === 'update-cloud-member-role' && target\.matches\?\.\('select'\)/);
   assert.match(app, /data-action="confirm-member-action"/);
   assert.match(app, /data-action="copy-member-reset-link"/);
   assert.match(app, /memberResetLinkText\(\)/);
@@ -980,7 +983,7 @@ test('task columns can be collapsed from the board header', async () => {
   const styles = await readStylesSource();
 
   assert.match(app, /let collapsedTaskColumns = readCollapsedTaskColumns\(\)/);
-  assert.match(app, /const DEFAULT_COLLAPSED_TASK_COLUMNS = \{ done: true \}/);
+  assert.match(app, /const DEFAULT_COLLAPSED_TASK_COLUMNS = \{ done: true, closed: true \}/);
   assert.match(app, /return \{ \.\.\.DEFAULT_COLLAPSED_TASK_COLUMNS, \.\.\.parsed \}/);
   assert.match(app, /data-action="toggle-task-column"/);
   assert.match(app, /function toggleTaskColumn\(status\)/);
@@ -1256,30 +1259,40 @@ test('task status icons sync across messages threads saved and task detail', asy
   const app = await readAppSource();
   const styles = await readStylesSource();
   const messageSource = app.slice(app.indexOf('function renderMessage'), app.indexOf('function renderComposer'));
+  const inlineBadgeSource = app.slice(app.indexOf('function renderTaskStatusMenu'), app.indexOf('function renderThreadKindBadge'));
   const threadsSource = app.slice(app.indexOf('function renderThreads'), app.indexOf('function renderSaved'));
   const savedSource = app.slice(app.indexOf('function renderSavedRecord'), app.indexOf('function renderSearch'));
   const taskCardSource = app.slice(app.indexOf('function renderTaskCard'), app.indexOf('function renderTaskActionButtons'));
+  const clickSource = app.slice(app.indexOf("if (action === 'toggle-task-status-menu')"), app.indexOf("if (action === 'message-task')"));
   const lifecycleSource = app.slice(app.indexOf('function renderTaskLifecycle'), app.indexOf('function renderModal'));
 
   assert.match(app, /function taskStatusIcon\(status\)/);
   assert.match(app, /function renderTaskStatusBadge\(status, options = \{\}\)/);
   assert.match(app, /function renderTaskInlineBadge\(task, options = \{\}\)/);
-  assert.match(app, /function renderTaskHoverCard\(task\)/);
+  assert.match(app, /function renderTaskStatusMenu\(task\)/);
   assert.match(app, /function renderTaskStateFlow\(task\)/);
   assert.match(app, /function renderTaskHistoryCompact\(task\)/);
   assert.match(messageSource, /renderTaskInlineBadge\(task/);
+  assert.match(inlineBadgeSource, /data-action="toggle-task-status-menu"/);
+  assert.match(inlineBadgeSource, /data-action="task-status-set"/);
   assert.equal(messageSource.includes('pill(task.status'), false);
   assert.match(threadsSource, /renderThreadKindBadge\(message, task\)/);
   assert.match(savedSource, /renderTaskInlineBadge\(task/);
-  assert.match(taskCardSource, /renderTaskInlineBadge\(task, \{ showAssignee: false, hover: false \}\)/);
+  assert.match(savedSource, /renderTaskInlineBadge\(task, \{ showAssignee: false, interactive: false \}\)/);
+  assert.match(taskCardSource, /renderTaskInlineBadge\(task, \{ showAssignee: false, hover: false, interactive: false \}\)/);
+  assert.match(clickSource, /openTaskStatusMenuId = openTaskStatusMenuId === taskId \? null : taskId/);
+  assert.match(clickSource, /if \(action === 'task-status-set'\)/);
+  assert.match(clickSource, /\/api\/tasks\/\$\{taskId\}/);
+  assert.match(clickSource, /body: JSON\.stringify\(\{ status: nextStatus \}\)/);
   assert.match(lifecycleSource, /renderTaskStateFlow\(task\)/);
   assert.match(lifecycleSource, /renderTaskHistoryCompact\(task\)/);
   assert.equal(lifecycleSource.includes('<span>${escapeHtml(task.status)}</span>'), false);
   assert.equal(lifecycleSource.includes('<p>${escapeHtml(plainActorText(item.message))}</p>'), false);
   assert.match(styles, /\.task-status-icon-badge/);
   assert.match(styles, /\.task-inline-badge/);
-  assert.match(styles, /\.task-hover-card/);
-  assert.match(styles, /\.task-inline-badge:hover \.task-hover-card/);
+  assert.match(styles, /\.task-status-menu/);
+  assert.match(styles, /\.task-inline-badge\.open \.task-status-menu/);
+  assert.doesNotMatch(styles, /\.task-inline-badge:hover \.task-hover-card/);
   assert.match(styles, /\.task-state-flow/);
   assert.match(styles, /\.task-state-node\.current > span::before/);
   assert.match(styles, /@keyframes taskAutocastSpin/);
@@ -1524,6 +1537,11 @@ test('agent detail uses MagClaw-style tabs with inline profile editing and runti
   assert.match(app, /data-action="save-agent-field" data-field="\$\{escapeHtml\(field\)\}"/);
   assert.equal(app.includes('>Edit</button>'), false);
   assert.match(app, /maxlength="3000"[\s\S]*\$\{descriptionValue\.length\}\/3000/);
+  assert.match(app, /let agentDetailFieldDraft = null/);
+  assert.match(app, /function captureAgentDetailFieldDraft/);
+  assert.match(app, /function agentDetailFieldFocusSnapshot/);
+  assert.match(app, /function restoreAgentDetailFieldFocus/);
+  assert.match(app, /if \(agentDetailInlineEditIsActive\(\)\)/);
   assert.match(app, /id="agent-runtime-config-form"/);
   assert.match(app, /Runtime Configuration/);
   assert.match(app, /RESTART TO APPLY RUNTIME CONFIGURATION/);
@@ -1607,7 +1625,9 @@ test('sidebar settings and skill panels support collapsible MagClaw UI sections'
 });
 
 test('left rail and active shell controls use the MagClaw pink accent', async () => {
+  const app = await readAppSource();
   const styles = await readStylesSource();
+  const railSource = app.slice(app.indexOf('function renderRail()'), app.indexOf('function currentServerProfile()'));
 
   assert.match(styles, /--magclaw-rail:\s*var\(--accent\)/);
   assert.match(styles, /--magclaw-rail-badge:\s*#FFE15A/);
@@ -1616,6 +1636,10 @@ test('left rail and active shell controls use the MagClaw pink accent', async ()
   assert.match(styles, /\.left-rail-btn em \{[\s\S]*?background:\s*var\(--magclaw-rail-badge\)[\s\S]*?color:\s*var\(--magclaw-rail-badge-text\)/);
   assert.match(styles, /\.agent-detail-tabs button\.active \{[\s\S]*?background:\s*var\(--accent\)/);
   assert.equal(/background:\s*var\(--magclaw-sun\)/.test(styles), false);
+  assert.match(railSource, /renderLeftRailButton\('chat'[\s\S]*inbox\.unreadCount \|\| ''/);
+  assert.match(railSource, /renderLeftRailButton\('tasks', railMode, 'Tasks', [\s\S]*?\)\}/);
+  assert.doesNotMatch(railSource, /renderLeftRailButton\('tasks'[\s\S]*openTasks \|\| ''/);
+  assert.doesNotMatch(railSource, /renderLeftRailButton\('members'[\s\S]*normalAgents\.length \|\| ''/);
 });
 
 test('agent create modal uses native selects for runtime, model, and reasoning choices', async () => {
@@ -1887,6 +1911,7 @@ test('cloud server shell uses MagClaw-style switcher and removes local-only chro
   assert.match(railSource, /data-action="toggle-server-switcher"/);
   assert.match(railSource, /renderServerSwitcherMenu\(\)/);
   assert.match(app, /data-action="switch-server"/);
+  assert.match(app, /renderServerAvatar\(server, 'server-switcher-avatar'\)/);
   assert.match(app, /data-action="open-console-server-switcher"/);
   assert.match(app, /Switch or create server/);
   assert.match(app, /\.filter\(Boolean\)[\s\S]*normalizeInviteEmailValue\(item\.email/);
@@ -1897,6 +1922,8 @@ test('cloud server shell uses MagClaw-style switcher and removes local-only chro
   assert.doesNotMatch(settingsNavSource, /id: 'members'/);
   assert.doesNotMatch(app, /Local Only[\s\S]*State, attachments, Codex runs/);
   assert.match(styles, /\.server-switcher-menu/);
+  assert.match(styles, /\.server-switcher-avatar/);
+  assert.match(styles, /\.server-switcher-row \{[\s\S]*grid-template-columns:\s*20px 34px minmax\(0, 1fr\)/);
   assert.match(styles, /\.console-switch-page/);
 });
 
@@ -1966,6 +1993,23 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(styles, /\.human-detail-page/);
   assert.match(styles, /\.computer-detail-page/);
   assert.match(styles, /\.server-profile-avatar/);
+});
+
+test('server profile saves patch settings and open thread surfaces without full render', async () => {
+  const app = await readAppSource();
+  const stateUpdateSource = app.slice(app.indexOf('function applyStateUpdate(nextState)'), app.indexOf('function applyRunEventUpdate'));
+  const submitSource = app.slice(app.indexOf("if (form.id === 'server-profile-form')"), app.indexOf("if (form.id === 'server-onboarding-form')"));
+
+  assert.match(app, /let pendingServerProfilePatchSignature = ''/);
+  assert.match(app, /function serverProfilePatchSignature\(stateSnapshot = appState\)/);
+  assert.match(app, /function serverSettingsSupportSignature\(stateSnapshot = appState\)/);
+  assert.match(app, /function patchOpenThreadDrawerSurface\(scrollSnapshot\)/);
+  assert.match(app, /function patchServerProfileSettingsSurface\(\)/);
+  assert.match(stateUpdateSource, /const serverProfileBefore = serverProfilePatchSignature\(\)/);
+  assert.match(stateUpdateSource, /const serverProfileOnlyChanged = activeView === 'cloud'[\s\S]*serverSettingsSupportBefore === serverSettingsSupportSignature\(\)/);
+  assert.match(stateUpdateSource, /patchServerProfileSettingsSurface\(\);[\s\S]*patchOpenThreadDrawerSurface\(scrollSnapshot\);[\s\S]*return;/);
+  assert.match(submitSource, /pendingServerProfilePatchSignature = serverProfilePatchSignature\(\)/);
+  assert.match(submitSource, /skipFinalRefresh = true/);
 });
 
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {

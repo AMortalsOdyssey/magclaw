@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_PROFILE = 'default';
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
+const DEFAULT_DAEMON_HEARTBEAT_MS = 25_000;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,6 +37,48 @@ const CAPABILITIES = [
 
 function now() {
   return new Date().toISOString();
+}
+
+function localTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join('-') + ' ' + [
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join(':');
+}
+
+export function formatDaemonLogLine(level, category, message, date = new Date()) {
+  const safeLevel = String(level || 'info').toUpperCase();
+  const safeCategory = String(category || 'daemon').toUpperCase();
+  return `${localTimestamp(date)} ${safeLevel} ${safeCategory} ${String(message || '')}`;
+}
+
+function daemonLog(level, category, message) {
+  const line = formatDaemonLogLine(level, category, message);
+  if (level === 'error') {
+    console.error(line);
+  } else if (level === 'warning' || level === 'warn') {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
+}
+
+function logInfo(category, message) {
+  daemonLog('info', category, message);
+}
+
+function logWarning(category, message) {
+  daemonLog('warning', category, message);
+}
+
+function logError(category, message) {
+  daemonLog('error', category, message);
 }
 
 function sleep(ms) {
@@ -1556,6 +1599,8 @@ class MagClawDaemon {
     this.request = null;
     this.sessions = new Map();
     this.closed = false;
+    this.heartbeatTimer = null;
+    this.heartbeatIntervalMs = Math.max(5000, Number(env.MAGCLAW_DAEMON_HEARTBEAT_MS || DEFAULT_DAEMON_HEARTBEAT_MS) || DEFAULT_DAEMON_HEARTBEAT_MS);
   }
 
   send(payload) {
@@ -1588,6 +1633,29 @@ class MagClawDaemon {
     this.send(await this.readyPayload());
   }
 
+  sendHeartbeat() {
+    this.send({
+      type: 'heartbeat',
+      time: now(),
+      computerId: this.config.computerId || null,
+      daemonVersion: DAEMON_VERSION,
+      runningAgents: [...this.sessions.keys()],
+    });
+  }
+
+  startHeartbeat() {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), this.heartbeatIntervalMs);
+    this.heartbeatTimer.unref?.();
+    this.sendHeartbeat();
+  }
+
+  stopHeartbeat() {
+    if (!this.heartbeatTimer) return;
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
   async handleFrame(message) {
     switch (message.type) {
       case 'pairing:accepted':
@@ -1596,7 +1664,7 @@ class MagClawDaemon {
         this.config.token = message.machineToken;
         this.config.pairToken = '';
         await saveProfile(this.paths.profile, this.config, this.env);
-        console.log(`Paired computer ${message.computerId}.`);
+        logInfo('daemon', `Paired computer ${message.computerId}.`);
         await this.sendReady();
         break;
       case 'connected':
@@ -1606,7 +1674,7 @@ class MagClawDaemon {
         await this.sendReady();
         break;
       case 'ready:ack':
-        console.log(`MagClaw daemon ready for computer ${message.computerId || this.config.computerId}.`);
+        logInfo('daemon', `MagClaw daemon ready for computer ${message.computerId || this.config.computerId}.`);
         break;
       case 'ping':
         this.send({ type: 'pong', time: now() });
@@ -1631,12 +1699,12 @@ class MagClawDaemon {
         this.send({ type: 'machine:runtime_models:result', commandId: message.commandId, runtimes: await detectRuntimes(this.env) });
         break;
       case 'token:revoked':
-        console.error('Machine token was revoked by the server.');
+        logError('daemon', 'Machine token was revoked by the server.');
         this.close();
         process.exitCode = 2;
         break;
       default:
-        console.log(`Unhandled server frame: ${message.type || 'unknown'}`);
+        logWarning('network', `Unhandled server frame: ${message.type || 'unknown'}`);
         break;
     }
   }
@@ -1731,6 +1799,7 @@ class MagClawDaemon {
     this.closed = true;
     for (const session of this.sessions.values()) session.stop();
     this.sessions.clear();
+    this.stopHeartbeat();
     if (this.request) {
       this.request.destroy(new Error('MagClaw daemon is shutting down.'));
       this.request = null;
@@ -1745,12 +1814,13 @@ class MagClawDaemon {
     const requestModule = url.protocol === 'wss:' ? https : http;
     const requestUrl = new URL(url.href.replace(/^ws/, 'http'));
     const key = crypto.randomBytes(16).toString('base64');
-    console.log(`Connecting MagClaw daemon profile "${this.paths.profile}" to ${this.config.serverUrl}...`);
+    logInfo('daemon', `Connecting MagClaw daemon profile "${this.paths.profile}" to ${this.config.serverUrl}...`);
     return new Promise((resolve, reject) => {
       let settled = false;
       const finish = (callback, value) => {
         if (settled) return;
         settled = true;
+        this.stopHeartbeat();
         if (this.request === req) this.request = null;
         callback(value);
       };
@@ -1777,6 +1847,7 @@ class MagClawDaemon {
           return;
         }
         this.socket = socket;
+        this.startHeartbeat();
         const connection = { socket, buffer: Buffer.alloc(0) };
         const handleChunk = (chunk) => {
           for (const frame of decodeFrames(connection, chunk)) {
@@ -1790,7 +1861,7 @@ class MagClawDaemon {
                 this.send({ type: 'error', error: error.message });
               });
             } catch (error) {
-              console.error(`Invalid server frame: ${error.message}`);
+              logError('network', `Invalid server frame: ${error.message}`);
             }
           }
         };
@@ -1826,7 +1897,7 @@ class MagClawDaemon {
       try {
         await this.connectOnce();
       } catch (error) {
-        console.error(`MagClaw daemon connection failed: ${error.message}`);
+        logError('daemon', `MagClaw daemon connection failed: ${error.message}`);
       }
       if (!this.closed) await sleep(2000);
     }
@@ -1870,7 +1941,8 @@ async function writeLauncher(profile, env = process.env) {
     '  process.exit(code || 0);',
     '});',
     "child.on('error', (error) => {",
-    '  console.error(error.message);',
+    "  const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);",
+    "  console.error(`${stamp} ERROR DAEMON ${error.message}`);",
     '  process.exit(1);',
     '});',
     '',
@@ -2177,7 +2249,7 @@ async function runConnect(flags, env = process.env) {
     const result = await startBackground(config.profile, env);
     printJson(result);
     if (!result.ok) {
-      console.log('Falling back to foreground mode.');
+      logWarning('daemon', 'Falling back to foreground mode.');
       await runForegroundDaemon(config, env);
     }
     return;
