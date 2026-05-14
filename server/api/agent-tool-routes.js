@@ -235,7 +235,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       if (!channel) throw httpError(404, `Channel not found: ${channelRef}`);
       return channel;
     }
-    const space = resolveConversationSpace(body);
+    const space = resolveConversationSpace(body, { workspaceId: requestWorkspaceId() });
     if (space.spaceType !== 'channel') throw httpError(400, 'Channel member proposals require a channel target.');
     return (state.channels || []).find((item) => item.id === space.spaceId);
   }
@@ -625,7 +625,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     }
     let target;
     try {
-      target = resolveMessageTarget(body.target || workItem.target);
+      target = resolveMessageTarget(body.target || workItem.target, { workspaceId: requestWorkspaceId() });
       if (!workItemTargetMatches(workItem, target)) {
         throw httpError(409, 'Target does not match the work item conversation.');
       }
@@ -794,7 +794,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
           channel: url.searchParams.get('channel') || '',
           spaceType: url.searchParams.get('spaceType') || '',
           spaceId: url.searchParams.get('spaceId') || '',
-        });
+        }, { workspaceId: requestWorkspaceId() });
       } catch (error) {
         sendError(res, error.status || 400, error.message);
         return true;
@@ -864,7 +864,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     }
     let space;
     try {
-      space = resolveConversationSpace(body);
+      space = resolveConversationSpace(body, { workspaceId: requestWorkspaceId() });
     } catch (error) {
       sendError(res, error.status || 400, error.message);
       return true;
@@ -973,7 +973,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     }
     let space;
     try {
-      space = resolveConversationSpace(body);
+      space = resolveConversationSpace(body, { workspaceId: requestWorkspaceId() });
     } catch (error) {
       sendError(res, error.status || 400, error.message);
       return true;

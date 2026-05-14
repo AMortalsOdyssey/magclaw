@@ -69,3 +69,40 @@ test('conversation mention validation resolves active cloud member humans', () =
   assert.equal(model.findHuman('hum_cloud').name, 'Cloud Human');
   assert.deepEqual(model.extractMentions('<@hum_cloud>').humans, ['hum_cloud']);
 });
+
+test('conversation targets resolve #all threads within the requested workspace', () => {
+  const state = {
+    humans: [],
+    agents: [],
+    computers: [],
+    channels: [
+      { id: 'chan_other_all', name: 'all', workspaceId: 'wsp_other' },
+      { id: 'chan_current_all', name: 'all', workspaceId: 'wsp_current' },
+    ],
+    dms: [],
+    messages: [
+      { id: 'msg_current', spaceType: 'channel', spaceId: 'chan_current_all', workspaceId: 'wsp_current' },
+    ],
+    replies: [],
+    tasks: [],
+    missions: [],
+    runs: [],
+    workItems: [],
+    connection: { workspaceId: 'wsp_other' },
+    cloud: { workspace: { id: 'wsp_other' } },
+  };
+  const model = createConversationModel({
+    getState: () => state,
+    httpError: (status, message) => Object.assign(new Error(message), { status }),
+    makeId: (prefix) => `${prefix}_test`,
+    now: () => '2026-05-14T00:00:00.000Z',
+    extractLocalReferences: () => [],
+    projectReferenceFromParts: () => null,
+  });
+
+  const target = model.resolveMessageTarget('#all:msg_current', { workspaceId: 'wsp_current' });
+
+  assert.equal(target.spaceId, 'chan_current_all');
+  assert.equal(target.parentMessageId, 'msg_current');
+  assert.equal(target.label, '#all:msg_current');
+});

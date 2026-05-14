@@ -41,10 +41,41 @@ export function createConversationModel(deps) {
   function findChannel(id) {
     return state.channels.find((channel) => channel.id === id);
   }
+
+  function defaultWorkspaceId() {
+    return String(state.connection?.workspaceId || state.cloud?.workspace?.id || 'local').trim() || 'local';
+  }
+
+  function requestedWorkspaceId(options = {}) {
+    return String(options?.workspaceId || '').trim();
+  }
+
+  function effectiveWorkspaceId(options = {}) {
+    return requestedWorkspaceId(options) || defaultWorkspaceId();
+  }
+
+  function recordWorkspaceId(record) {
+    return String(record?.workspaceId || '').trim();
+  }
+
+  function recordBelongsToWorkspace(record, workspaceId) {
+    const target = String(workspaceId || '').trim();
+    if (!target) return true;
+    const value = recordWorkspaceId(record);
+    return !value || value === target;
+  }
+
+  function messageBelongsToWorkspace(message, workspaceId) {
+    if (recordBelongsToWorkspace(message, workspaceId) && recordWorkspaceId(message)) return true;
+    if (recordWorkspaceId(message)) return false;
+    if (message?.spaceType === 'channel') return recordBelongsToWorkspace(findChannel(message.spaceId), workspaceId);
+    if (message?.spaceType === 'dm') return recordBelongsToWorkspace(state.dms?.find((dm) => dm.id === message.spaceId), workspaceId);
+    return true;
+  }
   
   function selectedDefaultSpaceId(spaceType) {
     if (spaceType === 'dm') return state.dms?.[0]?.id || '';
-    const workspaceId = state.connection?.workspaceId || state.cloud?.workspace?.id || 'local';
+    const workspaceId = defaultWorkspaceId();
     return findWorkspaceAllChannel(state, workspaceId)?.id || state.channels?.[0]?.id || 'chan_all';
   }
   
@@ -64,34 +95,40 @@ export function createConversationModel(deps) {
     return state.workItems?.find((item) => item.id === id);
   }
   
-  function findChannelByRef(ref) {
+  function findChannelByRef(ref, options = {}) {
     const raw = String(ref || '').trim().replace(/^#/, '');
     if (!raw) return null;
+    const workspaceId = effectiveWorkspaceId(options);
     if (raw === 'all' || raw === 'chan_all') {
-      const workspaceId = state.connection?.workspaceId || state.cloud?.workspace?.id || 'local';
-      return findWorkspaceAllChannel(state, workspaceId) || state.channels.find((channel) => channel.id === 'chan_all') || null;
+      return findWorkspaceAllChannel(state, workspaceId)
+        || state.channels.find((channel) => channel.id === 'chan_all' && recordBelongsToWorkspace(channel, workspaceId))
+        || null;
     }
-    return state.channels.find((channel) => (
+    const matches = state.channels.filter((channel) => (
       channel.id === raw
       || channel.name === raw
       || channel.id.startsWith(raw)
       || channel.name.startsWith(raw)
-    )) || null;
+    ));
+    return matches.find((channel) => recordBelongsToWorkspace(channel, workspaceId)) || null;
   }
   
-  function findDmByRef(ref) {
+  function findDmByRef(ref, options = {}) {
     const raw = String(ref || '').trim().replace(/^dm:/, '');
     if (!raw) return null;
-    return state.dms.find((dm) => dm.id === raw || dm.id.startsWith(raw) || dm.name === raw) || null;
+    const workspaceId = effectiveWorkspaceId(options);
+    const matches = state.dms.filter((dm) => dm.id === raw || dm.id.startsWith(raw) || dm.name === raw);
+    return matches.find((dm) => recordBelongsToWorkspace(dm, workspaceId)) || null;
   }
   
-  function findMessageByRef(ref) {
+  function findMessageByRef(ref, options = {}) {
     const raw = String(ref || '').trim();
     if (!raw) return null;
+    const workspaceId = effectiveWorkspaceId(options);
     return state.messages.find((message) => (
       message.id === raw
       || message.id.startsWith(raw)
-    )) || null;
+    ) && messageBelongsToWorkspace(message, workspaceId)) || null;
   }
   
   function targetForConversation(spaceType, spaceId, parentMessageId = null) {
@@ -107,19 +144,20 @@ export function createConversationModel(deps) {
     return `${spaceType}:${spaceId}${parentMessageId ? `:${parentMessageId}` : ''}`;
   }
   
-  function resolveMessageTarget(target) {
+  function resolveMessageTarget(target, options = {}) {
     const raw = String(target || '').trim();
     if (!raw) throw httpError(400, 'Target is required.');
+    const workspaceId = effectiveWorkspaceId(options);
     if (raw.startsWith('#')) {
       const withoutHash = raw.slice(1);
       const separator = withoutHash.indexOf(':');
       const channelRef = separator >= 0 ? withoutHash.slice(0, separator) : withoutHash;
       const parentRef = separator >= 0 ? withoutHash.slice(separator + 1) : '';
-      const channel = findChannelByRef(channelRef);
+      const channel = findChannelByRef(channelRef, { ...options, workspaceId });
       if (!channel) throw httpError(404, `Channel not found: #${channelRef}`);
       let parentMessageId = null;
       if (parentRef) {
-        const parent = findMessageByRef(parentRef);
+        const parent = findMessageByRef(parentRef, { ...options, workspaceId: recordWorkspaceId(channel) || workspaceId });
         if (!parent) throw httpError(404, `Thread message not found: ${parentRef}`);
         if (parent.spaceType !== 'channel' || parent.spaceId !== channel.id) {
           throw httpError(409, 'Thread target does not belong to the target channel.');
@@ -137,11 +175,11 @@ export function createConversationModel(deps) {
       const parts = raw.split(':');
       const dmRef = parts[1] || '';
       const parentRef = parts.slice(2).join(':');
-      const dm = findDmByRef(dmRef);
+      const dm = findDmByRef(dmRef, { ...options, workspaceId });
       if (!dm) throw httpError(404, `DM not found: ${dmRef}`);
       let parentMessageId = null;
       if (parentRef) {
-        const parent = findMessageByRef(parentRef);
+        const parent = findMessageByRef(parentRef, { ...options, workspaceId: recordWorkspaceId(dm) || workspaceId });
         if (!parent) throw httpError(404, `Thread message not found: ${parentRef}`);
         if (parent.spaceType !== 'dm' || parent.spaceId !== dm.id) {
           throw httpError(409, 'Thread target does not belong to the target DM.');
@@ -300,22 +338,23 @@ export function createConversationModel(deps) {
     return `${spaceType || 'space'}:${spaceId || ''}`;
   }
   
-  function resolveConversationSpace(input = {}) {
+  function resolveConversationSpace(input = {}, options = {}) {
+    const scopedOptions = { ...options, workspaceId: requestedWorkspaceId(options) || requestedWorkspaceId(input) || '' };
     if (input.target) {
-      const target = resolveMessageTarget(input.target);
+      const target = resolveMessageTarget(input.target, scopedOptions);
       return { spaceType: target.spaceType, spaceId: target.spaceId, label: spaceDisplayName(target.spaceType, target.spaceId) };
     }
     const rawChannel = String(input.channel || '').trim();
     if (rawChannel) {
       if (rawChannel.startsWith('#')) {
         const name = rawChannel.slice(1);
-        const channel = findChannelByRef(name);
+        const channel = findChannelByRef(name, scopedOptions);
         if (!channel) throw httpError(404, `Channel not found: ${rawChannel}`);
         return { spaceType: 'channel', spaceId: channel.id, label: `#${channel.name}` };
       }
       if (rawChannel.toLowerCase().startsWith('dm:')) {
         const dmRef = rawChannel.slice(3);
-        const dm = state.dms.find((item) => item.id === dmRef || item.id.startsWith(dmRef));
+        const dm = findDmByRef(dmRef, scopedOptions);
         if (!dm) throw httpError(404, `DM not found: ${rawChannel}`);
         return { spaceType: 'dm', spaceId: dm.id, label: `dm:${dm.id}` };
       }

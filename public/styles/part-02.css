@@ -1537,6 +1537,12 @@
   transition: background 0.15s;
 }
 
+button.mention-tag {
+  font: inherit;
+  line-height: inherit;
+  vertical-align: baseline;
+}
+
 .mention-tag:hover {
   background: var(--identity-soft);
 }

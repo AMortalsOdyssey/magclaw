@@ -994,6 +994,7 @@ test('human mention chips use a distinct color from agent mentions', async () =>
   const styles = await readStylesSource();
 
   assert.match(app, /mention-identity mention-agent/);
+  assert.match(app, /data-action="select-agent" data-id="\$\{escapeHtml\(id\)\}"/);
   assert.match(app, /mention-human/);
   assert.match(styles, /\.mention-tag\.mention-human/);
   assert.match(styles, /background: #9FE3D1/);

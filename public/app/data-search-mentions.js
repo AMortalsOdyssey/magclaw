@@ -321,7 +321,7 @@ function parseMentions(text) {
     const agent = byId(appState?.agents, id);
     const name = agent?.name || (id === 'agt_codex' ? displayName(id) : '');
     return name
-      ? `<span class="mention-tag mention-identity mention-agent" data-mention-id="${id}">@${escapeHtml(name)}</span>`
+      ? `<button class="mention-tag mention-identity mention-agent" type="button" data-action="select-agent" data-id="${escapeHtml(id)}" data-mention-id="${escapeHtml(id)}">@${escapeHtml(name)}</button>`
       : match;
   });
   // Replace human mentions: <@hum_xxx> -> styled span
