@@ -45,6 +45,16 @@ const WEB_RELEASES = [
 
 const DAEMON_RELEASES = [
   {
+    version: '0.1.5',
+    date: '2026-05-14',
+    title: 'Codex runtime trust config',
+    features: [],
+    improved: [],
+    fixes: [
+      'Cloud-connected npm daemon agents now generate trusted Codex homes so Codex app-server can load project-local config and run chat turns.',
+    ],
+  },
+  {
     version: '0.1.4',
     date: '2026-05-14',
     title: 'Production domain npm examples',

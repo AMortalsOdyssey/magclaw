@@ -14,7 +14,7 @@ test('release notes expose independent Web and Daemon version catalogs', () => {
   assert.equal(notes.web.currentVersion, '0.2.0');
   assert.equal(notes.daemon.currentVersion, '0.1.1');
   assert.match(notes.web.releases[0].title, /Cloud account/);
-  assert.match(notes.daemon.releases[0].title, /Production domain/);
+  assert.match(notes.daemon.releases[0].title, /Codex runtime trust/);
 });
 
 test('release notes normalization keeps seeded module releases authoritative', () => {
