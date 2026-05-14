@@ -320,6 +320,10 @@ process.stdin.on('data', (chunk) => {
     const entries = (await readFile(logPath, 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line));
     const appServer = entries.find((entry) => entry.mode === 'app-server');
     assert.match(appServer.env.CODEX_HOME, /daemon-home\/profiles\/cloud-test\/agents\/agt_remote\/codex-home$/);
+    const agentCodexConfig = await readFile(path.join(appServer.env.CODEX_HOME, 'config.toml'), 'utf8');
+    assert.match(agentCodexConfig, /wire_api\s*=\s*"responses"/);
+    assert.match(agentCodexConfig, new RegExp(`\\[projects\\.${JSON.stringify(os.homedir()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]`));
+    assert.match(agentCodexConfig, /trust_level\s*=\s*"trusted"/);
     assert.ok(appServer.args.some((arg) => String(arg).includes('mcp_servers.magclaw.args')));
     assert.equal(appServer.args.some((arg) => String(arg).includes('mc_machine_test')), false);
     assert.ok(entries.some((entry) => entry.method === 'turn/start'));

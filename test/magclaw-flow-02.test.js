@@ -732,6 +732,8 @@ process.stdin.on('data', (chunk) => {
     assert.match(config, /memories\s*=\s*false/);
     assert.match(config, /plugins\s*=\s*true/);
     assert.match(config, /\[analytics\][\s\S]*enabled\s*=\s*false/);
+    assert.match(config, new RegExp(`\\[projects\\.${JSON.stringify(os.homedir()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]`));
+    assert.match(config, /trust_level\s*=\s*"trusted"/);
     const appServerEntry = initialEntries.find((item) => item.mode === 'app-server');
     assert.ok(appServerEntry?.args?.includes('wire_api="responses"'));
     assert.ok(appServerEntry?.args?.some((arg) => String(arg).includes('mcp_servers.magclaw.command')));

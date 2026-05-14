@@ -998,6 +998,23 @@ async function ensureSymlinkedCodexHomeEntry(codexHome, entryName) {
   await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
 }
 
+function codexTrustedProjectPaths() {
+  const home = path.resolve(os.homedir());
+  const sourceCodexHome = path.resolve(SOURCE_CODEX_HOME);
+  const trustRoot = sourceCodexHome === home || sourceCodexHome.startsWith(`${home}${path.sep}`)
+    ? home
+    : sourceCodexHome;
+  return [...new Set([trustRoot].filter(Boolean))];
+}
+
+function codexTrustConfigLines() {
+  return codexTrustedProjectPaths().flatMap((projectPath) => [
+    `[projects.${tomlString(projectPath)}]`,
+    'trust_level = "trusted"',
+    '',
+  ]);
+}
+
 class CodexAgentSession {
   constructor({ agent, profile, paths, serverUrl, token, workspaceId, send, env = process.env }) {
     this.agent = agent;
@@ -1054,6 +1071,7 @@ class CodexAgentSession {
       '[analytics]',
       'enabled = false',
       '',
+      ...codexTrustConfigLines(),
     ].join('\n'));
     await writeFile(path.join(this.workspace(), 'AGENTS.md'), [
       '# MagClaw Remote Agent Workspace',

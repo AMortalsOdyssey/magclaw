@@ -96,6 +96,27 @@ export function createAgentWorkspaceManager(deps) {
       if (error.code !== 'ENOENT') throw error;
     }
   }
+
+  function tomlString(value) {
+    return JSON.stringify(String(value || ''));
+  }
+
+  function codexTrustedProjectPaths() {
+    const home = path.resolve(os.homedir());
+    const sourceCodexHome = path.resolve(SOURCE_CODEX_HOME);
+    const trustRoot = sourceCodexHome === home || sourceCodexHome.startsWith(`${home}${path.sep}`)
+      ? home
+      : sourceCodexHome;
+    return [...new Set([trustRoot].filter(Boolean))];
+  }
+
+  function codexTrustConfigLines() {
+    return codexTrustedProjectPaths().flatMap((projectPath) => [
+      `[projects.${tomlString(projectPath)}]`,
+      'trust_level = "trusted"',
+      '',
+    ]);
+  }
   
   async function writeAgentCodexConfig(codexHome) {
     await writeFile(path.join(codexHome, 'config.toml'), [
@@ -110,6 +131,7 @@ export function createAgentWorkspaceManager(deps) {
       '[analytics]',
       'enabled = false',
       '',
+      ...codexTrustConfigLines(),
     ].join('\n'), 'utf8');
   }
   

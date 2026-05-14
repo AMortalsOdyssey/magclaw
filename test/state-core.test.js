@@ -26,7 +26,7 @@ function makeStateCore(tmp, overrides = {}) {
     ATTACHMENTS_DIR: path.join(tmp, 'attachments'),
     CLOUD_PROTOCOL_VERSION: 1,
     CODEX_FALLBACK_MODEL: 'gpt-5.5',
-    CODEX_HOME_CONFIG_VERSION: 7,
+    CODEX_HOME_CONFIG_VERSION: 8,
     FANOUT_API_TIMEOUT_MS: 30_000,
     ROOT: tmp,
     RUNS_DIR: path.join(tmp, 'runs'),
