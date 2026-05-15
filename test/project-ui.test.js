@@ -1200,6 +1200,9 @@ test('create channel keeps agent members optional and manually selected', async 
   assert.match(app, /function agentCanJoinNewChannel\(agent\)/);
   assert.match(joinHelperSource, /return agentIsActiveInWorkspace\(agent\);/);
   assert.doesNotMatch(joinHelperSource, /agentDisplayStatus|offline|error/);
+  assert.match(channelModalSource, /<form id="channel-form" class="modal-form" autocomplete="off"/);
+  assert.match(channelModalSource, /<input name="name"[^>]*autocomplete="off"/);
+  assert.match(channelModalSource, /<textarea name="description"[^>]*autocomplete="off"/);
   assert.match(channelModalSource, /Members <small>\(optional\)<\/small>/);
   assert.match(channelModalSource, /id="create-channel-member-search"/);
   assert.doesNotMatch(channelModalSource, /checked/);

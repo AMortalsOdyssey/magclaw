@@ -176,12 +176,12 @@ function renderProjectModal() {
     </div>
     <details class="manual-project-path">
       <summary>Path</summary>
-      <form id="project-form" class="modal-form">
+      <form id="project-form" class="modal-form" autocomplete="off">
         <label>
           <span>Folder path</span>
-          <input name="path" placeholder="/Users/tt/code/myproject/magclaw" required />
+          <input name="path" placeholder="/Users/tt/code/myproject/magclaw" autocomplete="off" spellcheck="false" required />
         </label>
-        <label><span>Name</span><input name="name" placeholder="Optional display name" /></label>
+        <label><span>Name</span><input name="name" placeholder="Optional display name" autocomplete="off" /></label>
         <div class="modal-actions">
           <button class="primary-btn" type="submit">Add Path</button>
         </div>
@@ -221,9 +221,9 @@ function renderChannelModal() {
   });
   return `
     ${modalHeader('Create Channel', 'Collaboration')}
-    <form id="channel-form" class="modal-form">
-      <label><span>Name</span><input name="name" placeholder="frontend-war-room" required /></label>
-      <label><span>Description</span><textarea name="description" rows="3"></textarea></label>
+    <form id="channel-form" class="modal-form" autocomplete="off">
+      <label><span>Name</span><input name="name" placeholder="frontend-war-room" autocomplete="off" required /></label>
+      <label><span>Description</span><textarea name="description" rows="3" autocomplete="off"></textarea></label>
       <div class="form-field create-channel-members-field">
         <span>Members <small>(optional)</small></span>
         <label class="create-channel-search-wrap" aria-label="Search members by name">
@@ -259,9 +259,9 @@ function renderEditChannelModal() {
   const channel = selectedSpaceType === 'channel' ? currentSpace() : null;
   return `
     ${modalHeader('Edit Channel', channel ? `#${channel.name}` : 'No channel')}
-    <form id="edit-channel-form" class="modal-form">
-      <label><span>Name</span><input name="name" value="${escapeHtml(channel?.name || '')}" required /></label>
-      <label><span>Description</span><textarea name="description" rows="3">${escapeHtml(channel?.description || '')}</textarea></label>
+    <form id="edit-channel-form" class="modal-form" autocomplete="off">
+      <label><span>Name</span><input name="name" value="${escapeHtml(channel?.name || '')}" autocomplete="off" required /></label>
+      <label><span>Description</span><textarea name="description" rows="3" autocomplete="off">${escapeHtml(channel?.description || '')}</textarea></label>
       <button class="primary-btn" type="submit">Save</button>
     </form>
   `;
@@ -438,9 +438,9 @@ function renderDmModal() {
 function renderTaskModal() {
   return `
     ${modalHeader('New Task', spaceName(selectedSpaceType, selectedSpaceId))}
-    <form id="task-form" class="modal-form">
-      <label><span>Title</span><input name="title" required /></label>
-      <label><span>Body</span><textarea name="body" rows="4"></textarea></label>
+    <form id="task-form" class="modal-form" autocomplete="off">
+      <label><span>Title</span><input name="title" autocomplete="off" required /></label>
+      <label><span>Body</span><textarea name="body" rows="4" autocomplete="off"></textarea></label>
       <label><span>Assignees</span><select name="assigneeIds" multiple size="4">${channelAssignableAgents().map((agent) => `<option value="${agent.id}">${escapeHtml(agent.name)}</option>`).join('')}</select></label>
       <label class="checkline"><input type="checkbox" name="addAnother" /> Add another after create</label>
       <button class="primary-btn" type="submit">Create Task</button>
@@ -454,9 +454,9 @@ function renderEnvVarsList() {
   }
   return agentFormState.envVars.map((item, index) => `
     <div class="env-var-row" data-index="${index}">
-      <input type="text" class="env-key" placeholder="KEY" value="${escapeHtml(item.key)}" data-env-index="${index}" data-env-field="key" />
+      <input type="text" class="env-key" placeholder="KEY" value="${escapeHtml(item.key)}" autocomplete="off" spellcheck="false" data-env-index="${index}" data-env-field="key" />
       <span class="env-eq">=</span>
-      <input type="text" class="env-value" placeholder="value" value="${escapeHtml(item.value)}" data-env-index="${index}" data-env-field="value" />
+      <input type="text" class="env-value" placeholder="value" value="${escapeHtml(item.value)}" autocomplete="off" spellcheck="false" data-env-index="${index}" data-env-field="value" />
       <button type="button" class="env-remove-btn" data-action="remove-env-var" data-index="${index}">×</button>
     </div>
   `).join('');
@@ -603,7 +603,7 @@ function renderAgentModal() {
 
   return `
     ${modalHeader('CREATE AGENT', 'Runtime profile')}
-    <form id="agent-form" class="modal-form">
+    <form id="agent-form" class="modal-form" autocomplete="off">
       ${connectedComputers.length ? '' : '<div class="empty-box small agent-computer-required">No connected Computer is available. Connect one first; offline Computers are shown below for reference.</div>'}
       <div class="avatar-picker">
         <span class="form-label">AVATAR</span>
@@ -632,11 +632,11 @@ function renderAgentModal() {
       </label>
       <label>
         <span>NAME <span class="required">*</span></span>
-        <input name="name" placeholder="e.g. Kael" value="${escapeHtml(agentFormState.name)}" required />
+        <input name="name" placeholder="e.g. Kael" value="${escapeHtml(agentFormState.name)}" autocomplete="off" required />
       </label>
       <label>
         <span>DESCRIPTION <span class="optional">(optional)</span></span>
-        <textarea name="description" rows="3" placeholder="Leave blank for a general-purpose agent, or describe a role...">${escapeHtml(agentFormState.description)}</textarea>
+        <textarea name="description" rows="3" placeholder="Leave blank for a general-purpose agent, or describe a role..." autocomplete="off">${escapeHtml(agentFormState.description)}</textarea>
         <small class="char-count">${agentFormState.description.length}/3000</small>
       </label>
       <div class="form-field">
@@ -818,7 +818,7 @@ function renderComputerModal() {
       </div>
       <label class="connect-display-name-field">
         <span>Display name</span>
-        <input id="computer-display-name-input" data-action="computer-display-name" maxlength="30" value="${escapeHtml(displayName)}" placeholder="${escapeHtml(defaultComputerPairingName(pairingComputer))}" />
+        <input id="computer-display-name-input" data-action="computer-display-name" maxlength="30" value="${escapeHtml(displayName)}" placeholder="${escapeHtml(defaultComputerPairingName(pairingComputer))}" autocomplete="off" />
         <small>Optional. This becomes the computer name after it connects.</small>
       </label>
       <div class="connect-command-shell">
@@ -848,9 +848,9 @@ function renderHumanModal() {
   }
   return `
     ${modalHeader('Invite Human', 'Team placeholder')}
-    <form id="human-form" class="modal-form">
-      <label><span>Name</span><input name="name" placeholder="Teammate" /></label>
-      <label><span>Email</span><input name="email" type="email" placeholder="person@example.com" /></label>
+    <form id="human-form" class="modal-form" autocomplete="off">
+      <label><span>Name</span><input name="name" placeholder="Teammate" autocomplete="off" /></label>
+      <label><span>Email</span><input name="email" type="email" placeholder="person@example.com" autocomplete="off" /></label>
       <button class="primary-btn" type="submit">Invite</button>
     </form>
   `;
