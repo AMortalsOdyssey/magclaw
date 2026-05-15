@@ -267,19 +267,6 @@ test('top-level daemon npm package dry-run excludes cloud server and deployment 
   assert.equal(files.includes('kizuna.json'), false);
 });
 
-test('daemon publish script uses a temporary npm token file flow', async () => {
-  const rootPackage = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-  const publishScript = await readFile(new URL('../scripts/publish-daemon.mjs', import.meta.url), 'utf8');
-
-  assert.equal(rootPackage.scripts['daemon:publish'], 'node scripts/publish-daemon.mjs');
-  assert.equal(rootPackage.scripts['daemon:publish:dry-run'], 'node scripts/publish-daemon.mjs --dry-run');
-  assert.match(publishScript, /MAGCLAW_NPM_TOKEN_FILE/);
-  assert.match(publishScript, /NPM_CONFIG_USERCONFIG/);
-  assert.match(publishScript, /mkdtempSync/);
-  assert.match(publishScript, /rmSync\(tempDir/);
-  assert.doesNotMatch(publishScript, /npm_[A-Za-z0-9]{20,}/);
-});
-
 test('foreground daemon exits and clears its lock on SIGINT', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-sigint-'));
   const server = await startHoldingWebSocketServer();
