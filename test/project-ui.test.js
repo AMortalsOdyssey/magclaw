@@ -525,7 +525,8 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.doesNotMatch(checkIconStyles, /#ffd743|--magclaw-sun|#FFD800/i);
   assert.doesNotMatch(authGateSource, /owner invite/);
   assert.doesNotMatch(authGateSource, /admin account configured|Admin access required|Admin login/i);
-  assert.match(authGateSource, /Where humans and AI agents collaborate/);
+  assert.match(authGateSource, /Welcome to MagClaw/);
+  assert.doesNotMatch(authGateSource, /Use your organization account to continue/);
   assert.match(authGateSource, /cloud-login-error/);
   assert.match(authGateSource, /role="alert" aria-live="polite"/);
   assert.match(authGateSource, /value="\$\{escapeHtml\(cloudLoginDraftEmail\)\}"/);
@@ -538,7 +539,7 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.match(authGateSource, /<img src="\$\{BRAND_LOGO_SRC\}" alt="" \/>/);
   assert.match(authGateSource, /class="cloud-auth-shell"/);
   assert.match(authGateSource, /class="pixel-panel cloud-login-card"/);
-  assert.match(authGateSource, /id="cloud-login-title">Sign in/);
+  assert.match(authGateSource, /id="cloud-login-title">Welcome to MagClaw/);
   assert.match(styles, /\.cloud-auth-stage/);
   assert.match(styles, /\.cloud-auth-shell \{[\s\S]*background: #fffaf7/);
   assert.match(styles, /\.cloud-login-card,/);
@@ -563,17 +564,22 @@ test('cloud auth gate renders configured login providers with Feishu prioritized
   assert.match(app, /function cloudDefaultAuthProvider\(auth\)/);
   assert.match(authGateSource, /auth\.providers/);
   assert.match(authGateSource, /auth\.defaultProvider/);
-  assert.match(app, /data-auth-provider="\$\{escapeHtml\(provider\.id\)\}"/);
-  assert.match(app, /data-action="select-auth-provider"/);
-  assert.match(app, /if \(action === 'select-auth-provider'\)[\s\S]*await showCloudAuthGate\(null\)/);
+  assert.match(authGateSource, /showFeishuProvider/);
+  assert.match(authGateSource, /showPasswordProvider/);
+  assert.match(authGateSource, /cloud-login-divider/);
   assert.match(app, /Continue with Feishu/);
+  assert.match(app, /\/brand\/feishu-logo\.svg/);
+  assert.match(authGateSource, /samlee\.mobbin@gmail\.com/);
   assert.match(app, /href="\$\{escapeHtml\(feishuLoginUrl\(feishuProvider/);
-  assert.match(authGateSource, /activeProvider === 'email_password'/);
+  assert.match(app, /Log In/);
+  assert.match(authGateSource, /cloud-login-label-row/);
+  assert.doesNotMatch(authGateSource, /Feishu authorization/);
+  assert.doesNotMatch(authGateSource, /Scan with the Feishu app/);
   assert.match(authGateSource, /auth\.passwordLogin/);
-  assert.match(styles, /\.cloud-provider-tabs/);
+  assert.match(styles, /\.cloud-login-divider/);
   assert.match(styles, /\.cloud-oauth-panel/);
   assert.match(styles, /\.cloud-oauth-button/);
-  assert.match(styles, /\.cloud-feishu-mark/);
+  assert.match(styles, /\.cloud-oauth-button img/);
 });
 
 test('join-link auth keeps Feishu login on the join return path', async () => {

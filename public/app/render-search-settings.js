@@ -1300,14 +1300,10 @@ function renderFeishuOauthPanel(feishuProvider, returnTo = '') {
   if (!feishuProvider) return '';
   return `
     <div class="cloud-oauth-panel" data-auth-provider="feishu">
-      <div class="cloud-feishu-mark" aria-hidden="true">
-        <span></span><span></span><span></span><span></span>
-      </div>
-      <div class="cloud-oauth-copy">
-        <strong>Feishu authorization</strong>
-        <span>Scan with the Feishu app to authorize MagClaw.</span>
-      </div>
-      <a class="primary-btn cloud-login-submit cloud-oauth-button" href="${escapeHtml(feishuLoginUrl(feishuProvider, returnTo))}">Continue with Feishu</a>
+      <a class="cloud-oauth-button" href="${escapeHtml(feishuLoginUrl(feishuProvider, returnTo))}">
+        <img src="/brand/feishu-logo.svg" alt="" aria-hidden="true" />
+        <span>Continue with Feishu</span>
+      </a>
     </div>
   `;
 }
@@ -1433,26 +1429,29 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
   const createAccountLink = hasPasswordProvider
     ? '<p class="cloud-login-switch">No account? <a href="/create-account" data-action="none">Create one</a></p>'
     : '';
+  const showFeishuProvider = Boolean(feishuProvider);
+  const showPasswordProvider = hasPasswordProvider;
+  const loginDivider = showFeishuProvider && showPasswordProvider
+    ? '<div class="cloud-login-divider" role="separator"><span>OR</span></div>'
+    : '';
+  const passwordLoginForm = showPasswordProvider ? `
+        <form id="cloud-login-form" class="cloud-login-form" novalidate>
+          <label class="cloud-login-field"><span>Email</span><input name="email" type="email" autocomplete="email" value="${escapeHtml(cloudLoginDraftEmail)}" placeholder="samlee.mobbin@gmail.com" required /></label>
+          <label class="cloud-login-field"><span class="cloud-login-label-row"><span>Password</span><a href="/forgot-password" data-action="none">Forgot password?</a></span><input name="password" type="password" autocomplete="current-password" placeholder="Password" required /></label>
+          ${loginErrorHtml}
+          <button class="primary-btn cloud-login-submit" type="submit">Log In</button>
+          ${createAccountLink}
+        </form>` : '';
   const loginPanel = `
       <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
         ${brandHtml}
         <div class="cloud-login-heading">
-          <p>MagClaw</p>
-          <h1 id="cloud-login-title">Sign in</h1>
-          <span>${activeProvider === 'feishu' ? 'Use your organization account to continue.' : 'Where humans and AI agents collaborate.'}</span>
+          <h1 id="cloud-login-title">Welcome to MagClaw</h1>
         </div>
-        ${renderCloudProviderTabs(providers, activeProvider)}
-        ${activeProvider !== 'email_password' ? loginErrorHtml : ''}
-        ${activeProvider === 'feishu' ? renderFeishuOauthPanel(feishuProvider, loginReturnTo) : ''}
-        ${activeProvider === 'email_password' && hasPasswordProvider ? `
-        <form id="cloud-login-form" class="cloud-login-form" novalidate>
-          <label class="cloud-login-field"><span>Email</span><input name="email" type="email" autocomplete="email" value="${escapeHtml(cloudLoginDraftEmail)}" required /></label>
-          <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="current-password" placeholder="Password" required /></label>
-          ${loginErrorHtml}
-          <button class="primary-btn cloud-login-submit" type="submit">Sign in</button>
-          <p class="cloud-login-switch"><a href="/forgot-password" data-action="none">Forgot password?</a></p>
-          ${createAccountLink}
-        </form>` : ''}
+        ${showFeishuProvider ? renderFeishuOauthPanel(feishuProvider, loginReturnTo) : ''}
+        ${!showPasswordProvider ? loginErrorHtml : ''}
+        ${loginDivider}
+        ${passwordLoginForm}
       </section>
     `;
   const joinPanel = tokenContext.mode === 'join' ? `
