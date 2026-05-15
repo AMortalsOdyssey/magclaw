@@ -205,7 +205,7 @@ function renderProjectModal() {
 }
 
 function agentCanJoinNewChannel(agent) {
-  return agentIsActiveInWorkspace(agent) && !['offline', 'error', 'disabled', 'deleted'].includes(String(agentDisplayStatus(agent) || '').toLowerCase());
+  return agentIsActiveInWorkspace(agent);
 }
 
 function channelAssignableAgents() {

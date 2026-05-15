@@ -1194,9 +1194,12 @@ test('dm chat and task empty states use MagClaw-style simple surfaces', async ()
 test('create channel keeps agent members optional and manually selected', async () => {
   const app = await readAppSource();
   const channelModalSource = app.slice(app.indexOf('function renderChannelModal'), app.indexOf('function renderEditChannelModal'));
+  const joinHelperSource = app.slice(app.indexOf('function agentCanJoinNewChannel'), app.indexOf('function channelAssignableAgents'));
   const styles = await readStylesSource();
 
   assert.match(app, /function agentCanJoinNewChannel\(agent\)/);
+  assert.match(joinHelperSource, /return agentIsActiveInWorkspace\(agent\);/);
+  assert.doesNotMatch(joinHelperSource, /agentDisplayStatus|offline|error/);
   assert.match(channelModalSource, /Members <small>\(optional\)<\/small>/);
   assert.match(channelModalSource, /id="create-channel-member-search"/);
   assert.doesNotMatch(channelModalSource, /checked/);
