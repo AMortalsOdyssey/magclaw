@@ -897,6 +897,16 @@ export function createCloudPostgresStore(optionsInput = {}) {
     };
   }
 
+  function normalizedEmailForUserRow(user) {
+    const email = normalizeEmail(user?.email);
+    if (email) return email;
+    const oauth = jsonObject(jsonObject(user?.metadata).oauth);
+    const feishu = jsonObject(oauth.feishu);
+    const providerAccountId = String(feishu.providerAccountId || '').trim();
+    if (providerAccountId) return `oauth:feishu:${providerAccountId}`;
+    return `user:${String(user?.id || '').trim()}`;
+  }
+
   async function upsertUserSnapshot(client, user) {
     if (!user?.id) return;
     await client.query(`
@@ -923,7 +933,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     `, [
       user.id,
       user.email,
-      normalizeEmail(user.email),
+      normalizedEmailForUserRow(user),
       user.name || '',
       user.passwordHash || null,
       user.avatarUrl || '',
@@ -2072,7 +2082,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         ], users.filter((user) => user?.id).map((user) => [
           user.id,
           user.email,
-          normalizeEmail(user.email),
+          normalizedEmailForUserRow(user),
           user.name || '',
           user.passwordHash || null,
           user.avatarUrl || '',
@@ -2372,6 +2382,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       await withTransaction(client, 'persistAuthOperation', async () => {
         switch (operation.type) {
           case 'register-open-account':
+          case 'oauth-login':
             await upsertUserSnapshot(client, operation.user);
             await upsertSession(client, operation.session);
             break;

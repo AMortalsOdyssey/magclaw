@@ -1256,8 +1256,71 @@ function renderMembersSettingsTab() {
   return renderMembersDirectory({ context: 'settings' });
 }
 
+function cloudAuthProviders(auth) {
+  const providers = Array.isArray(auth?.providers)
+    ? auth.providers.filter((provider) => provider?.enabled !== false && provider?.id)
+    : [];
+  if (!providers.length && auth?.passwordLogin !== false) {
+    return [{ id: 'email_password', type: 'email_password', label: 'Email password', mode: 'password', enabled: true }];
+  }
+  return providers;
+}
+
+function cloudDefaultAuthProvider(auth) {
+  const providers = cloudAuthProviders(auth);
+  if (selectedAuthProvider && providers.some((provider) => provider.id === selectedAuthProvider)) return selectedAuthProvider;
+  if (auth?.defaultProvider && providers.some((provider) => provider.id === auth.defaultProvider)) return auth.defaultProvider;
+  const feishu = providers.find((provider) => provider.id === 'feishu');
+  return feishu?.id || providers[0]?.id || 'email_password';
+}
+
+function renderCloudProviderTabs(providers, activeProvider) {
+  if (providers.length <= 1) return '';
+  return `
+    <div class="cloud-provider-tabs" role="tablist" aria-label="Sign-in methods">
+      ${providers.map((provider) => `
+        <button class="${activeProvider === provider.id ? 'active' : ''}" type="button" role="tab" aria-selected="${activeProvider === provider.id ? 'true' : 'false'}" data-action="select-auth-provider" data-provider="${escapeHtml(provider.id)}" data-auth-provider="${escapeHtml(provider.id)}">
+          ${provider.id === 'feishu' ? '<span class="cloud-provider-dot cloud-provider-dot-feishu" aria-hidden="true"></span>' : '<span class="cloud-provider-dot" aria-hidden="true"></span>'}
+          <span>${escapeHtml(provider.label || (provider.id === 'feishu' ? 'Feishu' : 'Email password'))}</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function feishuLoginUrl(provider, returnTo = '') {
+  const base = String(provider?.loginUrl || '/api/cloud/auth/feishu/start');
+  const safeReturnTo = String(returnTo || '').trim();
+  if (!safeReturnTo) return base;
+  const separator = base.includes('?') ? '&' : '?';
+  return `${base}${separator}returnTo=${encodeURIComponent(safeReturnTo)}`;
+}
+
+function renderFeishuOauthPanel(feishuProvider, returnTo = '') {
+  if (!feishuProvider) return '';
+  return `
+    <div class="cloud-oauth-panel" data-auth-provider="feishu">
+      <div class="cloud-feishu-mark" aria-hidden="true">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <div class="cloud-oauth-copy">
+        <strong>Feishu authorization</strong>
+        <span>Scan with the Feishu app to authorize MagClaw.</span>
+      </div>
+      <a class="primary-btn cloud-login-submit cloud-oauth-button" href="${escapeHtml(feishuLoginUrl(feishuProvider, returnTo))}">Continue with Feishu</a>
+    </div>
+  `;
+}
+
 function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
   const auth = cloud.auth || {};
+  const configuredProviders = auth.providers;
+  const configuredDefaultProvider = auth.defaultProvider;
+  const providers = cloudAuthProviders({ ...auth, providers: configuredProviders });
+  const activeProvider = cloudDefaultAuthProvider({ ...auth, defaultProvider: configuredDefaultProvider });
+  selectedAuthProvider = activeProvider;
+  const feishuProvider = providers.find((provider) => provider.id === 'feishu');
+  const hasPasswordProvider = providers.some((provider) => provider.id === 'email_password') && auth.passwordLogin !== false;
   const loginError = String(errorMessage || '').trim();
   const loginErrorHtml = loginError
     ? `<div class="cloud-login-error" role="alert" aria-live="polite">${escapeHtml(loginError)}</div>`
@@ -1275,6 +1338,10 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
   const invitation = tokenContext.invitation || {};
   const reset = tokenContext.reset || {};
   const joinWorkspace = tokenContext.joinWorkspace || {};
+  const oauthLink = tokenContext.oauthLink || {};
+  const loginReturnTo = tokenContext.mode === 'join' && tokenContext.token
+    ? `/join/${encodeURIComponent(tokenContext.token || '')}`
+    : '';
   const brandHtml = `<div class="cloud-login-brand"><span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span></div>`;
   const registerPanel = tokenContext.mode === 'invite' ? `
       <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">
@@ -1363,15 +1430,21 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
         </form>`}
       </section>
     ` : '';
-  const createAccountLink = '<p class="cloud-login-switch">No account? <a href="/create-account" data-action="none">Create one</a></p>';
+  const createAccountLink = hasPasswordProvider
+    ? '<p class="cloud-login-switch">No account? <a href="/create-account" data-action="none">Create one</a></p>'
+    : '';
   const loginPanel = `
       <section class="pixel-panel cloud-login-card" aria-labelledby="cloud-login-title">
         ${brandHtml}
         <div class="cloud-login-heading">
           <p>MagClaw</p>
           <h1 id="cloud-login-title">Sign in</h1>
-          <span>Where humans and AI agents collaborate.</span>
+          <span>${activeProvider === 'feishu' ? 'Use your organization account to continue.' : 'Where humans and AI agents collaborate.'}</span>
         </div>
+        ${renderCloudProviderTabs(providers, activeProvider)}
+        ${activeProvider !== 'email_password' ? loginErrorHtml : ''}
+        ${activeProvider === 'feishu' ? renderFeishuOauthPanel(feishuProvider, loginReturnTo) : ''}
+        ${activeProvider === 'email_password' && hasPasswordProvider ? `
         <form id="cloud-login-form" class="cloud-login-form" novalidate>
           <label class="cloud-login-field"><span>Email</span><input name="email" type="email" autocomplete="email" value="${escapeHtml(cloudLoginDraftEmail)}" required /></label>
           <label class="cloud-login-field"><span>Password</span><input name="password" type="password" autocomplete="current-password" placeholder="Password" required /></label>
@@ -1379,7 +1452,7 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
           <button class="primary-btn cloud-login-submit" type="submit">Sign in</button>
           <p class="cloud-login-switch"><a href="/forgot-password" data-action="none">Forgot password?</a></p>
           ${createAccountLink}
-        </form>
+        </form>` : ''}
       </section>
     `;
   const joinPanel = tokenContext.mode === 'join' ? `
@@ -1414,6 +1487,46 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
         `)}
       </section>
     ` : '';
+  const oauthLinkPanel = tokenContext.mode === 'oauth-link' ? `
+      <section class="pixel-panel cloud-login-card cloud-token-card cloud-oauth-link-card" aria-labelledby="cloud-login-title">
+        ${brandHtml}
+        <div class="cloud-login-heading">
+          <p>MagClaw</p>
+          <h1 id="cloud-login-title">Link Feishu account</h1>
+          <span>Confirm that this Feishu identity belongs to your MagClaw account.</span>
+        </div>
+        ${tokenErrorHtml || `
+        <form id="feishu-link-form" class="cloud-login-form" novalidate>
+          <div class="join-link-summary">
+            <span class="settings-account-avatar">${profileAvatarInnerHtml({
+              human: {},
+              avatar: oauthLink.profile?.avatarUrl || '',
+              displayName: oauthLink.profile?.name || oauthLink.profile?.email || 'Feishu',
+              cssClass: 'settings-account-avatar-inner',
+            })}</span>
+            <div>
+              <strong>${escapeHtml(oauthLink.profile?.name || oauthLink.profile?.email || 'Feishu account')}</strong>
+              <small>${escapeHtml(oauthLink.profile?.email || 'No email returned by Feishu')}</small>
+            </div>
+          </div>
+          <div class="join-link-summary">
+            <span class="settings-account-avatar">${profileAvatarInnerHtml({
+              human: {},
+              avatar: oauthLink.account?.avatarUrl || '',
+              displayName: oauthLink.account?.name || oauthLink.account?.email || 'MagClaw',
+              cssClass: 'settings-account-avatar-inner',
+            })}</span>
+            <div>
+              <strong>${escapeHtml(oauthLink.account?.name || oauthLink.account?.email || 'MagClaw account')}</strong>
+              <small>${escapeHtml(oauthLink.account?.email || 'MagClaw user')}</small>
+            </div>
+          </div>
+          ${loginErrorHtml}
+          <button class="primary-btn cloud-login-submit" type="submit">Link and continue</button>
+          <button class="secondary-btn cloud-login-submit" type="button" data-action="cancel-feishu-link">Cancel</button>
+        </form>`}
+      </section>
+    ` : '';
   const loginPanels = tokenContext.mode === 'invite'
     ? registerPanel
     : tokenContext.mode === 'reset'
@@ -1426,7 +1539,9 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
             ? forgotSentPanel
             : tokenContext.mode === 'join'
               ? joinPanel
-              : loginPanel;
+              : tokenContext.mode === 'oauth-link'
+                ? oauthLinkPanel
+                : loginPanel;
 
   root.innerHTML = `
     <main class="cloud-auth-shell">

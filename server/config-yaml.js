@@ -37,26 +37,83 @@ function parseScalar(rawValue) {
 }
 
 export function parseSimpleYaml(text) {
-  const root = {};
-  const stack = [{ indent: -1, value: root }];
-  for (const rawLine of String(text || '').split(/\r?\n/)) {
-    if (!rawLine.trim() || rawLine.trimStart().startsWith('#')) continue;
-    const indent = rawLine.match(/^\s*/)?.[0].length || 0;
-    const line = rawLine.trim();
-    const match = line.match(/^([^:]+):(.*)$/);
-    if (!match) continue;
-    const key = match[1].trim();
-    const rawValue = match[2] || '';
-    while (stack.length > 1 && indent <= stack.at(-1).indent) stack.pop();
-    const parent = stack.at(-1).value;
-    if (!rawValue.trim()) {
-      parent[key] = {};
-      stack.push({ indent, value: parent[key] });
-    } else {
-      parent[key] = parseScalar(rawValue);
+  const lines = String(text || '').split(/\r?\n/)
+    .filter((rawLine) => rawLine.trim() && !rawLine.trimStart().startsWith('#'))
+    .map((rawLine) => ({
+      indent: rawLine.match(/^\s*/)?.[0].length || 0,
+      line: rawLine.trim(),
+    }));
+  if (!lines.length) return {};
+
+  function parseMappingEntry(target, key, rawValue, index, indent) {
+    if (rawValue.trim()) {
+      target[key] = parseScalar(rawValue);
+      return index + 1;
     }
+    const next = lines[index + 1];
+    if (!next || next.indent <= indent) {
+      target[key] = {};
+      return index + 1;
+    }
+    const [child, nextIndex] = parseBlock(index + 1, next.indent);
+    target[key] = child;
+    return nextIndex;
   }
-  return root;
+
+  function parseBlock(startIndex, indent) {
+    const sequence = lines[startIndex]?.line.startsWith('- ');
+    const value = sequence ? [] : {};
+    let index = startIndex;
+    while (index < lines.length) {
+      const current = lines[index];
+      if (current.indent < indent) break;
+      if (current.indent > indent) break;
+      if (sequence) {
+        if (!current.line.startsWith('- ')) break;
+        const itemText = current.line.slice(2).trim();
+        if (!itemText) {
+          const next = lines[index + 1];
+          if (!next || next.indent <= indent) {
+            value.push(null);
+            index += 1;
+          } else {
+            const [child, nextIndex] = parseBlock(index + 1, next.indent);
+            value.push(child);
+            index = nextIndex;
+          }
+          continue;
+        }
+        const match = itemText.match(/^([^:]+):(.*)$/);
+        if (!match) {
+          value.push(parseScalar(itemText));
+          index += 1;
+          continue;
+        }
+        const item = {};
+        index = parseMappingEntry(item, match[1].trim(), match[2] || '', index, indent);
+        while (index < lines.length && lines[index].indent > indent) {
+          const [continuation, nextIndex] = parseBlock(index, lines[index].indent);
+          if (continuation && typeof continuation === 'object' && !Array.isArray(continuation)) {
+            Object.assign(item, continuation);
+          }
+          index = nextIndex;
+        }
+        value.push(item);
+        continue;
+      }
+
+      if (current.line.startsWith('- ')) break;
+      const match = current.line.match(/^([^:]+):(.*)$/);
+      if (!match) {
+        index += 1;
+        continue;
+      }
+      index = parseMappingEntry(value, match[1].trim(), match[2] || '', index, indent);
+    }
+    return [value, index];
+  }
+
+  return parseBlock(0, lines[0].indent)[0] || {};
 }
 
 function setEnv(env, key, value) {
@@ -104,6 +161,7 @@ export function applyServerYamlConfig(options = {}) {
   const database = config.database || config.postgres || {};
   const storage = config.storage || {};
   const email = config.email || config.smtp || {};
+  const auth = config.auth || {};
   const runtime = config.runtime || {};
   const daemon = config.daemon || {};
   const rawDaemonConnectCommand = pick(daemon.connect_command, daemon.connectCommand);
@@ -170,6 +228,11 @@ export function applyServerYamlConfig(options = {}) {
   setEnv(env, 'MAGCLAW_MAIL_FROM', pick(email.from, joinNameAndAddress(email.from_name, email.from_address)));
   setEnv(env, 'MAGCLAW_MAIL_LOGO_URL', pick(email.logo_url, email.logoUrl));
 
+  const authProviders = pick(auth.providers, auth.login_providers, auth.loginProviders, auth.methods, auth.login_methods, auth.loginMethods);
+  if (Array.isArray(authProviders)) {
+    setEnv(env, 'MAGCLAW_AUTH_PROVIDERS', JSON.stringify(authProviders));
+  }
+
   setEnv(env, 'CODEX_MODEL', pick(runtime.codex_model, runtime.codexModel));
   setEnv(env, 'CODEX_PATH', pick(runtime.codex_path, runtime.codexPath));
   setEnv(env, 'MAGCLAW_CHAT_MODEL', pick(runtime.chat_model, runtime.chatModel));
@@ -200,18 +263,20 @@ export function applyServerYamlConfig(options = {}) {
     daemonConnectCommandTemplate,
   ));
 
-  return { loaded: true, config, path: configPath };
+  return { loaded: true, config, redacted: redactConfig(config), path: configPath };
 }
 
 export function redactConfig(config = {}) {
-  const clone = JSON.parse(JSON.stringify(config || {}));
-  for (const section of Object.values(clone)) {
-    if (!section || typeof section !== 'object') continue;
-    for (const key of Object.keys(section)) {
-      if (/password|secret|api_?key|token|url/i.test(key) && section[key]) {
-        section[key] = '[redacted]';
-      }
+  function redactValue(value, key = '') {
+    if (Array.isArray(value)) return value.map((item) => redactValue(item));
+    if (!value || typeof value !== 'object') {
+      return /password|secret|api_?key|token|url/i.test(key) && value ? '[redacted]' : value;
     }
+    const clone = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      clone[childKey] = redactValue(childValue, childKey);
+    }
+    return clone;
   }
-  return clone;
+  return redactValue(config || {});
 }

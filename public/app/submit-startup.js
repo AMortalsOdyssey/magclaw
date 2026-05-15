@@ -452,21 +452,32 @@ document.addEventListener('submit', async (event) => {
       window.history.replaceState({}, '', '/console/servers');
       toast('Server moved to Lost Space');
     }
-    if (form.id === 'cloud-login-form') {
-      cloudLoginDraftEmail = String(data.get('email') || '').trim();
-      const credentials = validateCloudLoginForm(form, data);
-      await api('/api/auth/login', {
+        if (form.id === 'cloud-login-form') {
+          cloudLoginDraftEmail = String(data.get('email') || '').trim();
+          const credentials = validateCloudLoginForm(form, data);
+          await api('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({
           email: credentials.email,
           password: credentials.password,
         }),
-      });
-      cloudLoginDraftEmail = '';
-      toast('Signed in');
-    }
-    if (form.id === 'cloud-open-register-form') {
-      const password = assertCloudPasswordPolicy(data.get('password'));
+          });
+          cloudLoginDraftEmail = '';
+          toast('Signed in');
+        }
+        if (form.id === 'feishu-link-form') {
+          const result = await api('/api/cloud/auth/feishu/link/confirm', {
+            method: 'POST',
+            body: '{}',
+          });
+          const returnTo = String(result.returnTo || '').trim();
+          if (window.history?.replaceState) window.history.replaceState({}, '', returnTo || '/console');
+          toast('Feishu account linked');
+          await refreshStateOrAuthGate();
+          skipFinalRefresh = true;
+        }
+        if (form.id === 'cloud-open-register-form') {
+          const password = assertCloudPasswordPolicy(data.get('password'));
       await api('/api/auth/register', {
         method: 'POST',
         body: JSON.stringify({

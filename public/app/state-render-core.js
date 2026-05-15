@@ -134,6 +134,7 @@ let notificationPrefs = normalizeNotificationPrefs(readJsonStorage(NOTIFICATION_
 let windowFocused = document.hasFocus();
 let eventSource = null;
 let cloudLoginDraftEmail = '';
+let selectedAuthProvider = '';
 let humanPresenceTimer = null;
 let humanPresenceInFlight = false;
 let routeServerSwitchAttempted = false;

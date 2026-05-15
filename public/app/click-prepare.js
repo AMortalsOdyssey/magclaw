@@ -102,6 +102,7 @@ async function prepareDocumentClick(event) {
   if (action === 'update-cloud-member-role' && target.matches?.('select')) return;
   const localOnlyActions = new Set([
     'set-view',
+    'open-account-settings',
     'set-settings-tab',
     'set-ui-language',
     'dismiss-app-flash',
@@ -244,6 +245,17 @@ async function prepareDocumentClick(event) {
   if (action === 'dismiss-app-flash') {
     appFlash = null;
     render();
+    return;
+  }
+  if (action === 'select-auth-provider') {
+    selectedAuthProvider = target.dataset.provider || '';
+    await showCloudAuthGate(null);
+    return;
+  }
+  if (action === 'cancel-feishu-link') {
+    await api('/api/cloud/auth/feishu/link/cancel', { method: 'POST', body: '{}' });
+    if (window.history?.replaceState) window.history.replaceState({}, '', '/');
+    await showCloudAuthGate(null);
     return;
   }
   if (action === 'toggle-server-notification-mute') {

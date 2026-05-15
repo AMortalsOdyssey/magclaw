@@ -10,6 +10,15 @@ data:
       public_url: "https://magclaw.multiego.me"
       deployment: "cloud"
       require_postgres: true
+    auth:
+      providers:
+        - type: "email_password"
+          label: "Email password"
+        - type: "feishu"
+          label: "Feishu"
+          app_id: "cli_replace_with_feishu_app_id"
+          app_secret: "replace-with-feishu-app-secret"
+          redirect_uri: "https://magclaw.multiego.me/api/cloud/auth/feishu/callback"
     database:
       postgres_url: "postgres://magclaw:change-me@postgres:5432/magclaw"
       name: "magclaw_server"

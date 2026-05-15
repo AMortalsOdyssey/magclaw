@@ -56,6 +56,13 @@ function response(assertion = () => {}) {
   };
 }
 
+function cookieHeaderFromSetCookie(value) {
+  return [value].flat()
+    .map((item) => String(item || '').split(';')[0])
+    .filter(Boolean)
+    .join('; ');
+}
+
 test('open account registration durably persists before issuing a session cookie', async () => {
   let persisted = false;
   const operations = [];
@@ -152,6 +159,431 @@ test('login persists a narrow auth operation before issuing a session cookie', a
   assert.equal(operations.length, 1);
   assert.equal(operations[0].session.userId, 'usr_login');
   assert.match(res.headers[0][1], /magclaw_session=/);
+});
+
+test('auth status exposes configured login providers with Feishu as the default provider', () => {
+  const previous = process.env.MAGCLAW_AUTH_PROVIDERS;
+  process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([
+    { type: 'email_password', label: 'Email password' },
+    {
+      type: 'feishu',
+      label: 'Feishu SSO',
+      app_id: 'cli_test',
+      app_secret: 'super-secret',
+      redirect_uri: 'https://magclaw.example.com/api/cloud/auth/feishu/callback',
+    },
+  ]);
+  try {
+    const { auth } = makeAuth(null);
+    const cloud = auth.publicCloudState(request());
+
+    assert.equal(cloud.auth.passwordLogin, true);
+    assert.equal(cloud.auth.defaultProvider, 'feishu');
+    assert.deepEqual(cloud.auth.providers, [
+      {
+        id: 'email_password',
+        type: 'email_password',
+        label: 'Email password',
+        mode: 'password',
+        enabled: true,
+      },
+      {
+        id: 'feishu',
+        type: 'feishu',
+        label: 'Feishu SSO',
+        mode: 'oauth',
+        enabled: true,
+        loginUrl: '/api/cloud/auth/feishu/start',
+      },
+    ]);
+    assert.equal(JSON.stringify(cloud.auth.providers).includes('super-secret'), false);
+    assert.equal(JSON.stringify(cloud.auth.providers).includes('cli_test'), false);
+  } finally {
+    if (previous === undefined) delete process.env.MAGCLAW_AUTH_PROVIDERS;
+    else process.env.MAGCLAW_AUTH_PROVIDERS = previous;
+  }
+});
+
+test('password login is disabled when only Feishu provider is configured', async () => {
+  const previous = process.env.MAGCLAW_AUTH_PROVIDERS;
+  process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([
+    {
+      type: 'feishu',
+      label: 'Feishu SSO',
+      app_id: 'cli_test',
+      app_secret: 'super-secret',
+      redirect_uri: 'https://magclaw.example.com/api/cloud/auth/feishu/callback',
+    },
+  ]);
+  try {
+    const createdAt = '2026-05-12T00:00:00.000Z';
+    const { auth } = makeAuth(null, {
+      cloud: {
+        users: [{
+          id: 'usr_login_disabled',
+          email: 'login-disabled@example.test',
+          name: 'Login Disabled User',
+          passwordHash: scryptPassword('password123'),
+          language: 'en',
+          createdAt,
+          updatedAt: createdAt,
+        }],
+      },
+    });
+
+    assert.equal(auth.publicCloudState(request()).auth.passwordLogin, false);
+    await assert.rejects(
+      () => auth.login({
+        email: 'login-disabled@example.test',
+        password: 'password123',
+      }, request(), response()),
+      /Email password sign-in is not enabled/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.MAGCLAW_AUTH_PROVIDERS;
+    else process.env.MAGCLAW_AUTH_PROVIDERS = previous;
+  }
+});
+
+test('Feishu callback exchanges code, creates a MagClaw session, and persists oauth metadata', async () => {
+  const previousProviders = process.env.MAGCLAW_AUTH_PROVIDERS;
+  const previousFetch = globalThis.fetch;
+  process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([
+    {
+      type: 'feishu',
+      label: 'Feishu SSO',
+      app_id: 'cli_test',
+      app_secret: 'super-secret',
+      redirect_uri: 'https://magclaw.example.com/api/cloud/auth/feishu/callback',
+    },
+  ]);
+  const fetchCalls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (String(url).includes('/auth/v3/app_access_token/internal')) {
+      const body = JSON.parse(options.body);
+      assert.equal(body.app_id, 'cli_test');
+      assert.equal(body.app_secret, 'super-secret');
+      return Response.json({ code: 0, msg: 'ok', app_access_token: 'app-token' });
+    }
+    if (String(url).includes('/authen/v1/access_token')) {
+      assert.equal(options.headers.authorization, 'Bearer app-token');
+      assert.equal(JSON.parse(options.body).code, 'oauth-code');
+      return Response.json({ code: 0, data: { access_token: 'user-token' } });
+    }
+    if (String(url).includes('/authen/v1/user_info')) {
+      assert.equal(options.headers.authorization, 'Bearer user-token');
+      return Response.json({
+        code: 0,
+        data: {
+          email: 'feishu@example.test',
+          name: 'Feishu User',
+          avatar_url: 'https://avatar.example.test/u.png',
+          open_id: 'ou_test',
+          union_id: 'on_test',
+          tenant_key: 'tenant_test',
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  };
+
+  const operations = [];
+  const repository = {
+    isEnabled: () => true,
+    async persistAuthOperation(operation) {
+      operations.push(operation);
+      assert.equal(operation.type, 'oauth-login');
+      assert.equal(operation.provider, 'feishu');
+      assert.equal(operation.user.email, 'feishu@example.test');
+      assert.equal(operation.user.metadata.oauth.feishu.openId, 'ou_test');
+      assert.equal(operation.user.metadata.oauth.feishu.unionId, 'on_test');
+    },
+  };
+  try {
+    const { auth, state } = makeAuth(repository);
+    const res = response();
+    const result = await auth.loginWithFeishuCallback(
+      new URL('https://magclaw.example.com/api/cloud/auth/feishu/callback?code=oauth-code&state=state-token'),
+      request('magclaw_feishu_oauth_state=state-token'),
+      res,
+    );
+
+    assert.equal(result.user.email, 'feishu@example.test');
+    assert.equal(state.cloud.users.length, 1);
+    assert.equal(state.cloud.users[0].passwordHash, '');
+    assert.equal(operations.length, 1);
+    assert.equal(fetchCalls.length, 3);
+    assert.equal(res.headers.length, 1);
+    assert.ok(Array.isArray(res.headers[0][1]));
+    assert.match(res.headers[0][1][0], /magclaw_session=/);
+    assert.match(res.headers[0][1][1], /magclaw_feishu_oauth_state=;/);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousProviders === undefined) delete process.env.MAGCLAW_AUTH_PROVIDERS;
+    else process.env.MAGCLAW_AUTH_PROVIDERS = previousProviders;
+  }
+});
+
+test('Feishu callback without email uses provider account identity and keeps account email empty', async () => {
+  const previousProviders = process.env.MAGCLAW_AUTH_PROVIDERS;
+  const previousFetch = globalThis.fetch;
+  process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([
+    {
+      type: 'feishu',
+      label: 'Feishu SSO',
+      app_id: 'cli_test',
+      app_secret: 'super-secret',
+      redirect_uri: 'https://magclaw.example.com/api/cloud/auth/feishu/callback',
+    },
+  ]);
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).includes('/auth/v3/app_access_token/internal')) {
+      return Response.json({ code: 0, msg: 'ok', app_access_token: 'app-token' });
+    }
+    if (String(url).includes('/authen/v1/access_token')) {
+      return Response.json({ code: 0, data: { access_token: 'user-token' } });
+    }
+    if (String(url).includes('/authen/v1/user_info')) {
+      return Response.json({
+        code: 0,
+        data: {
+          name: 'No Email Feishu',
+          avatar_url: 'https://avatar.example.test/no-email.png',
+          open_id: 'ou_no_email',
+          union_id: 'on_no_email',
+          tenant_key: 'tenant_test',
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  };
+
+  try {
+    const { auth, state } = makeAuth(null);
+    const first = await auth.loginWithFeishuCallback(
+      new URL('https://magclaw.example.com/api/cloud/auth/feishu/callback?code=oauth-code&state=state-token'),
+      request('magclaw_feishu_oauth_state=state-token'),
+      response(),
+    );
+    const second = await auth.loginWithFeishuCallback(
+      new URL('https://magclaw.example.com/api/cloud/auth/feishu/callback?code=oauth-code&state=state-token-2'),
+      request('magclaw_feishu_oauth_state=state-token-2'),
+      response(),
+    );
+
+    assert.equal(first.user.email, '');
+    assert.equal(second.user.id, first.user.id);
+    assert.equal(state.cloud.users.length, 1);
+    assert.equal(state.cloud.users[0].email, '');
+    assert.equal(state.cloud.users[0].metadata.oauth.feishu.providerAccountId, 'on_no_email');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousProviders === undefined) delete process.env.MAGCLAW_AUTH_PROVIDERS;
+    else process.env.MAGCLAW_AUTH_PROVIDERS = previousProviders;
+  }
+});
+
+test('Feishu callback requires explicit link confirmation before attaching to an existing email account', async () => {
+  const previousProviders = process.env.MAGCLAW_AUTH_PROVIDERS;
+  const previousFetch = globalThis.fetch;
+  process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([
+    {
+      type: 'feishu',
+      label: 'Feishu SSO',
+      app_id: 'cli_test',
+      app_secret: 'super-secret',
+      redirect_uri: 'https://magclaw.example.com/api/cloud/auth/feishu/callback',
+    },
+  ]);
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).includes('/auth/v3/app_access_token/internal')) {
+      return Response.json({ code: 0, msg: 'ok', app_access_token: 'app-token' });
+    }
+    if (String(url).includes('/authen/v1/access_token')) {
+      return Response.json({ code: 0, data: { access_token: 'user-token' } });
+    }
+    if (String(url).includes('/authen/v1/user_info')) {
+      return Response.json({
+        code: 0,
+        data: {
+          email: 'linked@example.test',
+          name: 'Feishu Linked',
+          avatar_url: 'https://avatar.example.test/linked.png',
+          open_id: 'ou_linked',
+          union_id: 'on_linked',
+          tenant_key: 'tenant_test',
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  };
+  const operations = [];
+  const repository = {
+    isEnabled: () => true,
+    async persistAuthOperation(operation) {
+      operations.push(operation);
+      assert.equal(operation.type, 'oauth-login');
+      assert.equal(operation.user.id, 'usr_existing');
+      assert.equal(operation.user.metadata.oauth.feishu.providerAccountId, 'on_linked');
+    },
+  };
+  try {
+    const createdAt = '2026-05-12T00:00:00.000Z';
+    const { auth, state } = makeAuth(repository, {
+      cloud: {
+        users: [{
+          id: 'usr_existing',
+          email: 'linked@example.test',
+          name: 'Existing User',
+          passwordHash: scryptPassword('password123'),
+          language: 'en',
+          createdAt,
+          updatedAt: createdAt,
+        }],
+      },
+    });
+    const pendingRes = response();
+    const pending = await auth.loginWithFeishuCallback(
+      new URL('https://magclaw.example.com/api/cloud/auth/feishu/callback?code=oauth-code&state=state-token'),
+      request('magclaw_feishu_oauth_state=state-token'),
+      pendingRes,
+    );
+
+    assert.equal(pending.pendingLink, true);
+    assert.equal(state.cloud.sessions.length, 0);
+    assert.equal(operations.length, 0);
+    assert.ok(Array.isArray(pendingRes.headers[0][1]));
+    assert.equal(pendingRes.headers[0][1].some((item) => String(item).startsWith('magclaw_session=')), false);
+
+    const linkCookie = cookieHeaderFromSetCookie(pendingRes.headers[0][1]);
+    const status = auth.feishuLinkStatus(request(linkCookie));
+    assert.equal(status.account.email, 'linked@example.test');
+    assert.equal(status.profile.email, 'linked@example.test');
+
+    const confirmRes = response();
+    const confirmed = await auth.confirmFeishuLink(request(linkCookie), confirmRes);
+    assert.equal(confirmed.user.id, 'usr_existing');
+    assert.equal(state.cloud.users[0].metadata.oauth.feishu.providerAccountId, 'on_linked');
+    assert.equal(operations.length, 1);
+    assert.match(confirmRes.headers[0][1][0], /magclaw_session=/);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousProviders === undefined) delete process.env.MAGCLAW_AUTH_PROVIDERS;
+    else process.env.MAGCLAW_AUTH_PROVIDERS = previousProviders;
+  }
+});
+
+test('Feishu authorization keeps a safe join-link return path through callback login', async () => {
+  const previousProviders = process.env.MAGCLAW_AUTH_PROVIDERS;
+  const previousFetch = globalThis.fetch;
+  process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([
+    {
+      type: 'feishu',
+      label: 'Feishu SSO',
+      app_id: 'cli_test',
+      app_secret: 'super-secret',
+      redirect_uri: 'https://magclaw.example.com/api/cloud/auth/feishu/callback',
+    },
+  ]);
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/auth/v3/app_access_token/internal')) {
+      return Response.json({ code: 0, msg: 'ok', app_access_token: 'app-token' });
+    }
+    if (String(url).includes('/authen/v1/access_token')) {
+      return Response.json({ code: 0, data: { access_token: 'user-token' } });
+    }
+    if (String(url).includes('/authen/v1/user_info')) {
+      return Response.json({
+        code: 0,
+        data: {
+          email: 'join-feishu@example.test',
+          name: 'Join Feishu',
+          open_id: 'ou_join',
+          union_id: 'on_join',
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  };
+  try {
+    const { auth } = makeAuth(null);
+    const authorization = auth.createFeishuAuthorization(request(), { returnTo: '/join/mc_join_safe' });
+    assert.ok(authorization.cookies.some((item) => item.startsWith('magclaw_feishu_oauth_state=')));
+    assert.ok(authorization.cookies.some((item) => item.startsWith('magclaw_feishu_oauth_return=')));
+    const state = new URL(authorization.redirectUrl).searchParams.get('state');
+    const callback = await auth.loginWithFeishuCallback(
+      new URL(`https://magclaw.example.com/api/cloud/auth/feishu/callback?code=oauth-code&state=${encodeURIComponent(state)}`),
+      request(cookieHeaderFromSetCookie(authorization.cookies)),
+      response(),
+    );
+    assert.equal(callback.returnTo, '/join/mc_join_safe');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousProviders === undefined) delete process.env.MAGCLAW_AUTH_PROVIDERS;
+    else process.env.MAGCLAW_AUTH_PROVIDERS = previousProviders;
+  }
+});
+
+test('join link acceptance works for a signed-in Feishu account without email', async () => {
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  const rawSession = 'no-email-session';
+  const rawJoin = 'mc_join_no_email';
+  const { auth, state } = makeAuth(null, {
+    cloud: {
+      users: [{
+        id: 'usr_no_email',
+        email: '',
+        name: 'No Email Feishu',
+        passwordHash: '',
+        avatarUrl: 'https://avatar.example.test/no-email.png',
+        language: 'en',
+        createdAt,
+        updatedAt: createdAt,
+        metadata: {
+          oauth: {
+            feishu: {
+              providerAccountId: 'on_no_email',
+              openId: 'ou_no_email',
+            },
+          },
+        },
+      }],
+      sessions: [{
+        id: 'sess_no_email',
+        userId: 'usr_no_email',
+        tokenHash: sha256(rawSession),
+        createdAt,
+        expiresAt: '2026-05-26T00:00:00.000Z',
+      }],
+      workspaces: [
+        { id: 'local', slug: 'local', name: 'Local', createdAt, updatedAt: createdAt },
+        { id: 'wsp_join', slug: 'join-team', name: 'Join Team', createdAt, updatedAt: createdAt },
+      ],
+      joinLinks: [{
+        id: 'jlink_no_email',
+        workspaceId: 'wsp_join',
+        tokenHash: sha256(rawJoin),
+        maxUses: 1,
+        usedCount: 0,
+        expiresAt: '2026-05-26T00:00:00.000Z',
+        revokedAt: null,
+        createdBy: 'usr_owner',
+        createdAt,
+        updatedAt: createdAt,
+      }],
+    },
+  });
+
+  const result = await auth.acceptJoinLink(
+    { token: rawJoin },
+    request(`${SESSION_COOKIE}=${rawSession}`),
+  );
+
+  assert.equal(result.workspace.id, 'wsp_join');
+  assert.equal(result.member.userId, 'usr_no_email');
+  assert.equal(state.cloud.joinLinks[0].usedCount, 1);
+  assert.equal(state.humans.find((human) => human.authUserId === 'usr_no_email')?.email, '');
 });
 
 test('console server switch stays local to the handling process', async () => {

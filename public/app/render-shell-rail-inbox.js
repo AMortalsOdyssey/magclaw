@@ -132,7 +132,7 @@ function renderRail() {
       ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>')}
       <span class="left-rail-spacer"></span>
       ${renderLeftRailButton('console', railMode, 'Console', '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 8h8"/><path d="M8 12h4"/><path d="M14 12h2"/><path d="M8 16h8"/>')}
-      ${renderLeftRailButton('settings', railMode, 'Settings', '<circle cx="12" cy="12" r="3"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="M5.6 5.6l2.1 2.1"/><path d="M16.3 16.3l2.1 2.1"/><path d="M18.4 5.6l-2.1 2.1"/><path d="M7.7 16.3l-2.1 2.1"/>')}
+      ${renderAccountRailButton(railMode)}
     </div>
   `;
 
@@ -168,6 +168,39 @@ function renderRail() {
       ${sidebarBody}
       </div>
     </aside>
+  `;
+}
+
+function accountRailInitial(user = {}, human = {}) {
+  const label = String(user.email || human.email || user.name || human.name || 'M').trim();
+  const match = label.match(/[a-zA-Z0-9\u4e00-\u9fff]/);
+  return (match?.[0] || 'M').toUpperCase();
+}
+
+function accountRailAvatarHtml(user = {}, human = {}) {
+  const avatar = String(human.avatar || human.avatarUrl || user.avatarUrl || '').trim();
+  if (avatar) return `<img src="${escapeHtml(avatar)}" alt="">`;
+  return `<span>${escapeHtml(accountRailInitial(user, human))}</span>`;
+}
+
+function renderAccountRailButton(activeNav) {
+  const user = appState?.cloud?.auth?.currentUser || null;
+  if (!user) {
+    return renderLeftRailButton('settings', activeNav, 'Settings', '<circle cx="12" cy="12" r="3"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="M5.6 5.6l2.1 2.1"/><path d="M16.3 16.3l2.1 2.1"/><path d="M18.4 5.6l-2.1 2.1"/><path d="M7.7 16.3l-2.1 2.1"/>');
+  }
+  const human = currentAccountHuman();
+  const label = user.email || human.email || user.name || human.name || 'MagClaw user';
+  const name = user.name || human.name || label;
+  const provider = user.metadata?.oauth?.feishu ? 'Feishu' : 'Email password';
+  return `
+    <button class="left-rail-btn account-rail-button${activeNav === 'settings' ? ' active' : ''}" type="button" data-action="open-account-settings" title="${escapeHtml(label)}" aria-label="Open account settings">
+      <span class="account-rail-avatar" aria-hidden="true">${accountRailAvatarHtml(user, human)}</span>
+      <span class="account-rail-popover" role="tooltip">
+        <strong>${escapeHtml(name)}</strong>
+        <small>${escapeHtml(label)}</small>
+        <em>${escapeHtml(provider)}</em>
+      </span>
+    </button>
   `;
 }
 

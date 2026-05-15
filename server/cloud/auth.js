@@ -1,5 +1,12 @@
+import crypto from 'node:crypto';
 import { canInviteRole, canRemoveRole, canUpdateMemberRole, cloudCapabilitiesForRole, normalizeCloudRole, roleAllows } from './roles.js';
-import { parseCookies, publicLinkOrigin, safeArray } from './auth-utils.js';
+import { parseCookies, publicLinkOrigin, requestOrigin, safeArray } from './auth-utils.js';
+import {
+  defaultAuthProviderId,
+  feishuProviderConfig,
+  hasAuthProvider,
+  publicAuthProviders,
+} from './auth-providers.js';
 import {
   basicAuthCredentials,
   clearSessionCookie,
@@ -36,6 +43,27 @@ function normalizeLanguagePreference(value) {
   if (raw === 'zh' || raw === 'zh-cn' || raw === 'cn' || raw === 'chinese') return 'zh-CN';
   if (raw === 'en' || raw === 'en-us' || raw === 'english') return 'en';
   return 'en';
+}
+
+const FEISHU_OAUTH_STATE_COOKIE = 'magclaw_feishu_oauth_state';
+const FEISHU_OAUTH_RETURN_COOKIE = 'magclaw_feishu_oauth_return';
+const FEISHU_LINK_COOKIE = 'magclaw_feishu_link';
+const FEISHU_OAUTH_COOKIE_TTL_SECONDS = 10 * 60;
+
+function jsonObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function safeRelativeReturnPath(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.length > 512) return '';
+  if (!raw.startsWith('/') || raw.startsWith('//')) return '';
+  try {
+    const parsed = new URL(raw, 'https://magclaw.local');
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return '';
+  }
 }
 
 export function createCloudAuth(deps) {
@@ -75,7 +103,7 @@ export function createCloudAuth(deps) {
     state.cloud.schemaVersion = Number(state.cloud.schemaVersion || 1);
     state.cloud.auth = {
       ...(state.cloud.auth || {}),
-      passwordLogin: true,
+      passwordLogin: hasAuthProvider('email_password'),
     };
     delete state.cloud.auth.allowSignups;
     delete state.cloud.auth.ownerInviteOnly;
@@ -452,6 +480,7 @@ export function createCloudAuth(deps) {
         const user = ensureCloudState().users.find((item) => item.id === session.userId) || null;
         return user && !user.disabledAt ? user : null;
       }
+      if (!hasAuthProvider('email_password')) return null;
       const credentials = basicAuthCredentials(req);
       if (!credentials?.email || !credentials.password) return null;
       const user = ensureCloudState().users.find((item) => item.email === credentials.email && !item.disabledAt);
@@ -558,6 +587,414 @@ export function createCloudAuth(deps) {
     return { session, cookie: sessionCookie(raw, req) };
   }
 
+  function oauthCookie(name, value, req, maxAgeSeconds = FEISHU_OAUTH_COOKIE_TTL_SECONDS) {
+    const secure = requestOrigin(req).startsWith('https://') || process.env.MAGCLAW_SECURE_COOKIES === '1';
+    return [
+      `${name}=${encodeURIComponent(value)}`,
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Lax',
+      `Max-Age=${maxAgeSeconds}`,
+      secure ? 'Secure' : '',
+    ].filter(Boolean).join('; ');
+  }
+
+  function oauthStateCookie(rawState, req) {
+    return oauthCookie(FEISHU_OAUTH_STATE_COOKIE, rawState, req);
+  }
+
+  function oauthReturnCookie(returnTo, req) {
+    return oauthCookie(FEISHU_OAUTH_RETURN_COOKIE, returnTo, req);
+  }
+
+  function feishuLinkCookie(value, req) {
+    return oauthCookie(FEISHU_LINK_COOKIE, value, req);
+  }
+
+  function clearOauthCookie(name) {
+    return `${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+  }
+
+  function clearOauthStateCookie() {
+    return clearOauthCookie(FEISHU_OAUTH_STATE_COOKIE);
+  }
+
+  function clearOauthReturnCookie() {
+    return clearOauthCookie(FEISHU_OAUTH_RETURN_COOKIE);
+  }
+
+  function clearFeishuLinkCookie() {
+    return clearOauthCookie(FEISHU_LINK_COOKIE);
+  }
+
+  function feishuOauthReturnTo(req) {
+    return safeRelativeReturnPath(parseCookies(req).get(FEISHU_OAUTH_RETURN_COOKIE) || '');
+  }
+
+  function feishuAuthErrorRedirect(message) {
+    const params = new URLSearchParams({ authError: message || 'Feishu sign-in failed.' });
+    return `/?${params.toString()}`;
+  }
+
+  function requireFeishuProvider(req) {
+    const provider = feishuProviderConfig(req);
+    if (!provider) {
+      const error = new Error('Feishu sign-in is not enabled.');
+      error.status = 404;
+      throw error;
+    }
+    if (!provider.appId || !provider.appSecret || !provider.redirectUri) {
+      const error = new Error('Feishu sign-in is not fully configured.');
+      error.status = 503;
+      throw error;
+    }
+    return provider;
+  }
+
+  function signFeishuPayload(payload, provider) {
+    const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = crypto.createHmac('sha256', provider.appSecret).update(data).digest('base64url');
+    return `${data}.${signature}`;
+  }
+
+  function verifyFeishuPayload(value, provider) {
+    const [data, signature] = String(value || '').split('.');
+    if (!data || !signature) return null;
+    const expected = crypto.createHmac('sha256', provider.appSecret).update(data).digest('base64url');
+    const actualBuffer = Buffer.from(signature);
+    const expectedBuffer = Buffer.from(expected);
+    if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
+      if (!payload || typeof payload !== 'object') return null;
+      if (Number(payload.expiresAt || 0) <= Date.now()) return null;
+      return payload;
+    } catch {
+      return null;
+    }
+  }
+
+  function createFeishuAuthorization(req, options = {}) {
+    const provider = requireFeishuProvider(req);
+    const rawState = `mc_feishu_${crypto.randomBytes(24).toString('base64url')}`;
+    const returnTo = safeRelativeReturnPath(options.returnTo);
+    const authorizationUrl = new URL('https://open.feishu.cn/open-apis/authen/v1/index');
+    authorizationUrl.searchParams.set('app_id', provider.appId);
+    authorizationUrl.searchParams.set('redirect_uri', provider.redirectUri);
+    authorizationUrl.searchParams.set('state', rawState);
+    const cookies = [oauthStateCookie(rawState, req)];
+    if (returnTo) cookies.push(oauthReturnCookie(returnTo, req));
+    return {
+      redirectUrl: authorizationUrl.toString(),
+      cookie: cookies,
+      cookies,
+    };
+  }
+
+  async function fetchFeishuJson(label, url, options = {}) {
+    console.info(`[cloud-auth] feishu request start action=${label}`);
+    const response = await fetch(url, options);
+    const body = await response.json().catch(() => ({}));
+    const code = body?.code;
+    console.info(`[cloud-auth] feishu request complete action=${label} status=${response.status} code=${code ?? 'n/a'}`);
+    if (!response.ok || (code !== undefined && code !== 0)) {
+      const message = body?.msg || body?.message || `Feishu ${label} failed.`;
+      const error = new Error(message);
+      error.status = response.ok ? 502 : response.status;
+      throw error;
+    }
+    return body;
+  }
+
+  async function feishuUserInfoForCode(code, provider) {
+    const appTokenBody = await fetchFeishuJson('app_access_token', 'https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        app_id: provider.appId,
+        app_secret: provider.appSecret,
+      }),
+    });
+    const appAccessToken = appTokenBody?.app_access_token || appTokenBody?.data?.app_access_token || '';
+    if (!appAccessToken) throw new Error('Feishu app_access_token was not returned.');
+
+    const userTokenBody = await fetchFeishuJson('user_access_token', 'https://open.feishu.cn/open-apis/authen/v1/access_token', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${appAccessToken}`,
+      },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        code,
+      }),
+    });
+    const userAccessToken = userTokenBody?.data?.access_token || userTokenBody?.data?.user_access_token || '';
+    if (!userAccessToken) throw new Error('Feishu user_access_token was not returned.');
+
+    const userInfoBody = await fetchFeishuJson('user_info', 'https://open.feishu.cn/open-apis/authen/v1/user_info', {
+      headers: { authorization: `Bearer ${userAccessToken}` },
+    });
+    return userInfoBody?.data || {};
+  }
+
+  function normalizeFeishuUserInfo(info) {
+    const email = normalizeEmail(info.email || info.enterprise_email);
+    if (email && !isValidEmail(email)) {
+      const error = new Error('Feishu returned an invalid email address.');
+      error.status = 400;
+      throw error;
+    }
+    const providerAccountId = String(info.union_id || info.open_id || info.user_id || email).trim();
+    if (!providerAccountId) {
+      const error = new Error('Feishu did not return a stable account identifier.');
+      error.status = 400;
+      throw error;
+    }
+    const name = String(info.name || info.en_name || (email ? email.split('@')[0] : 'Feishu user')).trim();
+    return {
+      email,
+      name,
+      avatarUrl: String(info.avatar_url || info.avatar_big || info.avatar_middle || info.avatar_thumb || '').trim(),
+      providerAccountId,
+      tenantKey: String(info.tenant_key || '').trim(),
+      openId: String(info.open_id || '').trim(),
+      unionId: String(info.union_id || '').trim(),
+      userId: String(info.user_id || '').trim(),
+    };
+  }
+
+  function feishuMetadata(user) {
+    return jsonObject(jsonObject(user?.metadata).oauth)?.feishu || {};
+  }
+
+  function userWithFeishuIdentity(profile) {
+    const providerAccountId = String(profile?.providerAccountId || '').trim();
+    if (!providerAccountId) return null;
+    return ensureCloudState().users.find((user) => (
+      !user.disabledAt
+      && String(feishuMetadata(user).providerAccountId || '').trim() === providerAccountId
+    )) || null;
+  }
+
+  function feishuLinkDiffers(user, profile) {
+    const existing = String(feishuMetadata(user).providerAccountId || '').trim();
+    return Boolean(existing && existing !== String(profile?.providerAccountId || '').trim());
+  }
+
+  function applyFeishuProfileToUser(user, profile, timestamp) {
+    if (profile.email && !user.email) user.email = profile.email;
+    user.name = user.name || profile.name;
+    user.avatarUrl = user.avatarUrl || profile.avatarUrl || '';
+    if (profile.email) user.emailVerifiedAt = user.emailVerifiedAt || timestamp;
+    user.updatedAt = timestamp;
+    user.metadata = {
+      ...jsonObject(user.metadata),
+      oauth: {
+        ...jsonObject(user.metadata?.oauth),
+        feishu: {
+          providerAccountId: profile.providerAccountId,
+          tenantKey: profile.tenantKey,
+          openId: profile.openId,
+          unionId: profile.unionId,
+          userId: profile.userId,
+          linkedAt: user.metadata?.oauth?.feishu?.linkedAt || timestamp,
+          lastLoginAt: timestamp,
+        },
+      },
+    };
+  }
+
+  function beginFeishuLinkConfirmation(user, profile, req, res, options = {}) {
+    const provider = requireFeishuProvider(req);
+    const payload = {
+      provider: 'feishu',
+      userId: user.id,
+      profile,
+      returnTo: safeRelativeReturnPath(options.returnTo),
+      expiresAt: Date.now() + FEISHU_OAUTH_COOKIE_TTL_SECONDS * 1000,
+    };
+    res.setHeader('Set-Cookie', [
+      feishuLinkCookie(signFeishuPayload(payload, provider), req),
+      clearOauthStateCookie(),
+      clearOauthReturnCookie(),
+    ]);
+    console.info(`[cloud-auth] feishu link confirmation required email=${profile.email} user=${user.id}`);
+    return {
+      pendingLink: true,
+      provider: 'feishu',
+      account: publicUser(user),
+      profile,
+      returnTo: payload.returnTo,
+    };
+  }
+
+  function pendingFeishuLink(req) {
+    const provider = requireFeishuProvider(req);
+    const payload = verifyFeishuPayload(parseCookies(req).get(FEISHU_LINK_COOKIE) || '', provider);
+    if (!payload || payload.provider !== 'feishu') {
+      const error = new Error('Feishu link confirmation has expired.');
+      error.status = 401;
+      throw error;
+    }
+    const profile = payload.profile || {};
+    const user = ensureCloudState().users.find((item) => item.id === payload.userId && !item.disabledAt);
+    if (!user) {
+      const error = new Error('MagClaw account was not found.');
+      error.status = 404;
+      throw error;
+    }
+    if (profile.email && normalizeEmail(user.email) !== normalizeEmail(profile.email)) {
+      const error = new Error('Feishu email no longer matches this MagClaw account.');
+      error.status = 409;
+      throw error;
+    }
+    if (feishuLinkDiffers(user, profile)) {
+      const error = new Error('This MagClaw account is already linked to another Feishu account.');
+      error.status = 409;
+      throw error;
+    }
+    return { user, profile, returnTo: safeRelativeReturnPath(payload.returnTo) };
+  }
+
+  function feishuLinkStatus(req) {
+    const pending = pendingFeishuLink(req);
+    return {
+      provider: 'feishu',
+      account: publicUser(pending.user),
+      profile: {
+        email: pending.profile.email || '',
+        name: pending.profile.name || '',
+        avatarUrl: pending.profile.avatarUrl || '',
+      },
+      returnTo: pending.returnTo,
+    };
+  }
+
+  async function loginWithFeishuProfile(profile, req, res, options = {}) {
+    const cloud = ensureCloudState();
+    const createdAt = now();
+    const providerUser = userWithFeishuIdentity(profile);
+    const emailUser = profile.email ? userWithEmail(profile.email) : null;
+    if (providerUser && emailUser && providerUser.id !== emailUser.id) {
+      const error = new Error('This Feishu account is already linked to a different MagClaw account.');
+      error.status = 409;
+      throw error;
+    }
+    let user = options.forceLinkUserId
+      ? cloud.users.find((item) => item.id === options.forceLinkUserId && !item.disabledAt)
+      : (providerUser || null);
+    if (!user && emailUser) {
+      if (feishuLinkDiffers(emailUser, profile)) {
+        const error = new Error('This MagClaw account is already linked to another Feishu account.');
+        error.status = 409;
+        throw error;
+      }
+      return beginFeishuLinkConfirmation(emailUser, profile, req, res, options);
+    }
+    const previousUser = user ? cloneRecord(user) : null;
+    let createdUser = false;
+    if (!user) {
+      user = {
+        id: makeUserId(),
+        email: profile.email || '',
+        name: profile.name,
+        passwordHash: '',
+        avatarUrl: profile.avatarUrl,
+        language: normalizeLanguagePreference(req.headers?.['accept-language'] || 'en'),
+        emailVerifiedAt: createdAt,
+        createdAt,
+        updatedAt: createdAt,
+        lastLoginAt: null,
+        metadata: {},
+      };
+      cloud.users.push(user);
+      createdUser = true;
+      console.info(`[cloud-auth] feishu account created email=${profile.email || '[none]'} user=${user.id}`);
+    }
+    if (!user) {
+      const error = new Error('MagClaw account was not found.');
+      error.status = 404;
+      throw error;
+    }
+    applyFeishuProfileToUser(user, profile, createdAt);
+
+    const member = memberForUser(user.id);
+    if (member) {
+      const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, {
+        humanId: member.humanId,
+        workspaceId: member.workspaceId,
+      });
+      if (human?.id && member.humanId !== human.id) member.humanId = human.id;
+      markHumanPresence(human, 'online');
+    }
+
+    const previousLastLoginAt = user.lastLoginAt || null;
+    const issued = issueSession(user, req);
+    try {
+      await persistAuthOperation({
+        type: 'oauth-login',
+        provider: 'feishu',
+        user: authUserRecord(user),
+        session: cloneRecord(issued.session),
+      });
+    } catch (error) {
+      removeArrayItem(cloud.sessions, issued.session);
+      if (createdUser) {
+        removeArrayItem(cloud.users, user);
+      } else if (previousUser) {
+        const index = cloud.users.findIndex((item) => item.id === previousUser.id);
+        if (index >= 0) cloud.users[index] = previousUser;
+        else Object.assign(user, previousUser);
+      }
+      user.lastLoginAt = previousLastLoginAt;
+      console.error(`[cloud-auth] feishu login persist failed email=${profile.email} user=${user.id}`, error);
+      throw error;
+    }
+    res.setHeader('Set-Cookie', [
+      issued.cookie,
+      clearOauthStateCookie(),
+      clearOauthReturnCookie(),
+      ...(options.clearLink ? [clearFeishuLinkCookie()] : []),
+    ]);
+    return { user: publicUser(user), member, workspace: primaryWorkspace(), returnTo: safeRelativeReturnPath(options.returnTo) };
+  }
+
+  async function loginWithFeishuCallback(url, req, res) {
+    const provider = requireFeishuProvider(req);
+    const returnTo = feishuOauthReturnTo(req);
+    const code = String(url.searchParams.get('code') || '').trim();
+    const stateParam = String(url.searchParams.get('state') || '').trim();
+    const stateCookie = parseCookies(req).get(FEISHU_OAUTH_STATE_COOKIE) || '';
+    if (!code) {
+      const error = new Error('Feishu authorization code is missing.');
+      error.status = 400;
+      throw error;
+    }
+    if (!stateParam || !stateCookie || stateParam !== stateCookie) {
+      const error = new Error('Feishu sign-in state is invalid.');
+      error.status = 400;
+      throw error;
+    }
+    const profile = normalizeFeishuUserInfo(await feishuUserInfoForCode(code, provider));
+    return loginWithFeishuProfile(profile, req, res, { returnTo });
+  }
+
+  async function confirmFeishuLink(req, res) {
+    const pending = pendingFeishuLink(req);
+    return loginWithFeishuProfile(pending.profile, req, res, {
+      forceLinkUserId: pending.user.id,
+      returnTo: pending.returnTo,
+      clearLink: true,
+    });
+  }
+
+  function cancelFeishuLink(req, res) {
+    pendingFeishuLink(req);
+    res.setHeader('Set-Cookie', clearFeishuLinkCookie());
+    return { ok: true };
+  }
+
   function inviteUrlForToken(raw, req, email = '') {
     const base = publicLinkOrigin(req);
     const params = new URLSearchParams({
@@ -630,6 +1067,10 @@ export function createCloudAuth(deps) {
       human.name = user.name || human.name || user.email.split('@')[0];
       human.email = user.email;
       human.role = normalizedRole;
+      if (user.avatarUrl && !human.avatarUrl && !human.avatar) {
+        human.avatarUrl = user.avatarUrl;
+        human.avatar = user.avatarUrl;
+      }
       human.status = 'online';
       human.lastSeenAt = now();
       human.presenceUpdatedAt = human.lastSeenAt;
@@ -649,6 +1090,11 @@ export function createCloudAuth(deps) {
   }
 
     async function login(body, req, res) {
+      if (!hasAuthProvider('email_password')) {
+        const error = new Error('Email password sign-in is not enabled.');
+        error.status = 403;
+        throw error;
+      }
       const cloud = ensureCloudState();
       const email = normalizeEmail(body.email);
       const user = cloud.users.find((item) => item.email === email && !item.disabledAt);
@@ -685,6 +1131,11 @@ export function createCloudAuth(deps) {
     }
 
     async function registerOpenAccount(body, req, res) {
+      if (!hasAuthProvider('email_password')) {
+        const error = new Error('Email password account creation is not enabled.');
+        error.status = 403;
+        throw error;
+      }
       const cloud = ensureCloudState();
       const email = normalizeEmail(body.email);
       if (!isValidEmail(email)) {
@@ -1545,7 +1996,7 @@ export function createCloudAuth(deps) {
         error.status = 400;
         throw error;
       }
-      if (activeUserWithEmail(finalEmail)) {
+      if (userWithEmail(finalEmail)) {
         const error = new Error('User already exists.');
         error.status = 409;
         throw error;
@@ -2034,9 +2485,11 @@ export function createCloudAuth(deps) {
       return {
         schemaVersion: cloud.schemaVersion,
         auth: {
-        initialized: cloud.users.length > 0,
-        loginRequired: isLoginRequired(),
-        passwordLogin: true,
+          initialized: cloud.users.length > 0,
+          loginRequired: isLoginRequired(),
+          passwordLogin: hasAuthProvider('email_password'),
+          providers: publicAuthProviders(req),
+          defaultProvider: defaultAuthProviderId(),
           storageBackend: storageBackend(),
           currentUser: publicUser(user),
           currentMember: member || null,
@@ -2083,6 +2536,12 @@ export function createCloudAuth(deps) {
     workspaceForRequest,
     initializeStorage,
     isLoginRequired,
+    createFeishuAuthorization,
+    feishuAuthErrorRedirect,
+    loginWithFeishuCallback,
+    feishuLinkStatus,
+    confirmFeishuLink,
+    cancelFeishuLink,
     login,
       logout,
       touchPresence,

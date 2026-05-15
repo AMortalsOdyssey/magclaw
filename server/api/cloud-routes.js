@@ -41,6 +41,15 @@ export async function handleCloudApi(req, res, url, deps) {
     }
   }
 
+  function sendRedirect(location, headers = {}) {
+    res.writeHead(302, {
+      location,
+      'cache-control': 'no-store',
+      ...headers,
+    });
+    res.end();
+  }
+
   function requireCloudRole(allowedRoles = []) {
     if (!cloudAuth?.isLoginRequired?.()) return true;
     return Boolean(cloudAuth.requireUser(req, res, sendError, allowedRoles));
@@ -67,6 +76,68 @@ export async function handleCloudApi(req, res, url, deps) {
       return true;
     }
     sendJson(res, 200, cloudAuth.publicCloudState(req));
+    return true;
+  }
+
+  if (req.method === 'GET' && (url.pathname === '/api/cloud/auth/feishu/start' || url.pathname === '/api/auth/feishu/start')) {
+    if (!cloudAuth) {
+      sendRedirect('/?authError=Cloud%20auth%20service%20is%20unavailable.');
+      return true;
+    }
+    try {
+      const result = cloudAuth.createFeishuAuthorization(req, {
+        returnTo: url.searchParams.get('returnTo') || '',
+      });
+      sendRedirect(result.redirectUrl, { 'set-cookie': result.cookie });
+    } catch (error) {
+      console.error('[cloud-auth] feishu authorization start failed', error);
+      sendRedirect(cloudAuth.feishuAuthErrorRedirect(error.message));
+    }
+    return true;
+  }
+
+  if (req.method === 'GET' && (url.pathname === '/api/cloud/auth/feishu/callback' || url.pathname === '/api/auth/feishu/callback')) {
+    if (!cloudAuth) {
+      sendRedirect('/?authError=Cloud%20auth%20service%20is%20unavailable.');
+      return true;
+    }
+    try {
+      const result = await cloudAuth.loginWithFeishuCallback(url, req, res);
+      sendRedirect(result.pendingLink ? '/?authLink=feishu' : (result.returnTo || '/console'));
+    } catch (error) {
+      console.error('[cloud-auth] feishu callback failed', error);
+      sendRedirect(cloudAuth.feishuAuthErrorRedirect(error.message));
+    }
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/cloud/auth/feishu/link-status') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.feishuLinkStatus(req));
+    if (result) sendJson(res, 200, result);
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/auth/feishu/link/confirm') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.confirmFeishuLink(req, res));
+    if (result) sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/auth/feishu/link/cancel') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.cancelFeishuLink(req, res));
+    if (result) sendJson(res, 200, result);
     return true;
   }
 

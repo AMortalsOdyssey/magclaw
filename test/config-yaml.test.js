@@ -67,3 +67,37 @@ fanout_api:
   assert.equal(env.MAGCLAW_FANOUT_API_FALLBACK_MODEL, undefined);
   assert.equal(env.MAGCLAW_FANOUT_TIMEOUT_MS, undefined);
 });
+
+test('server yaml maps modular auth providers without exposing nested secrets in redaction', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-config-yaml-auth-'));
+  const configPath = path.join(tmp, 'server.yaml');
+  const env = {};
+  await writeFile(configPath, `
+auth:
+  providers:
+    - type: email_password
+      label: "Email password"
+    - type: feishu
+      label: "Feishu"
+      app_id: "cli_test"
+      app_secret: "super-secret"
+      redirect_uri: "https://magclaw.example.com/api/cloud/auth/feishu/callback"
+`);
+
+  const result = applyServerYamlConfig({ paths: [configPath], env });
+
+  assert.equal(result.loaded, true);
+  const providers = JSON.parse(env.MAGCLAW_AUTH_PROVIDERS);
+  assert.deepEqual(providers, [
+    { type: 'email_password', label: 'Email password' },
+    {
+      type: 'feishu',
+      label: 'Feishu',
+      app_id: 'cli_test',
+      app_secret: 'super-secret',
+      redirect_uri: 'https://magclaw.example.com/api/cloud/auth/feishu/callback',
+    },
+  ]);
+  assert.equal(result.config.auth.providers[1].app_secret, 'super-secret');
+  assert.equal(result.redacted.auth.providers[1].app_secret, '[redacted]');
+});

@@ -1312,6 +1312,18 @@ document.addEventListener('click', async (event) => {
       const copied = await tryCopyTextToClipboard(target.dataset.url || '');
       toast(copied ? 'Join link copied' : 'Copy is unavailable');
     }
+    if (action === 'open-account-settings') {
+      railTab = 'settings';
+      activeView = 'cloud';
+      settingsTab = 'account';
+      selectedAgentId = null;
+      selectedHumanId = null;
+      selectedComputerId = null;
+      workspaceActivityDrawerOpen = false;
+      localStorage.setItem('railTab', railTab);
+      render();
+      syncBrowserRouteForActiveView();
+    }
     if (action === 'revoke-join-link') {
       await api(`/api/cloud/join-links/${encodeURIComponent(target.dataset.id || '')}/revoke`, { method: 'POST', body: '{}' });
       toast('Join link revoked');

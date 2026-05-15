@@ -35,6 +35,7 @@ function cloudAuthTokenFromLocation() {
   const params = new URLSearchParams(window.location.search);
   const token = params.get('token') || '';
   const path = window.location.pathname || '';
+  if (params.get('authLink') === 'feishu') return { mode: 'oauth-link', token: '' };
   if (path.startsWith('/create-account')) return { mode: 'create', token: '' };
   if (path.startsWith('/forgot-password/check-email')) {
     return { mode: 'forgot-sent', token: '', email: params.get('email') || '' };
@@ -47,8 +48,21 @@ function cloudAuthTokenFromLocation() {
   return { mode: 'invite', token };
 }
 
+function cloudAuthErrorFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  return String(params.get('authError') || '').trim();
+}
+
 async function loadCloudAuthTokenContext() {
   const context = cloudAuthTokenFromLocation();
+  if (context.mode === 'oauth-link') {
+    try {
+      const status = await api('/api/cloud/auth/feishu/link-status');
+      return { ...context, oauthLink: status || {} };
+    } catch (error) {
+      return { ...context, error: error.message || 'Feishu link confirmation is no longer available.' };
+    }
+  }
   if (!context.mode || !context.token) return context;
   try {
     if (context.mode === 'reset') {
@@ -89,7 +103,7 @@ async function showCloudAuthGate(error = null, options = {}) {
   } catch {
     // Keep the login shell available even if auth status is temporarily unavailable.
   }
-  const authErrorMessage = cloudAuthErrorMessage(error, options);
+  const authErrorMessage = cloudAuthErrorMessage(error, options) || cloudAuthErrorFromLocation();
   const tokenContext = await loadCloudAuthTokenContext();
   renderCloudAuthGate(cloud, authErrorMessage, tokenContext);
 }

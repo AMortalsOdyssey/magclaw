@@ -554,6 +554,52 @@ test('cloud auth gate uses token context for invite and reset forms', async () =
   assert.doesNotMatch(app.slice(app.indexOf("if (form.id === 'cloud-register-form')"), app.indexOf("if (form.id === 'cloud-reset-form')")), /email: data\.get\('email'\)/);
 });
 
+test('cloud auth gate renders configured login providers with Feishu prioritized', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const authGateSource = app.slice(app.indexOf('function renderCloudAuthGate('), app.indexOf('function renderBrowserSettingsTab()'));
+
+  assert.match(app, /function cloudAuthProviders\(auth\)/);
+  assert.match(app, /function cloudDefaultAuthProvider\(auth\)/);
+  assert.match(authGateSource, /auth\.providers/);
+  assert.match(authGateSource, /auth\.defaultProvider/);
+  assert.match(app, /data-auth-provider="\$\{escapeHtml\(provider\.id\)\}"/);
+  assert.match(app, /data-action="select-auth-provider"/);
+  assert.match(app, /if \(action === 'select-auth-provider'\)[\s\S]*await showCloudAuthGate\(null\)/);
+  assert.match(app, /Continue with Feishu/);
+  assert.match(app, /href="\$\{escapeHtml\(feishuLoginUrl\(feishuProvider/);
+  assert.match(authGateSource, /activeProvider === 'email_password'/);
+  assert.match(authGateSource, /auth\.passwordLogin/);
+  assert.match(styles, /\.cloud-provider-tabs/);
+  assert.match(styles, /\.cloud-oauth-panel/);
+  assert.match(styles, /\.cloud-oauth-button/);
+  assert.match(styles, /\.cloud-feishu-mark/);
+});
+
+test('join-link auth keeps Feishu login on the join return path', async () => {
+  const app = await readAppSource();
+  const authGateSource = app.slice(app.indexOf('function renderCloudAuthGate('), app.indexOf('function renderBrowserSettingsTab()'));
+
+  assert.match(authGateSource, /loginReturnTo/);
+  assert.match(authGateSource, /\/join\/\$\{encodeURIComponent\(tokenContext\.token/);
+  assert.match(app, /function feishuLoginUrl\(provider, returnTo = ''\)/);
+  assert.match(app, /returnTo/);
+});
+
+test('left rail settings entry renders as the signed-in user account avatar with hover details', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const railSource = app.slice(app.indexOf('function renderRail()'), app.indexOf('function currentServerProfile()'));
+
+  assert.match(app, /function renderAccountRailButton\(activeNav\)/);
+  assert.match(railSource, /renderAccountRailButton\(railMode\)/);
+  assert.match(app, /data-action="open-account-settings"/);
+  assert.match(app, /account-rail-popover/);
+  assert.match(app, /accountRailAvatarHtml/);
+  assert.match(styles, /\.account-rail-button/);
+  assert.match(styles, /\.account-rail-popover/);
+});
+
 test('browser favicon and shared brand assets use the selected Modular Claw logo', async () => {
   const index = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
   const app = await readAppSource();

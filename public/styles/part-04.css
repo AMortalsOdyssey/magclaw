@@ -348,6 +348,102 @@
   font-size: 11px;
 }
 
+.cloud-provider-tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid rgba(26, 0, 32, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 250, 247, 0.72);
+}
+
+.cloud-provider-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #5f4b5a;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.cloud-provider-tabs button.active {
+  border-color: rgba(26, 0, 32, 0.32);
+  background: #1a0020;
+  color: #fffaf7;
+  box-shadow: 1px 1px 0 rgba(26, 26, 26, 0.28);
+}
+
+.cloud-provider-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.cloud-provider-dot-feishu {
+  background: #19b47b;
+}
+
+.cloud-oauth-panel {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.cloud-feishu-mark {
+  display: grid;
+  grid-template-columns: repeat(2, 18px);
+  gap: 5px;
+  place-content: center;
+  width: 70px;
+  height: 70px;
+  border: 1px solid rgba(26, 0, 32, 0.22);
+  border-radius: 8px;
+  background: #f7fffb;
+  box-shadow: 1px 1px 0 rgba(26, 26, 26, 0.22);
+}
+
+.cloud-feishu-mark span {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: #19b47b;
+}
+
+.cloud-feishu-mark span:nth-child(2),
+.cloud-feishu-mark span:nth-child(3) {
+  background: #38a6ff;
+}
+
+.cloud-oauth-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.cloud-oauth-copy strong {
+  color: #1d1022;
+  font-size: 16px;
+}
+
+.cloud-oauth-copy span {
+  color: #4e3e4a;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.cloud-oauth-button {
+  width: min(100%, 240px);
+}
+
 .cloud-login-submit {
   display: inline-flex;
   align-items: center;
