@@ -19,7 +19,9 @@
     "web:start": "node server/index.js",
     "web:check": "node --check server/index.js",
     "web:docker:build": "docker build -f web/Dockerfile -t magclaw-web .",
-    "daemon:pack": "npm pack --dry-run --json ./daemon"
+    "daemon:pack": "npm pack --dry-run --json ./daemon",
+    "daemon:publish": "node scripts/publish-daemon.mjs",
+    "daemon:publish:dry-run": "node scripts/publish-daemon.mjs --dry-run"
   },
   "engines": {
     "node": ">=20"
