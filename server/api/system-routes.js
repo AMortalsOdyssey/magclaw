@@ -23,10 +23,12 @@ export async function handleSystemApi(req, res, url, deps) {
     getState,
     persistState,
     presenceHeartbeat,
+    publicBootstrapState,
     publicState,
     readJson,
     sendError,
     sendJson,
+    stateDeltaEnvelope,
     sseClients,
     updateFanoutApiConfig,
   } = deps;
@@ -59,6 +61,19 @@ export async function handleSystemApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
+    const options = {
+      spaceType: url.searchParams.get('spaceType') || '',
+      spaceId: url.searchParams.get('spaceId') || '',
+      threadMessageId: url.searchParams.get('threadMessageId') || '',
+      messageLimit: url.searchParams.get('messageLimit') || '',
+      threadRootLimit: url.searchParams.get('threadRootLimit') || '',
+      eventLimit: url.searchParams.get('eventLimit') || '',
+    };
+    sendJson(res, 200, (publicBootstrapState || publicState)(req, options));
+    return true;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/runtime') {
     sendJson(res, 200, await getRuntimeInfo());
     return true;
@@ -72,12 +87,15 @@ export async function handleSystemApi(req, res, url, deps) {
   if (req.method === 'GET' && url.pathname === '/api/events') {
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache, no-transform',
+      'cache-control': 'no-store, no-transform',
       connection: 'keep-alive',
       'x-accel-buffering': 'no',
     });
     res.magclawRequest = req;
-    res.write(`event: state\ndata: ${JSON.stringify(publicState(req))}\n\n`);
+    const initialPayload = typeof stateDeltaEnvelope === 'function'
+      ? stateDeltaEnvelope(req)
+      : { seq: 0, type: 'state_patch', payload: (publicBootstrapState || publicState)(req) };
+    res.write(`event: state-delta\ndata: ${JSON.stringify(initialPayload)}\n\n`);
     res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat())}\n\n`);
     sseClients.add(res);
     const cleanup = () => sseClients.delete(res);

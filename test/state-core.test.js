@@ -125,17 +125,18 @@ test('state core coalesces burst state broadcasts for SSE clients', async () => 
     core.broadcastState();
     core.broadcastState();
 
-    assert.equal(ssePackets(firstClient, 'state').length, 0);
+    assert.equal(ssePackets(firstClient, 'state-delta').length, 0);
     assert.deepEqual(cloudPushes, ['state_changed', 'state_changed', 'state_changed']);
 
     await new Promise((resolve) => setTimeout(resolve, 60));
 
-    assert.equal(ssePackets(firstClient, 'state').length, 1);
+    assert.equal(ssePackets(firstClient, 'state-delta').length, 1);
     assert.equal(ssePackets(firstClient, 'heartbeat').length, 1);
-    assert.equal(ssePackets(secondClient, 'state').length, 1);
+    assert.equal(ssePackets(secondClient, 'state-delta').length, 1);
     assert.equal(ssePackets(secondClient, 'heartbeat').length, 1);
-    assert.match(ssePackets(firstClient, 'state')[0], /"requestId":"first"/);
-    assert.match(ssePackets(secondClient, 'state')[0], /"requestId":"second"/);
+    assert.match(ssePackets(firstClient, 'state-delta')[0], /"type":"state_patch"/);
+    assert.match(ssePackets(firstClient, 'state-delta')[0], /"requestId":"first"/);
+    assert.match(ssePackets(secondClient, 'state-delta')[0], /"requestId":"second"/);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

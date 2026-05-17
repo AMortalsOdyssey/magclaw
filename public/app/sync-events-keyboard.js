@@ -1,6 +1,16 @@
+function bootstrapStatePath() {
+  const params = new URLSearchParams();
+  params.set('spaceType', selectedSpaceType || 'channel');
+  params.set('spaceId', selectedSpaceId || '');
+  if (threadMessageId) params.set('threadMessageId', threadMessageId);
+  params.set('messageLimit', '80');
+  params.set('threadRootLimit', '160');
+  return `/api/bootstrap?${params.toString()}`;
+}
+
 async function refreshState() {
   rememberPinnedBottomBeforeStateChange();
-  const nextState = await api('/api/state');
+  const nextState = await api(bootstrapStatePath());
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
   trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
   appState = nextState;
@@ -15,7 +25,7 @@ async function refreshState() {
   ) {
     routeServerSwitchAttempted = true;
     await api(`/api/console/servers/${encodeURIComponent(routeSlug)}/switch`, { method: 'POST', body: '{}' });
-    appState = await api('/api/state');
+    appState = await api(bootstrapStatePath());
     if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   }
   startHumanPresenceHeartbeat();
@@ -573,6 +583,31 @@ function applyPresenceHeartbeat(heartbeat) {
   });
 }
 
+async function refreshAfterSseGap() {
+  if (sseGapRefreshInFlight) return;
+  sseGapRefreshInFlight = true;
+  try {
+    applyStateUpdate(await api(bootstrapStatePath()));
+  } catch (error) {
+    console.warn('Failed to compensate SSE gap:', error);
+  } finally {
+    sseGapRefreshInFlight = false;
+  }
+}
+
+function applyStateDeltaEnvelope(envelope) {
+  const seq = Number(envelope?.seq || 0);
+  const hasGap = Boolean(seq && lastSseSeq && seq !== lastSseSeq + 1);
+  if (seq) lastSseSeq = seq;
+  if (hasGap) {
+    refreshAfterSseGap();
+    return;
+  }
+  if (envelope?.type === 'state_patch' && envelope.payload) {
+    applyStateUpdate(envelope.payload);
+  }
+}
+
 function connectEvents() {
   if (eventSource) return;
   const serverSlug = String(serverSlugFromPath() || currentServerSlug() || '').trim();
@@ -580,6 +615,9 @@ function connectEvents() {
     ? `/api/events?serverSlug=${encodeURIComponent(serverSlug)}`
     : '/api/events';
   eventSource = new EventSource(eventPath);
+  eventSource.addEventListener('state-delta', (event) => {
+    applyStateDeltaEnvelope(JSON.parse(event.data));
+  });
   eventSource.addEventListener('state', (event) => {
     applyStateUpdate(JSON.parse(event.data));
   });

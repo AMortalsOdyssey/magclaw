@@ -167,6 +167,24 @@ export async function handleMessageApi(req, res, url, deps) {
     return allowed;
   }
 
+  function paginationLimit(value, fallback = 80, max = 200) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.min(max, Math.max(1, Math.floor(parsed)));
+  }
+
+  function recordTime(record) {
+    const parsed = Date.parse(record?.createdAt || record?.updatedAt || '');
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function beforeCursorTime(url) {
+    const raw = url.searchParams.get('before') || '';
+    if (!raw) return Number.POSITIVE_INFINITY;
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+  }
+
   function workspaceIdForSpace(spaceType, spaceId, req) {
     const target = spaceType === 'channel'
       ? state.channels.find((channel) => channel.id === spaceId)
@@ -385,6 +403,39 @@ export async function handleMessageApi(req, res, url, deps) {
   }
 
   const messageMatch = url.pathname.match(/^\/api\/spaces\/(channel|dm)\/([^/]+)\/messages$/);
+  if (req.method === 'GET' && messageMatch) {
+    const [, spaceType, rawSpaceId] = messageMatch;
+    const spaceId = resolveSpaceId(spaceType, rawSpaceId, req);
+    const targetExists = spaceType === 'channel'
+      ? state.channels.some((channel) => channel.id === spaceId)
+      : state.dms.some((dm) => dm.id === spaceId);
+    if (!targetExists) {
+      sendError(res, 404, 'Conversation not found.');
+      return true;
+    }
+    if (spaceType === 'dm' && !canUseDm(req, spaceId)) {
+      sendError(res, 403, 'Conversation is not available.');
+      return true;
+    }
+    const limit = paginationLimit(url.searchParams.get('limit'));
+    const before = beforeCursorTime(url);
+    const matching = state.messages
+      .filter((message) => message.spaceType === spaceType && message.spaceId === spaceId)
+      .filter((message) => recordTime(message) < before)
+      .sort((a, b) => recordTime(b) - recordTime(a));
+    const page = matching.slice(0, limit);
+    const nextBefore = page.length ? page[page.length - 1].createdAt : '';
+    sendJson(res, 200, {
+      messages: page.slice().sort((a, b) => recordTime(a) - recordTime(b)),
+      pagination: {
+        limit,
+        hasMore: matching.length > page.length,
+        nextBefore,
+      },
+    });
+    return true;
+  }
+
   if (req.method === 'POST' && messageMatch) {
     const body = await readJson(req);
     const [, spaceType, rawSpaceId] = messageMatch;
@@ -537,6 +588,35 @@ export async function handleMessageApi(req, res, url, deps) {
   }
 
   const replyMatch = url.pathname.match(/^\/api\/messages\/([^/]+)\/replies$/);
+  if (req.method === 'GET' && replyMatch) {
+    const message = findMessage(replyMatch[1]);
+    if (!message) {
+      sendError(res, 404, 'Message not found.');
+      return true;
+    }
+    if (message.spaceType === 'dm' && !canUseDm(req, message.spaceId)) {
+      sendError(res, 403, 'Conversation is not available.');
+      return true;
+    }
+    const limit = paginationLimit(url.searchParams.get('limit'), 80, 300);
+    const before = beforeCursorTime(url);
+    const matching = state.replies
+      .filter((reply) => reply.parentMessageId === message.id)
+      .filter((reply) => recordTime(reply) < before)
+      .sort((a, b) => recordTime(b) - recordTime(a));
+    const page = matching.slice(0, limit);
+    const nextBefore = page.length ? page[page.length - 1].createdAt : '';
+    sendJson(res, 200, {
+      replies: page.slice().sort((a, b) => recordTime(a) - recordTime(b)),
+      pagination: {
+        limit,
+        hasMore: matching.length > page.length,
+        nextBefore,
+      },
+    });
+    return true;
+  }
+
   if (req.method === 'POST' && replyMatch) {
     const message = findMessage(replyMatch[1]);
     if (!message) {

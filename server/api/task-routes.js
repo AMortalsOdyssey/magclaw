@@ -37,6 +37,24 @@ export async function handleTaskApi(req, res, url, deps) {
   const state = getState();
   const allowedTaskStatuses = new Set(TASK_STATUS_VALUES);
 
+  function paginationLimit(value, fallback = 80, max = 200) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.min(max, Math.max(1, Math.floor(parsed)));
+  }
+
+  function recordTime(record) {
+    const parsed = Date.parse(record?.updatedAt || record?.createdAt || '');
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function beforeCursorTime(url) {
+    const raw = url.searchParams.get('before') || '';
+    if (!raw) return Number.POSITIVE_INFINITY;
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+  }
+
   function closeTask(task, actorId = 'hum_local', reason = 'Task closed.') {
     if (!task) return null;
     if (task.status === 'closed') return task;
@@ -52,6 +70,31 @@ export async function handleTaskApi(req, res, url, deps) {
     addTaskTimelineMessage(task, `× ${displayActor(actorId)} closed ${taskLabel(task)}`, 'task_closed');
     addCollabEvent('task_closed', `Task closed: ${task.title}`, { taskId: task.id, actorId });
     return task;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/tasks') {
+    const requestedSpaceType = url.searchParams.get('spaceType') || '';
+    const requestedSpaceId = url.searchParams.get('spaceId') || '';
+    const status = url.searchParams.get('status') || '';
+    const limit = paginationLimit(url.searchParams.get('limit'));
+    const before = beforeCursorTime(url);
+    const matching = (state.tasks || [])
+      .filter((task) => !requestedSpaceType || task.spaceType === requestedSpaceType)
+      .filter((task) => !requestedSpaceId || String(task.spaceId || '') === requestedSpaceId)
+      .filter((task) => !status || String(task.status || '') === status)
+      .filter((task) => recordTime(task) < before)
+      .sort((a, b) => recordTime(b) - recordTime(a));
+    const page = matching.slice(0, limit);
+    const nextBefore = page.length ? (page[page.length - 1].updatedAt || page[page.length - 1].createdAt || '') : '';
+    sendJson(res, 200, {
+      tasks: page,
+      pagination: {
+        limit,
+        hasMore: matching.length > page.length,
+        nextBefore,
+      },
+    });
+    return true;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/tasks') {

@@ -36,6 +36,24 @@ export function createSystemServices(deps) {
     return Array.isArray(value) ? value.filter(Boolean) : [];
   }
 
+  function clampLimit(value, fallback, max) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.min(max, Math.max(1, Math.floor(parsed)));
+  }
+
+  function recordTime(record) {
+    const parsed = Date.parse(record?.updatedAt || record?.createdAt || '');
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function newestRecords(items, limit) {
+    return records(items)
+      .slice()
+      .sort((a, b) => recordTime(b) - recordTime(a))
+      .slice(0, limit);
+  }
+
   function publicState(req = null) {
     const currentState = getState() || {};
     const cloud = typeof publicCloudState === 'function' ? publicCloudState(req) : undefined;
@@ -109,6 +127,92 @@ export function createSystemServices(deps) {
       releaseNotes: publicReleaseNotes(),
       runtime: runtimeSnapshot(),
       runningRunIds: [...runningProcesses.keys()],
+    };
+  }
+
+  function publicBootstrapState(req = null, options = {}) {
+    const snapshot = publicState(req);
+    if (!snapshot || !Array.isArray(snapshot.channels)) return snapshot;
+
+    const spaceType = ['channel', 'dm'].includes(options.spaceType) ? options.spaceType : 'channel';
+    const fallbackSpaceId = spaceType === 'dm'
+      ? snapshot.dms?.[0]?.id
+      : snapshot.channels?.[0]?.id;
+    const spaceId = String(options.spaceId || fallbackSpaceId || 'chan_all');
+    const threadMessageId = String(options.threadMessageId || '');
+    const messageLimit = clampLimit(options.messageLimit, 80, 200);
+    const threadRootLimit = clampLimit(options.threadRootLimit, 120, 300);
+    const eventLimit = clampLimit(options.eventLimit, 120, 300);
+
+    const selectedMessages = records(snapshot.messages)
+      .filter((message) => message.spaceType === spaceType && String(message.spaceId) === spaceId)
+      .slice()
+      .sort((a, b) => recordTime(b) - recordTime(a))
+      .slice(0, messageLimit)
+      .sort((a, b) => recordTime(a) - recordTime(b));
+    const threadRoots = newestRecords(
+      records(snapshot.messages).filter((message) => (
+        Number(message.replyCount || 0) > 0
+        || message.taskId
+        || records(message.savedBy).length
+        || String(message.id || '') === threadMessageId
+      )),
+      threadRootLimit,
+    );
+    const messageById = new Map();
+    for (const message of [...selectedMessages, ...threadRoots]) messageById.set(message.id, message);
+    if (threadMessageId && !messageById.has(threadMessageId)) {
+      const threadRoot = records(snapshot.messages).find((message) => String(message.id || '') === threadMessageId);
+      if (threadRoot) messageById.set(threadRoot.id, threadRoot);
+    }
+
+    const latestReplyByParent = new Map();
+    const selectedThreadReplies = [];
+    for (const reply of records(snapshot.replies).slice().sort((a, b) => recordTime(a) - recordTime(b))) {
+      if (messageById.has(reply.parentMessageId)) latestReplyByParent.set(reply.parentMessageId, reply);
+      if (threadMessageId && String(reply.parentMessageId || '') === threadMessageId) selectedThreadReplies.push(reply);
+    }
+    const replyById = new Map();
+    for (const reply of [...latestReplyByParent.values(), ...selectedThreadReplies]) replyById.set(reply.id, reply);
+
+    const taskIds = new Set();
+    for (const message of messageById.values()) {
+      if (message.taskId) taskIds.add(message.taskId);
+    }
+    const taskRecords = records(snapshot.tasks);
+    const openStatuses = new Set(['todo', 'in_progress', 'in_review']);
+    const visibleTasks = taskRecords.filter((task) => (
+      taskIds.has(task.id)
+      || (task.spaceType === spaceType && String(task.spaceId) === spaceId)
+      || openStatuses.has(String(task.status || 'todo'))
+    ));
+
+    const attachmentIds = new Set();
+    for (const record of [...messageById.values(), ...replyById.values(), ...visibleTasks]) {
+      for (const id of records(record.attachmentIds)) attachmentIds.add(String(id));
+    }
+
+    return {
+      ...snapshot,
+      bootstrap: {
+        mode: 'bootstrap',
+        fullState: false,
+        spaceType,
+        spaceId,
+        messageLimit,
+        threadRootLimit,
+        hasMoreMessages: records(snapshot.messages)
+          .filter((message) => message.spaceType === spaceType && String(message.spaceId) === spaceId).length > selectedMessages.length,
+      },
+      messages: [...messageById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
+      replies: [...replyById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
+      tasks: visibleTasks.sort((a, b) => recordTime(b) - recordTime(a)),
+      runs: newestRecords(snapshot.runs, 80).sort((a, b) => recordTime(a) - recordTime(b)),
+      workItems: newestRecords(snapshot.workItems, 200).sort((a, b) => recordTime(a) - recordTime(b)),
+      events: newestRecords(snapshot.events, eventLimit).sort((a, b) => recordTime(a) - recordTime(b)),
+      routeEvents: newestRecords(snapshot.routeEvents, 80).sort((a, b) => recordTime(a) - recordTime(b)),
+      systemNotifications: newestRecords(snapshot.systemNotifications, 120).sort((a, b) => recordTime(a) - recordTime(b)),
+      attachments: records(snapshot.attachments).filter((attachment) => attachmentIds.has(String(attachment.id))),
     };
   }
   
@@ -589,6 +693,7 @@ export function createSystemServices(deps) {
     pickFolderPath,
     publicConnection,
     publicSettings,
+    publicBootstrapState,
     publicState,
     runtimeSnapshot,
     updateFanoutApiConfig,

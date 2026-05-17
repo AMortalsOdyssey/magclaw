@@ -96,6 +96,30 @@ test('task route group ignores unrelated API paths', async () => {
   assert.equal(handled, false);
 });
 
+test('task route group pages tasks with space and status filters', async () => {
+  const deps = routeDeps();
+  deps.state.tasks = [
+    { id: 'task_old', title: 'Old', status: 'todo', spaceType: 'channel', spaceId: 'chan_all', updatedAt: '2026-05-01T00:00:00.000Z' },
+    { id: 'task_mid', title: 'Mid', status: 'todo', spaceType: 'channel', spaceId: 'chan_all', updatedAt: '2026-05-02T00:00:00.000Z' },
+    { id: 'task_new', title: 'New', status: 'todo', spaceType: 'channel', spaceId: 'chan_all', updatedAt: '2026-05-03T00:00:00.000Z' },
+    { id: 'task_done', title: 'Done', status: 'done', spaceType: 'channel', spaceId: 'chan_all', updatedAt: '2026-05-04T00:00:00.000Z' },
+  ];
+  const res = makeResponse();
+
+  const handled = await handleTaskApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/api/tasks?spaceType=channel&spaceId=chan_all&status=todo&limit=2'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.data.tasks.map((task) => task.id), ['task_new', 'task_mid']);
+  assert.equal(res.data.pagination.hasMore, true);
+  assert.equal(res.data.pagination.nextBefore, '2026-05-02T00:00:00.000Z');
+});
+
 test('task route group creates conversation-backed tasks', async () => {
   const deps = routeDeps({
     readJson: async () => ({

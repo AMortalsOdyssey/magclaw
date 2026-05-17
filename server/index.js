@@ -123,6 +123,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const WEB_ASSET_DIR = path.join(PUBLIC_DIR, '.magclaw-assets');
+const WEB_ASSET_MANIFEST_FILE = path.join(WEB_ASSET_DIR, 'manifest.json');
 const serverConfigLoad = applyServerYamlConfig({ root: ROOT, homeDir: os.homedir(), env: process.env });
 const LOCAL_FILE_STORAGE_FALLBACK = process.env.MAGCLAW_LOCAL_FILE_STORAGE_FALLBACK !== '0';
 const DEFAULT_DATA_DIR = process.env.MAGCLAW_DEPLOYMENT === 'cloud' && LOCAL_FILE_STORAGE_FALLBACK
@@ -383,6 +385,7 @@ const stateCore = createStateCore({
   normalizeConversationRecord: (...args) => normalizeConversationRecord(...args),
   now,
   publicState: (...args) => publicState(...args),
+  publicStateForSse: (...args) => publicBootstrapState(...args),
   queueCloudPush: (...args) => queueCloudPush(...args),
   sseClients,
   targetForConversation: (...args) => targetForConversation(...args),
@@ -427,6 +430,7 @@ const {
   resolveCodexRuntime,
   setExternalStatePersister,
   setAgentStatus,
+  stateDeltaEnvelope,
   stateJsonSnapshot,
 } = stateCore;
 
@@ -986,6 +990,7 @@ const {
   getRuntimeInfo,
   pickFolderPath,
   publicConnection,
+  publicBootstrapState,
   publicState,
   updateFanoutApiConfig,
 } = systemServices;
@@ -1250,10 +1255,12 @@ function systemApiDeps() {
     getState: () => state,
     persistState,
     presenceHeartbeat,
+    publicBootstrapState,
     publicState,
     readJson,
     sendError,
     sendJson,
+    stateDeltaEnvelope,
     sseClients,
     updateFanoutApiConfig,
   };
@@ -1524,9 +1531,86 @@ async function handleApi(req, res, url) {
   return false;
 }
 
+function readWebAssetManifest() {
+  try {
+    const manifest = JSON.parse(readFileSync(WEB_ASSET_MANIFEST_FILE, 'utf8'));
+    const script = String(manifest?.assets?.script || '');
+    const style = String(manifest?.assets?.style || '');
+    if (!script.startsWith('/.magclaw-assets/') || !style.startsWith('/.magclaw-assets/')) return null;
+    return { script, style };
+  } catch {
+    return null;
+  }
+}
+
+function renderAppIndexHtml() {
+  const source = readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  const manifest = readWebAssetManifest();
+  if (!manifest) return source;
+  return source
+    .replace(/^\s*<link rel="stylesheet" href="\/app\/release-settings\.css" \/>\s*\n?/m, '')
+    .replace(
+      /<link rel="stylesheet" href="\/styles\.css" \/>/,
+      `<link rel="stylesheet" href="${manifest.style}" />`,
+    )
+    .replace(
+      /<script type="module" src="\/app\.js"><\/script>/,
+      `<script defer src="${manifest.script}"></script>`,
+    );
+}
+
+function staticCacheControl(pathname, filePath, isAppShell = false) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (isAppShell || ext === '.html') return 'no-cache, must-revalidate';
+  if (/^\/\.magclaw-assets\/(?:app|style)-[a-f0-9]{12}\.(?:js|css)$/.test(pathname)) {
+    return 'public, max-age=31536000, immutable';
+  }
+  if (
+    pathname.startsWith('/brand/')
+    || pathname.startsWith('/avatars/')
+    || /^\/(?:favicon\.ico|apple-touch-icon\.png|android-chrome-\d+x\d+\.png|favicon-\d+x\d+\.png)$/.test(pathname)
+  ) {
+    return 'public, max-age=31536000, immutable';
+  }
+  if (['.js', '.css'].includes(ext)) return 'no-cache, must-revalidate';
+  if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.ico', '.woff', '.woff2'].includes(ext)) {
+    return 'public, max-age=86400, stale-while-revalidate=604800';
+  }
+  return 'no-cache, must-revalidate';
+}
+
+function compressibleStaticPath(filePath) {
+  return ['.js', '.css', '.html', '.svg', '.json'].includes(path.extname(filePath).toLowerCase());
+}
+
+function precompressedAsset(req, filePath) {
+  if (!compressibleStaticPath(filePath)) return null;
+  const acceptEncoding = String(req.headers['accept-encoding'] || '');
+  if (/\bbr\b/.test(acceptEncoding) && existsSync(`${filePath}.br`)) {
+    return { filePath: `${filePath}.br`, encoding: 'br' };
+  }
+  if (/\bgzip\b/.test(acceptEncoding) && existsSync(`${filePath}.gz`)) {
+    return { filePath: `${filePath}.gz`, encoding: 'gzip' };
+  }
+  return null;
+}
+
+function sendAppShell(res) {
+  const html = renderAppIndexHtml();
+  res.writeHead(200, {
+    'content-type': contentTypes.get('.html') || 'text/html; charset=utf-8',
+    'cache-control': staticCacheControl('/index.html', path.join(PUBLIC_DIR, 'index.html'), true),
+  });
+  res.end(html);
+}
+
 async function serveStatic(req, res, url) {
   let pathname = decodeURIComponent(url.pathname);
-  if (pathname === '/') pathname = '/index.html';
+  const appShellRequest = pathname === '/' || pathname === '/index.html';
+  if (appShellRequest) {
+    sendAppShell(res);
+    return;
+  }
   const requestedPath = safePathWithin(PUBLIC_DIR, pathname.replace(/^\/+/, ''));
   if (!requestedPath) {
     sendError(res, 403, 'Forbidden.');
@@ -1538,15 +1622,24 @@ async function serveStatic(req, res, url) {
     const info = await stat(filePath);
     if (info.isDirectory()) filePath = path.join(filePath, 'index.html');
   } catch {
-    filePath = path.join(PUBLIC_DIR, 'index.html');
+    sendAppShell(res);
+    return;
   }
 
   const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, {
+  const compressed = precompressedAsset(req, filePath);
+  const headers = {
     'content-type': contentTypes.get(ext) || 'application/octet-stream',
-    'cache-control': 'no-store',
-  });
-  createReadStream(filePath).pipe(res);
+    'cache-control': staticCacheControl(pathname, filePath),
+  };
+  if (compressed) {
+    headers['content-encoding'] = compressed.encoding;
+    headers.vary = 'accept-encoding';
+  } else if (compressibleStaticPath(filePath)) {
+    headers.vary = 'accept-encoding';
+  }
+  res.writeHead(200, headers);
+  createReadStream(compressed?.filePath || filePath).pipe(res);
 }
 
 async function handleRequest(req, res) {

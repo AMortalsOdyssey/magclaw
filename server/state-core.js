@@ -31,6 +31,7 @@ export function createStateCore(deps) {
     normalizeConversationRecord,
     now,
     publicState,
+    publicStateForSse = publicState,
     queueCloudPush,
     sseClients,
     targetForConversation,
@@ -61,6 +62,7 @@ export function createStateCore(deps) {
   let stateDb = null;
   let externalStatePersister = null;
   let stateBroadcastTimer = null;
+  let sseSeq = 0;
   const stateBroadcastDebounceMs = (() => {
     const parsed = Number(STATE_BROADCAST_DEBOUNCE_MS);
     return Number.isFinite(parsed) ? Math.min(1000, Math.max(0, parsed)) : 80;
@@ -885,13 +887,44 @@ export function createStateCore(deps) {
     }
   }
 
+  function nextSseSeq() {
+    sseSeq += 1;
+    return sseSeq;
+  }
+
+  function stateDeltaEnvelope(req = null, seq = nextSseSeq()) {
+    return {
+      seq,
+      type: 'state_patch',
+      createdAt: now(),
+      payload: publicStateForSse(req),
+    };
+  }
+
+  function broadcastStateDelta() {
+    const seq = nextSseSeq();
+    for (const res of sseClients) {
+      const packet = `event: state-delta\ndata: ${JSON.stringify(stateDeltaEnvelope(res.magclawRequest || null, seq))}\n\n`;
+      try {
+        res.write(packet);
+      } catch (error) {
+        sseClients.delete(res);
+        if (!expectedStreamClose(error)) {
+          const code = String(error?.code || error?.errno || 'UNKNOWN');
+          const message = String(error?.message || error || 'SSE broadcast error').replace(/\s+/g, ' ').slice(0, 300);
+          console.warn(`[state-core] sse broadcast error code=${code} message=${message}`);
+        }
+      }
+    }
+  }
+
   function flushStateBroadcast() {
     if (stateBroadcastTimer) {
       clearTimeout(stateBroadcastTimer);
       stateBroadcastTimer = null;
     }
     if (!sseClients.size) return;
-    broadcast('state', (req) => publicState(req));
+    broadcastStateDelta();
     broadcastHeartbeat();
   }
 
@@ -1044,6 +1077,7 @@ export function createStateCore(deps) {
     setAgentStatus,
     state: stateProxy,
     stateFullSnapshot,
+    stateDeltaEnvelope,
     stateJsonSnapshot,
   };
 }

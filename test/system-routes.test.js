@@ -42,6 +42,7 @@ function routeDeps(overrides = {}) {
     getState: () => state,
     persistState: async () => {},
     presenceHeartbeat: () => ({ agents: [] }),
+    publicBootstrapState: (_req, options) => ({ bootstrap: { options }, router: state.router }),
     publicState: () => ({ settings: state.settings, router: state.router }),
     readJson: async () => ({}),
     sendError: (res, statusCode, message) => {
@@ -85,6 +86,27 @@ test('system route group returns public state and ignores unrelated API paths', 
     new URL('http://local/api/messages'),
     deps,
   ), false);
+});
+
+test('system route group returns bootstrap state with route query options', async () => {
+  const deps = routeDeps();
+  const res = makeResponse();
+  assert.equal(await handleSystemApi(
+    { method: 'GET', on: () => {} },
+    res,
+    new URL('http://local/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=40&threadMessageId=msg_1'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.data.bootstrap.options, {
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    threadMessageId: 'msg_1',
+    messageLimit: '40',
+    threadRootLimit: '',
+    eventLimit: '',
+  });
 });
 
 test('system settings route updates runtime settings through injected state', async () => {

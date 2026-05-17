@@ -14,6 +14,7 @@ These rules are a living baseline for Codex sessions. Update them when the local
 ## Local Tests
 
 - Local cloud/storage verification should connect to PostgreSQL and use local directory attachment storage, not PVC.
+- Web performance changes should include `npm run build:web-assets` and a cold-start smoke against the production manifest. The current budget is one app JS request, one app CSS request, Brotli JS under 180 KB, and Brotli CSS under 70 KB.
 - Use an isolated schema or test database when running live PG tests. Do not run destructive tests against shared production data.
 - Prefer these local storage flags for server smoke tests:
 
@@ -52,4 +53,3 @@ curl -fsS https://<magclaw-host>/api/readyz
 
 - Delete or quarantine tests that only protect pre-cloud defaults, pre-workspace-ID behavior, or migration-only compatibility after the production path no longer needs them.
 - Keep tests that protect current production contracts: request-scoped workspace selection, PostgreSQL persistence, realtime invalidation, daemon pairing, auth/session behavior, and visible UI state.
-

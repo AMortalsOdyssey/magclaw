@@ -13,8 +13,10 @@ RUN npm ci --omit=dev
 COPY server ./server
 COPY public ./public
 COPY shared ./shared
+COPY scripts ./scripts
 COPY daemon/package.json ./daemon/package.json
 
+RUN npm run build:web-assets
 RUN mkdir -p /etc/magclaw /var/lib/magclaw/uploads
 
 EXPOSE 6543

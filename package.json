@@ -13,6 +13,8 @@
     "test:flow": "node scripts/test-runner.mjs flow",
     "test:pg": "node scripts/test-runner.mjs pg",
     "test:all": "node scripts/test-runner.mjs all",
+    "build:web-assets": "node scripts/build-web-assets.mjs",
+    "web:build": "npm run build:web-assets",
     "check": "node --check server/index.js",
     "cloud:db:init": "node server/cloud/postgres.js migrate",
     "cloud:db:status": "node server/cloud/postgres.js status",

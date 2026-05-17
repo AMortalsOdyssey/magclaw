@@ -27,6 +27,7 @@ const suites = {
     'test/fanout-toast.test.js',
     'test/intents.test.js',
     'test/magclaw-mcp-schema.test.js',
+    'test/message-routes.test.js',
     'test/mentions.test.js',
     'test/mission-routes.test.js',
     'test/path-utils.test.js',
@@ -39,6 +40,7 @@ const suites = {
     'test/system-routes.test.js',
     'test/task-routes.test.js',
     'test/ui-sse-render.test.js',
+    'test/web-assets.test.js',
   ],
   ui: [
     'test/console-server-form.test.js',
