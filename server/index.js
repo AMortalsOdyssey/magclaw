@@ -1297,7 +1297,11 @@ function requireAppApiAccess(req, res, url) {
     return false;
   }
   if (appApiAuthIsBypassed(url)) return true;
-  if (req.method === 'GET' && url.pathname === '/api/state' && cloudAuth.currentUser(req)) return true;
+  if (
+    req.method === 'GET'
+    && (url.pathname === '/api/state' || url.pathname === '/api/bootstrap')
+    && cloudAuth.currentUser(req)
+  ) return true;
   return Boolean(cloudAuth.requireUser(req, res, sendError, requiredRolesForAppApi(req, url)));
 }
 

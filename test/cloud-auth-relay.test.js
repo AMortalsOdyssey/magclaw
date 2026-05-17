@@ -401,6 +401,10 @@ test('console invitations stay repeatable and resolve per logged-in user', async
     assert.equal(consoleState.data.channels.length, 0);
     assert.equal(consoleState.data.cloud.myInvitations.length, 2);
     assert.equal(consoleState.data.cloud.auth.currentMember, null);
+    const bootstrapState = await request(server.baseUrl, '/api/bootstrap?messageLimit=80&threadRootLimit=160', { cookie: user.cookie });
+    assert.equal(bootstrapState.data.channels.length, 0);
+    assert.equal(bootstrapState.data.cloud.myInvitations.length, 2);
+    assert.equal(bootstrapState.data.cloud.auth.currentMember, null);
 
     const declined = await request(server.baseUrl, `/api/console/invitations/${first.data.invitation.id}/decline`, {
       method: 'POST',
