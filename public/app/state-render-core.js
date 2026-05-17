@@ -29,6 +29,7 @@ let appState = null;
 const initialRouteSpace = initialRouteState.space || initialSpaceFromLocation(initialUiState.selectedSpaceType || 'channel', initialUiState.selectedSpaceId || 'chan_all');
 let selectedSpaceType = initialRouteSpace.type;
 let selectedSpaceId = initialRouteSpace.id;
+let mobileHomeOpen = Boolean(initialRouteState.mobileHome || initialUiState.mobileHomeOpen || !initialRouteState.activeView);
 let activeView = initialRouteState.activeView || initialActiveViewFromLocation(initialUiState.activeView || 'space');
 let activeTab = initialUiState.activeTab || 'chat';
 let railTab = initialRouteState.railTab || initialUiState.railTab || localStorage.getItem('railTab') || 'spaces'; // 'spaces', 'members', 'computers', or 'settings'
@@ -169,6 +170,9 @@ function routeStateFromLocation(path = window.location.pathname || '') {
   if (value.startsWith('/console')) {
     return { activeView: 'console', consoleTab: consoleTabFromPath(value), railTab: 'console' };
   }
+  if (/^\/s\/[^/]+\/settings\/?$/.test(value)) {
+    return { activeView: 'cloud', settingsTab: 'root', railTab: 'settings' };
+  }
   const settingsMatch = value.match(/^\/s\/[^/]+\/settings\/([^/]+)/);
   if (settingsMatch) {
     const tab = decodeURIComponent(settingsMatch[1] || 'server');
@@ -200,6 +204,7 @@ function routeStateFromLocation(path = window.location.pathname || '') {
       },
     };
   }
+  if (/^\/s\/[^/]+\/?$/.test(value)) return { activeView: 'space', railTab: 'spaces', mobileHome: true };
   if (value.startsWith('/s/')) return { activeView: 'space', railTab: 'spaces' };
   return {};
 }
@@ -258,6 +263,7 @@ function routePathForActiveView() {
   if (activeView === 'console') return consolePath(consoleTab);
   const serverSlug = encodeURIComponent(currentServerSlug());
   if (activeView === 'space') {
+    if (mobileHomeOpen && typeof isMobileViewport === 'function' && isMobileViewport()) return `/s/${serverSlug}`;
     const kind = selectedSpaceType === 'dm' ? 'dms' : 'channels';
     return `/s/${serverSlug}/${kind}/${encodeURIComponent(selectedSpaceId || '')}`;
   }
@@ -274,6 +280,7 @@ function routePathForActiveView() {
   if (activeView === 'tasks') return `/s/${serverSlug}/tasks`;
   if (activeView === 'cloud') {
     const safeSettingsTab = settingsTab === 'system' ? 'server' : (settingsTab || 'account');
+    if (safeSettingsTab === 'root') return `/s/${serverSlug}/settings`;
     return `/s/${serverSlug}/settings/${encodeURIComponent(safeSettingsTab)}`;
   }
   return `/s/${serverSlug}`;

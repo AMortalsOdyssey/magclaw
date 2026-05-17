@@ -764,7 +764,7 @@ function ensureSelection() {
   if (membersLayout.humanId && typeof humanByIdAny === 'function' && !humanByIdAny(membersLayout.humanId)) {
     membersLayout = normalizeMembersLayout({ mode: 'channel' });
   }
-  if (activeView === 'members' && !selectedAgentId && !selectedHumanId) {
+  if (activeView === 'members' && !selectedAgentId && !selectedHumanId && !(typeof isMobileViewport === 'function' && isMobileViewport())) {
     selectMembersDefault();
   }
 }

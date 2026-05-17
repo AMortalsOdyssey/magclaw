@@ -34,9 +34,35 @@ function render() {
   };
   ensureSelection();
   persistUiState();
+  const mobileLayout = typeof isMobileViewport === 'function' && isMobileViewport() && typeof renderMobileShell === 'function';
   const inspectorHtml = renderInspector();
   const notificationBanner = renderNotificationPromptBanner();
   const appFlashBanner = renderAppFlashBanner();
+  if (mobileLayout) {
+    root.innerHTML = `
+      ${notificationBanner}
+      ${appFlashBanner}
+      ${renderMobileShell()}
+      ${modal ? renderModal() : ''}
+    `;
+    if (typeof translatePage === 'function') translatePage(root);
+    if (typeof ensureOfflineComputerConnectCommand === 'function') {
+      window.setTimeout(ensureOfflineComputerConnectCommand, 0);
+    }
+    window.requestAnimationFrame(() => {
+      restorePaneScrolls(scrollSnapshot);
+      restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
+      restoreProfileFormFocus(profileFocus);
+      restoreAgentDetailFieldFocus(agentDetailFocus);
+      restoreComputerNameFieldFocus(computerNameFocus);
+      restorePendingComposerFocus();
+      if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
+        workspaceActivityScrollToBottom = false;
+        scrollWorkspaceActivityToBottom('auto');
+      }
+    });
+    return;
+  }
   const taskFocusLayout = activeView === 'tasks';
   const settingsLayout = activeView === 'cloud' || activeView === 'console';
   const consoleLayout = activeView === 'console';
@@ -401,6 +427,7 @@ function settingsIcon(name, size = 20) {
     browser: '<rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 9h18"/>',
     server: '<rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h6"/><path d="M9 12h6"/><path d="M9 17h.01"/><path d="M15 17h.01"/>',
     system: '<path d="M4 7h16"/><path d="M4 17h16"/><path d="M8 3v8"/><path d="M16 13v8"/>',
+    console: '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 8h8"/><path d="M8 12h4"/><path d="M14 12h2"/><path d="M8 16h8"/>',
     release: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h6"/>',
     language: '<path d="M3 5h12"/><path d="M9 3v2"/><path d="M5 5c1.2 4.4 3.7 7.4 8 9"/><path d="M13 5c-.9 3.2-2.7 5.8-5.4 7.8"/><path d="M14 21l4-9 4 9"/><path d="M15.5 18h5"/>',
     lost: '<path d="M3 7h18"/><path d="M5 7l1 14h12l1-14"/><path d="M9 7V4h6v3"/><path d="M10 12h4"/><path d="M10 16h4"/>',

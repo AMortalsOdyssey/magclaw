@@ -389,6 +389,7 @@ function persistUiState() {
   const payload = {
     selectedSpaceType,
     selectedSpaceId,
+    mobileHomeOpen,
     activeView,
     activeTab,
     railTab,

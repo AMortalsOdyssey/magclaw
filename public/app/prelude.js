@@ -149,13 +149,14 @@ function readStoredUiState() {
     : ['space', 'members', 'tasks', 'inbox', 'threads', 'saved', 'search', 'missions', 'cloud', 'computers', 'console'].includes(rawView)
       ? rawView
     : 'space';
-  const validTab = ['chat', 'tasks'].includes(parsed.activeTab) ? parsed.activeTab : 'chat';
+  const validTab = ['chat', 'tasks', 'files'].includes(parsed.activeTab) ? parsed.activeTab : 'chat';
   const validRailTab = ['spaces', 'members', 'computers', 'settings'].includes(parsed.railTab) ? parsed.railTab : '';
-  const validSettingsTab = ['account', 'browser', 'server', 'members', 'lost-space', 'language', 'release'].includes(parsed.settingsTab) ? parsed.settingsTab : 'account';
+  const validSettingsTab = ['root', 'account', 'browser', 'server', 'members', 'lost-space', 'language', 'release'].includes(parsed.settingsTab) ? parsed.settingsTab : 'account';
   const validConsoleTab = ['overview', 'invitations', 'servers', 'lost-space'].includes(parsed.consoleTab) ? parsed.consoleTab : 'overview';
   return {
     selectedSpaceType: validSpaceType,
     selectedSpaceId: String(parsed.selectedSpaceId || ''),
+    mobileHomeOpen: parsed.mobileHomeOpen === true,
     activeView: validView,
     activeTab: validTab,
     railTab: validRailTab,

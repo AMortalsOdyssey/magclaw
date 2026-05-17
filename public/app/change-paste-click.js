@@ -170,6 +170,14 @@ document.addEventListener('click', async (event) => {
   if (!prepared) return;
   const { action, target, localOnlyActions } = prepared;
   try {
+    if (action === 'mobile-nav') {
+      openMobileRoot(target.dataset.nav || 'home');
+      return;
+    }
+    if (action === 'mobile-back') {
+      mobileNavigateBack();
+      return;
+    }
     if (action === 'select-agent-runtime') {
       const form = target.closest('#agent-form');
       if (!form || target.disabled) return;
@@ -202,6 +210,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'set-view') {
       if (railTab === 'members') rememberMembersLayoutFromCurrent();
       activeView = target.dataset.view;
+      mobileHomeOpen = false;
       if (activeView === 'cloud') railTab = 'settings';
       if (activeView === 'console') consoleTab = consoleTab || 'overview';
       if (activeView === 'computers' || activeView === 'missions') railTab = 'computers';
@@ -223,6 +232,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'set-settings-tab') {
       settingsTab = target.dataset.tab || 'account';
       activeView = 'cloud';
+      mobileHomeOpen = false;
       railTab = 'settings';
       modal = null;
       threadMessageId = null;
@@ -432,6 +442,7 @@ document.addEventListener('click', async (event) => {
       if (nav === 'chat') {
         railTab = 'spaces';
         activeView = 'space';
+        mobileHomeOpen = false;
         selectedSpaceType = selectedSpaceType || 'channel';
         selectedSpaceId = selectedSpaceId || appState?.channels?.[0]?.id || 'chan_all';
         selectedAgentId = null;
@@ -441,6 +452,7 @@ document.addEventListener('click', async (event) => {
       } else if (nav === 'tasks') {
         railTab = 'spaces';
         activeView = 'tasks';
+        mobileHomeOpen = false;
         selectedAgentId = null;
         selectedHumanId = null;
         selectedComputerId = null;
@@ -466,6 +478,7 @@ document.addEventListener('click', async (event) => {
       } else if (nav === 'settings') {
         railTab = 'settings';
         activeView = 'cloud';
+        mobileHomeOpen = false;
         selectedAgentId = null;
         selectedHumanId = null;
         selectedComputerId = null;
@@ -480,6 +493,7 @@ document.addEventListener('click', async (event) => {
       if (!installedRuntimes.length) await loadInstalledRuntimes();
       if (threadMessageId) inspectorReturnThreadId = threadMessageId;
       selectedAgentId = target.dataset.id;
+      mobileHomeOpen = false;
       selectedHumanId = null;
       selectedComputerId = null;
       agentDetailTab = 'profile';
@@ -503,6 +517,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'select-human-inspector') {
       if (threadMessageId) inspectorReturnThreadId = threadMessageId;
       selectedHumanId = target.dataset.id;
+      mobileHomeOpen = false;
       selectedAgentId = null;
       selectedComputerId = null;
       agentDetailEditState = { field: null };
@@ -523,6 +538,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'select-human') {
       selectedHumanId = target.dataset.id;
+      mobileHomeOpen = false;
       selectedAgentId = null;
       selectedComputerId = null;
       agentDetailEditState = { field: null };
@@ -542,6 +558,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'select-computer') {
       selectedComputerId = target.dataset.id;
+      mobileHomeOpen = false;
       selectedAgentId = null;
       selectedHumanId = null;
       humanDescriptionEditState = { humanId: null };
@@ -574,6 +591,12 @@ document.addEventListener('click', async (event) => {
         agentDetailEditState = { field: null };
         agentEnvEditState = null;
         selectedAgentWorkspaceFile = null;
+        if (typeof isMobileViewport === 'function' && isMobileViewport()) {
+          membersLayout = normalizeMembersLayout({ mode: 'directory' });
+          render();
+          syncBrowserRouteForActiveView();
+          return;
+        }
         activeView = 'space';
         membersLayout = normalizeMembersLayout({ mode: 'channel' });
         render();
@@ -592,6 +615,12 @@ document.addEventListener('click', async (event) => {
       if (activeView === 'members') {
         selectedHumanId = null;
         humanDescriptionEditState = { humanId: null };
+        if (typeof isMobileViewport === 'function' && isMobileViewport()) {
+          membersLayout = normalizeMembersLayout({ mode: 'directory' });
+          render();
+          syncBrowserRouteForActiveView();
+          return;
+        }
         activeView = 'space';
         membersLayout = normalizeMembersLayout({ mode: 'channel' });
         render();
@@ -724,6 +753,7 @@ document.addEventListener('click', async (event) => {
         selectedSpaceType = 'dm';
         selectedSpaceId = existingDm.id;
         activeView = 'space';
+        mobileHomeOpen = false;
         railTab = 'spaces';
         selectedAgentId = null;
         selectedHumanId = null;
@@ -738,6 +768,7 @@ document.addEventListener('click', async (event) => {
         selectedSpaceType = 'dm';
         selectedSpaceId = result.dm.id;
         activeView = 'space';
+        mobileHomeOpen = false;
         railTab = 'spaces';
         selectedAgentId = null;
         selectedHumanId = null;
@@ -764,6 +795,7 @@ document.addEventListener('click', async (event) => {
       }
       selectedSpaceType = 'dm';
       activeView = 'space';
+      mobileHomeOpen = false;
       railTab = 'spaces';
       selectedAgentId = null;
       selectedHumanId = null;
@@ -802,6 +834,7 @@ document.addEventListener('click', async (event) => {
       selectedSpaceType = target.dataset.type;
       selectedSpaceId = target.dataset.id;
       activeView = 'space';
+      mobileHomeOpen = false;
       activeTab = 'chat';
       threadMessageId = null;
       workspaceActivityDrawerOpen = false;
@@ -1051,6 +1084,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'open-thread') {
       threadMessageId = target.dataset.id;
+      mobileHomeOpen = false;
       workspaceActivityDrawerOpen = false;
       inspectorReturnThreadId = null;
       selectedSavedRecordId = null;
@@ -1081,6 +1115,7 @@ document.addEventListener('click', async (event) => {
         selectedSpaceType = message.spaceType;
         selectedSpaceId = message.spaceId;
         activeView = 'space';
+        mobileHomeOpen = false;
         activeTab = 'chat';
         threadMessageId = message.id;
         workspaceActivityDrawerOpen = false;
@@ -1171,11 +1206,13 @@ document.addEventListener('click', async (event) => {
         inspectorReturnThreadId = null;
         if (threadRoot) {
           threadMessageId = threadRoot.id;
+          mobileHomeOpen = false;
           render();
         } else {
           selectedSpaceType = record.spaceType;
           selectedSpaceId = record.spaceId;
           activeView = 'space';
+          mobileHomeOpen = false;
           activeTab = 'chat';
           threadMessageId = null;
           render();
@@ -1316,6 +1353,7 @@ document.addEventListener('click', async (event) => {
       railTab = 'settings';
       activeView = 'cloud';
       settingsTab = 'account';
+      mobileHomeOpen = false;
       selectedAgentId = null;
       selectedHumanId = null;
       selectedComputerId = null;

@@ -162,6 +162,7 @@ function openSearchResult(record) {
   activeView = 'space';
   activeTab = 'chat';
   threadMessageId = opensThread ? root.id : null;
+  mobileHomeOpen = false;
   render();
   scrollToMessage(root.id);
   if (record.parentMessageId) scrollToReply(record.id);
@@ -172,6 +173,7 @@ function openSearchEntity(targetType, targetId) {
     selectedSpaceType = targetType;
     selectedSpaceId = targetId;
     activeView = 'space';
+    mobileHomeOpen = false;
     activeTab = 'chat';
     threadMessageId = null;
     selectedSavedRecordId = null;
@@ -206,6 +208,7 @@ function focusSearchInputEnd() {
 
 function openSearchView() {
   activeView = 'search';
+  mobileHomeOpen = false;
   activeTab = 'chat';
   threadMessageId = null;
   inspectorReturnThreadId = null;
