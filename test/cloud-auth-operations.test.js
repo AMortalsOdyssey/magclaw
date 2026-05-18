@@ -325,6 +325,66 @@ test('Feishu callback exchanges code, creates a MagClaw session, and persists oa
   }
 });
 
+test('Feishu callback uses enterprise email from the user token response', async () => {
+  const previousProviders = process.env.MAGCLAW_AUTH_PROVIDERS;
+  const previousFetch = globalThis.fetch;
+  process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([
+    {
+      type: 'feishu',
+      label: 'Feishu SSO',
+      app_id: 'cli_test',
+      app_secret: 'super-secret',
+      redirect_uri: 'https://magclaw.example.com/api/cloud/auth/feishu/callback',
+    },
+  ]);
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).includes('/auth/v3/app_access_token/internal')) {
+      return Response.json({ code: 0, msg: 'ok', app_access_token: 'app-token' });
+    }
+    if (String(url).includes('/authen/v1/access_token')) {
+      assert.equal(options.headers.authorization, 'Bearer app-token');
+      return Response.json({
+        code: 0,
+        data: {
+          access_token: 'user-token',
+          enterprise_email: 'enterprise-feishu@example.test',
+          user_id: 'user_from_token',
+        },
+      });
+    }
+    if (String(url).includes('/authen/v1/user_info')) {
+      assert.equal(options.headers.authorization, 'Bearer user-token');
+      return Response.json({
+        code: 0,
+        data: {
+          name: 'Enterprise Feishu',
+          open_id: 'ou_enterprise',
+          union_id: 'on_enterprise',
+          tenant_key: 'tenant_test',
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  };
+
+  try {
+    const { auth, state } = makeAuth(null);
+    const result = await auth.loginWithFeishuCallback(
+      new URL('https://magclaw.example.com/api/cloud/auth/feishu/callback?code=oauth-code&state=state-token'),
+      request('magclaw_feishu_oauth_state=state-token'),
+      response(),
+    );
+
+    assert.equal(result.user.email, 'enterprise-feishu@example.test');
+    assert.equal(result.user.emailVerifiedAt, result.user.createdAt);
+    assert.equal(state.cloud.users[0].metadata.oauth.feishu.userId, 'user_from_token');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousProviders === undefined) delete process.env.MAGCLAW_AUTH_PROVIDERS;
+    else process.env.MAGCLAW_AUTH_PROVIDERS = previousProviders;
+  }
+});
+
 test('Feishu callback without email uses provider account identity and keeps account email empty', async () => {
   const previousProviders = process.env.MAGCLAW_AUTH_PROVIDERS;
   const previousFetch = globalThis.fetch;
@@ -376,6 +436,7 @@ test('Feishu callback without email uses provider account identity and keeps acc
     assert.equal(second.user.id, first.user.id);
     assert.equal(state.cloud.users.length, 1);
     assert.equal(state.cloud.users[0].email, '');
+    assert.equal(state.cloud.users[0].emailVerifiedAt, null);
     assert.equal(state.cloud.users[0].metadata.oauth.feishu.providerAccountId, 'on_no_email');
   } finally {
     globalThis.fetch = previousFetch;

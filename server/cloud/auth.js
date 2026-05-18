@@ -735,7 +735,15 @@ export function createCloudAuth(deps) {
     const userInfoBody = await fetchFeishuJson('user_info', 'https://open.feishu.cn/open-apis/authen/v1/user_info', {
       headers: { authorization: `Bearer ${userAccessToken}` },
     });
-    return userInfoBody?.data || {};
+    const tokenProfile = jsonObject(userTokenBody?.data);
+    const userInfo = jsonObject(userInfoBody?.data);
+    return {
+      ...tokenProfile,
+      ...userInfo,
+      email: userInfo.email || tokenProfile.email || '',
+      enterprise_email: userInfo.enterprise_email || tokenProfile.enterprise_email || '',
+      user_id: userInfo.user_id || tokenProfile.user_id || '',
+    };
   }
 
   function normalizeFeishuUserInfo(info) {
@@ -902,7 +910,7 @@ export function createCloudAuth(deps) {
         passwordHash: '',
         avatarUrl: profile.avatarUrl,
         language: normalizeLanguagePreference(req.headers?.['accept-language'] || 'en'),
-        emailVerifiedAt: createdAt,
+        emailVerifiedAt: profile.email ? createdAt : null,
         createdAt,
         updatedAt: createdAt,
         lastLoginAt: null,
