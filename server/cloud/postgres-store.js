@@ -196,8 +196,26 @@ function spaceType(value) {
   return ['channel', 'dm'].includes(type) ? type : 'channel';
 }
 
+function isDefaultLocalWorkspacePlaceholder(workspace, cloud) {
+  const id = String(workspace?.id || '').trim();
+  if (id !== 'local') return false;
+  const slug = String(workspace?.slug || workspace?.id || '').trim();
+  const hasOwner = Boolean(workspace?.ownerUserId || workspace?.owner_user_id);
+  const hasMember = safeArray(cloud?.workspaceMembers).some((member) => String(member?.workspaceId || '') === id);
+  return (!slug || slug === 'local') && !hasOwner && !hasMember;
+}
+
+function durableCloudWorkspaces(cloud) {
+  return safeArray(cloud?.workspaces)
+    .filter((workspace) => workspace?.id && !isDefaultLocalWorkspacePlaceholder(workspace, cloud));
+}
+
 function workspaceIds(cloud) {
-  return safeArray(cloud?.workspaces).map((workspace) => workspace.id).filter(Boolean);
+  return durableCloudWorkspaces(cloud).map((workspace) => workspace.id).filter(Boolean);
+}
+
+function fallbackWorkspaceId(cloud) {
+  return workspaceIds(cloud)[0] || '';
 }
 
 function defaultWorkspaceId(state, cloud) {
@@ -1671,7 +1689,10 @@ export function createCloudPostgresStore(optionsInput = {}) {
           await upsertUserSnapshot(client, user);
         }
 
-        for (const workspace of safeArray(cloud.workspaces)) {
+        const workspaceIdsForPersist = new Set(workspaceIds(cloud));
+        const defaultPersistWorkspaceId = fallbackWorkspaceId(cloud);
+
+        for (const workspace of durableCloudWorkspaces(cloud)) {
           await client.query(`
             INSERT INTO ${table('cloud_workspaces')}
               (id, slug, name, avatar, onboarding_agent_id, new_agent_greeting_enabled,
@@ -1702,7 +1723,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           ]);
         }
 
-        for (const member of safeArray(cloud.workspaceMembers)) {
+        for (const member of safeArray(cloud.workspaceMembers).filter((item) => workspaceIdsForPersist.has(item?.workspaceId))) {
           await client.query(`
             INSERT INTO ${table('cloud_workspace_members')}
               (id, workspace_id, user_id, human_id, role, status, joined_at,
@@ -1764,6 +1785,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         `);
 
         for (const invitation of safeArray(cloud.invitations)) {
+          if (!workspaceIdsForPersist.has(invitation?.workspaceId)) continue;
           await client.query(`
               INSERT INTO ${table('cloud_invitations')}
                 (id, workspace_id, human_id, email, normalized_email, role, token_hash,
@@ -1805,6 +1827,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         }
 
         for (const joinLink of safeArray(cloud.joinLinks)) {
+          if (!workspaceIdsForPersist.has(joinLink?.workspaceId)) continue;
           await client.query(`
             INSERT INTO ${table('cloud_join_links')}
               (id, workspace_id, token_hash, max_uses, used_count, expires_at,
@@ -1841,8 +1864,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
         for (const pair of safeArray(cloud.pairingTokens)) {
           const provisionalComputer = pair?.metadata?.provisionalComputer && jsonObject(pair.metadata.computer);
           if (!pair?.computerId || !provisionalComputer?.id || computerIdsForPersist.has(pair.computerId)) continue;
-          const workspaceId = pair.workspaceId || provisionalComputer.workspaceId || cloud.workspaces?.[0]?.id;
-          if (!workspaceId) continue;
+          const workspaceId = pair.workspaceId || provisionalComputer.workspaceId || defaultPersistWorkspaceId;
+          if (!workspaceId || !workspaceIdsForPersist.has(workspaceId)) continue;
           computersForPersist.push({
             ...provisionalComputer,
             id: pair.computerId,
@@ -1856,19 +1879,19 @@ export function createCloudPostgresStore(optionsInput = {}) {
           console.warn(`[postgres-store] restored provisional pairing computer computer=${pair.computerId} workspace=${workspaceId}`);
         }
 
-        const workspaceIdsForPersist = workspaceIds(cloud);
-        if (workspaceIdsForPersist.length) {
+        const runtimeWorkspaceIdsForPersist = workspaceIds(cloud);
+        if (runtimeWorkspaceIdsForPersist.length) {
           await client.query(`
             DELETE FROM ${table('cloud_computers')}
             WHERE workspace_id = ANY($1::text[])
               AND NOT (id = ANY($2::text[]))
-          `, [workspaceIdsForPersist, [...computerIdsForPersist]]);
+          `, [runtimeWorkspaceIdsForPersist, [...computerIdsForPersist]]);
         }
 
         const computerRows = [];
         for (const computer of computersForPersist) {
-          const workspaceId = computer.workspaceId || cloud.workspaces?.[0]?.id;
-          if (!workspaceId) continue;
+          const workspaceId = computer.workspaceId || defaultPersistWorkspaceId;
+          if (!workspaceId || !workspaceIdsForPersist.has(workspaceId)) continue;
           computerRows.push([
             computer.id,
             workspaceId,
@@ -1933,9 +1956,11 @@ export function createCloudPostgresStore(optionsInput = {}) {
             console.warn(`[postgres-store] skipping orphan computer token token=${token.id || 'unknown'} computer=${token.computerId}`);
             continue;
           }
+          const workspaceId = token.workspaceId || defaultPersistWorkspaceId;
+          if (!workspaceId || !workspaceIdsForPersist.has(workspaceId)) continue;
           computerTokenRows.push([
             token.id,
-            token.workspaceId || cloud.workspaces?.[0]?.id,
+            workspaceId,
             token.computerId,
             token.label || '',
             token.tokenHash,
@@ -1975,9 +2000,11 @@ export function createCloudPostgresStore(optionsInput = {}) {
             console.warn(`[postgres-store] skipping orphan pairing token token=${pair.id || 'unknown'} computer=${pair.computerId}`);
             continue;
           }
+          const workspaceId = pair.workspaceId || defaultPersistWorkspaceId;
+          if (!workspaceId || !workspaceIdsForPersist.has(workspaceId)) continue;
           pairingTokenRows.push([
             pair.id,
-            pair.workspaceId || cloud.workspaces?.[0]?.id,
+            workspaceId,
             pair.computerId,
             pair.label || '',
             pair.tokenHash,
@@ -2016,9 +2043,11 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
         const deliveryRows = [];
         for (const delivery of safeArray(cloud.agentDeliveries)) {
+          const workspaceId = delivery.workspaceId || defaultPersistWorkspaceId;
+          if (!workspaceId || !workspaceIdsForPersist.has(workspaceId)) continue;
           deliveryRows.push([
             delivery.id,
-            delivery.workspaceId || cloud.workspaces?.[0]?.id,
+            workspaceId,
             delivery.agentId,
             delivery.computerId,
             delivery.messageId || null,
@@ -2130,8 +2159,12 @@ export function createCloudPostgresStore(optionsInput = {}) {
   async function persistAuthFromStateNow(state) {
     const cloud = state.cloud || {};
     const users = safeArray(cloud.users).map(cloneRecord);
-    const workspaces = safeArray(cloud.workspaces).map(cloneRecord);
-    const workspaceMembers = safeArray(cloud.workspaceMembers).map(cloneRecord);
+    const workspaces = durableCloudWorkspaces(cloud).map(cloneRecord);
+    const workspaceIdsForAuth = new Set(workspaces.map((workspace) => workspace.id).filter(Boolean));
+    const defaultAuthWorkspaceId = workspaces[0]?.id || '';
+    const workspaceMembers = safeArray(cloud.workspaceMembers)
+      .filter((member) => workspaceIdsForAuth.has(member?.workspaceId))
+      .map(cloneRecord);
     const sessions = safeArray(cloud.sessions).map(cloneRecord);
 
     await withClient(async (client) => {
@@ -2311,9 +2344,12 @@ export function createCloudPostgresStore(optionsInput = {}) {
           'disconnected_at',
           'disabled_at',
           'metadata',
-        ], computersForAuth.filter((computer) => computer?.id && (computer.workspaceId || cloud.workspaces?.[0]?.id)).map((computer) => [
+        ], computersForAuth
+          .map((computer) => ({ computer, workspaceId: computer?.workspaceId || defaultAuthWorkspaceId }))
+          .filter(({ computer, workspaceId }) => computer?.id && workspaceId && workspaceIdsForAuth.has(workspaceId))
+          .map(({ computer, workspaceId }) => [
           computer.id,
-          computer.workspaceId || cloud.workspaces?.[0]?.id,
+          workspaceId,
           computer.name || computer.hostname || computer.id,
           computer.hostname || '',
           computer.os || '',
@@ -2353,9 +2389,12 @@ export function createCloudPostgresStore(optionsInput = {}) {
           'expires_at',
           'revoked_at',
           'metadata',
-        ], safeArray(cloud.computerTokens).filter((token) => token?.id && computerIdsForAuth.has(token.computerId)).map((token) => [
+        ], safeArray(cloud.computerTokens)
+          .map((token) => ({ token, workspaceId: token?.workspaceId || defaultAuthWorkspaceId }))
+          .filter(({ token, workspaceId }) => token?.id && computerIdsForAuth.has(token.computerId) && workspaceId && workspaceIdsForAuth.has(workspaceId))
+          .map(({ token, workspaceId }) => [
           token.id,
-          token.workspaceId || cloud.workspaces?.[0]?.id,
+          workspaceId,
           token.computerId,
           token.label || '',
           token.tokenHash,
@@ -2388,9 +2427,12 @@ export function createCloudPostgresStore(optionsInput = {}) {
           'consumed_at',
           'revoked_at',
           'metadata',
-        ], safeArray(cloud.pairingTokens).filter((pair) => pair?.id && computerIdsForAuth.has(pair.computerId)).map((pair) => [
+        ], safeArray(cloud.pairingTokens)
+          .map((pair) => ({ pair, workspaceId: pair?.workspaceId || defaultAuthWorkspaceId }))
+          .filter(({ pair, workspaceId }) => pair?.id && computerIdsForAuth.has(pair.computerId) && workspaceId && workspaceIdsForAuth.has(workspaceId))
+          .map(({ pair, workspaceId }) => [
           pair.id,
-          pair.workspaceId || cloud.workspaces?.[0]?.id,
+          workspaceId,
           pair.computerId,
           pair.label || '',
           pair.tokenHash,

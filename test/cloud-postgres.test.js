@@ -784,6 +784,78 @@ test('postgres store upserts duplicate durable state records without crashing', 
   assert.equal(orphanInsert, undefined);
 });
 
+test('postgres store skips default local placeholder workspace runtime persistence', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          if (sql.includes('INSERT INTO "magclaw"."cloud_channels"')) {
+            throw new Error('should not persist placeholder local channels');
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-18T00:00:00.000Z';
+  await store.persistWorkspaceFromState({
+    connection: { workspaceId: 'local' },
+    cloud: {
+      workspaces: [{ id: 'local', slug: 'local', name: 'MagClaw', createdAt }],
+      workspaceMembers: [],
+    },
+    channels: [{ id: 'chan_local', workspaceId: 'local', name: 'all', createdAt, updatedAt: createdAt }],
+  }, 'local');
+
+  assert.equal(queries.some((query) => query.sql.includes('cloud_channels')), false);
+});
+
+test('postgres store skips default local placeholder workspace auth persistence', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          if (sql.includes('INSERT INTO "magclaw"."cloud_workspaces"') && params[0] === 'local') {
+            throw new Error('should not persist placeholder local workspace');
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-18T00:00:00.000Z';
+  await store.persistAuthFromState({
+    cloud: {
+      workspaces: [{ id: 'local', slug: 'local', name: 'MagClaw', createdAt }],
+      users: [],
+      workspaceMembers: [],
+      sessions: [],
+      invitations: [],
+      passwordResetTokens: [],
+    },
+  });
+
+  assert.equal(queries.some((query) => query.sql.includes('cloud_workspaces')), false);
+});
+
 test('postgres store can persist a single workspace runtime snapshot', async () => {
   const queries = [];
   const pool = {
