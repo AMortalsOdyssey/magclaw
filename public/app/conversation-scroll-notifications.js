@@ -88,6 +88,14 @@ function unreadCountForSpace(counts, spaceType, spaceId) {
   return counts?.get(spaceUnreadKey(spaceType, spaceId)) || 0;
 }
 
+function chatUnreadCountFromSpaces(spaceUnreadCounts) {
+  let total = 0;
+  for (const [key, count] of spaceUnreadCounts?.entries?.() || []) {
+    if (key.startsWith('channel:') || key.startsWith('dm:')) total += Number(count || 0);
+  }
+  return total;
+}
+
 function spaceUnreadRecordIds(spaceType, spaceId, humanId = currentHumanId()) {
   const key = spaceUnreadKey(spaceType, spaceId);
   const ids = [];
@@ -669,17 +677,32 @@ function notificationRootRecord(record, stateSnapshot = appState) {
   return record?.parentMessageId ? byId(stateSnapshot?.messages, record.parentMessageId) : record;
 }
 
-function notificationTitle(record, stateSnapshot = appState) {
-  const agentName = displayNameFromState(stateSnapshot, record?.authorId);
+function notificationServerLabel(stateSnapshot = appState) {
+  const workspace = stateSnapshot?.cloud?.workspace || {};
+  return workspace.name || workspace.slug || workspace.id || 'MagClaw';
+}
+
+function notificationSurfaceLabel(record, stateSnapshot = appState) {
   const root = notificationRootRecord(record, stateSnapshot);
   const space = spaceNameFromState(stateSnapshot, root?.spaceType || record?.spaceType, root?.spaceId || record?.spaceId);
-  return record?.parentMessageId ? `${agentName} replied in ${space}` : `${agentName} in ${space}`;
+  if (record?.parentMessageId) return `Thread in ${space}`;
+  if ((root?.spaceType || record?.spaceType) === 'dm') return `DM ${space}`;
+  return space;
+}
+
+function notificationTitle(record, stateSnapshot = appState) {
+  const serverLabel = notificationServerLabel(stateSnapshot);
+  return `MagClaw - ${serverLabel}`;
 }
 
 function notificationBody(record, stateSnapshot = appState) {
   const text = plainNotificationText(record?.body || '(attachment)', stateSnapshot);
-  if (!text) return '(attachment)';
-  return text.length > NOTIFICATION_PREVIEW_LIMIT ? `${text.slice(0, NOTIFICATION_PREVIEW_LIMIT - 1)}…` : text;
+  const preview = text
+    ? (text.length > NOTIFICATION_PREVIEW_LIMIT ? `${text.slice(0, NOTIFICATION_PREVIEW_LIMIT - 1)}…` : text)
+    : '(attachment)';
+  const surfaceLabel = notificationSurfaceLabel(record, stateSnapshot);
+  const agentName = displayNameFromState(stateSnapshot, record?.authorId);
+  return `[${surfaceLabel}] ${agentName}: ${preview}`;
 }
 
 function openNotificationRecord(recordId) {
@@ -697,6 +720,11 @@ function showAgentNotification(record, stateSnapshot = appState) {
       icon: agent?.avatar || NOTIFICATION_ICON,
       badge: NOTIFICATION_ICON,
       tag: `magclaw:${record.id}`,
+      data: {
+        recordId: record.id,
+        serverLabel: notificationServerLabel(stateSnapshot),
+        surfaceLabel: notificationSurfaceLabel(record, stateSnapshot),
+      },
     });
     notification.onclick = () => {
       window.focus();

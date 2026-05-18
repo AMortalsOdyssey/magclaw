@@ -92,14 +92,16 @@ test('members settings expose role-aware invitation controls', async () => {
   const manageRoleOptionsSource = app.slice(app.indexOf('function cloudMemberManageRoleOptions()'), app.indexOf('function cloudCanRemoveMemberRole'));
   assert.doesNotMatch(inviteRoleOptionsSource, /invite_admin/);
   assert.match(inviteRoleOptionsSource, /options\.push\(\['member', 'Member'\]\)[\s\S]*options\.push\(\['admin', 'Admin'\]\)/);
-  assert.match(manageRoleOptionsSource, /options\.push\(\['member', 'Member'\]\)[\s\S]*options\.push\(\['admin', 'Admin'\]\)/);
+  assert.match(manageRoleOptionsSource, /options\.push\(\['member', 'Member'\]\)[\s\S]*options\.push\(\['admin', 'Admin'\]\)[\s\S]*options\.push\(\['owner', 'Owner'\]\)/);
   assert.match(manageRoleOptionsSource, /manage_member_roles/);
+  assert.match(manageRoleOptionsSource, /manage_owner_role/);
   assert.match(app, /let latestInvitationLink = null/);
   assert.match(app, /let cloudGeneratedLinks = \[\]/);
   assert.match(app, /function generatedLinkText\(item\)/);
   assert.match(app, /async function tryCopyTextToClipboard\(text\)[\s\S]*catch/);
   assert.match(app, /tryCopyTextToClipboard\(generatedLinksText\(\)\)/);
   assert.match(app, /'admin', 'Admin'/);
+  assert.match(app, /'owner', 'Owner'/);
   assert.match(app, /'member', 'Member'/);
   assert.match(membersSettingsSource, /member-role-badge/);
   assert.doesNotMatch(accountSettingsSource, /id="cloud-invite-form"|Workspace Members/);
@@ -275,6 +277,8 @@ test('members directory separates roles from top-centered manage actions', async
   assert.match(manageSource, /class="member-manage-role-form"/);
   assert.match(manageSource, /data-member-role-select/);
   assert.match(manageSource, /data-action="update-cloud-member-role"/);
+  assert.match(manageSource, /You cannot remove your own Owner role/);
+  assert.match(manageSource, /Only another Owner can change this Owner role/);
   assert.match(manageSource, /data-action="open-member-action-confirm"[\s\S]*data-member-action="reset-password"/);
   assert.match(manageSource, /data-action="open-member-action-confirm"[\s\S]*data-member-action="remove"/);
   assert.doesNotMatch(manageSource, /reset-cloud-member-password|remove-cloud-member/);
@@ -471,6 +475,9 @@ test('cloud account settings use server-configured sign-in without owner bootstr
   assert.match(accountSettingsSource, /The initial sign-in account is configured on the server/);
   assert.doesNotMatch(accountSettingsSource, /Admin Login/);
   assert.match(app, /function renderCloudAuthGate/);
+  assert.match(app, /function renderCloudAuthCallbackGate\(provider = 'feishu'\)/);
+  assert.match(app, /function cloudAuthCallbackFromLocation\(\)/);
+  assert.match(app, /if \(callbackProvider\) renderCloudAuthCallbackGate\(callbackProvider\)/);
 });
 
 test('cloud auth gate uses token context for invite and reset forms', async () => {
@@ -960,12 +967,12 @@ test('thread rows use the last reply actor avatar and prefix the preview with th
   assert.doesNotMatch(app, /\$\{lastReply \? plainMentionText\(previewRecord\.body\)\.slice\(0, 140\) : 'latest'\} · \$\{lastReplyAuthor\}/);
 });
 
-test('chat rail keeps Threads and adds Inbox without a System notification tab', async () => {
+test('chat rail keeps Threads and adds Activities without a System notification tab', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
   const chatRailSource = app.slice(app.indexOf('function renderChatRail('), app.indexOf('function renderMembersRail('));
 
-  assert.match(chatRailSource, /renderNavItem\('inbox', 'Inbox', 'inbox', inboxUnread \|\| '', \{ badgeKind: 'unread' \}\)/);
+  assert.match(chatRailSource, /renderNavItem\('inbox', 'Activities', 'inbox', inboxUnread \|\| '', \{ badgeKind: 'unread' \}\)/);
   assert.match(chatRailSource, /renderNavItem\('threads', 'Threads', 'message'/);
   assert.match(chatRailSource, /renderChannelItem\(channel, unreadCountForSpace\(spaceUnreadCounts, 'channel', channel\.id\)\)/);
   assert.match(chatRailSource, /const dmPeers = dms/);
@@ -974,6 +981,8 @@ test('chat rail keeps Threads and adds Inbox without a System notification tab',
   assert.match(chatRailSource, /renderDmItem\(dm\.id, peer\.name \|\| displayName\(peer\.id\), peer\.status \|\| 'offline', peer\.avatar \|\| '', unreadCountForSpace\(spaceUnreadCounts, 'dm', dm\.id\)\)/);
   assert.match(app, /function renderRailUnreadBadge\(count, label = 'unread messages'\)/);
   assert.match(app, /function buildSpaceUnreadCounts\(humanId = currentHumanId\(\), stateSnapshot = appState\)/);
+  assert.match(app, /function chatUnreadCountFromSpaces\(spaceUnreadCounts\)/);
+  assert.match(app, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| inbox\.unreadCount \|\| ''/);
   assert.match(app, /function markSpaceRead\(spaceType, spaceId\)/);
   assert.doesNotMatch(chatRailSource, /system-notifications|System Notification List/);
   assert.match(app, /if \(activeView === 'inbox'\) return renderInbox\(\)/);
@@ -993,10 +1002,11 @@ test('inbox reuses thread rows and renders workspace activity drawer', async () 
   assert.match(app, /function renderWorkspaceActivityDrawer\(\)/);
   assert.match(app, /function workspaceActivityScrollSnapshot\(\)/);
   assert.match(app, /function restoreWorkspaceActivityScroll\(snapshot\)/);
-  assert.match(app, /unreadCount: 0,[\s\S]*title: 'Workspace Activity'/);
+  assert.match(app, /unreadCount: 0,[\s\S]*title: 'Server Activity'/);
   assert.match(app, /const allItems = \[workspaceItem, \.\.\.normalItems\]/);
   assert.match(app, /activeCount: normalItems\.length/);
-  assert.match(app, /renderInboxCategoryButton\('workspace', 'Workspace Activity', null\)/);
+  assert.match(app, /renderInboxCategoryButton\('workspace', 'Server Activity', null\)/);
+  assert.match(app, /renderHeader\('Activities'/);
   assert.match(app, /title="Open activity">LOG/);
   assert.match(renderSource, /workspaceActivity: workspaceActivityScrollSnapshot\(\)/);
   assert.match(renderSource, /restoreWorkspaceActivityScroll\(scrollSnapshot\.workspaceActivity\)/);
@@ -1590,13 +1600,19 @@ test('event stream follows the selected conversation bootstrap window', async ()
 
 test('codex agent startup repairs stale configured Codex paths before spawning', async () => {
   const source = await readFile(new URL('../server/agent-runtime/process-start.js', import.meta.url), 'utf8');
+  const legacySource = await readFile(new URL('../server/agent-runtime/legacy-stop.js', import.meta.url), 'utf8');
 
   assert.match(source, /async function resolveCodexSpawnCommand\(agent\)/);
   assert.match(source, /process\.env\.CODEX_PATH/);
   assert.match(source, /state\.settings\.codexPath = command/);
   assert.match(source, /codex_path_repaired/);
+  assert.match(source, /function runtimeCommandNeedsShell\(command\)/);
+  assert.equal(source.includes('/\\.(cmd|bat)$/i'), true);
+  assert.match(source, /shell: runtimeCommandNeedsShell\(value\)/);
   assert.match(source, /const codexCommand = await resolveCodexSpawnCommand\(agent\)/);
   assert.match(source, /spawn\(codexCommand, args/);
+  assert.match(source, /shell: runtimeCommandNeedsShell\(codexCommand\)/);
+  assert.match(legacySource, /shell: runtimeCommandNeedsShell\(state\.settings\.codexPath \|\| 'codex'\)/);
 });
 
 test('message rows re-render when author presence changes from heartbeat', async () => {
@@ -1731,6 +1747,9 @@ test('agent detail uses MagClaw-style tabs with inline profile editing and runti
   assert.match(app, /data-action="open-agent-restart"/);
   assert.match(app, /data-action="agent-stop-unavailable"/);
   assert.match(app, /function renderAgentRestartModal\(\)/);
+  assert.match(app, /function markAgentRestartStarting\(agentId\)/);
+  assert.match(app, /agent\.status = 'starting'/);
+  assert.match(app, /markAgentRestartStarting\(agentRestartState\.agentId\);\s*await api\(`\/api\/agents\/\$\{agentRestartState\.agentId\}\/restart`/);
   assert.match(app, /RESET SESSION & RESTART/);
   assert.match(app, /Clear the runtime session and restart/);
   assert.match(app, /function renderAgentSkillsTab\(agent\)/);
@@ -1802,7 +1821,7 @@ test('left rail and active shell controls use the MagClaw pink accent', async ()
   assert.match(styles, /\.left-rail-btn em \{[\s\S]*?background:\s*var\(--magclaw-rail-badge\)[\s\S]*?color:\s*var\(--magclaw-rail-badge-text\)/);
   assert.match(styles, /\.agent-detail-tabs button\.active \{[\s\S]*?background:\s*var\(--accent\)/);
   assert.equal(/background:\s*var\(--magclaw-sun\)/.test(styles), false);
-  assert.match(railSource, /renderLeftRailButton\('chat'[\s\S]*inbox\.unreadCount \|\| ''/);
+  assert.match(railSource, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| inbox\.unreadCount \|\| ''/);
   assert.match(railSource, /renderLeftRailButton\('tasks', railMode, 'Tasks', [\s\S]*?\)\}/);
   assert.doesNotMatch(railSource, /renderLeftRailButton\('tasks'[\s\S]*openTasks \|\| ''/);
   assert.doesNotMatch(railSource, /renderLeftRailButton\('members'[\s\S]*normalAgents\.length \|\| ''/);
@@ -1983,6 +2002,10 @@ test('browser agent notifications can be enabled from a MagClaw-style prompt and
   assert.match(app, /function renderNotificationPromptBanner\(\)/);
   assert.match(app, /function renderNotificationConfigCard\(\)/);
   assert.match(app, /Notification\.requestPermission\(\)/);
+  assert.match(app, /function notificationServerLabel\(stateSnapshot = appState\)/);
+  assert.match(app, /function notificationSurfaceLabel\(record, stateSnapshot = appState\)/);
+  assert.match(app, /return `MagClaw - \$\{serverLabel\}`/);
+  assert.match(app, /`\[\$\{surfaceLabel\}\] \$\{agentName\}: \$\{preview\}`/);
   assert.match(app, /new Notification\(notificationTitle\(record, stateSnapshot\)/);
   assert.match(app, /trackAgentNotifications\(nextState, \{ silent: !initialLoadComplete \|\| !appState \}\)/);
   assert.match(app, /trackAgentNotifications\(nextState, \{ silent: !initialLoadComplete \}\)/);
@@ -2205,15 +2228,25 @@ test('agent workspace tab has split tree and raw/preview markdown controls', asy
 test('agent activity tab renders newest first with second-level timestamps and a 5000 item cap', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
+  const profileSource = app.slice(app.indexOf('function renderAgentProfileTab'), app.indexOf('function renderAgentDmsTab'));
+  const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderAgentGroupsByComputer'));
 
   assert.match(app, /const AGENT_ACTIVITY_EVENT_LIMIT = 5000/);
   assert.match(app, /function agentActivityEvents\(agent\)/);
   assert.match(app, /\.sort\(\(a, b\) => new Date\(b\.createdAt\) - new Date\(a\.createdAt\)\)/);
   assert.match(app, /\.slice\(0, AGENT_ACTIVITY_EVENT_LIMIT\)/);
   assert.match(app, /fmtTime\(event\.createdAt\)/);
+  assert.match(app, /function agentLiveActivitySummary\(agent\)/);
+  assert.match(app, /agent\?\.runtimeActivity && typeof agent\.runtimeActivity === 'object'/);
+  assert.match(app, /function renderAgentLiveActivityBar\(agent, \{ compact = false \} = \{\}\)/);
+  assert.match(app, /data-action="set-agent-detail-tab" data-tab="activity"/);
+  assert.match(profileSource, /renderAgentLiveActivityBar\(agent\)/);
+  assert.match(agentListSource, /renderAgentLiveActivityBar\(agent, \{ compact: true \}\)/);
   assert.match(app, /function renderAgentActivityTab\(agent\)/);
   assert.match(styles, /\.agent-activity-list/);
   assert.match(styles, /\.agent-activity-dot/);
+  assert.match(styles, /\.agent-live-activity-bar/);
+  assert.match(styles, /\.agent-live-activity-bar\.compact/);
 });
 
 test('mobile shell renders root tabs, detail pages, and safe-area navigation', async () => {
@@ -2244,6 +2277,7 @@ test('mobile shell renders root tabs, detail pages, and safe-area navigation', a
   assert.match(app, /\['files', 'Files', 'file'\]/);
   assert.match(app, /mobile-space-tabs/);
   assert.match(app, /mobile-task-toolbar/);
+  assert.match(app, /renderMobileQuickAction\('inbox', 'Activities', 'inbox', inbox\.unreadCount \|\| ''\)/);
   assert.match(app, /renderMobileQuickAction\('threads', 'Threads', 'message', inbox\.threadItems\.length \|\| ''\)/);
   assert.match(app, /data-action="mobile-nav"/);
   assert.match(app, /data-action="mobile-back"/);

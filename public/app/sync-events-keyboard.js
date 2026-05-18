@@ -61,6 +61,21 @@ function cloudAuthTokenFromLocation() {
   return { mode: 'invite', token };
 }
 
+function cloudAuthCallbackFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  return String(params.get('authCallback') || params.get('auth_callback') || '').trim();
+}
+
+function clearCloudAuthCallbackFromLocation() {
+  const callbackProvider = cloudAuthCallbackFromLocation();
+  if (!callbackProvider || !window.history?.replaceState) return;
+  const params = new URLSearchParams(window.location.search);
+  params.delete('authCallback');
+  params.delete('auth_callback');
+  const nextSearch = params.toString();
+  window.history.replaceState({}, '', `${window.location.pathname || '/'}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash || ''}`);
+}
+
 function cloudAuthErrorFromLocation() {
   const params = new URLSearchParams(window.location.search);
   return String(params.get('authError') || '').trim();
@@ -126,8 +141,11 @@ async function refreshStateOrAuthGate() {
     await showCloudAuthGate(null);
     return false;
   }
+  const callbackProvider = cloudAuthCallbackFromLocation();
+  if (callbackProvider) renderCloudAuthCallbackGate(callbackProvider);
   try {
     await refreshState();
+    clearCloudAuthCallbackFromLocation();
     initialLoadComplete = true;
     connectEvents();
     return true;

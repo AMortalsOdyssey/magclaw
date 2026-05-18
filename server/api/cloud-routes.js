@@ -50,6 +50,16 @@ export async function handleCloudApi(req, res, url, deps) {
     res.end();
   }
 
+  function redirectWithAuthCallback(location, provider = 'feishu') {
+    const raw = String(location || '/console');
+    const [pathAndSearch, hash = ''] = raw.split('#');
+    const [path = '/', search = ''] = pathAndSearch.split('?');
+    const params = new URLSearchParams(search);
+    params.set('authCallback', provider);
+    const nextSearch = params.toString();
+    return `${path || '/'}${nextSearch ? `?${nextSearch}` : ''}${hash ? `#${hash}` : ''}`;
+  }
+
   function requireCloudRole(allowedRoles = []) {
     if (!cloudAuth?.isLoginRequired?.()) return true;
     return Boolean(cloudAuth.requireUser(req, res, sendError, allowedRoles));
@@ -120,7 +130,7 @@ export async function handleCloudApi(req, res, url, deps) {
     }
     try {
       const result = await cloudAuth.loginWithFeishuCallback(url, req, res);
-      sendRedirect(result.pendingLink ? '/?authLink=feishu' : (result.returnTo || '/console'));
+      sendRedirect(result.pendingLink ? '/?authLink=feishu' : redirectWithAuthCallback(result.returnTo || '/console', 'feishu'));
     } catch (error) {
       console.error('[cloud-auth] feishu callback failed', error);
       sendRedirect(cloudAuth.feishuAuthErrorRedirect(error.message));

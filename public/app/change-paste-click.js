@@ -73,6 +73,16 @@ async function switchConsoleServerAndLoadState(slug) {
   return result;
 }
 
+function markAgentRestartStarting(agentId) {
+  const agent = byId(appState?.agents, agentId);
+  if (!agent) return false;
+  agent.status = 'starting';
+  agent.statusReason = 'agent_restart_requested';
+  agent.statusUpdatedAt = new Date().toISOString();
+  render();
+  return true;
+}
+
 document.addEventListener('change', async (event) => {
   if (event.target.id === 'profile-avatar-library') {
     setProfileAvatarInput(event.target.value);
@@ -415,7 +425,7 @@ document.addEventListener('click', async (event) => {
         recordIds,
         workspaceActivityReadAt: new Date().toISOString(),
       });
-      toast('Inbox marked read');
+      toast('Activities marked read');
     }
     if (action === 'set-rail-tab') {
       if (target.dataset.railTab === 'members') {
@@ -991,6 +1001,7 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'confirm-agent-restart') {
       if (!agentRestartState.agentId) return;
+      markAgentRestartStarting(agentRestartState.agentId);
       await api(`/api/agents/${agentRestartState.agentId}/restart`, {
         method: 'POST',
         body: JSON.stringify({ mode: agentRestartState.mode || 'restart' }),

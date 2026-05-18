@@ -363,6 +363,7 @@ function renderAgentProfileTab(agent) {
           <p>${escapeHtml(agentHandle(agent))}</p>
         </div>
       </div>
+      ${renderAgentLiveActivityBar(agent)}
       ${renderAgentAvatarEditor(agent)}
       ${renderAgentInlineField(agent, 'name', 'Display Name', { placeholder: 'Display name' })}
       ${renderAgentInlineField(agent, 'description', 'Description', { multiline: true, placeholder: 'Describe this agent...' })}
@@ -433,6 +434,50 @@ function agentActivityTone(event) {
   if (text.includes('idle')) return 'idle';
   if (text.includes('connected')) return 'online';
   return 'queued';
+}
+
+function agentLiveActivitySummary(agent) {
+  const status = agentDisplayStatus(agent);
+  const value = String(status || 'offline').toLowerCase();
+  const activity = agent?.runtimeActivity && typeof agent.runtimeActivity === 'object' ? agent.runtimeActivity : {};
+  const latestEvent = agentActivityEvents(agent)[0] || null;
+  const detail = String(
+    activity.detail
+    || activity.note
+    || activity.text
+    || activity.tool
+    || latestEvent?.message
+    || ''
+  ).trim();
+  const fallback = value === 'idle'
+    ? 'Standing by'
+    : value === 'waiting_for_computer'
+      ? 'Waiting for daemon'
+      : value === 'starting'
+        ? 'Starting runtime'
+        : value === 'offline'
+          ? 'Offline'
+          : agentStatusLabel(agent);
+  return {
+    status,
+    label: agentStatusLabel(agent),
+    detail: detail || fallback,
+    at: activity.at || latestEvent?.createdAt || agent.statusUpdatedAt || agent.updatedAt || agent.createdAt || '',
+  };
+}
+
+function renderAgentLiveActivityBar(agent, { compact = false } = {}) {
+  const summary = agentLiveActivitySummary(agent);
+  const tag = compact ? 'span' : 'button';
+  const actionAttrs = compact ? '' : ' type="button" data-action="set-agent-detail-tab" data-tab="activity"';
+  return `
+    <${tag} class="agent-live-activity-bar${compact ? ' compact' : ''} ${presenceClass(summary.status)}"${actionAttrs}>
+      <span class="agent-activity-dot ${presenceClass(summary.status)}"></span>
+      <strong>${escapeHtml(summary.label)}</strong>
+      <span>${escapeHtml(summary.detail)}</span>
+      ${summary.at ? `<time>${fmtTime(summary.at)}</time>` : ''}
+    </${tag}>
+  `;
 }
 
 function renderAgentActivityTab(agent) {
@@ -521,6 +566,7 @@ function renderAgentListItem(agent) {
       <div class="member-info">
         <span class="dm-name">${escapeHtml(agent.name)}</span>
         ${desc}
+        ${renderAgentLiveActivityBar(agent, { compact: true })}
       </div>
       <span class="member-status-side">${avatarStatusDot(status, 'Agent status')}</span>
     </button>

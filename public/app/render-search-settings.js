@@ -1053,13 +1053,19 @@ function renderMemberManageModal() {
   if (!member) return modalHeader('Manage member', 'Member not found');
   const role = member.role || 'member';
   const displayRole = cloudMemberDisplayRole(member);
-  const isAdminRow = role === 'admin';
+  const isPrivilegedRow = cloudRoleAllows(displayRole, 'admin');
   const isOwnerRow = displayRole === 'owner';
   const isCurrent = auth.currentMember?.id === member.id;
   const roleOptions = cloudMemberManageRoleOptions();
-  const canManageRole = Boolean(roleOptions.length) && !isOwnerRow && !isCurrent;
-  const canResetPassword = auth.currentMember?.role === 'admin' && !isAdminRow && !isCurrent;
-  const canRemove = cloudCanRemoveMemberRole(role) && !isAdminRow && !isCurrent;
+  const canManageOwnerRole = cloudCan('manage_owner_role');
+  const canManageRole = Boolean(roleOptions.length) && !isCurrent && (!isOwnerRow || canManageOwnerRole);
+  const manageUnavailableReason = isCurrent && isOwnerRow
+    ? 'You cannot remove your own Owner role.'
+    : isOwnerRow && !canManageOwnerRole
+      ? 'Only another Owner can change this Owner role.'
+      : '';
+  const canResetPassword = cloudRoleAllows(auth.currentMember?.role, 'admin') && !isPrivilegedRow && !isCurrent;
+  const canRemove = cloudCanRemoveMemberRole(displayRole) && !isPrivilegedRow && !isCurrent;
   return `
     ${modalHeader('Manage member', 'Account operations')}
     <div class="member-manage-modal">
@@ -1069,22 +1075,23 @@ function renderMemberManageModal() {
           <strong>${escapeHtml(memberDisplayName(member))}</strong>
           <span>${escapeHtml(memberEmail(member))}</span>
         </div>
-        <em>${escapeHtml(cloudRoleLabel(role))}</em>
+        <em>${escapeHtml(cloudRoleLabel(displayRole))}</em>
       </div>
       ${canManageRole ? `
-        <form class="member-manage-role-form" data-current-role="${escapeHtml(role)}" data-id="${escapeHtml(member.id)}">
+        <form class="member-manage-role-form" data-current-role="${escapeHtml(displayRole)}" data-id="${escapeHtml(member.id)}">
           <label for="member-manage-role-select">
             <span>Role</span>
             <small>Change this member's workspace access level.</small>
           </label>
           <div class="member-manage-role-controls">
             <select id="member-manage-role-select" name="role" data-member-role-select>
-              ${roleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === role ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}
+              ${roleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === displayRole ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}
             </select>
             <button class="secondary-btn compact-btn" type="button" data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}">Save Role</button>
           </div>
         </form>
       ` : ''}
+      ${manageUnavailableReason ? `<div class="empty-box small">${escapeHtml(manageUnavailableReason)}</div>` : ''}
       ${(canResetPassword || canRemove || (!canManageRole && !canResetPassword && !canRemove)) ? `
         <div class="member-manage-actions">
           ${canResetPassword ? `
@@ -1180,11 +1187,11 @@ function renderMemberRow(row) {
   const role = member.role || 'member';
   const isCurrent = currentMember?.id === member.id;
   const displayRole = cloudMemberDisplayRole(member);
-  const isAdminRow = role === 'admin';
+  const isPrivilegedRow = cloudRoleAllows(displayRole, 'admin');
   const isOwnerRow = displayRole === 'owner';
-  const canManageRole = cloudCan('manage_member_roles') && !isOwnerRow && !isCurrent;
-  const canResetPassword = auth.currentMember?.role === 'admin' && !isAdminRow && !isCurrent;
-  const canRemove = cloudCanRemoveMemberRole(role) && !isAdminRow && !isCurrent;
+  const canManageRole = cloudCan('manage_member_roles') && !isCurrent && (!isOwnerRow || cloudCan('manage_owner_role'));
+  const canResetPassword = cloudRoleAllows(auth.currentMember?.role, 'admin') && !isPrivilegedRow && !isCurrent;
+  const canRemove = cloudCanRemoveMemberRole(displayRole) && !isPrivilegedRow && !isCurrent;
   const canManage = canManageRole || canResetPassword || canRemove;
   return `
     <div class="members-row" data-member-kind="active">
@@ -1550,6 +1557,25 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
       <div class="cloud-auth-stage">
         ${loginPanels}
         ${legalHtml}
+      </div>
+    </main>
+  `;
+  if (typeof translatePage === 'function') translatePage(root);
+}
+
+function renderCloudAuthCallbackGate(provider = 'feishu') {
+  const label = provider === 'feishu' ? 'Feishu' : 'social sign-in';
+  root.innerHTML = `
+    <main class="cloud-auth-shell">
+      <div class="cloud-auth-stage">
+        <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">
+          <div class="cloud-check-icon" aria-hidden="true">${settingsIcon('account', 28)}</div>
+          <div class="cloud-login-heading">
+            <p>MagClaw</p>
+            <h1 id="cloud-login-title">Finishing sign-in</h1>
+            <span>Completing ${escapeHtml(label)} and opening your server.</span>
+          </div>
+        </section>
       </div>
     </main>
   `;

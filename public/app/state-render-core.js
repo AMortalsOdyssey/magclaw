@@ -15,7 +15,7 @@ const WORKSPACE_ACTIVITY_CACHE_LIMIT = 300;
 const WORKSPACE_ACTIVITY_READ_KEY = 'magclawWorkspaceActivityReadAt';
 const DEFAULT_COLLAPSED_TASK_COLUMNS = { done: true, closed: true };
 const MEMBERS_LAYOUT_MODES = new Set(['directory', 'channel', 'split', 'agent', 'human']);
-const CLOUD_ROLE_HIERARCHY = ['member', 'admin'];
+const CLOUD_ROLE_HIERARCHY = ['member', 'admin', 'owner'];
 const CLOUD_ROLE_LABELS = {
   owner: 'Owner',
   admin: 'Admin',
@@ -578,6 +578,10 @@ function cloudRoleLabel(role) {
 }
 
 function serverOwnerUserId(workspace = appState?.cloud?.workspace || {}) {
+  const activeOwners = (appState?.cloud?.members || [])
+    .filter((member) => member.workspaceId === workspace?.id && member.status !== 'removed' && member.role === 'owner')
+    .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0));
+  if (activeOwners[0]?.userId) return activeOwners[0].userId;
   if (workspace?.ownerUserId) return workspace.ownerUserId;
   const activeAdmins = (appState?.cloud?.members || [])
     .filter((member) => member.workspaceId === workspace?.id && member.status !== 'removed' && member.role === 'admin')
@@ -586,6 +590,7 @@ function serverOwnerUserId(workspace = appState?.cloud?.workspace || {}) {
 }
 
 function cloudMemberDisplayRole(member = {}) {
+  if (member?.role === 'owner') return 'owner';
   const ownerUserId = serverOwnerUserId();
   if (ownerUserId && member?.userId === ownerUserId) return 'owner';
   return member?.role || 'member';
@@ -759,6 +764,7 @@ function cloudMemberManageRoleOptions() {
   if (!cloudCan('manage_member_roles')) return options;
   options.push(['member', 'Member']);
   options.push(['admin', 'Admin']);
+  if (cloudCan('manage_owner_role')) options.push(['owner', 'Owner']);
   return options;
 }
 

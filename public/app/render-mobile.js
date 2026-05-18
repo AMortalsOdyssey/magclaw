@@ -226,7 +226,7 @@ function renderMobileHomeHeader(serverProfile) {
         </button>
         ${renderServerSwitcherMenu()}
       </div>
-      <button class="mobile-alert-btn" type="button" data-action="set-view" data-view="inbox" aria-label="Open inbox">
+      <button class="mobile-alert-btn" type="button" data-action="set-view" data-view="inbox" aria-label="Open Activities">
         ${mobileIcon('bell')}
       </button>
     </header>
@@ -298,7 +298,7 @@ function renderMobileHome() {
       ${renderMobileHomeHeader(serverProfile)}
       <div class="mobile-shortcut-list">
         ${renderMobileQuickAction('search', 'Search', 'search')}
-        ${renderMobileQuickAction('inbox', 'Inbox', 'inbox', inbox.unreadCount || '')}
+        ${renderMobileQuickAction('inbox', 'Activities', 'inbox', inbox.unreadCount || '')}
         ${renderMobileQuickAction('threads', 'Threads', 'message', inbox.threadItems.length || '')}
         ${renderMobileQuickAction('saved', 'Saved', 'saved', saved || '')}
       </div>
@@ -313,7 +313,7 @@ function renderMobileHome() {
       </section>
       <section class="mobile-list-section">
         ${renderMobileSectionTitle('Direct Messages', dmPeers.length, `
-          <button type="button" data-action="set-view" data-view="inbox" aria-label="Inbox">${mobileIcon('sort')}</button>
+          <button type="button" data-action="set-view" data-view="inbox" aria-label="Activities">${mobileIcon('sort')}</button>
           <button type="button" data-action="open-modal" data-modal="dm" aria-label="New direct message">${mobileIcon('plus')}</button>
         `)}
         <div class="mobile-list">
@@ -573,7 +573,7 @@ function renderMobileMain() {
   }
   if (activeView === 'computers') return renderMobileComputersList();
   if (activeView === 'search') return renderMobileDetailPage('Search', '', renderSearch(), 'mobile-search-detail');
-  if (activeView === 'inbox') return renderMobileDetailPage('Inbox', '', renderInbox(), 'mobile-inbox-detail');
+  if (activeView === 'inbox') return renderMobileDetailPage('Activities', '', renderInbox(), 'mobile-inbox-detail');
   if (activeView === 'threads') return renderMobileDetailPage('Threads', '', renderThreads(), 'mobile-threads-detail');
   if (activeView === 'saved') return renderMobileDetailPage('Saved', '', renderSaved(), 'mobile-saved-detail');
   if (activeView === 'missions') return renderMobileDetailPage('Codex Missions', '', renderMissions(), 'mobile-missions-detail');

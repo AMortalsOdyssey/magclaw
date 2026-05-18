@@ -107,6 +107,7 @@ function renderRail() {
   const dms = appState.dms || [];
   const inbox = buildInboxModel();
   const spaceUnreadCounts = buildSpaceUnreadCounts(inbox.humanId);
+  const chatUnreadCount = chatUnreadCountFromSpaces(spaceUnreadCounts);
   const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0 || message.taskId).length;
   const openTasks = (appState.tasks || []).filter((task) => task && !taskIsClosedStatus(task.status)).length;
   const saved = savedRecords().length;
@@ -152,7 +153,7 @@ function renderRail() {
         </button>
         ${renderServerSwitcherMenu()}
       </div>
-      ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', inbox.unreadCount || '')}
+      ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', chatUnreadCount || inbox.unreadCount || '')}
       ${renderLeftRailButton('tasks', railMode, 'Tasks', '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>')}
       ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>')}
       ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>')}
@@ -288,7 +289,7 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
   return `
     <div class="nav-list">
       ${renderNavItem('search', 'Search', 'search', searchQuery ? '⌘K' : '⌘K')}
-      ${renderNavItem('inbox', 'Inbox', 'inbox', inboxUnread || '', { badgeKind: 'unread' })}
+      ${renderNavItem('inbox', 'Activities', 'inbox', inboxUnread || '', { badgeKind: 'unread' })}
       ${renderNavItem('threads', 'Threads', 'message', unreadThreads || '')}
       ${renderNavItem('tasks', 'Tasks', 'file', openTasks || '')}
       ${renderNavItem('saved', 'Saved', 'bookmark', saved || '')}
@@ -703,7 +704,7 @@ function buildInboxModel() {
     type: 'workspace',
     unreadCount: 0,
     updatedAt: new Date(activityRecords.at(-1)?.createdAt || 0).getTime(),
-    title: 'Workspace Activity',
+    title: 'Server Activity',
     preview: workspacePreview || 'Members, computers, and system changes will appear here.',
     records: activityRecords,
   };
@@ -800,14 +801,14 @@ function renderInbox() {
   `;
   return `
     <section class="inbox-page">
-      ${renderHeader('Inbox', `${model.activeCount} active · ${model.unreadCount} unread`, actions)}
+      ${renderHeader('Activities', `${model.activeCount} active · ${model.unreadCount} unread`, actions)}
       <div class="inbox-shell">
         <aside class="inbox-category-panel pixel-panel">
           ${renderInboxCategoryButton('all', 'All', model.activeCount)}
           ${renderInboxCategoryButton('unread', 'Unread', model.unreadCount)}
           ${renderInboxCategoryButton('threads', 'Threads', model.threadItems.length)}
           ${renderInboxCategoryButton('direct', 'Direct Messages', model.directItems.length)}
-          ${renderInboxCategoryButton('workspace', 'Workspace Activity', null)}
+          ${renderInboxCategoryButton('workspace', 'Server Activity', null)}
         </aside>
         <section class="inbox-list-wrap">
           <div class="inbox-toolbar pixel-panel">
@@ -819,7 +820,7 @@ function renderInbox() {
             <span>${escapeHtml(visibleItems.length)} shown</span>
           </div>
           <div class="list-panel thread-list-panel magclaw-thread-list inbox-list-panel">
-            ${visibleItems.length ? visibleItems.map(renderInboxItem).join('') : '<div class="empty-box small">No inbox items for this filter.</div>'}
+            ${visibleItems.length ? visibleItems.map(renderInboxItem).join('') : '<div class="empty-box small">No activities for this filter.</div>'}
           </div>
         </section>
       </div>

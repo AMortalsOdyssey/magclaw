@@ -320,6 +320,67 @@
   overflow-wrap: anywhere;
 }
 
+.agent-live-activity-bar {
+  display: grid;
+  grid-template-columns: 10px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 14px;
+  border: 0;
+  border-top: 1px solid var(--border-faint);
+  border-bottom: 1px solid var(--border-faint);
+  background: var(--surface-subtle);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-live-activity-bar:hover {
+  background: var(--surface-hover);
+}
+
+.agent-live-activity-bar strong {
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.agent-live-activity-bar span:nth-child(3) {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-live-activity-bar time {
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.agent-live-activity-bar.compact {
+  grid-template-columns: 8px minmax(0, 1fr);
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: inherit;
+}
+
+.agent-live-activity-bar.compact strong,
+.agent-live-activity-bar.compact time {
+  display: none;
+}
+
+.agent-live-activity-bar.compact span:nth-child(3) {
+  font-size: 11px;
+  line-height: 1.25;
+}
+
 /* Member list items in rail */
 .member-btn {
   position: relative;
