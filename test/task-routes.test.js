@@ -161,9 +161,13 @@ test('task route group rejects done transition before review', async () => {
 
 test('task route group records direct manual status transitions in the task timeline', async () => {
   const timeline = [];
+  const broadcastOptions = [];
   const deps = routeDeps({
     addTaskTimelineMessage: (task, body, eventType) => {
       timeline.push({ taskId: task.id, body, eventType });
+    },
+    broadcastState: (options = {}) => {
+      broadcastOptions.push(options);
     },
     readJson: async () => ({ status: 'in_progress' }),
   });
@@ -184,6 +188,7 @@ test('task route group records direct manual status transitions in the task time
     eventType: 'task_progress',
   }]);
   assert.ok(deps.state.tasks[0].history.some((item) => item.type === 'status_changed'));
+  assert.deepEqual(broadcastOptions, [{ immediate: true }]);
 });
 
 test('task route group closes tasks without review and keeps closed terminal', async () => {

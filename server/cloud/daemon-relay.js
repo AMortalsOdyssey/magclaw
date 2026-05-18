@@ -7,6 +7,7 @@ const SENT_DELIVERY_RETRY_TTL_MS = Math.max(1000, Number(process.env.MAGCLAW_DAE
 const DAEMON_PING_MS = readMsEnv('MAGCLAW_DAEMON_PING_MS', 30_000, { min: 0, max: 10 * 60_000 });
 const DAEMON_INBOUND_WATCHDOG_MS = readMsEnv('MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS', 70_000, { min: 0, max: 10 * 60_000 });
 const ACTIVITY_PROBE_TIMEOUT_MS = readMsEnv('MAGCLAW_DAEMON_ACTIVITY_PROBE_TIMEOUT_MS', 5_000, { min: 250, max: 60_000 });
+const DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv('MAGCLAW_DAEMON_RECONNECT_GRACE_MS', 2_000, { min: 0, max: 60_000 });
 const ACTIVE_DELIVERY_STATUSES = new Set(['queued', 'sent', 'acked']);
 
 function readMsEnv(name, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
@@ -181,6 +182,7 @@ export function createDaemonRelay(deps) {
     persistCloudState = null,
     persistState,
     port,
+    DAEMON_RECONNECT_GRACE_MS = DEFAULT_DAEMON_RECONNECT_GRACE_MS,
     setAgentStatus,
   } = deps;
 
@@ -189,6 +191,7 @@ export function createDaemonRelay(deps) {
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
   const connections = new Map();
+  const pendingDisconnects = new Map();
   const pendingActivityProbes = new Map();
   const pendingSkillRequests = new Map();
   const handlers = {
@@ -690,6 +693,37 @@ export function createDaemonRelay(deps) {
     return changed;
   }
 
+  function requeueUnackedSentDeliveries(computerId, errorMessage) {
+    const requeued = [];
+    for (const delivery of safeArray(cloud().agentDeliveries)) {
+      if (delivery.computerId !== computerId) continue;
+      if (delivery.status !== 'sent' || delivery.ackedAt) continue;
+      delivery.status = 'queued';
+      delivery.error = errorMessage;
+      delivery.updatedAt = now();
+      requeued.push(delivery);
+      markWorkItemQueuedFromDelivery(delivery);
+    }
+    if (requeued.length) {
+      recordDaemonEvent('agent_delivery_requeued', `Requeued ${requeued.length} unacknowledged daemon delivery${requeued.length === 1 ? '' : 'ies'}.`, {
+        computerId,
+        deliveryIds: requeued.map((delivery) => delivery.id),
+      });
+    }
+    return requeued;
+  }
+
+  function clearPendingDisconnect(computerId, { requeue = true } = {}) {
+    const pending = pendingDisconnects.get(computerId);
+    if (!pending) return false;
+    clearTimeout(pending.timer);
+    pendingDisconnects.delete(computerId);
+    if (requeue) {
+      requeueUnackedSentDeliveries(computerId, 'Connection re-established before daemon acknowledgement.');
+    }
+    return true;
+  }
+
   function probeStaleAgentHeartbeats() {
     const threshold = nowMs() - Math.max(1000, Number(AGENT_STATUS_STALE_MS || 45_000));
     let waitingForProbe = false;
@@ -739,35 +773,24 @@ export function createDaemonRelay(deps) {
     return { waitingForProbe, changed };
   }
 
-  function markComputerDisconnected(connection) {
+  function finalizeComputerDisconnected(connection) {
     if (!connection?.computerId) return;
-    if (connection.disconnected) return;
-    connection.disconnected = true;
-    connection.closed = true;
-    stopConnectionTimers(connection);
+    const pending = pendingDisconnects.get(connection.computerId);
+    if (pending?.connection === connection) {
+      clearTimeout(pending.timer);
+      pendingDisconnects.delete(connection.computerId);
+    }
+    const current = connections.get(connection.computerId);
+    if (current && current !== connection && !current.closed) return;
     if (connections.get(connection.computerId) === connection) connections.delete(connection.computerId);
     const computer = findComputer(connection.computerId);
     if (computer) {
       if (!computerIsDisabled(computer)) computer.status = 'offline';
+      computer.reconnectingSince = null;
       computer.disconnectedAt = now();
       computer.updatedAt = now();
     }
-    const requeued = [];
-    for (const delivery of safeArray(cloud().agentDeliveries)) {
-      if (delivery.computerId !== connection.computerId) continue;
-      if (delivery.status !== 'sent' || delivery.ackedAt) continue;
-      delivery.status = 'queued';
-      delivery.error = 'Connection dropped before daemon acknowledgement.';
-      delivery.updatedAt = now();
-      requeued.push(delivery);
-      markWorkItemQueuedFromDelivery(delivery);
-    }
-    if (requeued.length) {
-      recordDaemonEvent('agent_delivery_requeued', `Requeued ${requeued.length} unacknowledged daemon delivery${requeued.length === 1 ? '' : 'ies'}.`, {
-        computerId: connection.computerId,
-        deliveryIds: requeued.map((delivery) => delivery.id),
-      });
-    }
+    requeueUnackedSentDeliveries(connection.computerId, 'Connection dropped before daemon acknowledgement.');
     const affectedAgents = markAgentsForComputerDisconnected(connection.computerId);
     if (affectedAgents) {
       recordDaemonEvent('agent_computer_offline', `Marked ${affectedAgents} Agent${affectedAgents === 1 ? '' : 's'} offline because the computer disconnected.`, {
@@ -781,13 +804,42 @@ export function createDaemonRelay(deps) {
     persistAllState().then(broadcastState).catch(() => {});
   }
 
+  function markComputerDisconnected(connection) {
+    if (!connection?.computerId) return;
+    if (connection.disconnected) return;
+    connection.disconnected = true;
+    connection.closed = true;
+    stopConnectionTimers(connection);
+    if (connections.get(connection.computerId) === connection) connections.delete(connection.computerId);
+    if (connection.forceOffline || !DAEMON_RECONNECT_GRACE_MS) {
+      finalizeComputerDisconnected(connection);
+      return;
+    }
+    const computer = findComputer(connection.computerId);
+    if (computer && !computerIsDisabled(computer)) {
+      computer.status = 'connected';
+      computer.reconnectingSince = now();
+      computer.updatedAt = now();
+    }
+    const timer = setTimeout(() => finalizeComputerDisconnected(connection), DAEMON_RECONNECT_GRACE_MS);
+    timer.unref?.();
+    pendingDisconnects.set(connection.computerId, { connection, timer });
+    recordDaemonEvent('computer_reconnect_grace', `Computer reconnect grace started: ${computer?.name || connection.computerId}`, {
+      computerId: connection.computerId,
+      graceMs: DAEMON_RECONNECT_GRACE_MS,
+    });
+    persistAllState().then(broadcastState).catch(() => {});
+  }
+
   function adoptConnection(connection, computer, tokenRecord) {
+    clearPendingDisconnect(computer.id);
     const previous = connections.get(computer.id);
     if (previous && previous !== connection) {
       previous.disconnected = true;
       previous.closed = true;
       stopConnectionTimers(previous);
       previous.socket.end();
+      requeueUnackedSentDeliveries(computer.id, 'Connection replaced before daemon acknowledgement.');
     }
     connection.computerId = computer.id;
     connection.workspaceId = tokenRecord.workspaceId || computer.workspaceId || cloud().workspaces[0]?.id;
@@ -797,6 +849,7 @@ export function createDaemonRelay(deps) {
     computer.connectedVia = 'daemon';
     computer.lastSeenAt = now();
     computer.daemonConnectedAt = now();
+    computer.reconnectingSince = null;
     computer.updatedAt = now();
     tokenRecord.lastUsedAt = now();
   }
@@ -1452,6 +1505,7 @@ export function createDaemonRelay(deps) {
   function disconnectComputer(computerId, reason = 'Computer disconnected.') {
     const connection = connections.get(computerId);
     if (!connection) return false;
+    connection.forceOffline = true;
     send(connection, { type: 'error', error: reason });
     connection.socket.end();
     return true;

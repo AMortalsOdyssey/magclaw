@@ -168,6 +168,7 @@ function commandRuns(command, args = ['--version'], timeoutMs = 3000) {
       child = spawn(value, args, {
         stdio: ['ignore', 'ignore', 'ignore'],
         env: { ...process.env },
+        shell: runtimeCommandNeedsShell(value),
       });
       child.on('error', () => finish(false));
       child.on('close', (code) => finish(code === 0));
@@ -175,6 +176,11 @@ function commandRuns(command, args = ['--version'], timeoutMs = 3000) {
       finish(false);
     }
   });
+}
+
+function runtimeCommandNeedsShell(command) {
+  const basename = String(command || '').split(/[\\/]/).pop() || '';
+  return process.platform === 'win32' && /\.(cmd|bat)$/i.test(basename);
 }
 
 async function resolveCodexSpawnCommand(agent) {
@@ -263,6 +269,7 @@ async function startCodexAgent(agent, proc, workspace) {
   const child = spawn(codexCommand, args, {
     cwd: workspace,
     stdio: ['pipe', 'pipe', 'pipe'],
+    shell: runtimeCommandNeedsShell(codexCommand),
     env: {
       ...process.env,
       NO_COLOR: '1',

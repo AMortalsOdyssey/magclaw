@@ -37,6 +37,10 @@ export async function handleTaskApi(req, res, url, deps) {
   const state = getState();
   const allowedTaskStatuses = new Set(TASK_STATUS_VALUES);
 
+  function broadcastTaskStatusState() {
+    broadcastState({ immediate: true });
+  }
+
   function paginationLimit(value, fallback = 80, max = 200) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -152,7 +156,7 @@ export async function handleTaskApi(req, res, url, deps) {
       return true;
     }
     await persistState();
-    broadcastState();
+    broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
   }
@@ -182,7 +186,7 @@ export async function handleTaskApi(req, res, url, deps) {
     addSystemReply(thread.id, 'Task claim released.');
     addTaskTimelineMessage(task, `🔓 ${displayActor(actorId)} released ${taskLabel(task)}`, 'task_unclaimed');
     await persistState();
-    broadcastState();
+    broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
   }
@@ -209,7 +213,7 @@ export async function handleTaskApi(req, res, url, deps) {
     addSystemReply(thread.id, 'Review requested. Waiting for human approval.');
     addTaskTimelineMessage(task, `👀 ${displayActor(task.claimedBy)} moved ${taskLabel(task)} to In Review`, 'task_review');
     await persistState();
-    broadcastState();
+    broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
   }
@@ -232,7 +236,7 @@ export async function handleTaskApi(req, res, url, deps) {
     addSystemReply(thread.id, 'Human review approved. Task marked done.');
     addTaskTimelineMessage(task, `✅ ${displayActor('hum_local')} moved ${taskLabel(task)} to Done`, 'task_done');
     await persistState();
-    broadcastState();
+    broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
   }
@@ -261,7 +265,7 @@ export async function handleTaskApi(req, res, url, deps) {
     addSystemReply(thread.id, 'Task reopened.');
     addTaskTimelineMessage(task, `↩ ${displayActor('hum_local')} reopened ${taskLabel(task)}`, 'task_reopened');
     await persistState();
-    broadcastState();
+    broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
   }
@@ -280,7 +284,7 @@ export async function handleTaskApi(req, res, url, deps) {
     const body = await readJson(req);
     closeTask(task, String(body.actorId || 'hum_local'), String(body.reason || 'Task closed by human.'));
     await persistState();
-    broadcastState();
+    broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
   }
@@ -351,7 +355,7 @@ export async function handleTaskApi(req, res, url, deps) {
     addTaskHistory(task, 'run_started', `Codex run started: ${run.id}`, actorId, { runId: run.id, missionId: mission.id });
     addSystemReply(ensureTaskThread(task).id, `Codex run started: ${run.id}.`);
     await persistState();
-    broadcastState();
+    broadcastTaskStatusState();
     startCodexRun(mission, run);
     sendJson(res, 201, { task, mission, run });
     return true;
@@ -365,6 +369,7 @@ export async function handleTaskApi(req, res, url, deps) {
       return true;
     }
     const body = await readJson(req);
+    let taskStatusChanged = false;
     if (body.title !== undefined) task.title = String(body.title || task.title).trim();
     if (body.body !== undefined) task.body = String(body.body || '').trim();
     if (body.status !== undefined && body.status !== task.status) {
@@ -380,11 +385,12 @@ export async function handleTaskApi(req, res, url, deps) {
       if (nextStatus === 'closed') {
         closeTask(task, 'hum_local', String(body.reason || 'Task closed by human.'));
         await persistState();
-        broadcastState();
+        broadcastTaskStatusState();
         sendJson(res, 200, { task });
         return true;
       }
       task.status = nextStatus;
+      taskStatusChanged = true;
       if (nextStatus === 'todo' || nextStatus === 'in_progress') {
         task.reviewRequestedAt = null;
         task.completedAt = null;
@@ -420,7 +426,8 @@ export async function handleTaskApi(req, res, url, deps) {
     task.updatedAt = now();
     addCollabEvent('task_updated', `Task updated: ${task.title}`, { taskId: task.id });
     await persistState();
-    broadcastState();
+    if (taskStatusChanged) broadcastTaskStatusState();
+    else broadcastState();
     sendJson(res, 200, { task });
     return true;
   }

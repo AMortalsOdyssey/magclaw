@@ -46,6 +46,10 @@ export async function handleAgentToolApi(req, res, url, deps) {
   const state = getState();
   const TASK_CREATE_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
 
+  function broadcastTaskStatusState() {
+    broadcastState({ immediate: true });
+  }
+
   function headerValue(name) {
     const headers = req.headers || {};
     const lower = name.toLowerCase();
@@ -846,7 +850,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       return true;
     }
     await persistState();
-    broadcastState();
+    broadcastTaskStatusState();
     sendJson(res, 200, {
       ok: true,
       task,
@@ -1006,7 +1010,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       return true;
     }
     await persistState();
-    broadcastState();
+    broadcastTaskStatusState();
     sendJson(res, 200, {
       ok: true,
       tasks: claimed,

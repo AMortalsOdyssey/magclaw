@@ -91,6 +91,15 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export function runtimeCommandHasPathSeparator(command) {
+  return /[\\/]/.test(String(command || ''));
+}
+
+export function runtimeCommandNeedsShell(command, platform = process.platform) {
+  const basename = String(command || '').split(/[\\/]/).pop() || '';
+  return platform === 'win32' && /\.(cmd|bat)$/i.test(basename);
+}
+
 function envInteger(env, name, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
   const parsed = Number(env?.[name]);
   if (!Number.isFinite(parsed)) return fallback;
@@ -332,6 +341,7 @@ function commandOutput(command, args = [], options = {}) {
     encoding: 'utf8',
     timeout: options.timeoutMs || 3000,
     env: options.env || process.env,
+    shell: runtimeCommandNeedsShell(command, options.platform || process.platform),
   });
   return {
     ok: result.status === 0,
@@ -379,7 +389,7 @@ function defaultCodexCommand(env = process.env) {
     .map((item) => String(item || '').trim())
     .filter(Boolean);
   for (const candidate of [...new Set(candidates)]) {
-    if (candidate.includes(path.sep) && !existsSync(candidate)) continue;
+    if (runtimeCommandHasPathSeparator(candidate) && !existsSync(candidate)) continue;
     const result = commandOutput(candidate, ['--version'], { env, timeoutMs: 3000 });
     if (result.ok) return candidate;
   }
@@ -491,7 +501,7 @@ export async function detectRuntimes(env = process.env) {
     },
   ];
   return candidates.map((item) => {
-    const pathValue = item.command.includes(path.sep) ? (existsSync(item.command) ? item.command : '') : commandExists(item.command, env);
+    const pathValue = runtimeCommandHasPathSeparator(item.command) ? (existsSync(item.command) ? item.command : '') : commandExists(item.command, env);
     const installed = Boolean(pathValue);
     const version = installed ? runtimeVersion(item.command, env) : '';
     const modelInfo = installed && item.modelsFor ? item.modelsFor(item.command) : {
@@ -1639,6 +1649,7 @@ class CodexAgentSession {
     this.child = spawn(codexCommand, args, {
       cwd: this.workspace(),
       stdio: ['pipe', 'pipe', 'pipe'],
+      shell: runtimeCommandNeedsShell(codexCommand, process.platform),
       env: {
         ...agentEnvironment(this.agent, this.env),
         NO_COLOR: '1',

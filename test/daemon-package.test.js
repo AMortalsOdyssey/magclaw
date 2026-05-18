@@ -13,6 +13,8 @@ import {
   formatDaemonLogLine,
   parseCli,
   profilePaths,
+  runtimeCommandHasPathSeparator,
+  runtimeCommandNeedsShell,
   toWebSocketUrl,
 } from '../daemon/src/cli.js';
 
@@ -246,6 +248,15 @@ process.exit(2);
   assert.ok(runtimes.find((runtime) => runtime.id === 'gemini'));
   assert.ok(runtimes.find((runtime) => runtime.id === 'copilot'));
   assert.ok(runtimes.find((runtime) => runtime.id === 'opencode'));
+});
+
+test('daemon runtime command helpers handle Windows Codex CLI paths', () => {
+  assert.equal(runtimeCommandHasPathSeparator('C:\\Users\\tt\\AppData\\Roaming\\npm\\codex.cmd'), true);
+  assert.equal(runtimeCommandHasPathSeparator('C:/Users/tt/AppData/Roaming/npm/codex.cmd'), true);
+  assert.equal(runtimeCommandHasPathSeparator('codex'), false);
+  assert.equal(runtimeCommandNeedsShell('C:\\Users\\tt\\AppData\\Roaming\\npm\\codex.cmd', 'win32'), true);
+  assert.equal(runtimeCommandNeedsShell('C:/Users/tt/AppData/Roaming/npm/codex.bat', 'win32'), true);
+  assert.equal(runtimeCommandNeedsShell('/usr/local/bin/codex', 'darwin'), false);
 });
 
 test('top-level daemon npm package dry-run excludes cloud server and deployment files', () => {

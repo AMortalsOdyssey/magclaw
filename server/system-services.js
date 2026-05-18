@@ -198,9 +198,18 @@ export function createSystemServices(deps) {
     }
     const taskRecords = records(snapshot.tasks);
     const openStatuses = new Set(['todo', 'in_progress', 'in_review']);
+    const currentHumanId = snapshot.cloud?.auth?.currentMember?.humanId || null;
+    const memberChannelIds = new Set(records(snapshot.channels)
+      .filter((channel) => (
+        !currentHumanId
+        || records(channel.memberIds).includes(currentHumanId)
+        || records(channel.humanIds).includes(currentHumanId)
+      ))
+      .map((channel) => channel.id));
     const visibleTasks = taskRecords.filter((task) => (
       taskIds.has(task.id)
       || (task.spaceType === spaceType && String(task.spaceId) === spaceId)
+      || (task.spaceType === 'channel' && memberChannelIds.has(task.spaceId))
       || openStatuses.has(String(task.status || 'todo'))
     ));
 
@@ -385,6 +394,27 @@ export function createSystemServices(deps) {
     return 'codex';
   }
 
+  function commandHasPathSeparator(command) {
+    return /[\\/]/.test(String(command || ''));
+  }
+
+  function commandNeedsShell(command) {
+    const basename = String(command || '').split(/[\\/]/).pop() || '';
+    return process.platform === 'win32' && /\.(cmd|bat)$/i.test(basename);
+  }
+
+  function commandNameCandidates(command) {
+    const value = String(command || '').trim();
+    if (!value) return [];
+    if (commandHasPathSeparator(value) || path.extname(value)) return [value];
+    if (process.platform !== 'win32') return [value];
+    const exts = String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+      .split(';')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    return [value, ...exts.map((ext) => `${value}${ext}`)];
+  }
+
   async function resolveCodexPath() {
     const configured = state.settings?.codexPath || '';
     const candidates = [configured, defaultCodexPath(), 'codex']
@@ -402,11 +432,12 @@ export function createSystemServices(deps) {
   }
 
   function executableCandidates(command) {
-    return [...new Set([
-      command,
-      path.join(path.dirname(process.execPath), command),
-      path.join(os.homedir(), '.local', 'bin', command),
-    ].filter(Boolean))];
+    const names = commandNameCandidates(command);
+    return [...new Set(names.flatMap((name) => [
+      name,
+      commandHasPathSeparator(name) ? '' : path.join(path.dirname(process.execPath), name),
+      commandHasPathSeparator(name) ? '' : path.join(os.homedir(), '.local', 'bin', name),
+    ]).filter(Boolean))];
   }
 
   async function resolveCommandVersion(command) {
@@ -595,7 +626,7 @@ export function createSystemServices(deps) {
   
   function execText(command, args) {
     return new Promise((resolve, reject) => {
-      execFile(command, args, { timeout: 10_000 }, (error, stdout, stderr) => {
+      execFile(command, args, { timeout: 10_000, shell: commandNeedsShell(command) }, (error, stdout, stderr) => {
         if (error) {
           reject(new Error(stderr.trim() || error.message));
           return;
@@ -607,7 +638,7 @@ export function createSystemServices(deps) {
   
   function execFileResult(command, args, options = {}) {
     return new Promise((resolve) => {
-      execFile(command, args, options, (error, stdout, stderr) => {
+      execFile(command, args, { ...options, shell: options.shell ?? commandNeedsShell(command) }, (error, stdout, stderr) => {
         resolve({
           code: typeof error?.code === 'number' ? error.code : 0,
           signal: error?.signal || null,

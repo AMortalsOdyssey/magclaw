@@ -60,6 +60,7 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
   const child = spawn(state.settings.codexPath || 'codex', args, {
     cwd: workspace,
     stdio: ['pipe', 'pipe', 'pipe'],
+    shell: runtimeCommandNeedsShell(state.settings.codexPath || 'codex'),
     env: {
       ...process.env,
       ...(agent.envVars ? Object.fromEntries(agent.envVars.map(e => [e.key, e.value])) : {}),

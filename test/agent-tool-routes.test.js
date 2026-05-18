@@ -264,6 +264,38 @@ test('agent tool task creation reuses an immediate duplicate from the same agent
   assert.equal(secondRes.data.tasks[0].reused, true);
 });
 
+test('agent tool task status updates broadcast immediately', async () => {
+  const broadcastOptions = [];
+  const task = { id: 'task_update', number: 7, status: 'todo' };
+  const deps = routeDeps({
+    broadcastState: (options = {}) => {
+      broadcastOptions.push(options);
+    },
+    findTaskForAgentTool: () => task,
+    readJson: async () => ({
+      agentId: 'agt_one',
+      taskId: task.id,
+      status: 'in_review',
+      force: true,
+    }),
+    updateTaskForAgent: (targetTask, _agent, status) => {
+      targetTask.status = status;
+    },
+  });
+  const res = makeResponse();
+  const handled = await handleAgentToolApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/agent-tools/tasks/update'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(task.status, 'in_review');
+  assert.deepEqual(broadcastOptions, [{ immediate: true }]);
+});
+
 test('agent tool memory endpoint records controlled memory writebacks', async () => {
   const deps = routeDeps({
     readJson: async () => ({

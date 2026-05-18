@@ -7,14 +7,21 @@ function makeServices() {
   const state = {
     connection: { workspaceId: 'local' },
     settings: {},
-    channels: [{ id: 'chan_all', workspaceId: 'local', name: 'all', createdAt, updatedAt: createdAt }],
+    channels: [
+      { id: 'chan_all', workspaceId: 'local', name: 'all', memberIds: ['hum_1'], createdAt, updatedAt: createdAt },
+      { id: 'chan_member', workspaceId: 'local', name: 'member-room', memberIds: ['hum_1'], createdAt, updatedAt: createdAt },
+      { id: 'chan_outside', workspaceId: 'local', name: 'outside-room', memberIds: ['hum_other'], createdAt, updatedAt: createdAt },
+    ],
     dms: [{ id: 'dm_1', workspaceId: 'local', participantIds: ['hum_1', 'agt_1'], createdAt, updatedAt: createdAt }],
     messages: [
       { id: 'msg_channel', workspaceId: 'local', spaceType: 'channel', spaceId: 'chan_all', body: 'channel hello', createdAt, updatedAt: createdAt },
       { id: 'msg_dm', workspaceId: 'local', spaceType: 'dm', spaceId: 'dm_1', body: 'dm hello', createdAt, updatedAt: createdAt },
     ],
     replies: [],
-    tasks: [],
+    tasks: [
+      { id: 'task_member_done', workspaceId: 'local', spaceType: 'channel', spaceId: 'chan_member', title: 'Done for my channel', status: 'done', createdAt, updatedAt: createdAt },
+      { id: 'task_outside_done', workspaceId: 'local', spaceType: 'channel', spaceId: 'chan_outside', title: 'Done outside', status: 'done', createdAt, updatedAt: createdAt },
+    ],
     runs: [],
     workItems: [],
     events: [],
@@ -62,4 +69,17 @@ test('bootstrap state reads active DM options from event stream requests', () =>
   assert.equal(snapshot.bootstrap.messageLimit, 20);
   assert.equal(snapshot.bootstrap.threadRootLimit, 40);
   assert.deepEqual(snapshot.messages.map((message) => message.body), ['dm hello']);
+});
+
+test('bootstrap state includes terminal task updates for the current member channels', () => {
+  const services = makeServices();
+  const req = {
+    url: '/api/events?spaceType=channel&spaceId=chan_all',
+    headers: {},
+  };
+
+  const snapshot = services.publicBootstrapState(req);
+
+  assert.equal(snapshot.tasks.some((task) => task.id === 'task_member_done'), true);
+  assert.equal(snapshot.tasks.some((task) => task.id === 'task_outside_done'), false);
 });
