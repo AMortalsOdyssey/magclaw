@@ -431,6 +431,45 @@ test('daemon relay keeps agents out of offline during quick reconnect grace', as
   assert.equal(cloud.daemonEvents.some((event) => event.type === 'agent_computer_offline'), false);
 });
 
+test('daemon relay restores connected status from any live websocket frame', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_live';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote computer',
+    status: 'offline',
+    connectedVia: 'daemon',
+    createdAt: '2026-05-13T00:00:00.000Z',
+    updatedAt: '2026-05-13T00:00:00.000Z',
+  });
+  cloud.computerTokens.push({
+    id: 'tok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  state.computers[0].status = 'offline';
+  socket.emit('data', encodeFrame({ type: 'pong' }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(state.computers[0].status, 'connected');
+  assert.equal(state.computers[0].lastSeenAt, '2026-05-13T00:00:00.000Z');
+});
+
 test('daemon relay marks offline after reconnect grace expires', async () => {
   const { cloud, relay, state } = createRelay({ reconnectGraceMs: 25 });
   const rawToken = 'mc_machine_existing';

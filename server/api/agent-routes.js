@@ -372,6 +372,7 @@ export async function handleAgentApi(req, res, url, deps) {
     if (body.model !== undefined) agent.model = normalizeCodexModelName(body.model, state.settings?.model);
     if (body.reasoningEffort === null) agent.reasoningEffort = null;
     if (Array.isArray(body.envVars)) agent.envVars = body.envVars;
+    agent.updatedAt = now();
     addCollabEvent('agent_updated', `Agent updated: ${agent.name}`, { agentId: agent.id });
     await persistState();
     broadcastState();

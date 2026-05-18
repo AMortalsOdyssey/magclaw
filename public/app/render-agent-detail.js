@@ -436,11 +436,19 @@ function agentActivityTone(event) {
   return 'queued';
 }
 
+function agentActivityIsUserVisible(event) {
+  const rawType = String(event?.raw?.type || event?.raw?.event || event?.type || '').toLowerCase();
+  const resultType = String(event?.raw?.resultType || event?.resultType || '').toLowerCase();
+  if (rawType === 'daemon_result') return false;
+  if (resultType === 'agent:skills:list_result') return false;
+  return true;
+}
+
 function agentLiveActivitySummary(agent) {
   const status = agentDisplayStatus(agent);
   const value = String(status || 'offline').toLowerCase();
   const activity = agent?.runtimeActivity && typeof agent.runtimeActivity === 'object' ? agent.runtimeActivity : {};
-  const latestEvent = agentActivityEvents(agent)[0] || null;
+  const latestEvent = agentActivityEvents(agent).find(agentActivityIsUserVisible) || null;
   const detail = String(
     activity.detail
     || activity.note

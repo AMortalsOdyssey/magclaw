@@ -1021,6 +1021,7 @@ export function createStateCore(deps) {
     const previousStatus = agent.status || 'offline';
     agent.status = nextStatus;
     agent.statusUpdatedAt = now();
+    agent.updatedAt = agent.statusUpdatedAt;
     agent.heartbeatAt = agent.statusUpdatedAt;
     if (!agentStatusIsBusy(nextStatus)) {
       agent.runtimeActivity = null;

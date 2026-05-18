@@ -828,6 +828,100 @@ test('postgres store can persist a single workspace runtime snapshot', async () 
   assert.equal(queries.some((query) => query.params?.includes?.('chan_one') || query.params?.includes?.('msg_one')), true);
 });
 
+test('postgres workspace persistence preserves newer agent and human fields during upsert', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  await store.persistWorkspaceFromState({
+    humans: [{ id: 'hum_main', workspaceId: 'wsp_main', name: 'Human', status: 'online', lastSeenAt: createdAt, createdAt, updatedAt: createdAt }],
+    computers: [{ id: 'cmp_main' }],
+    agents: [{ id: 'agt_main', workspaceId: 'wsp_main', computerId: 'cmp_main', name: 'Agent', description: 'fresh', status: 'idle', createdAt, updatedAt: createdAt, statusUpdatedAt: createdAt }],
+    channels: [],
+    dms: [],
+    messages: [],
+    replies: [],
+    tasks: [],
+    workItems: [],
+    attachments: [],
+    reminders: [],
+    missions: [],
+    runs: [],
+    projects: [],
+    cloud: {
+      workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
+    },
+  }, 'wsp_main');
+
+  const runtimeDelete = queries.find((query) => query.sql.includes('WITH') && query.sql.includes('cloud_state_records'));
+  assert.ok(runtimeDelete);
+  assert.equal(runtimeDelete.sql.includes('cloud_agents'), false);
+  assert.equal(runtimeDelete.sql.includes('cloud_humans'), false);
+  assert.ok(queries.some((query) => query.sql.includes('DELETE FROM "magclaw"."cloud_agents"') && query.sql.includes('AND NOT (id = ANY($2::text[]))')));
+  const agentInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_agents"'));
+  const humanInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_humans"'));
+  assert.match(agentInsert.sql, /ON CONFLICT \(id\) DO UPDATE SET/);
+  assert.match(agentInsert.sql, /description = CASE WHEN/);
+  assert.match(agentInsert.sql, /status_updated_at = CASE/);
+  assert.match(humanInsert.sql, /status = CASE WHEN/);
+  assert.match(humanInsert.sql, /last_seen_at = CASE/);
+});
+
+test('postgres computer upsert keeps a newer connected daemon row from stale offline snapshots', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  await store.persistAuthFromState({
+    computers: [{ id: 'cmp_main', workspaceId: 'wsp_main', name: 'Computer', status: 'offline', connectedVia: 'daemon', createdAt, updatedAt: createdAt, lastSeenAt: createdAt }],
+    cloud: {
+      workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
+      users: [],
+      workspaceMembers: [],
+      sessions: [],
+      invitations: [],
+      passwordResetTokens: [],
+      computerTokens: [],
+      pairingTokens: [],
+    },
+  });
+
+  const computerInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_computers"'));
+  assert.match(computerInsert.sql, /EXCLUDED\.status = 'offline'/);
+  assert.match(computerInsert.sql, /"magclaw"\."cloud_computers"\.status = 'connected'/);
+  assert.match(computerInsert.sql, /last_seen_at = CASE/);
+});
+
 test('postgres store publishes and listens for realtime invalidation events', async () => {
   const queries = [];
   const listenerClient = new EventEmitter();

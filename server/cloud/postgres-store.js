@@ -733,6 +733,89 @@ export function createCloudPostgresStore(optionsInput = {}) {
     return tableName(schema, name);
   }
 
+  function greatestTimestamp(tableKey, column) {
+    return `CASE
+      WHEN ${table(tableKey)}.${column} IS NULL THEN EXCLUDED.${column}
+      WHEN EXCLUDED.${column} IS NULL THEN ${table(tableKey)}.${column}
+      ELSE GREATEST(${table(tableKey)}.${column}, EXCLUDED.${column})
+    END`;
+  }
+
+  function agentRuntimeConflictSuffix() {
+    const existing = table('cloud_agents');
+    const existingNewer = `COALESCE(${existing}.updated_at, TIMESTAMPTZ 'epoch') > COALESCE(EXCLUDED.updated_at, TIMESTAMPTZ 'epoch')`;
+    const existingStatusNewer = `COALESCE(${existing}.status_updated_at, TIMESTAMPTZ 'epoch') > COALESCE(EXCLUDED.status_updated_at, TIMESTAMPTZ 'epoch')`;
+    return `
+      ON CONFLICT (id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        computer_id = EXCLUDED.computer_id,
+        name = CASE WHEN ${existingNewer} THEN ${existing}.name ELSE EXCLUDED.name END,
+        handle = CASE WHEN ${existingNewer} THEN ${existing}.handle ELSE EXCLUDED.handle END,
+        description = CASE WHEN ${existingNewer} THEN ${existing}.description ELSE EXCLUDED.description END,
+        runtime = CASE WHEN ${existingNewer} THEN ${existing}.runtime ELSE EXCLUDED.runtime END,
+        model = CASE WHEN ${existingNewer} THEN ${existing}.model ELSE EXCLUDED.model END,
+        reasoning_effort = CASE WHEN ${existingNewer} THEN ${existing}.reasoning_effort ELSE EXCLUDED.reasoning_effort END,
+        status = CASE WHEN ${existingStatusNewer} THEN ${existing}.status ELSE EXCLUDED.status END,
+        workspace_path = CASE WHEN ${existingNewer} THEN ${existing}.workspace_path ELSE EXCLUDED.workspace_path END,
+        created_by = CASE WHEN ${existingNewer} THEN ${existing}.created_by ELSE EXCLUDED.created_by END,
+        created_at = LEAST(COALESCE(${existing}.created_at, EXCLUDED.created_at), EXCLUDED.created_at),
+        updated_at = GREATEST(COALESCE(${existing}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
+        status_updated_at = ${greatestTimestamp('cloud_agents', 'status_updated_at')},
+        metadata = CASE WHEN ${existingNewer} THEN ${existing}.metadata ELSE EXCLUDED.metadata END
+    `;
+  }
+
+  function humanRuntimeConflictSuffix() {
+    const existing = table('cloud_humans');
+    const existingProfileNewer = `COALESCE(${existing}.updated_at, TIMESTAMPTZ 'epoch') > COALESCE(EXCLUDED.updated_at, TIMESTAMPTZ 'epoch')`;
+    const existingPresenceNewer = `COALESCE(${existing}.last_seen_at, TIMESTAMPTZ 'epoch') > COALESCE(EXCLUDED.last_seen_at, TIMESTAMPTZ 'epoch')`;
+    return `
+      ON CONFLICT (id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        user_id = EXCLUDED.user_id,
+        name = CASE WHEN ${existingProfileNewer} THEN ${existing}.name ELSE EXCLUDED.name END,
+        email = CASE WHEN ${existingProfileNewer} THEN ${existing}.email ELSE EXCLUDED.email END,
+        role = EXCLUDED.role,
+        status = CASE WHEN ${existingPresenceNewer} THEN ${existing}.status ELSE EXCLUDED.status END,
+        avatar = CASE WHEN ${existingProfileNewer} THEN ${existing}.avatar ELSE EXCLUDED.avatar END,
+        description = CASE WHEN ${existingProfileNewer} THEN ${existing}.description ELSE EXCLUDED.description END,
+        last_seen_at = ${greatestTimestamp('cloud_humans', 'last_seen_at')},
+        created_at = LEAST(COALESCE(${existing}.created_at, EXCLUDED.created_at), EXCLUDED.created_at),
+        updated_at = GREATEST(COALESCE(${existing}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
+        metadata = CASE WHEN ${existingProfileNewer} THEN ${existing}.metadata ELSE EXCLUDED.metadata END
+    `;
+  }
+
+  function computerAuthConflictSuffix() {
+    const existing = table('cloud_computers');
+    const excludedDisconnectOrSeen = `COALESCE(EXCLUDED.disconnected_at, EXCLUDED.last_seen_at, EXCLUDED.updated_at, TIMESTAMPTZ 'epoch')`;
+    const staleOfflineDowngrade = `EXCLUDED.status = 'offline'
+          AND ${existing}.status = 'connected'
+          AND COALESCE(${existing}.last_seen_at, TIMESTAMPTZ 'epoch') > ${excludedDisconnectOrSeen}`;
+    return `
+      ON CONFLICT (id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        name = EXCLUDED.name,
+        hostname = EXCLUDED.hostname,
+        os = EXCLUDED.os,
+        arch = EXCLUDED.arch,
+        daemon_version = EXCLUDED.daemon_version,
+        status = CASE WHEN ${staleOfflineDowngrade} THEN ${existing}.status ELSE EXCLUDED.status END,
+        connected_via = EXCLUDED.connected_via,
+        runtime_ids = EXCLUDED.runtime_ids,
+        runtime_details = EXCLUDED.runtime_details,
+        capabilities = EXCLUDED.capabilities,
+        running_agents = EXCLUDED.running_agents,
+        machine_fingerprint = EXCLUDED.machine_fingerprint,
+        updated_at = GREATEST(COALESCE(${existing}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
+        last_seen_at = ${greatestTimestamp('cloud_computers', 'last_seen_at')},
+        daemon_connected_at = ${greatestTimestamp('cloud_computers', 'daemon_connected_at')},
+        disconnected_at = ${greatestTimestamp('cloud_computers', 'disconnected_at')},
+        disabled_at = EXCLUDED.disabled_at,
+        metadata = EXCLUDED.metadata
+    `;
+  }
+
   async function withClient(fn) {
     if (!pool) {
       pool = new Pool({
@@ -1145,8 +1228,6 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'cloud_messages',
       'cloud_dms',
       'cloud_channels',
-      'cloud_agents',
-      'cloud_humans',
       'cloud_attachments',
     ];
     await client.query(`
@@ -1395,6 +1476,17 @@ export function createCloudPostgresStore(optionsInput = {}) {
       ]);
     }
 
+    await client.query(`
+      DELETE FROM ${table('cloud_humans')}
+      WHERE workspace_id = ANY($1::text[])
+        AND NOT (id = ANY($2::text[]))
+    `, [ids, humanRows.map((row) => row[0])]);
+    await client.query(`
+      DELETE FROM ${table('cloud_agents')}
+      WHERE workspace_id = ANY($1::text[])
+        AND NOT (id = ANY($2::text[]))
+    `, [ids, agentRows.map((row) => row[0])]);
+
     await batchInsertRows(client, 'cloud_humans', [
       'id',
       'workspace_id',
@@ -1409,7 +1501,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'created_at',
       'updated_at',
       'metadata',
-    ], humanRows, { metadata: '::jsonb' });
+    ], humanRows, { metadata: '::jsonb' }, humanRuntimeConflictSuffix());
     await batchInsertRows(client, 'cloud_agents', [
       'id',
       'workspace_id',
@@ -1427,7 +1519,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'updated_at',
       'status_updated_at',
       'metadata',
-    ], agentRows, { metadata: '::jsonb' });
+    ], agentRows, { metadata: '::jsonb' }, agentRuntimeConflictSuffix());
     await batchInsertRows(client, 'cloud_channels', [
       'id',
       'workspace_id',
@@ -1831,28 +1923,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           capabilities: '::jsonb',
           running_agents: '::jsonb',
           metadata: '::jsonb',
-        }, `
-          ON CONFLICT (id) DO UPDATE SET
-            workspace_id = EXCLUDED.workspace_id,
-            name = EXCLUDED.name,
-            hostname = EXCLUDED.hostname,
-            os = EXCLUDED.os,
-            arch = EXCLUDED.arch,
-            daemon_version = EXCLUDED.daemon_version,
-            status = EXCLUDED.status,
-            connected_via = EXCLUDED.connected_via,
-            runtime_ids = EXCLUDED.runtime_ids,
-            runtime_details = EXCLUDED.runtime_details,
-            capabilities = EXCLUDED.capabilities,
-            running_agents = EXCLUDED.running_agents,
-            machine_fingerprint = EXCLUDED.machine_fingerprint,
-            updated_at = EXCLUDED.updated_at,
-            last_seen_at = EXCLUDED.last_seen_at,
-            daemon_connected_at = EXCLUDED.daemon_connected_at,
-            disconnected_at = EXCLUDED.disconnected_at,
-            disabled_at = EXCLUDED.disabled_at,
-            metadata = EXCLUDED.metadata
-        `);
+        }, computerAuthConflictSuffix());
 
         await replaceWorkspaceRuntimeRows(client, state, cloud);
 
@@ -2269,28 +2340,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           capabilities: '::jsonb',
           running_agents: '::jsonb',
           metadata: '::jsonb',
-        }, `
-          ON CONFLICT (id) DO UPDATE SET
-            workspace_id = EXCLUDED.workspace_id,
-            name = EXCLUDED.name,
-            hostname = EXCLUDED.hostname,
-            os = EXCLUDED.os,
-            arch = EXCLUDED.arch,
-            daemon_version = EXCLUDED.daemon_version,
-            status = EXCLUDED.status,
-            connected_via = EXCLUDED.connected_via,
-            runtime_ids = EXCLUDED.runtime_ids,
-            runtime_details = EXCLUDED.runtime_details,
-            capabilities = EXCLUDED.capabilities,
-            running_agents = EXCLUDED.running_agents,
-            machine_fingerprint = EXCLUDED.machine_fingerprint,
-            updated_at = EXCLUDED.updated_at,
-            last_seen_at = EXCLUDED.last_seen_at,
-            daemon_connected_at = EXCLUDED.daemon_connected_at,
-            disconnected_at = EXCLUDED.disconnected_at,
-            disabled_at = EXCLUDED.disabled_at,
-            metadata = EXCLUDED.metadata
-        `);
+        }, computerAuthConflictSuffix());
 
         await batchInsertRows(client, 'cloud_computer_tokens', [
           'id',

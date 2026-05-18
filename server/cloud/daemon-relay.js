@@ -1240,7 +1240,11 @@ export function createDaemonRelay(deps) {
     connection.lastSeenAt = now();
     refreshConnectionWatchdog(connection);
     const computer = findComputer(connection.computerId);
-    if (computer) computer.lastSeenAt = now();
+    if (computer) {
+      if (!computerIsDisabled(computer)) computer.status = 'connected';
+      computer.lastSeenAt = now();
+      computer.updatedAt = now();
+    }
     switch (message.type) {
       case 'ready':
         await handleReady(connection, message);

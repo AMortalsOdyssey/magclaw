@@ -433,7 +433,7 @@ test('console invitations stay repeatable and resolve per logged-in user', async
 });
 
 test('owner registration protects app APIs and supports invites end to end', async () => {
-  const server = await startIsolatedServer();
+  const server = await startIsolatedServer({ MAGCLAW_DAEMON_RECONNECT_GRACE_MS: '0' });
   let daemon = null;
   try {
     const initial = await request(server.baseUrl, '/api/cloud/auth/status');
