@@ -33,6 +33,21 @@ This project follows the global Codex rules plus the project-specific rules belo
 - Use `/home/godman/jhb/ai-social/magclaw` as the MagClaw operations workspace on the production jump host for deployment scripts, PostgreSQL bootstrap files, PVC checks, and related handoff artifacts.
 - Keep jump-host scripts free of plaintext passwords, tokens, and database URLs with embedded credentials; prefer interactive password prompts or runtime-only environment variables.
 
+## Production Troubleshooting
+
+- For production debugging, logs, K8s state, runtime verification, and database-configuration checks, use the jump host at `https://yw-jump.ttyuyin.com/luna/` first. Open it with Chrome/Computer Use when possible; if the browser tool cannot open or interact with it, ask the user to open it and continue from the visible terminal.
+- Work from `/home/godman/jhb/ai-social/magclaw` on the jump host and treat live `jsgai` output as the production source of truth.
+- Start incident triage with live object evidence: Deployment image/tag, ready replicas, Pods, recent service logs, and an in-Pod `/api/readyz` check. Do not rely only on CI status, local code, or external-domain behavior.
+- Useful first-pass commands:
+  - `jsgai get deploy magclaw-web -o wide`
+  - `jsgai get deploy magclaw-web -o jsonpath='{.spec.template.spec.containers[*].name}{"\n"}{.spec.template.spec.containers[*].image}{"\n"}{.status.readyReplicas}{"/"}{.status.replicas}{"\n"}'`
+  - `jsgai get pod | grep magclaw-web`
+  - `jsgai logs <pod> -c service --since=10m | tail -120`
+  - `jsgai exec <pod> -c service -- node -e "fetch('http://127.0.0.1:6543/api/readyz').then(r=>r.text()).then(console.log)"`
+- For database-related issues, verify configuration presence and runtime behavior without exposing secrets: inspect Deployment env var names, Sentinel deployment/dynamic config names, PostgreSQL connection log lines, readiness output, and app errors. Do not print or commit database URLs, passwords, token values, or full Secret contents.
+- If a migration, bootstrap, or data repair is required, prepare the exact command and risk summary first; use interactive passwords or runtime-only environment variables, and avoid writing credential-bearing scripts.
+- If external domains are not configured or are known pending, do not treat DNS or certificate failures as the main app failure; continue with in-cluster and Pod-local verification.
+
 ## Sentinel CI/CD Deployment
 
 - For MagClaw web deploys, use Sentinel project `AI-Social` (`projectId=83`), service `magclaw-web`, and pipeline `node test+prod/magclaw-web` (`pipeline/single/detail/415533`). The service runtime page is `service/7624`.
