@@ -753,7 +753,7 @@ export function createCloudAuth(deps) {
       error.status = 400;
       throw error;
     }
-    const providerAccountId = String(info.union_id || info.open_id || info.user_id || email).trim();
+    const providerAccountId = String(info.union_id || info.user_id || info.open_id || email).trim();
     if (!providerAccountId) {
       const error = new Error('Feishu did not return a stable account identifier.');
       error.status = 400;
@@ -1138,6 +1138,84 @@ export function createCloudAuth(deps) {
       return { user: publicUser(user), member, workspace: primaryWorkspace() };
     }
 
+    function localDevLoginUserRef() {
+      return String(process.env.MAGCLAW_DEV_LOGIN_USER_ID || process.env.MAGCLAW_DEV_LOGIN_USER || '').trim();
+    }
+
+    function isLoopbackRequest(req) {
+      const remoteAddress = String(req?.socket?.remoteAddress || '').toLowerCase();
+      return remoteAddress === '::1'
+        || remoteAddress === '127.0.0.1'
+        || remoteAddress === 'localhost'
+        || remoteAddress.startsWith('127.')
+        || remoteAddress.startsWith('::ffff:127.');
+    }
+
+    function userByDevLoginRef(ref) {
+      const normalized = String(ref || '').trim().toLowerCase();
+      if (!normalized) return null;
+      return ensureCloudState().users.find((user) => (
+        !user.disabledAt
+        && (
+          String(user.id || '').toLowerCase() === normalized
+          || normalizeEmail(user.email) === normalized
+          || String(user.normalizedEmail || user.normalized_email || '').toLowerCase() === normalized
+        )
+      )) || null;
+    }
+
+    function firstActiveMemberForUser(userId) {
+      const cloud = ensureCloudState();
+      return cloud.workspaceMembers.find((item) => item.userId === userId && item.status === 'active') || null;
+    }
+
+    async function devLogin(req, res) {
+      const userRef = localDevLoginUserRef();
+      if (!userRef) {
+        const error = new Error('Local dev login is not enabled.');
+        error.status = 404;
+        throw error;
+      }
+      if (!isLoopbackRequest(req) && process.env.MAGCLAW_ALLOW_REMOTE_DEV_LOGIN !== '1') {
+        const error = new Error('Local dev login only accepts loopback requests.');
+        error.status = 403;
+        throw error;
+      }
+      const cloud = ensureCloudState();
+      const user = userByDevLoginRef(userRef);
+      if (!user) {
+        const error = new Error('Configured local dev login user was not found.');
+        error.status = 404;
+        throw error;
+      }
+      const member = firstActiveMemberForUser(user.id);
+      if (member) {
+        const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, {
+          humanId: member.humanId,
+          workspaceId: member.workspaceId,
+        });
+        if (human?.id && member.humanId !== human.id) member.humanId = human.id;
+        markHumanPresence(human, 'online');
+      }
+      const previousLastLoginAt = user.lastLoginAt || null;
+      const issued = issueSession(user, req);
+      try {
+        await persistAuthOperation({
+          type: 'login',
+          user: loginUserRecord(user),
+          session: cloneRecord(issued.session),
+        });
+      } catch (error) {
+        removeArrayItem(cloud.sessions, issued.session);
+        user.lastLoginAt = previousLastLoginAt;
+        console.error(`[cloud-auth] dev login persist failed user=${user.id}`, error);
+        throw error;
+      }
+      res.setHeader('Set-Cookie', issued.cookie);
+      const workspace = member ? cloud.workspaces.find((item) => item.id === member.workspaceId) || primaryWorkspace() : primaryWorkspace();
+      return { user: publicUser(user), member: publicMember(member), workspace };
+    }
+
     async function registerOpenAccount(body, req, res) {
       if (!hasAuthProvider('email_password')) {
         const error = new Error('Email password account creation is not enabled.');
@@ -1392,6 +1470,56 @@ export function createCloudAuth(deps) {
       ));
       const workspaceIds = new Set(memberships.map((member) => member.workspaceId));
       return cloud.workspaces.filter((workspace) => workspaceIds.has(workspace.id) && !workspace.deletedAt);
+    }
+
+    function publicWorkspaceRouteSummary(workspace) {
+      if (!workspace) return null;
+      return {
+        id: workspace.id,
+        slug: workspace.slug || workspace.id,
+        name: workspace.name || workspace.slug || workspace.id,
+      };
+    }
+
+    function workspaceForPublicState(req, user) {
+      const requestedRef = req ? requestWorkspaceRef(req) : '';
+      const requestedWorkspace = req ? workspaceForRequest(req) : primaryWorkspace();
+      if (!user) {
+        return {
+          workspace: requestedWorkspace,
+          access: { denied: false, requestedRef, fallbackWorkspace: null },
+        };
+      }
+      const requestedMember = requestedWorkspace ? memberForUser(user.id, requestedWorkspace.id) : null;
+      if (requestedMember) {
+        return {
+          workspace: requestedWorkspace,
+          access: { denied: false, requestedRef, fallbackWorkspace: null },
+        };
+      }
+      const fallbackWorkspace = workspacesForUser(user)[0] || null;
+      if (!fallbackWorkspace) {
+        return {
+          workspace: requestedWorkspace,
+          access: { denied: false, requestedRef, fallbackWorkspace: null },
+        };
+      }
+      const denied = Boolean(
+        requestedRef
+        && requestedWorkspace?.id
+        && fallbackWorkspace.id !== requestedWorkspace.id,
+      );
+      if (denied) {
+        console.warn(`[cloud-auth] workspace access denied user=${user.id} requested=${requestedRef} fallback=${fallbackWorkspace.slug || fallbackWorkspace.id}`);
+      }
+      return {
+        workspace: fallbackWorkspace,
+        access: {
+          denied,
+          requestedRef,
+          fallbackWorkspace: denied ? publicWorkspaceRouteSummary(fallbackWorkspace) : null,
+        },
+      };
     }
 
     function deletedWorkspacesForUser(user) {
@@ -2479,8 +2607,9 @@ export function createCloudAuth(deps) {
     function publicCloudState(req) {
       const cloud = ensureCloudState();
       refreshHumanPresence();
-      const workspace = req ? workspaceForRequest(req) : primaryWorkspace();
       const user = req ? currentUser(req) : null;
+      const workspaceContext = workspaceForPublicState(req, user);
+      const workspace = workspaceContext.workspace;
       const member = user ? memberForUser(user.id, workspace?.id) : null;
       const session = req ? currentSession(req) : null;
       const capabilities = member ? cloudCapabilitiesForRole(member.role) : {};
@@ -2507,6 +2636,7 @@ export function createCloudAuth(deps) {
           humanPresenceTimeoutMs: HUMAN_PRESENCE_TIMEOUT_MS,
         },
         workspace,
+        workspaceAccess: workspaceContext.access,
         workspaces: ownConsoleState.workspaces,
         deletedWorkspaces: ownConsoleState.deletedWorkspaces || [],
         members: canSeeDirectory ? workspaceMembers.map(publicMember) : [],
@@ -2577,6 +2707,7 @@ export function createCloudAuth(deps) {
 	      removeMember,
 	      updateMemberRole,
 	      updateUserPreferences,
+	      devLogin,
 	      publicCloudState,
     publicInvitation,
     publicJoinLink,

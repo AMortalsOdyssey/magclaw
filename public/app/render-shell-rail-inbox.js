@@ -312,6 +312,7 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
 function renderMembersRail({ normalAgents }) {
   const humans = humansByJoinOrder();
   const agentModal = cloudCan('manage_agents') ? 'agent' : '';
+  const humanModal = cloudCan('invite_member') ? 'member-invite' : '';
   return `
     <div class="rail-section">
       ${renderRailSectionTitle('agents', 'Agents', normalAgents.length, { modal: agentModal })}
@@ -319,7 +320,7 @@ function renderMembersRail({ normalAgents }) {
     </div>
 
       <div class="rail-section">
-        ${renderRailSectionTitle('humans', 'Humans', humans.length, { modal: 'human' })}
+        ${renderRailSectionTitle('humans', 'Humans', humans.length, { modal: humanModal })}
         ${collapsedSidebarSections.humans ? '' : humans.map((human) => renderHumanListItem(human)).join('')}
       </div>
     `;

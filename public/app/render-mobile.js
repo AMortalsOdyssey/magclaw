@@ -373,6 +373,9 @@ function renderMobileMembersHome() {
   const normalAgents = channelAssignableAgents();
   const humans = humansByJoinOrder();
   const canCreateAgent = cloudCan('manage_agents');
+  const inviteHumanAction = cloudCan('invite_member')
+    ? `<button type="button" data-action="open-modal" data-modal="member-invite" aria-label="Invite human">${mobileIcon('plus')}</button>`
+    : '';
   return `
     <section class="mobile-root mobile-members-root">
       ${renderMobileRootHeader('Members', '')}
@@ -381,7 +384,7 @@ function renderMobileMembersHome() {
         <div class="mobile-list mobile-member-list">${renderAgentGroupsByComputer(normalAgents)}</div>
       </section>
       <section class="mobile-list-section">
-        ${renderMobileSectionTitle('Humans', humans.length, `<button type="button" data-action="open-modal" data-modal="member-invite" aria-label="Invite human">${mobileIcon('plus')}</button>`)}
+        ${renderMobileSectionTitle('Humans', humans.length, inviteHumanAction)}
         <div class="mobile-list mobile-member-list">${humans.length ? humans.map((human) => renderHumanListItem(human)).join('') : '<div class="empty-box small">No humans yet.</div>'}</div>
       </section>
     </section>

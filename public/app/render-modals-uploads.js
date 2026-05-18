@@ -24,6 +24,10 @@ function renderModal() {
     human: renderHumanModal,
   };
   const content = map[modal]?.() || '';
+  if (!String(content).trim()) {
+    modal = null;
+    return '';
+  }
   const isWideModal = modal === 'avatar-picker' || modal === 'avatar-crop';
   const modalClass = `modal-${String(modal || '').replace(/[^a-z0-9-]/gi, '-')}`;
   return `

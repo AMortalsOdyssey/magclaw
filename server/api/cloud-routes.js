@@ -79,6 +79,23 @@ export async function handleCloudApi(req, res, url, deps) {
     return true;
   }
 
+  if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/cloud/auth/dev-login') {
+    if (!cloudAuth) {
+      sendError(res, 503, 'Cloud auth service is unavailable.');
+      return true;
+    }
+    const result = await sendAction(() => cloudAuth.devLogin(req, res));
+    if (!result) return true;
+    if (req.method === 'GET') {
+      const rawReturnTo = String(url.searchParams.get('returnTo') || '/console');
+      const returnTo = rawReturnTo.startsWith('/') && !rawReturnTo.startsWith('//') ? rawReturnTo : '/console';
+      sendRedirect(returnTo);
+    } else {
+      sendJson(res, 200, { ok: true, ...result, cloud: cloudAuth.publicCloudState(req) });
+    }
+    return true;
+  }
+
   if (req.method === 'GET' && (url.pathname === '/api/cloud/auth/feishu/start' || url.pathname === '/api/auth/feishu/start')) {
     if (!cloudAuth) {
       sendRedirect('/?authError=Cloud%20auth%20service%20is%20unavailable.');

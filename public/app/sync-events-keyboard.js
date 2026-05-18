@@ -28,6 +28,9 @@ async function refreshState() {
     appState = await api(bootstrapStatePath());
     if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   }
+  if (appState.cloud?.workspaceAccess?.denied) {
+    syncBrowserRouteForActiveView({ replace: true });
+  }
   startHumanPresenceHeartbeat();
   if (!installedRuntimes.length && (selectedAgentId || activeView === 'members' || activeView === 'computers')) {
     await loadInstalledRuntimes().catch(() => {});

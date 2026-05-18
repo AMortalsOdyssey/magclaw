@@ -30,6 +30,12 @@ MAGCLAW_LOCAL_FILE_STORAGE_FALLBACK=0
 - Unit tests that mock dependencies may stay in memory-only mode, but they should not assert that cloud deployment without PostgreSQL is the normal path.
 - SQLite fallback tests are legacy compatibility checks. Keep them narrow and explicit if they are reintroduced.
 
+### Local Auth Smoke
+
+- For local browser testing against an existing PostgreSQL user when OAuth callbacks cannot use `localhost`, start the server with `MAGCLAW_DEV_LOGIN_USER_ID=<cloud-user-id>` and visit `/api/cloud/auth/dev-login`.
+- The dev-login endpoint is intentionally loopback-only unless `MAGCLAW_ALLOW_REMOTE_DEV_LOGIN=1` is set. Do not enable it in shared or public deployments.
+- Prefer using the real cloud user id for this smoke, then browse to `/console` or the user's server slug after the cookie is issued.
+
 ## Cloud And K8s Tests
 
 - Cloud uses PostgreSQL plus PVC-backed attachment storage.

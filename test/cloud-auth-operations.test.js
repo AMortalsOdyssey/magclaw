@@ -161,6 +161,104 @@ test('login persists a narrow auth operation before issuing a session cookie', a
   assert.match(res.headers[0][1], /magclaw_session=/);
 });
 
+test('local dev login issues a session for the configured loopback user', async () => {
+  const previousUser = process.env.MAGCLAW_DEV_LOGIN_USER_ID;
+  const previousAllowRemote = process.env.MAGCLAW_ALLOW_REMOTE_DEV_LOGIN;
+  process.env.MAGCLAW_DEV_LOGIN_USER_ID = 'usr_dev';
+  delete process.env.MAGCLAW_ALLOW_REMOTE_DEV_LOGIN;
+  const operations = [];
+  const repository = {
+    isEnabled: () => true,
+    async persistAuthOperation(operation) {
+      operations.push(operation);
+      assert.equal(operation.type, 'login');
+    },
+  };
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  const { auth, state } = makeAuth(repository, {
+    cloud: {
+      users: [{
+        id: 'usr_dev',
+        email: '',
+        name: 'Dev Feishu',
+        passwordHash: '',
+        avatarUrl: '',
+        language: 'en',
+        createdAt,
+        updatedAt: createdAt,
+      }],
+      workspaceMembers: [{
+        id: 'wmem_dev',
+        workspaceId: 'local',
+        userId: 'usr_dev',
+        humanId: 'hum_dev',
+        role: 'admin',
+        status: 'active',
+        joinedAt: createdAt,
+        createdAt,
+      }],
+    },
+    humans: [{
+      id: 'hum_dev',
+      userId: 'usr_dev',
+      workspaceId: 'local',
+      name: 'Dev Feishu',
+      email: '',
+      role: 'admin',
+      status: 'offline',
+      createdAt,
+      updatedAt: createdAt,
+    }],
+  });
+  try {
+    const res = response();
+    const result = await auth.devLogin(request('', { host: '127.0.0.1:6543' }), res);
+
+    assert.equal(result.user.id, 'usr_dev');
+    assert.equal(result.member.id, 'wmem_dev');
+    assert.equal(operations.length, 1);
+    assert.equal(state.cloud.sessions.length, 1);
+    assert.equal(state.humans[0].status, 'online');
+    assert.match(res.headers[0][1], /magclaw_session=/);
+  } finally {
+    if (previousUser === undefined) delete process.env.MAGCLAW_DEV_LOGIN_USER_ID;
+    else process.env.MAGCLAW_DEV_LOGIN_USER_ID = previousUser;
+    if (previousAllowRemote === undefined) delete process.env.MAGCLAW_ALLOW_REMOTE_DEV_LOGIN;
+    else process.env.MAGCLAW_ALLOW_REMOTE_DEV_LOGIN = previousAllowRemote;
+  }
+});
+
+test('local dev login rejects non-loopback requests', async () => {
+  const previousUser = process.env.MAGCLAW_DEV_LOGIN_USER_ID;
+  process.env.MAGCLAW_DEV_LOGIN_USER_ID = 'usr_dev';
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  const { auth } = makeAuth(null, {
+    cloud: {
+      users: [{
+        id: 'usr_dev',
+        email: '',
+        name: 'Dev Feishu',
+        passwordHash: '',
+        language: 'en',
+        createdAt,
+        updatedAt: createdAt,
+      }],
+    },
+  });
+  try {
+    await assert.rejects(
+      () => auth.devLogin({
+        headers: { host: 'magclaw.example.com' },
+        socket: { remoteAddress: '10.0.0.2' },
+      }, response()),
+      /loopback/,
+    );
+  } finally {
+    if (previousUser === undefined) delete process.env.MAGCLAW_DEV_LOGIN_USER_ID;
+    else process.env.MAGCLAW_DEV_LOGIN_USER_ID = previousUser;
+  }
+});
+
 test('auth status exposes configured login providers with Feishu as the default provider', () => {
   const previous = process.env.MAGCLAW_AUTH_PROVIDERS;
   process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([
@@ -438,6 +536,65 @@ test('Feishu callback without email uses provider account identity and keeps acc
     assert.equal(state.cloud.users[0].email, '');
     assert.equal(state.cloud.users[0].emailVerifiedAt, null);
     assert.equal(state.cloud.users[0].metadata.oauth.feishu.providerAccountId, 'on_no_email');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousProviders === undefined) delete process.env.MAGCLAW_AUTH_PROVIDERS;
+    else process.env.MAGCLAW_AUTH_PROVIDERS = previousProviders;
+  }
+});
+
+test('Feishu callback prefers user_id over open_id when union_id is absent', async () => {
+  const previousProviders = process.env.MAGCLAW_AUTH_PROVIDERS;
+  const previousFetch = globalThis.fetch;
+  process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([
+    {
+      type: 'feishu',
+      label: 'Feishu SSO',
+      app_id: 'cli_test',
+      app_secret: 'super-secret',
+      redirect_uri: 'https://magclaw.example.com/api/cloud/auth/feishu/callback',
+    },
+  ]);
+  let loginCount = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/auth/v3/app_access_token/internal')) {
+      return Response.json({ code: 0, msg: 'ok', app_access_token: 'app-token' });
+    }
+    if (String(url).includes('/authen/v1/access_token')) {
+      return Response.json({ code: 0, data: { access_token: 'user-token' } });
+    }
+    if (String(url).includes('/authen/v1/user_info')) {
+      loginCount += 1;
+      return Response.json({
+        code: 0,
+        data: {
+          name: 'No Union Feishu',
+          open_id: `ou_rotating_${loginCount}`,
+          user_id: 'feishu_user_stable',
+          tenant_key: 'tenant_test',
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  };
+
+  try {
+    const { auth, state } = makeAuth(null);
+    const first = await auth.loginWithFeishuCallback(
+      new URL('https://magclaw.example.com/api/cloud/auth/feishu/callback?code=oauth-code&state=state-token'),
+      request('magclaw_feishu_oauth_state=state-token'),
+      response(),
+    );
+    const second = await auth.loginWithFeishuCallback(
+      new URL('https://magclaw.example.com/api/cloud/auth/feishu/callback?code=oauth-code&state=state-token-2'),
+      request('magclaw_feishu_oauth_state=state-token-2'),
+      response(),
+    );
+
+    assert.equal(second.user.id, first.user.id);
+    assert.equal(state.cloud.users.length, 1);
+    assert.equal(state.cloud.users[0].metadata.oauth.feishu.providerAccountId, 'feishu_user_stable');
+    assert.equal(state.cloud.users[0].metadata.oauth.feishu.openId, 'ou_rotating_2');
   } finally {
     globalThis.fetch = previousFetch;
     if (previousProviders === undefined) delete process.env.MAGCLAW_AUTH_PROVIDERS;
@@ -749,6 +906,89 @@ test('request workspace headers scope current actor and public cloud state', asy
   assert.equal(cloud.workspace.id, 'wsp_second');
   assert.equal(cloud.auth.currentMember.workspaceId, 'wsp_second');
   assert.equal(state.connection.workspaceId, 'wsp_local');
+});
+
+test('public cloud state falls back from an inaccessible requested workspace', async () => {
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  const token = 'fallback-session-token';
+  const { auth } = makeAuth(null, {
+    connection: { workspaceId: 'wsp_own' },
+    cloud: {
+      users: [
+        {
+          id: 'usr_feishu',
+          email: '',
+          name: 'Feishu Owner',
+          passwordHash: '',
+          language: 'en',
+          createdAt,
+          updatedAt: createdAt,
+        },
+        {
+          id: 'usr_other',
+          email: 'other@example.test',
+          name: 'Other Owner',
+          passwordHash: scryptPassword('password123'),
+          language: 'en',
+          createdAt,
+          updatedAt: createdAt,
+        },
+      ],
+      sessions: [{
+        id: 'ses_fallback',
+        userId: 'usr_feishu',
+        tokenHash: sha256(token),
+        createdAt,
+        expiresAt: '2026-05-26T00:00:00.000Z',
+      }],
+      workspaces: [
+        { id: 'wsp_own', slug: 'own-team', name: 'Own Team', createdAt, updatedAt: createdAt },
+        { id: 'wsp_other', slug: 'other-team', name: 'Other Team', createdAt, updatedAt: createdAt },
+      ],
+      workspaceMembers: [
+        { id: 'wmem_own', workspaceId: 'wsp_own', userId: 'usr_feishu', humanId: 'hum_feishu', role: 'admin', status: 'active', joinedAt: createdAt, createdAt },
+        { id: 'wmem_other', workspaceId: 'wsp_other', userId: 'usr_other', humanId: 'hum_other', role: 'admin', status: 'active', joinedAt: createdAt, createdAt },
+      ],
+    },
+    humans: [
+      {
+        id: 'hum_feishu',
+        authUserId: 'usr_feishu',
+        userId: 'usr_feishu',
+        workspaceId: 'wsp_own',
+        name: 'Feishu Owner',
+        email: '',
+        role: 'admin',
+        status: 'offline',
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: 'hum_other',
+        authUserId: 'usr_other',
+        userId: 'usr_other',
+        workspaceId: 'wsp_other',
+        name: 'Other Owner',
+        email: 'other@example.test',
+        role: 'admin',
+        status: 'offline',
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ],
+  });
+
+  const cloud = auth.publicCloudState(
+    request(`${SESSION_COOKIE}=${token}`, { 'x-magclaw-server-slug': 'other-team' }),
+  );
+
+  assert.equal(cloud.workspace.slug, 'own-team');
+  assert.equal(cloud.auth.currentMember.workspaceId, 'wsp_own');
+  assert.equal(cloud.auth.currentMember.role, 'admin');
+  assert.deepEqual(cloud.members.map((member) => member.userId), ['usr_feishu']);
+  assert.equal(cloud.workspaceAccess.denied, true);
+  assert.equal(cloud.workspaceAccess.requestedRef, 'other-team');
+  assert.equal(cloud.workspaceAccess.fallbackWorkspace.slug, 'own-team');
 });
 
 test('console server creation waits for auth persistence before returning', async () => {

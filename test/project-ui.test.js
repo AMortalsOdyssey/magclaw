@@ -235,6 +235,8 @@ test('members page uses a join-ordered directory with invite modals', async () =
   assert.match(app, /<span>Name<\/span>[\s\S]*<span>Status<\/span>[\s\S]*<span>Last active<\/span>[\s\S]*<span>Role<\/span>/);
   assert.doesNotMatch(membersSettingsSource, />Heartbeat<\/span>|上次活动时间|已加入|邀请中|刚刚|分钟前|小时前|个月前|添加团队成员|发送邀请|邀请链接|无限制/);
   assert.match(app, /data-modal="member-invite"[\s\S]*>Invite<\/button>/);
+  assert.match(app, /const humanModal = cloudCan\('invite_member'\) \? 'member-invite' : ''/);
+  assert.doesNotMatch(app, /renderRailSectionTitle\('humans', 'Humans', humans\.length, \{ modal: 'human' \}\)/);
   assert.match(app, /data-action="members-page-prev"/);
   assert.match(app, /data-action="members-page-next"/);
   assert.match(app, /data-action="members-page-go"/);
@@ -242,6 +244,7 @@ test('members page uses a join-ordered directory with invite modals', async () =
   assert.doesNotMatch(membersSettingsSource, /members-workspace-card|members-workspace-avatar/);
   assert.match(modalSource, /'member-invite': renderMemberInviteModal/);
   assert.match(modalSource, /'member-invite-links': renderMemberInviteLinksModal/);
+  assert.match(modalSource, /if \(!String\(content\)\.trim\(\)\) \{[\s\S]*modal = null/);
   assert.match(styles, /\.members-directory-shell/);
   assert.match(styles, /\.members-page-header/);
   assert.match(styles, /\.members-pagination/);
@@ -1545,6 +1548,18 @@ test('agent warmup is session-scoped and not retriggered by every state refresh'
   assert.match(warmSource, /agent\?\.runtimeLastTurnAt/);
   assert.match(warmSource, /if \(agentHasWarmRuntimeSession\(agent\)\) return;/);
   assert.doesNotMatch(refreshSource, /maybeWarmCurrentAgent\(\)/);
+});
+
+test('state refresh replaces inaccessible server routes with the active workspace route', async () => {
+  const app = await readAppSource();
+  const refreshSource = app.slice(app.indexOf('async function refreshState()'), app.indexOf('function cloudAuthErrorMessage'));
+
+  assert.match(refreshSource, /workspaceAccess\?\.denied/);
+  assert.match(refreshSource, /syncBrowserRouteForActiveView\(\{ replace: true \}\)/);
+  assert.ok(
+    refreshSource.indexOf('workspaceAccess?.denied') < refreshSource.indexOf('render()'),
+    'route correction must happen before rendering the fallback workspace',
+  );
 });
 
 test('codex agent startup repairs stale configured Codex paths before spawning', async () => {
