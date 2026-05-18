@@ -30,6 +30,7 @@ function render() {
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
+    page: pageScrollSnapshot(),
     workspaceActivity: workspaceActivityScrollSnapshot(),
   };
   ensureSelection();
@@ -51,6 +52,7 @@ function render() {
     }
     window.requestAnimationFrame(() => {
       restorePaneScrolls(scrollSnapshot);
+      restorePageScroll(scrollSnapshot.page);
       restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
       restoreProfileFormFocus(profileFocus);
       restoreAgentDetailFieldFocus(agentDetailFocus);
@@ -90,6 +92,7 @@ function render() {
   }
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);
+    restorePageScroll(scrollSnapshot.page);
     restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
     restoreProfileFormFocus(profileFocus);
     restoreAgentDetailFieldFocus(agentDetailFocus);

@@ -516,6 +516,27 @@ function restorePaneScrolls(snapshot) {
   restorePaneScroll('thread', snapshot.thread);
 }
 
+function pageScrollSurface() {
+  return document.querySelector('[data-page-scroll-surface]');
+}
+
+function pageScrollSnapshot() {
+  const node = pageScrollSurface();
+  if (!node) return { key: '', top: 0, hasPosition: false };
+  return {
+    key: node.dataset?.scrollKey || '',
+    top: node.scrollTop || 0,
+    hasPosition: true,
+  };
+}
+
+function restorePageScroll(snapshot) {
+  const node = pageScrollSurface();
+  if (!node || !snapshot?.hasPosition || !snapshot.key || node.dataset?.scrollKey !== snapshot.key) return;
+  const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+  node.scrollTop = Math.min(Math.max(0, snapshot.top || 0), maxTop);
+}
+
 function restoreWorkspaceActivityScroll(snapshot) {
   if (!workspaceActivityDrawerOpen || workspaceActivityScrollToBottom) return;
   const node = document.querySelector('#workspace-activity-list');

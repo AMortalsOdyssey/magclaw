@@ -647,7 +647,7 @@ function renderSettingsChrome(body, actions = '') {
     </button>
   `).join('');
   return `
-    <section class="settings-page">
+    <section class="settings-page" data-page-scroll-surface data-scroll-key="settings:${escapeHtml(currentServerSlug())}:${escapeHtml(settingsTab)}">
       <header class="settings-page-header">
         <div class="settings-page-heading">
           <div class="settings-page-icon">${settingsIcon(meta.icon, 24)}</div>
@@ -1835,7 +1835,7 @@ function renderConsole() {
       ? renderConsoleLostSpace()
       : renderConsoleOverview();
   return `
-    <section class="settings-page console-page">
+    <section class="settings-page console-page" data-page-scroll-surface data-scroll-key="console:${escapeHtml(consoleTab)}">
       <header class="settings-page-header">
         <div class="settings-page-heading">
           <div class="settings-page-icon">${settingsIcon('system', 24)}</div>

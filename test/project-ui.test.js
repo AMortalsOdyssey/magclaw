@@ -2204,12 +2204,18 @@ test('server profile saves patch settings and open thread surfaces without full 
   const app = await readAppSource();
   const stateUpdateSource = app.slice(app.indexOf('function applyStateUpdate(nextState)'), app.indexOf('function applyRunEventUpdate'));
   const submitSource = app.slice(app.indexOf("if (form.id === 'server-profile-form')"), app.indexOf("if (form.id === 'server-onboarding-form')"));
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
 
   assert.match(app, /let pendingServerProfilePatchSignature = ''/);
   assert.match(app, /function serverProfilePatchSignature\(stateSnapshot = appState\)/);
   assert.match(app, /function serverSettingsSupportSignature\(stateSnapshot = appState\)/);
   assert.match(app, /function patchOpenThreadDrawerSurface\(scrollSnapshot\)/);
   assert.match(app, /function patchServerProfileSettingsSurface\(\)/);
+  assert.match(app, /function pageScrollSnapshot\(\)/);
+  assert.match(app, /function restorePageScroll\(snapshot\)/);
+  assert.match(app, /data-page-scroll-surface data-scroll-key="settings:\$\{escapeHtml\(currentServerSlug\(\)\)\}:\$\{escapeHtml\(settingsTab\)\}"/);
+  assert.match(renderSource, /page: pageScrollSnapshot\(\)/);
+  assert.match(renderSource, /restorePageScroll\(scrollSnapshot\.page\)/);
   assert.match(stateUpdateSource, /const serverProfileBefore = serverProfilePatchSignature\(\)/);
   assert.match(stateUpdateSource, /const serverProfileOnlyChanged = activeView === 'cloud'[\s\S]*serverSettingsSupportBefore === serverSettingsSupportSignature\(\)/);
   assert.match(stateUpdateSource, /patchServerProfileSettingsSurface\(\);[\s\S]*patchOpenThreadDrawerSurface\(scrollSnapshot\);[\s\S]*return;/);
