@@ -419,6 +419,7 @@ function settingsNavItems() {
     { id: 'account', label: 'Account', icon: 'account' },
     { id: 'browser', label: 'Browser', icon: 'browser', meta: notificationStatusLabel() },
     { id: 'server', label: 'Server', icon: 'server', meta: currentServerProfile().slug || '' },
+    { id: 'members', label: 'Members', icon: 'members' },
     { id: 'lost-space', label: 'Lost Space', icon: 'lost' },
     { id: 'language', label: 'Language', icon: 'language', meta: typeof magclawLanguageLabel === 'function' ? magclawLanguageLabel() : '' },
     { id: 'release', label: 'Release Notes', icon: 'release' },

@@ -77,8 +77,8 @@ test('members settings expose role-aware invitation controls', async () => {
   assert.match(app, /function cloudRoleAllows\(role, allowedRole\)/);
   assert.match(app, /function cloudCan\(capability\)/);
   assert.doesNotMatch(railSource, /System Config/);
-  assert.match(railSource, /Server[\s\S]*Release Notes/);
-  assert.doesNotMatch(railSource, /id: 'members'/);
+  assert.match(railSource, /Server[\s\S]*Members[\s\S]*Release Notes/);
+  assert.match(railSource, /id: 'members'/);
   assert.match(membersSettingsSource, /id="member-invite-form"/);
   assert.match(membersSettingsSource, /memberInviteValidCount\(\)/);
   assert.match(membersSettingsSource, /data-action="copy-member-generated-link"/);
@@ -260,6 +260,7 @@ test('members directory separates roles from top-centered manage actions', async
   const rowSource = app.slice(app.indexOf('function renderMemberRow(row)'), app.indexOf('function renderMemberInviteTrigger()'));
   const manageSource = app.slice(app.indexOf('function renderMemberManageModal()'), app.indexOf('function renderMemberRow(row)'));
   const modalSource = app.slice(app.indexOf('function renderModal()'), app.indexOf('function modalHeader('));
+  const roleUpdateSource = app.slice(app.lastIndexOf("if (action === 'update-cloud-member-role')"), app.indexOf("if (action === 'leave-channel')"));
 
   assert.match(app, /let memberManageState = \{ memberId: null \}/);
   assert.match(app, /let memberActionConfirmState = \{ memberId: null, action: null \}/);
@@ -284,6 +285,7 @@ test('members directory separates roles from top-centered manage actions', async
   assert.doesNotMatch(manageSource, /reset-cloud-member-password|remove-cloud-member/);
   assert.match(app, /if \(action === 'update-cloud-member-role'\)/);
   assert.match(app, /action === 'update-cloud-member-role' && target\.matches\?\.\('select'\)/);
+  assert.match(roleUpdateSource, /settingsTab = 'members'[\s\S]*syncBrowserRouteForActiveView\(\)/);
   assert.match(app, /data-action="confirm-member-action"/);
   assert.match(app, /data-action="copy-member-reset-link"/);
   assert.match(app, /memberResetLinkText\(\)/);
@@ -2116,7 +2118,7 @@ test('cloud server shell uses MagClaw-style switcher and removes local-only chro
     assert.doesNotMatch(app, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
   assert.doesNotMatch(railSource, /runtime-chip/);
-  assert.doesNotMatch(settingsNavSource, /id: 'members'/);
+  assert.match(settingsNavSource, /id: 'members'/);
   assert.doesNotMatch(app, /Local Only[\s\S]*State, attachments, Codex runs/);
   assert.match(styles, /\.server-switcher-menu/);
   assert.match(styles, /\.server-switcher-avatar/);

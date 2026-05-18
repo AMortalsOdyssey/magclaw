@@ -1455,6 +1455,7 @@ document.addEventListener('click', async (event) => {
         modal = 'member-manage';
         settingsTab = 'members';
         activeView = 'cloud';
+        syncBrowserRouteForActiveView();
         toast('Member role updated');
       }
       if (action === 'leave-channel') {
