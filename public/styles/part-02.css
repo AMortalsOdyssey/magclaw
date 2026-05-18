@@ -1422,6 +1422,10 @@
   background: var(--success);
 }
 
+.mention-status.status-idle {
+  background: var(--resting);
+}
+
 .mention-status.status-busy {
   background: var(--warning);
 }

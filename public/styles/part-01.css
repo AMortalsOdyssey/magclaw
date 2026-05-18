@@ -40,6 +40,7 @@
   --warning: #fbbf24;
   --error: #f87171;
   --info: #60a5fa;
+  --resting: #14532d;
 
   /* MagClaw 风格阴影：硬边 */
   --shadow-pixel: 2px 2px 0 #1a1a1a;
@@ -1406,6 +1407,11 @@ button:disabled {
   opacity: 1;
 }
 
+.avatar-status-dot.status-idle {
+  background: var(--resting);
+  opacity: 1;
+}
+
 .avatar-status-dot.status-busy {
   background: var(--warning);
   opacity: 1;
@@ -1551,6 +1557,11 @@ button:disabled {
 
 .agent-hover-status-dot.status-online {
   background: var(--success);
+  opacity: 1;
+}
+
+.agent-hover-status-dot.status-idle {
+  background: var(--resting);
   opacity: 1;
 }
 

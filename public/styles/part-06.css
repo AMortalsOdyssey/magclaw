@@ -291,6 +291,10 @@
   background: var(--success);
 }
 
+.agent-activity-dot.status-idle {
+  background: var(--resting);
+}
+
 .agent-activity-dot.status-busy {
   background: var(--warning);
 }
@@ -742,6 +746,14 @@
   background: #91FF00;
 }
 
+.member-status.status-idle {
+  color: var(--resting);
+}
+
+.member-status.status-idle::before {
+  background: var(--resting);
+}
+
 .member-status.status-busy {
   color: #8a5a00;
 }
@@ -924,6 +936,10 @@
 .add-member-status-dot.online,
 .add-member-status-dot.status-online {
   background: #91FF00;
+}
+
+.add-member-status-dot.status-idle {
+  background: var(--resting);
 }
 
 .add-member-status-dot.status-busy {

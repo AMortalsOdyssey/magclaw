@@ -702,6 +702,14 @@
   background: var(--success);
 }
 
+.agent-status.status-idle {
+  color: var(--resting);
+}
+
+.agent-status.status-idle::before {
+  background: var(--resting);
+}
+
 .agent-status.status-busy {
   color: #8a5a00;
 }

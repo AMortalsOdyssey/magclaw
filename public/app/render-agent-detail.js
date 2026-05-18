@@ -430,7 +430,8 @@ function agentActivityTone(event) {
   if (text.includes('output') || text.includes('message')) return 'output';
   if (text.includes('warming')) return 'warming';
   if (text.includes('thinking') || text.includes('working') || text.includes('running')) return 'busy';
-  if (text.includes('idle') || text.includes('connected')) return 'online';
+  if (text.includes('idle')) return 'idle';
+  if (text.includes('connected')) return 'online';
   return 'queued';
 }
 
