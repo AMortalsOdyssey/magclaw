@@ -33,6 +33,21 @@ This project follows the global Codex rules plus the project-specific rules belo
 - Use `/home/godman/jhb/ai-social/magclaw` as the MagClaw operations workspace on the production jump host for deployment scripts, PostgreSQL bootstrap files, PVC checks, and related handoff artifacts.
 - Keep jump-host scripts free of plaintext passwords, tokens, and database URLs with embedded credentials; prefer interactive password prompts or runtime-only environment variables.
 
+## Sentinel CI/CD Deployment
+
+- For MagClaw web deploys, use Sentinel project `AI-Social` (`projectId=83`), service `magclaw-web`, and pipeline `node test+prod/magclaw-web` (`pipeline/single/detail/415533`). The service runtime page is `service/7624`.
+- Before running the pipeline, make sure the intended commit is on `main` and pushed to `gitlab/main`; for cloud deployment handoffs, also push `main` to `origin` and confirm both remote heads match local `HEAD`.
+- Run the Sentinel pipeline on branch `main` with a short description. In the run detail, verify the source step cloned the intended commit and that the artifact tag ends with that short SHA, for example `VYYYYMMDDHHMMSS-<shortsha>`.
+- The pipeline may pause at deployment stages. For test, open the deployment detail and click `升级` only after confirming the target is `k8s-hs-bj-1-test/ai-social`. For production, confirm the target is `k8s-tc-sg-1-prod/ai-social` before clicking `升级`.
+- Do not change deployment configs during a normal app rollout. Use the pipeline-provided deployment config and record the config number in the handoff; the known successful flow used config `15` for test and config `4` for production.
+- After Sentinel reports success, verify from the jump host rather than relying only on the UI:
+  - `jsgai get deploy magclaw-web -o jsonpath='{.spec.template.spec.containers[*].name}{"\n"}{.spec.template.spec.containers[*].image}{"\n"}{.status.readyReplicas}{"/"}{.status.replicas}{"\n"}'`
+  - `jsgai get pod | grep magclaw-web`
+  - `jsgai logs <pod> -c service --since=5m | tail -80`
+  - `jsgai exec <pod> -c service -- node -e "fetch('http://127.0.0.1:6543/api/readyz').then(r=>r.text()).then(console.log)"`
+- A production deploy is not complete until the Deployment image tag contains the intended commit SHA, the Pod is `2/2 Running`, logs show PostgreSQL connected and the server listening on `0.0.0.0:6543`, and `/api/readyz` returns `ok: true`.
+- If the user says the domain is not ready, skip external-domain checks and focus on Deployment image, Pod readiness, service logs, and in-Pod readiness checks.
+
 ## Read On Demand
 
 - When creating or changing frontend pages, forms, dropdowns, settings surfaces, or realtime UI update handlers, read `agent-rules/frontend-rendering.md` first.
