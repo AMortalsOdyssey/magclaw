@@ -770,9 +770,37 @@ function cloudMemberManageRoleOptions() {
 
 function cloudCanRemoveMemberRole(role) {
   const normalized = String(role || 'member');
-  if (normalized === 'owner') return false;
+  if (normalized === 'owner') return cloudCan('remove_owner');
   if (normalized === 'admin') return cloudCan('remove_admin');
   return cloudCan('remove_member');
+}
+
+function cloudMemberIsCurrent(member = {}) {
+  const auth = appState?.cloud?.auth || {};
+  return Boolean(member?.id && auth.currentMember?.id === member.id)
+    || Boolean(member?.userId && auth.currentUser?.id === member.userId);
+}
+
+function cloudMemberCanManageRole(member = {}) {
+  if (!member?.id || !cloudCan('manage_member_roles')) return false;
+  const displayRole = cloudMemberDisplayRole(member);
+  if (displayRole === 'owner') {
+    return cloudCan('manage_owner_role') && !cloudMemberIsCurrent(member);
+  }
+  return true;
+}
+
+function cloudMemberRoleManageUnavailableReason(member = {}) {
+  if (!member?.id || !cloudCan('manage_member_roles')) return '';
+  const displayRole = cloudMemberDisplayRole(member);
+  if (displayRole === 'owner' && cloudMemberIsCurrent(member)) return 'You cannot remove your own Owner role.';
+  if (displayRole === 'owner' && !cloudCan('manage_owner_role')) return 'Only another Owner can change this Owner role.';
+  return '';
+}
+
+function cloudMemberCanRemove(member = {}) {
+  if (!member?.id || cloudMemberIsCurrent(member)) return false;
+  return cloudCanRemoveMemberRole(cloudMemberDisplayRole(member));
 }
 
 function safeMarkdownHref(value) {

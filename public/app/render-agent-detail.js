@@ -734,13 +734,50 @@ function renderHumanDescriptionField(human = {}, member = null) {
   `;
 }
 
+function renderHumanRoleManagement(human = {}, member = null) {
+  if (!member?.id) return '';
+  const displayRole = cloudMemberDisplayRole(member);
+  const canManageRole = cloudMemberCanManageRole(member);
+  const canRemove = cloudMemberCanRemove(member);
+  const unavailableReason = cloudMemberRoleManageUnavailableReason(member);
+  const isCurrent = cloudMemberIsCurrent(member);
+  if (!canManageRole && !canRemove && !unavailableReason && !isCurrent) return '';
+  return `
+    <section class="agent-profile-field human-permissions-section">
+      <span class="detail-label">Permissions</span>
+      <div class="human-permission-summary">
+        <span>Current Role</span>
+        <strong class="role-pill">${escapeHtml(cloudRoleLabel(displayRole))}</strong>
+      </div>
+      ${canManageRole ? `
+        <form class="member-manage-role-form human-role-form" data-member-role-form data-member-role-context="human" data-current-role="${escapeHtml(displayRole)}" data-id="${escapeHtml(member.id)}" data-human-id="${escapeHtml(human.id)}">
+          <label for="human-role-select-${escapeHtml(member.id)}">
+            <span>Role</span>
+            <small>Change this Human's server permission.</small>
+          </label>
+          <div class="member-manage-role-controls">
+            <select id="human-role-select-${escapeHtml(member.id)}" name="role" data-member-role-select>
+              ${memberRoleOptionsHtml(displayRole)}
+            </select>
+            <button class="secondary-btn compact-btn" type="button" data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}" data-human-id="${escapeHtml(human.id)}">Save Role</button>
+          </div>
+        </form>
+      ` : ''}
+      ${unavailableReason ? `<div class="empty-box small">${escapeHtml(unavailableReason)}</div>` : ''}
+      <div class="agent-detail-actions">
+        ${canRemove ? `<button class="danger-btn" type="button" data-action="open-member-action-confirm" data-id="${escapeHtml(member.id)}" data-member-action="remove">Remove ${escapeHtml(cloudRoleLabel(displayRole))}</button>` : ''}
+        ${isCurrent ? '<button class="secondary-btn" type="button" disabled>Cannot remove self</button>' : ''}
+      </div>
+    </section>
+  `;
+}
+
 function renderHumanDetail(human) {
   const member = cloudMemberForHuman(human);
   const createdAgents = humanCreatedAgents(human);
   const email = human.email || member?.user?.email || member?.email || '';
   const isCurrent = humanIsCurrent(human);
   const role = member ? cloudMemberDisplayRole(member) : human.role || 'member';
-  const canManageThisMember = Boolean(member && !isCurrent && role !== 'owner' && (cloudCan('manage_member_roles') || cloudCanRemoveMemberRole(role)));
   const youLabel = isCurrent ? ' <em class="human-you-label">(you)</em>' : '';
   const displayName = escapeHtml(human.name || member?.user?.name || 'Human');
   const nameWithYouLabel = `${displayName}${youLabel}`;
@@ -770,13 +807,7 @@ function renderHumanDetail(human) {
             <div><span>User ID</span><strong>${escapeHtml(member?.userId || human.authUserId || '--')}</strong></div>
           </div>
         </section>
-        ${canManageThisMember ? `<section class="agent-profile-field human-actions-section">
-          <span class="detail-label">Actions</span>
-          <div class="agent-detail-actions">
-            ${cloudCan('manage_member_roles') ? `<button class="secondary-btn" type="button" data-action="open-member-manage" data-id="${escapeHtml(member.id)}">Manage Role</button>` : ''}
-            ${cloudCanRemoveMemberRole(role) ? `<button class="danger-btn" type="button" data-action="open-member-action-confirm" data-id="${escapeHtml(member.id)}" data-member-action="remove">Remove Member</button>` : ''}
-          </div>
-        </section>` : ''}
+        ${renderHumanRoleManagement(human, member)}
         <section class="agent-profile-field human-created-agents">
           <span class="detail-label">Created Agents (${createdAgents.length})</span>
           ${createdAgents.length ? `

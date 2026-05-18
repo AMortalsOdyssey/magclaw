@@ -1047,25 +1047,32 @@ function memberResetLinkText() {
   return `Email: ${memberResetLinkState.email}\nLink: ${memberResetLinkState.link}`;
 }
 
+function memberRoleOptionsWithCurrent(currentRole) {
+  const role = String(currentRole || 'member');
+  const options = cloudMemberManageRoleOptions();
+  if (!options.some(([value]) => value === role)) {
+    return [[role, cloudRoleLabel(role)], ...options];
+  }
+  return options;
+}
+
+function memberRoleOptionsHtml(currentRole) {
+  return memberRoleOptionsWithCurrent(currentRole)
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === currentRole ? 'selected' : ''}>${escapeHtml(label)}</option>`)
+    .join('');
+}
+
 function renderMemberManageModal() {
   const auth = appState.cloud?.auth || {};
   const member = memberManageTarget();
   if (!member) return modalHeader('Manage member', 'Member not found');
-  const role = member.role || 'member';
   const displayRole = cloudMemberDisplayRole(member);
   const isPrivilegedRow = cloudRoleAllows(displayRole, 'admin');
-  const isOwnerRow = displayRole === 'owner';
-  const isCurrent = auth.currentMember?.id === member.id;
-  const roleOptions = cloudMemberManageRoleOptions();
-  const canManageOwnerRole = cloudCan('manage_owner_role');
-  const canManageRole = Boolean(roleOptions.length) && !isCurrent && (!isOwnerRow || canManageOwnerRole);
-  const manageUnavailableReason = isCurrent && isOwnerRow
-    ? 'You cannot remove your own Owner role.'
-    : isOwnerRow && !canManageOwnerRole
-      ? 'Only another Owner can change this Owner role.'
-      : '';
+  const isCurrent = cloudMemberIsCurrent(member);
+  const canManageRole = cloudMemberCanManageRole(member);
+  const manageUnavailableReason = cloudMemberRoleManageUnavailableReason(member);
   const canResetPassword = cloudRoleAllows(auth.currentMember?.role, 'admin') && !isPrivilegedRow && !isCurrent;
-  const canRemove = cloudCanRemoveMemberRole(displayRole) && !isPrivilegedRow && !isCurrent;
+  const canRemove = cloudMemberCanRemove(member);
   return `
     ${modalHeader('Manage member', 'Account operations')}
     <div class="member-manage-modal">
@@ -1078,14 +1085,14 @@ function renderMemberManageModal() {
         <em>${escapeHtml(cloudRoleLabel(displayRole))}</em>
       </div>
       ${canManageRole ? `
-        <form class="member-manage-role-form" data-current-role="${escapeHtml(displayRole)}" data-id="${escapeHtml(member.id)}">
+        <form class="member-manage-role-form" data-member-role-form data-member-role-context="modal" data-current-role="${escapeHtml(displayRole)}" data-id="${escapeHtml(member.id)}">
           <label for="member-manage-role-select">
             <span>Role</span>
             <small>Change this member's workspace access level.</small>
           </label>
           <div class="member-manage-role-controls">
             <select id="member-manage-role-select" name="role" data-member-role-select>
-              ${roleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === displayRole ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}
+              ${memberRoleOptionsHtml(displayRole)}
             </select>
             <button class="secondary-btn compact-btn" type="button" data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}">Save Role</button>
           </div>
@@ -1164,7 +1171,6 @@ function renderMemberResetLinkModal() {
 
 function renderMemberRow(row) {
   const auth = appState.cloud?.auth || {};
-  const currentMember = auth.currentMember;
   if (row.type === 'invitation') {
     const invitation = row.invitation;
     return `
@@ -1185,13 +1191,12 @@ function renderMemberRow(row) {
   }
   const member = row.member;
   const role = member.role || 'member';
-  const isCurrent = currentMember?.id === member.id;
+  const isCurrent = cloudMemberIsCurrent(member);
   const displayRole = cloudMemberDisplayRole(member);
   const isPrivilegedRow = cloudRoleAllows(displayRole, 'admin');
-  const isOwnerRow = displayRole === 'owner';
-  const canManageRole = cloudCan('manage_member_roles') && !isCurrent && (!isOwnerRow || cloudCan('manage_owner_role'));
+  const canManageRole = cloudMemberCanManageRole(member);
   const canResetPassword = cloudRoleAllows(auth.currentMember?.role, 'admin') && !isPrivilegedRow && !isCurrent;
-  const canRemove = cloudCanRemoveMemberRole(displayRole) && !isPrivilegedRow && !isCurrent;
+  const canRemove = cloudMemberCanRemove(member);
   const canManage = canManageRole || canResetPassword || canRemove;
   return `
     <div class="members-row" data-member-kind="active">
@@ -1590,14 +1595,99 @@ function renderBrowserSettingsTab() {
   `;
 }
 
+function activeServerMembers(members = appState.cloud?.members || []) {
+  return members.filter((member) => (member.status || 'active') === 'active');
+}
+
+function serverOwnerAdminMembers(members = appState.cloud?.members || []) {
+  return activeServerMembers(members).filter((member) => {
+    const displayRole = cloudMemberDisplayRole(member);
+    return displayRole === 'owner' || displayRole === 'admin';
+  });
+}
+
+function serverAdminPromotionRoleOptions() {
+  const options = [];
+  if (cloudCan('manage_member_roles')) options.push(['admin', 'Admin']);
+  if (cloudCan('manage_owner_role')) options.push(['owner', 'Owner']);
+  return options;
+}
+
+function renderServerAdminPromotionForm(members = []) {
+  const roleOptions = serverAdminPromotionRoleOptions();
+  if (!roleOptions.length) return '';
+  const candidates = activeServerMembers(members).filter((member) => !cloudRoleAllows(cloudMemberDisplayRole(member), 'admin'));
+  const disabled = !candidates.length;
+  return `
+    <form class="server-admin-promote-form" data-server-admin-promote-form>
+      <label>Add owner/admin</label>
+      <div class="server-admin-promote-controls">
+        <select data-server-admin-promote-select ${disabled ? 'disabled' : ''}>
+          ${candidates.length
+            ? candidates.map((member) => `<option value="${escapeHtml(member.id)}">${escapeHtml(memberDisplayName(member))}${memberEmail(member) ? ` · ${escapeHtml(memberEmail(member))}` : ''}</option>`).join('')
+            : '<option value="">No members to promote</option>'}
+        </select>
+        <select data-server-admin-promote-role ${disabled ? 'disabled' : ''}>
+          ${roleOptions.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')}
+        </select>
+        <button class="primary-btn compact-btn" type="button" data-action="promote-cloud-member-role" ${disabled ? 'disabled' : ''}>Update Role</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderServerOwnerAdminRow(member) {
+  const displayRole = cloudMemberDisplayRole(member);
+  const isCurrent = cloudMemberIsCurrent(member);
+  const canManageRole = cloudMemberCanManageRole(member);
+  const canRemove = cloudMemberCanRemove(member);
+  const unavailableReason = cloudMemberRoleManageUnavailableReason(member);
+  return `
+    <div class="server-admin-row server-owner-admin-row">
+      <div class="server-admin-member">
+        ${memberAvatar(member)}
+        <div>
+          <strong>${escapeHtml(memberDisplayName(member))}${isCurrent ? ' <span class="member-you">(you)</span>' : ''}</strong>
+          <small>${escapeHtml([memberEmail(member), cloudRoleLabel(displayRole)].filter(Boolean).join(' · '))}</small>
+        </div>
+      </div>
+      <div class="server-admin-controls">
+        ${canManageRole ? `
+          <form class="server-admin-role-form" data-member-role-form data-member-role-context="server" data-current-role="${escapeHtml(displayRole)}" data-id="${escapeHtml(member.id)}">
+            <select name="role" aria-label="Role for ${escapeHtml(memberDisplayName(member))}" data-member-role-select>
+              ${memberRoleOptionsHtml(displayRole)}
+            </select>
+            <button class="secondary-btn compact-btn" type="button" data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}">Save</button>
+          </form>
+        ` : `
+          <span class="member-role-badge">${escapeHtml(cloudRoleLabel(displayRole))}</span>
+          ${unavailableReason ? `<small class="server-admin-note">${escapeHtml(unavailableReason)}</small>` : ''}
+        `}
+        ${canRemove ? `
+          <button class="danger-btn compact-btn" type="button" data-action="open-member-action-confirm" data-member-action="remove" data-id="${escapeHtml(member.id)}">Remove ${escapeHtml(cloudRoleLabel(displayRole))}</button>
+        ` : isCurrent ? '<button class="secondary-btn compact-btn" type="button" disabled>Cannot remove self</button>' : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderServerAdminsPanel(members = appState.cloud?.members || []) {
+  const admins = serverOwnerAdminMembers(members);
+  return `
+    <div class="pixel-panel cloud-card">
+      <div class="panel-title"><span>Owners & Admins</span><span>${admins.length}</span></div>
+      <div class="server-admin-list">
+        ${renderServerAdminPromotionForm(members)}
+        ${admins.length ? admins.map(renderServerOwnerAdminRow).join('') : '<div class="empty-box small">No owners or admins found.</div>'}
+      </div>
+    </div>
+  `;
+}
+
 function renderServerSettingsTab() {
   const server = currentServerProfile();
   const serverAvatar = serverProfileAvatarDraft === null ? (server.avatar || '') : serverProfileAvatarDraft;
   const members = appState.cloud?.members || [];
-  const admins = members.filter((member) => (
-    (member.status || 'active') === 'active'
-    && (cloudMemberDisplayRole(member) === 'owner' || (member.role || 'member') === 'admin')
-  ));
   const pendingInvites = (appState.cloud?.invitations || []).filter((item) => (item.status || 'pending') === 'pending' && !item.acceptedAt && !item.declinedAt);
   const joinLinks = appState.cloud?.joinLinks || [];
   const agents = appState.agents || [];
@@ -1626,23 +1716,7 @@ function renderServerSettingsTab() {
         </form>
       </div>
 
-      <div class="pixel-panel cloud-card">
-        <div class="panel-title"><span>Admins</span><span>${admins.length}</span></div>
-        <div class="server-admin-list">
-          ${admins.length ? admins.map((member) => `
-            <div class="server-admin-row">
-              <div>
-                <strong>${escapeHtml(member.user?.name || member.user?.email || member.id)}</strong>
-                <small>${escapeHtml(member.user?.email || '')}</small>
-              </div>
-              <select data-action="update-cloud-member-role" data-id="${escapeHtml(member.id)}" ${canManage && admins.length > 1 && cloudMemberDisplayRole(member) !== 'owner' ? '' : 'disabled'}>
-                <option value="admin" selected>${cloudMemberDisplayRole(member) === 'owner' ? 'Owner' : 'Admin'}</option>
-                <option value="member">Member</option>
-              </select>
-            </div>
-          `).join('') : '<div class="empty-box small">No admins found.</div>'}
-        </div>
-      </div>
+      ${renderServerAdminsPanel(members)}
 
       <div class="pixel-panel cloud-card">
         <div class="panel-title"><span>Pending Invites</span><span>${pendingInvites.length}</span></div>

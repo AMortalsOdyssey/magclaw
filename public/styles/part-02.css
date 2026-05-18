@@ -708,6 +708,101 @@
   color: var(--text-secondary);
 }
 
+.server-admin-promote-form {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--settings-line, var(--border-faint));
+  border-radius: 6px;
+  background: #fff;
+}
+
+.server-admin-promote-form label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.server-admin-promote-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, 140px) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.server-admin-promote-controls select,
+.server-admin-role-form select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--settings-line-strong, var(--border));
+  border-radius: 6px;
+  background: var(--bg-input, #fff);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.server-owner-admin-row {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, auto);
+}
+
+.server-admin-member {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.server-admin-member .member-avatar {
+  flex: 0 0 auto;
+}
+
+.server-admin-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.server-admin-role-form {
+  display: grid;
+  grid-template-columns: minmax(96px, 132px) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.server-admin-note {
+  align-self: center;
+  max-width: 220px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.human-permissions-section {
+  gap: 10px;
+}
+
+.human-permission-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.human-permission-summary span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.human-role-form {
+  padding: 10px;
+}
+
 .join-link-card .cloud-login-card {
   width: 100%;
   margin: 12px 0 0;
@@ -1080,9 +1175,15 @@
 
   .compact-form,
   .server-admin-row,
+  .server-admin-promote-controls,
+  .server-admin-role-form,
   .server-join-link-row,
   .danger-row {
     grid-template-columns: 1fr;
+  }
+
+  .server-admin-controls {
+    justify-content: flex-start;
   }
 }
 

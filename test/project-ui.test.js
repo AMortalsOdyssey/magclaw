@@ -276,16 +276,24 @@ test('members directory separates roles from top-centered manage actions', async
   assert.match(rowSource, /data-action="open-member-manage"/);
   assert.doesNotMatch(rowSource, /reset-cloud-member-password|remove-cloud-member|update-cloud-member-role/);
   assert.match(manageSource, /class="member-manage-role-form"/);
+  assert.match(manageSource, /data-member-role-form/);
+  assert.match(manageSource, /data-member-role-context="modal"/);
   assert.match(manageSource, /data-member-role-select/);
   assert.match(manageSource, /data-action="update-cloud-member-role"/);
-  assert.match(manageSource, /You cannot remove your own Owner role/);
-  assert.match(manageSource, /Only another Owner can change this Owner role/);
+  assert.match(app, /You cannot remove your own Owner role/);
+  assert.match(app, /Only another Owner can change this Owner role/);
   assert.match(manageSource, /data-action="open-member-action-confirm"[\s\S]*data-member-action="reset-password"/);
   assert.match(manageSource, /data-action="open-member-action-confirm"[\s\S]*data-member-action="remove"/);
   assert.doesNotMatch(manageSource, /reset-cloud-member-password|remove-cloud-member/);
   assert.match(app, /if \(action === 'update-cloud-member-role'\)/);
+  assert.match(app, /if \(action === 'promote-cloud-member-role'\)/);
   assert.match(app, /action === 'update-cloud-member-role' && target\.matches\?\.\('select'\)/);
+  assert.match(roleUpdateSource, /memberRoleContext/);
+  assert.match(roleUpdateSource, /context === 'server'[\s\S]*settingsTab = 'server'/);
+  assert.match(roleUpdateSource, /context === 'human'[\s\S]*membersLayout = normalizeMembersLayout/);
   assert.match(roleUpdateSource, /settingsTab = 'members'[\s\S]*syncBrowserRouteForActiveView\(\)/);
+  assert.match(app, /function cloudMemberCanRemove/);
+  assert.match(app, /normalized === 'owner'[\s\S]*remove_owner/);
   assert.match(app, /data-action="confirm-member-action"/);
   assert.match(app, /data-action="copy-member-reset-link"/);
   assert.match(app, /memberResetLinkText\(\)/);
@@ -2157,6 +2165,12 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /serverProfileAvatarDraft === null \? \(server\.avatar \|\| ''\) : serverProfileAvatarDraft/);
   assert.match(app, /serverProfileAvatarDraft = avatar/);
   assert.match(app, /serverProfileAvatarDraft = null/);
+  assert.match(app, /function renderServerAdminsPanel/);
+  assert.match(app, /Owners & Admins/);
+  assert.match(app, /data-server-admin-promote-form/);
+  assert.match(app, /data-action="promote-cloud-member-role"/);
+  assert.match(app, /class="server-admin-role-form"/);
+  assert.match(app, /data-member-role-context="server"/);
   assert.match(app, /Join Links/);
   assert.match(app, /Onboarding Behavior/);
   assert.match(app, /Danger Zone/);
@@ -2180,7 +2194,10 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /const nameWithYouLabel = `\$\{displayName\}\$\{youLabel\}`/);
   assert.doesNotMatch(app, /const nameWithBadge = `\$\{displayName\}\$\{humanBadgeHtml\(\)\}\$\{youLabel\}`/);
   assert.doesNotMatch(app, /<small>\$\{escapeHtml\(email \|\| 'Server member'\)\}<\/small>/);
-  assert.doesNotMatch(app, /human-role-/);
+  assert.match(app, /function renderHumanRoleManagement/);
+  assert.match(app, /class="member-manage-role-form human-role-form"/);
+  assert.match(app, /data-member-role-context="human"/);
+  assert.match(app, /Cannot remove self/);
   assert.match(app, /function renderAgentGroupsByComputer\(/);
   assert.match(app, /function agentIsDisabled\(agent = \{\}\)/);
   assert.match(app, /agentIsActiveInWorkspace\(agent = \{\}\)[\s\S]*!agentIsDisabled\(agent\)/);
@@ -2212,6 +2229,9 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(styles, /\.human-detail-page/);
   assert.match(styles, /\.computer-detail-page/);
   assert.match(styles, /\.server-profile-avatar/);
+  assert.match(styles, /\.server-admin-promote-form/);
+  assert.match(styles, /\.server-admin-role-form/);
+  assert.match(styles, /\.human-permissions-section/);
 });
 
 test('server profile saves patch settings and open thread surfaces without full render', async () => {

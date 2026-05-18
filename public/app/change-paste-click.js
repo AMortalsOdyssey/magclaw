@@ -1437,8 +1437,24 @@ document.addEventListener('click', async (event) => {
           activeView = 'cloud';
         }
       }
+      if (action === 'promote-cloud-member-role') {
+        const roleForm = target.closest('[data-server-admin-promote-form]');
+        const memberId = roleForm?.querySelector('[data-server-admin-promote-select]')?.value || '';
+        const role = roleForm?.querySelector('[data-server-admin-promote-role]')?.value || '';
+        if (!memberId || !role) throw new Error('Member role is missing.');
+        await api(`/api/cloud/members/${encodeURIComponent(memberId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ role }),
+        });
+        memberManageState = { memberId: null };
+        modal = null;
+        settingsTab = 'server';
+        activeView = 'cloud';
+        syncBrowserRouteForActiveView();
+        toast('Member role updated');
+      }
       if (action === 'update-cloud-member-role') {
-        const roleForm = target.closest('.member-manage-role-form') || document.querySelector('.member-manage-role-form');
+        const roleForm = target.closest('[data-member-role-form]') || target.closest('.member-manage-role-form') || document.querySelector('.member-manage-role-form');
         const memberId = target.dataset.id || roleForm?.dataset?.id || memberManageState?.memberId || '';
         const role = roleForm?.querySelector('[data-member-role-select]')?.value || '';
         const currentRole = roleForm?.dataset?.currentRole || '';
@@ -1451,10 +1467,27 @@ document.addEventListener('click', async (event) => {
           method: 'PATCH',
           body: JSON.stringify({ role }),
         });
-        memberManageState = { memberId };
-        modal = 'member-manage';
-        settingsTab = 'members';
-        activeView = 'cloud';
+        const context = roleForm?.dataset?.memberRoleContext || 'modal';
+        if (context === 'server') {
+          memberManageState = { memberId: null };
+          modal = null;
+          settingsTab = 'server';
+          activeView = 'cloud';
+        } else if (context === 'human') {
+          memberManageState = { memberId: null };
+          modal = null;
+          activeView = 'members';
+          const humanId = roleForm?.dataset?.humanId || target.dataset.humanId || '';
+          if (humanId) {
+            selectedHumanId = humanId;
+            membersLayout = normalizeMembersLayout({ mode: 'human', humanId });
+          }
+        } else {
+          memberManageState = { memberId };
+          modal = 'member-manage';
+          settingsTab = 'members';
+          activeView = 'cloud';
+        }
         syncBrowserRouteForActiveView();
         toast('Member role updated');
       }
