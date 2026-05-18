@@ -1538,6 +1538,18 @@ test('agent warmup renders as Warming with a distinct pink status dot', async ()
   assert.match(styles, /\.avatar-status-dot\.status-warming \{[\s\S]*background: var\(--magclaw-pink\)/);
 });
 
+test('idle agents render with a distinct dark green standby status dot', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+
+  assert.match(app, /if \(value === 'idle'\) return 'idle'/);
+  assert.doesNotMatch(app, /\['online', 'idle', 'connected'\]\.includes\(value\)/);
+  assert.match(styles, /--resting: #14532d/);
+  assert.match(styles, /\.avatar-status-dot\.status-idle \{[\s\S]*background: var\(--resting\)/);
+  assert.match(styles, /\.agent-hover-status-dot\.status-idle \{[\s\S]*background: var\(--resting\)/);
+  assert.match(styles, /\.add-member-status-dot\.status-idle \{[\s\S]*background: var\(--resting\)/);
+});
+
 test('agent warmup is session-scoped and not retriggered by every state refresh', async () => {
   const app = await readAppSource();
   const refreshSource = app.slice(app.indexOf('async function refreshState()'), app.indexOf('function cloudAuthErrorMessage'));
