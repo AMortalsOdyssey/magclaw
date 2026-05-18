@@ -293,7 +293,7 @@ test('public account registration and password reset use SMTP outbox without inv
     assert.equal(serverCreated.status, 201);
     assert.equal(serverCreated.data.server.name, 'Free Team');
     assert.equal(serverCreated.data.server.slug, 'free-team');
-    assert.equal(serverCreated.data.member.role, 'admin');
+    assert.equal(serverCreated.data.member.role, 'owner');
     const firstServerComputer = await request(server.baseUrl, '/api/computers', {
       method: 'POST',
       cookie: created.cookie,
@@ -472,7 +472,7 @@ test('owner registration protects app APIs and supports invites end to end', asy
       headers: { authorization: basicAuth },
     });
     assert.equal(basicState.data.cloud.auth.currentUser.email, 'admin@example.com');
-    assert.equal(basicState.data.cloud.auth.currentMember.role, 'admin');
+    assert.equal(basicState.data.cloud.auth.currentMember.role, 'owner');
 
     const basicInvite = await request(server.baseUrl, '/api/cloud/invitations', {
       method: 'POST',
@@ -502,15 +502,15 @@ test('owner registration protects app APIs and supports invites end to end', asy
       }),
     });
     assert.equal(admin.data.user.email, 'admin@example.com');
-    assert.equal(admin.data.member.role, 'admin');
+    assert.equal(admin.data.member.role, 'owner');
     const adminCookie = admin.cookie;
-    assert.equal(owner.member.role, 'admin');
+    assert.equal(owner.member.role, 'owner');
     assert.match(adminCookie, /magclaw_session=/);
 
     const adminState = await request(server.baseUrl, '/api/state', { cookie: adminCookie });
     assert.equal(adminState.data.cloud.auth.currentUser.email, 'admin@example.com');
     assert.equal(adminState.data.cloud.auth.currentUser.language, 'en');
-    assert.equal(adminState.data.cloud.auth.currentMember.role, 'admin');
+    assert.equal(adminState.data.cloud.auth.currentMember.role, 'owner');
     assert.equal(adminState.data.cloud.auth.sessionTtlMs, 1000 * 60 * 60 * 24 * 14);
     assert.match(adminState.data.cloud.auth.sessionExpiresAt, /^\d{4}-\d{2}-\d{2}T/);
     const adminPreferences = await request(server.baseUrl, '/api/cloud/auth/preferences', {
@@ -1027,6 +1027,86 @@ test('cloud roles enforce admin invite and removal boundaries', async () => {
     assert.notEqual(rejoined.data.user.id, oldMemberUserId);
     assert.notEqual(rejoined.data.member.humanId, oldMemberHumanId);
     assert.match(rejoined.data.user.id, /^usr_\d{8}$/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('server Owners can promote and demote other Owners without allowing self-demotion', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const ownerA = await registerOwnerServer(server, {
+      name: 'Owner A',
+      email: 'owner-a@example.com',
+      serverName: 'Owner Team',
+      slug: 'owner-team',
+    });
+    assert.equal(ownerA.member.role, 'owner');
+
+    const ownerAState = await request(server.baseUrl, '/api/state', { cookie: ownerA.cookie });
+    assert.equal(ownerAState.data.cloud.auth.currentMember.role, 'owner');
+    assert.equal(ownerAState.data.cloud.auth.capabilities.manage_owner_role, true);
+
+    const inviteB = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie: ownerA.cookie,
+      body: JSON.stringify({ email: 'owner-b@example.com', role: 'member' }),
+    });
+    const memberB = await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: inviteB.data.inviteToken,
+        email: 'owner-b@example.com',
+        name: 'Owner B',
+        password: 'password123',
+      }),
+    });
+    assert.equal(memberB.data.member.role, 'member');
+
+    const promotedB = await request(server.baseUrl, `/api/cloud/members/${memberB.data.member.id}`, {
+      method: 'PATCH',
+      cookie: ownerA.cookie,
+      body: JSON.stringify({ role: 'owner' }),
+    });
+    assert.equal(promotedB.data.member.role, 'owner');
+
+    const agent = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      cookie: ownerA.cookie,
+      body: JSON.stringify({ name: 'Owner Runtime Probe', description: 'permission probe' }),
+    });
+
+    await request(server.baseUrl, `/api/cloud/members/${promotedB.data.member.id}`, {
+      method: 'PATCH',
+      cookie: memberB.cookie,
+      body: JSON.stringify({ role: 'member' }),
+      expectStatus: 403,
+    });
+
+    const demotedA = await request(server.baseUrl, `/api/cloud/members/${ownerA.member.id}`, {
+      method: 'PATCH',
+      cookie: memberB.cookie,
+      body: JSON.stringify({ role: 'member' }),
+    });
+    assert.equal(demotedA.data.member.role, 'member');
+
+    const demotedAState = await request(server.baseUrl, '/api/state', { cookie: ownerA.cookie });
+    assert.equal(demotedAState.data.cloud.auth.currentMember.role, 'member');
+    assert.equal(demotedAState.data.cloud.auth.capabilities.manage_computers, false);
+    assert.equal(demotedAState.data.cloud.auth.capabilities.detect_runtime, false);
+    assert.equal(demotedAState.data.cloud.auth.capabilities.manage_owner_role, false);
+
+    await request(server.baseUrl, '/api/runtime', { cookie: ownerA.cookie, expectStatus: 403 });
+    await request(server.baseUrl, '/api/runtimes', { cookie: ownerA.cookie, expectStatus: 403 });
+    await request(server.baseUrl, `/api/agents/${agent.data.agent.id}/workspace`, { cookie: ownerA.cookie, expectStatus: 403 });
+    await request(server.baseUrl, `/api/agents/${agent.data.agent.id}/skills`, { cookie: ownerA.cookie, expectStatus: 403 });
+
+    await request(server.baseUrl, `/api/cloud/members/${promotedB.data.member.id}`, {
+      method: 'PATCH',
+      cookie: ownerA.cookie,
+      body: JSON.stringify({ role: 'member' }),
+      expectStatus: 403,
+    });
   } finally {
     await server.stop();
   }

@@ -902,7 +902,7 @@ test('request workspace headers scope current actor and public cloud state', asy
   const cloud = auth.publicCloudState(req);
 
   assert.equal(actor.member.workspaceId, 'wsp_second');
-  assert.equal(actor.member.role, 'admin');
+  assert.equal(actor.member.role, 'owner');
   assert.equal(cloud.workspace.id, 'wsp_second');
   assert.equal(cloud.auth.currentMember.workspaceId, 'wsp_second');
   assert.equal(state.connection.workspaceId, 'wsp_local');
@@ -984,7 +984,7 @@ test('public cloud state falls back from an inaccessible requested workspace', a
 
   assert.equal(cloud.workspace.slug, 'own-team');
   assert.equal(cloud.auth.currentMember.workspaceId, 'wsp_own');
-  assert.equal(cloud.auth.currentMember.role, 'admin');
+  assert.equal(cloud.auth.currentMember.role, 'owner');
   assert.deepEqual(cloud.members.map((member) => member.userId), ['usr_feishu']);
   assert.equal(cloud.workspaceAccess.denied, true);
   assert.equal(cloud.workspaceAccess.requestedRef, 'other-team');

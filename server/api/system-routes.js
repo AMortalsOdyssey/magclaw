@@ -75,11 +75,13 @@ export async function handleSystemApi(req, res, url, deps) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/runtime') {
+    if (!requireSystemRole(['admin'])) return true;
     sendJson(res, 200, await getRuntimeInfo());
     return true;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/runtimes') {
+    if (!requireSystemRole(['admin'])) return true;
     sendJson(res, 200, { runtimes: await detectInstalledRuntimes() });
     return true;
   }

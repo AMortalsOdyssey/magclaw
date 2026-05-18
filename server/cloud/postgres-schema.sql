@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS cloud_workspace_members (
   user_id TEXT NOT NULL REFERENCES cloud_users(id) ON DELETE CASCADE,
   human_id TEXT,
   role TEXT NOT NULL CHECK (
-    role IN ('member', 'admin')
+    role IN ('member', 'admin', 'owner')
   ),
   status TEXT NOT NULL DEFAULT 'active' CHECK (
     status IN ('invited', 'active', 'disabled', 'removed')
@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS cloud_invitations (
   email TEXT NOT NULL,
   normalized_email TEXT NOT NULL,
   role TEXT NOT NULL CHECK (
-    role IN ('member', 'admin')
+    role IN ('member', 'admin', 'owner')
   ),
   token_hash TEXT NOT NULL,
   invited_by TEXT REFERENCES cloud_users(id) ON DELETE SET NULL,
@@ -162,7 +162,7 @@ ALTER TABLE cloud_invitations
 
 UPDATE cloud_workspace_members
   SET role = CASE role
-    WHEN 'owner' THEN 'admin'
+    WHEN 'owner' THEN 'owner'
     WHEN 'viewer' THEN 'member'
     WHEN 'core' || '_' || 'member' THEN 'member'
     WHEN 'agent' || '_' || 'admin' THEN 'admin'
@@ -172,7 +172,7 @@ UPDATE cloud_workspace_members
 
 UPDATE cloud_invitations
   SET role = CASE role
-    WHEN 'owner' THEN 'admin'
+    WHEN 'owner' THEN 'owner'
     WHEN 'viewer' THEN 'member'
     WHEN 'core' || '_' || 'member' THEN 'member'
     WHEN 'agent' || '_' || 'admin' THEN 'admin'
@@ -182,11 +182,19 @@ UPDATE cloud_invitations
 
 ALTER TABLE cloud_workspace_members
   ADD CONSTRAINT cloud_workspace_members_role_check
-  CHECK (role IN ('member', 'admin'));
+  CHECK (role IN ('member', 'admin', 'owner'));
 
 ALTER TABLE cloud_invitations
   ADD CONSTRAINT cloud_invitations_role_check
-  CHECK (role IN ('member', 'admin'));
+  CHECK (role IN ('member', 'admin', 'owner'));
+
+UPDATE cloud_workspace_members AS member
+  SET role = 'owner'
+  FROM cloud_workspaces AS workspace
+  WHERE member.workspace_id = workspace.id
+    AND member.user_id = workspace.owner_user_id
+    AND member.status = 'active'
+    AND member.role = 'admin';
 
 CREATE UNIQUE INDEX IF NOT EXISTS cloud_invitations_token_hash_uidx
   ON cloud_invitations(token_hash);

@@ -146,12 +146,26 @@ export function createCloudAuth(deps) {
       }
       for (const workspace of state.cloud.workspaces) {
         workspace.updatedAt = workspace.updatedAt || workspace.createdAt || createdAt;
-        if (!workspace.ownerUserId) {
-          const ownerMember = state.cloud.workspaceMembers
-            .filter((member) => member.workspaceId === workspace.id && member.status !== 'removed' && member.role === 'admin')
-            .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0))[0];
-          if (ownerMember?.userId) workspace.ownerUserId = ownerMember.userId;
+        const activeMembers = state.cloud.workspaceMembers
+          .filter((member) => member.workspaceId === workspace.id && member.status !== 'removed');
+        let ownerMembers = activeMembers.filter((member) => normalizeCloudRole(member.role) === 'owner');
+        if (!ownerMembers.length) {
+          const promotedOwner = activeMembers.find((member) => workspace.ownerUserId && member.userId === workspace.ownerUserId)
+            || activeMembers
+              .filter((member) => normalizeCloudRole(member.role) === 'admin')
+              .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0))[0];
+          if (promotedOwner) {
+            promotedOwner.role = 'owner';
+            promotedOwner.updatedAt = promotedOwner.updatedAt || workspace.updatedAt;
+            const human = state.humans.find((item) => item.id === promotedOwner.humanId);
+            if (human) {
+              human.role = 'owner';
+              human.updatedAt = human.updatedAt || promotedOwner.updatedAt;
+            }
+            ownerMembers = [promotedOwner];
+          }
         }
+        if (!workspace.ownerUserId && ownerMembers[0]?.userId) workspace.ownerUserId = ownerMembers[0].userId;
         const activeHumanIds = state.cloud.workspaceMembers
           .filter((member) => (
             member.workspaceId === workspace.id
@@ -1593,13 +1607,13 @@ export function createCloudAuth(deps) {
         updatedAt: createdAt,
       };
       cloud.workspaces.push(workspace);
-      const human = ensureHumanForUser(user, 'admin', { workspaceId: workspace.id });
+      const human = ensureHumanForUser(user, 'owner', { workspaceId: workspace.id });
       const member = {
         id: makeId('wmem'),
         workspaceId: workspace.id,
         userId: user.id,
         humanId: human.id,
-        role: 'admin',
+        role: 'owner',
         status: 'active',
         joinedAt: createdAt,
         createdAt,
@@ -1644,7 +1658,7 @@ export function createCloudAuth(deps) {
 
     async function deleteConsoleServer(slug, req) {
       const auth = currentActor(req);
-      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
+      if (!auth || !roleAllows(auth.member.role, ['admin'])) {
         const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
         error.status = auth ? 403 : 401;
         throw error;
@@ -1758,7 +1772,7 @@ export function createCloudAuth(deps) {
         throw error;
       }
       const member = memberForUser(user.id, workspace.id);
-      if (!member || normalizeCloudRole(member.role) !== 'admin') {
+      if (!member || !roleAllows(member.role, ['admin'])) {
         const error = new Error('Workspace role is not allowed.');
         error.status = 403;
         throw error;
@@ -1791,7 +1805,7 @@ export function createCloudAuth(deps) {
 
     async function createJoinLink(body, req) {
       const auth = currentActor(req);
-      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
+      if (!auth || !roleAllows(auth.member.role, ['admin'])) {
         const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
         error.status = auth ? 403 : 401;
         throw error;
@@ -1848,7 +1862,7 @@ export function createCloudAuth(deps) {
 
     async function revokeJoinLink(joinLinkId, req) {
       const auth = currentActor(req);
-      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
+      if (!auth || !roleAllows(auth.member.role, ['admin'])) {
         const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
         error.status = auth ? 403 : 401;
         throw error;
@@ -2219,17 +2233,17 @@ export function createCloudAuth(deps) {
       };
     }
 
-    function activeAdminCount(workspaceId = primaryWorkspace()?.id) {
+    function activeOwnerCount(workspaceId = primaryWorkspace()?.id) {
       return ensureCloudState().workspaceMembers.filter((member) => (
         member.workspaceId === workspaceId
         && member.status === 'active'
-        && normalizeCloudRole(member.role) === 'admin'
+        && normalizeCloudRole(member.role) === 'owner'
       )).length;
     }
 
     async function updateMemberRole(memberId, body, req) {
       const auth = currentActor(req);
-      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
+      if (!auth || !roleAllows(auth.member.role, ['admin'])) {
         const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
         error.status = auth ? 403 : 401;
         throw error;
@@ -2253,18 +2267,20 @@ export function createCloudAuth(deps) {
         throw error;
       }
       const previousRole = normalizeCloudRole(member.role);
-      if (workspace.ownerUserId && member.userId === workspace.ownerUserId && role !== 'admin') {
-        const error = new Error('Owner role cannot be changed.');
-        error.status = 403;
-        throw error;
-      }
-      if (previousRole === 'admin' && role !== 'admin' && activeAdminCount(workspace.id) <= 1) {
-        const error = new Error('At least one admin must remain.');
+      if (member.userId === auth.user.id && previousRole === 'owner' && role !== 'owner') {
+        const error = new Error('You cannot remove your own Owner role.');
         error.status = 403;
         throw error;
       }
       if (!canUpdateMemberRole(auth.member.role, previousRole, role)) {
-        const error = new Error('Workspace role is not allowed.');
+        const error = new Error(previousRole === 'owner' || role === 'owner'
+          ? 'Only an Owner can assign or remove Owner role.'
+          : 'Workspace role is not allowed.');
+        error.status = 403;
+        throw error;
+      }
+      if (previousRole === 'owner' && role !== 'owner' && activeOwnerCount(workspace.id) <= 1) {
+        const error = new Error('A server must keep at least one Owner.');
         error.status = 403;
         throw error;
       }
@@ -2319,7 +2335,7 @@ export function createCloudAuth(deps) {
 
     async function createPasswordReset(body, req) {
       const auth = currentActor(req);
-      if (!auth || normalizeCloudRole(auth.member.role) !== 'admin') {
+      if (!auth || !roleAllows(auth.member.role, ['admin'])) {
         const error = new Error(auth ? 'Workspace role is not allowed.' : 'Login is required.');
         error.status = auth ? 403 : 401;
         throw error;
@@ -2337,8 +2353,8 @@ export function createCloudAuth(deps) {
         error.status = 404;
         throw error;
       }
-      if (normalizeCloudRole(member.role) === 'admin') {
-        const error = new Error('Admin password cannot be reset here.');
+      if (roleAllows(member.role, ['admin'])) {
+        const error = new Error('Privileged member password cannot be reset here.');
         error.status = 403;
         throw error;
       }
@@ -2549,18 +2565,13 @@ export function createCloudAuth(deps) {
         error.status = 400;
         throw error;
       }
-      if (workspace.ownerUserId && member.userId === workspace.ownerUserId) {
-        const error = new Error('Owner cannot be removed.');
-        error.status = 403;
-        throw error;
-      }
       if (!canRemoveRole(auth.member.role, member.role)) {
         const error = new Error('Workspace role is not allowed.');
         error.status = 403;
         throw error;
       }
-      if (normalizeCloudRole(member.role) === 'admin' && activeAdminCount(workspace.id) <= 1) {
-        const error = new Error('At least one Admin is required.');
+      if (normalizeCloudRole(member.role) === 'owner' && activeOwnerCount(workspace.id) <= 1) {
+        const error = new Error('A server must keep at least one Owner.');
         error.status = 400;
         throw error;
       }

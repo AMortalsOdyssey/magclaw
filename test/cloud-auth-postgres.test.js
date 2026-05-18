@@ -134,7 +134,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
       cookie: adminAccount.cookie,
       body: JSON.stringify({ name: 'Admin Team', slug: 'admin-team' }),
     });
-    assert.equal(adminServer.data.member.role, 'admin');
+    assert.equal(adminServer.data.member.role, 'owner');
     const adminCookie = adminAccount.cookie;
 
     const firstInvite = await request(server.baseUrl, '/api/cloud/invitations', {
@@ -177,7 +177,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
     });
     assert.equal(createdServer.status, 201);
     assert.equal(createdServer.data.server.slug, 'pg-team');
-    assert.equal(createdServer.data.member.role, 'admin');
+    assert.equal(createdServer.data.member.role, 'owner');
     await request(server.baseUrl, '/api/console/servers', {
       method: 'POST',
       cookie: openAccount.cookie,
@@ -277,7 +277,7 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
          WHERE u.normalized_email = $1`,
         ['console-pg@example.com'],
       );
-      assert.deepEqual(memberRows.rows.map((row) => row.role).sort(), ['admin', 'admin']);
+      assert.deepEqual(memberRows.rows.map((row) => row.role).sort(), ['admin', 'owner']);
       assert.ok(memberRows.rows.every((row) => row.status === 'active'));
 
       const invitations = await client.query(

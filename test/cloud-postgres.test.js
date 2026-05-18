@@ -144,9 +144,9 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     assert.match(sql, /\bruntime_details\b/);
     assert.match(sql, /\bstorage_mode\b/);
   assert.match(sql, /component IN \('web', 'daemon'\)/);
-  assert.match(sql, /role IN \('member', 'admin'\)/);
+  assert.match(sql, /role IN \('member', 'admin', 'owner'\)/);
   assert.match(sql, /status IN \('todo', 'in_progress', 'in_review', 'done', 'closed'\)/);
-  assert.match(sql, /WHEN 'owner' THEN 'admin'/);
+  assert.match(sql, /WHEN 'owner' THEN 'owner'/);
     assert.match(sql, /cloud_users_active_normalized_email_uidx/);
   assert.match(sql, /WHERE disabled_at IS NULL/);
   assert.doesNotMatch(sql, /\buid\b/);

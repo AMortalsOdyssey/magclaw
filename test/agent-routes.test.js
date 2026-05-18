@@ -330,6 +330,40 @@ test('agent route group warms an agent process for the selected space', async ()
   assert.equal(res.data.warming, true);
 });
 
+test('agent route group marks restart as starting before control handoff', async () => {
+  const order = [];
+  const deps = routeDeps({
+    broadcastState: () => {
+      order.push(`broadcast:${deps.state.agents[0].status}`);
+    },
+    restartAgentFromControl: async () => {
+      order.push(`restart:${deps.state.agents[0].status}`);
+      return { restarted: true };
+    },
+    setAgentStatus: (agent, status, reason, extra = {}) => {
+      order.push(`status:${status}:${reason}:${Boolean(extra.forceEvent)}`);
+      agent.status = status;
+      agent.statusReason = reason;
+    },
+  });
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/agents/agt_1/restart'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(order.slice(0, 3), [
+    'status:starting:agent_restart_requested:true',
+    'broadcast:starting',
+    'restart:starting',
+  ]);
+  assert.equal(res.data.agent.status, 'starting');
+});
+
 test('agent route group stop-all resets visible status and process registry', async () => {
   let cleared = false;
   const deps = routeDeps({

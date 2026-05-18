@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { roleAllows } from '../cloud/roles.js';
 import { findWorkspaceAllChannel } from '../workspace-defaults.js';
 
 // Agent control API routes.
@@ -72,6 +73,24 @@ export async function handleAgentApi(req, res, url, deps) {
     warmAgentFromControl,
   } = deps;
   const state = getState();
+
+  function isLoginRequired() {
+    return process.env.MAGCLAW_DEPLOYMENT === 'cloud' || Boolean(state.cloud?.users?.length);
+  }
+
+  function requireAgentCapability(allowedRoles = ['admin']) {
+    if (!isLoginRequired()) return true;
+    const actor = typeof currentActor === 'function' ? currentActor(req) : null;
+    if (!actor) {
+      sendError(res, 401, 'Login is required.');
+      return false;
+    }
+    if (!roleAllows(actor.member?.role, allowedRoles)) {
+      sendError(res, 403, 'Workspace role is not allowed.');
+      return false;
+    }
+    return true;
+  }
 
   if (req.method === 'POST' && url.pathname === '/api/agents') {
     const body = await readJson(req);
@@ -225,6 +244,8 @@ export async function handleAgentApi(req, res, url, deps) {
       return true;
     }
     const body = await readJson(req);
+    setAgentStatus(agent, 'starting', 'agent_restart_requested', { forceEvent: true });
+    broadcastState();
     const result = await restartAgentFromControl(agent, String(body.mode || 'restart'));
     sendJson(res, 202, { agent, ...result });
     return true;
@@ -259,6 +280,7 @@ export async function handleAgentApi(req, res, url, deps) {
 
   const agentWorkspaceMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/workspace$/);
   if (req.method === 'GET' && agentWorkspaceMatch) {
+    if (!requireAgentCapability(['admin'])) return true;
     const agent = findAgent(agentWorkspaceMatch[1]);
     if (!agent) {
       sendError(res, 404, 'Agent not found.');
@@ -275,6 +297,7 @@ export async function handleAgentApi(req, res, url, deps) {
 
   const agentSkillsMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/skills$/);
   if (req.method === 'GET' && agentSkillsMatch) {
+    if (!requireAgentCapability(['admin'])) return true;
     const agent = findAgent(agentSkillsMatch[1]);
     if (!agent) {
       sendError(res, 404, 'Agent not found.');
@@ -305,6 +328,7 @@ export async function handleAgentApi(req, res, url, deps) {
 
   const agentWorkspaceFileMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/workspace\/file$/);
   if (req.method === 'GET' && agentWorkspaceFileMatch) {
+    if (!requireAgentCapability(['admin'])) return true;
     const agent = findAgent(agentWorkspaceFileMatch[1]);
     if (!agent) {
       sendError(res, 404, 'Agent not found.');

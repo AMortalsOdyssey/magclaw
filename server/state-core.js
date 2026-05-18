@@ -512,15 +512,9 @@ export function createStateCore(deps) {
     if (!state.cloud.workspaces.length) state.cloud.workspaces = fresh.cloud.workspaces;
     for (const workspace of state.cloud.workspaces) {
       workspace.updatedAt = workspace.updatedAt || workspace.createdAt || now();
-      if (!workspace.ownerUserId) {
-        const ownerMember = state.cloud.workspaceMembers
-          .filter((member) => member.workspaceId === workspace.id && member.status !== 'removed' && member.role === 'admin')
-          .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0))[0];
-        if (ownerMember?.userId) workspace.ownerUserId = ownerMember.userId;
-      }
     }
       const roleMap = {
-        owner: 'admin',
+        owner: 'owner',
         viewer: 'member',
         [['agent', 'admin'].join('_')]: 'admin',
         [['computer', 'admin'].join('_')]: 'admin',
@@ -530,6 +524,23 @@ export function createStateCore(deps) {
       }
       for (const invitation of state.cloud.invitations) {
         invitation.role = roleMap[invitation.role] || invitation.role || 'member';
+      }
+      for (const workspace of state.cloud.workspaces) {
+        const activeMembers = state.cloud.workspaceMembers
+          .filter((member) => member.workspaceId === workspace.id && member.status !== 'removed');
+        let owners = activeMembers.filter((member) => member.role === 'owner');
+        if (!owners.length) {
+          const promotedOwner = activeMembers.find((member) => workspace.ownerUserId && member.userId === workspace.ownerUserId)
+            || activeMembers
+              .filter((member) => member.role === 'admin')
+              .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0))[0];
+          if (promotedOwner) {
+            promotedOwner.role = 'owner';
+            promotedOwner.updatedAt = promotedOwner.updatedAt || workspace.updatedAt;
+            owners = [promotedOwner];
+          }
+        }
+        if (!workspace.ownerUserId && owners[0]?.userId) workspace.ownerUserId = owners[0].userId;
       }
       for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'reminders', 'missions', 'runs', 'attachments', 'projects', 'channelMemberProposals', 'workItems', 'routeEvents', 'events', 'systemNotifications']) {
         if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
@@ -549,6 +560,11 @@ export function createStateCore(deps) {
     if (!state.humans.length) state.humans = fresh.humans;
       for (const human of state.humans) {
         human.role = roleMap[human.role] || human.role || 'member';
+      }
+      for (const member of state.cloud.workspaceMembers) {
+        if (member.role !== 'owner') continue;
+        const human = state.humans.find((item) => item.id === member.humanId);
+        if (human) human.role = 'owner';
       }
     if (!state.computers.length) state.computers = fresh.computers;
     if (!state.agents.length) state.agents = fresh.agents;
