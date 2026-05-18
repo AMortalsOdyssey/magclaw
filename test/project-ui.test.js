@@ -2243,6 +2243,8 @@ test('server profile saves patch settings and open thread surfaces without full 
   assert.match(app, /let pendingServerProfilePatchSignature = ''/);
   assert.match(app, /function serverProfilePatchSignature\(stateSnapshot = appState\)/);
   assert.match(app, /function serverSettingsSupportSignature\(stateSnapshot = appState\)/);
+  assert.match(app, /function fanoutApiSettingsSignature\(stateSnapshot = appState\)/);
+  assert.match(app, /function serverSettingsVisibleSignature\(stateSnapshot = appState\)/);
   assert.match(app, /function patchOpenThreadDrawerSurface\(scrollSnapshot\)/);
   assert.match(app, /function patchServerProfileSettingsSurface\(\)/);
   assert.match(app, /function pageScrollSnapshot\(\)/);
@@ -2251,6 +2253,9 @@ test('server profile saves patch settings and open thread surfaces without full 
   assert.match(renderSource, /page: pageScrollSnapshot\(\)/);
   assert.match(renderSource, /restorePageScroll\(scrollSnapshot\.page\)/);
   assert.match(stateUpdateSource, /const serverProfileBefore = serverProfilePatchSignature\(\)/);
+  assert.match(stateUpdateSource, /const serverSettingsVisibleBefore = serverSettingsVisibleSignature\(\)/);
+  assert.match(stateUpdateSource, /const serverSettingsUnchanged = activeView === 'cloud'[\s\S]*settingsTab === 'server'[\s\S]*serverSettingsVisibleBefore === serverSettingsVisibleAfter/);
+  assert.match(stateUpdateSource, /if \(serverSettingsUnchanged\) \{[\s\S]*if \(unreadChanged\) patchRailSurface\(\);[\s\S]*patchServerProfileSettingsSurface\(\);[\s\S]*return;/);
   assert.match(stateUpdateSource, /const serverProfileOnlyChanged = activeView === 'cloud'[\s\S]*serverSettingsSupportBefore === serverSettingsSupportSignature\(\)/);
   assert.match(stateUpdateSource, /patchServerProfileSettingsSurface\(\);[\s\S]*patchOpenThreadDrawerSurface\(scrollSnapshot\);[\s\S]*return;/);
   assert.match(submitSource, /pendingServerProfilePatchSignature = serverProfilePatchSignature\(\)/);

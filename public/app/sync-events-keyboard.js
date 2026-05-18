@@ -352,6 +352,31 @@ function serverSettingsSupportSignature(stateSnapshot = appState) {
   return JSON.stringify({ canManage, members, invitations, joinLinks, agents });
 }
 
+function fanoutApiSettingsSignature(stateSnapshot = appState) {
+  const config = stateSnapshot?.settings?.fanoutApi || {};
+  const canManage = Boolean(stateSnapshot?.cloud?.auth?.capabilities?.manage_system);
+  return JSON.stringify([
+    canManage,
+    Boolean(config.configured),
+    Boolean(config.enabled),
+    config.baseUrl || '',
+    config.model || '',
+    config.fallbackModel || '',
+    config.timeoutMs || '',
+    (config.forceKeywords || []).join('\n'),
+    Boolean(config.hasApiKey),
+    config.apiKeyPreview || '',
+  ]);
+}
+
+function serverSettingsVisibleSignature(stateSnapshot = appState) {
+  return JSON.stringify({
+    profile: serverProfilePatchSignature(stateSnapshot),
+    support: serverSettingsSupportSignature(stateSnapshot),
+    fanoutApi: fanoutApiSettingsSignature(stateSnapshot),
+  });
+}
+
 function patchOpenThreadDrawerSurface(scrollSnapshot) {
   if (!threadMessageId || selectedProjectFile || selectedAgentId || selectedTaskId) return false;
   const message = byId(appState.messages, threadMessageId);
@@ -471,6 +496,7 @@ function applyStateUpdate(nextState) {
   const activeConversationBefore = activeConversationSignature();
   const serverProfileBefore = serverProfilePatchSignature();
   const serverSettingsSupportBefore = serverSettingsSupportSignature();
+  const serverSettingsVisibleBefore = serverSettingsVisibleSignature();
   const computerModalBefore = modal === 'computer' ? computerPairingModalRenderSignature(appState) : '';
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
@@ -485,6 +511,11 @@ function applyStateUpdate(nextState) {
   const unreadChanged = unreadBefore !== railUnreadSignature();
   const activeConversationChanged = activeConversationBefore !== activeConversationSignature();
   const serverProfileAfter = serverProfilePatchSignature();
+  const serverSettingsVisibleAfter = serverSettingsVisibleSignature();
+  const serverSettingsUnchanged = activeView === 'cloud'
+    && settingsTab === 'server'
+    && serverSettingsVisibleBefore === serverSettingsVisibleAfter
+    && !selectionChanged;
   const serverProfileOnlyChanged = activeView === 'cloud'
     && settingsTab === 'server'
     && serverProfileBefore !== serverProfileAfter
@@ -503,6 +534,12 @@ function applyStateUpdate(nextState) {
   if (selectionChanged) {
     pendingServerProfilePatchSignature = '';
     render();
+    return;
+  }
+  if (serverSettingsUnchanged) {
+    if (pendingServerProfilePatchSignature === serverProfileAfter) pendingServerProfilePatchSignature = '';
+    if (unreadChanged) patchRailSurface();
+    patchServerProfileSettingsSurface();
     return;
   }
   if (serverProfileOnlyChanged || serverProfileEcho) {
