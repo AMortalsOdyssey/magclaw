@@ -15,6 +15,7 @@ public/.magclaw-assets
 .magclaw
 .magclaw-local
 .npm-cache
+AGENTS.md
 
 # Editor directories and files
 .vscode/*
