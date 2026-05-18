@@ -172,6 +172,7 @@ test('daemon sends a periodic heartbeat while the websocket is connected', async
   assert.match(relaySource, /case 'heartbeat':/);
   assert.match(relaySource, /MAGCLAW_DAEMON_PING_MS/);
   assert.match(relaySource, /MAGCLAW_DAEMON_ACTIVITY_PROBE_TIMEOUT_MS/);
+  assert.match(relaySource, /DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv\('MAGCLAW_DAEMON_RECONNECT_GRACE_MS', 60_000, \{ min: 0, max: 5 \* 60_000 \}\)/);
   assert.match(relaySource, /startConnectionPing\(connection\)/);
   assert.match(relaySource, /probeStaleAgentHeartbeats\(\)/);
   assert.match(relaySource, /case 'pong':/);

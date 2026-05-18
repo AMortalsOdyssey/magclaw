@@ -2062,6 +2062,7 @@ function agentStatusLabel(agent) {
   const status = agentDisplayStatus(agent);
   const value = String(status || 'offline').toLowerCase();
   if (value === 'warming') return 'Warming';
+  if (value === 'standby') return 'Standby';
   if (value === 'waiting_for_computer') return 'Waiting for computer';
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }

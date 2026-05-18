@@ -703,11 +703,19 @@
 }
 
 .agent-status.status-idle {
-  color: var(--resting);
+  color: var(--success);
 }
 
 .agent-status.status-idle::before {
-  background: var(--resting);
+  background: var(--success);
+}
+
+.agent-status.status-standby {
+  color: var(--standby-text);
+}
+
+.agent-status.status-standby::before {
+  background: var(--standby);
 }
 
 .agent-status.status-busy {

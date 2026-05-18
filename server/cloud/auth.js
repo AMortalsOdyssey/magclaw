@@ -2623,6 +2623,17 @@ export function createCloudAuth(deps) {
       const workspace = workspaceContext.workspace;
       const member = user ? memberForUser(user.id, workspace?.id) : null;
       const session = req ? currentSession(req) : null;
+      if (user && member) {
+        const human = humanForMember(member, user)
+          || ensureHumanForUser(user, member.role, {
+            humanId: member.humanId,
+            workspaceId: member.workspaceId,
+          });
+        if (human?.id && member.humanId !== human.id) member.humanId = human.id;
+        if (markHumanPresence(human, 'online')) {
+          persistState({ workspaceId: member.workspaceId, reason: 'human_presence_public_state' }).catch(() => {});
+        }
+      }
       const capabilities = member ? cloudCapabilitiesForRole(member.role) : {};
       const canManageCloud = Boolean(capabilities.manage_cloud_connection);
       const canSeeDirectory = !cloud.users.length || Boolean(member);

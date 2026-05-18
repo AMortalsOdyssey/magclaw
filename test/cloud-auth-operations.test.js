@@ -302,6 +302,61 @@ test('auth status exposes configured login providers with Feishu as the default 
   }
 });
 
+test('public cloud state keeps the current human online after a stale presence refresh', () => {
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  const staleSeenAt = '2026-05-11T00:00:00.000Z';
+  const token = 'mc_session_present';
+  const { auth, state } = makeAuth(null, {
+    cloud: {
+      users: [{
+        id: 'usr_present',
+        email: 'present@example.test',
+        name: 'Present Human',
+        passwordHash: '',
+        createdAt,
+        updatedAt: createdAt,
+      }],
+      sessions: [{
+        id: 'ses_present',
+        userId: 'usr_present',
+        tokenHash: sha256(token),
+        createdAt,
+        expiresAt: '2026-05-26T00:00:00.000Z',
+      }],
+      workspaceMembers: [{
+        id: 'wmem_present',
+        workspaceId: 'local',
+        userId: 'usr_present',
+        humanId: 'hum_present',
+        role: 'owner',
+        status: 'active',
+        joinedAt: createdAt,
+        createdAt,
+      }],
+    },
+    humans: [{
+      id: 'hum_present',
+      authUserId: 'usr_present',
+      userId: 'usr_present',
+      workspaceId: 'local',
+      name: 'Present Human',
+      email: 'present@example.test',
+      role: 'owner',
+      status: 'online',
+      lastSeenAt: staleSeenAt,
+      presenceUpdatedAt: staleSeenAt,
+      createdAt,
+      updatedAt: createdAt,
+    }],
+  });
+
+  const cloud = auth.publicCloudState(request(`${SESSION_COOKIE}=${token}`));
+
+  assert.equal(cloud.auth.currentUser.id, 'usr_present');
+  assert.equal(state.humans[0].status, 'online');
+  assert.notEqual(state.humans[0].lastSeenAt, staleSeenAt);
+});
+
 test('password login is disabled when only Feishu provider is configured', async () => {
   const previous = process.env.MAGCLAW_AUTH_PROVIDERS;
   process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([

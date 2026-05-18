@@ -1548,16 +1548,24 @@ test('agent warmup renders as Warming with a distinct pink status dot', async ()
   assert.match(styles, /\.avatar-status-dot\.status-warming \{[\s\S]*background: var\(--magclaw-pink\)/);
 });
 
-test('idle agents render with a distinct dark green standby status dot', async () => {
+test('idle agents stay green while warmed standby renders purple', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
 
   assert.match(app, /if \(value === 'idle'\) return 'idle'/);
+  assert.match(app, /function agentIsStandby\(agent\)/);
+  assert.match(app, /if \(agentIsStandby\(agent\)\) return 'standby'/);
+  assert.match(app, /if \(value === 'standby'\) return 'standby'/);
+  assert.match(app, /if \(value === 'standby'\) return 'Standby'/);
   assert.doesNotMatch(app, /\['online', 'idle', 'connected'\]\.includes\(value\)/);
-  assert.match(styles, /--resting: #14532d/);
-  assert.match(styles, /\.avatar-status-dot\.status-idle \{[\s\S]*background: var\(--resting\)/);
-  assert.match(styles, /\.agent-hover-status-dot\.status-idle \{[\s\S]*background: var\(--resting\)/);
-  assert.match(styles, /\.add-member-status-dot\.status-idle \{[\s\S]*background: var\(--resting\)/);
+  assert.doesNotMatch(styles, /--resting: #14532d/);
+  assert.match(styles, /--standby: #C9B5FF/);
+  assert.match(styles, /\.avatar-status-dot\.status-idle \{[\s\S]*background: var\(--success\)/);
+  assert.match(styles, /\.avatar-status-dot\.status-standby \{[\s\S]*background: var\(--standby\)/);
+  assert.match(styles, /\.agent-hover-status-dot\.status-idle \{[\s\S]*background: var\(--success\)/);
+  assert.match(styles, /\.agent-hover-status-dot\.status-standby \{[\s\S]*background: var\(--standby\)/);
+  assert.match(styles, /\.add-member-status-dot\.status-idle \{[\s\S]*background: var\(--success\)/);
+  assert.match(styles, /\.add-member-status-dot\.status-standby \{[\s\S]*background: var\(--standby\)/);
 });
 
 test('agent warmup is session-scoped and not retriggered by every state refresh', async () => {

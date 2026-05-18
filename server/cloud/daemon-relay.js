@@ -7,7 +7,7 @@ const SENT_DELIVERY_RETRY_TTL_MS = Math.max(1000, Number(process.env.MAGCLAW_DAE
 const DAEMON_PING_MS = readMsEnv('MAGCLAW_DAEMON_PING_MS', 30_000, { min: 0, max: 10 * 60_000 });
 const DAEMON_INBOUND_WATCHDOG_MS = readMsEnv('MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS', 70_000, { min: 0, max: 10 * 60_000 });
 const ACTIVITY_PROBE_TIMEOUT_MS = readMsEnv('MAGCLAW_DAEMON_ACTIVITY_PROBE_TIMEOUT_MS', 5_000, { min: 250, max: 60_000 });
-const DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv('MAGCLAW_DAEMON_RECONNECT_GRACE_MS', 2_000, { min: 0, max: 60_000 });
+const DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv('MAGCLAW_DAEMON_RECONNECT_GRACE_MS', 60_000, { min: 0, max: 5 * 60_000 });
 const ACTIVE_DELIVERY_STATUSES = new Set(['queued', 'sent', 'acked']);
 
 function readMsEnv(name, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {

@@ -214,6 +214,13 @@ function agentIsWarming(agent) {
     || (status === 'thinking' && (activity.warmup === true || mode === 'warmup' || detail.includes('hidden warmup')));
 }
 
+function agentIsStandby(agent) {
+  const status = String(agent?.status || '').toLowerCase();
+  return status === 'idle'
+    && typeof agentHasWarmRuntimeSession === 'function'
+    && agentHasWarmRuntimeSession(agent);
+}
+
 function agentDisplayStatus(agent) {
   if (!agent) return 'offline';
   if (agent.deletedAt || agent.archivedAt) return 'deleted';
@@ -225,12 +232,14 @@ function agentDisplayStatus(agent) {
     const status = String(agent?.status || '').toLowerCase();
     if (!['waiting_for_computer', 'queued', 'starting', 'thinking', 'working', 'running', 'busy', 'warming', 'error'].includes(status)) return 'offline';
   }
+  if (agentIsStandby(agent)) return 'standby';
   return agent?.status || 'offline';
 }
 
 function presenceTone(status) {
   const value = String(status || '').toLowerCase();
   if (value === 'warming') return 'warming';
+  if (value === 'standby') return 'standby';
   if (value === 'idle') return 'idle';
   if (value === 'disabled') return 'disabled';
   if (value === 'deleted') return 'disabled';

@@ -1423,7 +1423,11 @@
 }
 
 .mention-status.status-idle {
-  background: var(--resting);
+  background: var(--success);
+}
+
+.mention-status.status-standby {
+  background: var(--standby);
 }
 
 .mention-status.status-busy {

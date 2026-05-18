@@ -292,7 +292,11 @@
 }
 
 .agent-activity-dot.status-idle {
-  background: var(--resting);
+  background: var(--success);
+}
+
+.agent-activity-dot.status-standby {
+  background: var(--standby);
 }
 
 .agent-activity-dot.status-busy {
@@ -808,11 +812,19 @@
 }
 
 .member-status.status-idle {
-  color: var(--resting);
+  color: var(--success);
 }
 
 .member-status.status-idle::before {
-  background: var(--resting);
+  background: var(--success);
+}
+
+.member-status.status-standby {
+  color: var(--standby-text);
+}
+
+.member-status.status-standby::before {
+  background: var(--standby);
 }
 
 .member-status.status-busy {
@@ -1000,7 +1012,11 @@
 }
 
 .add-member-status-dot.status-idle {
-  background: var(--resting);
+  background: var(--success);
+}
+
+.add-member-status-dot.status-standby {
+  background: var(--standby);
 }
 
 .add-member-status-dot.status-busy {

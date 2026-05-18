@@ -449,15 +449,17 @@ function agentLiveActivitySummary(agent) {
     || latestEvent?.message
     || ''
   ).trim();
-  const fallback = value === 'idle'
+  const fallback = value === 'standby'
     ? 'Standing by'
-    : value === 'waiting_for_computer'
-      ? 'Waiting for daemon'
-      : value === 'starting'
-        ? 'Starting runtime'
-        : value === 'offline'
-          ? 'Offline'
-          : agentStatusLabel(agent);
+    : value === 'idle'
+      ? 'Idle'
+      : value === 'waiting_for_computer'
+        ? 'Waiting for daemon'
+        : value === 'starting'
+          ? 'Starting runtime'
+          : value === 'offline'
+            ? 'Offline'
+            : agentStatusLabel(agent);
   return {
     status,
     label: agentStatusLabel(agent),
