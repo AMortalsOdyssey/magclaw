@@ -1046,6 +1046,34 @@
     display: none;
   }
 
+  .app-frame.tablet-inspector-main {
+    grid-template-columns: minmax(220px, 34vw) 8px minmax(0, 1fr);
+  }
+
+  .app-frame.tablet-inspector-main.task-focus {
+    grid-template-columns: 68px minmax(0, 1fr);
+  }
+
+  .app-frame.tablet-inspector-main .workspace {
+    display: none;
+  }
+
+  .app-frame.tablet-inspector-main .inspector {
+    display: grid;
+    grid-column: 3;
+    grid-row: 1;
+    align-content: stretch;
+    min-width: 0;
+  }
+
+  .app-frame.tablet-inspector-main.task-focus .inspector {
+    grid-column: 2;
+  }
+
+  .app-frame.tablet-inspector-main .thread-drawer {
+    border-left: 2px solid var(--border);
+  }
+
   .app-frame:not(.task-focus) .workspace {
     grid-column: 3;
   }

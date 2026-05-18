@@ -1179,11 +1179,23 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
 
   assert.match(app, /const inspectorHtml = renderInspector\(\)/);
   assert.match(app, /inspectorHtml \? `[\s\S]*collab-inspector/);
-  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{taskFocusLayout \? ' task-focus' : ''\}[\s\S]*\$\{notificationBanner \? ' notification-banner-active' : ''\}"/);
+  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{tabletInspectorMain \? ' tablet-inspector-main thread-open' : ''\}\$\{taskFocusLayout \? ' task-focus' : ''\}[\s\S]*\$\{notificationBanner \? ' notification-banner-active' : ''\}"/);
   assert.match(app, /let selectedTaskId = null/);
   assert.match(app, /function renderInspector\(\)[\s\S]*if \(selectedAgentId\)/);
   assert.match(app, /selectedAgentId = null;[\s\S]*selectedSpaceType = target\.dataset\.type/);
   assert.match(styles, /\.app-frame\.no-inspector/);
+});
+
+test('tablet thread layout promotes the thread inspector into the main content column', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+
+  assert.match(app, /const tabletInspectorMain = Boolean\(inspectorHtml && threadMessageId\)/);
+  assert.match(app, /\$\{tabletInspectorMain \? ' tablet-inspector-main thread-open' : ''\}/);
+  assert.match(styles, /@media \(min-width: 768px\) and \(max-width: 1099px\)[\s\S]*\.app-frame\.tablet-inspector-main \{/);
+  assert.match(styles, /\.app-frame\.tablet-inspector-main \.workspace \{[\s\S]*display: none/);
+  assert.match(styles, /\.app-frame\.tablet-inspector-main \.inspector \{[\s\S]*display: grid[\s\S]*align-content: stretch/);
+  assert.match(styles, /\.app-frame\.tablet-inspector-main \.thread-drawer \{[\s\S]*border-left: 2px solid var\(--border\)/);
 });
 
 test('members navigation restores the last detail and falls back to the first agent', async () => {

@@ -68,10 +68,11 @@ function render() {
   const taskFocusLayout = activeView === 'tasks';
   const settingsLayout = activeView === 'cloud' || activeView === 'console';
   const consoleLayout = activeView === 'console';
+  const tabletInspectorMain = Boolean(inspectorHtml && threadMessageId);
   root.innerHTML = `
     ${notificationBanner}
     ${appFlashBanner}
-    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${taskFocusLayout ? ' task-focus' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${consoleLayout ? ' console-layout-frame' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
+    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${tabletInspectorMain ? ' tablet-inspector-main thread-open' : ''}${taskFocusLayout ? ' task-focus' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${consoleLayout ? ' console-layout-frame' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
       ${renderRail()}
       ${taskFocusLayout ? '' : '<div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>'}
       <main class="workspace collab-main">
