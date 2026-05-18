@@ -2254,6 +2254,10 @@ test('agent activity tab renders newest first with second-level timestamps and a
   assert.match(app, /fmtTime\(event\.createdAt\)/);
   assert.match(app, /function agentLiveActivitySummary\(agent\)/);
   assert.match(app, /agent\?\.runtimeActivity && typeof agent\.runtimeActivity === 'object'/);
+  assert.match(app, /function agentActivityIsUserVisible\(event\)/);
+  assert.match(app, /rawType === 'daemon_result'/);
+  assert.match(app, /resultType === 'agent:skills:list_result'/);
+  assert.match(app, /agentActivityEvents\(agent\)\.find\(agentActivityIsUserVisible\)/);
   assert.match(app, /function renderAgentLiveActivityBar\(agent, \{ compact = false \} = \{\}\)/);
   assert.match(app, /data-action="set-agent-detail-tab" data-tab="activity"/);
   assert.match(profileSource, /renderAgentLiveActivityBar\(agent\)/);
