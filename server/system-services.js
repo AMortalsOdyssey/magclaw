@@ -54,6 +54,22 @@ export function createSystemServices(deps) {
       .slice(0, limit);
   }
 
+  function bootstrapOptionsFromRequest(req) {
+    try {
+      const url = new URL(req?.url || '/', 'http://magclaw.local');
+      return {
+        spaceType: url.searchParams.get('spaceType') || '',
+        spaceId: url.searchParams.get('spaceId') || '',
+        threadMessageId: url.searchParams.get('threadMessageId') || '',
+        messageLimit: url.searchParams.get('messageLimit') || '',
+        threadRootLimit: url.searchParams.get('threadRootLimit') || '',
+        eventLimit: url.searchParams.get('eventLimit') || '',
+      };
+    } catch {
+      return {};
+    }
+  }
+
   function publicState(req = null) {
     const currentState = getState() || {};
     const cloud = typeof publicCloudState === 'function' ? publicCloudState(req) : undefined;
@@ -133,16 +149,17 @@ export function createSystemServices(deps) {
   function publicBootstrapState(req = null, options = {}) {
     const snapshot = publicState(req);
     if (!snapshot || !Array.isArray(snapshot.channels)) return snapshot;
+    const effectiveOptions = { ...bootstrapOptionsFromRequest(req), ...options };
 
-    const spaceType = ['channel', 'dm'].includes(options.spaceType) ? options.spaceType : 'channel';
+    const spaceType = ['channel', 'dm'].includes(effectiveOptions.spaceType) ? effectiveOptions.spaceType : 'channel';
     const fallbackSpaceId = spaceType === 'dm'
       ? snapshot.dms?.[0]?.id
       : snapshot.channels?.[0]?.id;
-    const spaceId = String(options.spaceId || fallbackSpaceId || 'chan_all');
-    const threadMessageId = String(options.threadMessageId || '');
-    const messageLimit = clampLimit(options.messageLimit, 80, 200);
-    const threadRootLimit = clampLimit(options.threadRootLimit, 120, 300);
-    const eventLimit = clampLimit(options.eventLimit, 120, 300);
+    const spaceId = String(effectiveOptions.spaceId || fallbackSpaceId || 'chan_all');
+    const threadMessageId = String(effectiveOptions.threadMessageId || '');
+    const messageLimit = clampLimit(effectiveOptions.messageLimit, 80, 200);
+    const threadRootLimit = clampLimit(effectiveOptions.threadRootLimit, 120, 300);
+    const eventLimit = clampLimit(effectiveOptions.eventLimit, 120, 300);
 
     const selectedMessages = records(snapshot.messages)
       .filter((message) => message.spaceType === spaceType && String(message.spaceId) === spaceId)

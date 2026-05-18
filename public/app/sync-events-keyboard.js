@@ -611,12 +611,23 @@ function applyStateDeltaEnvelope(envelope) {
   }
 }
 
-function connectEvents() {
-  if (eventSource) return;
+function eventStreamPathForCurrentSelection() {
+  const params = new URLSearchParams();
   const serverSlug = String(serverSlugFromPath() || currentServerSlug() || '').trim();
-  const eventPath = serverSlug
-    ? `/api/events?serverSlug=${encodeURIComponent(serverSlug)}`
-    : '/api/events';
+  if (serverSlug) params.set('serverSlug', serverSlug);
+  params.set('spaceType', selectedSpaceType || 'channel');
+  params.set('spaceId', selectedSpaceId || '');
+  if (threadMessageId) params.set('threadMessageId', threadMessageId);
+  params.set('messageLimit', '80');
+  params.set('threadRootLimit', '160');
+  return `/api/events?${params.toString()}`;
+}
+
+function connectEvents() {
+  const eventPath = eventStreamPathForCurrentSelection();
+  if (eventSource && eventSourcePath === eventPath) return;
+  if (eventSource) disconnectEvents();
+  eventSourcePath = eventPath;
   eventSource = new EventSource(eventPath);
   eventSource.addEventListener('state-delta', (event) => {
     applyStateDeltaEnvelope(JSON.parse(event.data));
@@ -637,6 +648,7 @@ function disconnectEvents() {
   if (!eventSource) return;
   eventSource.close();
   eventSource = null;
+  eventSourcePath = '';
 }
 
 async function sendHumanPresenceHeartbeat() {

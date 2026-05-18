@@ -134,6 +134,7 @@ let avatarPickerState = null;
 let notificationPrefs = normalizeNotificationPrefs(readJsonStorage(NOTIFICATION_PREF_KEY, {}));
 let windowFocused = document.hasFocus();
 let eventSource = null;
+let eventSourcePath = '';
 let lastSseSeq = 0;
 let sseGapRefreshInFlight = false;
 let cloudLoginDraftEmail = '';
@@ -291,8 +292,10 @@ function routePathForActiveView() {
 function syncBrowserRouteForActiveView({ replace = false } = {}) {
   if (!window.history?.pushState) return;
   const nextPath = routePathForActiveView();
-  if (!nextPath || window.location.pathname === nextPath) return;
-  window.history[replace ? 'replaceState' : 'pushState']({}, '', nextPath);
+  if (nextPath && window.location.pathname !== nextPath) {
+    window.history[replace ? 'replaceState' : 'pushState']({}, '', nextPath);
+  }
+  if (eventSource && typeof connectEvents === 'function') connectEvents();
 }
 
 function isImeComposing(event) {

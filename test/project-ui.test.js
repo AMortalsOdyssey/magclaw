@@ -1562,6 +1562,20 @@ test('state refresh replaces inaccessible server routes with the active workspac
   );
 });
 
+test('event stream follows the selected conversation bootstrap window', async () => {
+  const app = await readAppSource();
+  const eventSource = app.slice(app.indexOf('function eventStreamPathForCurrentSelection()'), app.indexOf('function disconnectEvents()'));
+
+  assert.match(eventSource, /new URLSearchParams\(\)/);
+  assert.match(eventSource, /params\.set\('spaceType', selectedSpaceType/);
+  assert.match(eventSource, /params\.set\('spaceId', selectedSpaceId/);
+  assert.match(eventSource, /params\.set\('messageLimit', '80'\)/);
+  assert.match(eventSource, /return `\/api\/events\?\$\{params\.toString\(\)\}`/);
+  assert.match(eventSource, /eventSourcePath === eventPath/);
+  const routeSource = app.slice(app.indexOf('function syncBrowserRouteForActiveView'), app.indexOf('function isImeComposing'));
+  assert.match(routeSource, /eventSource && typeof connectEvents === 'function'/);
+});
+
 test('codex agent startup repairs stale configured Codex paths before spawning', async () => {
   const source = await readFile(new URL('../server/agent-runtime/process-start.js', import.meta.url), 'utf8');
 
