@@ -437,10 +437,16 @@ CREATE TABLE IF NOT EXISTS cloud_messages (
   reply_count INTEGER NOT NULL DEFAULT 0,
   saved_by JSONB NOT NULL DEFAULT '[]'::jsonb,
   read_by JSONB NOT NULL DEFAULT '[]'::jsonb,
+  reactions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  followed_by JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+
+ALTER TABLE cloud_messages
+  ADD COLUMN IF NOT EXISTS reactions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS followed_by JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE INDEX IF NOT EXISTS cloud_messages_space_created_idx
   ON cloud_messages(workspace_id, space_type, space_id, created_at DESC);
@@ -463,10 +469,14 @@ CREATE TABLE IF NOT EXISTS cloud_replies (
   mentioned_human_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
   saved_by JSONB NOT NULL DEFAULT '[]'::jsonb,
   read_by JSONB NOT NULL DEFAULT '[]'::jsonb,
+  reactions JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+
+ALTER TABLE cloud_replies
+  ADD COLUMN IF NOT EXISTS reactions JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE INDEX IF NOT EXISTS cloud_replies_parent_created_idx
   ON cloud_replies(parent_message_id, created_at ASC);

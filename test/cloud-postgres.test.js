@@ -152,8 +152,11 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
   assert.match(sql, /third_party_provider = 'feishu'/);
   assert.match(sql, /cloud_users_active_normalized_email_uidx/);
   assert.match(sql, /cloud_messages_space_cursor_idx/);
+  assert.match(sql, /cloud_messages[\s\S]*reactions JSONB NOT NULL DEFAULT '\[\]'::jsonb/);
+  assert.match(sql, /cloud_messages[\s\S]*followed_by JSONB NOT NULL DEFAULT '\[\]'::jsonb/);
   assert.match(sql, /ON cloud_messages\(workspace_id, space_type, space_id, created_at DESC, id DESC\)/);
   assert.match(sql, /cloud_replies_workspace_parent_cursor_idx/);
+  assert.match(sql, /cloud_replies[\s\S]*reactions JSONB NOT NULL DEFAULT '\[\]'::jsonb/);
   assert.match(sql, /ON cloud_replies\(workspace_id, parent_message_id, created_at DESC, id DESC\)/);
   assert.match(sql, /WHERE disabled_at IS NULL/);
   assert.doesNotMatch(sql, /\buid\b/);
@@ -233,6 +236,8 @@ test('postgres store persists relay core state without durable activity logs', a
       authorType: 'human',
       authorId: 'hum_owner',
       body: 'hello',
+      reactions: [{ key: 'rocket', emoji: '🚀', actorId: 'hum_owner', actorName: 'Owner', createdAt }],
+      followedBy: ['hum_owner'],
       createdAt,
       updatedAt: createdAt,
     }],
@@ -243,6 +248,7 @@ test('postgres store persists relay core state without durable activity logs', a
       authorType: 'agent',
       authorId: 'agt_remote',
       body: 'hi',
+      reactions: [{ key: 'heart', emoji: '❤️', actorId: 'hum_owner', actorName: 'Owner', createdAt }],
       createdAt,
       updatedAt: createdAt,
     }],
@@ -386,11 +392,19 @@ test('postgres store persists relay core state without durable activity logs', a
   const computerInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_computers"') && query.params[0] === 'cmp_remote');
   const humanInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_humans"') && query.params[0] === 'hum_owner');
   const agentInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_agents"') && query.params[0] === 'agt_remote');
+  const messageInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_messages"') && query.params[0] === 'msg_remote');
+  const replyInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_replies"') && query.params[0] === 'rep_remote');
   const taskInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_tasks"') && query.params[0] === 'task_remote');
   assert.equal(computerInsert.params[7], 'offline');
   assert.equal(humanInsert.params[6], 'offline');
   assert.equal(agentInsert.params[9], 'idle');
   assert.equal(JSON.parse(agentInsert.params[15]).state.status, 'idle');
+  assert.match(messageInsert.sql, /\breactions\b/);
+  assert.match(messageInsert.sql, /\bfollowed_by\b/);
+  assert.match(replyInsert.sql, /\breactions\b/);
+  assert.match(JSON.stringify(messageInsert.params), /rocket/);
+  assert.match(JSON.stringify(messageInsert.params), /hum_owner/);
+  assert.match(JSON.stringify(replyInsert.params), /heart/);
   assert.equal(taskInsert.params[7], 'closed');
 });
 
@@ -742,6 +756,35 @@ test('postgres store can reset transient online state when loading a fresh serve
       updated_at: createdAt,
       status_updated_at: createdAt,
     }],
+    cloud_messages: [{
+      id: 'msg_reacted',
+      workspace_id: 'wsp_main',
+      space_type: 'channel',
+      space_id: 'chan_all',
+      author_type: 'human',
+      author_id: 'hum_owner',
+      body: 'React here',
+      reply_count: 1,
+      reactions: [{ key: 'rocket', emoji: '🚀', actorId: 'hum_owner', actorName: 'Owner', createdAt }],
+      followed_by: ['hum_owner'],
+      saved_by: [],
+      read_by: [],
+      created_at: createdAt,
+      updated_at: createdAt,
+    }],
+    cloud_replies: [{
+      id: 'rep_reacted',
+      workspace_id: 'wsp_main',
+      parent_message_id: 'msg_reacted',
+      author_type: 'agent',
+      author_id: 'agt_remote',
+      body: 'React back',
+      reactions: [{ key: 'heart', emoji: '❤️', actorId: 'hum_owner', actorName: 'Owner', createdAt }],
+      saved_by: [],
+      read_by: [],
+      created_at: createdAt,
+      updated_at: createdAt,
+    }],
   };
   const pool = {
     async connect() {
@@ -770,6 +813,9 @@ test('postgres store can reset transient online state when loading a fresh serve
   assert.equal(state.agents[0].status, 'idle');
   assert.deepEqual(state.agents[0].activeWorkItemIds, []);
   assert.equal(state.agents[0].runtimeActivity, null);
+  assert.deepEqual(state.messages[0].reactions.map((item) => item.key), ['rocket']);
+  assert.deepEqual(state.messages[0].followedBy, ['hum_owner']);
+  assert.deepEqual(state.replies[0].reactions.map((item) => item.key), ['heart']);
 });
 
 test('postgres store upserts duplicate durable state records without crashing', async () => {

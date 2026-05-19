@@ -492,6 +492,8 @@ function messageFromRow(row) {
     replyCount: Number(row.reply_count || 0),
     savedBy: safeArray(row.saved_by),
     readBy: safeArray(row.read_by),
+    reactions: safeArray(row.reactions),
+    followedBy: safeArray(row.followed_by),
     createdAt: requiredIso(row.created_at),
     updatedAt: requiredIso(row.updated_at),
   });
@@ -510,6 +512,7 @@ function replyFromRow(row) {
     mentionedHumanIds: safeArray(row.mentioned_human_ids),
     savedBy: safeArray(row.saved_by),
     readBy: safeArray(row.read_by),
+    reactions: safeArray(row.reactions),
     createdAt: requiredIso(row.created_at),
     updatedAt: requiredIso(row.updated_at),
   });
@@ -813,6 +816,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
         reply_count = GREATEST(${existing}.reply_count, EXCLUDED.reply_count),
         saved_by = EXCLUDED.saved_by,
         read_by = EXCLUDED.read_by,
+        reactions = EXCLUDED.reactions,
+        followed_by = EXCLUDED.followed_by,
         created_at = COALESCE(${existing}.created_at, EXCLUDED.created_at),
         updated_at = GREATEST(COALESCE(${existing}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
         metadata = EXCLUDED.metadata
@@ -833,6 +838,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         mentioned_human_ids = EXCLUDED.mentioned_human_ids,
         saved_by = EXCLUDED.saved_by,
         read_by = EXCLUDED.read_by,
+        reactions = EXCLUDED.reactions,
         created_at = COALESCE(${existing}.created_at, EXCLUDED.created_at),
         updated_at = GREATEST(COALESCE(${existing}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
         metadata = EXCLUDED.metadata
@@ -1626,6 +1632,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
         Number(message.replyCount || 0),
         JSON.stringify(safeArray(message.savedBy)),
         JSON.stringify(safeArray(message.readBy)),
+        JSON.stringify(safeArray(message.reactions)),
+        JSON.stringify(safeArray(message.followedBy)),
         requiredIso(message.createdAt),
         requiredIso(message.updatedAt || message.createdAt),
         JSON.stringify(metadataWithState(message)),
@@ -1647,6 +1655,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         JSON.stringify(safeArray(reply.mentionedHumanIds)),
         JSON.stringify(safeArray(reply.savedBy)),
         JSON.stringify(safeArray(reply.readBy)),
+        JSON.stringify(safeArray(reply.reactions)),
         requiredIso(reply.createdAt),
         requiredIso(reply.updatedAt || reply.createdAt),
         JSON.stringify(metadataWithState(reply)),
@@ -1833,6 +1842,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'reply_count',
       'saved_by',
       'read_by',
+      'reactions',
+      'followed_by',
       'created_at',
       'updated_at',
       'metadata',
@@ -1842,6 +1853,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
       mentioned_human_ids: '::jsonb',
       saved_by: '::jsonb',
       read_by: '::jsonb',
+      reactions: '::jsonb',
+      followed_by: '::jsonb',
       metadata: '::jsonb',
     }, messageRuntimeConflictSuffix());
     await batchInsertRows(client, 'cloud_replies', [
@@ -1856,6 +1869,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'mentioned_human_ids',
       'saved_by',
       'read_by',
+      'reactions',
       'created_at',
       'updated_at',
       'metadata',
@@ -1865,6 +1879,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       mentioned_human_ids: '::jsonb',
       saved_by: '::jsonb',
       read_by: '::jsonb',
+      reactions: '::jsonb',
       metadata: '::jsonb',
     }, replyRuntimeConflictSuffix());
     await batchInsertRows(client, 'cloud_tasks', [

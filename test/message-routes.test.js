@@ -317,6 +317,162 @@ test('message route group can walk large channel, DM, and thread histories witho
   for (const id of replyIds) assert.ok(replyPages.includes(id));
 });
 
+test('message route group toggles current-human reactions on messages and replies', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({ member: { humanId: 'hum_reactor', workspaceId: 'local' } }),
+    findHuman: (id) => (id === 'hum_reactor' ? { id, name: 'Rhea' } : null),
+    readJson: async () => ({ key: 'rocket' }),
+  });
+
+  const messageReaction = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    messageReaction,
+    new URL('http://local/api/messages/msg_1/reactions'),
+    deps,
+  );
+
+  assert.equal(messageReaction.statusCode, 200);
+  assert.deepEqual(deps.state.messages[0].reactions, [{
+    key: 'rocket',
+    emoji: '🚀',
+    actorId: 'hum_reactor',
+    actorType: 'human',
+    actorName: 'Rhea',
+    createdAt: '2026-05-04T00:00:00.000Z',
+  }]);
+
+  const replyReaction = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    replyReaction,
+    new URL('http://local/api/messages/rep_1/reactions'),
+    deps,
+  );
+
+  assert.equal(replyReaction.statusCode, 200);
+  assert.equal(deps.state.replies[0].reactions[0].key, 'rocket');
+  assert.equal(deps.state.replies[0].reactions[0].actorId, 'hum_reactor');
+});
+
+test('message route group rejects unknown reactions and toggles duplicate reactions off', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({ member: { humanId: 'hum_reactor', workspaceId: 'local' } }),
+    findHuman: (id) => (id === 'hum_reactor' ? { id, name: 'Rhea' } : null),
+  });
+
+  const invalid = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    invalid,
+    new URL('http://local/api/messages/msg_1/reactions'),
+    { ...deps, readJson: async () => ({ key: 'not-real' }) },
+  );
+
+  assert.equal(invalid.statusCode, 400);
+  assert.match(invalid.error, /Reaction is not supported/);
+
+  const add = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    add,
+    new URL('http://local/api/messages/msg_1/reactions'),
+    { ...deps, readJson: async () => ({ key: 'heart' }) },
+  );
+  assert.equal(add.statusCode, 200);
+  assert.equal(deps.state.messages[0].reactions.length, 1);
+
+  const remove = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    remove,
+    new URL('http://local/api/messages/msg_1/reactions'),
+    { ...deps, readJson: async () => ({ key: 'heart' }) },
+  );
+  assert.equal(remove.statusCode, 200);
+  assert.deepEqual(deps.state.messages[0].reactions, []);
+});
+
+test('message route group counts the same reaction from different humans separately', async () => {
+  let humanId = 'hum_reactor';
+  const deps = routeDeps({
+    currentActor: () => ({ member: { humanId, workspaceId: 'local' } }),
+    findHuman: (id) => ({ id, name: id === 'hum_reactor' ? 'Rhea' : 'Mo' }),
+    readJson: async () => ({ key: 'heart' }),
+  });
+
+  const first = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    first,
+    new URL('http://local/api/messages/msg_1/reactions'),
+    deps,
+  );
+
+  humanId = 'hum_other';
+  const second = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    second,
+    new URL('http://local/api/messages/msg_1/reactions'),
+    deps,
+  );
+
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
+  assert.deepEqual(deps.state.messages[0].reactions.map((reaction) => reaction.actorId), [
+    'hum_reactor',
+    'hum_other',
+  ]);
+  assert.equal(deps.state.messages[0].reactions.filter((reaction) => reaction.key === 'heart').length, 2);
+});
+
+test('message route group toggles thread follow state from roots and replies', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({ member: { humanId: 'hum_follower', workspaceId: 'local' } }),
+  });
+
+  const followFromReply = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    followFromReply,
+    new URL('http://local/api/messages/rep_1/follow'),
+    deps,
+  );
+
+  assert.equal(followFromReply.statusCode, 200);
+  assert.equal(followFromReply.data.message.id, 'msg_3');
+  assert.deepEqual(deps.state.messages[2].followedBy, ['hum_follower']);
+
+  const unfollowFromRoot = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    unfollowFromRoot,
+    new URL('http://local/api/messages/msg_3/follow'),
+    deps,
+  );
+
+  assert.equal(unfollowFromRoot.statusCode, 200);
+  assert.deepEqual(deps.state.messages[2].followedBy, []);
+});
+
+test('message route group saves messages with the authenticated human id', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({ member: { humanId: 'hum_saved', workspaceId: 'local' } }),
+  });
+
+  const res = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/messages/msg_1/save'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(deps.state.messages[0].savedBy, ['hum_saved']);
+});
+
 test('message route group waits for explicit memory writebacks before responding', async () => {
   let memoryFinished = false;
   let responseSawMemoryFinished = null;

@@ -310,7 +310,31 @@ export function createConversationModel(deps) {
     record.mentionedHumanIds = normalizeIds(record.mentionedHumanIds?.length ? record.mentionedHumanIds : mentions.humans);
     record.readBy = normalizeIds(record.readBy?.length ? record.readBy : defaultReadBy(record));
     record.savedBy = normalizeIds(record.savedBy);
+    record.reactions = normalizeReactions(record.reactions);
+    if (!record.parentMessageId) record.followedBy = normalizeIds(record.followedBy);
     return record;
+  }
+
+  function normalizeReactions(reactions = []) {
+    const seen = new Set();
+    return (Array.isArray(reactions) ? reactions : [])
+      .map((reaction) => ({
+        key: String(reaction?.key || reaction?.emoji || '').trim(),
+        emoji: String(reaction?.emoji || reaction?.key || '').trim(),
+        actorId: String(reaction?.actorId || reaction?.humanId || reaction?.userId || '').trim(),
+        actorType: ['agent', 'human', 'system'].includes(String(reaction?.actorType || '').trim())
+          ? String(reaction.actorType).trim()
+          : 'human',
+        actorName: String(reaction?.actorName || reaction?.name || '').trim(),
+        createdAt: reaction?.createdAt || now(),
+      }))
+      .filter((reaction) => reaction.key && reaction.emoji && reaction.actorId)
+      .filter((reaction) => {
+        const signature = `${reaction.key}:${reaction.actorType}:${reaction.actorId}`;
+        if (seen.has(signature)) return false;
+        seen.add(signature);
+        return true;
+      });
   }
   
   function extractMentions(text) {

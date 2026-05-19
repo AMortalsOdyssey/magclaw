@@ -6,6 +6,31 @@
 import { findWorkspaceAllChannel, isWorkspaceAllChannel } from '../workspace-defaults.js';
 import { firstActorReferenceIndex, textReferencesActor } from '../mentions.js';
 
+const MESSAGE_REACTION_OPTIONS = [
+  { key: 'thumbs_up', emoji: '👍' },
+  { key: 'heart', emoji: '❤️' },
+  { key: 'party', emoji: '🎉' },
+  { key: 'eyes', emoji: '👀' },
+  { key: 'fire', emoji: '🔥' },
+  { key: 'laugh', emoji: '😂' },
+  { key: 'check', emoji: '✅' },
+  { key: 'idea', emoji: '💡' },
+  { key: 'pray', emoji: '🙏' },
+  { key: 'clap', emoji: '👏' },
+  { key: 'rocket', emoji: '🚀' },
+  { key: 'thinking', emoji: '🤔' },
+  { key: 'wow', emoji: '😮' },
+  { key: 'smile', emoji: '😄' },
+  { key: 'strong', emoji: '💪' },
+  { key: 'sparkles', emoji: '✨' },
+  { key: 'brain', emoji: '🧠' },
+  { key: 'pin', emoji: '📌' },
+  { key: 'tool', emoji: '🛠️' },
+  { key: 'star', emoji: '⭐' },
+];
+const MESSAGE_REACTION_BY_KEY = new Map(MESSAGE_REACTION_OPTIONS.map((item) => [item.key, item]));
+const MESSAGE_REACTION_BY_EMOJI = new Map(MESSAGE_REACTION_OPTIONS.map((item) => [item.emoji, item]));
+
 export async function handleMessageApi(req, res, url, deps) {
   const {
     addCollabEvent,
@@ -137,6 +162,99 @@ export async function handleMessageApi(req, res, url, deps) {
   function currentHumanId(req) {
     const auth = typeof currentActor === 'function' ? currentActor(req) : null;
     return auth?.member?.humanId || state.cloud?.auth?.currentMember?.humanId || 'hum_local';
+  }
+
+  function currentHumanName(req, humanId = currentHumanId(req)) {
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    const authName = auth?.member?.name || auth?.user?.name || '';
+    const human = findHuman(humanId) || state.humans?.find((item) => item.id === humanId);
+    return human?.name || authName || humanId;
+  }
+
+  function reactionOptionFromInput(input = {}) {
+    const key = String(input.key || '').trim();
+    const emoji = String(input.emoji || '').trim();
+    return MESSAGE_REACTION_BY_KEY.get(key) || MESSAGE_REACTION_BY_EMOJI.get(emoji) || null;
+  }
+
+  function reactionSignature(reaction) {
+    return `${reaction?.key || ''}:${reaction?.actorType || 'human'}:${reaction?.actorId || ''}`;
+  }
+
+  function toggleRecordReaction(record, option, req) {
+    const humanId = currentHumanId(req);
+    const actorName = currentHumanName(req, humanId);
+    const signature = `${option.key}:human:${humanId}`;
+    const seen = new Set();
+    let removed = false;
+    const nextReactions = [];
+    for (const reaction of Array.isArray(record.reactions) ? record.reactions : []) {
+      const clean = {
+        key: String(reaction?.key || reaction?.emoji || '').trim(),
+        emoji: String(reaction?.emoji || reaction?.key || '').trim(),
+        actorId: String(reaction?.actorId || '').trim(),
+        actorType: String(reaction?.actorType || 'human').trim() || 'human',
+        actorName: String(reaction?.actorName || '').trim(),
+        createdAt: reaction?.createdAt || now(),
+      };
+      if (!clean.key || !clean.emoji || !clean.actorId) continue;
+      const itemSignature = reactionSignature(clean);
+      if (itemSignature === signature) {
+        removed = true;
+        continue;
+      }
+      if (seen.has(itemSignature)) continue;
+      seen.add(itemSignature);
+      nextReactions.push(clean);
+    }
+    let reaction = null;
+    if (!removed) {
+      reaction = {
+        key: option.key,
+        emoji: option.emoji,
+        actorId: humanId,
+        actorType: 'human',
+        actorName,
+        createdAt: now(),
+      };
+      nextReactions.push(reaction);
+    }
+    record.reactions = nextReactions;
+    record.updatedAt = now();
+    normalizeConversationRecord(record);
+    console.info('[message] reaction toggled', {
+      recordId: record.id,
+      reactionKey: option.key,
+      humanId,
+      active: !removed,
+    });
+    return { reaction, active: !removed };
+  }
+
+  function threadRootForRecord(record) {
+    if (!record) return null;
+    if (!record.parentMessageId) return record;
+    return findMessage(record.parentMessageId);
+  }
+
+  function toggleThreadFollow(record, req) {
+    const root = threadRootForRecord(record);
+    if (!root) return null;
+    const humanId = currentHumanId(req);
+    const followed = new Set((Array.isArray(root.followedBy) ? root.followedBy : []).map(String).filter(Boolean));
+    const active = !followed.has(humanId);
+    if (active) followed.add(humanId);
+    else followed.delete(humanId);
+    root.followedBy = normalizeIds([...followed]);
+    root.updatedAt = now();
+    normalizeConversationRecord(root);
+    console.info('[message] thread follow toggled', {
+      messageId: root.id,
+      sourceRecordId: record.id,
+      humanId,
+      active,
+    });
+    return { root, active };
   }
 
   function canUseDm(req, spaceId) {
@@ -878,7 +996,7 @@ export async function handleMessageApi(req, res, url, deps) {
       sendError(res, 404, 'Message not found.');
       return true;
     }
-    const userId = 'hum_local';
+    const userId = currentHumanId(req);
     message.savedBy = Array.isArray(message.savedBy) ? message.savedBy : [];
     if (message.savedBy.includes(userId)) {
       message.savedBy = message.savedBy.filter((id) => id !== userId);
@@ -886,9 +1004,58 @@ export async function handleMessageApi(req, res, url, deps) {
       message.savedBy.push(userId);
     }
     message.updatedAt = now();
+    normalizeConversationRecord(message);
+    console.info('[message] save toggled', {
+      recordId: message.id,
+      humanId: userId,
+      saved: message.savedBy.includes(userId),
+    });
     await persistState();
     broadcastState();
     sendJson(res, 200, { message });
+    return true;
+  }
+
+  const reactionMatch = url.pathname.match(/^\/api\/messages\/([^/]+)\/reactions$/);
+  if (req.method === 'POST' && reactionMatch) {
+    const message = findConversationRecord(reactionMatch[1]);
+    if (!message) {
+      sendError(res, 404, 'Message not found.');
+      return true;
+    }
+    const body = await readJson(req);
+    const option = reactionOptionFromInput(body);
+    if (!option) {
+      console.warn('[message] unsupported reaction rejected', {
+        recordId: reactionMatch[1],
+        reactionKey: body?.key || '',
+        reactionEmoji: body?.emoji || '',
+      });
+      sendError(res, 400, 'Reaction is not supported.');
+      return true;
+    }
+    const result = toggleRecordReaction(message, option, req);
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, { message, reaction: result.reaction, active: result.active });
+    return true;
+  }
+
+  const followMatch = url.pathname.match(/^\/api\/messages\/([^/]+)\/follow$/);
+  if (req.method === 'POST' && followMatch) {
+    const message = findConversationRecord(followMatch[1]);
+    if (!message) {
+      sendError(res, 404, 'Message not found.');
+      return true;
+    }
+    const result = toggleThreadFollow(message, req);
+    if (!result) {
+      sendError(res, 404, 'Thread message not found.');
+      return true;
+    }
+    await persistState();
+    broadcastState();
+    sendJson(res, 200, { message: result.root, followed: result.active });
     return true;
   }
 

@@ -235,6 +235,8 @@ export function createStateCore(deps) {
           readBy: ['hum_local'],
           replyCount: 0,
           savedBy: [],
+          reactions: [],
+          followedBy: [],
           createdAt: seededAt,
           updatedAt: seededAt,
         },
