@@ -210,7 +210,7 @@ export async function handleAgentApi(req, res, url, deps) {
     await autoStartCreatedAgent(agent);
     await persistState();
     if (typeof scheduleNewAgentGreeting === 'function') {
-      scheduleNewAgentGreeting(agent, { workspaceId, trigger: 'agent_created' });
+      scheduleNewAgentGreeting(agent, { workspaceId, user: actor?.user || null, trigger: 'agent_created' });
     }
     broadcastState();
     sendJson(res, 201, { agent });

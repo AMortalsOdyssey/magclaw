@@ -310,6 +310,7 @@ test('human onboarding uses the selected agent in #all and respects disable', as
         name: 'Fly User',
         email: 'flyuser@example.com',
         password: 'password123',
+        language: 'zh-CN',
       }),
     });
 
@@ -331,8 +332,9 @@ test('human onboarding uses the selected agent in #all and respects disable', as
     assert.equal(onboarded.message.authorType, 'system');
     assert.match(onboarded.message.body, /new human member onboarding/i);
     assert.match(onboarded.message.body, new RegExp(`<@${member.data.member.humanId}>`));
-    assert.match(onboarded.message.body, /Default language is English/i);
-    assert.match(onboarded.message.body, /你希望用英语还是中文完成入门引导/);
+    assert.match(onboarded.message.body, /Target human language preference: Chinese \(zh-CN\)/);
+    assert.doesNotMatch(onboarded.message.body, /ask what language|what language they prefer|你希望用英语还是中文/);
+    assert.match(onboarded.message.body, /MEMORY\.md\/notes/);
     assert.equal(onboarded.workItem.spaceId, allChannel.id);
     assert.equal(onboarded.workItem.target, '#all');
     assert.equal(onboarded.snapshot.channels.some((channel) => /^onboarding-/i.test(channel.name || '')), false);
@@ -376,6 +378,11 @@ test('new agent greeting asks the created agent to introduce itself in #all', as
     const owner = await registerOwnerServer(server);
     const cookie = owner.cookie;
 
+    await request(server.baseUrl, '/api/cloud/auth/preferences', {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ language: 'zh-CN' }),
+    });
     const greeter = await request(server.baseUrl, '/api/agents', {
       method: 'POST',
       cookie,
@@ -404,7 +411,9 @@ test('new agent greeting asks the created agent to introduce itself in #all', as
     assert.equal(greeted.message.spaceId, allChannel.id);
     assert.match(greeted.message.body, /new Agent greeting/i);
     assert.match(greeted.message.body, /Helps coordinate deployments and release checks/);
-    assert.match(greeted.message.body, /write in Chinese/);
+    assert.match(greeted.message.body, /Creator language preference: Chinese \(zh-CN\)/);
+    assert.doesNotMatch(greeted.message.body, /ask what language|what language to use|你希望用英语还是中文/);
+    assert.match(greeted.message.body, /MEMORY\.md\/notes/);
     assert.equal(greeted.workItem.spaceId, allChannel.id);
     assert.equal(greeted.workItem.target, '#all');
     assert.equal(greeted.snapshot.channels.some((channel) => /^onboarding-/i.test(channel.name || '')), false);

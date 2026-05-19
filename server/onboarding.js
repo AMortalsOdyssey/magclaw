@@ -8,6 +8,17 @@ function compactText(value, limit = 260) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
 }
 
+function normalizeLanguagePreference(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'zh' || raw === 'zh-cn' || raw === 'cn' || raw === 'chinese') return 'zh-CN';
+  if (raw === 'en' || raw === 'en-us' || raw === 'english') return 'en';
+  return '';
+}
+
+function languageLabel(language) {
+  return language === 'zh-CN' ? 'Chinese (zh-CN)' : 'English (en)';
+}
+
 function workspaceIdForRecord(record, fallback = 'local') {
   return String(record?.workspaceId || record?.id || fallback || 'local').trim() || 'local';
 }
@@ -69,6 +80,21 @@ export function createOnboardingManager(deps) {
     return workspaceForId(current, workspaceId) || current.cloud?.workspace || {};
   }
 
+  function userForMember(member) {
+    const userId = String(member?.userId || '').trim();
+    if (!userId) return null;
+    return safeArray(state().cloud?.users).find((user) => user.id === userId) || null;
+  }
+
+  function preferredLanguage({ user = null, member = null, human = null, workspace = null, fallback = 'en' } = {}) {
+    return normalizeLanguagePreference(user?.language)
+      || normalizeLanguagePreference(human?.language)
+      || normalizeLanguagePreference(userForMember(member)?.language)
+      || normalizeLanguagePreference(workspace?.language)
+      || normalizeLanguagePreference(fallback)
+      || 'en';
+  }
+
   function enqueueOnboardingDelivery({ agent, channel, message, reason }) {
     if (!agent || !channel || !message) return;
     Promise.resolve()
@@ -85,7 +111,7 @@ export function createOnboardingManager(deps) {
       });
   }
 
-  function scheduleHumanOnboarding({ human, member = null, workspace = null, trigger = 'member_joined' } = {}) {
+  function scheduleHumanOnboarding({ human, member = null, user = null, workspace = null, trigger = 'member_joined' } = {}) {
     const workspaceId = workspaceIdForRecord(workspace, member?.workspaceId || human?.workspaceId || state().connection?.workspaceId || 'local');
     const settings = workspace || workspaceSettings(workspaceId);
     const onboardingAgentId = String(settings.onboardingAgentId || '').trim();
@@ -106,9 +132,11 @@ export function createOnboardingManager(deps) {
     });
     if (!channel) return null;
     const humanMention = human?.id ? `<@${human.id}>` : `@${human?.name || 'new member'}`;
+    const language = preferredLanguage({ user, member, human, workspace: settings });
     const body = [
       `Onboarding task (system-triggered): This is a new human member onboarding. Please proactively onboard ${humanMention} in #all.`,
-      'Default language is English; first ask what language they prefer: English or Chinese. Include a short Chinese option in the first question, for example: "你希望用英语还是中文完成入门引导？" If they choose Chinese or are already using Chinese, continue in Chinese.',
+      `Target human language preference: ${languageLabel(language)}. Use this language directly. Do not include a language-preference question.`,
+      'Generate the visible greeting yourself from your onboarding role, Agent profile, MEMORY.md/notes, and recent server context. Do not copy this system task text.',
       'Goals (soft guidance, do not force): 1) Help them understand what Slock is and what this server is for. 2) Introduce relevant humans/channels/agents for their current work, not a full catalog dump. 3) Suggest where they should start collaborating right away.',
       'Do NOT ask them to set up the server or create agents/channels. If they are already working on a concrete task, keep onboarding lightweight and adapt to their flow.',
     ].join(' ');
@@ -139,7 +167,7 @@ export function createOnboardingManager(deps) {
     return message;
   }
 
-  function scheduleNewAgentGreeting(agent, { workspaceId = '', trigger = 'agent_created' } = {}) {
+  function scheduleNewAgentGreeting(agent, { workspaceId = '', user = null, trigger = 'agent_created' } = {}) {
     const cleanWorkspaceId = String(workspaceId || agent?.workspaceId || state().connection?.workspaceId || 'local').trim() || 'local';
     const settings = workspaceSettings(cleanWorkspaceId);
     if (settings.newAgentGreetingEnabled === false) return null;
@@ -149,11 +177,12 @@ export function createOnboardingManager(deps) {
     const agentMention = `<@${agent.id}>`;
     const description = compactText(agent.description || 'No description provided yet.');
     const runtime = compactText(agent.runtime || agent.runtimeId || 'Agent');
+    const language = preferredLanguage({ user, workspace: settings, fallback: 'en' });
     const body = [
       `Onboarding task (system-triggered): This is a new Agent greeting. ${agentMention} was just created in this server.`,
       'Please post a short self-introduction in #all using your own words.',
-      'Use your configured name, description, runtime, and current work focus if helpful. Keep it brief and useful for humans deciding how to collaborate with you.',
-      'Language: default to English, but if the server context, your description, or recent conversation is Chinese, write in Chinese; a short bilingual greeting is also acceptable.',
+      'Generate the visible greeting yourself from your configured name, description, runtime, MEMORY.md/notes, and current work focus if helpful. Keep it brief and useful for humans deciding how to collaborate with you.',
+      `Creator language preference: ${languageLabel(language)}. Use this language directly for the greeting. Do not include a language-preference question.`,
       'Do NOT ask anyone to configure the server.',
       `Agent description: ${description}`,
       `Runtime: ${runtime}`,

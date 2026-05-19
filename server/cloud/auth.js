@@ -2030,7 +2030,7 @@ export function createCloudAuth(deps) {
       console.info(`[cloud-auth] join link accepted workspace=${workspace.id} user=${user.id}`);
       await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_join_link_accepted' });
       if (createdMembership && joinedHuman && typeof scheduleHumanOnboarding === 'function') {
-        scheduleHumanOnboarding({ human: joinedHuman, member, workspace, trigger: 'join_link' });
+        scheduleHumanOnboarding({ human: joinedHuman, member, user, workspace, trigger: 'join_link' });
       }
       return {
         server: workspace,
@@ -2100,7 +2100,7 @@ export function createCloudAuth(deps) {
       await persistCloudState({ workspaceId: invitation.workspaceId, reason: 'cloud_invitation_accepted' });
       if (createdMembership && joinedHuman && typeof scheduleHumanOnboarding === 'function') {
         const workspace = cloud.workspaces.find((item) => item.id === invitation.workspaceId) || null;
-        scheduleHumanOnboarding({ human: joinedHuman, member, workspace, trigger: 'console_invitation' });
+        scheduleHumanOnboarding({ human: joinedHuman, member, user, workspace, trigger: 'console_invitation' });
       }
       return {
         invitation: publicInvitation(invitation),
@@ -2260,7 +2260,7 @@ export function createCloudAuth(deps) {
       const issued = issueSession(user, req);
       await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_invite_registration' });
       if (invitation && typeof scheduleHumanOnboarding === 'function') {
-        scheduleHumanOnboarding({ human, member, workspace, trigger: 'invitation_registration' });
+        scheduleHumanOnboarding({ human, member, user, workspace, trigger: 'invitation_registration' });
       }
       res.setHeader('Set-Cookie', issued.cookie);
 	      return { user: publicUser(user), member: memberForUser(user.id, workspace.id), workspace };
