@@ -586,10 +586,14 @@ export async function handleAgentToolApi(req, res, url, deps) {
     const rawWorkItemId = String(body.workItemId || body.work_item_id || '');
     const rawTarget = String(body.target || '');
     const rawContent = String(body.content || '');
+    const deliveryId = String(body.deliveryId || body.delivery_id || '').trim();
+    const idempotencyKey = String(body.idempotencyKey || body.idempotency_key || deliveryId || '').trim();
     addSystemEvent('agent_tool_send_message_started', 'send_message request received.', {
       traceId,
       agentId: rawAgentId || null,
       workItemId: rawWorkItemId || null,
+      deliveryId: deliveryId || null,
+      idempotencyKey: idempotencyKey || null,
       target: rawTarget || null,
       contentLength: rawContent.trim().length,
     });
@@ -658,6 +662,8 @@ export async function handleAgentToolApi(req, res, url, deps) {
         agentId: agent.id,
         workItemId: workItem.id,
         target: target.label,
+        deliveryId: deliveryId || null,
+        idempotencyKey: idempotencyKey || null,
         responseId: previousResponse.id,
         durationMs: Date.now() - startedAt,
       });
@@ -677,6 +683,8 @@ export async function handleAgentToolApi(req, res, url, deps) {
     try {
       const posted = await postAgentResponse(agent, target.spaceType, target.spaceId, content, target.parentMessageId || null, {
         sourceMessage,
+        deliveryId: deliveryId || null,
+        idempotencyKey: idempotencyKey || null,
       });
       markWorkItemResponded(workItem, target.label, posted);
       addSystemEvent('agent_tool_send_message', `${agent.name} sent a routed message to ${target.label}.`, {
@@ -684,6 +692,8 @@ export async function handleAgentToolApi(req, res, url, deps) {
         agentId: agent.id,
         workItemId: workItem.id,
         target: target.label,
+        deliveryId: deliveryId || null,
+        idempotencyKey: idempotencyKey || null,
         responseId: posted?.id || null,
         durationMs: Date.now() - startedAt,
       });

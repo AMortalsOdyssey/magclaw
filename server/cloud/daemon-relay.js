@@ -9,6 +9,8 @@ const DAEMON_INBOUND_WATCHDOG_MS = readMsEnv('MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS
 const ACTIVITY_PROBE_TIMEOUT_MS = readMsEnv('MAGCLAW_DAEMON_ACTIVITY_PROBE_TIMEOUT_MS', 5_000, { min: 250, max: 60_000 });
 const DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv('MAGCLAW_DAEMON_RECONNECT_GRACE_MS', 60_000, { min: 0, max: 5 * 60_000 });
 const ACTIVE_DELIVERY_STATUSES = new Set(['queued', 'sent', 'acked']);
+const TERMINAL_DELIVERY_STATUSES = new Set(['completed', 'failed', 'stopped']);
+const VALID_DELIVERY_STATUSES = new Set([...ACTIVE_DELIVERY_STATUSES, ...TERMINAL_DELIVERY_STATUSES]);
 
 function readMsEnv(name, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
   const parsed = Number(process.env[name]);
@@ -22,6 +24,18 @@ function safeArray(value) {
 
 function objectValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  if (!value || typeof value !== 'object') return JSON.stringify(value);
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+}
+
+function normalizeDeliveryStatus(status, fallback = 'queued') {
+  const value = String(status || '').trim().toLowerCase();
+  if (value === 'error') return 'failed';
+  return VALID_DELIVERY_STATUSES.has(value) ? value : fallback;
 }
 
 function clearPairingProvisionalMetadata(computer) {
@@ -187,6 +201,7 @@ export function createDaemonRelay(deps) {
     findComputer,
     getState,
     host,
+    isDraining = () => false,
     makeId,
     normalizeConversationRecord,
     now,
@@ -887,6 +902,20 @@ export function createDaemonRelay(deps) {
       .reduce((max, delivery) => Math.max(max, Number(delivery.seq || 0)), 0) + 1;
   }
 
+  function deliveryIdempotencyKey(commandType, computerId, agentId, messageId, workItemId, payload = {}) {
+    const core = [
+      String(commandType || ''),
+      String(computerId || ''),
+      String(agentId || ''),
+      String(messageId || ''),
+      String(workItemId || ''),
+    ];
+    if (!messageId && !workItemId) {
+      core.push(crypto.createHash('sha256').update(stableJson(payload)).digest('hex').slice(0, 16));
+    }
+    return core.join(':');
+  }
+
   function sendDelivery(delivery) {
     const ok = sendToComputer(delivery.computerId, {
       type: delivery.commandType || delivery.type,
@@ -894,6 +923,7 @@ export function createDaemonRelay(deps) {
       seq: delivery.seq,
       agentId: delivery.agentId,
       workspaceId: delivery.workspaceId,
+      idempotencyKey: delivery.idempotencyKey || null,
       payload: delivery.payload || {},
     });
     if (ok) {
@@ -909,7 +939,7 @@ export function createDaemonRelay(deps) {
     if (!id) return null;
     const delivery = safeArray(cloud().agentDeliveries).find((item) => item.id === id);
     if (!delivery) return null;
-    delivery.status = status;
+    delivery.status = normalizeDeliveryStatus(status, 'completed');
     delivery.completedAt = delivery.completedAt || now();
     delivery.updatedAt = now();
     delivery.error = error || '';
@@ -970,12 +1000,14 @@ export function createDaemonRelay(deps) {
       type: commandType,
       commandType,
       status: 'queued',
+      idempotencyKey: deliveryIdempotencyKey(commandType, computer.id, agent.id, messageId, workItemId, payload),
       attempts: 0,
       payload,
       createdAt: now(),
       updatedAt: now(),
       sentAt: null,
       ackedAt: null,
+      completedAt: null,
       error: '',
     };
     store.agentDeliveries.push(delivery);
@@ -1160,7 +1192,9 @@ export function createDaemonRelay(deps) {
     const id = String(message.commandId || message.deliveryId || '');
     const delivery = safeArray(cloud().agentDeliveries).find((item) => item.id === id);
     if (delivery) {
-      delivery.status = 'acked';
+      if (!TERMINAL_DELIVERY_STATUSES.has(normalizeDeliveryStatus(delivery.status))) {
+        delivery.status = 'acked';
+      }
       delivery.ackedAt = now();
       delivery.updatedAt = now();
       delivery.error = '';
@@ -1188,7 +1222,7 @@ export function createDaemonRelay(deps) {
     if (message.deliveryId && ['idle', 'offline'].includes(nextStatus)) {
       markDeliveryFinished(message.deliveryId, 'completed');
     } else if (message.deliveryId && nextStatus === 'error') {
-      markDeliveryFinished(message.deliveryId, 'error', message.activity?.error || message.activity?.detail || 'Agent delivery failed.');
+      markDeliveryFinished(message.deliveryId, 'failed', message.activity?.error || message.activity?.detail || 'Agent delivery failed.');
     }
     if (message.sessionId !== undefined) agent.runtimeSessionId = message.sessionId || null;
     agent.runtimeActivity = message.activity || agent.runtimeActivity || null;
@@ -1239,6 +1273,8 @@ export function createDaemonRelay(deps) {
         authorId: agent.id,
         body: String(payload.body || payload.content || ''),
         attachmentIds: safeArray(payload.attachmentIds),
+        deliveryId: message.deliveryId || payload.deliveryId || null,
+        idempotencyKey: payload.idempotencyKey || message.idempotencyKey || message.deliveryId || payload.deliveryId || null,
         replyCount: 0,
         savedBy: [],
         createdAt: now(),
@@ -1290,6 +1326,16 @@ export function createDaemonRelay(deps) {
       case 'agent:deliver:ack':
       case 'agent:ack':
         await handleAck(connection, message);
+        break;
+      case 'daemon:release_notice:ack':
+        recordDaemonEvent('daemon_release_notice_acked', 'Daemon acknowledged release notice.', {
+          computerId: connection.computerId,
+          commandId: message.commandId || null,
+          version: message.version || null,
+          receivedAt: message.receivedAt || null,
+        });
+        await persistAllState();
+        broadcastState();
         break;
       case 'agent:status':
       case 'agent:session':
@@ -1343,7 +1389,7 @@ export function createDaemonRelay(deps) {
           const agent = findAgent(message.agentId);
           if (agent) {
             setAgentStatus(agent, 'error', 'daemon_error', { forceEvent: true });
-            markDeliveryFinished(message.commandId || message.deliveryId || null, 'error', String(message.error || 'Agent error'));
+            markDeliveryFinished(message.commandId || message.deliveryId || null, 'failed', String(message.error || 'Agent error'));
             agent.runtimeActivity = {
               source: '@magclaw/daemon',
               error: String(message.error || 'Agent error'),
@@ -1427,6 +1473,10 @@ export function createDaemonRelay(deps) {
   async function handleUpgrade(req, socket) {
     const url = new URL(req.url || '/', `http://${req.headers.host || `${host}:${port}`}`);
     if (url.pathname !== '/daemon/connect') return false;
+    if (isDraining()) {
+      safeSocketEnd(socket, 'HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nMagClaw server is draining.');
+      return true;
+    }
     let connection = null;
     socket.on('error', (error) => {
       if (connection) {
@@ -1535,9 +1585,43 @@ export function createDaemonRelay(deps) {
     return true;
   }
 
+  function beginDrain(reason = 'draining') {
+    for (const connection of connections.values()) {
+      send(connection, {
+        type: 'server:draining',
+        reason,
+        reconnect: true,
+        time: now(),
+      });
+      connection.socket.end();
+    }
+  }
+
+  function sendDaemonReleaseNotice(computerId, notice = {}) {
+    const commandId = makeId('dnotice');
+    const sent = sendToComputer(computerId, {
+      type: 'daemon:release_notice',
+      commandId,
+      notice: {
+        version: String(notice.version || ''),
+        title: String(notice.title || 'Daemon release notice'),
+        body: String(notice.body || notice.message || ''),
+        severity: String(notice.severity || 'info'),
+      },
+    });
+    recordDaemonEvent(sent ? 'daemon_release_notice_sent' : 'daemon_release_notice_queued', 'Daemon release notice dispatched.', {
+      computerId,
+      commandId,
+      version: notice.version || null,
+      sent,
+    });
+    return { commandId, sent };
+  }
+
   return {
     agentShouldUseRelay,
     authenticateHttpRequest,
+    beginDrain,
     createPairingToken,
     deliverToAgent,
     disconnectComputer,
@@ -1546,6 +1630,7 @@ export function createDaemonRelay(deps) {
     publicRelayState,
     requestAgentSkills,
     revokeComputerToken,
+    sendDaemonReleaseNotice,
     setHandlers,
     startAgent,
     restartAgent,

@@ -13,6 +13,7 @@ function expectedStreamClose(error) {
 export async function handleSystemApi(req, res, url, deps) {
   const {
     addSystemEvent,
+    beginDrain,
     broadcastState,
     cloudAuth,
     deploymentHealth,
@@ -21,6 +22,7 @@ export async function handleSystemApi(req, res, url, deps) {
     fanoutApiConfigured,
     getRuntimeInfo,
     getState,
+    isDraining,
     persistState,
     presenceHeartbeat,
     publicBootstrapState,
@@ -28,6 +30,7 @@ export async function handleSystemApi(req, res, url, deps) {
     readJson,
     sendError,
     sendJson,
+    realtimeEventsForRequest,
     stateDeltaEnvelope,
     sseClients,
     updateFanoutApiConfig,
@@ -53,6 +56,26 @@ export async function handleSystemApi(req, res, url, deps) {
       ? await deploymentHealth()
       : { ok: true };
     sendJson(res, ready.ok ? 200 : 503, ready);
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/internal/drain') {
+    const remoteAddress = String(req.socket?.remoteAddress || '');
+    const forwardedFor = String(req.headers?.['x-forwarded-for'] || '').trim();
+    const loopback = !forwardedFor && (
+      remoteAddress === '127.0.0.1'
+      || remoteAddress === '::1'
+      || remoteAddress === '::ffff:127.0.0.1'
+      || remoteAddress === ''
+    );
+    if (!loopback) {
+      sendError(res, 403, 'Drain endpoint is only available from loopback.');
+      return true;
+    }
+    const result = typeof beginDrain === 'function'
+      ? beginDrain('internal_api')
+      : { ok: false, draining: false };
+    sendJson(res, result.ok ? 200 : 500, result);
     return true;
   }
 
@@ -87,6 +110,10 @@ export async function handleSystemApi(req, res, url, deps) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/events') {
+    if (typeof isDraining === 'function' && isDraining()) {
+      sendJson(res, 503, { ok: false, draining: true });
+      return true;
+    }
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-store, no-transform',
@@ -94,6 +121,23 @@ export async function handleSystemApi(req, res, url, deps) {
       'x-accel-buffering': 'no',
     });
     res.magclawRequest = req;
+    const lastSeq = Number(url.searchParams.get('lastSeq') || 0);
+    if (lastSeq > 0 && typeof realtimeEventsForRequest === 'function') {
+      const replay = realtimeEventsForRequest(req, lastSeq);
+      if (replay.gap) {
+        res.write(`event: state-resync-required\ndata: ${JSON.stringify({
+          type: 'state_resync_required',
+          lastSeq,
+          minSeq: replay.minSeq,
+          currentSeq: replay.currentSeq,
+          createdAt: new Date().toISOString(),
+        })}\n\n`);
+      } else {
+        for (const event of replay.events) {
+          res.write(`event: realtime-event\ndata: ${JSON.stringify(event)}\n\n`);
+        }
+      }
+    }
     const initialPayload = typeof stateDeltaEnvelope === 'function'
       ? stateDeltaEnvelope(req)
       : { seq: 0, type: 'state_patch', payload: (publicBootstrapState || publicState)(req) };

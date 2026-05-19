@@ -363,6 +363,26 @@ test('status changes publish an immediate heartbeat without waiting for the inte
   }
 });
 
+test('internal drain marks readiness unavailable and closes new SSE streams', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const drainResponse = await fetch(`${server.baseUrl}/api/internal/drain`, { method: 'POST' });
+    assert.equal(drainResponse.status, 200);
+    const drain = await drainResponse.json();
+    assert.equal(drain.draining, true);
+
+    const readyResponse = await fetch(`${server.baseUrl}/api/readyz`);
+    assert.equal(readyResponse.status, 503);
+    const ready = await readyResponse.json();
+    assert.equal(ready.draining, true);
+
+    const eventsResponse = await fetch(`${server.baseUrl}/api/events`);
+    assert.equal(eventsResponse.status, 503);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('activity probe resets stale busy status when the local app-server is idle', async () => {
   const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-probe-idle-'));
   const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');

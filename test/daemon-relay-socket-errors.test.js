@@ -104,6 +104,7 @@ function createRelay(options = {}) {
     findComputer: (id) => state.computers.find((computer) => computer.id === id),
     getState: () => state,
     host: '127.0.0.1',
+    isDraining: options.isDraining || (() => false),
     makeId: (prefix = 'id') => `${prefix}_${nextId += 1}`,
     normalizeConversationRecord: (record) => record,
     now: () => '2026-05-13T00:00:00.000Z',
@@ -116,6 +117,22 @@ function createRelay(options = {}) {
   });
   return { cloud, relay, state };
 }
+
+test('daemon relay rejects new daemon websockets while draining', async () => {
+  const { relay } = createRelay({ isDraining: () => true });
+  const socket = new FakeSocket();
+
+  assert.equal(await relay.handleUpgrade({
+    url: '/daemon/connect?token=mc_machine_any',
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  assert.match(Buffer.concat(socket.writes).toString('utf8'), /503 Service Unavailable/);
+});
 
 test('daemon relay consumes socket reset during websocket authentication', async () => {
   const { relay } = createRelay();
@@ -134,6 +151,88 @@ test('daemon relay consumes socket reset during websocket authentication', async
   assert.doesNotThrow(() => socket.emit('error', reset));
   assert.equal(await upgrade, true);
   assert.match(socket.writes.join(''), /401 Unauthorized/);
+});
+
+test('daemon relay sends server draining control frame before closing live daemons', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_existing';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    createdAt: '2026-05-13T00:00:00.000Z',
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  relay.beginDrain('test');
+  const messages = decodeServerMessages(socket);
+  assert.equal(messages.some((message) => message.type === 'server:draining' && message.reason === 'test'), true);
+  assert.equal(socket.ended, true);
+});
+
+test('daemon relay dispatches and records daemon release notice acknowledgements', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_existing';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    createdAt: '2026-05-13T00:00:00.000Z',
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  const result = relay.sendDaemonReleaseNotice('cmp_remote', {
+    version: '0.50.0',
+    title: 'Daemon release notice',
+  });
+  assert.equal(result.sent, true);
+  const notice = decodeServerMessages(socket).find((message) => message.type === 'daemon:release_notice');
+  assert.equal(notice.commandId, result.commandId);
+  assert.equal(notice.notice.version, '0.50.0');
+
+  socket.emit('data', encodeFrame({
+    type: 'daemon:release_notice:ack',
+    commandId: result.commandId,
+    version: '0.50.0',
+    receivedAt: '2026-05-13T00:00:00.000Z',
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(cloud.daemonEvents.some((event) => event.type === 'daemon_release_notice_acked'), true);
 });
 
 test('daemon relay status omits events for deleted computers', () => {
@@ -366,6 +465,64 @@ test('daemon relay keeps offline agent presence while queuing delivery for a sto
   assert.equal(state.agents[0].status, 'offline');
   assert.equal(cloud.agentDeliveries.length, 1);
   assert.equal(cloud.agentDeliveries[0].status, 'queued');
+});
+
+test('daemon relay records delivery idempotency keys and failed terminal status', async () => {
+  const { cloud, relay, state } = createRelay();
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+  });
+  state.agents.push({
+    id: 'agt_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    name: 'Remote Agent',
+    runtime: 'codex',
+    status: 'idle',
+  });
+
+  const result = await relay.deliverToAgent(state.agents[0], {
+    id: 'msg_idempotent',
+    body: 'Queue this once.',
+  }, { id: 'wi_idempotent' });
+
+  assert.equal(result, true);
+  assert.equal(cloud.agentDeliveries.length, 1);
+  assert.match(cloud.agentDeliveries[0].idempotencyKey, /^agent:deliver:cmp_remote:agt_remote:msg_idempotent:wi_idempotent$/);
+
+  const socket = new FakeSocket();
+  const rawToken = 'mc_machine_existing';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    createdAt: '2026-05-13T00:00:00.000Z',
+  });
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+  socket.emit('data', encodeFrame({
+    type: 'agent:error',
+    agentId: 'agt_remote',
+    commandId: cloud.agentDeliveries[0].id,
+    error: 'boom',
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(cloud.agentDeliveries[0].status, 'failed');
+  assert.equal(cloud.agentDeliveries[0].error, 'boom');
+  assert.equal(typeof cloud.agentDeliveries[0].completedAt, 'string');
 });
 
 test('daemon relay keeps agents out of offline during quick reconnect grace', async () => {

@@ -17,6 +17,8 @@ const DEFAULT_DAEMON_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_MAX_CONCURRENT_AGENT_STARTS = 5;
 const DEFAULT_AGENT_START_INTERVAL_MS = 500;
 const DEFAULT_TRAJECTORY_COALESCE_MS = 350;
+const DELIVERY_LEDGER_LIMIT = 500;
+const DELIVERY_LEDGER_RETENTION_MS = 1000 * 60 * 60 * 24 * 7;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,6 +40,7 @@ const CAPABILITIES = [
   'agent:deliver',
   'agent:stop',
   'agent:skills:list',
+  'daemon:release_notice',
   'machine:runtime_models:detect',
 ];
 
@@ -140,6 +143,8 @@ export function profilePaths(profile = DEFAULT_PROFILE, env = process.env) {
     runDir: path.join(dir, 'run'),
     logDir: path.join(dir, 'logs'),
     agentsDir: path.join(dir, 'agents'),
+    deliveryLedger: path.join(dir, 'delivery-ledger.json'),
+    releaseNotices: path.join(dir, 'release-notices.json'),
   };
 }
 
@@ -1240,7 +1245,7 @@ function codexTrustConfigLines() {
 }
 
 class CodexAgentSession {
-  constructor({ agent, profile, paths, serverUrl, token, workspaceId, send, env = process.env }) {
+  constructor({ agent, profile, paths, serverUrl, token, workspaceId, send, markDelivery = null, env = process.env }) {
     this.agent = agent;
     this.profile = profile;
     this.paths = paths;
@@ -1248,6 +1253,7 @@ class CodexAgentSession {
     this.token = token;
     this.workspaceId = workspaceId || 'local';
     this.send = send;
+    this.markDelivery = typeof markDelivery === 'function' ? markDelivery : async () => {};
     this.env = env;
     this.child = null;
     this.requestId = 0;
@@ -1473,6 +1479,8 @@ class CodexAgentSession {
           body: {
             agentId: args.agentId,
             workItemId: args.workItemId || args.work_item_id,
+            deliveryId: args.deliveryId || args.delivery_id || this.activeDeliveryId || undefined,
+            idempotencyKey: args.idempotencyKey || args.idempotency_key || this.activeDeliveryId || undefined,
             target: args.target,
             content: args.content,
           },
@@ -1733,6 +1741,15 @@ class CodexAgentSession {
     });
     this.lastSourceMessage = message;
     this.responseBuffer = '';
+    if (this.activeDeliveryId) {
+      this.markDelivery(this.activeDeliveryId, 'started', {
+        agentId: this.agent.id,
+        messageId: message?.id || null,
+        workItemId: workItem?.id || message?.workItemId || null,
+      }).catch((error) => {
+        logWarning('daemon', `Failed to update delivery ledger for ${this.activeDeliveryId}: ${error.message}`);
+      });
+    }
     this.sendStatus('thinking', { source: '@magclaw/daemon', detail: 'Turn started', at: now() });
     return true;
   }
@@ -1767,6 +1784,7 @@ class CodexAgentSession {
       this.pending.delete(message.id);
       if (message.error) {
         this.send({ type: 'agent:error', agentId: this.agent.id, error: message.error.message || 'Codex request failed.' });
+        if (this.activeDeliveryId) await this.markDelivery(this.activeDeliveryId, 'failed', { error: message.error.message || 'Codex request failed.' });
         this.sendStatus('error', { source: '@magclaw/daemon', error: message.error.message || 'Codex request failed.', at: now() });
         return;
       }
@@ -1821,7 +1839,7 @@ class CodexAgentSession {
       this.flushCodexStreamActivity();
       const body = this.responseBuffer.trim();
       if (body && method === 'turn/completed' && !this.activeTurnUsedSendMessage) {
-        this.send({
+        const frame = {
           type: 'agent:message',
           agentId: this.agent.id,
           deliveryId: this.activeDeliveryId || null,
@@ -1832,8 +1850,16 @@ class CodexAgentSession {
             spaceType: this.lastSourceMessage?.spaceType || 'channel',
             spaceId: this.lastSourceMessage?.spaceId || 'chan_all',
             parentMessageId: this.lastSourceMessage?.parentMessageId || null,
+            idempotencyKey: this.activeDeliveryId || null,
           },
-        });
+        };
+        this.send(frame);
+        if (this.activeDeliveryId) await this.markDelivery(this.activeDeliveryId, 'completed', { resultFrame: frame });
+      }
+      if (this.activeDeliveryId && method === 'turn/completed') {
+        await this.markDelivery(this.activeDeliveryId, 'completed');
+      } else if (this.activeDeliveryId && method === 'turn/failed') {
+        await this.markDelivery(this.activeDeliveryId, 'failed', { error: 'Turn failed' });
       }
       this.responseBuffer = '';
       this.activeTurnId = '';
@@ -1862,17 +1888,19 @@ class CodexAgentSession {
 }
 
 class ClaudeAgentSession {
-  constructor({ agent, profile, paths, serverUrl, token, send, env = process.env }) {
+  constructor({ agent, profile, paths, serverUrl, token, send, markDelivery = null, env = process.env }) {
     this.agent = agent;
     this.profile = profile;
     this.paths = paths;
     this.serverUrl = serverUrl;
     this.token = token;
     this.send = send;
+    this.markDelivery = typeof markDelivery === 'function' ? markDelivery : async () => {};
     this.env = env;
     this.child = null;
     this.status = 'offline';
     this.started = false;
+    this.activeDeliveryId = '';
   }
 
   agentDir() {
@@ -1899,6 +1927,7 @@ class ClaudeAgentSession {
       type: 'agent:status',
       agentId: this.agent.id,
       status,
+      deliveryId: this.activeDeliveryId || null,
       sessionId: null,
       activity: activity || {
         source: 'claude-code',
@@ -1915,14 +1944,22 @@ class ClaudeAgentSession {
     this.sendStatus('idle', { source: 'claude-code', detail: 'Claude Code runner ready', at: now() });
   }
 
-  async deliver(message = {}, workItem = null) {
+  async deliver(message = {}, workItem = null, deliveryId = '') {
     await this.start();
+    this.activeDeliveryId = deliveryId || '';
     const prompt = deliveryPrompt(this.agent, message, workItem);
     const claudeCommand = this.env.CLAUDE_PATH || 'claude';
     const args = ['--print'];
     if (this.agent.model) args.push('--model', String(this.agent.model));
     args.push(prompt);
     const timeoutMs = Number(this.env.MAGCLAW_DAEMON_RUNTIME_TIMEOUT_MS || 10 * 60 * 1000);
+    if (this.activeDeliveryId) {
+      await this.markDelivery(this.activeDeliveryId, 'started', {
+        agentId: this.agent.id,
+        messageId: message?.id || null,
+        workItemId: workItem?.id || message?.workItemId || null,
+      });
+    }
     this.sendStatus('thinking', { source: 'claude-code', detail: 'Claude Code turn started', at: now() });
     await new Promise((resolve) => {
       let stdout = '';
@@ -1936,9 +1973,10 @@ class ClaudeAgentSession {
         if (status === 'idle') {
           const body = stdout.trim();
           if (body) {
-            this.send({
+            const frame = {
               type: 'agent:message',
               agentId: this.agent.id,
+              deliveryId: this.activeDeliveryId || null,
               payload: {
                 body,
                 message,
@@ -1946,15 +1984,21 @@ class ClaudeAgentSession {
                 spaceType: message.spaceType || 'channel',
                 spaceId: message.spaceId || 'chan_all',
                 parentMessageId: message.parentMessageId || null,
+                idempotencyKey: this.activeDeliveryId || null,
               },
-            });
+            };
+            this.send(frame);
+            this.markDelivery(this.activeDeliveryId, 'completed', { resultFrame: frame }).catch(() => {});
           }
+          this.markDelivery(this.activeDeliveryId, 'completed').catch(() => {});
           this.sendStatus('idle', { source: 'claude-code', detail: detail || 'Claude Code turn completed', at: now() });
         } else {
           const error = detail || stderr.trim() || 'Claude Code failed.';
-          this.send({ type: 'agent:error', agentId: this.agent.id, error });
+          this.send({ type: 'agent:error', commandId: this.activeDeliveryId || undefined, deliveryId: this.activeDeliveryId || null, agentId: this.agent.id, error });
+          this.markDelivery(this.activeDeliveryId, 'failed', { error }).catch(() => {});
           this.sendStatus('error', { source: 'claude-code', error, at: now() });
         }
+        this.activeDeliveryId = '';
         resolve();
       };
       this.child = spawn(claudeCommand, args, {
@@ -2026,12 +2070,142 @@ class MagClawDaemon {
     this.activeAgentStartCount = 0;
     this.lastAgentStartAt = 0;
     this.lastAgentStartAgentId = '';
+    this.daemonRunId = `${process.pid}:${Date.now()}`;
+    this.deliveryLedgerCache = null;
+    this.deliveryLedgerQueue = Promise.resolve();
   }
 
   send(payload) {
     if (!this.socket || this.socket.destroyed) return false;
     sendJsonFrame(this.socket, payload);
     return true;
+  }
+
+  async loadDeliveryLedger() {
+    if (this.deliveryLedgerCache) return this.deliveryLedgerCache;
+    const ledger = await readJsonFile(this.paths.deliveryLedger, { records: [] });
+    const records = Array.isArray(ledger.records) ? ledger.records : [];
+    this.deliveryLedgerCache = {
+      version: 1,
+      updatedAt: ledger.updatedAt || now(),
+      records: records
+        .filter((record) => record && record.deliveryId)
+        .map((record) => ({
+          ...record,
+          deliveryId: String(record.deliveryId),
+          status: String(record.status || 'accepted'),
+          updatedAt: record.updatedAt || record.acceptedAt || now(),
+        })),
+    };
+    return this.deliveryLedgerCache;
+  }
+
+  pruneDeliveryLedger(ledger) {
+    const cutoff = Date.now() - DELIVERY_LEDGER_RETENTION_MS;
+    ledger.records = ledger.records
+      .filter((record) => {
+        if (['accepted', 'started'].includes(record.status)) return true;
+        const updatedAt = Date.parse(record.updatedAt || record.completedAt || record.acceptedAt || '');
+        return !Number.isFinite(updatedAt) || updatedAt >= cutoff;
+      })
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+      .slice(0, DELIVERY_LEDGER_LIMIT);
+    ledger.updatedAt = now();
+  }
+
+  async updateDeliveryLedger(mutator) {
+    const task = this.deliveryLedgerQueue
+      .catch(() => {})
+      .then(async () => {
+        const ledger = await this.loadDeliveryLedger();
+        const result = await mutator(ledger);
+        this.pruneDeliveryLedger(ledger);
+        await writeJsonFile(this.paths.deliveryLedger, ledger);
+        return result;
+      });
+    this.deliveryLedgerQueue = task.then(() => {}, () => {});
+    return task;
+  }
+
+  async acceptDelivery(message, agent) {
+    const deliveryId = String(message.commandId || message.deliveryId || '').trim();
+    if (!deliveryId) return { duplicate: false, record: null };
+    const payload = message.payload || {};
+    const sourceMessage = payload.message || {};
+    const workItem = payload.workItem || {};
+    return this.updateDeliveryLedger((ledger) => {
+      const timestamp = now();
+      let record = ledger.records.find((item) => item.deliveryId === deliveryId);
+      const isDuplicate = Boolean(record && (
+        ['completed', 'failed', 'stopped'].includes(record.status)
+        || (record.runId === this.daemonRunId && ['accepted', 'started'].includes(record.status))
+      ));
+      if (!record) {
+        record = { deliveryId };
+        ledger.records.unshift(record);
+      }
+      if (isDuplicate) {
+        record.updatedAt = timestamp;
+        record.lastDuplicateAt = timestamp;
+        record.duplicateCount = Number(record.duplicateCount || 0) + 1;
+        return { duplicate: true, record: { ...record } };
+      }
+      Object.assign(record, {
+        status: 'accepted',
+        runId: this.daemonRunId,
+        agentId: agent?.id || message.agentId || record.agentId || '',
+        messageId: sourceMessage.id || message.messageId || record.messageId || null,
+        workItemId: workItem.id || sourceMessage.workItemId || message.workItemId || record.workItemId || null,
+        idempotencyKey: message.idempotencyKey || record.idempotencyKey || null,
+        acceptedAt: timestamp,
+        updatedAt: timestamp,
+      });
+      return { duplicate: false, record: { ...record } };
+    });
+  }
+
+  async markDelivery(deliveryId, status, meta = {}) {
+    const id = String(deliveryId || '').trim();
+    if (!id) return null;
+    return this.updateDeliveryLedger((ledger) => {
+      const timestamp = now();
+      let record = ledger.records.find((item) => item.deliveryId === id);
+      if (!record) {
+        record = { deliveryId: id, acceptedAt: timestamp };
+        ledger.records.unshift(record);
+      }
+      record.status = String(status || record.status || 'accepted');
+      record.runId = record.runId || this.daemonRunId;
+      record.updatedAt = timestamp;
+      if (record.status === 'started') record.startedAt = record.startedAt || timestamp;
+      if (['completed', 'failed', 'stopped'].includes(record.status)) record.completedAt = record.completedAt || timestamp;
+      if (meta.agentId) record.agentId = meta.agentId;
+      if (meta.messageId) record.messageId = meta.messageId;
+      if (meta.workItemId) record.workItemId = meta.workItemId;
+      if (meta.error) record.error = String(meta.error);
+      if (meta.resultFrame) record.resultFrame = meta.resultFrame;
+      return { ...record };
+    });
+  }
+
+  async recordReleaseNotice(message) {
+    const notice = {
+      commandId: String(message.commandId || ''),
+      version: String(message.notice?.version || message.version || ''),
+      title: String(message.notice?.title || message.title || 'Daemon release notice'),
+      body: String(message.notice?.body || message.notice?.message || message.message || ''),
+      severity: String(message.notice?.severity || message.severity || 'info'),
+      receivedAt: now(),
+    };
+    const current = await readJsonFile(this.paths.releaseNotices, { notices: [] });
+    const notices = Array.isArray(current.notices) ? current.notices : [];
+    notices.unshift(notice);
+    await writeJsonFile(this.paths.releaseNotices, {
+      version: 1,
+      updatedAt: notice.receivedAt,
+      notices: notices.slice(0, 50),
+    });
+    return notice;
   }
 
   async readyPayload() {
@@ -2184,6 +2358,22 @@ class MagClawDaemon {
       case 'ping':
         this.send({ type: 'pong', time: now() });
         break;
+      case 'server:draining':
+        logWarning('daemon', `MagClaw cloud is draining (${message.reason || 'rolling upgrade'}); reconnecting.`);
+        this.socket?.end();
+        break;
+      case 'daemon:release_notice':
+        {
+          const notice = await this.recordReleaseNotice(message);
+          logInfo('daemon', `Release notice received${notice.version ? ` for ${notice.version}` : ''}: ${notice.title}`);
+          this.send({
+            type: 'daemon:release_notice:ack',
+            commandId: message.commandId || null,
+            version: notice.version || null,
+            receivedAt: notice.receivedAt,
+          });
+        }
+        break;
       case 'agent:start':
         await this.handleAgentStart(message);
         break;
@@ -2250,6 +2440,7 @@ class MagClawDaemon {
       token: this.config.token,
       workspaceId: this.config.workspaceId || 'local',
       send: (payload) => this.send(payload),
+      markDelivery: (deliveryId, status, meta) => this.markDelivery(deliveryId, status, meta),
       env: this.env,
     });
     this.sessions.set(agent.id, session);
@@ -2300,11 +2491,26 @@ class MagClawDaemon {
   async handleAgentDeliver(message) {
     const agent = message.payload?.agent || { id: message.agentId, name: message.agentId || 'Agent' };
     try {
+      const accepted = await this.acceptDelivery(message, agent);
+      if (accepted.duplicate) {
+        this.send({
+          type: 'agent:deliver:ack',
+          commandId: message.commandId,
+          deliveryId: message.commandId || null,
+          agentId: agent.id,
+          duplicate: true,
+          deliveryStatus: accepted.record?.status || 'accepted',
+        });
+        if (accepted.record?.resultFrame) this.send(accepted.record.resultFrame);
+        logInfo('daemon', `Re-acked duplicate delivery ${message.commandId || '(missing)'} for ${agent.id}; status=${accepted.record?.status || 'accepted'}.`);
+        return;
+      }
       const session = this.sessionFor(agent);
       this.send({ type: 'agent:deliver:ack', commandId: message.commandId, agentId: agent.id, status: 'queued' });
       if (!session.started) await this.enqueueAgentStart(agent.id, () => session.start());
       await session.deliver(message.payload?.message || {}, message.payload?.workItem || null, message.commandId || '');
     } catch (error) {
+      if (message.commandId) await this.markDelivery(message.commandId, 'failed', { agentId: agent.id, error: error.message }).catch(() => {});
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
     }
   }
@@ -2316,6 +2522,7 @@ class MagClawDaemon {
       session.stop();
       this.sessions.delete(agentId);
     }
+    if (message.commandId) await this.markDelivery(message.commandId, 'stopped', { agentId }).catch(() => {});
     this.send({ type: 'agent:ack', commandId: message.commandId, agentId, status: 'offline' });
   }
 

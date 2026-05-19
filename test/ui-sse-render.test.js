@@ -24,6 +24,7 @@ test('state SSE updates route through the non-destructive state renderer', async
 
   assert.match(app, /function applyStateUpdate\(nextState\)/);
   assert.match(app, /function applyStateDeltaEnvelope\(envelope\)/);
+  assert.match(app, /function applyRealtimeJournalEvent\(envelope\)/);
   assert.match(app, /function refreshAfterSseGap\(\)/);
   assert.match(app, /function applyRunEventUpdate\(incoming\)/);
   assert.match(app, /function applyPresenceHeartbeat\(heartbeat\)/);
@@ -32,8 +33,10 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(app, /function patchThreadReplyList\(context, replies\)/);
   assert.match(app, /function activeConversationSignature\(stateSnapshot = appState\)/);
   assert.match(connectEventsSource, /addEventListener\('state-delta'[\s\S]*applyStateDeltaEnvelope\(JSON\.parse\(event\.data\)\)/);
+  assert.match(connectEventsSource, /addEventListener\('realtime-event'[\s\S]*applyRealtimeJournalEvent\(JSON\.parse\(event\.data\)\)/);
+  assert.match(connectEventsSource, /addEventListener\('state-resync-required'[\s\S]*refreshAfterSseGap\(\)/);
   assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*applyStateUpdate\(JSON\.parse\(event\.data\)\)/);
-  assert.match(app, /if \(hasGap\) \{[\s\S]*refreshAfterSseGap\(\);/);
+  assert.match(app, /function applySseSeq\(seqInput\)[\s\S]*seq > lastSseSeq \+ 1/);
   assert.match(connectEventsSource, /applyRunEventUpdate\(incoming\)/);
   assert.match(connectEventsSource, /eventSource\.addEventListener\('heartbeat'/);
   assert.match(connectEventsSource, /applyPresenceHeartbeat\(JSON\.parse\(event\.data\)\)/);

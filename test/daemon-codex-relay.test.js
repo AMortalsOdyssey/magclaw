@@ -301,15 +301,55 @@ process.stdin.on('data', (chunk) => {
     assert.equal(message.payload.spaceId, 'chan_all');
     assert.ok(relay.messages.some((item) => item.type === 'agent:deliver:ack' && item.commandId === 'adl_test'));
     assert.ok(relay.messages.some((item) => item.type === 'agent:session' && item.sessionId === 'thread_remote_fake'));
+    relay.send({
+      type: 'agent:deliver',
+      commandId: 'adl_test',
+      seq: 1,
+      agentId: 'agt_remote',
+      workspaceId: 'wsp_test',
+      payload: {
+        agent: {
+          id: 'agt_remote',
+          name: 'Remote Codex',
+          description: 'Remote agent that loves concise jokes',
+          runtime: 'codex',
+          model: 'gpt-test',
+          reasoningEffort: 'low',
+        },
+        message: {
+          id: 'msg_test',
+          body: 'hello from cloud',
+          spaceType: 'channel',
+          spaceId: 'chan_all',
+          parentMessageId: null,
+          workItemId: 'wi_test',
+        },
+        workItem: { id: 'wi_test' },
+      },
+    });
+    await waitFor(() => relay.messages.filter((item) => item.type === 'agent:deliver:ack' && item.commandId === 'adl_test').length >= 2);
+    await new Promise((resolve) => setTimeout(resolve, 250));
     relay.send({ type: 'agent:skills:list', commandId: 'skills_test', agentId: 'agt_remote' });
     const skillResult = await waitFor(() => relay.messages.find((item) => item.type === 'agent:skills:list_result'));
     assert.equal(skillResult.commandId, 'skills_test');
     assert.ok(skillResult.skills.global.some((skill) => skill.name === 'itinerary-scout'));
     assert.ok(skillResult.skills.tools.includes('send_message'));
+    relay.send({
+      type: 'daemon:release_notice',
+      commandId: 'notice_test',
+      notice: {
+        version: '0.50.0',
+        title: 'Daemon release notice',
+        body: 'Runtime migration notice available.',
+      },
+    });
+    await waitFor(() => relay.messages.find((item) => item.type === 'daemon:release_notice:ack' && item.commandId === 'notice_test'));
 
     const saved = JSON.parse(await readFile(path.join(tmp, 'daemon-home', 'profiles', 'cloud-test', 'config.json'), 'utf8'));
     assert.equal(saved.token, 'mc_machine_test');
     assert.equal(saved.pairToken, '');
+    const releaseNotices = JSON.parse(await readFile(path.join(tmp, 'daemon-home', 'profiles', 'cloud-test', 'release-notices.json'), 'utf8'));
+    assert.equal(releaseNotices.notices[0].version, '0.50.0');
     const duplicate = spawn(process.execPath, [
       DAEMON_BIN,
       'connect',
@@ -343,6 +383,10 @@ process.stdin.on('data', (chunk) => {
     assert.ok(appServer.args.some((arg) => String(arg).includes('mcp_servers.magclaw.args')));
     assert.equal(appServer.args.some((arg) => String(arg).includes('mc_machine_test')), false);
     assert.ok(entries.some((entry) => entry.method === 'turn/start'));
+    assert.equal(entries.filter((entry) => entry.method === 'turn/start' || entry.method === 'turn/steer').length, 1);
+    const deliveryLedger = JSON.parse(await readFile(path.join(tmp, 'daemon-home', 'profiles', 'cloud-test', 'delivery-ledger.json'), 'utf8'));
+    const ledgerRecord = deliveryLedger.records.find((record) => record.deliveryId === 'adl_test');
+    assert.equal(ledgerRecord.status, 'completed');
     const turnStart = entries.find((entry) => entry.method === 'turn/start');
     const promptText = turnStart.params.input[0].text;
     assert.match(promptText, /Agent description: Remote agent that loves concise jokes/);

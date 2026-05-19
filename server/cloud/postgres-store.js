@@ -606,6 +606,7 @@ function agentDeliveryFromRow(row) {
     type: row.type,
     commandType: row.command_type,
     status: row.status,
+    idempotencyKey: row.idempotency_key || '',
     attempts: Number(row.attempts || 0),
     payload: jsonObject(row.payload),
     error: row.error || '',
@@ -613,6 +614,21 @@ function agentDeliveryFromRow(row) {
     updatedAt: requiredIso(row.updated_at),
     sentAt: iso(row.sent_at),
     ackedAt: iso(row.acked_at),
+    completedAt: iso(row.completed_at),
+  };
+}
+
+function realtimeEventFromRow(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    seq: Number(row.seq || 0),
+    eventType: row.event_type,
+    scopeType: row.scope_type || 'workspace',
+    scopeId: row.scope_id || '',
+    threadMessageId: row.thread_message_id || null,
+    payload: jsonObject(row.payload),
+    createdAt: requiredIso(row.created_at),
   };
 }
 
@@ -2062,6 +2078,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
             delivery.type || delivery.commandType || '',
             delivery.commandType || delivery.type || '',
             delivery.status || 'queued',
+            delivery.idempotencyKey || delivery.idempotency_key || null,
             Number(delivery.attempts || 0),
             JSON.stringify(jsonObject(delivery.payload)),
             delivery.error || '',
@@ -2069,6 +2086,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
             requiredIso(delivery.updatedAt || delivery.createdAt),
             iso(delivery.sentAt),
             iso(delivery.ackedAt),
+            iso(delivery.completedAt),
           ]);
         }
         await batchInsertRows(client, 'cloud_agent_deliveries', [
@@ -2082,6 +2100,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           'type',
           'command_type',
           'status',
+          'idempotency_key',
           'attempts',
           'payload',
           'error',
@@ -2089,6 +2108,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           'updated_at',
           'sent_at',
           'acked_at',
+          'completed_at',
         ], deliveryRows, { payload: '::jsonb' }, `
           ON CONFLICT (id) DO UPDATE SET
             workspace_id = EXCLUDED.workspace_id,
@@ -2100,12 +2120,52 @@ export function createCloudPostgresStore(optionsInput = {}) {
             type = EXCLUDED.type,
             command_type = EXCLUDED.command_type,
             status = EXCLUDED.status,
+            idempotency_key = EXCLUDED.idempotency_key,
             attempts = EXCLUDED.attempts,
             payload = EXCLUDED.payload,
             error = EXCLUDED.error,
             updated_at = EXCLUDED.updated_at,
             sent_at = EXCLUDED.sent_at,
-            acked_at = EXCLUDED.acked_at
+            acked_at = EXCLUDED.acked_at,
+            completed_at = EXCLUDED.completed_at
+        `);
+
+        const realtimeRows = [];
+        for (const event of safeArray(cloud.realtimeEvents)) {
+          const workspaceId = event.workspaceId || defaultPersistWorkspaceId;
+          if (!workspaceId || !workspaceIdsForPersist.has(workspaceId)) continue;
+          realtimeRows.push([
+            event.id,
+            workspaceId,
+            Number(event.seq || 0),
+            event.eventType || event.event_type || event.type || '',
+            event.scopeType || event.scope_type || 'workspace',
+            event.scopeId || event.scope_id || '',
+            event.threadMessageId || event.thread_message_id || null,
+            JSON.stringify(jsonObject(event.payload)),
+            requiredIso(event.createdAt),
+          ]);
+        }
+        await batchInsertRows(client, 'cloud_realtime_events', [
+          'id',
+          'workspace_id',
+          'seq',
+          'event_type',
+          'scope_type',
+          'scope_id',
+          'thread_message_id',
+          'payload',
+          'created_at',
+        ], realtimeRows, { payload: '::jsonb' }, `
+          ON CONFLICT (id) DO UPDATE SET
+            workspace_id = EXCLUDED.workspace_id,
+            seq = EXCLUDED.seq,
+            event_type = EXCLUDED.event_type,
+            scope_type = EXCLUDED.scope_type,
+            scope_id = EXCLUDED.scope_id,
+            thread_message_id = EXCLUDED.thread_message_id,
+            payload = EXCLUDED.payload,
+            created_at = EXCLUDED.created_at
         `);
 
       });
@@ -2582,6 +2642,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const computerTokens = await client.query(`SELECT * FROM ${table('cloud_computer_tokens')} ORDER BY created_at ASC, id ASC`);
       const pairingTokens = await client.query(`SELECT * FROM ${table('cloud_pairing_tokens')} ORDER BY created_at ASC, id ASC`);
       const agentDeliveries = await client.query(`SELECT * FROM ${table('cloud_agent_deliveries')} ORDER BY created_at ASC, id ASC`);
+      const realtimeEvents = await client.query(`SELECT * FROM ${table('cloud_realtime_events')} ORDER BY workspace_id ASC, seq ASC`);
       const releaseNotes = await client.query(`SELECT * FROM ${table('cloud_release_notes')} ORDER BY component ASC, released_at DESC, version DESC, category ASC, position ASC`);
       cloud.workspaces = workspaces.rows.map(workspaceFromRow);
       cloud.users = users.rows.map(userFromRow);
@@ -2593,6 +2654,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       cloud.computerTokens = computerTokens.rows.map(computerTokenFromRow);
       cloud.pairingTokens = pairingTokens.rows.map(pairingTokenFromRow);
       cloud.agentDeliveries = agentDeliveries.rows.map(agentDeliveryFromRow);
+      cloud.realtimeEvents = realtimeEvents.rows.map(realtimeEventFromRow);
       cloud.daemonEvents = [];
       const loadedComputers = computers.rows.map(computerFromRow);
       state.humans = humans.rows.map(humanFromRow);
@@ -2643,6 +2705,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const computerTokens = await client.query(`SELECT * FROM ${table('cloud_computer_tokens')} ORDER BY created_at ASC, id ASC`);
       const pairingTokens = await client.query(`SELECT * FROM ${table('cloud_pairing_tokens')} ORDER BY created_at ASC, id ASC`);
       const agentDeliveries = await client.query(`SELECT * FROM ${table('cloud_agent_deliveries')} ORDER BY created_at ASC, id ASC`);
+      const realtimeEvents = await client.query(`SELECT * FROM ${table('cloud_realtime_events')} ORDER BY workspace_id ASC, seq ASC`);
 
       cloud.schemaVersion = Number(cloud.schemaVersion || 1);
       cloud.auth = {
@@ -2659,6 +2722,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       cloud.computerTokens = computerTokens.rows.map(computerTokenFromRow);
       cloud.pairingTokens = pairingTokens.rows.map(pairingTokenFromRow);
       cloud.agentDeliveries = agentDeliveries.rows.map(agentDeliveryFromRow);
+      cloud.realtimeEvents = realtimeEvents.rows.map(realtimeEventFromRow);
       cloud.daemonEvents = [];
       state.computers = computers.rows.map(computerFromRow);
       state.cloud = cloud;
@@ -2672,6 +2736,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       await loadIntoState(state);
       return;
     }
+    const cloud = state.cloud || {};
     const replaceWorkspaceRows = (key, rows) => {
       const existing = safeArray(state[key]).filter((item) => String(item?.workspaceId || '') !== scopedWorkspaceId);
       state[key] = [...existing, ...rows];
@@ -2691,6 +2756,10 @@ export function createCloudPostgresStore(optionsInput = {}) {
         `SELECT * FROM ${table('cloud_state_records')} WHERE workspace_id = $1 ORDER BY kind ASC, position ASC, id ASC`,
         [scopedWorkspaceId],
       );
+      const realtimeEvents = await client.query(
+        `SELECT * FROM ${table('cloud_realtime_events')} WHERE workspace_id = $1 ORDER BY seq ASC`,
+        [scopedWorkspaceId],
+      );
       replaceWorkspaceRows('humans', humans.rows.map(humanFromRow));
       replaceWorkspaceRows('computers', computers.rows.map(computerFromRow));
       replaceWorkspaceRows('agents', agents.rows.map(agentFromRow));
@@ -2701,6 +2770,10 @@ export function createCloudPostgresStore(optionsInput = {}) {
       replaceWorkspaceRows('tasks', tasks.rows.map(taskFromRow));
       replaceWorkspaceRows('workItems', workItems.rows.map(workItemFromRow));
       replaceWorkspaceRows('attachments', attachments.rows.map(attachmentFromRow));
+      cloud.realtimeEvents = [
+        ...safeArray(cloud.realtimeEvents).filter((item) => String(item?.workspaceId || '') !== scopedWorkspaceId),
+        ...realtimeEvents.rows.map(realtimeEventFromRow),
+      ];
       for (const kind of DURABLE_STATE_RECORD_ARRAY_KEYS) {
         const rows = stateRecords.rows
           .filter((row) => row.kind === kind)

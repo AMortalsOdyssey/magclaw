@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { lstat, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -57,7 +57,10 @@ function ssePackets(client, eventName) {
 
 test('state core can skip local SQLite and JSON persistence for PostgreSQL-backed cloud mode', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-'));
-  const core = makeStateCore(tmp, { USE_SQLITE_STATE: false });
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    ACTIVITY_LOG_DIR: path.join(tmp, 'activity-logs'),
+  });
   try {
     await core.ensureStorage();
     await core.persistState();
@@ -137,6 +140,41 @@ test('state core coalesces burst state broadcasts for SSE clients', async () => 
     assert.match(ssePackets(firstClient, 'state-delta')[0], /"type":"state_patch"/);
     assert.match(ssePackets(firstClient, 'state-delta')[0], /"requestId":"first"/);
     assert.match(ssePackets(secondClient, 'state-delta')[0], /"requestId":"second"/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('state core records scoped realtime journal events for SSE replay', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-journal-'));
+  const activityDir = path.join(tmp, 'activity-logs');
+  await mkdir(activityDir, { recursive: true });
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    ACTIVITY_LOG_DIR: activityDir,
+  });
+  try {
+    await core.ensureStorage();
+    const event = core.addSystemEvent('message_sent', 'Message sent.', {
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      messageId: 'msg_1',
+    });
+    core.setAgentStatus(core.state.agents[0], 'working', 'test', { forceEvent: true });
+
+    const snapshot = core.stateFullSnapshot();
+    assert.equal(snapshot.cloud.realtimeEvents.length, 3);
+    assert.deepEqual(snapshot.cloud.realtimeEvents.map((item) => item.seq), [1, 2, 3]);
+    assert.equal(snapshot.cloud.realtimeEvents[0].payload.event.id, event.id);
+
+    const replay = core.realtimeEventsForRequest({
+      url: '/api/events?spaceType=channel&spaceId=chan_all',
+    }, 0);
+    assert.equal(replay.gap, false);
+    assert.equal(replay.currentSeq, 3);
+    assert.deepEqual(replay.events.map((item) => item.eventType), ['system_event', 'system_event']);
+    await core.flushActivityLog();
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

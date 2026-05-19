@@ -376,6 +376,14 @@ function makeId(prefix) {
   return `${prefix}_${crypto.randomBytes(5).toString('hex')}`;
 }
 
+const SHUTDOWN_DRAIN_MS = Math.max(0, Number(process.env.MAGCLAW_SHUTDOWN_DRAIN_MS || 2500));
+let serverDraining = false;
+let serverDrainingSince = null;
+
+function isDraining() {
+  return serverDraining;
+}
+
 const stateCore = createStateCore({
   ensureAllAgentWorkspaces: (...args) => ensureAllAgentWorkspaces(...args),
   extractLocalReferences: (...args) => extractLocalReferences(...args),
@@ -427,7 +435,9 @@ const {
   persistState,
   presenceHeartbeat,
   reconcileAgentStatusHeartbeats,
+  realtimeEventsForRequest,
   resolveCodexRuntime,
+  recordRealtimeEvent,
   setExternalStatePersister,
   setAgentStatus,
   stateDeltaEnvelope,
@@ -779,6 +789,16 @@ const {
 } = conversationModel;
 
 async function deploymentHealth() {
+  if (isDraining()) {
+    return {
+      ok: false,
+      draining: true,
+      drainingSince: serverDrainingSince,
+      service: 'magclaw-web',
+      deployment: state.connection?.deployment || process.env.MAGCLAW_DEPLOYMENT || 'local',
+      time: now(),
+    };
+  }
   const attachmentProbe = {
     mode: ATTACHMENT_STORAGE.mode,
     requestedMode: ATTACHMENT_STORAGE.requestedMode,
@@ -824,6 +844,7 @@ const daemonRelay = createDaemonRelay({
   findComputer,
   getState: () => state,
   host: HOST,
+  isDraining,
   makeId,
   normalizeConversationRecord,
   now,
@@ -833,6 +854,32 @@ const daemonRelay = createDaemonRelay({
   root: ROOT,
   setAgentStatus,
 });
+
+function beginDrain(reason = 'manual') {
+  if (serverDraining) return { ok: true, draining: true, drainingSince: serverDrainingSince };
+  serverDraining = true;
+  serverDrainingSince = now();
+  addSystemEvent('server_draining', 'MagClaw server is draining before shutdown.', {
+    reason,
+    drainingSince: serverDrainingSince,
+  });
+  daemonRelay.beginDrain?.(reason);
+  for (const res of sseClients) {
+    try {
+      res.write(`event: state-resync-required\ndata: ${JSON.stringify({
+        type: 'server_draining',
+        reason,
+        draining: true,
+        createdAt: serverDrainingSince,
+      })}\n\n`);
+      res.end();
+    } catch {
+      sseClients.delete(res);
+    }
+  }
+  persistState().then(broadcastState).catch(() => {});
+  return { ok: true, draining: true, drainingSince: serverDrainingSince };
+}
 
 const agentWorkspace = createAgentWorkspaceManager({
   addSystemEvent,
@@ -1205,11 +1252,13 @@ function projectApiDeps() {
   return {
     addProjectFolder,
     addSystemEvent,
+    beginDrain,
     broadcastState,
     decodePathSegment,
     defaultWorkspace: ROOT,
     findProject,
     getState: () => state,
+    isDraining,
     listProjectTree,
     maxAttachmentUploads: MAX_ATTACHMENT_UPLOADS,
     persistState,
@@ -1254,6 +1303,7 @@ function cloudApiDeps() {
 function systemApiDeps() {
   return {
     addSystemEvent,
+    beginDrain,
     broadcastState,
     cloudAuth,
     deploymentHealth,
@@ -1262,6 +1312,7 @@ function systemApiDeps() {
     fanoutApiConfigured,
     getRuntimeInfo,
     getState: () => state,
+    isDraining,
     persistState,
     presenceHeartbeat,
     publicBootstrapState,
@@ -1270,6 +1321,7 @@ function systemApiDeps() {
     sendError,
     sendJson,
     stateDeltaEnvelope,
+    realtimeEventsForRequest,
     sseClients,
     updateFanoutApiConfig,
   };
@@ -1772,28 +1824,32 @@ server.listen(PORT, HOST, () => {
 });
 
 let shutdownStarted = false;
-function shutdown() {
+function shutdown(signal = 'SIGTERM') {
   if (shutdownStarted) return;
   shutdownStarted = true;
-  clearInterval(heartbeatTimer);
-  stopReminderScheduler();
-  for (const child of runningProcesses.values()) child.kill('SIGTERM');
-  for (const proc of agentProcesses.values()) {
-    if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');
-  }
-  const forceExit = setTimeout(() => process.exit(0), 1500);
+  beginDrain(String(signal || 'signal').toLowerCase());
+  const drainMs = signal === 'SIGTERM' ? SHUTDOWN_DRAIN_MS : 0;
+  const forceExit = setTimeout(() => process.exit(0), drainMs + 5000);
   forceExit.unref?.();
-  server.close(async () => {
-    try {
-      await cloudAuth.close?.();
-      await cloudRepository?.close?.();
-    } finally {
-      clearTimeout(forceExit);
-      process.exit(0);
+  setTimeout(() => {
+    clearInterval(heartbeatTimer);
+    stopReminderScheduler();
+    for (const child of runningProcesses.values()) child.kill('SIGTERM');
+    for (const proc of agentProcesses.values()) {
+      if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');
     }
-  });
-  server.closeAllConnections?.();
+    server.close(async () => {
+      try {
+        await cloudAuth.close?.();
+        await cloudRepository?.close?.();
+      } finally {
+        clearTimeout(forceExit);
+        process.exit(0);
+      }
+    });
+    server.closeAllConnections?.();
+  }, drainMs).unref?.();
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

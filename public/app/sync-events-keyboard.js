@@ -589,6 +589,52 @@ function applyRunEventUpdate(incoming) {
   patchRailSurface();
 }
 
+function applySseSeq(seqInput) {
+  const seq = Number(seqInput || 0);
+  if (!seq) return false;
+  if (lastSseSeq && seq < lastSseSeq) {
+    lastSseSeq = seq;
+    sessionStorage.setItem(SSE_LAST_SEQ_STORAGE_KEY, String(seq));
+    return false;
+  }
+  const hasGap = Boolean(lastSseSeq && seq > lastSseSeq + 1);
+  if (seq > lastSseSeq) {
+    lastSseSeq = seq;
+    sessionStorage.setItem(SSE_LAST_SEQ_STORAGE_KEY, String(seq));
+  }
+  return hasGap;
+}
+
+function applyRealtimeJournalEvent(envelope) {
+  if (applySseSeq(envelope?.seq)) {
+    refreshAfterSseGap();
+    return;
+  }
+  const eventType = String(envelope?.eventType || '');
+  const payload = envelope?.payload || {};
+  if ((eventType === 'system_event' || eventType === 'run_event') && payload.event) {
+    applyRunEventUpdate(payload.event);
+    return;
+  }
+  if (eventType === 'agent_status_changed' && payload.agent?.id && appState) {
+    const incoming = payload.agent;
+    const agents = (appState.agents || []).map((agent) => (
+      agent.id === incoming.id
+        ? {
+            ...agent,
+            status: incoming.status || agent.status,
+            previousStatus: incoming.previousStatus || agent.previousStatus,
+            statusUpdatedAt: incoming.statusUpdatedAt || agent.statusUpdatedAt || null,
+            heartbeatAt: incoming.heartbeatAt || agent.heartbeatAt || null,
+            runtimeActivity: incoming.runtimeActivity || null,
+            activeWorkItemIds: incoming.activeWorkItemIds || agent.activeWorkItemIds || [],
+          }
+        : agent
+    ));
+    applyStateUpdate({ ...appState, agents });
+  }
+}
+
 function applyPresenceHeartbeat(heartbeat) {
   if (!appState || !Array.isArray(heartbeat?.agents)) return;
   const incomingById = new Map(heartbeat.agents.map((agent) => [agent.id, agent]));
@@ -654,10 +700,7 @@ async function refreshAfterSseGap() {
 }
 
 function applyStateDeltaEnvelope(envelope) {
-  const seq = Number(envelope?.seq || 0);
-  const hasGap = Boolean(seq && lastSseSeq && seq !== lastSseSeq + 1);
-  if (seq) lastSseSeq = seq;
-  if (hasGap) {
+  if (applySseSeq(envelope?.seq)) {
     refreshAfterSseGap();
     return;
   }
@@ -673,6 +716,7 @@ function eventStreamPathForCurrentSelection() {
   params.set('spaceType', selectedSpaceType || 'channel');
   params.set('spaceId', selectedSpaceId || '');
   if (threadMessageId) params.set('threadMessageId', threadMessageId);
+  if (lastSseSeq) params.set('lastSeq', String(lastSseSeq));
   params.set('messageLimit', '80');
   params.set('threadRootLimit', '160');
   return `/api/events?${params.toString()}`;
@@ -686,6 +730,12 @@ function connectEvents() {
   eventSource = new EventSource(eventPath);
   eventSource.addEventListener('state-delta', (event) => {
     applyStateDeltaEnvelope(JSON.parse(event.data));
+  });
+  eventSource.addEventListener('realtime-event', (event) => {
+    applyRealtimeJournalEvent(JSON.parse(event.data));
+  });
+  eventSource.addEventListener('state-resync-required', () => {
+    refreshAfterSseGap();
   });
   eventSource.addEventListener('state', (event) => {
     applyStateUpdate(JSON.parse(event.data));

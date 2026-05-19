@@ -153,6 +153,7 @@ export function createStateCore(deps) {
         computerTokens: [],
         agentDeliveries: [],
         daemonEvents: [],
+        realtimeEvents: [],
       },
       storage: {
         schemaVersion: 1,
@@ -506,7 +507,7 @@ export function createStateCore(deps) {
     state.cloud = { ...fresh.cloud, ...(state.cloud || {}) };
     state.cloud.auth = { ...fresh.cloud.auth, ...(state.cloud.auth || {}) };
     delete state.cloud.auth.ownerInviteOnly;
-    for (const key of ['workspaces', 'workspaceMembers', 'users', 'sessions', 'invitations', 'pairingTokens', 'computerTokens', 'agentDeliveries', 'daemonEvents']) {
+    for (const key of ['workspaces', 'workspaceMembers', 'users', 'sessions', 'invitations', 'pairingTokens', 'computerTokens', 'agentDeliveries', 'daemonEvents', 'realtimeEvents']) {
       if (!Array.isArray(state.cloud[key])) state.cloud[key] = fresh.cloud[key] || [];
     }
     if (!state.cloud.workspaces.length) state.cloud.workspaces = fresh.cloud.workspaces;
@@ -856,6 +857,7 @@ export function createStateCore(deps) {
     state.events.push(event);
     trimEvents();
     activityLog.append(event).catch(() => {});
+    recordRealtimeEvent('system_event', { event }, extra);
     return event;
   }
   
@@ -871,6 +873,7 @@ export function createStateCore(deps) {
     state.events.push(event);
     trimEvents();
     activityLog.append(event).catch(() => {});
+    recordRealtimeEvent('run_event', { event }, { workspaceId: event.workspaceId, scopeType: 'workspace' });
     broadcast('run-event', event);
     return event;
   }
@@ -879,6 +882,139 @@ export function createStateCore(deps) {
     if (state.events.length > 1200) {
       state.events = state.events.slice(state.events.length - 1200);
     }
+  }
+
+  function primaryWorkspaceId() {
+    return state?.connection?.workspaceId
+      || state?.cloud?.workspaces?.[0]?.id
+      || 'local';
+  }
+
+  function nextRealtimeSeq(workspaceId = primaryWorkspaceId()) {
+    const maxSeq = (state?.cloud?.realtimeEvents || [])
+      .filter((event) => (event.workspaceId || primaryWorkspaceId()) === workspaceId)
+      .reduce((max, event) => Math.max(max, Number(event.seq || 0)), 0);
+    return maxSeq + 1;
+  }
+
+  function currentRealtimeSeq(workspaceId = primaryWorkspaceId()) {
+    return (state?.cloud?.realtimeEvents || [])
+      .filter((event) => (event.workspaceId || primaryWorkspaceId()) === workspaceId)
+      .reduce((max, event) => Math.max(max, Number(event.seq || 0)), 0);
+  }
+
+  function realtimeScopeFromPayload(payload = {}, scope = {}) {
+    if (scope.scopeType) return scope;
+    const threadMessageId = scope.threadMessageId || payload.threadMessageId || payload.parentMessageId || '';
+    if (threadMessageId) {
+      return {
+        scopeType: 'thread',
+        scopeId: String(threadMessageId),
+        threadMessageId: String(threadMessageId),
+      };
+    }
+    const spaceType = scope.spaceType || payload.spaceType || '';
+    const spaceId = scope.spaceId || payload.spaceId || '';
+    if (spaceType && spaceId) {
+      return {
+        scopeType: String(spaceType),
+        scopeId: String(spaceId),
+        threadMessageId: null,
+      };
+    }
+    return {
+      scopeType: 'workspace',
+      scopeId: scope.scopeId || payload.workspaceId || '',
+      threadMessageId: scope.threadMessageId || null,
+    };
+  }
+
+  function trimRealtimeEvents(workspaceId) {
+    if (!state?.cloud) return;
+    const all = Array.isArray(state.cloud.realtimeEvents) ? state.cloud.realtimeEvents : [];
+    const scoped = all
+      .filter((event) => event.workspaceId === workspaceId)
+      .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+    const overflow = Math.max(0, scoped.length - 2000);
+    if (!overflow) return;
+    const drop = new Set(scoped.slice(0, overflow).map((event) => event.id));
+    state.cloud.realtimeEvents = all.filter((event) => !drop.has(event.id));
+  }
+
+  function recordRealtimeEvent(eventType, payload = {}, scope = {}) {
+    if (!state?.cloud) return null;
+    state.cloud.realtimeEvents = Array.isArray(state.cloud.realtimeEvents) ? state.cloud.realtimeEvents : [];
+    const workspaceId = scope.workspaceId || payload.workspaceId || primaryWorkspaceId();
+    const resolvedScope = realtimeScopeFromPayload(payload, scope);
+    const event = {
+      id: makeId('rte'),
+      workspaceId,
+      seq: nextRealtimeSeq(workspaceId),
+      eventType: String(eventType || 'event'),
+      scopeType: resolvedScope.scopeType || 'workspace',
+      scopeId: resolvedScope.scopeId || '',
+      threadMessageId: resolvedScope.threadMessageId || null,
+      payload,
+      createdAt: now(),
+    };
+    state.cloud.realtimeEvents.push(event);
+    trimRealtimeEvents(workspaceId);
+    return event;
+  }
+
+  function requestRealtimeScope(req = null) {
+    const url = new URL(req?.url || '/api/events', 'http://127.0.0.1');
+    return {
+      spaceType: url.searchParams.get('spaceType') || '',
+      spaceId: url.searchParams.get('spaceId') || '',
+      threadMessageId: url.searchParams.get('threadMessageId') || '',
+    };
+  }
+
+  function realtimeEventMatchesRequest(event, req = null) {
+    const requestScope = requestRealtimeScope(req);
+    if (!requestScope.spaceType && !requestScope.spaceId && !requestScope.threadMessageId) return true;
+    if (event.scopeType === 'workspace') return true;
+    if (requestScope.threadMessageId && event.threadMessageId === requestScope.threadMessageId) return true;
+    if (requestScope.threadMessageId && event.scopeType === 'thread' && event.scopeId === requestScope.threadMessageId) return true;
+    if (requestScope.spaceType && requestScope.spaceId) {
+      return event.scopeType === requestScope.spaceType && event.scopeId === requestScope.spaceId;
+    }
+    return false;
+  }
+
+  function realtimeEventEnvelope(event) {
+    return {
+      seq: Number(event.seq || 0),
+      type: 'realtime_event',
+      eventType: event.eventType || event.event_type || '',
+      scopeType: event.scopeType || 'workspace',
+      scopeId: event.scopeId || '',
+      threadMessageId: event.threadMessageId || null,
+      createdAt: event.createdAt || now(),
+      payload: event.payload || {},
+    };
+  }
+
+  function realtimeEventsForRequest(req = null, lastSeqInput = 0) {
+    const workspaceId = primaryWorkspaceId();
+    const lastSeq = Number(lastSeqInput || 0);
+    const all = (state?.cloud?.realtimeEvents || [])
+      .filter((event) => (event.workspaceId || workspaceId) === workspaceId)
+      .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+    const minSeq = all.length ? Number(all[0].seq || 0) : 0;
+    const currentSeq = currentRealtimeSeq(workspaceId);
+    const gap = Boolean(lastSeq > 0 && minSeq > 0 && lastSeq < minSeq - 1);
+    if (gap) return { gap: true, minSeq, currentSeq, events: [] };
+    return {
+      gap: false,
+      minSeq,
+      currentSeq,
+      events: all
+        .filter((event) => Number(event.seq || 0) > lastSeq)
+        .filter((event) => realtimeEventMatchesRequest(event, req))
+        .map(realtimeEventEnvelope),
+    };
   }
 
   function expectedStreamClose(error) {
@@ -908,7 +1044,12 @@ export function createStateCore(deps) {
     return sseSeq;
   }
 
-  function stateDeltaEnvelope(req = null, seq = nextSseSeq()) {
+  function currentSseSeq() {
+    sseSeq = Math.max(sseSeq, currentRealtimeSeq(primaryWorkspaceId()));
+    return sseSeq;
+  }
+
+  function stateDeltaEnvelope(req = null, seq = currentSseSeq()) {
     return {
       seq,
       type: 'state_patch',
@@ -918,7 +1059,7 @@ export function createStateCore(deps) {
   }
 
   function broadcastStateDelta() {
-    const seq = nextSseSeq();
+    const seq = currentSseSeq();
     for (const res of sseClients) {
       const packet = `event: state-delta\ndata: ${JSON.stringify(stateDeltaEnvelope(res.magclawRequest || null, seq))}\n\n`;
       try {
@@ -1037,6 +1178,17 @@ export function createStateCore(deps) {
         reason,
         ...(extra.event || {}),
       });
+      recordRealtimeEvent('agent_status_changed', {
+        agent: {
+          id: agent.id,
+          status: nextStatus,
+          previousStatus,
+          statusUpdatedAt: agent.statusUpdatedAt,
+          heartbeatAt: agent.heartbeatAt || null,
+          runtimeActivity: agent.runtimeActivity || null,
+          activeWorkItemIds: agent.activeWorkItemIds || [],
+        },
+      }, { scopeType: 'agent', scopeId: agent.id });
     }
     return agent;
   }
@@ -1088,6 +1240,8 @@ export function createStateCore(deps) {
     persistState,
     presenceHeartbeat,
     reconcileAgentStatusHeartbeats,
+    realtimeEventsForRequest,
+    recordRealtimeEvent,
     resolveCodexRuntime,
     flushActivityLog: () => activityLog.flush(),
     setExternalStatePersister,

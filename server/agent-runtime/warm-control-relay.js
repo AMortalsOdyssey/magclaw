@@ -411,6 +411,8 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
       body: responseBody,
       attachmentIds: [],
       agentRelayDepth,
+      deliveryId: options.deliveryId || null,
+      idempotencyKey: options.idempotencyKey || null,
       createdAt: now(),
       updatedAt: now(),
     });
@@ -434,6 +436,8 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
     body: responseBody,
     attachmentIds: [],
     agentRelayDepth,
+    deliveryId: options.deliveryId || null,
+    idempotencyKey: options.idempotencyKey || null,
     replyCount: 0,
     savedBy: [],
     createdAt: now(),

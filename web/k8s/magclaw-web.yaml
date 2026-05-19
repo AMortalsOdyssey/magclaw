@@ -74,6 +74,7 @@ spec:
       labels:
         app: magclaw-web
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: magclaw-web
           image: ghcr.io/your-org/magclaw-web:latest
@@ -87,6 +88,15 @@ spec:
               readOnly: true
             - name: uploads
               mountPath: /var/lib/magclaw/uploads
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    node -e "fetch('http://127.0.0.1:6543/api/internal/drain',{method:'POST'}).catch(()=>{})" >/dev/null 2>&1 || true
+                    sleep 5
           startupProbe:
             httpGet:
               path: /api/readyz
@@ -103,8 +113,9 @@ spec:
             httpGet:
               path: /api/readyz
               port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            initialDelaySeconds: 3
+            periodSeconds: 3
+            failureThreshold: 1
       volumes:
         - name: config
           configMap:

@@ -576,16 +576,35 @@ CREATE TABLE IF NOT EXISTS cloud_agent_deliveries (
   type TEXT NOT NULL,
   command_type TEXT NOT NULL,
   status TEXT NOT NULL CHECK (
-    status IN ('queued', 'sent', 'acked', 'failed', 'stopped')
+    status IN ('queued', 'sent', 'acked', 'completed', 'failed', 'stopped')
   ),
+  idempotency_key TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   error TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   sent_at TIMESTAMPTZ,
-  acked_at TIMESTAMPTZ
+  acked_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ
 );
+
+ALTER TABLE cloud_agent_deliveries
+  ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
+  ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+
+UPDATE cloud_agent_deliveries
+SET status = 'failed'
+WHERE status = 'error';
+
+DO $$
+BEGIN
+  ALTER TABLE cloud_agent_deliveries
+    DROP CONSTRAINT IF EXISTS cloud_agent_deliveries_status_check;
+  ALTER TABLE cloud_agent_deliveries
+    ADD CONSTRAINT cloud_agent_deliveries_status_check
+    CHECK (status IN ('queued', 'sent', 'acked', 'completed', 'failed', 'stopped'));
+END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS cloud_agent_deliveries_agent_computer_seq_uidx
   ON cloud_agent_deliveries(agent_id, computer_id, seq);
@@ -593,6 +612,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS cloud_agent_deliveries_agent_computer_seq_uidx
 CREATE INDEX IF NOT EXISTS cloud_agent_deliveries_computer_pending_idx
   ON cloud_agent_deliveries(computer_id, status, seq)
   WHERE status IN ('queued', 'sent');
+
+CREATE INDEX IF NOT EXISTS cloud_agent_deliveries_idempotency_idx
+  ON cloud_agent_deliveries(workspace_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS cloud_agent_deliveries_workspace_created_idx
   ON cloud_agent_deliveries(workspace_id, created_at DESC);
@@ -612,6 +635,27 @@ CREATE INDEX IF NOT EXISTS cloud_daemon_events_workspace_created_idx
 
 CREATE INDEX IF NOT EXISTS cloud_daemon_events_computer_created_idx
   ON cloud_daemon_events(computer_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS cloud_realtime_events (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  seq BIGINT NOT NULL,
+  event_type TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'workspace',
+  scope_id TEXT NOT NULL DEFAULT '',
+  thread_message_id TEXT,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS cloud_realtime_events_workspace_seq_uidx
+  ON cloud_realtime_events(workspace_id, seq);
+
+CREATE INDEX IF NOT EXISTS cloud_realtime_events_scope_seq_idx
+  ON cloud_realtime_events(workspace_id, scope_type, scope_id, seq);
+
+CREATE INDEX IF NOT EXISTS cloud_realtime_events_created_idx
+  ON cloud_realtime_events(workspace_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS cloud_release_notes (
   id TEXT PRIMARY KEY,
