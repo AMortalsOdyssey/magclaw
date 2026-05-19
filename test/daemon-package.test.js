@@ -18,6 +18,7 @@ import {
   runtimeCommandNeedsShell,
   selectRuntimeCommandPath,
   toWebSocketUrl,
+  windowsNpmShimScript,
 } from '../daemon/src/cli.js';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -289,6 +290,21 @@ test('daemon prefers Windows command shims that Node can launch', () => {
   ].join('\n');
   assert.equal(selectRuntimeCommandPath(output, 'codex', 'win32'), 'C:\\Users\\tt\\AppData\\Roaming\\npm\\codex.cmd');
   assert.equal(selectRuntimeCommandPath(output, 'codex', 'linux'), 'C:\\Users\\tt\\AppData\\Roaming\\npm\\codex');
+});
+
+test('daemon resolves Windows npm command shims to their JS entrypoint', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cmd-shim-'));
+  try {
+    const shim = path.join(tmp, 'codex.cmd');
+    const entry = path.join(tmp, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+    await mkdir(path.dirname(entry), { recursive: true });
+    await writeFile(entry, 'console.log("codex")\n');
+    await writeFile(shim, '@ECHO off\n"%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\n');
+    assert.equal(windowsNpmShimScript(shim, 'win32'), entry);
+    assert.equal(windowsNpmShimScript(shim, 'linux'), '');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 });
 
 test('top-level daemon npm package dry-run excludes cloud server and deployment files', () => {

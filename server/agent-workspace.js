@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs';
 import {
+  copyFile,
+  cp,
   lstat,
   mkdir,
   readFile,
@@ -82,7 +84,21 @@ export function createAgentWorkspaceManager(deps) {
       if (error.code !== 'ENOENT') throw error;
     }
     const sourceStat = await stat(source);
-    await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
+    const linkType = sourceStat.isDirectory()
+      ? (process.platform === 'win32' ? 'junction' : 'dir')
+      : 'file';
+    try {
+      await symlink(source, target, linkType);
+    } catch (error) {
+      if (process.platform !== 'win32' || !['EPERM', 'EINVAL', 'UNKNOWN', 'ENOTSUP'].includes(error?.code)) {
+        throw error;
+      }
+      if (sourceStat.isDirectory()) {
+        await cp(source, target, { recursive: true, dereference: true, errorOnExist: true, force: false });
+      } else {
+        await copyFile(source, target);
+      }
+    }
   }
   
   async function removeStaleCodexHomeEntry(codexHome, entryName) {
@@ -292,6 +308,16 @@ export function createAgentWorkspaceManager(deps) {
     return base === 'SKILL' ? parent : base;
   }
 
+  function pluginNameFromPath(absPath) {
+    const parts = String(absPath || '').split(/[\\/]+/).filter(Boolean);
+    for (let index = 0; index < parts.length - 2; index += 1) {
+      if (parts[index] === 'plugins' && parts[index + 1] === 'cache') {
+        return parts[index + 2] || '';
+      }
+    }
+    return '';
+  }
+
   function skillPathScope(absPath, agent) {
     const agentRoot = agent?.id ? agentDataDir(agent) : '';
     const codexHome = agent?.id ? agentCodexHomeDir(agent) : '';
@@ -299,7 +325,7 @@ export function createAgentWorkspaceManager(deps) {
     const resolved = path.resolve(absPath);
     if (agentRoot && resolved.startsWith(path.resolve(agentRoot))) return 'agent';
     if (codexHome && resolved.startsWith(path.resolve(codexHome))) return 'agent';
-    if (resolved.includes(`${path.sep}plugins${path.sep}cache${path.sep}`)) return 'plugin';
+    if (pluginNameFromPath(resolved)) return 'plugin';
     if (resolved.startsWith(sourceHome)) return 'global';
     return 'workspace';
   }
@@ -324,7 +350,6 @@ export function createAgentWorkspaceManager(deps) {
     const description = firstFrontmatterValue(content, ['description', 'summary', 'short_description', 'short-description'])
       || firstMarkdownParagraph(content)
       || 'No description provided.';
-    const pluginMatch = resolvedFilePath.match(new RegExp(`${path.sep}plugins${path.sep}cache${path.sep}([^${path.sep}]+)${path.sep}`));
     return {
       id: `${source || skillPathScope(resolvedFilePath, agent)}:${shortenSkillPath(resolvedFilePath, agent)}`,
       name,
@@ -333,7 +358,7 @@ export function createAgentWorkspaceManager(deps) {
       absolutePath: resolvedFilePath,
       scope: source || skillPathScope(resolvedFilePath, agent),
       kind: path.basename(filePath) === 'SKILL.md' ? 'skill' : 'command',
-      plugin: pluginMatch?.[1] || '',
+      plugin: pluginNameFromPath(resolvedFilePath),
     };
   }
 

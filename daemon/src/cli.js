@@ -3,7 +3,7 @@ import https from 'node:https';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { chmod, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -342,11 +342,12 @@ function printJson(value) {
 }
 
 function commandOutput(command, args = [], options = {}) {
-  const result = spawnSync(command, args, {
+  const spawnSpec = runtimeSpawnSpec(command, args);
+  const result = spawnSync(spawnSpec.command, spawnSpec.args, {
     encoding: 'utf8',
     timeout: options.timeoutMs || 3000,
     env: options.env || process.env,
-    shell: runtimeCommandNeedsShell(command, options.platform || process.platform),
+    shell: spawnSpec.shell,
   });
   return {
     ok: result.status === 0,
@@ -1032,7 +1033,21 @@ async function ensureSymlinkedCodexHomeEntry(codexHome, entryName) {
     if (error.code !== 'ENOENT') throw error;
   }
   const sourceStat = await stat(source);
-  await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
+  const linkType = sourceStat.isDirectory()
+    ? (process.platform === 'win32' ? 'junction' : 'dir')
+    : 'file';
+  try {
+    await symlink(source, target, linkType);
+  } catch (error) {
+    if (process.platform !== 'win32' || !['EPERM', 'EINVAL', 'UNKNOWN', 'ENOTSUP'].includes(error?.code)) {
+      throw error;
+    }
+    if (sourceStat.isDirectory()) {
+      await cp(source, target, { recursive: true, dereference: true, errorOnExist: true, force: false });
+    } else {
+      await copyFile(source, target);
+    }
+  }
 }
 
 function toPosixPath(value) {
@@ -1131,6 +1146,16 @@ function skillNameFromPath(absPath) {
   return base === 'SKILL' ? parent : base;
 }
 
+function pluginNameFromPath(absPath) {
+  const parts = String(absPath || '').split(/[\\/]+/).filter(Boolean);
+  for (let index = 0; index < parts.length - 2; index += 1) {
+    if (parts[index] === 'plugins' && parts[index + 1] === 'cache') {
+      return parts[index + 2] || '';
+    }
+  }
+  return '';
+}
+
 function shortenSkillPath(absPath, { agentRoot = '', codexHome = '' } = {}) {
   const resolved = path.resolve(absPath);
   const sourceHome = path.resolve(SOURCE_CODEX_HOME);
@@ -1149,7 +1174,6 @@ async function parseSkillFile(filePath, scope, context = {}) {
   const description = firstFrontmatterValue(content, ['description', 'summary', 'short_description', 'short-description'])
     || firstMarkdownParagraph(content)
     || 'No description provided.';
-  const pluginMatch = resolvedFilePath.match(new RegExp(`${path.sep}plugins${path.sep}cache${path.sep}([^${path.sep}]+)${path.sep}`));
   const shortPath = shortenSkillPath(resolvedFilePath, context);
   return {
     id: `${scope}:${shortPath}`,
@@ -1159,7 +1183,38 @@ async function parseSkillFile(filePath, scope, context = {}) {
     absolutePath: resolvedFilePath,
     scope,
     kind: path.basename(filePath) === 'SKILL.md' ? 'skill' : 'command',
-    plugin: pluginMatch?.[1] || '',
+    plugin: pluginNameFromPath(resolvedFilePath),
+  };
+}
+
+export function windowsNpmShimScript(command, platform = process.platform) {
+  if (platform !== 'win32' || !/\.cmd$/i.test(String(command || ''))) return '';
+  if (!existsSync(command)) return '';
+  let content = '';
+  try {
+    content = readFileSync(command, 'utf8');
+  } catch {
+    return '';
+  }
+  const match = content.match(/"%dp0%\\([^"]+?\.js)"/i);
+  if (!match?.[1]) return '';
+  const script = path.join(path.dirname(command), match[1]);
+  return existsSync(script) ? script : '';
+}
+
+function runtimeSpawnSpec(command, args = [], platform = process.platform) {
+  const shimScript = windowsNpmShimScript(command, platform);
+  if (shimScript) {
+    return {
+      command: process.execPath,
+      args: [shimScript, ...args],
+      shell: false,
+    };
+  }
+  return {
+    command,
+    args,
+    shell: runtimeCommandNeedsShell(command, platform),
   };
 }
 
@@ -1676,10 +1731,11 @@ class CodexAgentSession {
       serverUrl: this.serverUrl,
       tokenFile: this.paths.config,
     }), '--listen', 'stdio://'];
-    this.child = spawn(codexCommand, args, {
+    const spawnSpec = runtimeSpawnSpec(codexCommand, args);
+    this.child = spawn(spawnSpec.command, spawnSpec.args, {
       cwd: this.workspace(),
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: runtimeCommandNeedsShell(codexCommand, process.platform),
+      shell: spawnSpec.shell,
       env: {
         ...agentEnvironment(this.agent, this.env),
         NO_COLOR: '1',
