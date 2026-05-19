@@ -1198,7 +1198,7 @@ export function windowsNpmShimScript(command, platform = process.platform) {
   }
   const match = content.match(/"%dp0%\\([^"]+?\.js)"/i);
   if (!match?.[1]) return '';
-  const script = path.join(path.dirname(command), match[1]);
+  const script = path.join(path.dirname(command), match[1].replace(/[\\/]+/g, path.sep));
   return existsSync(script) ? script : '';
 }
 

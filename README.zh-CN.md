@@ -10,7 +10,7 @@
   <p align="center">
     <img alt="Node >=20" src="https://img.shields.io/badge/Node-%3E%3D20-339933?logo=node.js&logoColor=white">
     <img alt="Web Service 0.2.0" src="https://img.shields.io/badge/Web_Service-0.2.0-111827">
-    <img alt="Daemon 0.1.7" src="https://img.shields.io/badge/Daemon-0.1.7-f59e0b">
+    <img alt="Daemon 0.1.8" src="https://img.shields.io/badge/Daemon-0.1.8-f59e0b">
     <img alt="Runtimes" src="https://img.shields.io/badge/Runtimes-Codex%20%7C%20Claude%20%7C%20more-7c3aed">
   </p>
   <p align="center">
