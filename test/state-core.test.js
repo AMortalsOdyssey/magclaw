@@ -76,6 +76,49 @@ test('state core can skip local SQLite and JSON persistence for PostgreSQL-backe
   }
 });
 
+test('state core waits for external persistence when no local durable store is enabled', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-external-'));
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    WRITE_STATE_JSON: false,
+    ACTIVITY_LOG_DIR: path.join(tmp, 'activity-logs'),
+  });
+  let releaseExternal;
+  let externalStarted = false;
+  let externalFinished = false;
+  const externalGate = new Promise((resolve) => {
+    releaseExternal = resolve;
+  });
+  try {
+    await core.ensureStorage();
+    core.setExternalStatePersister(async () => {
+      externalStarted = true;
+      await externalGate;
+      externalFinished = true;
+    });
+
+    const persistPromise = core.persistState();
+    for (let index = 0; index < 5 && !externalStarted; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(externalStarted, true);
+
+    let persistSettled = false;
+    persistPromise.finally(() => {
+      persistSettled = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(persistSettled, false);
+
+    releaseExternal();
+    await persistPromise;
+    assert.equal(externalFinished, true);
+  } finally {
+    releaseExternal?.();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('state core writes activity events to JSONL and restores recent activity tail', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-activity-'));
   const activityDir = path.join(tmp, 'activity-logs');

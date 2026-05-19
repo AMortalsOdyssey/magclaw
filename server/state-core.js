@@ -803,7 +803,9 @@ export function createStateCore(deps) {
         const workspaceId = options.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || '';
         const externalWrite = Promise.resolve()
           .then(() => externalStatePersister(stateFullSnapshot(), { ...options, workspaceId }));
-        if (options.awaitExternal) {
+        const shouldAwaitExternal = options.awaitExternal === true
+          || (!LOCAL_STATE_PERSISTENCE_ENABLED && options.awaitExternal !== false);
+        if (shouldAwaitExternal) {
           await externalWrite;
         } else {
           externalWrite.catch((error) => {

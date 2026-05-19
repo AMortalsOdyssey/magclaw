@@ -39,6 +39,22 @@ export async function handleCollabApi(req, res, url, deps) {
     };
   }
 
+  function workspaceIdForRecord(record, req) {
+    return String(record?.workspaceId || actorContext(req).workspaceId || 'local').trim();
+  }
+
+  function persistWorkspaceState(workspaceId, reason) {
+    return persistState({
+      awaitExternal: true,
+      workspaceId: String(workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local').trim(),
+      reason,
+    });
+  }
+
+  function persistRecordState(record, req, reason) {
+    return persistWorkspaceState(workspaceIdForRecord(record, req), reason);
+  }
+
   function scheduleChannelMemoryWriteback(channel) {
     for (const agentId of normalizeIds(channel.agentIds || [])) {
       const agent = findAgent(agentId);
@@ -145,7 +161,7 @@ export async function handleCollabApi(req, res, url, deps) {
       const agent = findAgent(agentId);
       if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
     }
-    await persistState();
+    await persistWorkspaceState(workspaceId, 'channel_created');
     broadcastState();
     sendJson(res, 201, { channel });
     return true;
@@ -178,7 +194,7 @@ export async function handleCollabApi(req, res, url, deps) {
       const agent = findAgent(agentId);
       if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
     }
-    await persistState();
+    await persistRecordState(channel, req, 'channel_updated');
     broadcastState();
     sendJson(res, 200, { channel });
     return true;
@@ -199,7 +215,7 @@ export async function handleCollabApi(req, res, url, deps) {
     }
     try {
       if (addMemberToChannel(channel, memberId)) {
-        await persistState();
+        await persistRecordState(channel, req, 'channel_member_added');
         broadcastState();
       }
     } catch (error) {
@@ -228,7 +244,7 @@ export async function handleCollabApi(req, res, url, deps) {
     }
     try {
       if (addMemberToChannel(channel, humanId)) {
-        await persistState();
+        await persistRecordState(channel, req, 'channel_joined');
         broadcastState();
       }
     } catch (error) {
@@ -287,7 +303,7 @@ export async function handleCollabApi(req, res, url, deps) {
     proposal.reviewerId = reviewerId;
     proposal.reviewedAt = reviewedAt;
     proposal.updatedAt = reviewedAt;
-    await persistState();
+    await persistRecordState(channel, req, `channel_member_proposal_${proposal.status}`);
     broadcastState();
     sendJson(res, 200, { proposal, channel });
     return true;
@@ -329,7 +345,7 @@ export async function handleCollabApi(req, res, url, deps) {
       addCollabEvent('channel_member_removed', `Member removed from #${channel.name}`, { channelId: channel.id, memberId });
       const agent = memberId.startsWith('agt_') ? findAgent(memberId) : null;
       if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
-      await persistState();
+      await persistRecordState(channel, req, 'channel_member_removed');
       broadcastState();
     }
     sendJson(res, 200, { channel });
@@ -351,7 +367,7 @@ export async function handleCollabApi(req, res, url, deps) {
     if (removeMemberFromChannel(channel, memberId)) {
       channel.updatedAt = now();
       addCollabEvent('channel_left', `Left #${channel.name}`, { channelId: channel.id, memberId });
-      await persistState();
+      await persistRecordState(channel, req, 'channel_left');
       broadcastState();
     }
     sendJson(res, 200, { channel });
@@ -385,7 +401,7 @@ export async function handleCollabApi(req, res, url, deps) {
       state.dms.push(dm);
     }
     addCollabEvent('dm_opened', 'DM opened.', { dmId: dm.id });
-    await persistState();
+    await persistWorkspaceState(workspaceId, 'dm_opened');
     broadcastState();
     sendJson(res, 200, { dm });
     return true;
@@ -411,7 +427,7 @@ export async function handleCollabApi(req, res, url, deps) {
     };
     state.computers.push(computer);
     addCollabEvent('computer_added', `Computer added: ${computer.name}`, { computerId: computer.id });
-    await persistState();
+    await persistWorkspaceState(workspaceId, 'computer_added');
     broadcastState();
     sendJson(res, 201, { computer });
     return true;
@@ -487,7 +503,7 @@ export async function handleCollabApi(req, res, url, deps) {
       }
     }
     computer.updatedAt = now();
-    await persistState();
+    await persistRecordState(computer, req, 'computer_updated');
     broadcastState();
     sendJson(res, 200, { computer });
       return true;
@@ -523,7 +539,7 @@ export async function handleCollabApi(req, res, url, deps) {
         cloudUser.avatarUrl = human.avatar || '';
         cloudUser.updatedAt = human.updatedAt;
       }
-      await persistState();
+      await persistRecordState(human, req, 'human_updated');
       broadcastState();
       sendJson(res, 200, { human });
       return true;
@@ -559,7 +575,7 @@ export async function handleCollabApi(req, res, url, deps) {
       allChannel.updatedAt = now();
     }
     addCollabEvent('human_invited', `Human invited: ${human.email || human.name}`, { humanId: human.id });
-    await persistState();
+    await persistWorkspaceState(workspaceId, 'human_invited');
     broadcastState();
     sendJson(res, 201, { human });
     return true;

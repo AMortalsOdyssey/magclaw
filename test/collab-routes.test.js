@@ -124,6 +124,35 @@ test('collab route group stamps cloud channels and DMs with the current workspac
   assert.deepEqual(dmRes.data.dm.participantIds, ['hum_owner', 'agt_one']);
 });
 
+test('collab route group persists created cloud channels with the request workspace scope', async () => {
+  const persistCalls = [];
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_owner', email: 'owner@example.test' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_owner', role: 'admin' },
+    }),
+    persistState: async (options = {}) => {
+      persistCalls.push(options);
+    },
+    readJson: async () => ({
+      name: 'Deploy Safe',
+      agentIds: ['agt_one'],
+    }),
+  });
+  const res = makeResponse();
+  await handleCollabApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/channels'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(persistCalls.length, 1);
+  assert.equal(persistCalls[0].workspaceId, 'wsp_main');
+  assert.equal(persistCalls[0].reason, 'channel_created');
+});
+
 test('collab route group manages channel members across legacy and canonical fields', async () => {
   const deps = routeDeps({
     readJson: async () => ({ memberId: 'agt_one' }),
