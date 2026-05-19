@@ -720,11 +720,26 @@ function appIsInBackground() {
 function agentNotificationRecords(stateSnapshot) {
   return [...(stateSnapshot?.messages || []), ...(stateSnapshot?.replies || [])]
     .filter((record) => record?.id && record.authorType === 'agent')
+    .filter((record) => recordShouldNotifyHuman(record, stateSnapshot))
     .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
 }
 
 function notificationRootRecord(record, stateSnapshot = appState) {
   return record?.parentMessageId ? byId(stateSnapshot?.messages, record.parentMessageId) : record;
+}
+
+function recordShouldNotifyHuman(record, stateSnapshot = appState, humanId = currentHumanId()) {
+  const targetHumanId = String(humanId || '').trim();
+  if (!targetHumanId || record?.authorType !== 'agent') return false;
+  const root = notificationRootRecord(record, stateSnapshot);
+  if ((root?.spaceType || record?.spaceType) === 'dm') return true;
+  const mentioned = (record?.mentionedHumanIds || []).map(String).includes(targetHumanId)
+    || (root?.mentionedHumanIds || []).map(String).includes(targetHumanId);
+  const followedThreadReply = Boolean(
+    record?.parentMessageId
+    && (root?.followedBy || []).map(String).includes(targetHumanId)
+  );
+  return mentioned || followedThreadReply;
 }
 
 function notificationServerLabel(stateSnapshot = appState) {

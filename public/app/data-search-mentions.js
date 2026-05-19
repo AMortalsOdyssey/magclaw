@@ -1035,8 +1035,9 @@ function recordSpaceName(record) {
 }
 
 function savedRecords() {
+  const humanId = typeof currentHumanId === 'function' ? currentHumanId() : 'hum_local';
   return [...(appState?.messages || []), ...(appState?.replies || [])]
-    .filter((record) => record.savedBy?.includes('hum_local'))
+    .filter((record) => record.savedBy?.includes(humanId))
     .sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt));
 }
 

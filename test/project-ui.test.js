@@ -1738,6 +1738,68 @@ test('messages use MagClaw-style hover save actions and saved messages open cont
   assert.match(styles, /\.saved-remove/);
 });
 
+test('message reactions, context menus, and share mode expose Slock-style interactions with MagClaw styling', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const renderKeySource = app.slice(app.indexOf('function renderRecordKey'), app.indexOf('function renderSystemEvent'));
+  const localOnlySource = app.slice(app.indexOf('const localOnlyActions = new Set'), app.indexOf('// Environment variable actions'));
+  const shareImageSource = app.slice(app.indexOf('async function generateShareImageDataUrl'), app.indexOf('function saveShareImage'));
+
+  assert.match(app, /const MAGCLAW_MESSAGE_REACTIONS = \[/);
+  assert.match(app, /key: 'rocket'/);
+  assert.match(app, /key: 'pin'/);
+  assert.match(app, /function renderMessageReactionTray\(record\)/);
+  assert.match(app, /function renderMessageContextMenu\(\)/);
+  assert.match(app, /function renderShareSelectionBar\(\)/);
+  assert.match(app, /function renderSharePreviewModal\(\)/);
+  assert.match(app, /function messageRecordLink\(record\)/);
+  assert.match(app, /function messageRecordMarkdown\(record\)/);
+  assert.match(app, /async function generateShareImageDataUrl/);
+  assert.match(app, /function shareReactionChipRows\(ctx, groups = \[\], maxWidth = 0\)/);
+  assert.match(app, /function shareActorProfile\(record\)/);
+  assert.match(app, /function drawShareAvatar\(ctx, profile, image, x, y, size\)/);
+  assert.match(app, /loadCanvasImage\(BRAND_LOGO_SRC\)/);
+  assert.match(shareImageSource, /groupedMessageReactions\(record\)/);
+  assert.match(shareImageSource, /reactionRows/);
+  assert.match(shareImageSource, /drawShareAvatar\(ctx, profile, row\.avatarImage/);
+  assert.match(shareImageSource, /MagClaw/);
+  assert.match(app, /const SHARE_IMAGE_DIRECTORY_PICKER_ID = 'magclaw-share-image-directory'/);
+  assert.match(app, /window\.showDirectoryPicker/);
+  assert.match(app, /id: SHARE_IMAGE_DIRECTORY_PICKER_ID/);
+  assert.match(app, /async function saveShareImageViaServer/);
+  assert.match(app, /\/api\/share-images\/save/);
+  assert.match(app, /method: 'server'/);
+  assert.match(app, /async function saveShareImage\(\)/);
+  assert.match(app, /Share image saved to/);
+  assert.doesNotMatch(app, /SHARE_IMAGE_DIRECTORY_DB|openShareImageDirectoryDb|rememberShareImageDirectoryHandle|storedShareImageDirectoryHandle/);
+  assert.match(renderKeySource, /reactions: record\?\.reactions \|\| \[\]/);
+  assert.match(renderKeySource, /followedBy: record\?\.followedBy \|\| \[\]/);
+  assert.match(app, /data-action="open-message-context-menu"/);
+  assert.match(app, /data-action="toggle-message-reaction"/);
+  assert.match(app, /data-action="start-message-share"/);
+  assert.match(app, /data-action="toggle-share-selection"/);
+  assert.match(app, /data-action="copy-selected-markdown"/);
+  assert.match(app, /data-action="download-selected-image"/);
+  assert.match(app, /data-action="save-share-image"/);
+  assert.match(app, /data-context-scope="saved"/);
+  assert.match(app, /Copy markdown/);
+  assert.match(app, /Share messages\.\.\./);
+  assert.match(app, /Follow Thread/);
+  assert.match(localOnlySource, /'open-message-context-menu'/);
+  assert.match(localOnlySource, /'start-message-share'/);
+  assert.match(localOnlySource, /'toggle-share-selection'/);
+  assert.match(styles, /\.message-context-menu/);
+  assert.match(styles, /\.message-reaction-grid/);
+  assert.match(styles, /\.message-reaction-tray/);
+  assert.match(styles, /\.share-selection-bar/);
+  assert.match(styles, /\.share-preview-modal/);
+  assert.match(styles, /\.modal-card\.share-preview-modal[\s\S]*border: 2px solid var\(--border\)/);
+  assert.match(styles, /\.message-share-selector\.selected[\s\S]*background: #168CFF/);
+  assert.match(styles, /\.message-card\.share-selecting/);
+  assert.match(styles, /\.collab-frame \.message-card\.share-selecting[\s\S]*grid-template-columns: 26px 34px minmax\(0, 1fr\)/);
+  assert.doesNotMatch(styles, /#ffd43b/);
+});
+
 test('conversation panes expose upward history loading affordances', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();

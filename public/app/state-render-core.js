@@ -23,6 +23,29 @@ const CLOUD_ROLE_LABELS = {
   admin: 'Admin',
   member: 'Member',
 };
+const MAGCLAW_MESSAGE_REACTIONS = [
+  { key: 'thumbs_up', emoji: '👍', label: 'Looks good' },
+  { key: 'heart', emoji: '❤️', label: 'Love this' },
+  { key: 'party', emoji: '🎉', label: 'Celebrate' },
+  { key: 'eyes', emoji: '👀', label: 'Watching' },
+  { key: 'fire', emoji: '🔥', label: 'Hot' },
+  { key: 'laugh', emoji: '😂', label: 'Funny' },
+  { key: 'check', emoji: '✅', label: 'Done' },
+  { key: 'idea', emoji: '💡', label: 'Idea' },
+  { key: 'pray', emoji: '🙏', label: 'Thanks' },
+  { key: 'clap', emoji: '👏', label: 'Applause' },
+  { key: 'rocket', emoji: '🚀', label: 'Launch' },
+  { key: 'thinking', emoji: '🤔', label: 'Thinking' },
+  { key: 'wow', emoji: '😮', label: 'Surprised' },
+  { key: 'smile', emoji: '😄', label: 'Smile' },
+  { key: 'strong', emoji: '💪', label: 'Strong' },
+  { key: 'sparkles', emoji: '✨', label: 'Polished' },
+  { key: 'brain', emoji: '🧠', label: 'Smart' },
+  { key: 'pin', emoji: '📌', label: 'Pin this' },
+  { key: 'tool', emoji: '🛠️', label: 'Working' },
+  { key: 'star', emoji: '⭐', label: 'Star' },
+];
+const MAGCLAW_MESSAGE_REACTION_KEYS = new Set(MAGCLAW_MESSAGE_REACTIONS.map((reaction) => reaction.key));
 const initialUiState = readStoredUiState();
 canonicalizeLegacyRoutePath();
 const initialRouteState = routeStateFromLocation(window.location.pathname || '');
@@ -56,6 +79,9 @@ let membersLayout = normalizeMembersLayout(
 );
 let selectedTaskId = null;
 let selectedSavedRecordId = null;
+let messageContextMenu = null;
+let messageShareState = { active: false, selectedIds: [] };
+let sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
 let modal = null;
 let agentStartState = { agentId: null };
 let agentRestartState = { agentId: null, mode: 'restart' };

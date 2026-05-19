@@ -476,6 +476,11 @@
   border-radius: 6px;
 }
 
+.collab-frame .message-card.share-selecting {
+  grid-template-columns: 26px 34px minmax(0, 1fr);
+  padding-left: 4px;
+}
+
 .collab-frame .magclaw-message:hover,
 .collab-frame .magclaw-message.highlighted,
 .collab-frame .magclaw-message.focus-pulse {

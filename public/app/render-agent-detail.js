@@ -859,10 +859,13 @@ function renderReply(reply) {
   const authorClass = ['agent', 'human', 'system'].includes(reply.authorType) ? reply.authorType : 'unknown';
   const agentAuthorAttr = reply.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(reply.authorId)}"` : '';
   const highlighted = selectedSavedRecordId === reply.id ? ' highlighted' : '';
+  const shareSelecting = messageShareState.active ? ' share-selecting' : '';
+  const shareSelected = shareSelectedIds().includes(String(reply.id)) ? ' share-selected' : '';
   const receiptTray = renderAgentReceiptTray(reply);
   const footer = renderMessageFooter({ receiptTray });
   return `
-    <article class="message-card magclaw-message reply-card author-${authorClass}${highlighted}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
+    <article class="message-card magclaw-message reply-card author-${authorClass}${highlighted}${shareSelecting}${shareSelected}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
+      ${renderShareSelector(reply)}
       ${renderActorAvatar(reply.authorId, reply.authorType)}
       <div class="message-body">
         <div class="message-meta">
@@ -872,6 +875,7 @@ function renderReply(reply) {
         </div>
         <div class="message-markdown">${renderMarkdownWithMentions(reply.body || '(attachment)')}</div>
         <div class="message-attachments">${attachmentLinks(reply.attachmentIds)}</div>
+        ${renderMessageReactionTray(reply)}
         ${renderMessageActions(reply, { threadContext: true })}
         ${footer}
       </div>

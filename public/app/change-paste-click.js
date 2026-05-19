@@ -211,12 +211,112 @@ document.addEventListener('paste', async (event) => {
   }
 });
 
+function openMessageContextMenu(recordId, event, scope = 'message') {
+  const id = String(recordId || '').trim();
+  if (!id || !conversationRecord(id)) return false;
+  const rect = event?.currentTarget?.getBoundingClientRect?.() || event?.target?.getBoundingClientRect?.();
+  messageContextMenu = {
+    recordId: id,
+    scope,
+    x: Number.isFinite(event?.clientX) ? event.clientX : (rect ? rect.right - 8 : 120),
+    y: Number.isFinite(event?.clientY) ? event.clientY : (rect ? rect.top + 24 : 120),
+  };
+  render();
+  return true;
+}
+
+document.addEventListener('contextmenu', (event) => {
+  const savedRow = event.target.closest?.('.saved-row[data-message-id]');
+  if (savedRow) {
+    if (openMessageContextMenu(savedRow.dataset.messageId, event, 'saved')) event.preventDefault();
+    return;
+  }
+  const messageRow = event.target.closest?.('.magclaw-message');
+  const recordId = messageRow?.dataset?.messageId || messageRow?.dataset?.replyId || '';
+  if (recordId && openMessageContextMenu(recordId, event, 'message')) event.preventDefault();
+});
+
 document.addEventListener('click', async (event) => {
   const prepared = await prepareDocumentClick(event);
   if (!prepared) return;
   const { action, target, localOnlyActions } = prepared;
   const clickLoadingToken = beginClickLoading(action, target, localOnlyActions);
   try {
+    if (action === 'open-message-context-menu') {
+      openMessageContextMenu(target.dataset.id, event, target.dataset.contextScope || 'message');
+      return;
+    }
+    if (action === 'close-message-context-menu') {
+      messageContextMenu = null;
+      render();
+      return;
+    }
+    if (action === 'copy-message-link') {
+      const record = conversationRecord(target.dataset.id);
+      const copied = await tryCopyTextToClipboard(messageRecordLink(record));
+      messageContextMenu = null;
+      toast(copied ? 'Message link copied' : 'Copy failed');
+      render();
+      return;
+    }
+    if (action === 'copy-message-markdown') {
+      const record = conversationRecord(target.dataset.id);
+      const copied = await tryCopyTextToClipboard(messageRecordMarkdown(record));
+      messageContextMenu = null;
+      toast(copied ? 'Message markdown copied' : 'Copy failed');
+      render();
+      return;
+    }
+    if (action === 'start-message-share') {
+      const id = target.dataset.id || '';
+      messageShareState = { active: Boolean(id), selectedIds: id ? [id] : [] };
+      messageContextMenu = null;
+      render();
+      return;
+    }
+    if (action === 'toggle-share-selection') {
+      const id = target.dataset.id || '';
+      const selected = new Set(shareSelectedIds());
+      if (selected.has(id)) selected.delete(id);
+      else if (id) selected.add(id);
+      messageShareState = { active: selected.size > 0, selectedIds: [...selected] };
+      render();
+      return;
+    }
+    if (action === 'cancel-message-share') {
+      messageShareState = { active: false, selectedIds: [] };
+      sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
+      render();
+      return;
+    }
+    if (action === 'copy-selected-markdown') {
+      const copied = await tryCopyTextToClipboard(selectedMessagesMarkdown());
+      toast(copied ? 'Selected messages copied as Markdown' : 'Copy failed');
+      return;
+    }
+    if (action === 'download-selected-image') {
+      const records = shareSelectionRecords();
+      sharePreviewState = { open: true, imageUrl: '', recordIds: records.map((record) => record.id) };
+      render();
+      const imageUrl = await generateShareImageDataUrl(records);
+      sharePreviewState = { open: true, imageUrl, recordIds: records.map((record) => record.id) };
+      render();
+      return;
+    }
+    if (action === 'close-share-preview') {
+      sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
+      render();
+      return;
+    }
+    if (action === 'save-share-image') {
+      const result = await saveShareImage();
+      if (result?.ok) {
+        toast(result.path ? `Share image saved to ${result.path}` : 'Share image saved');
+      } else {
+        toast(result?.cancelled ? 'Image save cancelled' : 'Image save failed');
+      }
+      return;
+    }
     if (action === 'mobile-nav') {
       openMobileRoot(target.dataset.nav || 'home');
       return;
@@ -1207,15 +1307,34 @@ document.addEventListener('click', async (event) => {
       toast('Project folder removed');
     }
     if (action === 'save-message') {
+      messageContextMenu = null;
       await api(`/api/messages/${target.dataset.id}/save`, { method: 'POST', body: '{}' });
     }
     if (action === 'remove-saved-message') {
+      messageContextMenu = null;
       await api(`/api/messages/${target.dataset.id}/save`, { method: 'POST', body: '{}' });
       if (selectedSavedRecordId === target.dataset.id) {
         selectedSavedRecordId = null;
         threadMessageId = null;
       }
       toast('Removed from saved');
+    }
+    if (action === 'toggle-message-reaction') {
+      const reactionKey = target.dataset.reactionKey || '';
+      if (!MAGCLAW_MESSAGE_REACTION_KEYS.has(reactionKey)) throw new Error('Reaction is not supported.');
+      messageContextMenu = null;
+      await api(`/api/messages/${encodeURIComponent(target.dataset.id)}/reactions`, {
+        method: 'POST',
+        body: JSON.stringify({ key: reactionKey }),
+      });
+    }
+    if (action === 'toggle-thread-follow') {
+      messageContextMenu = null;
+      const result = await api(`/api/messages/${encodeURIComponent(target.dataset.id)}/follow`, {
+        method: 'POST',
+        body: '{}',
+      });
+      toast(result.followed ? 'Thread followed' : 'Thread unfollowed');
     }
     if (action === 'open-saved-message') {
       const record = conversationRecord(target.dataset.id);
@@ -1261,6 +1380,7 @@ document.addEventListener('click', async (event) => {
       toast(`Task moved to ${taskStatusLabel(nextStatus)}`);
     }
     if (action === 'message-task') {
+      messageContextMenu = null;
       await api(`/api/messages/${target.dataset.id}/task`, { method: 'POST', body: '{}' });
       toast('Task created from message');
     }

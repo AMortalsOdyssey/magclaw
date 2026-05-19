@@ -687,6 +687,93 @@
   padding: 8px 7px;
 }
 
+.mobile-app-shell .message-card.share-selecting {
+  grid-template-columns: 24px 32px minmax(0, 1fr);
+}
+
+.mobile-app-shell .message-context-menu {
+  left: 10px;
+  right: 10px;
+  top: auto;
+  bottom: calc(70px + env(safe-area-inset-bottom));
+  width: auto;
+  max-height: min(70vh, 440px);
+  overflow: auto;
+}
+
+.mobile-app-shell .message-reaction-grid {
+  grid-template-columns: repeat(10, minmax(24px, 1fr));
+}
+
+.mobile-app-shell .share-selection-bar,
+.share-selection-bar {
+  padding-bottom: calc(6px + env(safe-area-inset-bottom));
+}
+
+.mobile-app-shell .share-selection-actions button,
+.share-selection-bar .share-selection-actions button {
+  min-width: 34px;
+}
+
+@media (max-width: 767px) {
+  .message-context-menu {
+    left: 10px;
+    right: 10px;
+    top: auto;
+    bottom: calc(70px + env(safe-area-inset-bottom));
+    width: auto;
+    max-height: min(70vh, 440px);
+    overflow: auto;
+  }
+
+  .message-reaction-grid {
+    grid-template-columns: repeat(10, minmax(24px, 1fr));
+  }
+
+  .share-selection-bar {
+    min-height: calc(44px + env(safe-area-inset-bottom));
+    padding: 5px 8px calc(5px + env(safe-area-inset-bottom));
+  }
+
+  .share-selection-actions {
+    gap: 6px;
+  }
+
+  .share-selection-actions button {
+    width: 34px;
+    min-width: 34px;
+    padding: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-indent: 100%;
+    position: relative;
+  }
+
+  .share-selection-actions button::before {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    text-indent: 0;
+  }
+
+  .share-selection-actions button[data-action="cancel-message-share"]::before {
+    content: "×";
+  }
+
+  .share-selection-actions button[data-action="download-selected-image"]::before {
+    content: "⇩";
+  }
+
+  .share-selection-actions button[data-action="copy-selected-markdown"]::before {
+    content: "⧉";
+  }
+
+  .share-preview-modal {
+    width: calc(100vw - 24px);
+  }
+}
+
 .mobile-app-shell .message-meta {
   flex-wrap: wrap;
   gap: 5px;

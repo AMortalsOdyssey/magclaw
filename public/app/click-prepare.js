@@ -67,7 +67,15 @@ async function prepareDocumentClick(event) {
   const clickedTaskStatusMenu = event.target.closest('.task-inline-badge');
   const clickedSearchFilter = event.target.closest('.search-time-filter');
   const clickedServerSwitcher = event.target.closest('.server-switcher-anchor');
+  const clickedMessageInteraction = event.target.closest('.message-context-menu, .share-selection-bar, .share-preview-modal');
   const target = event.target.closest('[data-action]');
+  if (messageContextMenu && !clickedMessageInteraction && target?.dataset?.action !== 'open-message-context-menu') {
+    messageContextMenu = null;
+    if (!target) {
+      render();
+      return;
+    }
+  }
   if (serverSwitcherOpen && !clickedServerSwitcher) {
     serverSwitcherOpen = false;
     if (!target) {
@@ -205,6 +213,17 @@ async function prepareDocumentClick(event) {
     'open-member-action-confirm',
     'copy-member-reset-link',
     'copy-join-link',
+    'open-message-context-menu',
+    'close-message-context-menu',
+    'copy-message-link',
+    'copy-message-markdown',
+    'start-message-share',
+    'toggle-share-selection',
+    'cancel-message-share',
+    'copy-selected-markdown',
+    'download-selected-image',
+    'close-share-preview',
+    'save-share-image',
     'start-all-computer-agents',
     'scan-computer-workspaces',
       'toggle-receipt-popover',

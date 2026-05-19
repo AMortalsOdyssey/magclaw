@@ -132,6 +132,201 @@
   height: 14px;
 }
 
+.message-card.share-selecting {
+  grid-template-columns: 26px 34px minmax(0, 1fr);
+  padding-left: 4px;
+}
+
+.message-share-selector {
+  display: inline-grid;
+  place-items: center;
+  align-self: start;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin-top: 8px;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.message-share-selector.selected {
+  border-color: #1269B7;
+  background: #168CFF;
+  color: #ffffff;
+  box-shadow: var(--shadow-pixel-sm);
+}
+
+.message-card.share-selected {
+  background: var(--accent-soft);
+  border-color: var(--border);
+}
+
+.message-reaction-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.message-reaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  background: #fff7fb;
+  color: var(--text-primary);
+  box-shadow: var(--shadow-pixel-sm);
+  font-size: 12px;
+}
+
+.message-reaction-chip.reacted {
+  background: var(--accent-soft);
+}
+
+.message-reaction-chip strong {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.message-context-menu {
+  position: fixed;
+  left: min(var(--menu-x), calc(100vw - 250px));
+  top: min(var(--menu-y), calc(100vh - 330px));
+  z-index: 250;
+  width: 236px;
+  padding: 0;
+  border: 2px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: 4px 4px 0 var(--border);
+}
+
+.message-context-menu button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font-weight: 800;
+}
+
+.message-context-menu button:hover {
+  background: var(--accent-soft);
+}
+
+.message-reaction-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 0;
+  padding: 6px;
+  border-bottom: 2px solid var(--border);
+  background: #fff7fb;
+}
+
+.message-reaction-grid button {
+  justify-content: center;
+  min-height: 25px;
+  padding: 0;
+  border: 1px solid transparent;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.message-reaction-grid button.active,
+.message-reaction-grid button:hover {
+  border-color: var(--border);
+  background: var(--magclaw-rail-badge);
+}
+
+.message-menu-separator {
+  height: 2px;
+  background: var(--border);
+}
+
+.share-selection-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 240;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 6px 12px;
+  border-top: 2px solid var(--border);
+  background: var(--accent-soft);
+  box-shadow: 0 -2px 0 var(--border);
+}
+
+.share-selection-bar strong {
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+.share-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-selection-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 2px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-pixel-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.share-selection-actions .share-image-action {
+  background: var(--magclaw-pink);
+  color: #1a0010;
+}
+
+.share-preview-backdrop {
+  z-index: 300;
+}
+
+.modal-card.share-preview-modal {
+  width: min(820px, calc(100vw - 48px));
+  border: 2px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: 6px 6px 0 var(--border);
+}
+
+.share-preview-frame {
+  max-height: 48vh;
+  overflow: auto;
+  padding: 14px;
+  border: 2px solid var(--border);
+  background: #fff8fc;
+  box-shadow: inset 0 0 0 2px #ffffff;
+}
+
+.share-preview-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 3px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: 3px 3px 0 var(--border);
+}
+
 .message-footer {
   display: flex;
   align-items: center;

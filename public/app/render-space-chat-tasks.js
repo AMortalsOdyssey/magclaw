@@ -512,6 +512,624 @@ function renderAgentReceiptTray(record) {
   `;
 }
 
+function messageReactionOption(key) {
+  return MAGCLAW_MESSAGE_REACTIONS.find((reaction) => reaction.key === key) || null;
+}
+
+function normalizedMessageReactions(record) {
+  const seen = new Set();
+  return (Array.isArray(record?.reactions) ? record.reactions : [])
+    .map((reaction) => {
+      const option = messageReactionOption(reaction?.key) || MAGCLAW_MESSAGE_REACTIONS.find((item) => item.emoji === reaction?.emoji) || null;
+      const key = option?.key || String(reaction?.key || '').trim();
+      return {
+        key,
+        emoji: option?.emoji || String(reaction?.emoji || '').trim(),
+        actorId: String(reaction?.actorId || '').trim(),
+        actorType: String(reaction?.actorType || 'human').trim() || 'human',
+        actorName: String(reaction?.actorName || '').trim(),
+        createdAt: reaction?.createdAt || '',
+      };
+    })
+    .filter((reaction) => reaction.key && reaction.emoji && reaction.actorId)
+    .filter((reaction) => {
+      const signature = `${reaction.key}:${reaction.actorType}:${reaction.actorId}`;
+      if (seen.has(signature)) return false;
+      seen.add(signature);
+      return true;
+    });
+}
+
+function reactionActorName(reaction) {
+  if (reaction.actorName) return reaction.actorName;
+  return displayName(reaction.actorId) || reaction.actorId;
+}
+
+function groupedMessageReactions(record) {
+  const groups = new Map();
+  for (const reaction of normalizedMessageReactions(record)) {
+    const group = groups.get(reaction.key) || {
+      key: reaction.key,
+      emoji: reaction.emoji,
+      actors: [],
+      currentUserReacted: false,
+    };
+    group.actors.push(reaction);
+    if (reaction.actorId === currentHumanId()) group.currentUserReacted = true;
+    groups.set(reaction.key, group);
+  }
+  return [...groups.values()].sort((a, b) => {
+    const ai = MAGCLAW_MESSAGE_REACTIONS.findIndex((reaction) => reaction.key === a.key);
+    const bi = MAGCLAW_MESSAGE_REACTIONS.findIndex((reaction) => reaction.key === b.key);
+    return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi);
+  });
+}
+
+function renderMessageReactionTray(record) {
+  const groups = groupedMessageReactions(record);
+  if (!groups.length) return '';
+  return `
+    <div class="message-reaction-tray" aria-label="Message reactions">
+      ${groups.map((group) => {
+        const names = group.actors.map(reactionActorName).join(', ');
+        return `
+          <button class="message-reaction-chip${group.currentUserReacted ? ' reacted' : ''}" type="button"
+            data-action="toggle-message-reaction"
+            data-id="${escapeHtml(record.id)}"
+            data-reaction-key="${escapeHtml(group.key)}"
+            title="${escapeHtml(names)}"
+            aria-label="${escapeHtml(`${group.emoji} reaction from ${names}`)}">
+            <span>${escapeHtml(group.emoji)}</span>
+            <strong>${group.actors.length}</strong>
+          </button>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function shareSelectedIds() {
+  return Array.isArray(messageShareState.selectedIds) ? messageShareState.selectedIds.map(String) : [];
+}
+
+function shareSelectionRecords() {
+  const selected = new Set(shareSelectedIds());
+  return [...(appState?.messages || []), ...(appState?.replies || [])]
+    .filter((record) => selected.has(String(record?.id || '')))
+    .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+}
+
+function renderShareSelector(record) {
+  if (!messageShareState.active) return '';
+  const selected = shareSelectedIds().includes(String(record.id));
+  return `
+    <button class="message-share-selector${selected ? ' selected' : ''}" type="button"
+      data-action="toggle-share-selection"
+      data-id="${escapeHtml(record.id)}"
+      aria-label="${selected ? 'Deselect message' : 'Select message'}">
+      <span>${selected ? '✓' : ''}</span>
+    </button>
+  `;
+}
+
+function contextMenuRecord() {
+  return messageContextMenu?.recordId ? conversationRecord(messageContextMenu.recordId) : null;
+}
+
+function messageThreadRoot(record) {
+  if (!record) return null;
+  return record.parentMessageId ? byId(appState?.messages, record.parentMessageId) : record;
+}
+
+function messageRecordLink(record) {
+  if (!record) return '';
+  const root = messageThreadRoot(record) || record;
+  const spaceType = root.spaceType || record.spaceType || selectedSpaceType || 'channel';
+  const spaceId = root.spaceId || record.spaceId || selectedSpaceId || '';
+  const kind = spaceType === 'dm' ? 'dms' : 'channels';
+  const slug = encodeURIComponent(currentServerSlug());
+  const url = new URL(`/s/${slug}/${kind}/${encodeURIComponent(spaceId)}`, window.location.origin);
+  if (record.parentMessageId) url.searchParams.set('threadMessageId', root.id);
+  url.hash = record.parentMessageId ? `reply-${record.id}` : `message-${record.id}`;
+  return url.toString();
+}
+
+function attachmentMarkdownLines(record) {
+  return (record?.attachmentIds || [])
+    .map((id) => byId(appState?.attachments, id))
+    .filter(Boolean)
+    .map((attachment) => `- Attachment: ${attachment.filename || attachment.name || attachment.id}`);
+}
+
+function messageRecordMarkdown(record) {
+  if (!record) return '';
+  const root = messageThreadRoot(record) || record;
+  const surface = spaceName(root.spaceType || record.spaceType, root.spaceId || record.spaceId);
+  const author = displayName(record.authorId) || record.authorId || 'Unknown';
+  const body = plainMentionText(record.body || '(attachment)').trim() || '(attachment)';
+  const lines = [
+    `**${author}** · ${surface} · ${fmtTime(record.createdAt)}`,
+    '',
+    body,
+    ...attachmentMarkdownLines(record),
+  ];
+  return lines.filter((line, index) => line || index < 2).join('\n');
+}
+
+function selectedMessagesMarkdown() {
+  return shareSelectionRecords().map(messageRecordMarkdown).join('\n\n---\n\n');
+}
+
+function renderMessageReactionGrid(record) {
+  if (!record) return '';
+  const active = new Set(normalizedMessageReactions(record)
+    .filter((reaction) => reaction.actorId === currentHumanId())
+    .map((reaction) => reaction.key));
+  return `
+    <div class="message-reaction-grid" role="group" aria-label="Add reaction">
+      ${MAGCLAW_MESSAGE_REACTIONS.map((reaction) => `
+        <button class="${active.has(reaction.key) ? 'active' : ''}" type="button"
+          data-action="toggle-message-reaction"
+          data-id="${escapeHtml(record.id)}"
+          data-reaction-key="${escapeHtml(reaction.key)}"
+          title="${escapeHtml(reaction.label)}"
+          aria-label="${escapeHtml(reaction.label)}">${escapeHtml(reaction.emoji)}</button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderContextMenuItem(action, label, recordId, extra = {}) {
+  const attrs = Object.entries(extra)
+    .map(([key, value]) => ` data-${escapeHtml(key)}="${escapeHtml(value)}"`)
+    .join('');
+  return `<button type="button" data-action="${escapeHtml(action)}" data-id="${escapeHtml(recordId)}"${attrs}>${escapeHtml(label)}</button>`;
+}
+
+function renderMessageContextMenu() {
+  const record = contextMenuRecord();
+  if (!record || !messageContextMenu) return '';
+  const scope = messageContextMenu.scope === 'saved' ? 'saved' : 'message';
+  const root = messageThreadRoot(record);
+  const saved = (record.savedBy || []).map(String).includes(currentHumanId());
+  const followed = (root?.followedBy || []).map(String).includes(currentHumanId());
+  const left = Number.isFinite(messageContextMenu.x) ? messageContextMenu.x : 120;
+  const top = Number.isFinite(messageContextMenu.y) ? messageContextMenu.y : 120;
+  const positionStyle = `--menu-x: ${Math.max(8, left)}px; --menu-y: ${Math.max(8, top)}px;`;
+  if (scope === 'saved') {
+    return `
+      <div class="message-context-menu pixel-panel" data-context-scope="saved" style="${positionStyle}" role="menu">
+        ${renderContextMenuItem('copy-message-link', 'Copy link', record.id)}
+        ${renderContextMenuItem('copy-message-markdown', 'Copy markdown', record.id)}
+        <div class="message-menu-separator"></div>
+        ${renderContextMenuItem('remove-saved-message', 'Remove from saved', record.id)}
+      </div>
+    `;
+  }
+  const threadLabel = record.parentMessageId ? 'View in channel' : 'Open thread';
+  const threadAction = record.parentMessageId ? 'view-in-channel' : 'open-thread';
+  const threadId = record.parentMessageId ? root?.id || record.parentMessageId : record.id;
+  return `
+    <div class="message-context-menu pixel-panel" data-context-scope="message" style="${positionStyle}" role="menu">
+      ${renderMessageReactionGrid(record)}
+      <div class="message-menu-separator"></div>
+      ${renderContextMenuItem('copy-message-link', 'Copy link', record.id)}
+      ${renderContextMenuItem('copy-message-markdown', 'Copy markdown', record.id)}
+      <button type="button" data-action="start-message-share" data-id="${escapeHtml(record.id)}">Share messages...</button>
+      <div class="message-menu-separator"></div>
+      ${threadId ? renderContextMenuItem(threadAction, threadLabel, threadId) : ''}
+      ${renderContextMenuItem(saved ? 'remove-saved-message' : 'save-message', saved ? 'Remove from saved' : 'Save message', record.id)}
+      ${root ? renderContextMenuItem('toggle-thread-follow', followed ? 'Unfollow Thread' : 'Follow Thread', record.id) : ''}
+      ${record.parentMessageId ? '' : '<div class="message-menu-separator"></div>'}
+      ${record.parentMessageId ? '' : renderContextMenuItem('message-task', 'Convert to Task', record.id)}
+    </div>
+  `;
+}
+
+function renderShareSelectionBar() {
+  if (!messageShareState.active) return '';
+  const count = shareSelectedIds().length;
+  return `
+    <div class="share-selection-bar" role="status" aria-live="polite">
+      <strong>${count} selected</strong>
+      <div class="share-selection-actions">
+        <button type="button" data-action="cancel-message-share" aria-label="Cancel">Cancel</button>
+        <button class="share-image-action" type="button" data-action="download-selected-image" ${count ? '' : 'disabled'} aria-label="Download as image">Download as image</button>
+        <button type="button" data-action="copy-selected-markdown" ${count ? '' : 'disabled'} aria-label="Copy as Markdown">Copy as Markdown</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSharePreviewModal() {
+  if (!sharePreviewState.open) return '';
+  return `
+    <div class="modal-backdrop share-preview-backdrop">
+      <section class="modal-card pixel-panel share-preview-modal" role="dialog" aria-modal="true" aria-label="Share preview">
+        <div class="modal-head">
+          <h2>Share preview</h2>
+          <button class="icon-btn small" type="button" data-action="close-share-preview" aria-label="Close">×</button>
+        </div>
+        <div class="share-preview-frame">
+          ${sharePreviewState.imageUrl ? `<img src="${escapeHtml(sharePreviewState.imageUrl)}" alt="Share preview" />` : '<div class="empty-box small">Preparing image...</div>'}
+        </div>
+        <div class="modal-actions">
+          <button class="secondary-btn" type="button" data-action="close-share-preview">Cancel</button>
+          <button class="primary-btn" type="button" data-action="save-share-image" ${sharePreviewState.imageUrl ? '' : 'disabled'}>Save image</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderMessageInteractionOverlays() {
+  return `
+    ${renderMessageContextMenu()}
+    ${renderShareSelectionBar()}
+    ${renderSharePreviewModal()}
+  `;
+}
+
+function wrapCanvasText(ctx, text, maxWidth) {
+  const value = String(text || '');
+  const words = value.includes(' ') ? value.split(/\s+/) : [...value];
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    const glue = value.includes(' ') && line ? ' ' : '';
+    const candidate = `${line}${glue}${word}`;
+    if (line && ctx.measureText(candidate).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [''];
+}
+
+function shareReactionChipRows(ctx, groups = [], maxWidth = 0) {
+  const chips = groups.map((group) => {
+    const label = `${group.emoji} ${group.actors.length}`;
+    return {
+      label,
+      width: Math.ceil(ctx.measureText(label).width) + 18,
+    };
+  });
+  const rows = [];
+  let row = [];
+  let rowWidth = 0;
+  for (const chip of chips) {
+    const gap = row.length ? 6 : 0;
+    if (row.length && rowWidth + gap + chip.width > maxWidth) {
+      rows.push(row);
+      row = [chip];
+      rowWidth = chip.width;
+    } else {
+      row.push(chip);
+      rowWidth += gap + chip.width;
+    }
+  }
+  if (row.length) rows.push(row);
+  return rows;
+}
+
+function shareImageFileName(date = new Date()) {
+  return `magclaw-share-${date.toISOString().slice(0, 19).replace(/:/g, '-')}.png`;
+}
+
+function shareCanvasImageSource(src) {
+  const value = String(src || '').trim();
+  if (!value) return '';
+  if (value.startsWith('data:image/')) return value;
+  try {
+    const url = new URL(value, window.location.href);
+    return url.origin === window.location.origin ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function loadCanvasImage(src) {
+  const safeSrc = shareCanvasImageSource(src);
+  if (!safeSrc) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = safeSrc;
+  });
+}
+
+function shareActorProfile(record) {
+  const id = record?.authorId || 'system';
+  const type = record?.authorType || 'unknown';
+  const agent = type === 'agent' ? byId(appState?.agents, id) : null;
+  const human = type === 'human'
+    ? (typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id))
+    : null;
+  const avatar = type === 'system'
+    ? BRAND_LOGO_SRC
+    : (agent?.avatar || agent?.avatarUrl || human?.avatar || human?.avatarUrl || '');
+  return {
+    id,
+    type,
+    name: displayName(id),
+    subtitle: actorSubtitle(id, type, record),
+    initials: displayAvatar(id, type),
+    avatar,
+  };
+}
+
+function shareTaskLabel(record) {
+  const task = record?.taskId ? byId(appState?.tasks, record.taskId) : null;
+  if (!task) return '';
+  return `#${task.number || shortId(task.id)}`;
+}
+
+function drawShareAvatar(ctx, profile, image, x, y, size) {
+  ctx.fillStyle = profile.type === 'human' ? '#80E4F2' : profile.type === 'agent' ? '#C9B5FF' : '#FFE1F0';
+  ctx.fillRect(x, y, size, size);
+  ctx.strokeStyle = '#111111';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, size, size);
+  if (image) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + 2, y + 2, size - 4, size - 4);
+    ctx.clip();
+    ctx.drawImage(image, x + 2, y + 2, size - 4, size - 4);
+    ctx.restore();
+    return;
+  }
+  ctx.fillStyle = '#111111';
+  ctx.font = '900 13px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(profile.initials || 'MC', x + size / 2, y + size / 2);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+}
+
+async function generateShareImageDataUrl(records = shareSelectionRecords()) {
+  const canvas = document.createElement('canvas');
+  const scale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  const width = 1040;
+  const padding = 28;
+  const avatarSize = 40;
+  const contentWidth = width - padding * 2 - avatarSize - 16;
+  const ctx = canvas.getContext('2d');
+  const logoImagePromise = loadCanvasImage(BRAND_LOGO_SRC);
+  ctx.font = '15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  const rows = await Promise.all(records.map(async (record) => {
+    const profile = shareActorProfile(record);
+    const text = plainMentionText(record.body || '(attachment)').trim() || '(attachment)';
+    const lines = wrapCanvasText(ctx, text, contentWidth);
+    const attachments = (record.attachmentIds || []).length;
+    ctx.font = '700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    const reactionRows = shareReactionChipRows(ctx, groupedMessageReactions(record), contentWidth);
+    const taskLabel = shareTaskLabel(record);
+    ctx.font = '15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    return {
+      record,
+      profile,
+      avatarImage: await loadCanvasImage(profile.avatar),
+      lines,
+      reactionRows,
+      taskLabel,
+      sourceLabel: recordSpaceName(record),
+      height: (taskLabel ? 82 : 62) + lines.length * 20 + (attachments ? 22 : 0) + (reactionRows.length ? 8 + reactionRows.length * 22 : 0),
+    };
+  }));
+  const logoImage = await logoImagePromise;
+  const height = Math.max(190, 56 + padding + rows.reduce((sum, row) => sum + row.height, 0) + padding + 16);
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  ctx.scale(scale, scale);
+  ctx.fillStyle = '#fff8fc';
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = '#111111';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(2, 2, width - 4, height - 4);
+  ctx.fillStyle = '#ff66cc';
+  ctx.fillRect(4, 4, width - 8, 52);
+  ctx.strokeStyle = '#111111';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(4, 4, width - 8, 52);
+  if (logoImage) {
+    ctx.fillStyle = '#fffefb';
+    ctx.fillRect(padding, 14, 32, 32);
+    ctx.strokeStyle = '#111111';
+    ctx.strokeRect(padding, 14, 32, 32);
+    ctx.drawImage(logoImage, padding + 3, 17, 26, 26);
+  }
+  ctx.fillStyle = '#111111';
+  ctx.font = '900 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  ctx.fillText('MagClaw', padding + 42, 35);
+  ctx.fillStyle = '#fffefb';
+  ctx.fillRect(padding + 136, 17, 92, 24);
+  ctx.strokeStyle = '#111111';
+  ctx.strokeRect(padding + 136, 17, 92, 24);
+  ctx.fillStyle = '#111111';
+  ctx.font = '900 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillText('MESSAGE', padding + 148, 33);
+  ctx.textAlign = 'right';
+  ctx.font = '700 13px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillText(currentServerSlug(), width - padding, 34);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#fffefb';
+  ctx.fillRect(padding, 72, width - padding * 2, height - 72 - padding);
+  ctx.strokeStyle = '#111111';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(padding, 72, width - padding * 2, height - 72 - padding);
+  let y = 92;
+  for (const row of rows) {
+    const { record, lines, profile } = row;
+    const rowX = padding + 16;
+    const rowWidth = width - padding * 2 - 32;
+    ctx.fillStyle = '#fffefb';
+    ctx.fillRect(rowX, y - 8, rowWidth, row.height);
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(rowX, y - 8, rowWidth, row.height);
+    drawShareAvatar(ctx, profile, row.avatarImage, rowX + 14, y + 8, avatarSize);
+    const contentX = rowX + 14 + avatarSize + 16;
+    ctx.fillStyle = '#111111';
+    ctx.font = '900 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    ctx.fillText(profile.name, contentX, y + 20);
+    ctx.fillStyle = '#8b8790';
+    ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+    const nameWidth = Math.min(260, ctx.measureText(profile.name).width + 10);
+    const metaText = `${profile.subtitle ? `${profile.subtitle} · ` : ''}${row.sourceLabel} · ${fmtTime(record.createdAt)}`;
+    ctx.fillText(metaText, contentX + nameWidth, y + 20);
+    if (row.taskLabel) {
+      const chipWidth = Math.ceil(ctx.measureText(row.taskLabel).width) + 14;
+      ctx.fillStyle = '#ffe7a8';
+      ctx.fillRect(contentX, y + 28, chipWidth, 18);
+      ctx.strokeStyle = '#111111';
+      ctx.strokeRect(contentX, y + 28, chipWidth, 18);
+      ctx.fillStyle = '#111111';
+      ctx.font = '900 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillText(row.taskLabel, contentX + 7, y + 41);
+    }
+    ctx.fillStyle = '#111111';
+    ctx.font = '15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    const bodyY = row.taskLabel ? y + 66 : y + 46;
+    lines.forEach((line, index) => {
+      ctx.fillText(line, contentX, bodyY + index * 20);
+    });
+    let detailY = bodyY + 4 + lines.length * 20;
+    if ((record.attachmentIds || []).length) {
+      ctx.fillStyle = '#e7fbff';
+      ctx.fillRect(contentX, detailY, 132, 18);
+      ctx.strokeStyle = '#111111';
+      ctx.strokeRect(contentX, detailY, 132, 18);
+      ctx.fillStyle = '#111111';
+      ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillText(`${record.attachmentIds.length} attachment(s)`, contentX + 6, detailY + 13);
+      detailY += 22;
+    }
+    if (row.reactionRows.length) {
+      detailY += 8;
+      ctx.font = '700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      for (const reactionRow of row.reactionRows) {
+        let chipX = contentX;
+        for (const chip of reactionRow) {
+          ctx.fillStyle = '#ffe8f5';
+          ctx.fillRect(chipX, detailY, chip.width, 18);
+          ctx.strokeStyle = '#111111';
+          ctx.strokeRect(chipX, detailY, chip.width, 18);
+          ctx.fillStyle = '#111111';
+          ctx.fillText(chip.label, chipX + 8, detailY + 13);
+          chipX += chip.width + 6;
+        }
+        detailY += 22;
+      }
+    }
+    y += row.height;
+  }
+  return canvas.toDataURL('image/png');
+}
+
+function shareImageDataUrlToBlob(dataUrl) {
+  const value = String(dataUrl || '');
+  const match = value.match(/^data:([^;,]+);base64,(.*)$/);
+  if (!match) return null;
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type: match[1] || 'image/png' });
+}
+
+const SHARE_IMAGE_DIRECTORY_PICKER_ID = 'magclaw-share-image-directory';
+
+async function pickShareImageDirectory() {
+  if (typeof window.showDirectoryPicker !== 'function') return null;
+  return window.showDirectoryPicker({
+    id: SHARE_IMAGE_DIRECTORY_PICKER_ID,
+    mode: 'readwrite',
+  });
+}
+
+async function saveBlobToDirectory(blob, fileName) {
+  const directoryHandle = await pickShareImageDirectory();
+  if (!directoryHandle) return false;
+  const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+  return true;
+}
+
+async function saveBlobWithFilePicker(blob, fileName) {
+  if (typeof window.showSaveFilePicker !== 'function') return false;
+  const fileHandle = await window.showSaveFilePicker({
+    id: 'magclaw-share-image-file',
+    suggestedName: fileName,
+    types: [{
+      description: 'PNG image',
+      accept: { 'image/png': ['.png'] },
+    }],
+  });
+  const writable = await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+  return true;
+}
+
+function downloadShareImageFallback(dataUrl, fileName) {
+  if (!sharePreviewState.imageUrl) return false;
+  const link = document.createElement('a');
+  link.href = dataUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  return true;
+}
+
+async function saveShareImageViaServer(dataUrl, fileName) {
+  try {
+    const result = await api('/api/share-images/save', {
+      method: 'POST',
+      body: JSON.stringify({ imageUrl: dataUrl, fileName }),
+    });
+    if (!result?.ok) return null;
+    return {
+      ok: true,
+      method: 'server',
+      fileName: result.fileName || fileName,
+      path: result.path || '',
+    };
+  } catch (error) {
+    console.warn('[share-image] local server save failed; falling back to browser download', error);
+    return null;
+  }
+}
+
+async function saveShareImage() {
+  if (!sharePreviewState.imageUrl) return { ok: false };
+  const fileName = shareImageFileName();
+  const blob = shareImageDataUrlToBlob(sharePreviewState.imageUrl);
+  if (!blob) return { ok: false };
+  try {
+    if (await saveBlobToDirectory(blob, fileName)) return { ok: true, method: 'directory', fileName };
+    if (await saveBlobWithFilePicker(blob, fileName)) return { ok: true, method: 'file-picker', fileName };
+  } catch (error) {
+    if (error?.name === 'AbortError') return { ok: false, cancelled: true };
+    console.warn('[share-image] picker save failed; falling back to browser download', error);
+  }
+  const serverResult = await saveShareImageViaServer(sharePreviewState.imageUrl, fileName);
+  if (serverResult?.ok) return serverResult;
+  if (downloadShareImageFallback(sharePreviewState.imageUrl, fileName)) return { ok: true, method: 'download', fileName };
+  return { ok: false };
+}
+
 function renderRecordKey(record) {
   const task = record?.taskId ? byId(appState?.tasks, record.taskId) : null;
   const author = record?.authorType === 'agent'
@@ -533,6 +1151,8 @@ function renderRecordKey(record) {
     taskUpdatedAt: task?.updatedAt || '',
     attachmentIds: record?.attachmentIds || [],
     savedBy: record?.savedBy || [],
+    reactions: record?.reactions || [],
+    followedBy: record?.followedBy || [],
     receipts: deliveryReceiptSignature(record),
     highlighted: threadMessageId === record?.id || selectedSavedRecordId === record?.id,
   });
@@ -556,7 +1176,7 @@ function saveMessageIcon(saved = false) {
 }
 
 function renderMessageActions(record, options = {}) {
-  const saved = record.savedBy?.includes('hum_local');
+  const saved = record.savedBy?.includes(currentHumanId());
   const threadContext = Boolean(options.threadContext || options.compact || record.parentMessageId);
   const saveLabel = saved ? 'Remove from saved' : 'Save message';
   const threadActionLabel = record?.spaceType === 'channel' && !currentUserIsChannelMember(record.spaceId)
@@ -571,6 +1191,9 @@ function renderMessageActions(record, options = {}) {
       `}
       <button class="message-icon-action${saved ? ' saved' : ''}" type="button" data-action="save-message" data-id="${escapeHtml(record.id)}" title="${escapeHtml(saveLabel)}" aria-label="${escapeHtml(saveLabel)}">
         ${saveMessageIcon(saved)}
+      </button>
+      <button class="message-icon-action" type="button" data-action="open-message-context-menu" data-id="${escapeHtml(record.id)}" title="More message actions" aria-label="More message actions">
+        <span aria-hidden="true">⋯</span>
       </button>
     </div>
   `;
@@ -593,6 +1216,8 @@ function renderMessage(message, options = {}) {
   const replyCount = Number(message.replyCount || 0);
   const highlighted = threadMessageId === message.id || selectedSavedRecordId === message.id ? ' highlighted' : '';
   const compact = options.compact ? ' compact' : '';
+  const shareSelecting = messageShareState.active ? ' share-selecting' : '';
+  const shareSelected = shareSelectedIds().includes(String(message.id)) ? ' share-selected' : '';
   const authorClass = ['agent', 'human', 'system'].includes(message.authorType) ? message.authorType : 'unknown';
   const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
   const agentAuthorAttr = message.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(message.authorId)}"` : '';
@@ -600,7 +1225,8 @@ function renderMessage(message, options = {}) {
   const replyCountChip = !options.compact && replyCount ? `<button class="reply-count-chip" type="button" data-action="open-thread" data-id="${escapeHtml(message.id)}">${replyActionLabel}</button>` : '';
   const footer = renderMessageFooter({ replyCountChip, receiptTray });
   return `
-    <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
+    <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${shareSelecting}${shareSelected}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
+      ${renderShareSelector(message)}
       ${renderActorAvatar(message.authorId, message.authorType)}
       <div class="message-body">
         <div class="message-meta">
@@ -611,6 +1237,7 @@ function renderMessage(message, options = {}) {
         </div>
         <div class="message-markdown">${renderMarkdownWithMentions(message.body || '(attachment)')}</div>
         <div class="message-attachments">${attachmentLinks(message.attachmentIds)}</div>
+        ${renderMessageReactionTray(message)}
         ${renderMessageActions(message, options)}
         ${footer}
       </div>
@@ -914,7 +1541,7 @@ function renderSavedRecord(record) {
   const task = (root?.taskId ? byId(appState.tasks, root.taskId) : null) || (record?.taskId ? byId(appState.tasks, record.taskId) : null);
   const active = selectedSavedRecordId === record.id ? ' active' : '';
   return `
-    <div class="saved-row${active}">
+    <div class="saved-row${active}" data-context-scope="saved" data-message-id="${escapeHtml(record.id)}">
       <button class="saved-row-open" type="button" data-action="open-saved-message" data-id="${escapeHtml(record.id)}">
         <span class="saved-avatar">${getAvatarHtml(record.authorId, record.authorType, 'avatar-inner')}</span>
         <span class="saved-row-body">

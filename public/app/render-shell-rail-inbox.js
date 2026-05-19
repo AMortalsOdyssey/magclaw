@@ -46,6 +46,7 @@ function render() {
       ${appFlashBanner}
       ${renderMobileShell()}
       ${modal ? renderModal() : ''}
+      ${typeof renderMessageInteractionOverlays === 'function' ? renderMessageInteractionOverlays() : ''}
     `;
     if (typeof translatePage === 'function') translatePage(root);
     if (typeof ensureOfflineComputerConnectCommand === 'function') {
@@ -90,6 +91,7 @@ function render() {
       ` : ''}
     </div>
     ${modal ? renderModal() : ''}
+    ${typeof renderMessageInteractionOverlays === 'function' ? renderMessageInteractionOverlays() : ''}
   `;
   if (typeof translatePage === 'function') translatePage(root);
   if (typeof ensureOfflineComputerConnectCommand === 'function') {
