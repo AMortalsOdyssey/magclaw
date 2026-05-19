@@ -1097,6 +1097,7 @@ function syncConsoleServerSlug(form, { force = false } = {}) {
   if (!force && slugInput.dataset.autoSlug === '0') return;
   slugInput.value = consoleServerSlugFromName(nameInput.value);
   slugInput.dataset.autoSlug = '1';
+  validateConsoleServerForm(form, { report: false });
 }
 
 document.addEventListener('input', async (event) => {
