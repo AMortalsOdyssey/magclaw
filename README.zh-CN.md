@@ -166,8 +166,9 @@ npx @magclaw/daemon@latest stop --profile my-server
 npx @magclaw/daemon@latest uninstall --profile my-server
 ```
 
-同一台 Computer 同一时间只能运行一个 daemon 进程。重复启动后台 daemon 时，
-它会报告已有进程，而不是创建重复连接。
+MagClaw 通过 per-profile lock 防止同一个 `--profile` 启动重复 daemon。也就是说，
+同一台物理电脑可以用不同 profile 同时运行多个 daemon，从而有意连接到多个 Server；
+但同一个 profile 重复后台启动时，会报告已有进程，而不是创建重复连接。
 
 ## Runtime 配置
 

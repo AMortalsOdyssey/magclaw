@@ -55,6 +55,10 @@ npx @magclaw/daemon@latest logs --profile default
 npx @magclaw/daemon@latest uninstall --profile default
 ```
 
-Only one daemon process may run on a computer at a time. A second foreground
-start exits with an `already running` error; a repeated background start reports
-the existing process instead of creating another connection.
+Only one daemon process may run for the same profile at a time. The lock is
+stored under `~/.magclaw/daemon/profiles/<profile>/run/daemon.lock`, so the same
+physical computer can intentionally run multiple daemon processes with different
+profiles and connect to multiple Servers. A second foreground start for the same
+profile exits with an `already running` error; a repeated background start for
+that profile reports the existing process instead of creating another
+connection.

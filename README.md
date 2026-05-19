@@ -173,8 +173,11 @@ npx @magclaw/daemon@latest stop --profile my-server
 npx @magclaw/daemon@latest uninstall --profile my-server
 ```
 
-Only one daemon process may run on a Computer at a time. Re-running a background
-start reports the existing process instead of creating a duplicate connection.
+MagClaw prevents duplicate daemon processes for the same `--profile` by using a
+per-profile lock. The same physical machine can run multiple daemon processes
+with different profiles, so it can connect to multiple Servers intentionally.
+Re-running a background start for the same profile reports the existing process
+instead of creating a duplicate connection.
 
 ## Runtime Configuration
 
