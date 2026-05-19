@@ -2160,7 +2160,9 @@ class MagClawDaemon {
   }
 
   async handleFrame(message) {
-    switch (message.type) {
+    const frameType = String(message?.type || 'unknown');
+    logInfo('daemon', `Received ${frameType}`);
+    switch (frameType) {
       case 'pairing:accepted':
         this.config.computerId = message.computerId;
         this.config.workspaceId = message.workspaceId || this.config.workspaceId || 'local';
@@ -2181,7 +2183,6 @@ class MagClawDaemon {
         break;
       case 'ping':
         this.send({ type: 'pong', time: now() });
-        logInfo('daemon', 'Received ping; sent pong.');
         break;
       case 'agent:start':
         await this.handleAgentStart(message);

@@ -165,7 +165,7 @@ test('daemon sends a periodic heartbeat while the websocket is connected', async
   assert.match(daemonSource, /this\.heartbeatIntervalMs/);
   assert.match(daemonSource, /Sent ready payload for computer/);
   assert.match(daemonSource, /Sent heartbeat/);
-  assert.match(daemonSource, /Received ping; sent pong/);
+  assert.match(daemonSource, /Received \$\{frameType\}/);
   assert.match(daemonSource, /local agent sessions continue running until reconnect/);
   assert.match(daemonSource, /MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS/);
   assert.match(daemonSource, /resetInboundWatchdog\(\)/);
