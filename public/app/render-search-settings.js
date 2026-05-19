@@ -1781,10 +1781,13 @@ function renderServerSettingsTab() {
         <form id="server-onboarding-form" class="modal-form">
           <div class="panel-title"><span>Onboarding Behavior</span><span>${server.newAgentGreetingEnabled === false ? 'quiet' : 'greeting'}</span></div>
           <label><span>Human Onboarding Agent</span><select name="onboardingAgentId">
-            <option value="">None</option>
-            ${agents.map((agent) => `<option value="${escapeHtml(agent.id)}" ${server.onboardingAgentId === agent.id ? 'selected' : ''}>${escapeHtml(agent.name)}</option>`).join('')}
+            <option value="" ${server.onboardingAgentId ? '' : 'selected'}>Disabled (no automatic onboarding)</option>
+            ${agents.map((agent) => `<option value="${escapeHtml(agent.id)}" ${server.onboardingAgentId === agent.id ? 'selected' : ''}>@${escapeHtml(agent.name)} (${escapeHtml(agent.name)})</option>`).join('')}
           </select></label>
-          <label class="checkline"><input type="checkbox" name="newAgentGreetingEnabled" ${server.newAgentGreetingEnabled === false ? '' : 'checked'} /> Enable new Agent greeting</label>
+          <label><span>New Agent Greeting</span><select name="newAgentGreetingEnabled">
+            <option value="true" ${server.newAgentGreetingEnabled === false ? '' : 'selected'}>Yes</option>
+            <option value="false" ${server.newAgentGreetingEnabled === false ? 'selected' : ''}>No</option>
+          </select></label>
           <button class="primary-btn" type="submit" ${canManage ? '' : 'disabled'}>Save Onboarding</button>
         </form>
       </div>

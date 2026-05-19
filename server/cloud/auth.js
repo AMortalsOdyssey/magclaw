@@ -75,6 +75,7 @@ export function createCloudAuth(deps) {
     now,
     persistState,
     realtimeSourceId = '',
+    scheduleHumanOnboarding = null,
   } = deps;
 
   const state = new Proxy({}, {
@@ -1998,8 +1999,11 @@ export function createCloudAuth(deps) {
       }
       const joinedAt = now();
       let member = memberForUser(user.id, workspace.id);
+      let joinedHuman = null;
+      let createdMembership = false;
       if (!member) {
         const human = ensureHumanForUser(user, 'member', { workspaceId: workspace.id });
+        joinedHuman = human;
         addHumanToAllChannel(human);
         member = {
           id: makeId('wmem'),
@@ -2014,6 +2018,7 @@ export function createCloudAuth(deps) {
         };
         cloud.workspaceMembers.push(member);
         joinLink.usedCount = Number(joinLink.usedCount || 0) + 1;
+        createdMembership = true;
       } else {
         member.status = 'active';
         member.joinedAt ||= joinedAt;
@@ -2024,6 +2029,9 @@ export function createCloudAuth(deps) {
       applyWorkspaceScopedSettings(workspace);
       console.info(`[cloud-auth] join link accepted workspace=${workspace.id} user=${user.id}`);
       await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_join_link_accepted' });
+      if (createdMembership && joinedHuman && typeof scheduleHumanOnboarding === 'function') {
+        scheduleHumanOnboarding({ human: joinedHuman, member, workspace, trigger: 'join_link' });
+      }
       return {
         server: workspace,
         workspace,
@@ -2039,11 +2047,14 @@ export function createCloudAuth(deps) {
       const acceptedAt = now();
       const role = normalizeCloudRole(invitation.role || 'member');
       let member = memberForUser(user.id, invitation.workspaceId);
+      let joinedHuman = null;
+      let createdMembership = false;
       if (!member) {
         const human = ensureHumanForUser(user, role, {
           humanId: invitation.humanId,
           workspaceId: invitation.workspaceId,
         });
+        joinedHuman = human;
         if (human) {
           human.role = role;
           human.status = 'online';
@@ -2062,6 +2073,7 @@ export function createCloudAuth(deps) {
           updatedAt: acceptedAt,
         };
         cloud.workspaceMembers.push(member);
+        createdMembership = true;
       } else {
         member.status = 'active';
         member.role = normalizeCloudRole(member.role || role);
@@ -2086,6 +2098,10 @@ export function createCloudAuth(deps) {
         message: `${user.name || user.email} accepted an invitation from Console.`,
       });
       await persistCloudState({ workspaceId: invitation.workspaceId, reason: 'cloud_invitation_accepted' });
+      if (createdMembership && joinedHuman && typeof scheduleHumanOnboarding === 'function') {
+        const workspace = cloud.workspaces.find((item) => item.id === invitation.workspaceId) || null;
+        scheduleHumanOnboarding({ human: joinedHuman, member, workspace, trigger: 'console_invitation' });
+      }
       return {
         invitation: publicInvitation(invitation),
         member: publicMember(member),
@@ -2216,7 +2232,7 @@ export function createCloudAuth(deps) {
         human.avatar = user.avatarUrl;
       }
       addHumanToAllChannel(human);
-      cloud.workspaceMembers.push({
+      const member = {
         id: makeId('wmem'),
         workspaceId: workspace.id,
         userId: user.id,
@@ -2225,7 +2241,8 @@ export function createCloudAuth(deps) {
         status: 'active',
         joinedAt: now(),
         createdAt: now(),
-      });
+      };
+      cloud.workspaceMembers.push(member);
       if (invitation) {
         invitation.acceptedAt = now();
         invitation.acceptedBy = user.id;
@@ -2242,6 +2259,9 @@ export function createCloudAuth(deps) {
       console.info(`[cloud-auth] invitation accepted email=${user.email} role=${role} user=${user.id}`);
       const issued = issueSession(user, req);
       await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_invite_registration' });
+      if (invitation && typeof scheduleHumanOnboarding === 'function') {
+        scheduleHumanOnboarding({ human, member, workspace, trigger: 'invitation_registration' });
+      }
       res.setHeader('Set-Cookie', issued.cookie);
 	      return { user: publicUser(user), member: memberForUser(user.id, workspace.id), workspace };
 	    }

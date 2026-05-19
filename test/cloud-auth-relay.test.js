@@ -263,6 +263,182 @@ test('server profile and join links are managed through cloud APIs', async () =>
   }
 });
 
+test('human onboarding uses the selected agent in #all and respects disable', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const owner = await registerOwnerServer(server);
+    const cookie = owner.cookie;
+
+    await request(server.baseUrl, '/api/cloud/server/profile', {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        workspaceSlug: owner.server.slug,
+        name: owner.server.name,
+        newAgentGreetingEnabled: false,
+      }),
+    });
+    const cindy = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Cindy',
+        description: 'Friendly onboarding assistant',
+        runtime: 'Codex CLI',
+      }),
+    });
+    await request(server.baseUrl, '/api/cloud/server/profile', {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        workspaceSlug: owner.server.slug,
+        name: owner.server.name,
+        onboardingAgentId: cindy.data.agent.id,
+        newAgentGreetingEnabled: false,
+      }),
+    });
+
+    const invite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ email: 'flyuser@example.com', role: 'member' }),
+    });
+    const member = await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: invite.data.inviteToken,
+        name: 'Fly User',
+        email: 'flyuser@example.com',
+        password: 'password123',
+      }),
+    });
+
+    const onboarded = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state', { cookie });
+      const message = snapshot.data.messages.find((item) => item.eventType === 'human_onboarding_task');
+      const workItem = message
+        ? snapshot.data.workItems.find((item) => item.sourceMessageId === message.id && item.agentId === cindy.data.agent.id)
+        : null;
+      return message && workItem ? { snapshot: snapshot.data, message, workItem } : null;
+    }, 5000);
+    const allChannel = onboarded.snapshot.channels.find((channel) => (
+      channel.workspaceId === owner.server.id
+      && (channel.defaultChannel || channel.name === 'all')
+    ));
+    assert.ok(allChannel);
+    assert.equal(onboarded.message.spaceType, 'channel');
+    assert.equal(onboarded.message.spaceId, allChannel.id);
+    assert.equal(onboarded.message.authorType, 'system');
+    assert.match(onboarded.message.body, /new human member onboarding/i);
+    assert.match(onboarded.message.body, new RegExp(`<@${member.data.member.humanId}>`));
+    assert.match(onboarded.message.body, /Default language is English/i);
+    assert.match(onboarded.message.body, /你希望用英语还是中文完成入门引导/);
+    assert.equal(onboarded.workItem.spaceId, allChannel.id);
+    assert.equal(onboarded.workItem.target, '#all');
+    assert.equal(onboarded.snapshot.channels.some((channel) => /^onboarding-/i.test(channel.name || '')), false);
+    assert.equal(onboarded.snapshot.agents.find((agent) => agent.id === cindy.data.agent.id)?.description, 'Friendly onboarding assistant');
+
+    await request(server.baseUrl, '/api/cloud/server/profile', {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        workspaceSlug: owner.server.slug,
+        name: owner.server.name,
+        onboardingAgentId: '',
+        newAgentGreetingEnabled: false,
+      }),
+    });
+    const disabledInvite = await request(server.baseUrl, '/api/cloud/invitations', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ email: 'quiet@example.com', role: 'member' }),
+    });
+    await request(server.baseUrl, '/api/cloud/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteToken: disabledInvite.data.inviteToken,
+        name: 'Quiet User',
+        email: 'quiet@example.com',
+        password: 'password123',
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const disabledState = await request(server.baseUrl, '/api/state', { cookie });
+    assert.equal(disabledState.data.messages.filter((item) => item.eventType === 'human_onboarding_task').length, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('new agent greeting asks the created agent to introduce itself in #all', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const owner = await registerOwnerServer(server);
+    const cookie = owner.cookie;
+
+    const greeter = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Deploy Buddy',
+        description: 'Helps coordinate deployments and release checks',
+        runtime: 'Codex CLI',
+      }),
+    });
+    const greeted = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state', { cookie });
+      const message = snapshot.data.messages.find((item) => (
+        item.eventType === 'agent_onboarding_greeting_task'
+        && item.body.includes(`<@${greeter.data.agent.id}>`)
+      ));
+      const workItem = message
+        ? snapshot.data.workItems.find((item) => item.sourceMessageId === message.id && item.agentId === greeter.data.agent.id)
+        : null;
+      return message && workItem ? { snapshot: snapshot.data, message, workItem } : null;
+    }, 5000);
+    const allChannel = greeted.snapshot.channels.find((channel) => (
+      channel.workspaceId === owner.server.id
+      && (channel.defaultChannel || channel.name === 'all')
+    ));
+    assert.ok(allChannel);
+    assert.equal(greeted.message.spaceId, allChannel.id);
+    assert.match(greeted.message.body, /new Agent greeting/i);
+    assert.match(greeted.message.body, /Helps coordinate deployments and release checks/);
+    assert.match(greeted.message.body, /write in Chinese/);
+    assert.equal(greeted.workItem.spaceId, allChannel.id);
+    assert.equal(greeted.workItem.target, '#all');
+    assert.equal(greeted.snapshot.channels.some((channel) => /^onboarding-/i.test(channel.name || '')), false);
+    assert.equal(greeted.snapshot.agents.find((agent) => agent.id === greeter.data.agent.id)?.description, 'Helps coordinate deployments and release checks');
+
+    await request(server.baseUrl, '/api/cloud/server/profile', {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        workspaceSlug: owner.server.slug,
+        name: owner.server.name,
+        newAgentGreetingEnabled: false,
+      }),
+    });
+    const quiet = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Quiet Bot',
+        description: 'Should not introduce itself automatically',
+        runtime: 'Codex CLI',
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const disabledState = await request(server.baseUrl, '/api/state', { cookie });
+    assert.equal(disabledState.data.messages.some((item) => (
+      item.eventType === 'agent_onboarding_greeting_task'
+      && item.body.includes(`<@${quiet.data.agent.id}>`)
+    )), false);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('public account registration and password reset use SMTP outbox without invite', async () => {
   const outbox = path.join(await mkdtemp(path.join(os.tmpdir(), 'magclaw-mail-')), 'outbox.jsonl');
   const server = await startIsolatedServer({
@@ -1100,7 +1276,11 @@ test('server Owners can promote and demote other Owners without allowing self-de
 
     await request(server.baseUrl, '/api/runtime', { cookie: ownerA.cookie, expectStatus: 403 });
     await request(server.baseUrl, '/api/runtimes', { cookie: ownerA.cookie, expectStatus: 403 });
-    await request(server.baseUrl, `/api/agents/${agent.data.agent.id}/workspace`, { cookie: ownerA.cookie, expectStatus: 403 });
+    const workspaceTree = await request(server.baseUrl, `/api/agents/${agent.data.agent.id}/workspace`, { cookie: ownerA.cookie });
+    assert.equal(workspaceTree.data.agent.id, agent.data.agent.id);
+    assert.ok(workspaceTree.data.entries.some((item) => item.path === 'MEMORY.md' && item.kind === 'file'));
+    const workspaceMemory = await request(server.baseUrl, `/api/agents/${agent.data.agent.id}/workspace/file?path=MEMORY.md`, { cookie: ownerA.cookie });
+    assert.equal(workspaceMemory.data.file.previewKind, 'markdown');
     await request(server.baseUrl, `/api/agents/${agent.data.agent.id}/skills`, { cookie: ownerA.cookie, expectStatus: 403 });
 
     await request(server.baseUrl, `/api/cloud/members/${promotedB.data.member.id}`, {

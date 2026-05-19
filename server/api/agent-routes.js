@@ -63,6 +63,7 @@ export async function handleAgentApi(req, res, url, deps) {
     requestAgentSkills,
     restartAgentFromControl,
     root,
+    scheduleNewAgentGreeting,
     sendError,
     sendJson,
     setAgentStatus,
@@ -87,6 +88,25 @@ export async function handleAgentApi(req, res, url, deps) {
     }
     if (!roleAllows(actor.member?.role, allowedRoles)) {
       sendError(res, 403, 'Workspace role is not allowed.');
+      return false;
+    }
+    return true;
+  }
+
+  function requireAgentWorkspaceRead(agent) {
+    if (!isLoginRequired()) return true;
+    const actor = typeof currentActor === 'function' ? currentActor(req) : null;
+    if (!actor) {
+      sendError(res, 401, 'Login is required.');
+      return false;
+    }
+    const actorWorkspaceId = String(actor.member?.workspaceId || '').trim();
+    const agentWorkspaceId = agentWorkspaceKey(
+      agent,
+      actorWorkspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local',
+    );
+    if (actorWorkspaceId && agentWorkspaceId && actorWorkspaceId !== agentWorkspaceId) {
+      sendError(res, 404, 'Agent not found.');
       return false;
     }
     return true;
@@ -189,6 +209,9 @@ export async function handleAgentApi(req, res, url, deps) {
     addCollabEvent('agent_created', `Agent created: ${agent.name}`, { agentId: agent.id });
     await autoStartCreatedAgent(agent);
     await persistState();
+    if (typeof scheduleNewAgentGreeting === 'function') {
+      scheduleNewAgentGreeting(agent, { workspaceId, trigger: 'agent_created' });
+    }
     broadcastState();
     sendJson(res, 201, { agent });
     return true;
@@ -318,12 +341,12 @@ export async function handleAgentApi(req, res, url, deps) {
 
   const agentWorkspaceMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/workspace$/);
   if (req.method === 'GET' && agentWorkspaceMatch) {
-    if (!requireAgentCapability(['admin'])) return true;
     const agent = findAgent(agentWorkspaceMatch[1]);
     if (!agent) {
       sendError(res, 404, 'Agent not found.');
       return true;
     }
+    if (!requireAgentWorkspaceRead(agent)) return true;
     try {
       const tree = await listAgentWorkspace(agent, url.searchParams.get('path') || '');
       sendJson(res, 200, tree);
@@ -366,12 +389,12 @@ export async function handleAgentApi(req, res, url, deps) {
 
   const agentWorkspaceFileMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/workspace\/file$/);
   if (req.method === 'GET' && agentWorkspaceFileMatch) {
-    if (!requireAgentCapability(['admin'])) return true;
     const agent = findAgent(agentWorkspaceFileMatch[1]);
     if (!agent) {
       sendError(res, 404, 'Agent not found.');
       return true;
     }
+    if (!requireAgentWorkspaceRead(agent)) return true;
     try {
       const file = await readAgentWorkspaceFile(agent, url.searchParams.get('path') || 'MEMORY.md');
       sendJson(res, 200, file);

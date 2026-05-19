@@ -424,7 +424,7 @@ document.addEventListener('submit', async (event) => {
           name: currentServerProfile().name,
           avatar: currentServerProfile().avatar || '',
           onboardingAgentId: data.get('onboardingAgentId') || '',
-          newAgentGreetingEnabled: Boolean(data.get('newAgentGreetingEnabled')),
+          newAgentGreetingEnabled: data.get('newAgentGreetingEnabled') === 'true',
         }),
       });
       toast('Onboarding saved');

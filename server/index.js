@@ -102,6 +102,7 @@ import { createCloudSync } from './cloud-sync.js';
 import { createDaemonRelay } from './cloud/daemon-relay.js';
 import { createRoutingEngine } from './routing-engine.js';
 import { createMissionRunner } from './mission-runner.js';
+import { createOnboardingManager } from './onboarding.js';
 import { createSystemServices } from './system-services.js';
 import { createStateCore } from './state-core.js';
 import { createTaskOrchestrator } from './task-orchestrator.js';
@@ -706,6 +707,7 @@ async function flushRealtimeReload() {
 }
 
 const mailService = createMailService();
+let scheduleHumanOnboardingFromCloud = null;
 const cloudAuth = createCloudAuth({
   cloudRepository,
   getState: () => state,
@@ -715,6 +717,7 @@ const cloudAuth = createCloudAuth({
   now,
   persistState,
   realtimeSourceId: REALTIME_SOURCE_ID,
+  scheduleHumanOnboarding: (...args) => scheduleHumanOnboardingFromCloud?.(...args),
 });
 
 async function hydrateBootstrapWindow(req, options = {}) {
@@ -1255,6 +1258,25 @@ const {
   updateTaskForAgent,
 } = agentRuntime;
 
+const onboardingManager = createOnboardingManager({
+  addSystemEvent,
+  addSystemMessage,
+  agentAvailableForAutoWork,
+  broadcastState,
+  deliverMessageToAgent,
+  findAgent,
+  getState: () => state,
+  makeId,
+  normalizeIds,
+  now,
+  persistState,
+});
+const {
+  scheduleHumanOnboarding,
+  scheduleNewAgentGreeting,
+} = onboardingManager;
+scheduleHumanOnboardingFromCloud = (...args) => scheduleHumanOnboarding(...args);
+
 const reminderScheduler = createReminderScheduler({
   addSystemEvent,
   addSystemMessage,
@@ -1547,6 +1569,7 @@ function agentApiDeps() {
     requestAgentSkills: (...args) => daemonRelay.requestAgentSkills(...args),
     restartAgentFromControl,
     root: ROOT,
+    scheduleNewAgentGreeting,
     sendError,
     sendJson,
     setAgentStatus,

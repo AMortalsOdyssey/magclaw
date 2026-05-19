@@ -2241,6 +2241,10 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /data-member-role-context="server"/);
   assert.match(app, /Join Links/);
   assert.match(app, /Onboarding Behavior/);
+  assert.match(app, /Disabled \(no automatic onboarding\)/);
+  assert.match(app, /<select name="newAgentGreetingEnabled">/);
+  assert.match(app, /<option value="true" \$\{server\.newAgentGreetingEnabled === false \? '' : 'selected'\}>Yes<\/option>/);
+  assert.match(app, /<option value="false" \$\{server\.newAgentGreetingEnabled === false \? 'selected' : ''\}>No<\/option>/);
   assert.match(app, /Danger Zone/);
   assert.match(app, /<details class="pixel-panel cloud-card danger-card server-danger-accordion" open>/);
   assert.match(app, /function renderHumanDetail\(/);
