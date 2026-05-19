@@ -91,10 +91,16 @@ async function discardProvisionalPairingComputer(pairingCommand = latestPairingC
 }
 
 async function switchConsoleServerAndLoadState(slug) {
-  if (!slug) throw new Error('Server slug is missing.');
-  const result = await api(`/api/console/servers/${encodeURIComponent(slug)}/switch`, { method: 'POST', body: '{}' });
+  const nextSlug = String(slug || '').trim();
+  if (!nextSlug) throw new Error('Server slug is missing.');
+  const nextServerHeaders = { 'x-magclaw-server-slug': nextSlug };
+  const result = await api(`/api/console/servers/${encodeURIComponent(nextSlug)}/switch`, {
+    method: 'POST',
+    body: '{}',
+    headers: nextServerHeaders,
+  });
   try {
-    appState = await api('/api/state');
+    appState = await api('/api/state', { headers: nextServerHeaders });
     if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   } catch (error) {
     if (result?.cloud && appState) appState = { ...appState, cloud: result.cloud };
