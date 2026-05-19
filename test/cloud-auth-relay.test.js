@@ -724,7 +724,7 @@ test('owner registration protects app APIs and supports invites end to end', asy
         item.agentId === remoteAgent.data.agent.id
         && item.messageId === offlineMessage.data.message.id
       ));
-      return agent?.status === 'waiting_for_computer' && delivery?.status === 'queued' ? snapshot : null;
+      return agent?.status === 'offline' && delivery?.status === 'queued' ? snapshot : null;
     });
 
     daemon = spawn(process.execPath, [

@@ -339,6 +339,35 @@ test('daemon relay requeues unacked sent deliveries when the socket disconnects'
   assert.equal(delivery.attempts, 2);
 });
 
+test('daemon relay keeps offline agent presence while queuing delivery for a stopped daemon', async () => {
+  const { cloud, relay, state } = createRelay();
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'offline',
+    connectedVia: 'daemon',
+  });
+  state.agents.push({
+    id: 'agt_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    name: 'Remote Agent',
+    runtime: 'codex',
+    status: 'offline',
+  });
+
+  const result = await relay.deliverToAgent(state.agents[0], {
+    id: 'msg_after_stop',
+    body: 'Queue this after the daemon was stopped.',
+  });
+
+  assert.equal(result, true);
+  assert.equal(state.agents[0].status, 'offline');
+  assert.equal(cloud.agentDeliveries.length, 1);
+  assert.equal(cloud.agentDeliveries[0].status, 'queued');
+});
+
 test('daemon relay keeps agents out of offline during quick reconnect grace', async () => {
   const { cloud, relay, state } = createRelay({ reconnectGraceMs: 50 });
   const rawToken = 'mc_machine_existing';

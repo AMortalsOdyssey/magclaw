@@ -679,9 +679,8 @@ export function createDaemonRelay(deps) {
     let changed = 0;
     for (const agent of safeArray(state.agents)) {
       if (agentIsUnavailable(agent) || agent.computerId !== computerId) continue;
-      const nextStatus = agentHasQueuedComputerDelivery(agent, computerId) ? 'waiting_for_computer' : 'offline';
-      if (agent.status === nextStatus) continue;
-      setAgentStatus(agent, nextStatus, 'daemon_computer_disconnected', {
+      if (agent.status === 'offline') continue;
+      setAgentStatus(agent, 'offline', 'daemon_computer_disconnected', {
         forceEvent: true,
         event: { computerId },
       });
@@ -917,6 +916,14 @@ export function createDaemonRelay(deps) {
     return delivery;
   }
 
+  function queuedCommandPresenceStatus(agent, delivery) {
+    const computer = findComputer(delivery?.computerId || agent?.computerId);
+    if (!computer || computerIsDisabled(computer)) return 'offline';
+    const status = String(computer.status || '').toLowerCase();
+    if (status === 'pairing' || computer.reconnectingSince || pendingDisconnects.has(computer.id)) return 'waiting_for_computer';
+    return 'offline';
+  }
+
   function agentShouldUseRelay(agent) {
     if (!agent?.computerId || agent.computerId === 'cmp_local') return false;
     const computer = findComputer(agent.computerId);
@@ -994,8 +1001,8 @@ export function createDaemonRelay(deps) {
     });
     if (result.queued) {
       const nextStatus = options.reason === 'warmup'
-        ? (result.sent ? 'warming' : 'waiting_for_computer')
-        : (result.sent ? 'starting' : 'waiting_for_computer');
+        ? (result.sent ? 'warming' : queuedCommandPresenceStatus(agent, result.delivery))
+        : (result.sent ? 'starting' : queuedCommandPresenceStatus(agent, result.delivery));
       setAgentStatus(agent, nextStatus, 'daemon_relay_start', { forceEvent: true });
       await persistAllState();
       broadcastState();
@@ -1032,7 +1039,7 @@ export function createDaemonRelay(deps) {
       reason: options.reason || 'manual_restart',
     });
     if (result.queued) {
-      setAgentStatus(agent, result.sent ? 'starting' : 'waiting_for_computer', 'daemon_relay_restart', { forceEvent: true });
+      setAgentStatus(agent, result.sent ? 'starting' : queuedCommandPresenceStatus(agent, result.delivery), 'daemon_relay_restart', { forceEvent: true });
       await persistAllState();
       broadcastState();
     }
@@ -1081,7 +1088,7 @@ export function createDaemonRelay(deps) {
       workItem.status = result.sent ? 'sent_remote' : 'queued_remote';
       workItem.updatedAt = now();
     }
-    setAgentStatus(agent, result.sent ? 'queued' : 'waiting_for_computer', 'daemon_relay_delivery', { forceEvent: true });
+    setAgentStatus(agent, result.sent ? 'queued' : queuedCommandPresenceStatus(agent, result.delivery), 'daemon_relay_delivery', { forceEvent: true });
     await persistAllState();
     broadcastState();
     return true;
