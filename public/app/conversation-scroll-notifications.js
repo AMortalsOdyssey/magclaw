@@ -537,6 +537,26 @@ function restorePageScroll(snapshot) {
   node.scrollTop = Math.min(Math.max(0, snapshot.top || 0), maxTop);
 }
 
+function railScrollSnapshot() {
+  const sections = [...document.querySelectorAll('[data-rail-scroll-section][data-scroll-key]')];
+  return sections.map((node) => ({
+    key: node.dataset?.scrollKey || '',
+    top: node.scrollTop || 0,
+    hasPosition: true,
+  }));
+}
+
+function restoreRailScroll(snapshot) {
+  const entries = Array.isArray(snapshot) ? snapshot : [];
+  for (const entry of entries) {
+    if (!entry?.hasPosition || !entry.key) continue;
+    const node = document.querySelector(`[data-rail-scroll-section][data-scroll-key="${CSS.escape(entry.key)}"]`);
+    if (!node) continue;
+    const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+    node.scrollTop = Math.min(Math.max(0, entry.top || 0), maxTop);
+  }
+}
+
 function restoreWorkspaceActivityScroll(snapshot) {
   if (!workspaceActivityDrawerOpen || workspaceActivityScrollToBottom) return;
   const node = document.querySelector('#workspace-activity-list');

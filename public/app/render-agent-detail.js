@@ -481,7 +481,7 @@ function renderAgentLiveActivityBar(agent, { compact = false } = {}) {
   const tag = compact ? 'span' : 'button';
   const actionAttrs = compact ? '' : ' type="button" data-action="set-agent-detail-tab" data-tab="activity"';
   return `
-    <${tag} class="agent-live-activity-bar${compact ? ' compact' : ''} ${presenceClass(summary.status)}"${actionAttrs}>
+    <${tag} class="agent-live-activity-bar${compact ? ' compact' : ''} ${presenceClass(summary.status)}" data-agent-id="${escapeHtml(agent.id)}" data-compact="${compact ? 'true' : 'false'}"${actionAttrs}>
       <span class="agent-activity-dot ${presenceClass(summary.status)}"></span>
       <strong>${escapeHtml(summary.label)}</strong>
       <span>${escapeHtml(summary.detail)}</span>
@@ -561,7 +561,7 @@ function renderAgentDetail(agent) {
         </div>
       </div>
       ${renderAgentDetailTabs()}
-      <div class="agent-detail-content">
+      <div class="agent-detail-content" data-page-scroll-surface data-scroll-key="agent:${escapeHtml(agent.id)}:${escapeHtml(normalizeAgentDetailTab(agentDetailTab))}">
         ${renderAgentDetailBody(agent)}
       </div>
     </section>

@@ -199,9 +199,10 @@ function syncRecordList(container, records, renderRecord, datasetName, emptyHtml
   return true;
 }
 
-function patchRailSurface() {
+function patchRailSurface(railSnapshot = railScrollSnapshot()) {
   const rail = document.querySelector('.collab-rail');
   if (rail) rail.replaceWith(htmlToElement(renderRail()));
+  restoreRailScroll(railSnapshot);
 }
 
 function patchThreadParentCard(message) {
@@ -377,6 +378,103 @@ function serverSettingsVisibleSignature(stateSnapshot = appState) {
   });
 }
 
+function agentDetailProfileSignature(stateSnapshot = appState) {
+  if (!selectedAgentId || normalizeAgentDetailTab(agentDetailTab) !== 'profile') return '';
+  const agent = byId(stateSnapshot?.agents, selectedAgentId);
+  if (!agent || agentDetailTabIsLoading(agent)) return '';
+  const computer = agent.computerId ? byId(stateSnapshot?.computers, agent.computerId) : null;
+  const creator = agentCreatorInfo(agent);
+  const runtimeOptions = runtimeOptionsForAgent(agent).map((runtime) => [
+    runtime?.id || '',
+    runtime?.name || '',
+    runtime?.installed !== false,
+    runtime?.createSupported !== false,
+    runtime?.defaultModel || '',
+    runtime?.defaultReasoningEffort || '',
+    (runtime?.models || []).join('\n'),
+    (runtime?.modelNames || []).map((model) => `${model?.slug || model}:${model?.name || model}`).join('\n'),
+    (runtime?.reasoningEffort || []).join('\n'),
+  ]);
+  return JSON.stringify({
+    agent: [
+      agent.id || '',
+      agent.name || '',
+      agent.description || '',
+      agent.avatar || '',
+      agent.runtime || '',
+      agent.runtimeId || '',
+      agent.model || '',
+      agent.reasoningEffort || '',
+      agent.computerId || '',
+      agent.workspace || '',
+      agent.createdAt || '',
+      agent.createdByHumanId || '',
+      agent.createdByUserId || '',
+      agent.creatorName || '',
+      agent.creatorEmail || '',
+      agent.deletedAt || '',
+      agent.archivedAt || '',
+    ],
+    computer: [
+      computer?.id || '',
+      computer?.name || '',
+      computer?.daemonVersion || '',
+      computer?.version || '',
+      computer?.deletedAt || '',
+      computer?.archivedAt || '',
+      computer?.disabledAt || '',
+    ],
+    creator: [creator.name || '', creator.username || '', creator.userId || ''],
+    envVars: (agent.envVars || []).map((item) => [item?.key || '', item?.value || '']),
+    runtimeOptions,
+    editField: agentDetailEditState?.field || '',
+    envEditAgentId: agentEnvEditState?.agentId || '',
+  });
+}
+
+function agentDetailRuntimeControlIsActive() {
+  const active = document.activeElement;
+  return Boolean(
+    active?.closest?.('#agent-runtime-config-form')
+    && ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(active.tagName)
+  );
+}
+
+function patchAgentDetailLiveSurfaces(agent) {
+  const heroStatus = document.querySelector('.agent-profile-hero .agent-hero-status');
+  if (heroStatus) {
+    heroStatus.innerHTML = `<span class="avatar-status-dot inline ${presenceClass(agentDisplayStatus(agent))}"></span>${escapeHtml(agentStatusLabel(agent))}`;
+  }
+  const selector = `.agent-live-activity-bar[data-agent-id="${CSS.escape(agent.id)}"]`;
+  document.querySelectorAll(selector).forEach((node) => {
+    const compact = node.dataset?.compact === 'true';
+    node.outerHTML = renderAgentLiveActivityBar(agent, { compact });
+  });
+}
+
+function patchAgentDetailSurface(scrollSnapshot = {}) {
+  if (!selectedAgentId) return false;
+  const agent = byId(appState.agents, selectedAgentId);
+  const shell = document.querySelector('.agent-detail-shell');
+  if (!agent || !shell) return false;
+  patchRailSurface();
+  if (!agentDetailRuntimeControlIsActive()) patchAgentDetailLiveSurfaces(agent);
+  const tab = normalizeAgentDetailTab(agentDetailTab);
+  if (tab === 'activity') {
+    const activityTab = shell.querySelector('.agent-activity-tab');
+    if (activityTab) activityTab.outerHTML = renderAgentActivityTab(agent);
+  }
+  if (tab === 'dms') {
+    const dmsTab = shell.querySelector('.agent-dms-tab');
+    if (dmsTab) dmsTab.outerHTML = renderAgentDmsTab(agent);
+  }
+  window.requestAnimationFrame(() => {
+    restorePaneScrolls(scrollSnapshot);
+    restorePageScroll(scrollSnapshot.page);
+  });
+  return true;
+}
+
 function patchOpenThreadDrawerSurface(scrollSnapshot) {
   if (!threadMessageId || selectedProjectFile || selectedAgentId || selectedTaskId) return false;
   const message = byId(appState.messages, threadMessageId);
@@ -490,6 +588,7 @@ function applyStateUpdate(nextState) {
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
+    page: pageScrollSnapshot(),
   };
   const selectionBefore = `${selectedSpaceType}:${selectedSpaceId}`;
   const unreadBefore = railUnreadSignature();
@@ -497,6 +596,7 @@ function applyStateUpdate(nextState) {
   const serverProfileBefore = serverProfilePatchSignature();
   const serverSettingsSupportBefore = serverSettingsSupportSignature();
   const serverSettingsVisibleBefore = serverSettingsVisibleSignature();
+  const agentDetailBefore = agentDetailProfileSignature();
   const computerModalBefore = modal === 'computer' ? computerPairingModalRenderSignature(appState) : '';
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
@@ -512,6 +612,12 @@ function applyStateUpdate(nextState) {
   const activeConversationChanged = activeConversationBefore !== activeConversationSignature();
   const serverProfileAfter = serverProfilePatchSignature();
   const serverSettingsVisibleAfter = serverSettingsVisibleSignature();
+  const agentDetailAfter = agentDetailProfileSignature();
+  const agentDetailUnchanged = Boolean(
+    agentDetailBefore
+    && agentDetailBefore === agentDetailAfter
+    && !selectionChanged
+  );
   const serverSettingsUnchanged = activeView === 'cloud'
     && settingsTab === 'server'
     && serverSettingsVisibleBefore === serverSettingsVisibleAfter
@@ -564,6 +670,7 @@ function applyStateUpdate(nextState) {
     window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
     return;
   }
+  if (agentDetailUnchanged && patchAgentDetailSurface(scrollSnapshot)) return;
   if (patchActiveThreadSurface(scrollSnapshot)) return;
   if (patchActiveConversationSurface(scrollSnapshot, { allowInspector: activeConversationChanged || unreadChanged })) return;
   if (unreadChanged) patchRailSurface();
@@ -572,6 +679,11 @@ function applyStateUpdate(nextState) {
 
 function applyRunEventUpdate(incoming) {
   if (!appState || appState.events.some((item) => item.id === incoming.id)) return;
+  const scrollSnapshot = {
+    main: paneScrollSnapshot('main'),
+    thread: paneScrollSnapshot('thread'),
+    page: pageScrollSnapshot(),
+  };
   appState.events.push(incoming);
   if (modal) return;
   if (agentDetailInlineEditIsActive()) {
@@ -582,7 +694,10 @@ function applyRunEventUpdate(incoming) {
     patchRailSurface();
     return;
   }
-  if (workspaceActivityDrawerOpen || selectedAgentId) {
+  if (selectedAgentId && patchAgentDetailSurface(scrollSnapshot)) {
+    return;
+  }
+  if (workspaceActivityDrawerOpen) {
     render();
     return;
   }

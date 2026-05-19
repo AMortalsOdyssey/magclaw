@@ -58,7 +58,7 @@ test('unread count changes do not force full render before active chat patching'
   const beforePatchSource = applyStateSource.slice(0, applyStateSource.indexOf('if (patchActiveThreadSurface(scrollSnapshot)) return;'));
 
   assert.match(app, /function railUnreadSignature\(stateSnapshot = appState\)/);
-  assert.match(app, /function patchRailSurface\(\)/);
+  assert.match(app, /function patchRailSurface\(/);
   assert.match(app, /function patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector = false \} = \{\}\)/);
   assert.match(app, /const activeConversationBefore = activeConversationSignature\(\)/);
   assert.match(app, /const activeConversationChanged = activeConversationBefore !== activeConversationSignature\(\)/);
@@ -88,6 +88,62 @@ test('background state updates do not repaint unchanged server settings forms', 
     ),
     /render\(\)/,
   );
+});
+
+test('background state updates do not repaint unchanged agent detail runtime forms', async () => {
+  const app = await readAppSource();
+  const applyStateSource = app.slice(
+    app.indexOf('function applyStateUpdate(nextState)'),
+    app.indexOf('function applyRunEventUpdate(incoming)'),
+  );
+
+  assert.match(app, /function agentDetailProfileSignature\(stateSnapshot = appState\)/);
+  assert.match(app, /function patchAgentDetailSurface\(scrollSnapshot = \{\}\)/);
+  assert.match(app, /data-page-scroll-surface data-scroll-key="agent:\$\{escapeHtml\(agent\.id\)\}:\$\{escapeHtml\(normalizeAgentDetailTab\(agentDetailTab\)\)\}"/);
+  assert.match(applyStateSource, /const agentDetailBefore = agentDetailProfileSignature\(\)/);
+  assert.match(applyStateSource, /const agentDetailAfter = agentDetailProfileSignature\(\)/);
+  assert.match(applyStateSource, /const agentDetailUnchanged = Boolean\([\s\S]*agentDetailBefore[\s\S]*agentDetailBefore === agentDetailAfter[\s\S]*!selectionChanged[\s\S]*\)/);
+  assert.match(applyStateSource, /if \(agentDetailUnchanged && patchAgentDetailSurface\(scrollSnapshot\)\) return;/);
+  assert.doesNotMatch(
+    applyStateSource.slice(
+      applyStateSource.indexOf('if (agentDetailUnchanged && patchAgentDetailSurface(scrollSnapshot))'),
+      applyStateSource.indexOf('if (patchActiveThreadSurface(scrollSnapshot)) return;'),
+    ),
+    /render\(\)/,
+  );
+});
+
+test('run-event SSE updates do not repaint selected agent detail', async () => {
+  const app = await readAppSource();
+  const runEventSource = app.slice(
+    app.indexOf('function applyRunEventUpdate(incoming)'),
+    app.indexOf('function applyPresenceHeartbeat(heartbeat)'),
+  );
+  const selectedAgentSource = runEventSource.slice(
+    runEventSource.indexOf('if (selectedAgentId && patchAgentDetailSurface(scrollSnapshot))'),
+    runEventSource.indexOf('if (workspaceActivityDrawerOpen)'),
+  );
+
+  assert.match(runEventSource, /const scrollSnapshot = \{[\s\S]*page: pageScrollSnapshot\(\)/);
+  assert.match(runEventSource, /if \(selectedAgentId && patchAgentDetailSurface\(scrollSnapshot\)\) \{[\s\S]*return;[\s\S]*\}/);
+  assert.doesNotMatch(selectedAgentSource, /render\(\)/);
+});
+
+test('rail patching preserves scrolled members agent lists', async () => {
+  const app = await readAppSource();
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
+  const patchRailSource = app.slice(
+    app.indexOf('function patchRailSurface'),
+    app.indexOf('function patchThreadParentCard'),
+  );
+
+  assert.match(app, /function railScrollSnapshot\(\)/);
+  assert.match(app, /function restoreRailScroll\(snapshot\)/);
+  assert.match(app, /data-rail-scroll-section="agents" data-scroll-key="rail:members:agents"/);
+  assert.match(renderSource, /rail: railScrollSnapshot\(\)/);
+  assert.match(renderSource, /restoreRailScroll\(scrollSnapshot\.rail\)/);
+  assert.match(patchRailSource, /function patchRailSurface\(railSnapshot = railScrollSnapshot\(\)\)/);
+  assert.match(patchRailSource, /restoreRailScroll\(railSnapshot\)/);
 });
 
 test('run-event SSE updates do not repaint active chat panes or force scroll restore', async () => {

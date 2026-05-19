@@ -32,6 +32,7 @@ function render() {
     thread: paneScrollSnapshot('thread'),
     page: pageScrollSnapshot(),
     workspaceActivity: workspaceActivityScrollSnapshot(),
+    rail: railScrollSnapshot(),
   };
   ensureSelection();
   persistUiState();
@@ -54,6 +55,7 @@ function render() {
       restorePaneScrolls(scrollSnapshot);
       restorePageScroll(scrollSnapshot.page);
       restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
+      restoreRailScroll(scrollSnapshot.rail);
       restoreProfileFormFocus(profileFocus);
       restoreAgentDetailFieldFocus(agentDetailFocus);
       restoreComputerNameFieldFocus(computerNameFocus);
@@ -97,6 +99,7 @@ function render() {
     restorePaneScrolls(scrollSnapshot);
     restorePageScroll(scrollSnapshot.page);
     restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
+    restoreRailScroll(scrollSnapshot.rail);
     restoreProfileFormFocus(profileFocus);
     restoreAgentDetailFieldFocus(agentDetailFocus);
     restoreComputerNameFieldFocus(computerNameFocus);
@@ -303,12 +306,12 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
       ${renderNavItem('saved', 'Saved', 'bookmark', saved || '')}
     </div>
 
-    <div class="rail-section">
+    <div class="rail-section" data-rail-scroll-section="channels" data-scroll-key="rail:spaces:channels">
       ${renderRailSectionTitle('channels', 'Channels', channels.length, { modal: 'channel' })}
       ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel, unreadCountForSpace(spaceUnreadCounts, 'channel', channel.id))).join('')}
     </div>
 
-      <div class="rail-section">
+      <div class="rail-section" data-rail-scroll-section="dms" data-scroll-key="rail:spaces:dms">
         ${renderRailSectionTitle('dms', 'DIRECT MESSAGES', dmPeers.length, { modal: 'dm' })}
         ${collapsedSidebarSections.dms ? '' : dmPeers.map(({ dm, peer }) => (
           renderDmItem(dm.id, peer.name || displayName(peer.id), peer.status || 'offline', peer.avatar || '', unreadCountForSpace(spaceUnreadCounts, 'dm', dm.id))
@@ -323,12 +326,12 @@ function renderMembersRail({ normalAgents }) {
   const agentModal = cloudCan('manage_agents') ? 'agent' : '';
   const humanModal = cloudCan('invite_member') ? 'member-invite' : '';
   return `
-    <div class="rail-section">
+    <div class="rail-section" data-rail-scroll-section="agents" data-scroll-key="rail:members:agents">
       ${renderRailSectionTitle('agents', 'Agents', normalAgents.length, { modal: agentModal })}
       ${collapsedSidebarSections.agents ? '' : renderAgentGroupsByComputer(normalAgents)}
     </div>
 
-      <div class="rail-section">
+      <div class="rail-section" data-rail-scroll-section="humans" data-scroll-key="rail:members:humans">
         ${renderRailSectionTitle('humans', 'Humans', humans.length, { modal: humanModal })}
         ${collapsedSidebarSections.humans ? '' : humans.map((human) => renderHumanListItem(human)).join('')}
       </div>
@@ -345,7 +348,7 @@ function renderComputersRail() {
     : (appState.computers || []);
   const canManageComputers = cloudCan('manage_computers');
   return `
-    <div class="rail-section">
+    <div class="rail-section" data-rail-scroll-section="computers" data-scroll-key="rail:computers:computers">
       ${renderRailSectionTitle('computers', 'Computers', computers.length, { modal: canManageComputers ? 'computer' : '' })}
       ${collapsedSidebarSections.computers ? '' : computers.map((computer) => renderComputerListItem(computer)).join('')}
     </div>
