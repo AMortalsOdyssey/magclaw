@@ -6,6 +6,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   DAEMON_VERSION,
   detectRuntimes,
@@ -15,11 +16,13 @@ import {
   profilePaths,
   runtimeCommandHasPathSeparator,
   runtimeCommandNeedsShell,
+  selectRuntimeCommandPath,
   toWebSocketUrl,
 } from '../daemon/src/cli.js';
 
-const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
+const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DAEMON_BIN = path.join(ROOT, 'daemon', 'bin', 'magclaw-daemon.js');
+const NPM_BIN = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 async function startHoldingWebSocketServer() {
@@ -96,9 +99,9 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
   const env = { MAGCLAW_DAEMON_HOME: path.join(os.tmpdir(), 'magclaw-daemon-test') };
   const paths = profilePaths('cloud/admin user', env);
   assert.equal(paths.profile, 'cloud_admin_user');
-  assert.match(paths.config, /\/profiles\/cloud_admin_user\/config\.json$/);
-  assert.match(paths.owner, /\/profiles\/cloud_admin_user\/owner\.json$/);
-  assert.doesNotMatch(paths.config, /state\.json|state\.sqlite|\/agents\//);
+  assert.equal(path.normalize(paths.config).endsWith(path.join('profiles', 'cloud_admin_user', 'config.json')), true);
+  assert.equal(path.normalize(paths.owner).endsWith(path.join('profiles', 'cloud_admin_user', 'owner.json')), true);
+  assert.doesNotMatch(path.normalize(paths.config), /state\.json|state\.sqlite|[\\/]agents[\\/]/);
 
   const parsed = parseCli([
     'node',
@@ -218,8 +221,21 @@ test('daemon machine fingerprint is stable inside a server profile', async () =>
 
 test('daemon runtime detection uses real commands and detects codex app-server', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-runtime-'));
-  const fakeCodex = path.join(tmp, 'codex-fake.js');
-  await writeFile(fakeCodex, `#!/usr/bin/env node
+  const fakeCodex = path.join(tmp, process.platform === 'win32' ? 'codex-fake.cmd' : 'codex-fake.js');
+  if (process.platform === 'win32') {
+    await writeFile(fakeCodex, `@echo off
+if "%~1"=="--version" (
+  echo codex-cli 9.9.9
+  exit /b 0
+)
+if "%~1"=="app-server" if "%~2"=="--help" (
+  echo Usage: codex app-server --listen stdio://
+  exit /b 0
+)
+exit /b 2
+`);
+  } else {
+    await writeFile(fakeCodex, `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === '--version') {
   console.log('codex-cli 9.9.9');
@@ -231,7 +247,8 @@ if (args[0] === 'app-server' && args[1] === '--help') {
 }
 process.exit(2);
 `);
-  await chmod(fakeCodex, 0o755);
+    await chmod(fakeCodex, 0o755);
+  }
   const runtimes = await detectRuntimes({
     ...process.env,
     CODEX_PATH: fakeCodex,
@@ -264,10 +281,21 @@ test('daemon runtime command helpers handle Windows Codex CLI paths', () => {
   assert.equal(runtimeCommandNeedsShell('/usr/local/bin/codex', 'darwin'), false);
 });
 
+test('daemon prefers Windows command shims that Node can launch', () => {
+  const output = [
+    'C:\\Users\\tt\\AppData\\Roaming\\npm\\codex',
+    'C:\\Users\\tt\\AppData\\Roaming\\npm\\codex.cmd',
+    'C:\\Program Files\\WindowsApps\\OpenAI.Codex\\codex.exe',
+  ].join('\n');
+  assert.equal(selectRuntimeCommandPath(output, 'codex', 'win32'), 'C:\\Users\\tt\\AppData\\Roaming\\npm\\codex.cmd');
+  assert.equal(selectRuntimeCommandPath(output, 'codex', 'linux'), 'C:\\Users\\tt\\AppData\\Roaming\\npm\\codex');
+});
+
 test('top-level daemon npm package dry-run excludes cloud server and deployment files', () => {
-  const result = spawnSync('npm', ['pack', '--dry-run', '--json', './daemon'], {
+  const result = spawnSync(NPM_BIN, ['pack', '--dry-run', '--json', './daemon'], {
     cwd: ROOT,
     encoding: 'utf8',
+    shell: process.platform === 'win32',
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const packed = JSON.parse(result.stdout)[0];
@@ -306,8 +334,12 @@ test('foreground daemon exits and clears its lock on SIGINT', async () => {
     await waitForOutput(child, /Connecting MagClaw daemon profile "sigint-test"/);
     child.kill('SIGINT');
     const exit = await exitPromise;
-    assert.equal(exit.code, 130);
-    assert.equal(exit.signal, null);
+    if (process.platform === 'win32') {
+      assert.equal(exit.signal, 'SIGINT');
+    } else {
+      assert.equal(exit.code, 130);
+      assert.equal(exit.signal, null);
+    }
 
     const status = spawnSync(process.execPath, [
       DAEMON_BIN,

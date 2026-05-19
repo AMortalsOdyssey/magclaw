@@ -358,13 +358,31 @@ function commandOutput(command, args = [], options = {}) {
   };
 }
 
+export function selectRuntimeCommandPath(output, fallback = '', platform = process.platform) {
+  const paths = String(output || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!paths.length) return fallback;
+  if (platform !== 'win32') return paths[0];
+  const score = (file) => {
+    const ext = path.extname(file).toLowerCase();
+    if (ext === '.cmd' || ext === '.bat') return 0;
+    if (ext === '.exe' || ext === '.com') return 1;
+    return 2;
+  };
+  return paths
+    .map((file, index) => ({ file, index, score: score(file) }))
+    .sort((left, right) => left.score - right.score || left.index - right.index)[0]?.file || paths[0];
+}
+
 function commandExists(command, env = process.env) {
   const checker = process.platform === 'win32' ? 'where' : 'command';
   const args = process.platform === 'win32' ? [command] : ['-v', command];
   const result = process.platform === 'win32'
     ? commandOutput(checker, args, { env, timeoutMs: 1500 })
     : commandOutput('/bin/sh', ['-lc', `command -v ${JSON.stringify(command)}`], { env, timeoutMs: 1500 });
-  if (result.ok) return result.stdout.split(/\r?\n/)[0] || command;
+  if (result.ok) return selectRuntimeCommandPath(result.stdout, command);
   for (const candidate of [
     path.join(path.dirname(process.execPath), command),
     path.join(os.homedir(), '.local', 'bin', command),
@@ -394,9 +412,12 @@ function defaultCodexCommand(env = process.env) {
     .map((item) => String(item || '').trim())
     .filter(Boolean);
   for (const candidate of [...new Set(candidates)]) {
-    if (runtimeCommandHasPathSeparator(candidate) && !existsSync(candidate)) continue;
-    const result = commandOutput(candidate, ['--version'], { env, timeoutMs: 3000 });
-    if (result.ok) return candidate;
+    const command = runtimeCommandHasPathSeparator(candidate)
+      ? candidate
+      : commandExists(candidate, env) || candidate;
+    if (runtimeCommandHasPathSeparator(command) && !existsSync(command)) continue;
+    const result = commandOutput(command, ['--version'], { env, timeoutMs: 3000 });
+    if (result.ok) return command;
   }
   return candidates[0] || 'codex';
 }
@@ -507,9 +528,10 @@ export async function detectRuntimes(env = process.env) {
   ];
   return candidates.map((item) => {
     const pathValue = runtimeCommandHasPathSeparator(item.command) ? (existsSync(item.command) ? item.command : '') : commandExists(item.command, env);
+    const runtimeCommand = pathValue || item.command;
     const installed = Boolean(pathValue);
-    const version = installed ? runtimeVersion(item.command, env) : '';
-    const modelInfo = installed && item.modelsFor ? item.modelsFor(item.command) : {
+    const version = installed ? runtimeVersion(runtimeCommand, env) : '';
+    const modelInfo = installed && item.modelsFor ? item.modelsFor(runtimeCommand) : {
       models: item.models || [],
       modelNames: (item.models || []).map((model) => ({ slug: model, name: model })),
       defaultModel: item.defaultModel || item.models?.[0] || '',
@@ -519,12 +541,12 @@ export async function detectRuntimes(env = process.env) {
     return {
       id: item.id,
       name: item.name,
-      command: item.command,
+      command: runtimeCommand,
       path: pathValue,
       installed,
       version,
       createSupported: item.createSupported !== false,
-      appServer: item.id === 'codex' && installed ? codexAppServerCapable(item.command, env) : false,
+      appServer: item.id === 'codex' && installed ? codexAppServerCapable(runtimeCommand, env) : false,
       ...modelInfo,
     };
   });
