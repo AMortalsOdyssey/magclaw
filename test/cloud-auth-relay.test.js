@@ -650,11 +650,12 @@ test('owner registration protects app APIs and supports invites end to end', asy
     assert.match(pairing.data.command, /# Admin Team/);
     assert.equal(pairing.data.provisional, true);
     assert.equal(pairing.data.displayName, 'CI runner');
+    assert.equal(pairing.data.computer.status, 'pairing');
+    assert.equal(pairing.data.computer.connectedVia, 'daemon');
+    assert.equal(pairing.data.computer.name, 'CI runner');
+    assert.equal(pairing.data.computer.metadata?.pairingProvisional, true);
     const prePairState = await request(server.baseUrl, '/api/state', { cookie: adminCookie });
-    const pendingComputer = prePairState.data.computers.find((item) => item.id === pairing.data.computer.id);
-    assert.equal(pendingComputer?.status, 'pairing');
-    assert.equal(pendingComputer?.connectedVia, 'daemon');
-    assert.equal(pendingComputer?.name, 'CI runner');
+    assert.equal(prePairState.data.computers.some((item) => item.id === pairing.data.computer.id), false);
 
     const daemonConfig = path.join(server.tmp, 'daemon.json');
     daemon = spawn(process.execPath, [
@@ -678,6 +679,7 @@ test('owner registration protects app APIs and supports invites end to end', asy
 
     const pairedComputer = state.computers.find((item) => item.id === pairing.data.computer.id);
     assert.equal(pairedComputer.connectedVia, 'daemon');
+    assert.equal(Boolean(pairedComputer.metadata?.pairingProvisional), false);
     assert.ok((pairedComputer.runtimeIds || []).includes('codex'));
     const saved = JSON.parse(await readFile(daemonConfig, 'utf8'));
     assert.equal(saved.token, pairing.data.apiKey);
@@ -865,7 +867,7 @@ test('cloud pairing tokens use the request-scoped server instead of the process 
       cookie: admin.cookie,
       headers: { 'x-magclaw-server-slug': 'second-team' },
     });
-    assert.ok(secondState.data.computers.some((computer) => computer.id === pairing.data.computer.id));
+    assert.equal(secondState.data.computers.some((computer) => computer.id === pairing.data.computer.id), false);
 
     const firstState = await request(server.baseUrl, '/api/state?serverSlug=admin-team', {
       cookie: admin.cookie,

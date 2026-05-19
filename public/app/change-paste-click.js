@@ -60,6 +60,36 @@ async function ensureOfflineComputerConnectCommand() {
   }
 }
 
+async function discardProvisionalPairingComputer(pairingCommand = latestPairingCommand) {
+  const pendingComputer = pairingCommand?.computer || null;
+  if (!pairingCommand?.provisional || !pendingComputer?.id) return false;
+  try {
+    await refreshState();
+  } catch (error) {
+    console.warn('Failed to refresh computer pairing state before discarding provisional computer:', error);
+    return false;
+  }
+  const liveComputer = pendingComputer.id ? byId(appState.computers, pendingComputer.id) : null;
+  const pairingComputer = liveComputer || pendingComputer;
+  const pendingStatus = String(pairingComputer?.status || '').toLowerCase();
+  const hasBoundAgents = (appState.agents || []).some((agent) => agent?.computerId === pairingComputer?.id && !agent.deletedAt);
+  const shouldDiscardPairingComputer = Boolean(
+    pairingComputer?.id
+    && pendingStatus !== 'connected'
+    && !hasBoundAgents
+  );
+  if (!shouldDiscardPairingComputer) return false;
+  try {
+    await api(`/api/computers/${encodeURIComponent(pairingComputer.id)}`, { method: 'DELETE' });
+    await refreshState();
+    if (latestPairingCommand?.computer?.id === pairingComputer.id) latestPairingCommand = null;
+    return true;
+  } catch (error) {
+    console.warn('Failed to discard unpaired computer:', error);
+    return false;
+  }
+}
+
 async function switchConsoleServerAndLoadState(slug) {
   if (!slug) throw new Error('Server slug is missing.');
   const result = await api(`/api/console/servers/${encodeURIComponent(slug)}/switch`, { method: 'POST', body: '{}' });
@@ -962,8 +992,12 @@ document.addEventListener('click', async (event) => {
         computerPairingDisplayName = '';
         computerPairingCommandError = '';
         render();
-        await generateFreshComputerPairingCommand({ name: defaultComputerPairingName() });
-        if (modal === 'computer') render();
+        const pairingCommand = await generateFreshComputerPairingCommand({ name: defaultComputerPairingName() });
+        if (modal !== 'computer') {
+          await discardProvisionalPairingComputer(pairingCommand);
+          return;
+        }
+        render();
         return;
       }
       if (modal === 'member-invite') {
@@ -1047,35 +1081,7 @@ document.addEventListener('click', async (event) => {
           memberResetLinkState = { email: '', link: '' };
         }
         if (modal === 'computer') {
-          const pendingComputer = latestPairingCommand?.computer || null;
-          let refreshedPairingState = false;
-          if (latestPairingCommand?.provisional && pendingComputer?.id) {
-            try {
-              await refreshState();
-              refreshedPairingState = true;
-            } catch (error) {
-              console.warn('Failed to refresh computer pairing state before closing modal:', error);
-            }
-          }
-          const liveComputer = pendingComputer?.id ? byId(appState.computers, pendingComputer.id) : null;
-          const pairingComputer = liveComputer || pendingComputer;
-          const pendingStatus = String(pairingComputer?.status || '').toLowerCase();
-          const hasBoundAgents = (appState.agents || []).some((agent) => agent?.computerId === pairingComputer?.id && !agent.deletedAt);
-          const shouldDiscardPairingComputer = Boolean(
-            latestPairingCommand?.provisional
-            && refreshedPairingState
-            && pairingComputer?.id
-            && pendingStatus !== 'connected'
-            && !hasBoundAgents
-          );
-          if (shouldDiscardPairingComputer) {
-            try {
-              await api(`/api/computers/${encodeURIComponent(pairingComputer.id)}`, { method: 'DELETE' });
-              await refreshState();
-            } catch (error) {
-              console.warn('Failed to discard unpaired computer:', error);
-            }
-          }
+          await discardProvisionalPairingComputer(latestPairingCommand);
           latestPairingCommand = null;
           computerPairingDisplayName = '';
           computerPairingCommandError = '';

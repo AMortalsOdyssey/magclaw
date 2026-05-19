@@ -2156,6 +2156,32 @@ export function createCloudPostgresStore(optionsInput = {}) {
     return next;
   }
 
+  async function deleteComputerNow(computerId, workspaceId = '') {
+    const cleanComputerId = String(computerId || '').trim();
+    const cleanWorkspaceId = String(workspaceId || '').trim();
+    if (!cleanComputerId) return;
+    await withClient(async (client) => {
+      await withTransaction(client, 'deleteComputer', async () => {
+        await client.query(`
+          DELETE FROM ${table('cloud_computers')}
+          WHERE id = $1
+            AND ($2::text = '' OR workspace_id = $2)
+        `, [cleanComputerId, cleanWorkspaceId]);
+      });
+    });
+  }
+
+  function deleteComputer(computerId, workspaceId = '') {
+    const cleanComputerId = String(computerId || '').trim();
+    const cleanWorkspaceId = String(workspaceId || '').trim();
+    const next = persistQueue.then(
+      () => deleteComputerNow(cleanComputerId, cleanWorkspaceId),
+      () => deleteComputerNow(cleanComputerId, cleanWorkspaceId),
+    );
+    persistQueue = next.catch(() => {});
+    return next;
+  }
+
   async function persistAuthFromStateNow(state) {
     const cloud = state.cloud || {};
     const users = safeArray(cloud.users).map(cloneRecord);
@@ -2713,6 +2739,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     persistAuthFromState,
     persistFromState,
     persistWorkspaceFromState,
+    deleteComputer,
     subscribeRealtimeEvents,
     publicInfo: () => ({
       backend: 'postgres',

@@ -437,7 +437,12 @@ export async function handleCollabApi(req, res, url, deps) {
       }
       state.computers = state.computers.filter((item) => item.id !== computer.id);
       addCollabEvent('computer_deleted', `Computer deleted: ${computer.name}`, { computerId: computer.id });
-      await persistState();
+      await persistState({
+        awaitExternal: true,
+        deletedComputerId: computer.id,
+        workspaceId: computer.workspaceId || actorContext(req).workspaceId,
+        reason: 'computer_deleted',
+      });
       broadcastState();
       sendJson(res, 200, { ok: true });
       return true;

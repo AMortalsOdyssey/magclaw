@@ -133,8 +133,10 @@ test('computer connect modal creates a fresh command before rendering stale stat
   const refreshActionSource = app.slice(app.indexOf("if (action === 'refresh-computer-pairing-command')"), app.indexOf("if (action === 'copy-join-link')"));
   const stateUpdateSource = app.slice(app.indexOf('function applyStateUpdate(nextState)'), app.indexOf('function applyRunEventUpdate'));
   const offlineCommandSource = app.slice(app.indexOf('function selectedOfflineComputerForCommand'), app.indexOf('async function switchConsoleServerAndLoadState'));
+  const discardSource = app.slice(app.indexOf('async function discardProvisionalPairingComputer'), app.indexOf('async function switchConsoleServerAndLoadState'));
 
   assert.match(app, /async function generateFreshComputerPairingCommand\(body = \{\}\)/);
+  assert.match(app, /async function discardProvisionalPairingComputer\(pairingCommand = latestPairingCommand\)/);
   assert.match(app, /latestPairingCommand\.displayName = requestedDisplayName/);
   assert.match(app, /appState = await api\('\/api\/state'\)/);
   assert.match(app, /let offlineComputerCommandRequestKey = ''/);
@@ -144,6 +146,7 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(offlineCommandSource, /pairingCommandIsUsable\(latestPairingCommand\)/);
   assert.match(offlineCommandSource, /await generateFreshComputerPairingCommand\(\{ computerId: computer\.id, name: displayName, displayName \}\)/);
   assert.match(clickSource, /await generateFreshComputerPairingCommand\(\{ name: defaultComputerPairingName\(\) \}\)/);
+  assert.match(clickSource, /const pairingCommand = await generateFreshComputerPairingCommand\(\{ name: defaultComputerPairingName\(\) \}\)/);
   assert.match(pairingActionsSource, /await generateFreshComputerPairingCommand\(body\)/);
   assert.match(regenerateActionSource, /modal = 'computer'/);
   assert.match(regenerateActionSource, /displayName:/);
@@ -157,7 +160,7 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(app, /code\.textContent = pairingCommandDisplayText\(\)/);
   assert.match(modalSource, /computerPairingCommandError \|\| 'Generating command\.\.\.'/);
   assert.match(clickSource, /if \(modal === 'computer'\) renderShellOrModal\(\)/);
-  assert.match(clickSource, /render\(\);\s*await generateFreshComputerPairingCommand\(\{ name: defaultComputerPairingName\(\) \}\)/);
+  assert.match(clickSource, /if \(modal !== 'computer'\) \{\s*await discardProvisionalPairingComputer\(pairingCommand\);\s*return;\s*\}\s*render\(\);/);
   assert.match(modalSource, /function defaultComputerPairingName/);
   assert.match(modalSource, /computerNameLooksLikeCloudHost/);
   assert.match(modalSource, /token\.consumedAt \|\| token\.revokedAt/);
@@ -168,15 +171,15 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(clickSource, /latestPairingCommand\.provisional = !body\.computerId/);
   assert.match(clickSource, /computerPairingDisplayName = ''/);
   assert.match(app, /'computer-display-name'/);
-  assert.match(closeModalSource, /shouldDiscardPairingComputer/);
-  assert.match(closeModalSource, /await refreshState\(\)/);
+  assert.match(discardSource, /shouldDiscardPairingComputer/);
+  assert.match(discardSource, /await refreshState\(\)/);
   assert.ok(
-    closeModalSource.indexOf('await refreshState()') < closeModalSource.indexOf('const liveComputer'),
-    'computer modal close must refresh server state before deciding whether the provisional computer is still unpaired',
+    discardSource.indexOf('await refreshState()') < discardSource.indexOf('const liveComputer'),
+    'computer provisional discard must refresh server state before deciding whether the computer is still unpaired',
   );
-  assert.match(closeModalSource, /let refreshedPairingState = false/);
-  assert.match(closeModalSource, /refreshedPairingState = true/);
-  assert.match(closeModalSource, /&& refreshedPairingState/);
+  assert.match(discardSource, /await api\(`\/api\/computers\/\$\{encodeURIComponent\(pairingComputer\.id\)\}`,\s*\{ method: 'DELETE' \}\)/);
+  assert.match(discardSource, /latestPairingCommand\?\.computer\?\.id === pairingComputer\.id/);
+  assert.match(closeModalSource, /await discardProvisionalPairingComputer\(latestPairingCommand\)/);
   assert.match(app, /function computerPairingModalRenderSignature/);
   assert.match(stateUpdateSource, /computerModalBefore !== computerPairingModalRenderSignature\(appState\)/);
   assert.doesNotMatch(stateUpdateSource, /if \(modal === 'computer'\) render\(\);/);

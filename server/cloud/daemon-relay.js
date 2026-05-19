@@ -20,6 +20,17 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function clearPairingProvisionalMetadata(computer) {
+  if (!computer) return;
+  const metadata = { ...objectValue(computer.metadata) };
+  delete metadata.pairingProvisional;
+  computer.metadata = metadata;
+}
+
 function websocketAcceptKey(key) {
   return crypto
     .createHash('sha1')
@@ -418,6 +429,7 @@ export function createDaemonRelay(deps) {
         runtimeIds: [],
         capabilities: [],
         connectedVia: 'daemon',
+        metadata: { pairingProvisional: true },
         createdBy: body.createdBy || null,
         createdAt,
         updatedAt: createdAt,
@@ -847,6 +859,7 @@ export function createDaemonRelay(deps) {
     connections.set(computer.id, connection);
     if (!computerIsDisabled(computer)) computer.status = 'connected';
     computer.connectedVia = 'daemon';
+    clearPairingProvisionalMetadata(computer);
     computer.lastSeenAt = now();
     computer.daemonConnectedAt = now();
     computer.reconnectingSince = null;

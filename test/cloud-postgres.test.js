@@ -660,6 +660,34 @@ test('postgres store deletes computers absent from the in-memory workspace snaps
   assert.ok(deleteIndex >= 0 && insertIndex > deleteIndex, 'stale deletion should run before current computer upserts');
 });
 
+test('postgres store deletes one computer through queued deleteComputer', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  await store.deleteComputer('cmp_pending', 'wsp_main');
+  const deleteQuery = queries.find((query) => (
+    query.sql.includes('DELETE FROM "magclaw"."cloud_computers"')
+    && query.sql.includes('id = $1')
+  ));
+  assert.ok(deleteQuery, 'expected deleteComputer to remove the requested cloud computer row');
+  assert.deepEqual(deleteQuery.params, ['cmp_pending', 'wsp_main']);
+});
+
 test('postgres store can reset transient online state when loading a fresh server process', async () => {
   const createdAt = '2026-05-13T10:01:53.000Z';
   const rowsForTable = {

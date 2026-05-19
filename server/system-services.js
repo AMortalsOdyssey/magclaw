@@ -113,6 +113,19 @@ export function createSystemServices(deps) {
     const scopedMessages = messages.filter(inCurrentWorkspace);
     const scopedReplies = replies.filter(inCurrentWorkspace);
     const scopedRecords = (key) => records(currentState[key]).filter(inCurrentWorkspace);
+    const scopedAgents = scopedRecords('agents');
+    const visibleComputers = scopedRecords('computers').filter((computer) => {
+      const status = String(computer?.status || '').toLowerCase();
+      if (status === 'connected' || computer?.lastSeenAt) return true;
+      const hasBoundAgent = scopedAgents.some((agent) => agent?.computerId === computer?.id && !agent.deletedAt);
+      if (hasBoundAgent) return true;
+      if (computer?.metadata?.pairingProvisional) return false;
+      return !(
+        status === 'pairing'
+        && String(computer?.connectedVia || '').toLowerCase() === 'daemon'
+        && records(computer?.runtimeIds).length === 0
+      );
+    });
     const visibleDms = currentHumanId
       ? scopedDms.filter((dm) => records(dm.participantIds).includes(currentHumanId))
       : scopedDms;
@@ -125,8 +138,8 @@ export function createSystemServices(deps) {
       messages: scopedMessages.filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId)),
       replies: scopedReplies.filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId)),
       tasks: scopedRecords('tasks'),
-      agents: scopedRecords('agents'),
-      computers: scopedRecords('computers'),
+      agents: scopedAgents,
+      computers: visibleComputers,
       humans: scopedRecords('humans'),
       reminders: scopedRecords('reminders'),
       missions: scopedRecords('missions'),

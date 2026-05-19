@@ -582,6 +582,15 @@ function resilientCloudRepository(repository) {
         await disable(error);
       }
     },
+    async deleteComputer(computerId, workspaceId) {
+      if (disabled) return;
+      try {
+        await repository.deleteComputer?.(computerId, workspaceId);
+      } catch (error) {
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
+        await disable(error);
+      }
+    },
     publicInfo() {
       if (disabled) return localStateFallbackInfo(fallbackReason);
       return repository.publicInfo?.() || { backend: 'postgres' };
@@ -1671,6 +1680,10 @@ if (cloudRepository?.isEnabled?.() && typeof cloudRepository.subscribeRealtimeEv
 setExternalStatePersister(async (stateSnapshot, options = {}) => {
   if (cloudRepository?.isEnabled?.()) {
     const workspaceId = String(options.workspaceId || options.externalWorkspaceId || '').trim();
+    const deletedComputerId = String(options.deletedComputerId || '').trim();
+    if (deletedComputerId && workspaceId && typeof cloudRepository.deleteComputer === 'function') {
+      await cloudRepository.deleteComputer(deletedComputerId, workspaceId);
+    }
     if (workspaceId && typeof cloudRepository.persistWorkspaceFromState === 'function') {
       await cloudRepository.persistWorkspaceFromState(stateSnapshot, workspaceId);
       await cloudRepository.publishRealtimeEvent?.({
