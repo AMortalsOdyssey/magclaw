@@ -633,6 +633,7 @@ test('browser favicon and shared brand assets use the selected Modular Claw logo
   const index = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
   const app = await readAppSource();
 
+  assert.match(index, /<title>MagClaw<\/title>/);
   assert.match(index, /<link rel="icon" type="image\/png" sizes="16x16" href="\/brand\/magclaw-favicon-16\.png\?v=modular-claw-v2" \/>/);
   assert.match(index, /<link rel="icon" type="image\/png" sizes="32x32" href="\/brand\/magclaw-favicon-32\.png\?v=modular-claw-v2" \/>/);
   assert.match(index, /<link rel="icon" type="image\/png" sizes="64x64" href="\/brand\/magclaw-favicon\.png\?v=modular-claw-v2" \/>/);
