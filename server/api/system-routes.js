@@ -1,3 +1,4 @@
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 // System-level API routes.
@@ -8,6 +9,53 @@ import path from 'node:path';
 function expectedStreamClose(error) {
   const code = String(error?.code || error?.errno || '');
   return code === 'ECONNRESET' || code === 'EPIPE' || code === 'ERR_STREAM_PREMATURE_CLOSE';
+}
+
+const SHARE_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+const PNG_SIGNATURE_HEX = '89504e470d0a1a0a';
+
+function isLoopbackRequest(req) {
+  const remoteAddress = String(req.socket?.remoteAddress || '');
+  const forwardedFor = String(req.headers?.['x-forwarded-for'] || '').trim();
+  return !forwardedFor && (
+    remoteAddress === '127.0.0.1'
+    || remoteAddress === '::1'
+    || remoteAddress === '::ffff:127.0.0.1'
+    || remoteAddress === ''
+  );
+}
+
+function safeShareImageFileName(value) {
+  const fallbackStamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+  const fallback = `magclaw-share-${fallbackStamp}.png`;
+  const baseName = path.basename(String(value || fallback));
+  if (!/^magclaw-share-[A-Za-z0-9._-]+\.png$/.test(baseName)) return fallback;
+  return baseName;
+}
+
+function decodeShareImageDataUrl(value) {
+  const match = String(value || '').match(/^data:image\/png;base64,([A-Za-z0-9+/=\s]+)$/);
+  if (!match) return null;
+  const buffer = Buffer.from(match[1].replace(/\s+/g, ''), 'base64');
+  if (!buffer.length || buffer.length > SHARE_IMAGE_MAX_BYTES) return null;
+  if (buffer.subarray(0, 8).toString('hex') !== PNG_SIGNATURE_HEX) return null;
+  return buffer;
+}
+
+async function writeUniqueShareImage(dir, fileName, buffer) {
+  await mkdir(dir, { recursive: true });
+  const parsed = path.parse(fileName);
+  for (let index = 0; index < 100; index += 1) {
+    const nextName = index === 0 ? fileName : `${parsed.name}-${index}${parsed.ext}`;
+    const filePath = path.join(dir, nextName);
+    try {
+      await writeFile(filePath, buffer, { flag: 'wx' });
+      return { fileName: nextName, path: filePath };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+  }
+  throw new Error('Could not allocate a unique share image filename.');
 }
 
 export async function handleSystemApi(req, res, url, deps) {
@@ -31,6 +79,7 @@ export async function handleSystemApi(req, res, url, deps) {
     readJson,
     sendError,
     sendJson,
+    shareImageDownloadDir,
     realtimeEventsForRequest,
     stateDeltaEnvelope,
     sseClients,
@@ -61,15 +110,7 @@ export async function handleSystemApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/internal/drain') {
-    const remoteAddress = String(req.socket?.remoteAddress || '');
-    const forwardedFor = String(req.headers?.['x-forwarded-for'] || '').trim();
-    const loopback = !forwardedFor && (
-      remoteAddress === '127.0.0.1'
-      || remoteAddress === '::1'
-      || remoteAddress === '::ffff:127.0.0.1'
-      || remoteAddress === ''
-    );
-    if (!loopback) {
+    if (!isLoopbackRequest(req)) {
       sendError(res, 403, 'Drain endpoint is only available from loopback.');
       return true;
     }
@@ -77,6 +118,29 @@ export async function handleSystemApi(req, res, url, deps) {
       ? beginDrain('internal_api')
       : { ok: false, draining: false };
     sendJson(res, result.ok ? 200 : 500, result);
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/share-images/save') {
+    if (!isLoopbackRequest(req)) {
+      sendError(res, 403, 'Share image saving is only available from loopback.');
+      return true;
+    }
+    const body = await readJson(req);
+    const buffer = decodeShareImageDataUrl(body.imageUrl || body.dataUrl);
+    if (!buffer) {
+      sendError(res, 400, 'A valid PNG data URL is required.');
+      return true;
+    }
+    const configuredDownloadDir = String(shareImageDownloadDir || '').trim();
+    if (!configuredDownloadDir) {
+      sendError(res, 500, 'Share image download directory is not configured.');
+      return true;
+    }
+    const downloadDir = path.resolve(configuredDownloadDir);
+    const fileName = safeShareImageFileName(body.fileName);
+    const saved = await writeUniqueShareImage(downloadDir, fileName, buffer);
+    sendJson(res, 200, { ok: true, ...saved });
     return true;
   }
 

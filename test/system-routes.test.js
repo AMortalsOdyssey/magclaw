@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { handleSystemApi } from '../server/api/system-routes.js';
 
 function makeResponse() {
@@ -18,6 +21,8 @@ function makeResponse() {
     },
   };
 }
+
+const TINY_PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lpC6iQAAAABJRU5ErkJggg==';
 
 function routeDeps(overrides = {}) {
   const state = {
@@ -66,6 +71,54 @@ function routeDeps(overrides = {}) {
     ...overrides,
   };
 }
+
+test('share image save route writes PNG files to the configured local directory', async () => {
+  const downloadDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-share-test-'));
+  const deps = routeDeps({
+    shareImageDownloadDir: downloadDir,
+    readJson: async () => ({
+      imageUrl: TINY_PNG_DATA_URL,
+      fileName: 'magclaw-share-test.png',
+    }),
+  });
+  const res = makeResponse();
+
+  assert.equal(await handleSystemApi(
+    { method: 'POST', headers: {}, socket: { remoteAddress: '127.0.0.1' }, on: () => {} },
+    res,
+    new URL('http://local/api/share-images/save'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.ok, true);
+  assert.equal(res.data.fileName, 'magclaw-share-test.png');
+  assert.equal(res.data.path, path.join(downloadDir, 'magclaw-share-test.png'));
+  const saved = await readFile(res.data.path);
+  assert.equal(saved.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+});
+
+test('share image save route rejects non-loopback callers', async () => {
+  let readJsonCalled = false;
+  const deps = routeDeps({
+    shareImageDownloadDir: '/tmp',
+    readJson: async () => {
+      readJsonCalled = true;
+      return {};
+    },
+  });
+  const res = makeResponse();
+
+  assert.equal(await handleSystemApi(
+    { method: 'POST', headers: {}, socket: { remoteAddress: '10.0.0.8' }, on: () => {} },
+    res,
+    new URL('http://local/api/share-images/save'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 403);
+  assert.equal(readJsonCalled, false);
+});
 
 test('system route group returns public state and ignores unrelated API paths', async () => {
   const deps = routeDeps();

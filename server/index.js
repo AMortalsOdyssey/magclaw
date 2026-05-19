@@ -1384,6 +1384,7 @@ function systemApiDeps() {
     readJson,
     sendError,
     sendJson,
+    shareImageDownloadDir: process.env.MAGCLAW_SHARE_DOWNLOAD_DIR || path.join(os.homedir(), 'Downloads'),
     stateDeltaEnvelope,
     realtimeEventsForRequest,
     sseClients,
