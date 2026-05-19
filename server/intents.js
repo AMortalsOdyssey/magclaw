@@ -202,9 +202,10 @@ export function agentMemoryWriteIntent(text) {
   const value = String(text || '').trim().toLowerCase();
   if (!value) return false;
   return [
-    /(记住|请记住|记录到|写入|保存到|加入|放进).*(memory|记忆|长期记忆|你的资料|你的 profile|你的档案)/i,
+    /(记住|请记住|记到|记入|记录到|写入|保存到|加入|放进).*(memory|记忆|长期记忆|你的资料|你的 profile|你的档案)/i,
     /(memory|记忆|长期记忆).*(记住|记录|写入|保存|更新)/i,
     /(^|[\s，。,.；;])(你|you)\s*(非常|很|特别|尤其|are|are very|are especially)?\s*(擅长|专长|拿手|熟悉|会解决|能解决|适合|good at|expert in|specialize in).{1,80}/i,
+    /(^|[\s，。,.；;])(你|you)?\s*(以后|后续)?\s*(都|要|请)?\s*(专门|主要|固定|长期).{1,80}(记住|记到|记录|memory|记忆|以后|后续)/i,
     /(^|[\s，。,.；;])(@?[^\s，。,.；;]{1,30})\s*(非常|很|特别|尤其)?(擅长|专长|拿手|熟悉|会解决|能解决|适合).{1,80}(记住|记录|memory|记忆|以后|后续)/i,
     /(学习|模仿|参考).{0,80}(语气|口吻|风格|写法|说话方式|tone|voice|style)/i,
     /(以后|后续).{0,40}(用|按|以|保持).{0,80}(语气|口吻|风格|写法|tone|voice|style)/i,
@@ -216,7 +217,7 @@ export function agentMemoryWriteIntent(text) {
 function stripMemoryCommandPhrases(text) {
   return String(text || '')
     .replace(/^(请|帮我|麻烦你|把|将)+/g, '')
-    .replace(/(记住|请记住|记录到|写入|保存到|加入|放进)(你的)?\s*(memory|记忆|长期记忆|profile|档案|资料)?/ig, '')
+    .replace(/(记住|请记住|记到|记入|记录到|写入|保存到|加入|放进)(你的)?\s*(memory|记忆|长期记忆|profile|档案|资料)?/ig, '')
     .replace(/(以后|后续)(都|要|请)?/g, '')
     .replace(/\s+/g, ' ')
     .replace(/[，。,.；;：:]+$/g, '')
@@ -249,6 +250,19 @@ export function inferAgentMemoryWriteback(text) {
   const capabilityMatch = raw.match(/(?:你|@?[^\s，。,.；;]+)?(?:非常|很|特别|尤其)?(擅长|专长|拿手|熟悉|会解决|能解决|适合)([^，。,.；;]{1,80})/i);
   if (capabilityMatch) {
     const phrase = `${capabilityMatch[1]}${capabilityMatch[2]}`.replace(/\s+/g, ' ').trim();
+    return {
+      kind: 'capability',
+      summary: phrase.slice(0, 120),
+      sourceText: raw,
+    };
+  }
+
+  const dedicatedRoleMatch = raw.match(/(专门|主要|固定|长期)([^，。,.；;]{1,80})/i);
+  if (dedicatedRoleMatch) {
+    const phrase = `${dedicatedRoleMatch[1]}${dedicatedRoleMatch[2]}`
+      .replace(/^(你|you)\s*/i, '')
+      .replace(/\s+/g, ' ')
+      .trim();
     return {
       kind: 'capability',
       summary: phrase.slice(0, 120),

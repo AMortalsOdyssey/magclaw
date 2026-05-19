@@ -281,7 +281,7 @@ export async function handleMessageApi(req, res, url, deps) {
     return channel ? channelAgentIds(channel).map((id) => findAgent(id)).filter(Boolean) : [];
   }
 
-  function scheduleMessageMemoryWritebacks({ record, text, spaceType, spaceId, respondingAgents = [], mentions = {}, parentMessage = null }) {
+  async function scheduleMessageMemoryWritebacks({ record, text, spaceType, spaceId, respondingAgents = [], mentions = {}, parentMessage = null }) {
     if (!record || record.authorType !== 'human') return;
     const memory = inferAgentMemoryWriteback(text);
     const explicitMemory = agentMemoryWriteIntent(text);
@@ -296,15 +296,14 @@ export async function handleMessageApi(req, res, url, deps) {
     const trigger = memory
       ? (explicitMemory ? 'explicit_user_memory' : 'user_preference')
       : 'user_preference';
-    for (const agent of targets) {
-      scheduleAgentMemoryWriteback(agent, trigger, {
-        message: record,
-        spaceType,
-        spaceId,
-        parentMessageId: parentMessage?.id || null,
-        memory,
-      });
-    }
+    const writes = targets.map((agent) => Promise.resolve(scheduleAgentMemoryWriteback(agent, trigger, {
+      message: record,
+      spaceType,
+      spaceId,
+      parentMessageId: parentMessage?.id || null,
+      memory,
+      })));
+    await Promise.all(writes);
   }
 
   function compactPeerMemoryResult(item) {
@@ -531,6 +530,15 @@ export async function handleMessageApi(req, res, url, deps) {
     await persistState();
     broadcastState();
 
+    await scheduleMessageMemoryWritebacks({
+      record: message,
+      text,
+      spaceType,
+      spaceId,
+      respondingAgents,
+      mentions,
+    });
+
     // Delivery happens after the message is durably stored so a background
     // Agent turn can always read the source record and thread context.
     if (message.authorType === 'human') {
@@ -563,14 +571,6 @@ export async function handleMessageApi(req, res, url, deps) {
       }
     }
 
-    scheduleMessageMemoryWritebacks({
-      record: message,
-      text,
-      spaceType,
-      spaceId,
-      respondingAgents,
-      mentions,
-    });
     if (routeDecision?.targetAgentIds?.length > 1 && (agentCapabilityQuestionIntent(text) || availabilityFollowupIntent(text))) {
       for (const agent of respondingAgents) {
         scheduleAgentMemoryWriteback(agent, 'multi_agent_collaboration', {
@@ -761,6 +761,15 @@ export async function handleMessageApi(req, res, url, deps) {
         const agent = agentId ? findAgent(agentId) : null;
         respondingAgents = agent && agentAvailableForAutoWork(agent) ? [agent] : [];
       }
+      await scheduleMessageMemoryWritebacks({
+        record: reply,
+        text,
+        spaceType: message.spaceType,
+        spaceId: message.spaceId,
+        respondingAgents,
+        mentions,
+        parentMessage: message,
+      });
       for (const agent of respondingAgents) {
         deliverMessageToAgent(agent, message.spaceType, message.spaceId, reply, { parentMessageId: message.id, ...deliveryContext }).catch(err => {
           addSystemEvent('delivery_error', `Failed to deliver thread reply to ${agent.name}: ${err.message}`, { agentId: agent.id, replyId: reply.id, parentMessageId: message.id });
@@ -775,15 +784,6 @@ export async function handleMessageApi(req, res, url, deps) {
         parentMessageId: message.id,
         alreadyDeliveredAgentIds: respondingAgents.map((agent) => agent.id),
         deliveryContext,
-      });
-      scheduleMessageMemoryWritebacks({
-        record: reply,
-        text,
-        spaceType: message.spaceType,
-        spaceId: message.spaceId,
-        respondingAgents,
-        mentions,
-        parentMessage: message,
       });
     }
 

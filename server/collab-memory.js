@@ -284,15 +284,22 @@ export function createCollabMemoryManager(deps) {
   }
   
   function scheduleAgentMemoryWriteback(agent, trigger, payload = {}) {
-    if (!agent) return;
-    writeAgentMemoryUpdate(agent, trigger, payload)
-      .then((changed) => (changed ? persistState().then(broadcastState) : null))
-      .catch((error) => {
+    if (!agent) return Promise.resolve(false);
+    return writeAgentMemoryUpdate(agent, trigger, payload)
+      .then(async (changed) => {
+        if (changed) {
+          await persistState();
+          broadcastState();
+        }
+        return Boolean(changed);
+      })
+      .catch(async (error) => {
         addSystemEvent('agent_memory_writeback_error', `Memory writeback failed for ${agent.name}: ${error.message}`, {
           agentId: agent.id,
           trigger,
         });
-        persistState().then(broadcastState).catch(() => {});
+        await persistState().then(broadcastState).catch(() => {});
+        return false;
       });
   }
   

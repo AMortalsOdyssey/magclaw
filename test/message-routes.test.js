@@ -113,3 +113,49 @@ test('message route group pages thread replies', async () => {
   assert.equal(res.data.pagination.hasMore, true);
   assert.equal(res.data.pagination.nextBefore, '2026-05-03T02:00:00.000Z');
 });
+
+test('message route group waits for explicit memory writebacks before responding', async () => {
+  let memoryFinished = false;
+  let responseSawMemoryFinished = null;
+  const agent = { id: 'agt_qinyi', name: '秦亦', status: 'idle' };
+  const deps = routeDeps({
+    agentAvailableForAutoWork: () => true,
+    agentMemoryWriteIntent: () => true,
+    channelAgentIds: () => [agent.id],
+    findAgent: (id) => (id === agent.id ? agent : null),
+    findChannel: (id) => deps.state.channels.find((channel) => channel.id === id),
+    inferAgentMemoryWriteback: () => ({
+      kind: 'capability',
+      summary: '专门帮我做业务调研',
+      sourceText: '秦亦，以后你专门帮我做业务调研，记到你的 memory 里面',
+    }),
+    readJson: async () => ({ body: '秦亦，以后你专门帮我做业务调研，记到你的 memory 里面' }),
+    routeMessageForChannel: async () => ({ targetAgentIds: [agent.id] }),
+    scheduleAgentMemoryWriteback: async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      memoryFinished = true;
+      return true;
+    },
+    sendJson: (res, statusCode, data) => {
+      responseSawMemoryFinished = memoryFinished;
+      res.statusCode = statusCode;
+      res.data = data;
+    },
+  });
+  deps.state.channels = [{ id: 'chan_all', memberIds: ['hum_local', agent.id], humanIds: ['hum_local'], agentIds: [agent.id] }];
+  deps.state.dms = [];
+  deps.state.messages = [];
+  deps.state.replies = [];
+
+  const res = makeResponse();
+  const handled = await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/spaces/channel/chan_all/messages'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(responseSawMemoryFinished, true);
+});
