@@ -1551,6 +1551,31 @@ test('member rail lists keep status dots on the far right only in the agent tab'
   assert.match(styles, /\.message-card \.avatar-status-dot/);
 });
 
+test('human identity UI shows third-party names only as secondary identity metadata', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));
+  const hoverSource = app.slice(app.indexOf('function renderHumanHoverCard'), app.indexOf('const identityHoverTriggerSelector'));
+  const humanListSource = app.slice(app.indexOf('function renderHumanListItem'), app.indexOf('function renderComputerListItem'));
+  const mentionSource = app.slice(app.indexOf('function mentionHandle'), app.indexOf('function mentionSearchValue'));
+  const addMemberSource = app.slice(app.indexOf('function renderAddMemberCandidateGroup'), app.indexOf('function channelMemberProposalCards'));
+
+  assert.match(app, /function thirdPartyNameForUser/);
+  assert.match(app, /function thirdPartyNameForHuman/);
+  assert.match(app, /thirdPartyNameForUser\(user\)/);
+  assert.match(app, /const enrichedMember = \(appState\?\.cloud\?\.members \|\| \[\]\)\.find/);
+  assert.match(accountSettingsSource, /currentUserThirdPartyName/);
+  assert.match(accountSettingsSource, /Third-party Name[\s\S]*disabled/);
+  assert.match(hoverSource, /renderHoverDetail\('Third-party Name'/);
+  assert.match(mentionSource, /mention-third-party-name/);
+  assert.match(mentionSource, /thirdPartyName/);
+  assert.match(addMemberSource, /humanSecondaryIdentityText/);
+  assert.match(humanListSource, /member-third-party-name/);
+  assert.match(styles, /\.member-third-party-name/);
+  assert.match(styles, /\.mention-third-party-name/);
+  assert.match(styles, /\.add-member-third-party-name/);
+});
+
 test('agent warmup renders as Warming with a distinct pink status dot', async () => {
   const app = await readAppSource();
   const serverWarmSource = await readFile(new URL('../server/agent-runtime/app-server-turns.js', import.meta.url), 'utf8');
@@ -1744,6 +1769,26 @@ test('agent detail uses MagClaw-style tabs with inline profile editing and runti
   assert.match(app, /\['skills', 'Skills'\]/);
   assert.match(app, /\['workspace', 'Workspace'\]/);
   assert.match(app, /data-action="set-agent-detail-tab" data-tab="\$\{id\}"/);
+  assert.match(app, /let agentDetailTabLoading = \{ agentId: null, tab: null, token: 0 \}/);
+  assert.match(app, /let clickLoadingState = \{ token: 0, action: '', key: '', label: '', surface: '', startedAt: 0 \}/);
+  assert.match(app, /function beginClickLoading\(action, target, localOnlyActions = new Set\(\)\)/);
+  assert.match(app, /function finishClickLoading\(token, target\)/);
+  assert.match(app, /function renderClickLoadingSurface\(surface\)/);
+  assert.match(app, /const clickLoadingToken = beginClickLoading\(action, target, localOnlyActions\)/);
+  assert.match(app, /finishClickLoading\(clickLoadingToken, target\)/);
+  assert.match(app, /renderClickLoadingSurface\('main'\)/);
+  assert.match(app, /renderClickLoadingSurface\('inspector'\)/);
+  assert.match(app, /renderClickLoadingSurface\('modal'\)/);
+  assert.match(app, /Loading server\.\.\./);
+  assert.match(app, /Loading connect command\.\.\./);
+  assert.match(app, /Updating task\.\.\./);
+  assert.match(app, /function switchAgentDetailTab\(agentId, tab\)/);
+  assert.match(app, /await switchAgentDetailTab\(selectedAgentId, target\.dataset\.tab \|\| 'profile'\)/);
+  assert.match(app, /function renderAgentDetailLoading\(tab\)/);
+  assert.match(app, /Loading agent DMs\.\.\./);
+  assert.match(app, /Loading reminders\.\.\./);
+  assert.match(app, /Loading activity\.\.\./);
+  assert.doesNotMatch(app, /if \(agentDetailTab === 'workspace'\) \{\s*await prepareAgentWorkspaceTab\(selectedAgentId\);/);
   assert.match(app, /renderAgentInlineField\(agent, 'name'/);
   assert.match(app, /renderAgentInlineField\(agent, 'description'/);
   assert.match(app, /function editPencilIcon\(\)/);
@@ -1794,6 +1839,10 @@ test('agent detail uses MagClaw-style tabs with inline profile editing and runti
   assert.match(app, /renderAgentSkillSections\(skills, \{ compact: true \}\)/);
   assert.equal(app.includes('renderSkillChips'), false);
   assert.match(styles, /\.agent-detail-tabs/);
+  assert.match(styles, /\.agent-detail-loading/);
+  assert.match(styles, /\.agent-tab-loading-dot/);
+  assert.match(styles, /\.click-loading-surface/);
+  assert.match(styles, /button\.is-loading::after/);
   assert.match(styles, /\.skill-row/);
   assert.match(styles, /\.agent-skill-section-stack\.compact/);
   assert.match(styles, /\.agent-tool-pill/);
@@ -2321,8 +2370,11 @@ test('mobile shell renders root tabs, detail pages, and safe-area navigation', a
   assert.match(app, /function renderMobileBottomNav\(\)/);
   assert.match(app, /function renderMobileHome\(\)/);
   assert.match(app, /function renderMobileSettingsHome\(\)/);
+  assert.match(app, /function renderMobileComputersSettingsRow\(\)/);
   const mobileSettingsSource = app.slice(app.indexOf('function renderMobileSettingsHome()'), app.indexOf('function renderMobileComputersList()'));
-  assert.match(mobileSettingsSource, /const items = settingsNavItems\(\)/);
+  assert.match(mobileSettingsSource, /mobileSettingsItemsInPreferredOrder\(settingsNavItems\(\)\)/);
+  assert.match(mobileSettingsSource, /renderMobileComputersSettingsRow\(\)/);
+  assert.match(app, /data-action="set-left-nav" data-nav="desktop"/);
   assert.match(mobileSettingsSource, /data-action="set-left-nav" data-nav="console"/);
   assert.match(app, /console: '<rect x="4" y="4" width="16" height="16" rx="1"/);
   assert.doesNotMatch(mobileSettingsSource, /Language & Region/);
@@ -2345,6 +2397,13 @@ test('mobile shell renders root tabs, detail pages, and safe-area navigation', a
   assert.match(app, /mobileHomeOpen/);
   assert.match(styles, /\.mobile-app-shell/);
   assert.match(styles, /\.mobile-bottom-nav/);
+  assert.match(styles, /--mobile-nav-height:\s*62px/);
+  assert.match(styles, /--mobile-border-width:\s*1\.5px/);
+  assert.match(styles, /--mobile-font:\s*-apple-system/);
+  assert.match(styles, /\.mobile-app-shell \{[\s\S]*?font-size:\s*13px/);
+  assert.match(styles, /\.mobile-app-shell \{[\s\S]*?font-family:\s*var\(--mobile-font\)/);
+  assert.match(styles, /\.mobile-app-shell \.dm-name \{[\s\S]*?font-size:\s*13px/);
+  assert.match(styles, /\.mobile-app-shell \.task-view-toggle button \{[\s\S]*?font-size:\s*11px/);
   assert.match(styles, /\.mobile-home-header/);
   assert.match(styles, /\.mobile-root \{[\s\S]*?background:\s*var\(--mobile-surface\)/);
   assert.match(styles, /\.mobile-home-header \{[\s\S]*?background:\s*var\(--mobile-surface\)[\s\S]*?color:\s*var\(--text-primary\)/);

@@ -77,11 +77,13 @@ function render() {
       ${taskFocusLayout ? '' : '<div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>'}
       <main class="workspace collab-main">
         ${renderMain()}
+        ${renderClickLoadingSurface('main')}
       </main>
       ${inspectorHtml ? `
         <div class="inspector-resizer" data-action="none" role="separator" aria-label="Resize inspector panel" aria-orientation="vertical" tabindex="0"></div>
         <aside class="inspector collab-inspector">
           ${inspectorHtml}
+          ${renderClickLoadingSurface('inspector')}
         </aside>
       ` : ''}
     </div>
@@ -223,11 +225,13 @@ function renderAccountRailButton(activeNav) {
   const label = user.email || human.email || user.name || human.name || 'MagClaw user';
   const name = user.name || human.name || label;
   const provider = user.metadata?.oauth?.feishu ? 'Feishu' : 'Email password';
+  const thirdPartyName = typeof thirdPartyNameForHuman === 'function' ? thirdPartyNameForHuman(human) : '';
   return `
     <button class="left-rail-btn account-rail-button${activeNav === 'settings' ? ' active' : ''}" type="button" data-action="open-account-settings" title="${escapeHtml(label)}" aria-label="Open account settings">
       <span class="account-rail-avatar" aria-hidden="true">${accountRailAvatarHtml(user, human)}</span>
       <span class="account-rail-popover" role="tooltip">
         <strong>${escapeHtml(name)}</strong>
+        ${thirdPartyName ? `<small>${escapeHtml(thirdPartyName)}</small>` : ''}
         <small>${escapeHtml(label)}</small>
         <em>${escapeHtml(provider)}</em>
       </span>

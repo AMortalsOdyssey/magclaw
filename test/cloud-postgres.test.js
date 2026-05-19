@@ -147,7 +147,10 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
   assert.match(sql, /role IN \('member', 'admin', 'owner'\)/);
   assert.match(sql, /status IN \('todo', 'in_progress', 'in_review', 'done', 'closed'\)/);
   assert.match(sql, /WHEN 'owner' THEN 'owner'/);
-    assert.match(sql, /cloud_users_active_normalized_email_uidx/);
+  assert.match(sql, /third_party_name/);
+  assert.match(sql, /metadata #>> '\{oauth,feishu,providerAccountId\}'/);
+  assert.match(sql, /third_party_provider = 'feishu'/);
+  assert.match(sql, /cloud_users_active_normalized_email_uidx/);
   assert.match(sql, /WHERE disabled_at IS NULL/);
   assert.doesNotMatch(sql, /\buid\b/);
 });
@@ -1283,6 +1286,8 @@ test('postgres store snapshots auth state before async connection waits', async 
         id: 'usr_snapshot',
         email: 'snapshot@example.test',
         name: 'Snapshot User',
+        thirdPartyName: 'Snapshot Feishu',
+        thirdPartyProvider: 'feishu',
         passwordHash: 'hash',
         language: 'en',
         createdAt,
@@ -1315,6 +1320,9 @@ test('postgres store snapshots auth state before async connection waits', async 
   const userInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_users"'));
   const workspaceInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_workspaces"'));
   assert.equal(userInsert?.params[0], 'usr_snapshot');
+  assert.match(userInsert?.sql || '', /third_party_name/);
+  assert.equal(userInsert?.params[6], 'Snapshot Feishu');
+  assert.equal(userInsert?.params[7], 'feishu');
   assert.equal(workspaceInsert?.params[0], 'wsp_snapshot');
 });
 

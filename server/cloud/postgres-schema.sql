@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS cloud_users (
   name TEXT NOT NULL DEFAULT '',
   password_hash TEXT,
   avatar_url TEXT NOT NULL DEFAULT '',
+  third_party_name TEXT NOT NULL DEFAULT '',
+  third_party_provider TEXT NOT NULL DEFAULT '',
   language TEXT NOT NULL DEFAULT 'en',
   email_verified_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -24,6 +26,23 @@ CREATE TABLE IF NOT EXISTS cloud_users (
 
 ALTER TABLE cloud_users
   ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'en';
+ALTER TABLE cloud_users
+  ADD COLUMN IF NOT EXISTS third_party_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE cloud_users
+  ADD COLUMN IF NOT EXISTS third_party_provider TEXT NOT NULL DEFAULT '';
+
+UPDATE cloud_users
+SET
+  third_party_name = COALESCE(NULLIF(metadata #>> '{oauth,feishu,name}', ''), NULLIF(name, ''), third_party_name),
+  third_party_provider = 'feishu',
+  updated_at = now()
+WHERE third_party_name = ''
+  AND third_party_provider = ''
+  AND (
+    metadata #>> '{oauth,feishu,providerAccountId}' IS NOT NULL
+    OR metadata #>> '{oauth,feishu,openId}' IS NOT NULL
+    OR metadata #>> '{oauth,feishu,unionId}' IS NOT NULL
+  );
 
 DROP INDEX IF EXISTS cloud_users_normalized_email_uidx;
 

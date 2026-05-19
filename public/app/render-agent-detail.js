@@ -512,7 +512,24 @@ function renderAgentActivityTab(agent) {
   `;
 }
 
+function agentDetailTabIsLoading(agent, tab = agentDetailTab) {
+  return Boolean(
+    agent
+    && agentDetailTabLoading.agentId === agent.id
+    && agentDetailTabLoading.tab === normalizeAgentDetailTab(tab)
+  );
+}
+
+function renderAgentDetailLoading(tab) {
+  return `
+    <div class="agent-detail-loading" role="status" aria-live="polite">
+      <span>${escapeHtml(agentDetailTabLoadingText(tab))}</span>
+    </div>
+  `;
+}
+
 function renderAgentDetailBody(agent) {
+  if (agentDetailTabIsLoading(agent)) return renderAgentDetailLoading(agentDetailTab);
   if (agentDetailTab === 'skills') return renderAgentSkillsTab(agent);
   if (agentDetailTab === 'workspace') return renderAgentWorkspaceTab(agent);
   if (agentDetailTab === 'activity') return renderAgentActivityTab(agent);
@@ -612,6 +629,7 @@ function renderAgentGroupsByComputer(agents = []) {
 function renderHumanListItem(human) {
   const active = selectedHumanId === human.id ? ' active' : '';
   const youLabel = humanIsCurrent(human) ? ' <em class="human-you-label">(you)</em>' : '';
+  const thirdPartyName = typeof humanSecondaryIdentityText === 'function' ? humanSecondaryIdentityText(human) : '';
   return `
     <button class="space-btn member-btn${active}" type="button" data-action="select-human" data-id="${escapeHtml(human.id)}">
       <span class="dm-avatar-wrap">
@@ -619,6 +637,7 @@ function renderHumanListItem(human) {
       </span>
       <div class="member-info">
         <span class="dm-name">${escapeHtml(human.name)}${youLabel}</span>
+        ${thirdPartyName ? `<small class="member-third-party-name">${escapeHtml(thirdPartyName)}</small>` : ''}
       </div>
       <span class="member-status-side">${avatarStatusDot(human.status, 'Human status')}</span>
     </button>
@@ -627,13 +646,22 @@ function renderHumanListItem(human) {
 
 function renderComputerListItem(computer) {
   const active = selectedComputerId === computer.id ? ' active' : '';
+  const name = computer.name || computer.hostname || computer.localHostname || 'Computer';
+  const daemonVersion = typeof displayDaemonVersion === 'function'
+    ? displayDaemonVersion(computer.daemonVersion, computer.version, appState.runtime?.daemonPackageVersion, MAGCLAW_DAEMON_PACKAGE_VERSION)
+    : '';
+  const versionLabel = daemonVersion && daemonVersion !== '--'
+    ? `v${String(daemonVersion).replace(/^v/i, '')}`
+    : '';
+  const meta = [computer.connectedVia || 'daemon', versionLabel].filter(Boolean).join('  ');
   return `
     <button class="space-btn member-btn${active}" type="button" data-action="select-computer" data-id="${escapeHtml(computer.id)}">
       <span class="dm-avatar-wrap">
         ${typeof renderComputerIcon === 'function' ? renderComputerIcon(computer, 16) : `<span class="dm-avatar">${settingsIcon('computer', 16)}</span>`}
       </span>
       <div class="member-info">
-        <span class="dm-name">${escapeHtml(computer.name)}</span>
+        <span class="dm-name">${escapeHtml(name)}</span>
+        ${meta ? `<small class="computer-row-meta">${escapeHtml(meta)}</small>` : ''}
       </div>
       <span class="member-status-side">${avatarStatusDot(computer.status, 'Computer status')}</span>
     </button>
@@ -781,6 +809,7 @@ function renderHumanDetail(human) {
   const youLabel = isCurrent ? ' <em class="human-you-label">(you)</em>' : '';
   const displayName = escapeHtml(human.name || member?.user?.name || 'Human');
   const nameWithYouLabel = `${displayName}${youLabel}`;
+  const thirdPartyName = typeof thirdPartyNameForHuman === 'function' ? thirdPartyNameForHuman(human) : '';
   return `
     <section class="pixel-panel inspector-panel human-detail-page magclaw-profile-detail ${isCurrent ? 'is-current-human' : 'is-other-human'}">
       <div class="agent-detail-topbar">
@@ -802,6 +831,7 @@ function renderHumanDetail(human) {
           <span class="detail-label">Info</span>
           <div class="human-info-list">
             <div><span>Role</span><strong class="role-pill">${escapeHtml(cloudRoleLabel(role))}</strong></div>
+            ${thirdPartyName ? `<div><span>Third-party Name</span><strong>${escapeHtml(thirdPartyName)}</strong></div>` : ''}
             <div><span>Email</span><strong>${escapeHtml(email || '--')}</strong></div>
             <div><span>Joined</span><strong>${escapeHtml(humanJoinedLabel(member?.joinedAt || human.joinedAt || human.createdAt))}</strong></div>
             <div><span>User ID</span><strong>${escapeHtml(member?.userId || human.authUserId || '--')}</strong></div>

@@ -92,6 +92,43 @@ export async function handleAgentApi(req, res, url, deps) {
     return true;
   }
 
+  async function autoStartCreatedAgent(agent) {
+    if (hasAgentProcess(agent.id)) return null;
+    try {
+      const result = await startAgentFromControl(agent);
+      if (result?.queued === false) {
+        console.warn('[agents] auto-start did not queue', {
+          agentId: agent.id,
+          computerId: agent.computerId,
+          error: result.error || '',
+        });
+        addCollabEvent('agent_start_failed', `Agent auto-start could not be queued: ${agent.name}`, {
+          agentId: agent.id,
+          computerId: agent.computerId,
+          error: result.error || '',
+        });
+      } else {
+        addCollabEvent('agent_start_requested', `Agent start requested: ${agent.name}`, {
+          agentId: agent.id,
+          reason: 'create',
+        });
+      }
+      return result || null;
+    } catch (error) {
+      console.error('[agents] auto-start failed', {
+        agentId: agent.id,
+        computerId: agent.computerId,
+        error,
+      });
+      addCollabEvent('agent_start_failed', `Agent auto-start failed: ${agent.name}`, {
+        agentId: agent.id,
+        computerId: agent.computerId,
+        error: error.message,
+      });
+      return { queued: false, error: error.message };
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/agents') {
     const body = await readJson(req);
     const actor = typeof currentActor === 'function' ? currentActor(req) : null;
@@ -150,6 +187,7 @@ export async function handleAgentApi(req, res, url, deps) {
     }
 
     addCollabEvent('agent_created', `Agent created: ${agent.name}`, { agentId: agent.id });
+    await autoStartCreatedAgent(agent);
     await persistState();
     broadcastState();
     sendJson(res, 201, { agent });

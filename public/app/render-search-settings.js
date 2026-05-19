@@ -673,6 +673,16 @@ function renderAccountSettingsTab() {
   const currentUser = auth.currentUser;
   const human = currentAccountHuman();
   const profileValues = profileFormValuesForRender(human, currentUser);
+  const currentUserThirdPartyName = String(
+    currentUser?.thirdPartyName
+    || currentUser?.third_party_name
+    || currentUser?.metadata?.oauth?.feishu?.name
+    || '',
+  ).trim();
+  const thirdPartyName = (
+    (typeof thirdPartyNameForHuman === 'function' ? thirdPartyNameForHuman(human) : '')
+    || currentUserThirdPartyName
+  );
   const authPanel = !auth.initialized ? `
       <div class="pixel-panel cloud-card">
         <div class="panel-title"><span>Sign-in Account</span><span>server config</span></div>
@@ -706,6 +716,7 @@ function renderAccountSettingsTab() {
               </div>
             </div>
             <label><span>Name</span><input name="displayName" value="${escapeHtml(profileValues.displayName || '')}" /></label>
+            ${thirdPartyName ? `<label><span>Third-party Name</span><input value="${escapeHtml(thirdPartyName)}" disabled /></label>` : ''}
             <label><span>Email</span><input value="${escapeHtml(human.email || currentUser?.email || '')}" disabled /></label>
             <label><span>Description</span><textarea name="description" rows="3">${escapeHtml(profileValues.description || '')}</textarea></label>
             <button class="primary-btn" type="submit">Save</button>
@@ -2176,9 +2187,15 @@ function renderAgentDetailTabs() {
   ];
   return `
     <div class="agent-detail-tabs" role="tablist">
-      ${tabs.map(([id, label]) => `
-        <button type="button" class="${agentDetailTab === id ? 'active' : ''}" data-action="set-agent-detail-tab" data-tab="${id}">${escapeHtml(label)}</button>
-      `).join('')}
+      ${tabs.map(([id, label]) => {
+        const loading = selectedAgentId && agentDetailTabLoading.agentId === selectedAgentId && agentDetailTabLoading.tab === id;
+        return `
+        <button type="button" role="tab" aria-selected="${agentDetailTab === id ? 'true' : 'false'}" class="${agentDetailTab === id ? 'active' : ''}${loading ? ' loading' : ''}" data-action="set-agent-detail-tab" data-tab="${id}">
+          <span>${escapeHtml(label)}</span>
+          ${loading ? '<span class="agent-tab-loading-dot" aria-hidden="true"></span>' : ''}
+        </button>
+      `;
+      }).join('')}
     </div>
   `;
 }

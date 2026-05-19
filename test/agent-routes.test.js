@@ -84,7 +84,12 @@ test('agent route group ignores unrelated API paths', async () => {
 
 test('agent route group creates agents, seeds workspace, and joins all', async () => {
   let seededAgentId = null;
+  let startedAgentId = null;
+  const events = [];
   const deps = routeDeps({
+    addCollabEvent: (type, message, meta) => {
+      events.push({ type, message, meta });
+    },
     ensureAgentWorkspace: async (agent) => {
       seededAgentId = agent.id;
     },
@@ -94,6 +99,10 @@ test('agent route group creates agents, seeds workspace, and joins all', async (
       reasoningEffort: 'low',
       envVars: [{ key: 'A', value: 'B' }],
     }),
+    startAgentFromControl: async (agent) => {
+      startedAgentId = agent.id;
+      return { started: true };
+    },
   });
   const res = makeResponse();
   const handled = await handleAgentApi(
@@ -105,9 +114,46 @@ test('agent route group creates agents, seeds workspace, and joins all', async (
   assert.equal(handled, true);
   assert.equal(res.statusCode, 201);
   assert.equal(seededAgentId, 'agt_new');
+  assert.equal(startedAgentId, 'agt_new');
   assert.equal(deps.state.agents.at(-1).workspace, '/tmp/workspace');
   assert.deepEqual(deps.state.channels[0].agentIds, ['agt_new']);
   assert.deepEqual(deps.state.channels[0].memberIds, ['hum_local', 'agt_new']);
+  assert.equal(events[0].type, 'agent_created');
+  assert.equal(events[1].type, 'agent_start_requested');
+  assert.equal(events[1].meta.reason, 'create');
+});
+
+test('agent route group keeps a created agent when auto-start cannot queue', async () => {
+  const events = [];
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  const deps = routeDeps({
+    addCollabEvent: (type, message, meta) => {
+      events.push({ type, message, meta });
+    },
+    readJson: async () => ({ name: 'Disconnected Agent', computerId: 'cmp_missing' }),
+    startAgentFromControl: async () => ({ queued: false, error: 'Computer not found.' }),
+  });
+  const res = makeResponse();
+  let handled = false;
+  try {
+    handled = await handleAgentApi(
+      { method: 'POST' },
+      res,
+      new URL('http://local/api/agents'),
+      deps,
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.data.agent.name, 'Disconnected Agent');
+  assert.equal(deps.state.agents.at(-1).id, 'agt_new');
+  assert.equal(events[0].type, 'agent_created');
+  assert.equal(events[1].type, 'agent_start_failed');
+  assert.equal(events[1].meta.error, 'Computer not found.');
 });
 
 test('agent route group stamps new cloud agents with the current workspace', async () => {

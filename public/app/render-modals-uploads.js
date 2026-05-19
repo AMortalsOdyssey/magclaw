@@ -34,6 +34,7 @@ function renderModal() {
     <div class="modal-backdrop ${modalClass}-backdrop" data-action="close-modal">
       <div class="modal-card pixel-panel ${modalClass} ${isWideModal ? 'modal-wide' : ''}" data-action="none">
         ${content}
+        ${renderClickLoadingSurface('modal')}
       </div>
     </div>
   `;
@@ -308,16 +309,22 @@ function renderAddMemberCandidateGroup(title, items, type) {
   return `
     <div class="add-member-group">
       <div class="add-member-group-title">${escapeHtml(title)}</div>
-      ${items.map((item) => `
+      ${items.map((item) => {
+        const thirdPartyName = type === 'human' && typeof humanSecondaryIdentityText === 'function'
+          ? humanSecondaryIdentityText(item)
+          : '';
+        return `
         <button class="add-member-candidate" type="button" data-action="add-channel-member" data-member-id="${escapeHtml(item.id)}">
           ${type === 'agent' ? getAvatarHtml(item.id, 'agent', 'dm-avatar member-avatar') : renderHumanAvatar(item, 'dm-avatar member-avatar')}
           <span class="add-member-candidate-main">
             <strong>${escapeHtml(item.name)}</strong>
-            ${type === 'human' && item.email ? `<small>${escapeHtml(item.email)}</small>` : ''}
+            ${type === 'human' && thirdPartyName ? `<small class="add-member-third-party-name">${escapeHtml(thirdPartyName)}</small>` : ''}
+            ${type === 'human' && !thirdPartyName && item.email ? `<small>${escapeHtml(item.email)}</small>` : ''}
           </span>
           ${type === 'agent' ? `<span class="add-member-status-dot ${presenceClass(item.status)}" title="${escapeHtml(item.status || 'offline')}"></span>` : ''}
         </button>
-      `).join('')}
+      `;
+      }).join('')}
     </div>
   `;
 }
@@ -396,7 +403,8 @@ function renderAddChannelMemberModal() {
   const memberIds = [...members.agents.map((a) => a.id), ...members.humans.map((h) => h.id)];
   const q = addMemberSearchQuery.trim().toLowerCase();
   const matches = (item) => {
-    const haystack = `${item.name || ''} ${item.email || ''} ${item.status || ''}`.toLowerCase();
+    const thirdPartyName = typeof humanSecondaryIdentityText === 'function' ? humanSecondaryIdentityText(item) : '';
+    const haystack = `${item.name || ''} ${thirdPartyName} ${item.email || ''} ${item.status || ''}`.toLowerCase();
     return !q || haystack.includes(q);
   };
   const availableAgents = channelAssignableAgents().filter((a) => !memberIds.includes(a.id) && matches(a));

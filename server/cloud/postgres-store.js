@@ -262,6 +262,8 @@ function userFromRow(row) {
     name: row.name || '',
     passwordHash: row.password_hash || '',
     avatarUrl: row.avatar_url || '',
+    thirdPartyName: row.third_party_name || jsonObject(jsonObject(row.metadata).oauth).feishu?.name || '',
+    thirdPartyProvider: row.third_party_provider || (jsonObject(jsonObject(row.metadata).oauth).feishu ? 'feishu' : ''),
     language: row.language || 'en',
     emailVerifiedAt: iso(row.email_verified_at),
     createdAt: requiredIso(row.created_at),
@@ -1013,15 +1015,17 @@ export function createCloudPostgresStore(optionsInput = {}) {
     await client.query(`
       INSERT INTO ${table('cloud_users')}
         (id, email, normalized_email, name, password_hash, avatar_url,
-         language, email_verified_at, created_at, updated_at, last_login_at,
-         disabled_at, metadata)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+         third_party_name, third_party_provider, language, email_verified_at,
+         created_at, updated_at, last_login_at, disabled_at, metadata)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
       ON CONFLICT (id) DO UPDATE SET
         email = EXCLUDED.email,
         normalized_email = EXCLUDED.normalized_email,
         name = EXCLUDED.name,
         password_hash = COALESCE(${table('cloud_users')}.password_hash, EXCLUDED.password_hash),
         avatar_url = EXCLUDED.avatar_url,
+        third_party_name = EXCLUDED.third_party_name,
+        third_party_provider = EXCLUDED.third_party_provider,
         language = EXCLUDED.language,
         email_verified_at = COALESCE(${table('cloud_users')}.email_verified_at, EXCLUDED.email_verified_at),
         updated_at = GREATEST(COALESCE(${table('cloud_users')}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
@@ -1038,6 +1042,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
       user.name || '',
       user.passwordHash || null,
       user.avatarUrl || '',
+      user.thirdPartyName || '',
+      user.thirdPartyProvider || '',
       user.language || 'en',
       iso(user.emailVerifiedAt),
       requiredIso(user.createdAt),
@@ -2202,6 +2208,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
           'name',
           'password_hash',
           'avatar_url',
+          'third_party_name',
+          'third_party_provider',
           'language',
           'email_verified_at',
           'created_at',
@@ -2216,6 +2224,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
           user.name || '',
           user.passwordHash || null,
           user.avatarUrl || '',
+          user.thirdPartyName || '',
+          user.thirdPartyProvider || '',
           user.language || 'en',
           iso(user.emailVerifiedAt),
           requiredIso(user.createdAt),
@@ -2230,6 +2240,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
             name = EXCLUDED.name,
             password_hash = COALESCE(${table('cloud_users')}.password_hash, EXCLUDED.password_hash),
             avatar_url = EXCLUDED.avatar_url,
+            third_party_name = EXCLUDED.third_party_name,
+            third_party_provider = EXCLUDED.third_party_provider,
             language = EXCLUDED.language,
             email_verified_at = COALESCE(${table('cloud_users')}.email_verified_at, EXCLUDED.email_verified_at),
             updated_at = GREATEST(COALESCE(${table('cloud_users')}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),

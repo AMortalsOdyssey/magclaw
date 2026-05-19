@@ -209,6 +209,7 @@ document.addEventListener('click', async (event) => {
   const prepared = await prepareDocumentClick(event);
   if (!prepared) return;
   const { action, target, localOnlyActions } = prepared;
+  const clickLoadingToken = beginClickLoading(action, target, localOnlyActions);
   try {
     if (action === 'mobile-nav') {
       openMobileRoot(target.dataset.nav || 'home');
@@ -676,16 +677,8 @@ document.addEventListener('click', async (event) => {
       render();
     }
     if (action === 'set-agent-detail-tab') {
-      agentDetailTab = target.dataset.tab || 'profile';
-      agentDetailEditState = { field: null };
-      agentEnvEditState = null;
-      if (agentDetailTab === 'workspace') {
-        await prepareAgentWorkspaceTab(selectedAgentId);
-      } else if (agentDetailTab === 'skills' || agentDetailTab === 'profile') {
-        await loadAgentSkills(selectedAgentId);
-      } else {
-        render();
-      }
+      await switchAgentDetailTab(selectedAgentId, target.dataset.tab || 'profile');
+      return;
     }
     if (action === 'toggle-agent-skill-section') {
       toggleSkillSection(target.dataset.section || '');
@@ -1551,9 +1544,13 @@ document.addEventListener('click', async (event) => {
   } catch (error) {
     toast(error.message);
   } finally {
+    if (clickLoadingToken && action !== 'set-agent-detail-tab') {
+      await waitForClickLoadingDebugDelay();
+    }
     if (!localOnlyActions.has(action)) {
       await refreshStateOrAuthGate().catch(() => {});
     }
+    finishClickLoading(clickLoadingToken, target);
     if (action === 'open-thread') scrollToMessage(threadMessageId);
     if (action === 'view-in-channel') scrollToMessage(target.dataset.id);
     if (action === 'back-to-bottom') {

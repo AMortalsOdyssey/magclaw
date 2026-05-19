@@ -427,6 +427,17 @@
   width: 100%;
 }
 
+.member-third-party-name {
+  display: block;
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .system-notification-list {
   display: grid;
   gap: 8px;
@@ -998,6 +1009,10 @@
   font-size: 11px;
 }
 
+.add-member-third-party-name {
+  font-family: var(--font-mono);
+}
+
 .add-member-status-dot {
   width: 9px;
   height: 9px;
@@ -1524,6 +1539,59 @@ body {
 .pixel-panel,
 .inbox-category-btn {
   background: #ffffff;
+}
+
+.collab-main,
+.collab-inspector,
+.modal-card {
+  position: relative;
+}
+
+button.is-loading,
+.primary-btn.is-loading,
+.secondary-btn.is-loading,
+.danger-btn.is-loading {
+  cursor: wait;
+  opacity: 0.78;
+}
+
+button.is-loading::after,
+.primary-btn.is-loading::after,
+.secondary-btn.is-loading::after,
+.danger-btn.is-loading::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border: 1px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: click-loading-spin 0.75s linear infinite;
+}
+
+.click-loading-surface {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  pointer-events: auto;
+}
+
+.click-loading-modal {
+  border-radius: inherit;
+}
+
+@keyframes click-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .thread-row.active,

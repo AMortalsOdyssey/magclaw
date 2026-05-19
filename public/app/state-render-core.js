@@ -96,6 +96,10 @@ let agentWorkspacePreviewMode = 'preview';
 let agentSkillsCache = {};
 let agentWarmRequests = new Set();
 let agentDetailTab = 'profile';
+let agentDetailTabLoading = { agentId: null, tab: null, token: 0 };
+let agentDetailTabLoadSeq = 0;
+let clickLoadingState = { token: 0, action: '', key: '', label: '', surface: '', startedAt: 0 };
+let clickLoadingSeq = 0;
 let agentDetailEditState = { field: null };
 let agentDetailFieldDraft = null;
 let agentEnvEditState = null;
@@ -612,15 +616,69 @@ function humanBadgeHtml() {
   return '<img class="human-script-badge" src="/brand/humans-script-badge.png" alt="humans" />';
 }
 
+function identityObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function thirdPartyNameFromMetadata(metadata = {}) {
+  const oauth = identityObject(identityObject(metadata).oauth);
+  const feishu = identityObject(oauth.feishu);
+  return String(feishu.name || feishu.displayName || '').trim();
+}
+
+function thirdPartyProviderFromMetadata(metadata = {}) {
+  const oauth = identityObject(identityObject(metadata).oauth);
+  if (Object.keys(identityObject(oauth.feishu)).length) return 'feishu';
+  return '';
+}
+
+function thirdPartyNameForUser(user = {}) {
+  return String(user.thirdPartyName || user.third_party_name || thirdPartyNameFromMetadata(user.metadata)).trim();
+}
+
+function thirdPartyProviderForUser(user = {}) {
+  return String(user.thirdPartyProvider || user.third_party_provider || thirdPartyProviderFromMetadata(user.metadata)).trim();
+}
+
+function thirdPartyNameForHuman(human = {}) {
+  const member = human.cloudMember || {};
+  const user = member.user || {};
+  return String(
+    human.thirdPartyName
+    || human.third_party_name
+    || thirdPartyNameForUser(user)
+    || thirdPartyNameFromMetadata(human.metadata),
+  ).trim();
+}
+
+function thirdPartyProviderForHuman(human = {}) {
+  const member = human.cloudMember || {};
+  const user = member.user || {};
+  return String(
+    human.thirdPartyProvider
+    || human.third_party_provider
+    || thirdPartyProviderForUser(user)
+    || thirdPartyProviderFromMetadata(human.metadata),
+  ).trim();
+}
+
+function humanSecondaryIdentityText(human = {}) {
+  return thirdPartyNameForHuman(human);
+}
+
 function humanFromCloudMember(member = {}) {
   const human = member.human || byId(appState?.humans, member.humanId) || {};
   const user = member.user || {};
+  const thirdPartyName = human.thirdPartyName || thirdPartyNameForUser(user) || thirdPartyNameFromMetadata(human.metadata);
+  const thirdPartyProvider = human.thirdPartyProvider || thirdPartyProviderForUser(user) || thirdPartyProviderFromMetadata(human.metadata);
   return {
     ...human,
     id: human.id || member.humanId || `hum_${member.userId || member.id || 'member'}`,
     authUserId: member.userId || human.authUserId || '',
     name: human.name || user.name || user.email || member.email || 'Human',
     email: human.email || user.email || member.email || '',
+    thirdPartyName,
+    thirdPartyProvider,
     avatar: human.avatar || human.avatarUrl || user.avatarUrl || '',
     role: cloudMemberDisplayRole(member),
     status: human.status || member.presenceStatus || 'offline',
@@ -677,7 +735,20 @@ function currentAccountHuman() {
   const currentUser = auth.currentUser;
   const currentMember = auth.currentMember;
   if (currentMember) {
-    return humanFromCloudMember(currentMember);
+    const enrichedMember = (appState?.cloud?.members || []).find((member) => (
+      member.id === currentMember.id
+      || (
+        member.userId === currentMember.userId
+        && member.workspaceId === currentMember.workspaceId
+        && member.humanId === currentMember.humanId
+      )
+    )) || {};
+    return humanFromCloudMember({
+      ...currentMember,
+      ...enrichedMember,
+      user: enrichedMember.user || currentMember.user || currentUser || {},
+      human: enrichedMember.human || currentMember.human || byId(appState?.humans, currentMember.humanId) || {},
+    });
   }
   if (currentUser) {
     const human = (appState?.humans || []).find((item) => item.authUserId === currentUser.id && item.status !== 'removed');
@@ -686,6 +757,8 @@ function currentAccountHuman() {
       authUserId: currentUser.id || '',
       name: currentUser.name || currentUser.email || 'You',
       email: currentUser.email || '',
+      thirdPartyName: thirdPartyNameForUser(currentUser),
+      thirdPartyProvider: thirdPartyProviderForUser(currentUser),
       avatar: currentUser.avatarUrl || '',
       role: 'member',
       status: 'offline',

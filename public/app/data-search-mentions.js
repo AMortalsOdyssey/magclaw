@@ -169,6 +169,7 @@ function humanRoleLabel(human) {
 
 function renderHumanHoverCard(human) {
   const role = humanRoleLabel(human);
+  const thirdPartyName = typeof thirdPartyNameForHuman === 'function' ? thirdPartyNameForHuman(human) : '';
   return `
     <span class="agent-hover-card human-hover-card" role="tooltip">
       <span class="agent-hover-head">
@@ -181,6 +182,7 @@ function renderHumanHoverCard(human) {
       </span>
       <span class="agent-hover-details">
         ${renderHoverDetail('Name', human.name || 'Human')}
+        ${thirdPartyName ? renderHoverDetail('Third-party Name', thirdPartyName) : ''}
         ${renderHoverDetail('Role', role)}
         ${renderHoverDetail('Creator', actorCreatorLabel(human))}
         ${renderHoverDetail('Created', human.createdAt ? fmtTime(human.createdAt) : '')}
@@ -326,9 +328,9 @@ function parseMentions(text) {
   });
   // Replace human mentions: <@hum_xxx> -> styled span
   result = result.replace(/&lt;@(hum_\w+)&gt;/g, (match, id) => {
-    const human = byId(appState?.humans, id);
+    const human = typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id);
     return human
-      ? `<span class="mention-tag mention-human" data-mention-id="${id}">@${escapeHtml(human.name)}</span>`
+      ? `<span class="mention-tag mention-human" data-mention-id="${id}">@${escapeHtml(human.name)}${mentionThirdPartyInlineHtml(human)}</span>`
       : match;
   });
   // Replace special mentions: <!all>, <!here> -> styled span
@@ -631,6 +633,7 @@ function mentionAvatar(item) {
 }
 
 function mentionHandle(item) {
+  if (item.type === 'human' && item.thirdPartyName) return item.thirdPartyName;
   if (item.type === 'human') return `@${item.handle || item.id}`;
   if (item.type === 'file' || item.type === 'folder') return item.absolutePath || item.path || item.projectName || item.name;
   return `@${item.name}`;
@@ -662,6 +665,7 @@ function mentionDetailText(item, handle) {
   if (item.type === 'agent') {
     return [mentionRuntimeLabel(item), item.description || ''].filter(Boolean).join(' · ') || handle;
   }
+  if (item.type === 'human' && item.thirdPartyName) return item.thirdPartyName;
   if (item.type === 'file' || item.type === 'folder') return handle;
   return handle;
 }
@@ -673,13 +677,20 @@ function mentionHumanBadgeHtml() {
 function mentionNameHtml(item) {
   return `
     <span class="mention-name-text">${escapeHtml(item.name)}</span>
+    ${item.type === 'human' && item.thirdPartyName ? `<small class="mention-third-party-name">${escapeHtml(item.thirdPartyName)}</small>` : ''}
     ${item.type === 'human' ? mentionHumanBadgeHtml() : ''}
   `;
+}
+
+function mentionThirdPartyInlineHtml(human = {}) {
+  const thirdPartyName = typeof thirdPartyNameForHuman === 'function' ? thirdPartyNameForHuman(human) : '';
+  return thirdPartyName ? ` <small class="mention-third-party-name">${escapeHtml(thirdPartyName)}</small>` : '';
 }
 
 function mentionSearchValue(item) {
   return [
     item.name,
+    item.thirdPartyName,
     mentionHandle(item),
     item.handle,
     item.runtime,
@@ -866,6 +877,8 @@ function mentionWorkspaceHumans() {
       id: humanId,
       name: member.human?.name || member.user?.name || email.split('@')[0] || humanId.replace(/^hum_/, ''),
       email,
+      thirdPartyName: member.human?.thirdPartyName || (typeof thirdPartyNameForUser === 'function' ? thirdPartyNameForUser(member.user || {}) : ''),
+      thirdPartyProvider: member.human?.thirdPartyProvider || (typeof thirdPartyProviderForUser === 'function' ? thirdPartyProviderForUser(member.user || {}) : ''),
       role: member.role || member.human?.role || 'member',
       status: member.human?.status || 'offline',
       avatar: member.human?.avatar || member.human?.avatarUrl || '',
@@ -902,6 +915,7 @@ function getMentionCandidates(query, spaceType = selectedSpaceType, spaceId = se
     ...mentionWorkspaceHumans().map((human) => ({
       id: human.id,
       name: human.name,
+      thirdPartyName: typeof thirdPartyNameForHuman === 'function' ? thirdPartyNameForHuman(human) : '',
       type: 'human',
       avatar: human.avatar || human.avatarUrl || '',
       status: human.status || 'offline',
@@ -1191,6 +1205,286 @@ function clearAgentWorkspaceCaches(agentId) {
     if (key.startsWith(`${agentId}:`)) delete agentWorkspaceFilePreviews[key];
   }
   if (selectedAgentWorkspaceFile?.agentId === agentId) selectedAgentWorkspaceFile = null;
+}
+
+function clickLoadingDebugDelayMs() {
+  const params = new URLSearchParams(window.location.search || '');
+  const raw = params.get('clickLoadingDelayMs')
+    || localStorage.getItem('magclawClickLoadingDelayMs')
+    || window.__MAGCLAW_CLICK_LOADING_DELAY_MS
+    || 0;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(value, 5000);
+}
+
+function waitForClickLoadingDebugDelay(delayMs = clickLoadingDebugDelayMs()) {
+  return delayMs > 0 ? new Promise((resolve) => setTimeout(resolve, delayMs)) : Promise.resolve();
+}
+
+function clickLoadingTargetKey(action, target) {
+  const parts = [
+    action,
+    target?.dataset?.id,
+    target?.dataset?.slug,
+    target?.dataset?.tab,
+    target?.dataset?.modal,
+    target?.dataset?.projectId,
+    target?.dataset?.agentId,
+    target?.dataset?.path,
+    target?.dataset?.memberId,
+    target?.dataset?.proposalId,
+  ].filter(Boolean);
+  return parts.join(':') || action || '';
+}
+
+function clickLoadingButtonText(target) {
+  return String(target?.innerText || target?.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+function clickLoadingMeta(action, target) {
+  const modalName = target?.dataset?.modal || '';
+  const detailSurface = activeView === 'members' ? 'main' : 'inspector';
+  const map = {
+    'switch-server': ['Loading server...', 'main'],
+    'open-console-server': ['Loading server...', 'main'],
+    'accept-console-invitation': ['Accepting invitation...', 'main'],
+    'decline-console-invitation': ['Declining invitation...', 'main'],
+    'set-ui-language': ['Saving language...', 'main'],
+    'mark-inbox-read': ['Marking activities read...', 'main'],
+    'close-workspace-activity': ['Closing activity log...', 'inspector'],
+    'save-agent-field': ['Saving agent profile...', detailSurface],
+    'save-agent-env': ['Saving environment...', detailSurface],
+    'save-human-description': ['Saving profile...', detailSurface],
+    'refresh-agent-skills': ['Loading skills...', detailSurface],
+    'open-dm-with-agent': ['Loading DM...', 'main'],
+    'open-dm-with-human': ['Loading DM...', 'main'],
+    'delete-agent': ['Deleting agent...', detailSurface],
+    'restore-agent': ['Restoring agent...', 'main'],
+    'restore-console-server': ['Restoring server...', 'main'],
+    'confirm-agent-start': ['Requesting agent start...', detailSurface],
+    'confirm-agent-restart': ['Requesting agent restart...', detailSurface],
+    'pick-project-folder': ['Opening folder picker...', 'main'],
+    'toggle-project-tree': ['Loading folder...', 'main'],
+    'open-project-file': ['Loading file...', detailSurface],
+    'toggle-agent-workspace': ['Loading workspace folder...', detailSurface],
+    'open-agent-workspace-file': ['Loading workspace file...', detailSurface],
+    'refresh-agent-workspace': ['Loading workspace...', detailSurface],
+    'confirm-avatar-crop': ['Saving avatar...', 'modal'],
+    'remove-project': ['Removing folder...', 'main'],
+    'save-message': ['Saving message...', 'main'],
+    'remove-saved-message': ['Updating saved message...', 'main'],
+    'task-status-set': ['Updating task...', 'main'],
+    'message-task': ['Creating task...', 'main'],
+    'task-claim': ['Claiming task...', 'main'],
+    'task-unclaim': ['Unclaiming task...', 'main'],
+    'task-review': ['Requesting review...', 'main'],
+    'task-approve': ['Approving task...', 'main'],
+    'task-close': ['Closing task...', 'main'],
+    'task-reopen': ['Reopening task...', 'main'],
+    'run-task-codex': ['Starting mission...', 'main'],
+    'cloud-local': ['Switching offline...', 'main'],
+    'cloud-disconnect': ['Disconnecting cloud...', 'main'],
+    'cloud-configure': ['Saving cloud config...', 'main'],
+    'cloud-pair': ['Pairing cloud...', 'main'],
+    'cloud-push': ['Pushing state...', 'main'],
+    'cloud-pull': ['Pulling cloud state...', 'main'],
+    'create-computer-pairing': ['Loading connect command...', 'main'],
+    'generate-computer-command': ['Loading connect command...', 'main'],
+    'regenerate-computer-command': ['Loading connect command...', 'modal'],
+    'refresh-computer-pairing-command': ['Loading connect command...', 'modal'],
+    'revoke-join-link': ['Revoking join link...', 'main'],
+    'start-all-computer-agents': ['Starting agents...', 'main'],
+    'disable-computer': ['Disabling computer...', 'main'],
+    'enable-computer': ['Enabling computer...', 'main'],
+    'confirm-cloud-auth-logout': ['Signing out...', 'modal'],
+    'confirm-member-action': ['Updating member...', 'modal'],
+    'promote-cloud-member-role': ['Updating member role...', 'main'],
+    'update-cloud-member-role': ['Updating member role...', 'main'],
+    'leave-channel': ['Leaving channel...', 'main'],
+    'join-channel': ['Joining channel...', 'main'],
+    'remove-channel-member': ['Removing member...', 'modal'],
+    'add-channel-member': ['Adding member...', 'modal'],
+    'accept-member-proposal': ['Accepting proposal...', 'modal'],
+    'decline-member-proposal': ['Declining proposal...', 'modal'],
+  };
+  if (action === 'open-modal' && modalName === 'agent') return { label: 'Loading runtimes...', surface: 'modal' };
+  if (action === 'open-modal' && modalName === 'computer') return { label: 'Loading connect command...', surface: 'modal' };
+  if (action === 'close-modal' && modal === 'computer') return { label: 'Closing computer setup...', surface: 'modal' };
+  const item = map[action];
+  if (item) return { label: item[0], surface: item[1] };
+  return { label: `${clickLoadingButtonText(target) || 'Loading'}...`, surface: '' };
+}
+
+function shouldShowClickLoading(action, target, localOnlyActions = new Set()) {
+  const remoteLocalActions = new Set([
+    'set-agent-detail-tab',
+    'set-ui-language',
+    'refresh-agent-workspace',
+    'toggle-project-tree',
+    'open-project-file',
+    'toggle-agent-workspace',
+    'open-agent-workspace-file',
+    'open-modal',
+    'close-modal',
+  ]);
+  if (action === 'open-modal' && !['agent', 'computer'].includes(target?.dataset?.modal || '')) return false;
+  if (action === 'close-modal' && modal !== 'computer') return false;
+  return !localOnlyActions.has(action) || remoteLocalActions.has(action);
+}
+
+function setClickLoadingButton(target, loading) {
+  if (!target?.classList) return;
+  if (loading) {
+    target.classList.add('is-loading');
+    target.setAttribute('aria-busy', 'true');
+    if ('disabled' in target) target.disabled = true;
+    return;
+  }
+  target.classList.remove('is-loading');
+  target.removeAttribute('aria-busy');
+  if ('disabled' in target && target.dataset.action !== 'agent-stop-unavailable') target.disabled = false;
+}
+
+function beginClickLoading(action, target, localOnlyActions = new Set()) {
+  if (!shouldShowClickLoading(action, target, localOnlyActions)) return 0;
+  const meta = clickLoadingMeta(action, target);
+  const token = ++clickLoadingSeq;
+  clickLoadingState = {
+    token,
+    action,
+    key: clickLoadingTargetKey(action, target),
+    label: meta.label,
+    surface: meta.surface || '',
+    startedAt: Date.now(),
+  };
+  setClickLoadingButton(target, true);
+  if (clickLoadingState.surface) render();
+  return token;
+}
+
+function finishClickLoading(token, target) {
+  if (!token) return;
+  setClickLoadingButton(target, false);
+  const shouldRender = clickLoadingState.token === token && Boolean(clickLoadingState.surface);
+  if (clickLoadingState.token === token) {
+    clickLoadingState = { token: 0, action: '', key: '', label: '', surface: '', startedAt: 0 };
+  }
+  if (shouldRender) render();
+}
+
+function renderClickLoadingSurface(surface) {
+  if (!clickLoadingState.surface || clickLoadingState.surface !== surface) return '';
+  return `
+    <div class="click-loading-surface click-loading-${escapeHtml(surface)}" role="status" aria-live="polite">
+      <span>${escapeHtml(clickLoadingState.label || 'Loading...')}</span>
+    </div>
+  `;
+}
+
+function normalizeAgentDetailTab(value = '') {
+  const tab = String(value || '').trim().toLowerCase();
+  return ['profile', 'skills', 'dms', 'reminders', 'workspace', 'activity'].includes(tab) ? tab : 'profile';
+}
+
+function agentDetailTabLoadingText(tab) {
+  return {
+    profile: 'Loading profile...',
+    skills: 'Loading skills...',
+    dms: 'Loading agent DMs...',
+    reminders: 'Loading reminders...',
+    workspace: 'Loading workspace...',
+    activity: 'Loading activity...',
+  }[normalizeAgentDetailTab(tab)] || 'Loading agent detail...';
+}
+
+function agentDetailTabDebugDelayMs() {
+  const params = new URLSearchParams(window.location.search || '');
+  const raw = params.get('agentDetailLoadingDelayMs')
+    || params.get('clickLoadingDelayMs')
+    || localStorage.getItem('magclawAgentDetailLoadingDelayMs')
+    || localStorage.getItem('magclawClickLoadingDelayMs')
+    || window.__MAGCLAW_AGENT_DETAIL_LOADING_DELAY_MS
+    || window.__MAGCLAW_CLICK_LOADING_DELAY_MS
+    || 0;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(value, 5000);
+}
+
+function waitForAgentDetailTabDebugDelay(delayMs) {
+  return delayMs > 0 ? new Promise((resolve) => setTimeout(resolve, delayMs)) : Promise.resolve();
+}
+
+function agentDetailTabDataReady(agentId, tab) {
+  const normalized = normalizeAgentDetailTab(tab);
+  if (!agentId) return true;
+  if (normalized === 'skills') {
+    const skills = agentSkillsCache[agentId];
+    return Boolean(skills && !skills.loading && !skills.error);
+  }
+  if (normalized === 'workspace') {
+    const root = agentWorkspaceTreeCache[agentWorkspaceKey(agentId, '')];
+    const previewPath = selectedAgentWorkspaceFile?.agentId === agentId
+      ? selectedAgentWorkspaceFile.path
+      : 'MEMORY.md';
+    const preview = agentWorkspaceFilePreviews[agentWorkspaceKey(agentId, previewPath)];
+    return Boolean(root && !root.loading && !root.error && preview && !preview.loading && !preview.error);
+  }
+  return true;
+}
+
+async function warmAgentDetailTab(agentId, tab) {
+  const normalized = normalizeAgentDetailTab(tab);
+  if (!agentId) return;
+  if (normalized === 'workspace') {
+    await prepareAgentWorkspaceTab(agentId);
+    return;
+  }
+  if (normalized === 'skills') {
+    await loadAgentSkills(agentId);
+    return;
+  }
+  if (normalized === 'profile') {
+    loadAgentSkills(agentId).catch((error) => toast(error.message));
+  }
+}
+
+async function switchAgentDetailTab(agentId, tab) {
+  const nextTab = normalizeAgentDetailTab(tab);
+  agentDetailTab = nextTab;
+  agentDetailEditState = { field: null };
+  agentEnvEditState = null;
+
+  const delayMs = agentDetailTabDebugDelayMs();
+  const shouldShowLoading = delayMs > 0 || !agentDetailTabDataReady(agentId, nextTab);
+  const token = ++agentDetailTabLoadSeq;
+
+  if (!shouldShowLoading) {
+    agentDetailTabLoading = { agentId: null, tab: null, token };
+    render();
+    await warmAgentDetailTab(agentId, nextTab);
+    return;
+  }
+
+  agentDetailTabLoading = { agentId, tab: nextTab, token };
+  render();
+
+  try {
+    await Promise.all([
+      warmAgentDetailTab(agentId, nextTab),
+      waitForAgentDetailTabDebugDelay(delayMs),
+    ]);
+  } finally {
+    if (
+      agentDetailTabLoading.token === token
+      && agentDetailTabLoading.agentId === agentId
+      && agentDetailTabLoading.tab === nextTab
+    ) {
+      agentDetailTabLoading = { agentId: null, tab: null, token };
+      render();
+    }
+  }
 }
 
 async function loadAgentSkills(agentId, { force = false } = {}) {

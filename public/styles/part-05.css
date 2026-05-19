@@ -1281,6 +1281,10 @@
 }
 
 .agent-detail-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 30px;
   padding: 6px 8px;
   border-width: 0 2px 0 0;
@@ -1299,9 +1303,40 @@
   color: var(--accent-text);
 }
 
+.agent-tab-loading-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.65;
+  animation: agent-tab-loading-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes agent-tab-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.75);
+  }
+
+  50% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+}
+
 .agent-detail-content {
   min-height: 0;
   overflow: auto;
+}
+
+.agent-detail-loading {
+  min-height: 320px;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 13px;
 }
 
 .agent-profile-tab,

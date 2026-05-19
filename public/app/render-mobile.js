@@ -283,6 +283,39 @@ function renderMobileSectionTitle(label, count = '', actions = '') {
   `;
 }
 
+function mobileSettingsItemsInPreferredOrder(items = []) {
+  const order = ['account', 'language', 'browser', 'server', 'members', 'lost-space', 'release'];
+  const rank = new Map(order.map((id, index) => [id, index]));
+  return [...items].sort((left, right) => (
+    (rank.get(left.id) ?? 99) - (rank.get(right.id) ?? 99)
+  ));
+}
+
+function renderMobileSettingsNavRow(item) {
+  return `
+    <button class="mobile-settings-row" type="button" data-action="set-settings-tab" data-tab="${escapeHtml(item.id)}">
+      ${settingsIcon(item.icon, 17)}
+      <span>${escapeHtml(item.label)}</span>
+      ${item.meta ? `<em>${escapeHtml(item.meta)}</em>` : ''}
+    </button>
+  `;
+}
+
+function renderMobileComputersSettingsRow() {
+  const computers = Array.isArray(appState?.computers) ? appState.computers : [];
+  const connected = typeof computerIsConnected === 'function'
+    ? computers.filter((computer) => computerIsConnected(computer)).length
+    : computers.filter((computer) => String(computer?.status || '').toLowerCase() === 'connected').length;
+  const meta = computers.length ? `${connected}/${computers.length}` : '';
+  return `
+    <button class="mobile-settings-row mobile-settings-computers-row" type="button" data-action="set-left-nav" data-nav="desktop">
+      ${settingsIcon('computer', 17)}
+      <span>Computers</span>
+      ${meta ? `<em>${escapeHtml(meta)}</em>` : ''}
+    </button>
+  `;
+}
+
 function renderMobileHome() {
   const channels = appState.channels || [];
   const dms = appState.dms || [];
@@ -392,20 +425,19 @@ function renderMobileMembersHome() {
 }
 
 function renderMobileSettingsHome() {
-  const items = settingsNavItems();
+  const items = mobileSettingsItemsInPreferredOrder(settingsNavItems());
+  const rows = [];
+  for (const item of items) {
+    rows.push(renderMobileSettingsNavRow(item));
+    if (item.id === 'server') rows.push(renderMobileComputersSettingsRow());
+  }
   return `
     <section class="mobile-root mobile-settings-root">
       ${renderMobileRootHeader('Settings', '')}
       <nav class="mobile-settings-list" aria-label="Settings">
-        ${items.map((item) => `
-          <button class="mobile-settings-row" type="button" data-action="set-settings-tab" data-tab="${escapeHtml(item.id)}">
-            ${settingsIcon(item.icon, 18)}
-            <span>${escapeHtml(item.label)}</span>
-            ${item.meta ? `<em>${escapeHtml(item.meta)}</em>` : ''}
-          </button>
-        `).join('')}
+        ${rows.join('')}
         <button class="mobile-settings-row" type="button" data-action="set-left-nav" data-nav="console">
-          ${settingsIcon('console', 18)}
+          ${settingsIcon('console', 17)}
           <span>Console</span>
         </button>
       </nav>

@@ -2055,17 +2055,23 @@ class MagClawDaemon {
   }
 
   async sendReady() {
-    this.send(await this.readyPayload());
+    const payload = await this.readyPayload();
+    const sent = this.send(payload);
+    logInfo(
+      'daemon',
+      `Sent ready payload for computer ${payload.computerId || 'unpaired'} (runtimes=${payload.runtimes.join(', ') || 'none'}, runningAgents=${payload.runningAgents.length}, sent=${sent}).`,
+    );
   }
 
   sendHeartbeat() {
-    this.send({
+    const sent = this.send({
       type: 'heartbeat',
       time: now(),
       computerId: this.config.computerId || null,
       daemonVersion: DAEMON_VERSION,
       runningAgents: [...this.sessions.keys()],
     });
+    logInfo('daemon', `Sent heartbeat (runningAgents=${this.sessions.size}, sent=${sent}).`);
   }
 
   startHeartbeat() {
@@ -2175,6 +2181,7 @@ class MagClawDaemon {
         break;
       case 'ping':
         this.send({ type: 'pong', time: now() });
+        logInfo('daemon', 'Received ping; sent pong.');
         break;
       case 'agent:start':
         await this.handleAgentStart(message);
@@ -2397,8 +2404,15 @@ class MagClawDaemon {
         this.socket = socket;
         this.reconnectDelayMs = this.reconnectMinMs;
         this.markInbound('websocket_open');
+        logInfo('daemon', 'Connected to MagClaw cloud; waiting for ready acknowledgement.');
         this.startHeartbeat();
         const connection = { socket, buffer: Buffer.alloc(0) };
+        let disconnectLogged = false;
+        const logConnectionDrop = (reason) => {
+          if (this.closed || disconnectLogged) return;
+          disconnectLogged = true;
+          logWarning('daemon', `MagClaw cloud connection ${reason}; local agent sessions continue running until reconnect.`);
+        };
         const handleChunk = (chunk) => {
           for (const frame of decodeFrames(connection, chunk)) {
             if (frame.opcode === 0x8) {
@@ -2420,14 +2434,17 @@ class MagClawDaemon {
         socket.on('data', handleChunk);
         if (head.length) handleChunk(head);
         socket.on('close', () => {
+          logConnectionDrop('closed');
           if (this.socket === socket) this.socket = null;
           finish(resolve);
         });
         socket.on('end', () => {
+          logConnectionDrop('ended');
           if (this.socket === socket) this.socket = null;
           finish(resolve);
         });
         socket.on('error', (error) => {
+          logConnectionDrop(`errored (${error.message})`);
           if (this.socket === socket) this.socket = null;
           if (this.closed) finish(resolve);
           else finish(reject, error);

@@ -790,6 +790,38 @@ export function createCloudAuth(deps) {
     return jsonObject(jsonObject(user?.metadata).oauth)?.feishu || {};
   }
 
+  function thirdPartyNameFromUser(user) {
+    return String(user?.thirdPartyName || user?.third_party_name || feishuMetadata(user).name || '').trim();
+  }
+
+  function thirdPartyProviderFromUser(user) {
+    const explicit = String(user?.thirdPartyProvider || user?.third_party_provider || '').trim();
+    if (explicit) return explicit;
+    return Object.keys(feishuMetadata(user)).length ? 'feishu' : '';
+  }
+
+  function syncHumanThirdPartyIdentity(human, user) {
+    if (!human) return false;
+    const thirdPartyName = thirdPartyNameFromUser(user);
+    const thirdPartyProvider = thirdPartyProviderFromUser(user);
+    let changed = false;
+    if (thirdPartyName) {
+      if (human.thirdPartyName !== thirdPartyName) changed = true;
+      human.thirdPartyName = thirdPartyName;
+    } else if (Object.prototype.hasOwnProperty.call(human, 'thirdPartyName')) {
+      delete human.thirdPartyName;
+      changed = true;
+    }
+    if (thirdPartyProvider) {
+      if (human.thirdPartyProvider !== thirdPartyProvider) changed = true;
+      human.thirdPartyProvider = thirdPartyProvider;
+    } else if (Object.prototype.hasOwnProperty.call(human, 'thirdPartyProvider')) {
+      delete human.thirdPartyProvider;
+      changed = true;
+    }
+    return changed;
+  }
+
   function userWithFeishuIdentity(profile) {
     const providerAccountId = String(profile?.providerAccountId || '').trim();
     if (!providerAccountId) return null;
@@ -807,6 +839,8 @@ export function createCloudAuth(deps) {
   function applyFeishuProfileToUser(user, profile, timestamp) {
     if (profile.email && !user.email) user.email = profile.email;
     user.name = user.name || profile.name;
+    user.thirdPartyName = profile.name;
+    user.thirdPartyProvider = 'feishu';
     user.avatarUrl = user.avatarUrl || profile.avatarUrl || '';
     if (profile.email) user.emailVerifiedAt = user.emailVerifiedAt || timestamp;
     user.updatedAt = timestamp;
@@ -816,6 +850,7 @@ export function createCloudAuth(deps) {
         ...jsonObject(user.metadata?.oauth),
         feishu: {
           providerAccountId: profile.providerAccountId,
+          name: profile.name,
           tenantKey: profile.tenantKey,
           openId: profile.openId,
           unionId: profile.unionId,
@@ -921,6 +956,8 @@ export function createCloudAuth(deps) {
         id: makeUserId(),
         email: profile.email || '',
         name: profile.name,
+        thirdPartyName: profile.name,
+        thirdPartyProvider: 'feishu',
         passwordHash: '',
         avatarUrl: profile.avatarUrl,
         language: normalizeLanguagePreference(req.headers?.['accept-language'] || 'en'),
@@ -943,7 +980,7 @@ export function createCloudAuth(deps) {
 
     const member = memberForUser(user.id);
     if (member) {
-      const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, {
+      const human = ensureHumanForUser(user, member.role, {
         humanId: member.humanId,
         workspaceId: member.workspaceId,
       });
@@ -1034,6 +1071,8 @@ export function createCloudAuth(deps) {
     function ensureHumanForUser(user, role = 'member', options = {}) {
       state.humans = safeArray(state.humans);
       const normalizedRole = normalizeCloudRole(role);
+      const timestamp = now();
+      const fallbackName = user.name || user.email?.split('@')[0] || thirdPartyNameFromUser(user) || 'Human';
       const workspaceId = String(options.workspaceId || state.connection?.workspaceId || primaryWorkspace()?.id || 'local').trim();
       let human = options.humanId
         ? state.humans.find((item) => item.id === options.humanId)
@@ -1075,27 +1114,29 @@ export function createCloudAuth(deps) {
         human = {
           id: makeId('hum'),
           workspaceId,
-          name: user.name || user.email.split('@')[0],
+          name: fallbackName,
           email: user.email,
           role: normalizedRole,
           status: 'online',
-          createdAt: now(),
+          createdAt: timestamp,
         };
       state.humans.push(human);
       }
       human.authUserId = user.id;
       human.userId = human.userId || user.id;
       if (!human.workspaceId) human.workspaceId = workspaceId;
-      human.name = user.name || human.name || user.email.split('@')[0];
+      human.name = user.name || human.name || fallbackName;
       human.email = user.email;
       human.role = normalizedRole;
+      const thirdPartyChanged = syncHumanThirdPartyIdentity(human, user);
       if (user.avatarUrl && !human.avatarUrl && !human.avatar) {
         human.avatarUrl = user.avatarUrl;
         human.avatar = user.avatarUrl;
       }
       human.status = 'online';
-      human.lastSeenAt = now();
+      human.lastSeenAt = timestamp;
       human.presenceUpdatedAt = human.lastSeenAt;
+      if (thirdPartyChanged) human.updatedAt = timestamp;
       delete human.removedAt;
       return human;
     }
@@ -1127,7 +1168,7 @@ export function createCloudAuth(deps) {
         throw error;
     }
       if (member) {
-        const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, {
+        const human = ensureHumanForUser(user, member.role, {
           humanId: member.humanId,
           workspaceId: member.workspaceId,
         });
@@ -1204,7 +1245,7 @@ export function createCloudAuth(deps) {
       }
       const member = firstActiveMemberForUser(user.id);
       if (member) {
-        const human = humanForMember(member, user) || ensureHumanForUser(user, member.role, {
+        const human = ensureHumanForUser(user, member.role, {
           humanId: member.humanId,
           workspaceId: member.workspaceId,
         });
@@ -2624,8 +2665,7 @@ export function createCloudAuth(deps) {
       const member = user ? memberForUser(user.id, workspace?.id) : null;
       const session = req ? currentSession(req) : null;
       if (user && member) {
-        const human = humanForMember(member, user)
-          || ensureHumanForUser(user, member.role, {
+        const human = ensureHumanForUser(user, member.role, {
             humanId: member.humanId,
             workspaceId: member.workspaceId,
           });

@@ -598,6 +598,121 @@ test('Feishu callback without email uses provider account identity and keeps acc
   }
 });
 
+test('Feishu callback syncs third-party name without overwriting editable MagClaw name', async () => {
+  const previousProviders = process.env.MAGCLAW_AUTH_PROVIDERS;
+  const previousFetch = globalThis.fetch;
+  process.env.MAGCLAW_AUTH_PROVIDERS = JSON.stringify([
+    {
+      type: 'feishu',
+      label: 'Feishu SSO',
+      app_id: 'cli_test',
+      app_secret: 'super-secret',
+      redirect_uri: 'https://magclaw.example.com/api/cloud/auth/feishu/callback',
+    },
+  ]);
+  let profileName = 'Original Feishu Name';
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/auth/v3/app_access_token/internal')) {
+      return Response.json({ code: 0, msg: 'ok', app_access_token: 'app-token' });
+    }
+    if (String(url).includes('/authen/v1/access_token')) {
+      return Response.json({ code: 0, data: { access_token: 'user-token' } });
+    }
+    if (String(url).includes('/authen/v1/user_info')) {
+      return Response.json({
+        code: 0,
+        data: {
+          name: profileName,
+          open_id: 'ou_stable',
+          union_id: 'on_stable',
+          tenant_key: 'tenant_test',
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  };
+
+  try {
+    const createdAt = '2026-05-12T00:00:00.000Z';
+    const { auth, state } = makeAuth(null, {
+      cloud: {
+        users: [{
+          id: 'usr_feishu',
+          email: '',
+          name: 'Custom MagClaw Name',
+          thirdPartyName: 'Old Feishu Name',
+          thirdPartyProvider: 'feishu',
+          passwordHash: '',
+          language: 'en',
+          createdAt,
+          updatedAt: createdAt,
+          metadata: {
+            oauth: {
+              feishu: {
+                providerAccountId: 'on_stable',
+                name: 'Old Feishu Name',
+              },
+            },
+          },
+        }],
+        workspaceMembers: [{
+          id: 'wmem_feishu',
+          workspaceId: 'local',
+          userId: 'usr_feishu',
+          humanId: 'hum_feishu',
+          role: 'member',
+          status: 'active',
+          joinedAt: createdAt,
+          createdAt,
+        }],
+      },
+      humans: [{
+        id: 'hum_feishu',
+        workspaceId: 'local',
+        authUserId: 'usr_feishu',
+        name: 'Custom MagClaw Name',
+        thirdPartyName: 'Old Feishu Name',
+        thirdPartyProvider: 'feishu',
+        role: 'member',
+        status: 'offline',
+        createdAt,
+      }],
+    });
+
+    const first = await auth.loginWithFeishuCallback(
+      new URL('https://magclaw.example.com/api/cloud/auth/feishu/callback?code=oauth-code&state=state-token'),
+      request('magclaw_feishu_oauth_state=state-token'),
+      response(),
+    );
+
+    assert.equal(first.user.name, 'Custom MagClaw Name');
+    assert.equal(first.user.thirdPartyName, 'Original Feishu Name');
+    assert.equal(state.cloud.users[0].name, 'Custom MagClaw Name');
+    assert.equal(state.cloud.users[0].thirdPartyName, 'Original Feishu Name');
+    assert.equal(state.cloud.users[0].metadata.oauth.feishu.name, 'Original Feishu Name');
+    assert.equal(state.humans[0].name, 'Custom MagClaw Name');
+    assert.equal(state.humans[0].thirdPartyName, 'Original Feishu Name');
+
+    profileName = 'Renamed Feishu Name';
+    const second = await auth.loginWithFeishuCallback(
+      new URL('https://magclaw.example.com/api/cloud/auth/feishu/callback?code=oauth-code&state=state-token-2'),
+      request('magclaw_feishu_oauth_state=state-token-2'),
+      response(),
+    );
+
+    assert.equal(second.user.name, 'Custom MagClaw Name');
+    assert.equal(second.user.thirdPartyName, 'Renamed Feishu Name');
+    assert.equal(state.cloud.users[0].name, 'Custom MagClaw Name');
+    assert.equal(state.cloud.users[0].thirdPartyName, 'Renamed Feishu Name');
+    assert.equal(state.humans[0].name, 'Custom MagClaw Name');
+    assert.equal(state.humans[0].thirdPartyName, 'Renamed Feishu Name');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousProviders === undefined) delete process.env.MAGCLAW_AUTH_PROVIDERS;
+    else process.env.MAGCLAW_AUTH_PROVIDERS = previousProviders;
+  }
+});
+
 test('Feishu callback prefers user_id over open_id when union_id is absent', async () => {
   const previousProviders = process.env.MAGCLAW_AUTH_PROVIDERS;
   const previousFetch = globalThis.fetch;
