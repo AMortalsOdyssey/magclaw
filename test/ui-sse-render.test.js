@@ -49,6 +49,32 @@ test('state SSE updates route through the non-destructive state renderer', async
   );
 });
 
+test('opening a thread refreshes scoped replies instead of relying on preview state', async () => {
+  const app = await readAppSource();
+  const threadOpenSource = app.slice(
+    app.indexOf("if (action === 'open-thread')"),
+    app.indexOf("if (action === 'open-search-result')"),
+  );
+  const threadCloseSource = app.slice(
+    app.indexOf("if (action === 'close-thread')"),
+    app.indexOf("if (action === 'view-in-channel')"),
+  );
+  const searchOpenSource = app.slice(
+    app.indexOf('function openSearchResult(record)'),
+    app.indexOf('function closeSearchOverlay()'),
+  );
+
+  assert.match(app, /function mergeThreadReplyPageIntoState\(stateSnapshot, parentMessageId, replies = \[\]\)/);
+  assert.match(app, /async function refreshOpenThreadReplies\(parentMessageId = threadMessageId\)/);
+  assert.match(app, /\/api\/messages\/\$\{encodeURIComponent\(messageId\)\}\/replies\?limit=300/);
+  assert.match(app, /function refreshThreadSelection\(messageId = threadMessageId, \{ loadReplies = true \} = \{\}\)/);
+  assert.match(app, /if \(typeof connectEvents === 'function'\) connectEvents\(\)/);
+  assert.match(threadOpenSource, /render\(\);\s*refreshThreadSelection\(threadMessageId\);\s*scrollToMessage\(threadMessageId\)/);
+  assert.match(threadCloseSource, /render\(\);\s*refreshThreadSelection\(null, \{ loadReplies: false \}\)/);
+  assert.match(searchOpenSource, /render\(\);\s*refreshThreadSelection\(root\.id\);/);
+  assert.match(searchOpenSource, /render\(\);\s*refreshThreadSelection\(threadMessageId, \{ loadReplies: opensThread \}\);/);
+});
+
 test('unread count changes do not force full render before active chat patching', async () => {
   const app = await readAppSource();
   const applyStateSource = app.slice(

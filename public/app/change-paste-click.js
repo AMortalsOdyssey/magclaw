@@ -657,6 +657,7 @@ document.addEventListener('click', async (event) => {
       agentDetailEditState = { field: null };
       agentEnvEditState = null;
       render();
+      refreshThreadSelection(threadMessageId, { loadReplies: Boolean(threadMessageId) });
     }
     if (action === 'close-human-detail') {
       if (activeView === 'members') {
@@ -681,6 +682,7 @@ document.addEventListener('click', async (event) => {
       selectedHumanId = null;
       humanDescriptionEditState = { humanId: null };
       render();
+      refreshThreadSelection(threadMessageId, { loadReplies: Boolean(threadMessageId) });
     }
     if (action === 'set-agent-detail-tab') {
       await switchAgentDetailTab(selectedAgentId, target.dataset.tab || 'profile');
@@ -966,6 +968,7 @@ document.addEventListener('click', async (event) => {
       selectedProjectFile = null;
       selectedSavedRecordId = null;
       render();
+      refreshThreadSelection(threadMessageId, { loadReplies: Boolean(threadMessageId) });
     }
     if (action === 'close-task-detail') {
       selectedTaskId = null;
@@ -1110,6 +1113,7 @@ document.addEventListener('click', async (event) => {
       markThreadRead(threadMessageId);
       requestComposerFocus(composerIdFor('thread', threadMessageId));
       render();
+      refreshThreadSelection(threadMessageId);
       scrollToMessage(threadMessageId);
     }
     if (action === 'open-search-result') {
@@ -1123,6 +1127,7 @@ document.addEventListener('click', async (event) => {
       threadMessageId = null;
       selectedSavedRecordId = null;
       render();
+      refreshThreadSelection(null, { loadReplies: false });
     }
     if (action === 'view-in-channel') {
       const message = byId(appState.messages, target.dataset.id);
@@ -1138,6 +1143,7 @@ document.addEventListener('click', async (event) => {
         selectedTaskId = null;
         markThreadRead(message.id);
         render();
+        refreshThreadSelection(message.id);
         scrollToMessage(message.id);
       }
     }
@@ -1224,6 +1230,7 @@ document.addEventListener('click', async (event) => {
           threadMessageId = threadRoot.id;
           mobileHomeOpen = false;
           render();
+          refreshThreadSelection(threadRoot.id);
         } else {
           selectedSpaceType = record.spaceType;
           selectedSpaceId = record.spaceId;
@@ -1232,6 +1239,7 @@ document.addEventListener('click', async (event) => {
           activeTab = 'chat';
           threadMessageId = null;
           render();
+          refreshThreadSelection(null, { loadReplies: false });
           scrollToMessage(record.id);
         }
       }

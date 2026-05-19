@@ -153,6 +153,7 @@ function openSearchResult(record) {
   if (activeView === 'search' && opensThread) {
     threadMessageId = root.id;
     render();
+    refreshThreadSelection(root.id);
     if (record.parentMessageId) scrollToReply(record.id);
     focusSearchInputEnd();
     return;
@@ -164,6 +165,7 @@ function openSearchResult(record) {
   threadMessageId = opensThread ? root.id : null;
   mobileHomeOpen = false;
   render();
+  refreshThreadSelection(threadMessageId, { loadReplies: opensThread });
   scrollToMessage(root.id);
   if (record.parentMessageId) scrollToReply(record.id);
 }

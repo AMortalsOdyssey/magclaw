@@ -260,6 +260,54 @@ function stateThreadReplies(stateSnapshot, messageId) {
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 }
 
+function mergeThreadReplyPageIntoState(stateSnapshot, parentMessageId, replies = []) {
+  if (!stateSnapshot || !parentMessageId) return stateSnapshot;
+  const incoming = (replies || []).filter((reply) => reply?.id && reply.parentMessageId === parentMessageId);
+  if (!incoming.length) return stateSnapshot;
+
+  const replyById = new Map((stateSnapshot.replies || []).map((reply) => [reply.id, reply]));
+  for (const reply of incoming) {
+    replyById.set(reply.id, { ...(replyById.get(reply.id) || {}), ...reply });
+  }
+  const mergedReplies = [...replyById.values()]
+    .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+  const parentReplies = mergedReplies.filter((reply) => reply.parentMessageId === parentMessageId);
+  const latestReply = parentReplies.at(-1);
+  const messages = (stateSnapshot.messages || []).map((message) => {
+    if (message?.id !== parentMessageId) return message;
+    return {
+      ...message,
+      replyCount: Math.max(Number(message.replyCount || 0), parentReplies.length),
+      updatedAt: latestReply?.createdAt || latestReply?.updatedAt || message.updatedAt,
+    };
+  });
+
+  return {
+    ...stateSnapshot,
+    messages,
+    replies: mergedReplies,
+  };
+}
+
+async function refreshOpenThreadReplies(parentMessageId = threadMessageId) {
+  const messageId = String(parentMessageId || '').trim();
+  if (!messageId || !appState) return false;
+  const result = await api(`/api/messages/${encodeURIComponent(messageId)}/replies?limit=300`);
+  if (!appState || threadMessageId !== messageId) return false;
+  const nextState = mergeThreadReplyPageIntoState(appState, messageId, result.replies || []);
+  if (nextState === appState) return false;
+  applyStateUpdate(nextState);
+  return true;
+}
+
+function refreshThreadSelection(messageId = threadMessageId, { loadReplies = true } = {}) {
+  if (typeof connectEvents === 'function') connectEvents();
+  if (!loadReplies || !messageId) return;
+  refreshOpenThreadReplies(messageId).catch((error) => {
+    console.warn('Failed to load thread replies:', error);
+  });
+}
+
 function recordPatchSignature(record) {
   return [
     record?.id || '',

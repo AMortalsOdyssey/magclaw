@@ -183,6 +183,7 @@ document.addEventListener('submit', async (event) => {
       }
       if (shouldOpenTaskThread && result.message?.id) threadMessageId = result.message.id;
       applySubmittedConversationResult(result);
+      if (shouldOpenTaskThread && result.message?.id) refreshThreadSelection(threadMessageId);
       requestPaneBottomScroll('main');
       submittedBottomTarget = '#message-list';
       focusComposerId = shouldOpenTaskThread && result.message?.id ? composerIdFor('thread', result.message.id) : composerId;

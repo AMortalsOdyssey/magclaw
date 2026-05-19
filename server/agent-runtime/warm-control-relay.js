@@ -394,10 +394,28 @@ function markFallbackResponseWorkItems(sourceMessage, record, workItemIds = []) 
   return marked;
 }
 
+function findExistingAgentResponseForDelivery(agent, parentMessageId = null, options = {}) {
+  const deliveryId = String(options.deliveryId || '').trim();
+  const idempotencyKey = String(options.idempotencyKey || '').trim();
+  if (!deliveryId && !idempotencyKey) return null;
+  const records = parentMessageId ? state.replies : state.messages;
+  return (records || []).find((record) => (
+    record?.authorType === 'agent'
+    && record.authorId === agent.id
+    && String(record.parentMessageId || '') === String(parentMessageId || '')
+    && (
+      (deliveryId && record.deliveryId === deliveryId)
+      || (idempotencyKey && record.idempotencyKey === idempotencyKey)
+    )
+  )) || null;
+}
+
 async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageId = null, options = {}) {
   const responseBody = prepareAgentResponseBody(body);
   const sourceDepth = Number(options.sourceMessage?.agentRelayDepth || 0);
   const agentRelayDepth = sourceDepth + 1;
+  const existingResponse = findExistingAgentResponseForDelivery(agent, parentMessageId, options);
+  if (existingResponse) return existingResponse;
   if (parentMessageId && findMessage(parentMessageId)) {
     const parent = findMessage(parentMessageId);
     const reply = normalizeConversationRecord({
