@@ -1181,7 +1181,8 @@ test('empty thread replies keep the count without rendering a no-replies placeho
   const app = await readAppSource();
 
   assert.equal(app.includes('No replies yet'), false);
-  assert.match(app, /<strong>\$\{replies\.length\} \$\{replyWord\}<\/strong>/);
+  assert.match(app, /const replyCountText = pageInfo\?\.hasMore && totalReplies > replies\.length/);
+  assert.match(app, /<strong>\$\{replyCountText\}<\/strong>/);
   assert.match(app, /replies\.length \? `[\s\S]*<div class="reply-list">/);
 });
 
@@ -1735,6 +1736,20 @@ test('messages use MagClaw-style hover save actions and saved messages open cont
   assert.match(styles, /\.saved-list-panel/);
   assert.match(styles, /\.saved-row/);
   assert.match(styles, /\.saved-remove/);
+});
+
+test('conversation panes expose upward history loading affordances', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+
+  assert.match(app, /CONVERSATION_HISTORY_PAGE_SIZE = 80/);
+  assert.match(app, /CONVERSATION_HISTORY_TOP_THRESHOLD = 96/);
+  assert.match(app, /history-page-status/);
+  assert.match(app, /Scroll up for earlier messages/);
+  assert.match(app, /Scroll up for earlier replies/);
+  assert.match(app, /currentMainHistoryPage\(\)/);
+  assert.match(app, /currentThreadHistoryPage\(message\.id\)/);
+  assert.match(styles, /\.history-page-status/);
 });
 
 test('agent identities are clickable and expose MagClaw-style hover summaries', async () => {

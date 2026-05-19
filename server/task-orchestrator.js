@@ -90,7 +90,10 @@ export function createTaskOrchestrator(deps) {
       updatedAt: now(),
     });
     state.replies.push(ack);
-    parent.replyCount = state.replies.filter((item) => item.parentMessageId === parent.id).length;
+    parent.replyCount = Math.max(
+      Number(parent.replyCount || 0) + 1,
+      state.replies.filter((item) => item.parentMessageId === parent.id).length,
+    );
     parent.updatedAt = now();
     addCollabEvent('thread_task_created', `${agent.name} created ${taskLabel(result.task)} from a thread reply.`, {
       agentId: agent.id,

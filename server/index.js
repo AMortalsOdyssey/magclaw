@@ -522,6 +522,28 @@ function resilientCloudRepository(repository) {
         await disable(error);
       }
     },
+    async loadConversationWindowIntoState(stateSnapshot, options = {}) {
+      if (disabled || typeof repository.loadConversationWindowIntoState !== 'function') return null;
+      try {
+        return await repository.loadConversationWindowIntoState(stateSnapshot, options);
+      } catch (error) {
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
+        await disable(error);
+        return null;
+      }
+    },
+    async listSpaceMessagesPage(options = {}) {
+      if (disabled || typeof repository.listSpaceMessagesPage !== 'function') return null;
+      return repository.listSpaceMessagesPage(options);
+    },
+    async listThreadRepliesPage(options = {}) {
+      if (disabled || typeof repository.listThreadRepliesPage !== 'function') return null;
+      return repository.listThreadRepliesPage(options);
+    },
+    async getMessageById(messageId, options = {}) {
+      if (disabled || typeof repository.getMessageById !== 'function') return null;
+      return repository.getMessageById(messageId, options);
+    },
     async publishRealtimeEvent(payload) {
       if (disabled || typeof repository.publishRealtimeEvent !== 'function') return;
       try {
@@ -694,6 +716,25 @@ const cloudAuth = createCloudAuth({
   persistState,
   realtimeSourceId: REALTIME_SOURCE_ID,
 });
+
+async function hydrateBootstrapWindow(req, options = {}) {
+  if (!cloudRepository?.isEnabled?.() || typeof cloudRepository.loadConversationWindowIntoState !== 'function') return null;
+  const actor = cloudAuth.currentActor(req);
+  const workspaceId = String(
+    actor?.member?.workspaceId
+    || state.connection?.workspaceId
+    || state.cloud?.workspace?.id
+    || '',
+  ).trim();
+  return cloudRepository.loadConversationWindowIntoState(state, {
+    workspaceId,
+    spaceType: options.spaceType,
+    spaceId: options.spaceId,
+    threadMessageId: options.threadMessageId,
+    messageLimit: options.messageLimit,
+    replyLimit: options.replyLimit || options.messageLimit,
+  });
+}
 
 const serverIo = createServerIo({
   addSystemEvent,
@@ -1312,6 +1353,7 @@ function systemApiDeps() {
     fanoutApiConfigured,
     getRuntimeInfo,
     getState: () => state,
+    hydrateBootstrapWindow,
     isDraining,
     persistState,
     presenceHeartbeat,
@@ -1543,7 +1585,16 @@ function messageApiDeps() {
     findTaskForThreadMessage,
     finishTaskFromThread,
     getState: () => state,
+    getMessageById: typeof cloudRepository?.getMessageById === 'function'
+      ? (...args) => cloudRepository.getMessageById(...args)
+      : null,
     inferAgentMemoryWriteback,
+    listSpaceMessagesPage: typeof cloudRepository?.listSpaceMessagesPage === 'function'
+      ? (...args) => cloudRepository.listSpaceMessagesPage(...args)
+      : null,
+    listThreadRepliesPage: typeof cloudRepository?.listThreadRepliesPage === 'function'
+      ? (...args) => cloudRepository.listThreadRepliesPage(...args)
+      : null,
     makeId,
     normalizeIds,
     normalizeConversationRecord,

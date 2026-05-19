@@ -22,6 +22,7 @@ export async function handleSystemApi(req, res, url, deps) {
     fanoutApiConfigured,
     getRuntimeInfo,
     getState,
+    hydrateBootstrapWindow,
     isDraining,
     persistState,
     presenceHeartbeat,
@@ -93,7 +94,12 @@ export async function handleSystemApi(req, res, url, deps) {
       threadRootLimit: url.searchParams.get('threadRootLimit') || '',
       eventLimit: url.searchParams.get('eventLimit') || '',
     };
-    sendJson(res, 200, (publicBootstrapState || publicState)(req, options));
+    const hydration = typeof hydrateBootstrapWindow === 'function'
+      ? await hydrateBootstrapWindow(req, options)
+      : null;
+    if (hydration) req.magclawBootstrapHydration = hydration;
+    const bootstrapOptions = hydration ? { ...options, hydration } : options;
+    sendJson(res, 200, (publicBootstrapState || publicState)(req, bootstrapOptions));
     return true;
   }
 
@@ -113,6 +119,17 @@ export async function handleSystemApi(req, res, url, deps) {
     if (typeof isDraining === 'function' && isDraining()) {
       sendJson(res, 503, { ok: false, draining: true });
       return true;
+    }
+    const streamOptions = {
+      spaceType: url.searchParams.get('spaceType') || '',
+      spaceId: url.searchParams.get('spaceId') || '',
+      threadMessageId: url.searchParams.get('threadMessageId') || '',
+      messageLimit: url.searchParams.get('messageLimit') || '',
+      threadRootLimit: url.searchParams.get('threadRootLimit') || '',
+      eventLimit: url.searchParams.get('eventLimit') || '',
+    };
+    if (typeof hydrateBootstrapWindow === 'function') {
+      req.magclawBootstrapHydration = await hydrateBootstrapWindow(req, streamOptions);
     }
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',

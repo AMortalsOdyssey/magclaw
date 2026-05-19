@@ -1232,6 +1232,16 @@ button:disabled {
   background: var(--bg-chat);
 }
 
+.history-page-status {
+  justify-self: center;
+  padding: 4px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.2;
+  border: 1px solid var(--border-subtle);
+  background: #fff;
+}
+
 .dm-chat-panel {
   border-left: 0;
   border-right: 0;

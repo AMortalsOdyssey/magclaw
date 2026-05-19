@@ -435,7 +435,10 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
       updatedAt: now(),
     });
     state.replies.push(reply);
-    parent.replyCount = state.replies.filter((item) => item.parentMessageId === parentMessageId).length;
+    parent.replyCount = Math.max(
+      Number(parent.replyCount || 0) + 1,
+      state.replies.filter((item) => item.parentMessageId === parentMessageId).length,
+    );
     parent.updatedAt = now();
     addCollabEvent('agent_thread_response', `${agent.name} responded in thread`, { replyId: reply.id, messageId: parentMessageId, agentId: agent.id });
     await persistState();

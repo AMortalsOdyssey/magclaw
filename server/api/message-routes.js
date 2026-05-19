@@ -34,6 +34,9 @@ export async function handleMessageApi(req, res, url, deps) {
     finishTaskFromThread,
     getState,
     inferAgentMemoryWriteback,
+    getMessageById,
+    listSpaceMessagesPage,
+    listThreadRepliesPage,
     makeId,
     normalizeIds,
     normalizeConversationRecord,
@@ -183,6 +186,30 @@ export async function handleMessageApi(req, res, url, deps) {
     if (!raw) return Number.POSITIVE_INFINITY;
     const parsed = Date.parse(raw);
     return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+  }
+
+  function beforeCursorId(url) {
+    return String(url.searchParams.get('beforeId') || '').trim();
+  }
+
+  function cursorMatchesBefore(record, before, beforeId = '') {
+    const time = recordTime(record);
+    if (!Number.isFinite(before) || before === Number.POSITIVE_INFINITY) return true;
+    if (!beforeId) return time < before;
+    return time < before || (time === before && String(record?.id || '') < beforeId);
+  }
+
+  function sortNewestFirst(a, b) {
+    return recordTime(b) - recordTime(a) || String(b?.id || '').localeCompare(String(a?.id || ''));
+  }
+
+  function sortOldestFirst(a, b) {
+    return recordTime(a) - recordTime(b) || String(a?.id || '').localeCompare(String(b?.id || ''));
+  }
+
+  function workspaceIdForRequest(req) {
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    return String(auth?.member?.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local').trim();
   }
 
   function workspaceIdForSpace(spaceType, spaceId, req) {
@@ -418,18 +445,36 @@ export async function handleMessageApi(req, res, url, deps) {
     }
     const limit = paginationLimit(url.searchParams.get('limit'));
     const before = beforeCursorTime(url);
+    const beforeId = beforeCursorId(url);
+    const workspaceId = workspaceIdForSpace(spaceType, spaceId, req);
+    if (typeof listSpaceMessagesPage === 'function' && workspaceId) {
+      const page = await listSpaceMessagesPage({
+        workspaceId,
+        spaceType,
+        spaceId,
+        limit,
+        before: Number.isFinite(before) && before !== Number.POSITIVE_INFINITY ? new Date(before).toISOString() : '',
+        beforeId,
+      });
+      if (page) {
+        sendJson(res, 200, page);
+        return true;
+      }
+    }
     const matching = state.messages
       .filter((message) => message.spaceType === spaceType && message.spaceId === spaceId)
-      .filter((message) => recordTime(message) < before)
-      .sort((a, b) => recordTime(b) - recordTime(a));
+      .filter((message) => cursorMatchesBefore(message, before, beforeId))
+      .sort(sortNewestFirst);
     const page = matching.slice(0, limit);
     const nextBefore = page.length ? page[page.length - 1].createdAt : '';
+    const nextBeforeId = page.length ? page[page.length - 1].id : '';
     sendJson(res, 200, {
-      messages: page.slice().sort((a, b) => recordTime(a) - recordTime(b)),
+      messages: page.slice().sort(sortOldestFirst),
       pagination: {
         limit,
         hasMore: matching.length > page.length,
         nextBefore,
+        nextBeforeId,
       },
     });
     return true;
@@ -589,7 +634,9 @@ export async function handleMessageApi(req, res, url, deps) {
 
   const replyMatch = url.pathname.match(/^\/api\/messages\/([^/]+)\/replies$/);
   if (req.method === 'GET' && replyMatch) {
-    const message = findMessage(replyMatch[1]);
+    const requestWorkspaceId = workspaceIdForRequest(req);
+    const message = findMessage(replyMatch[1])
+      || (typeof getMessageById === 'function' ? await getMessageById(replyMatch[1], { workspaceId: requestWorkspaceId }) : null);
     if (!message) {
       sendError(res, 404, 'Message not found.');
       return true;
@@ -600,18 +647,35 @@ export async function handleMessageApi(req, res, url, deps) {
     }
     const limit = paginationLimit(url.searchParams.get('limit'), 80, 300);
     const before = beforeCursorTime(url);
+    const beforeId = beforeCursorId(url);
+    const workspaceId = message.workspaceId || requestWorkspaceId;
+    if (typeof listThreadRepliesPage === 'function' && workspaceId) {
+      const page = await listThreadRepliesPage({
+        workspaceId,
+        parentMessageId: message.id,
+        limit,
+        before: Number.isFinite(before) && before !== Number.POSITIVE_INFINITY ? new Date(before).toISOString() : '',
+        beforeId,
+      });
+      if (page) {
+        sendJson(res, 200, page);
+        return true;
+      }
+    }
     const matching = state.replies
       .filter((reply) => reply.parentMessageId === message.id)
-      .filter((reply) => recordTime(reply) < before)
-      .sort((a, b) => recordTime(b) - recordTime(a));
+      .filter((reply) => cursorMatchesBefore(reply, before, beforeId))
+      .sort(sortNewestFirst);
     const page = matching.slice(0, limit);
     const nextBefore = page.length ? page[page.length - 1].createdAt : '';
+    const nextBeforeId = page.length ? page[page.length - 1].id : '';
     sendJson(res, 200, {
-      replies: page.slice().sort((a, b) => recordTime(a) - recordTime(b)),
+      replies: page.slice().sort(sortOldestFirst),
       pagination: {
         limit,
         hasMore: matching.length > page.length,
         nextBefore,
+        nextBeforeId,
       },
     });
     return true;
@@ -663,7 +727,10 @@ export async function handleMessageApi(req, res, url, deps) {
     });
     applyMentions(reply, mentions);
     state.replies.push(reply);
-    message.replyCount = state.replies.filter((item) => item.parentMessageId === message.id).length;
+    message.replyCount = Math.max(
+      Number(message.replyCount || 0) + 1,
+      state.replies.filter((item) => item.parentMessageId === message.id).length,
+    );
     message.updatedAt = now();
     addCollabEvent('thread_reply', 'Thread reply added.', { messageId: message.id, replyId: reply.id });
     const linkedTask = findTaskForThreadMessage(message);

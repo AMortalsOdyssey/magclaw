@@ -21,6 +21,11 @@ const DURABLE_STATE_RECORD_ARRAY_KEYS = Object.freeze(['reminders', 'missions', 
 const DURABLE_STATE_RECORD_OBJECT_KEYS = Object.freeze(['settings', 'connection', 'router']);
 const EPHEMERAL_STATE_RECORD_KEYS = new Set(['events', 'routeEvents', 'systemNotifications', 'inboxReads']);
 const EPHEMERAL_STATE_RECORD_KEY_LIST = Object.freeze([...EPHEMERAL_STATE_RECORD_KEYS]);
+const MESSAGE_PAGE_DEFAULT_LIMIT = 80;
+const MESSAGE_PAGE_MAX_LIMIT = 200;
+const THREAD_REPLY_PAGE_MAX_LIMIT = 300;
+const RECENT_MESSAGE_HYDRATION_LIMIT = 500;
+const RECENT_REPLY_HYDRATION_LIMIT = 500;
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -63,6 +68,19 @@ function parsePositiveInteger(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 1) return fallback;
   return Math.trunc(parsed);
+}
+
+function parsePageLimit(value, fallback = MESSAGE_PAGE_DEFAULT_LIMIT, max = MESSAGE_PAGE_MAX_LIMIT) {
+  const parsed = parsePositiveInteger(value, fallback);
+  return Math.min(max, parsed);
+}
+
+function compareRecordCreatedAsc(a, b) {
+  const aTime = Date.parse(a?.createdAt || a?.updatedAt || '');
+  const bTime = Date.parse(b?.createdAt || b?.updatedAt || '');
+  const aValue = Number.isFinite(aTime) ? aTime : 0;
+  const bValue = Number.isFinite(bTime) ? bTime : 0;
+  return aValue - bValue || String(a?.id || '').localeCompare(String(b?.id || ''));
 }
 
 function realtimeChannelName(value, schema = DEFAULT_SCHEMA) {
@@ -728,6 +746,16 @@ export function createCloudPostgresStore(optionsInput = {}) {
   const runtimeOptions = normalizePostgresRuntimeOptions(options.runtimeOptions || postgresRuntimeOptionsFromEnv());
   const applicationName = options.applicationName || process.env.MAGCLAW_DATABASE_APPLICATION_NAME || 'magclaw-web';
   const realtimeChannel = realtimeChannelName(options.realtimeChannel || process.env.MAGCLAW_REALTIME_CHANNEL, schema);
+  const recentMessageHydrationLimit = parsePageLimit(
+    options.recentMessageHydrationLimit || process.env.MAGCLAW_RECENT_MESSAGE_HYDRATION_LIMIT,
+    RECENT_MESSAGE_HYDRATION_LIMIT,
+    2000,
+  );
+  const recentReplyHydrationLimit = parsePageLimit(
+    options.recentReplyHydrationLimit || process.env.MAGCLAW_RECENT_REPLY_HYDRATION_LIMIT,
+    RECENT_REPLY_HYDRATION_LIMIT,
+    2000,
+  );
   let pool = options.pool || null;
   let realtimeClient = null;
   let realtimeStopper = null;
@@ -767,6 +795,48 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
   function table(name) {
     return tableName(schema, name);
+  }
+
+  function messageRuntimeConflictSuffix() {
+    const existing = table('cloud_messages');
+    return `
+      ON CONFLICT (id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        space_type = EXCLUDED.space_type,
+        space_id = EXCLUDED.space_id,
+        author_type = EXCLUDED.author_type,
+        author_id = EXCLUDED.author_id,
+        body = EXCLUDED.body,
+        attachment_ids = EXCLUDED.attachment_ids,
+        mentioned_agent_ids = EXCLUDED.mentioned_agent_ids,
+        mentioned_human_ids = EXCLUDED.mentioned_human_ids,
+        reply_count = GREATEST(${existing}.reply_count, EXCLUDED.reply_count),
+        saved_by = EXCLUDED.saved_by,
+        read_by = EXCLUDED.read_by,
+        created_at = COALESCE(${existing}.created_at, EXCLUDED.created_at),
+        updated_at = GREATEST(COALESCE(${existing}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
+        metadata = EXCLUDED.metadata
+    `;
+  }
+
+  function replyRuntimeConflictSuffix() {
+    const existing = table('cloud_replies');
+    return `
+      ON CONFLICT (id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        parent_message_id = EXCLUDED.parent_message_id,
+        author_type = EXCLUDED.author_type,
+        author_id = EXCLUDED.author_id,
+        body = EXCLUDED.body,
+        attachment_ids = EXCLUDED.attachment_ids,
+        mentioned_agent_ids = EXCLUDED.mentioned_agent_ids,
+        mentioned_human_ids = EXCLUDED.mentioned_human_ids,
+        saved_by = EXCLUDED.saved_by,
+        read_by = EXCLUDED.read_by,
+        created_at = COALESCE(${existing}.created_at, EXCLUDED.created_at),
+        updated_at = GREATEST(COALESCE(${existing}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
+        metadata = EXCLUDED.metadata
+    `;
   }
 
   function greatestTimestamp(tableKey, column) {
@@ -1248,6 +1318,179 @@ export function createCloudPostgresStore(optionsInput = {}) {
     `);
   }
 
+  function pageFromDescendingRows(rows, limit, mapper, key) {
+    const pageRows = rows.slice(0, limit);
+    const records = pageRows.map(mapper).sort(compareRecordCreatedAsc);
+    const cursorRow = pageRows.at(-1) || null;
+    return {
+      [key]: records,
+      pagination: {
+        limit,
+        hasMore: rows.length > pageRows.length,
+        nextBefore: cursorRow ? requiredIso(cursorRow.created_at) : '',
+        nextBeforeId: cursorRow?.id || '',
+      },
+    };
+  }
+
+  function cursorClause(params, before, beforeId, columnPrefix = '') {
+    const beforeAt = iso(before);
+    const cleanBeforeId = String(beforeId || '').trim();
+    const createdColumn = `${columnPrefix}created_at`;
+    const idColumn = `${columnPrefix}id`;
+    if (beforeAt && cleanBeforeId) {
+      const timeParam = params.push(beforeAt);
+      const idParam = params.push(cleanBeforeId);
+      return ` AND (${createdColumn}, ${idColumn}) < ($${timeParam}::timestamptz, $${idParam}::text)`;
+    }
+    if (beforeAt) {
+      const timeParam = params.push(beforeAt);
+      return ` AND ${createdColumn} < $${timeParam}::timestamptz`;
+    }
+    return '';
+  }
+
+  async function listSpaceMessagesPage(options = {}) {
+    const workspaceId = String(options.workspaceId || '').trim();
+    const cleanSpaceType = spaceType(options.spaceType);
+    const spaceId = String(options.spaceId || '').trim();
+    if (!workspaceId || !spaceId) {
+      return {
+        messages: [],
+        pagination: {
+          limit: parsePageLimit(options.limit),
+          hasMore: false,
+          nextBefore: '',
+          nextBeforeId: '',
+        },
+      };
+    }
+    const limit = parsePageLimit(options.limit);
+    return withClient(async (client) => {
+      const params = [workspaceId, cleanSpaceType, spaceId];
+      const cursor = cursorClause(params, options.before, options.beforeId);
+      const limitParam = params.push(limit + 1);
+      const rows = await client.query(`
+        SELECT *
+        FROM ${table('cloud_messages')}
+        WHERE workspace_id = $1
+          AND space_type = $2
+          AND space_id = $3
+          ${cursor}
+        ORDER BY created_at DESC, id DESC
+        LIMIT $${limitParam}
+      `, params);
+      return pageFromDescendingRows(rows.rows, limit, messageFromRow, 'messages');
+    });
+  }
+
+  async function listThreadRepliesPage(options = {}) {
+    const workspaceId = String(options.workspaceId || '').trim();
+    const parentMessageId = String(options.parentMessageId || '').trim();
+    if (!workspaceId || !parentMessageId) {
+      return {
+        replies: [],
+        pagination: {
+          limit: parsePageLimit(options.limit, MESSAGE_PAGE_DEFAULT_LIMIT, THREAD_REPLY_PAGE_MAX_LIMIT),
+          hasMore: false,
+          nextBefore: '',
+          nextBeforeId: '',
+        },
+      };
+    }
+    const limit = parsePageLimit(options.limit, MESSAGE_PAGE_DEFAULT_LIMIT, THREAD_REPLY_PAGE_MAX_LIMIT);
+    return withClient(async (client) => {
+      const params = [workspaceId, parentMessageId];
+      const cursor = cursorClause(params, options.before, options.beforeId);
+      const limitParam = params.push(limit + 1);
+      const rows = await client.query(`
+        SELECT *
+        FROM ${table('cloud_replies')}
+        WHERE workspace_id = $1
+          AND parent_message_id = $2
+          ${cursor}
+        ORDER BY created_at DESC, id DESC
+        LIMIT $${limitParam}
+      `, params);
+      return pageFromDescendingRows(rows.rows, limit, replyFromRow, 'replies');
+    });
+  }
+
+  async function getMessageById(messageId, options = {}) {
+    const id = String(messageId || '').trim();
+    if (!id) return null;
+    return withClient(async (client) => {
+      const params = [id];
+      const workspaceId = String(options.workspaceId || '').trim();
+      const workspaceClause = workspaceId ? ` AND workspace_id = $${params.push(workspaceId)}` : '';
+      const result = await client.query(`
+        SELECT *
+        FROM ${table('cloud_messages')}
+        WHERE id = $1
+          ${workspaceClause}
+        LIMIT 1
+      `, params);
+      return result.rows[0] ? messageFromRow(result.rows[0]) : null;
+    });
+  }
+
+  function mergeRecordsIntoState(state, key, records) {
+    if (!records?.length) return;
+    const byId = new Map(safeArray(state[key]).map((record) => [record?.id, record]).filter(([id]) => id));
+    for (const record of records) byId.set(record.id, record);
+    state[key] = [...byId.values()].sort(compareRecordCreatedAsc);
+  }
+
+  function resolveHydrationSpaceId(state, workspaceId, cleanSpaceType, requestedSpaceId = '') {
+    const explicit = String(requestedSpaceId || '').trim();
+    if (cleanSpaceType === 'dm') {
+      if (explicit) return explicit;
+      return safeArray(state.dms).find((dm) => String(dm?.workspaceId || '') === workspaceId)?.id || '';
+    }
+    const channels = safeArray(state.channels).filter((channel) => String(channel?.workspaceId || '') === workspaceId && !channel.archived);
+    if (explicit && explicit !== 'chan_all') return explicit;
+    const allChannel = channels.find((channel) => (
+      channel.locked
+      || channel.defaultChannel
+      || String(channel.id || '') === 'chan_all'
+      || String(channel.name || '').trim().toLowerCase() === 'all'
+    ));
+    return allChannel?.id || explicit || channels[0]?.id || '';
+  }
+
+  async function loadConversationWindowIntoState(state, options = {}) {
+    const cloud = state.cloud || {};
+    const workspaceId = String(options.workspaceId || defaultWorkspaceId(state, cloud) || fallbackWorkspaceId(cloud) || '').trim();
+    const cleanSpaceType = spaceType(options.spaceType);
+    const spaceId = resolveHydrationSpaceId(state, workspaceId, cleanSpaceType, options.spaceId);
+    const result = { messages: null, replies: null };
+    if (workspaceId && spaceId) {
+      result.messages = await listSpaceMessagesPage({
+        workspaceId,
+        spaceType: cleanSpaceType,
+        spaceId,
+        limit: options.messageLimit || MESSAGE_PAGE_DEFAULT_LIMIT,
+      });
+      mergeRecordsIntoState(state, 'messages', result.messages.messages);
+    }
+    const threadMessageId = String(options.threadMessageId || '').trim();
+    if (workspaceId && threadMessageId) {
+      const parent = safeArray(state.messages).find((message) => message.id === threadMessageId)
+        || await getMessageById(threadMessageId, { workspaceId });
+      if (parent) {
+        mergeRecordsIntoState(state, 'messages', [parent]);
+        result.replies = await listThreadRepliesPage({
+          workspaceId,
+          parentMessageId: parent.id,
+          limit: options.replyLimit || MESSAGE_PAGE_DEFAULT_LIMIT,
+        });
+        mergeRecordsIntoState(state, 'replies', result.replies.replies);
+      }
+    }
+    state.updatedAt = requiredIso();
+    return result;
+  }
+
   async function replaceWorkspaceRuntimeRows(client, state, cloud, scopeWorkspaceIds = null) {
     const allWorkspaceIds = workspaceIds(cloud);
     const requestedIds = safeArray(scopeWorkspaceIds).map(String).filter(Boolean);
@@ -1264,8 +1507,6 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'cloud_state_records',
       'cloud_work_items',
       'cloud_tasks',
-      'cloud_replies',
-      'cloud_messages',
       'cloud_dms',
       'cloud_channels',
       'cloud_attachments',
@@ -1602,7 +1843,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       saved_by: '::jsonb',
       read_by: '::jsonb',
       metadata: '::jsonb',
-    });
+    }, messageRuntimeConflictSuffix());
     await batchInsertRows(client, 'cloud_replies', [
       'id',
       'workspace_id',
@@ -1625,7 +1866,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       saved_by: '::jsonb',
       read_by: '::jsonb',
       metadata: '::jsonb',
-    });
+    }, replyRuntimeConflictSuffix());
     await batchInsertRows(client, 'cloud_tasks', [
       'id',
       'workspace_id',
@@ -2633,8 +2874,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const agents = await client.query(`SELECT * FROM ${table('cloud_agents')} ORDER BY created_at ASC, id ASC`);
       const channels = await client.query(`SELECT * FROM ${table('cloud_channels')} ORDER BY created_at ASC, id ASC`);
       const dms = await client.query(`SELECT * FROM ${table('cloud_dms')} ORDER BY created_at ASC, id ASC`);
-      const messages = await client.query(`SELECT * FROM ${table('cloud_messages')} ORDER BY created_at ASC, id ASC`);
-      const replies = await client.query(`SELECT * FROM ${table('cloud_replies')} ORDER BY created_at ASC, id ASC`);
+      const messages = await client.query(`SELECT * FROM ${table('cloud_messages')} ORDER BY created_at DESC, id DESC LIMIT $1`, [recentMessageHydrationLimit]);
+      const replies = await client.query(`SELECT * FROM ${table('cloud_replies')} ORDER BY created_at DESC, id DESC LIMIT $1`, [recentReplyHydrationLimit]);
       const tasks = await client.query(`SELECT * FROM ${table('cloud_tasks')} ORDER BY created_at ASC, id ASC`);
       const workItems = await client.query(`SELECT * FROM ${table('cloud_work_items')} ORDER BY created_at ASC, id ASC`);
       const attachments = await client.query(`SELECT * FROM ${table('cloud_attachments')} ORDER BY created_at ASC, id ASC`);
@@ -2662,8 +2903,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
       state.agents = agents.rows.map(agentFromRow);
       state.channels = channels.rows.map(channelFromRow);
       state.dms = dms.rows.map(dmFromRow);
-      state.messages = messages.rows.map(messageFromRow);
-      state.replies = replies.rows.map(replyFromRow);
+      state.messages = messages.rows.map(messageFromRow).sort(compareRecordCreatedAsc);
+      state.replies = replies.rows.map(replyFromRow).sort(compareRecordCreatedAsc);
       state.tasks = tasks.rows.map(taskFromRow);
       state.workItems = workItems.rows.map(workItemFromRow);
       state.attachments = attachments.rows.map(attachmentFromRow);
@@ -2747,8 +2988,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const agents = await client.query(`SELECT * FROM ${table('cloud_agents')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
       const channels = await client.query(`SELECT * FROM ${table('cloud_channels')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
       const dms = await client.query(`SELECT * FROM ${table('cloud_dms')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
-      const messages = await client.query(`SELECT * FROM ${table('cloud_messages')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
-      const replies = await client.query(`SELECT * FROM ${table('cloud_replies')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
+      const messages = await client.query(`SELECT * FROM ${table('cloud_messages')} WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2`, [scopedWorkspaceId, recentMessageHydrationLimit]);
+      const replies = await client.query(`SELECT * FROM ${table('cloud_replies')} WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2`, [scopedWorkspaceId, recentReplyHydrationLimit]);
       const tasks = await client.query(`SELECT * FROM ${table('cloud_tasks')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
       const workItems = await client.query(`SELECT * FROM ${table('cloud_work_items')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
       const attachments = await client.query(`SELECT * FROM ${table('cloud_attachments')} WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC`, [scopedWorkspaceId]);
@@ -2765,8 +3006,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
       replaceWorkspaceRows('agents', agents.rows.map(agentFromRow));
       replaceWorkspaceRows('channels', channels.rows.map(channelFromRow));
       replaceWorkspaceRows('dms', dms.rows.map(dmFromRow));
-      replaceWorkspaceRows('messages', messages.rows.map(messageFromRow));
-      replaceWorkspaceRows('replies', replies.rows.map(replyFromRow));
+      replaceWorkspaceRows('messages', messages.rows.map(messageFromRow).sort(compareRecordCreatedAsc));
+      replaceWorkspaceRows('replies', replies.rows.map(replyFromRow).sort(compareRecordCreatedAsc));
       replaceWorkspaceRows('tasks', tasks.rows.map(taskFromRow));
       replaceWorkspaceRows('workItems', workItems.rows.map(workItemFromRow));
       replaceWorkspaceRows('attachments', attachments.rows.map(attachmentFromRow));
@@ -2819,6 +3060,10 @@ export function createCloudPostgresStore(optionsInput = {}) {
     loadIntoState,
     loadAuthIntoState,
     loadWorkspaceIntoState,
+    loadConversationWindowIntoState,
+    listSpaceMessagesPage,
+    listThreadRepliesPage,
+    getMessageById,
     publishRealtimeEvent,
     persistAuthOperation,
     persistAuthFromState,

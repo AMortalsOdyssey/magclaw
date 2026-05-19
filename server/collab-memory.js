@@ -321,7 +321,10 @@ export function createCollabMemoryManager(deps) {
       ...extra,
     });
     state.replies.push(reply);
-    parent.replyCount = state.replies.filter((item) => item.parentMessageId === parentMessageId).length;
+    parent.replyCount = Math.max(
+      Number(parent.replyCount || 0) + 1,
+      state.replies.filter((item) => item.parentMessageId === parentMessageId).length,
+    );
     parent.updatedAt = now();
     return reply;
   }

@@ -66,13 +66,35 @@ test('opening a thread refreshes scoped replies instead of relying on preview st
 
   assert.match(app, /function mergeThreadReplyPageIntoState\(stateSnapshot, parentMessageId, replies = \[\]\)/);
   assert.match(app, /async function refreshOpenThreadReplies\(parentMessageId = threadMessageId\)/);
-  assert.match(app, /\/api\/messages\/\$\{encodeURIComponent\(messageId\)\}\/replies\?limit=300/);
+  assert.match(app, /\/api\/messages\/\$\{encodeURIComponent\(messageId\)\}\/replies\?limit=\$\{CONVERSATION_HISTORY_PAGE_SIZE\}/);
   assert.match(app, /function refreshThreadSelection\(messageId = threadMessageId, \{ loadReplies = true \} = \{\}\)/);
   assert.match(app, /if \(typeof connectEvents === 'function'\) connectEvents\(\)/);
   assert.match(threadOpenSource, /render\(\);\s*refreshThreadSelection\(threadMessageId\);\s*scrollToMessage\(threadMessageId\)/);
   assert.match(threadCloseSource, /render\(\);\s*refreshThreadSelection\(null, \{ loadReplies: false \}\)/);
   assert.match(searchOpenSource, /render\(\);\s*refreshThreadSelection\(root\.id\);/);
   assert.match(searchOpenSource, /render\(\);\s*refreshThreadSelection\(threadMessageId, \{ loadReplies: opensThread \}\);/);
+});
+
+test('chat and thread panes load older history without discarding loaded pages on SSE refresh', async () => {
+  const app = await readAppSource();
+  const applyStateSource = app.slice(
+    app.indexOf('function applyStateUpdate(nextState)'),
+    app.indexOf('function applyRunEventUpdate(incoming)'),
+  );
+  const scrollSource = app.slice(
+    app.indexOf("document.addEventListener('scroll'"),
+    app.indexOf('function handleGlobalKeydown'),
+  );
+
+  assert.match(app, /let conversationHistoryPages = \{ main: \{\}, thread: \{\} \}/);
+  assert.match(app, /function mergeSpaceMessagePageIntoState\(stateSnapshot, spaceType, spaceId, messages = \[\]\)/);
+  assert.match(app, /function preserveLoadedConversationHistory\(previousState, nextState\)/);
+  assert.match(app, /async function loadOlderMainMessages\(\)/);
+  assert.match(app, /async function loadOlderThreadReplies\(\)/);
+  assert.match(app, /beforeId', pageInfo\.nextBeforeId/);
+  assert.match(applyStateSource, /nextState = preserveLoadedConversationHistory\(appState, nextState\)/);
+  assert.match(scrollSource, /maybeLoadOlderConversationHistory\('main', event\.target\)/);
+  assert.match(scrollSource, /maybeLoadOlderConversationHistory\('thread', event\.target\)/);
 });
 
 test('unread count changes do not force full render before active chat patching', async () => {

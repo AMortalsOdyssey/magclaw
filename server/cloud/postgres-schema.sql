@@ -445,6 +445,9 @@ CREATE TABLE IF NOT EXISTS cloud_messages (
 CREATE INDEX IF NOT EXISTS cloud_messages_space_created_idx
   ON cloud_messages(workspace_id, space_type, space_id, created_at DESC);
 
+CREATE INDEX IF NOT EXISTS cloud_messages_space_cursor_idx
+  ON cloud_messages(workspace_id, space_type, space_id, created_at DESC, id DESC);
+
 CREATE INDEX IF NOT EXISTS cloud_messages_author_created_idx
   ON cloud_messages(workspace_id, author_type, author_id, created_at DESC);
 
@@ -467,6 +470,9 @@ CREATE TABLE IF NOT EXISTS cloud_replies (
 
 CREATE INDEX IF NOT EXISTS cloud_replies_parent_created_idx
   ON cloud_replies(parent_message_id, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS cloud_replies_workspace_parent_cursor_idx
+  ON cloud_replies(workspace_id, parent_message_id, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS cloud_tasks (
   id TEXT PRIMARY KEY,

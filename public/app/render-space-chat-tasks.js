@@ -247,10 +247,13 @@ function renderChat() {
   const messages = spaceMessages();
   const composerId = composerIdFor('message');
   const readOnlyChannel = currentChannelIsReadOnly();
+  const pageInfo = typeof currentMainHistoryPage === 'function' ? currentMainHistoryPage() : null;
+  const historyMarker = pageInfo?.hasMore ? '<div class="history-page-status" data-history-target="main">Scroll up for earlier messages</div>' : '';
   return `
     <section class="chat-panel pixel-panel">
       <div class="message-area">
         <div class="message-list" id="message-list">
+          ${historyMarker}
           ${messages.length ? messages.map(renderMessage).join('') : '<div class="empty-box">No messages here yet.</div>'}
         </div>
         ${backBottomButton('main', 'main-back-bottom')}
@@ -265,10 +268,13 @@ function renderChat() {
 function renderDmChat() {
   const messages = spaceMessages();
   const composerId = composerIdFor('message');
+  const pageInfo = typeof currentMainHistoryPage === 'function' ? currentMainHistoryPage() : null;
+  const historyMarker = pageInfo?.hasMore ? '<div class="history-page-status" data-history-target="main">Scroll up for earlier messages</div>' : '';
   return `
     <section class="chat-panel dm-chat-panel pixel-panel">
       <div class="message-area">
         <div class="message-list dm-message-list" id="message-list">
+          ${historyMarker}
           ${messages.length ? messages.map(renderMessage).join('') : '<div class="dm-empty-state">No messages yet. Start the conversation!</div>'}
         </div>
         ${backBottomButton('main', 'main-back-bottom')}

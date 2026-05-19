@@ -151,6 +151,10 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
   assert.match(sql, /metadata #>> '\{oauth,feishu,providerAccountId\}'/);
   assert.match(sql, /third_party_provider = 'feishu'/);
   assert.match(sql, /cloud_users_active_normalized_email_uidx/);
+  assert.match(sql, /cloud_messages_space_cursor_idx/);
+  assert.match(sql, /ON cloud_messages\(workspace_id, space_type, space_id, created_at DESC, id DESC\)/);
+  assert.match(sql, /cloud_replies_workspace_parent_cursor_idx/);
+  assert.match(sql, /ON cloud_replies\(workspace_id, parent_message_id, created_at DESC, id DESC\)/);
   assert.match(sql, /WHERE disabled_at IS NULL/);
   assert.doesNotMatch(sql, /\buid\b/);
 });
@@ -1124,6 +1128,159 @@ test('postgres store reloads a single workspace without replacing other workspac
   assert.equal(state.humans.some((human) => human.id === 'hum_one_new'), true);
   assert.equal(state.channels.some((channel) => channel.id === 'chan_one_new'), true);
   assert.ok(queries.some((query) => query.sql.includes('cloud_humans') && query.params[0] === 'wsp_one'));
+});
+
+test('postgres store pages message history with keyset SQL', async () => {
+  const queries = [];
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          if (sql.includes('FROM "magclaw"."cloud_messages"')) {
+            return {
+              rows: [
+                {
+                  id: 'msg_8',
+                  workspace_id: 'wsp_main',
+                  space_type: 'channel',
+                  space_id: 'chan_main',
+                  author_type: 'human',
+                  author_id: 'hum_owner',
+                  body: 'older',
+                  reply_count: 0,
+                  created_at: createdAt,
+                  updated_at: createdAt,
+                },
+                {
+                  id: 'msg_7',
+                  workspace_id: 'wsp_main',
+                  space_type: 'channel',
+                  space_id: 'chan_main',
+                  author_type: 'human',
+                  author_id: 'hum_owner',
+                  body: 'has more sentinel',
+                  reply_count: 0,
+                  created_at: '2026-05-12T00:00:00.000Z',
+                  updated_at: '2026-05-12T00:00:00.000Z',
+                },
+              ],
+            };
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+
+  const page = await store.listSpaceMessagesPage({
+    workspaceId: 'wsp_main',
+    spaceType: 'channel',
+    spaceId: 'chan_main',
+    limit: 1,
+    before: '2026-05-14T00:00:00.000Z',
+    beforeId: 'msg_9',
+  });
+
+  const query = queries.find((item) => item.sql.includes('FROM "magclaw"."cloud_messages"'));
+  assert.match(query.sql, /\(created_at, id\) < \(\$4::timestamptz, \$5::text\)/);
+  assert.match(query.sql, /ORDER BY created_at DESC, id DESC/);
+  assert.match(query.sql, /LIMIT \$6/);
+  assert.deepEqual(query.params, ['wsp_main', 'channel', 'chan_main', '2026-05-14T00:00:00.000Z', 'msg_9', 2]);
+  assert.deepEqual(page.messages.map((message) => message.id), ['msg_8']);
+  assert.equal(page.pagination.hasMore, true);
+  assert.equal(page.pagination.nextBeforeId, 'msg_8');
+});
+
+test('postgres store pages thread replies with workspace parent cursor SQL', async () => {
+  const queries = [];
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          if (sql.includes('FROM "magclaw"."cloud_replies"')) {
+            return {
+              rows: [{
+                id: 'rep_8',
+                workspace_id: 'wsp_main',
+                parent_message_id: 'msg_parent',
+                author_type: 'agent',
+                author_id: 'agt_one',
+                body: 'reply',
+                created_at: createdAt,
+                updated_at: createdAt,
+              }],
+            };
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+
+  const page = await store.listThreadRepliesPage({
+    workspaceId: 'wsp_main',
+    parentMessageId: 'msg_parent',
+    limit: 1,
+    before: '2026-05-14T00:00:00.000Z',
+    beforeId: 'rep_9',
+  });
+
+  const query = queries.find((item) => item.sql.includes('FROM "magclaw"."cloud_replies"'));
+  assert.match(query.sql, /WHERE workspace_id = \$1/);
+  assert.match(query.sql, /AND parent_message_id = \$2/);
+  assert.match(query.sql, /\(created_at, id\) < \(\$3::timestamptz, \$4::text\)/);
+  assert.match(query.sql, /ORDER BY created_at DESC, id DESC/);
+  assert.deepEqual(query.params, ['wsp_main', 'msg_parent', '2026-05-14T00:00:00.000Z', 'rep_9', 2]);
+  assert.deepEqual(page.replies.map((reply) => reply.id), ['rep_8']);
+  assert.equal(page.pagination.hasMore, false);
+});
+
+test('postgres store bounded hydration does not perform unbounded message loads', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+
+  await store.loadIntoState({});
+
+  const messageQuery = queries.find((query) => query.sql.includes('FROM "magclaw"."cloud_messages"'));
+  const replyQuery = queries.find((query) => query.sql.includes('FROM "magclaw"."cloud_replies"'));
+  assert.match(messageQuery.sql, /ORDER BY created_at DESC, id DESC LIMIT \$1/);
+  assert.match(replyQuery.sql, /ORDER BY created_at DESC, id DESC LIMIT \$1/);
+  assert.equal(messageQuery.params[0], 500);
+  assert.equal(replyQuery.params[0], 500);
 });
 
 test('postgres store reloads auth directory without clobbering active workspace', async () => {

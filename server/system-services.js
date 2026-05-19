@@ -57,7 +57,7 @@ export function createSystemServices(deps) {
   function bootstrapOptionsFromRequest(req) {
     try {
       const url = new URL(req?.url || '/', 'http://magclaw.local');
-      return {
+      const options = {
         spaceType: url.searchParams.get('spaceType') || '',
         spaceId: url.searchParams.get('spaceId') || '',
         threadMessageId: url.searchParams.get('threadMessageId') || '',
@@ -65,6 +65,8 @@ export function createSystemServices(deps) {
         threadRootLimit: url.searchParams.get('threadRootLimit') || '',
         eventLimit: url.searchParams.get('eventLimit') || '',
       };
+      if (req?.magclawBootstrapHydration) options.hydration = req.magclawBootstrapHydration;
+      return options;
     } catch {
       return {};
     }
@@ -180,6 +182,8 @@ export function createSystemServices(deps) {
       .sort((a, b) => recordTime(b) - recordTime(a))
       .slice(0, messageLimit)
       .sort((a, b) => recordTime(a) - recordTime(b));
+    const selectedMessageCursor = selectedMessages[0] || null;
+    const hydratedMessagePagination = effectiveOptions.hydration?.messages?.pagination || null;
     const threadRoots = newestRecords(
       records(snapshot.messages).filter((message) => (
         Number(message.replyCount || 0) > 0
@@ -240,8 +244,13 @@ export function createSystemServices(deps) {
         spaceId,
         messageLimit,
         threadRootLimit,
-        hasMoreMessages: records(snapshot.messages)
-          .filter((message) => message.spaceType === spaceType && String(message.spaceId) === spaceId).length > selectedMessages.length,
+        hasMoreMessages: hydratedMessagePagination
+          ? Boolean(hydratedMessagePagination.hasMore)
+          : records(snapshot.messages)
+            .filter((message) => message.spaceType === spaceType && String(message.spaceId) === spaceId).length > selectedMessages.length,
+        nextBefore: hydratedMessagePagination?.nextBefore || selectedMessageCursor?.createdAt || '',
+        nextBeforeId: hydratedMessagePagination?.nextBeforeId || selectedMessageCursor?.id || '',
+        threadReplies: effectiveOptions.hydration?.replies?.pagination || null,
       },
       messages: [...messageById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
       replies: [...replyById.values()].sort((a, b) => recordTime(a) - recordTime(b)),

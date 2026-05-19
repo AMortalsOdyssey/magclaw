@@ -935,7 +935,13 @@ function renderThreadDrawer(message) {
   const replies = threadReplies(message.id);
   const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
   const composerId = composerIdFor('thread', message.id);
-  const replyWord = replies.length === 1 ? 'reply' : 'replies';
+  const pageInfo = typeof currentThreadHistoryPage === 'function' ? currentThreadHistoryPage(message.id) : null;
+  const totalReplies = Math.max(Number(message.replyCount || 0), replies.length);
+  const replyWord = totalReplies === 1 ? 'reply' : 'replies';
+  const replyCountText = pageInfo?.hasMore && totalReplies > replies.length
+    ? `${replies.length} of ${totalReplies} ${replyWord}`
+    : `${totalReplies} ${replyWord}`;
+  const replyDividerLabel = pageInfo?.hasMore ? 'Scroll up for earlier replies' : 'Beginning of replies';
   const canReply = message.spaceType !== 'channel' || currentUserIsChannelMember(message.spaceId);
   return `
     <section class="pixel-panel inspector-panel thread-drawer">
@@ -956,8 +962,8 @@ function renderThreadDrawer(message) {
           </div>
           ${task ? renderTaskLifecycle(task) : ''}
           <div class="thread-reply-divider">
-            <span>Beginning of replies</span>
-            <strong>${replies.length} ${replyWord}</strong>
+            <span>${replyDividerLabel}</span>
+            <strong>${replyCountText}</strong>
           </div>
           ${replies.length ? `
             <div class="reply-list">

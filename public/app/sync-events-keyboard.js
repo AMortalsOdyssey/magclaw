@@ -14,6 +14,7 @@ async function refreshState() {
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
   trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
   appState = nextState;
+  syncBootstrapPagination(appState);
   if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   const routeSlug = serverSlugFromPath();
   if (
@@ -26,6 +27,7 @@ async function refreshState() {
     routeServerSwitchAttempted = true;
     await api(`/api/console/servers/${encodeURIComponent(routeSlug)}/switch`, { method: 'POST', body: '{}' });
     appState = await api(bootstrapStatePath());
+    syncBootstrapPagination(appState);
     if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   }
   if (appState.cloud?.workspaceAccess?.denied) {
@@ -260,6 +262,84 @@ function stateThreadReplies(stateSnapshot, messageId) {
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 }
 
+function conversationPageKey(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  return `${spaceType || 'channel'}:${spaceId || ''}`;
+}
+
+function threadPageKey(messageId = threadMessageId) {
+  return String(messageId || '');
+}
+
+function normalizePageInfo(value = {}, fallbackLimit = CONVERSATION_HISTORY_PAGE_SIZE) {
+  return {
+    limit: Number(value.limit || fallbackLimit),
+    hasMore: Boolean(value.hasMore),
+    nextBefore: value.nextBefore || '',
+    nextBeforeId: value.nextBeforeId || '',
+  };
+}
+
+function updateMainHistoryPage(spaceType, spaceId, pagination = {}) {
+  const key = conversationPageKey(spaceType, spaceId);
+  conversationHistoryPages.main[key] = normalizePageInfo(pagination);
+}
+
+function updateThreadHistoryPage(messageId, pagination = {}) {
+  const key = threadPageKey(messageId);
+  if (!key) return;
+  conversationHistoryPages.thread[key] = normalizePageInfo(pagination);
+}
+
+function currentMainHistoryPage() {
+  return conversationHistoryPages.main[conversationPageKey()] || {
+    limit: CONVERSATION_HISTORY_PAGE_SIZE,
+    hasMore: Boolean(appState?.bootstrap?.hasMoreMessages),
+    nextBefore: appState?.bootstrap?.nextBefore || '',
+    nextBeforeId: appState?.bootstrap?.nextBeforeId || '',
+  };
+}
+
+function currentThreadHistoryPage(messageId = threadMessageId) {
+  return conversationHistoryPages.thread[threadPageKey(messageId)] || {
+    limit: CONVERSATION_HISTORY_PAGE_SIZE,
+    hasMore: false,
+    nextBefore: '',
+    nextBeforeId: '',
+  };
+}
+
+function syncBootstrapPagination(stateSnapshot = appState) {
+  const bootstrap = stateSnapshot?.bootstrap || {};
+  if (bootstrap.spaceType && bootstrap.spaceId) {
+    updateMainHistoryPage(bootstrap.spaceType, bootstrap.spaceId, {
+      limit: bootstrap.messageLimit || CONVERSATION_HISTORY_PAGE_SIZE,
+      hasMore: bootstrap.hasMoreMessages,
+      nextBefore: bootstrap.nextBefore,
+      nextBeforeId: bootstrap.nextBeforeId,
+    });
+  }
+  if (bootstrap.threadReplies && threadMessageId) {
+    updateThreadHistoryPage(threadMessageId, bootstrap.threadReplies);
+  }
+}
+
+function mergeSpaceMessagePageIntoState(stateSnapshot, spaceType, spaceId, messages = []) {
+  if (!stateSnapshot || !spaceType || !spaceId) return stateSnapshot;
+  const incoming = (messages || []).filter((message) => (
+    message?.id && message.spaceType === spaceType && message.spaceId === spaceId
+  ));
+  if (!incoming.length) return stateSnapshot;
+  const messageById = new Map((stateSnapshot.messages || []).map((message) => [message.id, message]));
+  for (const message of incoming) {
+    messageById.set(message.id, { ...(messageById.get(message.id) || {}), ...message });
+  }
+  return {
+    ...stateSnapshot,
+    messages: [...messageById.values()]
+      .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)),
+  };
+}
+
 function mergeThreadReplyPageIntoState(stateSnapshot, parentMessageId, replies = []) {
   if (!stateSnapshot || !parentMessageId) return stateSnapshot;
   const incoming = (replies || []).filter((reply) => reply?.id && reply.parentMessageId === parentMessageId);
@@ -292,8 +372,9 @@ function mergeThreadReplyPageIntoState(stateSnapshot, parentMessageId, replies =
 async function refreshOpenThreadReplies(parentMessageId = threadMessageId) {
   const messageId = String(parentMessageId || '').trim();
   if (!messageId || !appState) return false;
-  const result = await api(`/api/messages/${encodeURIComponent(messageId)}/replies?limit=300`);
+  const result = await api(`/api/messages/${encodeURIComponent(messageId)}/replies?limit=${CONVERSATION_HISTORY_PAGE_SIZE}`);
   if (!appState || threadMessageId !== messageId) return false;
+  updateThreadHistoryPage(messageId, result.pagination || {});
   const nextState = mergeThreadReplyPageIntoState(appState, messageId, result.replies || []);
   if (nextState === appState) return false;
   applyStateUpdate(nextState);
@@ -306,6 +387,105 @@ function refreshThreadSelection(messageId = threadMessageId, { loadReplies = tru
   refreshOpenThreadReplies(messageId).catch((error) => {
     console.warn('Failed to load thread replies:', error);
   });
+}
+
+function preserveLoadedConversationHistory(previousState, nextState) {
+  if (!previousState || !nextState) return nextState;
+  let merged = nextState;
+  const mainKey = conversationPageKey();
+  const mainPage = conversationHistoryPages.main[mainKey];
+  if (mainPage) {
+    const previousMessages = stateSpaceMessages(previousState, selectedSpaceType, selectedSpaceId);
+    merged = mergeSpaceMessagePageIntoState(merged, selectedSpaceType, selectedSpaceId, previousMessages);
+  }
+  const threadKey = threadPageKey();
+  const threadPage = conversationHistoryPages.thread[threadKey];
+  if (threadKey && threadPage) {
+    const previousReplies = stateThreadReplies(previousState, threadKey);
+    merged = mergeThreadReplyPageIntoState(merged, threadKey, previousReplies);
+  }
+  return merged;
+}
+
+function restorePrependedScroll(targetName, beforeHeight, beforeTop) {
+  const selector = targetName === 'thread' ? '#thread-context' : '#message-list';
+  const apply = () => {
+    const node = document.querySelector(selector);
+    if (!node) return;
+    const heightDelta = Math.max(0, node.scrollHeight - beforeHeight);
+    node.scrollTop = Math.max(0, beforeTop + heightDelta);
+    persistPaneScroll(targetName, node);
+    updateBackBottomVisibility(targetName);
+  };
+  window.requestAnimationFrame(apply);
+  window.setTimeout(apply, 40);
+}
+
+async function loadOlderMainMessages() {
+  if (!appState || activeView !== 'space' || activeTab !== 'chat') return false;
+  const key = conversationPageKey();
+  const pageInfo = currentMainHistoryPage();
+  if (!pageInfo.hasMore || !pageInfo.nextBefore || conversationHistoryLoading.main[key]) return false;
+  const node = document.querySelector('#message-list');
+  const beforeHeight = node?.scrollHeight || 0;
+  const beforeTop = node?.scrollTop || 0;
+  conversationHistoryLoading.main[key] = true;
+  try {
+    const params = new URLSearchParams();
+    params.set('limit', String(CONVERSATION_HISTORY_PAGE_SIZE));
+    params.set('before', pageInfo.nextBefore);
+    if (pageInfo.nextBeforeId) params.set('beforeId', pageInfo.nextBeforeId);
+    const result = await api(`/api/spaces/${selectedSpaceType}/${selectedSpaceId}/messages?${params.toString()}`);
+    if (key !== conversationPageKey()) return false;
+    updateMainHistoryPage(selectedSpaceType, selectedSpaceId, result.pagination || {});
+    const nextState = mergeSpaceMessagePageIntoState(appState, selectedSpaceType, selectedSpaceId, result.messages || []);
+    if (nextState !== appState) applyStateUpdate(nextState);
+    restorePrependedScroll('main', beforeHeight, beforeTop);
+    return true;
+  } catch (error) {
+    console.warn('Failed to load older messages:', error);
+    return false;
+  } finally {
+    conversationHistoryLoading.main[key] = false;
+  }
+}
+
+async function loadOlderThreadReplies() {
+  const messageId = threadPageKey();
+  if (!appState || activeView !== 'space' || activeTab !== 'chat' || !messageId) return false;
+  const pageInfo = currentThreadHistoryPage(messageId);
+  if (!pageInfo.hasMore || !pageInfo.nextBefore || conversationHistoryLoading.thread[messageId]) return false;
+  const node = document.querySelector('#thread-context');
+  const beforeHeight = node?.scrollHeight || 0;
+  const beforeTop = node?.scrollTop || 0;
+  conversationHistoryLoading.thread[messageId] = true;
+  try {
+    const params = new URLSearchParams();
+    params.set('limit', String(CONVERSATION_HISTORY_PAGE_SIZE));
+    params.set('before', pageInfo.nextBefore);
+    if (pageInfo.nextBeforeId) params.set('beforeId', pageInfo.nextBeforeId);
+    const result = await api(`/api/messages/${encodeURIComponent(messageId)}/replies?${params.toString()}`);
+    if (messageId !== threadPageKey()) return false;
+    updateThreadHistoryPage(messageId, result.pagination || {});
+    const nextState = mergeThreadReplyPageIntoState(appState, messageId, result.replies || []);
+    if (nextState !== appState) applyStateUpdate(nextState);
+    restorePrependedScroll('thread', beforeHeight, beforeTop);
+    return true;
+  } catch (error) {
+    console.warn('Failed to load older thread replies:', error);
+    return false;
+  } finally {
+    conversationHistoryLoading.thread[messageId] = false;
+  }
+}
+
+function maybeLoadOlderConversationHistory(targetName, node) {
+  if (!node || node.scrollTop > CONVERSATION_HISTORY_TOP_THRESHOLD) return;
+  if (targetName === 'thread') {
+    loadOlderThreadReplies();
+  } else {
+    loadOlderMainMessages();
+  }
 }
 
 function recordPatchSignature(record) {
@@ -532,12 +712,18 @@ function patchOpenThreadDrawerSurface(scrollSnapshot) {
 
   const replies = threadReplies(message.id);
   const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
-  const replyWord = replies.length === 1 ? 'reply' : 'replies';
-  const replyCountText = `${replies.length} ${replyWord}`;
+  const pageInfo = currentThreadHistoryPage(message.id);
+  const totalReplies = Math.max(Number(message.replyCount || 0), replies.length);
+  const replyWord = totalReplies === 1 ? 'reply' : 'replies';
+  const replyCountText = pageInfo?.hasMore && totalReplies > replies.length
+    ? `${replies.length} of ${totalReplies} ${replyWord}`
+    : `${totalReplies} ${replyWord}`;
   const card = context.querySelector('.thread-parent-card');
 
   patchThreadParentCard(message);
   patchThreadTaskLifecycle(card, task);
+  const dividerLabel = context.querySelector('.thread-reply-divider span');
+  if (dividerLabel) dividerLabel.textContent = pageInfo?.hasMore ? 'Scroll up for earlier replies' : 'Beginning of replies';
   const dividerCount = context.querySelector('.thread-reply-divider strong');
   if (dividerCount) dividerCount.textContent = replyCountText;
   patchThreadReplyList(context, replies);
@@ -607,8 +793,8 @@ function patchServerProfileSettingsSurface() {
   if (onboardingForm) {
     const select = onboardingForm.querySelector('select[name="onboardingAgentId"]');
     if (select && document.activeElement !== select) select.value = server.onboardingAgentId || '';
-    const checkbox = onboardingForm.querySelector('input[name="newAgentGreetingEnabled"]');
-    if (checkbox) checkbox.checked = server.newAgentGreetingEnabled !== false;
+    const greetingSelect = onboardingForm.querySelector('select[name="newAgentGreetingEnabled"]');
+    if (greetingSelect && document.activeElement !== greetingSelect) greetingSelect.value = server.newAgentGreetingEnabled === false ? 'false' : 'true';
     const mode = onboardingForm.querySelector('.panel-title span:last-child');
     if (mode) mode.textContent = server.newAgentGreetingEnabled === false ? 'quiet' : 'greeting';
   }
@@ -631,6 +817,8 @@ function computerPairingModalRenderSignature(stateSnapshot = appState) {
 }
 
 function applyStateUpdate(nextState) {
+  nextState = preserveLoadedConversationHistory(appState, nextState);
+  syncBootstrapPagination(nextState);
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete });
   trackAgentNotifications(nextState, { silent: !initialLoadComplete });
   const scrollSnapshot = {
@@ -969,10 +1157,12 @@ document.addEventListener('scroll', (event) => {
   if (event.target?.id === 'message-list') {
     updateBackBottomVisibility('main');
     persistPaneScroll('main', event.target);
+    maybeLoadOlderConversationHistory('main', event.target);
   }
   if (event.target?.id === 'thread-context') {
     updateBackBottomVisibility('thread');
     persistPaneScroll('thread', event.target);
+    maybeLoadOlderConversationHistory('thread', event.target);
   }
   if (event.target?.id === 'workspace-activity-list' && event.target.scrollTop <= 24) {
     const total = workspaceActivityRecords().length;
