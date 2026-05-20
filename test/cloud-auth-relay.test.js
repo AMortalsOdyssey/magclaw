@@ -465,6 +465,56 @@ test('new agent greeting asks the created agent to introduce itself in #all', as
   }
 });
 
+test('first created agent becomes onboarding assistant and greets humans in Chinese by default', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const owner = await registerOwnerServer(server, {
+      email: 'first-agent-owner@example.com',
+      serverName: 'First Agent Team',
+      slug: 'first-agent-team',
+    });
+    const cookie = owner.cookie;
+
+    await request(server.baseUrl, '/api/cloud/auth/preferences', {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ language: 'en' }),
+    });
+    const greeter = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Welcome Lead',
+        description: 'Helps new humans find the right channels and agents',
+        runtime: 'Codex CLI',
+      }),
+    });
+    const greeted = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state', { cookie });
+      const message = snapshot.data.messages.find((item) => (
+        item.eventType === 'agent_onboarding_greeting_task'
+        && item.body.includes(`<@${greeter.data.agent.id}>`)
+      ));
+      const workItem = message
+        ? snapshot.data.workItems.find((item) => item.sourceMessageId === message.id && item.agentId === greeter.data.agent.id)
+        : null;
+      const workspace = snapshot.data.cloud?.workspace || null;
+      return message && workItem && workspace?.onboardingAgentId === greeter.data.agent.id
+        ? { snapshot: snapshot.data, message, workItem, workspace }
+        : null;
+    }, 5000);
+
+    assert.equal(greeted.workspace.newAgentGreetingEnabled, true);
+    assert.match(greeted.message.body, /Default greeting language: Chinese \(zh-CN\)/);
+    assert.match(greeted.message.body, /default human onboarding assistant/i);
+    assert.match(greeted.message.body, /welcome the humans/i);
+    assert.doesNotMatch(greeted.message.body, /Creator language preference: English \(en\)/);
+    assert.equal(greeted.workItem.target, '#all');
+  } finally {
+    await server.stop();
+  }
+});
+
 test('public account registration and password reset use SMTP outbox without invite', async () => {
   const outbox = path.join(await mkdtemp(path.join(os.tmpdir(), 'magclaw-mail-')), 'outbox.jsonl');
   const server = await startIsolatedServer({

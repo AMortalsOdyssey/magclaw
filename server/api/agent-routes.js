@@ -31,6 +31,20 @@ function findAgentNameConflict(state, workspaceId, name, excludeAgentId = '') {
   )) || null;
 }
 
+function workspaceForId(state, workspaceId) {
+  const cleanWorkspaceId = String(workspaceId || '').trim();
+  if (!cleanWorkspaceId) return null;
+  return (state.cloud?.workspaces || []).find((workspace) => workspace.id === cleanWorkspaceId) || null;
+}
+
+function hasExistingWorkspaceAgent(state, workspaceId) {
+  const cleanWorkspaceId = String(workspaceId || '').trim();
+  if (!cleanWorkspaceId || cleanWorkspaceId === 'local') {
+    return (state.agents || []).some((agent) => agentWorkspaceKey(agent, 'local') === 'local');
+  }
+  return (state.agents || []).some((agent) => String(agent?.workspaceId || '').trim() === cleanWorkspaceId);
+}
+
 function makeUniqueAgentId(makeId, state) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const id = makeId('agt');
@@ -171,6 +185,7 @@ export async function handleAgentApi(req, res, url, deps) {
       sendError(res, 500, error.message);
       return true;
     }
+    const isFirstWorkspaceAgent = Boolean(workspaceId && !hasExistingWorkspaceAgent(state, workspaceId));
     const agent = {
       id: agentId,
       ...(workspaceId ? { workspaceId } : {}),
@@ -205,12 +220,28 @@ export async function handleAgentApi(req, res, url, deps) {
       allChannel.memberIds = normalizeIds([...(allChannel.memberIds || []), agent.id]);
       allChannel.updatedAt = now();
     }
+    const workspace = workspaceForId(state, workspaceId);
+    const becameDefaultOnboardingAssistant = Boolean(isFirstWorkspaceAgent && workspace && !workspace.onboardingAgentId);
+    if (becameDefaultOnboardingAssistant) {
+      workspace.onboardingAgentId = agent.id;
+      workspace.updatedAt = now();
+      addCollabEvent('onboarding_agent_assigned', `Default onboarding Agent assigned: ${agent.name}`, {
+        agentId: agent.id,
+        workspaceId,
+        reason: 'first_agent_created',
+      });
+    }
 
     addCollabEvent('agent_created', `Agent created: ${agent.name}`, { agentId: agent.id });
     await autoStartCreatedAgent(agent);
     await persistState();
     if (typeof scheduleNewAgentGreeting === 'function') {
-      scheduleNewAgentGreeting(agent, { workspaceId, user: actor?.user || null, trigger: 'agent_created' });
+      scheduleNewAgentGreeting(agent, {
+        workspaceId,
+        user: actor?.user || null,
+        trigger: 'agent_created',
+        isDefaultOnboardingAssistant: becameDefaultOnboardingAssistant,
+      });
     }
     broadcastState();
     sendJson(res, 201, { agent });

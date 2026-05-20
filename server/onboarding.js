@@ -204,7 +204,12 @@ export function createOnboardingManager(deps) {
     return message;
   }
 
-  function scheduleNewAgentGreeting(agent, { workspaceId = '', user = null, trigger = 'agent_created' } = {}) {
+  function scheduleNewAgentGreeting(agent, {
+    workspaceId = '',
+    user = null,
+    trigger = 'agent_created',
+    isDefaultOnboardingAssistant = false,
+  } = {}) {
     const cleanWorkspaceId = String(workspaceId || agent?.workspaceId || state().connection?.workspaceId || 'local').trim() || 'local';
     const settings = workspaceSettings(cleanWorkspaceId);
     if (settings.newAgentGreetingEnabled === false) return null;
@@ -215,19 +220,22 @@ export function createOnboardingManager(deps) {
     const description = compactText(agent.description || 'No description provided yet.');
     const runtime = compactText(agent.runtime || agent.runtimeId || 'Agent');
     const channelLanguage = recentAllChannelLanguage(channel, cleanWorkspaceId);
-    const language = channelLanguage || preferredLanguage({ user, workspace: settings, fallback: 'en' });
+    const language = channelLanguage || 'zh-CN';
     const languageInstruction = channelLanguage
       ? `Recent #all language context: ${languageLabel(language)}. Use this language directly for the greeting. Do not include a language-preference question.`
-      : `Creator language preference: ${languageLabel(language)}. Use this language directly for the greeting. Do not include a language-preference question.`;
+      : `Default greeting language: ${languageLabel(language)}. Use this language directly for the greeting because #all has no recent human chat context. Do not include a language-preference question.`;
     const body = [
       `Onboarding task (system-triggered): This is a new Agent greeting. ${agentMention} was just created in this server.`,
       'Please post a short self-introduction in #all using your own words.',
+      isDefaultOnboardingAssistant
+        ? 'This is the first Agent in this server and it is now the default human onboarding assistant. In the visible greeting, introduce yourself and welcome the humans in #all.'
+        : '',
       'Generate the visible greeting yourself from your configured name, description, runtime, MEMORY.md/notes, and current work focus if helpful. Keep it brief and useful for humans deciding how to collaborate with you.',
       languageInstruction,
       'Do NOT ask anyone to configure the server.',
       `Agent description: ${description}`,
       `Runtime: ${runtime}`,
-    ].join(' ');
+    ].filter(Boolean).join(' ');
     const message = addSystemMessage('channel', channel.id, body, {
       workspaceId: cleanWorkspaceId,
       eventType: 'agent_onboarding_greeting_task',
@@ -237,6 +245,7 @@ export function createOnboardingManager(deps) {
           type: 'agent',
           trigger,
           targetAgentId: agent.id,
+          isDefaultOnboardingAssistant,
         },
       },
     });
