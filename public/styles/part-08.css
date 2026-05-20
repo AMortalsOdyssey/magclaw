@@ -271,6 +271,10 @@
   align-items: flex-start;
 }
 
+.human-author-name + .sender-role {
+  margin-left: 4px;
+}
+
 .human-detail-name .human-script-badge {
   width: 38px;
   height: 12px;

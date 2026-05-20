@@ -1760,8 +1760,10 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /function shareSelectableRecords\(\)/);
   assert.match(app, /function shareSelectAllTargetIds\(\)/);
   assert.match(app, /function shareAllSelectableMessagesSelected\(\)/);
-  assert.match(app, /function shareBodyToggleAttrs\(record\)/);
-  assert.match(app, /function isThreadShareRoot\(messageId\)/);
+  assert.match(app, /function shareReplacementLines\(record\)/);
+  assert.match(app, /function shareRecordPlainText\(record\)/);
+  assert.match(app, /function shareBodyToggleAttrs\(record,/);
+  assert.doesNotMatch(app, /function isThreadShareRoot\(messageId\)/);
   assert.match(app, /function messageRecordLink\(record\)/);
   assert.match(app, /function messageRecordMarkdown\(record\)/);
   assert.match(app, /async function generateShareImageDataUrl/);
@@ -1769,9 +1771,11 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /function drawShareInlineText\(ctx, text, x, y, maxWidth\)/);
   assert.match(app, /function shareReactionChipRows\(ctx, groups = \[\], maxWidth = 0\)/);
   assert.match(app, /function shareActorProfile\(record\)/);
+  assert.match(app, /function shareAvatarProxyUrl\(src\)/);
   assert.match(app, /function drawShareAvatar\(ctx, profile, image, x, y, size\)/);
   assert.match(app, /loadCanvasImage\(BRAND_LOGO_SRC\)/);
   assert.match(shareImageSource, /groupedMessageReactions\(record\)/);
+  assert.match(shareImageSource, /shareRecordPlainText\(record\)/);
   assert.match(shareImageSource, /reactionRows/);
   assert.match(shareImageSource, /const width = 1040/);
   assert.match(shareImageSource, /const threadRootId = messageShareState\.scope === 'thread'/);
@@ -1807,6 +1811,8 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /data-action="start-message-share"/);
   assert.match(app, /data-action="toggle-share-selection"/);
   assert.match(app, /data-action="toggle-share-select-all"/);
+  assert.match(app, /const shareSelectable = !options\.compact && messageShareState\.active/);
+  assert.match(app, /const shareSelectable = false;/);
   assert.match(app, /data-share-body-toggle="1"/);
   assert.match(app, /data-action="copy-selected-markdown"/);
   assert.match(app, /data-action="download-selected-image"/);
@@ -1836,6 +1842,7 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /Copy markdown/);
   assert.match(app, /Share messages\.\.\./);
   assert.match(app, /Follow Thread/);
+  assert.doesNotMatch(app, /shareThreadClass/);
   assert.match(localOnlySource, /'open-message-context-menu'/);
   assert.match(localOnlySource, /'start-message-share'/);
   assert.match(localOnlySource, /'toggle-share-selection'/);
@@ -1845,8 +1852,10 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(styles, /\.message-reaction-grid/);
   assert.match(styles, /\.message-reaction-tray/);
   assert.match(styles, /\.share-selection-bar/);
-  assert.match(styles, /\.message-card\.share-selecting \.message-body\[data-share-body-toggle="1"\]/);
-  assert.match(styles, /\.thread-context\.share-thread-mode \.reply-list[\s\S]*padding-left: 28px/);
+  assert.match(styles, /\.message-card\.share-selecting \.message-body\[data-share-body-toggle="1"\][\s\S]*user-select: none/);
+  assert.match(styles, /\.human-author-name \+ \.sender-role/);
+  assert.doesNotMatch(styles, /\.message-card\.share-selecting \.message-body\[data-share-body-toggle="1"\]:hover \.message-markdown/);
+  assert.doesNotMatch(styles, /\.thread-context\.share-thread-mode/);
   assert.match(styles, /\.message-markdown a[\s\S]*color: #1269B7/);
   assert.match(styles, /\.share-preview-modal/);
   assert.match(styles, /\.modal-card\.share-preview-modal[\s\S]*max-height: calc\(100vh - 48px\)/);

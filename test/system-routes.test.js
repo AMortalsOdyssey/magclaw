@@ -12,12 +12,17 @@ function makeResponse() {
     error: null,
     writes: [],
     headers: null,
+    ended: false,
     writeHead(statusCode, headers) {
       this.statusCode = statusCode;
       this.headers = headers;
     },
     write(chunk) {
       this.writes.push(chunk);
+    },
+    end(chunk) {
+      if (chunk) this.writes.push(chunk);
+      this.ended = true;
     },
   };
 }
@@ -118,6 +123,49 @@ test('share image save route rejects non-loopback callers', async () => {
 
   assert.equal(res.statusCode, 403);
   assert.equal(readJsonCalled, false);
+});
+
+test('share image avatar proxy only fetches avatar URLs present in state', async () => {
+  const remoteAvatar = 'https://avatars.example.test/human.png';
+  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const previousFetch = globalThis.fetch;
+  let fetchedUrl = '';
+  globalThis.fetch = async (url) => {
+    fetchedUrl = String(url);
+    return {
+      ok: true,
+      status: 200,
+      headers: new Map([['content-type', 'image/png']]),
+      arrayBuffer: async () => imageBytes.buffer.slice(imageBytes.byteOffset, imageBytes.byteOffset + imageBytes.byteLength),
+    };
+  };
+  try {
+    const deps = routeDeps();
+    deps.state.humans = [{ id: 'hum_remote', avatar: remoteAvatar }];
+    const res = makeResponse();
+    assert.equal(await handleSystemApi(
+      { method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' }, on: () => {} },
+      res,
+      new URL(`http://local/api/share-images/avatar?src=${encodeURIComponent(remoteAvatar)}`),
+      deps,
+    ), true);
+
+    assert.equal(fetchedUrl, remoteAvatar);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.headers['Content-Type'], 'image/png');
+    assert.deepEqual(Buffer.concat(res.writes.map((chunk) => Buffer.from(chunk))), imageBytes);
+
+    const rejected = makeResponse();
+    assert.equal(await handleSystemApi(
+      { method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' }, on: () => {} },
+      rejected,
+      new URL('http://local/api/share-images/avatar?src=https%3A%2F%2Fother.example.test%2Favatar.png'),
+      deps,
+    ), true);
+    assert.equal(rejected.statusCode, 403);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });
 
 test('system route group returns public state and ignores unrelated API paths', async () => {

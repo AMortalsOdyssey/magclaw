@@ -671,6 +671,69 @@ function shareAllSelectableMessagesSelected() {
   return targetIds.every((id) => selected.has(id));
 }
 
+function normalizeShareReplacementEntry(value) {
+  if (value === null || value === undefined) return [];
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    const text = plainMentionText(String(value)).trim();
+    return text ? [text] : [];
+  }
+  if (Array.isArray(value)) return value.flatMap(normalizeShareReplacementEntry);
+  if (typeof value !== 'object') return [];
+  const direct = value.text ?? value.content ?? value.body ?? value.value ?? null;
+  if (direct !== null && direct !== undefined) return normalizeShareReplacementEntry(direct);
+  const nested = value.replace ?? value.replacement ?? value.replaceContent ?? value.replacementContent ?? null;
+  if (nested !== null && nested !== undefined) return normalizeShareReplacementEntry(nested);
+  const before = value.before ?? value.old ?? value.from ?? null;
+  const after = value.after ?? value.new ?? value.to ?? null;
+  if (before !== null || after !== null) {
+    const beforeText = plainMentionText(String(before ?? '')).trim();
+    const afterText = plainMentionText(String(after ?? '')).trim();
+    const text = [beforeText, afterText].filter(Boolean).join(' -> ');
+    return text ? [text] : [];
+  }
+  return [];
+}
+
+function shareReplacementLines(record) {
+  const metadata = record?.metadata && typeof record.metadata === 'object' ? record.metadata : {};
+  const state = metadata.state && typeof metadata.state === 'object' ? metadata.state : {};
+  const sources = [
+    record?.replace,
+    record?.replacement,
+    record?.replacements,
+    record?.replaceContent,
+    record?.replacementContent,
+    metadata.replace,
+    metadata.replacement,
+    metadata.replacements,
+    metadata.replaceContent,
+    metadata.replacementContent,
+    state.replace,
+    state.replacement,
+    state.replacements,
+    state.replaceContent,
+    state.replacementContent,
+  ];
+  const seen = new Set();
+  return sources.flatMap(normalizeShareReplacementEntry)
+    .filter((line) => {
+      if (!line || seen.has(line)) return false;
+      seen.add(line);
+      return true;
+    })
+    .map((line) => `Replace: ${line}`);
+}
+
+function shareRecordPlainText(record) {
+  const body = plainMentionText(record?.body || '').trim();
+  const replacementLines = shareReplacementLines(record);
+  const lines = [
+    body,
+    ...replacementLines,
+  ].filter(Boolean);
+  return lines.length ? lines.join('\n') : '(attachment)';
+}
+
 function shareSelectionRecords() {
   const selected = new Set(shareSelectedIds());
   const source = messageShareState.scope === 'thread' ? shareSelectableRecords() : [...(appState?.messages || []), ...(appState?.replies || [])];
@@ -679,21 +742,13 @@ function shareSelectionRecords() {
   return records.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
 }
 
-function shareBodyToggleAttrs(record) {
-  if (!messageShareState.active || !recordMatchesShareScope(record)) return '';
+function shareBodyToggleAttrs(record, { selectable = messageShareState.active && recordMatchesShareScope(record) } = {}) {
+  if (!selectable) return '';
   return ` data-action="toggle-share-selection" data-id="${escapeHtml(record.id)}" data-share-body-toggle="1"`;
 }
 
-function isThreadShareRoot(messageId) {
-  return Boolean(
-    messageShareState.active
-    && messageShareState.scope === 'thread'
-    && String(messageShareState.threadRootId || '') === String(messageId || '')
-  );
-}
-
-function renderShareSelector(record) {
-  if (!messageShareState.active || !recordMatchesShareScope(record)) return '';
+function renderShareSelector(record, { selectable = messageShareState.active && recordMatchesShareScope(record) } = {}) {
+  if (!selectable) return '';
   const selected = shareSelectedIds().includes(String(record.id));
   return `
     <button class="message-share-selector${selected ? ' selected' : ''}" type="button"
@@ -739,7 +794,7 @@ function messageRecordMarkdown(record) {
   const root = messageThreadRoot(record) || record;
   const surface = spaceName(root.spaceType || record.spaceType, root.spaceId || record.spaceId);
   const author = displayName(record.authorId) || record.authorId || 'Unknown';
-  const body = plainMentionText(record.body || '(attachment)').trim() || '(attachment)';
+  const body = shareRecordPlainText(record);
   const lines = [
     `**${author}** · ${surface} · ${fmtTime(record.createdAt)}`,
     '',
@@ -1001,8 +1056,28 @@ function shareCanvasImageSource(src) {
   }
 }
 
+function shareAvatarProxyUrl(src) {
+  const value = String(src || '').trim();
+  if (!value) return '';
+  try {
+    const url = new URL(value, window.location.href);
+    if (!['http:', 'https:'].includes(url.protocol) || url.origin === window.location.origin) return '';
+    return `/api/share-images/avatar?src=${encodeURIComponent(url.href)}`;
+  } catch {
+    return '';
+  }
+}
+
+function wrapShareRecordText(ctx, text, maxWidth) {
+  const lines = [];
+  for (const rawLine of String(text || '').split(/\n+/)) {
+    lines.push(...wrapCanvasText(ctx, rawLine, maxWidth));
+  }
+  return lines.length ? lines : [''];
+}
+
 function loadCanvasImage(src) {
-  const safeSrc = shareCanvasImageSource(src);
+  const safeSrc = shareCanvasImageSource(src) || shareAvatarProxyUrl(src);
   if (!safeSrc) return Promise.resolve(null);
   return new Promise((resolve) => {
     const image = new Image();
@@ -1134,10 +1209,10 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
   ctx.font = '15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   const rows = await Promise.all(records.map(async (record) => {
     const profile = shareActorProfile(record);
-    const text = plainMentionText(record.body || '(attachment)').trim() || '(attachment)';
+    const text = shareRecordPlainText(record);
     const isThreadReply = Boolean(threadRootId && record.parentMessageId === threadRootId);
     const lineWidth = contentWidth - (isThreadReply ? 32 : 0);
-    const lines = wrapCanvasText(ctx, text, lineWidth);
+    const lines = wrapShareRecordText(ctx, text, lineWidth);
     const attachments = (record.attachmentIds || []).length;
     ctx.font = '700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
     const reactionRows = shareReactionChipRows(ctx, groupedMessageReactions(record), contentWidth);
@@ -1219,12 +1294,17 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
     const rowContentWidth = contentWidth - (row.isThreadReply ? 32 : 0);
     ctx.fillStyle = '#111111';
     ctx.font = '900 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    ctx.fillText(profile.name, contentX, y + 15);
+    const nameMaxWidth = Math.min(260, Math.max(80, rowContentWidth * 0.45));
+    const fittedName = fitCanvasText(ctx, profile.name, nameMaxWidth);
+    ctx.fillText(fittedName, contentX, y + 15);
     ctx.fillStyle = '#8b8790';
     ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
-    const nameWidth = Math.min(260, ctx.measureText(profile.name).width + 10);
+    const nameWidth = Math.min(nameMaxWidth, ctx.measureText(fittedName).width);
+    const metaGap = profile.type === 'human' ? 28 : 16;
     const metaText = `${profile.subtitle ? `${profile.subtitle} · ` : ''}${row.sourceLabel} · ${fmtTime(record.createdAt)}`;
-    ctx.fillText(metaText, contentX + nameWidth, y + 15);
+    const metaX = contentX + nameWidth + metaGap;
+    const metaWidth = Math.max(60, rowContentWidth - nameWidth - metaGap);
+    ctx.fillText(fitCanvasText(ctx, metaText, metaWidth), metaX, y + 15);
     if (row.taskLabel) {
       const chipWidth = Math.ceil(ctx.measureText(row.taskLabel).width) + 14;
       ctx.fillStyle = '#ffe7a8';
@@ -1449,9 +1529,9 @@ function renderMessage(message, options = {}) {
   const replyCount = Number(message.replyCount || 0);
   const highlighted = threadMessageId === message.id || selectedSavedRecordId === message.id ? ' highlighted' : '';
   const compact = options.compact ? ' compact' : '';
-  const shareSelectable = messageShareState.active && recordMatchesShareScope(message);
+  const shareSelectable = !options.compact && messageShareState.active && recordMatchesShareScope(message);
   const shareSelecting = shareSelectable ? ' share-selecting' : '';
-  const shareSelected = shareSelectedIds().includes(String(message.id)) ? ' share-selected' : '';
+  const shareSelected = shareSelectable && shareSelectedIds().includes(String(message.id)) ? ' share-selected' : '';
   const authorClass = ['agent', 'human', 'system'].includes(message.authorType) ? message.authorType : 'unknown';
   const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
   const agentAuthorAttr = message.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(message.authorId)}"` : '';
@@ -1460,9 +1540,9 @@ function renderMessage(message, options = {}) {
   const footer = renderMessageFooter({ replyCountChip, receiptTray });
   return `
     <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${shareSelecting}${shareSelected}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
-      ${renderShareSelector(message)}
+      ${renderShareSelector(message, { selectable: shareSelectable })}
       ${renderActorAvatar(message.authorId, message.authorType)}
-      <div class="message-body"${shareBodyToggleAttrs(message)}>
+      <div class="message-body"${shareBodyToggleAttrs(message, { selectable: shareSelectable })}>
         <div class="message-meta">
           ${renderActorName(message.authorId, message.authorType)}
           <span class="sender-role">${escapeHtml(actorSubtitle(message.authorId, message.authorType, message))}</span>

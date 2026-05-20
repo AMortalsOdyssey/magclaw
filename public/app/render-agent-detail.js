@@ -859,16 +859,16 @@ function renderReply(reply) {
   const authorClass = ['agent', 'human', 'system'].includes(reply.authorType) ? reply.authorType : 'unknown';
   const agentAuthorAttr = reply.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(reply.authorId)}"` : '';
   const highlighted = selectedSavedRecordId === reply.id ? ' highlighted' : '';
-  const shareSelectable = messageShareState.active && recordMatchesShareScope(reply);
+  const shareSelectable = false;
   const shareSelecting = shareSelectable ? ' share-selecting' : '';
-  const shareSelected = shareSelectedIds().includes(String(reply.id)) ? ' share-selected' : '';
+  const shareSelected = shareSelectable && shareSelectedIds().includes(String(reply.id)) ? ' share-selected' : '';
   const receiptTray = renderAgentReceiptTray(reply);
   const footer = renderMessageFooter({ receiptTray });
   return `
     <article class="message-card magclaw-message reply-card author-${authorClass}${highlighted}${shareSelecting}${shareSelected}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
-      ${renderShareSelector(reply)}
+      ${renderShareSelector(reply, { selectable: shareSelectable })}
       ${renderActorAvatar(reply.authorId, reply.authorType)}
-      <div class="message-body"${shareBodyToggleAttrs(reply)}>
+      <div class="message-body"${shareBodyToggleAttrs(reply, { selectable: shareSelectable })}>
         <div class="message-meta">
           ${renderActorName(reply.authorId, reply.authorType)}
           <span class="sender-role">${escapeHtml(actorSubtitle(reply.authorId, reply.authorType, reply))}</span>
@@ -948,7 +948,6 @@ function renderThreadDrawer(message) {
     : `${totalReplies} ${replyWord}`;
   const replyDividerLabel = pageInfo?.hasMore ? 'Scroll up for earlier replies' : 'Beginning of replies';
   const canReply = message.spaceType !== 'channel' || currentUserIsChannelMember(message.spaceId);
-  const shareThreadClass = isThreadShareRoot(message.id) ? ' share-thread-mode' : '';
   return `
     <section class="pixel-panel inspector-panel thread-drawer">
       <div class="thread-head">
@@ -962,7 +961,7 @@ function renderThreadDrawer(message) {
         </div>
       </div>
       <div class="thread-context-wrap">
-        <div class="thread-context${shareThreadClass}" id="thread-context">
+        <div class="thread-context" id="thread-context">
           <div class="thread-parent-card">
             ${renderMessage(message, { compact: true })}
           </div>

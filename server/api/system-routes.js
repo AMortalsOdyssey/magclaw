@@ -1,4 +1,5 @@
 import { mkdir, writeFile } from 'node:fs/promises';
+import net from 'node:net';
 import path from 'node:path';
 
 // System-level API routes.
@@ -12,6 +13,8 @@ function expectedStreamClose(error) {
 }
 
 const SHARE_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+const SHARE_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+const SHARE_AVATAR_FETCH_TIMEOUT_MS = 8000;
 const PNG_SIGNATURE_HEX = '89504e470d0a1a0a';
 
 function isLoopbackRequest(req) {
@@ -40,6 +43,72 @@ function decodeShareImageDataUrl(value) {
   if (!buffer.length || buffer.length > SHARE_IMAGE_MAX_BYTES) return null;
   if (buffer.subarray(0, 8).toString('hex') !== PNG_SIGNATURE_HEX) return null;
   return buffer;
+}
+
+function normalizedShareAvatarUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.startsWith('data:') || raw.startsWith('/')) return '';
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    return parsed.href;
+  } catch {
+    return '';
+  }
+}
+
+function addShareAvatarUrl(urls, value) {
+  const normalized = normalizedShareAvatarUrl(value);
+  if (normalized) urls.add(normalized);
+}
+
+function collectShareAvatarUrls(state = {}) {
+  const urls = new Set();
+  for (const agent of state.agents || []) {
+    addShareAvatarUrl(urls, agent?.avatar);
+    addShareAvatarUrl(urls, agent?.avatarUrl);
+  }
+  for (const human of state.humans || []) {
+    addShareAvatarUrl(urls, human?.avatar);
+    addShareAvatarUrl(urls, human?.avatarUrl);
+  }
+  const cloud = state.cloud || {};
+  addShareAvatarUrl(urls, cloud.workspace?.avatar);
+  for (const workspace of cloud.workspaces || []) addShareAvatarUrl(urls, workspace?.avatar);
+  for (const user of cloud.users || []) addShareAvatarUrl(urls, user?.avatarUrl || user?.avatar);
+  for (const member of cloud.members || cloud.workspaceMembers || []) {
+    addShareAvatarUrl(urls, member?.avatarUrl || member?.avatar);
+    addShareAvatarUrl(urls, member?.user?.avatarUrl || member?.user?.avatar);
+    addShareAvatarUrl(urls, member?.human?.avatar || member?.human?.avatarUrl);
+  }
+  return urls;
+}
+
+function blockedShareAvatarHost(hostname = '') {
+  const host = String(hostname || '').toLowerCase();
+  if (!host || host === 'localhost') return true;
+  const ipVersion = net.isIP(host);
+  if (!ipVersion) return false;
+  if (ipVersion === 4) {
+    const parts = host.split('.').map((part) => Number(part));
+    if (parts[0] === 0 || parts[0] === 10 || parts[0] === 127 || parts[0] === 169 && parts[1] === 254) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    return false;
+  }
+  return host === '::1'
+    || host === '::'
+    || host.startsWith('fc')
+    || host.startsWith('fd')
+    || host.startsWith('fe80:');
+}
+
+function allowedShareAvatarUrl(state, value) {
+  const normalized = normalizedShareAvatarUrl(value);
+  if (!normalized) return '';
+  const parsed = new URL(normalized);
+  if (blockedShareAvatarHost(parsed.hostname)) return '';
+  return collectShareAvatarUrls(state).has(normalized) ? normalized : '';
 }
 
 async function writeUniqueShareImage(dir, fileName, buffer) {
@@ -142,6 +211,48 @@ export async function handleSystemApi(req, res, url, deps) {
     const saved = await writeUniqueShareImage(downloadDir, fileName, buffer);
     sendJson(res, 200, { ok: true, ...saved });
     return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/share-images/avatar') {
+    const avatarUrl = allowedShareAvatarUrl(state, url.searchParams.get('src'));
+    if (!avatarUrl) {
+      sendError(res, 403, 'Avatar URL is not available for share export.');
+      return true;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SHARE_AVATAR_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(avatarUrl, {
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: { accept: 'image/avif,image/webp,image/png,image/jpeg,image/svg+xml,image/*;q=0.8' },
+      });
+      if (!response.ok) {
+        sendError(res, 502, 'Avatar image could not be loaded.');
+        return true;
+      }
+      const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      if (!contentType.startsWith('image/')) {
+        sendError(res, 415, 'Avatar URL did not return an image.');
+        return true;
+      }
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length || buffer.length > SHARE_AVATAR_MAX_BYTES) {
+        sendError(res, 413, 'Avatar image is too large for share export.');
+        return true;
+      }
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Cache-Control': 'private, max-age=300',
+      });
+      res.end(buffer);
+      return true;
+    } catch {
+      sendError(res, 502, 'Avatar image could not be loaded.');
+      return true;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   if (req.method === 'GET' && url.pathname === '/api/state') {
