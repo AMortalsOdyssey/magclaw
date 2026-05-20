@@ -774,7 +774,9 @@
 
 .console-switch-server {
   display: grid;
-  gap: 4px;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
   width: 100%;
   min-height: 72px;
   padding: 14px;
@@ -787,6 +789,33 @@
 
 .console-switch-server:hover {
   background: var(--accent-soft);
+}
+
+.console-switch-server-avatar {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 900;
+  object-fit: cover;
+}
+
+.console-switch-server-label {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.console-switch-server strong,
+.console-switch-server small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .console-switch-server small {

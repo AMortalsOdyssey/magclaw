@@ -1899,8 +1899,11 @@ function renderConsoleServers() {
       <div class="console-switch-list">
         ${servers.length ? servers.map((server) => `
           <button class="console-switch-server" type="button" data-action="open-console-server" data-slug="${escapeHtml(server.slug || server.id || 'local')}">
-            <strong>${escapeHtml(server.name || displayServerSlug(server.slug || server.id) || 'Server')}</strong>
-            ${displayServerSlug(server.slug || server.id) ? `<small>/${escapeHtml(displayServerSlug(server.slug || server.id))}</small>` : ''}
+            ${renderServerAvatar(server, 'console-switch-server-avatar')}
+            <span class="console-switch-server-label">
+              <strong>${escapeHtml(server.name || displayServerSlug(server.slug || server.id) || 'Server')}</strong>
+              ${displayServerSlug(server.slug || server.id) ? `<small>/${escapeHtml(displayServerSlug(server.slug || server.id))}</small>` : ''}
+            </span>
           </button>
         `).join('') : '<div class="empty-box small">Choose a server to continue. If you do not have one yet, create a new server.</div>'}
       </div>

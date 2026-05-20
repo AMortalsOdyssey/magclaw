@@ -2285,6 +2285,8 @@ test('console has routed sections, invitation actions, and no human heartbeat', 
   assert.match(app, /data-modal="server-create"/);
   assert.match(app, /\/api\/console\/servers/);
   assert.match(app, /Choose a server to continue\. If you do not have one yet, create a new server\./);
+  assert.match(app, /renderServerAvatar\(server, 'console-switch-server-avatar'\)/);
+  assert.match(app, /console-switch-server-label/);
   assert.doesNotMatch(app, /console-create-server" type="button" disabled/);
   assert.match(styles, /\.toast \{[\s\S]*z-index: 120/);
   assert.match(styles, /\.toast \{[\s\S]*border: 2px solid var\(--accent\)/);
@@ -2292,6 +2294,8 @@ test('console has routed sections, invitation actions, and no human heartbeat', 
   assert.match(styles, /\.console-page/);
   assert.match(styles, /\.console-grid/);
   assert.match(styles, /\.console-row/);
+  assert.match(styles, /\.console-switch-server-avatar/);
+  assert.match(styles, /\.console-switch-server-label/);
   assert.match(styles, /\.modal-form \.form-error/);
 });
 
