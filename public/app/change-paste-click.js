@@ -281,7 +281,13 @@ document.addEventListener('click', async (event) => {
       if (!recordMatchesShareScope(record)) return;
       const selected = new Set(shareSelectedIds());
       if (selected.has(id)) selected.delete(id);
-      else if (id) selected.add(id);
+      else if (id) {
+        if (selected.size >= SHARE_MESSAGE_SELECTION_LIMIT) {
+          toast(shareSelectionLimitMessage());
+          return;
+        }
+        selected.add(id);
+      }
       messageShareState = selected.size
         ? normalizedMessageShareState({ ...messageShareState, active: true, selectedIds: [...selected] })
         : emptyMessageShareState();
@@ -290,10 +296,11 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'toggle-share-select-all') {
       const records = shareSelectableRecords();
+      if (records.length > SHARE_MESSAGE_SELECTION_LIMIT) toast(shareSelectionLimitMessage());
       messageShareState = normalizedMessageShareState({
         ...messageShareState,
         active: records.length > 0,
-        selectedIds: records.map((record) => record.id),
+        selectedIds: records.slice(0, SHARE_MESSAGE_SELECTION_LIMIT).map((record) => record.id),
       });
       render();
       return;
@@ -312,8 +319,12 @@ document.addEventListener('click', async (event) => {
     if (action === 'download-selected-image') {
       const records = shareSelectionRecords();
       sharePreviewState = { open: true, imageUrl: '', recordIds: records.map((record) => record.id) };
+      const renderStartedAt = Date.now();
       render();
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
       const imageUrl = await generateShareImageDataUrl(records);
+      const remainingRenderMs = SHARE_IMAGE_RENDER_MIN_MS - (Date.now() - renderStartedAt);
+      if (remainingRenderMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingRenderMs));
       sharePreviewState = { open: true, imageUrl, recordIds: records.map((record) => record.id) };
       render();
       return;

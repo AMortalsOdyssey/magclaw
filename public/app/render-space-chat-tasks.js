@@ -588,6 +588,13 @@ function renderMessageReactionTray(record) {
   `;
 }
 
+const SHARE_MESSAGE_SELECTION_LIMIT = 100;
+const SHARE_IMAGE_RENDER_MIN_MS = 240;
+
+function shareSelectionLimitMessage() {
+  return `You can select up to ${SHARE_MESSAGE_SELECTION_LIMIT} messages.`;
+}
+
 function shareSelectedIds() {
   const seen = new Set();
   return (Array.isArray(messageShareState.selectedIds) ? messageShareState.selectedIds : [])
@@ -596,7 +603,8 @@ function shareSelectedIds() {
       if (!id || seen.has(id)) return false;
       seen.add(id);
       return true;
-    });
+    })
+    .slice(0, SHARE_MESSAGE_SELECTION_LIMIT);
 }
 
 function emptyMessageShareState() {
@@ -604,11 +612,14 @@ function emptyMessageShareState() {
 }
 
 function normalizedMessageShareState(next = {}) {
-  const selectedIds = Array.isArray(next.selectedIds) ? next.selectedIds.map(String).filter(Boolean) : [];
+  const selectedIds = [...new Set((Array.isArray(next.selectedIds) ? next.selectedIds : [])
+    .map(String)
+    .filter(Boolean))]
+    .slice(0, SHARE_MESSAGE_SELECTION_LIMIT);
   const scope = next.scope === 'thread' && next.threadRootId ? 'thread' : 'all';
   return {
     active: Boolean(next.active && selectedIds.length),
-    selectedIds: [...new Set(selectedIds)],
+    selectedIds,
     scope,
     threadRootId: scope === 'thread' ? String(next.threadRootId || '') : '',
   };
@@ -823,7 +834,12 @@ function renderSharePreviewModal() {
           <button class="icon-btn small" type="button" data-action="close-share-preview" aria-label="Close">×</button>
         </div>
         <div class="share-preview-frame">
-          ${sharePreviewState.imageUrl ? `<img src="${escapeHtml(sharePreviewState.imageUrl)}" alt="Share preview" />` : '<div class="empty-box small">Preparing image...</div>'}
+          ${sharePreviewState.imageUrl ? `<img src="${escapeHtml(sharePreviewState.imageUrl)}" alt="Share preview" />` : `
+            <div class="share-preview-loading" role="status" aria-live="polite">
+              <span class="share-preview-spinner" aria-hidden="true"></span>
+              <strong>Rendering...</strong>
+            </div>
+          `}
         </div>
         <div class="modal-actions">
           <button class="secondary-btn" type="button" data-action="close-share-preview">Cancel</button>

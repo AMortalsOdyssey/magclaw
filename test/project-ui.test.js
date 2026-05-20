@@ -1749,6 +1749,9 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /key: 'rocket'/);
   assert.match(app, /key: 'pin'/);
   assert.match(app, /function renderMessageReactionTray\(record\)/);
+  assert.match(app, /const SHARE_MESSAGE_SELECTION_LIMIT = 100/);
+  assert.match(app, /const SHARE_IMAGE_RENDER_MIN_MS = 240/);
+  assert.match(app, /function shareSelectionLimitMessage\(\)/);
   assert.match(app, /function renderMessageContextMenu\(\)/);
   assert.match(app, /function renderShareSelectionBar\(\)/);
   assert.match(app, /function renderSharePreviewModal\(\)/);
@@ -1803,6 +1806,13 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /data-action="copy-selected-markdown"/);
   assert.match(app, /data-action="download-selected-image"/);
   assert.match(app, /data-action="save-share-image"/);
+  assert.match(app, /selected\.size >= SHARE_MESSAGE_SELECTION_LIMIT/);
+  assert.match(app, /records\.length > SHARE_MESSAGE_SELECTION_LIMIT/);
+  assert.match(app, /records\.slice\(0, SHARE_MESSAGE_SELECTION_LIMIT\)/);
+  assert.match(app, /requestAnimationFrame\(\(\) => resolve\(\)\)/);
+  assert.match(app, /remainingRenderMs > 0/);
+  assert.match(app, /share-preview-loading/);
+  assert.match(app, /share-preview-spinner/);
   assert.match(app, /messageShareState = emptyMessageShareState\(\)/);
   assert.match(app, /sharePreviewState = \{ open: false, imageUrl: '', recordIds: \[\] \}/);
   assert.match(app, /upsertConversationRecord\(appState\.messages, result\.message\)/);
@@ -1823,6 +1833,11 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(styles, /\.thread-context\.share-thread-mode \.reply-list[\s\S]*padding-left: 28px/);
   assert.match(styles, /\.message-markdown a[\s\S]*color: #1269B7/);
   assert.match(styles, /\.share-preview-modal/);
+  assert.match(styles, /\.modal-card\.share-preview-modal[\s\S]*max-height: calc\(100vh - 48px\)/);
+  assert.match(styles, /\.share-preview-frame[\s\S]*overflow: auto/);
+  assert.match(styles, /\.share-preview-loading/);
+  assert.match(styles, /\.share-preview-spinner[\s\S]*animation: share-preview-spin/);
+  assert.match(styles, /@keyframes share-preview-spin/);
   assert.match(styles, /\.modal-card\.share-preview-modal[\s\S]*border: 2px solid var\(--border\)/);
   assert.match(styles, /\.message-share-selector\.selected[\s\S]*background: #168CFF/);
   assert.match(styles, /\.message-card\.share-selecting/);
