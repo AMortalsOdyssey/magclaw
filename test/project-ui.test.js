@@ -1763,6 +1763,12 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(shareImageSource, /reactionRows/);
   assert.match(shareImageSource, /drawShareAvatar\(ctx, profile, row\.avatarImage/);
   assert.match(shareImageSource, /MagClaw/);
+  assert.match(app, /function shareServerProfile\(\)/);
+  assert.match(app, /function sharePublicDomain\(\)/);
+  assert.match(app, /appState\?\.connection\?\.publicUrl/);
+  assert.match(app, /function drawShareServerAvatar\(ctx, profile, image, x, y, size\)/);
+  assert.doesNotMatch(shareImageSource, /MESSAGE/);
+  assert.doesNotMatch(shareImageSource, /strokeRect\(rowX/);
   assert.doesNotMatch(app, /SHARE_IMAGE_DIRECTORY_PICKER_ID/);
   assert.doesNotMatch(app, /window\.showDirectoryPicker/);
   assert.match(app, /window\.showSaveFilePicker/);

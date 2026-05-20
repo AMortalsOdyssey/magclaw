@@ -789,6 +789,16 @@ function wrapCanvasText(ctx, text, maxWidth) {
   return lines.length ? lines : [''];
 }
 
+function fitCanvasText(ctx, text, maxWidth) {
+  const value = String(text || '').trim();
+  if (!value || ctx.measureText(value).width <= maxWidth) return value;
+  let next = value;
+  while (next.length > 1 && ctx.measureText(`${next}...`).width > maxWidth) {
+    next = next.slice(0, -1);
+  }
+  return `${next || value.slice(0, 1)}...`;
+}
+
 function shareReactionChipRows(ctx, groups = [], maxWidth = 0) {
   const chips = groups.map((group) => {
     const label = `${group.emoji} ${group.actors.length}`;
@@ -892,15 +902,71 @@ function drawShareAvatar(ctx, profile, image, x, y, size) {
   ctx.textBaseline = 'alphabetic';
 }
 
+function shareServerProfile() {
+  const server = typeof currentServerProfile === 'function'
+    ? currentServerProfile()
+    : (appState?.cloud?.workspace || appState?.cloud?.workspaces?.[0] || {});
+  const name = String(server?.name || server?.slug || currentServerSlug() || 'MagClaw').trim() || 'MagClaw';
+  const fallbackInitial = name.match(/[a-zA-Z0-9]/)?.[0]?.toUpperCase() || 'M';
+  return {
+    name,
+    avatar: String(server?.avatar || '').trim(),
+    initial: typeof serverAvatarInitial === 'function' ? serverAvatarInitial(server) : fallbackInitial,
+  };
+}
+
+function sharePublicDomain() {
+  const configured = String(appState?.connection?.publicUrl || '').trim();
+  const fallback = window.location?.host || currentServerSlug();
+  const value = configured || fallback;
+  try {
+    const url = new URL(value.includes('://') ? value : `https://${value}`);
+    return url.host || url.hostname || '';
+  } catch {
+    return String(value || '')
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/.*$/, '')
+      .trim();
+  }
+}
+
+function drawShareServerAvatar(ctx, profile, image, x, y, size) {
+  ctx.fillStyle = '#fffefb';
+  ctx.fillRect(x, y, size, size);
+  ctx.strokeStyle = '#111111';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, size, size);
+  if (image) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + 2, y + 2, size - 4, size - 4);
+    ctx.clip();
+    ctx.drawImage(image, x + 2, y + 2, size - 4, size - 4);
+    ctx.restore();
+    return;
+  }
+  ctx.fillStyle = '#111111';
+  ctx.font = '900 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(profile.initial || 'M', x + size / 2, y + size / 2);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+}
+
 async function generateShareImageDataUrl(records = shareSelectionRecords()) {
   const canvas = document.createElement('canvas');
   const scale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
   const width = 1040;
   const padding = 28;
+  const headerHeight = 56;
   const avatarSize = 40;
   const contentWidth = width - padding * 2 - avatarSize - 16;
   const ctx = canvas.getContext('2d');
+  const serverProfile = shareServerProfile();
+  const publicDomain = sharePublicDomain();
   const logoImagePromise = loadCanvasImage(BRAND_LOGO_SRC);
+  const serverImagePromise = loadCanvasImage(serverProfile.avatar);
   ctx.font = '15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   const rows = await Promise.all(records.map(async (record) => {
     const profile = shareActorProfile(record);
@@ -919,11 +985,12 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
       reactionRows,
       taskLabel,
       sourceLabel: recordSpaceName(record),
-      height: (taskLabel ? 82 : 62) + lines.length * 20 + (attachments ? 22 : 0) + (reactionRows.length ? 8 + reactionRows.length * 22 : 0),
+      height: (taskLabel ? 70 : 50) + lines.length * 20 + (attachments ? 22 : 0) + (reactionRows.length ? 8 + reactionRows.length * 22 : 0) + 14,
     };
   }));
   const logoImage = await logoImagePromise;
-  const height = Math.max(190, 56 + padding + rows.reduce((sum, row) => sum + row.height, 0) + padding + 16);
+  const serverImage = await serverImagePromise;
+  const height = Math.max(176, headerHeight + 24 + rows.reduce((sum, row) => sum + row.height, 0) + 22);
   canvas.width = Math.round(width * scale);
   canvas.height = Math.round(height * scale);
   canvas.style.width = `${width}px`;
@@ -931,73 +998,71 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
   ctx.scale(scale, scale);
   ctx.fillStyle = '#fff8fc';
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = '#111111';
-  ctx.lineWidth = 4;
-  ctx.strokeRect(2, 2, width - 4, height - 4);
+  ctx.fillStyle = '#fffefb';
+  ctx.fillRect(0, headerHeight, width, height - headerHeight);
   ctx.fillStyle = '#ff66cc';
-  ctx.fillRect(4, 4, width - 8, 52);
+  ctx.fillRect(0, 0, width, headerHeight);
   ctx.strokeStyle = '#111111';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(4, 4, width - 8, 52);
+  ctx.lineWidth = 3;
+  ctx.strokeRect(1.5, 1.5, width - 3, height - 3);
+  ctx.beginPath();
+  ctx.moveTo(0, headerHeight);
+  ctx.lineTo(width, headerHeight);
+  ctx.stroke();
   if (logoImage) {
     ctx.fillStyle = '#fffefb';
-    ctx.fillRect(padding, 14, 32, 32);
+    ctx.fillRect(padding, 12, 32, 32);
     ctx.strokeStyle = '#111111';
-    ctx.strokeRect(padding, 14, 32, 32);
-    ctx.drawImage(logoImage, padding + 3, 17, 26, 26);
+    ctx.lineWidth = 2;
+    ctx.strokeRect(padding, 12, 32, 32);
+    ctx.drawImage(logoImage, padding + 3, 15, 26, 26);
   }
   ctx.fillStyle = '#111111';
   ctx.font = '900 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-  ctx.fillText('MagClaw', padding + 42, 35);
-  ctx.fillStyle = '#fffefb';
-  ctx.fillRect(padding + 136, 17, 92, 24);
-  ctx.strokeStyle = '#111111';
-  ctx.strokeRect(padding + 136, 17, 92, 24);
-  ctx.fillStyle = '#111111';
-  ctx.font = '900 11px ui-monospace, SFMono-Regular, Menlo, monospace';
-  ctx.fillText('MESSAGE', padding + 148, 33);
-  ctx.textAlign = 'right';
+  const brandX = padding + 42;
+  ctx.fillText('MagClaw', brandX, 34);
+  const brandWidth = ctx.measureText('MagClaw').width;
   ctx.font = '700 13px ui-monospace, SFMono-Regular, Menlo, monospace';
-  ctx.fillText(currentServerSlug(), width - padding, 34);
+  const domainText = fitCanvasText(ctx, publicDomain, 280);
+  ctx.textAlign = 'right';
+  ctx.fillText(domainText, width - padding, 33);
   ctx.textAlign = 'left';
-  ctx.fillStyle = '#fffefb';
-  ctx.fillRect(padding, 72, width - padding * 2, height - 72 - padding);
-  ctx.strokeStyle = '#111111';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(padding, 72, width - padding * 2, height - 72 - padding);
-  let y = 92;
+  const domainWidth = publicDomain ? ctx.measureText(domainText).width + 34 : 0;
+  const serverAvatarSize = 24;
+  const serverX = brandX + brandWidth + 20;
+  const serverNameX = serverX + serverAvatarSize + 10;
+  const serverNameMaxWidth = Math.max(80, width - padding - domainWidth - serverNameX);
+  drawShareServerAvatar(ctx, serverProfile, serverImage, serverX, 16, serverAvatarSize);
+  ctx.fillStyle = '#111111';
+  ctx.font = '800 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  ctx.fillText(fitCanvasText(ctx, serverProfile.name, serverNameMaxWidth), serverNameX, 33);
+  let y = headerHeight + 24;
   for (const row of rows) {
     const { record, lines, profile } = row;
-    const rowX = padding + 16;
-    const rowWidth = width - padding * 2 - 32;
-    ctx.fillStyle = '#fffefb';
-    ctx.fillRect(rowX, y - 8, rowWidth, row.height);
-    ctx.strokeStyle = '#111111';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(rowX, y - 8, rowWidth, row.height);
-    drawShareAvatar(ctx, profile, row.avatarImage, rowX + 14, y + 8, avatarSize);
-    const contentX = rowX + 14 + avatarSize + 16;
+    const rowX = padding + 4;
+    drawShareAvatar(ctx, profile, row.avatarImage, rowX, y, avatarSize);
+    const contentX = rowX + avatarSize + 16;
     ctx.fillStyle = '#111111';
     ctx.font = '900 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    ctx.fillText(profile.name, contentX, y + 20);
+    ctx.fillText(profile.name, contentX, y + 15);
     ctx.fillStyle = '#8b8790';
     ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
     const nameWidth = Math.min(260, ctx.measureText(profile.name).width + 10);
     const metaText = `${profile.subtitle ? `${profile.subtitle} · ` : ''}${row.sourceLabel} · ${fmtTime(record.createdAt)}`;
-    ctx.fillText(metaText, contentX + nameWidth, y + 20);
+    ctx.fillText(metaText, contentX + nameWidth, y + 15);
     if (row.taskLabel) {
       const chipWidth = Math.ceil(ctx.measureText(row.taskLabel).width) + 14;
       ctx.fillStyle = '#ffe7a8';
-      ctx.fillRect(contentX, y + 28, chipWidth, 18);
+      ctx.fillRect(contentX, y + 24, chipWidth, 18);
       ctx.strokeStyle = '#111111';
-      ctx.strokeRect(contentX, y + 28, chipWidth, 18);
+      ctx.strokeRect(contentX, y + 24, chipWidth, 18);
       ctx.fillStyle = '#111111';
       ctx.font = '900 11px ui-monospace, SFMono-Regular, Menlo, monospace';
-      ctx.fillText(row.taskLabel, contentX + 7, y + 41);
+      ctx.fillText(row.taskLabel, contentX + 7, y + 37);
     }
     ctx.fillStyle = '#111111';
     ctx.font = '15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    const bodyY = row.taskLabel ? y + 66 : y + 46;
+    const bodyY = row.taskLabel ? y + 58 : y + 38;
     lines.forEach((line, index) => {
       ctx.fillText(line, contentX, bodyY + index * 20);
     });

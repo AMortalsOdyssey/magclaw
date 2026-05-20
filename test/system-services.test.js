@@ -83,3 +83,17 @@ test('bootstrap state includes terminal task updates for the current member chan
   assert.equal(snapshot.tasks.some((task) => task.id === 'task_member_done'), true);
   assert.equal(snapshot.tasks.some((task) => task.id === 'task_outside_done'), false);
 });
+
+test('public state exposes configured public URL for share exports', () => {
+  const previous = process.env.MAGCLAW_PUBLIC_URL;
+  process.env.MAGCLAW_PUBLIC_URL = 'https://magclaw.multiego.me/';
+  try {
+    const services = makeServices();
+    const snapshot = services.publicState();
+
+    assert.equal(snapshot.connection.publicUrl, 'https://magclaw.multiego.me');
+  } finally {
+    if (previous === undefined) delete process.env.MAGCLAW_PUBLIC_URL;
+    else process.env.MAGCLAW_PUBLIC_URL = previous;
+  }
+});

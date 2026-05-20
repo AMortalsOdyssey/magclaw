@@ -292,6 +292,7 @@ export function createSystemServices(deps) {
     const { cloudToken, ...connection } = state?.connection || {};
     return {
       ...connection,
+      publicUrl: normalizeCloudUrl(process.env.MAGCLAW_PUBLIC_URL || ''),
       hasControlPlane: Boolean(state?.connection?.controlPlaneUrl),
       hasRelay: Boolean(state?.connection?.relayUrl),
       hasCloudToken: Boolean(cloudToken || process.env.MAGCLAW_CLOUD_TOKEN),
