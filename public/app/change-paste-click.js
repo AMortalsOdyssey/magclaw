@@ -295,12 +295,19 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'toggle-share-select-all') {
-      const records = shareSelectableRecords();
-      if (records.length > SHARE_MESSAGE_SELECTION_LIMIT) toast(shareSelectionLimitMessage());
+      if (shareAllSelectableMessagesSelected()) {
+        messageShareState = emptyMessageShareState();
+        sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
+        render();
+        return;
+      }
+      await loadShareSelectAllThreadWindow();
+      const targetIds = shareSelectAllTargetIds();
+      if (shareSelectableRecords().length > SHARE_MESSAGE_SELECTION_LIMIT) toast(shareSelectionLimitMessage());
       messageShareState = normalizedMessageShareState({
         ...messageShareState,
-        active: records.length > 0,
-        selectedIds: records.slice(0, SHARE_MESSAGE_SELECTION_LIMIT).map((record) => record.id),
+        active: targetIds.length > 0,
+        selectedIds: targetIds,
       });
       render();
       return;

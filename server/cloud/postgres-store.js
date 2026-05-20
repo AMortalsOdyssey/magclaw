@@ -1405,8 +1405,29 @@ export function createCloudPostgresStore(optionsInput = {}) {
       };
     }
     const limit = parsePageLimit(options.limit, MESSAGE_PAGE_DEFAULT_LIMIT, THREAD_REPLY_PAGE_MAX_LIMIT);
+    const oldestFirst = String(options.order || '').toLowerCase() === 'oldest';
     return withClient(async (client) => {
       const params = [workspaceId, parentMessageId];
+      if (oldestFirst) {
+        const limitParam = params.push(limit + 1);
+        const rows = await client.query(`
+          SELECT *
+          FROM ${table('cloud_replies')}
+          WHERE workspace_id = $1
+            AND parent_message_id = $2
+          ORDER BY created_at ASC, id ASC
+          LIMIT $${limitParam}
+        `, params);
+        return {
+          replies: rows.rows.slice(0, limit).map(replyFromRow),
+          pagination: {
+            limit,
+            hasMore: rows.rows.length > limit,
+            nextBefore: '',
+            nextBeforeId: '',
+          },
+        };
+      }
       const cursor = cursorClause(params, options.before, options.beforeId);
       const limitParam = params.push(limit + 1);
       const rows = await client.query(`

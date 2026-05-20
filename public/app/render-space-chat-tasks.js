@@ -658,6 +658,37 @@ function shareSelectableRecords() {
   return [...(appState?.messages || []), ...(appState?.replies || [])];
 }
 
+function shareSelectAllTargetIds() {
+  return shareSelectableRecords().slice(0, SHARE_MESSAGE_SELECTION_LIMIT)
+    .map((record) => String(record?.id || ''))
+    .filter(Boolean);
+}
+
+function shareAllSelectableMessagesSelected() {
+  const targetIds = shareSelectAllTargetIds();
+  if (!targetIds.length) return false;
+  const selected = new Set(shareSelectedIds());
+  return targetIds.every((id) => selected.has(id));
+}
+
+async function loadShareSelectAllThreadWindow() {
+  if (messageShareState.scope !== 'thread' || !messageShareState.threadRootId) return false;
+  const threadRootId = String(messageShareState.threadRootId || '');
+  try {
+    const result = await api(`/api/messages/${encodeURIComponent(threadRootId)}/replies?limit=${SHARE_MESSAGE_SELECTION_LIMIT - 1}&order=oldest`);
+    const replies = Array.isArray(result?.replies) ? result.replies : [];
+    if (!replies.length || typeof mergeThreadReplyPageIntoState !== 'function') return false;
+    const nextState = mergeThreadReplyPageIntoState(appState, threadRootId, replies);
+    if (nextState && nextState !== appState) {
+      appState = nextState;
+      return true;
+    }
+  } catch (error) {
+    console.warn('Failed to load share select-all thread window:', error);
+  }
+  return false;
+}
+
 function shareSelectionRecords() {
   const selected = new Set(shareSelectedIds());
   const source = messageShareState.scope === 'thread' ? shareSelectableRecords() : [...(appState?.messages || []), ...(appState?.replies || [])];
@@ -686,7 +717,7 @@ function renderShareSelector(record) {
     <button class="message-share-selector${selected ? ' selected' : ''}" type="button"
       data-action="toggle-share-selection"
       data-id="${escapeHtml(record.id)}"
-      aria-label="${selected ? 'Deselect message' : 'Select message'}">
+      aria-label="${escapeHtml(t(selected ? 'Deselect message' : 'Select message'))}">
       <span>${selected ? '✓' : ''}</span>
     </button>
   `;
@@ -811,14 +842,17 @@ function renderShareSelectionBar() {
   const count = shareSelectedIds().length;
   const threadMode = messageShareState.scope === 'thread';
   const selectableCount = threadMode ? shareSelectableRecords().length : 0;
+  const allSelectableSelected = shareAllSelectableMessagesSelected();
+  const selectAllLabel = allSelectableSelected ? 'Deselect all' : 'Select all';
+  const selectAllAria = allSelectableSelected ? 'Deselect all thread messages' : 'Select all thread messages';
   return `
     <div class="share-selection-bar" role="status" aria-live="polite">
-      <strong>${count} selected</strong>
+      <strong>${escapeHtml(t(`${count} selected`))}</strong>
       <div class="share-selection-actions">
-        ${threadMode ? `<button type="button" data-action="toggle-share-select-all" ${selectableCount ? '' : 'disabled'} aria-label="Select all thread messages">Select all</button>` : ''}
-        <button type="button" data-action="cancel-message-share" aria-label="Cancel">Cancel</button>
-        <button class="share-image-action" type="button" data-action="download-selected-image" ${count ? '' : 'disabled'} aria-label="Download as image">Download as image</button>
-        <button type="button" data-action="copy-selected-markdown" ${count ? '' : 'disabled'} aria-label="Copy as Markdown">Copy as Markdown</button>
+        ${threadMode ? `<button type="button" data-action="toggle-share-select-all" ${selectableCount ? '' : 'disabled'} aria-label="${escapeHtml(t(selectAllAria))}">${escapeHtml(t(selectAllLabel))}</button>` : ''}
+        <button type="button" data-action="cancel-message-share" aria-label="${escapeHtml(t('Cancel'))}">${escapeHtml(t('Cancel'))}</button>
+        <button class="share-image-action" type="button" data-action="download-selected-image" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Download as image'))}">${escapeHtml(t('Download as image'))}</button>
+        <button type="button" data-action="copy-selected-markdown" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Copy as Markdown'))}">${escapeHtml(t('Copy as Markdown'))}</button>
       </div>
     </div>
   `;
@@ -826,24 +860,25 @@ function renderShareSelectionBar() {
 
 function renderSharePreviewModal() {
   if (!sharePreviewState.open) return '';
+  const previewLabel = escapeHtml(t('Share preview'));
   return `
     <div class="modal-backdrop share-preview-backdrop">
-      <section class="modal-card pixel-panel share-preview-modal" role="dialog" aria-modal="true" aria-label="Share preview">
+      <section class="modal-card pixel-panel share-preview-modal" role="dialog" aria-modal="true" aria-label="${previewLabel}">
         <div class="modal-head">
-          <h2>Share preview</h2>
-          <button class="icon-btn small" type="button" data-action="close-share-preview" aria-label="Close">×</button>
+          <h2>${previewLabel}</h2>
+          <button class="icon-btn small" type="button" data-action="close-share-preview" aria-label="${escapeHtml(t('Close'))}">×</button>
         </div>
         <div class="share-preview-frame">
-          ${sharePreviewState.imageUrl ? `<img src="${escapeHtml(sharePreviewState.imageUrl)}" alt="Share preview" />` : `
+          ${sharePreviewState.imageUrl ? `<img src="${escapeHtml(sharePreviewState.imageUrl)}" alt="${previewLabel}" />` : `
             <div class="share-preview-loading" role="status" aria-live="polite">
               <span class="share-preview-spinner" aria-hidden="true"></span>
-              <strong>Rendering...</strong>
+              <strong>${escapeHtml(t('Rendering...'))}</strong>
             </div>
           `}
         </div>
         <div class="modal-actions">
-          <button class="secondary-btn" type="button" data-action="close-share-preview">Cancel</button>
-          <button class="primary-btn" type="button" data-action="save-share-image" ${sharePreviewState.imageUrl ? '' : 'disabled'}>Save image</button>
+          <button class="secondary-btn" type="button" data-action="close-share-preview">${escapeHtml(t('Cancel'))}</button>
+          <button class="primary-btn" type="button" data-action="save-share-image" ${sharePreviewState.imageUrl ? '' : 'disabled'}>${escapeHtml(t('Save image'))}</button>
         </div>
       </section>
     </div>

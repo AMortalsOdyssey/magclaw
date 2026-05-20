@@ -767,11 +767,13 @@ export async function handleMessageApi(req, res, url, deps) {
     const before = beforeCursorTime(url);
     const beforeId = beforeCursorId(url);
     const workspaceId = message.workspaceId || requestWorkspaceId;
+    const oldestFirst = String(url.searchParams.get('order') || '').toLowerCase() === 'oldest';
     if (typeof listThreadRepliesPage === 'function' && workspaceId) {
       const page = await listThreadRepliesPage({
         workspaceId,
         parentMessageId: message.id,
         limit,
+        order: oldestFirst ? 'oldest' : 'newest',
         before: Number.isFinite(before) && before !== Number.POSITIVE_INFINITY ? new Date(before).toISOString() : '',
         beforeId,
       });
@@ -782,18 +784,18 @@ export async function handleMessageApi(req, res, url, deps) {
     }
     const matching = state.replies
       .filter((reply) => reply.parentMessageId === message.id)
-      .filter((reply) => cursorMatchesBefore(reply, before, beforeId))
-      .sort(sortNewestFirst);
+      .filter((reply) => oldestFirst || cursorMatchesBefore(reply, before, beforeId))
+      .sort(oldestFirst ? sortOldestFirst : sortNewestFirst);
     const page = matching.slice(0, limit);
     const nextBefore = page.length ? page[page.length - 1].createdAt : '';
     const nextBeforeId = page.length ? page[page.length - 1].id : '';
     sendJson(res, 200, {
-      replies: page.slice().sort(sortOldestFirst),
+      replies: oldestFirst ? page : page.slice().sort(sortOldestFirst),
       pagination: {
         limit,
         hasMore: matching.length > page.length,
-        nextBefore,
-        nextBeforeId,
+        nextBefore: oldestFirst ? '' : nextBefore,
+        nextBeforeId: oldestFirst ? '' : nextBeforeId,
       },
     });
     return true;
