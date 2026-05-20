@@ -1046,26 +1046,6 @@ function shareImageDataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: match[1] || 'image/png' });
 }
 
-const SHARE_IMAGE_DIRECTORY_PICKER_ID = 'magclaw-share-image-directory';
-
-async function pickShareImageDirectory() {
-  if (typeof window.showDirectoryPicker !== 'function') return null;
-  return window.showDirectoryPicker({
-    id: SHARE_IMAGE_DIRECTORY_PICKER_ID,
-    mode: 'readwrite',
-  });
-}
-
-async function saveBlobToDirectory(blob, fileName) {
-  const directoryHandle = await pickShareImageDirectory();
-  if (!directoryHandle) return false;
-  const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
-  const writable = await fileHandle.createWritable();
-  await writable.write(blob);
-  await writable.close();
-  return true;
-}
-
 async function saveBlobWithFilePicker(blob, fileName) {
   if (typeof window.showSaveFilePicker !== 'function') return false;
   const fileHandle = await window.showSaveFilePicker({
@@ -1083,7 +1063,7 @@ async function saveBlobWithFilePicker(blob, fileName) {
 }
 
 function downloadShareImageFallback(dataUrl, fileName) {
-  if (!sharePreviewState.imageUrl) return false;
+  if (!dataUrl) return false;
   const link = document.createElement('a');
   link.href = dataUrl;
   link.download = fileName;
@@ -1093,7 +1073,18 @@ function downloadShareImageFallback(dataUrl, fileName) {
   return true;
 }
 
+function canSaveShareImageViaServer() {
+  const hostname = window.location?.hostname || '';
+  return hostname === 'localhost'
+    || hostname.endsWith('.localhost')
+    || hostname === '127.0.0.1'
+    || hostname === '0.0.0.0'
+    || hostname === '::1'
+    || hostname === '[::1]';
+}
+
 async function saveShareImageViaServer(dataUrl, fileName) {
+  if (!canSaveShareImageViaServer()) return null;
   try {
     const result = await api('/api/share-images/save', {
       method: 'POST',
@@ -1118,7 +1109,6 @@ async function saveShareImage() {
   const blob = shareImageDataUrlToBlob(sharePreviewState.imageUrl);
   if (!blob) return { ok: false };
   try {
-    if (await saveBlobToDirectory(blob, fileName)) return { ok: true, method: 'directory', fileName };
     if (await saveBlobWithFilePicker(blob, fileName)) return { ok: true, method: 'file-picker', fileName };
   } catch (error) {
     if (error?.name === 'AbortError') return { ok: false, cancelled: true };

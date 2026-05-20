@@ -1763,12 +1763,15 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(shareImageSource, /reactionRows/);
   assert.match(shareImageSource, /drawShareAvatar\(ctx, profile, row\.avatarImage/);
   assert.match(shareImageSource, /MagClaw/);
-  assert.match(app, /const SHARE_IMAGE_DIRECTORY_PICKER_ID = 'magclaw-share-image-directory'/);
-  assert.match(app, /window\.showDirectoryPicker/);
-  assert.match(app, /id: SHARE_IMAGE_DIRECTORY_PICKER_ID/);
+  assert.doesNotMatch(app, /SHARE_IMAGE_DIRECTORY_PICKER_ID/);
+  assert.doesNotMatch(app, /window\.showDirectoryPicker/);
+  assert.match(app, /window\.showSaveFilePicker/);
+  assert.match(app, /function canSaveShareImageViaServer\(\)/);
   assert.match(app, /async function saveShareImageViaServer/);
   assert.match(app, /\/api\/share-images\/save/);
+  assert.match(app, /method: 'file-picker'/);
   assert.match(app, /method: 'server'/);
+  assert.match(app, /method: 'download'/);
   assert.match(app, /async function saveShareImage\(\)/);
   assert.match(app, /Share image saved to/);
   assert.doesNotMatch(app, /SHARE_IMAGE_DIRECTORY_DB|openShareImageDirectoryDb|rememberShareImageDirectoryHandle|storedShareImageDirectoryHandle/);
