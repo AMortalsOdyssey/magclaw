@@ -53,6 +53,7 @@ return {
   workItemTargetMatches,
   markWorkItemResponded,
   markFallbackResponseWorkItem,
+  markPassiveAwarenessWorkItemsObserved,
   markFallbackResponseWorkItems,
   postAgentResponse,
   deliverMessageToAgent,

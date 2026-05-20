@@ -287,6 +287,49 @@ async function relayAgentMentions(record, { parentMessageId = null, sourceMessag
   }
 }
 
+async function fanOutAgentChannelAwareness(record, { sourceMessage = null } = {}) {
+  const channel = record?.spaceType === 'channel' ? findChannel(record.spaceId) : null;
+  const targets = selectAgentAwarenessTargets({
+    state,
+    channel,
+    record,
+    channelAgentIds,
+    findAgent,
+    agentAvailableForAutoWork,
+  });
+  if (!targets.length) return [];
+
+  addSystemEvent('agent_channel_awareness_fanout', `${displayActor(record.authorId)} public channel message delivered to ${targets.length} peer agent(s).`, {
+    messageId: record.id,
+    fromAgentId: record.authorId,
+    targetAgentIds: targets.map((agent) => agent.id),
+    sourceMessageId: sourceMessage?.id || null,
+    relayDepth: Number(record.agentRelayDepth || 0),
+  });
+
+  const awarenessMessage = {
+    ...record,
+    passiveAwareness: true,
+    suppressTaskContext: true,
+  };
+  for (const targetAgent of targets) {
+    deliverMessageToAgent(targetAgent, record.spaceType, record.spaceId, awarenessMessage, {
+      suppressTaskContext: true,
+      contextLimits: {
+        recentMessages: 8,
+        threadReplies: 3,
+        tasks: 3,
+      },
+    }).catch((err) => {
+      addSystemEvent('delivery_error', `Failed to deliver public Agent awareness to ${targetAgent.name}: ${err.message}`, {
+        agentId: targetAgent.id,
+        messageId: record.id,
+      });
+    });
+  }
+  return targets;
+}
+
 function inferTaskIdForDelivery(message, parentMessageId) {
   if (message?.taskId) return message.taskId;
   const parent = parentMessageId ? findMessage(parentMessageId) : null;
@@ -381,6 +424,21 @@ function markFallbackResponseWorkItem(sourceMessage, record) {
   return markFallbackResponseWorkItems(sourceMessage, record);
 }
 
+function markPassiveAwarenessWorkItemsObserved(sourceMessage, workItemIds = []) {
+  const ids = normalizeIds([...workItemIds, sourceMessage?.workItemId].filter(Boolean));
+  let marked = false;
+  for (const id of ids) {
+    const item = findWorkItem(id);
+    if (!item || item.status === 'responded' || item.status === 'stopped') continue;
+    item.status = 'responded';
+    item.completedAt = item.completedAt || now();
+    item.updatedAt = now();
+    item.passiveAwarenessObserved = true;
+    marked = true;
+  }
+  return marked;
+}
+
 function markFallbackResponseWorkItems(sourceMessage, record, workItemIds = []) {
   const workItemId = sourceMessage?.workItemId;
   const ids = normalizeIds([...workItemIds, workItemId].filter(Boolean));
@@ -469,5 +527,6 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
   await persistState();
   broadcastState();
   await relayAgentMentions(message, { sourceMessage: options.sourceMessage });
+  await fanOutAgentChannelAwareness(message, { sourceMessage: options.sourceMessage });
   return message;
 }

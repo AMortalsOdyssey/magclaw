@@ -206,6 +206,7 @@ function sanitizeRecord(record) {
     localReferences: asArray(record.localReferences),
     taskId: record.taskId || null,
     target: record.target || null,
+    passiveAwareness: Boolean(record.passiveAwareness),
     workItemId: record.workItemId || null,
     replyCount: Number(record.replyCount || 0),
     createdAt: record.createdAt || '',
@@ -413,6 +414,7 @@ function messageLine(state, record, targetAgentId) {
     : '';
   const header = [
     record?.target ? `target=${record.target}` : '',
+    record?.passiveAwareness ? 'awareness=passive' : '',
     record?.workItemId ? `workItem=${record.workItemId}` : '',
     `msg=${record.id}`,
     record?.taskId ? `task=${record.taskId}` : '',
@@ -624,6 +626,9 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
     '',
     'Current message:',
     messageLine(sourceState, pack.currentMessage, targetAgentId),
+    pack.currentMessage.passiveAwareness
+      ? 'Passive awareness delivery: another Agent posted this public channel message. Treat it as shared context; reply only if you were explicitly asked, directly mentioned, or can add a brief useful coordination note.'
+      : '',
     '',
     'Recent channel activity (oldest to newest):',
     renderRecentEvents(sourceState, pack.recentEvents),

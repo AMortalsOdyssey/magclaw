@@ -175,7 +175,7 @@ export function createRoutingEngine(deps) {
     const previouslyAskedIds = new Set(recentAvailabilityContextAgentIds(channelAgents, message, spaceId));
     if (!previouslyAskedIds.size) return [];
     return uniqueAgents((channelAgents || [])
-      .filter(agentIdleForAvailability)
+      .filter(agentAvailableForAutoWork)
       .filter((agent) => !previouslyAskedIds.has(agent.id)));
   }
   
@@ -1132,7 +1132,7 @@ export function createRoutingEngine(deps) {
           mode: 'follow_up',
           targetAgentIds: followupAgents.map((agent) => agent.id),
           confidence: 0.88,
-          reason: 'Availability follow-up targets remaining idle agents from recent channel context.',
+          reason: 'Availability follow-up targets remaining available agents from recent channel context.',
           evidence: [...evidence, routeEvidence('recent_context', 'availability follow-up')],
           ...baseDecision,
         }, channelAgents);

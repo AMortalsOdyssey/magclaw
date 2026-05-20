@@ -206,6 +206,51 @@ test('agent context pack renders required peer memory search grounding', () => {
   assert.match(rendered, /search_message_history\/read_history/);
 });
 
+test('agent context pack marks passive awareness deliveries', () => {
+  const state = {
+    humans: [{ id: 'hum_local', name: 'You', role: 'admin' }],
+    agents: [
+      { id: 'agt_cindy', name: 'Cindy', description: 'onboarding', status: 'idle' },
+      { id: 'agt_alice', name: 'Alice', description: 'memory', status: 'idle' },
+    ],
+    channels: [{
+      id: 'chan_all',
+      name: 'all',
+      humanIds: ['hum_local'],
+      agentIds: ['agt_cindy', 'agt_alice'],
+      memberIds: ['hum_local', 'agt_cindy', 'agt_alice'],
+    }],
+    dms: [],
+    messages: [{
+      id: 'msg_cindy',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_cindy',
+      body: '收到，我会把这个作为新的长期角色侧重点。',
+      attachmentIds: [],
+      passiveAwareness: true,
+      createdAt: '2026-05-20T10:34:10.000Z',
+    }],
+    replies: [],
+    tasks: [],
+    attachments: [],
+  };
+
+  const pack = buildAgentContextPack({
+    state,
+    agentId: 'agt_alice',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    currentMessage: state.messages[0],
+  });
+
+  assert.equal(pack.currentMessage.passiveAwareness, true);
+  const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_alice' });
+  assert.match(rendered, /Passive awareness delivery/);
+  assert.match(rendered, /reply only if you were explicitly asked/);
+});
+
 test('workspace all context expands cloud workspace humans and agents', () => {
   const state = {
     connection: { workspaceId: 'wsp_test22222' },

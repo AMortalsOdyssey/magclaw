@@ -252,6 +252,9 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
   } else if (proc.responseBuffer.trim()) {
     const responseText = proc.responseBuffer.trim();
     proc.responseBuffer = '';
+    const sourceMessage = turnMeta
+      ? turnMeta.sourceMessage || proc.lastSourceMessage || proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null
+      : null;
     if (turnMeta && turnMetaAllWorkStopped(turnMeta)) {
       addSystemEvent('agent_stdout_suppressed', `${agent.name} output was suppressed for stopped work.`, {
         agentId: agent.id,
@@ -266,8 +269,16 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
         turnId,
         workItemIds: turnMeta.workItemIds || [],
       });
+    } else if (turnMeta && sourceMessage?.passiveAwareness) {
+      markPassiveAwarenessWorkItemsObserved(sourceMessage, turnMeta.workItemIds || []);
+      addSystemEvent('agent_passive_awareness_stdout_suppressed', `${agent.name} read passive channel awareness without posting fallback output.`, {
+        agentId: agent.id,
+        sessionId: proc.threadId,
+        turnId,
+        workItemIds: turnMeta.workItemIds || [],
+        messageId: sourceMessage.id || null,
+      });
     } else if (turnMeta) {
-      const sourceMessage = turnMeta.sourceMessage || proc.lastSourceMessage || proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
       const posted = await postAgentResponse(agent, turnMeta.spaceType || proc.spaceType, turnMeta.spaceId || proc.spaceId, responseText, deliveryParentMessageId(sourceMessage, turnMeta.parentMessageId), { sourceMessage });
       markFallbackResponseWorkItems(sourceMessage, posted, turnMeta.workItemIds || []);
     } else {

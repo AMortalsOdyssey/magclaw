@@ -27,6 +27,7 @@ export function createCollabMemoryManager(deps) {
     get(_target, prop) { return getState()[prop]; },
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
+  const memoryWritebackQueues = new Map();
 
   function normalizeName(value, fallback) {
     return String(value || fallback || '')
@@ -285,7 +286,11 @@ export function createCollabMemoryManager(deps) {
   
   function scheduleAgentMemoryWriteback(agent, trigger, payload = {}) {
     if (!agent) return Promise.resolve(false);
-    return writeAgentMemoryUpdate(agent, trigger, payload)
+    const previous = memoryWritebackQueues.get(agent.id) || Promise.resolve();
+    let queued;
+    queued = previous
+      .catch(() => false)
+      .then(() => writeAgentMemoryUpdate(agent, trigger, payload))
       .then(async (changed) => {
         if (changed) {
           await persistState();
@@ -300,7 +305,14 @@ export function createCollabMemoryManager(deps) {
         });
         await persistState().then(broadcastState).catch(() => {});
         return false;
+      })
+      .finally(() => {
+        if (memoryWritebackQueues.get(agent.id) === queued) {
+          memoryWritebackQueues.delete(agent.id);
+        }
       });
+    memoryWritebackQueues.set(agent.id, queued);
+    return queued;
   }
   
   function addSystemReply(parentMessageId, body, extra = {}) {

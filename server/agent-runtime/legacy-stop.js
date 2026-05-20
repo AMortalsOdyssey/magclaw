@@ -131,13 +131,20 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
         agentId: agent.id,
         workItemId: sourceMessage?.workItemId || null,
       });
-    } else if (responseText && !turnMetaHasExplicitSend(fallbackGuard)) {
-      await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText, proc.parentMessageId, { sourceMessage });
-    } else if (responseText) {
+    } else if (responseText && turnMetaHasExplicitSend(fallbackGuard)) {
       addSystemEvent('agent_stdout_suppressed', `${agent.name} used send_message; final stdout fallback was suppressed.`, {
         agentId: agent.id,
         workItemId: sourceMessage?.workItemId || null,
       });
+    } else if (responseText && sourceMessage?.passiveAwareness) {
+      markPassiveAwarenessWorkItemsObserved(sourceMessage, [sourceMessage?.workItemId].filter(Boolean));
+      addSystemEvent('agent_passive_awareness_stdout_suppressed', `${agent.name} read passive channel awareness without posting fallback output.`, {
+        agentId: agent.id,
+        workItemId: sourceMessage?.workItemId || null,
+        messageId: sourceMessage?.id || null,
+      });
+    } else if (responseText) {
+      await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText, proc.parentMessageId, { sourceMessage });
     }
 
     addSystemEvent(proc.stopRequested ? 'agent_stopped' : 'agent_completed', `${agent.name} ${proc.stopRequested ? 'stopped' : 'finished'} (code ${code})`, { agentId: agent.id });

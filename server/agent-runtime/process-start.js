@@ -127,15 +127,22 @@ async function startClaudeAgent(agent, proc, workspace) {
 	        agentId: agent.id,
 	        workItemId: sourceMessage?.workItemId || null,
 	      });
-	    } else if (responseText && responseText !== '(No response)' && !turnMetaHasExplicitSend(fallbackGuard)) {
+	    } else if (responseText && responseText !== '(No response)' && turnMetaHasExplicitSend(fallbackGuard)) {
+	      addSystemEvent('agent_stdout_suppressed', `${agent.name} used send_message; final stdout fallback was suppressed.`, {
+	        agentId: agent.id,
+	        workItemId: sourceMessage?.workItemId || null,
+	      });
+	    } else if (responseText && responseText !== '(No response)' && sourceMessage?.passiveAwareness) {
+	      markPassiveAwarenessWorkItemsObserved(sourceMessage, [sourceMessage?.workItemId].filter(Boolean));
+	      addSystemEvent('agent_passive_awareness_stdout_suppressed', `${agent.name} read passive channel awareness without posting fallback output.`, {
+	        agentId: agent.id,
+	        workItemId: sourceMessage?.workItemId || null,
+	        messageId: sourceMessage?.id || null,
+	      });
+	    } else if (responseText && responseText !== '(No response)') {
 	      const posted = await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText, proc.parentMessageId, { sourceMessage });
 	      markFallbackResponseWorkItem(sourceMessage, posted);
-	    } else if (responseText && responseText !== '(No response)') {
-      addSystemEvent('agent_stdout_suppressed', `${agent.name} used send_message; final stdout fallback was suppressed.`, {
-        agentId: agent.id,
-        workItemId: sourceMessage?.workItemId || null,
-      });
-    }
+	    }
 
     addSystemEvent(proc.stopRequested ? 'agent_stopped' : 'agent_completed', `${agent.name} ${proc.stopRequested ? 'stopped' : 'finished'} (code ${code})`, { agentId: agent.id });
     await persistState();
@@ -346,10 +353,17 @@ async function startCodexAgent(agent, proc, workspace) {
           agentId: agent.id,
           workItemId: sourceMessage?.workItemId || null,
         });
-		      } else {
-		        const posted = await postAgentResponse(agent, proc.spaceType, proc.spaceId, proc.responseBuffer.trim(), deliveryParentMessageId(sourceMessage, proc.parentMessageId), { sourceMessage });
-		        markFallbackResponseWorkItem(sourceMessage, posted);
-		      }
+      } else if (sourceMessage?.passiveAwareness) {
+        markPassiveAwarenessWorkItemsObserved(sourceMessage, [sourceMessage?.workItemId].filter(Boolean));
+        addSystemEvent('agent_passive_awareness_stdout_suppressed', `${agent.name} read passive channel awareness without posting fallback output.`, {
+          agentId: agent.id,
+          workItemId: sourceMessage?.workItemId || null,
+          messageId: sourceMessage?.id || null,
+        });
+      } else {
+        const posted = await postAgentResponse(agent, proc.spaceType, proc.spaceId, proc.responseBuffer.trim(), deliveryParentMessageId(sourceMessage, proc.parentMessageId), { sourceMessage });
+        markFallbackResponseWorkItem(sourceMessage, posted);
+      }
       proc.responseBuffer = '';
     } else if (proc.suppressOutput && proc.responseBuffer.trim()) {
       proc.responseBuffer = '';

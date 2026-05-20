@@ -4,6 +4,7 @@ import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import { selectAgentAwarenessTargets } from './agent-awareness.js';
 import { buildAgentContextPack, renderAgentContextPack } from './agent-context.js';
 import { codexThreadConfig, parseCodexStreamRetry } from './codex-runtime.js';
 import { normalizeIds } from './mentions.js';
@@ -52,6 +53,7 @@ export function createAgentRuntimeManager(deps) {
     path,
     buildAgentContextPack,
     renderAgentContextPack,
+    selectAgentAwarenessTargets,
     codexThreadConfig,
     parseCodexStreamRetry,
     normalizeIds,

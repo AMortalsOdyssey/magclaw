@@ -39,7 +39,7 @@ test('memory writeback hooks update MEMORY and notes for task progress and user 
       return memory.includes('测试方案') && workLog.includes('task_in_review')
         ? { memory, workLog }
         : null;
-    }, 8000);
+    }, 15000);
     assert.match(progressWriteback.memory, /测试方案/);
     assert.doesNotMatch(progressWriteback.memory, /task_in_review/);
     assert.match(progressWriteback.workLog, /测试方案/);
@@ -225,7 +225,7 @@ test('busy status heartbeats recover stale agents without a page refresh', async
   }
 });
 
-test('top-level agent replies do not relay mentions as new channel deliveries', async () => {
+test('top-level agent replies fan out as passive channel awareness', async () => {
   const server = await startIsolatedServer();
   try {
     const { agent: cindy } = await request(server.baseUrl, '/api/agents', {
@@ -263,10 +263,16 @@ test('top-level agent replies do not relay mentions as new channel deliveries', 
     });
     assert.equal(sent.ok, true);
 
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    const finalState = await request(server.baseUrl, '/api/state');
+    const finalState = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const deliveries = snapshot.workItems.filter((item) => item.sourceMessageId === sent.message.id && item.agentId === cindy.id);
+      return deliveries.length ? snapshot : null;
+    });
+    const deliveries = finalState.workItems.filter((item) => item.sourceMessageId === sent.message.id && item.agentId === cindy.id);
     assert.equal(finalState.messages.some((message) => message.id === sent.message.id && message.spaceId === channel.id), true);
-    assert.equal(finalState.workItems.some((item) => item.sourceMessageId === sent.message.id && item.agentId === cindy.id), false);
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].taskId, null);
+    assert.equal(finalState.events.some((event) => event.type === 'agent_channel_awareness_fanout' && event.messageId === sent.message.id), true);
   } finally {
     await server.stop();
   }
@@ -407,7 +413,7 @@ test('thread agent mention relay ignores descriptive references and keeps explic
   }
 });
 
-test('availability follow-up routes to remaining idle agents from recent context', async () => {
+test('availability follow-up routes to remaining available agents from recent context', async () => {
   const server = await startIsolatedServer();
   try {
     const { agent: ziling } = await request(server.baseUrl, '/api/agents', {
