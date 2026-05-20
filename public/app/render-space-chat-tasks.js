@@ -1122,6 +1122,9 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
   const headerHeight = 56;
   const avatarSize = 40;
   const contentWidth = width - padding * 2 - avatarSize - 16;
+  const SHARE_LINE_HEIGHT = 20;
+  const SHARE_DETAIL_ROW_HEIGHT = 22;
+  const SHARE_REACTION_TOP_GAP = 12;
   const ctx = canvas.getContext('2d');
   const serverProfile = shareServerProfile();
   const publicDomain = sharePublicDomain();
@@ -1150,7 +1153,13 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
       sourceLabel: recordSpaceName(record),
       isThreadRoot: Boolean(threadRootId && record.id === threadRootId),
       isThreadReply,
-      height: (taskLabel ? 70 : 50) + lines.length * 20 + (attachments ? 22 : 0) + (reactionRows.length ? 8 + reactionRows.length * 22 : 0) + 14,
+      height: (taskLabel ? 70 : 50)
+        + lines.length * SHARE_LINE_HEIGHT
+        + (attachments ? SHARE_DETAIL_ROW_HEIGHT : 0)
+        + (reactionRows.length
+          ? (attachments ? 4 : -12) + reactionRows.length * SHARE_DETAIL_ROW_HEIGHT
+          : 0)
+        + 14,
     };
   }));
   const logoImage = await logoImagePromise;
@@ -1230,10 +1239,11 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
     ctx.font = '15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
     const bodyY = row.taskLabel ? y + 58 : y + 38;
     lines.forEach((line, index) => {
-      drawShareInlineText(ctx, line, contentX, bodyY + index * 20, rowContentWidth);
+      drawShareInlineText(ctx, line, contentX, bodyY + index * SHARE_LINE_HEIGHT, rowContentWidth);
     });
-    let detailY = bodyY + 4 + lines.length * 20;
-    if ((record.attachmentIds || []).length) {
+    const hasAttachments = (record.attachmentIds || []).length > 0;
+    let detailY = bodyY + 4 + lines.length * SHARE_LINE_HEIGHT;
+    if (hasAttachments) {
       ctx.fillStyle = '#e7fbff';
       ctx.fillRect(contentX, detailY, 132, 18);
       ctx.strokeStyle = '#111111';
@@ -1241,10 +1251,12 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
       ctx.fillStyle = '#111111';
       ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.fillText(`${record.attachmentIds.length} attachment(s)`, contentX + 6, detailY + 13);
-      detailY += 22;
+      detailY += SHARE_DETAIL_ROW_HEIGHT;
     }
     if (row.reactionRows.length) {
-      detailY += 8;
+      detailY = hasAttachments
+        ? detailY + 4
+        : bodyY + Math.max(0, lines.length - 1) * SHARE_LINE_HEIGHT + SHARE_REACTION_TOP_GAP;
       ctx.font = '700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
       for (const reactionRow of row.reactionRows) {
         let chipX = contentX;
@@ -1257,7 +1269,7 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
           ctx.fillText(chip.label, chipX + 8, detailY + 13);
           chipX += chip.width + 6;
         }
-        detailY += 22;
+        detailY += SHARE_DETAIL_ROW_HEIGHT;
       }
     }
     y += row.height;

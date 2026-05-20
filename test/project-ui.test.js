@@ -1778,6 +1778,9 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(shareImageSource, /isThreadReply/);
   assert.match(shareImageSource, /drawShareInlineText\(ctx, line, contentX/);
   assert.match(shareImageSource, /drawShareAvatar\(ctx, profile, row\.avatarImage/);
+  assert.match(shareImageSource, /const SHARE_REACTION_TOP_GAP = 12/);
+  assert.match(shareImageSource, /Math\.max\(0, lines\.length - 1\) \* SHARE_LINE_HEIGHT \+ SHARE_REACTION_TOP_GAP/);
+  assert.doesNotMatch(shareImageSource, /detailY \+= 8/);
   assert.match(shareImageSource, /MagClaw/);
   assert.match(app, /function shareServerProfile\(\)/);
   assert.match(app, /function sharePublicDomain\(\)/);
