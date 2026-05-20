@@ -235,6 +235,67 @@ test('daemon relay dispatches and records daemon release notice acknowledgements
   assert.equal(cloud.daemonEvents.some((event) => event.type === 'daemon_release_notice_acked'), true);
 });
 
+test('daemon relay forwards delivery idempotency fields with agent messages', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_existing';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+  });
+  state.agents.push({
+    id: 'agt_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    name: 'Remote Agent',
+    runtime: 'codex',
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    createdAt: '2026-05-13T00:00:00.000Z',
+  });
+  let received = null;
+  relay.setHandlers({
+    onAgentMessage: async (message) => {
+      received = message;
+    },
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  socket.emit('data', encodeFrame({
+    type: 'agent:message',
+    agentId: 'agt_remote',
+    deliveryId: 'adl_reply_1',
+    payload: {
+      body: 'same reply',
+      spaceType: 'channel',
+      spaceId: 'chan_test',
+      parentMessageId: 'msg_parent',
+      sourceMessage: { id: 'msg_parent', spaceType: 'channel', spaceId: 'chan_test' },
+      idempotencyKey: 'agent:deliver:cmp_remote:agt_remote:msg_parent:wi_1',
+    },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(received?.deliveryId, 'adl_reply_1');
+  assert.equal(received?.idempotencyKey, 'agent:deliver:cmp_remote:agt_remote:msg_parent:wi_1');
+  assert.equal(cloud.agentDeliveries.find((item) => item.id === 'adl_reply_1')?.status, undefined);
+});
+
 test('daemon relay status omits events for deleted computers', () => {
   const { cloud, relay, state } = createRelay();
   state.computers.push({

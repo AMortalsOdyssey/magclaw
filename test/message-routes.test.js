@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleMessageApi } from '../server/api/message-routes.js';
+import {
+  agentMemoryWriteIntent,
+  inferAgentMemoryWriteback,
+  userPreferenceIntent,
+} from '../server/intents.js';
 
 function makeResponse() {
   return {
@@ -517,4 +522,44 @@ test('message route group waits for explicit memory writebacks before responding
   assert.equal(handled, true);
   assert.equal(res.statusCode, 201);
   assert.equal(responseSawMemoryFinished, true);
+});
+
+test('message route group records mentioned agent specialty assignments in memory', async () => {
+  const yuanYao = { id: 'agt_yuanyao', name: '元瑶', status: 'idle' };
+  let writeback = null;
+  const deps = routeDeps({
+    agentMemoryWriteIntent,
+    channelAgentIds: () => [yuanYao.id],
+    extractMentions: () => ({ agents: [yuanYao.id], humans: [] }),
+    findAgent: (id) => (id === yuanYao.id ? yuanYao : null),
+    findChannel: (id) => deps.state.channels.find((channel) => channel.id === id),
+    inferAgentMemoryWriteback,
+    readJson: async () => ({ body: '@元瑶 以后专攻群里的情绪价值的提供' }),
+    routeMessageForChannel: async () => ({ targetAgentIds: [] }),
+    scheduleAgentMemoryWriteback: async (agent, trigger, payload) => {
+      writeback = { agent, trigger, payload };
+      return true;
+    },
+    userPreferenceIntent,
+  });
+  deps.state.channels = [{ id: 'chan_all', memberIds: ['hum_local', yuanYao.id], humanIds: ['hum_local'], agentIds: [yuanYao.id] }];
+  deps.state.messages = [];
+
+  const res = makeResponse();
+  const handled = await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/spaces/channel/chan_all/messages'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(writeback.agent.id, yuanYao.id);
+  assert.equal(writeback.trigger, 'explicit_user_memory');
+  assert.deepEqual(writeback.payload.memory, {
+    kind: 'capability',
+    summary: '专攻群里的情绪价值的提供',
+    sourceText: '@元瑶 以后专攻群里的情绪价值的提供',
+  });
 });

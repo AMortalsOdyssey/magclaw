@@ -1262,6 +1262,8 @@ export function createDaemonRelay(deps) {
         parentMessageId: payload.parentMessageId || payload.message?.parentMessageId || null,
         sourceMessage: payload.sourceMessage || payload.message || null,
         attachments: safeArray(payload.attachmentIds),
+        deliveryId: message.deliveryId || payload.deliveryId || null,
+        idempotencyKey: payload.idempotencyKey || message.idempotencyKey || message.deliveryId || payload.deliveryId || null,
       });
     } else {
       state.messages.push(normalizeConversationRecord({

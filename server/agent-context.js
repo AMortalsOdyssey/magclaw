@@ -546,7 +546,7 @@ function renderPeerMemorySearch(search) {
     search.query ? `- Query: ${search.query}` : '',
   ].filter(Boolean);
   if (!search.results?.length) {
-    lines.push('- Results: no matches. If the question asks who is best suited, call search_agent_memory with narrower keywords before answering.');
+    lines.push('- Results: no matches. If the question asks what another agent specializes in or who is best suited, call search_message_history/read_history for prior role assignments and search_agent_memory with narrower keywords before answering.');
     return lines.join('\n');
   }
   lines.push('- Results:');
@@ -555,7 +555,7 @@ function renderPeerMemorySearch(search) {
     const matched = item.matchedTerms?.length ? `; matched=${item.matchedTerms.join(', ')}` : '';
     lines.push(`  - @${item.agentName} (${item.agentId}) ${location}${matched}: ${item.preview || ''}`);
   }
-  lines.push('- Use these matches as grounding when recommending which agent is best suited. If they are insufficient or contradictory, call search_agent_memory/read_agent_memory before answering.');
+  lines.push('- Use these matches as grounding when recommending which agent is best suited. If they are insufficient or contradictory, call search_agent_memory/read_agent_memory and search_message_history/read_history before answering.');
   return lines.join('\n');
 }
 
@@ -596,7 +596,7 @@ function renderHistoryToolHints(pack) {
   }
   hints.push(
     pack.peerMemorySearch?.required
-      ? '- For agent capability or suitability questions, use the peer memory search results above first. If they are missing or weak, call search_agent_memory/read_agent_memory before giving a recommendation.'
+      ? '- For agent capability or suitability questions, use the peer memory search results above first. If they are missing or weak, call search_agent_memory/read_agent_memory and search_message_history/read_history before giving a recommendation.'
       : '- Use history/search only when the visible snapshot is not enough. Use send_message for explicit routed replies, especially when multiple channels or tasks are active.',
   );
   return hints.join('\n');

@@ -1302,8 +1302,12 @@ const {
 } = reminderScheduler;
 
 daemonRelay.setHandlers({
-  onAgentMessage: async ({ agent, body, spaceType, spaceId, parentMessageId, sourceMessage }) => {
-    const posted = await postAgentResponse(agent, spaceType, spaceId, body, parentMessageId, { sourceMessage });
+  onAgentMessage: async ({ agent, body, spaceType, spaceId, parentMessageId, sourceMessage, deliveryId, idempotencyKey }) => {
+    const posted = await postAgentResponse(agent, spaceType, spaceId, body, parentMessageId, {
+      sourceMessage,
+      deliveryId,
+      idempotencyKey,
+    });
     if (markFallbackResponseWorkItem(sourceMessage, posted)) {
       await persistState();
       broadcastState();

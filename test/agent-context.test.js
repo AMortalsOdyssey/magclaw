@@ -203,6 +203,7 @@ test('agent context pack renders required peer memory search grounding', () => {
   assert.match(rendered, /Required for this turn: yes/);
   assert.match(rendered, /@韩立 \(agt_han\) MEMORY\.md:14; matched=旅游: 解决旅游/);
   assert.match(rendered, /For agent capability or suitability questions, use the peer memory search results above first/);
+  assert.match(rendered, /search_message_history\/read_history/);
 });
 
 test('workspace all context expands cloud workspace humans and agents', () => {

@@ -749,13 +749,13 @@ function renderContextPeerMemory(pack) {
   ].filter(Boolean);
   const results = contextArray(search.results);
   if (!results.length) {
-    lines.push('- Results: no matches.');
+    lines.push('- Results: no matches. If this asks what another agent specializes in, call search_messages/read_history for prior role assignments before answering.');
   } else {
     lines.push('- Results:');
     for (const item of results.slice(0, 3)) {
       lines.push(`  - @${item.agentName || item.agentId}: ${contextSnippet(item.preview, 220)}`);
     }
-    if (results.length > 3) lines.push(`  - ${results.length - 3} more result(s) omitted; call search_agent_memory/read_agent_memory if needed.`);
+    if (results.length > 3) lines.push(`  - ${results.length - 3} more result(s) omitted; call search_agent_memory/read_agent_memory and search_messages/read_history if needed.`);
   }
   return lines.join('\n');
 }
@@ -858,6 +858,7 @@ function renderRemoteAgentContextPack(pack, targetAgentId = '') {
     '',
     'Progressive context tools: list_agents, read_agent_profile, read_history, search_messages, search_agent_memory, read_agent_memory, and list_tasks are available through MagClaw MCP.',
     'For "who can we bring in" or agent suitability questions, use the server member list above first; call list_agents without a target for the server-wide agent roster, because target filters to the current channel.',
+    'For agent capability or specialty questions, use peer memory first; if memory is empty or weak, search_messages/read_history for earlier user role assignments before saying the fact is unknown.',
     'Use this compact snapshot first. Call the tools only when the answer depends on omitted participants, deeper history, memory, or task details.',
   );
   return lines.filter(Boolean).join('\n');
