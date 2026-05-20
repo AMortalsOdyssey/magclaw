@@ -116,26 +116,6 @@ test('message route group pages thread replies', async () => {
   assert.equal(res.data.pagination.nextBeforeId, 'rep_2');
 });
 
-test('message route group can page thread replies from the beginning', async () => {
-  const deps = routeDeps();
-  deps.state.replies.push(
-    { id: 'rep_3', parentMessageId: 'msg_3', body: 'third', createdAt: '2026-05-03T03:00:00.000Z' },
-    { id: 'rep_4', parentMessageId: 'msg_3', body: 'fourth', createdAt: '2026-05-03T04:00:00.000Z' },
-  );
-  const res = makeResponse();
-  const handled = await handleMessageApi(
-    { method: 'GET' },
-    res,
-    new URL('http://local/api/messages/msg_3/replies?limit=2&order=oldest'),
-    deps,
-  );
-
-  assert.equal(handled, true);
-  assert.equal(res.statusCode, 200);
-  assert.deepEqual(res.data.replies.map((reply) => reply.id), ['rep_1', 'rep_2']);
-  assert.equal(res.data.pagination.hasMore, true);
-});
-
 test('message route group uses beforeId to avoid duplicate same-timestamp pages', async () => {
   const deps = routeDeps();
   deps.state.messages.push({

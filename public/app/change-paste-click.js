@@ -301,7 +301,6 @@ document.addEventListener('click', async (event) => {
         render();
         return;
       }
-      await loadShareSelectAllThreadWindow();
       const targetIds = shareSelectAllTargetIds();
       if (shareSelectableRecords().length > SHARE_MESSAGE_SELECTION_LIMIT) toast(shareSelectionLimitMessage());
       messageShareState = normalizedMessageShareState({

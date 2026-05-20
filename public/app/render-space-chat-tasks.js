@@ -671,24 +671,6 @@ function shareAllSelectableMessagesSelected() {
   return targetIds.every((id) => selected.has(id));
 }
 
-async function loadShareSelectAllThreadWindow() {
-  if (messageShareState.scope !== 'thread' || !messageShareState.threadRootId) return false;
-  const threadRootId = String(messageShareState.threadRootId || '');
-  try {
-    const result = await api(`/api/messages/${encodeURIComponent(threadRootId)}/replies?limit=${SHARE_MESSAGE_SELECTION_LIMIT - 1}&order=oldest`);
-    const replies = Array.isArray(result?.replies) ? result.replies : [];
-    if (!replies.length || typeof mergeThreadReplyPageIntoState !== 'function') return false;
-    const nextState = mergeThreadReplyPageIntoState(appState, threadRootId, replies);
-    if (nextState && nextState !== appState) {
-      appState = nextState;
-      return true;
-    }
-  } catch (error) {
-    console.warn('Failed to load share select-all thread window:', error);
-  }
-  return false;
-}
-
 function shareSelectionRecords() {
   const selected = new Set(shareSelectedIds());
   const source = messageShareState.scope === 'thread' ? shareSelectableRecords() : [...(appState?.messages || []), ...(appState?.replies || [])];

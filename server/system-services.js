@@ -173,6 +173,7 @@ export function createSystemServices(deps) {
     const spaceId = String(effectiveOptions.spaceId || fallbackSpaceId || 'chan_all');
     const threadMessageId = String(effectiveOptions.threadMessageId || '');
     const messageLimit = clampLimit(effectiveOptions.messageLimit, 80, 200);
+    const threadReplyLimit = clampLimit(effectiveOptions.replyLimit || effectiveOptions.messageLimit, 80, 300);
     const threadRootLimit = clampLimit(effectiveOptions.threadRootLimit, 120, 300);
     const eventLimit = clampLimit(effectiveOptions.eventLimit, 120, 300);
 
@@ -201,11 +202,26 @@ export function createSystemServices(deps) {
     }
 
     const latestReplyByParent = new Map();
-    const selectedThreadReplies = [];
+    const allSelectedThreadReplies = [];
     for (const reply of records(snapshot.replies).slice().sort((a, b) => recordTime(a) - recordTime(b))) {
       if (messageById.has(reply.parentMessageId)) latestReplyByParent.set(reply.parentMessageId, reply);
-      if (threadMessageId && String(reply.parentMessageId || '') === threadMessageId) selectedThreadReplies.push(reply);
+      if (threadMessageId && String(reply.parentMessageId || '') === threadMessageId) allSelectedThreadReplies.push(reply);
     }
+    const selectedThreadReplies = allSelectedThreadReplies
+      .slice()
+      .sort((a, b) => recordTime(b) - recordTime(a))
+      .slice(0, threadReplyLimit)
+      .sort((a, b) => recordTime(a) - recordTime(b));
+    const selectedThreadReplyCursor = selectedThreadReplies[0] || null;
+    const threadRepliesPagination = effectiveOptions.hydration?.replies?.pagination
+      || (threadMessageId
+        ? {
+            limit: threadReplyLimit,
+            hasMore: allSelectedThreadReplies.length > selectedThreadReplies.length,
+            nextBefore: selectedThreadReplyCursor?.createdAt || '',
+            nextBeforeId: selectedThreadReplyCursor?.id || '',
+          }
+        : null);
     const replyById = new Map();
     for (const reply of [...latestReplyByParent.values(), ...selectedThreadReplies]) replyById.set(reply.id, reply);
 
@@ -250,7 +266,7 @@ export function createSystemServices(deps) {
             .filter((message) => message.spaceType === spaceType && String(message.spaceId) === spaceId).length > selectedMessages.length,
         nextBefore: hydratedMessagePagination?.nextBefore || selectedMessageCursor?.createdAt || '',
         nextBeforeId: hydratedMessagePagination?.nextBeforeId || selectedMessageCursor?.id || '',
-        threadReplies: effectiveOptions.hydration?.replies?.pagination || null,
+        threadReplies: threadRepliesPagination,
       },
       messages: [...messageById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
       replies: [...replyById.values()].sort((a, b) => recordTime(a) - recordTime(b)),

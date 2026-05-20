@@ -1760,7 +1760,6 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /function shareSelectableRecords\(\)/);
   assert.match(app, /function shareSelectAllTargetIds\(\)/);
   assert.match(app, /function shareAllSelectableMessagesSelected\(\)/);
-  assert.match(app, /async function loadShareSelectAllThreadWindow\(\)/);
   assert.match(app, /function shareBodyToggleAttrs\(record\)/);
   assert.match(app, /function isThreadShareRoot\(messageId\)/);
   assert.match(app, /function messageRecordLink\(record\)/);
@@ -1814,8 +1813,7 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /shareSelectableRecords\(\)\.slice\(0, SHARE_MESSAGE_SELECTION_LIMIT\)/);
   assert.match(app, /const allSelectableSelected = shareAllSelectableMessagesSelected\(\)/);
   assert.match(app, /allSelectableSelected \? 'Deselect all' : 'Select all'/);
-  assert.match(app, /order=oldest/);
-  assert.match(app, /await loadShareSelectAllThreadWindow\(\)/);
+  assert.doesNotMatch(app, /loadShareSelectAllThreadWindow|order=oldest/);
   assert.match(app, /if \(shareAllSelectableMessagesSelected\(\)\) \{[\s\S]*messageShareState = emptyMessageShareState\(\);[\s\S]*sharePreviewState = \{ open: false, imageUrl: '', recordIds: \[\] \};/);
   assert.match(app, /escapeHtml\(t\('Share preview'\)\)/);
   assert.match(app, /escapeHtml\(t\('Rendering\.\.\.'\)\)/);

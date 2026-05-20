@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createSystemServices } from '../server/system-services.js';
 
-function makeServices() {
+function makeServices(configureState = null) {
   const createdAt = '2026-05-18T00:00:00.000Z';
   const state = {
     connection: { workspaceId: 'local' },
@@ -29,6 +29,7 @@ function makeServices() {
     systemNotifications: [],
     attachments: [],
   };
+  if (typeof configureState === 'function') configureState(state);
   return createSystemServices({
     addSystemEvent: () => {},
     broadcastState: () => {},
@@ -69,6 +70,40 @@ test('bootstrap state reads active DM options from event stream requests', () =>
   assert.equal(snapshot.bootstrap.messageLimit, 20);
   assert.equal(snapshot.bootstrap.threadRootLimit, 40);
   assert.deepEqual(snapshot.messages.map((message) => message.body), ['dm hello']);
+});
+
+test('bootstrap state limits selected thread replies to the loaded page', () => {
+  const services = makeServices((state) => {
+    state.messages[0].replyCount = 101;
+    state.replies = Array.from({ length: 101 }, (_, index) => {
+      const position = index + 1;
+      const replyTime = new Date(Date.parse(state.messages[0].createdAt) + position * 60_000).toISOString();
+      return {
+        id: `rep_${String(position).padStart(3, '0')}`,
+        workspaceId: 'local',
+        parentMessageId: 'msg_channel',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        body: `reply ${position}`,
+        createdAt: replyTime,
+        updatedAt: replyTime,
+      };
+    });
+  });
+  const req = {
+    url: '/api/events?spaceType=channel&spaceId=chan_all&threadMessageId=msg_channel&messageLimit=80',
+    headers: {},
+  };
+
+  const snapshot = services.publicBootstrapState(req);
+  const replies = snapshot.replies.filter((reply) => reply.parentMessageId === 'msg_channel');
+
+  assert.equal(replies.length, 80);
+  assert.equal(replies[0].id, 'rep_022');
+  assert.equal(replies.at(-1).id, 'rep_101');
+  assert.equal(snapshot.bootstrap.threadReplies.hasMore, true);
+  assert.equal(snapshot.bootstrap.threadReplies.nextBeforeId, 'rep_022');
+  assert.equal(snapshot.replies.some((reply) => reply.id === 'rep_001'), false);
 });
 
 test('bootstrap state includes terminal task updates for the current member channels', () => {
