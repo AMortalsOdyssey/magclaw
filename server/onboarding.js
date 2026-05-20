@@ -19,6 +19,23 @@ function languageLabel(language) {
   return language === 'zh-CN' ? 'Chinese (zh-CN)' : 'English (en)';
 }
 
+const RECENT_LANGUAGE_CONTEXT_LIMIT = 40;
+const CHINESE_CHAR_RE = /[\u3400-\u9fff\uf900-\ufaff]/g;
+const LATIN_WORD_RE = /[A-Za-z][A-Za-z'-]*/g;
+
+function countPattern(value, pattern) {
+  return String(value || '').match(pattern)?.length || 0;
+}
+
+function classifyTextLanguage(value) {
+  const text = String(value || '').replace(/<@[^>]+>/g, ' ');
+  const chineseChars = countPattern(text, CHINESE_CHAR_RE);
+  const latinWords = countPattern(text, LATIN_WORD_RE);
+  if (chineseChars >= 2 && chineseChars >= latinWords) return 'zh-CN';
+  if (latinWords >= 3 && chineseChars === 0) return 'en';
+  return '';
+}
+
 function workspaceIdForRecord(record, fallback = 'local') {
   return String(record?.workspaceId || record?.id || fallback || 'local').trim() || 'local';
 }
@@ -93,6 +110,26 @@ export function createOnboardingManager(deps) {
       || normalizeLanguagePreference(workspace?.language)
       || normalizeLanguagePreference(fallback)
       || 'en';
+  }
+
+  function recentAllChannelLanguage(channel, workspaceId) {
+    if (!channel?.id) return '';
+    const counts = { 'zh-CN': 0, en: 0 };
+    const records = safeArray(state().messages)
+      .filter((message) => message.spaceType === 'channel' && message.spaceId === channel.id)
+      .filter((message) => !workspaceId || !message.workspaceId || message.workspaceId === workspaceId)
+      .filter((message) => message.authorType !== 'system')
+      .sort((a, b) => Date.parse(a.createdAt || '') - Date.parse(b.createdAt || ''))
+      .slice(-RECENT_LANGUAGE_CONTEXT_LIMIT);
+    for (const record of records) {
+      const language = classifyTextLanguage(record.body);
+      if (language) counts[language] += 1;
+    }
+    const classified = counts['zh-CN'] + counts.en;
+    if (classified < 2) return '';
+    if (counts['zh-CN'] >= 2 && counts['zh-CN'] >= counts.en) return 'zh-CN';
+    if (counts.en >= 2 && counts.en > counts['zh-CN']) return 'en';
+    return '';
   }
 
   function enqueueOnboardingDelivery({ agent, channel, message, reason }) {
@@ -177,12 +214,16 @@ export function createOnboardingManager(deps) {
     const agentMention = `<@${agent.id}>`;
     const description = compactText(agent.description || 'No description provided yet.');
     const runtime = compactText(agent.runtime || agent.runtimeId || 'Agent');
-    const language = preferredLanguage({ user, workspace: settings, fallback: 'en' });
+    const channelLanguage = recentAllChannelLanguage(channel, cleanWorkspaceId);
+    const language = channelLanguage || preferredLanguage({ user, workspace: settings, fallback: 'en' });
+    const languageInstruction = channelLanguage
+      ? `Recent #all language context: ${languageLabel(language)}. Use this language directly for the greeting. Do not include a language-preference question.`
+      : `Creator language preference: ${languageLabel(language)}. Use this language directly for the greeting. Do not include a language-preference question.`;
     const body = [
       `Onboarding task (system-triggered): This is a new Agent greeting. ${agentMention} was just created in this server.`,
       'Please post a short self-introduction in #all using your own words.',
       'Generate the visible greeting yourself from your configured name, description, runtime, MEMORY.md/notes, and current work focus if helpful. Keep it brief and useful for humans deciding how to collaborate with you.',
-      `Creator language preference: ${languageLabel(language)}. Use this language directly for the greeting. Do not include a language-preference question.`,
+      languageInstruction,
       'Do NOT ask anyone to configure the server.',
       `Agent description: ${description}`,
       `Runtime: ${runtime}`,

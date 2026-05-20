@@ -381,7 +381,23 @@ test('new agent greeting asks the created agent to introduce itself in #all', as
     await request(server.baseUrl, '/api/cloud/auth/preferences', {
       method: 'PATCH',
       cookie,
-      body: JSON.stringify({ language: 'zh-CN' }),
+      body: JSON.stringify({ language: 'en' }),
+    });
+    const initialState = await request(server.baseUrl, '/api/state', { cookie });
+    const initialAllChannel = initialState.data.channels.find((channel) => (
+      channel.workspaceId === owner.server.id
+      && (channel.defaultChannel || channel.name === 'all')
+    ));
+    assert.ok(initialAllChannel);
+    await request(server.baseUrl, `/api/spaces/channel/${initialAllChannel.id}/messages`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ body: '大家好，我们今天先看一下部署状态。' }),
+    });
+    await request(server.baseUrl, `/api/spaces/channel/${initialAllChannel.id}/messages`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ body: '这个 Agent 后面主要负责代码调查和修复。' }),
     });
     const greeter = await request(server.baseUrl, '/api/agents', {
       method: 'POST',
@@ -411,7 +427,8 @@ test('new agent greeting asks the created agent to introduce itself in #all', as
     assert.equal(greeted.message.spaceId, allChannel.id);
     assert.match(greeted.message.body, /new Agent greeting/i);
     assert.match(greeted.message.body, /Helps coordinate deployments and release checks/);
-    assert.match(greeted.message.body, /Creator language preference: Chinese \(zh-CN\)/);
+    assert.match(greeted.message.body, /Recent #all language context: Chinese \(zh-CN\)/);
+    assert.doesNotMatch(greeted.message.body, /Creator language preference: English \(en\)/);
     assert.doesNotMatch(greeted.message.body, /ask what language|what language to use|你希望用英语还是中文/);
     assert.match(greeted.message.body, /MEMORY\.md\/notes/);
     assert.equal(greeted.workItem.spaceId, allChannel.id);
