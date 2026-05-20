@@ -269,22 +269,37 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'start-message-share') {
       const id = target.dataset.id || '';
-      messageShareState = { active: Boolean(id), selectedIds: id ? [id] : [] };
+      const record = conversationRecord(id);
+      messageShareState = messageShareStateForRecord(record);
       messageContextMenu = null;
       render();
       return;
     }
     if (action === 'toggle-share-selection') {
       const id = target.dataset.id || '';
+      const record = conversationRecord(id);
+      if (!recordMatchesShareScope(record)) return;
       const selected = new Set(shareSelectedIds());
       if (selected.has(id)) selected.delete(id);
       else if (id) selected.add(id);
-      messageShareState = { active: selected.size > 0, selectedIds: [...selected] };
+      messageShareState = selected.size
+        ? normalizedMessageShareState({ ...messageShareState, active: true, selectedIds: [...selected] })
+        : emptyMessageShareState();
+      render();
+      return;
+    }
+    if (action === 'toggle-share-select-all') {
+      const records = shareSelectableRecords();
+      messageShareState = normalizedMessageShareState({
+        ...messageShareState,
+        active: records.length > 0,
+        selectedIds: records.map((record) => record.id),
+      });
       render();
       return;
     }
     if (action === 'cancel-message-share') {
-      messageShareState = { active: false, selectedIds: [] };
+      messageShareState = emptyMessageShareState();
       sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
       render();
       return;
@@ -312,6 +327,9 @@ document.addEventListener('click', async (event) => {
       const result = await saveShareImage();
       if (result?.ok) {
         toast(result.path ? `Share image saved to ${result.path}` : 'Share image saved');
+        messageShareState = emptyMessageShareState();
+        sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
+        render();
       } else {
         toast(result?.cancelled ? 'Image save cancelled' : 'Image save failed');
       }
@@ -1323,10 +1341,18 @@ document.addEventListener('click', async (event) => {
       const reactionKey = target.dataset.reactionKey || '';
       if (!MAGCLAW_MESSAGE_REACTION_KEYS.has(reactionKey)) throw new Error('Reaction is not supported.');
       messageContextMenu = null;
-      await api(`/api/messages/${encodeURIComponent(target.dataset.id)}/reactions`, {
+      const result = await api(`/api/messages/${encodeURIComponent(target.dataset.id)}/reactions`, {
         method: 'POST',
         body: JSON.stringify({ key: reactionKey }),
       });
+      if (result?.message?.id) {
+        if (result.message.parentMessageId) {
+          appState.replies = upsertConversationRecord(appState.replies, result.message);
+        } else {
+          appState.messages = upsertConversationRecord(appState.messages, result.message);
+        }
+      }
+      render();
     }
     if (action === 'toggle-thread-follow') {
       messageContextMenu = null;

@@ -589,18 +589,87 @@ function renderMessageReactionTray(record) {
 }
 
 function shareSelectedIds() {
-  return Array.isArray(messageShareState.selectedIds) ? messageShareState.selectedIds.map(String) : [];
+  const seen = new Set();
+  return (Array.isArray(messageShareState.selectedIds) ? messageShareState.selectedIds : [])
+    .map(String)
+    .filter((id) => {
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+}
+
+function emptyMessageShareState() {
+  return { active: false, selectedIds: [], scope: 'all', threadRootId: '' };
+}
+
+function normalizedMessageShareState(next = {}) {
+  const selectedIds = Array.isArray(next.selectedIds) ? next.selectedIds.map(String).filter(Boolean) : [];
+  const scope = next.scope === 'thread' && next.threadRootId ? 'thread' : 'all';
+  return {
+    active: Boolean(next.active && selectedIds.length),
+    selectedIds: [...new Set(selectedIds)],
+    scope,
+    threadRootId: scope === 'thread' ? String(next.threadRootId || '') : '',
+  };
+}
+
+function messageShareStateForRecord(record) {
+  if (!record?.id) return emptyMessageShareState();
+  const root = messageThreadRoot(record);
+  const threadRootId = root?.id || '';
+  const isThreadScope = Boolean(
+    threadRootId
+    && (record.parentMessageId || threadMessageId === threadRootId)
+  );
+  return normalizedMessageShareState({
+    active: true,
+    selectedIds: [record.id],
+    scope: isThreadScope ? 'thread' : 'all',
+    threadRootId: isThreadScope ? threadRootId : '',
+  });
+}
+
+function recordMatchesShareScope(record) {
+  if (!record?.id) return false;
+  if (messageShareState.scope !== 'thread') return true;
+  const threadRootId = String(messageShareState.threadRootId || '');
+  return Boolean(threadRootId && (String(record.id) === threadRootId || String(record.parentMessageId || '') === threadRootId));
+}
+
+function shareSelectableRecords() {
+  if (messageShareState.scope === 'thread') {
+    const threadRootId = String(messageShareState.threadRootId || '');
+    const root = byId(appState?.messages, threadRootId);
+    if (!root) return [];
+    return [root, ...threadReplies(threadRootId)].filter((record) => recordMatchesShareScope(record));
+  }
+  return [...(appState?.messages || []), ...(appState?.replies || [])];
 }
 
 function shareSelectionRecords() {
   const selected = new Set(shareSelectedIds());
-  return [...(appState?.messages || []), ...(appState?.replies || [])]
-    .filter((record) => selected.has(String(record?.id || '')))
-    .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+  const source = messageShareState.scope === 'thread' ? shareSelectableRecords() : [...(appState?.messages || []), ...(appState?.replies || [])];
+  const records = source.filter((record) => selected.has(String(record?.id || '')));
+  if (messageShareState.scope === 'thread') return records;
+  return records.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+}
+
+function shareBodyToggleAttrs(record) {
+  if (!messageShareState.active || !recordMatchesShareScope(record)) return '';
+  return ` data-action="toggle-share-selection" data-id="${escapeHtml(record.id)}" data-share-body-toggle="1"`;
+}
+
+function isThreadShareRoot(messageId) {
+  return Boolean(
+    messageShareState.active
+    && messageShareState.scope === 'thread'
+    && String(messageShareState.threadRootId || '') === String(messageId || '')
+  );
 }
 
 function renderShareSelector(record) {
-  if (!messageShareState.active) return '';
+  if (!messageShareState.active || !recordMatchesShareScope(record)) return '';
   const selected = shareSelectedIds().includes(String(record.id));
   return `
     <button class="message-share-selector${selected ? ' selected' : ''}" type="button"
@@ -729,10 +798,13 @@ function renderMessageContextMenu() {
 function renderShareSelectionBar() {
   if (!messageShareState.active) return '';
   const count = shareSelectedIds().length;
+  const threadMode = messageShareState.scope === 'thread';
+  const selectableCount = threadMode ? shareSelectableRecords().length : 0;
   return `
     <div class="share-selection-bar" role="status" aria-live="polite">
       <strong>${count} selected</strong>
       <div class="share-selection-actions">
+        ${threadMode ? `<button type="button" data-action="toggle-share-select-all" ${selectableCount ? '' : 'disabled'} aria-label="Select all thread messages">Select all</button>` : ''}
         <button type="button" data-action="cancel-message-share" aria-label="Cancel">Cancel</button>
         <button class="share-image-action" type="button" data-action="download-selected-image" ${count ? '' : 'disabled'} aria-label="Download as image">Download as image</button>
         <button type="button" data-action="copy-selected-markdown" ${count ? '' : 'disabled'} aria-label="Copy as Markdown">Copy as Markdown</button>
@@ -797,6 +869,61 @@ function fitCanvasText(ctx, text, maxWidth) {
     next = next.slice(0, -1);
   }
   return `${next || value.slice(0, 1)}...`;
+}
+
+function shareInlineTokenRuns(text = '') {
+  const value = String(text || '');
+  const pattern = /(https?:\/\/[^\s<>()]+|@[^\s,，.。;；:：!?！？()\[\]{}]+|#[^\s,，.。;；:：!?！？()\[\]{}]+)/g;
+  const tokens = [];
+  let lastIndex = 0;
+  for (const match of value.matchAll(pattern)) {
+    if (match.index > lastIndex) tokens.push({ type: 'text', text: value.slice(lastIndex, match.index) });
+    const raw = match[0];
+    const type = raw.startsWith('http') ? 'link' : raw.startsWith('@') ? 'mention' : (/^#\d+$/.test(raw) ? 'task' : 'channel');
+    tokens.push({ type, text: raw });
+    lastIndex = match.index + raw.length;
+  }
+  if (lastIndex < value.length) tokens.push({ type: 'text', text: value.slice(lastIndex) });
+  return tokens.filter((token) => token.text);
+}
+
+function drawShareInlineText(ctx, text, x, y, maxWidth) {
+  const tokens = shareInlineTokenRuns(text);
+  let cursor = x;
+  for (const token of tokens) {
+    const label = token.text;
+    const textWidth = ctx.measureText(label).width;
+    const tokenWidth = token.type === 'text' || token.type === 'link' ? textWidth : textWidth + 8;
+    if (cursor + tokenWidth > x + maxWidth + 4) break;
+    if (token.type === 'text') {
+      ctx.fillStyle = '#111111';
+      ctx.fillText(label, cursor, y);
+      cursor += textWidth;
+      continue;
+    }
+    if (token.type === 'link') {
+      ctx.fillStyle = '#1269B7';
+      ctx.fillText(label, cursor, y);
+      ctx.strokeStyle = '#1269B7';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cursor, y + 2);
+      ctx.lineTo(cursor + textWidth, y + 2);
+      ctx.stroke();
+      cursor += textWidth;
+      continue;
+    }
+    const background = token.type === 'mention' ? '#FFE1F0' : token.type === 'task' ? '#FFE7A8' : '#FFE15A';
+    const textColor = token.type === 'mention' ? '#4A1032' : '#1A1A1A';
+    ctx.fillStyle = background;
+    ctx.fillRect(cursor, y - 14, tokenWidth, 18);
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cursor, y - 14, tokenWidth, 18);
+    ctx.fillStyle = textColor;
+    ctx.fillText(label, cursor + 4, y);
+    cursor += tokenWidth;
+  }
 }
 
 function shareReactionChipRows(ctx, groups = [], maxWidth = 0) {
@@ -965,13 +1092,16 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
   const ctx = canvas.getContext('2d');
   const serverProfile = shareServerProfile();
   const publicDomain = sharePublicDomain();
+  const threadRootId = messageShareState.scope === 'thread' ? String(messageShareState.threadRootId || '') : '';
   const logoImagePromise = loadCanvasImage(BRAND_LOGO_SRC);
   const serverImagePromise = loadCanvasImage(serverProfile.avatar);
   ctx.font = '15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   const rows = await Promise.all(records.map(async (record) => {
     const profile = shareActorProfile(record);
     const text = plainMentionText(record.body || '(attachment)').trim() || '(attachment)';
-    const lines = wrapCanvasText(ctx, text, contentWidth);
+    const isThreadReply = Boolean(threadRootId && record.parentMessageId === threadRootId);
+    const lineWidth = contentWidth - (isThreadReply ? 32 : 0);
+    const lines = wrapCanvasText(ctx, text, lineWidth);
     const attachments = (record.attachmentIds || []).length;
     ctx.font = '700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
     const reactionRows = shareReactionChipRows(ctx, groupedMessageReactions(record), contentWidth);
@@ -985,6 +1115,8 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
       reactionRows,
       taskLabel,
       sourceLabel: recordSpaceName(record),
+      isThreadRoot: Boolean(threadRootId && record.id === threadRootId),
+      isThreadReply,
       height: (taskLabel ? 70 : 50) + lines.length * 20 + (attachments ? 22 : 0) + (reactionRows.length ? 8 + reactionRows.length * 22 : 0) + 14,
     };
   }));
@@ -1039,9 +1171,10 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
   let y = headerHeight + 24;
   for (const row of rows) {
     const { record, lines, profile } = row;
-    const rowX = padding + 4;
+    const rowX = padding + (row.isThreadRoot ? 0 : 4) + (row.isThreadReply ? 32 : 0);
     drawShareAvatar(ctx, profile, row.avatarImage, rowX, y, avatarSize);
     const contentX = rowX + avatarSize + 16;
+    const rowContentWidth = contentWidth - (row.isThreadReply ? 32 : 0);
     ctx.fillStyle = '#111111';
     ctx.font = '900 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
     ctx.fillText(profile.name, contentX, y + 15);
@@ -1064,7 +1197,7 @@ async function generateShareImageDataUrl(records = shareSelectionRecords()) {
     ctx.font = '15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
     const bodyY = row.taskLabel ? y + 58 : y + 38;
     lines.forEach((line, index) => {
-      ctx.fillText(line, contentX, bodyY + index * 20);
+      drawShareInlineText(ctx, line, contentX, bodyY + index * 20, rowContentWidth);
     });
     let detailY = bodyY + 4 + lines.length * 20;
     if ((record.attachmentIds || []).length) {
@@ -1271,7 +1404,8 @@ function renderMessage(message, options = {}) {
   const replyCount = Number(message.replyCount || 0);
   const highlighted = threadMessageId === message.id || selectedSavedRecordId === message.id ? ' highlighted' : '';
   const compact = options.compact ? ' compact' : '';
-  const shareSelecting = messageShareState.active ? ' share-selecting' : '';
+  const shareSelectable = messageShareState.active && recordMatchesShareScope(message);
+  const shareSelecting = shareSelectable ? ' share-selecting' : '';
   const shareSelected = shareSelectedIds().includes(String(message.id)) ? ' share-selected' : '';
   const authorClass = ['agent', 'human', 'system'].includes(message.authorType) ? message.authorType : 'unknown';
   const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
@@ -1283,7 +1417,7 @@ function renderMessage(message, options = {}) {
     <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${shareSelecting}${shareSelected}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
       ${renderShareSelector(message)}
       ${renderActorAvatar(message.authorId, message.authorType)}
-      <div class="message-body">
+      <div class="message-body"${shareBodyToggleAttrs(message)}>
         <div class="message-meta">
           ${renderActorName(message.authorId, message.authorType)}
           <span class="sender-role">${escapeHtml(actorSubtitle(message.authorId, message.authorType, message))}</span>

@@ -137,6 +137,15 @@
   padding-left: 4px;
 }
 
+.message-card.share-selecting .message-body[data-share-body-toggle="1"] {
+  cursor: pointer;
+}
+
+.message-card.share-selecting .message-body[data-share-body-toggle="1"]:hover .message-markdown {
+  background: rgba(22, 140, 255, 0.08);
+  box-shadow: inset 3px 0 0 #168CFF;
+}
+
 .message-share-selector {
   display: inline-grid;
   place-items: center;

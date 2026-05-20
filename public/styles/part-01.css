@@ -1700,6 +1700,14 @@ button:disabled {
   background: var(--accent-soft);
 }
 
+.message-markdown a {
+  color: #1269B7;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
 .message-markdown pre {
   max-width: 100%;
   overflow: auto;

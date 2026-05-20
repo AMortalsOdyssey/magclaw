@@ -163,6 +163,14 @@
   border-bottom: 2px solid var(--border);
 }
 
+.thread-context.share-thread-mode .thread-parent-card .message-card.share-selecting {
+  margin-left: -4px;
+}
+
+.thread-context.share-thread-mode .reply-list {
+  padding-left: 28px;
+}
+
 .thread-reply-divider {
   display: grid;
   place-items: center;

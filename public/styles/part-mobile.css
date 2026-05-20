@@ -761,6 +761,10 @@
     content: "×";
   }
 
+  .share-selection-actions button[data-action="toggle-share-select-all"]::before {
+    content: "✓";
+  }
+
   .share-selection-actions button[data-action="download-selected-image"]::before {
     content: "⇩";
   }
