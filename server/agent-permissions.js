@@ -91,13 +91,14 @@ export function recordAgentPermissionGrant(agent, grant, { now = () => new Date(
   if (!agent || !grant?.kind) return false;
   const grants = normalizeAgentPermissionGrants(agent.permissionGrants);
   const existingIndex = grants.findIndex((item) => item.kind === grant.kind);
+  const timestamp = now();
   const next = {
     kind: String(grant.kind),
     summary: cleanText(grant.summary, 260),
     allowed: uniqueStrings(grant.allowed),
     requiresConfirmation: uniqueStrings(grant.requiresConfirmation),
     sourceMessageId: sourceMessageId ? String(sourceMessageId) : null,
-    grantedAt: now(),
+    grantedAt: timestamp,
     updatedAt: null,
   };
   if (existingIndex >= 0) {
@@ -113,12 +114,13 @@ export function recordAgentPermissionGrant(agent, grant, { now = () => new Date(
       ...existing,
       ...next,
       grantedAt: existing.grantedAt || next.grantedAt,
-      updatedAt: now(),
+      updatedAt: timestamp,
     };
   } else {
     grants.push(next);
   }
   agent.permissionGrants = grants;
+  agent.updatedAt = timestamp;
   return true;
 }
 

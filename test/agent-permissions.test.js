@@ -38,6 +38,7 @@ test('agent permission grants persist on the agent and render into runtime guida
   }), false);
   assert.equal(agent.permissionGrants.length, 1);
   assert.equal(agent.permissionGrants[0].sourceMessageId, 'msg_42');
+  assert.equal(agent.updatedAt, '2026-05-21T07:42:00.000Z');
 
   const guidance = renderAgentPermissionGuidance(agent);
   assert.match(guidance, /默认允许常规开发操作/);
