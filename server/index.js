@@ -102,6 +102,7 @@ import {
   sortProjectSearchResults,
 } from './project-files.js';
 import { createAgentRuntimeManager } from './agent-runtime-manager.js';
+import { createAgentMemoryMirrorManager } from './agent-memory-mirror.js';
 import { createAgentWorkspaceManager } from './agent-workspace.js';
 import { createConversationModel } from './conversation-model.js';
 import { createCollabMemoryManager } from './collab-memory.js';
@@ -276,6 +277,7 @@ const MARKDOWN_MAINTENANCE_STARTUP_DELAY_MS = Math.max(0, Number(process.env.MAG
 const MARKDOWN_MAINTENANCE_SEMANTIC = !/^(0|false|no)$/i.test(String(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_SEMANTIC || 'true'));
 const MARKDOWN_MAINTENANCE_MAX_AGENTS = Math.max(1, Number(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_MAX_AGENTS || 50));
 const MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT = Math.max(1, Number(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT || 20));
+const AGENT_MEMORY_MIRROR_MIGRATION_ENABLED = /^(1|true|yes)$/i.test(String(process.env.MAGCLAW_AGENT_MEMORY_MIRROR_MIGRATION || ''));
 const CODEX_STREAM_RETRY_LIMIT = codexStreamRetryLimit();
 const CLOUD_PROTOCOL_VERSION = 1;
 const CODEX_HOME_CONFIG_VERSION = 8;
@@ -984,11 +986,26 @@ const {
   writeAgentSessionFile,
 } = agentWorkspace;
 
+const agentMemoryMirror = createAgentMemoryMirrorManager({
+  addSystemEvent,
+  enabled: ATTACHMENT_STORAGE.mode === 'pvc' && ATTACHMENT_STORAGE.writable,
+  rootDir: process.env.MAGCLAW_AGENT_MEMORY_MIRROR_DIR
+    || path.join(ATTACHMENT_STORAGE.pvcPath || ATTACHMENTS_DIR, 'agent-memory'),
+  now,
+});
+const {
+  listAgentMemoryMirrorWorkspace,
+  materializeAgentMemoryMirror,
+  migrateAgentMemoryMirror,
+  readAgentMemoryMirrorFile,
+} = agentMemoryMirror;
+
 const markdownApplier = createMarkdownOperationApplier({
   addSystemEvent,
   defaultAgentMemory: agentWorkspace.defaultAgentMemory,
   ensureAgentWorkspace,
   makeId,
+  materializeMarkdownMirror: materializeAgentMemoryMirror,
   now,
   persistMarkdownDocumentIndex: (...args) => cloudRepository?.persistMarkdownDocumentIndex?.(...args),
   persistMarkdownOperationIndex: (...args) => cloudRepository?.persistMarkdownOperationIndex?.(...args),
@@ -1410,7 +1427,7 @@ async function runMarkdownMaintenanceSweep(reason = 'interval') {
   let failed = 0;
   try {
     for (const agent of agents) {
-      const files = await listAgentMemoryFiles(agent)
+      const files = await listAgentMemoryFiles(agent, { includeDetailed: true })
         .catch((error) => {
           failed += 1;
           addSystemEvent('markdown_maintenance_list_error', `Markdown maintenance could not list memory files for ${agent.name || agent.id}: ${error.message}`, {
@@ -1450,6 +1467,66 @@ async function runMarkdownMaintenanceSweep(reason = 'interval') {
   } finally {
     markdownMaintenanceRunning = false;
   }
+}
+
+async function runAgentMemoryMirrorMigration(reason = 'startup') {
+  if (!AGENT_MEMORY_MIRROR_MIGRATION_ENABLED) return { ok: true, skipped: 'disabled' };
+  let migrated = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const agent of state.agents || []) {
+    if (!agent?.id) continue;
+    if (agent.memoryMirrorMigration?.migratedAt) {
+      skipped += 1;
+      continue;
+    }
+    const legacyWorkspacePath = String(agent.workspacePath || '').trim();
+    if (!legacyWorkspacePath) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      const result = await migrateAgentMemoryMirror({
+        agent,
+        legacyWorkspacePath,
+        defaultAgentMemory: agentWorkspace.defaultAgentMemory,
+        clearLegacyWorkspace: async () => {
+          agent.workspacePath = null;
+          agent.workspace = null;
+        },
+      });
+      migrated += 1;
+      addSystemEvent('agent_memory_mirror_migrated', `Migrated ${agent.name || agent.id} MEMORY.md to cloud mirror.`, {
+        agentId: agent.id,
+        workspaceId: agent.workspaceId || 'local',
+        source: result.source,
+        hash: result.hash,
+        reason,
+      });
+      await persistState({ workspaceId: agent.workspaceId || 'local', reason: 'agent_memory_mirror_migrated' });
+    } catch (error) {
+      failed += 1;
+      console.warn('[agent-memory-mirror] migration failed', {
+        agentId: agent.id,
+        workspaceId: agent.workspaceId || 'local',
+        error: error.message,
+      });
+      addSystemEvent('agent_memory_mirror_migration_error', `Could not migrate ${agent.name || agent.id} MEMORY.md: ${error.message}`, {
+        agentId: agent.id,
+        workspaceId: agent.workspaceId || 'local',
+        reason,
+      });
+    }
+  }
+  if (migrated || failed) {
+    addSystemEvent('agent_memory_mirror_migration_sweep', 'Agent memory mirror migration completed.', {
+      reason,
+      migrated,
+      skipped,
+      failed,
+    });
+  }
+  return { ok: failed === 0, migrated, skipped, failed };
 }
 
 function scheduleNextMarkdownMaintenance(delayMs) {
@@ -1671,6 +1748,7 @@ function agentToolApiDeps() {
     searchAgentMemory,
     sendError,
     sendJson,
+    submitAgentMarkdownOperation: markdownApplier.submitAgentMarkdownOperation,
     taskLabel,
     updateTaskForAgent,
     writeAgentMemoryUpdate,
@@ -1737,8 +1815,10 @@ function agentApiDeps() {
     ensureAgentWorkspace,
     findAgent,
     findChannel,
+    findComputer,
     getState: () => state,
     hasAgentProcess: (agentId) => [...agentProcesses.values()].some((proc) => proc?.agentId === agentId),
+    listAgentMemoryMirrorWorkspace,
     listAgentWorkspace,
     listAgentSkills,
     makeId,
@@ -1746,8 +1826,11 @@ function agentApiDeps() {
     normalizeIds,
     now,
     persistState,
+    readAgentMemoryMirrorFile,
     readAgentWorkspaceFile,
     readJson,
+    requestAgentWorkspaceFile: (...args) => daemonRelay.requestAgentWorkspaceFile(...args),
+    requestAgentWorkspaceList: (...args) => daemonRelay.requestAgentWorkspaceList(...args),
     requestAgentSkills: (...args) => daemonRelay.requestAgentSkills(...args),
     restartAgentFromControl,
     root: ROOT,
@@ -1984,6 +2067,7 @@ async function handleRequest(req, res) {
 
 await ensureStorage();
 await cloudAuth.initializeStorage();
+await runAgentMemoryMirrorMigration('startup');
 if (cloudRepository?.isEnabled?.() && typeof cloudRepository.subscribeRealtimeEvents === 'function') {
   await cloudRepository.subscribeRealtimeEvents(scheduleRealtimeReload).catch((error) => {
     console.warn(`[cloud-postgres] realtime listener startup failed message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);

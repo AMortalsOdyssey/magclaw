@@ -697,12 +697,22 @@ CREATE TABLE IF NOT EXISTS cloud_markdown_documents (
   agent_id TEXT NOT NULL REFERENCES cloud_agents(id) ON DELETE CASCADE,
   rel_path TEXT NOT NULL,
   revision BIGINT NOT NULL DEFAULT 0,
+  storage_mode TEXT NOT NULL DEFAULT 'metadata',
+  storage_key TEXT NOT NULL DEFAULT '',
+  bytes BIGINT NOT NULL DEFAULT 0,
   document_hash TEXT NOT NULL DEFAULT '',
   current_segment INTEGER NOT NULL DEFAULT 1,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   PRIMARY KEY (workspace_id, agent_id, rel_path)
 );
+
+ALTER TABLE cloud_markdown_documents
+  ADD COLUMN IF NOT EXISTS storage_mode TEXT NOT NULL DEFAULT 'metadata';
+ALTER TABLE cloud_markdown_documents
+  ADD COLUMN IF NOT EXISTS storage_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE cloud_markdown_documents
+  ADD COLUMN IF NOT EXISTS bytes BIGINT NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS cloud_markdown_documents_workspace_idx
   ON cloud_markdown_documents(workspace_id, updated_at DESC);

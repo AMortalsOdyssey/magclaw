@@ -2636,13 +2636,21 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const agentId = String(record.agentId || '').trim();
     const relPath = String(record.relPath || '').trim();
     if (!workspaceId || !agentId || !relPath) return;
+    const metadata = jsonObject(record.metadata);
+    const storageMode = String(record.storageMode || metadata.storageMode || metadata.mirror?.storageMode || 'metadata');
+    const storageKey = String(record.storageKey || metadata.storageKey || metadata.mirror?.storageKey || '');
+    const bytes = Number(record.bytes || metadata.bytes || metadata.mirror?.bytes || 0);
     await withClient(async (client) => {
       await client.query(`
         INSERT INTO ${table('cloud_markdown_documents')}
-          (workspace_id, agent_id, rel_path, revision, document_hash, current_segment, updated_at, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+          (workspace_id, agent_id, rel_path, revision, storage_mode, storage_key, bytes,
+           document_hash, current_segment, updated_at, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
         ON CONFLICT (workspace_id, agent_id, rel_path) DO UPDATE SET
           revision = GREATEST(${table('cloud_markdown_documents')}.revision, EXCLUDED.revision),
+          storage_mode = EXCLUDED.storage_mode,
+          storage_key = EXCLUDED.storage_key,
+          bytes = EXCLUDED.bytes,
           document_hash = EXCLUDED.document_hash,
           current_segment = EXCLUDED.current_segment,
           updated_at = GREATEST(${table('cloud_markdown_documents')}.updated_at, EXCLUDED.updated_at),
@@ -2652,10 +2660,13 @@ export function createCloudPostgresStore(optionsInput = {}) {
         agentId,
         relPath,
         Number(record.revision || 0),
+        storageMode,
+        storageKey,
+        bytes,
         String(record.documentHash || ''),
         Number(record.currentSegment || 1),
         requiredIso(record.updatedAt),
-        JSON.stringify(jsonObject(record.metadata)),
+        JSON.stringify(metadata),
       ]);
     });
   }

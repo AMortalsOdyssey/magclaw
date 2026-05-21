@@ -100,6 +100,7 @@ function routeDeps(overrides = {}) {
       res.statusCode = statusCode;
       res.data = data;
     },
+    submitAgentMarkdownOperation: async () => ({ ok: true, status: 'applied', revision: 1, operationId: 'mdop_test' }),
     taskLabel: (task) => `#${task.number || task.id}`,
     updateTaskForAgent: (task, _agent, status) => {
       task.status = status;
@@ -398,7 +399,38 @@ test('agent tool memory endpoint records controlled memory writebacks', async ()
   assert.equal(deps.memoryWrites[0].payload.message.id, 'msg_1');
 });
 
-test('agent tool memory search and read expose peer notes through controlled APIs', async () => {
+test('daemon memory mirror endpoint rewrites MEMORY.md through the central applier', async () => {
+  let applied = null;
+  const deps = routeDeps({
+    submitAgentMarkdownOperation: async (agent, operation, options) => {
+      applied = { agent, operation, options };
+      return { ok: true, status: 'applied', revision: 7, operationId: 'mdop_mirror' };
+    },
+    readJson: async () => ({
+      agentId: 'agt_one',
+      content: '# Agent One\n\n## 渐进式披露\n- mirror\n',
+      documentHash: 'hash_mirror',
+    }),
+  });
+
+  const res = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'POST', daemonAuth: { workspaceId: 'local', computerId: 'cmp_remote' } },
+    res,
+    new URL('http://local/api/agent-tools/memory/mirror'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 202);
+  assert.equal(applied.agent.id, 'agt_one');
+  assert.equal(applied.operation.type, 'maintenance_rewrite');
+  assert.equal(applied.operation.target.relPath, 'MEMORY.md');
+  assert.match(applied.operation.markdown, /渐进式披露/);
+  assert.equal(applied.options.sourceTrigger, 'daemon_memory_mirror');
+  assert.equal(applied.options.metadata.computerId, 'cmp_remote');
+});
+
+test('agent tool memory search defaults to MEMORY.md while explicit reads can fetch peer notes', async () => {
   let memorySearchOptions = null;
   const deps = routeDeps({
     searchAgentMemory: async (query, options) => ({
@@ -409,11 +441,11 @@ test('agent tool memory search and read expose peer notes through controlled API
         agentId: 'agt_two',
         agentName: 'Bug Fixer',
         agentDescription: 'General helper',
-        path: 'notes/work-log.md',
+        path: 'MEMORY.md',
         line: 4,
         score: 8,
         matchedTerms: ['bug', '修复'],
-        preview: '- 修复登录 bug 并补测试',
+        preview: '- 修复登录 bug 的入口线索在 notes/work-log.md',
       }],
       truncated: false,
       options,
@@ -435,11 +467,11 @@ test('agent tool memory search and read expose peer notes through controlled API
         agentId: 'agt_two',
         agentName: 'Bug Fixer',
         agentDescription: 'General helper',
-        path: 'notes/work-log.md',
+        path: 'MEMORY.md',
         line: 4,
         score: 8,
         matchedTerms: ['bug', '修复'],
-        preview: '- 修复登录 bug 并补测试',
+        preview: '- 修复登录 bug 的入口线索在 notes/work-log.md',
       }],
       truncated: false,
       options,
@@ -456,8 +488,9 @@ test('agent tool memory search and read expose peer notes through controlled API
   ), true);
   assert.equal(searchRes.statusCode, 200);
   assert.equal(searchRes.data.results[0].agentId, 'agt_two');
-  assert.match(searchRes.data.text, /notes\/work-log\.md:4/);
+  assert.match(searchRes.data.text, /MEMORY\.md:4/);
   assert.equal(memorySearchOptions.workspaceId, 'wsp_test');
+  assert.deepEqual(memorySearchOptions.includePaths, ['MEMORY.md']);
 
   const readRes = makeResponse();
   assert.equal(await handleAgentToolApi(
@@ -468,6 +501,35 @@ test('agent tool memory search and read expose peer notes through controlled API
   ), true);
   assert.equal(readRes.statusCode, 200);
   assert.match(readRes.data.text, /修复登录 bug/);
+});
+
+test('agent tool file read requires an explicit path for detailed workspace disclosure', async () => {
+  let requestedPath = '';
+  const deps = routeDeps({
+    readAgentMemoryFile: async (targetAgent, relPath) => {
+      requestedPath = relPath;
+      return {
+        file: {
+          path: relPath,
+          content: '# Detailed Plan\n- 只有明确请求路径时才返回。\n',
+        },
+      };
+    },
+  });
+  deps.state.agents.push({ id: 'agt_two', name: 'Bug Fixer', workspaceId: 'wsp_test' });
+
+  const res = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
+    res,
+    new URL('http://local/api/agent-tools/files/read?agentId=agt_one&targetAgentId=agt_two&path=workspace/plans/fix.md'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(requestedPath, 'workspace/plans/fix.md');
+  assert.match(res.data.text, /workspace\/plans\/fix\.md/);
+  assert.match(res.data.text, /只有明确请求路径时才返回/);
 });
 
 test('agent tool APIs list and read workspace-scoped agent profiles', async () => {

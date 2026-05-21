@@ -224,6 +224,7 @@ export function createDaemonRelay(deps) {
   const pendingDisconnects = new Map();
   const pendingActivityProbes = new Map();
   const pendingSkillRequests = new Map();
+  const pendingWorkspaceRequests = new Map();
   const pendingRuntimePersists = new Map();
   const lastRuntimeBroadcastAt = new Map();
   const handlers = {
@@ -693,6 +694,79 @@ export function createDaemonRelay(deps) {
         pendingSkillRequests.delete(commandId);
         reject(new Error('Could not send skills request to daemon.'));
       }
+    });
+  }
+
+  function requestAgentWorkspace(agent, { path = '', frameType, resultLabel, timeoutMs = 5_000 } = {}) {
+    return new Promise((resolve, reject) => {
+      if (!agent?.id) {
+        reject(new Error('Agent is required.'));
+        return;
+      }
+      if (!agentShouldUseRelay(agent)) {
+        reject(new Error('Agent is not connected through a daemon.'));
+        return;
+      }
+      const connection = connections.get(agent.computerId);
+      if (!connection || connection.closed || connection.socket?.destroyed) {
+        reject(new Error('Agent daemon is not connected.'));
+        return;
+      }
+      const commandId = makeId('awk');
+      const timer = setTimeout(() => {
+        pendingWorkspaceRequests.delete(commandId);
+        reject(new Error(`Timed out waiting for daemon ${resultLabel}.`));
+      }, Math.max(250, Number(timeoutMs) || 5_000));
+      timer.unref?.();
+      pendingWorkspaceRequests.set(commandId, {
+        agentId: agent.id,
+        resolve,
+        reject,
+        timer,
+        resultLabel,
+      });
+      const sent = send(connection, {
+        type: frameType,
+        commandId,
+        agentId: agent.id,
+        path,
+        payload: {
+          path,
+          agent: {
+            id: agent.id,
+            name: agent.name,
+            description: agent.description || '',
+            runtime: agent.runtime,
+            runtimeId: agent.runtimeId || null,
+            model: agent.model || '',
+            reasoningEffort: agent.reasoningEffort || null,
+            envVars: safeArray(agent.envVars),
+          },
+        },
+      });
+      if (!sent) {
+        clearTimeout(timer);
+        pendingWorkspaceRequests.delete(commandId);
+        reject(new Error(`Could not send ${resultLabel} request to daemon.`));
+      }
+    });
+  }
+
+  function requestAgentWorkspaceList(agent, path = '', options = {}) {
+    return requestAgentWorkspace(agent, {
+      ...options,
+      path,
+      frameType: 'agent:workspace:list',
+      resultLabel: 'workspace list',
+    });
+  }
+
+  function requestAgentWorkspaceFile(agent, path = 'MEMORY.md', options = {}) {
+    return requestAgentWorkspace(agent, {
+      ...options,
+      path,
+      frameType: 'agent:workspace:file',
+      resultLabel: 'workspace file',
     });
   }
 
@@ -1594,6 +1668,31 @@ export function createDaemonRelay(deps) {
           broadcastState();
         }
         break;
+      case 'agent:workspace:list_result':
+      case 'agent:workspace:file_result':
+        {
+          const agent = findAgent(message.agentId);
+          const pending = pendingWorkspaceRequests.get(message.commandId);
+          if (pending) {
+            clearTimeout(pending.timer);
+            pendingWorkspaceRequests.delete(message.commandId);
+            pending.resolve(message.type === 'agent:workspace:list_result'
+              ? (message.tree || { entries: [] })
+              : { file: message.file || null });
+          }
+          recordDaemonEvent('daemon_result', `Daemon returned ${message.type}.`, {
+            computerId: connection.computerId,
+            agentId: message.agentId || null,
+            commandId: message.commandId || null,
+            resultType: message.type,
+          });
+          await persistRuntimeState(
+            workspaceIdForAgent(agent, workspaceIdForComputer(findComputer(connection.computerId), connection)),
+            message.type === 'agent:workspace:list_result' ? 'daemon_agent_workspace_list_result' : 'daemon_agent_workspace_file_result',
+          );
+          broadcastState();
+        }
+        break;
       case 'machine:runtime_models:result':
         recordDaemonEvent('daemon_result', `Daemon returned ${message.type}.`, {
           computerId: connection.computerId,
@@ -1610,6 +1709,18 @@ export function createDaemonRelay(deps) {
       case 'agent:error':
         {
           const agent = findAgent(message.agentId);
+          const pendingSkill = pendingSkillRequests.get(message.commandId);
+          if (pendingSkill) {
+            clearTimeout(pendingSkill.timer);
+            pendingSkillRequests.delete(message.commandId);
+            pendingSkill.reject(new Error(String(message.error || 'Agent error')));
+          }
+          const pendingWorkspace = pendingWorkspaceRequests.get(message.commandId);
+          if (pendingWorkspace) {
+            clearTimeout(pendingWorkspace.timer);
+            pendingWorkspaceRequests.delete(message.commandId);
+            pendingWorkspace.reject(new Error(String(message.error || 'Agent error')));
+          }
           if (agent) {
             setAgentStatus(agent, 'error', 'daemon_error', { forceEvent: true });
             markDeliveryFinished(message.commandId || message.deliveryId || null, 'failed', String(message.error || 'Agent error'));
@@ -1861,6 +1972,8 @@ export function createDaemonRelay(deps) {
     probeStaleAgentHeartbeats,
     publicRelayState,
     requestAgentSkills,
+    requestAgentWorkspaceFile,
+    requestAgentWorkspaceList,
     revokeComputerToken,
     sendDaemonReleaseNotice,
     setHandlers,

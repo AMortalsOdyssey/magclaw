@@ -24,6 +24,10 @@ import {
   toPosixPath,
 } from './path-utils.js';
 import { projectFilePreviewKind } from './project-files.js';
+import {
+  ensureProgressiveDisclosureSection,
+  PROGRESSIVE_DISCLOSURE_SECTION,
+} from './agent-memory-guidance.js';
 
 // Agent workspace and isolated Codex-home helpers.
 // Runtime code depends on these functions to keep every Agent's files, memory,
@@ -559,6 +563,8 @@ export function createAgentWorkspaceManager(deps) {
       '- `notes/work-log.md` - 任务记录、长期决策和完成产物。',
       ...knowledgeBullets,
       '',
+      PROGRESSIVE_DISCLOSURE_SECTION,
+      '',
       '## 能力',
       ...(capabilityBullets.length ? capabilityBullets : ['- 暂无经过真实任务验证的稳定能力。']),
       '',
@@ -841,6 +847,9 @@ export function createAgentWorkspaceManager(deps) {
       const content = await readFile(memoryPath, 'utf8').catch(() => '');
       if (shouldUpgradeSeededAgentMemory(content)) {
         await writeFile(memoryPath, upgradeSeededAgentMemory(agent, content));
+      } else {
+        const withGuidance = ensureProgressiveDisclosureSection(content);
+        if (withGuidance !== content) await writeFile(memoryPath, withGuidance);
       }
     }
     await writeFileIfMissingOrSeeded(
@@ -1104,9 +1113,16 @@ export function createAgentWorkspaceManager(deps) {
     return 0;
   }
 
-  async function listAgentMemoryFiles(agent) {
+  async function listAgentMemoryFiles(agent, options = {}) {
     const root = await ensureAgentWorkspace(agent);
     const files = ['MEMORY.md'];
+    const includePaths = asArray(options.includePaths)
+      .map((item) => normalizeProjectRelPath(item))
+      .filter(Boolean);
+    if (includePaths.length) {
+      return [...new Set(includePaths.filter((item) => canReadAgentMemoryPath(item)))].slice(0, 80);
+    }
+    if (!options.includeDetailed) return files;
     const notesRoot = safePathWithin(root, 'notes');
     if (!notesRoot) return files;
     async function walk(absDir, relDir) {
@@ -1129,13 +1145,20 @@ export function createAgentWorkspaceManager(deps) {
 
   function canReadAgentMemoryPath(relPath) {
     const value = normalizeProjectRelPath(relPath || 'MEMORY.md');
-    return value === 'MEMORY.md' || (value.startsWith('notes/') && /\.(md|txt)$/i.test(value));
+    if (value === 'MEMORY.md') return true;
+    if (value.startsWith('notes/') && /\.(md|txt)$/i.test(value)) return true;
+    if (value.startsWith('workspace/')
+      && /\.(md|markdown|txt|json|jsonl|yaml|yml|csv|log)$/i.test(value)
+      && !value.split('/').some((part) => part.startsWith('.'))) {
+      return true;
+    }
+    return false;
   }
 
   async function readAgentMemoryFile(agent, rawRelPath = 'MEMORY.md') {
     const relPath = normalizeProjectRelPath(rawRelPath || 'MEMORY.md');
     if (!canReadAgentMemoryPath(relPath)) {
-      throw httpError(400, 'Agent memory reads are limited to MEMORY.md and notes/*.md or notes/*.txt.');
+      throw httpError(400, 'Agent memory reads require MEMORY.md, notes/*.md|txt, or an explicit text file under workspace/.');
     }
     return readAgentWorkspaceFile(agent, relPath);
   }
@@ -1158,7 +1181,10 @@ export function createAgentWorkspaceManager(deps) {
     const results = [];
     for (const agent of targetAgents) {
       if (!agent?.id) continue;
-      const files = await listAgentMemoryFiles(agent);
+      const files = await listAgentMemoryFiles(agent, {
+        includeDetailed: Boolean(options.includeDetailed),
+        includePaths: options.includePaths || null,
+      });
       for (const relPath of files) {
         if (excludePaths.has(relPath)) continue;
         const root = await ensureAgentWorkspace(agent);
@@ -1210,6 +1236,7 @@ export function createAgentWorkspaceManager(deps) {
     defaultAgentWorkspaceReadme,
     ensureAgentWorkspace,
     ensureAllAgentWorkspaces,
+    listAgentMemoryFiles,
     listAgentSkills,
     listAgentWorkspace,
     prepareAgentCodexHome,

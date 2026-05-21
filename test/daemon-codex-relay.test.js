@@ -377,6 +377,18 @@ process.stdin.on('data', (chunk) => {
     const appServer = entries.find((entry) => entry.mode === 'app-server');
     assert.match(appServer.env.CODEX_HOME, /daemon-home\/profiles\/cloud-test\/agents\/agt_remote\/codex-home$/);
     const agentRoot = path.join(tmp, 'daemon-home', 'profiles', 'cloud-test', 'agents', 'agt_remote');
+    const remoteMemory = await readFile(path.join(agentRoot, 'MEMORY.md'), 'utf8');
+    assert.match(remoteMemory, /## 渐进式披露/);
+    assert.match(remoteMemory, /默认只会先读取本文件/);
+    assert.equal((await lstat(path.join(agentRoot, 'notes'))).isDirectory(), true);
+    relay.send({ type: 'agent:workspace:list', commandId: 'workspace_list_test', agentId: 'agt_remote', path: '' });
+    const workspaceList = await waitFor(() => relay.messages.find((item) => item.type === 'agent:workspace:list_result'));
+    assert.equal(workspaceList.commandId, 'workspace_list_test');
+    assert.ok(workspaceList.tree.entries.some((entry) => entry.path === 'MEMORY.md'));
+    relay.send({ type: 'agent:workspace:file', commandId: 'workspace_file_test', agentId: 'agt_remote', path: 'MEMORY.md' });
+    const workspaceFile = await waitFor(() => relay.messages.find((item) => item.type === 'agent:workspace:file_result'));
+    assert.equal(workspaceFile.commandId, 'workspace_file_test');
+    assert.match(workspaceFile.file.content, /## 渐进式披露/);
     const codexHooksJson = path.join(agentRoot, 'workspace', 'runtime-hooks', 'codex', 'hooks.json');
     const codexHooksDir = path.join(agentRoot, 'workspace', 'runtime-hooks', 'codex', 'hooks');
     assert.deepEqual(JSON.parse(await readFile(codexHooksJson, 'utf8')), { hooks: [] });

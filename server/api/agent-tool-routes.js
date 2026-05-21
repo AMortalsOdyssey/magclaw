@@ -39,6 +39,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     searchAgentMemory,
     sendError,
     sendJson,
+    submitAgentMarkdownOperation = null,
     taskLabel,
     updateTaskForAgent,
     writeAgentMemoryUpdate,
@@ -658,6 +659,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       targetAgentId,
       limit: url.searchParams.get('limit') || undefined,
       workspaceId,
+      includePaths: ['MEMORY.md'],
     });
     addSystemEvent('agent_memory_search', `${displayActor(agentId) || 'Agent'} searched agent memory.`, {
       agentId,
@@ -705,6 +707,99 @@ export async function handleAgentToolApi(req, res, url, deps) {
       });
     } catch (error) {
       sendError(res, error.status || 400, error.message);
+    }
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/files/read') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const workspaceId = requestWorkspaceId();
+    const targetAgentRef = url.searchParams.get('targetAgentId') || url.searchParams.get('targetAgent') || '';
+    const relPath = url.searchParams.get('path') || '';
+    const targetAgent = findWorkspaceAgent(targetAgentRef, workspaceId)
+      || (() => {
+        const agent = findAgent(targetAgentRef);
+        return agent && workspaceMatches(agent, workspaceId) ? agent : null;
+      })();
+    if (!targetAgent) {
+      sendError(res, 404, 'Target agent not found.');
+      return true;
+    }
+    if (!relPath) {
+      sendError(res, 400, 'Explicit file path is required.');
+      return true;
+    }
+    try {
+      const file = await readAgentMemoryFile(targetAgent, relPath);
+      addSystemEvent('agent_file_read', `${displayActor(agentId) || 'Agent'} read ${targetAgent.name} workspace file.`, {
+        agentId,
+        workspaceId: workspaceId || null,
+        targetAgentId: targetAgent.id,
+        path: file.file.path,
+      });
+      sendJson(res, 200, {
+        ok: true,
+        ...file,
+        text: [
+          `@${targetAgent.name} ${file.file.path}`,
+          file.file.content,
+        ].join('\n'),
+      });
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agent-tools/memory/mirror') {
+    if (typeof submitAgentMarkdownOperation !== 'function') {
+      sendError(res, 503, 'Memory mirror applier is not available.');
+      return true;
+    }
+    const body = await readJson(req);
+    const workspaceId = requestWorkspaceId();
+    const agent = findAgent(String(body.agentId || ''));
+    if (!agent || (workspaceId && workspaceId !== 'local' && !workspaceMatches(agent, workspaceId))) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    const markdown = String(body.content || body.markdown || '').trim();
+    if (!markdown) {
+      sendError(res, 400, 'MEMORY.md content is required.');
+      return true;
+    }
+    try {
+      const result = await submitAgentMarkdownOperation(agent, {
+        type: 'maintenance_rewrite',
+        target: { relPath: 'MEMORY.md' },
+        markdown,
+      }, {
+        idempotencyKey: body.idempotencyKey || `daemon-memory-mirror:${workspaceId || 'local'}:${agent.id}:${body.documentHash || markdown.length}`,
+        sourceTrigger: 'daemon_memory_mirror',
+        metadata: {
+          source: 'daemon_memory_mirror',
+          computerId: req.daemonAuth?.computerId || body.computerId || null,
+          documentHash: body.documentHash || '',
+        },
+      });
+      addSystemEvent('agent_memory_mirror_sync_received', `Received daemon MEMORY.md mirror for ${agent.name || agent.id}.`, {
+        agentId: agent.id,
+        workspaceId: workspaceId || null,
+        revision: result.revision || null,
+        operationId: result.operationId || null,
+      });
+      sendJson(res, 202, { ok: true, result });
+    } catch (error) {
+      console.warn('[agent-tools] memory mirror sync failed', {
+        agentId: agent.id,
+        workspaceId: workspaceId || null,
+        error: error.message,
+      });
+      addSystemEvent('agent_memory_mirror_sync_error', `Daemon MEMORY.md mirror sync failed for ${agent.name || agent.id}: ${error.message}`, {
+        agentId: agent.id,
+        workspaceId: workspaceId || null,
+      });
+      sendError(res, error.status || 500, error.message);
     }
     return true;
   }

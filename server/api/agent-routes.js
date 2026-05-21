@@ -63,8 +63,10 @@ export async function handleAgentApi(req, res, url, deps) {
     ensureAgentWorkspace,
     findAgent,
     findChannel,
+    findComputer,
     getState,
     hasAgentProcess,
+    listAgentMemoryMirrorWorkspace,
     listAgentSkills,
     listAgentWorkspace,
     makeId,
@@ -72,8 +74,11 @@ export async function handleAgentApi(req, res, url, deps) {
     normalizeIds,
     now,
     persistState,
+    readAgentMemoryMirrorFile,
     readAgentWorkspaceFile,
     readJson,
+    requestAgentWorkspaceFile,
+    requestAgentWorkspaceList,
     requestAgentSkills,
     restartAgentFromControl,
     root,
@@ -124,6 +129,105 @@ export async function handleAgentApi(req, res, url, deps) {
       return false;
     }
     return true;
+  }
+
+  function agentUsesRemoteComputer(agent) {
+    return Boolean(agent?.computerId && agent.computerId !== 'cmp_local');
+  }
+
+  function computerForAgent(agent) {
+    if (!agentUsesRemoteComputer(agent)) return null;
+    if (typeof findComputer === 'function') return findComputer(agent.computerId) || null;
+    return (state.computers || []).find((computer) => computer?.id === agent.computerId) || null;
+  }
+
+  function agentComputerIsOnline(agent) {
+    if (!agentUsesRemoteComputer(agent)) return true;
+    const computer = computerForAgent(agent);
+    const computerStatus = String(computer?.status || '').toLowerCase();
+    if (['connected', 'online', 'ready'].includes(computerStatus)) return true;
+    const agentStatus = String(agent?.status || '').toLowerCase();
+    if (['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming', 'idle', 'standby'].includes(agentStatus)
+      && ['connected', 'online', 'ready'].includes(computerStatus)) {
+      return true;
+    }
+    return false;
+  }
+
+  async function listWorkspaceForAgent(agent, relPath) {
+    let daemonError = null;
+    if (agentUsesRemoteComputer(agent) && agentComputerIsOnline(agent) && typeof requestAgentWorkspaceList === 'function') {
+      try {
+        return await requestAgentWorkspaceList(agent, relPath);
+      } catch (error) {
+        daemonError = error;
+        console.warn('[agents] daemon workspace list failed; falling back when possible', {
+          agentId: agent.id,
+          computerId: agent.computerId,
+          error: error.message,
+        });
+      }
+    }
+    if (agentUsesRemoteComputer(agent)) {
+      if (typeof listAgentMemoryMirrorWorkspace === 'function') {
+        const tree = await listAgentMemoryMirrorWorkspace(agent, relPath);
+        return {
+          ...tree,
+          stale: Boolean(daemonError),
+          refreshError: daemonError?.message || '',
+        };
+      }
+      throw Object.assign(new Error(daemonError ? 'Mirror stale/error.' : 'Computer offline / file unavailable.'), { status: 409 });
+    }
+    const tree = await listAgentWorkspace(agent, relPath);
+    return {
+      ...tree,
+      source: tree.source || 'computer_local',
+      agent: {
+        ...(tree.agent || {}),
+        source: tree.agent?.source || 'computer_local',
+      },
+    };
+  }
+
+  async function readWorkspaceFileForAgent(agent, relPath) {
+    const cleanPath = String(relPath || 'MEMORY.md').trim() || 'MEMORY.md';
+    let daemonError = null;
+    if (agentUsesRemoteComputer(agent) && agentComputerIsOnline(agent) && typeof requestAgentWorkspaceFile === 'function') {
+      try {
+        return await requestAgentWorkspaceFile(agent, cleanPath);
+      } catch (error) {
+        daemonError = error;
+        console.warn('[agents] daemon workspace file read failed; falling back when possible', {
+          agentId: agent.id,
+          computerId: agent.computerId,
+          path: cleanPath,
+          error: error.message,
+        });
+      }
+    }
+    if (agentUsesRemoteComputer(agent)) {
+      if (cleanPath === 'MEMORY.md' && typeof readAgentMemoryMirrorFile === 'function') {
+        const file = await readAgentMemoryMirrorFile(agent);
+        return {
+          ...file,
+          file: {
+            ...(file.file || {}),
+            stale: Boolean(daemonError),
+            refreshError: daemonError?.message || '',
+          },
+        };
+      }
+      throw Object.assign(new Error(daemonError ? 'Mirror stale/error.' : 'Computer offline / file unavailable.'), { status: 409 });
+    }
+    const file = await readAgentWorkspaceFile(agent, cleanPath);
+    return {
+      ...file,
+      file: {
+        ...(file.file || {}),
+        source: file.file?.source || 'computer_local',
+      },
+    };
   }
 
   async function autoStartCreatedAgent(agent) {
@@ -379,7 +483,7 @@ export async function handleAgentApi(req, res, url, deps) {
     }
     if (!requireAgentWorkspaceRead(agent)) return true;
     try {
-      const tree = await listAgentWorkspace(agent, url.searchParams.get('path') || '');
+      const tree = await listWorkspaceForAgent(agent, url.searchParams.get('path') || '');
       sendJson(res, 200, tree);
     } catch (error) {
       sendError(res, error.status || 500, error.message);
@@ -427,7 +531,7 @@ export async function handleAgentApi(req, res, url, deps) {
     }
     if (!requireAgentWorkspaceRead(agent)) return true;
     try {
-      const file = await readAgentWorkspaceFile(agent, url.searchParams.get('path') || 'MEMORY.md');
+      const file = await readWorkspaceFileForAgent(agent, url.searchParams.get('path') || 'MEMORY.md');
       sendJson(res, 200, file);
     } catch (error) {
       sendError(res, error.status || 500, error.message);
