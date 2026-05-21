@@ -1244,6 +1244,16 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
   async function persistReleaseNotesFromState(client, state) {
     const entries = releaseEntriesFromNotes(state.releaseNotes);
+    for (const component of RELEASE_COMPONENTS) {
+      const ids = entries
+        .filter((entry) => entry.component === component)
+        .map((entry) => entry.id);
+      if (ids.length) {
+        await client.query(`DELETE FROM ${table('cloud_release_notes')} WHERE component = $1 AND id <> ALL($2::text[])`, [component, ids]);
+      } else {
+        await client.query(`DELETE FROM ${table('cloud_release_notes')} WHERE component = $1`, [component]);
+      }
+    }
     for (const entry of entries) {
       await client.query(`
         INSERT INTO ${table('cloud_release_notes')}

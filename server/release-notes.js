@@ -11,33 +11,14 @@ export const RELEASE_CATEGORY_LABELS = {
 
 const WEB_RELEASES = [
   {
-    version: '0.2.0',
-    date: '2026-05-09',
-    title: 'Cloud account, server console, and daemon runtime parity',
+    version: '0.3.0',
+    date: '2026-05-21',
+    title: 'SSE broadcasts and Feishu login',
     features: [
-      'Free account creation, password login, and SMTP password reset complete the cloud account flow.',
-      'Console, server switching, globally unique slugs, invitations, and join links establish the multi-server architecture.',
-      'PostgreSQL persistence, PVC attachments, and K8s environment configuration define the cloud Web Service boundary.',
+      'Feishu authorization login is now supported.',
     ],
     improved: [
-      'Computer, Human, and Agent detail pages follow the MagClaw-style layout while keeping MagClaw colors.',
-      'Release Notes are grouped by Web Service version with release dates instead of daily buckets.',
-    ],
-    fixes: [
-      'Cloud mode no longer depends on preset admin accounts or invite-only registration.',
-      'Agent identity, warmup recovery, and direct-message delivery now use server-scoped cloud users.',
-    ],
-  },
-  {
-    version: '0.1.0',
-    date: '2026-04-27',
-    title: 'Local collaboration baseline',
-    features: [
-      'Local Channels, Direct Messages, Tasks, Agents, and Computer views form the first collaboration surface.',
-      'Codex CLI agents can run from isolated workspaces with project references and task handoff.',
-    ],
-    improved: [
-      'The MagClaw shell introduced persistent rails, settings pages, and searchable collaboration history.',
+      'SSE broadcasts are leaner and more reliable.',
     ],
     fixes: [],
   },
@@ -180,12 +161,7 @@ function normalizeReleaseItems(items) {
 
 function mergeReleaseItems(existingItems, defaultItems) {
   const defaults = normalizeReleaseItems(defaultItems);
-  const byVersion = new Map(defaults.map((item) => [item.version, item]));
-  for (const item of normalizeReleaseItems(existingItems)) {
-    if (!byVersion.has(item.version)) byVersion.set(item.version, item);
-  }
-  return [...byVersion.values()]
-    .sort((a, b) => Date.parse(b.date) - Date.parse(a.date) || b.version.localeCompare(a.version));
+  return defaults.length ? defaults : normalizeReleaseItems(existingItems);
 }
 
 function firstReleaseVersion(releases) {
@@ -197,8 +173,8 @@ function normalizeComponent(component, defaults = {}) {
   return {
     component: String(component?.component || defaults.component || ''),
     packageName: String(component?.packageName || defaults.packageName || ''),
-    currentVersion: normalizeVersion(component?.currentVersion || defaults.currentVersion || firstReleaseVersion(releases)),
-    latestVersion: normalizeVersion(component?.latestVersion || defaults.latestVersion || firstReleaseVersion(releases)),
+    currentVersion: normalizeVersion(defaults.currentVersion || component?.currentVersion || firstReleaseVersion(releases)),
+    latestVersion: normalizeVersion(defaults.latestVersion || component?.latestVersion || firstReleaseVersion(releases)),
     releases,
   };
 }
