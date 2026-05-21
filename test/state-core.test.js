@@ -39,13 +39,24 @@ function makeStateCore(tmp, overrides = {}) {
   });
 }
 
-function fakeSseClient(req = {}) {
+function fakeSseClient(req = {}, options = {}) {
+  const listeners = new Map();
   const client = {
     magclawRequest: req,
     writes: [],
+    blockWrites: Boolean(options.blockWrites),
     write(packet) {
       this.writes.push(packet);
-      return true;
+      return !this.blockWrites;
+    },
+    once(eventName, listener) {
+      listeners.set(eventName, listener);
+    },
+    emitDrain() {
+      const listener = listeners.get('drain');
+      listeners.delete('drain');
+      this.blockWrites = false;
+      listener?.();
     },
   };
   return client;
@@ -53,6 +64,13 @@ function fakeSseClient(req = {}) {
 
 function ssePackets(client, eventName) {
   return client.writes.filter((packet) => packet.startsWith(`event: ${eventName}\n`));
+}
+
+function sseEnvelopes(client, eventName) {
+  return ssePackets(client, eventName).map((packet) => {
+    const match = packet.match(/^event: [^\n]+\ndata: ([\s\S]*)\n\n$/);
+    return JSON.parse(match?.[1] || '{}');
+  });
 }
 
 test('state core can skip local SQLite and JSON persistence for PostgreSQL-backed cloud mode', async () => {
@@ -145,25 +163,34 @@ test('state core writes activity events to JSONL and restores recent activity ta
   }
 });
 
-test('state core coalesces burst state broadcasts for SSE clients', async () => {
+test('state core coalesces burst state broadcasts and reuses matching SSE scope payloads', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-sse-'));
   const sseClients = new Set();
   const cloudPushes = [];
-  let snapshotSeq = 0;
+  let publicStateCalls = 0;
   const core = makeStateCore(tmp, {
     USE_SQLITE_STATE: false,
     STATE_BROADCAST_DEBOUNCE_MS: 20,
     sseClients,
     publicState: (req) => ({
-      requestId: req?.requestId || '',
-      snapshotSeq: snapshotSeq += 1,
+      spaceId: new URL(req?.url || '/api/events', 'http://127.0.0.1').searchParams.get('spaceId') || '',
+      snapshotSeq: publicStateCalls += 1,
     }),
     queueCloudPush: (reason) => cloudPushes.push(reason),
   });
-  const firstClient = fakeSseClient({ requestId: 'first' });
-  const secondClient = fakeSseClient({ requestId: 'second' });
+  const sharedScope = {
+    url: '/api/events?spaceType=channel&spaceId=chan_all&messageLimit=50&threadRootLimit=30',
+    headers: { cookie: 'magclaw_session=same-user' },
+  };
+  const firstClient = fakeSseClient(sharedScope);
+  const secondClient = fakeSseClient(sharedScope);
+  const thirdClient = fakeSseClient({
+    url: '/api/events?spaceType=channel&spaceId=chan_design&messageLimit=50&threadRootLimit=30',
+    headers: { cookie: 'magclaw_session=same-user' },
+  });
   sseClients.add(firstClient);
   sseClients.add(secondClient);
+  sseClients.add(thirdClient);
 
   try {
     await core.ensureStorage();
@@ -180,9 +207,129 @@ test('state core coalesces burst state broadcasts for SSE clients', async () => 
     assert.equal(ssePackets(firstClient, 'heartbeat').length, 1);
     assert.equal(ssePackets(secondClient, 'state-delta').length, 1);
     assert.equal(ssePackets(secondClient, 'heartbeat').length, 1);
+    assert.equal(ssePackets(thirdClient, 'state-delta').length, 1);
+    assert.equal(ssePackets(thirdClient, 'heartbeat').length, 1);
+    assert.equal(publicStateCalls, 2);
+    assert.equal(ssePackets(firstClient, 'state-delta')[0], ssePackets(secondClient, 'state-delta')[0]);
+    assert.notEqual(ssePackets(firstClient, 'state-delta')[0], ssePackets(thirdClient, 'state-delta')[0]);
     assert.match(ssePackets(firstClient, 'state-delta')[0], /"type":"state_patch"/);
-    assert.match(ssePackets(firstClient, 'state-delta')[0], /"requestId":"first"/);
-    assert.match(ssePackets(secondClient, 'state-delta')[0], /"requestId":"second"/);
+    assert.match(ssePackets(firstClient, 'state-delta')[0], /"spaceId":"chan_all"/);
+    assert.match(ssePackets(thirdClient, 'state-delta')[0], /"spaceId":"chan_design"/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('state core broadcasts agent realtime events without forcing state patches', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-realtime-'));
+  const activityDir = path.join(tmp, 'activity-logs');
+  await mkdir(activityDir, { recursive: true });
+  const sseClients = new Set();
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    ACTIVITY_LOG_DIR: activityDir,
+    STATE_BROADCAST_DEBOUNCE_MS: 0,
+    sseClients,
+  });
+  const channelClient = fakeSseClient({ url: '/api/events?spaceType=channel&spaceId=chan_all' });
+  const otherChannelClient = fakeSseClient({ url: '/api/events?spaceType=channel&spaceId=chan_other' });
+  sseClients.add(channelClient);
+  sseClients.add(otherChannelClient);
+
+  try {
+    await core.ensureStorage();
+    core.setAgentStatus(core.state.agents[0], 'working', 'test', { forceEvent: true });
+    core.addSystemEvent('message_sent', 'Message sent.', {
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      messageId: 'msg_1',
+    });
+
+    const channelEvents = sseEnvelopes(channelClient, 'realtime-event');
+    const otherEvents = sseEnvelopes(otherChannelClient, 'realtime-event');
+    assert.ok(channelEvents.some((event) => event.eventType === 'agent_status_changed'));
+    assert.ok(otherEvents.some((event) => event.eventType === 'agent_status_changed'));
+    assert.ok(channelEvents.some((event) => event.payload?.event?.type === 'message_sent'));
+    assert.equal(otherEvents.some((event) => event.payload?.event?.type === 'message_sent'), false);
+    assert.equal(ssePackets(channelClient, 'state-delta').length, 0);
+    assert.equal(ssePackets(otherChannelClient, 'state-delta').length, 0);
+    await core.flushActivityLog();
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('state core coalesces pending state patches for backpressured SSE clients', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-slow-sse-'));
+  const sseClients = new Set();
+  let publicStateCalls = 0;
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    STATE_BROADCAST_DEBOUNCE_MS: 0,
+    sseClients,
+    publicState: () => ({ snapshotSeq: publicStateCalls += 1 }),
+  });
+  const slowClient = fakeSseClient({ url: '/api/events?spaceType=channel&spaceId=chan_all' }, { blockWrites: true });
+  sseClients.add(slowClient);
+
+  try {
+    await core.ensureStorage();
+    core.broadcastState({ immediate: true });
+    core.broadcastState({ immediate: true });
+    core.broadcastState({ immediate: true });
+
+    assert.equal(ssePackets(slowClient, 'state-delta').length, 1);
+    assert.equal(publicStateCalls, 3);
+
+    slowClient.emitDrain();
+
+    const patches = sseEnvelopes(slowClient, 'state-delta');
+    assert.equal(patches.length, 2);
+    assert.equal(patches.at(-1).payload.snapshotSeq, 3);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('state core keeps state generation bounded for 100 SSE clients during agent status bursts', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-sse-load-'));
+  const activityDir = path.join(tmp, 'activity-logs');
+  await mkdir(activityDir, { recursive: true });
+  const sseClients = new Set();
+  let publicStateCalls = 0;
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    ACTIVITY_LOG_DIR: activityDir,
+    STATE_BROADCAST_DEBOUNCE_MS: 0,
+    sseClients,
+    publicState: () => ({ snapshotSeq: publicStateCalls += 1 }),
+  });
+  const clients = Array.from({ length: 100 }, () => fakeSseClient({
+    url: '/api/events?spaceType=channel&spaceId=chan_all&messageLimit=50&threadRootLimit=30',
+    headers: { cookie: 'magclaw_session=same-user' },
+  }));
+  for (const client of clients) sseClients.add(client);
+
+  try {
+    await core.ensureStorage();
+    core.broadcastState({ immediate: true, skipCloudPush: true });
+    assert.equal(publicStateCalls, 1);
+    assert.equal(clients.every((client) => ssePackets(client, 'state-delta').length === 1), true);
+
+    const agent = core.state.agents[0];
+    for (let index = 0; index < 10; index += 1) {
+      core.setAgentStatus(agent, index % 2 === 0 ? 'working' : 'thinking', 'load_test', { forceEvent: true });
+    }
+
+    assert.equal(publicStateCalls, 1);
+    assert.equal(clients.every((client) => ssePackets(client, 'state-delta').length === 1), true);
+    assert.equal(clients.every((client) => ssePackets(client, 'realtime-event').length >= 10), true);
+    const averagePacketBytes = clients
+      .flatMap((client) => client.writes)
+      .reduce((sum, packet) => sum + Buffer.byteLength(packet), 0) / clients.reduce((sum, client) => sum + client.writes.length, 0);
+    assert.ok(averagePacketBytes > 0);
+    await core.flushActivityLog();
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
@@ -216,7 +363,7 @@ test('state core records scoped realtime journal events for SSE replay', async (
     }, 0);
     assert.equal(replay.gap, false);
     assert.equal(replay.currentSeq, 3);
-    assert.deepEqual(replay.events.map((item) => item.eventType), ['system_event', 'system_event']);
+    assert.deepEqual(replay.events.map((item) => item.eventType), ['system_event', 'system_event', 'agent_status_changed']);
     await core.flushActivityLog();
   } finally {
     await rm(tmp, { recursive: true, force: true });

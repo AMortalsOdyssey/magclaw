@@ -249,6 +249,8 @@ export function createStateCore(deps) {
       attachments: [],
       projects: [],
       channelMemberProposals: [],
+      agentRuntimeSessions: [],
+      conversationGrants: [],
       workItems: [],
         routeEvents: [],
         events: [],
@@ -545,7 +547,7 @@ export function createStateCore(deps) {
         }
         if (!workspace.ownerUserId && owners[0]?.userId) workspace.ownerUserId = owners[0].userId;
       }
-      for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'reminders', 'missions', 'runs', 'attachments', 'projects', 'channelMemberProposals', 'workItems', 'routeEvents', 'events', 'systemNotifications']) {
+      for (const key of ['humans', 'computers', 'agents', 'channels', 'dms', 'messages', 'replies', 'tasks', 'reminders', 'missions', 'runs', 'attachments', 'projects', 'channelMemberProposals', 'agentRuntimeSessions', 'conversationGrants', 'workItems', 'routeEvents', 'events', 'systemNotifications']) {
         if (!Array.isArray(state[key])) state[key] = fresh[key] || [];
       }
     state.inboxReads = state.inboxReads && typeof state.inboxReads === 'object' && !Array.isArray(state.inboxReads)
@@ -620,6 +622,41 @@ export function createStateCore(deps) {
       item.parentMessageId = item.parentMessageId || null;
       item.target = item.target || targetForConversation(item.spaceType, item.spaceId, item.parentMessageId);
       item.sendCount = Number(item.sendCount || 0);
+    }
+    for (const session of state.agentRuntimeSessions) {
+      session.id = session.id || makeId('ars');
+      session.workspaceId = session.workspaceId || state.connection?.workspaceId || 'local';
+      session.agentId = session.agentId || null;
+      session.computerId = session.computerId || null;
+      session.sessionKey = session.sessionKey || null;
+      session.target = session.target || targetForConversation(session.spaceType, session.spaceId, session.parentMessageId || null);
+      session.spaceType = session.spaceType === 'dm' ? 'dm' : 'channel';
+      session.spaceId = session.spaceId || '';
+      session.parentMessageId = session.parentMessageId || null;
+      session.codexThreadId = session.codexThreadId || null;
+      session.status = session.status || 'idle';
+      session.activeTurnIds = normalizeIds(session.activeTurnIds || []);
+      session.activeTargetKeys = normalizeIds(session.activeTargetKeys || []);
+      session.lastTurnAt = session.lastTurnAt || null;
+      session.createdAt = session.createdAt || now();
+      session.updatedAt = session.updatedAt || session.createdAt;
+      session.metadata = session.metadata && typeof session.metadata === 'object' ? session.metadata : {};
+    }
+    for (const grant of state.conversationGrants) {
+      grant.id = grant.id || makeId('grant');
+      grant.workspaceId = grant.workspaceId || state.connection?.workspaceId || 'local';
+      grant.grantorHumanId = grant.grantorHumanId || grant.humanId || null;
+      grant.agentId = grant.agentId || null;
+      grant.sourceTarget = grant.sourceTarget || '';
+      grant.allowedRecipients = normalizeIds(grant.allowedRecipients || grant.allowedRecipientIds || []);
+      grant.allowedTargets = normalizeIds(grant.allowedTargets || []);
+      grant.actions = normalizeIds(grant.actions?.length ? grant.actions : ['read', 'summarize']);
+      grant.status = grant.revokedAt ? 'revoked' : (grant.status || 'active');
+      grant.sourceMessageId = grant.sourceMessageId || null;
+      grant.scopeText = String(grant.scopeText || grant.sourceText || '').trim();
+      grant.createdAt = grant.createdAt || now();
+      grant.updatedAt = grant.updatedAt || null;
+      grant.revokedAt = grant.revokedAt || null;
     }
     for (const attachment of state.attachments) {
       attachment.source = attachment.source || 'upload';
@@ -945,6 +982,8 @@ export function createStateCore(deps) {
     state.cloud.realtimeEvents = all.filter((event) => !drop.has(event.id));
   }
 
+  const REALTIME_BROADCAST_EVENT_TYPES = new Set(['agent_status_changed', 'system_event', 'run_event']);
+
   function recordRealtimeEvent(eventType, payload = {}, scope = {}) {
     if (!state?.cloud) return null;
     state.cloud.realtimeEvents = Array.isArray(state.cloud.realtimeEvents) ? state.cloud.realtimeEvents : [];
@@ -963,6 +1002,9 @@ export function createStateCore(deps) {
     };
     state.cloud.realtimeEvents.push(event);
     trimRealtimeEvents(workspaceId);
+    if (REALTIME_BROADCAST_EVENT_TYPES.has(event.eventType)) {
+      broadcastRealtimeEvent(event);
+    }
     return event;
   }
 
@@ -978,7 +1020,7 @@ export function createStateCore(deps) {
   function realtimeEventMatchesRequest(event, req = null) {
     const requestScope = requestRealtimeScope(req);
     if (!requestScope.spaceType && !requestScope.spaceId && !requestScope.threadMessageId) return true;
-    if (event.scopeType === 'workspace') return true;
+    if (event.scopeType === 'workspace' || event.scopeType === 'agent') return true;
     if (requestScope.threadMessageId && event.threadMessageId === requestScope.threadMessageId) return true;
     if (requestScope.threadMessageId && event.scopeType === 'thread' && event.scopeId === requestScope.threadMessageId) return true;
     if (requestScope.spaceType && requestScope.spaceId) {
@@ -1025,21 +1067,137 @@ export function createStateCore(deps) {
     const code = String(error?.code || error?.errno || '');
     return code === 'ECONNRESET' || code === 'EPIPE' || code === 'ERR_STREAM_PREMATURE_CLOSE';
   }
+
+  function logSseWriteError(error) {
+    if (expectedStreamClose(error)) return;
+    const code = String(error?.code || error?.errno || 'UNKNOWN');
+    const message = String(error?.message || error || 'SSE broadcast error').replace(/\s+/g, ' ').slice(0, 300);
+    console.warn(`[state-core] sse broadcast error code=${code} message=${message}`);
+  }
+
+  function ssePacket(type, body) {
+    return `event: ${type}\ndata: ${JSON.stringify(body)}\n\n`;
+  }
+
+  function requestParam(req, name) {
+    try {
+      const url = new URL(req?.url || '/api/events', 'http://127.0.0.1');
+      return url.searchParams.get(name) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function requestPath(req) {
+    try {
+      const url = new URL(req?.url || '/api/events', 'http://127.0.0.1');
+      return url.pathname || '/api/events';
+    } catch {
+      return '/api/events';
+    }
+  }
+
+  function hashText(value) {
+    let hash = 2166136261;
+    const text = String(value || '');
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  }
+
+  function sseStateScopeCacheKey(req = null) {
+    const headers = req?.headers || {};
+    const cookieHash = hashText(`${headers.cookie || ''}|${headers.authorization || ''}`);
+    const scopeParts = [
+      requestPath(req),
+      headers['x-magclaw-workspace-id'] || '',
+      headers['x-magclaw-server-slug'] || '',
+      requestParam(req, 'workspaceId'),
+      requestParam(req, 'serverSlug'),
+      requestParam(req, 'spaceType'),
+      requestParam(req, 'spaceId'),
+      requestParam(req, 'threadMessageId'),
+      requestParam(req, 'messageLimit'),
+      requestParam(req, 'threadRootLimit'),
+      requestParam(req, 'eventLimit'),
+    ];
+    return `${scopeParts.map((part) => encodeURIComponent(part)).join('|')}|auth=${cookieHash}`;
+  }
+
+  function ensureSseDrainHandler(res) {
+    if (res.magclawSseDrainAttached || typeof res.once !== 'function') return;
+    res.magclawSseDrainAttached = true;
+    res.once('drain', () => {
+      res.magclawSseDrainAttached = false;
+      flushPendingSsePackets(res);
+    });
+  }
+
+  function queuePendingSsePacket(res, packet, coalesceKey) {
+    res.magclawPendingSsePackets = res.magclawPendingSsePackets instanceof Map
+      ? res.magclawPendingSsePackets
+      : new Map();
+    res.magclawPendingSsePackets.set(String(coalesceKey || 'packet'), packet);
+    res.magclawSseBackpressure = true;
+    ensureSseDrainHandler(res);
+  }
+
+  function writeSsePacket(res, packet, { coalesceKey = 'packet' } = {}) {
+    if (!res || typeof res.write !== 'function') return;
+    if (res.magclawSseBackpressure || res.writableNeedDrain) {
+      queuePendingSsePacket(res, packet, coalesceKey);
+      return;
+    }
+    try {
+      const accepted = res.write(packet);
+      if (accepted === false) {
+        res.magclawSseBackpressure = true;
+        ensureSseDrainHandler(res);
+      }
+    } catch (error) {
+      res.magclawPendingSsePackets?.clear?.();
+      sseClients.delete(res);
+      logSseWriteError(error);
+    }
+  }
+
+  function flushPendingSsePackets(res) {
+    const pending = res?.magclawPendingSsePackets;
+    if (!(pending instanceof Map) || !pending.size) {
+      if (res) res.magclawSseBackpressure = false;
+      return;
+    }
+    const entries = [...pending.entries()];
+    pending.clear();
+    res.magclawSseBackpressure = false;
+    for (let index = 0; index < entries.length; index += 1) {
+      const [coalesceKey, packet] = entries[index];
+      writeSsePacket(res, packet, { coalesceKey });
+      if (res.magclawSseBackpressure || res.writableNeedDrain) {
+        const remaining = entries.slice(index + 1);
+        for (const [key, queuedPacket] of remaining) queuePendingSsePacket(res, queuedPacket, key);
+        break;
+      }
+    }
+  }
+
+  function broadcastRealtimeEvent(event) {
+    if (!sseClients.size) return;
+    const envelope = realtimeEventEnvelope(event);
+    const packet = ssePacket('realtime-event', envelope);
+    const coalesceKey = `realtime-event:${envelope.eventType}:${envelope.scopeType}:${envelope.scopeId || ''}`;
+    for (const res of sseClients) {
+      if (!realtimeEventMatchesRequest(event, res.magclawRequest || null)) continue;
+      writeSsePacket(res, packet, { coalesceKey });
+    }
+  }
   
   function broadcast(type, payload) {
     for (const res of sseClients) {
       const body = typeof payload === 'function' ? payload(res.magclawRequest || null) : payload;
-      const packet = `event: ${type}\ndata: ${JSON.stringify(body)}\n\n`;
-      try {
-        res.write(packet);
-      } catch (error) {
-        sseClients.delete(res);
-        if (!expectedStreamClose(error)) {
-          const code = String(error?.code || error?.errno || 'UNKNOWN');
-          const message = String(error?.message || error || 'SSE broadcast error').replace(/\s+/g, ' ').slice(0, 300);
-          console.warn(`[state-core] sse broadcast error code=${code} message=${message}`);
-        }
-      }
+      writeSsePacket(res, ssePacket(type, body), { coalesceKey: type });
     }
   }
 
@@ -1064,18 +1222,16 @@ export function createStateCore(deps) {
 
   function broadcastStateDelta() {
     const seq = currentSseSeq();
+    const packetsByScope = new Map();
     for (const res of sseClients) {
-      const packet = `event: state-delta\ndata: ${JSON.stringify(stateDeltaEnvelope(res.magclawRequest || null, seq))}\n\n`;
-      try {
-        res.write(packet);
-      } catch (error) {
-        sseClients.delete(res);
-        if (!expectedStreamClose(error)) {
-          const code = String(error?.code || error?.errno || 'UNKNOWN');
-          const message = String(error?.message || error || 'SSE broadcast error').replace(/\s+/g, ' ').slice(0, 300);
-          console.warn(`[state-core] sse broadcast error code=${code} message=${message}`);
-        }
+      const req = res.magclawRequest || null;
+      const cacheKey = sseStateScopeCacheKey(req);
+      let packet = packetsByScope.get(cacheKey);
+      if (!packet) {
+        packet = ssePacket('state-delta', stateDeltaEnvelope(req, seq));
+        packetsByScope.set(cacheKey, packet);
       }
+      writeSsePacket(res, packet, { coalesceKey: 'state-delta' });
     }
   }
 
@@ -1104,7 +1260,7 @@ export function createStateCore(deps) {
   }
 
   function broadcastState(options = {}) {
-    scheduleStateBroadcast(options);
+    if (!options.realtimeOnly) scheduleStateBroadcast(options);
     if (!options.skipCloudPush) queueCloudPush('state_changed');
   }
 
@@ -1168,7 +1324,9 @@ export function createStateCore(deps) {
     agent.statusUpdatedAt = now();
     agent.updatedAt = agent.statusUpdatedAt;
     agent.heartbeatAt = agent.statusUpdatedAt;
-    if (!agentStatusIsBusy(nextStatus)) {
+    if (extra.runtimeActivity !== undefined) {
+      agent.runtimeActivity = extra.runtimeActivity;
+    } else if (!agentStatusIsBusy(nextStatus)) {
       agent.runtimeActivity = null;
     }
     if (extra.activeWorkItemIds !== undefined) {
@@ -1200,10 +1358,12 @@ export function createStateCore(deps) {
   function reconcileAgentStatusHeartbeats() {
     if (!state?.agents?.length) return false;
     let changed = false;
-    const activeAgentIds = new Set([...agentProcesses.keys()]);
+    const activeAgentIds = new Set([...agentProcesses.values()].map((proc) => proc?.agentId).filter(Boolean));
     const threshold = Date.now() - AGENT_STATUS_STALE_MS;
     for (const agent of state.agents) {
-      const activeProc = activeAgentIds.has(agent.id) ? agentProcesses.get(agent.id) : null;
+      const activeProc = activeAgentIds.has(agent.id)
+        ? [...agentProcesses.values()].find((proc) => proc?.agentId === agent.id) || null
+        : null;
       if (activeProc) {
         if (agentStatusIsBusy(agent.status) && !runtimeProcessHasActiveWork(activeProc)) {
           setAgentStatus(agent, 'idle', 'activity_probe_idle');

@@ -210,6 +210,23 @@ test('run-event SSE updates do not repaint active chat panes or force scroll res
   assert.match(runEventSource, /selectedAgentId/);
 });
 
+test('agent status realtime events patch state without a direct full render call', async () => {
+  const app = await readAppSource();
+  const realtimeSource = app.slice(
+    app.indexOf('function applyRealtimeJournalEvent(envelope)'),
+    app.indexOf('function applyPresenceHeartbeat(heartbeat)'),
+  );
+  const agentStatusSource = realtimeSource.slice(
+    realtimeSource.indexOf("if (eventType === 'agent_status_changed'"),
+    realtimeSource.lastIndexOf('}')
+  );
+
+  assert.match(agentStatusSource, /eventType === 'agent_status_changed'/);
+  assert.match(agentStatusSource, /runtimeActivity: incoming\.runtimeActivity \|\| null/);
+  assert.match(agentStatusSource, /applyStateUpdate\(\{ \.\.\.appState, agents \}\)/);
+  assert.doesNotMatch(agentStatusSource, /render\(\)/);
+});
+
 test('state SSE updates do not send an immediate presence heartbeat on every event', async () => {
   const app = await readAppSource();
   const heartbeatSource = app.slice(
