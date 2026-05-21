@@ -40,7 +40,6 @@ import {
   fanoutApiResponseText,
   parseFanoutApiJson,
 } from './fanout-api.js';
-import { llmConfigFromEnv, llmConfigReady } from './llm-client.js';
 import {
   applyMentions,
   escapeRegExp,
@@ -269,7 +268,6 @@ const MARKDOWN_MAINTENANCE_ENABLED = !/^(0|false|no)$/i.test(String(process.env.
 const MARKDOWN_MAINTENANCE_INTERVAL_MS = Math.max(60_000, Number(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_INTERVAL_MS || 6 * 60 * 60_000));
 const MARKDOWN_MAINTENANCE_STARTUP_DELAY_MS = Math.max(0, Number(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_STARTUP_DELAY_MS || 120_000));
 const MARKDOWN_MAINTENANCE_SEMANTIC = !/^(0|false|no)$/i.test(String(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_SEMANTIC || 'true'));
-const MARKDOWN_MAINTENANCE_SEMANTIC_READY = MARKDOWN_MAINTENANCE_SEMANTIC && llmConfigReady(llmConfigFromEnv());
 const MARKDOWN_MAINTENANCE_MAX_AGENTS = Math.max(1, Number(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_MAX_AGENTS || 50));
 const MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT = Math.max(1, Number(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT || 20));
 const CODEX_STREAM_RETRY_LIMIT = codexStreamRetryLimit();
@@ -988,12 +986,50 @@ const markdownApplier = createMarkdownOperationApplier({
   persistMarkdownOperationIndex: (...args) => cloudRepository?.persistMarkdownOperationIndex?.(...args),
 });
 
+function recordSessionSummaryLlmIssue(issue = {}) {
+  const message = '会话总结的 LLM 异常';
+  const workspaceId = String(issue.workspaceId || issue.agent?.workspaceId || state.cloud?.workspace?.id || 'local');
+  const nowIso = now();
+  const existing = (state.systemNotifications || []).find((item) => (
+    item
+    && String(item.event || item.type || '') === 'session_summary_llm_error'
+    && String(item.workspaceId || '') === workspaceId
+  ));
+  if (existing) {
+    existing.message = message;
+    existing.updatedAt = nowIso;
+    existing.lastSeenAt = nowIso;
+    existing.occurrenceCount = Math.max(1, Number(existing.occurrenceCount || 1)) + 1;
+  } else {
+    state.systemNotifications = Array.isArray(state.systemNotifications) ? state.systemNotifications : [];
+    state.systemNotifications.push({
+      id: makeId('sys'),
+      type: 'system_warning',
+      event: 'session_summary_llm_error',
+      workspaceId,
+      message,
+      severity: 'warning',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      occurrenceCount: 1,
+    });
+    if (state.systemNotifications.length > 500) {
+      state.systemNotifications.splice(0, state.systemNotifications.length - 500);
+    }
+  }
+  return persistState().then(broadcastState).catch((error) => {
+    console.error(`[markdown-maintenance] failed to persist LLM issue notification workspace=${workspaceId}`, error);
+  });
+}
+
 const markdownMaintenance = createMarkdownMaintenanceManager({
   addSystemEvent,
   ensureAgentWorkspace,
+  logLlmIssue: (message, detail) => console.error(message, detail),
   makeId,
   now,
   persistMarkdownMaintenanceRun: (...args) => cloudRepository?.persistMarkdownMaintenanceRun?.(...args),
+  reportLlmIssue: recordSessionSummaryLlmIssue,
   submitAgentMarkdownOperation: markdownApplier.submitAgentMarkdownOperation,
 });
 
@@ -1374,7 +1410,7 @@ async function runMarkdownMaintenanceSweep(reason = 'interval') {
         });
       for (const relPath of files.slice(0, MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT)) {
         const result = await markdownMaintenance.maintainAgentMarkdown(agent, relPath, {
-          semantic: MARKDOWN_MAINTENANCE_SEMANTIC_READY,
+          semantic: MARKDOWN_MAINTENANCE_SEMANTIC,
         }).catch((error) => {
           failed += 1;
           addSystemEvent('markdown_maintenance_error', `Markdown maintenance failed for ${agent.name || agent.id} ${relPath}: ${error.message}`, {

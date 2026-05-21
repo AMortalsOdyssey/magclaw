@@ -1835,7 +1835,14 @@ function renderConsoleOverview() {
   const user = appState?.cloud?.auth?.currentUser || {};
   const pendingCount = consoleInvitationRows().filter((item) => item?.status === 'pending').length;
   const serversCount = consoleServers().length;
+  const summaryLlmIssue = sessionSummaryLlmIssueNotifications().length > 0;
   return `
+    ${summaryLlmIssue ? `
+      <div class="pixel-panel cloud-card console-alert-card" role="status" aria-live="polite">
+        <span class="console-alert-mark" aria-hidden="true">!</span>
+        <strong>会话总结的 LLM 异常</strong>
+      </div>
+    ` : ''}
     <section class="console-grid">
       <div class="pixel-panel cloud-card console-hero-card">
         <p class="eyebrow">Console</p>

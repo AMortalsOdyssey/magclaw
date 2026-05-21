@@ -2057,6 +2057,20 @@ test('left rail and active shell controls use the MagClaw pink accent', async ()
   assert.doesNotMatch(railSource, /renderLeftRailButton\('members'[\s\S]*normalAgents\.length \|\| ''/);
 });
 
+test('console surfaces show session summary LLM alerts without exposing internals', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const railSource = app.slice(app.indexOf('function renderRail()'), app.indexOf('function currentServerProfile()'));
+  const consoleSource = app.slice(app.indexOf('function renderConsoleOverview()'), app.indexOf('function renderConsoleInvitations()'));
+
+  assert.match(app, /function sessionSummaryLlmIssueNotifications\(\)/);
+  assert.match(railSource, /renderLeftRailButton\('console'[\s\S]*sessionSummaryLlmIssueNotifications\(\)\.length \? '!' : ''/);
+  assert.match(consoleSource, /会话总结的 LLM 异常/);
+  assert.doesNotMatch(consoleSource, /detail|stack|error/i);
+  assert.match(styles, /\.console-alert-card/);
+  assert.match(styles, /\.console-alert-mark/);
+});
+
 test('agent create modal uses native selects for runtime, model, and reasoning choices', async () => {
   const app = await readAppSource();
   const agentModalSource = app.slice(

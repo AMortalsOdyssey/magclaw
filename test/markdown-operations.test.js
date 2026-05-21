@@ -215,3 +215,34 @@ test('markdown maintenance applies cleanup through the applier and records run m
     await rm(tmp, { recursive: true, force: true });
   }
 });
+
+test('markdown maintenance reports global LLM failures with generic UI copy and detailed logs', async () => {
+  const { agent, applier, root, tmp } = await makeHarness();
+  const issues = [];
+  const errors = [];
+  try {
+    await writeFile(path.join(root, 'MEMORY.md'), '# One\n\n## 近期工作\n- seed\n');
+    const maintenance = createMarkdownMaintenanceManager({
+      addSystemEvent: () => {},
+      ensureAgentWorkspace: async () => root,
+      llmConfig: { baseUrl: '', apiKey: '', model: '' },
+      logLlmIssue: (message, detail) => errors.push({ message, detail }),
+      reportLlmIssue: (issue) => issues.push(issue),
+      submitAgentMarkdownOperation: applier.submitAgentMarkdownOperation,
+    });
+
+    const result = await maintenance.maintainAgentMarkdown(agent, 'MEMORY.md', { semantic: true });
+
+    assert.equal(result.semantic, 'llm_unconfigured');
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].message, '会话总结的 LLM 异常');
+    assert.equal(issues[0].workspaceId, 'wsp_one');
+    assert.equal(issues[0].agentId, 'agt_one');
+    assert.match(issues[0].detail, /not configured/i);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].message, /global LLM unavailable/i);
+    assert.match(JSON.stringify(errors[0].detail), /MEMORY\.md/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});

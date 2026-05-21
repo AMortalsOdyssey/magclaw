@@ -530,6 +530,26 @@
   gap: 14px;
 }
 
+.console-alert-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  border-color: var(--warning);
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.console-alert-mark {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 2px solid var(--border);
+  background: var(--warning);
+  color: #1a1a1a;
+  font-weight: 900;
+}
+
 .console-hero-card,
 .console-stat-card,
 .console-row {

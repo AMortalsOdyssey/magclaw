@@ -4,6 +4,8 @@ import { llmConfigFromEnv, llmConfigReady, requestLlmJson } from './llm-client.j
 import { markdownContentHash } from './markdown-oplog.js';
 import { safePathWithin } from './path-utils.js';
 
+export const SESSION_SUMMARY_LLM_ERROR_MESSAGE = '会话总结的 LLM 异常';
+
 function maintenancePrompt() {
   return [
     'You are MagClaw Markdown memory maintenance.',
@@ -22,9 +24,12 @@ export function createMarkdownMaintenanceManager(deps = {}) {
     addSystemEvent = () => {},
     ensureAgentWorkspace,
     llmConfig = llmConfigFromEnv(),
+    logLlmIssue = (message, detail) => console.error(message, detail),
     makeId = (prefix) => `${prefix}_${Date.now()}`,
     now = () => new Date().toISOString(),
     persistMarkdownMaintenanceRun = null,
+    reportLlmIssue = null,
+    requestLlmJson: requestLlmJsonImpl = requestLlmJson,
     submitAgentMarkdownOperation,
   } = deps;
 
@@ -32,6 +37,34 @@ export function createMarkdownMaintenanceManager(deps = {}) {
     if (typeof persistMarkdownMaintenanceRun !== 'function') return;
     await persistMarkdownMaintenanceRun(record).catch((error) => {
       console.warn(`[markdown-maintenance] run persist failed relPath=${record.relPath || ''} message=${String(error?.message || error).slice(0, 240)}`);
+    });
+  }
+
+  async function reportGlobalLlmIssue(agent, relPath, reason, detail = {}) {
+    const workspaceId = String(agent?.workspaceId || 'local');
+    const error = detail.error;
+    const logDetail = {
+      workspaceId,
+      agentId: agent?.id || '',
+      agentName: agent?.name || '',
+      relPath,
+      reason,
+      model: llmConfig?.model || '',
+      baseUrl: llmConfig?.baseUrl || '',
+      errorMessage: error ? String(error?.message || error) : '',
+      errorStack: error?.stack || '',
+      ...detail,
+      error: undefined,
+    };
+    logLlmIssue?.('[markdown-maintenance] global LLM unavailable for session summary maintenance', logDetail);
+    if (typeof reportLlmIssue !== 'function') return;
+    await reportLlmIssue({
+      message: SESSION_SUMMARY_LLM_ERROR_MESSAGE,
+      workspaceId,
+      agentId: agent?.id || '',
+      relPath,
+      reason,
+      detail: error ? String(error?.message || error) : String(detail.message || reason || ''),
     });
   }
 
@@ -76,6 +109,9 @@ export function createMarkdownMaintenanceManager(deps = {}) {
         agentId: agent.id,
         relPath,
       });
+      await reportGlobalLlmIssue(agent, relPath, 'llm_unconfigured', {
+        message: 'Global LLM is not configured.',
+      });
       await persistRun({
         id: makeId('mdmaint'),
         workspaceId: String(agent.workspaceId || 'local'),
@@ -90,20 +126,46 @@ export function createMarkdownMaintenanceManager(deps = {}) {
       });
       return { ok: true, deterministicChanged: cleaned !== existing, semantic: 'llm_unconfigured' };
     }
-    const result = await requestLlmJson({
-      config: llmConfig,
-      system: maintenancePrompt(),
-      user: JSON.stringify({
-        agent: { id: agent.id, name: agent.name || '' },
+    let result;
+    try {
+      result = await requestLlmJsonImpl({
+        config: llmConfig,
+        system: maintenancePrompt(),
+        user: JSON.stringify({
+          agent: { id: agent.id, name: agent.name || '' },
+          relPath,
+          markdown: cleaned,
+        }),
+        maxTokens: options.maxTokens || 4000,
+      });
+    } catch (error) {
+      addSystemEvent('agent_memory_maintenance_error', 'Markdown semantic maintenance failed because global LLM request failed.', {
+        agentId: agent.id,
         relPath,
-        markdown: cleaned,
-      }),
-      maxTokens: options.maxTokens || 4000,
-    });
+      });
+      await reportGlobalLlmIssue(agent, relPath, 'llm_request_failed', { error });
+      await persistRun({
+        id: makeId('mdmaint'),
+        workspaceId: String(agent.workspaceId || 'local'),
+        agentId: agent.id,
+        relPath,
+        status: 'failed',
+        model: llmConfig.model,
+        beforeHash: markdownContentHash(cleaned),
+        afterHash: markdownContentHash(cleaned),
+        summary: 'semantic maintenance request failed',
+        createdAt: now(),
+        metadata: { mode: 'semantic', reason: 'llm_request_failed', error: String(error?.message || error).slice(0, 500) },
+      });
+      return { ok: false, deterministicChanged: cleaned !== existing, semantic: 'llm_request_failed' };
+    }
     if (!validRewrite(result)) {
       addSystemEvent('agent_memory_maintenance_error', 'Markdown semantic maintenance returned invalid JSON.', {
         agentId: agent.id,
         relPath,
+      });
+      await reportGlobalLlmIssue(agent, relPath, 'llm_invalid_output', {
+        message: 'Global LLM returned invalid maintenance JSON.',
       });
       await persistRun({
         id: makeId('mdmaint'),

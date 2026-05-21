@@ -169,7 +169,7 @@ function renderRail() {
       ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>')}
       ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>')}
       <span class="left-rail-spacer"></span>
-      ${renderLeftRailButton('console', railMode, 'Console', '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 8h8"/><path d="M8 12h4"/><path d="M14 12h2"/><path d="M8 16h8"/>')}
+      ${renderLeftRailButton('console', railMode, 'Console', '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 8h8"/><path d="M8 12h4"/><path d="M14 12h2"/><path d="M8 16h8"/>', sessionSummaryLlmIssueNotifications().length ? '!' : '')}
       ${renderAccountRailButton(railMode)}
     </div>
   `;
@@ -371,12 +371,25 @@ function renderSettingsRail() {
   `;
 }
 
+function sessionSummaryLlmIssueNotifications() {
+  const items = [...(appState?.cloud?.systemNotifications || []), ...(appState?.systemNotifications || [])];
+  const seen = new Set();
+  return items.filter((item) => {
+    const type = String(item?.event || item?.type || '');
+    const id = String(item?.id || `${type}:${item?.createdAt || ''}`);
+    if (type !== 'session_summary_llm_error' || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 function renderConsoleRail() {
   const pendingCount = consoleInvitationRows().filter((item) => item?.status === 'pending').length;
   const serversCount = consoleServers().length;
   const lostCount = consoleDeletedServers().length;
+  const issueCount = sessionSummaryLlmIssueNotifications().length;
   const items = [
-    { id: 'overview', label: 'Overview', meta: 'home' },
+    { id: 'overview', label: 'Overview', meta: issueCount ? '!' : 'home' },
     { id: 'invitations', label: 'Invitations', meta: pendingCount ? `${pendingCount}` : '' },
     { id: 'servers', label: 'Servers', meta: `${serversCount}` },
     { id: 'lost-space', label: 'Lost Space', meta: lostCount ? `${lostCount}` : '' },
