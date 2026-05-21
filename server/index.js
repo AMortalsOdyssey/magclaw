@@ -75,6 +75,10 @@ import {
   publicApiKeyPreview,
 } from './runtime-config.js';
 import {
+  inferAgentPermissionGrant,
+  recordAgentPermissionGrant,
+} from './agent-permissions.js';
+import {
   baseNameFromProjectPath,
   CONTENT_TYPES as contentTypes,
   decodePathSegment,
@@ -1617,6 +1621,7 @@ function messageApiDeps() {
       ? (...args) => cloudRepository.getMessageById(...args)
       : null,
     inferAgentMemoryWriteback,
+    inferAgentPermissionGrant,
     listSpaceMessagesPage: typeof cloudRepository?.listSpaceMessagesPage === 'function'
       ? (...args) => cloudRepository.listSpaceMessagesPage(...args)
       : null,
@@ -1632,6 +1637,7 @@ function messageApiDeps() {
     readJson,
     routeMessageForChannel,
     routeThreadReplyForChannel,
+    recordAgentPermissionGrant,
     scheduleAgentMemoryWriteback,
     searchAgentMemory,
     sendError,

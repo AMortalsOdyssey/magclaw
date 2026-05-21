@@ -110,7 +110,7 @@ export function createMissionRunner(deps) {
       '--json',
       '--skip-git-repo-check',
       '--sandbox',
-      state.settings.sandbox || 'workspace-write',
+      state.settings.sandbox || 'danger-full-access',
       '-C',
       workspace,
       '-o',

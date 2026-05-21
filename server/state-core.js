@@ -105,7 +105,7 @@ export function createStateCore(deps) {
         codexPath: process.env.CODEX_PATH || '/Applications/Codex.app/Contents/Resources/codex',
         defaultWorkspace: ROOT,
         model: process.env.CODEX_MODEL || '',
-        sandbox: process.env.CODEX_SANDBOX || 'workspace-write',
+        sandbox: process.env.CODEX_SANDBOX || 'danger-full-access',
         fanoutApi: normalizeFanoutApiConfig({}),
         chatRuntime: normalizeChatRuntimeConfig({
           enabled: process.env.MAGCLAW_CHAT_FAST_RUNTIME !== '0',

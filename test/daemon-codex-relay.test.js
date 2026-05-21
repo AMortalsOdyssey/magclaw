@@ -412,7 +412,7 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
-test('npm daemon silently declines Codex app-server approval requests instead of hanging the turn', async () => {
+test('npm daemon applies Slock-style Codex permission policy instead of hanging the turn', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-approval-'));
   const fakeCodex = path.join(tmp, 'codex-fake.js');
   const logPath = path.join(tmp, 'codex-log.jsonl');
@@ -478,11 +478,11 @@ process.stdin.on('data', (chunk) => {
       send({ id: message.id, result: { turn: { id: 'turn_approval_safe' } } });
       send({ method: 'turn/started', params: { turn: { id: 'turn_approval_safe' } } });
       setTimeout(requestCommandApproval, 20);
-    } else if (message.id === 701 && message.result?.decision === 'decline') {
+    } else if (message.id === 701 && message.result?.decision === 'approve') {
       requestFileApproval();
-    } else if (message.id === 702 && message.result?.decision === 'decline') {
+    } else if (message.id === 702 && message.result?.decision === 'approve') {
       requestPermissionsApproval();
-    } else if (message.id === 703 && message.result && Object.keys(message.result.permissions || {}).length === 0) {
+    } else if (message.id === 703 && message.result?.permissions?.shell?.sandbox === 'danger-full-access') {
       finishTurn();
     }
   }
@@ -515,17 +515,20 @@ process.stdin.on('data', (chunk) => {
     assert.equal(relay.messages.filter((item) => item.type === 'agent:message').length, 1);
     assert.ok(relay.messages.some((item) => item.type === 'agent:activity'
       && item.activity?.source === 'codex-permission'
-      && item.activity?.decision === 'decline'
+      && item.activity?.decision === 'approve'
       && item.activity?.method === 'item/commandExecution/requestApproval'));
     const entries = (await readFile(logPath, 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line));
     const threadStart = entries.find((entry) => entry.method === 'thread/start');
     const turnStart = entries.find((entry) => entry.method === 'turn/start');
     assert.equal(threadStart.params.approvalPolicy, 'never');
-    assert.equal(threadStart.params.sandbox, 'workspace-write');
+    assert.equal(threadStart.params.sandbox, 'danger-full-access');
+    assert.match(threadStart.params.developerInstructions, /Operation permission profile/);
     assert.equal(turnStart.params.approvalPolicy, 'never');
-    assert.ok(entries.some((entry) => entry.id === 701 && entry.result?.decision === 'decline'));
-    assert.ok(entries.some((entry) => entry.id === 702 && entry.result?.decision === 'decline'));
-    assert.ok(entries.some((entry) => entry.id === 703 && Object.keys(entry.result?.permissions || {}).length === 0));
+    assert.match(turnStart.params.input[0].text, /默认允许常规开发操作/);
+    assert.match(turnStart.params.input[0].text, /高风险动作必须先确认/);
+    assert.ok(entries.some((entry) => entry.id === 701 && entry.result?.decision === 'approve'));
+    assert.ok(entries.some((entry) => entry.id === 702 && entry.result?.decision === 'approve'));
+    assert.ok(entries.some((entry) => entry.id === 703 && entry.result?.permissions?.shell?.sandbox === 'danger-full-access'));
   } finally {
     daemon.kill('SIGINT');
     await Promise.race([

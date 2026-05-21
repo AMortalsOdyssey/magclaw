@@ -391,7 +391,7 @@ async function startCodexAgent(agent, proc, workspace) {
       ...(agent.runtimeSessionId ? { threadId: agent.runtimeSessionId } : {}),
       cwd: workspace,
       approvalPolicy: 'never',
-      sandbox: state.settings.sandbox || 'workspace-write',
+      sandbox: state.settings.sandbox || 'danger-full-access',
       developerInstructions: standingPrompt,
       model: runtime.model,
       ...(codexThreadConfig(runtime) ? { config: codexThreadConfig(runtime) } : {}),

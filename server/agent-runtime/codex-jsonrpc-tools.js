@@ -430,22 +430,30 @@ async function handleCodexPermissionRequest(agent, proc, message) {
   const params = message.params || {};
   const method = String(message.method || '');
   const summary = summarizeCodexPermissionRequest(method, params);
-  const result = codexPermissionDeclineResult(method);
-  addSystemEvent('agent_codex_permission_auto_declined', `${agent.name} auto-declined Codex permission request ${method}.`, {
+  const policy = typeof codexPermissionDecision === 'function'
+    ? codexPermissionDecision(method, params)
+    : { decision: 'decline', reason: 'runtime_policy_unavailable', result: codexPermissionDeclineResult(method) };
+  const eventType = policy.decision === 'approve'
+    ? 'agent_codex_permission_auto_approved'
+    : 'agent_codex_permission_auto_declined';
+  addSystemEvent(eventType, `${agent.name} ${policy.decision === 'approve' ? 'auto-approved' : 'auto-declined'} Codex permission request ${method}.`, {
     agentId: agent.id,
     requestId: message.id,
     sessionId: proc.threadId || null,
     turnId: params.turnId || null,
     threadId: params.threadId || proc.threadId || null,
+    decision: policy.decision,
+    reason: policy.reason || null,
     ...summary,
   });
-  sendCodexAppServerResponse(proc, message.id, result);
-  touchAgentRunProgress(agent, proc, 'permission_auto_declined', {
+  sendCodexAppServerResponse(proc, message.id, policy.result);
+  touchAgentRunProgress(agent, proc, policy.decision === 'approve' ? 'permission_auto_approved' : 'permission_auto_declined', {
     turnId: params.turnId || null,
   });
-  updateAgentRuntimeActivity(agent, proc, 'working', 'Permission request auto-declined by runtime policy.', {
+  updateAgentRuntimeActivity(agent, proc, 'working', `Permission request ${policy.decision === 'approve' ? 'auto-approved' : 'auto-declined'} by runtime policy.`, {
     source: 'codex-permission',
-    decision: 'decline',
+    decision: policy.decision,
+    reason: policy.reason || null,
     ...summary,
   });
   await persistState();

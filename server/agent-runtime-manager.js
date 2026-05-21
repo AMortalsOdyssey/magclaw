@@ -7,6 +7,10 @@ import vm from 'node:vm';
 import { selectAgentAwarenessTargets } from './agent-awareness.js';
 import { buildAgentContextPack, renderAgentContextPack } from './agent-context.js';
 import { codexThreadConfig, parseCodexStreamRetry } from './codex-runtime.js';
+import {
+  codexPermissionDecision,
+  renderAgentPermissionGuidance,
+} from './agent-permissions.js';
 import { normalizeIds } from './mentions.js';
 
 // Agent runtime and delivery manager.
@@ -53,6 +57,8 @@ export function createAgentRuntimeManager(deps) {
     path,
     buildAgentContextPack,
     renderAgentContextPack,
+    codexPermissionDecision,
+    renderAgentPermissionGuidance,
     selectAgentAwarenessTargets,
     codexThreadConfig,
     parseCodexStreamRetry,

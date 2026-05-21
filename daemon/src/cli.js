@@ -121,8 +121,8 @@ function codexApprovalPolicy(env = process.env) {
 }
 
 function codexSandbox(env = process.env) {
-  const value = String(env.MAGCLAW_CODEX_SANDBOX || env.CODEX_SANDBOX || 'workspace-write').trim();
-  return CODEX_SANDBOX_MODES.has(value) ? value : 'workspace-write';
+  const value = String(env.MAGCLAW_CODEX_SANDBOX || env.CODEX_SANDBOX || 'danger-full-access').trim();
+  return CODEX_SANDBOX_MODES.has(value) ? value : 'danger-full-access';
 }
 
 function isCodexPermissionRequest(method) {
@@ -158,6 +158,123 @@ function summarizeCodexPermissionRequest(method, params = {}) {
     : [];
   if (changes.length) summary.paths = changes;
   return summary;
+}
+
+const BASE_ALLOWED_OPERATIONS = [
+  '读写 Agent workspace、用户明确给出的项目路径，以及任务相关的临时文件。',
+  '执行常规开发命令：git status/fetch/pull/clone、安装依赖、运行测试/构建、启动本地服务、查看日志和只读诊断。',
+  '在不触达生产环境的前提下操作测试环境、测试流水线和本地验证流程。',
+];
+
+const BASE_CONFIRMATION_REQUIRED = [
+  '删除整个项目目录、批量删除用户文件、覆盖不可恢复内容，或执行 rm -rf 这类破坏性命令。',
+  'git reset --hard、强推、回滚、取消/终止正在运行的任务或流水线。',
+  '生产部署、test+prod 无法拆分的流水线、生产升级、部署配置变更。',
+  '数据库迁移/清库/批量写入、sudo、系统配置、权限/所有权修改、密钥/cookie/token 处理。',
+];
+
+function cleanPermissionText(value, limit = 260) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+
+function normalizeAgentPermissionGrants(grants = []) {
+  return (Array.isArray(grants) ? grants : [])
+    .filter((grant) => grant && typeof grant === 'object' && grant.kind)
+    .map((grant) => ({
+      kind: String(grant.kind),
+      summary: cleanPermissionText(grant.summary),
+      allowed: [...new Set((Array.isArray(grant.allowed) ? grant.allowed : []).map((item) => cleanPermissionText(item)).filter(Boolean))],
+      requiresConfirmation: [...new Set((Array.isArray(grant.requiresConfirmation) ? grant.requiresConfirmation : []).map((item) => cleanPermissionText(item)).filter(Boolean))],
+    }));
+}
+
+function renderAgentPermissionGuidance(agent = {}) {
+  const grants = normalizeAgentPermissionGrants(agent.permissionGrants);
+  const lines = [
+    'Operation permission profile:',
+    '- 默认允许常规开发操作：' + BASE_ALLOWED_OPERATIONS.join(' '),
+    '- 高风险动作必须先确认：' + BASE_CONFIRMATION_REQUIRED.join(' '),
+    '- 固定确认句：要求用户回复 `确认执行 <动作/路径>` 或同等明确确认后，再执行对应高风险动作。',
+    '- 不要因为需要确认就停止任务；先说明影响、等待用户确认，确认后继续完成剩余工作。',
+  ];
+  if (grants.length) {
+    lines.push('- 已持久授权的默认操作：');
+    for (const grant of grants) {
+      lines.push(`  - ${grant.summary}${grant.allowed.length ? ` 可直接执行：${grant.allowed.join(' ')}` : ''}${grant.requiresConfirmation.length ? ` 仍需确认：${grant.requiresConfirmation.join(' ')}` : ''}`);
+    }
+  } else {
+    lines.push('- 当前没有额外持久授权；按默认开发权限和高风险确认边界执行。');
+  }
+  return lines.join('\n');
+}
+
+function remoteAgentStandingPrompt(agent = {}) {
+  return [
+    `You are ${agent.name || agent.id || 'a MagClaw remote agent'}, a MagClaw agent running on this local computer for real work.`,
+    agent.runtime ? `Runtime: ${agent.runtime}` : '',
+    agent.description ? `Agent description: ${cleanPermissionText(agent.description, 300)}` : '',
+    '',
+    renderAgentPermissionGuidance(agent),
+    '',
+    'Use MagClaw MCP tools for conversation, memory, tasks, reminders, and history. Use shell/file tools for real local work when the user asks for concrete execution.',
+    'Keep durable preferences and permission boundaries in MagClaw memory through write_memory when the user grants or changes them.',
+    'Do not expose machine tokens, secrets, cookies, or private credentials in chat, docs, logs, or commits.',
+  ].filter(Boolean).join('\n');
+}
+
+function commandLooksHighRisk(command) {
+  const value = String(command || '').toLowerCase();
+  if (!value) return false;
+  return [
+    /\bsudo\b/,
+    /\brm\s+(-[a-z]*r[a-z]*f|-rf|-fr)\b/,
+    /\bgit\s+reset\s+--hard\b/,
+    /\bgit\s+push\b.*(--force|-f\b)/,
+    /\b(drop\s+database|truncate\s+table|delete\s+from)\b/,
+    /\b(terraform|tofu)\s+(apply|destroy)\b/,
+    /\bhelm\s+(upgrade|rollback|delete|uninstall)\b/,
+    /\bkubectl\s+(delete|apply|replace|rollout|scale|patch)\b/,
+    /(生产|prod|production).{0,30}(部署|发布|升级|回滚|deploy|release|upgrade|rollback)/,
+    /(部署|发布|升级|回滚|deploy|release|upgrade|rollback).{0,30}(生产|prod|production)/,
+    /(取消|终止|terminate|cancel).{0,30}(流水线|pipeline|部署|deploy)/,
+  ].some((pattern) => pattern.test(value));
+}
+
+function fileChangeLooksHighRisk(params = {}) {
+  const changes = Array.isArray(params.changes) ? params.changes : [];
+  return changes.some((change) => {
+    const action = String(change?.action || change?.kind || change?.type || '').toLowerCase();
+    const filePath = String(change?.path || change?.uri || '');
+    if (/(delete|remove|unlink|rmdir)/.test(action)) return true;
+    if (/\/(\.ssh|\.gnupg|Library\/Keychains)\b/.test(filePath)) return true;
+    return false;
+  });
+}
+
+function codexPermissionDecision(method, params = {}) {
+  const name = String(method || '');
+  let highRisk = false;
+  if (name === 'item/commandExecution/requestApproval') highRisk = commandLooksHighRisk(params.command);
+  if (name === 'item/fileChange/requestApproval') highRisk = fileChangeLooksHighRisk(params);
+  if (highRisk) {
+    return {
+      decision: 'decline',
+      reason: 'high_risk_requires_user_confirmation',
+      result: name === 'item/permissions/requestApproval' ? { permissions: {} } : { decision: 'decline' },
+    };
+  }
+  if (name === 'item/permissions/requestApproval') {
+    return {
+      decision: 'approve',
+      reason: 'default_development_access',
+      result: { permissions: params.permissions && typeof params.permissions === 'object' ? params.permissions : {} },
+    };
+  }
+  return {
+    decision: 'approve',
+    reason: 'default_development_access',
+    result: { decision: 'approve' },
+  };
 }
 
 function safeProfileName(value) {
@@ -932,6 +1049,7 @@ export function deliveryPrompt(agent, message = {}, workItem = null) {
     'When a real Work item id is provided, use the MagClaw MCP send_message tool with that workItemId and the exact conversation target.',
     'Use the other MagClaw MCP tools only when you need to inspect omitted roster details, read history, search messages or memory, manage tasks, write memory, or schedule reminders.',
     'The daemon already provides the MagClaw MCP bridge and MAGCLAW_MACHINE_TOKEN. Prefer MCP tools; if you fall back to shell curl for /api/agent-tools/*, include `-H "authorization: Bearer $MAGCLAW_MACHINE_TOKEN"` and do not claim the machine token is missing.',
+    renderAgentPermissionGuidance(agent),
     `Agent id: ${agent.id}`,
     `Conversation target: ${target}`,
     workItemLine,
@@ -1776,8 +1894,8 @@ class CodexAgentSession {
 
   handleCodexPermissionRequest(method, requestId, params = {}) {
     const summary = summarizeCodexPermissionRequest(method, params);
-    const result = codexPermissionDeclineResult(method);
-    logWarning('codex', `Auto-declined Codex permission request method=${method} agent=${this.agent.id}`);
+    const policy = codexPermissionDecision(method, params);
+    logWarning('codex', `Auto-${policy.decision === 'approve' ? 'approved' : 'declined'} Codex permission request method=${method} agent=${this.agent.id} reason=${policy.reason}`);
     this.send({
       type: 'agent:activity',
       agentId: this.agent.id,
@@ -1785,12 +1903,13 @@ class CodexAgentSession {
       deliveryId: this.activeDeliveryId || null,
       activity: {
         source: 'codex-permission',
-        decision: 'decline',
+        decision: policy.decision,
+        reason: policy.reason,
         ...summary,
         at: now(),
       },
     });
-    return this.sendResponse(requestId, result);
+    return this.sendResponse(requestId, policy.result);
   }
 
   async start() {
@@ -1857,6 +1976,7 @@ class CodexAgentSession {
       cwd: this.workspace(),
       approvalPolicy: codexApprovalPolicy(this.env),
       sandbox: codexSandbox(this.env),
+      developerInstructions: remoteAgentStandingPrompt(this.agent),
     };
     this.sendRequest(method, params);
   }

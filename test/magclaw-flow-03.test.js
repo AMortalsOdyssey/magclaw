@@ -181,7 +181,7 @@ if (args[0] === 'exec') {
   }
 });
 
-test('Codex app-server shell approval requests auto-decline and complete without user UI', async () => {
+test('Codex app-server shell approval requests follow runtime policy and complete without user UI', async () => {
   const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-shell-approval-'));
   const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
   const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
@@ -229,7 +229,7 @@ if (args[0] === 'exec') {
       }, 20);
       return;
     }
-    if (message.id === 88 && message.result?.decision === 'decline') {
+    if (message.id === 88 && message.result?.decision === 'approve') {
       send({ method: 'item/agentMessage/delta', params: { itemId: 'item_shell_approval', delta: 'shell approval closed without chat UI' } });
       send({ method: 'turn/completed', params: { turn: { id: 'turn_shell_approval', status: 'completed' } } });
     }
@@ -267,14 +267,14 @@ if (args[0] === 'exec') {
       return replied && agent?.status === 'idle' ? state : null;
     }, 6000);
     assert.ok(finalState, JSON.stringify((await request(server.baseUrl, '/api/state')).events.slice(-20), null, 2));
-    assert.ok(finalState.events.some((item) => item.type === 'agent_codex_permission_auto_declined'
+    assert.ok(finalState.events.some((item) => item.type === 'agent_codex_permission_auto_approved'
       && item.method === 'item/commandExecution/requestApproval'));
     assert.equal(finalState.events.some((item) => item.type === 'agent_app_server_request_unhandled'
       && item.method === 'item/commandExecution/requestApproval'), false);
     const entries = await readJsonLines(logPath);
     const turnStart = entries.find((item) => item.method === 'turn/start');
     assert.equal(turnStart.params.approvalPolicy, 'never');
-    assert.ok(entries.some((item) => item.id === 88 && item.result?.decision === 'decline'));
+    assert.ok(entries.some((item) => item.id === 88 && item.result?.decision === 'approve'));
     assert.equal(entries.some((item) => item.mode === 'exec'), false);
   } finally {
     await server.stop();

@@ -6,6 +6,10 @@ import {
   inferAgentMemoryWriteback,
   userPreferenceIntent,
 } from '../server/intents.js';
+import {
+  inferAgentPermissionGrant,
+  recordAgentPermissionGrant,
+} from '../server/agent-permissions.js';
 
 function makeResponse() {
   return {
@@ -57,6 +61,7 @@ function routeDeps(overrides = {}) {
     finishTaskFromThread: () => null,
     getState: () => state,
     inferAgentMemoryWriteback: () => null,
+    inferAgentPermissionGrant: () => null,
     makeId: (prefix) => `${prefix}_new`,
     normalizeIds: (ids) => [...new Set((ids || []).map(String).filter(Boolean))],
     normalizeConversationRecord: (record) => record,
@@ -66,6 +71,7 @@ function routeDeps(overrides = {}) {
     readJson: async () => ({}),
     routeMessageForChannel: async () => ({ targetAgentIds: [] }),
     routeThreadReplyForChannel: async () => ({ targetAgentIds: [] }),
+    recordAgentPermissionGrant: () => false,
     scheduleAgentMemoryWriteback: () => {},
     searchAgentMemory: async () => ({ ok: true, results: [] }),
     sendError: (res, statusCode, message) => {
@@ -562,4 +568,49 @@ test('message route group records mentioned agent specialty assignments in memor
     summary: '专攻群里的情绪价值的提供',
     sourceText: '@元瑶 以后专攻群里的情绪价值的提供',
   });
+});
+
+test('message route group persists explicit agent permission grants before delivery', async () => {
+  const cindy = { id: 'agt_cindy', name: 'Cindy', status: 'idle', permissionGrants: [] };
+  const events = [];
+  let deliveredGrantCount = null;
+  let writeback = null;
+  const deps = routeDeps({
+    addSystemEvent: (type, message, extra) => events.push({ type, message, ...extra }),
+    agentAvailableForAutoWork: () => true,
+    channelAgentIds: () => [cindy.id],
+    extractMentions: () => ({ agents: [cindy.id], humans: [] }),
+    findAgent: (id) => (id === cindy.id ? cindy : null),
+    findChannel: (id) => deps.state.channels.find((channel) => channel.id === id),
+    inferAgentPermissionGrant,
+    readJson: async () => ({ body: '@Cindy 以后运行流水线，部署测试环境，不需要我确认，你有这个权限' }),
+    recordAgentPermissionGrant,
+    routeMessageForChannel: async () => ({ targetAgentIds: [cindy.id] }),
+    scheduleAgentMemoryWriteback: async (agent, trigger, payload) => {
+      if (trigger === 'permission_grant') writeback = { agent, trigger, payload };
+      return true;
+    },
+    deliverMessageToAgent: async (agent) => {
+      deliveredGrantCount = agent.permissionGrants.length;
+    },
+  });
+  deps.state.channels = [{ id: 'chan_all', memberIds: ['hum_local', cindy.id], humanIds: ['hum_local'], agentIds: [cindy.id] }];
+  deps.state.messages = [];
+
+  const res = makeResponse();
+  const handled = await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/spaces/channel/chan_all/messages'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(cindy.permissionGrants.length, 1);
+  assert.equal(cindy.permissionGrants[0].kind, 'test_deployment_without_confirmation');
+  assert.equal(deliveredGrantCount, 1);
+  assert.equal(writeback.trigger, 'permission_grant');
+  assert.equal(writeback.payload.memory.kind, 'preference');
+  assert.ok(events.some((event) => event.type === 'agent_permission_grant_persisted' && event.agentId === cindy.id));
 });

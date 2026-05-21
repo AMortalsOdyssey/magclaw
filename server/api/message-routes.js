@@ -59,6 +59,7 @@ export async function handleMessageApi(req, res, url, deps) {
     finishTaskFromThread,
     getState,
     inferAgentMemoryWriteback,
+    inferAgentPermissionGrant,
     getMessageById,
     listSpaceMessagesPage,
     listThreadRepliesPage,
@@ -71,6 +72,7 @@ export async function handleMessageApi(req, res, url, deps) {
     readJson,
     routeMessageForChannel,
     routeThreadReplyForChannel,
+    recordAgentPermissionGrant,
     scheduleAgentMemoryWriteback,
     searchAgentMemory,
     sendError,
@@ -430,7 +432,10 @@ export async function handleMessageApi(req, res, url, deps) {
     if (!record || record.authorType !== 'human') return;
     const memory = inferAgentMemoryWriteback(text);
     const explicitMemory = agentMemoryWriteIntent(text);
-    if (!memory && !userPreferenceIntent(text)) return;
+    const permissionGrant = typeof inferAgentPermissionGrant === 'function'
+      ? inferAgentPermissionGrant(text)
+      : null;
+    if (!memory && !userPreferenceIntent(text) && !permissionGrant) return;
     const targets = memoryTargetsForConversation({
       spaceType,
       spaceId,
@@ -438,17 +443,60 @@ export async function handleMessageApi(req, res, url, deps) {
       mentions,
       parentMessage,
     });
-    const trigger = memory
-      ? (explicitMemory ? 'explicit_user_memory' : 'user_preference')
-      : 'user_preference';
-    const writes = targets.map((agent) => Promise.resolve(scheduleAgentMemoryWriteback(agent, trigger, {
-      message: record,
-      spaceType,
-      spaceId,
-      parentMessageId: parentMessage?.id || null,
-      memory,
-      })));
+    const writes = [];
+    let permissionChanged = false;
+    if (permissionGrant) {
+      for (const agent of targets) {
+        const changed = typeof recordAgentPermissionGrant === 'function'
+          ? recordAgentPermissionGrant(agent, permissionGrant, {
+            now,
+            sourceMessageId: record.id,
+          })
+          : false;
+        if (changed) {
+          permissionChanged = true;
+          addSystemEvent('agent_permission_grant_persisted', `${agent.name} permission grant persisted.`, {
+            agentId: agent.id,
+            messageId: record.id,
+            kind: permissionGrant.kind,
+          });
+        }
+        writes.push(Promise.resolve(scheduleAgentMemoryWriteback(agent, 'permission_grant', {
+          message: record,
+          spaceType,
+          spaceId,
+          parentMessageId: parentMessage?.id || null,
+          memory: {
+            kind: 'preference',
+            summary: permissionGrant.summary,
+            sourceText: permissionGrant.sourceText || text,
+          },
+        })));
+      }
+    }
+    if (memory && !permissionGrant) {
+      const trigger = explicitMemory ? 'explicit_user_memory' : 'user_preference';
+      writes.push(...targets.map((agent) => Promise.resolve(scheduleAgentMemoryWriteback(agent, trigger, {
+        message: record,
+        spaceType,
+        spaceId,
+        parentMessageId: parentMessage?.id || null,
+        memory,
+      }))));
+    } else if (!memory && userPreferenceIntent(text) && !permissionGrant) {
+      writes.push(...targets.map((agent) => Promise.resolve(scheduleAgentMemoryWriteback(agent, 'user_preference', {
+        message: record,
+        spaceType,
+        spaceId,
+        parentMessageId: parentMessage?.id || null,
+        memory,
+      }))));
+    }
     await Promise.all(writes);
+    if (permissionChanged) {
+      await persistState();
+      broadcastState();
+    }
   }
 
   function compactPeerMemoryResult(item) {
