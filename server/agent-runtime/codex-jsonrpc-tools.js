@@ -1,3 +1,44 @@
+const CODEX_PERMISSION_REQUEST_METHODS = new Set([
+  'item/commandExecution/requestApproval',
+  'item/fileChange/requestApproval',
+  'item/permissions/requestApproval',
+]);
+
+function isCodexPermissionRequest(method) {
+  return CODEX_PERMISSION_REQUEST_METHODS.has(String(method || ''));
+}
+
+function codexPermissionDeclineResult(method) {
+  if (String(method || '') === 'item/permissions/requestApproval') {
+    return { permissions: {} };
+  }
+  return { decision: 'decline' };
+}
+
+function summarizeCodexPermissionRequest(method, params = {}) {
+  const summary = {
+    method: String(method || ''),
+  };
+  if (typeof params.command === 'string' && params.command.trim()) {
+    summary.commandPreview = params.command.replace(/\s+/g, ' ').trim().slice(0, 300);
+  }
+  if (typeof params.cwd === 'string' && params.cwd.trim()) {
+    summary.cwd = params.cwd.slice(0, 500);
+  }
+  if (typeof params.reason === 'string' && params.reason.trim()) {
+    summary.reason = params.reason.replace(/\s+/g, ' ').trim().slice(0, 300);
+  }
+  const permissions = params.permissions && typeof params.permissions === 'object' && !Array.isArray(params.permissions)
+    ? Object.keys(params.permissions)
+    : [];
+  if (permissions.length) summary.permissionKeys = permissions.slice(0, 20);
+  const changes = Array.isArray(params.changes)
+    ? params.changes.map((item) => String(item?.path || item?.uri || '').trim()).filter(Boolean).slice(0, 10)
+    : [];
+  if (changes.length) summary.paths = changes;
+  return summary;
+}
+
 function nextCodexRequestId(proc) {
   proc.requestId = Number(proc.requestId || 0) + 1;
   return proc.requestId;
@@ -379,6 +420,33 @@ async function handleCodexMcpServerElicitationRequest(agent, proc, message) {
   });
   touchAgentRunProgress(agent, proc, approve ? 'mcp_elicitation_auto_approved' : 'mcp_elicitation_declined', {
     turnId: params.turnId || null,
+  });
+  await persistState();
+  broadcastState();
+  return true;
+}
+
+async function handleCodexPermissionRequest(agent, proc, message) {
+  const params = message.params || {};
+  const method = String(message.method || '');
+  const summary = summarizeCodexPermissionRequest(method, params);
+  const result = codexPermissionDeclineResult(method);
+  addSystemEvent('agent_codex_permission_auto_declined', `${agent.name} auto-declined Codex permission request ${method}.`, {
+    agentId: agent.id,
+    requestId: message.id,
+    sessionId: proc.threadId || null,
+    turnId: params.turnId || null,
+    threadId: params.threadId || proc.threadId || null,
+    ...summary,
+  });
+  sendCodexAppServerResponse(proc, message.id, result);
+  touchAgentRunProgress(agent, proc, 'permission_auto_declined', {
+    turnId: params.turnId || null,
+  });
+  updateAgentRuntimeActivity(agent, proc, 'working', 'Permission request auto-declined by runtime policy.', {
+    source: 'codex-permission',
+    decision: 'decline',
+    ...summary,
   });
   await persistState();
   broadcastState();

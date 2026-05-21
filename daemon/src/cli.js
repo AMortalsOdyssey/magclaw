@@ -19,6 +19,12 @@ const DEFAULT_AGENT_START_INTERVAL_MS = 500;
 const DEFAULT_TRAJECTORY_COALESCE_MS = 350;
 const DELIVERY_LEDGER_LIMIT = 500;
 const DELIVERY_LEDGER_RETENTION_MS = 1000 * 60 * 60 * 24 * 7;
+const CODEX_PERMISSION_REQUEST_METHODS = new Set([
+  'item/commandExecution/requestApproval',
+  'item/fileChange/requestApproval',
+  'item/permissions/requestApproval',
+]);
+const CODEX_SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -107,6 +113,51 @@ function envInteger(env, name, fallback, { min = 0, max = Number.POSITIVE_INFINI
   const parsed = Number(env?.[name]);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
+function codexApprovalPolicy(env = process.env) {
+  const value = String(env.MAGCLAW_CODEX_APPROVAL_POLICY || env.CODEX_APPROVAL_POLICY || 'never').trim();
+  return value || 'never';
+}
+
+function codexSandbox(env = process.env) {
+  const value = String(env.MAGCLAW_CODEX_SANDBOX || env.CODEX_SANDBOX || 'workspace-write').trim();
+  return CODEX_SANDBOX_MODES.has(value) ? value : 'workspace-write';
+}
+
+function isCodexPermissionRequest(method) {
+  return CODEX_PERMISSION_REQUEST_METHODS.has(String(method || ''));
+}
+
+function codexPermissionDeclineResult(method) {
+  if (String(method || '') === 'item/permissions/requestApproval') {
+    return { permissions: {} };
+  }
+  return { decision: 'decline' };
+}
+
+function summarizeCodexPermissionRequest(method, params = {}) {
+  const summary = {
+    method: String(method || ''),
+  };
+  if (typeof params.command === 'string' && params.command.trim()) {
+    summary.commandPreview = params.command.replace(/\s+/g, ' ').trim().slice(0, 300);
+  }
+  if (typeof params.cwd === 'string' && params.cwd.trim()) {
+    summary.cwd = params.cwd.slice(0, 500);
+  }
+  if (typeof params.reason === 'string' && params.reason.trim()) {
+    summary.reason = params.reason.replace(/\s+/g, ' ').trim().slice(0, 300);
+  }
+  const permissions = params.permissions && typeof params.permissions === 'object' && !Array.isArray(params.permissions)
+    ? Object.keys(params.permissions)
+    : [];
+  if (permissions.length) summary.permissionKeys = permissions.slice(0, 20);
+  const changes = Array.isArray(params.changes)
+    ? params.changes.map((item) => String(item?.path || item?.uri || '').trim()).filter(Boolean).slice(0, 10)
+    : [];
+  if (changes.length) summary.paths = changes;
+  return summary;
 }
 
 function safeProfileName(value) {
@@ -1723,6 +1774,25 @@ class CodexAgentSession {
     }
   }
 
+  handleCodexPermissionRequest(method, requestId, params = {}) {
+    const summary = summarizeCodexPermissionRequest(method, params);
+    const result = codexPermissionDeclineResult(method);
+    logWarning('codex', `Auto-declined Codex permission request method=${method} agent=${this.agent.id}`);
+    this.send({
+      type: 'agent:activity',
+      agentId: this.agent.id,
+      status: this.status || 'working',
+      deliveryId: this.activeDeliveryId || null,
+      activity: {
+        source: 'codex-permission',
+        decision: 'decline',
+        ...summary,
+        at: now(),
+      },
+    });
+    return this.sendResponse(requestId, result);
+  }
+
   async start() {
     if (this.started) return;
     await this.prepare();
@@ -1782,7 +1852,12 @@ class CodexAgentSession {
     this.sendRequest('initialize', { clientInfo: { name: '@magclaw/daemon', version: DAEMON_VERSION } });
     this.sendNotification('initialized', {});
     const method = this.threadId ? 'thread/resume' : 'thread/start';
-    const params = this.threadId ? { threadId: this.threadId } : {};
+    const params = {
+      ...(this.threadId ? { threadId: this.threadId } : {}),
+      cwd: this.workspace(),
+      approvalPolicy: codexApprovalPolicy(this.env),
+      sandbox: codexSandbox(this.env),
+    };
     this.sendRequest(method, params);
   }
 
@@ -1806,6 +1881,7 @@ class CodexAgentSession {
     const params = {
       threadId: this.threadId,
       input: [{ type: 'text', text: prompt }],
+      approvalPolicy: codexApprovalPolicy(this.env),
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
     };
@@ -1882,6 +1958,10 @@ class CodexAgentSession {
     const method = message.method || '';
     const params = message.params || {};
     if (method && message.id !== undefined && message.id !== null) {
+      if (isCodexPermissionRequest(method)) {
+        this.handleCodexPermissionRequest(method, message.id, params);
+        return;
+      }
       if (method === 'item/tool/call') {
         const handled = await this.executeCodexToolItem(params.item || params, message.id, params);
         if (!handled) this.sendErrorResponse(message.id, -32602, `Unsupported dynamic tool request: ${codexToolName(params.item || params) || '(unnamed)'}`);

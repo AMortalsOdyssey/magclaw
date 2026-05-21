@@ -181,6 +181,107 @@ if (args[0] === 'exec') {
   }
 });
 
+test('Codex app-server shell approval requests auto-decline and complete without user UI', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-shell-approval-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+if (args[0] === 'exec') {
+  const outputPath = args[args.indexOf('-o') + 1];
+  log({ mode: 'exec', args });
+  process.stdin.on('end', () => {
+    fs.writeFileSync(outputPath, 'legacy fallback should not run for approval decline');
+    process.exit(0);
+  });
+  process.stdin.resume();
+} else if (args[0] === 'app-server') {
+  log({ mode: 'app-server', args });
+  let buffer = '';
+  function handle(message) {
+    log({ method: message.method, id: message.id, params: message.params, result: message.result, error: message.error });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+      return;
+    }
+    if (message.method === 'initialized') return;
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_shell_approval' } } });
+      return;
+    }
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_shell_approval' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_shell_approval' } } });
+      setTimeout(() => {
+        send({
+          id: 88,
+          method: 'item/commandExecution/requestApproval',
+          params: { command: 'kubectl get pods', cwd: '/workspace', reason: 'requires elevated permissions' },
+        });
+      }, 20);
+      return;
+    }
+    if (message.id === 88 && message.result?.decision === 'decline') {
+      send({ method: 'item/agentMessage/delta', params: { itemId: 'item_shell_approval', delta: 'shell approval closed without chat UI' } });
+      send({ method: 'turn/completed', params: { turn: { id: 'turn_shell_approval', status: 'completed' } } });
+    }
+  }
+  process.on('SIGTERM', () => process.exit(0));
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\\r?\\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      handle(JSON.parse(line));
+    }
+  });
+}
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+    MAGCLAW_AGENT_STUCK_SEND_MESSAGE_MS: '5000',
+    MAGCLAW_AGENT_RUN_STALL_LOG_MS: '5000',
+    MAGCLAW_STATE_HEARTBEAT_MS: '25',
+  });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body: '<@agt_codex> 执行一个需要权限的只读命令', attachmentIds: [] }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const state = await request(server.baseUrl, '/api/state');
+      const replied = state.replies.some((item) => item.parentMessageId === created.message.id && item.body.includes('shell approval closed without chat UI'));
+      const agent = state.agents.find((item) => item.id === 'agt_codex');
+      return replied && agent?.status === 'idle' ? state : null;
+    }, 6000);
+    assert.ok(finalState, JSON.stringify((await request(server.baseUrl, '/api/state')).events.slice(-20), null, 2));
+    assert.ok(finalState.events.some((item) => item.type === 'agent_codex_permission_auto_declined'
+      && item.method === 'item/commandExecution/requestApproval'));
+    assert.equal(finalState.events.some((item) => item.type === 'agent_app_server_request_unhandled'
+      && item.method === 'item/commandExecution/requestApproval'), false);
+    const entries = await readJsonLines(logPath);
+    const turnStart = entries.find((item) => item.method === 'turn/start');
+    assert.equal(turnStart.params.approvalPolicy, 'never');
+    assert.ok(entries.some((item) => item.id === 88 && item.result?.decision === 'decline'));
+    assert.equal(entries.some((item) => item.mode === 'exec'), false);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
 test('Codex app-server watchdog logs but does not kill a long-running tool call', async () => {
   const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-watchdog-long-tool-'));
   const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');

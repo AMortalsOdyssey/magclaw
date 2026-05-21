@@ -412,6 +412,131 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
+test('npm daemon silently declines Codex app-server approval requests instead of hanging the turn', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-approval-'));
+  const fakeCodex = path.join(tmp, 'codex-fake.js');
+  const logPath = path.join(tmp, 'codex-log.jsonl');
+  await writeFile(fakeCodex, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+if (args[0] === '--version') {
+  console.log('codex-cli fake-daemon-approval-test');
+  process.exit(0);
+}
+if (args[0] === 'app-server' && args[1] === '--help') {
+  console.log('Usage: codex app-server --listen stdio://');
+  process.exit(0);
+}
+if (args[0] !== 'app-server') process.exit(2);
+log({ mode: 'app-server', args });
+let buffer = '';
+function requestCommandApproval() {
+  send({
+    id: 701,
+    method: 'item/commandExecution/requestApproval',
+    params: { command: 'kubectl get namespaces', cwd: '/workspace', reason: 'requires unsandboxed execution' },
+  });
+}
+function requestFileApproval() {
+  send({
+    id: 702,
+    method: 'item/fileChange/requestApproval',
+    params: { reason: 'write outside the trusted workspace', changes: [{ path: '/tmp/outside.txt', action: 'write' }] },
+  });
+}
+function requestPermissionsApproval() {
+  send({
+    id: 703,
+    method: 'item/permissions/requestApproval',
+    params: { permissions: { shell: { sandbox: 'danger-full-access' } }, scope: 'turn' },
+  });
+}
+function finishTurn() {
+  send({ method: 'item/agentMessage/delta', params: { itemId: 'item_approval_safe', delta: 'approval request was closed safely' } });
+  send({ method: 'turn/completed', params: { turn: { id: 'turn_approval_safe', status: 'completed' } } });
+}
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    log({ method: message.method, id: message.id, params: message.params, result: message.result, error: message.error });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+    } else if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_approval_safe' } } });
+    } else if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_approval_safe' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_approval_safe' } } });
+      setTimeout(requestCommandApproval, 20);
+    } else if (message.id === 701 && message.result?.decision === 'decline') {
+      requestFileApproval();
+    } else if (message.id === 702 && message.result?.decision === 'decline') {
+      requestPermissionsApproval();
+    } else if (message.id === 703 && message.result && Object.keys(message.result.permissions || {}).length === 0) {
+      finishTurn();
+    }
+  }
+});
+`);
+  await chmod(fakeCodex, 0o755);
+  const relay = await startRelay({ welcomeInUpgradeHead: true });
+  const daemon = spawn(process.execPath, [
+    DAEMON_BIN,
+    'connect',
+    '--server-url',
+    relay.baseUrl,
+    '--pair-token',
+    'mc_pair_test',
+    '--profile',
+    'cloud-approval-test',
+  ], {
+    env: {
+      ...process.env,
+      MAGCLAW_DAEMON_HOME: path.join(tmp, 'daemon-home'),
+      CODEX_PATH: fakeCodex,
+      FAKE_CODEX_LOG: logPath,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    const message = await waitFor(() => relay.messages.find((item) => item.type === 'agent:message'), 5000);
+    assert.equal(message.agentId, 'agt_remote');
+    assert.equal(message.payload.body, 'approval request was closed safely');
+    assert.equal(relay.messages.filter((item) => item.type === 'agent:message').length, 1);
+    assert.ok(relay.messages.some((item) => item.type === 'agent:activity'
+      && item.activity?.source === 'codex-permission'
+      && item.activity?.decision === 'decline'
+      && item.activity?.method === 'item/commandExecution/requestApproval'));
+    const entries = (await readFile(logPath, 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    const threadStart = entries.find((entry) => entry.method === 'thread/start');
+    const turnStart = entries.find((entry) => entry.method === 'turn/start');
+    assert.equal(threadStart.params.approvalPolicy, 'never');
+    assert.equal(threadStart.params.sandbox, 'workspace-write');
+    assert.equal(turnStart.params.approvalPolicy, 'never');
+    assert.ok(entries.some((entry) => entry.id === 701 && entry.result?.decision === 'decline'));
+    assert.ok(entries.some((entry) => entry.id === 702 && entry.result?.decision === 'decline'));
+    assert.ok(entries.some((entry) => entry.id === 703 && Object.keys(entry.result?.permissions || {}).length === 0));
+  } finally {
+    daemon.kill('SIGINT');
+    await Promise.race([
+      new Promise((resolve) => daemon.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 500)),
+    ]);
+    await relay.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('npm daemon dispatches Claude Code agents through the Claude runner', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-claude-'));
   const fakeClaude = path.join(tmp, 'claude-fake.js');

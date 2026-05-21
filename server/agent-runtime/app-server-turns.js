@@ -94,6 +94,7 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
     requestId = sendCodexAppServerRequest(proc, 'turn/start', {
       threadId: proc.threadId,
       input,
+      approvalPolicy: 'never',
       model: runtime.model,
       ...(runtime.reasoningEffort ? { effort: runtime.reasoningEffort } : {}),
     });
@@ -360,6 +361,10 @@ async function handleCodexAppServerLine(agent, proc, line) {
   }
 
   if (message.method && message.id !== undefined && message.id !== null) {
+    if (isCodexPermissionRequest(message.method)) {
+      await handleCodexPermissionRequest(agent, proc, message);
+      return;
+    }
     if (message.method === 'mcpServer/elicitation/request') {
       await handleCodexMcpServerElicitationRequest(agent, proc, message);
       return;
