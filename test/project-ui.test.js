@@ -1155,6 +1155,15 @@ test('system messages render the browser tab logo as the avatar', async () => {
   assert.equal(app.includes('return `<span class="${cssClass}">MC</span>`;'), false);
 });
 
+test('channel views hide internal new-agent greeting tasks', async () => {
+  const app = await readAppSource();
+  const spaceMessagesSource = app.slice(app.indexOf('function spaceMessages('), app.indexOf('function projectsForSpace('));
+
+  assert.match(app, /function isInternalOnboardingTaskMessage\(message\)/);
+  assert.match(app, /message\?\.eventType === 'agent_onboarding_greeting_task'/);
+  assert.match(spaceMessagesSource, /\.filter\(\(message\) => !isInternalOnboardingTaskMessage\(message\)\)/);
+});
+
 test('agent born date shows a cake on same-month-day anniversaries only', async () => {
   const app = await readAppSource();
 

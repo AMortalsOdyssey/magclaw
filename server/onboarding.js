@@ -134,6 +134,34 @@ export function createOnboardingManager(deps) {
       });
   }
 
+  function internalOnboardingTaskMessage(spaceType, spaceId, body, extra = {}) {
+    const metadata = {
+      ...(extra.metadata || {}),
+      visibility: 'internal',
+      hiddenFromChannel: true,
+    };
+    return {
+      id: makeId('msg'),
+      spaceType,
+      spaceId,
+      authorType: 'system',
+      authorId: 'system',
+      body,
+      attachmentIds: [],
+      replyCount: 0,
+      savedBy: [],
+      readBy: [],
+      createdAt: now(),
+      updatedAt: now(),
+      ...extra,
+      metadata,
+      internal: true,
+      hiddenFromChannel: true,
+      mentionedAgentIds: normalizeIds(extra.mentionedAgentIds || []),
+      mentionedHumanIds: normalizeIds(extra.mentionedHumanIds || []),
+    };
+  }
+
   function scheduleHumanOnboarding({ human, member = null, workspace = null, trigger = 'member_joined' } = {}) {
     const workspaceId = workspaceIdForRecord(workspace, member?.workspaceId || human?.workspaceId || state().connection?.workspaceId || 'local');
     const settings = workspace || workspaceSettings(workspaceId);
@@ -217,7 +245,7 @@ export function createOnboardingManager(deps) {
       `Agent description: ${description}`,
       `Runtime: ${runtime}`,
     ].filter(Boolean).join(' ');
-    const message = addSystemMessage('channel', channel.id, body, {
+    const message = internalOnboardingTaskMessage('channel', channel.id, body, {
       workspaceId: cleanWorkspaceId,
       eventType: 'agent_onboarding_greeting_task',
       mentionedAgentIds: [agent.id],

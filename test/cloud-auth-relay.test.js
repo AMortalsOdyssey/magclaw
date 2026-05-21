@@ -426,29 +426,24 @@ test('new agent greeting asks the created agent to introduce itself in #all', as
     });
     const greeted = await waitFor(async () => {
       const snapshot = await request(server.baseUrl, '/api/state', { cookie });
-      const message = snapshot.data.messages.find((item) => (
-        item.eventType === 'agent_onboarding_greeting_task'
-        && item.body.includes(`<@${greeter.data.agent.id}>`)
+      const event = snapshot.data.events.find((item) => (
+        item.type === 'agent_onboarding_greeting_task_created'
+        && item.agentId === greeter.data.agent.id
       ));
-      const workItem = message
-        ? snapshot.data.workItems.find((item) => item.sourceMessageId === message.id && item.agentId === greeter.data.agent.id)
+      const workItem = event
+        ? snapshot.data.workItems.find((item) => item.sourceMessageId === event.messageId && item.agentId === greeter.data.agent.id)
         : null;
-      return message && workItem ? { snapshot: snapshot.data, message, workItem } : null;
+      return event && workItem ? { snapshot: snapshot.data, event, workItem } : null;
     }, 5000);
     const allChannel = greeted.snapshot.channels.find((channel) => (
       channel.workspaceId === owner.server.id
       && (channel.defaultChannel || channel.name === 'all')
     ));
     assert.ok(allChannel);
-    assert.equal(greeted.message.spaceId, allChannel.id);
-    assert.match(greeted.message.body, /new Agent greeting/i);
-    assert.match(greeted.message.body, /Helps coordinate deployments and release checks/);
-    assert.match(greeted.message.body, /Recent #all language context: Chinese \(zh-CN\)/);
-    assert.doesNotMatch(greeted.message.body, /Creator language preference: English \(en\)/);
-    assert.doesNotMatch(greeted.message.body, /ask what language|what language to use|你希望用英语还是中文/);
-    assert.match(greeted.message.body, /MEMORY\.md\/notes/);
     assert.equal(greeted.workItem.spaceId, allChannel.id);
     assert.equal(greeted.workItem.target, '#all');
+    assert.equal(greeted.snapshot.messages.some((item) => item.eventType === 'agent_onboarding_greeting_task'), false);
+    assert.equal(greeted.snapshot.messages.some((item) => /Onboarding task \(system-triggered\): This is a new Agent greeting/.test(item.body || '')), false);
     assert.equal(greeted.snapshot.channels.some((channel) => /^onboarding-/i.test(channel.name || '')), false);
     assert.equal(greeted.snapshot.agents.find((agent) => agent.id === greeter.data.agent.id)?.description, 'Helps coordinate deployments and release checks');
 
@@ -473,7 +468,7 @@ test('new agent greeting asks the created agent to introduce itself in #all', as
     await new Promise((resolve) => setTimeout(resolve, 200));
     const disabledState = await request(server.baseUrl, '/api/state', { cookie });
     assert.equal(disabledState.data.messages.some((item) => (
-      item.eventType === 'agent_onboarding_greeting_task'
+      /Onboarding task \(system-triggered\): This is a new Agent greeting/.test(item.body || '')
       && item.body.includes(`<@${quiet.data.agent.id}>`)
     )), false);
   } finally {
@@ -507,25 +502,23 @@ test('first created agent becomes onboarding assistant without a fixed language 
     });
     const greeted = await waitFor(async () => {
       const snapshot = await request(server.baseUrl, '/api/state', { cookie });
-      const message = snapshot.data.messages.find((item) => (
-        item.eventType === 'agent_onboarding_greeting_task'
-        && item.body.includes(`<@${greeter.data.agent.id}>`)
+      const event = snapshot.data.events.find((item) => (
+        item.type === 'agent_onboarding_greeting_task_created'
+        && item.agentId === greeter.data.agent.id
       ));
-      const workItem = message
-        ? snapshot.data.workItems.find((item) => item.sourceMessageId === message.id && item.agentId === greeter.data.agent.id)
+      const workItem = event
+        ? snapshot.data.workItems.find((item) => item.sourceMessageId === event.messageId && item.agentId === greeter.data.agent.id)
         : null;
       const workspace = snapshot.data.cloud?.workspace || null;
-      return message && workItem && workspace?.onboardingAgentId === greeter.data.agent.id
-        ? { snapshot: snapshot.data, message, workItem, workspace }
+      return event && workItem && workspace?.onboardingAgentId === greeter.data.agent.id
+        ? { snapshot: snapshot.data, event, workItem, workspace }
         : null;
     }, 5000);
 
     assert.equal(greeted.workspace.newAgentGreetingEnabled, true);
-    assert.match(greeted.message.body, /No clear recent #all language context is available/);
-    assert.match(greeted.message.body, /default human onboarding assistant/i);
-    assert.match(greeted.message.body, /welcome the humans/i);
-    assert.doesNotMatch(greeted.message.body, /Creator language preference|Default greeting language/);
     assert.equal(greeted.workItem.target, '#all');
+    assert.equal(greeted.snapshot.messages.some((item) => item.eventType === 'agent_onboarding_greeting_task'), false);
+    assert.equal(greeted.snapshot.messages.some((item) => /Onboarding task \(system-triggered\): This is a new Agent greeting/.test(item.body || '')), false);
   } finally {
     await server.stop();
   }

@@ -1048,9 +1048,20 @@ function savedRecordThreadRoot(record) {
   return null;
 }
 
+function isInternalOnboardingTaskMessage(message) {
+  const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+  return Boolean(
+    message?.hiddenFromChannel === true
+    || metadata.hiddenFromChannel === true
+    || metadata.visibility === 'internal'
+    || message?.eventType === 'agent_onboarding_greeting_task'
+  );
+}
+
 function spaceMessages(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
   return (appState?.messages || [])
     .filter((message) => message.spaceType === spaceType && message.spaceId === spaceId)
+    .filter((message) => !isInternalOnboardingTaskMessage(message))
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 }
 
