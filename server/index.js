@@ -40,6 +40,7 @@ import {
   fanoutApiResponseText,
   parseFanoutApiJson,
 } from './fanout-api.js';
+import { llmConfigFromEnv, llmConfigReady } from './llm-client.js';
 import {
   applyMentions,
   escapeRegExp,
@@ -101,6 +102,8 @@ import { createAgentRuntimeManager } from './agent-runtime-manager.js';
 import { createAgentWorkspaceManager } from './agent-workspace.js';
 import { createConversationModel } from './conversation-model.js';
 import { createCollabMemoryManager } from './collab-memory.js';
+import { createMarkdownMaintenanceManager } from './markdown-maintenance.js';
+import { createMarkdownOperationApplier } from './markdown-operations.js';
 import { createCloudAuth } from './cloud/auth.js';
 import { createCloudSync } from './cloud-sync.js';
 import { createDaemonRelay } from './cloud/daemon-relay.js';
@@ -262,6 +265,13 @@ const AGENT_STATUS_STALE_MS = Math.max(1000, Number(process.env.MAGCLAW_AGENT_ST
 const ROUTE_EVENTS_LIMIT = Math.max(50, Number(process.env.MAGCLAW_ROUTE_EVENTS_LIMIT || 500));
 const AGENT_CARD_TEXT_LIMIT = 5000;
 const FANOUT_API_TIMEOUT_MS = DEFAULT_FANOUT_API_TIMEOUT_MS;
+const MARKDOWN_MAINTENANCE_ENABLED = !/^(0|false|no)$/i.test(String(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_ENABLED || 'true'));
+const MARKDOWN_MAINTENANCE_INTERVAL_MS = Math.max(60_000, Number(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_INTERVAL_MS || 6 * 60 * 60_000));
+const MARKDOWN_MAINTENANCE_STARTUP_DELAY_MS = Math.max(0, Number(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_STARTUP_DELAY_MS || 120_000));
+const MARKDOWN_MAINTENANCE_SEMANTIC = !/^(0|false|no)$/i.test(String(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_SEMANTIC || 'true'));
+const MARKDOWN_MAINTENANCE_SEMANTIC_READY = MARKDOWN_MAINTENANCE_SEMANTIC && llmConfigReady(llmConfigFromEnv());
+const MARKDOWN_MAINTENANCE_MAX_AGENTS = Math.max(1, Number(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_MAX_AGENTS || 50));
+const MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT = Math.max(1, Number(process.env.MAGCLAW_MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT || 20));
 const CODEX_STREAM_RETRY_LIMIT = codexStreamRetryLimit();
 const CLOUD_PROTOCOL_VERSION = 1;
 const CODEX_HOME_CONFIG_VERSION = 8;
@@ -628,6 +638,18 @@ function resilientCloudRepository(repository) {
         await disable(error);
       }
     },
+    async persistMarkdownDocumentIndex(record) {
+      if (disabled || typeof repository.persistMarkdownDocumentIndex !== 'function') return;
+      await repository.persistMarkdownDocumentIndex(record);
+    },
+    async persistMarkdownOperationIndex(record) {
+      if (disabled || typeof repository.persistMarkdownOperationIndex !== 'function') return;
+      await repository.persistMarkdownOperationIndex(record);
+    },
+    async persistMarkdownMaintenanceRun(record) {
+      if (disabled || typeof repository.persistMarkdownMaintenanceRun !== 'function') return;
+      await repository.persistMarkdownMaintenanceRun(record);
+    },
     publicInfo() {
       if (disabled) return localStateFallbackInfo(fallbackReason);
       return repository.publicInfo?.() || { backend: 'postgres' };
@@ -946,6 +968,7 @@ const {
   agentDataDir,
   ensureAgentWorkspace,
   ensureAllAgentWorkspaces,
+  listAgentMemoryFiles,
   listAgentSkills,
   listAgentWorkspace,
   prepareAgentCodexHome,
@@ -954,6 +977,25 @@ const {
   searchAgentMemory,
   writeAgentSessionFile,
 } = agentWorkspace;
+
+const markdownApplier = createMarkdownOperationApplier({
+  addSystemEvent,
+  defaultAgentMemory: agentWorkspace.defaultAgentMemory,
+  ensureAgentWorkspace,
+  makeId,
+  now,
+  persistMarkdownDocumentIndex: (...args) => cloudRepository?.persistMarkdownDocumentIndex?.(...args),
+  persistMarkdownOperationIndex: (...args) => cloudRepository?.persistMarkdownOperationIndex?.(...args),
+});
+
+const markdownMaintenance = createMarkdownMaintenanceManager({
+  addSystemEvent,
+  ensureAgentWorkspace,
+  makeId,
+  now,
+  persistMarkdownMaintenanceRun: (...args) => cloudRepository?.persistMarkdownMaintenanceRun?.(...args),
+  submitAgentMarkdownOperation: markdownApplier.submitAgentMarkdownOperation,
+});
 
 const routingEngine = createRoutingEngine({
   addSystemEvent,
@@ -1010,6 +1052,7 @@ const collabMemory = createCollabMemoryManager({
   now,
   persistState,
   spaceDisplayName,
+  submitAgentMarkdownOperation: markdownApplier.submitAgentMarkdownOperation,
   taskLabel,
 });
 const {
@@ -1304,6 +1347,85 @@ const {
   start: startReminderScheduler,
   stop: stopReminderScheduler,
 } = reminderScheduler;
+
+let markdownMaintenanceTimer = null;
+let markdownMaintenanceRunning = false;
+
+async function runMarkdownMaintenanceSweep(reason = 'interval') {
+  if (!MARKDOWN_MAINTENANCE_ENABLED) return { ok: true, skipped: 'disabled' };
+  if (markdownMaintenanceRunning) return { ok: true, skipped: 'already_running' };
+  markdownMaintenanceRunning = true;
+  const agents = (state.agents || [])
+    .filter((agent) => agent?.id)
+    .slice(0, MARKDOWN_MAINTENANCE_MAX_AGENTS);
+  let processed = 0;
+  let changed = 0;
+  let failed = 0;
+  try {
+    for (const agent of agents) {
+      const files = await listAgentMemoryFiles(agent)
+        .catch((error) => {
+          failed += 1;
+          addSystemEvent('markdown_maintenance_list_error', `Markdown maintenance could not list memory files for ${agent.name || agent.id}: ${error.message}`, {
+            agentId: agent.id,
+            workspaceId: agent.workspaceId || 'local',
+          });
+          return ['MEMORY.md'];
+        });
+      for (const relPath of files.slice(0, MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT)) {
+        const result = await markdownMaintenance.maintainAgentMarkdown(agent, relPath, {
+          semantic: MARKDOWN_MAINTENANCE_SEMANTIC_READY,
+        }).catch((error) => {
+          failed += 1;
+          addSystemEvent('markdown_maintenance_error', `Markdown maintenance failed for ${agent.name || agent.id} ${relPath}: ${error.message}`, {
+            agentId: agent.id,
+            workspaceId: agent.workspaceId || 'local',
+            relPath,
+          });
+          return null;
+        });
+        if (!result) continue;
+        processed += 1;
+        if (result.deterministicChanged || result.semantic === 'applied') changed += 1;
+      }
+    }
+    if (changed || failed) {
+      addSystemEvent('markdown_maintenance_sweep', 'Markdown maintenance sweep completed.', {
+        reason,
+        processed,
+        changed,
+        failed,
+        agents: agents.length,
+      });
+      await persistState().then(broadcastState).catch(() => {});
+    }
+    return { ok: failed === 0, processed, changed, failed };
+  } finally {
+    markdownMaintenanceRunning = false;
+  }
+}
+
+function scheduleNextMarkdownMaintenance(delayMs) {
+  if (!MARKDOWN_MAINTENANCE_ENABLED) return;
+  clearTimeout(markdownMaintenanceTimer);
+  markdownMaintenanceTimer = setTimeout(async () => {
+    await runMarkdownMaintenanceSweep('interval').catch((error) => {
+      addSystemEvent('markdown_maintenance_scheduler_error', `Markdown maintenance scheduler failed: ${error.message}`);
+      persistState().then(broadcastState).catch(() => {});
+    });
+    scheduleNextMarkdownMaintenance(MARKDOWN_MAINTENANCE_INTERVAL_MS);
+  }, delayMs);
+  markdownMaintenanceTimer.unref?.();
+}
+
+function startMarkdownMaintenanceScheduler() {
+  scheduleNextMarkdownMaintenance(MARKDOWN_MAINTENANCE_STARTUP_DELAY_MS);
+}
+
+function stopMarkdownMaintenanceScheduler() {
+  clearTimeout(markdownMaintenanceTimer);
+  markdownMaintenanceTimer = null;
+}
 
 daemonRelay.setHandlers({
   onAgentMessage: async ({ agent, body, spaceType, spaceId, parentMessageId, sourceMessage, deliveryId, idempotencyKey }) => {
@@ -1899,6 +2021,7 @@ heartbeatTimer.unref?.();
 server.listen(PORT, HOST, () => {
   addSystemEvent('server_started', `Magclaw local server started at http://${HOST}:${PORT}`);
   startReminderScheduler();
+  startMarkdownMaintenanceScheduler();
   fireDueReminders().catch((error) => {
     addSystemEvent('reminder_startup_fire_error', `Startup reminder check failed: ${error.message}`);
     persistState().then(broadcastState).catch(() => {});
@@ -1919,6 +2042,7 @@ function shutdown(signal = 'SIGTERM') {
   setTimeout(() => {
     clearInterval(heartbeatTimer);
     stopReminderScheduler();
+    stopMarkdownMaintenanceScheduler();
     for (const child of runningProcesses.values()) child.kill('SIGTERM');
     for (const proc of agentProcesses.values()) {
       if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');

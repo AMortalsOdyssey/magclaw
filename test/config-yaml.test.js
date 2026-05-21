@@ -34,6 +34,18 @@ daemon:
   connect_command:
     mode: "npm"
     local_repo_placeholder: "/workspace/magclaw"
+llm:
+  base_url: "https://llm.example/v1"
+  api_key: "llm-secret"
+  model: "qwen-test"
+  timeout_ms: 12000
+markdown_maintenance:
+  enabled: true
+  interval_ms: 60000
+  startup_delay_ms: 5000
+  semantic: false
+  max_agents: 3
+  max_files_per_agent: 4
 fanout_api:
   enabled: true
   base_url: "https://models.example/v1"
@@ -58,6 +70,16 @@ fanout_api:
   assert.equal(env.MAGCLAW_LOCAL_UPLOAD_DIR, '/tmp/magclaw-fallback');
   assert.equal(env.MAGCLAW_DAEMON_COMMAND_MODE, 'npm');
   assert.equal(env.MAGCLAW_DAEMON_LOCAL_REPO_PLACEHOLDER, '/workspace/magclaw');
+  assert.equal(env.MAGCLAW_LLM_BASE_URL, 'https://llm.example/v1');
+  assert.equal(env.MAGCLAW_LLM_API_KEY, 'llm-secret');
+  assert.equal(env.MAGCLAW_LLM_MODEL, 'qwen-test');
+  assert.equal(env.MAGCLAW_LLM_TIMEOUT_MS, '12000');
+  assert.equal(env.MAGCLAW_MARKDOWN_MAINTENANCE_ENABLED, '1');
+  assert.equal(env.MAGCLAW_MARKDOWN_MAINTENANCE_INTERVAL_MS, '60000');
+  assert.equal(env.MAGCLAW_MARKDOWN_MAINTENANCE_STARTUP_DELAY_MS, '5000');
+  assert.equal(env.MAGCLAW_MARKDOWN_MAINTENANCE_SEMANTIC, '0');
+  assert.equal(env.MAGCLAW_MARKDOWN_MAINTENANCE_MAX_AGENTS, '3');
+  assert.equal(env.MAGCLAW_MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT, '4');
   assert.equal(env.MAGCLAW_REQUIRE_LOGIN, undefined);
   assert.equal(env.MAGCLAW_DATA_DIR, undefined);
   assert.equal(env.MAGCLAW_FANOUT_API_ENABLED, undefined);
@@ -66,6 +88,7 @@ fanout_api:
   assert.equal(env.MAGCLAW_FANOUT_API_MODEL, undefined);
   assert.equal(env.MAGCLAW_FANOUT_API_FALLBACK_MODEL, undefined);
   assert.equal(env.MAGCLAW_FANOUT_TIMEOUT_MS, undefined);
+  assert.equal(result.redacted.llm.api_key, '[redacted]');
 });
 
 test('server yaml maps modular auth providers without exposing nested secrets in redaction', async () => {

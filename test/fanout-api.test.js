@@ -62,6 +62,7 @@ test('runtime config helpers normalize fan-out and chat settings', () => {
 });
 
 test('fan-out API helpers support OpenAI-compatible and responses shapes', () => {
+  assert.equal(fanoutApiEndpoint('https://api.example.com'), 'https://api.example.com/v1/chat/completions');
   assert.equal(fanoutApiEndpoint('https://api.example.com/v1'), 'https://api.example.com/v1/chat/completions');
   assert.equal(fanoutApiEndpoint('https://api.example.com/v1/responses'), 'https://api.example.com/v1/responses');
   assert.equal(fanoutApiResponseText({ choices: [{ message: { content: '{"mode":"directed"}' } }] }), '{"mode":"directed"}');

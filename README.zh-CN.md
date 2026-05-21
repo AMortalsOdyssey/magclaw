@@ -233,6 +233,16 @@ storage:
   upload_dir: "/var/lib/magclaw/uploads"
   local_file_storage_fallback: false
 
+llm:
+  base_url: "https://model-api.example.com/v1"
+  api_key: "replace-with-llm-api-key"
+  model: "qwen3.5-flash"
+
+markdown_maintenance:
+  enabled: true
+  interval_ms: 21600000
+  semantic: true
+
 daemon:
   connect_command_mode: "npm"
 ```

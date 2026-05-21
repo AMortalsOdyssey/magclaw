@@ -8,7 +8,8 @@ export function fanoutApiEndpoint(baseUrl) {
   const base = normalizeCloudUrl(baseUrl || '');
   if (!base) return '';
   if (/\/(chat\/completions|responses)$/i.test(base)) return base;
-  return `${base}/chat/completions`;
+  if (/\/v\d+$/i.test(base)) return `${base}/chat/completions`;
+  return `${base}/v1/chat/completions`;
 }
 
 export function fanoutApiResponseText(data) {

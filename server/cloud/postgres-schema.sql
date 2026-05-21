@@ -692,6 +692,68 @@ CREATE UNIQUE INDEX IF NOT EXISTS cloud_release_notes_component_position_uidx
 CREATE INDEX IF NOT EXISTS cloud_release_notes_component_released_idx
   ON cloud_release_notes(component, released_at DESC, version DESC);
 
+CREATE TABLE IF NOT EXISTS cloud_markdown_documents (
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES cloud_agents(id) ON DELETE CASCADE,
+  rel_path TEXT NOT NULL,
+  revision BIGINT NOT NULL DEFAULT 0,
+  document_hash TEXT NOT NULL DEFAULT '',
+  current_segment INTEGER NOT NULL DEFAULT 1,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  PRIMARY KEY (workspace_id, agent_id, rel_path)
+);
+
+CREATE INDEX IF NOT EXISTS cloud_markdown_documents_workspace_idx
+  ON cloud_markdown_documents(workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS cloud_markdown_operations (
+  operation_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES cloud_agents(id) ON DELETE CASCADE,
+  rel_path TEXT NOT NULL,
+  sequence BIGINT NOT NULL,
+  revision BIGINT NOT NULL,
+  segment_index INTEGER NOT NULL DEFAULT 1,
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'applied' CHECK (status IN ('pending', 'applied', 'deduped', 'conflicted', 'failed')),
+  operation JSONB NOT NULL DEFAULT '{}'::jsonb,
+  before_hash TEXT NOT NULL DEFAULT '',
+  after_hash TEXT NOT NULL DEFAULT '',
+  source_trigger TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  applied_at TIMESTAMPTZ,
+  error TEXT NOT NULL DEFAULT '',
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS cloud_markdown_operations_doc_sequence_uidx
+  ON cloud_markdown_operations(workspace_id, agent_id, rel_path, sequence);
+
+CREATE UNIQUE INDEX IF NOT EXISTS cloud_markdown_operations_idempotency_uidx
+  ON cloud_markdown_operations(workspace_id, agent_id, rel_path, idempotency_key)
+  WHERE idempotency_key <> '';
+
+CREATE INDEX IF NOT EXISTS cloud_markdown_operations_workspace_created_idx
+  ON cloud_markdown_operations(workspace_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS cloud_markdown_maintenance_runs (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  agent_id TEXT REFERENCES cloud_agents(id) ON DELETE SET NULL,
+  rel_path TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('completed', 'skipped', 'failed')),
+  model TEXT NOT NULL DEFAULT '',
+  before_hash TEXT NOT NULL DEFAULT '',
+  after_hash TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS cloud_markdown_maintenance_runs_workspace_created_idx
+  ON cloud_markdown_maintenance_runs(workspace_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS cloud_audit_logs (
   id TEXT PRIMARY KEY,
   workspace_id TEXT REFERENCES cloud_workspaces(id) ON DELETE SET NULL,

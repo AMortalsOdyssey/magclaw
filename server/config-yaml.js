@@ -161,6 +161,8 @@ export function applyServerYamlConfig(options = {}) {
   const database = config.database || config.postgres || {};
   const storage = config.storage || {};
   const email = config.email || config.smtp || {};
+  const llm = config.llm || {};
+  const markdownMaintenance = config.markdown_maintenance || config.markdownMaintenance || {};
   const auth = config.auth || {};
   const runtime = config.runtime || {};
   const daemon = config.daemon || {};
@@ -227,6 +229,17 @@ export function applyServerYamlConfig(options = {}) {
   setEnv(env, 'MAGCLAW_SMTP_STARTTLS', email.smtp_tls ?? email.starttls);
   setEnv(env, 'MAGCLAW_MAIL_FROM', pick(email.from, joinNameAndAddress(email.from_name, email.from_address)));
   setEnv(env, 'MAGCLAW_MAIL_LOGO_URL', pick(email.logo_url, email.logoUrl));
+
+  setEnv(env, 'MAGCLAW_LLM_BASE_URL', pick(llm.base_url, llm.baseUrl, llm.url));
+  setEnv(env, 'MAGCLAW_LLM_API_KEY', pick(llm.api_key, llm.apiKey));
+  setEnv(env, 'MAGCLAW_LLM_MODEL', pick(llm.model, llm.model_name, llm.modelName));
+  setEnv(env, 'MAGCLAW_LLM_TIMEOUT_MS', pick(llm.timeout_ms, llm.timeoutMs));
+  setEnv(env, 'MAGCLAW_MARKDOWN_MAINTENANCE_ENABLED', pick(markdownMaintenance.enabled, markdownMaintenance.enable));
+  setEnv(env, 'MAGCLAW_MARKDOWN_MAINTENANCE_INTERVAL_MS', pick(markdownMaintenance.interval_ms, markdownMaintenance.intervalMs));
+  setEnv(env, 'MAGCLAW_MARKDOWN_MAINTENANCE_STARTUP_DELAY_MS', pick(markdownMaintenance.startup_delay_ms, markdownMaintenance.startupDelayMs));
+  setEnv(env, 'MAGCLAW_MARKDOWN_MAINTENANCE_SEMANTIC', pick(markdownMaintenance.semantic, markdownMaintenance.semantic_enabled, markdownMaintenance.semanticEnabled));
+  setEnv(env, 'MAGCLAW_MARKDOWN_MAINTENANCE_MAX_AGENTS', pick(markdownMaintenance.max_agents, markdownMaintenance.maxAgents));
+  setEnv(env, 'MAGCLAW_MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT', pick(markdownMaintenance.max_files_per_agent, markdownMaintenance.maxFilesPerAgent));
 
   const authProviders = pick(auth.providers, auth.login_providers, auth.loginProviders, auth.methods, auth.login_methods, auth.loginMethods);
   if (Array.isArray(authProviders)) {

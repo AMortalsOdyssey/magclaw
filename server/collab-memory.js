@@ -1,7 +1,3 @@
-import { readFile, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-import { safePathWithin } from './path-utils.js';
-
 // Collaboration events and Agent memory writeback.
 // Keep this module focused on durable notes, task history, and system replies;
 // routing/runtime modules call it when work ownership or useful context changes.
@@ -11,9 +7,7 @@ export function createCollabMemoryManager(deps) {
     agentCardCache,
     broadcastState,
     channelAgentIds,
-    defaultAgentMemory,
     displayActor,
-    ensureAgentWorkspace,
     findMessage,
     getState,
     makeId,
@@ -21,14 +15,13 @@ export function createCollabMemoryManager(deps) {
     now,
     persistState,
     spaceDisplayName,
+    submitAgentMarkdownOperation,
     taskLabel,
   } = deps;
   const state = new Proxy({}, {
     get(_target, prop) { return getState()[prop]; },
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
-  const memoryWritebackQueues = new Map();
-
   function normalizeName(value, fallback) {
     return String(value || fallback || '')
       .trim()
@@ -79,109 +72,26 @@ export function createCollabMemoryManager(deps) {
     return 'memory';
   }
 
-  const SECTION_HEADINGS = new Map([
-    ['Recent Work', '近期工作'],
-    ['Capabilities', '能力'],
-    ['Key Knowledge', '知识索引'],
-    ['Strengths And Skills', '优势与技能'],
-    ['Style Adaptations', '语气适配'],
-    ['User Preferences', '用户偏好'],
-    ['Memory Writebacks', '记忆写入记录'],
-    ['Channel Memory', '频道记忆'],
-    ['Observed Collaboration', '协作观察'],
-  ]);
-
-  const SECTION_ALIASES = new Map([
-    ['Recent Work', ['近期工作']],
-    ['Capabilities', ['能力', 'Skills', '技能']],
-    ['Key Knowledge', ['知识索引', 'Knowledge Index']],
-    ['Strengths And Skills', ['优势与技能', 'Skills', '技能']],
-    ['Style Adaptations', ['语气适配']],
-    ['User Preferences', ['用户偏好']],
-    ['Memory Writebacks', ['记忆写入记录']],
-    ['Channel Memory', ['频道记忆']],
-    ['Observed Collaboration', ['协作观察']],
-  ]);
-
-  function preferredSectionHeading(heading) {
-    return SECTION_HEADINGS.get(heading) || heading;
-  }
-
-  function sectionHeadingAliases(heading) {
-    return [heading, ...(SECTION_ALIASES.get(heading) || [])]
-      .map((item) => String(item || '').trim().toLowerCase())
-      .filter(Boolean);
-  }
-
-  const PLACEHOLDER_BULLETS = [
-    /No recent durable work has been recorded yet/i,
-    /No open work has been recorded yet/i,
-    /No completed work has been recorded yet/i,
-    /No durable decisions have been recorded yet/i,
-    /No active task has been recorded yet/i,
-    /Before a long task or context-heavy handoff/i,
-    /暂无近期可复用记录/,
-    /暂无经过真实任务验证的稳定能力/,
-    /暂无需要跨回合延续的任务/,
-    /暂无进行中的长期工作/,
-    /暂无已完成的长期工作/,
-    /暂无需要长期保留的决策/,
-    /根据真实完成的任务补充/,
-  ];
-  
-  function upsertMarkdownBullet(content, heading, bullet, maxItems = 10) {
-    const lines = String(content || '').split(/\r?\n/);
-    const preferredHeading = preferredSectionHeading(heading);
-    const headingLine = `## ${preferredHeading}`;
-    const aliases = sectionHeadingAliases(heading);
-    let headingIndex = lines.findIndex((line) => {
-      const match = line.trim().match(/^##\s+(.+?)\s*$/);
-      return match && aliases.includes(match[1].trim().toLowerCase());
+  async function appendAgentMemoryNote(agent, relPath, heading, bullet, maxItems = 10) {
+    if (typeof submitAgentMarkdownOperation !== 'function') {
+      throw new Error('Markdown operation applier is not configured.');
+    }
+    await submitAgentMarkdownOperation(agent, {
+      type: 'upsert_bullet',
+      target: { relPath, heading },
+      text: bullet,
+      maxItems,
+    }, {
+      sourceTrigger: 'agent_memory_note',
     });
-    if (headingIndex === -1) {
-      const suffix = lines.length && lines[lines.length - 1].trim() ? ['', headingLine, bullet] : [headingLine, bullet];
-      return [...lines, ...suffix].join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
-    }
-    lines[headingIndex] = headingLine;
-    let endIndex = lines.length;
-    for (let index = headingIndex + 1; index < lines.length; index += 1) {
-      if (/^#{1,6}\s+/.test(lines[index])) {
-        endIndex = index;
-        break;
-      }
-    }
-    const before = lines.slice(0, headingIndex + 1);
-    const section = lines.slice(headingIndex + 1, endIndex).filter((line) => line.trim());
-    const after = lines.slice(endIndex);
-    const bullets = [bullet, ...section.filter((line) => line.trim() !== bullet.trim())]
-      .filter((line) => line.trim().startsWith('- '))
-      .filter((line) => !PLACEHOLDER_BULLETS.some((pattern) => pattern.test(line)))
-      .slice(0, maxItems);
-    return [...before, ...bullets, '', ...after].join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
-  }
-  
-  async function appendAgentMemoryNote(agent, relPath, heading, bullet) {
-    const root = await ensureAgentWorkspace(agent);
-    const filePath = safePathWithin(root, relPath);
-    if (!filePath) return;
-    const existing = await readFile(filePath, 'utf8').catch(() => `# ${agent.name} ${path.basename(relPath, '.md')}\n`);
-    await writeFile(filePath, upsertMarkdownBullet(existing, heading, bullet));
   }
   
   async function updateAgentMemoryEntrypoint(agent, bullet) {
-    const root = await ensureAgentWorkspace(agent);
-    const memoryPath = safePathWithin(root, 'MEMORY.md');
-    if (!memoryPath) return;
-    const existing = await readFile(memoryPath, 'utf8').catch(() => defaultAgentMemory(agent));
-    await writeFile(memoryPath, upsertMarkdownBullet(existing, 'Recent Work', bullet, 8));
+    await appendAgentMemoryNote(agent, 'MEMORY.md', 'Recent Work', bullet, 8);
   }
 
   async function updateAgentMemorySection(agent, heading, bullet, maxItems = 10) {
-    const root = await ensureAgentWorkspace(agent);
-    const memoryPath = safePathWithin(root, 'MEMORY.md');
-    if (!memoryPath) return;
-    const existing = await readFile(memoryPath, 'utf8').catch(() => defaultAgentMemory(agent));
-    await writeFile(memoryPath, upsertMarkdownBullet(existing, heading, bullet, maxItems));
+    await appendAgentMemoryNote(agent, 'MEMORY.md', heading, bullet, maxItems);
   }
 
   async function writeExplicitAgentMemory(agent, memory) {
@@ -286,10 +196,7 @@ export function createCollabMemoryManager(deps) {
   
   function scheduleAgentMemoryWriteback(agent, trigger, payload = {}) {
     if (!agent) return Promise.resolve(false);
-    const previous = memoryWritebackQueues.get(agent.id) || Promise.resolve();
-    let queued;
-    queued = previous
-      .catch(() => false)
+    return Promise.resolve()
       .then(() => writeAgentMemoryUpdate(agent, trigger, payload))
       .then(async (changed) => {
         if (changed) {
@@ -305,14 +212,7 @@ export function createCollabMemoryManager(deps) {
         });
         await persistState().then(broadcastState).catch(() => {});
         return false;
-      })
-      .finally(() => {
-        if (memoryWritebackQueues.get(agent.id) === queued) {
-          memoryWritebackQueues.delete(agent.id);
-        }
       });
-    memoryWritebackQueues.set(agent.id, queued);
-    return queued;
   }
   
   function addSystemReply(parentMessageId, body, extra = {}) {

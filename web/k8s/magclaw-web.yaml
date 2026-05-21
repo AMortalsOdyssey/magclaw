@@ -46,6 +46,14 @@ data:
       smtp_password: "change-me"
       from_address: "noreply@example.com"
       from_name: "MagClaw"
+    llm:
+      base_url: "https://model-api.example.com/v1"
+      api_key: "replace-with-llm-api-key"
+      model: "qwen3.5-flash"
+    markdown_maintenance:
+      enabled: true
+      interval_ms: 21600000
+      semantic: true
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

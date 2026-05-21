@@ -2504,6 +2504,110 @@ export function createCloudPostgresStore(optionsInput = {}) {
     return next;
   }
 
+  async function persistMarkdownDocumentIndex(record = {}) {
+    const workspaceId = String(record.workspaceId || '').trim();
+    const agentId = String(record.agentId || '').trim();
+    const relPath = String(record.relPath || '').trim();
+    if (!workspaceId || !agentId || !relPath) return;
+    await withClient(async (client) => {
+      await client.query(`
+        INSERT INTO ${table('cloud_markdown_documents')}
+          (workspace_id, agent_id, rel_path, revision, document_hash, current_segment, updated_at, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+        ON CONFLICT (workspace_id, agent_id, rel_path) DO UPDATE SET
+          revision = GREATEST(${table('cloud_markdown_documents')}.revision, EXCLUDED.revision),
+          document_hash = EXCLUDED.document_hash,
+          current_segment = EXCLUDED.current_segment,
+          updated_at = GREATEST(${table('cloud_markdown_documents')}.updated_at, EXCLUDED.updated_at),
+          metadata = EXCLUDED.metadata
+      `, [
+        workspaceId,
+        agentId,
+        relPath,
+        Number(record.revision || 0),
+        String(record.documentHash || ''),
+        Number(record.currentSegment || 1),
+        requiredIso(record.updatedAt),
+        JSON.stringify(jsonObject(record.metadata)),
+      ]);
+    });
+  }
+
+  async function persistMarkdownOperationIndex(record = {}) {
+    const operationId = String(record.operationId || '').trim();
+    const workspaceId = String(record.workspaceId || '').trim();
+    const agentId = String(record.agentId || '').trim();
+    const relPath = String(record.relPath || '').trim();
+    if (!operationId || !workspaceId || !agentId || !relPath) return;
+    await withClient(async (client) => {
+      await client.query(`
+        INSERT INTO ${table('cloud_markdown_operations')}
+          (operation_id, workspace_id, agent_id, rel_path, sequence, revision, segment_index,
+           idempotency_key, status, operation, before_hash, after_hash, source_trigger,
+           created_at, applied_at, error, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17::jsonb)
+        ON CONFLICT (operation_id) DO UPDATE SET
+          status = EXCLUDED.status,
+          revision = EXCLUDED.revision,
+          segment_index = EXCLUDED.segment_index,
+          before_hash = EXCLUDED.before_hash,
+          after_hash = EXCLUDED.after_hash,
+          applied_at = EXCLUDED.applied_at,
+          error = EXCLUDED.error,
+          metadata = EXCLUDED.metadata
+      `, [
+        operationId,
+        workspaceId,
+        agentId,
+        relPath,
+        Number(record.sequence || record.revision || 0),
+        Number(record.revision || record.sequence || 0),
+        Number(record.segmentIndex || 1),
+        String(record.idempotencyKey || ''),
+        String(record.status || 'applied'),
+        JSON.stringify(jsonObject(record.operation)),
+        String(record.beforeHash || ''),
+        String(record.afterHash || ''),
+        String(record.sourceTrigger || ''),
+        requiredIso(record.createdAt),
+        record.appliedAt ? requiredIso(record.appliedAt) : null,
+        String(record.error || ''),
+        JSON.stringify(jsonObject(record.metadata)),
+      ]);
+    });
+  }
+
+  async function persistMarkdownMaintenanceRun(record = {}) {
+    const id = String(record.id || '').trim();
+    const workspaceId = String(record.workspaceId || '').trim();
+    const relPath = String(record.relPath || '').trim();
+    if (!id || !workspaceId || !relPath) return;
+    await withClient(async (client) => {
+      await client.query(`
+        INSERT INTO ${table('cloud_markdown_maintenance_runs')}
+          (id, workspace_id, agent_id, rel_path, status, model, before_hash, after_hash, summary, created_at, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          status = EXCLUDED.status,
+          after_hash = EXCLUDED.after_hash,
+          summary = EXCLUDED.summary,
+          metadata = EXCLUDED.metadata
+      `, [
+        id,
+        workspaceId,
+        String(record.agentId || '') || null,
+        relPath,
+        String(record.status || 'completed'),
+        String(record.model || ''),
+        String(record.beforeHash || ''),
+        String(record.afterHash || ''),
+        String(record.summary || '').slice(0, 1000),
+        requiredIso(record.createdAt),
+        JSON.stringify(jsonObject(record.metadata)),
+      ]);
+    });
+  }
+
   async function persistAuthFromStateNow(state) {
     const cloud = state.cloud || {};
     const users = safeArray(cloud.users).map(cloneRecord);
@@ -3085,6 +3189,9 @@ export function createCloudPostgresStore(optionsInput = {}) {
     persistFromState,
     persistWorkspaceFromState,
     deleteComputer,
+    persistMarkdownDocumentIndex,
+    persistMarkdownOperationIndex,
+    persistMarkdownMaintenanceRun,
     subscribeRealtimeEvents,
     publicInfo: () => ({
       backend: 'postgres',

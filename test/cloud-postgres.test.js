@@ -135,6 +135,9 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     'cloud_attachments',
     'cloud_agent_deliveries',
     'cloud_release_notes',
+    'cloud_markdown_documents',
+    'cloud_markdown_operations',
+    'cloud_markdown_maintenance_runs',
     'cloud_audit_logs',
   ]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
@@ -154,6 +157,10 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
   assert.match(sql, /cloud_messages_space_cursor_idx/);
   assert.match(sql, /cloud_messages[\s\S]*reactions JSONB NOT NULL DEFAULT '\[\]'::jsonb/);
   assert.match(sql, /cloud_messages[\s\S]*followed_by JSONB NOT NULL DEFAULT '\[\]'::jsonb/);
+  assert.match(sql, /cloud_markdown_operations[\s\S]*idempotency_key TEXT NOT NULL DEFAULT ''/);
+  assert.match(sql, /cloud_markdown_operations_doc_sequence_uidx/);
+  assert.match(sql, /cloud_markdown_operations_idempotency_uidx/);
+  assert.match(sql, /cloud_markdown_maintenance_runs_workspace_created_idx/);
   assert.match(sql, /ON cloud_messages\(workspace_id, space_type, space_id, created_at DESC, id DESC\)/);
   assert.match(sql, /cloud_replies_workspace_parent_cursor_idx/);
   assert.match(sql, /cloud_replies[\s\S]*reactions JSONB NOT NULL DEFAULT '\[\]'::jsonb/);
@@ -406,6 +413,73 @@ test('postgres store persists relay core state without durable activity logs', a
   assert.match(JSON.stringify(messageInsert.params), /hum_owner/);
   assert.match(JSON.stringify(replyInsert.params), /heart/);
   assert.equal(taskInsert.params[7], 'closed');
+});
+
+test('postgres store indexes markdown document operations and maintenance runs', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+
+  await store.persistMarkdownDocumentIndex({
+    workspaceId: 'wsp_main',
+    agentId: 'agt_one',
+    relPath: 'MEMORY.md',
+    revision: 2,
+    documentHash: 'hash_after',
+    currentSegment: 1,
+    updatedAt: '2026-05-21T00:00:00.000Z',
+  });
+  await store.persistMarkdownOperationIndex({
+    operationId: 'mdop_one',
+    workspaceId: 'wsp_main',
+    agentId: 'agt_one',
+    relPath: 'MEMORY.md',
+    sequence: 2,
+    revision: 2,
+    segmentIndex: 1,
+    idempotencyKey: 'idem-one',
+    status: 'applied',
+    operation: { type: 'upsert_bullet' },
+    beforeHash: 'hash_before',
+    afterHash: 'hash_after',
+    sourceTrigger: 'test',
+    createdAt: '2026-05-21T00:00:00.000Z',
+    appliedAt: '2026-05-21T00:00:01.000Z',
+  });
+  await store.persistMarkdownMaintenanceRun({
+    id: 'maint_one',
+    workspaceId: 'wsp_main',
+    agentId: 'agt_one',
+    relPath: 'MEMORY.md',
+    status: 'completed',
+    model: 'qwen-test',
+    beforeHash: 'hash_before',
+    afterHash: 'hash_after',
+    summary: 'merged duplicate headings',
+    createdAt: '2026-05-21T00:00:02.000Z',
+  });
+
+  assert.ok(queries.some((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_markdown_documents"')));
+  assert.ok(queries.some((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_markdown_operations"')));
+  assert.ok(queries.some((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_markdown_maintenance_runs"')));
+  const operationQuery = queries.find((query) => query.sql.includes('cloud_markdown_operations'));
+  assert.equal(operationQuery.params[0], 'mdop_one');
+  assert.equal(JSON.parse(operationQuery.params[9]).type, 'upsert_bullet');
 });
 
 test('postgres store restores legacy provisional computers before pairing tokens', async () => {
