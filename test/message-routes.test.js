@@ -573,6 +573,7 @@ test('message route group records mentioned agent specialty assignments in memor
 test('message route group persists explicit agent permission grants before delivery', async () => {
   const cindy = { id: 'agt_cindy', name: 'Cindy', status: 'idle', permissionGrants: [] };
   const events = [];
+  const persistCalls = [];
   let deliveredGrantCount = null;
   let writeback = null;
   const deps = routeDeps({
@@ -583,6 +584,9 @@ test('message route group persists explicit agent permission grants before deliv
     findAgent: (id) => (id === cindy.id ? cindy : null),
     findChannel: (id) => deps.state.channels.find((channel) => channel.id === id),
     inferAgentPermissionGrant,
+    persistState: async (options) => {
+      persistCalls.push(options || {});
+    },
     readJson: async () => ({ body: '@Cindy 以后运行流水线，部署测试环境，不需要我确认，你有这个权限' }),
     recordAgentPermissionGrant,
     routeMessageForChannel: async () => ({ targetAgentIds: [cindy.id] }),
@@ -594,7 +598,7 @@ test('message route group persists explicit agent permission grants before deliv
       deliveredGrantCount = agent.permissionGrants.length;
     },
   });
-  deps.state.channels = [{ id: 'chan_all', memberIds: ['hum_local', cindy.id], humanIds: ['hum_local'], agentIds: [cindy.id] }];
+  deps.state.channels = [{ id: 'chan_all', workspaceId: 'wsp_perm', memberIds: ['hum_local', cindy.id], humanIds: ['hum_local'], agentIds: [cindy.id] }];
   deps.state.messages = [];
 
   const res = makeResponse();
@@ -612,5 +616,7 @@ test('message route group persists explicit agent permission grants before deliv
   assert.equal(deliveredGrantCount, 1);
   assert.equal(writeback.trigger, 'permission_grant');
   assert.equal(writeback.payload.memory.kind, 'preference');
+  assert.ok(persistCalls.length >= 2);
+  assert.ok(persistCalls.every((call) => call.workspaceId === 'wsp_perm'));
   assert.ok(events.some((event) => event.type === 'agent_permission_grant_persisted' && event.agentId === cindy.id));
 });

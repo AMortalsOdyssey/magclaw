@@ -122,14 +122,14 @@ export async function handleMessageApi(req, res, url, deps) {
           });
         });
       }
-      await persistState();
+      await persistConversationState(message, spaceType, spaceId);
       broadcastState();
     }).catch(async (err) => {
       addSystemEvent('fanout_api_supplement_delivery_error', `LLM supplement delivery failed: ${err.message}`, {
         messageId: message?.id || null,
         parentMessageId,
       });
-      await persistState().catch(() => {});
+      await persistConversationState(message, spaceType, spaceId).catch(() => {});
       broadcastState();
     });
   }
@@ -171,6 +171,22 @@ export async function handleMessageApi(req, res, url, deps) {
     const authName = auth?.member?.name || auth?.user?.name || '';
     const human = findHuman(humanId) || state.humans?.find((item) => item.id === humanId);
     return human?.name || authName || humanId;
+  }
+
+  function workspaceIdForConversation(record, spaceType, spaceId, req = null) {
+    const explicit = String(record?.workspaceId || record?.workspace_id || '').trim();
+    if (explicit) return explicit;
+    const target = spaceType === 'channel'
+      ? state.channels.find((channel) => channel.id === spaceId)
+      : state.dms.find((dm) => dm.id === spaceId);
+    if (target?.workspaceId) return String(target.workspaceId).trim();
+    if (req) return workspaceIdForSpace(spaceType, spaceId, req);
+    return String(state.connection?.workspaceId || state.cloud?.workspace?.id || '').trim();
+  }
+
+  function persistConversationState(record, spaceType, spaceId, req = null) {
+    const workspaceId = workspaceIdForConversation(record, spaceType, spaceId, req);
+    return persistState(workspaceId ? { workspaceId } : {});
   }
 
   function reactionOptionFromInput(input = {}) {
@@ -407,7 +423,7 @@ export async function handleMessageApi(req, res, url, deps) {
       recordCount: markedRecordIds.length,
     });
     if (changed) {
-      await persistState();
+      await persistState({ workspaceId: workspaceIdForRequest(req) });
       broadcastState();
     }
     sendJson(res, 200, {
@@ -494,7 +510,7 @@ export async function handleMessageApi(req, res, url, deps) {
     }
     await Promise.all(writes);
     if (permissionChanged) {
-      await persistState();
+      await persistConversationState(record, spaceType, spaceId);
       broadcastState();
     }
   }
@@ -738,7 +754,7 @@ export async function handleMessageApi(req, res, url, deps) {
     const deliveryContext = peerMemorySearch ? { peerMemorySearch } : {};
 
     addCollabEvent('message_sent', 'Message sent.', { messageId: message.id, spaceType, spaceId });
-    await persistState();
+    await persistConversationState(message, spaceType, spaceId, req);
     broadcastState();
 
     await scheduleMessageMemoryWritebacks({
@@ -944,7 +960,7 @@ export async function handleMessageApi(req, res, url, deps) {
         createdThreadTaskMessage = created.message;
       }
     }
-    await persistState();
+    await persistConversationState(reply, message.spaceType, message.spaceId, req);
     broadcastState();
 
     if (createdThreadTask && createdThreadTaskMessage) {
@@ -1021,7 +1037,7 @@ export async function handleMessageApi(req, res, url, deps) {
     }
 
     if (routeDecision) {
-      await persistState();
+      await persistConversationState(reply, message.spaceType, message.spaceId, req);
       broadcastState();
     }
 
@@ -1058,7 +1074,7 @@ export async function handleMessageApi(req, res, url, deps) {
       humanId: userId,
       saved: message.savedBy.includes(userId),
     });
-    await persistState();
+    await persistConversationState(message, message.spaceType, message.spaceId, req);
     broadcastState();
     sendJson(res, 200, { message });
     return true;
@@ -1083,7 +1099,7 @@ export async function handleMessageApi(req, res, url, deps) {
       return true;
     }
     const result = toggleRecordReaction(message, option, req);
-    await persistState();
+    await persistConversationState(message, message.spaceType, message.spaceId, req);
     broadcastState();
     sendJson(res, 200, { message, reaction: result.reaction, active: result.active });
     return true;
@@ -1101,7 +1117,7 @@ export async function handleMessageApi(req, res, url, deps) {
       sendError(res, 404, 'Thread message not found.');
       return true;
     }
-    await persistState();
+    await persistConversationState(result.root, result.root?.spaceType, result.root?.spaceId, req);
     broadcastState();
     sendJson(res, 200, { message: result.root, followed: result.active });
     return true;
@@ -1118,7 +1134,7 @@ export async function handleMessageApi(req, res, url, deps) {
     normalizeConversationRecord(message);
     const task = createTaskFromMessage(message, body.title || message.body);
     message.taskId = task.id;
-    await persistState();
+    await persistConversationState(message, message.spaceType, message.spaceId, req);
     broadcastState();
     sendJson(res, 201, { task });
     return true;
