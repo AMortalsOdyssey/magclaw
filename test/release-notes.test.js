@@ -14,7 +14,7 @@ test('release notes expose independent Web and Daemon version catalogs', () => {
   assert.equal(notes.web.currentVersion, '0.3.0');
   assert.equal(notes.daemon.currentVersion, '0.1.1');
   assert.match(notes.web.releases[0].title, /SSE broadcasts/);
-  assert.match(notes.daemon.releases[0].title, /Long-task permission runtime/);
+  assert.match(notes.daemon.releases[0].title, /Runtime-native agent hook layout/);
 });
 
 test('release notes normalization keeps the seeded catalog authoritative', () => {
@@ -41,5 +41,5 @@ test('release notes normalization keeps the seeded catalog authoritative', () =>
   assert.equal(notes.web.currentVersion, '0.3.0');
   assert.deepEqual(notes.web.releases.map((release) => release.version), ['0.3.0']);
   assert.equal(notes.web.releases[0].features[0], 'Feishu authorization login is now supported.');
-  assert.ok(notes.daemon.releases.length > 0);
+  assert.equal(notes.daemon.releases[0].version, '0.1.10');
 });

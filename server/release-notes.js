@@ -26,6 +26,18 @@ const WEB_RELEASES = [
 
 const DAEMON_RELEASES = [
   {
+    version: '0.1.10',
+    date: '2026-05-21',
+    title: 'Runtime-native agent hook layout',
+    features: [
+      'Agent workspaces now prepare runtime-specific hook directories for Codex and Claude Code.',
+    ],
+    improved: [
+      'Codex hooks and Claude Code settings are linked into the runtime-native locations expected by each CLI.',
+    ],
+    fixes: [],
+  },
+  {
     version: '0.1.9',
     date: '2026-05-21',
     title: 'Long-task permission runtime',
@@ -152,11 +164,23 @@ function normalizeReleaseItem(item, index = 0) {
   };
 }
 
+function compareVersionsDescending(a, b) {
+  const aParts = String(a || '').split('.').map((part) => Number.parseInt(part, 10));
+  const bParts = String(b || '').split('.').map((part) => Number.parseInt(part, 10));
+  const length = Math.max(aParts.length, bParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const aPart = Number.isFinite(aParts[index]) ? aParts[index] : 0;
+    const bPart = Number.isFinite(bParts[index]) ? bParts[index] : 0;
+    if (aPart !== bPart) return bPart - aPart;
+  }
+  return String(b || '').localeCompare(String(a || ''));
+}
+
 function normalizeReleaseItems(items) {
   return safeArray(items)
     .map(normalizeReleaseItem)
     .filter((item) => item.version && item.date)
-    .sort((a, b) => Date.parse(b.date) - Date.parse(a.date) || b.version.localeCompare(a.version));
+    .sort((a, b) => Date.parse(b.date) - Date.parse(a.date) || compareVersionsDescending(a.version, b.version));
 }
 
 function mergeReleaseItems(existingItems, defaultItems) {
