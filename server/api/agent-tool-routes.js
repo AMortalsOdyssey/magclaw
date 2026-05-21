@@ -22,6 +22,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     formatAgentSearchResults,
     getState,
     httpError,
+    deliverMessageToAgent = null,
     makeId,
     markWorkItemResponded,
     normalizeIds,
@@ -258,6 +259,157 @@ export async function handleAgentToolApi(req, res, url, deps) {
     ].includes(memberId);
   }
 
+  function channelRequiresMembership(channel) {
+    const visibility = String(channel?.visibility || channel?.privacy || '').trim().toLowerCase();
+    return Boolean(channel?.private || channel?.isPrivate || ['private', 'secret'].includes(visibility));
+  }
+
+  function findWorkspaceHuman(ref, workspaceId = requestWorkspaceId()) {
+    const value = String(ref || '').trim().replace(/^@/, '');
+    if (!value) return null;
+    const humans = new Map((state.humans || []).map((human) => [human.id, human]));
+    const usersById = new Map((state.cloud?.users || []).map((user) => [user.id, user]));
+    for (const member of state.cloud?.workspaceMembers || []) {
+      if ((member.status || 'active') !== 'active') continue;
+      if (workspaceId && member.workspaceId !== workspaceId) continue;
+      if (!member.humanId || humans.has(member.humanId)) continue;
+      const user = usersById.get(member.userId) || {};
+      humans.set(member.humanId, {
+        id: member.humanId,
+        name: user.name || user.email?.split('@')[0] || member.humanId,
+        email: user.email || '',
+      });
+    }
+    return [...humans.values()].find((human) => (
+      workspaceMatches(human, workspaceId)
+      && (
+        human.id === value
+        || human.id.startsWith(value)
+        || human.name === value
+        || `@${human.name}` === value
+        || human.email === value
+      )
+    )) || null;
+  }
+
+  function findVisibleDmPeer(ref, workspaceId = requestWorkspaceId()) {
+    return findWorkspaceAgent(ref, workspaceId)
+      || findWorkspaceHuman(ref, workspaceId)
+      || null;
+  }
+
+  function canonicalDmParticipants(firstId, secondId) {
+    const first = String(firstId || '').trim();
+    const second = String(secondId || '').trim();
+    return [first, second].filter(Boolean);
+  }
+
+  function findOrCreateAgentPeerDm(agent, peer, workspaceId = requestWorkspaceId()) {
+    const participants = canonicalDmParticipants(agent.id, peer.id);
+    let dm = (state.dms || []).find((item) => (
+      workspaceMatches(item, workspaceId)
+      && Array.isArray(item.participantIds)
+      && participants.every((id) => item.participantIds.includes(id))
+    ));
+    if (dm) return dm;
+    dm = {
+      id: makeId('dm'),
+      workspaceId,
+      participantIds: participants,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    state.dms = Array.isArray(state.dms) ? state.dms : [];
+    state.dms.push(dm);
+    addSystemEvent('agent_tool_dm_created', `${agent.name} opened a proactive DM.`, {
+      agentId: agent.id,
+      peerId: peer.id,
+      dmId: dm.id,
+      workspaceId: workspaceId || null,
+    });
+    return dm;
+  }
+
+  function parentMessageForDmThread(dm, parentRef, workspaceId = requestWorkspaceId()) {
+    const ref = String(parentRef || '').trim();
+    if (!ref) return null;
+    const parent = (state.messages || []).find((message) => (
+      workspaceMatches(message, workspaceId)
+      && message.spaceType === 'dm'
+      && message.spaceId === dm.id
+      && (message.id === ref || message.id.startsWith(ref) || message.id.split('_').pop()?.startsWith(ref))
+    ));
+    if (!parent) throw httpError(404, `Thread message not found: ${parentRef}`);
+    return parent;
+  }
+
+  function resolveProactiveMessageTarget(agent, rawTarget) {
+    const workspaceId = requestWorkspaceId();
+    const target = String(rawTarget || '').trim();
+    if (!target) throw httpError(400, 'Target is required for proactive send_message.');
+    const namedDm = target.match(/^dm:@([^:]+)(?::(.+))?$/);
+    if (namedDm) {
+      const peer = findVisibleDmPeer(namedDm[1], workspaceId);
+      if (!peer) throw httpError(404, `DM peer not found: @${namedDm[1]}`);
+      if (peer.id === agent.id) throw httpError(400, 'Agent cannot DM itself.');
+      const dm = findOrCreateAgentPeerDm(agent, peer, workspaceId);
+      const parent = parentMessageForDmThread(dm, namedDm[2] || '', workspaceId);
+      return {
+        spaceType: 'dm',
+        spaceId: dm.id,
+        parentMessageId: parent?.id || null,
+        label: parent ? `dm:${dm.id}:${parent.id}` : `dm:${dm.id}`,
+        dm,
+        peer,
+      };
+    }
+    const resolved = resolveMessageTarget(target, { workspaceId });
+    if (resolved.spaceType === 'dm') {
+      const dm = (state.dms || []).find((item) => item.id === resolved.spaceId);
+      if (!dm?.participantIds?.includes(agent.id)) {
+        throw httpError(403, 'Agent can only send to a DM it participates in, or use dm:@peer to open one.');
+      }
+      return { ...resolved, dm };
+    }
+    if (resolved.spaceType === 'channel') {
+      const channel = (state.channels || []).find((item) => item.id === resolved.spaceId);
+      if (!channel) throw httpError(404, 'Channel not found.');
+      if (channelRequiresMembership(channel) && !channelHasMember(channel, agent.id)) {
+        throw httpError(403, 'Agent can only proactively send to private channels it belongs to.');
+      }
+      return { ...resolved, channel };
+    }
+    return resolved;
+  }
+
+  async function deliverProactiveMessageToAgentPeers(senderAgent, target, posted) {
+    if (target.spaceType !== 'dm' || typeof deliverMessageToAgent !== 'function') return [];
+    const dm = target.dm || (state.dms || []).find((item) => item.id === target.spaceId);
+    const recipientAgents = (dm?.participantIds || [])
+      .filter((id) => id.startsWith('agt_') && id !== senderAgent.id)
+      .map((id) => findAgent(id))
+      .filter(Boolean);
+    const delivered = [];
+    for (const recipient of recipientAgents) {
+      try {
+        await deliverMessageToAgent(recipient, 'dm', dm.id, posted, {
+          parentMessageId: target.parentMessageId || null,
+          proactive: true,
+          sourceAgentId: senderAgent.id,
+        });
+        delivered.push(recipient.id);
+      } catch (error) {
+        addSystemEvent('delivery_error', `Failed to deliver proactive DM to ${recipient.name}: ${error.message}`, {
+          agentId: recipient.id,
+          sourceAgentId: senderAgent.id,
+          messageId: posted?.id || null,
+          dmId: dm.id,
+        });
+      }
+    }
+    return delivered;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/agent-tools/reminders') {
     const agentId = url.searchParams.get('agentId') || '';
     const result = typeof listReminders === 'function'
@@ -418,6 +570,8 @@ export async function handleAgentToolApi(req, res, url, deps) {
     const agentId = url.searchParams.get('agentId') || '';
     const workspaceId = requestWorkspaceId();
     const history = readAgentHistory(state, {
+      agentId,
+      workItemId: url.searchParams.get('workItemId') || url.searchParams.get('work_item_id') || undefined,
       target: url.searchParams.get('target') || url.searchParams.get('channel') || '#all',
       limit: url.searchParams.get('limit') || undefined,
       around: url.searchParams.get('around') || undefined,
@@ -431,7 +585,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       target: history.target || url.searchParams.get('target') || '#all',
       ok: Boolean(history.ok),
     });
-    sendJson(res, history.ok ? 200 : 404, {
+    sendJson(res, history.ok ? 200 : (history.code === 'dm_forbidden' ? 403 : 404), {
       ...history,
       text: formatAgentHistory(history, { state, targetAgentId: agentId }),
     });
@@ -442,6 +596,8 @@ export async function handleAgentToolApi(req, res, url, deps) {
     const agentId = url.searchParams.get('agentId') || '';
     const workspaceId = requestWorkspaceId();
     const search = searchAgentMessageHistory(state, {
+      agentId,
+      workItemId: url.searchParams.get('workItemId') || url.searchParams.get('work_item_id') || undefined,
       query: url.searchParams.get('q') || url.searchParams.get('query') || '',
       target: url.searchParams.get('target') || url.searchParams.get('channel') || '#all',
       limit: url.searchParams.get('limit') || undefined,
@@ -454,7 +610,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       target: url.searchParams.get('target') || '#all',
       ok: Boolean(search.ok),
     });
-    sendJson(res, search.ok ? 200 : 400, {
+    sendJson(res, search.ok ? 200 : (search.code === 'dm_forbidden' ? 403 : 400), {
       ...search,
       text: formatAgentSearchResults(search, { state, targetAgentId: agentId }),
     });
@@ -604,12 +760,65 @@ export async function handleAgentToolApi(req, res, url, deps) {
         workItemId: rawWorkItemId || null,
       });
     }
-    const workItem = findWorkItem(String(body.workItemId || body.work_item_id || ''));
-    if (!workItem) {
+    const workItem = rawWorkItemId ? findWorkItem(String(body.workItemId || body.work_item_id || '')) : null;
+    if (rawWorkItemId && !workItem) {
       return fail(404, 'Work item not found.', {
         agentId: agent.id,
         workItemId: rawWorkItemId || null,
       });
+    }
+    const content = String(body.content || '').trim();
+    if (!content) {
+      return fail(400, 'Message content is required.', {
+        agentId: agent.id,
+        workItemId: rawWorkItemId || null,
+      });
+    }
+    if (!workItem) {
+      let target;
+      try {
+        target = resolveProactiveMessageTarget(agent, body.target);
+      } catch (error) {
+        return fail(error.status || 400, error.message, {
+          agentId: agent.id,
+          target: rawTarget || null,
+        });
+      }
+      try {
+        const posted = await postAgentResponse(agent, target.spaceType, target.spaceId, content, target.parentMessageId || null, {
+          deliveryId: deliveryId || null,
+          idempotencyKey: idempotencyKey || null,
+          proactive: true,
+        });
+        const deliveredAgentIds = await deliverProactiveMessageToAgentPeers(agent, target, posted);
+        addSystemEvent('agent_tool_send_message', `${agent.name} proactively sent a message to ${target.label}.`, {
+          traceId,
+          agentId: agent.id,
+          proactive: true,
+          target: target.label,
+          deliveryId: deliveryId || null,
+          idempotencyKey: idempotencyKey || null,
+          responseId: posted?.id || null,
+          deliveredAgentIds,
+          durationMs: Date.now() - startedAt,
+        });
+        await persistState();
+        broadcastState();
+        sendJson(res, 200, {
+          ok: true,
+          proactive: true,
+          target: target.label,
+          message: posted,
+          deliveredAgentIds,
+          text: `Message sent to ${target.label}.`,
+        });
+      } catch (error) {
+        return fail(error.status || 500, error.message || 'Failed to send message.', {
+          agentId: agent.id,
+          target: target?.label || rawTarget || null,
+        });
+      }
+      return true;
     }
     if (workItem.agentId !== agent.id) {
       return fail(403, 'Work item belongs to a different agent.', {
@@ -620,13 +829,6 @@ export async function handleAgentToolApi(req, res, url, deps) {
     }
     if (workItem.status === 'stopped') {
       return fail(409, 'Work item was stopped by the user.', {
-        agentId: agent.id,
-        workItemId: workItem.id,
-      });
-    }
-    const content = String(body.content || '').trim();
-    if (!content) {
-      return fail(400, 'Message content is required.', {
         agentId: agent.id,
         workItemId: workItem.id,
       });

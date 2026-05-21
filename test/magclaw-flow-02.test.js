@@ -779,7 +779,7 @@ process.stdin.on('data', (chunk) => {
     assert.ok(finalState.replies.some((item) => item.parentMessageId === first.message.id && item.body.includes('fake app-server response')));
 
     await request(server.baseUrl, '/api/agents/stop-all', { method: 'POST', body: '{}' });
-    await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+    await request(server.baseUrl, `/api/messages/${first.message.id}/replies`, {
       method: 'POST',
       body: JSON.stringify({
         body: '<@agt_codex> 继续这个长期 session',
@@ -857,7 +857,7 @@ process.stdin.on('data', (chunk) => {
   try {
     const warmed = await request(server.baseUrl, '/api/agents/agt_codex/warm', {
       method: 'POST',
-      body: JSON.stringify({ spaceType: 'channel', spaceId: 'chan_all' }),
+      body: JSON.stringify({ spaceType: 'dm', spaceId: 'dm_codex' }),
     });
     assert.equal(warmed.running, true);
 
@@ -869,16 +869,21 @@ process.stdin.on('data', (chunk) => {
     assert.equal(warmState.replies.some((reply) => reply.body === 'ready'), false);
     assert.equal(warmState.messages.some((message) => message.body === 'ready'), false);
 
-    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+    const created = await request(server.baseUrl, '/api/spaces/dm/dm_codex/messages', {
       method: 'POST',
       body: JSON.stringify({
-        body: '<@agt_codex> warm session should answer',
+        body: 'warm session should answer',
         attachmentIds: [],
       }),
     });
     const finalState = await waitFor(async () => {
       const snapshot = await request(server.baseUrl, '/api/state');
-      return snapshot.replies.some((reply) => reply.parentMessageId === created.message.id && reply.body.includes('visible warm session response'))
+      return snapshot.messages.some((message) => (
+        message.spaceType === 'dm'
+        && message.spaceId === 'dm_codex'
+        && message.authorId === 'agt_codex'
+        && message.body.includes('visible warm session response')
+      ))
         ? snapshot
         : null;
     }, 8000);
@@ -889,6 +894,7 @@ process.stdin.on('data', (chunk) => {
     assert.equal(turnStarts.length, 2);
     assert.match(turnStarts[0].params.input[0].text, /Runtime warmup for MagClaw/);
     assert.match(turnStarts[1].params.input[0].text, /warm session should answer/);
+    assert.ok(created.message);
   } finally {
     await server.stop();
     await rm(fakeCodexDir, { recursive: true, force: true });

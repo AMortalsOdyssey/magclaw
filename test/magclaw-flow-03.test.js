@@ -982,7 +982,7 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
-test('busy Codex agent batches different-channel messages into the next turn and routes each target', async () => {
+test('busy Codex agent isolates different channel thread lanes without steering', async () => {
   const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-busy-batch-'));
   const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
   const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
@@ -1118,8 +1118,8 @@ process.stdin.on('data', (chunk) => {
       const secondReplies = snapshot.replies.filter((reply) => reply.parentMessageId === second.message.id);
       const thirdReplies = snapshot.replies.filter((reply) => reply.parentMessageId === third.message.id);
       return firstReplies.some((reply) => reply.body.includes('initial delayed response'))
-        && secondReplies.some((reply) => reply.body.includes('routed reply for #all:'))
-        && thirdReplies.some((reply) => reply.body.includes('routed reply for #x:'))
+        && secondReplies.some((reply) => reply.body.includes('initial delayed response'))
+        && thirdReplies.some((reply) => reply.body.includes('initial delayed response'))
         ? snapshot
         : null;
     }, 8000);
@@ -1127,14 +1127,15 @@ process.stdin.on('data', (chunk) => {
 
     const finalEntries = await readJsonLines(logPath);
     const turnStarts = finalEntries.filter((item) => item.method === 'turn/start');
+    const threadStarts = finalEntries.filter((item) => item.method === 'thread/start');
     assert.equal(finalEntries.some((item) => item.method === 'turn/steer'), false);
-    assert.ok(turnStarts.length >= 2);
-    const batchPrompt = turnStarts[1].params.input[0].text;
-    assert.match(batchPrompt, /target=#all:msg_/);
-    assert.match(batchPrompt, /target=#x:msg_/);
-    assert.match(batchPrompt, /workItem=wi_/);
-    assert.equal(batchPrompt.includes('second queued question from all'), true);
-    assert.equal(batchPrompt.includes('third queued question from x'), true);
+    assert.ok(turnStarts.length >= 3);
+    assert.ok(threadStarts.length >= 3);
+    assert.ok(finalState.agentRuntimeSessions.filter((session) => session.agentId === 'agt_codex').length >= 3);
+    assert.ok(finalState.agentRuntimeSessions.some((session) => session.sessionKey.includes(`thread:${first.message.id}`)));
+    assert.ok(finalState.agentRuntimeSessions.some((session) => session.sessionKey.includes(`thread:${second.message.id}`)));
+    assert.ok(finalState.agentRuntimeSessions.some((session) => session.sessionKey.includes(`thread:${third.message.id}`)));
+    assert.ok(finalState.events.some((event) => event.type === 'agent_runtime_session_queued' && event.agentId === 'agt_codex'));
     assert.equal([...finalState.messages, ...finalState.replies].some((record) => record.body === 'batch stdout fallback should be suppressed'), false);
   } finally {
     await server.stop();

@@ -115,6 +115,20 @@ function envInteger(env, name, fallback, { min = 0, max = Number.POSITIVE_INFINI
   return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
+export function daemonConversationLaneKey({ workspaceId = 'local', message = {}, spaceType = '', spaceId = '', parentMessageId = null } = {}) {
+  const kind = String(spaceType || message?.spaceType || 'channel') === 'dm' ? 'dm' : 'channel';
+  const workspace = String(workspaceId || message?.workspaceId || 'local').trim() || 'local';
+  const targetSpaceId = String(spaceId || message?.spaceId || (kind === 'dm' ? 'dm' : 'chan_all')).trim();
+  const parent = String(parentMessageId || message?.parentMessageId || '').trim();
+  return parent
+    ? `${kind}:${workspace}:${targetSpaceId}:thread:${parent}`
+    : `${kind}:${workspace}:${targetSpaceId}:top`;
+}
+
+export function daemonAgentSessionMapKey(agentId, sessionKey) {
+  return `${String(agentId || 'agent').trim()}:${String(sessionKey || 'default').trim()}`;
+}
+
 function codexApprovalPolicy(env = process.env) {
   const value = String(env.MAGCLAW_CODEX_APPROVAL_POLICY || env.CODEX_APPROVAL_POLICY || 'never').trim();
   return value || 'never';
@@ -1045,8 +1059,8 @@ export function deliveryPrompt(agent, message = {}, workItem = null) {
     agent.runtime ? `Runtime: ${agent.runtime}` : '',
     agent.description ? `Agent description: ${contextSnippet(agent.description, 180)}` : '',
     'You must respond to the incoming message unless it is purely informational and clearly needs no reply.',
-    'For ordinary channel or DM chat where Work item id is none, do not call send_message; finish with the exact reply text and MagClaw will post it back to the source conversation.',
-    'When a real Work item id is provided, use the MagClaw MCP send_message tool with that workItemId and the exact conversation target.',
+    'For ordinary replies to the current source conversation, finish with the exact reply text and MagClaw will post it back.',
+    'Use send_message with workItemId and the exact target for routed task replies; use send_message without workItemId only when you need to proactively message another visible target such as dm:@Agent or #channel:thread.',
     'Use the other MagClaw MCP tools only when you need to inspect omitted roster details, read history, search messages or memory, manage tasks, write memory, or schedule reminders.',
     'The daemon already provides the MagClaw MCP bridge and MAGCLAW_MACHINE_TOKEN. Prefer MCP tools; if you fall back to shell curl for /api/agent-tools/*, include `-H "authorization: Bearer $MAGCLAW_MACHINE_TOKEN"` and do not claim the machine token is missing.',
     renderAgentPermissionGuidance(agent),
@@ -1492,22 +1506,27 @@ function codexTrustConfigLines() {
 }
 
 class CodexAgentSession {
-  constructor({ agent, profile, paths, serverUrl, token, workspaceId, send, markDelivery = null, env = process.env }) {
+  constructor({ agent, profile, paths, serverUrl, token, workspaceId, sessionKey = '', send, markDelivery = null, onStatusChange = null, env = process.env }) {
     this.agent = agent;
     this.profile = profile;
     this.paths = paths;
     this.serverUrl = serverUrl;
     this.token = token;
     this.workspaceId = workspaceId || 'local';
+    this.sessionKey = sessionKey || daemonConversationLaneKey({ workspaceId: this.workspaceId });
     this.send = send;
     this.markDelivery = typeof markDelivery === 'function' ? markDelivery : async () => {};
+    this.onStatusChange = typeof onStatusChange === 'function' ? onStatusChange : () => {};
     this.env = env;
     this.child = null;
     this.requestId = 0;
     this.pending = new Map();
     this.stdoutBuffer = '';
     this.responseBuffer = '';
-    this.threadId = agent.runtimeSessionId || '';
+    const matchingRuntimeSession = Array.isArray(agent.runtimeSessions)
+      ? agent.runtimeSessions.find((session) => session?.sessionKey === this.sessionKey)
+      : null;
+    this.threadId = matchingRuntimeSession?.codexThreadId || agent.runtimeSessionId || '';
     this.activeTurnId = '';
     this.status = 'offline';
     this.started = false;
@@ -1602,12 +1621,14 @@ class CodexAgentSession {
 
   sendStatus(status, activity = null) {
     this.status = status;
+    this.onStatusChange(this, status);
     this.send({
       type: 'agent:status',
       agentId: this.agent.id,
       status,
       deliveryId: this.activeDeliveryId || null,
       sessionId: this.threadId || null,
+      sessionKey: this.sessionKey || null,
       activity: activity || {
         source: '@magclaw/daemon',
         status,
@@ -1737,6 +1758,7 @@ class CodexAgentSession {
           query: {
             agentId: args.agentId,
             target: args.target || args.channel,
+            workItemId: args.workItemId || args.work_item_id,
             limit: args.limit,
             around: args.around,
             before: args.before,
@@ -1749,6 +1771,7 @@ class CodexAgentSession {
             agentId: args.agentId,
             query: args.query || args.q,
             target: args.target || args.channel,
+            workItemId: args.workItemId || args.work_item_id,
             limit: args.limit,
           },
         });
@@ -2018,8 +2041,9 @@ class CodexAgentSession {
     this.responseBuffer = '';
     if (this.activeDeliveryId) {
       this.markDelivery(this.activeDeliveryId, 'started', {
-        agentId: this.agent.id,
-        messageId: message?.id || null,
+            agentId: this.agent.id,
+            sessionKey: this.sessionKey || null,
+            messageId: message?.id || null,
         workItemId: workItem?.id || message?.workItemId || null,
       }).catch((error) => {
         logWarning('daemon', `Failed to update delivery ledger for ${this.activeDeliveryId}: ${error.message}`);
@@ -2065,7 +2089,7 @@ class CodexAgentSession {
       }
       if (pending?.method === 'thread/start' || pending?.method === 'thread/resume') {
         this.threadId = message.result?.thread?.id || message.result?.threadId || this.threadId;
-        this.send({ type: 'agent:session', agentId: this.agent.id, status: 'idle', sessionId: this.threadId });
+        this.send({ type: 'agent:session', agentId: this.agent.id, status: 'idle', sessionId: this.threadId, sessionKey: this.sessionKey || null });
         this.sendStatus('idle', { source: '@magclaw/daemon', detail: 'Codex session ready', at: now() });
         const queued = this.pendingPrompts.splice(0);
         for (const item of queued) this.startTurn(item.prompt, item.message, item.workItem, item.deliveryId);
@@ -2094,7 +2118,7 @@ class CodexAgentSession {
     }
     if (method === 'thread/started') {
       this.threadId = params.thread?.id || params.threadId || this.threadId;
-      this.send({ type: 'agent:session', agentId: this.agent.id, status: 'idle', sessionId: this.threadId });
+      this.send({ type: 'agent:session', agentId: this.agent.id, status: 'idle', sessionId: this.threadId, sessionKey: this.sessionKey || null });
       return;
     }
     if (method === 'turn/started') {
@@ -2167,7 +2191,7 @@ class CodexAgentSession {
 }
 
 class ClaudeAgentSession {
-  constructor({ agent, profile, paths, serverUrl, token, send, markDelivery = null, env = process.env }) {
+  constructor({ agent, profile, paths, serverUrl, token, send, markDelivery = null, onStatusChange = null, env = process.env }) {
     this.agent = agent;
     this.profile = profile;
     this.paths = paths;
@@ -2175,6 +2199,7 @@ class ClaudeAgentSession {
     this.token = token;
     this.send = send;
     this.markDelivery = typeof markDelivery === 'function' ? markDelivery : async () => {};
+    this.onStatusChange = typeof onStatusChange === 'function' ? onStatusChange : () => {};
     this.env = env;
     this.child = null;
     this.status = 'offline';
@@ -2202,6 +2227,7 @@ class ClaudeAgentSession {
 
   sendStatus(status, activity = null) {
     this.status = status;
+    this.onStatusChange(this, status);
     this.send({
       type: 'agent:status',
       agentId: this.agent.id,
@@ -2341,6 +2367,8 @@ class MagClawDaemon {
     this.reconnectMaxMs = envInteger(env, 'MAGCLAW_DAEMON_RECONNECT_MAX_MS', DEFAULT_DAEMON_RECONNECT_MAX_MS, { min: this.reconnectMinMs, max: 5 * 60_000 });
     this.heartbeatIntervalMs = envInteger(env, 'MAGCLAW_DAEMON_HEARTBEAT_MS', DEFAULT_DAEMON_HEARTBEAT_MS, { min: 5_000, max: 5 * 60_000 });
     this.inboundWatchdogMs = envInteger(env, 'MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS', DEFAULT_DAEMON_INBOUND_WATCHDOG_MS, { min: 0, max: 10 * 60_000 });
+    this.maxActiveAgentSessions = envInteger(env, 'MAGCLAW_AGENT_MAX_ACTIVE_SESSIONS', 2, { min: 1, max: 100 });
+    this.maxActiveComputerSessions = envInteger(env, 'MAGCLAW_COMPUTER_MAX_ACTIVE_SESSIONS', 8, { min: 1, max: 500 });
     this.maxConcurrentAgentStarts = envInteger(env, 'MAGCLAW_DAEMON_MAX_CONCURRENT_AGENT_STARTS', DEFAULT_MAX_CONCURRENT_AGENT_STARTS, { min: 1, max: 100 });
     this.agentStartIntervalMs = envInteger(env, 'MAGCLAW_DAEMON_AGENT_START_INTERVAL_MS', DEFAULT_AGENT_START_INTERVAL_MS, { min: 0, max: 60_000 });
     this.agentStartQueue = [];
@@ -2349,6 +2377,8 @@ class MagClawDaemon {
     this.activeAgentStartCount = 0;
     this.lastAgentStartAt = 0;
     this.lastAgentStartAgentId = '';
+    this.pendingSessionDeliveries = [];
+    this.drainingSessionDeliveries = false;
     this.daemonRunId = `${process.pid}:${Date.now()}`;
     this.deliveryLedgerCache = null;
     this.deliveryLedgerQueue = Promise.resolve();
@@ -2686,7 +2716,9 @@ class MagClawDaemon {
   }
 
   async handleAgentSkillsList(message) {
-    const existing = message.agentId ? this.sessions.get(message.agentId) : null;
+    const existing = message.agentId
+      ? [...this.sessions.values()].find((session) => session.agent?.id === message.agentId) || null
+      : null;
     const agent = existing?.agent || message.payload?.agent || { id: message.agentId, name: message.agentId || 'Agent', runtime: 'codex' };
     try {
       const session = existing || this.sessionFor(agent);
@@ -2701,8 +2733,79 @@ class MagClawDaemon {
     }
   }
 
-  sessionFor(agent) {
-    const existing = this.sessions.get(agent.id);
+  sessionIsActive(session) {
+    if (!session || session.child?.killed) return false;
+    if (session.activeTurnId) return true;
+    if (session.pendingPrompts?.length || session.pending?.size) return true;
+    return ['starting', 'thinking', 'working', 'running'].includes(String(session.status || '').toLowerCase());
+  }
+
+  activeSessionCountForAgent(agentId) {
+    return [...this.sessions.values()].filter((session) => (
+      session.agent?.id === agentId && this.sessionIsActive(session)
+    )).length;
+  }
+
+  activeSessionCountForComputer() {
+    return [...this.sessions.values()].filter((session) => this.sessionIsActive(session)).length;
+  }
+
+  canUseSessionSlot(agent, mapKey) {
+    const existing = this.sessions.get(mapKey);
+    if (existing && this.sessionIsActive(existing)) return true;
+    return this.activeSessionCountForAgent(agent.id) < this.maxActiveAgentSessions
+      && this.activeSessionCountForComputer() < this.maxActiveComputerSessions;
+  }
+
+  queueSessionDelivery(message, agent, sessionKey, mapKey) {
+    this.pendingSessionDeliveries.push({
+      message,
+      agent,
+      sessionKey,
+      mapKey,
+      queuedAt: now(),
+    });
+    logInfo('daemon', `Queued delivery ${message.commandId || '(missing)'} for ${agent.id} session ${sessionKey}; active session limit reached.`);
+  }
+
+  async drainPendingSessionDeliveries() {
+    if (this.drainingSessionDeliveries || !this.pendingSessionDeliveries.length) return;
+    this.drainingSessionDeliveries = true;
+    try {
+      let progressed = true;
+      while (progressed) {
+        progressed = false;
+        for (let index = 0; index < this.pendingSessionDeliveries.length; index += 1) {
+          const item = this.pendingSessionDeliveries[index];
+          if (!this.canUseSessionSlot(item.agent, item.mapKey)) continue;
+          this.pendingSessionDeliveries.splice(index, 1);
+          index -= 1;
+          progressed = true;
+          const payload = item.message.payload || {};
+          const session = this.sessionFor(item.agent, {
+            sessionKey: item.sessionKey,
+            workspaceId: item.message.workspaceId || payload.workspaceId || '',
+            message: payload.message || {},
+          });
+          if (!session.started) await this.enqueueAgentStart(item.agent.id, () => session.start());
+          await session.deliver(payload.message || {}, payload.workItem || null, item.message.commandId || '');
+        }
+      }
+    } finally {
+      this.drainingSessionDeliveries = false;
+    }
+  }
+
+  sessionFor(agent, context = {}) {
+    const sessionKey = context.sessionKey || daemonConversationLaneKey({
+      workspaceId: context.workspaceId || this.config.workspaceId || 'local',
+      message: context.message || context.payload?.message || {},
+      spaceType: context.spaceType || context.payload?.spaceType || '',
+      spaceId: context.spaceId || context.payload?.spaceId || '',
+      parentMessageId: context.parentMessageId || context.payload?.parentMessageId || null,
+    });
+    const mapKey = daemonAgentSessionMapKey(agent.id, sessionKey);
+    const existing = this.sessions.get(mapKey);
     if (existing) return existing;
     const kind = agentRuntimeKind(agent);
     const SessionClass = kind === 'codex'
@@ -2718,11 +2821,17 @@ class MagClawDaemon {
       serverUrl: this.config.serverUrl,
       token: this.config.token,
       workspaceId: this.config.workspaceId || 'local',
+      sessionKey,
       send: (payload) => this.send(payload),
       markDelivery: (deliveryId, status, meta) => this.markDelivery(deliveryId, status, meta),
+      onStatusChange: () => {
+        this.drainPendingSessionDeliveries().catch((error) => {
+          logWarning('daemon', `Failed to drain pending session deliveries: ${error.message}`);
+        });
+      },
       env: this.env,
     });
-    this.sessions.set(agent.id, session);
+    this.sessions.set(mapKey, session);
     return session;
   }
 
@@ -2730,7 +2839,7 @@ class MagClawDaemon {
     const agent = message.payload?.agent || { id: message.agentId, name: message.agentId || 'Agent' };
     this.send({ type: 'agent:start:ack', commandId: message.commandId, agentId: agent.id, status: 'starting' });
     try {
-      const session = this.sessionFor(agent);
+      const session = this.sessionFor(agent, message.payload || {});
       await this.enqueueAgentStart(agent.id, () => session.start());
     } catch (error) {
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
@@ -2744,10 +2853,10 @@ class MagClawDaemon {
       : 'restart';
     this.send({ type: 'agent:ack', commandId: message.commandId, agentId: agent.id, status: 'starting' });
     try {
-      const existing = this.sessions.get(agent.id);
-      if (existing) {
+      const matching = [...this.sessions.entries()].filter(([, session]) => session.agent?.id === agent.id);
+      for (const [key, existing] of matching) {
         existing.stop();
-        this.sessions.delete(agent.id);
+        this.sessions.delete(key);
       }
       if (mode === 'reset-session' || mode === 'full-reset') {
         agent.runtimeSessionId = null;
@@ -2760,7 +2869,7 @@ class MagClawDaemon {
           retryDelay: 80,
         });
       }
-      const session = this.sessionFor(agent);
+      const session = this.sessionFor(agent, message.payload || {});
       await this.enqueueAgentStart(agent.id, () => session.start());
     } catch (error) {
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
@@ -2784,8 +2893,22 @@ class MagClawDaemon {
         logInfo('daemon', `Re-acked duplicate delivery ${message.commandId || '(missing)'} for ${agent.id}; status=${accepted.record?.status || 'accepted'}.`);
         return;
       }
-      const session = this.sessionFor(agent);
+      const sessionContext = {
+        sessionKey: message.payload?.sessionKey || message.sessionKey || '',
+        workspaceId: message.workspaceId || message.payload?.workspaceId || '',
+        message: message.payload?.message || {},
+      };
+      const sessionKey = sessionContext.sessionKey || daemonConversationLaneKey({
+        workspaceId: sessionContext.workspaceId || this.config.workspaceId || 'local',
+        message: sessionContext.message,
+      });
+      const mapKey = daemonAgentSessionMapKey(agent.id, sessionKey);
       this.send({ type: 'agent:deliver:ack', commandId: message.commandId, agentId: agent.id, status: 'queued' });
+      if (!this.canUseSessionSlot(agent, mapKey)) {
+        this.queueSessionDelivery(message, agent, sessionKey, mapKey);
+        return;
+      }
+      const session = this.sessionFor(agent, { ...sessionContext, sessionKey });
       if (!session.started) await this.enqueueAgentStart(agent.id, () => session.start());
       await session.deliver(message.payload?.message || {}, message.payload?.workItem || null, message.commandId || '');
     } catch (error) {
@@ -2796,10 +2919,10 @@ class MagClawDaemon {
 
   async handleAgentStop(message) {
     const agentId = message.agentId || message.payload?.agentId;
-    const session = this.sessions.get(agentId);
-    if (session) {
+    const matching = [...this.sessions.entries()].filter(([, session]) => session.agent?.id === agentId);
+    for (const [key, session] of matching) {
       session.stop();
-      this.sessions.delete(agentId);
+      this.sessions.delete(key);
     }
     if (message.commandId) await this.markDelivery(message.commandId, 'stopped', { agentId }).catch(() => {});
     this.send({ type: 'agent:ack', commandId: message.commandId, agentId, status: 'offline' });
@@ -2807,7 +2930,7 @@ class MagClawDaemon {
 
   handleAgentActivityProbe(message) {
     const agentId = message.agentId || message.payload?.agentId;
-    const session = this.sessions.get(agentId);
+    const session = [...this.sessions.values()].find((item) => item.agent?.id === agentId) || null;
     const status = session?.status || 'offline';
     this.send({
       type: 'agent:activity',

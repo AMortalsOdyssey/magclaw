@@ -79,18 +79,19 @@ function schema(properties, required = []) {
 const tools = [
   {
     name: 'send_message',
-    description: 'Send a routed MagClaw reply tied to the current work item.',
+    description: 'Send a MagClaw message. With workItemId it replies to the current routed task; without workItemId it can proactively send to a visible target such as dm:@Agent.',
     inputSchema: schema({
       workItemId: { type: 'string' },
       target: { type: 'string' },
       content: { type: 'string' },
-    }, ['workItemId', 'target', 'content']),
+    }, ['target', 'content']),
   },
   {
     name: 'read_history',
     description: 'Read bounded MagClaw conversation history.',
     inputSchema: schema({
       target: { type: 'string' },
+      workItemId: { type: 'string' },
       limit: { type: 'number' },
       around: { type: 'string' },
       before: { type: 'string' },
@@ -103,6 +104,7 @@ const tools = [
     inputSchema: schema({
       query: { type: 'string' },
       target: { type: 'string' },
+      workItemId: { type: 'string' },
       limit: { type: 'number' },
     }, ['query']),
   },
@@ -316,6 +318,7 @@ async function callTool(name, rawArgs = {}) {
         query: {
           agentId: args.agentId,
           target: args.target || args.channel,
+          workItemId: args.workItemId || args.work_item_id,
           limit: args.limit,
           around: args.around,
           before: args.before,
@@ -328,6 +331,7 @@ async function callTool(name, rawArgs = {}) {
           agentId: args.agentId,
           query: args.query || args.q,
           target: args.target || args.channel,
+          workItemId: args.workItemId || args.work_item_id,
           limit: args.limit,
         },
       });

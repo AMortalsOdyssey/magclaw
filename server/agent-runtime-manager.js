@@ -12,6 +12,11 @@ import {
   renderAgentPermissionGuidance,
 } from './agent-permissions.js';
 import { normalizeIds } from './mentions.js';
+import {
+  agentRuntimeProcessKey,
+  conversationLaneKeyForMessage,
+  workspaceIdForConversation,
+} from './conversation-session.js';
 
 // Agent runtime and delivery manager.
 // This entrypoint owns dependency wiring; implementation parts live under
@@ -63,6 +68,9 @@ export function createAgentRuntimeManager(deps) {
     codexThreadConfig,
     parseCodexStreamRetry,
     normalizeIds,
+    agentRuntimeProcessKey,
+    conversationLaneKeyForMessage,
+    workspaceIdForConversation,
     process,
     console,
     URL,

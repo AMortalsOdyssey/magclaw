@@ -2,6 +2,7 @@
 // These helpers implement MagClaw's progressive context disclosure: Agents get
 // a small prompt snapshot first, then call these functions when they need more
 // channel, thread, or DM history.
+import { conversationGrantAllowsRead } from './conversation-grants.js';
 
 const DEFAULT_HISTORY_LIMIT = 50;
 const MAX_HISTORY_LIMIT = 100;
@@ -149,6 +150,47 @@ function resolveHistoryTarget(state, rawTarget, options = {}) {
   return { error: `History target not found: ${target}` };
 }
 
+function canonicalTargetForResolved(state, resolved) {
+  if (!resolved || resolved.error) return '';
+  const base = resolved.spaceType === 'dm'
+    ? `dm:${resolved.spaceId}`
+    : spaceLabel(state, resolved.spaceType, resolved.spaceId);
+  return resolved.kind === 'thread' && resolved.parent?.id
+    ? `${base}:${resolved.parent.id}`
+    : base;
+}
+
+function workItemAllowsResolvedTarget(state, resolved, options = {}) {
+  const workItemId = String(options.workItemId || options.work_item_id || '').trim();
+  const agentId = String(options.agentId || '').trim();
+  if (!workItemId || !agentId) return false;
+  const item = byId(state?.workItems, workItemId);
+  if (!item || item.agentId !== agentId) return false;
+  if (item.spaceType !== resolved.spaceType || item.spaceId !== resolved.spaceId) return false;
+  if (resolved.kind !== 'thread') return true;
+  const parentId = String(resolved.parent?.id || '');
+  return Boolean(parentId && (
+    String(item.parentMessageId || '') === parentId
+    || String(item.sourceMessageId || '') === parentId
+    || String(item.messageId || '') === parentId
+  ));
+}
+
+function canAgentReadResolvedTarget(state, resolved, options = {}) {
+  const agentId = String(options.agentId || '').trim();
+  if (!agentId) return { ok: true };
+  if (resolved.spaceType !== 'dm') return { ok: true };
+  const workspaceId = String(options.workspaceId || '').trim();
+  const target = canonicalTargetForResolved(state, resolved);
+  if (workItemAllowsResolvedTarget(state, resolved, options)) return { ok: true };
+  if (conversationGrantAllowsRead(state, { agentId, workspaceId, target })) return { ok: true };
+  return {
+    ok: false,
+    code: 'dm_forbidden',
+    error: 'DM history is private to its current session unless the participant granted this Agent access.',
+  };
+}
+
 function centerWindow(records, around, limit) {
   if (!around) return records.slice(Math.max(0, records.length - limit));
   const ref = String(around);
@@ -204,9 +246,11 @@ export function readAgentHistory(state, options = {}) {
   const workspaceId = String(options.workspaceId || '').trim();
   const resolved = resolveHistoryTarget(state, options.target || '#all', { workspaceId });
   if (resolved.error) return { ok: false, error: resolved.error, messages: [] };
+  const access = canAgentReadResolvedTarget(state, resolved, options);
+  if (!access.ok) return { ok: false, code: access.code, error: access.error, messages: [] };
 
   if (resolved.kind === 'thread') {
-    const label = `${spaceLabel(state, resolved.spaceType, resolved.spaceId)}:${resolved.parent.id}`;
+    const label = canonicalTargetForResolved(state, resolved);
     const replies = sortByCreatedAt(asArray(state?.replies).filter((reply) => (
       reply.parentMessageId === resolved.parent.id
       && recordInWorkspace(reply, workspaceId, state?.connection?.workspaceId)
@@ -221,7 +265,7 @@ export function readAgentHistory(state, options = {}) {
     };
   }
 
-  const label = spaceLabel(state, resolved.spaceType, resolved.spaceId);
+  const label = canonicalTargetForResolved(state, resolved);
   const records = sortByCreatedAt(asArray(state?.messages).filter((message) => (
     message.spaceType === resolved.spaceType && message.spaceId === resolved.spaceId
     && recordInWorkspace(message, workspaceId, state?.connection?.workspaceId)
@@ -254,6 +298,8 @@ export function searchAgentMessageHistory(state, options = {}) {
   const workspaceId = String(options.workspaceId || '').trim();
   const resolved = resolveHistoryTarget(state, options.target || '#all', { workspaceId });
   if (resolved.error) return { ok: false, error: resolved.error, results: [] };
+  const access = canAgentReadResolvedTarget(state, resolved, options);
+  if (!access.ok) return { ok: false, code: access.code, error: access.error, results: [] };
   const q = query.toLowerCase();
 
   const spaceFilter = (record) => (

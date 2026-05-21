@@ -168,3 +168,91 @@ test('agent history tools scope duplicate channel names by workspace id', () => 
   assert.deepEqual(twoSearch.results.map((message) => message.id), ['msg_two', 'rep_two']);
   assert.equal(twoSearch.results[1].target, '#all:msg_two');
 });
+
+test('agent history blocks cross-DM reads unless current work item or grant allows it', () => {
+  const state = {
+    humans: [
+      { id: 'hum_owner', name: 'Owner' },
+      { id: 'hum_other', name: 'Other' },
+    ],
+    agents: [{ id: 'agt_cindy', name: 'Cindy', workspaceId: 'wsp_one' }],
+    channels: [],
+    dms: [
+      { id: 'dm_owner', workspaceId: 'wsp_one', participantIds: ['hum_owner', 'agt_cindy'] },
+      { id: 'dm_other', workspaceId: 'wsp_one', participantIds: ['hum_other', 'agt_cindy'] },
+    ],
+    messages: [
+      {
+        id: 'msg_owner',
+        workspaceId: 'wsp_one',
+        spaceType: 'dm',
+        spaceId: 'dm_owner',
+        authorType: 'human',
+        authorId: 'hum_owner',
+        body: 'private owner context',
+        createdAt: '2026-05-21T01:00:00.000Z',
+      },
+      {
+        id: 'msg_other',
+        workspaceId: 'wsp_one',
+        spaceType: 'dm',
+        spaceId: 'dm_other',
+        authorType: 'human',
+        authorId: 'hum_other',
+        body: 'private other context',
+        createdAt: '2026-05-21T02:00:00.000Z',
+      },
+    ],
+    replies: [],
+    tasks: [],
+    workItems: [{
+      id: 'wi_owner',
+      workspaceId: 'wsp_one',
+      agentId: 'agt_cindy',
+      spaceType: 'dm',
+      spaceId: 'dm_owner',
+      parentMessageId: null,
+      target: 'dm:dm_owner',
+      sourceMessageId: 'msg_owner',
+    }],
+    conversationGrants: [],
+  };
+
+  const currentDm = readAgentHistory(state, {
+    agentId: 'agt_cindy',
+    workItemId: 'wi_owner',
+    target: 'dm:dm_owner',
+    workspaceId: 'wsp_one',
+  });
+  assert.equal(currentDm.ok, true);
+  assert.deepEqual(currentDm.messages.map((message) => message.id), ['msg_owner']);
+
+  const otherDm = readAgentHistory(state, {
+    agentId: 'agt_cindy',
+    workItemId: 'wi_owner',
+    target: 'dm:dm_other',
+    workspaceId: 'wsp_one',
+  });
+  assert.equal(otherDm.ok, false);
+  assert.equal(otherDm.code, 'dm_forbidden');
+
+  state.conversationGrants.push({
+    id: 'grant_1',
+    workspaceId: 'wsp_one',
+    grantorHumanId: 'hum_other',
+    agentId: 'agt_cindy',
+    sourceTarget: 'dm:dm_other',
+    actions: ['read', 'summarize'],
+    status: 'active',
+    createdAt: '2026-05-21T03:00:00.000Z',
+  });
+
+  const grantedDm = searchAgentMessageHistory(state, {
+    agentId: 'agt_cindy',
+    query: 'other',
+    target: 'dm:dm_other',
+    workspaceId: 'wsp_one',
+  });
+  assert.equal(grantedDm.ok, true);
+  assert.deepEqual(grantedDm.results.map((message) => message.id), ['msg_other']);
+});

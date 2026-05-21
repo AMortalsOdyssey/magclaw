@@ -10,6 +10,10 @@ import {
   inferAgentPermissionGrant,
   recordAgentPermissionGrant,
 } from '../server/agent-permissions.js';
+import {
+  inferConversationDisclosureGrant,
+  recordConversationGrant,
+} from '../server/conversation-grants.js';
 
 function makeResponse() {
   return {
@@ -62,6 +66,7 @@ function routeDeps(overrides = {}) {
     getState: () => state,
     inferAgentMemoryWriteback: () => null,
     inferAgentPermissionGrant: () => null,
+    inferConversationDisclosureGrant: () => null,
     makeId: (prefix) => `${prefix}_new`,
     normalizeIds: (ids) => [...new Set((ids || []).map(String).filter(Boolean))],
     normalizeConversationRecord: (record) => record,
@@ -72,6 +77,7 @@ function routeDeps(overrides = {}) {
     routeMessageForChannel: async () => ({ targetAgentIds: [] }),
     routeThreadReplyForChannel: async () => ({ targetAgentIds: [] }),
     recordAgentPermissionGrant: () => false,
+    recordConversationGrant: () => null,
     scheduleAgentMemoryWriteback: () => {},
     searchAgentMemory: async () => ({ ok: true, results: [] }),
     sendError: (res, statusCode, message) => {
@@ -619,4 +625,53 @@ test('message route group persists explicit agent permission grants before deliv
   assert.ok(persistCalls.length >= 2);
   assert.ok(persistCalls.every((call) => call.workspaceId === 'wsp_perm'));
   assert.ok(events.some((event) => event.type === 'agent_permission_grant_persisted' && event.agentId === cindy.id));
+});
+
+test('message route group persists and revokes DM disclosure grants server-side', async () => {
+  const cindy = { id: 'agt_cindy', name: 'Cindy' };
+  const events = [];
+  const deps = routeDeps({
+    addSystemEvent: (type, message, extra) => events.push({ type, message, ...extra }),
+    findAgent: (id) => (id === cindy.id ? cindy : null),
+    inferConversationDisclosureGrant,
+    recordConversationGrant,
+  });
+  deps.state.connection = { workspaceId: 'wsp_dm' };
+  deps.state.conversationGrants = [];
+  deps.state.dms = [{ id: 'dm_cindy', workspaceId: 'wsp_dm', participantIds: ['hum_local', cindy.id] }];
+  deps.state.messages = [];
+  deps.readJson = async () => ({ body: '你可以以后告诉他，但只能总结，不要原文转述' });
+
+  let res = makeResponse();
+  let handled = await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/spaces/dm/dm_cindy/messages'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(deps.state.conversationGrants.length, 1);
+  assert.equal(deps.state.conversationGrants[0].agentId, cindy.id);
+  assert.equal(deps.state.conversationGrants[0].sourceTarget, 'dm:dm_cindy');
+  assert.equal(deps.state.conversationGrants[0].status, 'active');
+  assert.deepEqual(deps.state.conversationGrants[0].actions, ['read', 'summarize']);
+  assert.ok(events.some((event) => event.type === 'conversation_grant_persisted' && event.agentId === cindy.id));
+
+  deps.readJson = async () => ({ body: '撤销刚才的授权，不要再告诉别人这个私聊内容' });
+  res = makeResponse();
+  handled = await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/spaces/dm/dm_cindy/messages'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(deps.state.conversationGrants.length, 1);
+  assert.equal(deps.state.conversationGrants[0].status, 'revoked');
+  assert.ok(deps.state.conversationGrants[0].revokedAt);
+  assert.ok(events.some((event) => event.type === 'conversation_grant_revoked' && event.agentId === cindy.id));
 });

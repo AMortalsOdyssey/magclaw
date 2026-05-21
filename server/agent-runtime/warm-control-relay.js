@@ -1,6 +1,16 @@
 async function resetAgentRuntimeSession(agent) {
   agent.runtimeSessionId = null;
   agent.runtimeLastTurnAt = null;
+  if (Array.isArray(state.agentRuntimeSessions)) {
+    for (const session of state.agentRuntimeSessions) {
+      if (session?.agentId !== agent.id) continue;
+      session.codexThreadId = null;
+      session.status = 'reset';
+      session.activeTurnIds = [];
+      session.activeTargetKeys = [];
+      session.updatedAt = now();
+    }
+  }
   await writeAgentSessionFile(agent).catch(() => {});
 }
 
@@ -12,6 +22,9 @@ async function resetAgentWorkspaceFiles(agent) {
   agent.runtimeLastStartedAt = null;
   agent.runtimeLastTurnAt = null;
   agent.workspacePath = null;
+  if (Array.isArray(state.agentRuntimeSessions)) {
+    state.agentRuntimeSessions = state.agentRuntimeSessions.filter((session) => session?.agentId !== agent.id);
+  }
   await ensureAgentWorkspace(agent);
 }
 
@@ -39,7 +52,7 @@ function codexProcessIsWarm(agent, proc) {
 }
 
 async function runCodexWarmup(agent, proc) {
-  const stillCurrent = () => agentProcesses.get(agent.id) === proc && !proc.stopRequested && !proc.child?.killed;
+  const stillCurrent = () => agentProcesses.get(proc.processKey) === proc && !proc.stopRequested && !proc.child?.killed;
   const startedAt = Date.now();
   const timeoutMs = Math.max(15_000, Number(process.env.MAGCLAW_AGENT_WARMUP_READY_TIMEOUT_MS || 180_000));
   while (stillCurrent()) {
@@ -126,9 +139,10 @@ async function warmAgentFromControl(agent, { spaceType = 'channel', spaceId = 'c
       spaceId,
     });
   }
-  let proc = agentProcesses.get(agent.id);
   const normalizedSpaceType = spaceType === 'dm' ? 'dm' : 'channel';
   const normalizedSpaceId = String(spaceId || (normalizedSpaceType === 'channel' ? defaultChannelId() : '') || defaultChannelId());
+  const processKey = agentProcessKeyForDelivery(agent, normalizedSpaceType, normalizedSpaceId, null, null);
+  let proc = agentProcesses.get(processKey) || firstAgentProcess(agent.id);
   if (!proc || proc.child?.killed || proc.stopRequested) {
     proc = await startAgentProcess(agent, normalizedSpaceType, normalizedSpaceId, []);
   } else if (!codexProcessHasActiveTurn(proc)) {

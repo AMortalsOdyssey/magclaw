@@ -3,6 +3,10 @@ async function handleCodexThreadReady(agent, proc, threadId) {
   proc.threadId = threadId;
   proc.threadReady = true;
   agent.runtimeSessionId = threadId;
+  updateRuntimeSession(agent, proc, {
+    codexThreadId: threadId,
+    status: proc.status || 'idle',
+  });
   await writeAgentSessionFile(agent).catch(() => {});
   if (!alreadyReady) {
     addSystemEvent('agent_session_ready', `${agent.name} Codex session ready`, { agentId: agent.id, sessionId: threadId });
@@ -113,6 +117,7 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
     targetKeys,
     runtime,
     warmup: isWarmup,
+    sessionKey: proc.sessionKey || null,
   });
   touchAgentRunProgress(agent, proc, `${mode}_request_sent`);
   rememberActiveTurnTargets(proc, mode, targetKeys);
@@ -134,6 +139,11 @@ function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages 
   }, { broadcast: false });
   if (!isWarmup) {
     agent.runtimeLastTurnAt = now();
+    updateRuntimeSession(agent, proc, {
+      status: 'running',
+      lastTurnAt: agent.runtimeLastTurnAt,
+      activeTargetKeys: targetKeys,
+    });
   } else {
     agent.runtimeWarmRequestedAt = now();
   }
@@ -263,7 +273,7 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
         turnId,
         workItemIds: turnMeta.workItemIds || [],
       });
-    } else if (turnMeta && turnMetaHasExplicitSend(turnMeta)) {
+    } else if (turnMeta && (turnMetaHasExplicitSend(turnMeta) || proc.explicitSendTurnIds?.has?.(String(turnId)))) {
       addSystemEvent('agent_stdout_suppressed', `${agent.name} used send_message; final stdout fallback was suppressed.`, {
         agentId: agent.id,
         sessionId: proc.threadId,
@@ -300,11 +310,21 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
       pendingToolCalls: [],
     });
     proc.status = 'idle';
+    proc.explicitSendUsed = false;
+    proc.explicitSendTurnIds = new Set();
     setAgentStatus(agent, 'idle', 'codex_turn_completed', { activeWorkItemIds: [] });
+    updateRuntimeSession(agent, proc, {
+      status: 'idle',
+      activeTurnIds: [],
+      activeTargetKeys: [],
+    });
   }
   if (!proc.activeTurnIds?.size && proc.pendingDeliveryMessages?.length) {
     clearAgentBusyDeliveryTimer(proc);
     await flushCodexPendingDeliveries(agent, proc);
+  }
+  if (!proc.activeTurnIds?.size && !proc.pendingDeliveryMessages?.length) {
+    await drainRuntimeSessionQueues(agent);
   }
   await writeAgentSessionFile(agent).catch(() => {});
   await persistState();
@@ -343,6 +363,10 @@ async function handleCodexAppServerLine(agent, proc, line) {
       proc.activeTurnId = turnId;
       proc.activeTurnIds = proc.activeTurnIds || new Set();
       proc.activeTurnIds.add(turnId);
+      updateRuntimeSession(agent, proc, {
+        status: 'running',
+        activeTurnIds: activeTurnIdList(proc),
+      });
       const meta = proc.pendingTurnRequests?.get(message.id);
       if (meta) {
         proc.turnMeta = proc.turnMeta || new Map();
@@ -395,12 +419,16 @@ async function handleCodexAppServerLine(agent, proc, line) {
         proc.activeTurnId = turnId;
         proc.activeTurnIds = proc.activeTurnIds || new Set();
         proc.activeTurnIds.add(turnId);
+        updateRuntimeSession(agent, proc, {
+          status: 'running',
+          activeTurnIds: activeTurnIdList(proc),
+        });
       }
       touchAgentRunProgress(agent, proc, 'turn_started', { turnId });
       proc.status = 'running';
       setAgentStatus(agent, 'thinking', 'codex_turn_started');
       await persistState();
-      broadcastState();
+      broadcastState({ realtimeOnly: true });
       break;
     }
     case 'item/agentMessage/delta': {

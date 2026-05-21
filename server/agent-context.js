@@ -599,7 +599,7 @@ function renderHistoryToolHints(pack) {
   hints.push(
     pack.peerMemorySearch?.required
       ? '- For agent capability or suitability questions, use the peer memory search results above first. If they are missing or weak, call search_agent_memory/read_agent_memory and search_message_history/read_history before giving a recommendation.'
-      : '- Use history/search only when the visible snapshot is not enough. Use send_message for explicit routed replies, especially when multiple channels or tasks are active.',
+      : '- Use history/search only when the visible snapshot is not enough. Use send_message for explicit routed replies or proactive messages to visible targets such as dm:@Agent.',
   );
   return hints.join('\n');
 }

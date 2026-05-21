@@ -90,8 +90,8 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
       reason: runtimeOverride.reason,
     });
   }
-  // Check if agent has a running process
-  const proc = agentProcesses.get(agent.id);
+  const processKey = agentProcessKeyForDelivery(agent, spaceType, spaceId, deliveryMessage, parentMessageId);
+  const proc = agentProcesses.get(processKey);
 
   if (proc && getAgentRuntime(agent) === 'codex') {
     const codexProcessAliveOrBooting = !proc.child || !proc.child.killed;
@@ -120,6 +120,19 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
   }
 
   // Start the agent process with this message
+  if (!canStartRuntimeSession(agent)) {
+    enqueueRuntimeSessionDelivery(agent, {
+      processKey,
+      sessionKey: agentRuntimeSessionKey(agent, spaceType, spaceId, deliveryMessage, parentMessageId),
+      spaceType,
+      spaceId,
+      parentMessageId,
+      deliveryMessage,
+    });
+    await persistState();
+    broadcastState();
+    return;
+  }
   await startAgentProcess(agent, spaceType, spaceId, deliveryMessage);
 }
 

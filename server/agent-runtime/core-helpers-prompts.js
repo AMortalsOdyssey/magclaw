@@ -32,6 +32,216 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const agentSessionQueues = new Map();
+
+function runtimeSessionLimit(name, fallback) {
+  const value = typeof name === 'string' && name === 'agent'
+    ? (typeof AGENT_MAX_ACTIVE_SESSIONS !== 'undefined' ? AGENT_MAX_ACTIVE_SESSIONS : fallback)
+    : (typeof COMPUTER_MAX_ACTIVE_SESSIONS !== 'undefined' ? COMPUTER_MAX_ACTIVE_SESSIONS : fallback);
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function processIsActiveRuntimeSession(proc) {
+  if (!proc || proc.stopRequested || proc.child?.killed) return false;
+  if (proc.status === 'starting' || proc.status === 'running') return true;
+  if (proc.activeTurnId || proc.activeTurnIds?.size || proc.pendingTurnRequests?.size) return true;
+  if (proc.pendingInitialPrompt || proc.pendingInitialMessages?.length || proc.pendingDeliveryMessages?.length) return true;
+  return Boolean(proc.warmupActive);
+}
+
+function activeRuntimeSessionCountForAgent(agentId) {
+  return [...agentProcesses.values()].filter((proc) => (
+    proc?.agentId === agentId && processIsActiveRuntimeSession(proc)
+  )).length;
+}
+
+function activeRuntimeSessionCountForComputer(computerId) {
+  if (!computerId) return 0;
+  return [...agentProcesses.values()].filter((proc) => {
+    if (!processIsActiveRuntimeSession(proc)) return false;
+    const procAgent = findAgent(proc.agentId);
+    return procAgent?.computerId === computerId;
+  }).length;
+}
+
+function canStartRuntimeSession(agent) {
+  const agentLimit = runtimeSessionLimit('agent', 2);
+  const computerLimit = runtimeSessionLimit('computer', 8);
+  return activeRuntimeSessionCountForAgent(agent.id) < agentLimit
+    && activeRuntimeSessionCountForComputer(agent.computerId) < computerLimit;
+}
+
+function queuedSessionKey(agent, processKey) {
+  return `${agent.id}:${processKey}`;
+}
+
+function enqueueRuntimeSessionDelivery(agent, {
+  processKey,
+  sessionKey,
+  spaceType,
+  spaceId,
+  parentMessageId = null,
+  deliveryMessage,
+}) {
+  const key = queuedSessionKey(agent, processKey);
+  const existing = agentSessionQueues.get(key) || {
+    agentId: agent.id,
+    processKey,
+    sessionKey,
+    spaceType,
+    spaceId,
+    parentMessageId,
+    messages: [],
+    createdAt: now(),
+  };
+  existing.messages.push(deliveryMessage);
+  existing.updatedAt = now();
+  agentSessionQueues.set(key, existing);
+  const procLike = {
+    agentId: agent.id,
+    computerId: agent.computerId || null,
+    workspaceId: workspaceIdForConversation(state, {
+      spaceType,
+      spaceId,
+      fallbackRecord: deliveryMessage,
+      agent,
+    }),
+    sessionKey,
+    spaceType,
+    spaceId,
+    parentMessageId,
+    target: targetForConversation(spaceType, spaceId, parentMessageId),
+    status: 'queued',
+    lastSourceMessage: deliveryMessage,
+  };
+  updateRuntimeSession(agent, procLike, {
+    status: 'queued',
+    lastTurnAt: null,
+    activeTurnIds: [],
+    activeTargetKeys: [],
+  });
+  addSystemEvent('agent_runtime_session_queued', `${agent.name} queued a conversation lane until runtime capacity is available.`, {
+    agentId: agent.id,
+    processKey,
+    sessionKey,
+    messageId: deliveryMessage?.id || null,
+    workItemId: deliveryMessage?.workItemId || null,
+  });
+}
+
+async function drainRuntimeSessionQueues(agent = null) {
+  const candidates = [...agentSessionQueues.entries()]
+    .filter(([, item]) => !agent || item.agentId === agent.id)
+    .sort((a, b) => String(a[1].createdAt || '').localeCompare(String(b[1].createdAt || '')));
+  for (const [key, item] of candidates) {
+    const targetAgent = findAgent(item.agentId);
+    if (!targetAgent || !canStartRuntimeSession(targetAgent)) continue;
+    agentSessionQueues.delete(key);
+    await startAgentProcess(targetAgent, item.spaceType, item.spaceId, item.messages);
+  }
+}
+
+function agentRuntimeSessionKey(agent, spaceType, spaceId, message = null, parentMessageId = null) {
+  return conversationLaneKeyForMessage(state, {
+    agent,
+    spaceType,
+    spaceId,
+    message,
+    parentMessageId,
+  });
+}
+
+function agentRuntimeProcessKeyFor(agent, sessionKey) {
+  return agentRuntimeProcessKey(agent?.id || agent, sessionKey);
+}
+
+function agentProcessKeyForDelivery(agent, spaceType, spaceId, message = null, parentMessageId = null) {
+  return agentRuntimeProcessKeyFor(agent, agentRuntimeSessionKey(agent, spaceType, spaceId, message, parentMessageId));
+}
+
+function agentProcessEntries(agentId) {
+  return [...agentProcesses.entries()].filter(([, proc]) => proc?.agentId === agentId);
+}
+
+function firstAgentProcess(agentId) {
+  return agentProcessEntries(agentId)[0]?.[1] || null;
+}
+
+function deleteAgentProcess(procOrAgent, fallbackAgentId = '') {
+  const proc = procOrAgent?.sessionId ? procOrAgent : null;
+  if (proc?.processKey) {
+    agentProcesses.delete(proc.processKey);
+    return;
+  }
+  const agentId = proc?.agentId || procOrAgent?.id || fallbackAgentId || procOrAgent;
+  if (!agentId) return;
+  for (const [key, item] of agentProcesses.entries()) {
+    if (item?.agentId === agentId) agentProcesses.delete(key);
+  }
+}
+
+function normalizeRuntimeSessions() {
+  state.agentRuntimeSessions = Array.isArray(state.agentRuntimeSessions) ? state.agentRuntimeSessions : [];
+  return state.agentRuntimeSessions;
+}
+
+function findRuntimeSession(agent, sessionKey) {
+  return normalizeRuntimeSessions().find((session) => (
+    session.agentId === agent.id
+    && session.sessionKey === sessionKey
+  )) || null;
+}
+
+function ensureRuntimeSession(agent, proc) {
+  const sessions = normalizeRuntimeSessions();
+  let session = findRuntimeSession(agent, proc.sessionKey);
+  const timestamp = now();
+  if (!session) {
+    session = {
+      id: makeId('ars'),
+      workspaceId: proc.workspaceId || workspaceIdForConversation(state, {
+        spaceType: proc.spaceType,
+        spaceId: proc.spaceId,
+        fallbackRecord: proc.lastSourceMessage || proc.pendingInitialMessages?.[0] || null,
+        agent,
+      }),
+      agentId: agent.id,
+      computerId: agent.computerId || null,
+      sessionKey: proc.sessionKey,
+      target: proc.target || targetForConversation(proc.spaceType, proc.spaceId, proc.parentMessageId || null),
+      spaceType: proc.spaceType,
+      spaceId: proc.spaceId,
+      parentMessageId: proc.parentMessageId || null,
+      codexThreadId: null,
+      status: proc.status || 'starting',
+      activeTurnIds: [],
+      activeTargetKeys: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      lastTurnAt: null,
+      metadata: {},
+    };
+    sessions.push(session);
+  }
+  session.workspaceId = session.workspaceId || proc.workspaceId || 'local';
+  session.computerId = agent.computerId || session.computerId || null;
+  session.target = proc.target || session.target;
+  session.spaceType = proc.spaceType || session.spaceType;
+  session.spaceId = proc.spaceId || session.spaceId;
+  session.parentMessageId = proc.parentMessageId || null;
+  session.status = proc.status || session.status || 'starting';
+  session.updatedAt = timestamp;
+  proc.runtimeSessionRecordId = session.id;
+  return session;
+}
+
+function updateRuntimeSession(agent, proc, patch = {}) {
+  const session = ensureRuntimeSession(agent, proc);
+  Object.assign(session, patch, { updatedAt: now() });
+  return session;
+}
+
 function summarizeCodexEvent(event) {
   if (!event || typeof event !== 'object') return String(event || '');
   const candidates = [
@@ -203,7 +413,22 @@ function addAgentRuntimeActivityEvent(agent, proc, type, activity, detail, extra
     detail: detail || '',
     ...extra,
   });
-  if (options.broadcast) persistState().then(broadcastState).catch(() => {});
+  if (options.broadcast) {
+    if (typeof recordRealtimeEvent === 'function' && agent?.id) {
+      recordRealtimeEvent('agent_status_changed', {
+        agent: {
+          id: agent.id,
+          status: agent.status || 'offline',
+          previousStatus: agent.previousStatus || null,
+          statusUpdatedAt: agent.statusUpdatedAt || null,
+          heartbeatAt: agent.heartbeatAt || null,
+          runtimeActivity: agent.runtimeActivity || null,
+          activeWorkItemIds: agent.activeWorkItemIds || [],
+        },
+      }, { scopeType: 'agent', scopeId: agent.id });
+    }
+    persistState().then(() => broadcastState({ realtimeOnly: true })).catch(() => {});
+  }
   return payload;
 }
 
@@ -254,8 +479,9 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     '- For simple Q&A, greetings, role questions, one-off lookups, weather/forecast requests, or lightweight coordination, answer in the current thread and do not create a task.',
     '- For simple lookup/weather requests, use at most one or two authoritative lookups, then reply with a compact answer. Do not inspect local files or run project/memory workflows unless the user explicitly asks.',
     '- Each delivered message includes a bracket header such as `[target=#all:msg_xxx workItem=wi_xxx msg=msg_xxx task=task_xxx ...]`. Treat target and workItem as routing authority.',
-    '- For multi-channel, multi-task, or thread/task work, reply with the controlled send_message API: POST /api/agent-tools/messages/send using the exact target and workItemId from the current header.',
-    '- If you call send_message for a work item, Magclaw will not duplicate your final stdout for that same turn. If you do not call send_message, Magclaw will post your final stdout back to the source thread as a compatibility fallback.',
+    '- For multi-channel, multi-task, or thread/task work, reply with the controlled send_message API using the exact target and workItemId from the current header.',
+    '- You may call send_message without a workItemId only for proactive messages to visible targets such as dm:@Agent, dm:@Human, #channel, or #channel:thread.',
+    '- If you call send_message, Magclaw will not duplicate your final stdout for that same turn. If you do not call send_message, Magclaw will post your final stdout back to the source thread as a compatibility fallback.',
     '- Never guess a channel or thread target. Use the exact target from the header or read/search history first.',
     '- Task statuses are exactly: todo, in_progress, in_review, done, closed. Do not use completed, complete, finished, resolved, canceled, or other synonyms as status values.',
     '- Use done only when the requested work is completed and ready/accepted. Use closed when the user asks to close/stop/cancel/terminate a task or says the work is no longer needed.',

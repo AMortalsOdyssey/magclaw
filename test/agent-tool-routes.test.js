@@ -79,6 +79,7 @@ function routeDeps(overrides = {}) {
     formatAgentSearchResults: () => 'formatted search',
     getState: () => state,
     httpError: (status, message) => Object.assign(new Error(message), { status }),
+    makeId: (prefix) => `${prefix}_new`,
     markWorkItemResponded: () => {},
     normalizeIds: (items) => [...new Set((items || []).filter(Boolean).map(String))],
     now: () => '2026-05-14T00:01:00.000Z',
@@ -105,6 +106,7 @@ function routeDeps(overrides = {}) {
     },
     writeAgentMemoryUpdate: async (targetAgent, trigger, payload) => memoryWrites.push({ targetAgent, trigger, payload }),
     workItemTargetMatches: () => true,
+    deliverMessageToAgent: async () => {},
     agent,
     events,
     memoryWrites,
@@ -176,7 +178,7 @@ test('agent tool route group formats bounded history reads', async () => {
     deps,
   );
   assert.equal(handled, true);
-  assert.equal(res.statusCode, 200);
+  assert.equal(res.statusCode, 200, res.error || '');
   assert.equal(res.data.text, 'formatted history');
   assert.equal(historyOptions.workspaceId, 'wsp_test');
   assert.equal(deps.events[0].type, 'agent_history_read');
@@ -205,6 +207,58 @@ test('agent tool send_message rejects stopped work before posting', async () => 
   );
   assert.equal(handled, true);
   assert.equal(res.statusCode, 409);
+});
+
+test('agent tool send_message can proactively DM a visible agent without a work item', async () => {
+  const deliveries = [];
+  const posted = [];
+  const deps = routeDeps({
+    readJson: async () => ({
+      agentId: 'agt_one',
+      target: 'dm:@Alice',
+      content: '我来同步一下',
+    }),
+    postAgentResponse: async (agent, spaceType, spaceId, content, parentMessageId, options) => {
+      const message = {
+        id: 'msg_proactive',
+        workspaceId: 'wsp_test',
+        spaceType,
+        spaceId,
+        authorType: 'agent',
+        authorId: agent.id,
+        body: content,
+        parentMessageId,
+        createdAt: '2026-05-21T04:00:00.000Z',
+      };
+      posted.push({ agent, spaceType, spaceId, content, parentMessageId, options, message });
+      deps.state.messages.push(message);
+      return message;
+    },
+    deliverMessageToAgent: async (agent, spaceType, spaceId, message, options) => {
+      deliveries.push({ agent, spaceType, spaceId, message, options });
+    },
+  });
+  deps.state.connection = { workspaceId: 'wsp_test' };
+  deps.state.agents.push({ id: 'agt_alice', name: 'Alice', workspaceId: 'wsp_test', status: 'idle' });
+  deps.state.dms = [];
+
+  const res = makeResponse();
+  const handled = await handleAgentToolApi(
+    { method: 'POST', daemonAuth: { workspaceId: 'wsp_test' } },
+    res,
+    new URL('http://local/api/agent-tools/messages/send'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200, res.error || '');
+  assert.equal(res.data.proactive, true);
+  assert.equal(deps.state.dms.length, 1);
+  assert.deepEqual(deps.state.dms[0].participantIds, ['agt_one', 'agt_alice']);
+  assert.equal(posted[0].spaceType, 'dm');
+  assert.equal(posted[0].spaceId, deps.state.dms[0].id);
+  assert.equal(deliveries[0].agent.id, 'agt_alice');
+  assert.equal(deliveries[0].options.parentMessageId, null);
 });
 
 test('agent tool task creation merges assignees and can claim created work', async () => {

@@ -5,10 +5,21 @@ async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
   const initialMessages = Array.isArray(initialMessage)
     ? initialMessage.filter(Boolean)
     : (initialMessage ? [initialMessage] : []);
+  const firstMessage = initialMessages[0] || null;
+  const parentMessageId = firstMessage?.parentMessageId || null;
+  const sessionKey = agentRuntimeSessionKey(agent, spaceType, spaceId, firstMessage, parentMessageId);
+  const processKey = agentRuntimeProcessKeyFor(agent, sessionKey);
+  const workspaceId = workspaceIdForConversation(state, {
+    spaceType,
+    spaceId,
+    fallbackRecord: firstMessage,
+    agent,
+  });
+  const target = targetForConversation(spaceType, spaceId, parentMessageId);
 
   // Check if agent already has a running process
-  if (agentProcesses.has(agentId)) {
-    const proc = agentProcesses.get(agentId);
+  if (agentProcesses.has(processKey)) {
+    const proc = agentProcesses.get(processKey);
     if (proc.status === 'running' || proc.status === 'starting') {
       // Queue the message for delivery
       proc.inbox.push(...initialMessages);
@@ -30,11 +41,18 @@ async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
     promptMessageCount: 0,
     child: null,
     runtime,
-    parentMessageId: initialMessages[0]?.parentMessageId || null,
+    parentMessageId,
+    workspaceId,
+    target,
+    sessionKey,
+    processKey,
+    runtimeSessionRecordId: null,
     startedAt: now(),
     workspace,
   };
-  agentProcesses.set(agentId, proc);
+  const runtimeSession = ensureRuntimeSession(agent, proc);
+  if (runtimeSession?.codexThreadId) proc.threadId = runtimeSession.codexThreadId;
+  agentProcesses.set(processKey, proc);
 
   // Update agent status
   setAgentStatus(agent, 'starting', 'delivery_started');
@@ -105,7 +123,7 @@ async function startClaudeAgent(agent, proc, workspace) {
     addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
     await persistState();
     broadcastState();
-    agentProcesses.delete(agent.id);
+    deleteAgentProcess(proc, agent.id);
   });
 
   child.on('close', async (code) => {
@@ -147,7 +165,7 @@ async function startClaudeAgent(agent, proc, workspace) {
     addSystemEvent(proc.stopRequested ? 'agent_stopped' : 'agent_completed', `${agent.name} ${proc.stopRequested ? 'stopped' : 'finished'} (code ${code})`, { agentId: agent.id });
     await persistState();
     broadcastState();
-    agentProcesses.delete(agent.id);
+    deleteAgentProcess(proc, agent.id);
     restartAgentWithQueuedMessages(agent, proc, queuedMessages);
   });
 }
@@ -259,6 +277,7 @@ async function startCodexAgent(agent, proc, workspace) {
   setAgentStatus(agent, 'starting', 'codex_app_server_start');
   noteAgentRuntimeProgress(agent, proc, 'working', 'Starting Codex app-server', {
     sessionId: proc.sessionId || null,
+    sessionKey: proc.sessionKey || null,
   });
   agent.runtimeLastStartedAt = now();
   await writeAgentSessionFile(agent).catch(() => {});
@@ -325,7 +344,7 @@ async function startCodexAgent(agent, proc, workspace) {
     addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
     await persistState();
     broadcastState();
-    agentProcesses.delete(agent.id);
+    deleteAgentProcess(proc, agent.id);
   });
 
   child.on('close', async (code) => {
@@ -339,7 +358,7 @@ async function startCodexAgent(agent, proc, workspace) {
         addSystemEvent('agent_stopped', `${agent.name} stopped before Codex session was ready`, { agentId: agent.id });
         await persistState();
         broadcastState();
-        agentProcesses.delete(agent.id);
+        deleteAgentProcess(proc, agent.id);
         restartAgentWithQueuedMessages(agent, proc, proc.restartMessagesAfterStop || []);
         return;
       }
@@ -348,7 +367,7 @@ async function startCodexAgent(agent, proc, workspace) {
     }
     if (!proc.suppressOutput && proc.responseBuffer.trim()) {
       const sourceMessage = proc.lastSourceMessage || proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
-      if (turnMetaHasExplicitSend({ workItemIds: [sourceMessage?.workItemId].filter(Boolean) })) {
+      if (proc.explicitSendUsed || turnMetaHasExplicitSend({ workItemIds: [sourceMessage?.workItemId].filter(Boolean) })) {
         addSystemEvent('agent_stdout_suppressed', `${agent.name} used send_message; final stdout fallback was suppressed.`, {
           agentId: agent.id,
           workItemId: sourceMessage?.workItemId || null,
@@ -377,7 +396,7 @@ async function startCodexAgent(agent, proc, workspace) {
     await writeAgentSessionFile(agent).catch(() => {});
     await persistState();
     broadcastState();
-    agentProcesses.delete(agent.id);
+    deleteAgentProcess(proc, agent.id);
     restartAgentWithQueuedMessages(agent, proc, proc.restartMessagesAfterStop || []);
   });
 
@@ -386,9 +405,9 @@ async function startCodexAgent(agent, proc, workspace) {
     capabilities: { experimentalApi: true },
   });
   proc.pendingThreadRequest = {
-    method: agent.runtimeSessionId ? 'thread/resume' : 'thread/start',
+    method: proc.threadId ? 'thread/resume' : 'thread/start',
     params: {
-      ...(agent.runtimeSessionId ? { threadId: agent.runtimeSessionId } : {}),
+      ...(proc.threadId ? { threadId: proc.threadId } : {}),
       cwd: workspace,
       approvalPolicy: 'never',
       sandbox: state.settings.sandbox || 'danger-full-access',

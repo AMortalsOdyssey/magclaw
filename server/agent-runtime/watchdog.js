@@ -243,7 +243,7 @@ async function recoverPendingSendMessageToolCalls(agent, proc) {
 }
 
 async function handleAgentRunWatchdogTimeout(agent, proc) {
-  if (agentProcesses.get(agent.id) !== proc || proc.stopRequested || proc.child?.killed || proc.usedLegacyFallback) return false;
+  if (agentProcesses.get(proc.processKey) !== proc || proc.stopRequested || proc.child?.killed || proc.usedLegacyFallback) return false;
   if (!codexProcessHasActiveTurn(proc)) return false;
   const lastProgressAt = Number(proc.lastTurnProgressAt || 0);
   const staleMs = Date.now() - (lastProgressAt || Date.now());
@@ -290,7 +290,7 @@ async function handleAgentRunWatchdogTimeout(agent, proc) {
       broadcastState();
       if (proc.child && !proc.child.killed) proc.child.kill('SIGTERM');
       else {
-        agentProcesses.delete(agent.id);
+        deleteAgentProcess(proc, agent.id);
         if (queuedMessages.length) restartAgentWithQueuedMessages(agent, proc, queuedMessages);
       }
       return true;

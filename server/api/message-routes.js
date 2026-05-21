@@ -60,6 +60,7 @@ export async function handleMessageApi(req, res, url, deps) {
     getState,
     inferAgentMemoryWriteback,
     inferAgentPermissionGrant,
+    inferConversationDisclosureGrant,
     getMessageById,
     listSpaceMessagesPage,
     listThreadRepliesPage,
@@ -73,6 +74,7 @@ export async function handleMessageApi(req, res, url, deps) {
     routeMessageForChannel,
     routeThreadReplyForChannel,
     recordAgentPermissionGrant,
+    recordConversationGrant,
     scheduleAgentMemoryWriteback,
     searchAgentMemory,
     sendError,
@@ -451,7 +453,10 @@ export async function handleMessageApi(req, res, url, deps) {
     const permissionGrant = typeof inferAgentPermissionGrant === 'function'
       ? inferAgentPermissionGrant(text)
       : null;
-    if (!memory && !userPreferenceIntent(text) && !permissionGrant) return;
+    const disclosureGrant = typeof inferConversationDisclosureGrant === 'function'
+      ? inferConversationDisclosureGrant(text)
+      : null;
+    if (!memory && !userPreferenceIntent(text) && !permissionGrant && !disclosureGrant) return;
     const targets = memoryTargetsForConversation({
       spaceType,
       spaceId,
@@ -490,6 +495,28 @@ export async function handleMessageApi(req, res, url, deps) {
         })));
       }
     }
+    if (disclosureGrant && spaceType === 'dm') {
+      const sourceTarget = parentMessage?.id ? `dm:${spaceId}:${parentMessage.id}` : `dm:${spaceId}`;
+      for (const agent of targets) {
+        const grant = typeof recordConversationGrant === 'function'
+          ? recordConversationGrant(state, {
+            ...disclosureGrant,
+            workspaceId: record.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local',
+            grantorHumanId: record.authorId,
+            agentId: agent.id,
+            sourceTarget,
+            sourceMessageId: record.id,
+          }, { makeId, now })
+          : null;
+        if (grant) {
+          addSystemEvent(
+            disclosureGrant.intent === 'revoke' ? 'conversation_grant_revoked' : 'conversation_grant_persisted',
+            `${agent.name} conversation disclosure grant ${disclosureGrant.intent === 'revoke' ? 'revoked' : 'persisted'}.`,
+            { agentId: agent.id, messageId: record.id, grantId: grant.id, sourceTarget },
+          );
+        }
+      }
+    }
     if (memory && !permissionGrant) {
       const trigger = explicitMemory ? 'explicit_user_memory' : 'user_preference';
       writes.push(...targets.map((agent) => Promise.resolve(scheduleAgentMemoryWriteback(agent, trigger, {
@@ -509,7 +536,7 @@ export async function handleMessageApi(req, res, url, deps) {
       }))));
     }
     await Promise.all(writes);
-    if (permissionChanged) {
+    if (permissionChanged || disclosureGrant) {
       await persistConversationState(record, spaceType, spaceId);
       broadcastState();
     }

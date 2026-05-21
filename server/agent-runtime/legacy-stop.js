@@ -103,7 +103,7 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
     addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
     await persistState();
     broadcastState();
-    agentProcesses.delete(agent.id);
+    deleteAgentProcess(proc, agent.id);
   });
 
   child.on('close', async (code) => {
@@ -150,7 +150,7 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
     addSystemEvent(proc.stopRequested ? 'agent_stopped' : 'agent_completed', `${agent.name} ${proc.stopRequested ? 'stopped' : 'finished'} (code ${code})`, { agentId: agent.id });
     await persistState();
     broadcastState();
-    agentProcesses.delete(agent.id);
+    deleteAgentProcess(proc, agent.id);
     restartAgentWithQueuedMessages(agent, proc, queuedMessages);
   });
 
@@ -289,7 +289,7 @@ function stopAgentProcessForScope(agent, proc, scope, restartMessages = []) {
     proc.child.kill('SIGTERM');
     return true;
   }
-  agentProcesses.delete(agent.id);
+  deleteAgentProcess(proc, agent.id);
   if (proc.restartMessagesAfterStop.length) restartAgentWithQueuedMessages(agent, proc, proc.restartMessagesAfterStop);
   return false;
 }
@@ -310,7 +310,7 @@ function stopAgentProcessForTask(agent, proc, task, restartMessages = []) {
     proc.child.kill('SIGTERM');
     return true;
   }
-  agentProcesses.delete(agent.id);
+  deleteAgentProcess(proc, agent.id);
   if (proc.restartMessagesAfterStop.length) restartAgentWithQueuedMessages(agent, proc, proc.restartMessagesAfterStop);
   return false;
 }
@@ -318,7 +318,8 @@ function stopAgentProcessForTask(agent, proc, task, restartMessages = []) {
 function stopAgentProcesses(scope = null) {
   const stoppedAgents = [];
   const stoppedWorkItems = [];
-  for (const [agentId, proc] of agentProcesses.entries()) {
+  for (const [, proc] of agentProcesses.entries()) {
+    const agentId = proc?.agentId;
     const agent = findAgent(agentId);
     if (!agent) continue;
     const stoppedForAgent = stopWorkItemsForScope(scope, agentId);
@@ -355,7 +356,8 @@ function stopAgentProcesses(scope = null) {
 function stopAgentProcessesForTask(task) {
   const stoppedAgents = [];
   const stoppedWorkItems = [];
-  for (const [agentId, proc] of agentProcesses.entries()) {
+  for (const [, proc] of agentProcesses.entries()) {
+    const agentId = proc?.agentId;
     const agent = findAgent(agentId);
     if (!agent) continue;
     const activeTask = processHasActiveTaskWork(proc, task);
@@ -396,7 +398,8 @@ function stopAgentProcessesForTask(task) {
 function steerAgentProcessesForTaskStop(task, actorId = 'hum_local', replyId = null) {
   const steeredAgents = [];
   const stoppedWorkItems = [];
-  for (const [agentId, proc] of agentProcesses.entries()) {
+  for (const [, proc] of agentProcesses.entries()) {
+    const agentId = proc?.agentId;
     const agent = findAgent(agentId);
     if (!agent) continue;
     const activeTurnIds = proc.activeTurnIds instanceof Set
@@ -509,7 +512,7 @@ function waitForAgentProcessExit(proc, timeoutMs = 5000) {
 }
 
 async function stopAgentProcessForControl(agent) {
-  const proc = agentProcesses.get(agent.id);
+  const proc = firstAgentProcess(agent.id);
   if (!proc) return false;
   clearAgentBusyDeliveryTimer(proc);
   clearAgentRunWatchdog(proc);
@@ -523,7 +526,7 @@ async function stopAgentProcessForControl(agent) {
     proc.child.kill('SIGTERM');
     await waitForAgentProcessExit(proc);
   } else {
-    agentProcesses.delete(agent.id);
+    deleteAgentProcess(proc, agent.id);
   }
   return true;
 }

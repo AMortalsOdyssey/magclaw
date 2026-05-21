@@ -204,6 +204,7 @@ async function executeMagClawLocalTool(agent, name, args = {}) {
       query: {
         agentId,
         target: args.target || args.channel,
+        workItemId: args.workItemId || args.work_item_id,
         limit: args.limit,
         around: args.around,
         before: args.before,
@@ -217,6 +218,7 @@ async function executeMagClawLocalTool(agent, name, args = {}) {
         agentId,
         query: args.query || args.q,
         target: args.target || args.channel,
+        workItemId: args.workItemId || args.work_item_id,
         limit: args.limit,
       },
     });
@@ -361,6 +363,12 @@ async function handleCodexDynamicToolCallRequest(agent, proc, message) {
   });
   try {
     const data = await executeMagClawLocalTool(agent, info.canonicalName, info.args);
+    if (info.canonicalName === 'send_message' && data?.ok !== false) {
+      proc.explicitSendTurnIds = proc.explicitSendTurnIds instanceof Set ? proc.explicitSendTurnIds : new Set();
+      if (info.turnId) proc.explicitSendTurnIds.add(String(info.turnId));
+      if (proc.activeTurnId) proc.explicitSendTurnIds.add(String(proc.activeTurnId));
+      proc.explicitSendUsed = true;
+    }
     const result = dynamicToolContentResult(localToolText(data));
     sendCodexAppServerResponse(proc, message.id, result);
     if (info.callId) {

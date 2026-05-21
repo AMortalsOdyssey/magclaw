@@ -79,6 +79,10 @@ import {
   recordAgentPermissionGrant,
 } from './agent-permissions.js';
 import {
+  inferConversationDisclosureGrant,
+  recordConversationGrant,
+} from './conversation-grants.js';
+import {
   baseNameFromProjectPath,
   CONTENT_TYPES as contentTypes,
   decodePathSegment,
@@ -251,6 +255,8 @@ const MAX_AGENT_WORKSPACE_TREE_ENTRIES = 300;
 const MAX_AGENT_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_AGENT_RELAY_DEPTH = 2;
 const AGENT_BUSY_DELIVERY_DELAY_MS = Math.max(10, Number(process.env.MAGCLAW_AGENT_BUSY_DELIVERY_DELAY_MS || 160));
+const AGENT_MAX_ACTIVE_SESSIONS = Math.max(1, Number(process.env.MAGCLAW_AGENT_MAX_ACTIVE_SESSIONS || 2));
+const COMPUTER_MAX_ACTIVE_SESSIONS = Math.max(1, Number(process.env.MAGCLAW_COMPUTER_MAX_ACTIVE_SESSIONS || 8));
 const AGENT_RUN_STALL_LOG_MS = Math.max(250, Number(process.env.MAGCLAW_AGENT_RUN_STALL_LOG_MS || process.env.MAGCLAW_AGENT_RUN_WATCHDOG_STALE_MS || 90_000));
 const AGENT_STUCK_SEND_MESSAGE_MS = Math.max(250, Number(process.env.MAGCLAW_AGENT_STUCK_SEND_MESSAGE_MS || 15_000));
 const AGENT_ACTIVITY_HEARTBEAT_MS = Math.max(250, Number(process.env.MAGCLAW_AGENT_ACTIVITY_HEARTBEAT_MS || 60_000));
@@ -290,7 +296,7 @@ const CODEX_HOME_STALE_SHARED_ENTRIES = [
   'hooks',
 ];
 const runningProcesses = new Map();
-const agentProcesses = new Map(); // agentId -> { child, sessionId, status, inbox }
+const agentProcesses = new Map(); // agentId:conversationLaneKey -> { child, sessionId, status, inbox }
 const sseClients = new Set();
 const agentCardCache = new Map();
 
@@ -919,6 +925,7 @@ const daemonRelay = createDaemonRelay({
   persistCloudState: cloudAuth.persistCloudState,
   persistState,
   port: PORT,
+  recordRealtimeEvent,
   root: ROOT,
   setAgentStatus,
 });
@@ -1270,6 +1277,8 @@ const agentRuntime = createAgentRuntimeManager({
   workItemMatchesScope,
   workItemMatchesTask,
   AGENT_BUSY_DELIVERY_DELAY_MS,
+  AGENT_MAX_ACTIVE_SESSIONS,
+  COMPUTER_MAX_ACTIVE_SESSIONS,
   AGENT_RUN_STALL_LOG_MS,
   AGENT_STUCK_SEND_MESSAGE_MS,
   AGENT_ACTIVITY_HEARTBEAT_MS,
@@ -1630,6 +1639,7 @@ function agentToolApiDeps() {
     createTaskFromMessage,
     createTaskMessage,
     createReminder,
+    deliverMessageToAgent,
     displayActor,
     findAgent,
     findConversationRecord,
@@ -1723,7 +1733,7 @@ function agentApiDeps() {
     findAgent,
     findChannel,
     getState: () => state,
-    hasAgentProcess: (agentId) => agentProcesses.has(agentId),
+    hasAgentProcess: (agentId) => [...agentProcesses.values()].some((proc) => proc?.agentId === agentId),
     listAgentWorkspace,
     listAgentSkills,
     makeId,
@@ -1780,6 +1790,7 @@ function messageApiDeps() {
       : null,
     inferAgentMemoryWriteback,
     inferAgentPermissionGrant,
+    inferConversationDisclosureGrant,
     listSpaceMessagesPage: typeof cloudRepository?.listSpaceMessagesPage === 'function'
       ? (...args) => cloudRepository.listSpaceMessagesPage(...args)
       : null,
@@ -1796,6 +1807,7 @@ function messageApiDeps() {
     routeMessageForChannel,
     routeThreadReplyForChannel,
     recordAgentPermissionGrant,
+    recordConversationGrant,
     scheduleAgentMemoryWriteback,
     searchAgentMemory,
     sendError,

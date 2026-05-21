@@ -70,18 +70,19 @@ function schema(properties, required = []) {
 const tools = [
   {
     name: 'send_message',
-    description: 'Send a routed MagClaw reply tied to the current work item. Use the exact target/workItemId from the prompt header.',
+    description: 'Send a MagClaw message. With workItemId it replies to the current routed task; without workItemId it can proactively send to a visible target such as dm:@Agent.',
     inputSchema: schema({
-      workItemId: { type: 'string', description: 'The work item id from the delivered message header.' },
-      target: { type: 'string', description: 'Conversation target such as #all, @Agent, or #channel:msg_id.' },
+      workItemId: { type: 'string', description: 'Optional work item id from the delivered message header.' },
+      target: { type: 'string', description: 'Conversation target such as #all, #channel:msg_id, dm:dm_id, dm:@Agent, or dm:@Agent:msg_id.' },
       content: { type: 'string', description: 'Message body to post.' },
-    }, ['workItemId', 'target', 'content']),
+    }, ['target', 'content']),
   },
   {
     name: 'read_history',
     description: 'Read bounded MagClaw conversation history for a channel, DM, or thread target.',
     inputSchema: schema({
       target: { type: 'string', description: 'Conversation target, default #all.' },
+      workItemId: { type: 'string', description: 'Optional current work item id. Required for private DM reads unless a grant exists.' },
       limit: { type: 'number', description: 'Maximum records to return.' },
       around: { type: 'string', description: 'Optional message id to read around.' },
       before: { type: 'string', description: 'Optional ISO timestamp/message cursor.' },
@@ -94,6 +95,7 @@ const tools = [
     inputSchema: schema({
       query: { type: 'string', description: 'Text to search for.' },
       target: { type: 'string', description: 'Conversation target, default #all.' },
+      workItemId: { type: 'string', description: 'Optional current work item id. Required for private DM searches unless a grant exists.' },
       limit: { type: 'number', description: 'Maximum results to return.' },
     }, ['query']),
   },
@@ -332,6 +334,7 @@ async function callTool(name, args = {}) {
         target: args.target || args.channel,
         limit: args.limit,
         around: args.around,
+        workItemId: args.workItemId || args.work_item_id,
         before: args.before,
         after: args.after,
       }),
@@ -342,6 +345,7 @@ async function callTool(name, args = {}) {
       query: withAgentId({
         query: args.query || args.q,
         target: args.target || args.channel,
+        workItemId: args.workItemId || args.work_item_id,
         limit: args.limit,
       }),
     });

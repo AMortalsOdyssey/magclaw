@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
+import { conversationLaneKeyForMessage } from '../conversation-session.js';
 
 const MACHINE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 365;
 const MAX_DAEMON_EVENT_LOG = 300;
@@ -208,6 +209,7 @@ export function createDaemonRelay(deps) {
     persistCloudState = null,
     persistState,
     port,
+    recordRealtimeEvent = null,
     DAEMON_RECONNECT_GRACE_MS = DEFAULT_DAEMON_RECONNECT_GRACE_MS,
     setAgentStatus,
   } = deps;
@@ -348,6 +350,21 @@ export function createDaemonRelay(deps) {
     store.daemonEvents = store.daemonEvents.slice(0, MAX_DAEMON_EVENT_LOG);
     addSystemEvent(type, message, safeMeta);
     return event;
+  }
+
+  function recordAgentRealtimeSnapshot(agent) {
+    if (typeof recordRealtimeEvent !== 'function' || !agent?.id) return;
+    recordRealtimeEvent('agent_status_changed', {
+      agent: {
+        id: agent.id,
+        status: agent.status || 'offline',
+        previousStatus: agent.previousStatus || null,
+        statusUpdatedAt: agent.statusUpdatedAt || null,
+        heartbeatAt: agent.heartbeatAt || null,
+        runtimeActivity: agent.runtimeActivity || null,
+        activeWorkItemIds: agent.activeWorkItemIds || [],
+      },
+    }, { scopeType: 'agent', scopeId: agent.id });
   }
 
   function publicUrlFromRequest(req) {
@@ -688,6 +705,48 @@ export function createDaemonRelay(deps) {
       event: { computerId: delivery.computerId, deliveryId: delivery.id },
     });
     return true;
+  }
+
+  function agentRuntimeSessions() {
+    state.agentRuntimeSessions = Array.isArray(state.agentRuntimeSessions) ? state.agentRuntimeSessions : [];
+    return state.agentRuntimeSessions;
+  }
+
+  function ensureAgentRuntimeSession(agent, deliveryMessage = {}, sessionKey = '') {
+    const key = sessionKey || conversationLaneKeyForMessage(state, {
+      agent,
+      spaceType: deliveryMessage.spaceType || 'channel',
+      spaceId: deliveryMessage.spaceId || 'chan_all',
+      message: deliveryMessage,
+      parentMessageId: deliveryMessage.parentMessageId || null,
+      workspaceId: deliveryMessage.workspaceId || '',
+    });
+    let session = agentRuntimeSessions().find((item) => item.agentId === agent.id && item.sessionKey === key);
+    const timestamp = now();
+    if (!session) {
+      session = {
+        id: makeId('ars'),
+        workspaceId: deliveryMessage.workspaceId || agent.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local',
+        agentId: agent.id,
+        computerId: agent.computerId || null,
+        sessionKey: key,
+        target: deliveryMessage.target || '',
+        spaceType: deliveryMessage.spaceType || 'channel',
+        spaceId: deliveryMessage.spaceId || 'chan_all',
+        parentMessageId: deliveryMessage.parentMessageId || null,
+        codexThreadId: null,
+        status: 'queued',
+        activeTurnIds: [],
+        activeTargetKeys: [],
+        lastTurnAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        metadata: {},
+      };
+      agentRuntimeSessions().push(session);
+    }
+    session.updatedAt = timestamp;
+    return session;
   }
 
   function markAgentsForComputerDisconnected(computerId) {
@@ -1079,6 +1138,7 @@ export function createDaemonRelay(deps) {
   }
 
   async function deliverToAgent(agent, deliveryMessage, workItem = null) {
+    const runtimeSession = ensureAgentRuntimeSession(agent, deliveryMessage);
     const result = queueAgentCommand(agent, 'agent:deliver', {
       agent: {
         id: agent.id,
@@ -1087,6 +1147,7 @@ export function createDaemonRelay(deps) {
         runtime: agent.runtime,
         runtimeId: agent.runtimeId || null,
         runtimeSessionId: agent.runtimeSessionId || null,
+        runtimeSessions: agentRuntimeSessions().filter((session) => session.agentId === agent.id),
         model: agent.model,
         reasoningEffort: agent.reasoningEffort || null,
         workspace: agent.workspace || null,
@@ -1094,6 +1155,8 @@ export function createDaemonRelay(deps) {
       },
       message: deliveryMessage,
       workItem,
+      sessionKey: runtimeSession.sessionKey,
+      runtimeSession,
     });
     if (!result.queued) return false;
     console.info('[daemon-relay] agent_delivery_queued', JSON.stringify({
@@ -1217,27 +1280,47 @@ export function createDaemonRelay(deps) {
     const agent = findAgent(message.agentId);
     if (!agent) return;
     if (message.probeId) pendingActivityProbes.delete(agent.id);
-    setAgentStatus(agent, String(message.status || 'idle'), 'daemon_status', { forceEvent: true });
+    const runtimeActivity = message.activity || agent.runtimeActivity || null;
+    setAgentStatus(agent, String(message.status || 'idle'), 'daemon_status', {
+      forceEvent: true,
+      runtimeActivity,
+    });
     const nextStatus = String(message.status || '').toLowerCase();
     if (message.deliveryId && ['idle', 'offline'].includes(nextStatus)) {
       markDeliveryFinished(message.deliveryId, 'completed');
     } else if (message.deliveryId && nextStatus === 'error') {
       markDeliveryFinished(message.deliveryId, 'failed', message.activity?.error || message.activity?.detail || 'Agent delivery failed.');
     }
-    if (message.sessionId !== undefined) agent.runtimeSessionId = message.sessionId || null;
-    agent.runtimeActivity = message.activity || agent.runtimeActivity || null;
+    if (message.sessionId !== undefined) {
+      agent.runtimeSessionId = message.sessionId || null;
+      if (message.sessionKey) {
+        const session = ensureAgentRuntimeSession(agent, {}, String(message.sessionKey));
+        session.codexThreadId = message.sessionId || null;
+        session.status = String(message.status || 'idle');
+        session.updatedAt = now();
+      }
+    }
+    agent.runtimeActivity = runtimeActivity;
     agent.heartbeatAt = now();
+    if (!message.status) recordAgentRealtimeSnapshot(agent);
     await persistAllState();
-    broadcastState();
+    broadcastState(message.deliveryId || message.sessionId !== undefined ? {} : { realtimeOnly: true });
   }
 
   async function handleAgentActivity(message) {
     const agent = findAgent(message.agentId);
     if (!agent) return;
     if (message.probeId) pendingActivityProbes.delete(agent.id);
-    if (message.status) setAgentStatus(agent, String(message.status), 'daemon_activity', { forceEvent: true });
-    agent.runtimeActivity = message.activity || agent.runtimeActivity || null;
+    const runtimeActivity = message.activity || agent.runtimeActivity || null;
+    if (message.status) {
+      setAgentStatus(agent, String(message.status), 'daemon_activity', {
+        forceEvent: true,
+        runtimeActivity,
+      });
+    }
+    agent.runtimeActivity = runtimeActivity;
     agent.heartbeatAt = now();
+    if (!message.status) recordAgentRealtimeSnapshot(agent);
     recordDaemonEvent('agent_activity', `${agent.name} reported daemon activity.`, {
       agentId: agent.id,
       computerId: message.computerId || agent.computerId || null,
@@ -1245,7 +1328,7 @@ export function createDaemonRelay(deps) {
       deliveryId: message.deliveryId || null,
     });
     await persistAllState();
-    broadcastState();
+    broadcastState(message.deliveryId ? {} : { realtimeOnly: true });
   }
 
   async function handleAgentMessage(message) {
