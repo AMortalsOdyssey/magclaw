@@ -159,20 +159,24 @@ export function createMarkdownOperationApplier(deps = {}) {
     });
     await atomicWriteMarkdownFile(filePath, afterContent);
 
-    await persistMarkdownDocumentIndex?.({
-      workspaceId: workspaceIdFor(agent),
-      agentId: agent.id,
-      relPath,
-      revision: appended.record.revision,
-      documentHash: afterHash,
-      currentSegment: appended.record.segmentIndex,
-      updatedAt: appended.record.appliedAt,
-    }).catch((error) => {
-      console.warn(`[markdown-applier] document index persist failed relPath=${relPath} message=${String(error?.message || error).slice(0, 240)}`);
-    });
-    await persistMarkdownOperationIndex?.(appended.record).catch((error) => {
-      console.warn(`[markdown-applier] operation index persist failed relPath=${relPath} message=${String(error?.message || error).slice(0, 240)}`);
-    });
+    if (typeof persistMarkdownDocumentIndex === 'function') {
+      await Promise.resolve(persistMarkdownDocumentIndex({
+        workspaceId: workspaceIdFor(agent),
+        agentId: agent.id,
+        relPath,
+        revision: appended.record.revision,
+        documentHash: afterHash,
+        currentSegment: appended.record.segmentIndex,
+        updatedAt: appended.record.appliedAt,
+      })).catch((error) => {
+        console.warn(`[markdown-applier] document index persist failed relPath=${relPath} message=${String(error?.message || error).slice(0, 240)}`);
+      });
+    }
+    if (typeof persistMarkdownOperationIndex === 'function') {
+      await Promise.resolve(persistMarkdownOperationIndex(appended.record)).catch((error) => {
+        console.warn(`[markdown-applier] operation index persist failed relPath=${relPath} message=${String(error?.message || error).slice(0, 240)}`);
+      });
+    }
 
     addSystemEvent('markdown_operation_applied', `Applied Markdown operation ${operation.type} to ${relPath}.`, {
       agentId: agent.id,
