@@ -41,6 +41,22 @@ export async function handleTaskApi(req, res, url, deps) {
     broadcastState({ immediate: true });
   }
 
+  function workspaceIdForRecord(record = null, fallback = '') {
+    return String(
+      record?.workspaceId
+      || fallback
+      || state.connection?.workspaceId
+      || state.cloud?.workspace?.id
+      || state.cloud?.workspaces?.[0]?.id
+      || '',
+    ).trim();
+  }
+
+  function persistTaskState(record = null, reason = 'task_changed') {
+    const workspaceId = workspaceIdForRecord(record);
+    return persistState(workspaceId ? { workspaceId, reason } : { reason });
+  }
+
   function paginationLimit(value, fallback = 80, max = 200) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -134,7 +150,7 @@ export async function handleTaskApi(req, res, url, deps) {
       sourceReplyId: body.sourceReplyId || null,
       status: body.status || 'todo',
     });
-    await persistState();
+    await persistTaskState(task, 'task_created');
     broadcastState();
     sendJson(res, 201, { message, task });
     return true;
@@ -155,7 +171,7 @@ export async function handleTaskApi(req, res, url, deps) {
       sendError(res, error.status || 409, error.message);
       return true;
     }
-    await persistState();
+    await persistTaskState(task, 'task_claimed');
     broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
@@ -185,7 +201,7 @@ export async function handleTaskApi(req, res, url, deps) {
     const thread = ensureTaskThread(task);
     addSystemReply(thread.id, 'Task claim released.');
     addTaskTimelineMessage(task, `🔓 ${displayActor(actorId)} released ${taskLabel(task)}`, 'task_unclaimed');
-    await persistState();
+    await persistTaskState(task, 'task_unclaimed');
     broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
@@ -212,7 +228,7 @@ export async function handleTaskApi(req, res, url, deps) {
     const thread = ensureTaskThread(task);
     addSystemReply(thread.id, 'Review requested. Waiting for human approval.');
     addTaskTimelineMessage(task, `👀 ${displayActor(task.claimedBy)} moved ${taskLabel(task)} to In Review`, 'task_review');
-    await persistState();
+    await persistTaskState(task, 'task_review_requested');
     broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
@@ -235,7 +251,7 @@ export async function handleTaskApi(req, res, url, deps) {
     const thread = ensureTaskThread(task);
     addSystemReply(thread.id, 'Human review approved. Task marked done.');
     addTaskTimelineMessage(task, `✅ ${displayActor('hum_local')} moved ${taskLabel(task)} to Done`, 'task_done');
-    await persistState();
+    await persistTaskState(task, 'task_approved');
     broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
@@ -264,7 +280,7 @@ export async function handleTaskApi(req, res, url, deps) {
     const thread = ensureTaskThread(task);
     addSystemReply(thread.id, 'Task reopened.');
     addTaskTimelineMessage(task, `↩ ${displayActor('hum_local')} reopened ${taskLabel(task)}`, 'task_reopened');
-    await persistState();
+    await persistTaskState(task, 'task_reopened');
     broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
@@ -283,7 +299,7 @@ export async function handleTaskApi(req, res, url, deps) {
     }
     const body = await readJson(req);
     closeTask(task, String(body.actorId || 'hum_local'), String(body.reason || 'Task closed by human.'));
-    await persistState();
+    await persistTaskState(task, 'task_closed');
     broadcastTaskStatusState();
     sendJson(res, 200, { task });
     return true;
@@ -354,7 +370,7 @@ export async function handleTaskApi(req, res, url, deps) {
     task.runIds.unshift(run.id);
     addTaskHistory(task, 'run_started', `Codex run started: ${run.id}`, actorId, { runId: run.id, missionId: mission.id });
     addSystemReply(ensureTaskThread(task).id, `Codex run started: ${run.id}.`);
-    await persistState();
+    await persistTaskState(task, 'task_run_started');
     broadcastTaskStatusState();
     startCodexRun(mission, run);
     sendJson(res, 201, { task, mission, run });
@@ -384,7 +400,7 @@ export async function handleTaskApi(req, res, url, deps) {
       }
       if (nextStatus === 'closed') {
         closeTask(task, 'hum_local', String(body.reason || 'Task closed by human.'));
-        await persistState();
+        await persistTaskState(task, 'task_closed');
         broadcastTaskStatusState();
         sendJson(res, 200, { task });
         return true;
@@ -425,7 +441,7 @@ export async function handleTaskApi(req, res, url, deps) {
     }
     task.updatedAt = now();
     addCollabEvent('task_updated', `Task updated: ${task.title}`, { taskId: task.id });
-    await persistState();
+    await persistTaskState(task, 'task_updated');
     if (taskStatusChanged) broadcastTaskStatusState();
     else broadcastState();
     sendJson(res, 200, { task });
@@ -435,12 +451,13 @@ export async function handleTaskApi(req, res, url, deps) {
   const deleteTaskMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)$/);
   if (req.method === 'DELETE' && deleteTaskMatch) {
     const taskId = deleteTaskMatch[1];
+    const deletedTask = findTask(taskId);
     state.tasks = state.tasks.filter((task) => task.id !== taskId);
     for (const message of state.messages) {
       if (message.taskId === taskId) delete message.taskId;
     }
     addCollabEvent('task_deleted', 'Task deleted.', { taskId });
-    await persistState();
+    await persistTaskState(deletedTask, 'task_deleted');
     broadcastState();
     sendJson(res, 200, { ok: true });
     return true;

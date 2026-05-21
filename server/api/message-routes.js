@@ -188,7 +188,7 @@ export async function handleMessageApi(req, res, url, deps) {
 
   function persistConversationState(record, spaceType, spaceId, req = null) {
     const workspaceId = workspaceIdForConversation(record, spaceType, spaceId, req);
-    return persistState(workspaceId ? { workspaceId } : {});
+    return persistState(workspaceId ? { workspaceId, reason: 'conversation_changed' } : { reason: 'conversation_changed' });
   }
 
   function reactionOptionFromInput(input = {}) {
@@ -425,7 +425,7 @@ export async function handleMessageApi(req, res, url, deps) {
       recordCount: markedRecordIds.length,
     });
     if (changed) {
-      await persistState({ workspaceId: workspaceIdForRequest(req) });
+      await persistState({ workspaceId: workspaceIdForRequest(req), reason: 'conversation_read_state_changed' });
       broadcastState();
     }
     sendJson(res, 200, {
