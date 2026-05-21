@@ -1017,7 +1017,7 @@ function recordSessionSummaryLlmIssue(issue = {}) {
       state.systemNotifications.splice(0, state.systemNotifications.length - 500);
     }
   }
-  return persistState().then(broadcastState).catch((error) => {
+  return persistState({ workspaceId, reason: 'session_summary_llm_error' }).then(broadcastState).catch((error) => {
     console.error(`[markdown-maintenance] failed to persist LLM issue notification workspace=${workspaceId}`, error);
   });
 }
@@ -1471,7 +1471,10 @@ daemonRelay.setHandlers({
       idempotencyKey,
     });
     if (markFallbackResponseWorkItem(sourceMessage, posted)) {
-      await persistState();
+      await persistState({
+        workspaceId: posted?.workspaceId || agent.workspaceId || state.connection?.workspaceId || '',
+        reason: 'daemon_agent_message_created',
+      });
       broadcastState();
     }
   },

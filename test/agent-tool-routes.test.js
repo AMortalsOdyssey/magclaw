@@ -160,6 +160,31 @@ test('agent tool reminders can schedule, list, and cancel timed reminders', asyn
   assert.equal(deps.state.reminders[0].status, 'canceled');
 });
 
+test('agent tool writes persist with the daemon workspace scope', async () => {
+  const persistCalls = [];
+  const deps = routeDeps({
+    persistState: async (options = {}) => {
+      persistCalls.push(options);
+    },
+    readJson: async () => ({
+      agentId: 'agt_one',
+      title: 'Ping standup',
+      fireAt: '2026-05-14T01:00:00.000Z',
+    }),
+  });
+  const res = makeResponse();
+  const handled = await handleAgentToolApi(
+    { method: 'POST', daemonAuth: { workspaceId: 'wsp_test' } },
+    res,
+    new URL('http://local/api/agent-tools/reminders'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.deepEqual(persistCalls, [{ workspaceId: 'wsp_test', reason: 'agent_tool_reminder_created' }]);
+});
+
 test('agent tool route group formats bounded history reads', async () => {
   let historyOptions = null;
   const deps = routeDeps({

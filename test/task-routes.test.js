@@ -145,6 +145,27 @@ test('task route group creates conversation-backed tasks', async () => {
   assert.equal(deps.state.messages[0].taskId, 'task_new');
 });
 
+test('task route group persists known workspace changes with scoped options', async () => {
+  const persistCalls = [];
+  const deps = routeDeps({
+    persistState: async (options = {}) => {
+      persistCalls.push(options);
+    },
+  });
+  deps.state.tasks[0].workspaceId = 'wsp_task';
+  const res = makeResponse();
+  const handled = await handleTaskApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/tasks/task_1/claim'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(persistCalls, [{ workspaceId: 'wsp_task', reason: 'task_claimed' }]);
+});
+
 test('task route group rejects done transition before review', async () => {
   const deps = routeDeps({ readJson: async () => ({ status: 'done' }) });
   const res = makeResponse();

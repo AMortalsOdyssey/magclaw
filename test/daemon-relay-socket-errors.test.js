@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import test from 'node:test';
+import test, { mock } from 'node:test';
 
 import { createDaemonRelay } from '../server/cloud/daemon-relay.js';
 
@@ -90,6 +90,7 @@ function createRelay(options = {}) {
     agents: [],
     events: [],
   };
+  const persistCalls = [];
   let nextId = 0;
   const relay = createDaemonRelay({
     addSystemEvent: () => {},
@@ -108,14 +109,16 @@ function createRelay(options = {}) {
     makeId: (prefix = 'id') => `${prefix}_${nextId += 1}`,
     normalizeConversationRecord: (record) => record,
     now: () => '2026-05-13T00:00:00.000Z',
-    persistState: async () => {},
+    persistState: options.persistState || (async (persistOptions = {}) => {
+      persistCalls.push(persistOptions);
+    }),
     port: 6543,
     DAEMON_RECONNECT_GRACE_MS: options.reconnectGraceMs ?? 0,
     setAgentStatus: (agent, status) => {
       if (agent) agent.status = status;
     },
   });
-  return { cloud, relay, state };
+  return { cloud, persistCalls, relay, state };
 }
 
 test('daemon relay rejects new daemon websockets while draining', async () => {
@@ -188,7 +191,7 @@ test('daemon relay sends server draining control frame before closing live daemo
 });
 
 test('daemon relay dispatches and records daemon release notice acknowledgements', async () => {
-  const { cloud, relay, state } = createRelay();
+  const { cloud, persistCalls, relay, state } = createRelay();
   const rawToken = 'mc_machine_existing';
   const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
   state.computers.push({
@@ -233,6 +236,53 @@ test('daemon relay dispatches and records daemon release notice acknowledgements
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(cloud.daemonEvents.some((event) => event.type === 'daemon_release_notice_acked'), true);
+  assert.ok(persistCalls.some((call) => (
+    call.workspaceId === 'wsp_test' && call.reason === 'daemon_release_notice_acked'
+  )));
+});
+
+test('daemon relay coalesces heartbeat persistence by workspace', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const { cloud, persistCalls, relay, state } = createRelay();
+    const rawToken = 'mc_machine_existing';
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    state.computers.push({
+      id: 'cmp_remote',
+      workspaceId: 'wsp_test',
+      name: 'Remote',
+      status: 'connected',
+      connectedVia: 'daemon',
+    });
+    cloud.computerTokens.push({
+      id: 'ctok_remote',
+      workspaceId: 'wsp_test',
+      computerId: 'cmp_remote',
+      tokenHash,
+      createdAt: '2026-05-13T00:00:00.000Z',
+    });
+    const socket = new FakeSocket();
+    assert.equal(await relay.handleUpgrade({
+      url: `/daemon/connect?token=${rawToken}`,
+      headers: {
+        host: 'magclaw.multiego.me',
+        'sec-websocket-key': 'test-key',
+      },
+      socket: {},
+    }, socket), true);
+    persistCalls.length = 0;
+
+    socket.emit('data', encodeFrame({ type: 'heartbeat', runningAgents: ['agt_one'] }));
+    socket.emit('data', encodeFrame({ type: 'heartbeat', runningAgents: ['agt_one', 'agt_two'] }));
+    await Promise.resolve();
+    assert.equal(persistCalls.length, 0);
+
+    mock.timers.tick(3000);
+    await Promise.resolve();
+    assert.deepEqual(persistCalls, [{ reason: 'daemon_heartbeat', workspaceId: 'wsp_test' }]);
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test('daemon relay forwards delivery idempotency fields with agent messages', async () => {

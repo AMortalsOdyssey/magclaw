@@ -765,8 +765,79 @@ export function createCloudPostgresStore(optionsInput = {}) {
   let realtimeReconnectTimer = null;
   let initialized = false;
   let migration = null;
-  let persistQueue = Promise.resolve();
+  const workspacePersistConcurrency = Math.max(1, Math.min(4, Math.max(1, poolMax - 2)));
+  const workspacePersistTails = new Map();
+  const workspacePersistWaiters = [];
+  let activeWorkspacePersists = 0;
+  let controlPlanePersistTail = Promise.resolve();
+  let authPersistTail = Promise.resolve();
   const poolsWithErrorHandler = new WeakSet();
+
+  function settled(promise) {
+    return Promise.resolve(promise).catch(() => {});
+  }
+
+  async function acquireWorkspacePersistSlot() {
+    if (activeWorkspacePersists < workspacePersistConcurrency) {
+      activeWorkspacePersists += 1;
+      return;
+    }
+    await new Promise((resolve) => workspacePersistWaiters.push(resolve));
+  }
+
+  function releaseWorkspacePersistSlot() {
+    const next = workspacePersistWaiters.shift();
+    if (next) {
+      next();
+      return;
+    }
+    activeWorkspacePersists = Math.max(0, activeWorkspacePersists - 1);
+  }
+
+  async function runWorkspacePersistTask(run) {
+    await acquireWorkspacePersistSlot();
+    try {
+      return await run();
+    } finally {
+      releaseWorkspacePersistSlot();
+    }
+  }
+
+  function enqueueWorkspacePersist(workspaceId, run) {
+    const cleanWorkspaceId = String(workspaceId || '').trim();
+    if (!cleanWorkspaceId) return Promise.resolve();
+    const controlPlaneBarrier = settled(controlPlanePersistTail);
+    const previousWorkspaceTail = settled(workspacePersistTails.get(cleanWorkspaceId) || Promise.resolve());
+    const task = Promise.all([controlPlaneBarrier, previousWorkspaceTail])
+      .then(() => runWorkspacePersistTask(run));
+    const safeTask = settled(task);
+    workspacePersistTails.set(cleanWorkspaceId, safeTask);
+    safeTask.then(() => {
+      if (workspacePersistTails.get(cleanWorkspaceId) === safeTask) {
+        workspacePersistTails.delete(cleanWorkspaceId);
+      }
+    });
+    return task;
+  }
+
+  function enqueueControlPlanePersist(run) {
+    const previousControlPlaneTail = settled(controlPlanePersistTail);
+    const workspaceTailsAtBarrier = Array.from(workspacePersistTails.values()).map(settled);
+    const authTailAtBarrier = settled(authPersistTail);
+    const task = previousControlPlaneTail
+      .then(() => Promise.all([...workspaceTailsAtBarrier, authTailAtBarrier]))
+      .then(run);
+    controlPlanePersistTail = settled(task);
+    return task;
+  }
+
+  function enqueueAuthPersist(run) {
+    const controlPlaneBarrier = settled(controlPlanePersistTail);
+    const previousAuthTail = settled(authPersistTail);
+    const task = Promise.all([controlPlaneBarrier, previousAuthTail]).then(run);
+    authPersistTail = settled(task);
+    return task;
+  }
 
   function attachPoolErrorHandler(nextPool) {
     if (!nextPool || typeof nextPool.on !== 'function') return;
@@ -1538,6 +1609,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     `, [ids]);
 
     const humanRows = [];
+    const computerRows = [];
     const agentRows = [];
     const channelRows = [];
     const dmRows = [];
@@ -1566,6 +1638,36 @@ export function createCloudPostgresStore(optionsInput = {}) {
         requiredIso(human.createdAt),
         requiredIso(human.updatedAt || human.createdAt),
         JSON.stringify(metadataWithState(human, { status: durableStatus })),
+      ]);
+    }
+
+    for (const computer of safeArray(state.computers)) {
+      if (!computer?.id) continue;
+      const workspaceId = workspaceIdFor(computer, state, cloud);
+      if (!workspaceId || !inScope(workspaceId)) continue;
+      computerRows.push([
+        computer.id,
+        workspaceId,
+        computer.name || computer.hostname || computer.id,
+        computer.hostname || '',
+        computer.os || '',
+        computer.arch || '',
+        computer.daemonVersion || '',
+        computerStatus(computer.status),
+        computer.connectedVia || 'daemon',
+        JSON.stringify(safeArray(computer.runtimeIds)),
+        JSON.stringify(safeArray(computer.runtimeDetails)),
+        JSON.stringify(safeArray(computer.capabilities)),
+        JSON.stringify(safeArray(computer.runningAgents)),
+        computer.machineFingerprint || computer.fingerprint || '',
+        computer.createdBy || null,
+        requiredIso(computer.createdAt),
+        requiredIso(computer.updatedAt || computer.createdAt),
+        iso(computer.lastSeenAt),
+        iso(computer.daemonConnectedAt),
+        iso(computer.disconnectedAt),
+        iso(computer.disabledAt),
+        JSON.stringify(jsonObject(computer.metadata)),
       ]);
     }
 
@@ -1802,6 +1904,36 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'updated_at',
       'metadata',
     ], humanRows, { metadata: '::jsonb' }, humanRuntimeConflictSuffix());
+    await batchInsertRows(client, 'cloud_computers', [
+      'id',
+      'workspace_id',
+      'name',
+      'hostname',
+      'os',
+      'arch',
+      'daemon_version',
+      'status',
+      'connected_via',
+      'runtime_ids',
+      'runtime_details',
+      'capabilities',
+      'running_agents',
+      'machine_fingerprint',
+      'created_by',
+      'created_at',
+      'updated_at',
+      'last_seen_at',
+      'daemon_connected_at',
+      'disconnected_at',
+      'disabled_at',
+      'metadata',
+    ], computerRows, {
+      runtime_ids: '::jsonb',
+      runtime_details: '::jsonb',
+      capabilities: '::jsonb',
+      running_agents: '::jsonb',
+      metadata: '::jsonb',
+    }, computerAuthConflictSuffix());
     await batchInsertRows(client, 'cloud_agents', [
       'id',
       'workspace_id',
@@ -2469,23 +2601,13 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
   function persistFromState(state) {
     const snapshot = cloneRecord(state);
-    const next = persistQueue.then(
-      () => persistFromStateWithRetry(snapshot),
-      () => persistFromStateWithRetry(snapshot),
-    );
-    persistQueue = next.catch(() => {});
-    return next;
+    return enqueueControlPlanePersist(() => persistFromStateWithRetry(snapshot));
   }
 
   function persistWorkspaceFromState(state, workspaceId) {
     const snapshot = cloneRecord(state);
     const cleanWorkspaceId = String(workspaceId || '').trim();
-    const next = persistQueue.then(
-      () => persistWorkspaceFromStateNow(snapshot, cleanWorkspaceId),
-      () => persistWorkspaceFromStateNow(snapshot, cleanWorkspaceId),
-    );
-    persistQueue = next.catch(() => {});
-    return next;
+    return enqueueWorkspacePersist(cleanWorkspaceId, () => persistWorkspaceFromStateNow(snapshot, cleanWorkspaceId));
   }
 
   async function deleteComputerNow(computerId, workspaceId = '') {
@@ -2506,12 +2628,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
   function deleteComputer(computerId, workspaceId = '') {
     const cleanComputerId = String(computerId || '').trim();
     const cleanWorkspaceId = String(workspaceId || '').trim();
-    const next = persistQueue.then(
-      () => deleteComputerNow(cleanComputerId, cleanWorkspaceId),
-      () => deleteComputerNow(cleanComputerId, cleanWorkspaceId),
-    );
-    persistQueue = next.catch(() => {});
-    return next;
+    return enqueueControlPlanePersist(() => deleteComputerNow(cleanComputerId, cleanWorkspaceId));
   }
 
   async function persistMarkdownDocumentIndex(record = {}) {
@@ -2929,12 +3046,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
   function persistAuthFromState(state) {
     const snapshot = cloneRecord(state);
-    const next = persistQueue.then(
-      () => persistAuthFromStateNow(snapshot),
-      () => persistAuthFromStateNow(snapshot),
-    );
-    persistQueue = next.catch(() => {});
-    return next;
+    return enqueueControlPlanePersist(() => persistAuthFromStateNow(snapshot));
   }
 
   async function persistAuthOperationNow(operation) {
@@ -2980,12 +3092,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
   function persistAuthOperation(operation) {
     const snapshot = snapshotAuthOperation(operation);
-    const next = persistQueue.then(
-      () => persistAuthOperationNow(snapshot),
-      () => persistAuthOperationNow(snapshot),
-    );
-    persistQueue = next.catch(() => {});
-    return next;
+    return enqueueAuthPersist(() => persistAuthOperationNow(snapshot));
   }
 
   async function loadIntoState(state, loadOptions = {}) {

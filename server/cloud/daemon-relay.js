@@ -7,6 +7,8 @@ const SENT_DELIVERY_RETRY_TTL_MS = Math.max(1000, Number(process.env.MAGCLAW_DAE
 const DAEMON_PING_MS = readMsEnv('MAGCLAW_DAEMON_PING_MS', 30_000, { min: 0, max: 10 * 60_000 });
 const DAEMON_INBOUND_WATCHDOG_MS = readMsEnv('MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS', 70_000, { min: 0, max: 10 * 60_000 });
 const ACTIVITY_PROBE_TIMEOUT_MS = readMsEnv('MAGCLAW_DAEMON_ACTIVITY_PROBE_TIMEOUT_MS', 5_000, { min: 250, max: 60_000 });
+const DAEMON_RUNTIME_COALESCE_MS = readMsEnv('MAGCLAW_DAEMON_RUNTIME_COALESCE_MS', 3_000, { min: 250, max: 60_000 });
+const DAEMON_ACTIVITY_BROADCAST_MIN_MS = readMsEnv('MAGCLAW_DAEMON_ACTIVITY_BROADCAST_MIN_MS', 2_000, { min: 0, max: 60_000 });
 const DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv('MAGCLAW_DAEMON_RECONNECT_GRACE_MS', 60_000, { min: 0, max: 5 * 60_000 });
 const ACTIVE_DELIVERY_STATUSES = new Set(['queued', 'sent', 'acked']);
 const TERMINAL_DELIVERY_STATUSES = new Set(['completed', 'failed', 'stopped']);
@@ -220,6 +222,8 @@ export function createDaemonRelay(deps) {
   const pendingDisconnects = new Map();
   const pendingActivityProbes = new Map();
   const pendingSkillRequests = new Map();
+  const pendingRuntimePersists = new Map();
+  const lastRuntimeBroadcastAt = new Map();
   const handlers = {
     onAgentMessage: null,
   };
@@ -245,8 +249,79 @@ export function createDaemonRelay(deps) {
     return Boolean(workItemId && messageId && delivery.workItemId === workItemId && delivery.messageId === messageId);
   }
 
-  function persistAllState() {
-    return (persistCloudState || persistState)();
+  function persistAllState(options = {}) {
+    return (persistCloudState || persistState)(options);
+  }
+
+  function workspaceIdForRuntime(record = null, fallback = '') {
+    return String(
+      record?.workspaceId
+      || fallback
+      || state.connection?.workspaceId
+      || cloud().workspaces?.[0]?.id
+      || '',
+    ).trim();
+  }
+
+  function workspaceIdForAgent(agent = null, fallback = '') {
+    return workspaceIdForRuntime(agent, fallback);
+  }
+
+  function workspaceIdForComputer(computer = null, connection = null) {
+    return workspaceIdForRuntime(computer, connection?.workspaceId || '');
+  }
+
+  function persistRuntimeState(workspaceId, reason = 'daemon_runtime_changed') {
+    const cleanWorkspaceId = String(workspaceId || '').trim();
+    const options = { reason };
+    if (cleanWorkspaceId) options.workspaceId = cleanWorkspaceId;
+    return persistState(options);
+  }
+
+  async function persistRuntimeStateAndBroadcast(workspaceId, reason, broadcastOptions) {
+    await persistRuntimeState(workspaceId, reason);
+    broadcastState(broadcastOptions);
+  }
+
+  function broadcastRuntimeStateThrottled(key, minIntervalMs = DAEMON_ACTIVITY_BROADCAST_MIN_MS) {
+    if (!minIntervalMs) {
+      broadcastState();
+      return true;
+    }
+    const nowTime = nowMs();
+    const last = lastRuntimeBroadcastAt.get(key) || 0;
+    if (nowTime - last < minIntervalMs) return false;
+    lastRuntimeBroadcastAt.set(key, nowTime);
+    broadcastState();
+    return true;
+  }
+
+  function scheduleRuntimePersist(workspaceId, reason, options = {}) {
+    const cleanWorkspaceId = String(workspaceId || '').trim();
+    const key = `${cleanWorkspaceId || 'global'}:${reason}`;
+    const existing = pendingRuntimePersists.get(key);
+    if (existing) {
+      existing.reason = reason;
+      existing.broadcast = existing.broadcast || Boolean(options.broadcast);
+      return;
+    }
+    const delayMs = options.delayMs ?? DAEMON_RUNTIME_COALESCE_MS;
+    const pending = {
+      reason,
+      broadcast: Boolean(options.broadcast),
+      timer: setTimeout(() => {
+        pendingRuntimePersists.delete(key);
+        persistRuntimeState(cleanWorkspaceId, pending.reason)
+          .then(() => {
+            if (pending.broadcast) {
+              broadcastRuntimeStateThrottled(options.broadcastKey || key, options.minBroadcastMs);
+            }
+          })
+          .catch(() => {});
+      }, delayMs),
+    };
+    pending.timer.unref?.();
+    pendingRuntimePersists.set(key, pending);
   }
 
   function cloud() {
@@ -507,7 +582,10 @@ export function createDaemonRelay(deps) {
     const at = now();
     tokenRecord.lastUsedAt = at;
     computer.lastSeenAt = at;
-    persistAllState().catch(() => {});
+    persistAllState({
+      workspaceId: tokenRecord.workspaceId || computer.workspaceId || '',
+      reason: 'daemon_http_auth_seen',
+    }).catch(() => {});
     return {
       type: 'daemon',
       workspaceId: tokenRecord.workspaceId || computer.workspaceId || null,
@@ -827,7 +905,10 @@ export function createDaemonRelay(deps) {
     recordDaemonEvent('computer_disconnected', `Computer disconnected: ${computer?.name || connection.computerId}`, {
       computerId: connection.computerId,
     });
-    persistAllState().then(broadcastState).catch(() => {});
+    persistRuntimeStateAndBroadcast(
+      workspaceIdForComputer(computer, connection),
+      'daemon_computer_disconnected',
+    ).catch(() => {});
   }
 
   function markComputerDisconnected(connection) {
@@ -854,7 +935,10 @@ export function createDaemonRelay(deps) {
       computerId: connection.computerId,
       graceMs: DAEMON_RECONNECT_GRACE_MS,
     });
-    persistAllState().then(broadcastState).catch(() => {});
+    persistRuntimeStateAndBroadcast(
+      workspaceIdForComputer(computer, connection),
+      'daemon_computer_reconnect_grace',
+    ).catch(() => {});
   }
 
   function adoptConnection(connection, computer, tokenRecord) {
@@ -892,7 +976,12 @@ export function createDaemonRelay(deps) {
         markAgentStatusForDelivery(delivery, 'daemon_replay_queued_delivery');
       }
     }
-    if (pending.length) await persistAllState();
+    if (pending.length) {
+      await persistRuntimeState(
+        workspaceIdForComputer(findComputer(computerId)),
+        'daemon_delivery_replayed',
+      );
+    }
     return replayed;
   }
 
@@ -1036,7 +1125,7 @@ export function createDaemonRelay(deps) {
         ? (result.sent ? 'warming' : queuedCommandPresenceStatus(agent, result.delivery))
         : (result.sent ? 'starting' : queuedCommandPresenceStatus(agent, result.delivery));
       setAgentStatus(agent, nextStatus, 'daemon_relay_start', { forceEvent: true });
-      await persistAllState();
+      await persistRuntimeState(workspaceIdForAgent(agent), 'daemon_agent_start_queued');
       broadcastState();
     }
     return result;
@@ -1072,7 +1161,7 @@ export function createDaemonRelay(deps) {
     });
     if (result.queued) {
       setAgentStatus(agent, result.sent ? 'starting' : queuedCommandPresenceStatus(agent, result.delivery), 'daemon_relay_restart', { forceEvent: true });
-      await persistAllState();
+      await persistRuntimeState(workspaceIdForAgent(agent), 'daemon_agent_restart_queued');
       broadcastState();
     }
     return result;
@@ -1112,7 +1201,7 @@ export function createDaemonRelay(deps) {
         workItem.status = result.sent ? 'sent_remote' : 'queued_remote';
         workItem.updatedAt = now();
       }
-      await persistAllState();
+      await persistRuntimeState(workspaceIdForAgent(agent), 'daemon_agent_delivery_deduped');
       broadcastState();
       return true;
     }
@@ -1121,7 +1210,7 @@ export function createDaemonRelay(deps) {
       workItem.updatedAt = now();
     }
     setAgentStatus(agent, result.sent ? 'queued' : queuedCommandPresenceStatus(agent, result.delivery), 'daemon_relay_delivery', { forceEvent: true });
-    await persistAllState();
+    await persistRuntimeState(workspaceIdForAgent(agent), 'daemon_agent_delivery_queued');
     broadcastState();
     return true;
   }
@@ -1138,7 +1227,10 @@ export function createDaemonRelay(deps) {
       send(connection, { type: 'token:revoked' });
       connection.socket.end();
     }
-    await persistAllState();
+    await persistAllState({
+      workspaceId: workspaceIdForComputer(findComputer(computerId)),
+      reason: 'daemon_computer_token_revoked',
+    });
     broadcastState();
     return { revoked: matches.map(publicComputerToken) };
   }
@@ -1155,7 +1247,7 @@ export function createDaemonRelay(deps) {
         error: 'This computer is disabled in MagClaw Cloud.',
       });
       connection.socket.end();
-      await persistAllState();
+      await persistRuntimeState(workspaceIdForComputer(computer, connection), 'daemon_computer_disabled');
       broadcastState();
       return;
     }
@@ -1184,7 +1276,7 @@ export function createDaemonRelay(deps) {
     });
     await replayQueued(computer.id);
     markAgentsForComputerReady(computer.id);
-    await persistAllState();
+    await persistRuntimeState(workspaceIdForComputer(computer, connection), 'daemon_computer_ready');
     broadcastState();
   }
 
@@ -1209,7 +1301,10 @@ export function createDaemonRelay(deps) {
     }
     const agent = delivery ? findAgent(delivery.agentId) : findAgent(message.agentId);
     if (agent && message.status) setAgentStatus(agent, String(message.status), 'daemon_relay_ack');
-    await persistAllState();
+    await persistRuntimeState(
+      workspaceIdForAgent(agent, workspaceIdForComputer(findComputer(connection.computerId), connection)),
+      'daemon_delivery_acked',
+    );
     broadcastState();
   }
 
@@ -1227,8 +1322,19 @@ export function createDaemonRelay(deps) {
     if (message.sessionId !== undefined) agent.runtimeSessionId = message.sessionId || null;
     agent.runtimeActivity = message.activity || agent.runtimeActivity || null;
     agent.heartbeatAt = now();
-    await persistAllState();
-    broadcastState();
+    const immediate = Boolean(
+      message.sessionId !== undefined
+      || (message.deliveryId && ['idle', 'offline', 'error'].includes(nextStatus))
+    );
+    if (immediate) {
+      await persistRuntimeState(workspaceIdForAgent(agent), 'daemon_agent_status_terminal');
+      broadcastState();
+    } else {
+      scheduleRuntimePersist(workspaceIdForAgent(agent), 'daemon_agent_status', {
+        broadcast: true,
+        broadcastKey: `agent:${agent.id}`,
+      });
+    }
   }
 
   async function handleAgentActivity(message) {
@@ -1244,8 +1350,10 @@ export function createDaemonRelay(deps) {
       activity: message.activity || null,
       deliveryId: message.deliveryId || null,
     });
-    await persistAllState();
-    broadcastState();
+    scheduleRuntimePersist(workspaceIdForAgent(agent), 'daemon_agent_activity', {
+      broadcast: true,
+      broadcastKey: `agent:${agent.id}`,
+    });
   }
 
   async function handleAgentMessage(message) {
@@ -1282,7 +1390,7 @@ export function createDaemonRelay(deps) {
         createdAt: now(),
         updatedAt: now(),
       }));
-      await persistAllState();
+      await persistRuntimeState(workspaceIdForAgent(agent, payload.workspaceId || payload.message?.workspaceId || ''), 'daemon_agent_message_created');
       broadcastState();
     }
   }
@@ -1310,7 +1418,11 @@ export function createDaemonRelay(deps) {
       case 'pong':
         if (computer) {
           computer.lastSeenAt = now();
-          await persistAllState();
+          scheduleRuntimePersist(
+            workspaceIdForComputer(computer, connection),
+            'daemon_pong',
+            { delayMs: DAEMON_RUNTIME_COALESCE_MS },
+          );
         }
         break;
       case 'heartbeat':
@@ -1320,8 +1432,15 @@ export function createDaemonRelay(deps) {
           computer.runningAgents = safeArray(message.runningAgents);
           computer.lastSeenAt = now();
           computer.updatedAt = now();
-          await persistAllState();
-          broadcastState();
+          scheduleRuntimePersist(
+            workspaceIdForComputer(computer, connection),
+            'daemon_heartbeat',
+            {
+              broadcast: true,
+              broadcastKey: `computer:${computer.id}`,
+              minBroadcastMs: DAEMON_ACTIVITY_BROADCAST_MIN_MS,
+            },
+          );
         }
         break;
       case 'agent:start:ack':
@@ -1336,7 +1455,10 @@ export function createDaemonRelay(deps) {
           version: message.version || null,
           receivedAt: message.receivedAt || null,
         });
-        await persistAllState();
+        await persistRuntimeState(
+          workspaceIdForComputer(findComputer(connection.computerId), connection),
+          'daemon_release_notice_acked',
+        );
         broadcastState();
         break;
       case 'agent:status':
@@ -1366,15 +1488,18 @@ export function createDaemonRelay(deps) {
             pendingSkillRequests.delete(message.commandId);
             pending.resolve(agent?.skillSnapshot || message.skills || {});
           }
+          recordDaemonEvent('daemon_result', `Daemon returned ${message.type}.`, {
+            computerId: connection.computerId,
+            agentId: message.agentId || null,
+            commandId: message.commandId || null,
+            resultType: message.type,
+          });
+          await persistRuntimeState(
+            workspaceIdForAgent(agent, workspaceIdForComputer(findComputer(connection.computerId), connection)),
+            'daemon_agent_skills_list_result',
+          );
+          broadcastState();
         }
-        recordDaemonEvent('daemon_result', `Daemon returned ${message.type}.`, {
-          computerId: connection.computerId,
-          agentId: message.agentId || null,
-          commandId: message.commandId || null,
-          resultType: message.type,
-        });
-        await persistAllState();
-        broadcastState();
         break;
       case 'machine:runtime_models:result':
         recordDaemonEvent('daemon_result', `Daemon returned ${message.type}.`, {
@@ -1383,7 +1508,10 @@ export function createDaemonRelay(deps) {
           commandId: message.commandId || null,
           resultType: message.type,
         });
-        await persistAllState();
+        await persistRuntimeState(
+          workspaceIdForComputer(findComputer(connection.computerId), connection),
+          'daemon_machine_runtime_models_result',
+        );
         broadcastState();
         break;
       case 'agent:error':
@@ -1399,13 +1527,16 @@ export function createDaemonRelay(deps) {
             };
             agent.heartbeatAt = now();
           }
+          recordDaemonEvent('agent_error', String(message.error || 'Agent error'), {
+            agentId: message.agentId || null,
+            computerId: connection.computerId,
+          });
+          await persistRuntimeState(
+            workspaceIdForAgent(agent, workspaceIdForComputer(findComputer(connection.computerId), connection)),
+            'daemon_agent_error',
+          );
+          broadcastState();
         }
-        recordDaemonEvent('agent_error', String(message.error || 'Agent error'), {
-          agentId: message.agentId || null,
-          computerId: connection.computerId,
-        });
-        await persistAllState();
-        broadcastState();
         break;
       default:
         send(connection, { type: 'error', error: `Unsupported daemon event: ${message.type || 'unknown'}` });
@@ -1424,7 +1555,10 @@ export function createDaemonRelay(deps) {
         const provisionalComputer = pair.metadata?.provisionalComputer && pair.metadata?.computer;
         if (!provisionalComputer) {
           pair.revokedAt = now();
-          await persistAllState();
+          await persistAllState({
+            workspaceId: pair.workspaceId || '',
+            reason: 'daemon_pairing_token_revoked',
+          });
           broadcastState();
           return { error: 'Paired computer was not found.' };
         }
@@ -1530,7 +1664,10 @@ export function createDaemonRelay(deps) {
     recordDaemonEvent('computer_connected', `Computer connected: ${auth.computer.name}`, {
       computerId: auth.computer.id,
     });
-    await persistAllState();
+    await persistAllState({
+      workspaceId: auth.tokenRecord.workspaceId || auth.computer.workspaceId || '',
+      reason: 'daemon_computer_connected',
+    });
     broadcastState();
 
     socket.on('data', (chunk) => {

@@ -16,6 +16,20 @@ import {
 } from '../server/cloud/postgres.js';
 import { createCloudPostgresStore as createStore } from '../server/cloud/postgres-store.js';
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 test('postgres store consumes idle pool connection errors', () => {
   const pool = new EventEmitter();
   const previousWarn = console.warn;
@@ -1038,6 +1052,10 @@ test('postgres store can persist a single workspace runtime snapshot', async () 
         { id: 'wsp_two', slug: 'two', name: 'Two', createdAt, updatedAt: createdAt },
       ],
     },
+    computers: [
+      { id: 'cmp_one', workspaceId: 'wsp_one', name: 'One Mac', status: 'connected', createdAt, updatedAt: createdAt },
+      { id: 'cmp_two', workspaceId: 'wsp_two', name: 'Two Mac', status: 'connected', createdAt, updatedAt: createdAt },
+    ],
     channels: [
       { id: 'chan_one', workspaceId: 'wsp_one', name: 'one', createdAt, updatedAt: createdAt },
       { id: 'chan_two', workspaceId: 'wsp_two', name: 'two', createdAt, updatedAt: createdAt },
@@ -1051,8 +1069,300 @@ test('postgres store can persist a single workspace runtime snapshot', async () 
   const deleteQueries = queries.filter((query) => query.sql.includes('DELETE FROM "magclaw"'));
   assert.ok(deleteQueries.length);
   for (const query of deleteQueries) assert.deepEqual(query.params[0], ['wsp_one']);
-  assert.equal(queries.some((query) => query.params?.includes?.('chan_two') || query.params?.includes?.('msg_two')), false);
-  assert.equal(queries.some((query) => query.params?.includes?.('chan_one') || query.params?.includes?.('msg_one')), true);
+  assert.equal(queries.some((query) => query.params?.includes?.('chan_two') || query.params?.includes?.('msg_two') || query.params?.includes?.('cmp_two')), false);
+  assert.equal(queries.some((query) => query.params?.includes?.('chan_one') || query.params?.includes?.('msg_one') || query.params?.includes?.('cmp_one')), true);
+});
+
+test('postgres store runs different workspace runtime persists concurrently', async () => {
+  const entered = {
+    wsp_one: deferred(),
+    wsp_two: deferred(),
+  };
+  const release = {
+    wsp_one: deferred(),
+    wsp_two: deferred(),
+  };
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          const workspaceIds = params[0];
+          if (
+            sql.includes('WITH')
+            && sql.includes('cloud_state_records')
+            && Array.isArray(workspaceIds)
+            && workspaceIds.length === 1
+            && entered[workspaceIds[0]]
+          ) {
+            entered[workspaceIds[0]].resolve();
+            await release[workspaceIds[0]].promise;
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+    poolMax: 10,
+  });
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const state = {
+    cloud: {
+      workspaces: [
+        { id: 'wsp_one', slug: 'one', name: 'One', createdAt, updatedAt: createdAt },
+        { id: 'wsp_two', slug: 'two', name: 'Two', createdAt, updatedAt: createdAt },
+      ],
+    },
+    channels: [
+      { id: 'chan_one', workspaceId: 'wsp_one', name: 'one', createdAt, updatedAt: createdAt },
+      { id: 'chan_two', workspaceId: 'wsp_two', name: 'two', createdAt, updatedAt: createdAt },
+    ],
+  };
+
+  const firstPersist = store.persistWorkspaceFromState(state, 'wsp_one');
+  await entered.wsp_one.promise;
+  const secondPersist = store.persistWorkspaceFromState(state, 'wsp_two');
+  try {
+    assert.equal(
+      await Promise.race([
+        entered.wsp_two.promise.then(() => true),
+        delay(50).then(() => false),
+      ]),
+      true,
+    );
+  } finally {
+    release.wsp_one.resolve();
+    release.wsp_two.resolve();
+  }
+  await Promise.all([firstPersist, secondPersist]);
+
+  assert.ok(queries.some((query) => Array.isArray(query.params[0]) && query.params[0][0] === 'wsp_one'));
+  assert.ok(queries.some((query) => Array.isArray(query.params[0]) && query.params[0][0] === 'wsp_two'));
+});
+
+test('postgres store keeps same workspace runtime persists serial', async () => {
+  let activeRuntimeDeletes = 0;
+  let maxActiveRuntimeDeletes = 0;
+  const releaseFirst = deferred();
+  const firstEntered = deferred();
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          if (
+            sql.includes('WITH')
+            && sql.includes('cloud_state_records')
+            && Array.isArray(params[0])
+            && params[0][0] === 'wsp_one'
+          ) {
+            activeRuntimeDeletes += 1;
+            maxActiveRuntimeDeletes = Math.max(maxActiveRuntimeDeletes, activeRuntimeDeletes);
+            firstEntered.resolve();
+            if (queries.filter((query) => query.sql.includes('cloud_state_records')).length === 1) {
+              await releaseFirst.promise;
+            }
+            activeRuntimeDeletes -= 1;
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+    poolMax: 10,
+  });
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const state = {
+    cloud: {
+      workspaces: [{ id: 'wsp_one', slug: 'one', name: 'One', createdAt, updatedAt: createdAt }],
+    },
+    channels: [{ id: 'chan_one', workspaceId: 'wsp_one', name: 'one', createdAt, updatedAt: createdAt }],
+  };
+
+  const firstPersist = store.persistWorkspaceFromState(state, 'wsp_one');
+  await firstEntered.promise;
+  const secondPersist = store.persistWorkspaceFromState(state, 'wsp_one');
+  try {
+    await delay(50);
+    assert.equal(maxActiveRuntimeDeletes, 1);
+  } finally {
+    releaseFirst.resolve();
+  }
+  await Promise.all([firstPersist, secondPersist]);
+  assert.equal(maxActiveRuntimeDeletes, 1);
+});
+
+test('postgres store lets narrow auth operations bypass blocked workspace runtime persists', async () => {
+  const workspaceEntered = deferred();
+  const releaseWorkspace = deferred();
+  const authEntered = deferred();
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          if (
+            sql.includes('WITH')
+            && sql.includes('cloud_state_records')
+            && Array.isArray(params[0])
+            && params[0][0] === 'wsp_main'
+          ) {
+            workspaceEntered.resolve();
+            await releaseWorkspace.promise;
+          }
+          if (sql.includes('INSERT INTO "magclaw"."cloud_sessions"')) {
+            authEntered.resolve();
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+    poolMax: 10,
+  });
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const runtimePersist = store.persistWorkspaceFromState({
+    cloud: {
+      workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
+    },
+    channels: [{ id: 'chan_main', workspaceId: 'wsp_main', name: 'main', createdAt, updatedAt: createdAt }],
+  }, 'wsp_main');
+  await workspaceEntered.promise;
+  const authPersist = store.persistAuthOperation({
+    type: 'login',
+    user: {
+      id: 'usr_login',
+      lastLoginAt: '2026-05-13T01:00:00.000Z',
+    },
+    session: {
+      id: 'sess_login',
+      userId: 'usr_login',
+      tokenHash: 'token_hash',
+      createdAt: '2026-05-13T01:00:00.000Z',
+      expiresAt: '2026-06-12T01:00:00.000Z',
+      userAgent: 'node-test',
+      ipHash: 'ip_hash',
+      revokedAt: null,
+    },
+  });
+  try {
+    assert.equal(
+      await Promise.race([
+        authEntered.promise.then(() => true),
+        delay(50).then(() => false),
+      ]),
+      true,
+    );
+  } finally {
+    releaseWorkspace.resolve();
+  }
+  await Promise.all([runtimePersist, authPersist]);
+});
+
+test('postgres store treats full snapshot persistence as a runtime barrier', async () => {
+  const firstWorkspaceEntered = deferred();
+  const releaseFirstWorkspace = deferred();
+  const fullSnapshotEntered = deferred();
+  const releaseFullSnapshot = deferred();
+  const secondWorkspaceEntered = deferred();
+  const runtimeDeleteOrder = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          if (
+            sql.includes('WITH')
+            && sql.includes('cloud_state_records')
+            && Array.isArray(params[0])
+          ) {
+            const ids = params[0].join(',');
+            runtimeDeleteOrder.push(ids);
+            if (ids === 'wsp_one') {
+              firstWorkspaceEntered.resolve();
+              await releaseFirstWorkspace.promise;
+            } else if (ids === 'wsp_one,wsp_two') {
+              fullSnapshotEntered.resolve();
+              await releaseFullSnapshot.promise;
+            } else if (ids === 'wsp_two') {
+              secondWorkspaceEntered.resolve();
+            }
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+    poolMax: 10,
+  });
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const state = {
+    cloud: {
+      workspaces: [
+        { id: 'wsp_one', slug: 'one', name: 'One', createdAt, updatedAt: createdAt },
+        { id: 'wsp_two', slug: 'two', name: 'Two', createdAt, updatedAt: createdAt },
+      ],
+      users: [],
+      workspaceMembers: [],
+      sessions: [],
+    },
+    channels: [
+      { id: 'chan_one', workspaceId: 'wsp_one', name: 'one', createdAt, updatedAt: createdAt },
+      { id: 'chan_two', workspaceId: 'wsp_two', name: 'two', createdAt, updatedAt: createdAt },
+    ],
+  };
+
+  const firstPersist = store.persistWorkspaceFromState(state, 'wsp_one');
+  await firstWorkspaceEntered.promise;
+  const fullPersist = store.persistFromState(state);
+  const secondPersist = store.persistWorkspaceFromState(state, 'wsp_two');
+  assert.equal(
+    await Promise.race([
+      fullSnapshotEntered.promise.then(() => true),
+      delay(50).then(() => false),
+    ]),
+    false,
+  );
+
+  releaseFirstWorkspace.resolve();
+  await fullSnapshotEntered.promise;
+  assert.equal(
+    await Promise.race([
+      secondWorkspaceEntered.promise.then(() => true),
+      delay(50).then(() => false),
+    ]),
+    false,
+  );
+
+  releaseFullSnapshot.resolve();
+  await Promise.all([firstPersist, fullPersist, secondPersist]);
+  assert.deepEqual(runtimeDeleteOrder, ['wsp_one', 'wsp_one,wsp_two', 'wsp_two']);
 });
 
 test('postgres workspace persistence preserves newer agent and human fields during upsert', async () => {

@@ -65,6 +65,26 @@ export async function handleAgentToolApi(req, res, url, deps) {
     ).trim();
   }
 
+  function workspaceIdForRecord(record = null, fallback = '') {
+    return String(
+      record?.workspaceId
+      || fallback
+      || requestWorkspaceId()
+      || state.cloud?.workspace?.id
+      || state.cloud?.workspaces?.[0]?.id
+      || '',
+    ).trim();
+  }
+
+  function persistWorkspaceState(record = null, reason = 'agent_tool_changed') {
+    const workspaceId = workspaceIdForRecord(record);
+    return persistState(workspaceId ? { workspaceId, reason } : { reason });
+  }
+
+  function persistWorkspaceStateSoon(record = null, reason = 'agent_tool_changed') {
+    persistWorkspaceState(record, reason).then(broadcastState).catch(() => {});
+  }
+
   function workspaceMatches(record, workspaceId = requestWorkspaceId()) {
     const target = String(workspaceId || '').trim();
     if (!target) return true;
@@ -309,7 +329,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
         reminderId: result.reminder?.id || null,
         fireAt: result.reminder?.fireAt || null,
       });
-      await persistState();
+      await persistWorkspaceState(result.reminder || agent, 'agent_tool_reminder_created');
       broadcastState();
       sendJson(res, 201, result);
     } catch (error) {
@@ -330,7 +350,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
         ...body,
         agentId: agent.id,
       });
-      await persistState();
+      await persistWorkspaceState(result.reminder || agent, 'agent_tool_reminder_canceled');
       broadcastState();
       sendJson(res, 200, result);
     } catch (error) {
@@ -558,7 +578,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
         sourceText: String(body.sourceText || body.source || '').trim() || summary,
       },
     });
-    await persistState();
+    await persistWorkspaceState(sourceMessage || agent, 'agent_tool_memory_updated');
     broadcastState();
     sendJson(res, 200, {
       ok: true,
@@ -577,7 +597,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
         durationMs: Date.now() - startedAt,
         ...extra,
       });
-      persistState().then(broadcastState).catch(() => {});
+      persistWorkspaceStateSoon({ workspaceId: requestWorkspaceId() }, 'agent_tool_send_message_failed');
       sendError(res, status, message);
       return true;
     };
@@ -667,7 +687,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
         responseId: previousResponse.id,
         durationMs: Date.now() - startedAt,
       });
-      await persistState();
+      await persistWorkspaceState(workItem || previousResponse || agent, 'agent_tool_send_message_deduped');
       broadcastState();
       sendJson(res, 200, {
         ok: true,
@@ -697,7 +717,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
         responseId: posted?.id || null,
         durationMs: Date.now() - startedAt,
       });
-      await persistState();
+      await persistWorkspaceState(workItem || posted || agent, 'agent_tool_send_message_created');
       broadcastState();
       sendJson(res, 200, {
         ok: true,
@@ -788,7 +808,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       proposalId: proposal.id,
       memberIds,
     });
-    await persistState();
+    await persistWorkspaceState(proposal, 'agent_tool_channel_member_proposal_created');
     broadcastState();
     sendJson(res, 201, {
       ok: true,
@@ -859,7 +879,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       sendError(res, error.status || 400, error.message);
       return true;
     }
-    await persistState();
+    await persistWorkspaceState(task, 'agent_tool_task_updated');
     broadcastTaskStatusState();
     sendJson(res, 200, {
       ok: true,
@@ -957,7 +977,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       spaceType: space.spaceType,
       spaceId: space.spaceId,
     });
-    await persistState();
+    await persistWorkspaceState(created[0]?.task || { workspaceId: space.workspaceId || requestWorkspaceId() }, 'agent_tool_tasks_created');
     broadcastState();
     const summary = createdCount && reusedCount
       ? `Created ${createdCount} and reused ${reusedCount} task(s) in ${space.label}:`
@@ -1019,7 +1039,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       sendError(res, error.status || 400, error.message);
       return true;
     }
-    await persistState();
+    await persistWorkspaceState(claimed[0] || { workspaceId: space.workspaceId || requestWorkspaceId() }, 'agent_tool_tasks_claimed');
     broadcastTaskStatusState();
     sendJson(res, 200, {
       ok: true,
