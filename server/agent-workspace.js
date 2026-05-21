@@ -63,6 +63,17 @@ export function createAgentWorkspaceManager(deps) {
   function agentCodexHomeDir(agent) {
     return path.join(agentDataDir(agent), 'codex-home');
   }
+
+  function agentRuntimeHookKind(agent = {}) {
+    const value = String(agent.runtimeId || agent.runtime || '').trim().toLowerCase();
+    if (value.includes('claude')) return 'claude-code';
+    if (value.includes('codex')) return 'codex';
+    return value.replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'codex';
+  }
+
+  function agentRuntimeHooksDir(agent, runtimeKind = agentRuntimeHookKind(agent)) {
+    return path.join(agentDataDir(agent), 'workspace', 'runtime-hooks', runtimeKind);
+  }
   
   async function ensureSymlinkedCodexHomeEntry(codexHome, entryName) {
     const source = path.join(SOURCE_CODEX_HOME, entryName);
@@ -183,6 +194,67 @@ export function createAgentWorkspaceManager(deps) {
     await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
   }
 
+  function runtimeHookConfigName(runtimeKind) {
+    if (runtimeKind === 'claude-code') return 'settings.json';
+    return 'hooks.json';
+  }
+
+  function runtimeHookDefaultConfig(runtimeKind) {
+    if (runtimeKind === 'codex') return { hooks: [] };
+    if (runtimeKind === 'claude-code') return { hooks: {} };
+    return {};
+  }
+
+  async function writeJsonFileIfMissing(filePath, value) {
+    if (existsSync(filePath)) return;
+    await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  }
+
+  function runtimeHookNativeTargets(agent, runtimeKind, hooksDir, configPath) {
+    if (runtimeKind === 'codex') {
+      const codexHome = agentCodexHomeDir(agent);
+      return [
+        [configPath, path.join(codexHome, 'hooks.json')],
+        [hooksDir, path.join(codexHome, 'hooks')],
+      ];
+    }
+    if (runtimeKind === 'claude-code') {
+      const workspace = path.join(agentDataDir(agent), 'workspace');
+      return [
+        [configPath, path.join(workspace, '.claude', 'settings.json')],
+        [hooksDir, path.join(workspace, '.claude', 'hooks')],
+      ];
+    }
+    return [];
+  }
+
+  async function prepareAgentRuntimeHooks(agent, runtimeKind = agentRuntimeHookKind(agent)) {
+    if (!agent?.id) return null;
+    const cleanRuntimeKind = String(runtimeKind || agentRuntimeHookKind(agent)).trim().toLowerCase() || 'codex';
+    const runtimeDir = agentRuntimeHooksDir(agent, cleanRuntimeKind);
+    const hooksDir = path.join(runtimeDir, 'hooks');
+    const configPath = path.join(runtimeDir, runtimeHookConfigName(cleanRuntimeKind));
+    await mkdir(hooksDir, { recursive: true });
+    await writeJsonFileIfMissing(configPath, runtimeHookDefaultConfig(cleanRuntimeKind));
+    for (const [source, target] of runtimeHookNativeTargets(agent, cleanRuntimeKind, hooksDir, configPath)) {
+      await mkdir(path.dirname(target), { recursive: true });
+      await linkSkillEntry(source, target).catch((error) => {
+        addSystemEvent('agent_runtime_hooks_link_skipped', `Could not link ${cleanRuntimeKind} hooks: ${error.message}`, {
+          agentId: agent.id,
+          runtime: cleanRuntimeKind,
+          source,
+          target,
+        });
+      });
+    }
+    return {
+      runtime: cleanRuntimeKind,
+      root: runtimeDir,
+      configPath,
+      hooksDir,
+    };
+  }
+
   async function globalSkillRoots() {
     const candidates = [
       path.join(SOURCE_CODEX_HOME, 'skills'),
@@ -265,6 +337,7 @@ export function createAgentWorkspaceManager(deps) {
     await writeAgentCodexConfig(codexHome);
     await writeAgentCodexAgentsFile(codexHome);
     await syncSourceSkillsIntoAgentHome(codexHome, agent);
+    await prepareAgentRuntimeHooks(agent, 'codex');
     if (agent.runtimeSessionId && (agent.runtimeSessionHome !== codexHome || Number(agent.runtimeConfigVersion || 0) !== CODEX_HOME_CONFIG_VERSION)) {
       addSystemEvent('agent_runtime_session_reset', `${agent.name} runtime session reset for isolated Codex home config.`, {
         agentId: agent.id,
@@ -811,7 +884,11 @@ export function createAgentWorkspaceManager(deps) {
         updatedAt: now(),
       }, null, 2));
     }
-    await prepareAgentCodexHome(agent);
+    if (agentRuntimeHookKind(agent) === 'codex') {
+      await prepareAgentCodexHome(agent);
+    } else {
+      await prepareAgentRuntimeHooks(agent);
+    }
     return dir;
   }
   
@@ -1123,6 +1200,7 @@ export function createAgentWorkspaceManager(deps) {
   return {
     agentCodexHomeDir,
     agentDataDir,
+    agentRuntimeHooksDir,
     agentWorkspacePreviewKind,
     defaultAgentChannelsNote,
     defaultAgentMemory,
@@ -1135,6 +1213,7 @@ export function createAgentWorkspaceManager(deps) {
     listAgentSkills,
     listAgentWorkspace,
     prepareAgentCodexHome,
+    prepareAgentRuntimeHooks,
     readAgentMemoryFile,
     readAgentWorkspaceFile,
     searchAgentMemory,

@@ -1189,6 +1189,47 @@ function agentRuntimeKind(agent = {}) {
   return value || 'codex';
 }
 
+function runtimeHookConfigName(runtimeKind) {
+  if (runtimeKind === 'claude-code') return 'settings.json';
+  return 'hooks.json';
+}
+
+function runtimeHookDefaultConfig(runtimeKind) {
+  if (runtimeKind === 'codex') return { hooks: [] };
+  if (runtimeKind === 'claude-code') return { hooks: {} };
+  return {};
+}
+
+async function writeJsonFileIfMissing(filePath, value) {
+  if (existsSync(filePath)) return;
+  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+async function prepareRuntimeHooks({ agentDir, workspace, codexHome = '', runtimeKind }) {
+  const cleanRuntimeKind = String(runtimeKind || '').trim().toLowerCase() || 'codex';
+  const runtimeDir = path.join(workspace, 'runtime-hooks', cleanRuntimeKind);
+  const hooksDir = path.join(runtimeDir, 'hooks');
+  const configPath = path.join(runtimeDir, runtimeHookConfigName(cleanRuntimeKind));
+  await mkdir(hooksDir, { recursive: true });
+  await writeJsonFileIfMissing(configPath, runtimeHookDefaultConfig(cleanRuntimeKind));
+  const targets = cleanRuntimeKind === 'codex'
+    ? [
+        [configPath, path.join(codexHome || path.join(agentDir, 'codex-home'), 'hooks.json')],
+        [hooksDir, path.join(codexHome || path.join(agentDir, 'codex-home'), 'hooks')],
+      ]
+    : cleanRuntimeKind === 'claude-code'
+      ? [
+          [configPath, path.join(workspace, '.claude', 'settings.json')],
+          [hooksDir, path.join(workspace, '.claude', 'hooks')],
+        ]
+      : [];
+  for (const [source, target] of targets) {
+    await mkdir(path.dirname(target), { recursive: true });
+    await linkPathEntry(source, target);
+  }
+  return { runtime: cleanRuntimeKind, root: runtimeDir, configPath, hooksDir };
+}
+
 function agentEnvironment(agent = {}, env = process.env) {
   const output = { ...env };
   for (const item of Array.isArray(agent.envVars) ? agent.envVars : []) {
@@ -1557,6 +1598,12 @@ class CodexAgentSession {
     await mkdir(this.codexHome(), { recursive: true });
     await mkdir(this.workspace(), { recursive: true });
     await Promise.all(CODEX_HOME_SHARED_ENTRIES.map((entry) => ensureSymlinkedCodexHomeEntry(this.codexHome(), entry)));
+    await prepareRuntimeHooks({
+      agentDir: this.agentDir(),
+      workspace: this.workspace(),
+      codexHome: this.codexHome(),
+      runtimeKind: 'codex',
+    });
     await syncGlobalSkillsIntoAgentHome(this.codexHome(), this.workspace());
     await writeFile(path.join(this.codexHome(), 'config.toml'), [
       'wire_api = "responses"',
@@ -2217,6 +2264,11 @@ class ClaudeAgentSession {
 
   async prepare() {
     await mkdir(this.workspace(), { recursive: true });
+    await prepareRuntimeHooks({
+      agentDir: this.agentDir(),
+      workspace: this.workspace(),
+      runtimeKind: 'claude-code',
+    });
     await writeFile(path.join(this.workspace(), 'AGENTS.md'), [
       '# MagClaw Remote Claude Agent Workspace',
       '',

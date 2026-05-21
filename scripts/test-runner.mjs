@@ -13,6 +13,7 @@ const suites = {
     'test/agent-context.test.js',
     'test/agent-history.test.js',
     'test/agent-routes.test.js',
+    'test/agent-runtime-hooks.test.js',
     'test/agent-tool-routes.test.js',
     'test/cloud-auth-operations.test.js',
     'test/cloud-postgres.test.js',

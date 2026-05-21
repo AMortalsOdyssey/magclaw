@@ -71,6 +71,9 @@ async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
 }
 
 async function startClaudeAgent(agent, proc, workspace) {
+  if (typeof prepareAgentRuntimeHooks === 'function') {
+    await prepareAgentRuntimeHooks(agent, 'claude-code');
+  }
   // TODO: Move Claude to the same persistent resume/steer contract once its CLI exposes a stable app-server style API.
   const standingPrompt = createAgentStandingPrompt(agent, proc.spaceType, proc.spaceId);
   const promptMessages = proc.inbox.slice();

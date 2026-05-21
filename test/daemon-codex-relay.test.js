@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -376,6 +376,13 @@ process.stdin.on('data', (chunk) => {
     const entries = (await readFile(logPath, 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line));
     const appServer = entries.find((entry) => entry.mode === 'app-server');
     assert.match(appServer.env.CODEX_HOME, /daemon-home\/profiles\/cloud-test\/agents\/agt_remote\/codex-home$/);
+    const agentRoot = path.join(tmp, 'daemon-home', 'profiles', 'cloud-test', 'agents', 'agt_remote');
+    const codexHooksJson = path.join(agentRoot, 'workspace', 'runtime-hooks', 'codex', 'hooks.json');
+    const codexHooksDir = path.join(agentRoot, 'workspace', 'runtime-hooks', 'codex', 'hooks');
+    assert.deepEqual(JSON.parse(await readFile(codexHooksJson, 'utf8')), { hooks: [] });
+    assert.equal((await lstat(codexHooksDir)).isDirectory(), true);
+    assert.equal(await realpath(path.join(appServer.env.CODEX_HOME, 'hooks.json')), await realpath(codexHooksJson));
+    assert.equal(await realpath(path.join(appServer.env.CODEX_HOME, 'hooks')), await realpath(codexHooksDir));
     const agentCodexConfig = await readFile(path.join(appServer.env.CODEX_HOME, 'config.toml'), 'utf8');
     assert.match(agentCodexConfig, /wire_api\s*=\s*"responses"/);
     assert.match(agentCodexConfig, new RegExp(`\\[projects\\.${JSON.stringify(sourceHome).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]`));
@@ -596,6 +603,13 @@ process.exit(2);
     const entries = (await readFile(logPath, 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line));
     assert.ok(entries.some((entry) => entry.args.includes('--print')));
     assert.equal(entries.some((entry) => entry.args.includes('app-server')), false);
+    const run = entries.find((entry) => entry.args.includes('--print'));
+    const claudeSettingsJson = path.join(run.cwd, 'runtime-hooks', 'claude-code', 'settings.json');
+    const claudeHooksDir = path.join(run.cwd, 'runtime-hooks', 'claude-code', 'hooks');
+    assert.deepEqual(JSON.parse(await readFile(claudeSettingsJson, 'utf8')), { hooks: {} });
+    assert.equal((await lstat(claudeHooksDir)).isDirectory(), true);
+    assert.equal(await realpath(path.join(run.cwd, '.claude', 'settings.json')), await realpath(claudeSettingsJson));
+    assert.equal(await realpath(path.join(run.cwd, '.claude', 'hooks')), await realpath(claudeHooksDir));
   } finally {
     daemon.kill('SIGINT');
     await Promise.race([
