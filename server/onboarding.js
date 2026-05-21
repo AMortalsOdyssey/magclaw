@@ -8,13 +8,6 @@ function compactText(value, limit = 260) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
 }
 
-function normalizeLanguagePreference(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  if (raw === 'zh' || raw === 'zh-cn' || raw === 'cn' || raw === 'chinese') return 'zh-CN';
-  if (raw === 'en' || raw === 'en-us' || raw === 'english') return 'en';
-  return '';
-}
-
 function languageLabel(language) {
   return language === 'zh-CN' ? 'Chinese (zh-CN)' : 'English (en)';
 }
@@ -97,21 +90,6 @@ export function createOnboardingManager(deps) {
     return workspaceForId(current, workspaceId) || current.cloud?.workspace || {};
   }
 
-  function userForMember(member) {
-    const userId = String(member?.userId || '').trim();
-    if (!userId) return null;
-    return safeArray(state().cloud?.users).find((user) => user.id === userId) || null;
-  }
-
-  function preferredLanguage({ user = null, member = null, human = null, workspace = null, fallback = 'en' } = {}) {
-    return normalizeLanguagePreference(user?.language)
-      || normalizeLanguagePreference(human?.language)
-      || normalizeLanguagePreference(userForMember(member)?.language)
-      || normalizeLanguagePreference(workspace?.language)
-      || normalizeLanguagePreference(fallback)
-      || 'en';
-  }
-
   function recentAllChannelLanguage(channel, workspaceId) {
     if (!channel?.id) return '';
     const counts = { 'zh-CN': 0, en: 0 };
@@ -132,6 +110,14 @@ export function createOnboardingManager(deps) {
     return '';
   }
 
+  function contextLanguageInstruction(channel, workspaceId, subject = 'greeting') {
+    const language = recentAllChannelLanguage(channel, workspaceId);
+    if (language) {
+      return `Recent #all language context: ${languageLabel(language)}. Use this language for the visible ${subject}. Do not ask language preference or use the user's system/account language as the deciding signal.`;
+    }
+    return `No clear recent #all language context is available. Infer the visible ${subject} language from the current server/channel context and your own role; keep it natural and brief. Do not ask language preference or use the user's system/account language as the deciding signal.`;
+  }
+
   function enqueueOnboardingDelivery({ agent, channel, message, reason }) {
     if (!agent || !channel || !message) return;
     Promise.resolve()
@@ -148,7 +134,7 @@ export function createOnboardingManager(deps) {
       });
   }
 
-  function scheduleHumanOnboarding({ human, member = null, user = null, workspace = null, trigger = 'member_joined' } = {}) {
+  function scheduleHumanOnboarding({ human, member = null, workspace = null, trigger = 'member_joined' } = {}) {
     const workspaceId = workspaceIdForRecord(workspace, member?.workspaceId || human?.workspaceId || state().connection?.workspaceId || 'local');
     const settings = workspace || workspaceSettings(workspaceId);
     const onboardingAgentId = String(settings.onboardingAgentId || '').trim();
@@ -169,10 +155,10 @@ export function createOnboardingManager(deps) {
     });
     if (!channel) return null;
     const humanMention = human?.id ? `<@${human.id}>` : `@${human?.name || 'new member'}`;
-    const language = preferredLanguage({ user, member, human, workspace: settings });
+    const languageInstruction = contextLanguageInstruction(channel, workspaceId, 'human welcome');
     const body = [
       `Onboarding task (system-triggered): This is a new human member onboarding. Please proactively onboard ${humanMention} in #all.`,
-      `Target human language preference: ${languageLabel(language)}. Use this language directly. Do not include a language-preference question.`,
+      languageInstruction,
       'Generate the visible greeting yourself from your onboarding role, Agent profile, MEMORY.md/notes, and recent server context. Do not copy this system task text.',
       'Goals (soft guidance, do not force): 1) Help them understand what Slock is and what this server is for. 2) Introduce relevant humans/channels/agents for their current work, not a full catalog dump. 3) Suggest where they should start collaborating right away.',
       'Do NOT ask them to set up the server or create agents/channels. If they are already working on a concrete task, keep onboarding lightweight and adapt to their flow.',
@@ -206,7 +192,6 @@ export function createOnboardingManager(deps) {
 
   function scheduleNewAgentGreeting(agent, {
     workspaceId = '',
-    user = null,
     trigger = 'agent_created',
     isDefaultOnboardingAssistant = false,
   } = {}) {
@@ -219,11 +204,7 @@ export function createOnboardingManager(deps) {
     const agentMention = `<@${agent.id}>`;
     const description = compactText(agent.description || 'No description provided yet.');
     const runtime = compactText(agent.runtime || agent.runtimeId || 'Agent');
-    const channelLanguage = recentAllChannelLanguage(channel, cleanWorkspaceId);
-    const language = channelLanguage || 'zh-CN';
-    const languageInstruction = channelLanguage
-      ? `Recent #all language context: ${languageLabel(language)}. Use this language directly for the greeting. Do not include a language-preference question.`
-      : `Default greeting language: ${languageLabel(language)}. Use this language directly for the greeting because #all has no recent human chat context. Do not include a language-preference question.`;
+    const languageInstruction = contextLanguageInstruction(channel, cleanWorkspaceId, 'greeting');
     const body = [
       `Onboarding task (system-triggered): This is a new Agent greeting. ${agentMention} was just created in this server.`,
       'Please post a short self-introduction in #all using your own words.',

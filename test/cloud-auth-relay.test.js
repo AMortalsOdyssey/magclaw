@@ -263,7 +263,7 @@ test('server profile and join links are managed through cloud APIs', async () =>
   }
 });
 
-test('human onboarding uses the selected agent in #all and respects disable', async () => {
+test('human onboarding uses the selected agent in #all, follows context language, and respects disable', async () => {
   const server = await startIsolatedServer();
   try {
     const owner = await registerOwnerServer(server);
@@ -296,6 +296,22 @@ test('human onboarding uses the selected agent in #all and respects disable', as
         onboardingAgentId: cindy.data.agent.id,
         newAgentGreetingEnabled: false,
       }),
+    });
+    const initialState = await request(server.baseUrl, '/api/state', { cookie });
+    const initialAllChannel = initialState.data.channels.find((channel) => (
+      channel.workspaceId === owner.server.id
+      && (channel.defaultChannel || channel.name === 'all')
+    ));
+    assert.ok(initialAllChannel);
+    await request(server.baseUrl, `/api/spaces/channel/${initialAllChannel.id}/messages`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ body: 'Good morning team, let us coordinate the onboarding plan here.' }),
+    });
+    await request(server.baseUrl, `/api/spaces/channel/${initialAllChannel.id}/messages`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ body: 'Please introduce new members in this channel before we start.' }),
     });
 
     const invite = await request(server.baseUrl, '/api/cloud/invitations', {
@@ -332,8 +348,8 @@ test('human onboarding uses the selected agent in #all and respects disable', as
     assert.equal(onboarded.message.authorType, 'system');
     assert.match(onboarded.message.body, /new human member onboarding/i);
     assert.match(onboarded.message.body, new RegExp(`<@${member.data.member.humanId}>`));
-    assert.match(onboarded.message.body, /Target human language preference: Chinese \(zh-CN\)/);
-    assert.doesNotMatch(onboarded.message.body, /ask what language|what language they prefer|你希望用英语还是中文/);
+    assert.match(onboarded.message.body, /Recent #all language context: English \(en\)/);
+    assert.doesNotMatch(onboarded.message.body, /Target human language preference|Chinese \(zh-CN\).*Use this language|ask what language|what language they prefer|你希望用英语还是中文/);
     assert.match(onboarded.message.body, /MEMORY\.md\/notes/);
     assert.equal(onboarded.workItem.spaceId, allChannel.id);
     assert.equal(onboarded.workItem.target, '#all');
@@ -465,7 +481,7 @@ test('new agent greeting asks the created agent to introduce itself in #all', as
   }
 });
 
-test('first created agent becomes onboarding assistant and greets humans in Chinese by default', async () => {
+test('first created agent becomes onboarding assistant without a fixed language default', async () => {
   const server = await startIsolatedServer();
   try {
     const owner = await registerOwnerServer(server, {
@@ -505,10 +521,10 @@ test('first created agent becomes onboarding assistant and greets humans in Chin
     }, 5000);
 
     assert.equal(greeted.workspace.newAgentGreetingEnabled, true);
-    assert.match(greeted.message.body, /Default greeting language: Chinese \(zh-CN\)/);
+    assert.match(greeted.message.body, /No clear recent #all language context is available/);
     assert.match(greeted.message.body, /default human onboarding assistant/i);
     assert.match(greeted.message.body, /welcome the humans/i);
-    assert.doesNotMatch(greeted.message.body, /Creator language preference: English \(en\)/);
+    assert.doesNotMatch(greeted.message.body, /Creator language preference|Default greeting language/);
     assert.equal(greeted.workItem.target, '#all');
   } finally {
     await server.stop();
