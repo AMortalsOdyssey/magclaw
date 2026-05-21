@@ -45,6 +45,20 @@ const WEB_RELEASES = [
 
 const DAEMON_RELEASES = [
   {
+    version: '0.1.9',
+    date: '2026-05-21',
+    title: 'Long-task permission runtime',
+    features: [
+      'Codex daemon runs now inherit Agent permission grants and use full development workspace access for ordinary engineering work.',
+    ],
+    improved: [
+      'High-risk actions keep a chat confirmation boundary instead of surfacing raw Codex approval prompts.',
+    ],
+    fixes: [
+      'Codex app-server starts with a writable sandbox policy so long-running delegated work no longer stalls on routine file and command access.',
+    ],
+  },
+  {
     version: '0.1.6',
     date: '2026-05-14',
     title: 'Workspace replies and remote skills',
