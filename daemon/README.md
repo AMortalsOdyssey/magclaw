@@ -50,12 +50,14 @@ Stop a background daemon:
 magclaw stop --profile default
 ```
 
-Inspect, restore, or remove it:
+Inspect, restart, or remove it:
 
 ```sh
 magclaw status --profile default
+magclaw list
+magclaw help
 magclaw logs --profile default
-magclaw restore --profile default
+magclaw restart --profile default
 magclaw uninstall --profile default
 ```
 

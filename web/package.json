@@ -1,7 +1,7 @@
 {
   "name": "@magclaw/web",
   "private": true,
-  "version": "0.3.6",
+  "version": "0.3.7",
   "type": "module",
   "description": "MagClaw cloud Web Service package boundary.",
   "scripts": {

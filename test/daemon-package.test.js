@@ -160,7 +160,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.16');
+  assert.equal(DAEMON_VERSION, '0.1.17');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -446,6 +446,63 @@ test('restore command requires saved daemon credentials for the selected profile
     assert.equal(result.status, 1);
     assert.match(result.stderr, /No saved MagClaw daemon credentials for profile "missing-profile"/);
     assert.doesNotMatch(result.stderr, /Unknown command/);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('help flags describe restart list and daemon control commands', () => {
+  for (const args of [['--help'], ['-h'], ['help']]) {
+    const result = spawnSync(process.execPath, [DAEMON_BIN, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Usage: magclaw/);
+    assert.match(result.stdout, /restart\s+Restart a saved background daemon profile/);
+    assert.match(result.stdout, /list\s+List local daemon profiles and connected Computers/);
+    assert.match(result.stdout, /stop\s+Stop a daemon profile/);
+    assert.match(result.stdout, /restore\s+Legacy alias for restart/);
+  }
+});
+
+test('list command returns saved local daemon profiles and computer ids', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-list-profiles-'));
+  try {
+    const alpha = profilePaths('alpha server', { MAGCLAW_DAEMON_HOME: home });
+    const beta = profilePaths('beta', { MAGCLAW_DAEMON_HOME: home });
+    const empty = profilePaths('empty', { MAGCLAW_DAEMON_HOME: home });
+    await mkdir(path.dirname(alpha.config), { recursive: true });
+    await mkdir(path.dirname(beta.config), { recursive: true });
+    await mkdir(empty.dir, { recursive: true });
+    await writeFile(alpha.config, JSON.stringify({
+      profile: alpha.profile,
+      serverUrl: 'https://alpha.example',
+      computerId: 'cmp_alpha',
+      name: 'Studio Mac',
+      token: 'mc_machine_secret',
+      createdAt: '2026-05-20T01:02:03.000Z',
+      updatedAt: '2026-05-21T01:02:03.000Z',
+    }, null, 2));
+    await writeFile(beta.config, JSON.stringify({
+      profile: beta.profile,
+      serverUrl: 'https://beta.example',
+      computerId: 'cmp_beta',
+      name: 'Windows Desk',
+      pairToken: 'mc_pair_legacy',
+    }, null, 2));
+
+    const result = spawnSync(process.execPath, [DAEMON_BIN, 'list'], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.root, home);
+    assert.deepEqual(payload.profiles.map((item) => item.profile), ['alpha_server', 'beta']);
+    assert.deepEqual(payload.profiles.map((item) => item.computerId), ['cmp_alpha', 'cmp_beta']);
+    assert.equal(payload.profiles[0].name, 'Studio Mac');
+    assert.equal(payload.profiles[0].hasMachineToken, true);
+    assert.equal(payload.profiles[0].token, undefined);
+    assert.equal(payload.profiles[1].hasPairToken, true);
   } finally {
     await rm(home, { recursive: true, force: true });
   }

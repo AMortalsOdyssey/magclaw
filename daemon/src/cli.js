@@ -459,6 +459,10 @@ export function parseCli(argv = process.argv) {
   const flags = {};
   for (let index = 0; index < args.length; index += 1) {
     const item = args[index];
+    if (item === '-h') {
+      flags.help = true;
+      continue;
+    }
     if (!item.startsWith('--')) continue;
     const equalsIndex = item.indexOf('=');
     if (equalsIndex > 2) {
@@ -476,6 +480,45 @@ export function parseCli(argv = process.argv) {
   }
   flags.profile = safeProfileName(flags.profile || process.env.MAGCLAW_DAEMON_PROFILE || DEFAULT_PROFILE);
   return { command, flags };
+}
+
+function renderHelp() {
+  return [
+    `MagClaw daemon CLI ${DAEMON_VERSION}`,
+    '',
+    'Usage: magclaw <command> [options]',
+    '',
+    'Commands:',
+    '  connect      Connect this Computer to MagClaw Cloud (foreground by default)',
+    '  start        Start a saved background daemon profile',
+    '  restart      Restart a saved background daemon profile',
+    '  stop         Stop a daemon profile',
+    '  status       Show daemon status for one profile',
+    '  list         List local daemon profiles and connected Computers',
+    '  logs         Print recent daemon logs for one profile',
+    '  install-cli  Install or repair the durable magclaw command shim',
+    '  upgrade      Upgrade the background daemon package',
+    '  doctor       Show runtime and environment diagnostics',
+    '  uninstall    Stop and remove the background daemon service',
+    '  restore      Legacy alias for restart',
+    '  help         Show this help',
+    '',
+    'Common options:',
+    '  --profile <name>       Profile/server slug (default: default)',
+    '  --server-url <url>     MagClaw Cloud URL',
+    '  --api-key <key>        Machine API key for connect',
+    '  --background           Install and run as a background service',
+    '  --bin-dir <path>       install-cli target directory',
+    '  --force                Overwrite an existing MagClaw CLI shim',
+    '  -h, --help             Show this help',
+    '',
+    'Examples:',
+    '  magclaw status --profile my-server',
+    '  magclaw restart --profile my-server',
+    '  magclaw stop --profile my-server',
+    '  magclaw list',
+    '',
+  ].join('\n');
 }
 
 async function readJsonFile(file, fallback = {}) {
@@ -4300,6 +4343,46 @@ async function logs(profile) {
   }
 }
 
+async function listProfiles(env = process.env) {
+  const root = daemonRoot(env);
+  const profilesDir = path.join(root, 'profiles');
+  const entries = await readdir(profilesDir, { withFileTypes: true }).catch(() => []);
+  const profiles = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const paths = profilePaths(entry.name, env);
+    const config = await readProfile(paths.profile, env);
+    const configured = Boolean(await stat(paths.config).catch(() => null));
+    if (!configured) continue;
+    const lock = await activeDaemonLock(paths.profile, env);
+    const service = backgroundServiceStatus(paths.profile, env);
+    const serviceState = await readServiceState(paths.profile, env);
+    profiles.push({
+      profile: paths.profile,
+      configured,
+      running: Boolean(lock),
+      pid: lock?.pid || null,
+      serverUrl: config.serverUrl || '',
+      computerId: config.computerId || null,
+      name: config.name || '',
+      workspaceId: config.workspaceId || config.workspace || '',
+      hasMachineToken: Boolean(config.token || config.machineToken || config.apiKey),
+      hasPairToken: Boolean(config.pairToken),
+      service: {
+        mode: service.mode || serviceState.mode || 'foreground',
+        active: Boolean(service.active),
+        label: service.label || '',
+        serviceName: service.serviceName || '',
+        taskName: service.taskName || '',
+      },
+      createdAt: config.createdAt || '',
+      updatedAt: config.updatedAt || '',
+    });
+  }
+  profiles.sort((left, right) => left.profile.localeCompare(right.profile));
+  return { ok: true, root, profiles };
+}
+
 async function doctor(env = process.env) {
   const runtimes = await detectRuntimes(env);
   return {
@@ -4702,8 +4785,24 @@ async function startSavedBackground(flags, env = process.env) {
   return { ...result, cli };
 }
 
+async function restartSavedBackground(flags, env = process.env) {
+  const config = await buildConfig(flags, env);
+  if (!config.pairToken && !config.token) {
+    throw new Error(`No saved MagClaw daemon credentials for profile "${config.profile}". Run "magclaw connect --api-key <key> --profile ${config.profile}" first.`);
+  }
+  await stopDaemon(config.profile, env);
+  await saveProfile(config.profile, config, env);
+  const cli = await tryInstallCliShim(flags, env);
+  const result = await startBackground(config.profile, env);
+  return { ...result, command: 'restart', cli };
+}
+
 export async function main(argv = process.argv, env = process.env) {
   const { command, flags } = parseCli(argv);
+  if (command === 'help' || flags.help) {
+    process.stdout.write(renderHelp());
+    return;
+  }
   switch (command) {
     case 'connect':
       await runConnect(flags, env);
@@ -4716,14 +4815,16 @@ export async function main(argv = process.argv, env = process.env) {
       printJson(await stopDaemon(flags.profile, env));
       break;
     case 'restart':
-      await stopDaemon(flags.profile, env);
-      printJson(await startSavedBackground(flags, env));
+      printJson(await restartSavedBackground(flags, env));
       break;
     case 'restore':
-      printJson(await startSavedBackground(flags, env));
+      printJson({ ...(await restartSavedBackground(flags, env)), alias: 'restore' });
       break;
     case 'status':
       printJson(await status(flags.profile));
+      break;
+    case 'list':
+      printJson(await listProfiles(env));
       break;
     case 'logs':
       await logs(flags.profile);

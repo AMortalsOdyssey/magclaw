@@ -16,6 +16,16 @@ export const RELEASE_CATEGORY_LABELS = {
 
 const WEB_RELEASES = [
   {
+    version: '0.3.7',
+    date: '2026-05-22',
+    title: 'Daemon help and restart CLI',
+    new: [
+      'Daemon help now documents restart, list, status, stop, and logs commands.',
+    ],
+    bugFix: [],
+    approval: [],
+  },
+  {
     version: '0.3.6',
     date: '2026-05-22',
     title: 'Daemon CLI shim hardening',
@@ -98,6 +108,20 @@ const WEB_RELEASES = [
 ];
 
 const DAEMON_RELEASES = [
+  {
+    version: '0.1.17',
+    date: '2026-05-22',
+    title: 'Restart help and local list',
+    new: [
+      'The restart command is the primary way to stop and relaunch a saved profile.',
+      'The list command shows local daemon profiles and connected Computer ids.',
+      'The -h, --help, and help commands describe the daemon CLI surface.',
+    ],
+    bugFix: [
+      'restore remains only as a legacy restart alias.',
+    ],
+    approval: [],
+  },
   {
     version: '0.1.16',
     date: '2026-05-22',

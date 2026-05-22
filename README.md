@@ -9,8 +9,8 @@
   </p>
   <p align="center">
     <img alt="Node >=20" src="https://img.shields.io/badge/Node-%3E%3D20-339933?logo=node.js&logoColor=white">
-    <img alt="Web Service 0.3.6" src="https://img.shields.io/badge/Web_Service-0.3.6-111827">
-    <img alt="Daemon 0.1.16" src="https://img.shields.io/badge/Daemon-0.1.16-f59e0b">
+    <img alt="Web Service 0.3.7" src="https://img.shields.io/badge/Web_Service-0.3.7-111827">
+    <img alt="Daemon 0.1.17" src="https://img.shields.io/badge/Daemon-0.1.17-f59e0b">
     <img alt="Runtimes" src="https://img.shields.io/badge/Runtimes-Codex%20%7C%20Claude%20%7C%20more-7c3aed">
   </p>
   <p align="center">
@@ -169,9 +169,11 @@ a writable user bin directory on `PATH`. Useful daemon commands:
 
 ```bash
 magclaw status --profile my-server
+magclaw list
+magclaw help
 magclaw logs --profile my-server
 magclaw stop --profile my-server
-magclaw restore --profile my-server
+magclaw restart --profile my-server
 magclaw uninstall --profile my-server
 ```
 
