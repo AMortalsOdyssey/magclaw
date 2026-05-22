@@ -57,17 +57,23 @@ test('message and reply submits render an optimistic local record before waiting
   );
 
   assert.match(optimisticSource, /function optimisticConversationRecord\(/);
+  assert.match(optimisticSource, /references = \[\]/);
+  assert.match(optimisticSource, /references: typeof normalizeConversationReferenceDrafts === 'function'/);
   assert.match(optimisticSource, /optimistic: true/);
   assert.match(mergeSource, /function dropOptimisticConversationRecord\(/);
   assert.match(mergeSource, /record\.optimistic === true/);
   assert.match(mergeSource, /nextState = dropOptimisticConversationRecord\(nextState, removeOptimisticId\)/);
   assert.match(messageFormSource, /const optimisticMessage = optimisticConversationRecord\(\{[\s\S]*kind: 'message'[\s\S]*applySubmittedConversationResult\(\{ message: optimisticMessage \}\)/);
+  assert.match(messageFormSource, /const references = typeof outgoingComposerReferences === 'function' \? outgoingComposerReferences\(composerId\) : \[\]/);
+  assert.match(messageFormSource, /body: JSON\.stringify\(\{[\s\S]*attachmentIds,[\s\S]*references,/);
   assert.ok(
     messageFormSource.indexOf('applySubmittedConversationResult({ message: optimisticMessage })') < messageFormSource.indexOf('result = await api'),
     'message optimistic render must happen before awaiting the API',
   );
   assert.match(messageFormSource, /applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticMessage\.id \}\)/);
   assert.match(replyFormSource, /const optimisticReply = optimisticConversationRecord\(\{[\s\S]*kind: 'reply'[\s\S]*applySubmittedConversationResult\(\{ reply: optimisticReply \}\)/);
+  assert.match(replyFormSource, /const references = typeof outgoingComposerReferences === 'function' \? outgoingComposerReferences\(composerId\) : \[\]/);
+  assert.match(replyFormSource, /body: JSON\.stringify\(\{ body: encodedBody, attachmentIds, references \}\)/);
   assert.ok(
     replyFormSource.indexOf('applySubmittedConversationResult({ reply: optimisticReply })') < replyFormSource.indexOf('result = await api'),
     'reply optimistic render must happen before awaiting the API',

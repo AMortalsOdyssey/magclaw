@@ -860,10 +860,10 @@ function renderHumanDetail(human) {
 }
 
 function renderReply(reply) {
-  const authorClass = ['agent', 'human', 'system'].includes(reply.authorType) ? reply.authorType : 'unknown';
-  const agentAuthorAttr = reply.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(reply.authorId)}"` : '';
-  const highlighted = selectedSavedRecordId === reply.id ? ' highlighted' : '';
-  const shareSelectable = false;
+	  const authorClass = ['agent', 'human', 'system'].includes(reply.authorType) ? reply.authorType : 'unknown';
+	  const agentAuthorAttr = reply.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(reply.authorId)}"` : '';
+	  const highlighted = selectedSavedRecordId === reply.id ? ' highlighted' : '';
+	  const shareSelectable = messageShareState.active && recordMatchesShareScope(reply);
   const shareSelecting = shareSelectable ? ' share-selecting' : '';
   const shareSelected = shareSelectable && shareSelectedIds().includes(String(reply.id)) ? ' share-selected' : '';
   const receiptTray = renderAgentReceiptTray(reply);
@@ -878,7 +878,8 @@ function renderReply(reply) {
           <span class="sender-role">${escapeHtml(actorSubtitle(reply.authorId, reply.authorType, reply))}</span>
           <time>${fmtTime(reply.createdAt)}</time>
         </div>
-        <div class="message-markdown">${renderMarkdownWithMentions(reply.body || '(attachment)')}</div>
+	        ${renderMessageReferences(reply)}
+	        <div class="message-markdown">${renderMarkdownWithMentions(reply.body || (reply.references?.length ? '' : '(attachment)'))}</div>
         <div class="message-attachments">${attachmentLinks(reply.attachmentIds)}</div>
         ${renderMessageReactionTray(reply)}
         ${renderMessageActions(reply, { threadContext: true })}

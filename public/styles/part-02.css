@@ -232,6 +232,10 @@
   background: var(--accent-soft);
 }
 
+.message-context-menu.selection-menu {
+  width: 178px;
+}
+
 .message-reaction-grid {
   display: grid;
   grid-template-columns: repeat(10, 1fr);
@@ -259,6 +263,61 @@
 .message-menu-separator {
   height: 2px;
   background: var(--border);
+}
+
+.message-reference-stack {
+  display: grid;
+  gap: 6px;
+  margin: 2px 0 8px;
+}
+
+.message-reference-card {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-left: 4px solid var(--identity);
+  background: #eef8ff;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.message-reference-card:hover,
+.message-reference-card:focus-visible {
+  background: #dff1ff;
+  outline: 2px solid var(--border);
+}
+
+.message-reference-card.unavailable {
+  border-left-color: var(--text-muted);
+  background: #f5f1f3;
+  color: var(--text-muted);
+}
+
+.message-reference-kicker,
+.message-reference-meta,
+.message-reference-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-reference-kicker {
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.message-reference-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.message-reference-preview {
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .share-selection-bar {
@@ -1760,6 +1819,91 @@
 
 .composer-attachments.hidden {
   display: none;
+}
+
+.composer-reference-strip {
+  display: grid;
+  gap: 6px;
+  max-height: 138px;
+  overflow-y: auto;
+  padding: 0 2px 2px;
+}
+
+.composer-reference-chip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  gap: 6px;
+  align-items: stretch;
+  border: 2px solid var(--border);
+  background: #f0f7e8;
+  box-shadow: var(--shadow-pixel-sm);
+}
+
+.composer-reference-jump {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.composer-reference-jump:hover,
+.composer-reference-jump:focus-visible {
+  background: #dff0cd;
+}
+
+.composer-reference-jump strong,
+.composer-reference-jump small,
+.composer-reference-jump span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-reference-jump strong {
+  font-size: 11px;
+  line-height: 1.1;
+}
+
+.composer-reference-jump small {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.composer-reference-jump span {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.composer-reference-remove {
+  width: 24px;
+  min-height: 100%;
+  padding: 0;
+  border: 0;
+  border-left: 2px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.composer-reference-remove:hover,
+.composer-reference-remove:focus-visible {
+  background: #ffe1ec;
+}
+
+.composer-reference-more {
+  justify-self: start;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 900;
 }
 
 .composer-attachment-chip {

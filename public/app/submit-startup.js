@@ -77,6 +77,7 @@ function optimisticConversationRecord({
   kind,
   body,
   attachmentIds = [],
+  references = [],
   parentMessage = null,
   spaceType = selectedSpaceType,
   spaceId = selectedSpaceId,
@@ -97,6 +98,7 @@ function optimisticConversationRecord({
     authorId,
     body: String(body || ''),
     attachmentIds,
+    references: typeof normalizeConversationReferenceDrafts === 'function' ? normalizeConversationReferenceDrafts(references) : references,
     mentionedAgentIds: optimisticMentionIds(body, 'agent'),
     mentionedHumanIds: optimisticMentionIds(body, 'human'),
     readBy: [authorId],
@@ -139,17 +141,19 @@ document.addEventListener('submit', async (event) => {
       }
       const composerId = form.dataset.composerId || composerIdFor('message');
       const rawBody = composerDrafts[composerId] ?? data.get('body');
-      const encodedBody = encodeComposerMentions(rawBody, composerId);
-      const shouldOpenTaskThread = Boolean(composerTaskFlags[composerId] ?? data.get('asTask'));
-      const attachmentIds = stagedFor(composerId).ids;
-      const messageSnapshot = snapshotComposerState(form, composerId, { includeTask: true });
+	      const encodedBody = encodeComposerMentions(rawBody, composerId);
+	      const shouldOpenTaskThread = Boolean(composerTaskFlags[composerId] ?? data.get('asTask'));
+	      const attachmentIds = stagedFor(composerId).ids;
+	      const references = typeof outgoingComposerReferences === 'function' ? outgoingComposerReferences(composerId) : [];
+	      const messageSnapshot = snapshotComposerState(form, composerId, { includeTask: true });
       clearComposerForSubmit(form, composerId, { clearTask: true });
       const optimisticMessage = optimisticConversationRecord({
         kind: 'message',
-        body: encodedBody,
-        attachmentIds,
-        spaceType: selectedSpaceType,
-        spaceId: selectedSpaceId,
+	        body: encodedBody,
+	        attachmentIds,
+	        references,
+	        spaceType: selectedSpaceType,
+	        spaceId: selectedSpaceId,
       });
       requestPaneBottomScroll('main');
       applySubmittedConversationResult({ message: optimisticMessage });
@@ -158,11 +162,12 @@ document.addEventListener('submit', async (event) => {
         result = await api(`/api/spaces/${selectedSpaceType}/${selectedSpaceId}/messages`, {
           method: 'POST',
           body: JSON.stringify({
-            body: encodedBody,
-            asTask: shouldOpenTaskThread,
-            attachmentIds,
-          }),
-        });
+	            body: encodedBody,
+	            asTask: shouldOpenTaskThread,
+	            attachmentIds,
+	            references,
+	          }),
+	        });
       } catch (error) {
         applySubmittedConversationResult({}, { removeOptimisticId: optimisticMessage.id });
         restoreComposerAfterFailedSubmit(form, composerId, messageSnapshot, { restoreTask: true });
@@ -183,25 +188,27 @@ document.addEventListener('submit', async (event) => {
         throw new Error('Join this channel before replying in the thread.');
       }
       const composerId = form.dataset.composerId || composerIdFor('thread', threadMessageId);
-      const rawBody = composerDrafts[composerId] ?? data.get('body');
-      const encodedBody = encodeComposerMentions(rawBody, composerId);
-      const attachmentIds = stagedFor(composerId).ids;
-      const replySnapshot = snapshotComposerState(form, composerId);
+	      const rawBody = composerDrafts[composerId] ?? data.get('body');
+	      const encodedBody = encodeComposerMentions(rawBody, composerId);
+	      const attachmentIds = stagedFor(composerId).ids;
+	      const references = typeof outgoingComposerReferences === 'function' ? outgoingComposerReferences(composerId) : [];
+	      const replySnapshot = snapshotComposerState(form, composerId);
       clearComposerForSubmit(form, composerId);
       const optimisticReply = optimisticConversationRecord({
         kind: 'reply',
-        parentMessage,
-        body: encodedBody,
-        attachmentIds,
-      });
+	        parentMessage,
+	        body: encodedBody,
+	        attachmentIds,
+	        references,
+	      });
       requestPaneBottomScroll('thread');
       applySubmittedConversationResult({ reply: optimisticReply });
       let result;
       try {
         result = await api(`/api/messages/${threadMessageId}/replies`, {
           method: 'POST',
-          body: JSON.stringify({ body: encodedBody, attachmentIds }),
-        });
+	          body: JSON.stringify({ body: encodedBody, attachmentIds, references }),
+	        });
       } catch (error) {
         applySubmittedConversationResult({}, { removeOptimisticId: optimisticReply.id });
         restoreComposerAfterFailedSubmit(form, composerId, replySnapshot);

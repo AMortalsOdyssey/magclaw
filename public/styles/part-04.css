@@ -1247,6 +1247,11 @@
   --channel-action-hover-bg: #b8d3ec;
 }
 
+.channel-action-context {
+  --channel-action-bg: #d7efb7;
+  --channel-action-hover-bg: #c4e897;
+}
+
 .channel-action-edit {
   --channel-action-bg: var(--identity-soft);
   --channel-action-fg: var(--identity-text);

@@ -23,6 +23,7 @@ const appScripts = [
   '/app/render-lost-space.js',
   '/app/render-release-settings.js',
   '/app/render-agent-detail.js',
+  '/app/conversation-references.js',
   '/app/render-modals-uploads.js',
   '/app/sync-events-keyboard.js',
   '/app/click-prepare.js',

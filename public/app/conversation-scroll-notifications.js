@@ -350,12 +350,13 @@ function removeStagedAttachment(composerId, attachmentId) {
 function snapshotComposerState(form, composerId, { includeTask = false } = {}) {
   const textarea = form?.querySelector('textarea[name="body"]');
   const taskInput = form?.querySelector('input[name="asTask"]');
-  return {
-    body: textarea?.value ?? composerDrafts[composerId] ?? '',
-    attachments: [...stagedFor(composerId).attachments],
-    mentionMap: { ...(composerMentionMaps[composerId] || {}) },
-    task: includeTask ? Boolean(taskInput?.checked || composerTaskFlags[composerId]) : false,
-  };
+	  return {
+	    body: textarea?.value ?? composerDrafts[composerId] ?? '',
+	    attachments: [...stagedFor(composerId).attachments],
+	    references: typeof outgoingComposerReferences === 'function' ? outgoingComposerReferences(composerId) : [],
+	    mentionMap: { ...(composerMentionMaps[composerId] || {}) },
+	    task: includeTask ? Boolean(taskInput?.checked || composerTaskFlags[composerId]) : false,
+	  };
 }
 
 function clearComposerForSubmit(form, composerId, { clearTask = false } = {}) {
@@ -366,10 +367,12 @@ function clearComposerForSubmit(form, composerId, { clearTask = false } = {}) {
   }
   const taskInput = form?.querySelector('input[name="asTask"]');
   if (clearTask && taskInput) taskInput.checked = false;
-  clearStagedFor(composerId);
-  updateComposerAttachmentStrip(composerId);
-  delete composerDrafts[composerId];
-  delete composerMentionMaps[composerId];
+	  clearStagedFor(composerId);
+	  updateComposerAttachmentStrip(composerId);
+	  if (typeof clearComposerReferences === 'function') clearComposerReferences(composerId);
+	  if (typeof updateComposerReferenceStrip === 'function') updateComposerReferenceStrip(composerId);
+	  delete composerDrafts[composerId];
+	  delete composerMentionMaps[composerId];
   if (clearTask) delete composerTaskFlags[composerId];
 }
 
@@ -377,10 +380,12 @@ function restoreComposerAfterFailedSubmit(form, composerId, snapshot, { restoreT
   const body = snapshot?.body || '';
   if (body) composerDrafts[composerId] = body;
   else delete composerDrafts[composerId];
-  if (snapshot?.attachments?.length) setStagedFor(composerId, snapshot.attachments);
-  else clearStagedFor(composerId);
-  updateComposerAttachmentStrip(composerId);
-  if (snapshot?.mentionMap && Object.keys(snapshot.mentionMap).length) composerMentionMaps[composerId] = snapshot.mentionMap;
+	  if (snapshot?.attachments?.length) setStagedFor(composerId, snapshot.attachments);
+	  else clearStagedFor(composerId);
+	  updateComposerAttachmentStrip(composerId);
+	  if (typeof setComposerReferences === 'function') setComposerReferences(composerId, snapshot?.references || []);
+	  if (typeof updateComposerReferenceStrip === 'function') updateComposerReferenceStrip(composerId);
+	  if (snapshot?.mentionMap && Object.keys(snapshot.mentionMap).length) composerMentionMaps[composerId] = snapshot.mentionMap;
   else delete composerMentionMaps[composerId];
   if (restoreTask) composerTaskFlags[composerId] = Boolean(snapshot?.task);
   const textarea = form?.querySelector('textarea[name="body"]');

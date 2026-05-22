@@ -146,6 +146,77 @@ test('agent context pack includes recent channel messages, current message, task
   assert.doesNotMatch(rendered, /agt_333|agt_ccc|hum_local/);
 });
 
+test('agent context pack renders structured conversation references for the current message', () => {
+  const state = {
+    humans: [{ id: 'hum_local', name: 'You' }],
+    agents: [{ id: 'agt_codex', name: 'Codex', runtime: 'codex', status: 'idle' }],
+    channels: [{
+      id: 'chan_all',
+      name: 'all',
+      humanIds: ['hum_local'],
+      agentIds: ['agt_codex'],
+      memberIds: ['hum_local', 'agt_codex'],
+    }],
+    dms: [],
+    messages: [
+      {
+        id: 'msg_source',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'human',
+        authorId: 'hum_local',
+        body: 'The exact source paragraph Agent should inspect.',
+        attachmentIds: [],
+        createdAt: '2026-05-22T08:00:00.000Z',
+      },
+      {
+        id: 'msg_current',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'human',
+        authorId: 'hum_local',
+        body: '<@agt_codex> respond to this quote',
+        attachmentIds: [],
+        references: [{
+          id: 'ref_1',
+          mode: 'quote',
+          kind: 'selection',
+          sourceRecordId: 'msg_source',
+          sourceKind: 'message',
+          spaceType: 'channel',
+          spaceId: 'chan_all',
+          authorType: 'human',
+          authorId: 'hum_local',
+          authorName: 'You',
+          selectedText: 'exact source paragraph',
+          bodyPreview: 'The exact source paragraph Agent should inspect.',
+          recordIds: ['msg_source'],
+          createdAt: '2026-05-22T08:00:00.000Z',
+        }],
+        createdAt: '2026-05-22T08:01:00.000Z',
+      },
+    ],
+    replies: [],
+    tasks: [],
+    attachments: [],
+    events: [],
+  };
+
+  const pack = buildAgentContextPack({
+    state,
+    agentId: 'agt_codex',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    currentMessage: state.messages[1],
+  });
+  const rendered = renderAgentContextPack(pack, { state, targetAgentId: 'agt_codex' });
+
+  assert.match(rendered, /Referenced context supplied with the current message:/);
+  assert.match(rendered, /quote\/selection/);
+  assert.match(rendered, /selected text: exact source paragraph/);
+  assert.match(rendered, /The exact source paragraph Agent should inspect/);
+});
+
 test('agent context pack renders required peer memory search grounding', () => {
   const state = {
     humans: [{ id: 'hum_local', name: 'You', role: 'admin' }],

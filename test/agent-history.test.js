@@ -114,6 +114,43 @@ test('agent history tools read channel, read thread, and search visible messages
   assert.match(search.results[1].next, /read_history\(target="#all:msg_parent", around="rep_1"/);
 });
 
+test('agent history exposes and searches structured conversation references', () => {
+  const state = {
+    humans: [{ id: 'hum_local', name: 'You' }],
+    agents: [{ id: 'agt_codex', name: 'Codex' }],
+    channels: [{ id: 'chan_all', name: 'all', memberIds: ['hum_local', 'agt_codex'] }],
+    dms: [],
+    messages: [{
+      id: 'msg_ref',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: '<@agt_codex> use the attached context',
+      attachmentIds: [],
+      references: [{
+        id: 'ref_1',
+        mode: 'context',
+        kind: 'selection',
+        sourceRecordId: 'msg_source',
+        selectedText: 'structured reference search needle',
+        bodyPreview: 'source preview',
+      }],
+      createdAt: '2026-05-22T09:00:00.000Z',
+    }],
+    replies: [],
+    tasks: [],
+  };
+
+  const history = readAgentHistory(state, { target: '#all', limit: 10 });
+  assert.equal(history.messages[0].references[0].kind, 'selection');
+  const rendered = formatAgentHistory(history, { state, targetAgentId: 'agt_codex' });
+  assert.match(rendered, /references=context\/selection:msg_source/);
+
+  const search = searchAgentMessageHistory(state, { target: '#all', query: 'needle' });
+  assert.equal(search.results[0].id, 'msg_ref');
+});
+
 test('agent history tools scope duplicate channel names by workspace id', () => {
   const state = {
     humans: [{ id: 'hum_local', name: 'You' }],

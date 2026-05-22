@@ -5,6 +5,7 @@ import {
   mentionTokenForId,
   normalizeIds,
 } from './mentions.js';
+import { normalizeStoredConversationReferences } from './conversation-references.js';
 import { findWorkspaceAllChannel } from './workspace-defaults.js';
 
 // Conversation model helpers.
@@ -310,6 +311,10 @@ export function createConversationModel(deps) {
   
   function normalizeConversationRecord(record) {
     const mentions = extractMentions(record.body || '');
+    const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+      ? { ...record.metadata }
+      : {};
+    const references = normalizeStoredConversationReferences(record.references || metadata.references);
     record.attachmentIds = normalizeIds(record.attachmentIds);
     record.localReferences = extractLocalReferences(record.body || '');
     record.mentionedAgentIds = normalizeIds(record.mentionedAgentIds?.length ? record.mentionedAgentIds : mentions.agents);
@@ -317,6 +322,13 @@ export function createConversationModel(deps) {
     record.readBy = normalizeIds(record.readBy?.length ? record.readBy : defaultReadBy(record));
     record.savedBy = normalizeIds(record.savedBy);
     record.reactions = normalizeReactions(record.reactions);
+    if (references.length) {
+      record.references = references;
+      record.metadata = { ...metadata, references };
+    } else {
+      delete record.references;
+      if (Object.keys(metadata).length) record.metadata = metadata;
+    }
     if (!record.parentMessageId) record.followedBy = normalizeIds(record.followedBy);
     return record;
   }

@@ -211,14 +211,15 @@ document.addEventListener('paste', async (event) => {
   }
 });
 
-function openMessageContextMenu(recordId, event, scope = 'message') {
+function openMessageContextMenu(recordId, event, scope = 'message', options = {}) {
   const id = String(recordId || '').trim();
   if (!id || !conversationRecord(id)) return false;
   const rect = event?.currentTarget?.getBoundingClientRect?.() || event?.target?.getBoundingClientRect?.();
   messageContextMenu = {
     recordId: id,
-    scope,
-    x: Number.isFinite(event?.clientX) ? event.clientX : (rect ? rect.right - 8 : 120),
+	    scope,
+	    selectionText: cleanReferenceText(options.selectionText || '', CONVERSATION_REFERENCE_LIMITS_UI?.selectedTextChars || 4000),
+	    x: Number.isFinite(event?.clientX) ? event.clientX : (rect ? rect.right - 8 : 120),
     y: Number.isFinite(event?.clientY) ? event.clientY : (rect ? rect.top + 24 : 120),
   };
   render();
@@ -230,11 +231,16 @@ document.addEventListener('contextmenu', (event) => {
   if (savedRow) {
     if (openMessageContextMenu(savedRow.dataset.messageId, event, 'saved')) event.preventDefault();
     return;
-  }
-  const messageRow = event.target.closest?.('.magclaw-message');
-  const recordId = messageRow?.dataset?.messageId || messageRow?.dataset?.replyId || '';
-  if (recordId && openMessageContextMenu(recordId, event, 'message')) event.preventDefault();
-});
+	  }
+	  const messageRow = event.target.closest?.('.magclaw-message');
+	  const recordId = messageRow?.dataset?.messageId || messageRow?.dataset?.replyId || '';
+	  const selection = typeof selectedMessageTextForEvent === 'function' ? selectedMessageTextForEvent(event) : null;
+	  if (selection?.recordId && openMessageContextMenu(selection.recordId, event, 'message', { selectionText: selection.text })) {
+	    event.preventDefault();
+	    return;
+	  }
+	  if (recordId && openMessageContextMenu(recordId, event, 'message')) event.preventDefault();
+	});
 
 document.addEventListener('click', async (event) => {
   const prepared = await prepareDocumentClick(event);
@@ -260,15 +266,59 @@ document.addEventListener('click', async (event) => {
       render();
       return;
     }
-    if (action === 'copy-message-markdown') {
+	    if (action === 'copy-message-markdown') {
       const record = conversationRecord(target.dataset.id);
       const copied = await tryCopyTextToClipboard(messageRecordMarkdown(record));
       messageContextMenu = null;
       toast(copied ? 'Message markdown copied' : 'Copy failed');
       render();
-      return;
-    }
-    if (action === 'start-message-share') {
+	      return;
+	    }
+	    if (action === 'copy-selected-message-text') {
+	      const copied = await tryCopyTextToClipboard(messageContextMenu?.selectionText || '');
+	      messageContextMenu = null;
+	      toast(copied ? 'Selected text copied' : 'Copy failed');
+	      render();
+	      return;
+	    }
+	    if (action === 'quote-selected-text') {
+	      const record = conversationRecord(target.dataset.id);
+	      const selectedText = messageContextMenu?.selectionText || '';
+	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'quote', selectedText);
+	      messageContextMenu = null;
+	      render();
+	      return;
+	    }
+	    if (action === 'add-selected-text-context') {
+	      const record = conversationRecord(target.dataset.id);
+	      const selectedText = messageContextMenu?.selectionText || '';
+	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'context', selectedText);
+	      messageContextMenu = null;
+	      render();
+	      return;
+	    }
+	    if (action === 'quote-message-reply') {
+	      const record = conversationRecord(target.dataset.id);
+	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'quote');
+	      messageContextMenu = null;
+	      render();
+	      return;
+	    }
+	    if (action === 'add-message-context') {
+	      const record = conversationRecord(target.dataset.id);
+	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'context');
+	      messageContextMenu = null;
+	      render();
+	      return;
+	    }
+	    if (action === 'add-thread-context') {
+	      const record = conversationRecord(target.dataset.id);
+	      if (record && typeof addThreadReferenceToComposer === 'function') addThreadReferenceToComposer(record);
+	      messageContextMenu = null;
+	      render();
+	      return;
+	    }
+	    if (action === 'start-message-share') {
       const id = target.dataset.id || '';
       const record = conversationRecord(id);
       messageShareState = messageShareStateForRecord(record);
@@ -318,11 +368,18 @@ document.addEventListener('click', async (event) => {
       render();
       return;
     }
-    if (action === 'copy-selected-markdown') {
+	    if (action === 'copy-selected-markdown') {
       const copied = await tryCopyTextToClipboard(selectedMessagesMarkdown());
       toast(copied ? 'Selected messages copied as Markdown' : 'Copy failed');
-      return;
-    }
+	      return;
+	    }
+	    if (action === 'add-selected-messages-context') {
+	      if (typeof addSelectedMessagesReferenceToComposer === 'function' && addSelectedMessagesReferenceToComposer()) {
+	        messageShareState = emptyMessageShareState();
+	      }
+	      render();
+	      return;
+	    }
     if (action === 'download-selected-image') {
       const records = shareSelectionRecords();
       sharePreviewState = { open: true, imageUrl: '', recordIds: records.map((record) => record.id) };
@@ -1049,12 +1106,16 @@ document.addEventListener('click', async (event) => {
       render();
       syncBrowserRouteForActiveView();
     }
-    if (action === 'set-tab') {
-      persistVisiblePaneScrolls();
-      activeTab = target.dataset.tab;
-      if (activeTab !== 'tasks') selectedTaskId = null;
-      render();
-    }
+	    if (action === 'set-tab') {
+	      persistVisiblePaneScrolls();
+	      activeTab = target.dataset.tab;
+	      if (activeTab !== 'tasks') selectedTaskId = null;
+	      render();
+	    }
+	    if (action === 'add-visible-conversation-context') {
+	      if (typeof addVisibleConversationReferenceToComposer === 'function') addVisibleConversationReferenceToComposer();
+	      render();
+	    }
     if (action === 'task-filter') {
       taskFilter = target.dataset.status;
       render();
@@ -1309,13 +1370,23 @@ document.addEventListener('click', async (event) => {
         scrollToMessage(message.id);
       }
     }
-    if (action === 'back-to-bottom') {
-      const targetPane = target.dataset.target === 'thread' ? '#thread-context' : '#message-list';
-      scrollPaneToBottom(targetPane);
-    }
-    if (action === 'remove-staged-attachment') {
-      removeStagedAttachment(target.dataset.composerId, target.dataset.id);
-    }
+	    if (action === 'back-to-bottom') {
+	      const targetPane = target.dataset.target === 'thread' ? '#thread-context' : '#message-list';
+	      scrollPaneToBottom(targetPane);
+	    }
+	    if (action === 'jump-to-reference-source') {
+	      if (typeof jumpToConversationReferenceSource === 'function') {
+	        jumpToConversationReferenceSource(target.dataset.sourceRecordId, target.dataset.parentMessageId);
+	      }
+	    }
+	    if (action === 'remove-composer-reference') {
+	      if (typeof removeComposerReference === 'function') {
+	        removeComposerReference(target.dataset.composerId, target.dataset.referenceId);
+	      }
+	    }
+	    if (action === 'remove-staged-attachment') {
+	      removeStagedAttachment(target.dataset.composerId, target.dataset.id);
+	    }
     if (action === 'pick-project-folder') {
       const result = await api('/api/projects/pick-folder', {
         method: 'POST',

@@ -3,6 +3,10 @@
 // a small prompt snapshot first, then call these functions when they need more
 // channel, thread, or DM history.
 import { conversationGrantAllowsRead } from './conversation-grants.js';
+import {
+  conversationReferenceText,
+  normalizeStoredConversationReferences,
+} from './conversation-references.js';
 
 const DEFAULT_HISTORY_LIMIT = 50;
 const MAX_HISTORY_LIMIT = 100;
@@ -220,6 +224,7 @@ function taskForMessage(state, record) {
 
 function normalizeRecord(state, record, targetLabel) {
   const task = taskForMessage(state, record);
+  const references = normalizeStoredConversationReferences(record.references || record.metadata?.references);
   return {
     id: record.id,
     target: targetLabel,
@@ -231,6 +236,7 @@ function normalizeRecord(state, record, targetLabel) {
     authorName: actorName(state, record.authorId),
     body: String(record.body || ''),
     attachmentIds: asArray(record.attachmentIds).map(String),
+    references,
     createdAt: record.createdAt || '',
     task: task ? {
       id: task.id,
@@ -279,7 +285,12 @@ export function readAgentHistory(state, options = {}) {
 }
 
 function recordSearchText(record) {
-  return String(record?.body || '').toLowerCase();
+  const references = normalizeStoredConversationReferences(record?.references || record?.metadata?.references);
+  return [
+    record?.body || '',
+    ...references.map((reference) => conversationReferenceText(reference)),
+    ...references.map((reference) => reference.bodyPreview || ''),
+  ].join('\n').toLowerCase();
 }
 
 function snippetFor(text, query) {
@@ -353,7 +364,11 @@ function taskSuffix(state, record) {
 function formatRecordLine(state, record, targetAgentId) {
   const mentionedYou = String(record.body || '').includes(`<@${targetAgentId}>`) ? ' mentioned you' : '';
   const attachmentSuffix = record.attachmentIds?.length ? ` [attachments=${record.attachmentIds.join(',')}]` : '';
-  return `[target=${record.target} msg=${record.id} time=${record.createdAt || '-'} type=${record.authorType}${mentionedYou}] @${record.authorName}: ${renderMentions(state, record.body)}${attachmentSuffix}${taskSuffix(state, record)}`;
+  const refs = normalizeStoredConversationReferences(record.references);
+  const referenceSuffix = refs.length
+    ? ` [references=${refs.map((ref) => `${ref.mode}/${ref.kind}${ref.sourceRecordId ? `:${ref.sourceRecordId}` : ''}`).join(',')}]`
+    : '';
+  return `[target=${record.target} msg=${record.id} time=${record.createdAt || '-'} type=${record.authorType}${mentionedYou}] @${record.authorName}: ${renderMentions(state, record.body)}${attachmentSuffix}${referenceSuffix}${taskSuffix(state, record)}`;
 }
 
 export function formatAgentHistory(history, { state, targetAgentId = '' } = {}) {

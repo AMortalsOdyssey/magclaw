@@ -15,6 +15,7 @@ import {
   redactDatabaseUrl,
 } from './postgres.js';
 import { normalizeReleaseNotes, RELEASE_CATEGORY_KEYS, RELEASE_COMPONENTS } from '../release-notes.js';
+import { normalizeStoredConversationReferences } from '../conversation-references.js';
 
 const TRANSIENT_POSTGRES_PERSIST_ERROR_CODES = new Set(['55P03', '40001', '40P01']);
 const DURABLE_STATE_RECORD_ARRAY_KEYS = Object.freeze(['reminders', 'missions', 'runs', 'projects', 'agentRuntimeSessions', 'conversationGrants']);
@@ -146,6 +147,11 @@ function recordFromMetadata(row, base = {}) {
   };
   if (!source.metadata && Object.keys(stripStateMetadata(metadata)).length) {
     next.metadata = stripStateMetadata(metadata);
+  }
+  const references = normalizeStoredConversationReferences(next.references || next.metadata?.references);
+  if (references.length) {
+    next.references = references;
+    next.metadata = { ...jsonObject(next.metadata), references };
   }
   return next;
 }

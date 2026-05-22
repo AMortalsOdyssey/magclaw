@@ -340,6 +340,7 @@
   right: 20px;
   bottom: 20px;
   z-index: 120;
+  pointer-events: none;
   max-width: 420px;
   padding: 12px 14px;
   border: 2px solid var(--accent);

@@ -3,6 +3,11 @@
 // channel/thread/task/attachment context without dumping the entire workspace
 // into every Codex turn.
 import { isWorkspaceAllChannel } from './workspace-defaults.js';
+import {
+  CONVERSATION_REFERENCE_LIMITS,
+  conversationReferenceText,
+  normalizeStoredConversationReferences,
+} from './conversation-references.js';
 
 const DEFAULT_LIMITS = {
   recentMessages: 12,
@@ -104,6 +109,12 @@ function compactText(value, limit = 240) {
   return `${text.slice(0, Math.max(0, limit - 3)).trim()}...`;
 }
 
+function compactBlockText(value, limit = 240) {
+  const text = String(value || '').trim();
+  if (!text || text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
+}
+
 function spaceRecord(state, spaceType, spaceId) {
   if (spaceType === 'channel') return byId(state?.channels, spaceId);
   if (spaceType === 'dm') return byId(state?.dms, spaceId);
@@ -194,6 +205,7 @@ function spaceVisibility(spaceType, space) {
 
 function sanitizeRecord(record) {
   if (!record) return null;
+  const references = normalizeStoredConversationReferences(record.references || record.metadata?.references);
   return {
     id: record.id,
     parentMessageId: record.parentMessageId || null,
@@ -213,6 +225,7 @@ function sanitizeRecord(record) {
     updatedAt: record.updatedAt || '',
     mentionedAgentIds: asArray(record.mentionedAgentIds).map(String),
     mentionedHumanIds: asArray(record.mentionedHumanIds).map(String),
+    references,
   };
 }
 
@@ -409,8 +422,12 @@ function renderTime(value) {
 function messageLine(state, record, targetAgentId) {
   const addressed = asArray(record?.mentionedAgentIds).includes(targetAgentId) ? ' mentioned you' : '';
   const refs = asArray(record?.localReferences);
+  const conversationRefs = normalizeStoredConversationReferences(record?.references);
   const refText = refs.length
     ? `\n  local refs: ${refs.map((ref) => `${ref.kind || 'ref'} ${ref.path || ref.absolutePath || ''}`).join('; ')}`
+    : '';
+  const conversationRefText = conversationRefs.length
+    ? `\n  conversation refs: ${conversationRefs.map((ref) => `${ref.mode}/${ref.kind}${ref.sourceRecordId ? ` ${ref.sourceRecordId}` : ''}`).join('; ')}`
     : '';
   const header = [
     record?.target ? `target=${record.target}` : '',
@@ -421,7 +438,71 @@ function messageLine(state, record, targetAgentId) {
     `time=${renderTime(record.createdAt)}`,
     `type=${record.authorType}`,
   ].filter(Boolean).join(' ');
-  return `[${header}] ${renderActor(state, record.authorId)}${addressed}: ${renderMentions(state, compactText(record.body, 420))}${refText}`;
+  return `[${header}] ${renderActor(state, record.authorId)}${addressed}: ${renderMentions(state, compactText(record.body, 420))}${refText}${conversationRefText}`;
+}
+
+function conversationRecordById(state, id) {
+  return byId(state?.messages, id) || byId(state?.replies, id);
+}
+
+function recordsForConversationReference(state, reference) {
+  const ref = reference || {};
+  const recordIds = asArray(ref.recordIds).map(String).filter(Boolean);
+  if (recordIds.length) {
+    return recordIds.map((id) => conversationRecordById(state, id)).filter(Boolean);
+  }
+  if (ref.sourceRecordId) {
+    const source = conversationRecordById(state, ref.sourceRecordId);
+    return source ? [source] : [];
+  }
+  return [];
+}
+
+function referenceSpaceLabel(state, reference) {
+  if (!reference?.spaceType || !reference?.spaceId) return 'unknown space';
+  return spaceName(state, reference.spaceType, reference.spaceId);
+}
+
+function renderConversationReferenceBlock(state, reference, targetAgentId, remainingChars) {
+  const records = recordsForConversationReference(state, reference);
+  const header = [
+    `- ${reference.mode || 'context'}/${reference.kind || 'message'}`,
+    reference.authorName ? `from @${reference.authorName}` : '',
+    referenceSpaceLabel(state, reference),
+    reference.createdAt ? `at ${renderTime(reference.createdAt)}` : '',
+    reference.truncated ? '(truncated)' : '',
+  ].filter(Boolean).join(' ');
+  const selected = conversationReferenceText(reference);
+  const bodyLines = [];
+  if (selected && reference.kind === 'selection') {
+    bodyLines.push(`  selected text: ${renderMentions(state, compactText(selected, Math.min(remainingChars, 1200)))}`);
+  }
+  if (records.length) {
+    bodyLines.push(...records.map((record) => `  ${messageLine(state, sanitizeRecord(record), targetAgentId)}`));
+  } else if (reference.bodyPreview) {
+    bodyLines.push(`  preview: ${renderMentions(state, compactText(reference.bodyPreview, Math.min(remainingChars, 1200)))}`);
+  } else {
+    bodyLines.push('  source: Message unavailable');
+  }
+  return compactBlockText([header, ...bodyLines].join('\n'), remainingChars);
+}
+
+function renderReferencedContext(state, references, targetAgentId) {
+  const refs = normalizeStoredConversationReferences(references);
+  if (!refs.length) return '';
+  const lines = ['Referenced context supplied with the current message:'];
+  let used = lines[0].length;
+  for (const reference of refs) {
+    const remaining = CONVERSATION_REFERENCE_LIMITS.agentContextChars - used;
+    if (remaining <= 120) {
+      lines.push('- (additional references omitted after context budget)');
+      break;
+    }
+    const block = renderConversationReferenceBlock(state, reference, targetAgentId, remaining);
+    used += block.length;
+    lines.push(block);
+  }
+  return lines.join('\n');
 }
 
 function compactParticipants(pack, targetAgentId = pack?.targetAgentId) {
@@ -624,13 +705,14 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
       ? `- Workspace members you may suggest adding with human review:\n${renderSuggestedMembers(pack)}`
       : '',
     '',
-    'Current message:',
-    messageLine(sourceState, pack.currentMessage, targetAgentId),
-    pack.currentMessage.passiveAwareness
-      ? 'Passive awareness delivery: another Agent posted this public channel message. Treat it as shared context; reply only if you were explicitly asked, directly mentioned, or can add a brief useful coordination note.'
-      : '',
-    '',
-    'Recent channel activity (oldest to newest):',
+	    'Current message:',
+	    messageLine(sourceState, pack.currentMessage, targetAgentId),
+	    pack.currentMessage.passiveAwareness
+	      ? 'Passive awareness delivery: another Agent posted this public channel message. Treat it as shared context; reply only if you were explicitly asked, directly mentioned, or can add a brief useful coordination note.'
+	      : '',
+	    renderReferencedContext(sourceState, pack.currentMessage.references, targetAgentId),
+	    '',
+	    'Recent channel activity (oldest to newest):',
     renderRecentEvents(sourceState, pack.recentEvents),
     'Use channel activity to resolve implicit references like "the new agent", "he", "she", "that member", or "刚加入的那位" before replying.',
     '',

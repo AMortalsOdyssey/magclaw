@@ -5,6 +5,11 @@
 // coordinator rather than a second Agent runtime implementation.
 import { findWorkspaceAllChannel, isWorkspaceAllChannel } from '../workspace-defaults.js';
 import { firstActorReferenceIndex, textReferencesActor } from '../mentions.js';
+import {
+  CONVERSATION_REFERENCE_LIMITS,
+  compactConversationReferenceText,
+  normalizeStoredConversationReferences,
+} from '../conversation-references.js';
 
 const MESSAGE_REACTION_OPTIONS = [
   { key: 'thumbs_up', emoji: '👍' },
@@ -173,6 +178,190 @@ export async function handleMessageApi(req, res, url, deps) {
     const authName = auth?.member?.name || auth?.user?.name || '';
     const human = findHuman(humanId) || state.humans?.find((item) => item.id === humanId);
     return human?.name || authName || humanId;
+  }
+
+  function actorSnapshotName(authorId, authorType) {
+    if (authorType === 'human') return findHuman(authorId)?.name || authorId || 'Unknown';
+    if (authorType === 'agent') return findAgent(authorId)?.name || authorId || 'Unknown';
+    if (authorId === 'system' || authorType === 'system') return 'Magclaw';
+    return authorId || 'Unknown';
+  }
+
+  function spacePrivacy(spaceType, spaceId) {
+    if (spaceType === 'dm') return 'private';
+    const channel = findChannel(spaceId);
+    const raw = String(channel?.visibility || channel?.privacy || '').trim().toLowerCase();
+    if (['private', 'secret'].includes(raw) || channel?.private || channel?.secret || channel?.isPrivate) return 'private';
+    return 'public';
+  }
+
+  function recordSourceSpace(record) {
+    const root = threadRootForRecord(record) || record;
+    return {
+      root,
+      spaceType: record?.spaceType || root?.spaceType || '',
+      spaceId: record?.spaceId || root?.spaceId || '',
+    };
+  }
+
+  function canReadReferenceRecord(req, record) {
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    if (!auth) return true;
+    const { spaceType, spaceId } = recordSourceSpace(record);
+    if (spaceType === 'dm') return canUseDm(req, spaceId);
+    if (spaceType === 'channel') return channelHasHuman(findChannel(spaceId), currentHumanId(req));
+    return false;
+  }
+
+  function referenceCanTravel(sourceSpaceType, sourceSpaceId, targetSpaceType, targetSpaceId) {
+    if (!sourceSpaceType || !sourceSpaceId) return false;
+    if (sourceSpaceType === targetSpaceType && sourceSpaceId === targetSpaceId) return true;
+    if (sourceSpaceType === 'dm' || targetSpaceType === 'dm') return false;
+    if (spacePrivacy(sourceSpaceType, sourceSpaceId) !== 'public') return false;
+    if (spacePrivacy(targetSpaceType, targetSpaceId) !== 'public') return false;
+    return true;
+  }
+
+  function compareCreatedAsc(a, b) {
+    const left = new Date(a?.createdAt || 0).getTime();
+    const right = new Date(b?.createdAt || 0).getTime();
+    if (left !== right) return left - right;
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
+  }
+
+  function referenceRecordsForThread(parentMessageId) {
+    const parent = findMessage(parentMessageId);
+    if (!parent) return [];
+    return [parent, ...state.replies
+      .filter((reply) => reply.parentMessageId === parent.id)
+      .sort(compareCreatedAsc)];
+  }
+
+  function referenceRecordsForConversation(spaceType, spaceId) {
+    return state.messages
+      .filter((message) => message.spaceType === spaceType && message.spaceId === spaceId)
+      .sort(compareCreatedAsc)
+      .slice(-CONVERSATION_REFERENCE_LIMITS.recordsPerReference);
+  }
+
+  function hydrateConversationReference(reference, req, targetSpaceType, targetSpaceId, targetWorkspaceId) {
+    const ref = { ...reference };
+    const sourceRecord = ref.sourceRecordId ? findConversationRecord(ref.sourceRecordId) : null;
+    let parentMessage = ref.parentMessageId ? findMessage(ref.parentMessageId) : null;
+
+    if ((ref.kind === 'message' || ref.kind === 'selection') && !sourceRecord) {
+      return { error: 'Referenced message is not available.' };
+    }
+    if (sourceRecord?.parentMessageId) parentMessage = findMessage(sourceRecord.parentMessageId);
+    if (ref.kind === 'thread') {
+      parentMessage = parentMessage || (sourceRecord?.parentMessageId ? findMessage(sourceRecord.parentMessageId) : sourceRecord);
+      if (!parentMessage || parentMessage.parentMessageId) return { error: 'Referenced thread is not available.' };
+      ref.sourceRecordId = parentMessage.id;
+      ref.parentMessageId = parentMessage.id;
+      ref.sourceKind = 'message';
+    }
+
+    const anchor = sourceRecord || parentMessage || null;
+    if (ref.kind !== 'conversation' && !anchor) return { error: 'Referenced message is not available.' };
+
+    const sourceSpace = ref.kind === 'conversation'
+      ? { spaceType: targetSpaceType, spaceId: targetSpaceId, root: null }
+      : recordSourceSpace(anchor);
+    const sourceWorkspaceId = ref.kind === 'conversation'
+      ? targetWorkspaceId
+      : workspaceIdForConversation(sourceSpace.root || anchor, sourceSpace.spaceType, sourceSpace.spaceId, req);
+    if (sourceWorkspaceId && targetWorkspaceId && sourceWorkspaceId !== targetWorkspaceId) {
+      return { error: 'Referenced message belongs to another workspace.' };
+    }
+    if (anchor && !canReadReferenceRecord(req, anchor)) {
+      return { error: 'Referenced message is not available.' };
+    }
+    if (!referenceCanTravel(sourceSpace.spaceType, sourceSpace.spaceId, targetSpaceType, targetSpaceId)) {
+      return { error: 'Private conversation references can only be sent inside the same conversation.' };
+    }
+
+    let records = [];
+    if (ref.kind === 'thread') {
+      records = referenceRecordsForThread(parentMessage.id);
+    } else if (ref.kind === 'conversation') {
+      records = referenceRecordsForConversation(targetSpaceType, targetSpaceId);
+    } else if (anchor) {
+      records = [anchor];
+    }
+    const suppliedIds = Array.isArray(ref.recordIds) ? ref.recordIds : [];
+    const visibleSuppliedRecords = [];
+    for (const id of suppliedIds) {
+      const record = findConversationRecord(id);
+      if (!record || !canReadReferenceRecord(req, record)) {
+        return { error: 'Referenced message is not available.' };
+      }
+      const space = recordSourceSpace(record);
+      const workspaceId = workspaceIdForConversation(space.root || record, space.spaceType, space.spaceId, req);
+      if (targetWorkspaceId && workspaceId && workspaceId !== targetWorkspaceId) {
+        return { error: 'Referenced message belongs to another workspace.' };
+      }
+      if (!referenceCanTravel(space.spaceType, space.spaceId, targetSpaceType, targetSpaceId)) {
+        return { error: 'Private conversation references can only be sent inside the same conversation.' };
+      }
+      visibleSuppliedRecords.push(record);
+    }
+    if (visibleSuppliedRecords.length) records = visibleSuppliedRecords;
+
+    const truncated = records.length > CONVERSATION_REFERENCE_LIMITS.recordsPerReference || Boolean(ref.truncated);
+    const boundedRecords = records.slice(0, CONVERSATION_REFERENCE_LIMITS.recordsPerReference);
+    const recordIds = boundedRecords.map((record) => record.id);
+    const displayRecord = anchor || boundedRecords[0] || null;
+    const selectedText = ref.kind === 'selection'
+      ? compactConversationReferenceText(ref.selectedText, CONVERSATION_REFERENCE_LIMITS.selectedTextChars)
+      : '';
+
+    return {
+      reference: {
+        ...ref,
+        sourceKind: displayRecord?.parentMessageId ? 'reply' : (ref.sourceKind || (displayRecord ? 'message' : undefined)),
+        parentMessageId: displayRecord?.parentMessageId || ref.parentMessageId || undefined,
+        spaceType: sourceSpace.spaceType,
+        spaceId: sourceSpace.spaceId,
+        authorType: displayRecord?.authorType || ref.authorType || undefined,
+        authorId: displayRecord?.authorId || ref.authorId || undefined,
+        authorName: displayRecord ? actorSnapshotName(displayRecord.authorId, displayRecord.authorType) : ref.authorName,
+        createdAt: displayRecord?.createdAt || ref.createdAt || undefined,
+        bodyPreview: compactConversationReferenceText(displayRecord?.body || ref.bodyPreview || ''),
+        selectedText: selectedText || undefined,
+        recordIds,
+        truncated,
+      },
+    };
+  }
+
+  function normalizeIncomingReferencesForWrite(rawReferences, req, targetSpaceType, targetSpaceId, targetWorkspaceId) {
+    if (rawReferences === undefined || rawReferences === null) return { references: [] };
+    if (!Array.isArray(rawReferences)) return { error: 'Message references must be an array.' };
+    const normalized = normalizeStoredConversationReferences(rawReferences, { makeId });
+    if (rawReferences.length && !normalized.length) return { error: 'Message references are invalid.' };
+    const references = [];
+    for (const reference of normalized) {
+      const hydrated = hydrateConversationReference(reference, req, targetSpaceType, targetSpaceId, targetWorkspaceId);
+      if (hydrated.error) {
+        console.info('[message] rejected conversation reference', {
+          kind: reference.kind,
+          sourceRecordId: reference.sourceRecordId || '',
+          reason: hydrated.error,
+        });
+        return { error: hydrated.error };
+      }
+      references.push(hydrated.reference);
+    }
+    const finalReferences = normalizeStoredConversationReferences(references, { makeId });
+    if (finalReferences.length) {
+      console.info('[message] conversation references normalized', {
+        targetSpaceType,
+        targetSpaceId,
+        referenceCount: finalReferences.length,
+        kinds: finalReferences.map((ref) => ref.kind),
+      });
+    }
+    return { references: finalReferences };
   }
 
   function workspaceIdForConversation(record, spaceType, spaceId, req = null) {
@@ -703,38 +892,46 @@ export async function handleMessageApi(req, res, url, deps) {
     if (spaceType === 'dm' && !canUseDm(req, spaceId)) {
       sendError(res, 403, 'Conversation is not available.');
       return true;
-    }
-    const text = String(body.body || '').trim();
-    const attachmentIds = Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [];
-    if (!text && !attachmentIds.length) {
-      sendError(res, 400, 'Message body or attachment is required.');
-      return true;
-    }
-    const mentions = extractMentions(text);
-    const author = messageAuthor(req, body);
-    const channel = spaceType === 'channel' ? findChannel(spaceId) : null;
-    if (spaceType === 'channel' && !canWriteChannel(req, channel, author)) {
-      sendError(res, 403, 'Join this channel before sending messages.');
-      return true;
-    }
-    const workspaceId = workspaceIdForSpace(spaceType, spaceId, req);
-    const message = normalizeConversationRecord({
-      id: makeId('msg'),
-      workspaceId,
-      spaceType,
-      spaceId,
+	    }
+	    const text = String(body.body || '').trim();
+	    const attachmentIds = Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [];
+	    const mentions = extractMentions(text);
+	    const author = messageAuthor(req, body);
+	    const channel = spaceType === 'channel' ? findChannel(spaceId) : null;
+	    if (spaceType === 'channel' && !canWriteChannel(req, channel, author)) {
+	      sendError(res, 403, 'Join this channel before sending messages.');
+	      return true;
+	    }
+	    const workspaceId = workspaceIdForSpace(spaceType, spaceId, req);
+	    const referenceResult = normalizeIncomingReferencesForWrite(body.references, req, spaceType, spaceId, workspaceId);
+	    if (referenceResult.error) {
+	      sendError(res, 400, referenceResult.error);
+	      return true;
+	    }
+	    const references = referenceResult.references;
+	    if (!text && !attachmentIds.length && !references.length) {
+	      sendError(res, 400, 'Message body, attachment, or reference is required.');
+	      return true;
+	    }
+	    const message = normalizeConversationRecord({
+	      id: makeId('msg'),
+	      workspaceId,
+	      spaceType,
+	      spaceId,
       authorType: author.authorType,
       authorId: author.authorId,
       body: text,
       attachmentIds,
       mentionedAgentIds: mentions.agents,
       mentionedHumanIds: mentions.humans,
-      readBy: author.authorType === 'agent' ? [] : [author.authorId],
-      replyCount: 0,
-      savedBy: [],
-      createdAt: now(),
-      updatedAt: now(),
-    });
+	      readBy: author.authorType === 'agent' ? [] : [author.authorId],
+	      replyCount: 0,
+	      savedBy: [],
+	      references,
+	      metadata: references.length ? { references } : undefined,
+	      createdAt: now(),
+	      updatedAt: now(),
+	    });
     applyMentions(message, mentions);
     state.messages.push(message);
 
@@ -905,35 +1102,44 @@ export async function handleMessageApi(req, res, url, deps) {
       sendError(res, 400, 'Thread replies cannot become tasks. Create a new top-level task message instead.');
       return true;
     }
-    const text = String(body.body || '').trim();
-    const attachmentIds = Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [];
-    if (!text && !attachmentIds.length) {
-      sendError(res, 400, 'Reply body or attachment is required.');
-      return true;
-    }
-    const mentions = extractMentions(text);
-    const author = messageAuthor(req, body);
-    const parentChannel = message.spaceType === 'channel' ? findChannel(message.spaceId) : null;
-    if (message.spaceType === 'channel' && !canWriteChannel(req, parentChannel, author)) {
-      sendError(res, 403, 'Join this channel before replying in the thread.');
-      return true;
-    }
-    const reply = normalizeConversationRecord({
-      id: makeId('rep'),
-      workspaceId: message.workspaceId || workspaceIdForSpace(message.spaceType, message.spaceId, req),
-      parentMessageId: message.id,
-      spaceType: message.spaceType,
-      spaceId: message.spaceId,
+	    const text = String(body.body || '').trim();
+	    const attachmentIds = Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [];
+	    const mentions = extractMentions(text);
+	    const author = messageAuthor(req, body);
+	    const parentChannel = message.spaceType === 'channel' ? findChannel(message.spaceId) : null;
+	    if (message.spaceType === 'channel' && !canWriteChannel(req, parentChannel, author)) {
+	      sendError(res, 403, 'Join this channel before replying in the thread.');
+	      return true;
+	    }
+	    const replyWorkspaceId = message.workspaceId || workspaceIdForSpace(message.spaceType, message.spaceId, req);
+	    const referenceResult = normalizeIncomingReferencesForWrite(body.references, req, message.spaceType, message.spaceId, replyWorkspaceId);
+	    if (referenceResult.error) {
+	      sendError(res, 400, referenceResult.error);
+	      return true;
+	    }
+	    const references = referenceResult.references;
+	    if (!text && !attachmentIds.length && !references.length) {
+	      sendError(res, 400, 'Reply body, attachment, or reference is required.');
+	      return true;
+	    }
+	    const reply = normalizeConversationRecord({
+	      id: makeId('rep'),
+	      workspaceId: replyWorkspaceId,
+	      parentMessageId: message.id,
+	      spaceType: message.spaceType,
+	      spaceId: message.spaceId,
       authorType: author.authorType,
       authorId: author.authorId,
       body: text,
       attachmentIds,
-      mentionedAgentIds: mentions.agents,
-      mentionedHumanIds: mentions.humans,
-      readBy: author.authorType === 'agent' ? [] : [author.authorId],
-      createdAt: now(),
-      updatedAt: now(),
-    });
+	      mentionedAgentIds: mentions.agents,
+	      mentionedHumanIds: mentions.humans,
+	      readBy: author.authorType === 'agent' ? [] : [author.authorId],
+	      references,
+	      metadata: references.length ? { references } : undefined,
+	      createdAt: now(),
+	      updatedAt: now(),
+	    });
     applyMentions(reply, mentions);
     state.replies.push(reply);
     message.replyCount = Math.max(

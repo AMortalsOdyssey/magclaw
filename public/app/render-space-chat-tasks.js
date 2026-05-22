@@ -111,15 +111,17 @@ function renderSpace() {
   const canWriteChannel = selectedSpaceType !== 'channel' || currentUserIsChannelMember(space);
   const actions = selectedSpaceType === 'channel' ? `
     ${canWriteChannel ? `
-      <button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>
-      <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
+	      <button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>
+	      <button class="channel-action channel-action-context" type="button" data-action="add-visible-conversation-context" data-tooltip="Add visible conversation to composer" aria-label="Add visible conversation to composer">${channelActionIcon('quote')}<span>Context</span></button>
+	      <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
       <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
       ${allChannelSelected ? '' : `<button class="channel-action channel-action-leave" type="button" data-action="leave-channel" data-tooltip="Leave channel" aria-label="Leave channel">${channelActionIcon('leave')}<span>Leave</span></button>`}
     ` : ''}
     <button class="channel-action channel-action-members" type="button" data-action="open-modal" data-modal="channel-members" data-tooltip="Members" aria-label="View ${memberCount} participants">${channelActionIcon('members')}<strong>${memberCount}</strong></button>
     ${canWriteChannel ? `<button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" title="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" aria-label="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)">${channelActionIcon('stop')}</button>` : ''}
   ` : `
-    <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
+	    <button class="channel-action channel-action-context" type="button" data-action="add-visible-conversation-context" data-tooltip="Add visible conversation to composer" aria-label="Add visible conversation to composer">${channelActionIcon('quote')}<span>Context</span></button>
+	    <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
     <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)" title="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)" aria-label="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)">${channelActionIcon('stop')}</button>
   `;
 
@@ -844,7 +846,7 @@ function renderMessageContextMenu() {
   const left = Number.isFinite(messageContextMenu.x) ? messageContextMenu.x : 120;
   const top = Number.isFinite(messageContextMenu.y) ? messageContextMenu.y : 120;
   const positionStyle = `--menu-x: ${Math.max(8, left)}px; --menu-y: ${Math.max(8, top)}px;`;
-  if (scope === 'saved') {
+	  if (scope === 'saved') {
     return `
       <div class="message-context-menu pixel-panel" data-context-scope="saved" style="${positionStyle}" role="menu">
         ${renderContextMenuItem('copy-message-link', 'Copy link', record.id)}
@@ -853,15 +855,28 @@ function renderMessageContextMenu() {
         ${renderContextMenuItem('remove-saved-message', 'Remove from saved', record.id)}
       </div>
     `;
-  }
-  const threadLabel = record.parentMessageId ? 'View in channel' : 'Open thread';
+	  }
+	  if (messageContextMenu.selectionText) {
+	    return `
+	      <div class="message-context-menu pixel-panel selection-menu" data-context-scope="selection" style="${positionStyle}" role="menu">
+	        ${renderContextMenuItem('quote-selected-text', '引用到', record.id)}
+	        ${renderContextMenuItem('add-selected-text-context', '添加到对话', record.id)}
+	        ${renderContextMenuItem('copy-selected-message-text', 'Copy', record.id)}
+	      </div>
+	    `;
+	  }
+	  const threadLabel = record.parentMessageId ? 'View in channel' : 'Open thread';
   const threadAction = record.parentMessageId ? 'view-in-channel' : 'open-thread';
   const threadId = record.parentMessageId ? root?.id || record.parentMessageId : record.id;
   return `
     <div class="message-context-menu pixel-panel" data-context-scope="message" style="${positionStyle}" role="menu">
-      ${renderMessageReactionGrid(record)}
-      <div class="message-menu-separator"></div>
-      ${renderContextMenuItem('copy-message-link', 'Copy link', record.id)}
+	      ${renderMessageReactionGrid(record)}
+	      <div class="message-menu-separator"></div>
+	      ${renderContextMenuItem('quote-message-reply', '引用消息回复', record.id)}
+	      ${renderContextMenuItem('add-message-context', '添加到对话', record.id)}
+	      ${root ? renderContextMenuItem('add-thread-context', 'Add thread to conversation', record.id) : ''}
+	      <div class="message-menu-separator"></div>
+	      ${renderContextMenuItem('copy-message-link', 'Copy link', record.id)}
       ${renderContextMenuItem('copy-message-markdown', 'Copy markdown', record.id)}
       <button type="button" data-action="start-message-share" data-id="${escapeHtml(record.id)}">Share messages...</button>
       <div class="message-menu-separator"></div>
@@ -888,8 +903,9 @@ function renderShareSelectionBar() {
       <div class="share-selection-actions">
         ${threadMode ? `<button type="button" data-action="toggle-share-select-all" ${selectableCount ? '' : 'disabled'} aria-label="${escapeHtml(t(selectAllAria))}">${escapeHtml(t(selectAllLabel))}</button>` : ''}
         <button type="button" data-action="cancel-message-share" aria-label="${escapeHtml(t('Cancel'))}">${escapeHtml(t('Cancel'))}</button>
-        <button class="share-image-action" type="button" data-action="download-selected-image" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Download as image'))}">${escapeHtml(t('Download as image'))}</button>
-        <button type="button" data-action="copy-selected-markdown" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Copy as Markdown'))}">${escapeHtml(t('Copy as Markdown'))}</button>
+	        <button class="share-image-action" type="button" data-action="download-selected-image" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Download as image'))}">${escapeHtml(t('Download as image'))}</button>
+	        <button type="button" data-action="add-selected-messages-context" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Add to conversation'))}">${escapeHtml(t('Add to conversation'))}</button>
+	        <button type="button" data-action="copy-selected-markdown" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Copy as Markdown'))}">${escapeHtml(t('Copy as Markdown'))}</button>
       </div>
     </div>
   `;
@@ -1539,7 +1555,7 @@ function renderMessage(message, options = {}) {
   const replyCountChip = !options.compact && replyCount ? `<button class="reply-count-chip" type="button" data-action="open-thread" data-id="${escapeHtml(message.id)}">${replyActionLabel}</button>` : '';
   const footer = renderMessageFooter({ replyCountChip, receiptTray });
   return `
-    <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${shareSelecting}${shareSelected}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
+	    <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${shareSelecting}${shareSelected}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
       ${renderShareSelector(message, { selectable: shareSelectable })}
       ${renderActorAvatar(message.authorId, message.authorType)}
       <div class="message-body"${shareBodyToggleAttrs(message, { selectable: shareSelectable })}>
@@ -1549,7 +1565,8 @@ function renderMessage(message, options = {}) {
           <time>${fmtTime(message.createdAt)}</time>
           ${task ? renderTaskInlineBadge(task) : ''}
         </div>
-        <div class="message-markdown">${renderMarkdownWithMentions(message.body || '(attachment)')}</div>
+	        ${renderMessageReferences(message)}
+	        <div class="message-markdown">${renderMarkdownWithMentions(message.body || (message.references?.length ? '' : '(attachment)'))}</div>
         <div class="message-attachments">${attachmentLinks(message.attachmentIds)}</div>
         ${renderMessageReactionTray(message)}
         ${renderMessageActions(message, options)}
@@ -1562,8 +1579,9 @@ function renderMessage(message, options = {}) {
 function renderComposer({ id, kind, placeholder, showTaskToggle = false }) {
   const hasAttachments = stagedFor(id).attachments.length > 0;
   return `
-    <form id="${kind === 'thread' ? 'reply-form' : 'message-form'}" class="chat-composer ${kind === 'thread' ? 'thread-composer' : ''}" data-composer-id="${escapeHtml(id)}">
-      <div class="composer-attachments ${hasAttachments ? '' : 'hidden'}" data-attachment-strip="${escapeHtml(id)}">
+	    <form id="${kind === 'thread' ? 'reply-form' : 'message-form'}" class="chat-composer ${kind === 'thread' ? 'thread-composer' : ''}" data-composer-id="${escapeHtml(id)}">
+	      ${renderComposerReferenceStrip(id)}
+	      <div class="composer-attachments ${hasAttachments ? '' : 'hidden'}" data-attachment-strip="${escapeHtml(id)}">
         ${renderAttachmentStrip(id)}
       </div>
       <div class="composer-input-wrapper">

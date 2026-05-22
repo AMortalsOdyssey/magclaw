@@ -490,6 +490,155 @@ test('message route group saves messages with the authenticated human id', async
   assert.deepEqual(deps.state.messages[0].savedBy, ['hum_saved']);
 });
 
+test('message route group stores structured selected-text references on messages and replies', async () => {
+  const deps = routeDeps();
+  deps.state.channels = [{ id: 'chan_all', workspaceId: 'wsp_refs', memberIds: ['hum_local'], humanIds: ['hum_local'], agentIds: [] }];
+  deps.state.humans = [{ id: 'hum_author', name: 'Cindy' }];
+  deps.state.messages = [{
+    id: 'msg_source',
+    workspaceId: 'wsp_refs',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    authorType: 'human',
+    authorId: 'hum_author',
+    body: 'Alpha beta gamma delta',
+    attachmentIds: [],
+    createdAt: '2026-05-03T00:00:00.000Z',
+  }];
+  deps.state.replies = [];
+  deps.findHuman = (id) => deps.state.humans.find((human) => human.id === id) || null;
+  deps.readJson = async () => ({
+    body: '',
+    references: [{
+      mode: 'quote',
+      kind: 'selection',
+      sourceRecordId: 'msg_source',
+      selectedText: 'beta gamma',
+    }],
+  });
+
+  const messageRes = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    messageRes,
+    new URL('http://local/api/spaces/channel/chan_all/messages'),
+    deps,
+  );
+
+  assert.equal(messageRes.statusCode, 201);
+  assert.equal(messageRes.data.message.body, '');
+  assert.equal(messageRes.data.message.references[0].kind, 'selection');
+  assert.equal(messageRes.data.message.references[0].mode, 'quote');
+  assert.equal(messageRes.data.message.references[0].selectedText, 'beta gamma');
+  assert.equal(messageRes.data.message.references[0].authorName, 'Cindy');
+  assert.deepEqual(messageRes.data.message.references[0].recordIds, ['msg_source']);
+  assert.deepEqual(messageRes.data.message.metadata.references, messageRes.data.message.references);
+
+  deps.readJson = async () => ({
+    body: 'reply with context',
+    references: [{
+      mode: 'context',
+      kind: 'message',
+      sourceRecordId: 'msg_source',
+    }],
+  });
+
+  const replyRes = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    replyRes,
+    new URL(`http://local/api/messages/${messageRes.data.message.id}/replies`),
+    deps,
+  );
+
+  assert.equal(replyRes.statusCode, 201);
+  assert.equal(replyRes.data.reply.references[0].kind, 'message');
+  assert.equal(replyRes.data.reply.references[0].mode, 'context');
+  assert.equal(replyRes.data.reply.metadata.references[0].sourceRecordId, 'msg_source');
+});
+
+test('message route group rejects cross-private conversation references', async () => {
+  const deps = routeDeps();
+  deps.state.connection = { workspaceId: 'wsp_private' };
+  deps.state.channels = [{ id: 'chan_all', workspaceId: 'wsp_private', memberIds: ['hum_local'], humanIds: ['hum_local'], agentIds: [] }];
+  deps.state.dms = [{ id: 'dm_private', workspaceId: 'wsp_private', participantIds: ['hum_local', 'agt_codex'] }];
+  deps.state.messages = [{
+    id: 'msg_private',
+    workspaceId: 'wsp_private',
+    spaceType: 'dm',
+    spaceId: 'dm_private',
+    authorType: 'agent',
+    authorId: 'agt_codex',
+    body: 'private context',
+    attachmentIds: [],
+    createdAt: '2026-05-03T00:00:00.000Z',
+  }];
+  deps.readJson = async () => ({
+    body: 'try leaking this',
+    references: [{ mode: 'context', kind: 'message', sourceRecordId: 'msg_private' }],
+  });
+
+  const res = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/spaces/channel/chan_all/messages'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 400);
+  assert.match(res.error, /Private conversation references/);
+});
+
+test('message route group rejects private records smuggled through reference recordIds', async () => {
+  const deps = routeDeps();
+  deps.state.connection = { workspaceId: 'wsp_private_records' };
+  deps.state.channels = [{ id: 'chan_all', workspaceId: 'wsp_private_records', memberIds: ['hum_local'], humanIds: ['hum_local'], agentIds: [] }];
+  deps.state.dms = [{ id: 'dm_private', workspaceId: 'wsp_private_records', participantIds: ['hum_local', 'agt_codex'] }];
+  deps.state.messages = [
+    {
+      id: 'msg_public',
+      workspaceId: 'wsp_private_records',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: 'public anchor',
+      createdAt: '2026-05-03T00:00:00.000Z',
+    },
+    {
+      id: 'msg_private',
+      workspaceId: 'wsp_private_records',
+      spaceType: 'dm',
+      spaceId: 'dm_private',
+      authorType: 'agent',
+      authorId: 'agt_codex',
+      body: 'private payload',
+      createdAt: '2026-05-03T00:01:00.000Z',
+    },
+  ];
+  deps.readJson = async () => ({
+    body: 'try smuggling this',
+    references: [{
+      mode: 'context',
+      kind: 'conversation',
+      sourceRecordId: 'msg_public',
+      recordIds: ['msg_public', 'msg_private'],
+    }],
+  });
+
+  const res = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/spaces/channel/chan_all/messages'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 400);
+  assert.match(res.error, /Private conversation references/);
+});
+
 test('message route group waits for explicit memory writebacks before responding', async () => {
   let memoryFinished = false;
   let responseSawMemoryFinished = null;
