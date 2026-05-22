@@ -227,6 +227,24 @@ test('agent status realtime events patch state without a direct full render call
   assert.doesNotMatch(agentStatusSource, /render\(\)/);
 });
 
+test('active DM status updates patch the DM header during scoped chat refreshes', async () => {
+  const app = await readAppSource();
+  const patchConversationSource = app.slice(
+    app.indexOf('function patchActiveConversationSurface'),
+    app.indexOf('function patchServerProfileSettingsSurface'),
+  );
+  const patchThreadSource = app.slice(
+    app.indexOf('function patchOpenThreadDrawerSurface'),
+    app.indexOf('function patchActiveThreadSurface'),
+  );
+
+  assert.match(app, /function patchDmHeaderSurface\(\)/);
+  assert.match(app, /document\.querySelector\('\.dm-space-header'\)/);
+  assert.match(app, /header\.replaceWith\(next\)/);
+  assert.match(patchConversationSource, /patchDmHeaderSurface\(\);[\s\S]*patchRailSurface\(\)/);
+  assert.match(patchThreadSource, /patchDmHeaderSurface\(\);[\s\S]*patchRailSurface\(\)/);
+});
+
 test('state SSE updates do not send an immediate presence heartbeat on every event', async () => {
   const app = await readAppSource();
   const heartbeatSource = app.slice(

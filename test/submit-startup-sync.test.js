@@ -33,6 +33,39 @@ test('submitted conversation writes merge the API response before the final refr
   assert.match(submitSource, /nextState\.replies = upsertConversationRecord\(nextState\.replies, result\.reply\)/);
   assert.match(submitSource, /nextState\.messages = mergeSubmittedReplyParent\(nextState\.messages, result\.reply, replyWasPresent\)/);
   assert.match(submitSource, /applyStateUpdate\(nextState\)/);
-  assert.match(messageFormSource, /result = await api\(`\/api\/spaces\/\$\{selectedSpaceType\}\/\$\{selectedSpaceId\}\/messages`[\s\S]*applySubmittedConversationResult\(result\);[\s\S]*requestPaneBottomScroll\('main'\)/);
-  assert.match(replyFormSource, /result = await api\(`\/api\/messages\/\$\{threadMessageId\}\/replies`[\s\S]*applySubmittedConversationResult\(result\);[\s\S]*requestPaneBottomScroll\('thread'\)/);
+  assert.match(messageFormSource, /result = await api\(`\/api\/spaces\/\$\{selectedSpaceType\}\/\$\{selectedSpaceId\}\/messages`[\s\S]*applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticMessage\.id \}\);[\s\S]*requestPaneBottomScroll\('main'\)/);
+  assert.match(replyFormSource, /result = await api\(`\/api\/messages\/\$\{threadMessageId\}\/replies`[\s\S]*applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticReply\.id \}\);[\s\S]*requestPaneBottomScroll\('thread'\)/);
+});
+
+test('message and reply submits render an optimistic local record before waiting for the API response', async () => {
+  const app = await readAppSource();
+  const submitSource = app.slice(
+    app.indexOf('function optimisticConversationRecord'),
+    app.indexOf("document.addEventListener('submit'"),
+  );
+  const messageFormSource = app.slice(
+    app.indexOf("if (form.id === 'message-form')"),
+    app.indexOf("if (form.id === 'reply-form')"),
+  );
+  const replyFormSource = app.slice(
+    app.indexOf("if (form.id === 'reply-form')"),
+    app.indexOf("if (form.id === 'channel-form')"),
+  );
+
+  assert.match(submitSource, /function optimisticConversationRecord\(/);
+  assert.match(submitSource, /function dropOptimisticConversationRecord\(/);
+  assert.match(submitSource, /record\.optimistic === true/);
+  assert.match(submitSource, /nextState = dropOptimisticConversationRecord\(nextState, removeOptimisticId\)/);
+  assert.match(messageFormSource, /const optimisticMessage = optimisticConversationRecord\(\{[\s\S]*kind: 'message'[\s\S]*applySubmittedConversationResult\(\{ message: optimisticMessage \}\)/);
+  assert.ok(
+    messageFormSource.indexOf('applySubmittedConversationResult({ message: optimisticMessage })') < messageFormSource.indexOf('result = await api'),
+    'message optimistic render must happen before awaiting the API',
+  );
+  assert.match(messageFormSource, /applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticMessage\.id \}\)/);
+  assert.match(replyFormSource, /const optimisticReply = optimisticConversationRecord\(\{[\s\S]*kind: 'reply'[\s\S]*applySubmittedConversationResult\(\{ reply: optimisticReply \}\)/);
+  assert.ok(
+    replyFormSource.indexOf('applySubmittedConversationResult({ reply: optimisticReply })') < replyFormSource.indexOf('result = await api'),
+    'reply optimistic render must happen before awaiting the API',
+  );
+  assert.match(replyFormSource, /applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticReply\.id \}\)/);
 });

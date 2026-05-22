@@ -207,6 +207,16 @@ function patchRailSurface(railSnapshot = railScrollSnapshot()) {
   restoreRailScroll(railSnapshot);
 }
 
+function patchDmHeaderSurface() {
+  if (activeView !== 'space' || selectedSpaceType !== 'dm') return false;
+  const header = document.querySelector('.dm-space-header');
+  if (!header) return false;
+  const next = htmlToElement(renderDmHeader());
+  if (!next) return false;
+  if (header.outerHTML !== next.outerHTML) header.replaceWith(next);
+  return true;
+}
+
 function patchThreadParentCard(message) {
   const card = document.querySelector('.thread-parent-card');
   const current = card?.firstElementChild;
@@ -395,13 +405,15 @@ function preserveLoadedConversationHistory(previousState, nextState) {
   const mainKey = conversationPageKey();
   const mainPage = conversationHistoryPages.main[mainKey];
   if (mainPage) {
-    const previousMessages = stateSpaceMessages(previousState, selectedSpaceType, selectedSpaceId);
+    const previousMessages = stateSpaceMessages(previousState, selectedSpaceType, selectedSpaceId)
+      .filter((record) => record.optimistic !== true);
     merged = mergeSpaceMessagePageIntoState(merged, selectedSpaceType, selectedSpaceId, previousMessages);
   }
   const threadKey = threadPageKey();
   const threadPage = conversationHistoryPages.thread[threadKey];
   if (threadKey && threadPage) {
-    const previousReplies = stateThreadReplies(previousState, threadKey);
+    const previousReplies = stateThreadReplies(previousState, threadKey)
+      .filter((record) => record.optimistic !== true);
     merged = mergeThreadReplyPageIntoState(merged, threadKey, previousReplies);
   }
   return merged;
@@ -743,6 +755,7 @@ function patchOpenThreadDrawerSurface(scrollSnapshot) {
       : '<div class="empty-box">No messages here yet.</div>';
     syncRecordList(list, spaceMessages(), renderMessage, 'messageId', emptyHtml);
   }
+  patchDmHeaderSurface();
   patchRailSurface();
   window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
   return true;
@@ -765,6 +778,7 @@ function patchActiveConversationSurface(scrollSnapshot, { allowInspector = false
     ? '<div class="dm-empty-state">No messages yet. Start the conversation!</div>'
     : '<div class="empty-box">No messages here yet.</div>';
   syncRecordList(list, spaceMessages(), renderMessage, 'messageId', emptyHtml);
+  patchDmHeaderSurface();
   patchRailSurface();
   window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
   return true;

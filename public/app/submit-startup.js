@@ -90,15 +90,93 @@ function mergeSubmittedReplyParent(messages = [], reply = null, replyWasPresent 
   });
 }
 
+function optimisticMentionIds(body = '', kind = 'agent') {
+  const prefix = kind === 'human' ? 'hum_' : 'agt_';
+  const ids = [];
+  const seen = new Set();
+  for (const match of String(body || '').matchAll(/<@(agt_\w+|hum_\w+)>/g)) {
+    const id = match[1];
+    if (!id.startsWith(prefix) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+function currentConversationWorkspaceId(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  const space = spaceType === 'channel'
+    ? byId(appState?.channels, spaceId)
+    : byId(appState?.dms, spaceId);
+  return space?.workspaceId
+    || appState?.connection?.workspaceId
+    || appState?.cloud?.workspace?.id
+    || '';
+}
+
+function optimisticConversationRecord({
+  kind,
+  body,
+  attachmentIds = [],
+  parentMessage = null,
+  spaceType = selectedSpaceType,
+  spaceId = selectedSpaceId,
+}) {
+  const isReply = kind === 'reply';
+  const createdAt = new Date().toISOString();
+  const authorId = currentHumanId();
+  const targetSpaceType = parentMessage?.spaceType || spaceType;
+  const targetSpaceId = parentMessage?.spaceId || spaceId;
+  return {
+    id: `local_${isReply ? 'rep' : 'msg'}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    optimistic: true,
+    workspaceId: parentMessage?.workspaceId || currentConversationWorkspaceId(targetSpaceType, targetSpaceId),
+    ...(isReply ? { parentMessageId: parentMessage?.id || threadMessageId } : { replyCount: 0, savedBy: [] }),
+    spaceType: targetSpaceType,
+    spaceId: targetSpaceId,
+    authorType: 'human',
+    authorId,
+    body: String(body || ''),
+    attachmentIds,
+    mentionedAgentIds: optimisticMentionIds(body, 'agent'),
+    mentionedHumanIds: optimisticMentionIds(body, 'human'),
+    readBy: [authorId],
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+function dropOptimisticConversationRecord(stateSnapshot, removeOptimisticId = '') {
+  const id = String(removeOptimisticId || '');
+  if (!stateSnapshot || !id) return stateSnapshot;
+  const optimisticMessage = (stateSnapshot.messages || []).find((record) => record.id === id && record.optimistic === true);
+  const optimisticReply = (stateSnapshot.replies || []).find((record) => record.id === id && record.optimistic === true);
+  if (!optimisticMessage && !optimisticReply) return stateSnapshot;
+  let messages = (stateSnapshot.messages || []).filter((record) => !(record.id === id && record.optimistic === true));
+  const replies = (stateSnapshot.replies || []).filter((record) => !(record.id === id && record.optimistic === true));
+  if (optimisticReply?.parentMessageId) {
+    messages = messages.map((message) => (
+      message?.id === optimisticReply.parentMessageId
+        ? { ...message, replyCount: Math.max(0, Number(message.replyCount || 0) - 1) }
+        : message
+    ));
+  }
+  return { ...stateSnapshot, messages, replies };
+}
+
 function applySubmittedConversationResult(result = {}) {
   if (!appState || typeof applyStateUpdate !== 'function') return false;
-  let changed = false;
-  const nextState = {
+  const options = arguments[1] || {};
+  const removeOptimisticId = String(options.removeOptimisticId || '');
+  let changed = Boolean(removeOptimisticId);
+  let nextState = {
     ...appState,
     messages: [...(appState.messages || [])],
     replies: [...(appState.replies || [])],
     tasks: [...(appState.tasks || [])],
   };
+  if (removeOptimisticId) {
+    nextState = dropOptimisticConversationRecord(nextState, removeOptimisticId);
+  }
   const taskRecords = [
     result.task,
     result.createdTask,
@@ -163,26 +241,37 @@ document.addEventListener('submit', async (event) => {
       }
       const composerId = form.dataset.composerId || composerIdFor('message');
       const rawBody = composerDrafts[composerId] ?? data.get('body');
+      const encodedBody = encodeComposerMentions(rawBody, composerId);
       const shouldOpenTaskThread = Boolean(composerTaskFlags[composerId] ?? data.get('asTask'));
       const attachmentIds = stagedFor(composerId).ids;
       const messageSnapshot = snapshotComposerState(form, composerId, { includeTask: true });
       clearComposerForSubmit(form, composerId, { clearTask: true });
+      const optimisticMessage = optimisticConversationRecord({
+        kind: 'message',
+        body: encodedBody,
+        attachmentIds,
+        spaceType: selectedSpaceType,
+        spaceId: selectedSpaceId,
+      });
+      requestPaneBottomScroll('main');
+      applySubmittedConversationResult({ message: optimisticMessage });
       let result;
       try {
         result = await api(`/api/spaces/${selectedSpaceType}/${selectedSpaceId}/messages`, {
           method: 'POST',
           body: JSON.stringify({
-            body: encodeComposerMentions(rawBody, composerId),
+            body: encodedBody,
             asTask: shouldOpenTaskThread,
             attachmentIds,
           }),
         });
       } catch (error) {
+        applySubmittedConversationResult({}, { removeOptimisticId: optimisticMessage.id });
         restoreComposerAfterFailedSubmit(form, composerId, messageSnapshot, { restoreTask: true });
         throw error;
       }
       if (shouldOpenTaskThread && result.message?.id) threadMessageId = result.message.id;
-      applySubmittedConversationResult(result);
+      applySubmittedConversationResult(result, { removeOptimisticId: optimisticMessage.id });
       if (shouldOpenTaskThread && result.message?.id) refreshThreadSelection(threadMessageId);
       requestPaneBottomScroll('main');
       submittedBottomTarget = '#message-list';
@@ -196,20 +285,30 @@ document.addEventListener('submit', async (event) => {
       }
       const composerId = form.dataset.composerId || composerIdFor('thread', threadMessageId);
       const rawBody = composerDrafts[composerId] ?? data.get('body');
+      const encodedBody = encodeComposerMentions(rawBody, composerId);
       const attachmentIds = stagedFor(composerId).ids;
       const replySnapshot = snapshotComposerState(form, composerId);
       clearComposerForSubmit(form, composerId);
+      const optimisticReply = optimisticConversationRecord({
+        kind: 'reply',
+        parentMessage,
+        body: encodedBody,
+        attachmentIds,
+      });
+      requestPaneBottomScroll('thread');
+      applySubmittedConversationResult({ reply: optimisticReply });
       let result;
       try {
         result = await api(`/api/messages/${threadMessageId}/replies`, {
           method: 'POST',
-          body: JSON.stringify({ body: encodeComposerMentions(rawBody, composerId), attachmentIds }),
+          body: JSON.stringify({ body: encodedBody, attachmentIds }),
         });
       } catch (error) {
+        applySubmittedConversationResult({}, { removeOptimisticId: optimisticReply.id });
         restoreComposerAfterFailedSubmit(form, composerId, replySnapshot);
         throw error;
       }
-      applySubmittedConversationResult(result);
+      applySubmittedConversationResult(result, { removeOptimisticId: optimisticReply.id });
       requestPaneBottomScroll('thread');
       submittedBottomTarget = '#thread-context';
       focusComposerId = composerId;
@@ -430,7 +529,7 @@ document.addEventListener('submit', async (event) => {
       toast('Onboarding saved');
     }
     if (form.id === 'server-join-link-form') {
-      await api('/api/cloud/join-links', {
+      const result = await api('/api/cloud/join-links', {
         method: 'POST',
         body: JSON.stringify({
           maxUses: data.get('maxUses'),
@@ -438,6 +537,10 @@ document.addEventListener('submit', async (event) => {
         }),
       });
       form.reset();
+      if (result?.cloud && appState) {
+        appState.cloud = { ...(appState.cloud || {}), ...result.cloud };
+        render();
+      }
       toast('Join link created');
     }
     if (form.id === 'delete-server-form') {
