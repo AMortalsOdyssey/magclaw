@@ -16,6 +16,26 @@ export const RELEASE_CATEGORY_LABELS = {
 
 const WEB_RELEASES = [
   {
+    version: '0.3.6',
+    date: '2026-05-22',
+    title: 'Daemon CLI shim hardening',
+    new: [],
+    bugFix: [
+      'Daemon CLI installation skips transient npx and npm script PATH directories.',
+    ],
+    approval: [],
+  },
+  {
+    version: '0.3.5',
+    date: '2026-05-22',
+    title: 'Daemon CLI release',
+    new: [
+      'Release notes now track daemon CLI status, stop, and restore controls.',
+    ],
+    bugFix: [],
+    approval: [],
+  },
+  {
     version: '0.3.4',
     date: '2026-05-22',
     title: 'Daemon upgrade visibility',
@@ -78,6 +98,29 @@ const WEB_RELEASES = [
 ];
 
 const DAEMON_RELEASES = [
+  {
+    version: '0.1.16',
+    date: '2026-05-22',
+    title: 'CLI install path hardening',
+    new: [],
+    bugFix: [
+      'install-cli skips transient npx and npm script PATH directories.',
+    ],
+    approval: [],
+  },
+  {
+    version: '0.1.15',
+    date: '2026-05-22',
+    title: 'Durable magclaw CLI',
+    new: [
+      'Connect installs a durable magclaw command for status, logs, stop, and restore.',
+      'The install-cli command repairs the local magclaw shim without reconnecting.',
+    ],
+    bugFix: [
+      'macOS, Linux, and Windows shims no longer depend on transient npx cache paths.',
+    ],
+    approval: [],
+  },
   {
     version: '0.1.14',
     date: '2026-05-22',

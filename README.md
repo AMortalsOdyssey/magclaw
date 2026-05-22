@@ -9,8 +9,8 @@
   </p>
   <p align="center">
     <img alt="Node >=20" src="https://img.shields.io/badge/Node-%3E%3D20-339933?logo=node.js&logoColor=white">
-    <img alt="Web Service 0.3.4" src="https://img.shields.io/badge/Web_Service-0.3.4-111827">
-    <img alt="Daemon 0.1.14" src="https://img.shields.io/badge/Daemon-0.1.14-f59e0b">
+    <img alt="Web Service 0.3.6" src="https://img.shields.io/badge/Web_Service-0.3.6-111827">
+    <img alt="Daemon 0.1.16" src="https://img.shields.io/badge/Daemon-0.1.16-f59e0b">
     <img alt="Runtimes" src="https://img.shields.io/badge/Runtimes-Codex%20%7C%20Claude%20%7C%20more-7c3aed">
   </p>
   <p align="center">
@@ -164,14 +164,19 @@ also supported:
 npx @magclaw/daemon@latest --server-url https://magclaw.multiego.me --api-key "$MAGCLAW_MACHINE_API_KEY" --profile my-server --background
 ```
 
-Useful daemon commands:
+The first connect command installs a durable `magclaw` CLI shim when it can find
+a writable user bin directory on `PATH`. Useful daemon commands:
 
 ```bash
-npx @magclaw/daemon@latest status --profile my-server
-npx @magclaw/daemon@latest logs --profile my-server
-npx @magclaw/daemon@latest stop --profile my-server
-npx @magclaw/daemon@latest uninstall --profile my-server
+magclaw status --profile my-server
+magclaw logs --profile my-server
+magclaw stop --profile my-server
+magclaw restore --profile my-server
+magclaw uninstall --profile my-server
 ```
+
+If the command is not on `PATH`, reinstall only the CLI shim with
+`npx @magclaw/daemon@latest install-cli`.
 
 MagClaw prevents duplicate daemon processes for the same `--profile` by using a
 per-profile lock. The same physical machine can run multiple daemon processes

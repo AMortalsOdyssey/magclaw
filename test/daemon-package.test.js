@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,7 +14,9 @@ import {
   ensureMachineFingerprint,
   formatDaemonLogLine,
   parseCli,
+  pathLooksEphemeralCli,
   profilePaths,
+  renderCliShimFiles,
   runtimeCommandHasPathSeparator,
   runtimeCommandNeedsShell,
   selectRuntimeCommandPath,
@@ -158,7 +160,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.14');
+  assert.equal(DAEMON_VERSION, '0.1.16');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -347,6 +349,106 @@ test('daemon package exposes one OpenClaw-style CLI bin for npx default executio
   const daemonPackage = JSON.parse(await readFile(new URL('../daemon/package.json', import.meta.url), 'utf8'));
   assert.deepEqual(daemonPackage.bin, { magclaw: 'bin/magclaw.js' });
   assert.ok(CAPABILITIES.includes('daemon:upgrade'));
+});
+
+test('daemon renders durable magclaw CLI shims for macOS Linux and Windows', () => {
+  const macFiles = renderCliShimFiles({
+    platform: 'darwin',
+    npmPath: '/opt/homebrew/bin/npm',
+    packageSpec: '@magclaw/daemon@latest',
+  });
+  assert.deepEqual(macFiles.map((file) => file.name), ['magclaw']);
+  assert.match(macFiles[0].content, /^#!\/bin\/sh/);
+  assert.match(macFiles[0].content, /@magclaw\/daemon@latest/);
+  assert.match(macFiles[0].content, /exec "\$NPM_BIN" exec --yes --package "\$PACKAGE_SPEC" -- magclaw "\$@"/);
+
+  const linuxFiles = renderCliShimFiles({
+    platform: 'linux',
+    npmPath: '/usr/bin/npm',
+    packageSpec: '@magclaw/daemon@latest',
+  });
+  assert.deepEqual(linuxFiles.map((file) => file.name), ['magclaw']);
+  assert.match(linuxFiles[0].content, /NPM_BIN='\/usr\/bin\/npm'/);
+
+  const windowsFiles = renderCliShimFiles({
+    platform: 'win32',
+    npmPath: 'C:\\Users\\tt\\AppData\\Roaming\\npm\\npm.cmd',
+    packageSpec: '@magclaw/daemon@latest',
+  });
+  assert.deepEqual(windowsFiles.map((file) => file.name), ['magclaw.cmd', 'magclaw.ps1']);
+  assert.match(windowsFiles[0].content, /@echo off/);
+  assert.match(windowsFiles[0].content, /@magclaw\/daemon@latest/);
+  assert.match(windowsFiles[0].content, /%ARGS%/);
+  assert.match(windowsFiles[1].content, /@args/);
+});
+
+test('daemon ignores transient npx and npm run-script PATH directories for CLI shim install', () => {
+  assert.equal(pathLooksEphemeralCli('/Users/tt/.npm/_npx/abc/node_modules/.bin'), true);
+  assert.equal(pathLooksEphemeralCli('/Users/tt/project/node_modules/.bin'), true);
+  assert.equal(
+    pathLooksEphemeralCli('/Users/tt/.nvm/versions/node/v22.17.0/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin'),
+    true,
+  );
+  assert.equal(pathLooksEphemeralCli('/Users/tt/.local/bin'), false);
+});
+
+test('install-cli command writes a durable magclaw command shim', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cli-home-'));
+  const binDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cli-bin-'));
+  try {
+    const result = spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'install-cli',
+      '--bin-dir',
+      binDir,
+      '--package-spec',
+      '@magclaw/daemon@latest',
+    ], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.command, 'magclaw');
+    assert.equal(payload.installed, true);
+    assert.equal(payload.pathReady, true);
+    assert.ok(payload.files.length >= 1);
+
+    const files = await readdir(binDir);
+    if (process.platform === 'win32') {
+      assert.ok(files.includes('magclaw.cmd'));
+      assert.ok(files.includes('magclaw.ps1'));
+    } else {
+      assert.deepEqual(files, ['magclaw']);
+      const shim = await readFile(path.join(binDir, 'magclaw'), 'utf8');
+      assert.match(shim, /exec "\$NPM_BIN" exec/);
+      assert.match(shim, /@magclaw\/daemon@latest/);
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(binDir, { recursive: true, force: true });
+  }
+});
+
+test('restore command requires saved daemon credentials for the selected profile', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-restore-empty-'));
+  try {
+    const result = spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'restore',
+      '--profile',
+      'missing-profile',
+    ], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /No saved MagClaw daemon credentials for profile "missing-profile"/);
+    assert.doesNotMatch(result.stderr, /Unknown command/);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
 });
 
 test('daemon reports and verifies active background service state before remote upgrades', async () => {

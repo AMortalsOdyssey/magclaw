@@ -41,19 +41,26 @@ Background mode:
 npx @magclaw/daemon@latest --server-url https://magclaw.multiego.me --api-key mc_machine_xxx --background
 ```
 
+The first connect command installs a durable `magclaw` CLI shim when it can find
+a writable user bin directory on `PATH`.
+
 Stop a background daemon:
 
 ```sh
-npx @magclaw/daemon@latest stop --profile default
+magclaw stop --profile default
 ```
 
-Inspect or remove it:
+Inspect, restore, or remove it:
 
 ```sh
-npx @magclaw/daemon@latest status --profile default
-npx @magclaw/daemon@latest logs --profile default
-npx @magclaw/daemon@latest uninstall --profile default
+magclaw status --profile default
+magclaw logs --profile default
+magclaw restore --profile default
+magclaw uninstall --profile default
 ```
+
+If `magclaw` is not on `PATH`, reinstall only the command shim with
+`npx @magclaw/daemon@latest install-cli`.
 
 Only one daemon process may run for the same profile at a time. The lock is
 stored under `~/.magclaw/daemon/profiles/<profile>/run/daemon.lock`, so the same
