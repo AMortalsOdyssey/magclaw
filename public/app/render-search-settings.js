@@ -1100,7 +1100,11 @@ function inviteLinkForCurrentOrigin(link) {
   try {
     const url = new URL(raw, currentOrigin);
     const current = new URL(currentOrigin);
-    if (url.pathname === '/activate' && isLoopbackInviteHostname(url.hostname) && !isLoopbackInviteHostname(current.hostname)) {
+    if (
+      (url.pathname === '/activate' || url.pathname.startsWith('/join/'))
+      && isLoopbackInviteHostname(url.hostname)
+      && url.origin !== current.origin
+    ) {
       url.protocol = current.protocol;
       url.hostname = current.hostname;
       url.port = current.port;
@@ -1109,6 +1113,45 @@ function inviteLinkForCurrentOrigin(link) {
   } catch {
     return raw;
   }
+}
+
+function joinLinkDisplayUrl(link = {}) {
+  return inviteLinkForCurrentOrigin(link.url || '');
+}
+
+function joinLinkMetaText(link = {}) {
+  const used = Number(link.usedCount || 0);
+  const max = Number(link.maxUses || 0);
+  const usage = max > 0 ? `${used}/${max} uses` : `${used} uses`;
+  const expiry = link.expiresAt ? `expires ${fmtTime(link.expiresAt)}` : 'no expiry';
+  const status = String(link.status || '').trim();
+  return status && status !== 'active'
+    ? `${status} · ${usage} · ${expiry}`
+    : `${usage} · ${expiry}`;
+}
+
+function joinLinkRevokeConfirmTarget() {
+  const id = joinLinkRevokeConfirmState?.joinLinkId || '';
+  return id ? (appState?.cloud?.joinLinks || []).find((link) => link.id === id) || null : null;
+}
+
+function renderJoinLinkRevokeConfirmModal() {
+  const link = joinLinkRevokeConfirmTarget();
+  if (!link) return modalHeader('REVOKE JOIN LINK');
+  return `
+    ${modalHeader('REVOKE JOIN LINK')}
+    <div class="join-link-revoke-confirm-modal">
+      <div class="join-link-revoke-warning">
+        <span class="join-link-revoke-warning-icon">${settingsIcon('alert', 16)}</span>
+        <p>Revoke this join link? Anyone who still has the URL will stop being able to join with it.</p>
+      </div>
+      <code class="join-link-revoke-url">${escapeHtml(joinLinkDisplayUrl(link) || 'Join link unavailable')}</code>
+    </div>
+    <div class="modal-actions join-link-revoke-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+      <button type="button" class="danger-btn" data-action="confirm-revoke-join-link">Revoke Link</button>
+    </div>
+  `;
 }
 
 function generatedLinkText(item) {
@@ -1869,11 +1912,13 @@ function renderServerSettingsTab() {
         <button class="secondary-btn" type="button" data-action="open-modal" data-modal="member-invite">Invite Human</button>
       </div>
 
-      <div class="pixel-panel cloud-card wide">
-        <form id="server-join-link-form" class="modal-form">
-          <div class="panel-title"><span>Join Links</span><span>${joinLinks.length}</span></div>
-          <p class="muted-note">Create a shareable link for people to join this server after signing in.</p>
-          <div class="form-grid">
+      <div class="pixel-panel cloud-card wide server-join-link-card">
+        <div class="panel-title server-join-link-title">
+          <span>${settingsIcon('link', 14)} JOIN LINKS</span>
+          <span>${joinLinks.length}</span>
+        </div>
+        <form id="server-join-link-form" class="server-join-link-form">
+          <div class="server-join-link-form-grid">
             <label><span>Max Uses</span><input name="maxUses" type="number" min="0" step="1" placeholder="Unlimited" /></label>
             <label><span>Expires In</span><select name="expiresIn">
               <option value="1h">1 hour</option>
@@ -1884,21 +1929,27 @@ function renderServerSettingsTab() {
               <option value="never">Never expires</option>
             </select></label>
           </div>
-          <button class="primary-btn" type="submit" ${canManage ? '' : 'disabled'}>Create Join Link</button>
+          <button class="primary-btn server-join-link-create-btn" type="submit" ${canManage ? '' : 'disabled'}><span aria-hidden="true">+</span> Create Join Link</button>
         </form>
+        <div class="server-join-link-divider" aria-hidden="true"></div>
         <div class="server-join-link-list">
-          ${joinLinks.length ? joinLinks.map((link) => `
-            <div class="server-join-link-row">
-              <div>
-                <strong>${escapeHtml(link.url || 'Join link created')}</strong>
-                <small>${escapeHtml(link.status || (link.revokedAt ? 'revoked' : 'active'))} · ${escapeHtml(link.usedCount || 0)}/${escapeHtml(link.maxUses || 'unlimited')} uses · ${escapeHtml(link.expiresAt ? `expires ${fmtTime(link.expiresAt)}` : 'no expiry')}</small>
+          ${joinLinks.length ? joinLinks.map((link) => {
+            const displayUrl = joinLinkDisplayUrl(link);
+            return `
+              <div class="server-join-link-row" data-join-link-id="${escapeHtml(link.id)}">
+                <div class="server-join-link-row-main">
+                  <div class="server-join-link-url-line">
+                    <code class="server-join-link-url">${escapeHtml(displayUrl || 'Join link unavailable')}</code>
+                    <div class="server-join-link-actions">
+                      ${displayUrl ? `<button class="server-join-link-icon-btn copy" type="button" data-action="copy-join-link" data-url="${escapeHtml(displayUrl)}" aria-label="Copy join link" title="Copy join link">${settingsIcon('copy', 15)}</button>` : ''}
+                      ${!link.revokedAt ? `<button class="server-join-link-icon-btn revoke" type="button" data-action="revoke-join-link" data-id="${escapeHtml(link.id)}" aria-label="Revoke join link" title="Revoke join link">${settingsIcon('x', 15)}</button>` : ''}
+                    </div>
+                  </div>
+                  <small>${escapeHtml(joinLinkMetaText(link))}</small>
+                </div>
               </div>
-              <div class="action-row">
-                ${link.url ? `<button class="secondary-btn" type="button" data-action="copy-join-link" data-url="${escapeHtml(link.url)}">Copy</button>` : ''}
-                ${!link.revokedAt ? `<button class="danger-btn" type="button" data-action="revoke-join-link" data-id="${escapeHtml(link.id)}">Revoke</button>` : ''}
-              </div>
-            </div>
-          `).join('') : '<div class="empty-box small">No join links yet.</div>'}
+            `;
+          }).join('') : '<div class="server-join-link-empty">No join links yet.</div>'}
         </div>
       </div>
 

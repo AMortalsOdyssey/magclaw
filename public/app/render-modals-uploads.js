@@ -11,6 +11,7 @@ function renderModal() {
     'member-manage': renderMemberManageModal,
     'member-action-confirm': renderMemberActionConfirmModal,
     'member-reset-link': renderMemberResetLinkModal,
+    'join-link-revoke-confirm': renderJoinLinkRevokeConfirmModal,
     'server-create': renderServerCreateModal,
     project: renderProjectModal,
     dm: renderDmModal,

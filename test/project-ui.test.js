@@ -460,6 +460,21 @@ test('generated invitation links use the current browser origin for loopback API
     context.inviteLinkForCurrentOrigin('https://magclaw.multiego.me/activate?email=a%40example.com&token=mc_inv_123'),
     'https://magclaw.multiego.me/activate?email=a%40example.com&token=mc_inv_123',
   );
+
+  const localContext = {
+    URL,
+    window: {
+      location: {
+        origin: 'http://127.0.0.1:6573',
+      },
+    },
+  };
+  vm.createContext(localContext);
+  vm.runInContext(source, localContext);
+  assert.equal(
+    localContext.inviteLinkForCurrentOrigin('http://127.0.0.1:6543/join/mc_join_123'),
+    'http://127.0.0.1:6573/join/mc_join_123',
+  );
 });
 
 test('account profile uses a MagClaw-style waterfall layout with avatar picker controls', async () => {
@@ -2250,6 +2265,37 @@ test('Fan-out API config is server-scoped in Server settings', async () => {
   assert.match(submitSource, /form\.id === 'fanout-config-form'/);
   assert.match(submitSource, /\/api\/settings\/fanout/);
   assert.match(styles, /\.fanout-api-note/);
+});
+
+test('server join links use Slack-style rows and a revoke confirmation modal', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const serverSettingsSource = app.slice(app.indexOf('function renderServerSettingsTab()'), app.indexOf('function consoleInvitationRows()'));
+  const modalSource = app.slice(app.indexOf('function renderModal()'), app.indexOf('function modalHeader'));
+  const clickSource = app.slice(app.indexOf("if (action === 'copy-join-link'"), app.indexOf("if (action === 'open-account-settings'"));
+  const confirmSource = app.slice(app.indexOf("if (action === 'confirm-revoke-join-link'"), app.indexOf("if (action === 'start-all-computer-agents'"));
+
+  assert.match(app, /let joinLinkRevokeConfirmState = \{ joinLinkId: null \}/);
+  assert.match(app, /function renderJoinLinkRevokeConfirmModal\(\)/);
+  assert.match(modalSource, /'join-link-revoke-confirm': renderJoinLinkRevokeConfirmModal/);
+  assert.match(serverSettingsSource, /class="pixel-panel cloud-card wide server-join-link-card"/);
+  assert.match(serverSettingsSource, /server-join-link-form-grid/);
+  assert.match(serverSettingsSource, /server-join-link-create-btn/);
+  assert.match(serverSettingsSource, /server-join-link-divider/);
+  assert.match(serverSettingsSource, /server-join-link-url-line/);
+  assert.match(serverSettingsSource, /server-join-link-icon-btn copy/);
+  assert.match(serverSettingsSource, /server-join-link-icon-btn revoke/);
+  assert.match(serverSettingsSource, /joinLinkMetaText\(link\)/);
+  assert.match(serverSettingsSource, /Expires In[\s\S]*name="expiresIn"/);
+  assert.doesNotMatch(serverSettingsSource, /Expires At|Create a shareable link for people to join this server after signing in\./);
+  assert.match(clickSource, /modal = 'join-link-revoke-confirm'/);
+  assert.match(confirmSource, /\/api\/cloud\/join-links\/\$\{encodeURIComponent\(joinLinkId\)\}\/revoke/);
+  assert.doesNotMatch(confirmSource, /window\.confirm/);
+  assert.match(styles, /\.server-join-link-card/);
+  assert.match(styles, /\.server-join-link-form-grid/);
+  assert.match(styles, /\.server-join-link-icon-btn/);
+  assert.match(styles, /\.modal-join-link-revoke-confirm/);
+  assert.match(styles, /\.join-link-revoke-warning/);
 });
 
 test('LLM fan-out decisions render one concise route toast only when LLM is used', async () => {

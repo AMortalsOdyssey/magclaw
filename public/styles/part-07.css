@@ -1511,7 +1511,8 @@
 .modal-member-invite-links,
 .modal-member-manage,
 .modal-member-action-confirm,
-.modal-member-reset-link {
+.modal-member-reset-link,
+.modal-join-link-revoke-confirm {
   width: min(420px, 100%);
   padding: 28px 30px 24px;
   border-radius: 8px;
@@ -1523,7 +1524,8 @@
 
 .modal-member-manage-backdrop,
 .modal-member-action-confirm-backdrop,
-.modal-member-reset-link-backdrop {
+.modal-member-reset-link-backdrop,
+.modal-join-link-revoke-confirm-backdrop {
   place-items: start center;
   padding-top: clamp(42px, 11vh, 92px);
   background: rgba(0, 0, 0, 0.36);
@@ -1531,17 +1533,26 @@
 
 .modal-member-manage,
 .modal-member-action-confirm,
-.modal-member-reset-link {
+.modal-member-reset-link,
+.modal-join-link-revoke-confirm {
   width: min(430px, calc(100vw - 40px));
   background: #ffffff;
   box-shadow: 5px 5px 0 var(--border);
+}
+
+.modal-join-link-revoke-confirm {
+  width: min(390px, calc(100vw - 28px));
+  padding: 26px 24px 24px;
+  border: 2px solid var(--border);
+  border-radius: 0;
 }
 
 .modal-member-invite .modal-head,
 .modal-member-invite-links .modal-head,
 .modal-member-manage .modal-head,
 .modal-member-action-confirm .modal-head,
-.modal-member-reset-link .modal-head {
+.modal-member-reset-link .modal-head,
+.modal-join-link-revoke-confirm .modal-head {
   margin-bottom: 12px;
 }
 
@@ -1549,9 +1560,76 @@
 .modal-member-invite-links .modal-head h3,
 .modal-member-manage .modal-head h3,
 .modal-member-action-confirm .modal-head h3,
-.modal-member-reset-link .modal-head h3 {
+.modal-member-reset-link .modal-head h3,
+.modal-join-link-revoke-confirm .modal-head h3 {
   margin: 0;
   font-size: 22px;
+}
+
+.modal-join-link-revoke-confirm .modal-head h3 {
+  font-size: 16px;
+  text-transform: uppercase;
+}
+
+.modal-join-link-revoke-confirm .modal-head button {
+  width: 32px;
+  height: 32px;
+  border: 2px solid var(--border);
+  background: #ffffff;
+  color: var(--text-primary);
+  box-shadow: 3px 3px 0 var(--border);
+}
+
+.join-link-revoke-confirm-modal {
+  display: grid;
+  gap: 12px;
+}
+
+.join-link-revoke-warning {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 2px solid var(--border);
+  background: #ffe1df;
+  color: var(--text-primary);
+}
+
+.join-link-revoke-warning p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.join-link-revoke-warning-icon {
+  display: grid;
+  place-items: center;
+  padding-top: 2px;
+}
+
+.join-link-revoke-url {
+  display: block;
+  overflow-x: auto;
+  padding: 8px 10px;
+  border: 2px solid var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.join-link-revoke-actions {
+  justify-content: flex-end;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.join-link-revoke-actions .secondary-btn,
+.join-link-revoke-actions .danger-btn {
+  min-width: 82px;
+  box-shadow: 4px 4px 0 var(--border);
+}
+
+.join-link-revoke-actions .danger-btn {
+  background: #ff6f61;
 }
 
 .member-manage-modal {

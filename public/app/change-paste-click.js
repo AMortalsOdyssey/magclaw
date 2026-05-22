@@ -1203,6 +1203,9 @@ document.addEventListener('click', async (event) => {
         if (modal === 'agent-restart') {
           agentRestartState = { agentId: null, mode: 'restart' };
         }
+        if (modal === 'join-link-revoke-confirm') {
+          joinLinkRevokeConfirmState = { joinLinkId: null };
+        }
         if (modal === 'member-invite') {
           cloudInviteEmails = [];
           cloudInviteDraft = '';
@@ -1561,6 +1564,13 @@ document.addEventListener('click', async (event) => {
       const copied = await tryCopyTextToClipboard(target.dataset.url || '');
       toast(copied ? 'Join link copied' : 'Copy is unavailable');
     }
+    if (action === 'revoke-join-link') {
+      const joinLinkId = target.dataset.id || '';
+      if (!joinLinkId) return;
+      joinLinkRevokeConfirmState = { joinLinkId };
+      modal = 'join-link-revoke-confirm';
+      renderShellOrModal();
+    }
     if (action === 'open-account-settings') {
       railTab = 'settings';
       activeView = 'cloud';
@@ -1574,8 +1584,12 @@ document.addEventListener('click', async (event) => {
       render();
       syncBrowserRouteForActiveView();
     }
-    if (action === 'revoke-join-link') {
-      await api(`/api/cloud/join-links/${encodeURIComponent(target.dataset.id || '')}/revoke`, { method: 'POST', body: '{}' });
+    if (action === 'confirm-revoke-join-link') {
+      const joinLinkId = joinLinkRevokeConfirmState?.joinLinkId || '';
+      if (!joinLinkId) throw new Error('Join link is missing.');
+      await api(`/api/cloud/join-links/${encodeURIComponent(joinLinkId)}/revoke`, { method: 'POST', body: '{}' });
+      joinLinkRevokeConfirmState = { joinLinkId: null };
+      modal = null;
       toast('Join link revoked');
     }
     if (action === 'start-all-computer-agents') {

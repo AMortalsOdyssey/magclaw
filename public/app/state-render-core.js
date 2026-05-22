@@ -85,6 +85,7 @@ let sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
 let modal = null;
 let agentStartState = { agentId: null };
 let agentRestartState = { agentId: null, mode: 'restart' };
+let joinLinkRevokeConfirmState = { joinLinkId: null };
 let searchQuery = '';
 let searchIsComposing = false;
 let composerIsComposing = false;

@@ -1141,6 +1141,47 @@ test('cloud pairing tokens use the request-scoped server instead of the process 
   }
 });
 
+test('cloud join links use the request-scoped server instead of the process default', async () => {
+  const server = await startIsolatedServer({ MAGCLAW_DEPLOYMENT: 'cloud' });
+  try {
+    const admin = await registerOwnerServer(server);
+    const second = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ name: 'Second Team', slug: 'second-team' }),
+    });
+    await request(server.baseUrl, `/api/console/servers/${admin.server.slug}/switch`, {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: '{}',
+    });
+
+    const created = await request(server.baseUrl, '/api/cloud/join-links', {
+      method: 'POST',
+      cookie: admin.cookie,
+      headers: { 'x-magclaw-server-slug': 'second-team' },
+      body: JSON.stringify({ maxUses: 3, expiresIn: 'never' }),
+    });
+
+    assert.equal(created.status, 201);
+    assert.equal(created.data.joinLink.workspaceId, second.data.server.id);
+    assert.match(created.data.joinLink.url, /\/join\/mc_join_/);
+    assert.equal(created.data.cloud.workspace.slug, 'second-team');
+    assert.equal(created.data.cloud.joinLinks.length, 1);
+    assert.equal(created.data.cloud.joinLinks[0].workspaceId, second.data.server.id);
+    assert.match(created.data.cloud.joinLinks[0].url, /\/join\/mc_join_/);
+
+    const secondState = await request(server.baseUrl, '/api/state?serverSlug=second-team', {
+      cookie: admin.cookie,
+      headers: { 'x-magclaw-server-slug': 'second-team' },
+    });
+    assert.equal(secondState.data.cloud.joinLinks.length, 1);
+    assert.equal(secondState.data.cloud.joinLinks[0].workspaceId, second.data.server.id);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('cloud roles enforce admin invite and removal boundaries', async () => {
   const server = await startIsolatedServer();
   try {

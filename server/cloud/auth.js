@@ -1853,7 +1853,7 @@ export function createCloudAuth(deps) {
         throw error;
       }
       const cloud = ensureCloudState();
-      const workspace = primaryWorkspace();
+      const workspace = workspaceForRequest(req);
       const rawMaxUses = Number(body.maxUses || 0);
       const maxUses = Number.isFinite(rawMaxUses) && rawMaxUses > 0 ? Math.floor(rawMaxUses) : 0;
       let expiresAt = null;
@@ -1898,7 +1898,7 @@ export function createCloudAuth(deps) {
       };
       cloud.joinLinks.push(joinLink);
       console.info(`[cloud-auth] join link created workspace=${workspace.id} actor=${auth.user.id} maxUses=${maxUses}`);
-      await persistCloudState();
+      await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_join_link_created' });
       return { joinLink: publicJoinLink(joinLink, raw, req) };
     }
 
@@ -1909,7 +1909,7 @@ export function createCloudAuth(deps) {
         error.status = auth ? 403 : 401;
         throw error;
       }
-      const workspace = primaryWorkspace();
+      const workspace = workspaceForRequest(req);
       const joinLink = safeArray(ensureCloudState().joinLinks).find((item) => (
         item.id === String(joinLinkId || '')
         && item.workspaceId === workspace.id
@@ -1923,7 +1923,7 @@ export function createCloudAuth(deps) {
       joinLink.revokedBy = auth.user.id;
       joinLink.updatedAt = joinLink.revokedAt;
       console.info(`[cloud-auth] join link revoked id=${joinLink.id} actor=${auth.user.id}`);
-      await persistCloudState();
+      await persistCloudState({ workspaceId: workspace.id, reason: 'cloud_join_link_revoked' });
       return { joinLink: publicJoinLink(joinLink) };
     }
 

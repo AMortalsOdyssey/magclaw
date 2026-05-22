@@ -213,6 +213,7 @@ async function prepareDocumentClick(event) {
     'open-member-action-confirm',
     'copy-member-reset-link',
     'copy-join-link',
+    'revoke-join-link',
     'open-message-context-menu',
     'close-message-context-menu',
     'copy-message-link',

@@ -1306,7 +1306,7 @@ function clickLoadingMeta(action, target) {
     'upgrade-computer-daemon': ['Queueing daemon upgrade...', 'main'],
     'regenerate-computer-command': ['Loading connect command...', 'modal'],
     'refresh-computer-pairing-command': ['Loading connect command...', 'modal'],
-    'revoke-join-link': ['Revoking join link...', 'main'],
+    'confirm-revoke-join-link': ['Revoking join link...', 'modal'],
     'start-all-computer-agents': ['Starting agents...', 'main'],
     'disable-computer': ['Disabling computer...', 'main'],
     'enable-computer': ['Enabling computer...', 'main'],
