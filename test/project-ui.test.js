@@ -215,8 +215,11 @@ test('computer name editor survives realtime rerenders', async () => {
 test('computer daemon upgrade UI only appears when actionable and shows one state', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
+  const upgradeSource = app.slice(app.indexOf('function computerUpgradeStatusLabel'), app.indexOf('function renderComputerAgentCard'));
   const computerSource = app.slice(app.indexOf('function renderComputerDetail'), app.indexOf('function renderComputerConfigCard()'));
-  const clickSource = app.slice(app.indexOf("if (action === 'generate-computer-command'"), app.indexOf("if (action === 'copy-join-link'"));
+  const clickSource = app.slice(app.indexOf("if (action === 'upgrade-computer-daemon'"), app.indexOf("if (action === 'regenerate-computer-command'"));
+  const confirmClickStart = app.indexOf("if (action === 'confirm-daemon-upgrade'");
+  const confirmClickSource = app.slice(confirmClickStart, app.indexOf("if (action === 'close-modal'", confirmClickStart));
 
   assert.match(app, /function computerDaemonUpgradeState\(/);
   assert.match(app, /function computerUpgradeStatusLabel\(/);
@@ -228,14 +231,24 @@ test('computer daemon upgrade UI only appears when actionable and shows one stat
   assert.match(app, /service\.active === true/);
   assert.match(app, /const shouldShowUpgradePanel = updateAvailable \|\| upgradeVisible/);
   assert.match(app, /data-action="upgrade-computer-daemon"/);
+  assert.match(app, /let daemonUpgradeConfirmState = \{ computerId: null \}/);
+  assert.match(app, /'daemon-upgrade-confirm': renderDaemonUpgradeConfirmModal/);
+  assert.match(app, /function renderDaemonUpgradeConfirmModal\(\)/);
+  assert.match(app, /data-action="confirm-daemon-upgrade"/);
+  assert.match(app, /if \(action === 'confirm-daemon-upgrade'\)/);
   assert.match(computerSource, /renderDaemonUpgradePanel\(computer/);
   assert.match(computerSource, /Daemon Version[\s\S]*\$\{daemonUpgradePanel\}/);
-  assert.match(app, /只有后台运行才允许自动更新/);
-  assert.match(app, /等待更新|Waiting for update/);
-  assert.match(app, /升级中|Updating|Upgrading/);
-  assert.doesNotMatch(computerSource, /sr-only[\s\S]*等待更新[\s\S]*升级中[\s\S]*已回退/);
-  assert.match(clickSource, /\/api\/computers\/\$\{encodeURIComponent\(target\.dataset\.id \|\| ''\)\}\/daemon-upgrade/);
+  assert.match(app, /'Update manually': '请手动更新'/);
+  assert.match(app, /'Only background daemons can update automatically. For foreground daemons, update manually.': '只有后台运行才允许自动更新，前台运行请手动更新。'/);
+  assert.match(upgradeSource, /Waiting for update/);
+  assert.match(upgradeSource, /Updating/);
+  assert.match(upgradeSource, /Update manually/);
+  assert.doesNotMatch(upgradeSource, /请手动更新|等待更新|升级中|已回退/);
+  assert.doesNotMatch(computerSource, /sr-only[\s\S]*Waiting for update[\s\S]*Updating[\s\S]*Rolled back/);
+  assert.match(confirmClickSource, /\/api\/computers\/\$\{encodeURIComponent\(computerId\)\}\/daemon-upgrade/);
   assert.match(clickSource, /dataset\.upgradeDisabledReason/);
+  assert.doesNotMatch(clickSource, /window\.confirm/);
+  assert.doesNotMatch(confirmClickSource, /window\.confirm/);
   assert.match(app, /waiting_for_upgrade/);
   assert.match(app, /upgrade_pending/);
   assert.match(styles, /\.status-crystal/);
@@ -244,6 +257,17 @@ test('computer daemon upgrade UI only appears when actionable and shows one stat
   assert.match(styles, /\.daemon-upgrade-panel\.blocked/);
   assert.match(styles, /\.daemon-version-value\.upgrade-pending/);
   assert.match(styles, /\.daemon-version-value\.upgrading/);
+});
+
+test('computers detail page preserves scroll through background renders', async () => {
+  const app = await readAppSource();
+  const computersSource = app.slice(app.indexOf('function renderComputers()'), app.indexOf('function fmtFullDateTime'));
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
+
+  assert.match(computersSource, /const scrollKey = selected\?\.id \? `computers:\$\{selected\.id\}` : 'computers:list'/);
+  assert.match(computersSource, /<section class="computers-page" data-page-scroll-surface data-scroll-key="\$\{escapeHtml\(scrollKey\)\}">/);
+  assert.match(renderSource, /page: pageScrollSnapshot\(\)/);
+  assert.match(renderSource, /restorePageScroll\(scrollSnapshot\.page\)/);
 });
 
 test('agent creation guard prevents duplicate submit rerenders', async () => {
@@ -1613,6 +1637,8 @@ test('member rail lists keep status dots on the far right only in the agent tab'
   assert.match(computerListSource, /member-status-side/);
   assert.equal(agentListSource.includes("avatarStatusDot(agent.status"), false);
   assert.match(styles, /\.member-status-side/);
+  assert.match(styles, /\.member-info \.agent-live-activity-bar\.compact \{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(styles, /\.member-info \.agent-live-activity-bar\.compact \.agent-activity-dot \{[\s\S]*display: none/);
   assert.match(styles, /\.member-btn \.dm-avatar-wrap \.avatar-status-dot/);
   assert.match(styles, /\.message-card \.avatar-status-dot/);
 });
@@ -2585,6 +2611,7 @@ test('agent workspace tab has split tree and raw/preview markdown controls', asy
   const app = await readAppSource();
   const styles = await readStylesSource();
 
+  assert.match(app, /function displayHomePath\(value = ''\)/);
   assert.match(app, /function renderAgentWorkspaceTab\(agent\)/);
   assert.match(app, /class="agent-workspace-tab"/);
   assert.match(app, /data-action="refresh-agent-workspace"/);
@@ -2592,6 +2619,9 @@ test('agent workspace tab has split tree and raw/preview markdown controls', asy
   assert.match(app, /data-action="set-agent-workspace-preview-mode" data-mode="preview"/);
   assert.match(app, /agentWorkspacePreviewMode === 'preview'/);
   assert.match(app, /renderMarkdown\(file\.content \|\| ''\)/);
+  assert.match(app, /const displayAbsolutePath = displayHomePath\(file\?\.absolutePath \|\| ''\)/);
+  assert.match(app, /const displayWorkspacePath = displayHomePath\(workspacePath\)/);
+  assert.doesNotMatch(app, /escapeHtml\(file\.absolutePath\)} \/ \$\{bytes\(file\.bytes\)\}/);
   assert.match(app, /function agentWorkspaceSourceBadge/);
   assert.match(app, /Computer local/);
   assert.match(app, /Cloud mirror/);
@@ -2608,6 +2638,7 @@ test('agent activity tab renders newest first with second-level timestamps and a
   const styles = await readStylesSource();
   const profileSource = app.slice(app.indexOf('function renderAgentProfileTab'), app.indexOf('function renderAgentDmsTab'));
   const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderAgentGroupsByComputer'));
+  const liveActivitySource = app.slice(app.indexOf('function agentLiveActivitySummary'), app.indexOf('function renderAgentLiveActivityBar'));
 
   assert.match(app, /const AGENT_ACTIVITY_EVENT_LIMIT = 5000/);
   assert.match(app, /function agentActivityEvents\(agent\)/);
@@ -2620,6 +2651,7 @@ test('agent activity tab renders newest first with second-level timestamps and a
   assert.match(app, /rawType === 'daemon_result'/);
   assert.match(app, /resultType === 'agent:skills:list_result'/);
   assert.match(app, /agentActivityEvents\(agent\)\.find\(agentActivityIsUserVisible\)/);
+  assert.match(liveActivitySource, /latestEvent\?\.raw\?\.activity\?\.detail/);
   assert.match(app, /function renderAgentLiveActivityBar\(agent, \{ compact = false \} = \{\}\)/);
   assert.match(app, /data-action="set-agent-detail-tab" data-tab="activity"/);
   assert.match(profileSource, /renderAgentLiveActivityBar\(agent\)/);

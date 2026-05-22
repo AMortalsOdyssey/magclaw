@@ -10,6 +10,7 @@ const appScripts = [
   '/app/i18n.js',
   '/app/prelude.js',
   '/app/state-render-core.js',
+  '/app/state-sync.js',
   '/app/notifications-layout-avatar.js',
   '/app/avatar-upload.js',
   '/app/data-search-mentions.js',

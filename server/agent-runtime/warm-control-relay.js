@@ -236,6 +236,135 @@ function agentMentionRelayLooksIntentional(record, targetAgent) {
   return false;
 }
 
+function dmHasParticipant(dm, participantId) {
+  return Array.isArray(dm?.participantIds) && dm.participantIds.includes(participantId);
+}
+
+function dmHumanParticipantIds(dm) {
+  return (dm?.participantIds || []).filter((id) => findHuman(id) || String(id || '').startsWith('hum_'));
+}
+
+function originHumanIdForPrivateDmHandoff(sourceDm, sourceMessage = null) {
+  const humanIds = dmHumanParticipantIds(sourceDm);
+  if (sourceMessage?.authorType === 'human' && humanIds.includes(sourceMessage.authorId)) {
+    return sourceMessage.authorId;
+  }
+  return humanIds[0] || null;
+}
+
+function findOrCreateUserAgentHandoffDm(humanId, targetAgent, workspaceId) {
+  const normalizedWorkspaceId = String(workspaceId || 'local');
+  const existing = (state.dms || []).find((dm) => (
+    String(dm.workspaceId || 'local') === normalizedWorkspaceId
+    && dmHasParticipant(dm, humanId)
+    && dmHasParticipant(dm, targetAgent.id)
+  ));
+  if (existing) return { dm: existing, created: false };
+
+  const dm = {
+    id: makeId('dm'),
+    workspaceId: normalizedWorkspaceId,
+    participantIds: [humanId, targetAgent.id],
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  state.dms = Array.isArray(state.dms) ? state.dms : [];
+  state.dms.push(dm);
+  return { dm, created: true };
+}
+
+function privateHandoffMessageBody(record, sourceAgent, targetAgent, originHumanId, sourceMessage = null) {
+  const originalRequest = sourceMessage?.body && sourceMessage.id !== record.id
+    ? String(sourceMessage.body || '').trim()
+    : '';
+  return [
+    `Private handoff for <@${originHumanId}>.`,
+    `Source agent: <@${sourceAgent.id}>.`,
+    `Target agent: <@${targetAgent.id}>.`,
+    originalRequest ? `Original request: ${originalRequest}` : '',
+    `Handoff message: ${String(record.body || '').trim()}`,
+    'Continue in this DM with the human if you can help. Create or claim a task only when the work needs tracked follow-up.',
+  ].filter(Boolean).join('\n');
+}
+
+function createUserAgentHandoffMessage(record, sourceAgent, targetAgent, originHumanId, dm, workspaceId, sourceMessage = null) {
+  const message = normalizeConversationRecord({
+    id: makeId('msg'),
+    workspaceId,
+    spaceType: 'dm',
+    spaceId: dm.id,
+    authorType: 'system',
+    authorId: 'system',
+    body: privateHandoffMessageBody(record, sourceAgent, targetAgent, originHumanId, sourceMessage),
+    attachmentIds: Array.isArray(record.attachmentIds) ? record.attachmentIds : [],
+    mentionedAgentIds: [sourceAgent.id, targetAgent.id],
+    mentionedHumanIds: [originHumanId],
+    readBy: [originHumanId],
+    replyCount: 0,
+    savedBy: [],
+    agentRelayDepth: Number(record.agentRelayDepth || 0),
+    handoffSourceMessageId: record.id,
+    handoffSourceParentMessageId: record.parentMessageId || null,
+    suppressTaskContext: true,
+    internal: true,
+    hiddenFromChannel: true,
+    metadata: {
+      visibility: 'internal',
+      kind: 'private_user_agent_handoff',
+      sourceAgentId: sourceAgent.id,
+      targetAgentId: targetAgent.id,
+      originHumanId,
+      sourceDmId: record.spaceId,
+      sourceMessageId: sourceMessage?.id || null,
+    },
+    createdAt: now(),
+    updatedAt: now(),
+  });
+  state.messages.push(message);
+  return message;
+}
+
+async function relayPrivateDmMentionToUserAgentDm(record, targetAgent, { parentMessageId = null, sourceMessage = null } = {}) {
+  if (record.spaceType !== 'dm') return false;
+  const sourceDm = (state.dms || []).find((dm) => dm.id === record.spaceId);
+  if (dmHasParticipant(sourceDm, targetAgent.id)) return false;
+  const sourceAgent = findAgent(record.authorId);
+  if (!sourceAgent) return false;
+  const originHumanId = originHumanIdForPrivateDmHandoff(sourceDm, sourceMessage);
+  if (!originHumanId) return false;
+
+  const workspaceId = record.workspaceId
+    || sourceMessage?.workspaceId
+    || sourceDm?.workspaceId
+    || workspaceIdForSpace('dm', record.spaceId, record, sourceAgent);
+  const { dm, created } = findOrCreateUserAgentHandoffDm(originHumanId, targetAgent, workspaceId);
+  const handoffMessage = createUserAgentHandoffMessage(record, sourceAgent, targetAgent, originHumanId, dm, workspaceId, sourceMessage);
+  addSystemEvent('agent_dm_handoff_relay', `${sourceAgent.name} routed a private handoff from ${displayActor(originHumanId)} to ${targetAgent.name}.`, {
+    fromAgentId: sourceAgent.id,
+    toAgentId: targetAgent.id,
+    originHumanId,
+    sourceMessageId: record.id,
+    sourceParentMessageId: parentMessageId || null,
+    dmId: dm.id,
+    handoffMessageId: handoffMessage.id,
+    dmCreated: created,
+  });
+  await persistState();
+  broadcastState();
+  deliverMessageToAgent(targetAgent, 'dm', dm.id, handoffMessage, {
+    proactive: true,
+    sourceAgentId: sourceAgent.id,
+    suppressTaskContext: true,
+  }).catch((err) => {
+    addSystemEvent('delivery_error', `Failed to deliver private user-Agent handoff to ${targetAgent.name}: ${err.message}`, {
+      agentId: targetAgent.id,
+      messageId: handoffMessage.id,
+      dmId: dm.id,
+    });
+  });
+  return true;
+}
+
 async function relayAgentMentions(record, { parentMessageId = null, sourceMessage = null } = {}) {
   if (record.authorType !== 'agent') return;
   if (!parentMessageId && !record.taskId) return;
@@ -282,6 +411,9 @@ async function relayAgentMentions(record, { parentMessageId = null, sourceMessag
         sourceMessageId: sourceMessage?.id || null,
         parentMessageId,
       });
+      continue;
+    }
+    if (await relayPrivateDmMentionToUserAgentDm(record, targetAgent, { parentMessageId, sourceMessage })) {
       continue;
     }
     addSystemEvent('agent_message_relay', `${displayActor(record.authorId)} mentioned ${targetAgent.name}`, {

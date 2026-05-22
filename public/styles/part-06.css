@@ -420,6 +420,14 @@
   line-height: 1.25;
 }
 
+.member-info .agent-live-activity-bar.compact {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.member-info .agent-live-activity-bar.compact .agent-activity-dot {
+  display: none;
+}
+
 /* Member list items in rail */
 .member-btn {
   position: relative;

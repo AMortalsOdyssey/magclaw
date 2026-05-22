@@ -15,6 +15,25 @@ async function readAppSource() {
   return [app, ...chunkSources].join('\n');
 }
 
+test('state sync module loads before realtime and submit consumers', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const stateCoreIndex = app.indexOf("'/app/state-render-core.js'");
+  const stateSyncIndex = app.indexOf("'/app/state-sync.js'");
+  const realtimeIndex = app.indexOf("'/app/sync-events-keyboard.js'");
+  const clickIndex = app.indexOf("'/app/change-paste-click.js'");
+  const submitIndex = app.indexOf("'/app/submit-startup.js'");
+
+  assert.ok(stateCoreIndex >= 0, 'state render core script should be loaded');
+  assert.ok(stateSyncIndex >= 0, 'state sync module should be loaded');
+  assert.ok(realtimeIndex >= 0, 'realtime consumer script should be loaded');
+  assert.ok(clickIndex >= 0, 'click consumer script should be loaded');
+  assert.ok(submitIndex >= 0, 'submit consumer script should be loaded');
+  assert.ok(stateCoreIndex < stateSyncIndex, 'state sync should load after app state primitives');
+  assert.ok(stateSyncIndex < realtimeIndex, 'state sync should load before realtime handlers');
+  assert.ok(stateSyncIndex < clickIndex, 'state sync should load before click handlers');
+  assert.ok(stateSyncIndex < submitIndex, 'state sync should load before submit handlers');
+});
+
 test('state SSE updates route through the non-destructive state renderer', async () => {
   const app = await readAppSource();
   const connectEventsSource = app.slice(
@@ -35,7 +54,7 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(connectEventsSource, /addEventListener\('state-delta'[\s\S]*applyStateDeltaEnvelope\(JSON\.parse\(event\.data\)\)/);
   assert.match(connectEventsSource, /addEventListener\('realtime-event'[\s\S]*applyRealtimeJournalEvent\(JSON\.parse\(event\.data\)\)/);
   assert.match(connectEventsSource, /addEventListener\('state-resync-required'[\s\S]*refreshAfterSseGap\(\)/);
-  assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*applyStateUpdate\(JSON\.parse\(event\.data\)\)/);
+  assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*queueStateUpdate\(JSON\.parse\(event\.data\)\)/);
   assert.match(app, /function applySseSeq\(seqInput\)[\s\S]*seq > lastSseSeq \+ 1/);
   assert.match(connectEventsSource, /applyRunEventUpdate\(incoming\)/);
   assert.match(connectEventsSource, /eventSource\.addEventListener\('heartbeat'/);
@@ -223,7 +242,7 @@ test('agent status realtime events patch state without a direct full render call
 
   assert.match(agentStatusSource, /eventType === 'agent_status_changed'/);
   assert.match(agentStatusSource, /runtimeActivity: incoming\.runtimeActivity \|\| null/);
-  assert.match(agentStatusSource, /applyStateUpdate\(\{ \.\.\.appState, agents \}\)/);
+  assert.match(agentStatusSource, /queueStateUpdate\(\{ \.\.\.stateSnapshot, agents \}\)/);
   assert.doesNotMatch(agentStatusSource, /render\(\)/);
 });
 
@@ -256,6 +275,100 @@ test('state SSE updates do not send an immediate presence heartbeat on every eve
   assert.match(heartbeatSource, /window\.setInterval\(\(\) => \{[\s\S]*sendHumanPresenceHeartbeat\(\)/);
   assert.match(heartbeatSource, /if \(!humanPresenceTimer\) \{[\s\S]*sendHumanPresenceHeartbeat\(\);[\s\S]*\}/);
   assert.doesNotMatch(heartbeatSource.replace(/if \(!humanPresenceTimer\) \{[\s\S]*?\n  \}/, ''), /sendHumanPresenceHeartbeat\(\)/);
+});
+
+test('high-frequency SSE state updates are coalesced before scoped patching', async () => {
+  const app = await readAppSource();
+  const queueSource = app.slice(
+    app.indexOf('let pendingStateUpdate = null'),
+    app.indexOf('function applyStateUpdate(nextState)'),
+  );
+  const realtimeSource = app.slice(
+    app.indexOf('function applyRealtimeJournalEvent(envelope)'),
+    app.indexOf('function eventStreamPathForCurrentSelection()'),
+  );
+  const connectEventsSource = app.slice(
+    app.indexOf('function connectEvents()'),
+    app.indexOf('function disconnectEvents()'),
+  );
+  const browserHeartbeatSource = app.slice(
+    app.indexOf('async function sendHumanPresenceHeartbeat()'),
+    app.indexOf('function startHumanPresenceHeartbeat()'),
+  );
+
+  assert.match(app, /let pendingStateUpdate = null/);
+  assert.match(app, /let pendingStateUpdateFrame = null/);
+  assert.match(queueSource, /function pendingStateUpdateBase\(\)/);
+  assert.match(queueSource, /return pendingStateUpdate \|\| appState/);
+  assert.match(queueSource, /function queueStateUpdate\(nextState, \{ immediate = false \} = \{\}\)/);
+  assert.match(queueSource, /window\.requestAnimationFrame\(flushPendingStateUpdate\)/);
+  assert.match(queueSource, /function flushPendingStateUpdate\(\)[\s\S]*applyStateUpdate\(nextState\)/);
+  assert.match(realtimeSource, /const stateSnapshot = pendingStateUpdateBase\(\)/);
+  assert.match(realtimeSource, /queueStateUpdate\(\{ \.\.\.stateSnapshot, agents \}\)/);
+  assert.match(realtimeSource, /queueStateUpdate\(\{[\s\S]*\.\.\.stateSnapshot,[\s\S]*agents,[\s\S]*humans,[\s\S]*updatedAt: heartbeat\.updatedAt \|\| stateSnapshot\.updatedAt/);
+  assert.match(realtimeSource, /if \(envelope\?\.type === 'state_patch' && envelope\.payload\) \{[\s\S]*queueStateUpdate\(envelope\.payload\)/);
+  assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*queueStateUpdate\(JSON\.parse\(event\.data\)\)/);
+  assert.match(browserHeartbeatSource, /const stateSnapshot = pendingStateUpdateBase\(\)/);
+  assert.match(browserHeartbeatSource, /const humans = stateSnapshot\.humans\.map/);
+  assert.match(browserHeartbeatSource, /if \(changed\) queueStateUpdate\(\{ \.\.\.stateSnapshot, humans \}\)/);
+});
+
+test('full refresh fallback preserves chat, thread, and page scroll positions', async () => {
+  const app = await readAppSource();
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
+  const refreshSource = app.slice(app.indexOf('async function refreshState()'), app.indexOf('function cloudAuthErrorMessage'));
+  const applyStateSource = app.slice(
+    app.indexOf('function applyStateUpdate(nextState)'),
+    app.indexOf('function applyRunEventUpdate(incoming)'),
+  );
+  const paneRestoreSource = app.slice(
+    app.indexOf('function restorePaneScroll(targetName, snapshot)'),
+    app.indexOf('function restorePaneScrolls(snapshot)'),
+  );
+
+  assert.match(refreshSource, /rememberPinnedBottomBeforeStateChange\(\);[\s\S]*const nextState = await api\(bootstrapStatePath\(\)\)/);
+  assert.match(refreshSource, /appState = nextState;[\s\S]*render\(\);/);
+  assert.match(renderSource, /const scrollSnapshot = \{[\s\S]*main: paneScrollSnapshot\('main'\),[\s\S]*thread: paneScrollSnapshot\('thread'\),[\s\S]*page: pageScrollSnapshot\(\)/);
+  assert.match(renderSource, /root\.innerHTML = `[\s\S]*window\.requestAnimationFrame\(\(\) => \{[\s\S]*restorePaneScrolls\(scrollSnapshot\);[\s\S]*restorePageScroll\(scrollSnapshot\.page\)/);
+  assert.match(applyStateSource, /const scrollSnapshot = \{[\s\S]*main: paneScrollSnapshot\('main'\),[\s\S]*thread: paneScrollSnapshot\('thread'\),[\s\S]*page: pageScrollSnapshot\(\)/);
+  assert.match(applyStateSource, /if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;[\s\S]*if \(patchActiveConversationSurface\(scrollSnapshot,[\s\S]*\) return;[\s\S]*render\(\);/);
+  assert.match(paneRestoreSource, /const forceBottom = pendingBottomScroll\[targetName\]/);
+  assert.match(paneRestoreSource, /const shouldFollowBottom = forceBottom \|\| \(hasPosition \? candidate\.atBottom : targetDefaultAtBottom\(targetName\)\)/);
+  assert.match(paneRestoreSource, /if \(!shouldFollowBottom && hasPosition\) \{[\s\S]*node\.scrollTop = Math\.min\(Math\.max\(0, candidate\.top \|\| 0\), maxTop\)/);
+});
+
+test('task clicks merge returned task updates before falling back to full refresh', async () => {
+  const app = await readAppSource();
+  const mergeSource = app.slice(
+    app.indexOf('function applySubmittedConversationResult(result = {})'),
+    app.indexOf('function optimisticMentionIds'),
+  );
+  const clickStart = app.indexOf("document.addEventListener('click'");
+  const clickSource = app.slice(
+    clickStart,
+    app.indexOf('async function tryCopyTextToClipboard', clickStart),
+  );
+  const taskStatusSource = clickSource.slice(
+    clickSource.indexOf("if (action === 'task-status-set')"),
+    clickSource.indexOf("if (action === 'message-task')"),
+  );
+  const messageTaskSource = clickSource.slice(
+    clickSource.indexOf("if (action === 'message-task')"),
+    clickSource.indexOf("if (action === 'task-claim')"),
+  );
+  const finallySource = clickSource.slice(
+    clickSource.lastIndexOf('} finally {'),
+    clickSource.lastIndexOf('});'),
+  );
+
+  assert.match(mergeSource, /const taskRecords = \[[\s\S]*result\.task,[\s\S]*result\.createdTask,[\s\S]*result\.endedTask,[\s\S]*result\.stoppedTask/);
+  assert.match(mergeSource, /if \(task\.messageId\) \{[\s\S]*message\?\.id === task\.messageId[\s\S]*\{ \.\.\.message, taskId: task\.id, updatedAt: task\.updatedAt \|\| message\.updatedAt \}/);
+  assert.match(clickSource, /let skipFinalRefresh = false/);
+  assert.match(taskStatusSource, /const result = await api\(`\/api\/tasks\/\$\{taskId\}`/);
+  assert.match(taskStatusSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
+  assert.match(messageTaskSource, /const result = await api\(`\/api\/messages\/\$\{target\.dataset\.id\}\/task`/);
+  assert.match(messageTaskSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
+  assert.match(finallySource, /if \(!localOnlyActions\.has\(action\) && !skipFinalRefresh\) \{[\s\S]*await refreshStateOrAuthGate\(\)\.catch\(\(\) => \{\}\)/);
 });
 
 test('current human authors are marked and human inspector can return to the active thread', async () => {

@@ -180,7 +180,7 @@ test('task route group rejects done transition before review', async () => {
   assert.equal(deps.state.tasks[0].status, 'todo');
 });
 
-test('task route group records direct manual status transitions in the task timeline', async () => {
+test('task route group records direct manual status transitions and lets SSE debounce coalesce updates', async () => {
   const timeline = [];
   const broadcastOptions = [];
   const deps = routeDeps({
@@ -209,7 +209,7 @@ test('task route group records direct manual status transitions in the task time
     eventType: 'task_progress',
   }]);
   assert.ok(deps.state.tasks[0].history.some((item) => item.type === 'status_changed'));
-  assert.deepEqual(broadcastOptions, [{ immediate: true }]);
+  assert.deepEqual(broadcastOptions, [{}]);
 });
 
 test('task route group closes tasks without review and keeps closed terminal', async () => {

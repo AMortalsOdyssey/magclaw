@@ -21,6 +21,7 @@ function renderModal() {
     'avatar-crop': renderAvatarCropModal,
     'agent-start': renderAgentStartModal,
     'agent-restart': renderAgentRestartModal,
+    'daemon-upgrade-confirm': renderDaemonUpgradeConfirmModal,
     computer: renderComputerModal,
     human: renderHumanModal,
   };

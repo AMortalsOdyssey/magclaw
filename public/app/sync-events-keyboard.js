@@ -831,6 +831,7 @@ function computerPairingModalRenderSignature(stateSnapshot = appState) {
 }
 
 function applyStateUpdate(nextState) {
+  if (pendingStateUpdate && pendingStateUpdate !== nextState) clearPendingStateUpdate();
   nextState = preserveLoadedConversationHistory(appState, nextState);
   syncBootstrapPagination(nextState);
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete });
@@ -981,9 +982,10 @@ function applyRealtimeJournalEvent(envelope) {
     applyRunEventUpdate(payload.event);
     return;
   }
-  if (eventType === 'agent_status_changed' && payload.agent?.id && appState) {
+  const stateSnapshot = pendingStateUpdateBase();
+  if (eventType === 'agent_status_changed' && payload.agent?.id && stateSnapshot) {
     const incoming = payload.agent;
-    const agents = (appState.agents || []).map((agent) => (
+    const agents = (stateSnapshot.agents || []).map((agent) => (
       agent.id === incoming.id
         ? {
             ...agent,
@@ -996,16 +998,17 @@ function applyRealtimeJournalEvent(envelope) {
           }
         : agent
     ));
-    applyStateUpdate({ ...appState, agents });
+    queueStateUpdate({ ...stateSnapshot, agents });
   }
 }
 
 function applyPresenceHeartbeat(heartbeat) {
-  if (!appState || !Array.isArray(heartbeat?.agents)) return;
+  const stateSnapshot = pendingStateUpdateBase();
+  if (!stateSnapshot || !Array.isArray(heartbeat?.agents)) return;
   const incomingById = new Map(heartbeat.agents.map((agent) => [agent.id, agent]));
   const incomingHumansById = new Map((heartbeat.humans || []).map((human) => [human.id, human]));
   let changed = false;
-  const agents = (appState.agents || []).map((agent) => {
+  const agents = (stateSnapshot.agents || []).map((agent) => {
     const incoming = incomingById.get(agent.id);
     if (!incoming) return agent;
     const next = {
@@ -1025,7 +1028,7 @@ function applyPresenceHeartbeat(heartbeat) {
     }
     return next;
   });
-  const humans = (appState.humans || []).map((human) => {
+  const humans = (stateSnapshot.humans || []).map((human) => {
     const incoming = incomingHumansById.get(human.id);
     if (!incoming) return human;
     const next = {
@@ -1044,11 +1047,11 @@ function applyPresenceHeartbeat(heartbeat) {
     return next;
   });
   if (!changed) return;
-  applyStateUpdate({
-    ...appState,
+  queueStateUpdate({
+    ...stateSnapshot,
     agents,
     humans,
-    updatedAt: heartbeat.updatedAt || appState.updatedAt,
+    updatedAt: heartbeat.updatedAt || stateSnapshot.updatedAt,
   });
 }
 
@@ -1070,7 +1073,7 @@ function applyStateDeltaEnvelope(envelope) {
     return;
   }
   if (envelope?.type === 'state_patch' && envelope.payload) {
-    applyStateUpdate(envelope.payload);
+    queueStateUpdate(envelope.payload);
   }
 }
 
@@ -1103,7 +1106,7 @@ function connectEvents() {
     refreshAfterSseGap();
   });
   eventSource.addEventListener('state', (event) => {
-    applyStateUpdate(JSON.parse(event.data));
+    queueStateUpdate(JSON.parse(event.data));
   });
   eventSource.addEventListener('run-event', (event) => {
     const incoming = JSON.parse(event.data);
@@ -1127,14 +1130,15 @@ async function sendHumanPresenceHeartbeat() {
   humanPresenceInFlight = true;
   try {
     const result = await api('/api/cloud/auth/heartbeat', { method: 'POST', body: '{}' });
-    if (result?.human?.id && appState?.humans) {
+    const stateSnapshot = pendingStateUpdateBase();
+    if (result?.human?.id && stateSnapshot?.humans) {
       let changed = false;
-      const humans = appState.humans.map((human) => {
+      const humans = stateSnapshot.humans.map((human) => {
         if (human.id !== result.human.id) return human;
         changed = human.status !== result.human.status || human.lastSeenAt !== result.human.lastSeenAt;
         return { ...human, ...result.human };
       });
-      if (changed) applyStateUpdate({ ...appState, humans });
+      if (changed) queueStateUpdate({ ...stateSnapshot, humans });
     }
   } catch (error) {
     if (error.status === 401) stopHumanPresenceHeartbeat();

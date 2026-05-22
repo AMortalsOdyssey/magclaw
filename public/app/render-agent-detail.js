@@ -454,6 +454,10 @@ function agentLiveActivitySummary(agent) {
     || activity.note
     || activity.text
     || activity.tool
+    || latestEvent?.raw?.activity?.detail
+    || latestEvent?.raw?.activity?.note
+    || latestEvent?.raw?.activity?.text
+    || latestEvent?.raw?.activity?.tool
     || latestEvent?.message
     || ''
   ).trim();

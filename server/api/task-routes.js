@@ -38,7 +38,7 @@ export async function handleTaskApi(req, res, url, deps) {
   const allowedTaskStatuses = new Set(TASK_STATUS_VALUES);
 
   function broadcastTaskStatusState() {
-    broadcastState({ immediate: true });
+    broadcastState();
   }
 
   function workspaceIdForRecord(record = null, fallback = '') {

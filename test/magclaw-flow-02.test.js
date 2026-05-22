@@ -413,6 +413,101 @@ test('thread agent mention relay ignores descriptive references and keeps explic
   }
 });
 
+test('private user-agent DM handoffs route the target agent back to the originating human DM', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const { agent: coordinator } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Coordinator', description: 'General coordinator', runtime: 'Codex CLI' }),
+    });
+    const { agent: specialist } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Specialist', description: 'Focused helper', runtime: 'Codex CLI' }),
+    });
+    const { dm: ownerDm } = await request(server.baseUrl, '/api/dms', {
+      method: 'POST',
+      body: JSON.stringify({ participantId: coordinator.id }),
+    });
+    const parent = await request(server.baseUrl, `/api/spaces/dm/${ownerDm.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '请找 Specialist 一起看一下这个问题',
+        attachmentIds: [],
+      }),
+    });
+
+    const coordinatorWorkItem = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      return snapshot.workItems.find((item) => (
+        item.sourceMessageId === parent.message.id
+        && item.agentId === coordinator.id
+        && item.spaceType === 'dm'
+        && item.spaceId === ownerDm.id
+      ));
+    });
+    assert.ok(coordinatorWorkItem);
+
+    const sent = await request(server.baseUrl, '/api/agent-tools/messages/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: coordinator.id,
+        workItemId: coordinatorWorkItem.id,
+        target: coordinatorWorkItem.target,
+        content: '收到，我会请 Specialist 接手处理。',
+      }),
+    });
+    assert.equal(sent.ok, true);
+    assert.equal(sent.message.parentMessageId, parent.message.id);
+
+    const finalState = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const targetHumanDm = snapshot.dms.find((item) => (
+        Array.isArray(item.participantIds)
+        && item.participantIds.includes('hum_local')
+        && item.participantIds.includes(specialist.id)
+      ));
+      const handoffMessage = targetHumanDm
+        ? snapshot.messages.find((item) => (
+          item.spaceType === 'dm'
+          && item.spaceId === targetHumanDm.id
+          && item.handoffSourceMessageId === sent.message.id
+          && item.metadata?.visibility === 'internal'
+        ))
+        : null;
+      const specialistWorkItem = handoffMessage
+        ? snapshot.workItems.find((item) => item.sourceMessageId === handoffMessage.id && item.agentId === specialist.id)
+        : null;
+      return targetHumanDm && handoffMessage && specialistWorkItem
+        ? { snapshot, targetHumanDm, handoffMessage, specialistWorkItem }
+        : null;
+    });
+
+    assert.ok(finalState.targetHumanDm);
+    assert.deepEqual(new Set(finalState.targetHumanDm.participantIds), new Set(['hum_local', specialist.id]));
+    assert.equal(finalState.handoffMessage.authorType, 'system');
+    assert.equal(finalState.handoffMessage.hiddenFromChannel, true);
+    assert.equal(finalState.handoffMessage.parentMessageId || null, null);
+    assert.match(finalState.handoffMessage.body, new RegExp(`<@${coordinator.id}>`));
+    assert.match(finalState.handoffMessage.body, new RegExp(`<@${specialist.id}>`));
+    assert.equal(finalState.specialistWorkItem.spaceId, finalState.targetHumanDm.id);
+    assert.equal(finalState.specialistWorkItem.parentMessageId || null, null);
+    assert.equal(finalState.specialistWorkItem.taskId || null, null);
+    assert.equal(finalState.snapshot.workItems.some((item) => (
+      item.sourceMessageId === sent.message.id
+      && item.agentId === specialist.id
+      && item.spaceId === ownerDm.id
+      && item.parentMessageId === parent.message.id
+    )), false);
+    assert.equal(finalState.snapshot.dms.some((item) => (
+      Array.isArray(item.participantIds)
+      && item.participantIds.includes(coordinator.id)
+      && item.participantIds.includes(specialist.id)
+    )), false);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('availability follow-up routes to remaining available agents from recent context', async () => {
   const server = await startIsolatedServer();
   try {

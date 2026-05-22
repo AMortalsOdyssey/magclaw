@@ -39,9 +39,13 @@ test('submitted conversation writes merge the API response before the final refr
 
 test('message and reply submits render an optimistic local record before waiting for the API response', async () => {
   const app = await readAppSource();
-  const submitSource = app.slice(
+  const optimisticSource = app.slice(
     app.indexOf('function optimisticConversationRecord'),
     app.indexOf("document.addEventListener('submit'"),
+  );
+  const mergeSource = app.slice(
+    app.indexOf('function dropOptimisticConversationRecord'),
+    app.indexOf('function optimisticMentionIds'),
   );
   const messageFormSource = app.slice(
     app.indexOf("if (form.id === 'message-form')"),
@@ -52,10 +56,11 @@ test('message and reply submits render an optimistic local record before waiting
     app.indexOf("if (form.id === 'channel-form')"),
   );
 
-  assert.match(submitSource, /function optimisticConversationRecord\(/);
-  assert.match(submitSource, /function dropOptimisticConversationRecord\(/);
-  assert.match(submitSource, /record\.optimistic === true/);
-  assert.match(submitSource, /nextState = dropOptimisticConversationRecord\(nextState, removeOptimisticId\)/);
+  assert.match(optimisticSource, /function optimisticConversationRecord\(/);
+  assert.match(optimisticSource, /optimistic: true/);
+  assert.match(mergeSource, /function dropOptimisticConversationRecord\(/);
+  assert.match(mergeSource, /record\.optimistic === true/);
+  assert.match(mergeSource, /nextState = dropOptimisticConversationRecord\(nextState, removeOptimisticId\)/);
   assert.match(messageFormSource, /const optimisticMessage = optimisticConversationRecord\(\{[\s\S]*kind: 'message'[\s\S]*applySubmittedConversationResult\(\{ message: optimisticMessage \}\)/);
   assert.ok(
     messageFormSource.indexOf('applySubmittedConversationResult({ message: optimisticMessage })') < messageFormSource.indexOf('result = await api'),
@@ -68,4 +73,44 @@ test('message and reply submits render an optimistic local record before waiting
     'reply optimistic render must happen before awaiting the API',
   );
   assert.match(replyFormSource, /applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticReply\.id \}\)/);
+});
+
+test('successful message and reply submits skip the final full state refresh after local merge', async () => {
+  const app = await readAppSource();
+  const messageFormSource = app.slice(
+    app.indexOf("if (form.id === 'message-form')"),
+    app.indexOf("if (form.id === 'reply-form')"),
+  );
+  const replyFormSource = app.slice(
+    app.indexOf("if (form.id === 'reply-form')"),
+    app.indexOf("if (form.id === 'channel-form')"),
+  );
+  const submitListenerSource = app.slice(
+    app.indexOf("document.addEventListener('submit'"),
+    app.indexOf('render();\nrefreshStateOrAuthGate', app.indexOf("document.addEventListener('submit'")),
+  );
+  const finallySource = submitListenerSource.slice(
+    submitListenerSource.lastIndexOf('} finally {'),
+    submitListenerSource.lastIndexOf('});'),
+  );
+
+  assert.match(finallySource, /if \(!skipFinalRefresh\) await refreshStateOrAuthGate\(\)\.catch\(\(\) => \{\}\);/);
+  assert.ok(
+    messageFormSource.indexOf('applySubmittedConversationResult(result, { removeOptimisticId: optimisticMessage.id })')
+      < messageFormSource.indexOf('skipFinalRefresh = true'),
+    'message submit should only skip the final refresh after the server result is locally merged',
+  );
+  assert.ok(
+    messageFormSource.indexOf('skipFinalRefresh = true') < messageFormSource.indexOf("toast('Message sent')"),
+    'message submit should suppress the final full refresh on the normal success path',
+  );
+  assert.ok(
+    replyFormSource.indexOf('applySubmittedConversationResult(result, { removeOptimisticId: optimisticReply.id })')
+      < replyFormSource.indexOf('skipFinalRefresh = true'),
+    'reply submit should only skip the final refresh after the server result is locally merged',
+  );
+  assert.ok(
+    replyFormSource.indexOf('skipFinalRefresh = true') < replyFormSource.indexOf("toast('Reply added')"),
+    'reply submit should suppress the final full refresh on the normal success path',
+  );
 });

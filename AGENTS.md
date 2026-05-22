@@ -10,7 +10,23 @@ This project follows the global Codex rules plus the project-specific rules belo
 4. When committing for this project, commit directly on `main` unless the user explicitly asks for a branch. Split dirty work into small logical commits, use `jianghaibo <jianghaibo@52tt.com>`, and do not add `Co-Authored-By`.
 5. When the user asks to publish for cloud deployment or AMO verification, push `main` to both `gitlab` and `origin` after verification, then confirm both remote heads match the local commit.
 6. For GitHub `origin` repository operations in this project, use the `AMO` GitHub account to pull/fetch and push; do not assume the GitLab identity applies to GitHub.
-7. When summarizing implemented features into Obsidian, update the MagClaw feature changelog first, then run the conversation recap workflow if requested.
+7. Treat release notes updates, feature changelog updates, and conversation recaps as separate commands. Execute only the commands the user explicitly names.
+
+## Engineering Discipline
+
+- For every bug fix, new feature, or enhancement, start from the whole-system impact: affected domains, data contracts, realtime/state sync, permissions, persistence, tests, performance, and deployment/runtime behavior.
+- Prefer capability-level solutions over case patches. When a problem can recur, define the reusable domain rule, API/helper, UI behavior, or routing primitive first, then implement the smallest change inside that boundary.
+- Keep changes modular and cohesive: business rules belong near domain/runtime services, rendering behavior belongs in rendering modules, and persistence/transport concerns should stay at the edges.
+- Consolidate repeated symptoms into one shared abstraction when they have the same root cause. Do not add agent-specific or scenario-specific rules unless the product requirement is truly specific.
+- Balance extensibility with simplicity: avoid speculative frameworks, but leave clear extension points, observability, tests, and documentation for the next adjacent workflow.
+- Before finalizing, verify neighboring flows and regression risk, especially message/task routing, privacy boundaries, state synchronization, permission checks, render performance, and deployment assumptions.
+
+## Command Boundaries
+
+- If the user only asks to update `release notes`, update release notes only; do not update feature docs or run the recap skill unless also requested.
+- If the user only asks to update `feature`, update the Obsidian MagClaw feature changelog only; do not update release notes or run the recap skill unless also requested.
+- If the user only says `用 skill 总结会话` or asks to summarize the conversation, run the conversation recap workflow only; do not update release notes or feature docs unless also requested.
+- If the user asks for multiple commands in the same request, perform exactly that requested set and verify each touched output.
 
 ## Feature Changelog
 
@@ -18,7 +34,7 @@ This project follows the global Codex rules plus the project-specific rules belo
 - Put feature details in the relevant `myproject/magclaw/changelog/features/YYYYMMDD_NN_*.md` module instead of crowding the index.
 - Do not put implementation logs, test transcripts, secrets, local absolute paths, or deployment evidence in the feature changelog.
 - After editing feature notes, read the touched files back before reporting success.
-- If the user says to use the recap skill, append the session to the Daily Note, refresh the generated daily summary when appropriate, and verify `word_count` against the body text after removing frontmatter.
+- Do not update feature changelog files during a conversation recap unless the user explicitly asks to update `feature`.
 
 ## Release Notes
 

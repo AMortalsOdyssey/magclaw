@@ -70,6 +70,36 @@ test('conversation mention validation resolves active cloud member humans', () =
   assert.deepEqual(model.extractMentions('<@hum_cloud>').humans, ['hum_cloud']);
 });
 
+test('agent response preparation canonicalizes visible agent names into mentions', () => {
+  const state = {
+    humans: [],
+    agents: [
+      { id: 'agt_sender', name: 'Sender', status: 'idle' },
+      { id: 'agt_kk', name: 'KK', status: 'idle' },
+    ],
+    computers: [],
+    channels: [],
+    dms: [],
+    messages: [],
+    replies: [],
+    tasks: [],
+    missions: [],
+    runs: [],
+    workItems: [],
+    cloud: { users: [], workspaceMembers: [] },
+  };
+  const model = createConversationModel({
+    getState: () => state,
+    httpError: (status, message) => Object.assign(new Error(message), { status }),
+    makeId: (prefix) => `${prefix}_test`,
+    now: () => '2026-05-22T00:00:00.000Z',
+    extractLocalReferences: () => [],
+    projectReferenceFromParts: () => null,
+  });
+
+  assert.equal(model.prepareAgentResponseBody('收到，我已经找 KK 同步了。'), '收到，我已经找 <@agt_kk> 同步了。');
+});
+
 test('conversation targets resolve #all threads within the requested workspace', () => {
   const state = {
     humans: [],

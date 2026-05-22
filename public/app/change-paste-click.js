@@ -241,6 +241,7 @@ document.addEventListener('click', async (event) => {
   if (!prepared) return;
   const { action, target, localOnlyActions } = prepared;
   const clickLoadingToken = beginClickLoading(action, target, localOnlyActions);
+  let skipFinalRefresh = false;
   try {
     if (action === 'open-message-context-menu') {
       openMessageContextMenu(target.dataset.id, event, target.dataset.contextScope || 'message');
@@ -1181,6 +1182,26 @@ document.addEventListener('click', async (event) => {
       modal = null;
       toast('Agent restart requested');
     }
+    if (action === 'confirm-daemon-upgrade') {
+      const computerId = daemonUpgradeConfirmState?.computerId || '';
+      if (!computerId) return;
+      const result = await api(`/api/computers/${encodeURIComponent(computerId)}/daemon-upgrade`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      if (result?.computer) {
+        const existing = byId(appState.computers, result.computer.id);
+        if (existing) Object.assign(existing, result.computer);
+      }
+      selectedComputerId = computerId;
+      activeView = 'computers';
+      railTab = 'computers';
+      daemonUpgradeConfirmState = { computerId: null };
+      modal = null;
+      await refreshState().catch(() => {});
+      render();
+      toast('Daemon upgrade queued');
+    }
     if (action === 'close-modal') {
       const isBackdrop = event.target.classList.contains('modal-backdrop');
       const isCloseBtn = event.target.closest('.modal-head button[data-action="close-modal"]');
@@ -1202,6 +1223,9 @@ document.addEventListener('click', async (event) => {
         }
         if (modal === 'agent-restart') {
           agentRestartState = { agentId: null, mode: 'restart' };
+        }
+        if (modal === 'daemon-upgrade-confirm') {
+          daemonUpgradeConfirmState = { computerId: null };
         }
         if (modal === 'join-link-revoke-confirm') {
           joinLinkRevokeConfirmState = { joinLinkId: null };
@@ -1419,15 +1443,17 @@ document.addEventListener('click', async (event) => {
       const nextStatus = target.dataset.status || '';
       if (!taskId || !taskColumns.some(([status]) => status === nextStatus)) throw new Error('Task status is invalid.');
       openTaskStatusMenuId = null;
-      await api(`/api/tasks/${taskId}`, {
+      const result = await api(`/api/tasks/${taskId}`, {
         method: 'PATCH',
         body: JSON.stringify({ status: nextStatus }),
       });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
       toast(`Task moved to ${taskStatusLabel(nextStatus)}`);
     }
     if (action === 'message-task') {
       messageContextMenu = null;
-      await api(`/api/messages/${target.dataset.id}/task`, { method: 'POST', body: '{}' });
+      const result = await api(`/api/messages/${target.dataset.id}/task`, { method: 'POST', body: '{}' });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
       toast('Task created from message');
     }
     if (action === 'task-claim') {
@@ -1513,23 +1539,12 @@ document.addEventListener('click', async (event) => {
         toast(target.dataset.upgradeDisabledReason);
         return;
       }
-      const computer = byId(appState.computers, computerId);
-      const label = computer?.name || computer?.hostname || 'this computer';
-      if (!window.confirm(`Upgrade the MagClaw daemon on ${label} after all Agents become idle?`)) return;
-      const result = await api(`/api/computers/${encodeURIComponent(target.dataset.id || '')}/daemon-upgrade`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
-      if (result?.computer) {
-        const existing = byId(appState.computers, result.computer.id);
-        if (existing) Object.assign(existing, result.computer);
-      }
       selectedComputerId = computerId;
       activeView = 'computers';
       railTab = 'computers';
-      await refreshState().catch(() => {});
+      daemonUpgradeConfirmState = { computerId };
+      modal = 'daemon-upgrade-confirm';
       render();
-      toast('Daemon upgrade queued');
     }
     if (action === 'regenerate-computer-command') {
       const computer = byId(appState.computers, target.dataset.id);
@@ -1763,7 +1778,7 @@ document.addEventListener('click', async (event) => {
     if (clickLoadingToken && action !== 'set-agent-detail-tab') {
       await waitForClickLoadingDebugDelay();
     }
-    if (!localOnlyActions.has(action)) {
+    if (!localOnlyActions.has(action) && !skipFinalRefresh) {
       await refreshStateOrAuthGate().catch(() => {});
     }
     finishClickLoading(clickLoadingToken, target);

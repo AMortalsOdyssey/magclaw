@@ -345,7 +345,7 @@ test('agent tool task creation reuses an immediate duplicate from the same agent
   assert.equal(secondRes.data.tasks[0].reused, true);
 });
 
-test('agent tool task status updates broadcast immediately', async () => {
+test('agent tool task status updates use debounced state broadcasts', async () => {
   const broadcastOptions = [];
   const task = { id: 'task_update', number: 7, status: 'todo' };
   const deps = routeDeps({
@@ -374,7 +374,7 @@ test('agent tool task status updates broadcast immediately', async () => {
   assert.equal(handled, true);
   assert.equal(res.statusCode, 200);
   assert.equal(task.status, 'in_review');
-  assert.deepEqual(broadcastOptions, [{ immediate: true }]);
+  assert.deepEqual(broadcastOptions, [{}]);
 });
 
 test('agent tool memory endpoint records controlled memory writebacks', async () => {

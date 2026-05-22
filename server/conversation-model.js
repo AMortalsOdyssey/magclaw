@@ -251,15 +251,21 @@ export function createConversationModel(deps) {
       });
   }
   
-  function knownMentionEntries() {
+  function knownMentionEntries({ includeBareActorNames = false } = {}) {
     const entries = [];
     for (const agent of state.agents || []) {
       const agentStatus = String(agent?.status || '').toLowerCase();
       if (agent?.deletedAt || agent?.archivedAt || agentStatus === 'deleted' || agentStatus === 'disabled') continue;
       entries.push([visibleMentionLabel(agent), agent.id]);
+      if (includeBareActorNames && agent?.name && String(agent.name).trim().length >= 2) {
+        entries.push([String(agent.name).trim(), agent.id]);
+      }
     }
     for (const human of workspaceHumans()) {
       entries.push([visibleMentionLabel(human), human.id]);
+      if (includeBareActorNames && human?.name && String(human.name).trim().length >= 2) {
+        entries.push([String(human.name).trim(), human.id]);
+      }
       if (human.email) entries.push([`@${human.email.split('@')[0]}`, human.id]);
     }
     for (const special of ['all', 'here', 'channel', 'everyone']) {
@@ -270,9 +276,9 @@ export function createConversationModel(deps) {
       .sort((a, b) => b[0].length - a[0].length);
   }
   
-  function encodeVisibleMentions(text) {
+  function encodeVisibleMentions(text, options = {}) {
     let result = String(text || '');
-    for (const [label, id] of knownMentionEntries()) {
+    for (const [label, id] of knownMentionEntries(options)) {
       const pattern = new RegExp(escapeRegExp(label), 'g');
       result = result.replace(pattern, (match, offset, fullText) => {
         const before = offset > 0 ? fullText[offset - 1] : '';
@@ -293,7 +299,7 @@ export function createConversationModel(deps) {
   }
   
   function prepareAgentResponseBody(text) {
-    return encodeVisibleMentions(replaceBareActorIds(String(text || '').trim()));
+    return encodeVisibleMentions(replaceBareActorIds(String(text || '').trim()), { includeBareActorNames: true });
   }
   
   function defaultReadBy(record) {

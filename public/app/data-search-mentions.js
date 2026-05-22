@@ -1277,6 +1277,7 @@ function clickLoadingMeta(action, target) {
     'restore-console-server': ['Restoring server...', 'main'],
     'confirm-agent-start': ['Requesting agent start...', detailSurface],
     'confirm-agent-restart': ['Requesting agent restart...', detailSurface],
+    'confirm-daemon-upgrade': ['Queuing daemon upgrade...', 'modal'],
     'pick-project-folder': ['Opening folder picker...', 'main'],
     'toggle-project-tree': ['Loading folder...', 'main'],
     'open-project-file': ['Loading file...', detailSurface],

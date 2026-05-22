@@ -50,7 +50,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
   const PROACTIVE_MESSAGE_DEDUPE_WINDOW_MS = 3 * 1000;
 
   function broadcastTaskStatusState() {
-    broadcastState({ immediate: true });
+    broadcastState();
   }
 
   function headerValue(name) {

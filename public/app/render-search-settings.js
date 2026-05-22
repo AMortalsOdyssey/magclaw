@@ -265,8 +265,9 @@ function renderComputers() {
   void canManageComputers;
   void canManageAgents;
   const selected = (selectedComputerId ? byId(computers, selectedComputerId) : null) || computers[0] || null;
+  const scrollKey = selected?.id ? `computers:${selected.id}` : 'computers:list';
   return `
-    <section class="computers-page">
+    <section class="computers-page" data-page-scroll-surface data-scroll-key="${escapeHtml(scrollKey)}">
       <header class="settings-page-header">
         <div class="settings-page-heading">
           <div class="settings-page-icon">${settingsIcon('computer', 24)}</div>
@@ -451,13 +452,13 @@ function computerDaemonUpgradeState(computer = {}) {
 function computerUpgradeStatusLabel(computer = {}) {
   const upgrade = computerDaemonUpgradeState(computer);
   const status = upgrade.status || String(computer.status || '').toLowerCase();
-  if (['pending_idle', 'queued_until_idle', 'accepted', 'upgrade_pending'].includes(status)) return '等待更新';
-  if (['upgrading', 'preparing', 'resolve_target', 'download', 'preflight', 'stage_service'].includes(status) || String(computer.status || '').toLowerCase() === 'upgrading') return '升级中';
-  if (['restarting', 'stop_old_daemon', 'start_target_daemon', 'wait_ready'].includes(status)) return '重启中';
-  if (status === 'rollback' || status === 'rollback_succeeded' || String(computer.status || '').toLowerCase() === 'rollback') return '已回退';
-  if (status === 'rollback_failed') return '回退失败';
-  if (status === 'failed' || String(computer.status || '').toLowerCase() === 'upgrade_failed') return '升级失败';
-  if (status === 'succeeded') return '已更新';
+  if (['pending_idle', 'queued_until_idle', 'accepted', 'upgrade_pending'].includes(status)) return 'Waiting for update';
+  if (['upgrading', 'preparing', 'resolve_target', 'download', 'preflight', 'stage_service'].includes(status) || String(computer.status || '').toLowerCase() === 'upgrading') return 'Updating';
+  if (['restarting', 'stop_old_daemon', 'start_target_daemon', 'wait_ready'].includes(status)) return 'Restarting';
+  if (status === 'rollback' || status === 'rollback_succeeded' || String(computer.status || '').toLowerCase() === 'rollback') return 'Rolled back';
+  if (status === 'rollback_failed') return 'Rollback failed';
+  if (status === 'failed' || String(computer.status || '').toLowerCase() === 'upgrade_failed') return 'Update failed';
+  if (status === 'succeeded') return 'Updated';
   return '';
 }
 
@@ -472,7 +473,7 @@ function daemonUpgradeDisabledMessage(computer = {}, { updateAvailable = false, 
   if (!(cloudCan('upgrade_computers') || cloudCan('manage_computers'))) return 'Only owners and admins can upgrade daemons.';
   if (upgradeBusy) return 'Daemon upgrade is already in progress.';
   if (updateAvailable && !computerDaemonServiceReady(computer)) {
-    return '只有后台运行才允许自动更新，前台运行请手动更新。';
+    return 'Only background daemons can update automatically. For foreground daemons, update manually.';
   }
   return '';
 }
@@ -495,10 +496,10 @@ function renderDaemonVersionValue(...values) {
   return `
     <span class="daemon-version-value ${updateAvailable ? 'update-available' : ''} ${upgradePending ? 'upgrade-pending' : ''} ${upgrading ? 'upgrading' : ''} ${rollback ? 'rolled-back' : ''} ${failed ? 'upgrade-failed' : ''}">
       ${escapeHtml(label)}
-      ${upgradePending ? '<small>等待更新</small>' : ''}
-      ${upgrading ? `<small>升级中 ${escapeHtml(String(upgrade.progress || 0))}%</small>` : ''}
-      ${rollback ? '<small>已回退</small>' : ''}
-      ${failed ? '<small>升级失败</small>' : ''}
+      ${upgradePending ? '<small>Waiting for update</small>' : ''}
+      ${upgrading ? `<small>Updating ${escapeHtml(String(upgrade.progress || 0))}%</small>` : ''}
+      ${rollback ? '<small>Rolled back</small>' : ''}
+      ${failed ? '<small>Update failed</small>' : ''}
     </span>
   `;
 }
@@ -512,13 +513,13 @@ function renderDaemonUpgradePanel(computer = {}, options = {}) {
     updateAvailable = daemonUpdateAvailable(currentVersion, latestVersion),
     upgradeBusy = false,
   } = options;
-  const upgradeVisible = Boolean(upgradeState.commandId && upgradeLabel && upgradeLabel !== '已更新');
+  const upgradeVisible = Boolean(upgradeState.commandId && upgradeLabel && upgradeLabel !== 'Updated');
   const shouldShowUpgradePanel = updateAvailable || upgradeVisible;
   if (!shouldShowUpgradePanel) return '';
   const disabledReason = daemonUpgradeDisabledMessage(computer, { updateAvailable, upgradeBusy });
   const blocked = Boolean(disabledReason && updateAvailable && !upgradeBusy);
   const active = Boolean(upgradeBusy);
-  const upgrading = ['升级中', '重启中'].includes(upgradeLabel);
+  const upgrading = ['Updating', 'Restarting'].includes(upgradeLabel);
   const title = upgradeLabel || 'Daemon update available';
   const range = latestVersion !== '--' ? `${currentVersion} -> ${latestVersion}` : currentVersion;
   const message = upgradeState.message
@@ -530,7 +531,7 @@ function renderDaemonUpgradePanel(computer = {}, options = {}) {
   const buttonText = upgradeBusy
     ? upgradeLabel
     : blocked
-      ? '请手动更新'
+      ? 'Update manually'
       : 'Upgrade daemon';
   const progress = Math.max(0, Math.min(100, Number(upgradeState.progress || 0) || 0));
   return `
@@ -568,6 +569,40 @@ function renderComputerAgentCard(agent) {
   `;
 }
 
+function computerUpgradeConfirmTarget() {
+  const computerId = daemonUpgradeConfirmState?.computerId || '';
+  return computerId ? byId(appState?.computers, computerId) : null;
+}
+
+function renderDaemonUpgradeConfirmModal() {
+  const computer = computerUpgradeConfirmTarget();
+  if (!computer) return modalHeader('Upgrade Daemon', 'Computer not found');
+  const label = computer.name || computer.hostname || 'this computer';
+  const currentVersion = displayDaemonVersion(
+    computer.daemonVersion,
+    computer.version,
+    appState.runtime?.daemonPackageVersion,
+    MAGCLAW_DAEMON_PACKAGE_VERSION,
+  );
+  const latestVersion = daemonLatestVersion();
+  const range = latestVersion !== '--' ? `${currentVersion} -> ${latestVersion}` : currentVersion;
+  return `
+    ${modalHeader('Upgrade Daemon', 'Computer')}
+    <div class="confirm-stop-modal daemon-upgrade-confirm-modal">
+      <div class="confirm-stop-icon">${settingsIcon('computer')}</div>
+      <div class="confirm-stop-copy">
+        <strong>Upgrade ${escapeHtml(label)}?</strong>
+        <p>MagClaw will ask the computer daemon to upgrade after all Agents on this computer become idle.</p>
+        <small>${escapeHtml(range)}</small>
+      </div>
+    </div>
+    <div class="modal-actions confirm-stop-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+      <button type="button" class="primary-btn" data-action="confirm-daemon-upgrade">Queue daemon upgrade</button>
+    </div>
+  `;
+}
+
 function renderComputerDetail(computer) {
   const agents = computerAgents(computer.id);
   const currentCommand = latestPairingCommand?.computer?.id === computer.id ? latestPairingCommand.command : '';
@@ -578,8 +613,8 @@ function renderComputerDetail(computer) {
   const installedCount = runtimeDetails.filter((runtime) => runtime.installed !== false).length;
   const upgradeState = computerDaemonUpgradeState(computer);
   const upgradeLabel = computerUpgradeStatusLabel(computer);
-  const rolledBackLabel = '已回退';
-  const upgradeBusy = Boolean(upgradeState.commandId && upgradeLabel && !['已更新', '升级失败', rolledBackLabel, '回退失败'].includes(upgradeLabel));
+  const rolledBackLabel = 'Rolled back';
+  const upgradeBusy = Boolean(upgradeState.commandId && upgradeLabel && !['Updated', 'Update failed', rolledBackLabel, 'Rollback failed'].includes(upgradeLabel));
   const currentDaemonVersion = displayDaemonVersion(
     computer.daemonVersion,
     computer.version,
@@ -2195,6 +2230,22 @@ function renderProjectFilePreview() {
   `;
 }
 
+function displayHomePath(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const posixHome = raw.match(/^\/(Users|home)\/[^/]+(?=\/|$)/);
+  if (posixHome) {
+    const suffix = raw.slice(posixHome[0].length);
+    return suffix ? `~${suffix}` : '~';
+  }
+  const windowsHome = raw.match(/^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)/);
+  if (windowsHome) {
+    const suffix = raw.slice(windowsHome[0].length).replace(/\\/g, '/');
+    return suffix ? `~${suffix}` : '~';
+  }
+  return raw;
+}
+
 function renderAgentWorkspaceTree(agent, relPath = '', depth = 0) {
   const key = agentWorkspaceKey(agent.id, relPath);
   const tree = agentWorkspaceTreeCache[key];
@@ -2244,6 +2295,7 @@ function renderAgentWorkspacePreview(agent) {
   const file = preview.file;
   const mode = agentWorkspacePreviewMode === 'preview' ? 'preview' : 'raw';
   const showPreview = file?.previewKind === 'markdown' && agentWorkspacePreviewMode === 'preview';
+  const displayAbsolutePath = displayHomePath(file?.absolutePath || '');
   return `
     <div class="agent-workspace-preview">
       <div class="agent-workspace-filebar">
@@ -2260,8 +2312,8 @@ function renderAgentWorkspacePreview(agent) {
       ${preview.error ? `<div class="empty-box small error">${escapeHtml(preview.error)}</div>` : ''}
       ${file ? `
         <div class="file-preview-meta">
-          <strong title="${escapeHtml(file.absolutePath)}">${escapeHtml(file.name)}</strong>
-          <small>${escapeHtml(file.absolutePath)} / ${bytes(file.bytes)}</small>
+          <strong title="${escapeHtml(displayAbsolutePath)}">${escapeHtml(file.name)}</strong>
+          <small>${escapeHtml(displayAbsolutePath)} / ${bytes(file.bytes)}</small>
         </div>
         ${showPreview
           ? `<div class="markdown-preview">${renderMarkdown(file.content || '')}</div>`
@@ -2294,11 +2346,12 @@ function renderAgentWorkspaceTab(agent) {
   const rootKey = agentWorkspaceKey(agent.id, '');
   const tree = agentWorkspaceTreeCache[rootKey];
   const workspacePath = tree?.agent?.workspacePath || agent.workspacePath || agent.workspace || '--';
+  const displayWorkspacePath = displayHomePath(workspacePath);
   return `
     <div class="agent-workspace-tab">
       <div class="agent-workspace-path">
         <div class="agent-workspace-path-main">
-          <code>${escapeHtml(workspacePath)}</code>
+          <code title="${escapeHtml(displayWorkspacePath)}">${escapeHtml(displayWorkspacePath)}</code>
           ${agentWorkspaceSourceBadge(tree, agent)}
         </div>
         <button type="button" data-action="refresh-agent-workspace" data-agent-id="${escapeHtml(agent.id)}">Refresh</button>
