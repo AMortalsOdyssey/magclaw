@@ -33,8 +33,26 @@ function renderReleaseSummaryCard(componentId, label, component) {
   `;
 }
 
+function releaseBadgeClass(key) {
+  const classes = {
+    new: 'new',
+    bugFix: 'bug-fix',
+    approval: 'approval',
+    features: 'feature',
+    fixes: 'fix',
+    improved: 'improved',
+  };
+  if (classes[key]) return classes[key];
+  return String(key || '')
+    .replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`)
+    .replace(/^-/, '');
+}
+
 function renderReleaseVersionCard(release) {
   const sections = [
+    ['new', 'NEW'],
+    ['bugFix', 'BUG FIX'],
+    ['approval', 'APPROVAL'],
     ['features', 'FEATURE'],
     ['fixes', 'FIX'],
     ['improved', 'IMPROVED'],
@@ -53,7 +71,7 @@ function renderReleaseVersionCard(release) {
         if (!notes.length) return '';
         return `
           <div class="release-note-group">
-            <span class="release-badge release-${label.toLowerCase()}">${escapeHtml(label)}</span>
+            <span class="release-badge release-${releaseBadgeClass(key)}">${escapeHtml(label)}</span>
             <div class="release-note-list">
               ${notes.map((text) => `
                 <div class="release-note-row">

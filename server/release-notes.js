@@ -3,13 +3,31 @@ import path from 'node:path';
 
 export const RELEASE_COMPONENTS = ['web', 'daemon'];
 
+export const RELEASE_CATEGORY_KEYS = ['new', 'bugFix', 'approval', 'features', 'fixes', 'improved'];
+
 export const RELEASE_CATEGORY_LABELS = {
+  new: 'NEW',
+  bugFix: 'BUG FIX',
+  approval: 'APPROVAL',
   features: 'FEATURE',
   fixes: 'FIX',
   improved: 'IMPROVED',
 };
 
 const WEB_RELEASES = [
+  {
+    version: '0.3.1',
+    date: '2026-05-22',
+    title: 'Agent memory mirror',
+    new: [
+      'Agent memory mirrors only MEMORY.md to cloud storage while workspace files stay on the Computer.',
+      'Offline Agent workspaces fall back to the cloud MEMORY.md mirror with source status.',
+    ],
+    bugFix: [
+      'Local memory writes succeed even when PVC or PostgreSQL mirror sync fails.',
+    ],
+    approval: [],
+  },
   {
     version: '0.3.0',
     date: '2026-05-21',
@@ -158,6 +176,9 @@ function normalizeReleaseItem(item, index = 0) {
     version,
     date,
     title: String(item?.title || ''),
+    new: safeArray(item?.new).map(String).filter(Boolean),
+    bugFix: safeArray(item?.bugFix).map(String).filter(Boolean),
+    approval: safeArray(item?.approval).map(String).filter(Boolean),
     features: safeArray(item?.features).map(String).filter(Boolean),
     fixes: safeArray(item?.fixes).map(String).filter(Boolean),
     improved: safeArray(item?.improved).map(String).filter(Boolean),

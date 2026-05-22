@@ -6,7 +6,7 @@ const searchTimeRangeOptions = [
 ];
 
 const MAGCLAW_DAEMON_PACKAGE_VERSION = '0.1.4';
-const MAGCLAW_WEB_PACKAGE_VERSION = '0.2.0';
+const MAGCLAW_WEB_PACKAGE_VERSION = '0.3.1';
 
 function searchTimeRangeLabel() {
   return searchTimeRangeOptions.find(([value]) => value === searchTimeRange)?.[1] || 'Any Time';

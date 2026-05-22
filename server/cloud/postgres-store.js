@@ -14,7 +14,7 @@ import {
   quoteIdent,
   redactDatabaseUrl,
 } from './postgres.js';
-import { normalizeReleaseNotes, RELEASE_COMPONENTS } from '../release-notes.js';
+import { normalizeReleaseNotes, RELEASE_CATEGORY_KEYS, RELEASE_COMPONENTS } from '../release-notes.js';
 
 const TRANSIENT_POSTGRES_PERSIST_ERROR_CODES = new Set(['55P03', '40001', '40P01']);
 const DURABLE_STATE_RECORD_ARRAY_KEYS = Object.freeze(['reminders', 'missions', 'runs', 'projects', 'agentRuntimeSessions', 'conversationGrants']);
@@ -674,7 +674,7 @@ function releaseEntriesFromNotes(releaseNotesInput) {
   const entries = [];
   for (const component of RELEASE_COMPONENTS) {
     for (const release of safeArray(releaseNotes[component]?.releases)) {
-      for (const category of ['features', 'fixes', 'improved']) {
+      for (const category of RELEASE_CATEGORY_KEYS) {
         safeArray(release[category]).forEach((body, position) => {
           entries.push({
             id: releaseNoteRowId(component, release.version, category, position),
@@ -712,13 +712,16 @@ function releaseNotesFromRows(rows, fallback) {
         version,
         date,
         title: row.title || '',
+        new: [],
+        bugFix: [],
+        approval: [],
         features: [],
         fixes: [],
         improved: [],
       });
     }
     const release = grouped[component].get(key);
-    const category = ['features', 'fixes', 'improved'].includes(row.category) ? row.category : 'features';
+    const category = RELEASE_CATEGORY_KEYS.includes(row.category) ? row.category : 'new';
     release[category].push(String(row.body || ''));
   }
   for (const component of RELEASE_COMPONENTS) {

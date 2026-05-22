@@ -992,6 +992,14 @@
   background: #94d9f0;
 }
 
+.release-bug-fix {
+  background: #ffae76;
+}
+
+.release-approval {
+  background: #d8c5ff;
+}
+
 .release-improved {
   background: #b8ef77;
 }

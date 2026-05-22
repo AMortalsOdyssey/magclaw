@@ -2054,8 +2054,10 @@ test('sidebar settings and skill panels support collapsible MagClaw UI sections'
   assert.doesNotMatch(app, /id: 'system'/);
   assert.doesNotMatch(app, /System Config/);
   assert.match(app, /Release Notes/);
-  assert.match(app, /MAGCLAW_WEB_PACKAGE_VERSION = '0\.2\.0'/);
+  assert.match(app, /MAGCLAW_WEB_PACKAGE_VERSION = '0\.3\.1'/);
   assert.match(app, /function renderReleaseVersionCard\(release\)/);
+  assert.match(app, /bugFix: 'bug-fix'/);
+  assert.match(app, /features: 'feature'/);
   assert.match(app, /Versioned changelog/);
   assert.match(app, /Agent warmup/);
   assert.match(index, /<link rel="stylesheet" href="\/app\/release-settings\.css" \/>/);

@@ -679,12 +679,21 @@ CREATE TABLE IF NOT EXISTS cloud_release_notes (
   version TEXT NOT NULL,
   released_at DATE NOT NULL,
   title TEXT NOT NULL DEFAULT '',
-  category TEXT NOT NULL CHECK (category IN ('features', 'fixes', 'improved')),
+  category TEXT NOT NULL CHECK (category IN ('new', 'bugFix', 'approval', 'features', 'fixes', 'improved')),
   body TEXT NOT NULL,
   position INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+
+DO $$
+BEGIN
+  ALTER TABLE cloud_release_notes
+    DROP CONSTRAINT IF EXISTS cloud_release_notes_category_check;
+  ALTER TABLE cloud_release_notes
+    ADD CONSTRAINT cloud_release_notes_category_check
+    CHECK (category IN ('new', 'bugFix', 'approval', 'features', 'fixes', 'improved'));
+END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS cloud_release_notes_component_position_uidx
   ON cloud_release_notes(component, version, category, position);
