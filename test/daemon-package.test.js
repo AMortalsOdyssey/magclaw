@@ -158,7 +158,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.11');
+  assert.equal(DAEMON_VERSION, '0.1.12');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -343,10 +343,9 @@ test('top-level daemon npm package dry-run excludes cloud server and deployment 
   assert.equal(files.includes('kizuna.json'), false);
 });
 
-test('daemon package exposes upgrade capability and magclaw CLI alias', async () => {
+test('daemon package exposes one OpenClaw-style CLI bin for npx default execution', async () => {
   const daemonPackage = JSON.parse(await readFile(new URL('../daemon/package.json', import.meta.url), 'utf8'));
-  assert.equal(daemonPackage.bin.magclaw, 'bin/magclaw.js');
-  assert.equal(daemonPackage.bin['magclaw-daemon'], 'bin/magclaw-daemon.js');
+  assert.deepEqual(daemonPackage.bin, { magclaw: 'bin/magclaw.js' });
   assert.ok(CAPABILITIES.includes('daemon:upgrade'));
 });
 

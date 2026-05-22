@@ -27,6 +27,7 @@ This project follows the global Codex rules plus the project-specific rules belo
 - Keep each release note item to one sentence that is short enough to render as a single line in the Release Notes UI.
 - Every release-notes update must increment the Web Service / MagClaw cloud server version by one patch version.
 - If the user asks for both feature and release notes, update both, then read back the touched feature/release files before reporting success.
+- Because release notes are project code, after updating release notes run targeted validation, commit the project-code changes, and push the updated branch.
 
 ## Obsidian Note Naming
 

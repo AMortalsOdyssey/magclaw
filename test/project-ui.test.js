@@ -156,6 +156,9 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(modalSource, /function pairingCommandDisplayText/);
   assert.match(modalSource, /id="computer-display-name-input"/);
   assert.match(modalSource, /--display-name/);
+  assert.match(modalSource, /connect-background-note/);
+  assert.match(modalSource, /--background/);
+  assert.match(modalSource, /system daemon service/);
   assert.match(app, /let computerPairingCommandError = ''/);
   assert.match(app, /code\.textContent = pairingCommandDisplayText\(\)/);
   assert.match(modalSource, /computerPairingCommandError \|\| 'Generating command\.\.\.'/);

@@ -16,6 +16,21 @@ export const RELEASE_CATEGORY_LABELS = {
 
 const WEB_RELEASES = [
   {
+    version: '0.3.2',
+    date: '2026-05-22',
+    title: 'Remote daemon upgrades',
+    new: [
+      'Owners and admins can trigger daemon upgrades from Computer details.',
+      'Upgrade status shows waiting, progress, rollback, and failure states.',
+    ],
+    bugFix: [
+      'Queued Agent work resumes after the upgraded daemon reconnects.',
+    ],
+    approval: [
+      'Remote daemon upgrades still require owner or admin confirmation.',
+    ],
+  },
+  {
     version: '0.3.1',
     date: '2026-05-22',
     title: 'Agent memory mirror',
@@ -43,6 +58,32 @@ const WEB_RELEASES = [
 ];
 
 const DAEMON_RELEASES = [
+  {
+    version: '0.1.12',
+    date: '2026-05-22',
+    title: 'Default magclaw launcher',
+    new: [
+      'The daemon package exposes magclaw as the default npx command.',
+    ],
+    bugFix: [
+      'Service launchers restart through the magclaw command after upgrades.',
+    ],
+    approval: [],
+  },
+  {
+    version: '0.1.11',
+    date: '2026-05-22',
+    title: 'Background self-upgrade worker',
+    new: [
+      'Background daemon services can stage packages, restart, and report upgrade progress.',
+    ],
+    bugFix: [
+      'Failed target starts roll back to the previous launcher version.',
+    ],
+    approval: [
+      'Upgrade workers only run after a server-issued upgrade command.',
+    ],
+  },
   {
     version: '0.1.10',
     date: '2026-05-21',

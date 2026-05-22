@@ -800,6 +800,15 @@ function pairingCommandDisplayText(command = latestPairingCommand?.command || ''
   return pairingCommandText(command) || computerPairingCommandError || 'Generating command...';
 }
 
+function connectBackgroundNoteHtml({ usesLocalRepoPlaceholder = false, className = 'connect-command-note' } = {}) {
+  return `
+    <p class="${escapeHtml(className)} connect-background-note">
+      ${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your MagClaw checkout path before running. ' : ''}
+      Foreground mode keeps running in this terminal. To register it as a system daemon service, add <code>--background</code> to this same command before the trailing <code># Server Name</code> comment.
+    </p>
+  `;
+}
+
 function renderComputerModal() {
   if (!cloudCan('manage_computers')) {
     return `
@@ -837,10 +846,7 @@ function renderComputerModal() {
         <pre><code>${escapeHtml(pairingCommandDisplayText(command))}</code></pre>
         ${command ? pairingCommandCopyButtonHtml() : ''}
       </div>
-      <p class="connect-command-note">
-        ${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your MagClaw checkout path before running. ' : ''}
-        Keep this process running — it maintains the connection between your computer and MagClaw.
-      </p>
+      ${connectBackgroundNoteHtml({ usesLocalRepoPlaceholder })}
       <div class="pairing-wait-box ${connected ? 'connected' : ''} ${stale || commandError ? 'stale' : ''}">
         <span class="avatar-status-dot inline ${presenceClass(connected ? 'connected' : (stale || commandError) ? 'offline' : 'queued')}"></span>
         <strong>${connected ? 'Computer connected.' : stale ? 'This connect command is no longer valid.' : commandStatusText}</strong>

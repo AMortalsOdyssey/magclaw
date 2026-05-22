@@ -430,7 +430,7 @@ async function acquireDaemonLock(profile = DEFAULT_PROFILE, config = {}, env = p
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const active = await activeDaemonLock(paths.profile, env);
     if (active) {
-      throw new Error(`MagClaw daemon profile "${paths.profile}" is already running with pid ${active.pid}. Run "magclaw-daemon stop --profile ${paths.profile}" before starting another daemon.`);
+      throw new Error(`MagClaw daemon profile "${paths.profile}" is already running with pid ${active.pid}. Run "magclaw stop --profile ${paths.profile}" before starting another daemon.`);
     }
     try {
       await writeLockFile(paths.lockFile, lock);
@@ -3433,7 +3433,7 @@ async function writeLauncher(profile, env = process.env) {
     "const packageSpec = String(service.packageSpec || defaultPackageSpec || '@magclaw/daemon@latest');",
     'const command = useNpmLauncher ? npmPath : process.execPath;',
     "const args = useNpmLauncher",
-    "  ? ['exec', '--yes', '--package', packageSpec, '--', 'magclaw-daemon', 'connect', '--profile', profile]",
+    "  ? ['exec', '--yes', '--package', packageSpec, '--', 'magclaw', 'connect', '--profile', profile]",
     "  : [fallbackBin, 'connect', '--profile', profile];",
     "const launchPath = [nodeDir, npmDir, process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].filter(Boolean).join(':');",
     'const child = spawn(command, args, {',

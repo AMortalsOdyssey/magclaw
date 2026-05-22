@@ -577,7 +577,6 @@ export function createDaemonRelay(deps) {
       `--${credentialFlag} ${shellArg(credential)}`,
       `--profile ${shellArg(profile)}`,
       displayName ? `--display-name ${shellArg(displayName)}` : '',
-      '--background',
       `# ${comment}`,
     ].filter(Boolean).join(' ');
   }

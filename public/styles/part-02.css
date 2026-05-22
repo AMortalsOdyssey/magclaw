@@ -1409,6 +1409,15 @@
   line-height: 1.45;
 }
 
+.connect-background-note code {
+  padding: 1px 4px;
+  border: 1px solid var(--border-faint);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 .pairing-wait-box {
   display: flex;
   align-items: center;

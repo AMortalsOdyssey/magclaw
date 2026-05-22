@@ -608,7 +608,7 @@ function renderComputerDetail(computer) {
               <pre><code>${escapeHtml(renderedCommand)}</code></pre>
               ${pairingCommandCopyButtonHtml('computer-connect-copy')}
             </div>
-            <p class="muted-note">Keep this process running — it maintains the connection between your computer and MagClaw.</p>
+            ${connectBackgroundNoteHtml({ className: 'muted-note' })}
           ` : `
             <button class="primary-btn generate-connect-command-btn" type="button" data-action="generate-computer-command" data-id="${escapeHtml(computer.id)}" ${offlineComputerCommandInFlight ? 'disabled' : ''}>
               <span aria-hidden="true">↻</span>
