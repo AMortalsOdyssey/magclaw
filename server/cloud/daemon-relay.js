@@ -295,6 +295,11 @@ export function createDaemonRelay(deps) {
       || (upgradeStatus && !DAEMON_UPGRADE_TERMINAL_STATUSES.has(upgradeStatus));
   }
 
+  function computerDaemonServiceReady(computer = {}) {
+    const service = objectValue(computer.service);
+    return service.background === true && service.active === true;
+  }
+
   function computerStatusForUpgradeStatus(status) {
     const value = String(status || '').toLowerCase();
     if (['pending_idle', 'queued_until_idle', 'accepted'].includes(value)) return 'upgrade_pending';
@@ -2155,6 +2160,11 @@ export function createDaemonRelay(deps) {
         computer,
         upgrade: current,
       };
+    }
+    if (!computerDaemonServiceReady(computer)) {
+      const error = new Error('Remote daemon upgrade requires an active background daemon service.');
+      error.status = 409;
+      throw error;
     }
     const commandId = makeId('dupgrade');
     const targetVersion = String(options.targetVersion || options.version || 'latest').trim() || 'latest';

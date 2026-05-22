@@ -158,7 +158,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.12');
+  assert.equal(DAEMON_VERSION, '0.1.13');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -347,6 +347,15 @@ test('daemon package exposes one OpenClaw-style CLI bin for npx default executio
   const daemonPackage = JSON.parse(await readFile(new URL('../daemon/package.json', import.meta.url), 'utf8'));
   assert.deepEqual(daemonPackage.bin, { magclaw: 'bin/magclaw.js' });
   assert.ok(CAPABILITIES.includes('daemon:upgrade'));
+});
+
+test('daemon reports and verifies active background service state before remote upgrades', async () => {
+  const source = await readFile(new URL('../daemon/src/cli.js', import.meta.url), 'utf8');
+  assert.match(source, /function backgroundServiceStatus\(/);
+  assert.match(source, /const activeService = backgroundServiceStatus\(this\.paths\.profile, this\.env\)/);
+  assert.match(source, /!activeService\.active/);
+  assert.match(source, /const serviceStatus = backgroundServiceStatus\(this\.paths\.profile, this\.env\)/);
+  assert.match(source, /active: Boolean\(serviceStatus\.active\)/);
 });
 
 test('foreground daemon exits and clears its lock on SIGINT', async () => {

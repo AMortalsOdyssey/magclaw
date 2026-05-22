@@ -2668,23 +2668,26 @@ class MagClawDaemon {
     const targetVersion = String(message.targetVersion || message.version || 'latest').trim() || 'latest';
     const previousVersion = String(message.previousVersion || DAEMON_VERSION).trim() || DAEMON_VERSION;
     const service = await readServiceState(this.paths.profile, this.env);
-    if (!service.background) {
-      const error = 'Remote daemon upgrade requires a background service. Run `magclaw start` or reconnect with `--background` first.';
+    const activeService = backgroundServiceStatus(this.paths.profile, this.env);
+    if (!service.background || !activeService.active) {
+      const phase = service.background ? 'background_inactive' : 'background_required';
+      const error = 'Remote daemon upgrade requires an active background daemon service. Run `magclaw start` or reconnect with `--background` first.';
       await writeUpgradeHandoff(this.paths.profile, {
         commandId,
         status: 'failed',
-        phase: 'background_required',
+        phase,
         progress: 0,
         message: error,
         previousVersion,
         targetVersion,
         error,
+        service: activeService,
       }, this.env);
       this.send({
         type: 'daemon:upgrade:ack',
         commandId,
         status: 'failed',
-        phase: 'background_required',
+        phase,
         progress: 0,
         message: error,
         previousVersion,
@@ -2784,6 +2787,7 @@ class MagClawDaemon {
     const runtimes = await detectRuntimes(this.env);
     const owner = await ensureMachineFingerprint(this.paths.profile, this.env);
     const service = await readServiceState(this.paths.profile, this.env);
+    const serviceStatus = backgroundServiceStatus(this.paths.profile, this.env);
     const upgrade = await readUpgradeHandoff(this.paths.profile, this.env);
     return {
       type: 'ready',
@@ -2796,8 +2800,12 @@ class MagClawDaemon {
       arch: os.arch(),
       daemonVersion: DAEMON_VERSION,
       service: {
-        mode: service.mode || 'foreground',
+        mode: service.mode || serviceStatus.mode || 'foreground',
         background: Boolean(service.background),
+        active: Boolean(serviceStatus.active),
+        label: serviceStatus.label || '',
+        serviceName: serviceStatus.serviceName || '',
+        taskName: serviceStatus.taskName || '',
         launcher: service.launcher || '',
         packageSpec: service.packageSpec || '',
       },
@@ -3586,6 +3594,44 @@ async function startBackground(profile, env = process.env) {
   return { ok: false, mode: 'foreground', message: 'Background daemon is only automated on macOS launchd, Linux user systemd, and Windows schtasks.' };
 }
 
+function backgroundServiceStatus(profile, env = process.env) {
+  const paths = profilePaths(profile, env);
+  if (process.platform === 'darwin') {
+    const label = launchAgentLabel(paths.profile);
+    const result = spawnSync('launchctl', ['print', `gui/${process.getuid()}/${label}`], { encoding: 'utf8' });
+    return {
+      mode: 'launchd',
+      active: result.status === 0,
+      label,
+      file: path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`),
+      error: result.status === 0 ? '' : String(result.stderr || result.stdout || '').trim(),
+    };
+  }
+  if (process.platform === 'linux') {
+    const serviceName = systemdServiceName(paths.profile);
+    const result = spawnSync('systemctl', ['--user', 'is-active', serviceName], { encoding: 'utf8' });
+    return {
+      mode: 'systemd',
+      active: result.status === 0,
+      serviceName,
+      status: String(result.stdout || '').trim(),
+      error: result.status === 0 ? '' : String(result.stderr || '').trim(),
+    };
+  }
+  if (process.platform === 'win32') {
+    const taskName = windowsTaskName(paths.profile);
+    const result = spawnSync('schtasks.exe', ['/Query', '/TN', taskName, '/FO', 'LIST'], { encoding: 'utf8' });
+    return {
+      mode: 'schtasks',
+      active: result.status === 0,
+      taskName,
+      status: String(result.stdout || '').trim(),
+      error: result.status === 0 ? '' : String(result.stderr || result.stdout || '').trim(),
+    };
+  }
+  return { mode: 'foreground', active: false };
+}
+
 async function waitForPidExit(pid, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -3692,20 +3738,7 @@ async function status(profile) {
   const configStat = await stat(paths.config).catch(() => null);
   const lock = await activeDaemonLock(paths.profile);
   const computerLock = await activeComputerLock();
-  let service = { mode: 'foreground', active: false };
-  if (process.platform === 'darwin') {
-    const label = launchAgentLabel(paths.profile);
-    const result = spawnSync('launchctl', ['print', `gui/${process.getuid()}/${label}`], { encoding: 'utf8' });
-    service = { mode: 'launchd', active: result.status === 0, label };
-  } else if (process.platform === 'linux') {
-    const serviceName = systemdServiceName(paths.profile);
-    const result = spawnSync('systemctl', ['--user', 'is-active', serviceName], { encoding: 'utf8' });
-    service = { mode: 'systemd', active: result.status === 0, serviceName, status: String(result.stdout || '').trim() };
-  } else if (process.platform === 'win32') {
-    const taskName = windowsTaskName(paths.profile);
-    const result = spawnSync('schtasks.exe', ['/Query', '/TN', taskName, '/FO', 'LIST'], { encoding: 'utf8' });
-    service = { mode: 'schtasks', active: result.status === 0, taskName, status: String(result.stdout || '').trim() };
-  }
+  const service = backgroundServiceStatus(paths.profile);
   return {
     profile: paths.profile,
     configPath: paths.config,

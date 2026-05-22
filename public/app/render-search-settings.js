@@ -461,8 +461,12 @@ function computerCanUpgradeDaemon(computer = {}) {
   if (!computer?.id || computerIsDisabled(computer)) return false;
   const canUpgrade = cloudCan('upgrade_computers') || cloudCan('manage_computers');
   if (!canUpgrade) return false;
+  return computerIsConnected(computer) && computerDaemonServiceReady(computer);
+}
+
+function computerDaemonServiceReady(computer = {}) {
   const service = computer.service && typeof computer.service === 'object' ? computer.service : {};
-  return computerIsConnected(computer) && service.background !== false;
+  return service.background === true && service.active === true;
 }
 
 function renderDaemonVersionValue(...values) {
@@ -534,7 +538,7 @@ function renderComputerDetail(computer) {
     : !connected
       ? 'Computer offline'
       : !canUpgradeDaemon
-        ? 'Remote upgrade requires a background daemon service.'
+        ? 'Remote upgrade requires an active background daemon service.'
         : '';
   const daemonVersion = renderDaemonVersionValue(
     computer.daemonVersion,

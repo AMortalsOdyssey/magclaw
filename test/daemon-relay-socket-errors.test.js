@@ -270,7 +270,12 @@ test('daemon relay requests daemon upgrade and records waiting state', async () 
     },
     socket: {},
   }, socket), true);
-  socket.emit('data', encodeFrame({ type: 'ready', daemonVersion: '0.1.10', runtimes: ['codex'] }));
+  socket.emit('data', encodeFrame({
+    type: 'ready',
+    daemonVersion: '0.1.10',
+    runtimes: ['codex'],
+    service: { mode: 'launchd', background: true, active: true },
+  }));
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   const result = await relay.requestDaemonUpgrade('cmp_remote', { targetVersion: '0.1.11', requestedBy: 'usr_owner' });
@@ -283,6 +288,53 @@ test('daemon relay requests daemon upgrade and records waiting state', async () 
   assert.equal(upgrade.commandId, result.commandId);
   assert.equal(upgrade.targetVersion, '0.1.11');
   assert.ok(cloud.daemonEvents.some((event) => event.type === 'daemon_upgrade_requested'));
+});
+
+test('daemon relay rejects daemon upgrades when the reported background service is inactive', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_existing';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+    daemonVersion: '0.1.10',
+    metadata: {},
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+  socket.emit('data', encodeFrame({
+    type: 'ready',
+    daemonVersion: '0.1.10',
+    runtimes: ['codex'],
+    service: { mode: 'launchd', background: true, active: false },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  await assert.rejects(
+    () => relay.requestDaemonUpgrade('cmp_remote', { targetVersion: '0.1.11', requestedBy: 'usr_owner' }),
+    (error) => error.status === 409 && /active background daemon service/i.test(error.message),
+  );
+
+  assert.equal(state.computers[0].status, 'connected');
+  assert.equal(state.computers[0].metadata.daemonUpgrade, undefined);
+  assert.equal(decodeServerMessages(socket).some((message) => message.type === 'daemon:upgrade'), false);
 });
 
 test('daemon relay queues deliveries while computer upgrade is pending and replays after ready', async () => {

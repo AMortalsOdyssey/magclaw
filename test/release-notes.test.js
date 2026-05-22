@@ -13,10 +13,10 @@ test('release notes expose independent Web and Daemon version catalogs', () => {
 
   assert.equal(notes.web.currentVersion, '0.3.1');
   assert.equal(notes.daemon.currentVersion, '0.1.1');
-  assert.match(notes.web.releases[0].title, /Remote daemon/);
-  assert.equal(notes.web.releases[0].new[0], 'Owners and admins can trigger daemon upgrades from Computer details.');
-  assert.equal(notes.web.releases[0].bugFix[0], 'Queued Agent work resumes after the upgraded daemon reconnects.');
-  assert.match(notes.daemon.releases[0].title, /Default magclaw/);
+  assert.match(notes.web.releases[0].title, /Daemon service/);
+  assert.equal(notes.web.releases[0].bugFix[0], 'Remote daemon upgrades no longer trust stale background service state.');
+  assert.equal(notes.web.releases[1].bugFix[0], 'Queued Agent work resumes after the upgraded daemon reconnects.');
+  assert.match(notes.daemon.releases[0].title, /Active service/);
 });
 
 test('release notes normalization keeps the seeded catalog authoritative', () => {
@@ -40,9 +40,9 @@ test('release notes normalization keeps the seeded catalog authoritative', () =>
     },
   });
 
-  assert.equal(notes.web.currentVersion, '0.3.2');
-  assert.deepEqual(notes.web.releases.map((release) => release.version), ['0.3.2', '0.3.1', '0.3.0']);
-  assert.equal(notes.web.releases[0].approval[0], 'Remote daemon upgrades still require owner or admin confirmation.');
-  assert.equal(notes.web.releases[2].features[0], 'Feishu authorization login is now supported.');
-  assert.equal(notes.daemon.releases[0].version, '0.1.12');
+  assert.equal(notes.web.currentVersion, '0.3.3');
+  assert.deepEqual(notes.web.releases.map((release) => release.version), ['0.3.3', '0.3.2', '0.3.1', '0.3.0']);
+  assert.equal(notes.web.releases[0].bugFix[0], 'Remote daemon upgrades no longer trust stale background service state.');
+  assert.equal(notes.web.releases[3].features[0], 'Feishu authorization login is now supported.');
+  assert.equal(notes.daemon.releases[0].version, '0.1.13');
 });

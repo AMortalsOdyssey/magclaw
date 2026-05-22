@@ -220,7 +220,11 @@ test('computer daemon upgrade UI shows pending progress and crystal status light
 
   assert.match(app, /function computerDaemonUpgradeState\(/);
   assert.match(app, /function computerUpgradeStatusLabel\(/);
+  assert.match(app, /function computerDaemonServiceReady\(/);
+  assert.match(app, /service\.background === true/);
+  assert.match(app, /service\.active === true/);
   assert.match(computerSource, /data-action="upgrade-computer-daemon"/);
+  assert.match(computerSource, /active background daemon service/);
   assert.match(computerSource, /等待更新|Waiting for update/);
   assert.match(computerSource, /升级中|Updating|Upgrading/);
   assert.match(computerSource, /已回退|Rolled back/);

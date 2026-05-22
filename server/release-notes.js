@@ -16,6 +16,16 @@ export const RELEASE_CATEGORY_LABELS = {
 
 const WEB_RELEASES = [
   {
+    version: '0.3.3',
+    date: '2026-05-22',
+    title: 'Daemon service verification',
+    new: [],
+    bugFix: [
+      'Remote daemon upgrades no longer trust stale background service state.',
+    ],
+    approval: [],
+  },
+  {
     version: '0.3.2',
     date: '2026-05-22',
     title: 'Remote daemon upgrades',
@@ -58,6 +68,16 @@ const WEB_RELEASES = [
 ];
 
 const DAEMON_RELEASES = [
+  {
+    version: '0.1.13',
+    date: '2026-05-22',
+    title: 'Active service upgrade guard',
+    new: [],
+    bugFix: [
+      'Remote upgrades verify the profile system service is active before starting.',
+    ],
+    approval: [],
+  },
   {
     version: '0.1.12',
     date: '2026-05-22',
