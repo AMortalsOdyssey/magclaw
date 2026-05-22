@@ -212,7 +212,7 @@ test('computer name editor survives realtime rerenders', async () => {
   assert.match(updateSource, /captureComputerNameFieldDraft\(\)/);
 });
 
-test('computer daemon upgrade UI shows pending progress and crystal status lights', async () => {
+test('computer daemon upgrade UI only appears when actionable and shows one state', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
   const computerSource = app.slice(app.indexOf('function renderComputerDetail'), app.indexOf('function renderComputerConfigCard()'));
@@ -221,18 +221,27 @@ test('computer daemon upgrade UI shows pending progress and crystal status light
   assert.match(app, /function computerDaemonUpgradeState\(/);
   assert.match(app, /function computerUpgradeStatusLabel\(/);
   assert.match(app, /function computerDaemonServiceReady\(/);
+  assert.match(app, /function daemonUpdateAvailable\(/);
+  assert.match(app, /function renderDaemonUpgradePanel\(/);
+  assert.match(app, /function daemonUpgradeDisabledMessage\(/);
   assert.match(app, /service\.background === true/);
   assert.match(app, /service\.active === true/);
-  assert.match(computerSource, /data-action="upgrade-computer-daemon"/);
-  assert.match(computerSource, /active background daemon service/);
-  assert.match(computerSource, /等待更新|Waiting for update/);
-  assert.match(computerSource, /升级中|Updating|Upgrading/);
-  assert.match(computerSource, /已回退|Rolled back/);
+  assert.match(app, /const shouldShowUpgradePanel = updateAvailable \|\| upgradeVisible/);
+  assert.match(app, /data-action="upgrade-computer-daemon"/);
+  assert.match(computerSource, /renderDaemonUpgradePanel\(computer/);
+  assert.match(computerSource, /Daemon Version[\s\S]*\$\{daemonUpgradePanel\}/);
+  assert.match(app, /只有后台运行才允许自动更新/);
+  assert.match(app, /等待更新|Waiting for update/);
+  assert.match(app, /升级中|Updating|Upgrading/);
+  assert.doesNotMatch(computerSource, /sr-only[\s\S]*等待更新[\s\S]*升级中[\s\S]*已回退/);
   assert.match(clickSource, /\/api\/computers\/\$\{encodeURIComponent\(target\.dataset\.id \|\| ''\)\}\/daemon-upgrade/);
+  assert.match(clickSource, /dataset\.upgradeDisabledReason/);
   assert.match(app, /waiting_for_upgrade/);
   assert.match(app, /upgrade_pending/);
   assert.match(styles, /\.status-crystal/);
   assert.match(styles, /\.daemon-upgrade-panel/);
+  assert.match(styles, /\.daemon-upgrade-panel\.available/);
+  assert.match(styles, /\.daemon-upgrade-panel\.blocked/);
   assert.match(styles, /\.daemon-version-value\.upgrade-pending/);
   assert.match(styles, /\.daemon-version-value\.upgrading/);
 });

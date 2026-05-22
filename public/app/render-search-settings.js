@@ -429,6 +429,10 @@ function daemonLatestVersion() {
   );
 }
 
+function daemonUpdateAvailable(current = '', latest = daemonLatestVersion()) {
+  return latest !== '--' && compareDaemonVersions(current, latest) < 0;
+}
+
 function computerDaemonUpgradeState(computer = {}) {
   const metadata = computer?.metadata && typeof computer.metadata === 'object' ? computer.metadata : {};
   const upgrade = metadata.daemonUpgrade && typeof metadata.daemonUpgrade === 'object' ? metadata.daemonUpgrade : {};
@@ -457,16 +461,20 @@ function computerUpgradeStatusLabel(computer = {}) {
   return '';
 }
 
-function computerCanUpgradeDaemon(computer = {}) {
-  if (!computer?.id || computerIsDisabled(computer)) return false;
-  const canUpgrade = cloudCan('upgrade_computers') || cloudCan('manage_computers');
-  if (!canUpgrade) return false;
-  return computerIsConnected(computer) && computerDaemonServiceReady(computer);
-}
-
 function computerDaemonServiceReady(computer = {}) {
   const service = computer.service && typeof computer.service === 'object' ? computer.service : {};
   return service.background === true && service.active === true;
+}
+
+function daemonUpgradeDisabledMessage(computer = {}, { updateAvailable = false, upgradeBusy = false } = {}) {
+  if (computerIsDisabled(computer)) return 'Computer disabled';
+  if (!computerIsConnected(computer)) return 'Computer offline';
+  if (!(cloudCan('upgrade_computers') || cloudCan('manage_computers'))) return 'Only owners and admins can upgrade daemons.';
+  if (upgradeBusy) return 'Daemon upgrade is already in progress.';
+  if (updateAvailable && !computerDaemonServiceReady(computer)) {
+    return '只有后台运行才允许自动更新，前台运行请手动更新。';
+  }
+  return '';
 }
 
 function renderDaemonVersionValue(...values) {
@@ -491,8 +499,51 @@ function renderDaemonVersionValue(...values) {
       ${upgrading ? `<small>升级中 ${escapeHtml(String(upgrade.progress || 0))}%</small>` : ''}
       ${rollback ? '<small>已回退</small>' : ''}
       ${failed ? '<small>升级失败</small>' : ''}
-      ${updateAvailable ? '<small>(update available)</small>' : ''}
     </span>
+  `;
+}
+
+function renderDaemonUpgradePanel(computer = {}, options = {}) {
+  const {
+    currentVersion = displayDaemonVersion(computer.daemonVersion, computer.version),
+    latestVersion = daemonLatestVersion(),
+    upgradeState = computerDaemonUpgradeState(computer),
+    upgradeLabel = computerUpgradeStatusLabel(computer),
+    updateAvailable = daemonUpdateAvailable(currentVersion, latestVersion),
+    upgradeBusy = false,
+  } = options;
+  const upgradeVisible = Boolean(upgradeState.commandId && upgradeLabel && upgradeLabel !== '已更新');
+  const shouldShowUpgradePanel = updateAvailable || upgradeVisible;
+  if (!shouldShowUpgradePanel) return '';
+  const disabledReason = daemonUpgradeDisabledMessage(computer, { updateAvailable, upgradeBusy });
+  const blocked = Boolean(disabledReason && updateAvailable && !upgradeBusy);
+  const active = Boolean(upgradeBusy);
+  const upgrading = ['升级中', '重启中'].includes(upgradeLabel);
+  const title = upgradeLabel || 'Daemon update available';
+  const range = latestVersion !== '--' ? `${currentVersion} -> ${latestVersion}` : currentVersion;
+  const message = upgradeState.message
+    || (blocked
+      ? disabledReason
+      : upgradeBusy
+        ? 'Waiting for the daemon to report the next upgrade step.'
+        : `A newer daemon is available (${range}). Upgrade after all Agents become idle.`);
+  const buttonText = upgradeBusy
+    ? upgradeLabel
+    : blocked
+      ? '请手动更新'
+      : 'Upgrade daemon';
+  const progress = Math.max(0, Math.min(100, Number(upgradeState.progress || 0) || 0));
+  return `
+    <div class="daemon-upgrade-panel ${active ? 'active' : ''} ${blocked ? 'blocked' : ''} ${updateAvailable && !blocked && !active ? 'available' : ''}" data-upgrade-status="${escapeHtml(upgradeState.status || (updateAvailable ? 'available' : ''))}">
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <p>${escapeHtml(message)}</p>
+        ${upgrading ? `<div class="daemon-upgrade-meter" aria-label="${escapeHtml(upgradeLabel)}"><span style="width: ${escapeHtml(String(progress))}%"></span></div>` : ''}
+      </div>
+      <button class="secondary-btn daemon-upgrade-btn ${disabledReason ? 'is-disabled' : ''}" type="button" data-action="upgrade-computer-daemon" data-id="${escapeHtml(computer.id)}" ${disabledReason ? `aria-disabled="true" data-upgrade-disabled-reason="${escapeHtml(disabledReason)}"` : ''}>
+        ${escapeHtml(buttonText)}
+      </button>
+    </div>
   `;
 }
 
@@ -527,19 +578,16 @@ function renderComputerDetail(computer) {
   const installedCount = runtimeDetails.filter((runtime) => runtime.installed !== false).length;
   const upgradeState = computerDaemonUpgradeState(computer);
   const upgradeLabel = computerUpgradeStatusLabel(computer);
-  const upgradePendingLabel = '等待更新';
-  const upgradingLabel = '升级中';
   const rolledBackLabel = '已回退';
   const upgradeBusy = Boolean(upgradeState.commandId && upgradeLabel && !['已更新', '升级失败', rolledBackLabel, '回退失败'].includes(upgradeLabel));
-  const canUpgradeDaemon = computerCanUpgradeDaemon(computer);
-  const upgradeButtonDisabled = disabled || upgradeBusy || !canUpgradeDaemon;
-  const upgradeDisabledReason = disabled
-    ? 'Computer disabled'
-    : !connected
-      ? 'Computer offline'
-      : !canUpgradeDaemon
-        ? 'Remote upgrade requires an active background daemon service.'
-        : '';
+  const currentDaemonVersion = displayDaemonVersion(
+    computer.daemonVersion,
+    computer.version,
+    appState.runtime?.daemonPackageVersion,
+    MAGCLAW_DAEMON_PACKAGE_VERSION,
+  );
+  const latestDaemonVersion = daemonLatestVersion();
+  const updateAvailable = daemonUpdateAvailable(currentDaemonVersion, latestDaemonVersion);
   const daemonVersion = renderDaemonVersionValue(
     computer.daemonVersion,
     computer.version,
@@ -547,6 +595,14 @@ function renderComputerDetail(computer) {
     MAGCLAW_DAEMON_PACKAGE_VERSION,
     { upgradeState },
   );
+  const daemonUpgradePanel = renderDaemonUpgradePanel(computer, {
+    currentVersion: currentDaemonVersion,
+    latestVersion: latestDaemonVersion,
+    upgradeState,
+    upgradeLabel,
+    updateAvailable,
+    upgradeBusy,
+  });
   const statusLabel = disabled ? 'disabled' : upgradeLabel || (connected ? 'connected' : 'offline');
   const nameIsEditing = computerNameEditState?.computerId === computer.id;
   const displayName = computer.name || computer.hostname || 'Computer';
@@ -587,21 +643,10 @@ function renderComputerDetail(computer) {
         <div class="computer-section-label">Info</div>
         <dl class="computer-info-list">
           <div class="computer-info-row"><dt>OS</dt><dd>${escapeHtml([computer.os, computer.arch].filter(Boolean).join(' ') || '--')}</dd></div>
-          <div class="computer-info-row important"><dt>Daemon Version</dt><dd>${daemonVersion}</dd></div>
+          <div class="computer-info-row important"><dt>Daemon Version</dt><dd><div class="daemon-version-stack">${daemonVersion}${daemonUpgradePanel}</div></dd></div>
           <div class="computer-info-row runtime-row"><dt>Detected Runtimes</dt><dd><span class="runtime-count">${escapeHtml(installedCount)}</span><div class="detected-runtime-list">${renderComputerRuntimeBadges(computer)}</div></dd></div>
           <div class="computer-info-row"><dt>Created</dt><dd>${escapeHtml(fmtFullDateTime(computer.createdAt))}</dd></div>
         </dl>
-        <div class="daemon-upgrade-panel ${upgradeBusy ? 'active' : ''}">
-          <div>
-            <strong>${escapeHtml(upgradeLabel || (daemonLatestVersion() !== '--' ? 'Daemon upgrade' : 'Daemon service'))}</strong>
-            <p>${escapeHtml(upgradeState.message || upgradeDisabledReason || 'Upgrade after all Agents become idle.')}</p>
-            ${upgradeBusy ? `<div class="daemon-upgrade-meter" aria-label="${escapeHtml(upgradingLabel)}"><span style="width: ${escapeHtml(String(upgradeState.progress || 0))}%"></span></div>` : ''}
-          </div>
-          <button class="secondary-btn" type="button" data-action="upgrade-computer-daemon" data-id="${escapeHtml(computer.id)}" ${upgradeButtonDisabled ? 'disabled' : ''}>
-            ${upgradeBusy ? escapeHtml(upgradeLabel || upgradingLabel) : 'Upgrade daemon'}
-          </button>
-          <span class="sr-only">${escapeHtml(`${upgradePendingLabel} ${upgradingLabel} ${rolledBackLabel}`)}</span>
-        </div>
       </div>
 
       ${connected || disabled ? '' : `

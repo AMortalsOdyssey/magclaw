@@ -1506,6 +1506,10 @@ document.addEventListener('click', async (event) => {
     if (action === 'upgrade-computer-daemon') {
       const computerId = target.dataset.id || '';
       if (!computerId) return;
+      if (target.dataset.upgradeDisabledReason) {
+        toast(target.dataset.upgradeDisabledReason);
+        return;
+      }
       const computer = byId(appState.computers, computerId);
       const label = computer?.name || computer?.hostname || 'this computer';
       if (!window.confirm(`Upgrade the MagClaw daemon on ${label} after all Agents become idle?`)) return;

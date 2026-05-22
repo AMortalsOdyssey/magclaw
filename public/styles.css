@@ -35,13 +35,38 @@
   color: var(--danger);
 }
 
+.daemon-version-stack {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
 .daemon-upgrade-panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  padding: 10px 0 0;
-  border-top: 1px solid var(--border);
+  max-width: 560px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #f8fbff;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.08);
+}
+
+.daemon-upgrade-panel.available {
+  border-color: #101010;
+  background: #fff7d8;
+}
+
+.daemon-upgrade-panel.blocked {
+  background: #f5f5f5;
+  color: var(--text-secondary);
+}
+
+.daemon-upgrade-panel.active {
+  border-color: rgba(2, 125, 145, 0.34);
+  background: #e9fcff;
 }
 
 .daemon-upgrade-panel strong {
@@ -57,8 +82,28 @@
   line-height: 1.4;
 }
 
+.daemon-upgrade-panel.available strong,
 .daemon-upgrade-panel.active strong {
   color: #027d91;
+}
+
+.daemon-upgrade-panel.blocked strong {
+  color: var(--text-primary);
+}
+
+.daemon-upgrade-btn {
+  white-space: nowrap;
+}
+
+.daemon-upgrade-panel.available .daemon-upgrade-btn {
+  background: #ff66cc;
+  color: #101010;
+}
+
+.daemon-upgrade-btn.is-disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+  filter: grayscale(0.2);
 }
 
 .daemon-upgrade-meter {
