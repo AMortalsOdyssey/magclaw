@@ -7,3 +7,73 @@
 @import url("./styles/part-07.css");
 @import url("./styles/part-08.css");
 @import url("./styles/part-mobile.css");
+
+.avatar-status-dot.status-crystal,
+.agent-hover-status-dot.status-crystal,
+.mention-status.status-crystal,
+.add-member-status-dot.status-crystal,
+.agent-activity-dot.status-crystal {
+  background: #62f4ff;
+  box-shadow: 0 0 0 2px rgba(98, 244, 255, 0.18), 0 0 10px rgba(98, 244, 255, 0.7);
+  opacity: 1;
+}
+
+.daemon-version-value.upgrade-pending,
+.daemon-version-value.upgrade-pending small,
+.daemon-version-value.upgrading,
+.daemon-version-value.upgrading small {
+  color: #027d91;
+}
+
+.daemon-version-value.rolled-back,
+.daemon-version-value.rolled-back small {
+  color: var(--warning);
+}
+
+.daemon-version-value.upgrade-failed,
+.daemon-version-value.upgrade-failed small {
+  color: var(--danger);
+}
+
+.daemon-upgrade-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.daemon-upgrade-panel strong {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 13px;
+}
+
+.daemon-upgrade-panel p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.daemon-upgrade-panel.active strong {
+  color: #027d91;
+}
+
+.daemon-upgrade-meter {
+  width: min(260px, 100%);
+  height: 6px;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(2, 125, 145, 0.24);
+  border-radius: 999px;
+  background: rgba(98, 244, 255, 0.16);
+}
+
+.daemon-upgrade-meter span {
+  display: block;
+  height: 100%;
+  background: #62f4ff;
+  box-shadow: 0 0 10px rgba(98, 244, 255, 0.7);
+}

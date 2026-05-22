@@ -1503,6 +1503,27 @@ document.addEventListener('click', async (event) => {
       render();
       toast('Connect command generated');
     }
+    if (action === 'upgrade-computer-daemon') {
+      const computerId = target.dataset.id || '';
+      if (!computerId) return;
+      const computer = byId(appState.computers, computerId);
+      const label = computer?.name || computer?.hostname || 'this computer';
+      if (!window.confirm(`Upgrade the MagClaw daemon on ${label} after all Agents become idle?`)) return;
+      const result = await api(`/api/computers/${encodeURIComponent(target.dataset.id || '')}/daemon-upgrade`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      if (result?.computer) {
+        const existing = byId(appState.computers, result.computer.id);
+        if (existing) Object.assign(existing, result.computer);
+      }
+      selectedComputerId = computerId;
+      activeView = 'computers';
+      railTab = 'computers';
+      await refreshState().catch(() => {});
+      render();
+      toast('Daemon upgrade queued');
+    }
     if (action === 'regenerate-computer-command') {
       const computer = byId(appState.computers, target.dataset.id);
       const displayName = defaultComputerPairingName(computer);

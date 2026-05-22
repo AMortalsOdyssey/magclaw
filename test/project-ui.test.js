@@ -209,6 +209,27 @@ test('computer name editor survives realtime rerenders', async () => {
   assert.match(updateSource, /captureComputerNameFieldDraft\(\)/);
 });
 
+test('computer daemon upgrade UI shows pending progress and crystal status lights', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const computerSource = app.slice(app.indexOf('function renderComputerDetail'), app.indexOf('function renderComputerConfigCard()'));
+  const clickSource = app.slice(app.indexOf("if (action === 'generate-computer-command'"), app.indexOf("if (action === 'copy-join-link'"));
+
+  assert.match(app, /function computerDaemonUpgradeState\(/);
+  assert.match(app, /function computerUpgradeStatusLabel\(/);
+  assert.match(computerSource, /data-action="upgrade-computer-daemon"/);
+  assert.match(computerSource, /等待更新|Waiting for update/);
+  assert.match(computerSource, /升级中|Updating|Upgrading/);
+  assert.match(computerSource, /已回退|Rolled back/);
+  assert.match(clickSource, /\/api\/computers\/\$\{encodeURIComponent\(target\.dataset\.id \|\| ''\)\}\/daemon-upgrade/);
+  assert.match(app, /waiting_for_upgrade/);
+  assert.match(app, /upgrade_pending/);
+  assert.match(styles, /\.status-crystal/);
+  assert.match(styles, /\.daemon-upgrade-panel/);
+  assert.match(styles, /\.daemon-version-value\.upgrade-pending/);
+  assert.match(styles, /\.daemon-version-value\.upgrading/);
+});
+
 test('agent creation guard prevents duplicate submit rerenders', async () => {
   const app = await readAppSource();
   const stateSource = app.slice(app.indexOf('let selectedComputerId'), app.indexOf('let serverSwitcherOpen'));

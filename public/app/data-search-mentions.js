@@ -1303,6 +1303,7 @@ function clickLoadingMeta(action, target) {
     'cloud-pull': ['Pulling cloud state...', 'main'],
     'create-computer-pairing': ['Loading connect command...', 'main'],
     'generate-computer-command': ['Loading connect command...', 'main'],
+    'upgrade-computer-daemon': ['Queueing daemon upgrade...', 'main'],
     'regenerate-computer-command': ['Loading connect command...', 'modal'],
     'refresh-computer-pairing-command': ['Loading connect command...', 'modal'],
     'revoke-join-link': ['Revoking join link...', 'main'],

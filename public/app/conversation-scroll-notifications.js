@@ -230,7 +230,7 @@ function agentDisplayStatus(agent) {
   if (agentIsWarming(agent)) return 'warming';
   if (computer && agent.computerId !== 'cmp_local' && typeof computerIsConnected === 'function' && !computerIsConnected(computer)) {
     const status = String(agent?.status || '').toLowerCase();
-    if (!['waiting_for_computer', 'queued', 'starting', 'thinking', 'working', 'running', 'busy', 'warming', 'error'].includes(status)) return 'offline';
+    if (!['waiting_for_computer', 'waiting_for_upgrade', 'queued', 'starting', 'thinking', 'working', 'running', 'busy', 'warming', 'error'].includes(status)) return 'offline';
   }
   if (agentIsStandby(agent)) return 'standby';
   return agent?.status || 'offline';
@@ -244,6 +244,8 @@ function presenceTone(status) {
   if (value === 'disabled') return 'disabled';
   if (value === 'deleted') return 'disabled';
   if (['working', 'running', 'starting', 'thinking', 'busy'].includes(value)) return 'busy';
+  if (['restarting'].includes(value)) return 'busy';
+  if (['upgrade_pending', 'upgrading', 'waiting_for_upgrade'].includes(value)) return 'crystal';
   if (['queued', 'pending', 'waiting_for_computer'].includes(value)) return 'queued';
   if (['error', 'failed'].includes(value)) return 'error';
   if (['online', 'connected'].includes(value)) return 'online';
