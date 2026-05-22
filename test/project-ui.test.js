@@ -1126,8 +1126,11 @@ test('human mention chips use a distinct color from agent mentions', async () =>
 
   assert.match(app, /mention-identity mention-agent/);
   assert.match(app, /data-action="select-agent" data-id="\$\{escapeHtml\(id\)\}"/);
-  assert.match(app, /mention-human/);
+  assert.match(app, /mention-identity mention-human/);
+  assert.match(app, /data-action="select-human-inspector" data-id="\$\{escapeHtml\(human\.id\)\}"/);
+  assert.match(app, /renderHumanHoverCard\(human\)/);
   assert.match(styles, /\.mention-tag\.mention-human/);
+  assert.match(styles, /\.mention-identity:hover \.agent-hover-card/);
   assert.match(styles, /background: #9FE3D1/);
   assert.match(styles, /color: #0B302A/);
 });

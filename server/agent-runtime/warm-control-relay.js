@@ -482,12 +482,80 @@ function findExistingAgentResponseForDelivery(agent, parentMessageId = null, opt
   )) || null;
 }
 
+function responseCreatedTimeMs(record) {
+  const parsed = Date.parse(record?.createdAt || record?.updatedAt || '');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function findRecentDuplicateAgentResponse(agent, spaceType, spaceId, responseBody, parentMessageId = null, options = {}) {
+  const dedupeWindowMs = Number(options.dedupeWindowMs || 0);
+  if (!Number.isFinite(dedupeWindowMs) || dedupeWindowMs <= 0) return null;
+  const baselineMs = Date.parse(options.dedupeNow || now());
+  if (!Number.isFinite(baselineMs)) return null;
+  const records = parentMessageId ? state.replies : state.messages;
+  return (records || []).slice().reverse().find((record) => {
+    const createdMs = responseCreatedTimeMs(record);
+    return (
+      record?.authorType === 'agent'
+      && record.authorId === agent.id
+      && record.spaceType === spaceType
+      && record.spaceId === spaceId
+      && String(record.parentMessageId || '') === String(parentMessageId || '')
+      && String(record.body || '').trim() === responseBody
+      && createdMs > 0
+      && baselineMs >= createdMs
+      && baselineMs - createdMs <= dedupeWindowMs
+    );
+  }) || null;
+}
+
+function attachAgentResponseDeliveryIdentity(record, options = {}) {
+  if (!record) return false;
+  let changed = false;
+  const deliveryId = String(options.deliveryId || '').trim();
+  const idempotencyKey = String(options.idempotencyKey || '').trim();
+  if (deliveryId && !record.deliveryId) {
+    record.deliveryId = deliveryId;
+    changed = true;
+  }
+  if (idempotencyKey && !record.idempotencyKey) {
+    record.idempotencyKey = idempotencyKey;
+    changed = true;
+  }
+  if (changed) {
+    record.updatedAt = now();
+    normalizeConversationRecord(record);
+  }
+  return changed;
+}
+
+async function returnExistingAgentResponse(record, options = {}) {
+  if (attachAgentResponseDeliveryIdentity(record, options)) {
+    await persistState();
+    broadcastState();
+  }
+  return record;
+}
+
 async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageId = null, options = {}) {
   const responseBody = prepareAgentResponseBody(body);
   const sourceDepth = Number(options.sourceMessage?.agentRelayDepth || 0);
   const agentRelayDepth = sourceDepth + 1;
   const existingResponse = findExistingAgentResponseForDelivery(agent, parentMessageId, options);
-  if (existingResponse) return existingResponse;
+  if (existingResponse) return returnExistingAgentResponse(existingResponse, options);
+  const recentDuplicate = findRecentDuplicateAgentResponse(agent, spaceType, spaceId, responseBody, parentMessageId, options);
+  if (recentDuplicate) {
+    addSystemEvent('agent_response_deduped', `${agent.name} repeated a recent message to the same target.`, {
+      agentId: agent.id,
+      responseId: recentDuplicate.id,
+      spaceType,
+      spaceId,
+      parentMessageId: parentMessageId || null,
+      deliveryId: options.deliveryId || null,
+      idempotencyKey: options.idempotencyKey || null,
+    });
+    return returnExistingAgentResponse(recentDuplicate, options);
+  }
   if (parentMessageId && findMessage(parentMessageId)) {
     const parent = findMessage(parentMessageId);
     const reply = normalizeConversationRecord({

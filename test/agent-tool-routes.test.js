@@ -283,6 +283,7 @@ test('agent tool send_message can proactively DM a visible agent without a work 
   assert.deepEqual(deps.state.dms[0].participantIds, ['agt_one', 'agt_alice']);
   assert.equal(posted[0].spaceType, 'dm');
   assert.equal(posted[0].spaceId, deps.state.dms[0].id);
+  assert.equal(posted[0].options.dedupeWindowMs, 3000);
   assert.equal(deliveries[0].agent.id, 'agt_alice');
   assert.equal(deliveries[0].options.parentMessageId, null);
 });

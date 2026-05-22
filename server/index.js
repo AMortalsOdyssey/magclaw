@@ -1557,6 +1557,7 @@ daemonRelay.setHandlers({
       sourceMessage,
       deliveryId,
       idempotencyKey,
+      dedupeWindowMs: deliveryId || idempotencyKey ? 3 * 1000 : 0,
     });
     if (markFallbackResponseWorkItem(sourceMessage, posted)) {
       await persistState({

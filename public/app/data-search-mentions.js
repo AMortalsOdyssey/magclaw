@@ -194,6 +194,7 @@ function renderHumanHoverCard(human) {
 const identityHoverTriggerSelector = [
   '.agent-identity-button',
   '.human-identity-button',
+  '.mention-identity',
   '.agent-author-name',
   '.human-author-name',
   '.member-profile-btn',
@@ -323,14 +324,14 @@ function parseMentions(text) {
     const agent = byId(appState?.agents, id);
     const name = agent?.name || (id === 'agt_codex' ? displayName(id) : '');
     return name
-      ? `<button class="mention-tag mention-identity mention-agent" type="button" data-action="select-agent" data-id="${escapeHtml(id)}" data-mention-id="${escapeHtml(id)}">@${escapeHtml(name)}</button>`
+      ? `<button class="mention-tag mention-identity mention-agent" type="button" data-action="select-agent" data-id="${escapeHtml(id)}" data-mention-id="${escapeHtml(id)}">@${escapeHtml(name)}${agent ? renderAgentHoverCard(agent) : ''}</button>`
       : match;
   });
   // Replace human mentions: <@hum_xxx> -> styled span
   result = result.replace(/&lt;@(hum_\w+)&gt;/g, (match, id) => {
     const human = typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id);
     return human
-      ? `<span class="mention-tag mention-human" data-mention-id="${id}">@${escapeHtml(human.name)}${mentionThirdPartyInlineHtml(human)}</span>`
+      ? `<button class="mention-tag mention-identity mention-human" type="button" data-action="select-human-inspector" data-id="${escapeHtml(human.id)}" data-mention-id="${escapeHtml(id)}">@${escapeHtml(human.name)}${mentionThirdPartyInlineHtml(human)}${renderHumanHoverCard(human)}</button>`
       : match;
   });
   // Replace special mentions: <!all>, <!here> -> styled span

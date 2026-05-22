@@ -47,6 +47,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
   } = deps;
   const state = getState();
   const TASK_CREATE_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
+  const PROACTIVE_MESSAGE_DEDUPE_WINDOW_MS = 3 * 1000;
 
   function broadcastTaskStatusState() {
     broadcastState({ immediate: true });
@@ -904,6 +905,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
           deliveryId: deliveryId || null,
           idempotencyKey: idempotencyKey || null,
           proactive: true,
+          dedupeWindowMs: PROACTIVE_MESSAGE_DEDUPE_WINDOW_MS,
         });
         const deliveredAgentIds = await deliverProactiveMessageToAgentPeers(agent, target, posted);
         addSystemEvent('agent_tool_send_message', `${agent.name} proactively sent a message to ${target.label}.`, {
