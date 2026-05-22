@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 // MCP stdio bridge used by cloud-connected daemon agents. It forwards MagClaw
 // tool calls to the cloud server with the daemon machine token.
-import { readFileSync } from 'node:fs';
+import crypto from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 
 function parseArgs(argv) {
   const options = {
     agentId: '',
+    agentRoot: '',
     baseUrl: process.env.MAGCLAW_SERVER_URL || 'http://127.0.0.1:6543',
     token: process.env.MAGCLAW_MACHINE_TOKEN || '',
     tokenFile: '',
@@ -15,6 +19,9 @@ function parseArgs(argv) {
     const next = argv[index + 1] || '';
     if (item === '--agent-id') {
       options.agentId = next;
+      index += 1;
+    } else if (item === '--agent-root') {
+      options.agentRoot = next || '';
       index += 1;
     } else if (item === '--base-url') {
       options.baseUrl = next || options.baseUrl;
@@ -64,6 +71,94 @@ function machineHeaders(body) {
     ...(body ? { 'content-type': 'application/json' } : {}),
     ...(token ? { authorization: `Bearer ${token}` } : {}),
     ...(workspace ? { 'x-magclaw-workspace-id': workspace } : {}),
+  };
+}
+
+const PROGRESSIVE_DISCLOSURE_SECTION = [
+  '## 渐进式披露',
+  '- 其他 Agent 默认只会先读取本文件；不要假设它们已经看到 `notes/` 或 `workspace/` 中的详细文件。',
+  '- 如果信息不足、但已经知道具体需要什么内容，请再次请求明确路径，例如 `read_agent_memory(targetAgentId="<agent-id>", path="notes/profile.md")` 或 `read_agent_file(targetAgentId="<agent-id>", path="workspace/<file>")`。',
+  '- 本文件只放入口索引、能力边界和路径线索；详细规则、任务记录和交付物放入 `notes/` 或 `workspace/` 的明确文件。',
+].join('\n');
+
+function localAgentRoot() {
+  return options.agentRoot ? path.resolve(options.agentRoot) : '';
+}
+
+function localMemoryHash(content) {
+  return crypto.createHash('sha256').update(String(content || '')).digest('hex');
+}
+
+function defaultLocalMemory(agentId) {
+  return [
+    `# ${agentId || 'Agent'}`,
+    '',
+    '## 知识索引',
+    '- `notes/profile.md` - 角色边界、稳定能力和回复习惯。',
+    '- `notes/work-log.md` - 任务记录、长期决策和完成产物。',
+    '',
+    PROGRESSIVE_DISCLOSURE_SECTION,
+    '',
+    '## 能力',
+    '- 暂无经过真实任务验证的稳定能力。',
+    '',
+    '## 当前上下文',
+    '- 暂无需要跨回合延续的任务。',
+    '',
+    '## 近期工作',
+    '- 暂无近期可复用记录。',
+    '',
+  ].join('\n');
+}
+
+function ensureLocalMemoryGuidance(content, agentId) {
+  const value = String(content || '').replace(/\s+$/u, '');
+  if (/^##\s+渐进式披露\s*$/m.test(value)) return `${value}\n`;
+  if (!value.trim()) return defaultLocalMemory(agentId);
+  return `${value}\n\n${PROGRESSIVE_DISCLOSURE_SECTION}\n`;
+}
+
+function headingForMemoryKind(kind) {
+  const value = String(kind || '').trim().toLowerCase();
+  if (value === 'capability') return '能力';
+  if (value === 'preference' || value === 'communication_style') return '当前上下文';
+  return '近期工作';
+}
+
+function upsertLocalMemoryBullet(content, heading, summary) {
+  const lines = String(content || '').replace(/\s+$/u, '').split(/\r?\n/);
+  const text = String(summary || '').trim().replace(/^\-\s*/, '');
+  if (!text) return `${lines.join('\n')}\n`;
+  const bullet = `- ${text}`;
+  if (lines.some((line) => line.trim() === bullet)) return `${lines.join('\n')}\n`;
+  const headingIndex = lines.findIndex((line) => line.trim() === `## ${heading}`);
+  if (headingIndex === -1) return `${lines.join('\n')}\n\n## ${heading}\n${bullet}\n`;
+  let insertAt = headingIndex + 1;
+  while (insertAt < lines.length && lines[insertAt].trim() === '') insertAt += 1;
+  lines.splice(insertAt, 0, bullet);
+  return `${lines.join('\n')}\n`;
+}
+
+async function writeLocalMemory(args = {}) {
+  const root = localAgentRoot();
+  if (!root) return null;
+  await mkdir(path.join(root, 'notes'), { recursive: true });
+  await mkdir(path.join(root, 'workspace'), { recursive: true });
+  const memoryPath = path.join(root, 'MEMORY.md');
+  if (!existsSync(memoryPath)) await writeFile(memoryPath, defaultLocalMemory(options.agentId), 'utf8');
+  const current = await readFile(memoryPath, 'utf8').catch(() => defaultLocalMemory(options.agentId));
+  const summary = String(args.summary || args.content || args.sourceText || '').trim();
+  if (!summary) throw new Error('Memory summary is required.');
+  const next = upsertLocalMemoryBullet(
+    ensureLocalMemoryGuidance(current, options.agentId),
+    headingForMemoryKind(args.kind),
+    summary,
+  );
+  await writeFile(memoryPath, next, 'utf8');
+  return {
+    content: next,
+    documentHash: localMemoryHash(next),
+    path: memoryPath,
   };
 }
 
@@ -119,11 +214,19 @@ const tools = [
   },
   {
     name: 'read_agent_memory',
-    description: 'Read a permitted MagClaw memory file for an agent.',
+    description: 'Read MEMORY.md by default, or a permitted notes/*.md|txt file when the path is explicitly known.',
     inputSchema: schema({
       targetAgentId: { type: 'string' },
       path: { type: 'string' },
     }, ['targetAgentId']),
+  },
+  {
+    name: 'read_agent_file',
+    description: 'Read an explicit detailed Agent workspace path after MEMORY.md points to it.',
+    inputSchema: schema({
+      targetAgentId: { type: 'string' },
+      path: { type: 'string' },
+    }, ['targetAgentId', 'path']),
   },
   {
     name: 'list_agents',
@@ -352,6 +455,46 @@ async function callTool(name, rawArgs = {}) {
           path: args.path || 'MEMORY.md',
         },
       });
+    case 'read_agent_file':
+      return request('/api/agent-tools/files/read', {
+        query: {
+          agentId: args.agentId,
+          targetAgentId: args.targetAgentId || args.targetAgent,
+          path: args.path,
+        },
+      });
+    case 'write_memory':
+      {
+        const local = await writeLocalMemory(args);
+        if (!local) {
+          return request('/api/agent-tools/memory', {
+            method: 'POST',
+            body: args,
+          });
+        }
+        request('/api/agent-tools/memory/mirror', {
+          method: 'POST',
+          body: {
+            ...args,
+            content: local.content,
+            documentHash: local.documentHash,
+            idempotencyKey: `daemon-memory:${workspaceId() || 'local'}:${args.agentId}:${local.documentHash}`,
+          },
+        }).catch((error) => {
+          console.error(`[magclaw-mcp] async MEMORY.md mirror sync failed: ${error.message}`);
+        });
+        return {
+          ok: true,
+          status: 'local_applied',
+          mirrorSync: 'queued',
+          file: {
+            path: 'MEMORY.md',
+            absolutePath: local.path,
+            documentHash: local.documentHash,
+          },
+          text: 'Memory updated locally. Cloud MEMORY.md mirror sync queued.',
+        };
+      }
     case 'list_agents':
       return request('/api/agent-tools/agents', {
         query: {
@@ -367,11 +510,6 @@ async function callTool(name, rawArgs = {}) {
           agentId: args.agentId,
           targetAgentId: args.targetAgentId || args.targetAgent,
         },
-      });
-    case 'write_memory':
-      return request('/api/agent-tools/memory', {
-        method: 'POST',
-        body: args,
       });
     case 'list_tasks':
       return request('/api/agent-tools/tasks', {

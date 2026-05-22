@@ -868,11 +868,11 @@ function tomlArray(values) {
   return `[${values.map((value) => tomlString(value)).join(',')}]`;
 }
 
-function codexMcpArgs({ agentId, serverUrl, tokenFile }) {
+function codexMcpArgs({ agentId, serverUrl, tokenFile, agentRoot = '' }) {
   return [
     '-c', 'wire_api="responses"',
     '-c', `mcp_servers.magclaw.command=${tomlString(process.execPath)}`,
-    '-c', `mcp_servers.magclaw.args=${tomlArray([MCP_BRIDGE_PATH, '--agent-id', agentId, '--base-url', serverUrl, '--token-file', tokenFile])}`,
+    '-c', `mcp_servers.magclaw.args=${tomlArray([MCP_BRIDGE_PATH, '--agent-id', agentId, '--base-url', serverUrl, '--token-file', tokenFile, '--agent-root', agentRoot])}`,
     '-c', 'mcp_servers.magclaw.startup_timeout_sec=30',
     '-c', 'mcp_servers.magclaw.tool_timeout_sec=120',
     '-c', 'mcp_servers.magclaw.enabled=true',
@@ -1091,7 +1091,7 @@ function renderRemoteAgentContextPack(pack, targetAgentId = '') {
     '',
     renderContextPeerMemory(pack),
     '',
-    'Progressive context tools: list_agents, read_agent_profile, read_history, search_messages, search_agent_memory, read_agent_memory, and list_tasks are available through MagClaw MCP.',
+    'Progressive context tools: list_agents, read_agent_profile, read_history, search_messages, search_agent_memory, read_agent_memory, read_agent_file, and list_tasks are available through MagClaw MCP.',
     'For "who can we bring in" or agent suitability questions, use the server member list above first; call list_agents without a target for the server-wide agent roster, because target filters to the current channel.',
     'For agent capability or specialty questions, use peer memory first; if memory is empty or weak, search_messages/read_history for earlier user role assignments before saying the fact is unknown.',
     'Use this compact snapshot first. Call the tools only when the answer depends on omitted participants, deeper history, memory, or task details.',
@@ -1194,6 +1194,7 @@ function canonicalMagClawToolName(name) {
     'search_messages',
     'search_agent_memory',
     'read_agent_memory',
+    'read_agent_file',
     'list_agents',
     'read_agent_profile',
     'write_memory',
@@ -1569,6 +1570,7 @@ function daemonSkillTools() {
     'search_messages',
     'search_agent_memory',
     'read_agent_memory',
+    'read_agent_file',
     'list_agents',
     'read_agent_profile',
     'write_memory',
@@ -1580,6 +1582,214 @@ function daemonSkillTools() {
     'list_reminders',
     'cancel_reminder',
   ];
+}
+
+const DAEMON_PROGRESSIVE_DISCLOSURE_SECTION = [
+  '## 渐进式披露',
+  '- 其他 Agent 默认只会先读取本文件；不要假设它们已经看到 `notes/` 或 `workspace/` 中的详细文件。',
+  '- 如果信息不足、但已经知道具体需要什么内容，请再次请求明确路径，例如 `read_agent_memory(targetAgentId="<agent-id>", path="notes/profile.md")` 或 `read_agent_file(targetAgentId="<agent-id>", path="workspace/<file>")`。',
+  '- 本文件只放入口索引、能力边界和路径线索；详细规则、任务记录和交付物放入 `notes/` 或 `workspace/` 的明确文件。',
+].join('\n');
+
+function daemonDefaultAgentMemory(agent = {}) {
+  return [
+    `# ${agent.name || agent.id || 'Agent'}`,
+    '',
+    '## 角色',
+    agent.description || '通用 MagClaw 协作伙伴。',
+    '',
+    '## 知识索引',
+    '- `notes/profile.md` - 角色边界、稳定能力和回复习惯。',
+    '- `notes/channels.md` - 频道成员、频道规范和协作上下文。',
+    '- `notes/agents.md` - 其他 Agent 的专长与交接线索。',
+    '- `notes/work-log.md` - 任务记录、长期决策和完成产物。',
+    '',
+    DAEMON_PROGRESSIVE_DISCLOSURE_SECTION,
+    '',
+    '## 能力',
+    '- 暂无经过真实任务验证的稳定能力。',
+    '',
+    '## 当前上下文',
+    '- 暂无需要跨回合延续的任务。',
+    '',
+    '## 近期工作',
+    '- 暂无近期可复用记录。',
+    '',
+  ].join('\n');
+}
+
+function ensureDaemonMemoryGuidance(content, agent = {}) {
+  const value = String(content || '').replace(/\s+$/u, '');
+  if (/^##\s+渐进式披露\s*$/m.test(value)) return `${value}\n`;
+  if (!value.trim()) return daemonDefaultAgentMemory(agent);
+  return `${value}\n\n${DAEMON_PROGRESSIVE_DISCLOSURE_SECTION}\n`;
+}
+
+async function ensureDaemonAgentWorkspaceRoot(agentRoot, agent = {}) {
+  await mkdir(path.join(agentRoot, 'notes'), { recursive: true });
+  await mkdir(path.join(agentRoot, 'workspace'), { recursive: true });
+  const memoryPath = path.join(agentRoot, 'MEMORY.md');
+  if (!existsSync(memoryPath)) {
+    await writeFile(memoryPath, daemonDefaultAgentMemory(agent), 'utf8');
+  } else {
+    const current = await readFile(memoryPath, 'utf8').catch(() => '');
+    const next = ensureDaemonMemoryGuidance(current, agent);
+    if (next !== current) await writeFile(memoryPath, next, 'utf8');
+  }
+}
+
+function daemonMemoryHash(content) {
+  return crypto.createHash('sha256').update(String(content || '')).digest('hex');
+}
+
+function daemonMemoryHeadingForKind(kind) {
+  const value = String(kind || '').trim().toLowerCase();
+  if (value === 'capability') return '能力';
+  if (value === 'preference' || value === 'communication_style') return '当前上下文';
+  return '近期工作';
+}
+
+function upsertDaemonMemoryBullet(content, heading, bullet) {
+  const lines = String(content || '').replace(/\s+$/u, '').split(/\r?\n/);
+  const text = String(bullet || '').trim().replace(/^\-\s*/, '');
+  if (!text) return `${lines.join('\n')}\n`;
+  const bulletLine = `- ${text}`;
+  if (lines.some((line) => line.trim() === bulletLine)) return `${lines.join('\n')}\n`;
+  const headingIndex = lines.findIndex((line) => line.trim() === `## ${heading}`);
+  if (headingIndex === -1) {
+    return `${lines.join('\n')}\n\n## ${heading}\n${bulletLine}\n`;
+  }
+  let insertAt = headingIndex + 1;
+  while (insertAt < lines.length && lines[insertAt].trim() === '') insertAt += 1;
+  lines.splice(insertAt, 0, bulletLine);
+  return `${lines.join('\n')}\n`;
+}
+
+async function writeDaemonLocalMemory(agentRoot, agent = {}, args = {}) {
+  await ensureDaemonAgentWorkspaceRoot(agentRoot, agent);
+  const memoryPath = path.join(agentRoot, 'MEMORY.md');
+  const summary = String(args.summary || args.content || args.sourceText || '').trim();
+  if (!summary) throw new Error('Memory summary is required.');
+  const current = await readFile(memoryPath, 'utf8').catch(() => daemonDefaultAgentMemory(agent));
+  const heading = daemonMemoryHeadingForKind(args.kind);
+  const next = upsertDaemonMemoryBullet(ensureDaemonMemoryGuidance(current, agent), heading, summary);
+  await writeFile(memoryPath, next, 'utf8');
+  const workLogPath = path.join(agentRoot, 'notes', 'work-log.md');
+  const existingLog = await readFile(workLogPath, 'utf8').catch(() => `# ${agent.name || agent.id || 'Agent'} 工作记录\n\n## 记忆写入记录\n`);
+  const logLine = `- ${now()} [daemon_write_memory] ${summary}`;
+  if (!existingLog.includes(logLine)) {
+    await writeFile(workLogPath, `${existingLog.replace(/\s+$/u, '')}\n${logLine}\n`, 'utf8');
+  }
+  return {
+    content: next,
+    documentHash: daemonMemoryHash(next),
+    path: memoryPath,
+  };
+}
+
+function normalizeDaemonWorkspaceRelPath(rawRelPath = '') {
+  const normalized = path.posix.normalize(`/${String(rawRelPath || '').replace(/\\/g, '/')}`).replace(/^\/+/, '');
+  if (!normalized || normalized === '.') return '';
+  if (normalized === '..' || normalized.startsWith('../')) return '';
+  return normalized;
+}
+
+function daemonWorkspaceFileType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.md' || ext === '.markdown') return 'text/markdown';
+  if (['.txt', '.log', '.jsonl', '.csv', '.yaml', '.yml'].includes(ext)) return 'text/plain';
+  if (ext === '.json') return 'application/json';
+  return 'application/octet-stream';
+}
+
+function daemonWorkspacePreviewKind(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.md' || ext === '.markdown') return 'markdown';
+  if (['.txt', '.log', '.json', '.jsonl', '.csv', '.yaml', '.yml'].includes(ext)) return 'text';
+  return 'binary';
+}
+
+function safeDaemonWorkspacePath(agentRoot, rawRelPath = '') {
+  const relPath = normalizeDaemonWorkspaceRelPath(rawRelPath);
+  const first = relPath.split('/')[0] || '';
+  if (relPath && !['MEMORY.md', 'notes', 'workspace'].includes(first)) return null;
+  if (relPath.split('/').some((part) => part.startsWith('.') || part === '..')) return null;
+  const filePath = path.resolve(agentRoot, relPath || '.');
+  const root = path.resolve(agentRoot);
+  if (filePath !== root && !filePath.startsWith(`${root}${path.sep}`)) return null;
+  return { relPath, filePath };
+}
+
+async function listDaemonAgentWorkspace(agentRoot, agent = {}, rawRelPath = '') {
+  await ensureDaemonAgentWorkspaceRoot(agentRoot, agent);
+  const resolved = safeDaemonWorkspacePath(agentRoot, rawRelPath);
+  if (!resolved) throw new Error('Agent workspace path must stay inside the agent workspace.');
+  const info = await stat(resolved.filePath);
+  if (!info.isDirectory()) throw new Error('Agent workspace path must be a directory.');
+  const entries = (await readdir(resolved.filePath, { withFileTypes: true }))
+    .filter((entry) => !entry.name.startsWith('.'))
+    .filter((entry) => resolved.relPath || ['MEMORY.md', 'notes', 'workspace'].includes(entry.name))
+    .sort((a, b) => (a.isDirectory() === b.isDirectory()
+      ? a.name.localeCompare(b.name)
+      : a.isDirectory() ? -1 : 1))
+    .slice(0, 300);
+  const mapped = [];
+  for (const entry of entries) {
+    const childRelPath = path.posix.join(resolved.relPath, entry.name);
+    const child = safeDaemonWorkspacePath(agentRoot, childRelPath);
+    if (!child) continue;
+    const childInfo = await stat(child.filePath).catch(() => null);
+    if (!childInfo) continue;
+    mapped.push({
+      id: `${agent.id}:${childRelPath}`,
+      name: entry.name,
+      path: childRelPath,
+      kind: entry.isDirectory() ? 'folder' : 'file',
+      type: entry.isDirectory() ? 'folder' : daemonWorkspaceFileType(child.filePath),
+      bytes: entry.isDirectory() ? 0 : childInfo.size,
+      updatedAt: childInfo.mtime.toISOString(),
+      source: 'computer_local',
+    });
+  }
+  return {
+    agent: {
+      id: agent.id,
+      name: agent.name || agent.id,
+      workspacePath: agentRoot,
+      source: 'computer_local',
+    },
+    path: resolved.relPath,
+    source: 'computer_local',
+    entries: mapped,
+    truncated: entries.length >= 300,
+  };
+}
+
+async function readDaemonAgentWorkspaceFile(agentRoot, agent = {}, rawRelPath = 'MEMORY.md') {
+  await ensureDaemonAgentWorkspaceRoot(agentRoot, agent);
+  const resolved = safeDaemonWorkspacePath(agentRoot, rawRelPath || 'MEMORY.md');
+  if (!resolved) throw new Error('Agent workspace file path must stay inside the agent workspace.');
+  const info = await stat(resolved.filePath);
+  if (!info.isFile()) throw new Error('Agent workspace preview path must be a file.');
+  if (info.size > 1024 * 1024) throw new Error('Agent workspace preview is limited to 1048576 bytes.');
+  const buffer = await readFile(resolved.filePath);
+  const previewKind = daemonWorkspacePreviewKind(resolved.filePath);
+  return {
+    file: {
+      id: `${agent.id}:${resolved.relPath}`,
+      agentId: agent.id,
+      agentName: agent.name || agent.id,
+      name: path.basename(resolved.relPath),
+      path: resolved.relPath,
+      absolutePath: resolved.filePath,
+      type: daemonWorkspaceFileType(resolved.filePath),
+      bytes: info.size,
+      updatedAt: info.mtime.toISOString(),
+      previewKind,
+      content: previewKind === 'binary' ? '' : buffer.toString('utf8'),
+      source: 'computer_local',
+    },
+  };
 }
 
 function codexTrustedProjectPaths() {
@@ -1650,6 +1860,7 @@ class CodexAgentSession {
   async prepare() {
     await mkdir(this.codexHome(), { recursive: true });
     await mkdir(this.workspace(), { recursive: true });
+    await ensureDaemonAgentWorkspaceRoot(this.agentDir(), this.agent);
     await Promise.all(CODEX_HOME_SHARED_ENTRIES.map((entry) => ensureSymlinkedCodexHomeEntry(this.codexHome(), entry)));
     await prepareRuntimeHooks({
       agentDir: this.agentDir(),
@@ -1679,6 +1890,14 @@ class CodexAgentSession {
       'Agent-specific skills can be installed under `./skills/<skill-name>/SKILL.md`; this path belongs to this agent only.',
       '',
     ].join('\n'));
+  }
+
+  async listWorkspace(relPath = '') {
+    return listDaemonAgentWorkspace(this.agentDir(), this.agent, relPath);
+  }
+
+  async readWorkspaceFile(relPath = 'MEMORY.md') {
+    return readDaemonAgentWorkspaceFile(this.agentDir(), this.agent, relPath);
   }
 
   async listSkills() {
@@ -1838,7 +2057,7 @@ class CodexAgentSession {
     }
   }
 
-  executeMagClawTool(name, rawArgs = {}) {
+  async executeMagClawTool(name, rawArgs = {}) {
     const args = { ...rawArgs, agentId: rawArgs.agentId || this.agent.id };
     switch (name) {
       case 'send_message':
@@ -1892,6 +2111,14 @@ class CodexAgentSession {
             path: args.path || 'MEMORY.md',
           },
         });
+      case 'read_agent_file':
+        return this.requestMagClawTool('/api/agent-tools/files/read', {
+          query: {
+            agentId: args.agentId,
+            targetAgentId: args.targetAgentId || args.targetAgent,
+            path: args.path,
+          },
+        });
       case 'list_agents':
         return this.requestMagClawTool('/api/agent-tools/agents', {
           query: {
@@ -1909,10 +2136,31 @@ class CodexAgentSession {
           },
         });
       case 'write_memory':
-        return this.requestMagClawTool('/api/agent-tools/memory', {
-          method: 'POST',
-          body: args,
-        });
+        {
+          const local = await writeDaemonLocalMemory(this.agentDir(), this.agent, args);
+          this.requestMagClawTool('/api/agent-tools/memory/mirror', {
+            method: 'POST',
+            body: {
+              agentId: args.agentId,
+              content: local.content,
+              documentHash: local.documentHash,
+              idempotencyKey: `daemon-memory:${this.workspaceId}:${args.agentId}:${local.documentHash}`,
+            },
+          }).catch((error) => {
+            logWarning('agent', `Async MEMORY.md mirror sync failed for ${args.agentId}: ${error.message}`);
+          });
+          return {
+            ok: true,
+            status: 'local_applied',
+            mirrorSync: 'queued',
+            file: {
+              path: 'MEMORY.md',
+              absolutePath: local.path,
+              documentHash: local.documentHash,
+            },
+            text: 'Memory updated locally. Cloud MEMORY.md mirror sync queued.',
+          };
+        }
       case 'list_tasks':
         return this.requestMagClawTool('/api/agent-tools/tasks', {
           query: {
@@ -2043,6 +2291,7 @@ class CodexAgentSession {
       agentId: this.agent.id,
       serverUrl: this.serverUrl,
       tokenFile: this.paths.config,
+      agentRoot: this.agentDir(),
     }), '--listen', 'stdio://'];
     const spawnSpec = runtimeSpawnSpec(codexCommand, args);
     this.child = spawn(spawnSpec.command, spawnSpec.args, {
@@ -2317,6 +2566,7 @@ class ClaudeAgentSession {
 
   async prepare() {
     await mkdir(this.workspace(), { recursive: true });
+    await ensureDaemonAgentWorkspaceRoot(this.agentDir(), this.agent);
     await prepareRuntimeHooks({
       agentDir: this.agentDir(),
       workspace: this.workspace(),
@@ -2328,6 +2578,14 @@ class ClaudeAgentSession {
       'This workspace is isolated for a MagClaw cloud-connected Claude Code agent.',
       '',
     ].join('\n'));
+  }
+
+  async listWorkspace(relPath = '') {
+    return listDaemonAgentWorkspace(this.agentDir(), this.agent, relPath);
+  }
+
+  async readWorkspaceFile(relPath = 'MEMORY.md') {
+    return readDaemonAgentWorkspaceFile(this.agentDir(), this.agent, relPath);
   }
 
   sendStatus(status, activity = null) {
@@ -2987,6 +3245,12 @@ class MagClawDaemon {
       case 'agent:skills:list':
         await this.handleAgentSkillsList(message);
         break;
+      case 'agent:workspace:list':
+        await this.handleAgentWorkspaceList(message);
+        break;
+      case 'agent:workspace:file':
+        await this.handleAgentWorkspaceFile(message);
+        break;
       case 'machine:runtime_models:detect':
         this.send({ type: 'machine:runtime_models:result', commandId: message.commandId, runtimes: await detectRuntimes(this.env) });
         break;
@@ -3016,6 +3280,41 @@ class MagClawDaemon {
     } catch (error) {
       this.send({ type: 'agent:skills:list_result', commandId: message.commandId, agentId: agent.id, skills: { agent: { id: agent.id, name: agent.name || agent.id }, global: [], workspace: [], plugin: [], tools: [], error: error.message } });
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
+    }
+  }
+
+  async sessionForWorkspaceRequest(message) {
+    const existing = message.agentId
+      ? [...this.sessions.values()].find((session) => session.agent?.id === message.agentId) || null
+      : null;
+    const agent = existing?.agent || message.payload?.agent || {
+      id: message.agentId,
+      name: message.agentId || 'Agent',
+      runtime: 'codex',
+      runtimeId: 'codex',
+    };
+    return existing || this.sessionFor(agent, message.payload || {});
+  }
+
+  async handleAgentWorkspaceList(message) {
+    try {
+      const session = await this.sessionForWorkspaceRequest(message);
+      const tree = await session.listWorkspace(message.path || message.payload?.path || '');
+      this.send({ type: 'agent:workspace:list_result', commandId: message.commandId, agentId: session.agent.id, tree });
+      this.send({ type: 'agent:ack', commandId: message.commandId, agentId: session.agent.id, status: session.status || 'idle' });
+    } catch (error) {
+      this.send({ type: 'agent:error', commandId: message.commandId, agentId: message.agentId || null, error: error.message });
+    }
+  }
+
+  async handleAgentWorkspaceFile(message) {
+    try {
+      const session = await this.sessionForWorkspaceRequest(message);
+      const file = await session.readWorkspaceFile(message.path || message.payload?.path || 'MEMORY.md');
+      this.send({ type: 'agent:workspace:file_result', commandId: message.commandId, agentId: session.agent.id, file: file.file });
+      this.send({ type: 'agent:ack', commandId: message.commandId, agentId: session.agent.id, status: session.status || 'idle' });
+    } catch (error) {
+      this.send({ type: 'agent:error', commandId: message.commandId, agentId: message.agentId || null, error: error.message });
     }
   }
 

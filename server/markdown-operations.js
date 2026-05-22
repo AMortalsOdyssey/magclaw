@@ -62,7 +62,9 @@ export function createMarkdownOperationApplier(deps = {}) {
     addSystemEvent = () => {},
     defaultAgentMemory = null,
     ensureAgentWorkspace,
+    logWarning = (message, meta) => console.warn(message, meta || ''),
     makeId = (prefix) => `${prefix}_${Date.now()}`,
+    materializeMarkdownMirror = null,
     now = () => new Date().toISOString(),
     persistMarkdownDocumentIndex = null,
     persistMarkdownOperationIndex = null,
@@ -70,6 +72,40 @@ export function createMarkdownOperationApplier(deps = {}) {
     segmentMaxOps = DEFAULT_MARKDOWN_OPLOG_SEGMENT_MAX_OPS,
   } = deps;
   const queues = new Map();
+  const asyncPersists = new Set();
+
+  function warnAsyncPersistFailure(label, error, meta = {}) {
+    const message = `[markdown-applier] ${label} failed relPath=${meta.relPath || ''} message=${String(error?.message || error).slice(0, 240)}`;
+    logWarning(message, {
+      ...meta,
+      error: String(error?.message || error),
+    });
+    addSystemEvent(`markdown_${label.replace(/\s+/g, '_')}_error`, `${label} failed for ${meta.relPath || 'Markdown document'}.`, {
+      ...meta,
+      error: String(error?.message || error),
+    });
+  }
+
+  function queueAsyncPersist(label, fn, meta = {}) {
+    let task;
+    task = new Promise((resolve) => {
+      const timer = setTimeout(resolve, 0);
+      timer.unref?.();
+    })
+      .then(fn)
+      .catch((error) => warnAsyncPersistFailure(label, error, meta))
+      .finally(() => {
+        asyncPersists.delete(task);
+      });
+    asyncPersists.add(task);
+    return task;
+  }
+
+  async function flushAsyncPersists() {
+    while (asyncPersists.size) {
+      await Promise.allSettled([...asyncPersists]);
+    }
+  }
 
   async function repairMaterializedFile({ root, relPath, filePath, reason }) {
     const rebuilt = await rebuildMarkdownFromOplog(root, relPath);
@@ -159,24 +195,78 @@ export function createMarkdownOperationApplier(deps = {}) {
     });
     await atomicWriteMarkdownFile(filePath, afterContent);
 
-    if (typeof persistMarkdownDocumentIndex === 'function') {
-      await Promise.resolve(persistMarkdownDocumentIndex({
-        workspaceId: workspaceIdFor(agent),
-        agentId: agent.id,
-        relPath,
-        revision: appended.record.revision,
-        documentHash: afterHash,
-        currentSegment: appended.record.segmentIndex,
-        updatedAt: appended.record.appliedAt,
-      })).catch((error) => {
-        console.warn(`[markdown-applier] document index persist failed relPath=${relPath} message=${String(error?.message || error).slice(0, 240)}`);
-      });
-    }
-    if (typeof persistMarkdownOperationIndex === 'function') {
-      await Promise.resolve(persistMarkdownOperationIndex(appended.record)).catch((error) => {
-        console.warn(`[markdown-applier] operation index persist failed relPath=${relPath} message=${String(error?.message || error).slice(0, 240)}`);
-      });
-    }
+    queueAsyncPersist('markdown_async_persist', async () => {
+      let mirrorMetadata = null;
+      if (relPath === 'MEMORY.md' && typeof materializeMarkdownMirror === 'function') {
+        mirrorMetadata = await Promise.resolve(materializeMarkdownMirror({
+          agent,
+          workspaceId: workspaceIdFor(agent),
+          agentId: agent.id,
+          relPath,
+          content: afterContent,
+          revision: appended.record.revision,
+          documentHash: afterHash,
+          updatedAt: appended.record.appliedAt,
+          record: appended.record,
+        })).catch((error) => {
+          warnAsyncPersistFailure('mirror persist', error, {
+            agentId: agent.id,
+            workspaceId: workspaceIdFor(agent),
+            relPath,
+            operationId,
+          });
+          return null;
+        });
+      }
+
+      if (typeof persistMarkdownDocumentIndex === 'function') {
+        await Promise.resolve(persistMarkdownDocumentIndex({
+          workspaceId: workspaceIdFor(agent),
+          agentId: agent.id,
+          relPath,
+          revision: appended.record.revision,
+          documentHash: afterHash,
+          currentSegment: appended.record.segmentIndex,
+          updatedAt: appended.record.appliedAt,
+          metadata: mirrorMetadata && !mirrorMetadata.skipped ? {
+            storageMode: mirrorMetadata.storageMode || 'pvc',
+            storageKey: mirrorMetadata.storageKey || '',
+            bytes: Number(mirrorMetadata.bytes || 0),
+            documentHash: mirrorMetadata.documentHash || afterHash,
+            revision: Number(mirrorMetadata.revision || appended.record.revision),
+            updatedAt: mirrorMetadata.updatedAt || appended.record.appliedAt,
+          } : {},
+        })).catch((error) => {
+          warnAsyncPersistFailure('document index persist', error, {
+            agentId: agent.id,
+            workspaceId: workspaceIdFor(agent),
+            relPath,
+            operationId,
+          });
+        });
+      }
+      if (typeof persistMarkdownOperationIndex === 'function') {
+        await Promise.resolve(persistMarkdownOperationIndex({
+          ...appended.record,
+          metadata: {
+            ...(appended.record.metadata || {}),
+            ...(mirrorMetadata && !mirrorMetadata.skipped ? { mirror: mirrorMetadata } : {}),
+          },
+        })).catch((error) => {
+          warnAsyncPersistFailure('operation index persist', error, {
+            agentId: agent.id,
+            workspaceId: workspaceIdFor(agent),
+            relPath,
+            operationId,
+          });
+        });
+      }
+    }, {
+      agentId: agent.id,
+      workspaceId: workspaceIdFor(agent),
+      relPath,
+      operationId,
+    });
 
     addSystemEvent('markdown_operation_applied', `Applied Markdown operation ${operation.type} to ${relPath}.`, {
       agentId: agent.id,
@@ -225,6 +315,8 @@ export function createMarkdownOperationApplier(deps = {}) {
 
   return {
     applyNow,
+    flushAsyncPersists,
+    pendingAsyncPersistCount: () => asyncPersists.size,
     pendingQueueCount: () => queues.size,
     submitAgentMarkdownOperation,
   };

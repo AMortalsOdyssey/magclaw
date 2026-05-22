@@ -500,3 +500,93 @@ test('agent skills route requests daemon skills for remote agents', async () => 
   assert.equal(res.data.global[0].name, 'itinerary-scout');
   assert.deepEqual(res.data.tools, ['send_message']);
 });
+
+test('agent workspace route falls back to cloud MEMORY.md mirror for offline remote agents', async () => {
+  const deps = routeDeps({
+    findComputer: (id) => ({ id, status: 'offline' }),
+    listAgentWorkspace: async () => {
+      throw new Error('offline daemon workspace should not be listed');
+    },
+    listAgentMemoryMirrorWorkspace: async (agent) => ({
+      agent: { id: agent.id, name: agent.name, workspacePath: '/mirror/wsp/agt_1', source: 'cloud_mirror' },
+      path: '',
+      source: 'cloud_mirror',
+      entries: [{
+        id: `${agent.id}:MEMORY.md`,
+        name: 'MEMORY.md',
+        path: 'MEMORY.md',
+        kind: 'file',
+        type: 'text/markdown',
+        bytes: 42,
+        updatedAt: '2026-05-21T00:00:00.000Z',
+        source: 'cloud_mirror',
+      }],
+      truncated: false,
+    }),
+  });
+  deps.state.agents[0].computerId = 'cmp_remote';
+  deps.state.agents[0].workspaceId = 'wsp_test';
+  deps.state.agents[0].status = 'waiting_for_computer';
+
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/api/agents/agt_1/workspace'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.source, 'cloud_mirror');
+  assert.deepEqual(res.data.entries.map((entry) => entry.path), ['MEMORY.md']);
+});
+
+test('offline agent workspace file route serves mirror MEMORY.md and rejects detailed files', async () => {
+  const deps = routeDeps({
+    findComputer: (id) => ({ id, status: 'offline' }),
+    readAgentWorkspaceFile: async () => {
+      throw new Error('offline daemon workspace file should not be read');
+    },
+    readAgentMemoryMirrorFile: async (agent) => ({
+      file: {
+        id: `${agent.id}:MEMORY.md`,
+        agentId: agent.id,
+        agentName: agent.name,
+        name: 'MEMORY.md',
+        path: 'MEMORY.md',
+        absolutePath: '/mirror/wsp/agt_1/MEMORY.md',
+        type: 'text/markdown',
+        bytes: 42,
+        updatedAt: '2026-05-21T00:00:00.000Z',
+        previewKind: 'markdown',
+        content: '# Ada\n\n## 渐进式披露\n',
+        source: 'cloud_mirror',
+      },
+    }),
+  });
+  deps.state.agents[0].computerId = 'cmp_remote';
+  deps.state.agents[0].workspaceId = 'wsp_test';
+  deps.state.agents[0].status = 'waiting_for_computer';
+
+  const memoryRes = makeResponse();
+  await handleAgentApi(
+    { method: 'GET' },
+    memoryRes,
+    new URL('http://local/api/agents/agt_1/workspace/file?path=MEMORY.md'),
+    deps,
+  );
+  assert.equal(memoryRes.statusCode, 200);
+  assert.equal(memoryRes.data.file.source, 'cloud_mirror');
+  assert.match(memoryRes.data.file.content, /渐进式披露/);
+
+  const detailedRes = makeResponse();
+  await handleAgentApi(
+    { method: 'GET' },
+    detailedRes,
+    new URL('http://local/api/agents/agt_1/workspace/file?path=notes/profile.md'),
+    deps,
+  );
+  assert.equal(detailedRes.statusCode, 409);
+  assert.match(detailedRes.error, /Computer offline \/ file unavailable/);
+});

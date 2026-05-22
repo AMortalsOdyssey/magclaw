@@ -18,6 +18,7 @@ async function makeHarness(options = {}) {
   const root = path.join(tmp, 'agent');
   await mkdir(path.join(root, 'notes'), { recursive: true });
   const events = [];
+  const warnings = [];
   const agent = { id: 'agt_one', name: 'One', workspaceId: 'wsp_one' };
   const applier = createMarkdownOperationApplier({
     addSystemEvent: (type, message, extra = {}) => events.push({ type, message, extra }),
@@ -34,10 +35,12 @@ async function makeHarness(options = {}) {
       let tick = 0;
       return () => `2026-05-21T00:00:${String(tick++).padStart(2, '0')}.000Z`;
     })(),
+    logWarning: (message, meta = {}) => warnings.push({ message, meta }),
     segmentMaxBytes: options.segmentMaxBytes || 10 * 1024 * 1024,
     segmentMaxOps: options.segmentMaxOps || 10_000,
+    ...(options.applierDeps || {}),
   });
-  return { agent, applier, events, root, tmp };
+  return { agent, applier, events, root, tmp, warnings };
 }
 
 test('markdown operation applier shards logs and rebuilds materialized Markdown in order', async () => {
@@ -110,6 +113,97 @@ test('markdown operation applier treats idempotency keys as exactly-once writes'
     assert.equal(records.length, 2);
     const content = await readFile(path.join(root, 'notes', 'profile.md'), 'utf8');
     assert.equal((content.match(/specializes in memory systems/g) || []).length, 1);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('markdown operation applier materializes MEMORY.md mirror asynchronously after local write', async () => {
+  const mirrorCalls = [];
+  const documentIndexes = [];
+  const operationIndexes = [];
+  let releaseMirror = null;
+  const mirrorGate = new Promise((resolve) => {
+    releaseMirror = resolve;
+  });
+  const { agent, applier, root, tmp } = await makeHarness({
+    applierDeps: {
+      materializeMarkdownMirror: async (payload) => {
+        mirrorCalls.push(payload);
+        await mirrorGate;
+        return {
+          storageMode: 'pvc',
+          storageKey: `agent-memory/${payload.workspaceId}/${payload.agentId}/MEMORY.md`,
+          bytes: Buffer.byteLength(payload.content || '', 'utf8'),
+          documentHash: payload.documentHash,
+          revision: payload.revision,
+        };
+      },
+      persistMarkdownDocumentIndex: async (record) => documentIndexes.push(record),
+      persistMarkdownOperationIndex: async (record) => operationIndexes.push(record),
+    },
+  });
+  try {
+    const result = await Promise.race([
+      applier.submitAgentMarkdownOperation(agent, {
+        type: 'upsert_bullet',
+        target: { relPath: 'MEMORY.md', heading: 'Recent Work' },
+        text: '- mirrored through PVC',
+      }, { idempotencyKey: 'mirror-memory' }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('local apply waited for mirror')), 200)),
+    ]);
+
+    assert.equal(result.status, 'applied');
+    const local = await readFile(path.join(root, 'MEMORY.md'), 'utf8');
+    assert.match(local, /mirrored through PVC/);
+
+    releaseMirror();
+    await applier.flushAsyncPersists();
+
+    assert.equal(mirrorCalls.length, 1);
+    assert.equal(mirrorCalls[0].relPath, 'MEMORY.md');
+    assert.match(mirrorCalls[0].content, /mirrored through PVC/);
+    assert.equal(documentIndexes.length, 1);
+    assert.equal(documentIndexes[0].metadata.storageMode, 'pvc');
+    assert.equal(documentIndexes[0].metadata.storageKey, 'agent-memory/wsp_one/agt_one/MEMORY.md');
+    assert.equal(documentIndexes[0].documentHash, result.afterHash);
+    assert.equal(operationIndexes.length, 1);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('markdown operation applier keeps local MEMORY.md when async mirror/index persist fails', async () => {
+  const { agent, applier, root, tmp, warnings, events } = await makeHarness({
+    applierDeps: {
+      materializeMarkdownMirror: async () => {
+        throw new Error('pvc locked');
+      },
+      persistMarkdownDocumentIndex: async () => {
+        throw new Error('pg deadlock');
+      },
+      persistMarkdownOperationIndex: async () => {
+        throw new Error('pg timeout');
+      },
+    },
+  });
+  try {
+    const result = await applier.submitAgentMarkdownOperation(agent, {
+      type: 'upsert_bullet',
+      target: { relPath: 'MEMORY.md', heading: 'Recent Work' },
+      text: '- local write survives async mirror failure',
+    }, { idempotencyKey: 'mirror-fails' });
+
+    assert.equal(result.status, 'applied');
+    const local = await readFile(path.join(root, 'MEMORY.md'), 'utf8');
+    assert.match(local, /local write survives async mirror failure/);
+
+    await applier.flushAsyncPersists();
+
+    assert.ok(warnings.some((entry) => /mirror persist failed/.test(entry.message)));
+    assert.ok(warnings.some((entry) => /document index persist failed/.test(entry.message)));
+    assert.ok(warnings.some((entry) => /operation index persist failed/.test(entry.message)));
+    assert.ok(events.some((entry) => entry.type === 'markdown_mirror_persist_error'));
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

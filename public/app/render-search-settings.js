@@ -2177,13 +2177,34 @@ function renderAgentWorkspacePreview(agent) {
   `;
 }
 
+function agentWorkspaceSourceBadge(tree, agent) {
+  const source = String(tree?.source || tree?.agent?.source || agent?.workspaceSource || '').toLowerCase();
+  const stale = Boolean(tree?.stale || tree?.mirrorStale || tree?.errorSource === 'cloud_mirror');
+  const label = stale
+    ? 'Mirror stale'
+    : source === 'cloud_mirror'
+      ? 'Cloud mirror'
+      : 'Computer local';
+  const klass = stale ? 'stale' : source === 'cloud_mirror' ? 'mirror' : 'local';
+  const title = stale
+    ? 'Mirror stale/error'
+    : source === 'cloud_mirror'
+      ? 'Cloud mirror'
+      : 'Computer local';
+  return `<span class="agent-workspace-source-badge ${klass}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+}
+
 function renderAgentWorkspaceTab(agent) {
   const rootKey = agentWorkspaceKey(agent.id, '');
   const tree = agentWorkspaceTreeCache[rootKey];
+  const workspacePath = tree?.agent?.workspacePath || agent.workspacePath || agent.workspace || '--';
   return `
     <div class="agent-workspace-tab">
       <div class="agent-workspace-path">
-        <code>${escapeHtml(agent.workspacePath || agent.workspace || '--')}</code>
+        <div class="agent-workspace-path-main">
+          <code>${escapeHtml(workspacePath)}</code>
+          ${agentWorkspaceSourceBadge(tree, agent)}
+        </div>
         <button type="button" data-action="refresh-agent-workspace" data-agent-id="${escapeHtml(agent.id)}">Refresh</button>
       </div>
       <div class="agent-workspace-layout">

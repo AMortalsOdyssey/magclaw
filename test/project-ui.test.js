@@ -2534,7 +2534,13 @@ test('agent workspace tab has split tree and raw/preview markdown controls', asy
   assert.match(app, /data-action="set-agent-workspace-preview-mode" data-mode="preview"/);
   assert.match(app, /agentWorkspacePreviewMode === 'preview'/);
   assert.match(app, /renderMarkdown\(file\.content \|\| ''\)/);
+  assert.match(app, /function agentWorkspaceSourceBadge/);
+  assert.match(app, /Computer local/);
+  assert.match(app, /Cloud mirror/);
+  assert.match(app, /Mirror stale/);
+  assert.match(app, /class="agent-workspace-source-badge/);
   assert.match(styles, /\.agent-workspace-layout/);
+  assert.match(styles, /\.agent-workspace-source-badge/);
   assert.match(styles, /\.agent-workspace-sidebar/);
   assert.match(styles, /\.agent-workspace-viewer/);
 });
