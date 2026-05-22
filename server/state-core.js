@@ -817,6 +817,10 @@ export function createStateCore(deps) {
     for (const computer of state.computers) {
       computer.workspaceId = computer.workspaceId || state.connection.workspaceId || 'local';
       computer.status = computer.status || 'offline';
+      if (['connected', 'upgrade_pending', 'upgrading', 'restarting', 'rollback'].includes(String(computer.status || '').toLowerCase()) && String(computer.connectedVia || '').toLowerCase() === 'daemon') {
+        computer.status = 'offline';
+        computer.disconnectedAt = computer.disconnectedAt || now();
+      }
       computer.runtimeIds = Array.isArray(computer.runtimeIds) ? computer.runtimeIds : [];
       computer.connectedVia = computer.connectedVia || (computer.id === 'cmp_local' ? 'local' : 'manual');
       computer.updatedAt = computer.updatedAt || computer.createdAt || now();

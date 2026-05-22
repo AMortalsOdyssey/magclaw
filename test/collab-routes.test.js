@@ -86,6 +86,56 @@ test('collab route group creates channels with synced membership fields and an a
   assert.equal(deps.memoryUpdates[0].trigger, 'channel_membership_changed');
 });
 
+test('collab route group restricts daemon upgrades to admins and owners', async () => {
+  let relayCall = null;
+  const deps = routeDeps({
+    daemonRelay: {
+      requestDaemonUpgrade: async (computerId, options) => {
+        relayCall = { computerId, options };
+        return {
+          commandId: 'dupgrade_test',
+          sent: true,
+          reused: false,
+          computer: { id: computerId, status: 'upgrade_pending' },
+          upgrade: { commandId: 'dupgrade_test', status: 'pending_idle' },
+        };
+      },
+    },
+    currentActor: () => ({
+      user: { id: 'usr_member' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_member', role: 'member' },
+    }),
+    readJson: async () => ({ targetVersion: '0.1.11' }),
+  });
+  const memberRes = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'POST' },
+    memberRes,
+    new URL('http://local/api/computers/cmp_one/daemon-upgrade'),
+    deps,
+  ), true);
+  assert.equal(memberRes.statusCode, 403);
+  assert.equal(relayCall, null);
+
+  deps.currentActor = () => ({
+    user: { id: 'usr_admin' },
+    member: { workspaceId: 'wsp_main', humanId: 'hum_admin', role: 'admin' },
+  });
+  const adminRes = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'POST' },
+    adminRes,
+    new URL('http://local/api/computers/cmp_one/daemon-upgrade'),
+    deps,
+  ), true);
+  assert.equal(adminRes.statusCode, 200);
+  assert.equal(adminRes.data.commandId, 'dupgrade_test');
+  assert.deepEqual(relayCall, {
+    computerId: 'cmp_one',
+    options: { targetVersion: '0.1.11', requestedBy: 'usr_admin' },
+  });
+});
+
 test('collab route group stamps cloud channels and DMs with the current workspace', async () => {
   const deps = routeDeps({
     currentActor: () => ({

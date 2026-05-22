@@ -151,8 +151,17 @@ function recordFromMetadata(row, base = {}) {
 }
 
 function computerStatus(value) {
-  const status = String(value || '').trim();
-  if (status === 'disabled' || status === 'pairing') return status;
+  const status = String(value || '').trim().toLowerCase();
+  if ([
+    'offline',
+    'disabled',
+    'pairing',
+    'upgrade_pending',
+    'upgrading',
+    'restarting',
+    'rollback',
+    'upgrade_failed',
+  ].includes(status)) return status;
   return 'offline';
 }
 
@@ -174,7 +183,7 @@ function resetTransientRuntimeStateAfterLoad(state, loadedAt = requiredIso()) {
   for (const computer of safeArray(state.computers)) {
     const status = String(computer.status || '').toLowerCase();
     const connectedVia = String(computer.connectedVia || '').toLowerCase();
-    if (status === 'connected' && connectedVia === 'daemon') {
+    if ((status === 'connected' || status === 'upgrade_pending' || status === 'upgrading' || status === 'restarting' || status === 'rollback') && connectedVia === 'daemon') {
       computer.status = 'offline';
       computer.disconnectedAt = computer.disconnectedAt || loadedAt;
       computer.updatedAt = loadedAt;

@@ -42,6 +42,7 @@ export function cloudCapabilitiesForRole(role) {
     remove_admin: isAdmin,
     remove_owner: isOwner,
     manage_computers: isAdmin,
+    upgrade_computers: isAdmin,
     manage_agents: isAdmin,
     manage_channels: isAdmin,
     manage_projects: isAdmin,

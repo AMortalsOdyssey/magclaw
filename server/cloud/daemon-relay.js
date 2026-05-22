@@ -14,6 +14,8 @@ const DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv('MAGCLAW_DAEMON_RECONNECT_GR
 const ACTIVE_DELIVERY_STATUSES = new Set(['queued', 'sent', 'acked']);
 const TERMINAL_DELIVERY_STATUSES = new Set(['completed', 'failed', 'stopped']);
 const VALID_DELIVERY_STATUSES = new Set([...ACTIVE_DELIVERY_STATUSES, ...TERMINAL_DELIVERY_STATUSES]);
+const COMPUTER_UPGRADE_BLOCKING_STATUSES = new Set(['upgrade_pending', 'upgrading', 'restarting', 'rollback']);
+const DAEMON_UPGRADE_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'rollback_succeeded', 'rollback_failed']);
 
 function readMsEnv(name, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
   const parsed = Number(process.env[name]);
@@ -224,6 +226,7 @@ export function createDaemonRelay(deps) {
   const pendingDisconnects = new Map();
   const pendingActivityProbes = new Map();
   const pendingSkillRequests = new Map();
+  const upgradeProgressConnections = new Map();
   const pendingRuntimePersists = new Map();
   const lastRuntimeBroadcastAt = new Map();
   const handlers = {
@@ -271,6 +274,70 @@ export function createDaemonRelay(deps) {
 
   function workspaceIdForComputer(computer = null, connection = null) {
     return workspaceIdForRuntime(computer, connection?.workspaceId || '');
+  }
+
+  function upgradeKey(computerId, commandId) {
+    return `${String(computerId || '').trim()}:${String(commandId || '').trim()}`;
+  }
+
+  function daemonUpgradeState(computer = {}) {
+    return objectValue(objectValue(computer?.metadata).daemonUpgrade);
+  }
+
+  function daemonUpgradeStatus(computer = {}) {
+    return String(daemonUpgradeState(computer).status || '').toLowerCase();
+  }
+
+  function computerUpgradeBlocksDelivery(computer = {}) {
+    const status = String(computer?.status || '').toLowerCase();
+    const upgradeStatus = daemonUpgradeStatus(computer);
+    return COMPUTER_UPGRADE_BLOCKING_STATUSES.has(status)
+      || (upgradeStatus && !DAEMON_UPGRADE_TERMINAL_STATUSES.has(upgradeStatus));
+  }
+
+  function computerStatusForUpgradeStatus(status) {
+    const value = String(status || '').toLowerCase();
+    if (['pending_idle', 'queued_until_idle', 'accepted'].includes(value)) return 'upgrade_pending';
+    if (['upgrading', 'preparing', 'resolve_target', 'download', 'preflight', 'stage_service'].includes(value)) return 'upgrading';
+    if (['restarting', 'stop_old_daemon', 'start_target_daemon', 'wait_ready'].includes(value)) return 'restarting';
+    if (['rollback', 'rollback_succeeded', 'rollback_failed'].includes(value)) return 'rollback';
+    if (value === 'failed') return 'upgrade_failed';
+    if (value === 'succeeded') return 'connected';
+    return 'upgrade_pending';
+  }
+
+  function patchDaemonUpgrade(computer, patch = {}) {
+    if (!computer) return null;
+    const metadata = { ...objectValue(computer.metadata) };
+    const previous = objectValue(metadata.daemonUpgrade);
+    const timestamp = now();
+    const next = {
+      ...previous,
+      ...patch,
+      updatedAt: timestamp,
+    };
+    if (!next.startedAt && ['upgrading', 'restarting', 'rollback'].includes(computerStatusForUpgradeStatus(next.status))) {
+      next.startedAt = timestamp;
+    }
+    if (next.progress !== undefined) {
+      const parsed = Number(next.progress);
+      next.progress = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : previous.progress || 0;
+    }
+    metadata.daemonUpgrade = next;
+    computer.metadata = metadata;
+    if (next.status) computer.status = computerStatusForUpgradeStatus(next.status);
+    computer.updatedAt = timestamp;
+    return next;
+  }
+
+  function completeUpgradeProgress(computerId, commandId, status = 'succeeded') {
+    const key = upgradeKey(computerId, commandId);
+    const progress = upgradeProgressConnections.get(key);
+    if (!progress) return false;
+    send(progress, { type: 'daemon:upgrade:complete', commandId, status, time: now() });
+    safeSocketEnd(progress.socket);
+    upgradeProgressConnections.delete(key);
+    return true;
   }
 
   function persistRuntimeState(workspaceId, reason = 'daemon_runtime_changed') {
@@ -502,14 +569,15 @@ export function createDaemonRelay(deps) {
     }
     const localRepoDir = process.env.MAGCLAW_DAEMON_LOCAL_REPO_PLACEHOLDER || '/path/to/magclaw';
     const launcher = useNpmCommand
-      ? 'npx @magclaw/daemon@latest'
-      : `MAGCLAW_REPO_DIR=${shellArg(localRepoDir)}; node "$MAGCLAW_REPO_DIR/daemon/bin/magclaw-daemon.js"`;
+      ? 'npx @magclaw/daemon@latest connect'
+      : `MAGCLAW_REPO_DIR=${shellArg(localRepoDir)}; node "$MAGCLAW_REPO_DIR/daemon/bin/magclaw-daemon.js" connect`;
     return [
       launcher,
       `--server-url ${shellArg(publicUrl)}`,
       `--${credentialFlag} ${shellArg(credential)}`,
       `--profile ${shellArg(profile)}`,
       displayName ? `--display-name ${shellArg(displayName)}` : '',
+      '--background',
       `# ${comment}`,
     ].filter(Boolean).join(' ');
   }
@@ -831,6 +899,16 @@ export function createDaemonRelay(deps) {
     let changed = 0;
     for (const agent of safeArray(state.agents)) {
       if (agentIsUnavailable(agent) || agent.computerId !== computerId) continue;
+      const computer = findComputer(computerId);
+      if (computerUpgradeBlocksDelivery(computer)) {
+        if (agent.status === 'waiting_for_upgrade') continue;
+        setAgentStatus(agent, 'waiting_for_upgrade', 'daemon_computer_upgrade_disconnect', {
+          forceEvent: true,
+          event: { computerId },
+        });
+        changed += 1;
+        continue;
+      }
       if (agent.status === 'offline') continue;
       setAgentStatus(agent, 'offline', 'daemon_computer_disconnected', {
         forceEvent: true,
@@ -845,8 +923,9 @@ export function createDaemonRelay(deps) {
     let changed = 0;
     for (const agent of safeArray(state.agents)) {
       if (agentIsUnavailable(agent) || agent.computerId !== computerId) continue;
-      if (agentHasQueuedComputerDelivery(agent, computerId)) continue;
-      if (!['offline', 'waiting_for_computer'].includes(String(agent.status || '').toLowerCase())) continue;
+      const currentStatus = String(agent.status || '').toLowerCase();
+      if (currentStatus !== 'waiting_for_upgrade' && agentHasQueuedComputerDelivery(agent, computerId)) continue;
+      if (!['offline', 'waiting_for_computer', 'waiting_for_upgrade'].includes(currentStatus)) continue;
       setAgentStatus(agent, 'idle', 'daemon_computer_ready', {
         forceEvent: true,
         event: { computerId },
@@ -948,7 +1027,7 @@ export function createDaemonRelay(deps) {
     if (connections.get(connection.computerId) === connection) connections.delete(connection.computerId);
     const computer = findComputer(connection.computerId);
     if (computer) {
-      if (!computerIsDisabled(computer)) computer.status = 'offline';
+      if (!computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'offline';
       computer.reconnectingSince = null;
       computer.disconnectedAt = now();
       computer.updatedAt = now();
@@ -1014,7 +1093,7 @@ export function createDaemonRelay(deps) {
     connection.workspaceId = tokenRecord.workspaceId || computer.workspaceId || cloud().workspaces[0]?.id;
     connection.tokenId = tokenRecord.id;
     connections.set(computer.id, connection);
-    if (!computerIsDisabled(computer)) computer.status = 'connected';
+    if (!computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
     computer.connectedVia = 'daemon';
     clearPairingProvisionalMetadata(computer);
     computer.lastSeenAt = now();
@@ -1025,6 +1104,7 @@ export function createDaemonRelay(deps) {
   }
 
   async function replayQueued(computerId) {
+    if (computerUpgradeBlocksDelivery(findComputer(computerId))) return [];
     const pending = safeArray(cloud().agentDeliveries)
       .filter((delivery) => delivery.computerId === computerId && deliveryRetryReady(delivery))
       .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
@@ -1032,7 +1112,10 @@ export function createDaemonRelay(deps) {
     for (const delivery of pending) {
       if (sendDelivery(delivery)) {
         replayed.push(delivery);
-        markAgentStatusForDelivery(delivery, 'daemon_replay_queued_delivery');
+        if (!delivery.waitingForUpgrade) {
+          markAgentStatusForDelivery(delivery, 'daemon_replay_queued_delivery');
+        }
+        delivery.waitingForUpgrade = false;
       }
     }
     if (pending.length) {
@@ -1065,6 +1148,7 @@ export function createDaemonRelay(deps) {
   }
 
   function sendDelivery(delivery) {
+    if (computerUpgradeBlocksDelivery(findComputer(delivery.computerId))) return false;
     const ok = sendToComputer(delivery.computerId, {
       type: delivery.commandType || delivery.type,
       commandId: delivery.id,
@@ -1098,6 +1182,7 @@ export function createDaemonRelay(deps) {
     const computer = findComputer(delivery?.computerId || agent?.computerId);
     if (!computer || computerIsDisabled(computer)) return 'offline';
     const status = String(computer.status || '').toLowerCase();
+    if (computerUpgradeBlocksDelivery(computer)) return 'waiting_for_upgrade';
     if (status === 'pairing' || computer.reconnectingSince || pendingDisconnects.has(computer.id)) return 'waiting_for_computer';
     return 'offline';
   }
@@ -1151,6 +1236,7 @@ export function createDaemonRelay(deps) {
       idempotencyKey: deliveryIdempotencyKey(commandType, computer.id, agent.id, messageId, workItemId, payload),
       attempts: 0,
       payload,
+      waitingForUpgrade: computerUpgradeBlocksDelivery(computer),
       createdAt: now(),
       updatedAt: now(),
       sentAt: null,
@@ -1324,6 +1410,30 @@ export function createDaemonRelay(deps) {
     computer.runtimeDetails = safeArray(message.runtimeDetails);
     computer.runningAgents = safeArray(message.runningAgents);
     computer.capabilities = safeArray(message.capabilities).map(String);
+    computer.service = objectValue(message.service);
+    const reportedUpgrade = message.upgrade && typeof message.upgrade === 'object' ? message.upgrade : null;
+    const previousUpgrade = daemonUpgradeState(computer);
+    const upgradeCommandId = String(reportedUpgrade?.commandId || previousUpgrade.commandId || '').trim();
+    const targetVersion = String(reportedUpgrade?.targetVersion || previousUpgrade.targetVersion || '').trim();
+    const readyMatchesUpgrade = Boolean(
+      upgradeCommandId
+      && (
+        reportedUpgrade?.status === 'succeeded'
+        || (targetVersion && String(message.daemonVersion || '') === targetVersion)
+      )
+    );
+    if (readyMatchesUpgrade) {
+      patchDaemonUpgrade(computer, {
+        commandId: upgradeCommandId,
+        status: 'succeeded',
+        phase: 'ready',
+        progress: 100,
+        message: 'Daemon reconnected with the upgraded version.',
+        targetVersion: targetVersion || message.daemonVersion || '',
+        error: '',
+      });
+      completeUpgradeProgress(computer.id, upgradeCommandId, 'succeeded');
+    }
     computer.status = 'connected';
     computer.lastSeenAt = now();
     computer.updatedAt = now();
@@ -1488,6 +1598,98 @@ export function createDaemonRelay(deps) {
     }
   }
 
+  async function handleDaemonUpgradeAck(connection, message) {
+    const computer = findComputer(connection.computerId);
+    if (!computer) return;
+    const rawStatus = String(message.status || '').toLowerCase();
+    const status = rawStatus === 'queued_until_idle' ? 'pending_idle' : rawStatus || 'upgrading';
+    const upgrade = patchDaemonUpgrade(computer, {
+      commandId: message.commandId || daemonUpgradeState(computer).commandId || null,
+      status,
+      phase: message.phase || (status === 'pending_idle' ? 'waiting_for_idle' : 'accepted'),
+      progress: message.progress ?? daemonUpgradeState(computer).progress ?? 0,
+      message: message.message || (status === 'pending_idle' ? 'Waiting for all Agents to become idle.' : 'Daemon accepted upgrade request.'),
+      previousVersion: message.previousVersion || daemonUpgradeState(computer).previousVersion || computer.daemonVersion || '',
+      targetVersion: message.targetVersion || daemonUpgradeState(computer).targetVersion || '',
+      error: '',
+    });
+    for (const agent of safeArray(state.agents)) {
+      if (agentIsUnavailable(agent) || agent.computerId !== computer.id) continue;
+      setAgentStatus(agent, 'waiting_for_upgrade', 'daemon_upgrade_ack', {
+        forceEvent: true,
+        event: { computerId: computer.id, commandId: upgrade.commandId },
+      });
+    }
+    recordDaemonEvent('daemon_upgrade_acked', 'Daemon acknowledged upgrade request.', {
+      computerId: computer.id,
+      commandId: upgrade.commandId || null,
+      status: upgrade.status || null,
+      phase: upgrade.phase || null,
+    });
+    await persistRuntimeState(workspaceIdForComputer(computer, connection), 'daemon_upgrade_acked');
+    broadcastState();
+  }
+
+  async function handleDaemonUpgradeStatus(connection, message) {
+    const computer = findComputer(connection.computerId);
+    if (!computer) return;
+    const status = String(message.status || daemonUpgradeState(computer).status || 'upgrading').toLowerCase();
+    const upgrade = patchDaemonUpgrade(computer, {
+      commandId: message.commandId || daemonUpgradeState(computer).commandId || null,
+      status,
+      phase: message.phase || daemonUpgradeState(computer).phase || status,
+      progress: message.progress ?? daemonUpgradeState(computer).progress ?? 0,
+      message: message.message || daemonUpgradeState(computer).message || '',
+      previousVersion: message.previousVersion || daemonUpgradeState(computer).previousVersion || computer.daemonVersion || '',
+      targetVersion: message.targetVersion || daemonUpgradeState(computer).targetVersion || '',
+      error: message.error || '',
+    });
+    if (status === 'succeeded') {
+      completeUpgradeProgress(computer.id, upgrade.commandId, 'succeeded');
+    } else if (['failed', 'rollback_failed', 'rollback_succeeded'].includes(status)) {
+      completeUpgradeProgress(computer.id, upgrade.commandId, status);
+    }
+    recordDaemonEvent('daemon_upgrade_status', 'Daemon upgrade status updated.', {
+      computerId: computer.id,
+      commandId: upgrade.commandId || null,
+      status: upgrade.status || null,
+      phase: upgrade.phase || null,
+      progress: upgrade.progress ?? null,
+    });
+    await persistRuntimeState(workspaceIdForComputer(computer, connection), 'daemon_upgrade_status');
+    broadcastState();
+  }
+
+  async function handleUpgradeProgressMessage(connection, message) {
+    const computer = findComputer(connection.computerId);
+    if (!computer) return;
+    const expectedCommandId = daemonUpgradeState(computer).commandId;
+    const commandId = String(message.commandId || connection.commandId || '').trim();
+    if (expectedCommandId && commandId && expectedCommandId !== commandId) {
+      send(connection, { type: 'error', error: 'Upgrade command id mismatch.' });
+      return;
+    }
+    const status = String(message.status || daemonUpgradeState(computer).status || 'upgrading').toLowerCase();
+    const upgrade = patchDaemonUpgrade(computer, {
+      commandId: commandId || expectedCommandId || null,
+      status,
+      phase: message.phase || daemonUpgradeState(computer).phase || status,
+      progress: message.progress ?? daemonUpgradeState(computer).progress ?? 0,
+      message: message.message || daemonUpgradeState(computer).message || '',
+      previousVersion: message.previousVersion || daemonUpgradeState(computer).previousVersion || '',
+      targetVersion: message.targetVersion || daemonUpgradeState(computer).targetVersion || '',
+      error: message.error || '',
+    });
+    send(connection, {
+      type: 'daemon:upgrade:progress:ack',
+      commandId: upgrade.commandId || null,
+      status: upgrade.status || null,
+      time: now(),
+    });
+    await persistRuntimeState(workspaceIdForComputer(computer, connection), 'daemon_upgrade_progress');
+    broadcastState({ realtimeOnly: true });
+  }
+
   async function handleDaemonMessage(connection, raw) {
     let message = null;
     try {
@@ -1500,7 +1702,7 @@ export function createDaemonRelay(deps) {
     refreshConnectionWatchdog(connection);
     const computer = findComputer(connection.computerId);
     if (computer) {
-      if (!computerIsDisabled(computer)) computer.status = 'connected';
+      if (!computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
       computer.lastSeenAt = now();
       computer.updatedAt = now();
     }
@@ -1520,7 +1722,7 @@ export function createDaemonRelay(deps) {
         break;
       case 'heartbeat':
         if (computer) {
-          if (!computerIsDisabled(computer)) computer.status = 'connected';
+          if (!computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
           if (message.daemonVersion) computer.daemonVersion = String(message.daemonVersion);
           computer.runningAgents = safeArray(message.runningAgents);
           computer.lastSeenAt = now();
@@ -1535,6 +1737,12 @@ export function createDaemonRelay(deps) {
             },
           );
         }
+        break;
+      case 'daemon:upgrade:ack':
+        await handleDaemonUpgradeAck(connection, message);
+        break;
+      case 'daemon:upgrade:status':
+        await handleDaemonUpgradeStatus(connection, message);
         break;
       case 'agent:start:ack':
       case 'agent:deliver:ack':
@@ -1701,6 +1909,83 @@ export function createDaemonRelay(deps) {
 
   async function handleUpgrade(req, socket) {
     const url = new URL(req.url || '/', `http://${req.headers.host || `${host}:${port}`}`);
+    if (url.pathname === '/api/daemon-upgrade-progress') {
+      const key = String(req.headers['sec-websocket-key'] || '');
+      if (!key) {
+        safeSocketWrite(socket, 'HTTP/1.1 400 Bad Request\r\n\r\n');
+        safeSocketDestroy(socket);
+        return true;
+      }
+      const computerId = String(url.searchParams.get('computerId') || '').trim();
+      const commandId = String(url.searchParams.get('commandId') || '').trim();
+      const token = String(url.searchParams.get('token') || '').trim();
+      const tokenRecord = token ? validateMachineToken(token) : null;
+      const computer = computerId ? findComputer(computerId) : null;
+      if (!computer || !commandId || !tokenRecord || tokenRecord.computerId !== computer.id) {
+        safeSocketEnd(socket, 'HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nInvalid upgrade progress connection.');
+        return true;
+      }
+      const upgrade = daemonUpgradeState(computer);
+      if (upgrade.commandId && upgrade.commandId !== commandId) {
+        safeSocketEnd(socket, 'HTTP/1.1 409 Conflict\r\nContent-Type: text/plain\r\n\r\nUpgrade command mismatch.');
+        return true;
+      }
+      const accepted = safeSocketWrite(socket, [
+        'HTTP/1.1 101 Switching Protocols',
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        `Sec-WebSocket-Accept: ${websocketAcceptKey(key)}`,
+        '\r\n',
+      ].join('\r\n'));
+      if (!accepted) return true;
+      const progressConnection = {
+        id: makeId('upws'),
+        socket,
+        buffer: Buffer.alloc(0),
+        closed: false,
+        computerId: computer.id,
+        workspaceId: tokenRecord.workspaceId || computer.workspaceId || '',
+        tokenId: tokenRecord.id,
+        commandId,
+      };
+      upgradeProgressConnections.set(upgradeKey(computer.id, commandId), progressConnection);
+      send(progressConnection, { type: 'daemon:upgrade:progress:ready', commandId, time: now() });
+      socket.on('data', (chunk) => {
+        for (const frame of decodeFrames(progressConnection, chunk)) {
+          if (frame.opcode === 0x8) {
+            progressConnection.closed = true;
+            safeSocketEnd(socket);
+            return;
+          }
+          if (frame.opcode !== 0x1) continue;
+          let message = null;
+          try {
+            message = JSON.parse(frame.text);
+          } catch {
+            send(progressConnection, { type: 'error', error: 'Invalid JSON frame.' });
+            continue;
+          }
+          if (message.type === 'daemon:upgrade:progress') {
+            handleUpgradeProgressMessage(progressConnection, message).catch((error) => {
+              send(progressConnection, { type: 'error', error: error.message });
+            });
+          }
+        }
+      });
+      socket.on('close', () => {
+        progressConnection.closed = true;
+        if (upgradeProgressConnections.get(upgradeKey(computer.id, commandId)) === progressConnection) {
+          upgradeProgressConnections.delete(upgradeKey(computer.id, commandId));
+        }
+      });
+      socket.on('end', () => {
+        progressConnection.closed = true;
+        if (upgradeProgressConnections.get(upgradeKey(computer.id, commandId)) === progressConnection) {
+          upgradeProgressConnections.delete(upgradeKey(computer.id, commandId));
+        }
+      });
+      return true;
+    }
     if (url.pathname !== '/daemon/connect') return false;
     if (isDraining()) {
       safeSocketEnd(socket, 'HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nMagClaw server is draining.');
@@ -1850,6 +2135,63 @@ export function createDaemonRelay(deps) {
     return { commandId, sent };
   }
 
+  async function requestDaemonUpgrade(computerId, options = {}) {
+    const computer = findComputer(computerId);
+    if (!computer) {
+      const error = new Error('Computer not found.');
+      error.status = 404;
+      throw error;
+    }
+    if (computerIsDisabled(computer)) {
+      const error = new Error('Computer is disabled.');
+      error.status = 400;
+      throw error;
+    }
+    const current = daemonUpgradeState(computer);
+    if (current.commandId && !DAEMON_UPGRADE_TERMINAL_STATUSES.has(String(current.status || '').toLowerCase())) {
+      return {
+        commandId: current.commandId,
+        sent: false,
+        reused: true,
+        computer,
+        upgrade: current,
+      };
+    }
+    const commandId = makeId('dupgrade');
+    const targetVersion = String(options.targetVersion || options.version || 'latest').trim() || 'latest';
+    const previousVersion = String(computer.daemonVersion || computer.version || '').trim();
+    const upgrade = patchDaemonUpgrade(computer, {
+      commandId,
+      status: 'pending_idle',
+      phase: 'waiting_for_idle',
+      progress: 0,
+      message: '等待更新：正在等待所有 Agent 进入空闲状态。',
+      previousVersion,
+      targetVersion,
+      requestedBy: options.requestedBy || null,
+      requestedAt: now(),
+      error: '',
+    });
+    const sent = sendToComputer(computer.id, {
+      type: 'daemon:upgrade',
+      commandId,
+      targetVersion,
+      previousVersion,
+      progressIntervalMs: 500,
+      requestedAt: upgrade.requestedAt,
+    });
+    recordDaemonEvent(sent ? 'daemon_upgrade_requested' : 'daemon_upgrade_queued', 'Daemon upgrade requested.', {
+      computerId: computer.id,
+      commandId,
+      targetVersion,
+      previousVersion: previousVersion || null,
+      sent,
+    });
+    await persistRuntimeState(workspaceIdForComputer(computer), 'daemon_upgrade_requested');
+    broadcastState();
+    return { commandId, sent, reused: false, computer, upgrade };
+  }
+
   return {
     agentShouldUseRelay,
     authenticateHttpRequest,
@@ -1860,6 +2202,7 @@ export function createDaemonRelay(deps) {
     handleUpgrade,
     probeStaleAgentHeartbeats,
     publicRelayState,
+    requestDaemonUpgrade,
     requestAgentSkills,
     revokeComputerToken,
     sendDaemonReleaseNotice,

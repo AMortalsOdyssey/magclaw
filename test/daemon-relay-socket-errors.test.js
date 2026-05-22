@@ -241,6 +241,194 @@ test('daemon relay dispatches and records daemon release notice acknowledgements
   )));
 });
 
+test('daemon relay requests daemon upgrade and records waiting state', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_existing';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+    daemonVersion: '0.1.10',
+    metadata: {},
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+  socket.emit('data', encodeFrame({ type: 'ready', daemonVersion: '0.1.10', runtimes: ['codex'] }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const result = await relay.requestDaemonUpgrade('cmp_remote', { targetVersion: '0.1.11', requestedBy: 'usr_owner' });
+
+  assert.equal(result.sent, true);
+  assert.equal(state.computers[0].status, 'upgrade_pending');
+  assert.equal(state.computers[0].metadata.daemonUpgrade.status, 'pending_idle');
+  assert.equal(state.computers[0].metadata.daemonUpgrade.targetVersion, '0.1.11');
+  const upgrade = decodeServerMessages(socket).find((message) => message.type === 'daemon:upgrade');
+  assert.equal(upgrade.commandId, result.commandId);
+  assert.equal(upgrade.targetVersion, '0.1.11');
+  assert.ok(cloud.daemonEvents.some((event) => event.type === 'daemon_upgrade_requested'));
+});
+
+test('daemon relay queues deliveries while computer upgrade is pending and replays after ready', async () => {
+  const { cloud, relay, state } = createRelay();
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'upgrade_pending',
+    connectedVia: 'daemon',
+    daemonVersion: '0.1.10',
+    metadata: {
+      daemonUpgrade: {
+        commandId: 'dupgrade_existing',
+        status: 'pending_idle',
+        targetVersion: '0.1.11',
+      },
+    },
+  });
+  state.agents.push({
+    id: 'agt_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    name: 'Remote Agent',
+    runtime: 'codex',
+    status: 'idle',
+  });
+
+  const result = await relay.deliverToAgent(state.agents[0], {
+    id: 'msg_wait_upgrade',
+    body: 'Queue while upgrade waits.',
+  }, { id: 'wi_wait_upgrade' });
+
+  assert.equal(result, true);
+  assert.equal(state.agents[0].status, 'waiting_for_upgrade');
+  assert.equal(cloud.agentDeliveries[0].status, 'queued');
+  assert.equal(cloud.agentDeliveries[0].sentAt, null);
+
+  const rawToken = 'mc_machine_existing';
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash: crypto.createHash('sha256').update(rawToken).digest('hex'),
+    revokedAt: null,
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+  socket.emit('data', encodeFrame({
+    type: 'ready',
+    daemonVersion: '0.1.11',
+    upgrade: { commandId: 'dupgrade_existing', status: 'succeeded', targetVersion: '0.1.11' },
+    runtimes: ['codex'],
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(state.computers[0].status, 'connected');
+  assert.equal(state.computers[0].daemonVersion, '0.1.11');
+  assert.equal(state.computers[0].metadata.daemonUpgrade.status, 'succeeded');
+  assert.equal(state.agents[0].status, 'idle');
+  assert.equal(cloud.agentDeliveries[0].status, 'sent');
+  assert.equal(decodeServerMessages(socket).some((message) => message.type === 'agent:deliver'), true);
+});
+
+test('daemon relay accepts isolated upgrade progress websockets per computer and command', async () => {
+  const { relay, state, cloud } = createRelay();
+  const rawOne = 'mc_machine_one';
+  const rawTwo = 'mc_machine_two';
+  state.computers.push(
+    {
+      id: 'cmp_one',
+      workspaceId: 'wsp_test',
+      name: 'One',
+      status: 'upgrading',
+      connectedVia: 'daemon',
+      metadata: { daemonUpgrade: { commandId: 'dupgrade_one', status: 'upgrading' } },
+    },
+    {
+      id: 'cmp_two',
+      workspaceId: 'wsp_test',
+      name: 'Two',
+      status: 'upgrading',
+      connectedVia: 'daemon',
+      metadata: { daemonUpgrade: { commandId: 'dupgrade_two', status: 'upgrading' } },
+    },
+  );
+  cloud.computerTokens.push(
+    {
+      id: 'ctok_one',
+      workspaceId: 'wsp_test',
+      computerId: 'cmp_one',
+      tokenHash: crypto.createHash('sha256').update(rawOne).digest('hex'),
+      revokedAt: null,
+    },
+    {
+      id: 'ctok_two',
+      workspaceId: 'wsp_test',
+      computerId: 'cmp_two',
+      tokenHash: crypto.createHash('sha256').update(rawTwo).digest('hex'),
+      revokedAt: null,
+    },
+  );
+  const socketOne = new FakeSocket();
+  const socketTwo = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/api/daemon-upgrade-progress?computerId=cmp_one&commandId=dupgrade_one&token=${rawOne}`,
+    headers: { host: 'magclaw.multiego.me', 'sec-websocket-key': 'progress-one' },
+    socket: {},
+  }, socketOne), true);
+  assert.equal(await relay.handleUpgrade({
+    url: `/api/daemon-upgrade-progress?computerId=cmp_two&commandId=dupgrade_two&token=${rawTwo}`,
+    headers: { host: 'magclaw.multiego.me', 'sec-websocket-key': 'progress-two' },
+    socket: {},
+  }, socketTwo), true);
+
+  socketOne.emit('data', encodeFrame({
+    type: 'daemon:upgrade:progress',
+    commandId: 'dupgrade_one',
+    phase: 'download',
+    progress: 35,
+    message: 'Downloaded package metadata',
+  }));
+  socketTwo.emit('data', encodeFrame({
+    type: 'daemon:upgrade:progress',
+    commandId: 'dupgrade_two',
+    phase: 'rollback',
+    status: 'rollback',
+    progress: 80,
+    message: 'Rolling back',
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(state.computers[0].metadata.daemonUpgrade.phase, 'download');
+  assert.equal(state.computers[0].metadata.daemonUpgrade.progress, 35);
+  assert.equal(state.computers[1].metadata.daemonUpgrade.phase, 'rollback');
+  assert.equal(state.computers[1].metadata.daemonUpgrade.status, 'rollback');
+  assert.equal(state.computers[1].metadata.daemonUpgrade.progress, 80);
+});
+
 test('daemon relay coalesces heartbeat persistence by workspace', async () => {
   mock.timers.enable({ apis: ['setTimeout'] });
   try {

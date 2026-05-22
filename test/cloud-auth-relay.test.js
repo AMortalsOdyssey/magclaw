@@ -906,7 +906,7 @@ test('owner registration protects app APIs and supports invites end to end', asy
     assert.match(pairing.data.command, /MAGCLAW_REPO_DIR="\/path\/to\/magclaw"; node "\$MAGCLAW_REPO_DIR\/daemon\/bin\/magclaw-daemon\.js"/);
     assert.match(pairing.data.command, /--api-key "?mc_machine_/);
     assert.doesNotMatch(pairing.data.command, /--pair-token/);
-    assert.doesNotMatch(pairing.data.command, /--background/);
+    assert.match(pairing.data.command, /--background/);
     assert.match(pairing.data.command, /--profile "?admin-team-cmp_/);
     assert.match(pairing.data.command, /# Admin Team/);
     assert.equal(pairing.data.provisional, true);

@@ -433,6 +433,38 @@ export async function handleCollabApi(req, res, url, deps) {
     return true;
   }
 
+    const computerUpgradeMatch = url.pathname.match(/^\/api\/computers\/([^/]+)\/daemon-upgrade$/);
+    if (req.method === 'POST' && computerUpgradeMatch) {
+      const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+      const role = String(auth?.member?.role || '').toLowerCase();
+      if (!['owner', 'admin'].includes(role)) {
+        sendError(res, auth ? 403 : 401, auth ? 'Workspace role is not allowed.' : 'Login is required.');
+        return true;
+      }
+      if (!daemonRelay?.requestDaemonUpgrade) {
+        sendError(res, 503, 'Daemon relay is unavailable.');
+        return true;
+      }
+      const body = await readJson(req);
+      try {
+        const result = await daemonRelay.requestDaemonUpgrade(computerUpgradeMatch[1], {
+          targetVersion: body.targetVersion || body.version || state.runtime?.daemonLatestVersion || state.runtime?.daemonPackageVersion || 'latest',
+          requestedBy: auth?.user?.id || auth?.member?.id || null,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          commandId: result.commandId,
+          sent: Boolean(result.sent),
+          reused: Boolean(result.reused),
+          computer: result.computer,
+          upgrade: result.upgrade,
+        });
+      } catch (error) {
+        sendError(res, error.status || 500, error.message || 'Failed to request daemon upgrade.');
+      }
+      return true;
+    }
+
     const computerMatch = url.pathname.match(/^\/api\/computers\/([^/]+)$/);
     if (req.method === 'DELETE' && computerMatch) {
       const computer = findComputer(computerMatch[1]);
