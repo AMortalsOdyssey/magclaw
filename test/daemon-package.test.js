@@ -9,6 +9,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   DAEMON_VERSION,
+  CAPABILITIES,
   detectRuntimes,
   ensureMachineFingerprint,
   formatDaemonLogLine,
@@ -119,6 +120,20 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
   assert.equal(parsed.flags.pairToken, 'mc_pair_test');
   assert.equal(parsed.flags.background, true);
 
+  const upgrade = parseCli([
+    'node',
+    'magclaw',
+    'upgrade',
+    '--to',
+    '0.1.11',
+    '--dry-run',
+    '--json',
+  ]);
+  assert.equal(upgrade.command, 'upgrade');
+  assert.equal(upgrade.flags.to, '0.1.11');
+  assert.equal(upgrade.flags.dryRun, true);
+  assert.equal(upgrade.flags.json, true);
+
   const named = parseCli([
     'node',
     'magclaw-daemon',
@@ -143,7 +158,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.10');
+  assert.equal(DAEMON_VERSION, '0.1.11');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -317,6 +332,7 @@ test('top-level daemon npm package dry-run excludes cloud server and deployment 
   const packed = JSON.parse(result.stdout)[0];
   const files = packed.files.map((file) => file.path);
   assert.ok(files.includes('bin/magclaw-daemon.js'));
+  assert.ok(files.includes('bin/magclaw.js'));
   assert.ok(files.includes('src/cli.js'));
   assert.ok(files.includes('src/mcp-bridge.js'));
   assert.equal(files.some((file) => file.startsWith('server/')), false);
@@ -325,6 +341,13 @@ test('top-level daemon npm package dry-run excludes cloud server and deployment 
   assert.equal(files.some((file) => file.startsWith('shared/')), false);
   assert.equal(files.includes('Dockerfile'), false);
   assert.equal(files.includes('kizuna.json'), false);
+});
+
+test('daemon package exposes upgrade capability and magclaw CLI alias', async () => {
+  const daemonPackage = JSON.parse(await readFile(new URL('../daemon/package.json', import.meta.url), 'utf8'));
+  assert.equal(daemonPackage.bin.magclaw, 'bin/magclaw.js');
+  assert.equal(daemonPackage.bin['magclaw-daemon'], 'bin/magclaw-daemon.js');
+  assert.ok(CAPABILITIES.includes('daemon:upgrade'));
 });
 
 test('foreground daemon exits and clears its lock on SIGINT', async () => {

@@ -40,12 +40,13 @@ const PACKAGE_JSON = (() => {
 export const DAEMON_VERSION = String(PACKAGE_JSON.version || '0.0.0');
 const SOURCE_CODEX_HOME = path.resolve(process.env.MAGCLAW_CODEX_HOME_SOURCE || process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
 const CODEX_HOME_SHARED_ENTRIES = ['auth.json', 'plugins', 'vendor_imports'];
-const CAPABILITIES = [
+export const CAPABILITIES = [
   'agent:start',
   'agent:restart',
   'agent:deliver',
   'agent:stop',
   'agent:skills:list',
+  'daemon:upgrade',
   'daemon:release_notice',
   'machine:runtime_models:detect',
 ];
@@ -327,6 +328,8 @@ export function profilePaths(profile = DEFAULT_PROFILE, env = process.env) {
     agentsDir: path.join(dir, 'agents'),
     deliveryLedger: path.join(dir, 'delivery-ledger.json'),
     releaseNotices: path.join(dir, 'release-notices.json'),
+    service: path.join(dir, 'service.json'),
+    upgradeHandoff: path.join(dir, 'upgrade-handoff.json'),
   };
 }
 
@@ -517,6 +520,56 @@ async function saveProfile(profile, config, env = process.env) {
   if (safeConfig.token) safeConfig.pairToken = '';
   await writeJsonFile(paths.config, safeConfig);
   return safeConfig;
+}
+
+async function readServiceState(profile = DEFAULT_PROFILE, env = process.env) {
+  const paths = profilePaths(profile, env);
+  const state = await readJsonFile(paths.service, {});
+  return {
+    version: 1,
+    profile: paths.profile,
+    mode: state.mode || 'foreground',
+    background: Boolean(state.background),
+    launcher: state.launcher || '',
+    packageSpec: state.packageSpec || '',
+    previousPackageSpec: state.previousPackageSpec || '',
+    installedDaemonVersion: state.installedDaemonVersion || DAEMON_VERSION,
+    updatedAt: state.updatedAt || '',
+    ...state,
+  };
+}
+
+async function writeServiceState(profile = DEFAULT_PROFILE, patch = {}, env = process.env) {
+  const paths = profilePaths(profile, env);
+  const previous = await readServiceState(paths.profile, env);
+  const next = {
+    ...previous,
+    ...patch,
+    version: 1,
+    profile: paths.profile,
+    updatedAt: now(),
+  };
+  await writeJsonFile(paths.service, next);
+  return next;
+}
+
+async function readUpgradeHandoff(profile = DEFAULT_PROFILE, env = process.env) {
+  const paths = profilePaths(profile, env);
+  const handoff = await readJsonFile(paths.upgradeHandoff, null);
+  return handoff && typeof handoff === 'object' && !Array.isArray(handoff) ? handoff : null;
+}
+
+async function writeUpgradeHandoff(profile = DEFAULT_PROFILE, patch = {}, env = process.env) {
+  const paths = profilePaths(profile, env);
+  const previous = await readUpgradeHandoff(paths.profile, env) || {};
+  const handoff = {
+    ...previous,
+    ...patch,
+    profile: paths.profile,
+    updatedAt: now(),
+  };
+  await writeJsonFile(paths.upgradeHandoff, handoff);
+  return handoff;
 }
 
 function printJson(value) {
@@ -2434,6 +2487,9 @@ class MagClawDaemon {
     this.daemonRunId = `${process.pid}:${Date.now()}`;
     this.deliveryLedgerCache = null;
     this.deliveryLedgerQueue = Promise.resolve();
+    this.pendingUpgradeRequest = null;
+    this.upgradeIdleTimer = null;
+    this.upgradeWorkerStarting = false;
   }
 
   send(payload) {
@@ -2569,9 +2625,166 @@ class MagClawDaemon {
     return notice;
   }
 
+  daemonIsIdleForUpgrade() {
+    if (this.activeAgentStartCount > 0) return false;
+    if (this.agentStartQueue.length || this.agentStartPromises.size) return false;
+    if (this.pendingSessionDeliveries.length || this.drainingSessionDeliveries) return false;
+    return [...this.sessions.values()].every((session) => !this.sessionIsActive(session));
+  }
+
+  clearUpgradeIdleTimer() {
+    if (!this.upgradeIdleTimer) return;
+    clearTimeout(this.upgradeIdleTimer);
+    this.upgradeIdleTimer = null;
+  }
+
+  scheduleUpgradeIdleCheck() {
+    if (!this.pendingUpgradeRequest || this.closed || this.upgradeIdleTimer) return;
+    this.upgradeIdleTimer = setTimeout(() => {
+      this.upgradeIdleTimer = null;
+      this.maybeStartPendingUpgrade().catch((error) => {
+        logError('upgrade', `Failed to evaluate pending daemon upgrade: ${error.message}`);
+      });
+    }, 1000);
+    this.upgradeIdleTimer.unref?.();
+  }
+
+  async maybeStartPendingUpgrade() {
+    if (!this.pendingUpgradeRequest || this.upgradeWorkerStarting) return;
+    if (!this.daemonIsIdleForUpgrade()) {
+      this.scheduleUpgradeIdleCheck();
+      return;
+    }
+    const request = this.pendingUpgradeRequest;
+    this.pendingUpgradeRequest = null;
+    this.clearUpgradeIdleTimer();
+    await this.startUpgradeWorker(request);
+  }
+
+  async startUpgradeWorker(message = {}) {
+    const commandId = String(message.commandId || '').trim();
+    if (!commandId) return false;
+    this.upgradeWorkerStarting = true;
+    const targetVersion = String(message.targetVersion || message.version || 'latest').trim() || 'latest';
+    const previousVersion = String(message.previousVersion || DAEMON_VERSION).trim() || DAEMON_VERSION;
+    const service = await readServiceState(this.paths.profile, this.env);
+    if (!service.background) {
+      const error = 'Remote daemon upgrade requires a background service. Run `magclaw start` or reconnect with `--background` first.';
+      await writeUpgradeHandoff(this.paths.profile, {
+        commandId,
+        status: 'failed',
+        phase: 'background_required',
+        progress: 0,
+        message: error,
+        previousVersion,
+        targetVersion,
+        error,
+      }, this.env);
+      this.send({
+        type: 'daemon:upgrade:ack',
+        commandId,
+        status: 'failed',
+        phase: 'background_required',
+        progress: 0,
+        message: error,
+        previousVersion,
+        targetVersion,
+      });
+      this.upgradeWorkerStarting = false;
+      return false;
+    }
+
+    await writeUpgradeHandoff(this.paths.profile, {
+      commandId,
+      status: 'upgrading',
+      phase: 'worker_starting',
+      progress: 1,
+      message: 'Upgrade worker is starting.',
+      previousVersion,
+      targetVersion,
+      packageSpec: message.packageSpec || '',
+      startedAt: now(),
+    }, this.env);
+    this.send({
+      type: 'daemon:upgrade:ack',
+      commandId,
+      status: 'upgrading',
+      phase: 'worker_starting',
+      progress: 1,
+      previousVersion,
+      targetVersion,
+      message: 'Upgrade worker is starting.',
+    });
+    const args = [
+      executablePath(),
+      'upgrade-worker',
+      '--profile',
+      this.paths.profile,
+      '--command-id',
+      commandId,
+      '--target-version',
+      targetVersion,
+      '--previous-version',
+      previousVersion,
+    ];
+    if (message.packageSpec) args.push('--package-spec', String(message.packageSpec));
+    const child = spawn(process.execPath, args, {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: 'ignore',
+      env: {
+        ...this.env,
+        MAGCLAW_DAEMON_HOME: daemonRoot(this.env),
+      },
+    });
+    child.unref();
+    logInfo('upgrade', `Started daemon upgrade worker command=${commandId} target=${targetVersion}.`);
+    this.upgradeWorkerStarting = false;
+    return true;
+  }
+
+  async handleDaemonUpgrade(message = {}) {
+    const commandId = String(message.commandId || '').trim();
+    const targetVersion = String(message.targetVersion || message.version || 'latest').trim() || 'latest';
+    const previousVersion = String(message.previousVersion || DAEMON_VERSION).trim() || DAEMON_VERSION;
+    if (!commandId) {
+      this.send({ type: 'daemon:upgrade:ack', status: 'failed', error: 'Missing commandId.' });
+      return;
+    }
+    await writeUpgradeHandoff(this.paths.profile, {
+      commandId,
+      status: this.daemonIsIdleForUpgrade() ? 'accepted' : 'queued_until_idle',
+      phase: this.daemonIsIdleForUpgrade() ? 'accepted' : 'waiting_for_idle',
+      progress: 0,
+      message: this.daemonIsIdleForUpgrade() ? 'Daemon accepted upgrade command.' : 'Waiting for all Agent work to become idle.',
+      previousVersion,
+      targetVersion,
+      packageSpec: message.packageSpec || '',
+      requestedAt: now(),
+    }, this.env);
+    if (!this.daemonIsIdleForUpgrade()) {
+      this.pendingUpgradeRequest = message;
+      this.send({
+        type: 'daemon:upgrade:ack',
+        commandId,
+        status: 'queued_until_idle',
+        phase: 'waiting_for_idle',
+        progress: 0,
+        previousVersion,
+        targetVersion,
+        message: 'Waiting for all Agent work to become idle.',
+      });
+      this.scheduleUpgradeIdleCheck();
+      return;
+    }
+    await this.startUpgradeWorker(message);
+  }
+
   async readyPayload() {
     const runtimes = await detectRuntimes(this.env);
     const owner = await ensureMachineFingerprint(this.paths.profile, this.env);
+    const service = await readServiceState(this.paths.profile, this.env);
+    const upgrade = await readUpgradeHandoff(this.paths.profile, this.env);
     return {
       type: 'ready',
       computerId: this.config.computerId || null,
@@ -2582,6 +2795,13 @@ class MagClawDaemon {
       os: `${os.platform()} ${os.release()}`,
       arch: os.arch(),
       daemonVersion: DAEMON_VERSION,
+      service: {
+        mode: service.mode || 'foreground',
+        background: Boolean(service.background),
+        launcher: service.launcher || '',
+        packageSpec: service.packageSpec || '',
+      },
+      upgrade: upgrade || null,
       runtimes: runtimes.filter((runtime) => runtime.installed).map((runtime) => runtime.id),
       runtimeDetails: runtimes,
       runningAgents: [...this.sessions.keys()],
@@ -2691,6 +2911,9 @@ class MagClawDaemon {
       .finally(() => {
         this.activeAgentStartCount = Math.max(0, this.activeAgentStartCount - 1);
         this.pumpAgentStartQueue();
+        this.maybeStartPendingUpgrade().catch((error) => {
+          logWarning('upgrade', `Failed to start pending daemon upgrade after agent start finished: ${error.message}`);
+        });
       });
   }
 
@@ -2734,6 +2957,9 @@ class MagClawDaemon {
             receivedAt: notice.receivedAt,
           });
         }
+        break;
+      case 'daemon:upgrade':
+        await this.handleDaemonUpgrade(message);
         break;
       case 'agent:start':
         await this.handleAgentStart(message);
@@ -2880,6 +3106,9 @@ class MagClawDaemon {
         this.drainPendingSessionDeliveries().catch((error) => {
           logWarning('daemon', `Failed to drain pending session deliveries: ${error.message}`);
         });
+        this.maybeStartPendingUpgrade().catch((error) => {
+          logWarning('upgrade', `Failed to start pending daemon upgrade after session status changed: ${error.message}`);
+        });
       },
       env: this.env,
     });
@@ -3009,6 +3238,7 @@ class MagClawDaemon {
       clearTimeout(this.agentStartPumpTimer);
       this.agentStartPumpTimer = null;
     }
+    this.clearUpgradeIdleTimer();
     const queuedStarts = this.agentStartQueue.splice(0);
     for (const item of queuedStarts) {
       item.resolve?.();
@@ -3171,12 +3401,24 @@ async function writeLauncher(profile, env = process.env) {
   const npmPath = commandExists('npm', env);
   const nodeDir = path.dirname(process.execPath);
   const npmDir = npmPath ? path.dirname(npmPath) : '';
-  const useNpmLauncher = String(env.MAGCLAW_DAEMON_COMMAND_MODE || '').toLowerCase() === 'npm' && Boolean(npmPath);
+  const commandMode = String(env.MAGCLAW_DAEMON_COMMAND_MODE || '').trim().toLowerCase();
+  const useNpmLauncher = Boolean(npmPath) && !['local', 'local-repo', 'repo', 'source'].includes(commandMode);
   const launcher = path.join(paths.runDir, 'launcher.js');
   const fallbackBin = executablePath();
+  const previousService = await readServiceState(paths.profile, env);
+  const service = await writeServiceState(paths.profile, {
+    mode: process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd' : process.platform === 'win32' ? 'schtasks' : 'foreground',
+    background: true,
+    launcher,
+    packageSpec: env.MAGCLAW_DAEMON_PACKAGE_SPEC || previousService.packageSpec || `@magclaw/daemon@${DAEMON_VERSION}`,
+    previousPackageSpec: previousService.previousPackageSpec || '',
+    installedDaemonVersion: DAEMON_VERSION,
+    commandMode: useNpmLauncher ? 'npm' : 'local',
+  }, env);
   const code = [
     '#!/usr/bin/env node',
     "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
     `const npmPath = ${JSON.stringify(npmPath)};`,
     `const useNpmLauncher = ${JSON.stringify(useNpmLauncher)};`,
     `const nodeDir = ${JSON.stringify(nodeDir)};`,
@@ -3184,10 +3426,15 @@ async function writeLauncher(profile, env = process.env) {
     `const fallbackBin = ${JSON.stringify(fallbackBin)};`,
     `const profile = ${JSON.stringify(paths.profile)};`,
     `const daemonHome = ${JSON.stringify(daemonRoot(env))};`,
+    `const serviceFile = ${JSON.stringify(paths.service)};`,
+    `const defaultPackageSpec = ${JSON.stringify(service.packageSpec)};`,
+    "let service = {};",
+    "try { service = JSON.parse(fs.readFileSync(serviceFile, 'utf8')); } catch {}",
+    "const packageSpec = String(service.packageSpec || defaultPackageSpec || '@magclaw/daemon@latest');",
     'const command = useNpmLauncher ? npmPath : process.execPath;',
     "const args = useNpmLauncher",
-    "  ? ['exec', '--yes', '--package', '@magclaw/daemon@latest', '--', 'magclaw-daemon', '--profile', profile]",
-    "  : [fallbackBin, '--profile', profile];",
+    "  ? ['exec', '--yes', '--package', packageSpec, '--', 'magclaw-daemon', 'connect', '--profile', profile]",
+    "  : [fallbackBin, 'connect', '--profile', profile];",
     "const launchPath = [nodeDir, npmDir, process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].filter(Boolean).join(':');",
     'const child = spawn(command, args, {',
     "  stdio: 'inherit',",
@@ -3302,10 +3549,41 @@ async function startLinuxBackground(profile, env = process.env) {
   return { ok: true, mode: 'systemd', serviceName, file: serviceFile };
 }
 
+function windowsTaskName(profile) {
+  return `MagClaw Daemon ${safeProfileName(profile)}`;
+}
+
+async function startWindowsBackground(profile, env = process.env) {
+  const paths = profilePaths(profile, env);
+  await mkdir(paths.logDir, { recursive: true });
+  const launcher = await writeLauncher(paths.profile, env);
+  await ensureExecutable(launcher);
+  const taskName = windowsTaskName(paths.profile);
+  const command = `"${process.execPath}" "${launcher}"`;
+  spawnSync('schtasks.exe', ['/Delete', '/TN', taskName, '/F'], { stdio: 'ignore' });
+  const create = spawnSync('schtasks.exe', [
+    '/Create',
+    '/SC',
+    'ONLOGON',
+    '/TN',
+    taskName,
+    '/TR',
+    command,
+    '/RL',
+    'LIMITED',
+    '/F',
+  ], { encoding: 'utf8' });
+  if (create.status !== 0) throw new Error((create.stderr || create.stdout || 'schtasks create failed').trim());
+  const run = spawnSync('schtasks.exe', ['/Run', '/TN', taskName], { encoding: 'utf8' });
+  if (run.status !== 0) throw new Error((run.stderr || run.stdout || 'schtasks run failed').trim());
+  return { ok: true, mode: 'schtasks', taskName, file: launcher };
+}
+
 async function startBackground(profile, env = process.env) {
   if (process.platform === 'darwin') return startMacBackground(profile, env);
   if (process.platform === 'linux') return startLinuxBackground(profile, env);
-  return { ok: false, mode: 'foreground', message: 'Background daemon is only automated on macOS launchd and Linux user systemd.' };
+  if (process.platform === 'win32') return startWindowsBackground(profile, env);
+  return { ok: false, mode: 'foreground', message: 'Background daemon is only automated on macOS launchd, Linux user systemd, and Windows schtasks.' };
 }
 
 async function waitForPidExit(pid, timeoutMs = 2000) {
@@ -3370,6 +3648,13 @@ function stopBackground(profile, env = process.env) {
     const result = spawnSync('systemctl', ['--user', 'disable', '--now', serviceName], { encoding: 'utf8' });
     return { ok: result.status === 0, mode: 'systemd', serviceName, error: result.stderr || '' };
   }
+  if (process.platform === 'win32') {
+    const paths = profilePaths(profile, env);
+    const taskName = windowsTaskName(paths.profile);
+    spawnSync('schtasks.exe', ['/End', '/TN', taskName], { stdio: 'ignore' });
+    const result = spawnSync('schtasks.exe', ['/Change', '/TN', taskName, '/DISABLE'], { encoding: 'utf8' });
+    return { ok: result.status === 0, mode: 'schtasks', taskName, error: result.stderr || result.stdout || '' };
+  }
   return { ok: false, mode: 'foreground' };
 }
 
@@ -3394,6 +3679,9 @@ async function uninstallBackground(profile, env = process.env) {
     const paths = profilePaths(profile, env);
     await rm(path.join(os.homedir(), '.config', 'systemd', 'user', systemdServiceName(paths.profile)), { force: true });
     spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
+  } else if (process.platform === 'win32') {
+    const paths = profilePaths(profile, env);
+    spawnSync('schtasks.exe', ['/Delete', '/TN', windowsTaskName(paths.profile), '/F'], { stdio: 'ignore' });
   }
   return stopped;
 }
@@ -3413,6 +3701,10 @@ async function status(profile) {
     const serviceName = systemdServiceName(paths.profile);
     const result = spawnSync('systemctl', ['--user', 'is-active', serviceName], { encoding: 'utf8' });
     service = { mode: 'systemd', active: result.status === 0, serviceName, status: String(result.stdout || '').trim() };
+  } else if (process.platform === 'win32') {
+    const taskName = windowsTaskName(paths.profile);
+    const result = spawnSync('schtasks.exe', ['/Query', '/TN', taskName, '/FO', 'LIST'], { encoding: 'utf8' });
+    service = { mode: 'schtasks', active: result.status === 0, taskName, status: String(result.stdout || '').trim() };
   }
   return {
     profile: paths.profile,
@@ -3454,6 +3746,317 @@ async function doctor(env = process.env) {
     profileRoot: daemonRoot(env),
     runtimes,
   };
+}
+
+function toUpgradeProgressWebSocketUrl(serverUrl, config = {}, commandId = '') {
+  const base = String(serverUrl || DEFAULT_SERVER_URL).replace(/\/+$/, '');
+  const wsBase = base.startsWith('https://')
+    ? `wss://${base.slice('https://'.length)}`
+    : base.startsWith('http://')
+      ? `ws://${base.slice('http://'.length)}`
+      : base;
+  const url = new URL(`${wsBase}/api/daemon-upgrade-progress`);
+  url.searchParams.set('computerId', String(config.computerId || ''));
+  url.searchParams.set('commandId', String(commandId || ''));
+  url.searchParams.set('token', String(config.token || config.machineToken || config.apiKey || ''));
+  return url;
+}
+
+async function openUpgradeProgressSocket(url) {
+  const requestModule = url.protocol === 'wss:' ? https : http;
+  const requestUrl = new URL(url.href.replace(/^ws/, 'http'));
+  const key = crypto.randomBytes(16).toString('base64');
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const req = requestModule.request(requestUrl, {
+      method: 'GET',
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Key': key,
+      },
+    });
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
+    req.on('upgrade', (res, socket, head = Buffer.alloc(0)) => {
+      if (res.statusCode !== 101) {
+        socket.destroy();
+        finish(reject, new Error(`Upgrade progress WebSocket failed: ${res.statusCode}`));
+        return;
+      }
+      const connection = { socket, buffer: Buffer.alloc(0) };
+      let completed = null;
+      let closed = false;
+      const listeners = new Set();
+      const handleChunk = (chunk) => {
+        for (const frame of decodeFrames(connection, chunk)) {
+          if (frame.opcode === 0x8) {
+            socket.end();
+            return;
+          }
+          if (frame.opcode !== 0x1) continue;
+          let message = null;
+          try {
+            message = JSON.parse(frame.text);
+          } catch {
+            continue;
+          }
+          if (message?.type === 'daemon:upgrade:complete') completed = message;
+          for (const listener of listeners) listener(message);
+        }
+      };
+      socket.on('data', handleChunk);
+      if (head.length) handleChunk(head);
+      socket.on('close', () => { closed = true; });
+      socket.on('end', () => { closed = true; });
+      socket.on('error', () => { closed = true; });
+      finish(resolve, {
+        socket,
+        send: (payload) => {
+          if (socket.destroyed) return false;
+          sendJsonFrame(socket, payload);
+          return true;
+        },
+        close: () => {
+          if (!socket.destroyed) socket.end();
+        },
+        onMessage: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        waitForComplete: (timeoutMs = 120_000) => new Promise((completeResolve) => {
+          if (completed) {
+            completeResolve(completed);
+            return;
+          }
+          const timer = setTimeout(() => {
+            cleanup();
+            completeResolve(completed || null);
+          }, timeoutMs);
+          timer.unref?.();
+          const cleanup = () => {
+            clearTimeout(timer);
+            off();
+          };
+          const off = listeners.add ? (() => listeners.delete(listener)) : () => {};
+          const listener = (message) => {
+            if (message?.type !== 'daemon:upgrade:complete') return;
+            completed = message;
+            cleanup();
+            completeResolve(message);
+          };
+          listeners.add(listener);
+          const closeCheck = setInterval(() => {
+            if (!closed && !socket.destroyed) return;
+            clearInterval(closeCheck);
+            if (!completed) {
+              cleanup();
+              completeResolve(null);
+            }
+          }, 500);
+          closeCheck.unref?.();
+        }),
+      });
+    });
+    req.on('response', (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk.toString(); });
+      res.on('end', () => finish(reject, new Error(body || `HTTP ${res.statusCode}`)));
+    });
+    req.on('error', (error) => finish(reject, error));
+    req.setTimeout(30_000, () => req.destroy(new Error('Upgrade progress WebSocket timed out.')));
+    req.end();
+  });
+}
+
+function packageSpecForUpgrade(targetVersion, flags = {}, env = process.env) {
+  const explicit = String(flags.packageSpec || env.MAGCLAW_DAEMON_UPGRADE_PACKAGE_SPEC || '').trim();
+  if (explicit) return explicit;
+  const target = String(targetVersion || '').trim();
+  return target && target !== 'latest' ? `@magclaw/daemon@${target}` : '@magclaw/daemon@latest';
+}
+
+function npmPackageLooksRemote(packageSpec) {
+  const value = String(packageSpec || '').trim();
+  return value.startsWith('@magclaw/daemon@') || value === '@magclaw/daemon';
+}
+
+function preflightPackage(packageSpec, env = process.env) {
+  if (env.MAGCLAW_DAEMON_UPGRADE_SKIP_PREFLIGHT === '1') return { ok: true, skipped: true };
+  if (!npmPackageLooksRemote(packageSpec)) return { ok: true, skipped: true };
+  const npmPath = commandExists('npm', env);
+  if (!npmPath) return { ok: false, error: 'npm was not found.' };
+  const result = spawnSync(npmPath, ['view', packageSpec, 'version', '--json'], {
+    encoding: 'utf8',
+    timeout: 45_000,
+    env,
+  });
+  return {
+    ok: result.status === 0,
+    stdout: String(result.stdout || '').trim(),
+    stderr: String(result.stderr || '').trim(),
+    error: result.status === 0 ? '' : (String(result.stderr || result.stdout || '').trim() || `npm view exited ${result.status}`),
+  };
+}
+
+async function runUpgradeWorker(flags, env = process.env) {
+  const profile = safeProfileName(flags.profile || DEFAULT_PROFILE);
+  const config = await buildConfig({ profile }, env);
+  const commandId = String(flags.commandId || `local_upgrade_${Date.now()}`).trim();
+  const targetVersion = String(flags.targetVersion || flags.version || 'latest').trim() || 'latest';
+  const previousVersion = String(flags.previousVersion || DAEMON_VERSION).trim() || DAEMON_VERSION;
+  const packageSpec = packageSpecForUpgrade(targetVersion, flags, env);
+  const progressIntervalMs = Math.max(100, Math.min(5000, Number(flags.progressIntervalMs || env.MAGCLAW_DAEMON_UPGRADE_PROGRESS_MS || 500) || 500));
+  const readyTimeoutMs = Math.max(5000, Math.min(10 * 60_000, Number(flags.readyTimeoutMs || env.MAGCLAW_DAEMON_UPGRADE_READY_TIMEOUT_MS || 120_000) || 120_000));
+  const serviceBefore = await readServiceState(profile, env);
+  const previousPackageSpec = serviceBefore.packageSpec || `@magclaw/daemon@${previousVersion}`;
+  const dryRunPlan = {
+    ok: true,
+    dryRun: Boolean(flags.dryRun),
+    commandId,
+    profile,
+    currentVersion: DAEMON_VERSION,
+    previousVersion,
+    targetVersion,
+    packageSpec,
+    previousPackageSpec,
+    service: serviceBefore,
+    progressIntervalMs,
+    readyTimeoutMs,
+  };
+  if (flags.dryRun) return dryRunPlan;
+
+  let progressSocket = null;
+  let latestProgress = {
+    type: 'daemon:upgrade:progress',
+    commandId,
+    status: 'upgrading',
+    phase: 'resolve_target',
+    progress: 0,
+    message: 'Preparing daemon upgrade.',
+    previousVersion,
+    targetVersion,
+  };
+  const emitProgress = async (patch = {}) => {
+    latestProgress = {
+      ...latestProgress,
+      ...patch,
+      type: 'daemon:upgrade:progress',
+      commandId,
+      previousVersion,
+      targetVersion,
+      time: now(),
+    };
+    await writeUpgradeHandoff(profile, {
+      commandId,
+      status: latestProgress.status,
+      phase: latestProgress.phase,
+      progress: latestProgress.progress,
+      message: latestProgress.message,
+      previousVersion,
+      targetVersion,
+      packageSpec,
+      error: latestProgress.error || '',
+      startedAt: latestProgress.startedAt || undefined,
+    }, env);
+    progressSocket?.send(latestProgress);
+  };
+
+  if (config.computerId && config.token) {
+    try {
+      progressSocket = await openUpgradeProgressSocket(toUpgradeProgressWebSocketUrl(config.serverUrl, config, commandId));
+    } catch (error) {
+      logWarning('upgrade', `Progress WebSocket unavailable; continuing local upgrade: ${error.message}`);
+    }
+  }
+
+  const progressTimer = setInterval(() => {
+    progressSocket?.send({ ...latestProgress, time: now() });
+  }, progressIntervalMs);
+  progressTimer.unref?.();
+
+  let switchedService = false;
+  try {
+    await emitProgress({ status: 'upgrading', phase: 'resolve_target', progress: 8, message: `Resolved target ${packageSpec}.`, startedAt: now() });
+    await emitProgress({ status: 'upgrading', phase: 'download', progress: 25, message: 'Checking package metadata.' });
+    const preflight = preflightPackage(packageSpec, env);
+    if (!preflight.ok) {
+      const error = `Preflight failed: ${preflight.error}`;
+      await emitProgress({ status: 'failed', phase: 'preflight', progress: 25, message: error, error });
+      return { ok: false, error, phase: 'preflight' };
+    }
+
+    await emitProgress({ status: 'upgrading', phase: 'stage_service', progress: 45, message: 'Staging service launcher.' });
+    await writeServiceState(profile, {
+      mode: serviceBefore.mode || (process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd' : process.platform === 'win32' ? 'schtasks' : 'foreground'),
+      background: true,
+      packageSpec,
+      previousPackageSpec,
+      pendingCommandId: commandId,
+      pendingTargetVersion: targetVersion,
+    }, env);
+    switchedService = true;
+
+    await emitProgress({ status: 'restarting', phase: 'stop_old_daemon', progress: 62, message: 'Stopping current daemon service.' });
+    stopBackground(profile, env);
+    await sleep(800);
+
+    await emitProgress({ status: 'restarting', phase: 'start_target_daemon', progress: 78, message: 'Starting target daemon service.' });
+    const start = await startBackground(profile, env);
+    if (!start.ok) throw new Error(start.error || start.message || 'Failed to start target daemon service.');
+
+    await emitProgress({ status: 'restarting', phase: 'wait_ready', progress: 92, message: 'Waiting for upgraded daemon heartbeat.' });
+    const complete = progressSocket ? await progressSocket.waitForComplete(readyTimeoutMs) : null;
+    if (complete?.status === 'succeeded') {
+      await emitProgress({ status: 'succeeded', phase: 'ready', progress: 100, message: 'Daemon upgrade completed.' });
+      await writeServiceState(profile, { installedDaemonVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
+      return { ok: true, commandId, targetVersion, packageSpec };
+    }
+    if (!progressSocket && env.MAGCLAW_DAEMON_UPGRADE_ASSUME_READY === '1') {
+      await emitProgress({ status: 'succeeded', phase: 'ready', progress: 100, message: 'Daemon upgrade completed locally.' });
+      await writeServiceState(profile, { installedDaemonVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
+      return { ok: true, commandId, targetVersion, packageSpec, assumedReady: true };
+    }
+    throw new Error('Timed out waiting for upgraded daemon ready acknowledgement.');
+  } catch (error) {
+    const upgradeError = error?.message || String(error);
+    if (!switchedService) {
+      await emitProgress({ status: 'failed', phase: latestProgress.phase || 'preflight', progress: latestProgress.progress || 0, message: upgradeError, error: upgradeError });
+      return { ok: false, error: upgradeError };
+    }
+    await emitProgress({ status: 'rollback', phase: 'rollback', progress: 82, message: `Rolling back: ${upgradeError}`, error: upgradeError });
+    let rollbackError = '';
+    try {
+      await writeServiceState(profile, {
+        packageSpec: previousPackageSpec,
+        previousPackageSpec: packageSpec,
+        pendingCommandId: '',
+        pendingTargetVersion: '',
+      }, env);
+      stopBackground(profile, env);
+      await sleep(500);
+      const restart = await startBackground(profile, env);
+      if (!restart.ok) throw new Error(restart.error || restart.message || 'Failed to restart previous daemon service.');
+      await emitProgress({ status: 'rollback_succeeded', phase: 'rollback_succeeded', progress: 100, message: 'Rolled back to the previous daemon service.', error: upgradeError });
+      return { ok: false, rolledBack: true, error: upgradeError };
+    } catch (rollback) {
+      rollbackError = rollback?.message || String(rollback);
+      await emitProgress({ status: 'rollback_failed', phase: 'rollback_failed', progress: 100, message: `Rollback failed: ${rollbackError}`, error: rollbackError });
+      return { ok: false, rolledBack: false, error: upgradeError, rollbackError };
+    }
+  } finally {
+    clearInterval(progressTimer);
+    setTimeout(() => progressSocket?.close(), 500).unref?.();
+  }
+}
+
+async function runManualUpgrade(flags, env = process.env) {
+  const plan = await runUpgradeWorker(flags.dryRun ? flags : { ...flags, commandId: flags.commandId || `manual_upgrade_${Date.now()}` }, env);
+  printJson(plan);
 }
 
 async function buildConfig(flags, env = process.env) {
@@ -3531,6 +4134,10 @@ export async function main(argv = process.argv, env = process.env) {
     case 'stop':
       printJson(await stopDaemon(flags.profile, env));
       break;
+    case 'restart':
+      await stopDaemon(flags.profile, env);
+      printJson(await startBackground(flags.profile, env));
+      break;
     case 'status':
       printJson(await status(flags.profile));
       break;
@@ -3539,6 +4146,12 @@ export async function main(argv = process.argv, env = process.env) {
       break;
     case 'doctor':
       printJson(await doctor(env));
+      break;
+    case 'upgrade':
+      await runManualUpgrade(flags, env);
+      break;
+    case 'upgrade-worker':
+      printJson(await runUpgradeWorker(flags, env));
       break;
     case 'uninstall':
       printJson(await uninstallBackground(flags.profile, env));
