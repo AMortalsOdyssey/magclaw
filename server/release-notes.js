@@ -16,6 +16,16 @@ export const RELEASE_CATEGORY_LABELS = {
 
 const WEB_RELEASES = [
   {
+    version: '0.3.4',
+    date: '2026-05-22',
+    title: 'Daemon upgrade visibility',
+    new: [],
+    bugFix: [
+      'Daemon upgrade controls only appear when an update or upgrade state exists.',
+    ],
+    approval: [],
+  },
+  {
     version: '0.3.3',
     date: '2026-05-22',
     title: 'Daemon service verification',
@@ -68,6 +78,16 @@ const WEB_RELEASES = [
 ];
 
 const DAEMON_RELEASES = [
+  {
+    version: '0.1.14',
+    date: '2026-05-22',
+    title: 'Agent workspace relay',
+    new: [
+      'Agent workspaces can read local daemon files and sync MEMORY.md mirrors.',
+    ],
+    bugFix: [],
+    approval: [],
+  },
   {
     version: '0.1.13',
     date: '2026-05-22',
