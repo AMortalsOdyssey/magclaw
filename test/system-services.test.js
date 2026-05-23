@@ -132,3 +132,37 @@ test('public state exposes configured public URL for share exports', () => {
     else process.env.MAGCLAW_PUBLIC_URL = previous;
   }
 });
+
+test('public state includes minimal identities for visible external human mentions', () => {
+  const services = makeServices((state) => {
+    state.humans = [
+      { id: 'hum_1', workspaceId: 'local', name: 'Owner', email: 'owner@example.com' },
+      {
+        id: 'hum_external',
+        workspaceId: 'other',
+        name: 'External Human',
+        email: 'external@example.com',
+        avatar: 'avatar-data',
+      },
+    ];
+    state.messages.push({
+      id: 'msg_external_mention',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      body: 'Talk to <@hum_external>',
+      mentionedHumanIds: ['hum_external'],
+      createdAt: '2026-05-18T00:01:00.000Z',
+      updatedAt: '2026-05-18T00:01:00.000Z',
+    });
+  });
+
+  const snapshot = services.publicState();
+  const external = snapshot.humans.find((human) => human.id === 'hum_external');
+
+  assert.equal(Boolean(external), true);
+  assert.equal(external.name, 'External Human');
+  assert.equal(external.identityReference, true);
+  assert.equal(external.avatar, 'avatar-data');
+  assert.equal(external.email, undefined);
+});

@@ -36,6 +36,54 @@ export function createSystemServices(deps) {
     return Array.isArray(value) ? value.filter(Boolean) : [];
   }
 
+  function mentionedHumanIdsForRecords(items = []) {
+    const ids = new Set();
+    for (const item of records(items)) {
+      for (const id of records(item.mentionedHumanIds)) {
+        const text = String(id || '').trim();
+        if (text.startsWith('hum_')) ids.add(text);
+      }
+      String(item.body || '').replace(/<@(hum_\w+)>/g, (_token, id) => {
+        ids.add(id);
+        return _token;
+      });
+    }
+    return ids;
+  }
+
+  function publicHumanReference(human) {
+    if (!human?.id) return null;
+    return {
+      id: human.id,
+      workspaceId: human.workspaceId || '',
+      name: human.name || 'Human',
+      avatar: human.avatar || '',
+      role: human.role || 'human',
+      status: human.status || 'offline',
+      createdAt: human.createdAt || '',
+      updatedAt: human.updatedAt || human.createdAt || '',
+      identityReference: true,
+    };
+  }
+
+  function appendReferencedHumans(scopedHumans, visibleRecords, currentState) {
+    const humans = records(scopedHumans);
+    const existingIds = new Set(humans.map((human) => String(human?.id || '')).filter(Boolean));
+    const referencedIds = mentionedHumanIdsForRecords(visibleRecords);
+    if (!referencedIds.size) return humans;
+    const allHumans = records(currentState?.humans);
+    const references = [];
+    for (const id of referencedIds) {
+      if (existingIds.has(id)) continue;
+      const human = allHumans.find((item) => String(item?.id || '') === id);
+      const reference = publicHumanReference(human);
+      if (!reference) continue;
+      references.push(reference);
+      existingIds.add(id);
+    }
+    return references.length ? [...humans, ...references] : humans;
+  }
+
   function clampLimit(value, fallback, max) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -132,17 +180,20 @@ export function createSystemServices(deps) {
       ? scopedDms.filter((dm) => records(dm.participantIds).includes(currentHumanId))
       : scopedDms;
     const visibleDmIds = new Set(visibleDms.map((dm) => dm.id));
+    const visibleMessages = scopedMessages.filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId));
+    const visibleReplies = scopedReplies.filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId));
+    const visibleHumans = appendReferencedHumans(scopedRecords('humans'), [...visibleMessages, ...visibleReplies], currentState);
     return {
       ...currentState,
       settings: publicSettings(cloud),
       channels: scopedChannels.filter((channel) => !channel.archived),
       dms: visibleDms,
-      messages: scopedMessages.filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId)),
-      replies: scopedReplies.filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId)),
+      messages: visibleMessages,
+      replies: visibleReplies,
       tasks: scopedRecords('tasks'),
       agents: scopedAgents,
       computers: visibleComputers,
-      humans: scopedRecords('humans'),
+      humans: visibleHumans,
       reminders: scopedRecords('reminders'),
       missions: scopedRecords('missions'),
       runs: scopedRecords('runs'),
