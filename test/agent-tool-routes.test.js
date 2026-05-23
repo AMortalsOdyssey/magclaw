@@ -367,6 +367,83 @@ test('agent tool send_message routes private handoff to the target human-agent D
   assert.equal(deliveries[0].message.id, handoff.id);
 });
 
+test('agent tool send_message dedupes private handoff retries across delivery identity paths', async () => {
+  const deliveries = [];
+  let payload = {
+    agentId: 'agt_one',
+    target: 'dm:@Alice',
+    content: 'handoff details for Alice',
+  };
+  const deps = routeDeps({
+    normalizeConversationRecord: (record) => record,
+    readJson: async () => payload,
+    findWorkItem: (id) => deps.state.workItems.find((item) => item.id === id) || null,
+    deliverMessageToAgent: async (agent, spaceType, spaceId, message, options) => {
+      deliveries.push({ agent, spaceType, spaceId, message, options });
+    },
+  });
+  deps.state.connection = { workspaceId: 'wsp_test' };
+  deps.state.cloud = {
+    agentDeliveries: [{ id: 'adl_private', workItemId: 'wi_private', messageId: 'msg_private' }],
+  };
+  deps.state.agents.push({ id: 'agt_alice', name: 'Alice', workspaceId: 'wsp_test', status: 'idle' });
+  deps.state.humans = [{ id: 'hum_owner', name: 'Owner', workspaceId: 'wsp_test' }];
+  deps.state.dms = [
+    { id: 'dm_source', workspaceId: 'wsp_test', participantIds: ['hum_owner', 'agt_one'] },
+    { id: 'dm_alice', workspaceId: 'wsp_test', participantIds: ['hum_owner', 'agt_alice'] },
+  ];
+  deps.state.messages = [{
+    id: 'msg_private',
+    workspaceId: 'wsp_test',
+    spaceType: 'dm',
+    spaceId: 'dm_source',
+    authorType: 'human',
+    authorId: 'hum_owner',
+    body: 'Ask <@agt_alice> for help',
+    mentionedAgentIds: ['agt_alice'],
+    createdAt: '2026-05-14T00:00:00.000Z',
+  }];
+  deps.state.workItems = [{
+    id: 'wi_private',
+    workspaceId: 'wsp_test',
+    agentId: 'agt_one',
+    sourceMessageId: 'msg_private',
+    parentMessageId: 'msg_private',
+    spaceType: 'dm',
+    spaceId: 'dm_source',
+    target: 'dm:dm_source:msg_private',
+    status: 'responded',
+    updatedAt: '2026-05-14T00:00:30.000Z',
+  }];
+
+  const firstRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'POST', daemonAuth: { workspaceId: 'wsp_test' } },
+    firstRes,
+    new URL('http://local/api/agent-tools/messages/send'),
+    deps,
+  ), true);
+  assert.equal(firstRes.statusCode, 200, firstRes.error || '');
+  assert.equal(firstRes.data.deduped, false);
+
+  payload = { ...payload, deliveryId: 'adl_private' };
+  const secondRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'POST', daemonAuth: { workspaceId: 'wsp_test' } },
+    secondRes,
+    new URL('http://local/api/agent-tools/messages/send'),
+    deps,
+  ), true);
+  assert.equal(secondRes.statusCode, 200, secondRes.error || '');
+  assert.equal(secondRes.data.deduped, true);
+  assert.equal(secondRes.data.message.id, firstRes.data.message.id);
+  assert.equal(deliveries.length, 1, 'deduped handoff retry should not be delivered again');
+
+  const handoffs = deps.state.messages.filter((message) => message.metadata?.kind === 'private_user_agent_handoff');
+  assert.equal(handoffs.length, 1);
+  assert.equal(handoffs[0].metadata.deliveryId, 'adl_private');
+});
+
 test('agent tool send_message infers private handoff context from the current DM work item', async () => {
   const deliveries = [];
   const posted = [];
@@ -437,6 +514,63 @@ test('agent tool send_message infers private handoff context from the current DM
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0].agent.id, 'agt_alice');
   assert.equal(deliveries[0].spaceId, 'dm_alice');
+});
+
+test('agent tool routed send_message passes a recent duplicate window for daemon retries', async () => {
+  let postedArgs = null;
+  const workItem = {
+    id: 'wi_routed',
+    workspaceId: 'wsp_test',
+    agentId: 'agt_one',
+    sourceMessageId: 'msg_private',
+    parentMessageId: 'msg_private',
+    spaceType: 'dm',
+    spaceId: 'dm_source',
+    target: 'dm:dm_source:msg_private',
+    status: 'delivered',
+  };
+  const deps = routeDeps({
+    findWorkItem: (id) => (id === workItem.id ? workItem : null),
+    resolveMessageTarget: () => ({
+      spaceType: 'dm',
+      spaceId: 'dm_source',
+      parentMessageId: 'msg_private',
+      label: 'dm:dm_source:msg_private',
+    }),
+    postAgentResponse: async (...args) => {
+      postedArgs = args;
+      return { id: 'rep_routed', body: args[3] };
+    },
+    readJson: async () => ({
+      agentId: 'agt_one',
+      workItemId: 'wi_routed',
+      target: 'dm:dm_source:msg_private',
+      content: 'already synced',
+      deliveryId: 'adl_retry',
+    }),
+  });
+  deps.state.connection = { workspaceId: 'wsp_test' };
+  deps.state.messages = [{
+    id: 'msg_private',
+    workspaceId: 'wsp_test',
+    spaceType: 'dm',
+    spaceId: 'dm_source',
+    authorType: 'human',
+    authorId: 'hum_owner',
+    body: 'source',
+  }];
+
+  const res = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'POST', daemonAuth: { workspaceId: 'wsp_test' } },
+    res,
+    new URL('http://local/api/agent-tools/messages/send'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200, res.error || '');
+  assert.equal(postedArgs[5].deliveryId, 'adl_retry');
+  assert.equal(postedArgs[5].dedupeWindowMs, 3000);
 });
 
 test('agent tool task creation merges assignees and can claim created work', async () => {

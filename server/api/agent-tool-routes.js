@@ -499,7 +499,62 @@ export async function handleAgentToolApi(req, res, url, deps) {
     ].filter(Boolean).join('\n');
   }
 
-  function createPrivateUserAgentHandoffMessage(sourceAgent, targetAgent, context, content) {
+  function recordTimeMs(record) {
+    const parsed = Date.parse(record?.createdAt || record?.updatedAt || '');
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function privateHandoffMetadata(record) {
+    const metadata = record?.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+      ? record.metadata
+      : {};
+    return {
+      ...metadata,
+      ...(metadata.state?.metadata && typeof metadata.state.metadata === 'object' ? metadata.state.metadata : {}),
+    };
+  }
+
+  function attachPrivateHandoffDeliveryIdentity(record, context) {
+    const deliveryId = String(context?.delivery?.id || '').trim();
+    if (!record || !deliveryId) return false;
+    const metadata = privateHandoffMetadata(record);
+    if (metadata.deliveryId) return false;
+    record.metadata = {
+      ...(record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata) ? record.metadata : {}),
+      deliveryId,
+    };
+    record.updatedAt = now();
+    if (typeof normalizeConversationRecord === 'function') normalizeConversationRecord(record);
+    return true;
+  }
+
+  function findRecentPrivateUserAgentHandoffMessage(sourceAgent, targetAgent, context, handoffBody) {
+    const baselineMs = Date.parse(now());
+    if (!Number.isFinite(baselineMs)) return null;
+    const sourceMessageId = String(context?.sourceMessage?.id || '').trim();
+    const workItemId = String(context?.workItem?.id || '').trim();
+    return (state.messages || []).slice().reverse().find((record) => {
+      const metadata = privateHandoffMetadata(record);
+      const createdMs = recordTimeMs(record);
+      return (
+        record?.authorType === 'system'
+        && record.spaceType === 'dm'
+        && record.spaceId === context.dm.id
+        && metadata.kind === 'private_user_agent_handoff'
+        && metadata.sourceAgentId === sourceAgent.id
+        && metadata.targetAgentId === targetAgent.id
+        && metadata.originHumanId === context.originHumanId
+        && (!sourceMessageId || metadata.sourceMessageId === sourceMessageId)
+        && (!workItemId || !metadata.workItemId || metadata.workItemId === workItemId)
+        && String(record.body || '').trim() === String(handoffBody || '').trim()
+        && createdMs > 0
+        && baselineMs >= createdMs
+        && baselineMs - createdMs <= PROACTIVE_MESSAGE_DEDUPE_WINDOW_MS
+      );
+    }) || null;
+  }
+
+  function createPrivateUserAgentHandoffMessage(sourceAgent, targetAgent, context, handoffBody) {
     const message = normalizeConversationRecord({
       id: makeId('msg'),
       workspaceId: context.workspaceId,
@@ -507,7 +562,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       spaceId: context.dm.id,
       authorType: 'system',
       authorId: 'system',
-      body: privateHandoffMessageBody(content, sourceAgent, targetAgent, context.originHumanId, context.sourceMessage),
+      body: handoffBody,
       attachmentIds: Array.isArray(context.sourceMessage?.attachmentIds) ? context.sourceMessage.attachmentIds : [],
       mentionedAgentIds: [sourceAgent.id, targetAgent.id],
       mentionedHumanIds: [context.originHumanId],
@@ -542,7 +597,30 @@ export async function handleAgentToolApi(req, res, url, deps) {
   async function deliverPrivateUserAgentHandoff(sourceAgent, target, content, traceId, startedAt) {
     const context = target.privateHandoffContext;
     const targetAgent = target.peer;
-    const handoffMessage = createPrivateUserAgentHandoffMessage(sourceAgent, targetAgent, context, content);
+    const handoffBody = privateHandoffMessageBody(content, sourceAgent, targetAgent, context.originHumanId, context.sourceMessage);
+    const existingHandoff = findRecentPrivateUserAgentHandoffMessage(sourceAgent, targetAgent, context, handoffBody);
+    if (existingHandoff) {
+      const changed = attachPrivateHandoffDeliveryIdentity(existingHandoff, context);
+      addSystemEvent('agent_tool_private_handoff_deduped', `${sourceAgent.name} repeated a private handoff to ${targetAgent.name}.`, {
+        traceId,
+        fromAgentId: sourceAgent.id,
+        toAgentId: targetAgent.id,
+        originHumanId: context.originHumanId,
+        sourceMessageId: context.sourceMessage?.id || null,
+        sourceDmId: context.sourceDm?.id || null,
+        dmId: context.dm.id,
+        handoffMessageId: existingHandoff.id,
+        deliveryId: context.delivery?.id || null,
+        attachedDeliveryIdentity: changed,
+        durationMs: Date.now() - startedAt,
+      });
+      if (changed) {
+        await persistWorkspaceState(existingHandoff, 'agent_tool_private_handoff_deduped');
+        broadcastState();
+      }
+      return { handoffMessage: existingHandoff, deliveredAgentIds: [], deduped: true };
+    }
+    const handoffMessage = createPrivateUserAgentHandoffMessage(sourceAgent, targetAgent, context, handoffBody);
     addSystemEvent('agent_tool_private_handoff', `${sourceAgent.name} routed a private handoff from ${displayActor(context.originHumanId)} to ${targetAgent.name}.`, {
       traceId,
       fromAgentId: sourceAgent.id,
@@ -576,7 +654,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
         });
       }
     }
-    return { handoffMessage, deliveredAgentIds };
+    return { handoffMessage, deliveredAgentIds, deduped: false };
   }
 
   function parentMessageForDmThread(dm, parentRef, workspaceId = requestWorkspaceId()) {
@@ -1144,9 +1222,10 @@ export async function handleAgentToolApi(req, res, url, deps) {
       }
       try {
         if (target.kind === 'private_user_agent_handoff') {
-          const { handoffMessage, deliveredAgentIds } = await deliverPrivateUserAgentHandoff(agent, target, content, traceId, startedAt);
+          const { handoffMessage, deliveredAgentIds, deduped } = await deliverPrivateUserAgentHandoff(agent, target, content, traceId, startedAt);
           sendJson(res, 200, {
             ok: true,
+            deduped,
             proactive: true,
             target: target.label,
             message: handoffMessage,
@@ -1258,6 +1337,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
         sourceMessage,
         deliveryId: deliveryId || null,
         idempotencyKey: idempotencyKey || null,
+        dedupeWindowMs: PROACTIVE_MESSAGE_DEDUPE_WINDOW_MS,
       });
       markWorkItemResponded(workItem, target.label, posted);
       addSystemEvent('agent_tool_send_message', `${agent.name} sent a routed message to ${target.label}.`, {
