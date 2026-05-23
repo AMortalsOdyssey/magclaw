@@ -16,6 +16,19 @@ export const RELEASE_CATEGORY_LABELS = {
 
 const WEB_RELEASES = [
   {
+    version: '0.3.8',
+    date: '2026-05-23',
+    title: 'Structured message references',
+    new: [
+      'Messages now support structured quote and context references for selections, messages, threads, and visible conversations.',
+      'Agent context now receives referenced conversation content without copying it into the composer body.',
+    ],
+    bugFix: [
+      'Private or restricted conversation records cannot be smuggled through reference record ids.',
+    ],
+    approval: [],
+  },
+  {
     version: '0.3.7',
     date: '2026-05-22',
     title: 'Daemon help and restart CLI',
