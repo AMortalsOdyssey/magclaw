@@ -46,9 +46,12 @@ test('agent responses can dedupe recent relay echoes with the same target and bo
   assert.match(helperSource, /record\.spaceType === spaceType/);
   assert.match(helperSource, /record\.spaceId === spaceId/);
   assert.match(helperSource, /String\(record\.body \|\| ''\)\.trim\(\) === responseBody/);
-  assert.match(postSource, /findRecentDuplicateAgentResponse\(agent, spaceType, spaceId, responseBody, parentMessageId, options\)/);
+  assert.match(postSource, /const parentForResponse = parentMessageId \? findMessage\(parentMessageId\) : null/);
+  assert.match(postSource, /const dedupeSpaceType = parentForResponse\?\.spaceType \|\| spaceType/);
+  assert.match(postSource, /const dedupeSpaceId = parentForResponse\?\.spaceId \|\| spaceId/);
+  assert.match(postSource, /findRecentDuplicateAgentResponse\(agent, dedupeSpaceType, dedupeSpaceId, responseBody, parentMessageId, options\)/);
   assert.ok(
-    postSource.indexOf('findRecentDuplicateAgentResponse(agent, spaceType, spaceId, responseBody, parentMessageId, options)')
+    postSource.indexOf('findRecentDuplicateAgentResponse(agent, dedupeSpaceType, dedupeSpaceId, responseBody, parentMessageId, options)')
       < postSource.indexOf('state.messages.push(message)'),
     'recent duplicate top-level messages must be detected before insertion',
   );

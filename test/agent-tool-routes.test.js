@@ -288,6 +288,157 @@ test('agent tool send_message can proactively DM a visible agent without a work 
   assert.equal(deliveries[0].options.parentMessageId, null);
 });
 
+test('agent tool send_message routes private handoff to the target human-agent DM', async () => {
+  const deliveries = [];
+  const posted = [];
+  const deps = routeDeps({
+    normalizeConversationRecord: (record) => record,
+    readJson: async () => ({
+      agentId: 'agt_one',
+      target: 'dm:@Alice',
+      content: 'handoff details for Alice',
+      deliveryId: 'adl_private',
+    }),
+    findWorkItem: (id) => deps.state.workItems.find((item) => item.id === id) || null,
+    postAgentResponse: async (...args) => {
+      posted.push(args);
+      return { id: 'msg_unexpected' };
+    },
+    deliverMessageToAgent: async (agent, spaceType, spaceId, message, options) => {
+      deliveries.push({ agent, spaceType, spaceId, message, options });
+    },
+  });
+  deps.state.connection = { workspaceId: 'wsp_test' };
+  deps.state.cloud = {
+    agentDeliveries: [{ id: 'adl_private', workItemId: 'wi_private', messageId: 'msg_private' }],
+  };
+  deps.state.agents.push({ id: 'agt_alice', name: 'Alice', workspaceId: 'wsp_test', status: 'idle' });
+  deps.state.humans = [{ id: 'hum_owner', name: 'Owner', workspaceId: 'wsp_test' }];
+  deps.state.dms = [
+    { id: 'dm_source', workspaceId: 'wsp_test', participantIds: ['hum_owner', 'agt_one'] },
+    { id: 'dm_alice', workspaceId: 'wsp_test', participantIds: ['hum_owner', 'agt_alice'] },
+  ];
+  deps.state.messages = [{
+    id: 'msg_private',
+    workspaceId: 'wsp_test',
+    spaceType: 'dm',
+    spaceId: 'dm_source',
+    authorType: 'human',
+    authorId: 'hum_owner',
+    body: 'Ask Alice for help',
+  }];
+  deps.state.workItems = [{
+    id: 'wi_private',
+    workspaceId: 'wsp_test',
+    agentId: 'agt_one',
+    sourceMessageId: 'msg_private',
+    parentMessageId: 'msg_private',
+    spaceType: 'dm',
+    spaceId: 'dm_source',
+    target: 'dm:dm_source:msg_private',
+    status: 'delivered',
+  }];
+
+  const res = makeResponse();
+  const handled = await handleAgentToolApi(
+    { method: 'POST', daemonAuth: { workspaceId: 'wsp_test' } },
+    res,
+    new URL('http://local/api/agent-tools/messages/send'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200, res.error || '');
+  assert.equal(posted.length, 0, 'private handoff should not create an agent-authored message in an agent-agent DM');
+  assert.equal(deps.state.dms.some((dm) => (
+    dm.participantIds.includes('agt_one') && dm.participantIds.includes('agt_alice')
+  )), false);
+  assert.equal(deps.state.messages.length, 2);
+  const handoff = deps.state.messages.find((message) => message.id !== 'msg_private');
+  assert.equal(handoff.spaceType, 'dm');
+  assert.equal(handoff.spaceId, 'dm_alice');
+  assert.equal(handoff.authorType, 'system');
+  assert.equal(handoff.hiddenFromChannel, true);
+  assert.equal(handoff.metadata.kind, 'private_user_agent_handoff');
+  assert.match(handoff.body, /handoff details for Alice/);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].agent.id, 'agt_alice');
+  assert.equal(deliveries[0].spaceId, 'dm_alice');
+  assert.equal(deliveries[0].message.id, handoff.id);
+});
+
+test('agent tool send_message infers private handoff context from the current DM work item', async () => {
+  const deliveries = [];
+  const posted = [];
+  const deps = routeDeps({
+    normalizeConversationRecord: (record) => record,
+    readJson: async () => ({
+      agentId: 'agt_one',
+      target: 'dm:@Alice',
+      content: 'local handoff details for Alice',
+    }),
+    postAgentResponse: async (...args) => {
+      posted.push(args);
+      return { id: 'msg_unexpected' };
+    },
+    deliverMessageToAgent: async (agent, spaceType, spaceId, message, options) => {
+      deliveries.push({ agent, spaceType, spaceId, message, options });
+    },
+  });
+  deps.state.connection = { workspaceId: 'wsp_test' };
+  deps.state.agents.push({ id: 'agt_alice', name: 'Alice', workspaceId: 'wsp_test', status: 'idle' });
+  deps.state.humans = [{ id: 'hum_owner', name: 'Owner', workspaceId: 'wsp_test' }];
+  deps.state.dms = [
+    { id: 'dm_source', workspaceId: 'wsp_test', participantIds: ['hum_owner', 'agt_one'] },
+    { id: 'dm_alice', workspaceId: 'wsp_test', participantIds: ['hum_owner', 'agt_alice'] },
+  ];
+  deps.state.messages = [{
+    id: 'msg_private',
+    workspaceId: 'wsp_test',
+    spaceType: 'dm',
+    spaceId: 'dm_source',
+    authorType: 'human',
+    authorId: 'hum_owner',
+    body: 'Ask <@agt_alice> for help',
+    mentionedAgentIds: ['agt_alice'],
+    createdAt: '2026-05-14T00:00:00.000Z',
+  }];
+  deps.state.workItems = [{
+    id: 'wi_private',
+    workspaceId: 'wsp_test',
+    agentId: 'agt_one',
+    sourceMessageId: 'msg_private',
+    parentMessageId: 'msg_private',
+    spaceType: 'dm',
+    spaceId: 'dm_source',
+    target: 'dm:dm_source:msg_private',
+    status: 'responded',
+    updatedAt: '2026-05-14T00:00:30.000Z',
+  }];
+
+  const res = makeResponse();
+  const handled = await handleAgentToolApi(
+    { method: 'POST', daemonAuth: { workspaceId: 'wsp_test' } },
+    res,
+    new URL('http://local/api/agent-tools/messages/send'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200, res.error || '');
+  assert.equal(posted.length, 0);
+  assert.equal(deps.state.dms.some((dm) => (
+    dm.participantIds.includes('agt_one') && dm.participantIds.includes('agt_alice')
+  )), false);
+  const handoff = deps.state.messages.find((message) => message.id !== 'msg_private');
+  assert.equal(handoff.spaceId, 'dm_alice');
+  assert.equal(handoff.metadata.kind, 'private_user_agent_handoff');
+  assert.match(handoff.body, /local handoff details for Alice/);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].agent.id, 'agt_alice');
+  assert.equal(deliveries[0].spaceId, 'dm_alice');
+});
+
 test('agent tool task creation merges assignees and can claim created work', async () => {
   const deps = routeDeps({
     readJson: async () => ({

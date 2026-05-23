@@ -1155,6 +1155,10 @@ test('human mention chips use a distinct color from agent mentions', async () =>
   assert.match(app, /renderHumanHoverCard\(human\)/);
   assert.match(styles, /\.mention-tag\.mention-human/);
   assert.match(styles, /\.mention-identity:hover \.agent-hover-card/);
+  assert.match(styles, /button\.mention-tag \{[\s\S]*display: inline-flex/);
+  assert.match(styles, /button\.mention-tag \{[\s\S]*white-space: nowrap/);
+  assert.match(styles, /\.mention-tag\.mention-identity \.agent-hover-card \{[\s\S]*display: none/);
+  assert.match(styles, /\.mention-tag\.mention-identity:hover \.agent-hover-card,[\s\S]*\.mention-tag\.mention-identity:focus-visible \.agent-hover-card \{[\s\S]*display: grid/);
   assert.match(styles, /background: #9FE3D1/);
   assert.match(styles, /color: #0B302A/);
 });
@@ -1942,6 +1946,8 @@ test('message reactions, context menus, and share mode expose Slock-style intera
 	  assert.match(app, /function selectedMessageTextForEvent\(event\)/);
 	  assert.match(app, /function renderComposerReferenceStrip\(composerId\)/);
 	  assert.match(app, /function renderMessageReferences\(record\)/);
+	  assert.match(app, /referencePreviewDisplayText\(reference\)/);
+	  assert.match(app, /escapeHtml\(referencePreviewDisplayText\(reference\)\)/);
 	  assert.match(app, /references: typeof normalizeConversationReferenceDrafts === 'function'/);
 	  assert.match(app, /Follow Thread/);
   assert.doesNotMatch(app, /shareThreadClass/);

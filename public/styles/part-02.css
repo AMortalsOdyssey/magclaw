@@ -2209,8 +2209,15 @@
 }
 
 button.mention-tag {
+  display: inline-flex;
+  align-items: baseline;
   font: inherit;
+  width: auto;
+  min-width: 0;
+  height: auto;
+  min-height: 0;
   line-height: inherit;
+  white-space: nowrap;
   vertical-align: baseline;
 }
 

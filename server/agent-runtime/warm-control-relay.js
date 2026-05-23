@@ -673,23 +673,26 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
   const responseBody = prepareAgentResponseBody(body);
   const sourceDepth = Number(options.sourceMessage?.agentRelayDepth || 0);
   const agentRelayDepth = sourceDepth + 1;
+  const parentForResponse = parentMessageId ? findMessage(parentMessageId) : null;
+  const dedupeSpaceType = parentForResponse?.spaceType || spaceType;
+  const dedupeSpaceId = parentForResponse?.spaceId || spaceId;
   const existingResponse = findExistingAgentResponseForDelivery(agent, parentMessageId, options);
   if (existingResponse) return returnExistingAgentResponse(existingResponse, options);
-  const recentDuplicate = findRecentDuplicateAgentResponse(agent, spaceType, spaceId, responseBody, parentMessageId, options);
+  const recentDuplicate = findRecentDuplicateAgentResponse(agent, dedupeSpaceType, dedupeSpaceId, responseBody, parentMessageId, options);
   if (recentDuplicate) {
     addSystemEvent('agent_response_deduped', `${agent.name} repeated a recent message to the same target.`, {
       agentId: agent.id,
       responseId: recentDuplicate.id,
-      spaceType,
-      spaceId,
+      spaceType: dedupeSpaceType,
+      spaceId: dedupeSpaceId,
       parentMessageId: parentMessageId || null,
       deliveryId: options.deliveryId || null,
       idempotencyKey: options.idempotencyKey || null,
     });
     return returnExistingAgentResponse(recentDuplicate, options);
   }
-  if (parentMessageId && findMessage(parentMessageId)) {
-    const parent = findMessage(parentMessageId);
+  if (parentForResponse) {
+    const parent = parentForResponse;
     const reply = normalizeConversationRecord({
       id: makeId('rep'),
       workspaceId: parent.workspaceId || options.sourceMessage?.workspaceId || workspaceIdForSpace(parent.spaceType || spaceType, parent.spaceId || spaceId, null, agent),

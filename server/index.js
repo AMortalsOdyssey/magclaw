@@ -1735,6 +1735,7 @@ function agentToolApiDeps() {
     httpError,
     makeId,
     markWorkItemResponded,
+    normalizeConversationRecord,
     normalizeIds,
     now,
     persistState,

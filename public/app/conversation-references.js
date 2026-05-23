@@ -95,6 +95,11 @@ function referencePreviewText(reference) {
   return cleanReferenceText(reference.selectedText || reference.bodyPreview || 'Message unavailable', 220);
 }
 
+function referencePreviewDisplayText(reference) {
+  const text = referencePreviewText(reference);
+  return typeof plainMentionText === 'function' ? plainMentionText(text) : text;
+}
+
 function referenceModeLabel(reference) {
   if (reference.mode === 'quote') return 'Quote';
   return 'Context';
@@ -122,7 +127,7 @@ function renderConversationReferenceChip(reference, composerId, index = 0) {
       <button type="button" class="composer-reference-jump" data-action="jump-to-reference-source" data-source-record-id="${escapeHtml(reference.sourceRecordId)}" data-parent-message-id="${escapeHtml(reference.parentMessageId)}" aria-label="Jump to reference source">
         <strong>${escapeHtml(referenceModeLabel(reference))}</strong>
         <small>${escapeHtml(referenceKindLabel(reference))}${meta ? ` · ${meta}` : ''}</small>
-        <span>${escapeHtml(referencePreviewText(reference))}</span>
+        <span>${escapeHtml(referencePreviewDisplayText(reference))}</span>
       </button>
       <button type="button" class="composer-reference-remove" data-action="remove-composer-reference" data-composer-id="${escapeHtml(composerId)}" data-reference-id="${escapeHtml(reference.id)}" aria-label="Remove reference ${index + 1}">×</button>
     </span>
@@ -164,7 +169,7 @@ function renderMessageReferences(record) {
             ${disabled ? 'disabled' : ''}>
             <span class="message-reference-kicker">${escapeHtml(referenceModeLabel(reference))} · ${escapeHtml(referenceKindLabel(reference))}</span>
             ${meta ? `<span class="message-reference-meta">${escapeHtml(meta)}</span>` : ''}
-            <span class="message-reference-preview">${escapeHtml(referencePreviewText(reference))}</span>
+            <span class="message-reference-preview">${escapeHtml(referencePreviewDisplayText(reference))}</span>
           </button>
         `;
       }).join('')}

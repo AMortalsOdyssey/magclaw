@@ -25,6 +25,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     deliverMessageToAgent = null,
     makeId,
     markWorkItemResponded,
+    normalizeConversationRecord = (record) => record,
     normalizeIds,
     now,
     persistState,
@@ -352,6 +353,232 @@ export async function handleAgentToolApi(req, res, url, deps) {
     return dm;
   }
 
+  function dmHasParticipant(dm, participantId) {
+    const id = String(participantId || '').trim();
+    return Boolean(id && Array.isArray(dm?.participantIds) && dm.participantIds.includes(id));
+  }
+
+  function dmHumanParticipantIds(dm, workspaceId = requestWorkspaceId()) {
+    return (dm?.participantIds || []).filter((id) => (
+      String(id || '').startsWith('hum_') || Boolean(findWorkspaceHuman(id, workspaceId))
+    ));
+  }
+
+  function findCloudAgentDelivery(deliveryKey) {
+    const key = String(deliveryKey || '').trim();
+    if (!key) return null;
+    return (state.cloud?.agentDeliveries || []).find((delivery) => (
+      delivery?.id === key
+      || delivery?.deliveryId === key
+      || delivery?.idempotencyKey === key
+      || delivery?.messageId === key
+    )) || null;
+  }
+
+  function findOrCreateUserAgentHandoffDm(humanId, targetAgent, workspaceId = requestWorkspaceId()) {
+    const normalizedWorkspaceId = String(workspaceId || 'local');
+    const existing = (state.dms || []).find((dm) => (
+      workspaceMatches(dm, normalizedWorkspaceId)
+      && dmHasParticipant(dm, humanId)
+      && dmHasParticipant(dm, targetAgent.id)
+    ));
+    if (existing) return { dm: existing, created: false };
+    const dm = {
+      id: makeId('dm'),
+      workspaceId: normalizedWorkspaceId,
+      participantIds: [humanId, targetAgent.id],
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    state.dms = Array.isArray(state.dms) ? state.dms : [];
+    state.dms.push(dm);
+    addSystemEvent('agent_tool_handoff_dm_created', `${targetAgent.name} opened a private handoff DM.`, {
+      humanId,
+      targetAgentId: targetAgent.id,
+      dmId: dm.id,
+      workspaceId: normalizedWorkspaceId || null,
+    });
+    return { dm, created: true };
+  }
+
+  function workItemTimeMs(workItem) {
+    const value = workItem?.updatedAt || workItem?.respondedAt || workItem?.deliveredAt || workItem?.createdAt || '';
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? ms : 0;
+  }
+
+  function sourceMessageMentionsPeer(sourceMessage, peer) {
+    if (!sourceMessage || !peer) return false;
+    if ((sourceMessage.mentionedAgentIds || []).includes(peer.id)) return true;
+    const body = String(sourceMessage.body || '');
+    const peerName = String(peer.name || '').trim();
+    return body.includes(`<@${peer.id}>`)
+      || Boolean(peerName && (body.includes(`@${peerName}`) || body.includes(peerName)));
+  }
+
+  function findLikelyPrivateHandoffWorkItem(agent, peer, workspaceId = requestWorkspaceId()) {
+    return (state.workItems || [])
+      .filter((workItem) => (
+        workItem?.agentId === agent.id
+        && workItem.spaceType === 'dm'
+        && workspaceMatches(workItem, workspaceId)
+      ))
+      .map((workItem) => {
+        const sourceMessage = workItem.sourceMessageId
+          ? (findConversationRecord(workItem.sourceMessageId) || findMessage(workItem.sourceMessageId))
+          : null;
+        const sourceDm = sourceMessage?.spaceType === 'dm'
+          ? (state.dms || []).find((dm) => dm.id === sourceMessage.spaceId && workspaceMatches(dm, sourceMessage.workspaceId || workspaceId))
+          : null;
+        return { workItem, sourceMessage, sourceDm };
+      })
+      .filter(({ sourceMessage, sourceDm }) => (
+        sourceMessageMentionsPeer(sourceMessage, peer)
+        && dmHasParticipant(sourceDm, agent.id)
+        && !dmHasParticipant(sourceDm, peer.id)
+        && dmHumanParticipantIds(sourceDm, sourceMessage.workspaceId || workspaceId).length > 0
+      ))
+      .sort((a, b) => workItemTimeMs(b.workItem) - workItemTimeMs(a.workItem))[0] || null;
+  }
+
+  function privateHandoffContextForProactiveDm(agent, peer, requestBody, workspaceId = requestWorkspaceId()) {
+    if (!String(peer?.id || '').startsWith('agt_')) return null;
+    const deliveryKey = String(
+      requestBody?.deliveryId
+      || requestBody?.delivery_id
+      || requestBody?.idempotencyKey
+      || requestBody?.idempotency_key
+      || '',
+    ).trim();
+    const delivery = findCloudAgentDelivery(deliveryKey);
+    const inferred = delivery ? null : findLikelyPrivateHandoffWorkItem(agent, peer, workspaceId);
+    if (!delivery && !inferred) return null;
+    const workItem = delivery?.workItemId ? findWorkItem(String(delivery.workItemId)) : inferred?.workItem || null;
+    const sourceMessageId = String(
+      workItem?.sourceMessageId
+      || delivery?.messageId
+      || workItem?.parentMessageId
+      || '',
+    ).trim();
+    const sourceMessage = inferred?.sourceMessage || (sourceMessageId
+      ? (findConversationRecord(sourceMessageId) || findMessage(sourceMessageId))
+      : null);
+    if (!sourceMessage || sourceMessage.spaceType !== 'dm') return null;
+    const sourceDm = inferred?.sourceDm || (state.dms || []).find((dm) => (
+      dm.id === sourceMessage.spaceId
+      && workspaceMatches(dm, sourceMessage.workspaceId || workspaceId)
+    ));
+    if (!sourceDm || !dmHasParticipant(sourceDm, agent.id) || dmHasParticipant(sourceDm, peer.id)) return null;
+    const humanIds = dmHumanParticipantIds(sourceDm, sourceMessage.workspaceId || workspaceId);
+    const originHumanId = sourceMessage.authorType === 'human' && humanIds.includes(sourceMessage.authorId)
+      ? sourceMessage.authorId
+      : humanIds[0] || null;
+    if (!originHumanId) return null;
+    const handoffWorkspaceId = sourceMessage.workspaceId || sourceDm.workspaceId || workspaceId || 'local';
+    const { dm, created } = findOrCreateUserAgentHandoffDm(originHumanId, peer, handoffWorkspaceId);
+    return {
+      delivery,
+      workItem,
+      sourceMessage,
+      sourceDm,
+      originHumanId,
+      dm,
+      dmCreated: created,
+      workspaceId: handoffWorkspaceId,
+    };
+  }
+
+  function privateHandoffMessageBody(content, sourceAgent, targetAgent, originHumanId, sourceMessage) {
+    return [
+      `Private handoff for <@${originHumanId}>.`,
+      `Source agent: <@${sourceAgent.id}>.`,
+      `Target agent: <@${targetAgent.id}>.`,
+      sourceMessage?.body ? `Original request: ${String(sourceMessage.body || '').trim()}` : '',
+      `Handoff message: ${String(content || '').trim()}`,
+      'Continue in this DM with the human if you can help. Create or claim a task only when the work needs tracked follow-up.',
+    ].filter(Boolean).join('\n');
+  }
+
+  function createPrivateUserAgentHandoffMessage(sourceAgent, targetAgent, context, content) {
+    const message = normalizeConversationRecord({
+      id: makeId('msg'),
+      workspaceId: context.workspaceId,
+      spaceType: 'dm',
+      spaceId: context.dm.id,
+      authorType: 'system',
+      authorId: 'system',
+      body: privateHandoffMessageBody(content, sourceAgent, targetAgent, context.originHumanId, context.sourceMessage),
+      attachmentIds: Array.isArray(context.sourceMessage?.attachmentIds) ? context.sourceMessage.attachmentIds : [],
+      mentionedAgentIds: [sourceAgent.id, targetAgent.id],
+      mentionedHumanIds: [context.originHumanId],
+      readBy: [context.originHumanId],
+      replyCount: 0,
+      savedBy: [],
+      agentRelayDepth: Number(context.sourceMessage?.agentRelayDepth || 0) + 1,
+      handoffSourceMessageId: context.sourceMessage?.id || null,
+      handoffSourceParentMessageId: context.sourceMessage?.parentMessageId || null,
+      suppressTaskContext: true,
+      internal: true,
+      hiddenFromChannel: true,
+      metadata: {
+        visibility: 'internal',
+        kind: 'private_user_agent_handoff',
+        sourceAgentId: sourceAgent.id,
+        targetAgentId: targetAgent.id,
+        originHumanId: context.originHumanId,
+        sourceDmId: context.sourceDm?.id || null,
+        sourceMessageId: context.sourceMessage?.id || null,
+        deliveryId: context.delivery?.id || null,
+        workItemId: context.workItem?.id || null,
+      },
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    state.messages = Array.isArray(state.messages) ? state.messages : [];
+    state.messages.push(message);
+    return message;
+  }
+
+  async function deliverPrivateUserAgentHandoff(sourceAgent, target, content, traceId, startedAt) {
+    const context = target.privateHandoffContext;
+    const targetAgent = target.peer;
+    const handoffMessage = createPrivateUserAgentHandoffMessage(sourceAgent, targetAgent, context, content);
+    addSystemEvent('agent_tool_private_handoff', `${sourceAgent.name} routed a private handoff from ${displayActor(context.originHumanId)} to ${targetAgent.name}.`, {
+      traceId,
+      fromAgentId: sourceAgent.id,
+      toAgentId: targetAgent.id,
+      originHumanId: context.originHumanId,
+      sourceMessageId: context.sourceMessage?.id || null,
+      sourceDmId: context.sourceDm?.id || null,
+      dmId: context.dm.id,
+      handoffMessageId: handoffMessage.id,
+      dmCreated: context.dmCreated,
+      durationMs: Date.now() - startedAt,
+    });
+    await persistWorkspaceState(handoffMessage, 'agent_tool_private_handoff_created');
+    broadcastState();
+    const deliveredAgentIds = [];
+    if (typeof deliverMessageToAgent === 'function') {
+      try {
+        await deliverMessageToAgent(targetAgent, 'dm', context.dm.id, handoffMessage, {
+          parentMessageId: null,
+          proactive: true,
+          sourceAgentId: sourceAgent.id,
+          suppressTaskContext: true,
+        });
+        deliveredAgentIds.push(targetAgent.id);
+      } catch (error) {
+        addSystemEvent('delivery_error', `Failed to deliver private user-Agent handoff to ${targetAgent.name}: ${error.message}`, {
+          agentId: targetAgent.id,
+          sourceAgentId: sourceAgent.id,
+          messageId: handoffMessage.id,
+          dmId: context.dm.id,
+        });
+      }
+    }
+    return { handoffMessage, deliveredAgentIds };
+  }
+
   function parentMessageForDmThread(dm, parentRef, workspaceId = requestWorkspaceId()) {
     const ref = String(parentRef || '').trim();
     if (!ref) return null;
@@ -365,7 +592,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     return parent;
   }
 
-  function resolveProactiveMessageTarget(agent, rawTarget) {
+  function resolveProactiveMessageTarget(agent, rawTarget, requestBody = {}) {
     const workspaceId = requestWorkspaceId();
     const target = String(rawTarget || '').trim();
     if (!target) throw httpError(400, 'Target is required for proactive send_message.');
@@ -374,6 +601,21 @@ export async function handleAgentToolApi(req, res, url, deps) {
       const peer = findVisibleDmPeer(namedDm[1], workspaceId);
       if (!peer) throw httpError(404, `DM peer not found: @${namedDm[1]}`);
       if (peer.id === agent.id) throw httpError(400, 'Agent cannot DM itself.');
+      const privateHandoffContext = namedDm[2]
+        ? null
+        : privateHandoffContextForProactiveDm(agent, peer, requestBody, workspaceId);
+      if (privateHandoffContext) {
+        return {
+          kind: 'private_user_agent_handoff',
+          spaceType: 'dm',
+          spaceId: privateHandoffContext.dm.id,
+          parentMessageId: null,
+          label: `dm:${privateHandoffContext.dm.id}`,
+          dm: privateHandoffContext.dm,
+          peer,
+          privateHandoffContext,
+        };
+      }
       const dm = findOrCreateAgentPeerDm(agent, peer, workspaceId);
       const parent = parentMessageForDmThread(dm, namedDm[2] || '', workspaceId);
       return {
@@ -893,7 +1135,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     if (!workItem) {
       let target;
       try {
-        target = resolveProactiveMessageTarget(agent, body.target);
+        target = resolveProactiveMessageTarget(agent, body.target, body);
       } catch (error) {
         return fail(error.status || 400, error.message, {
           agentId: agent.id,
@@ -901,6 +1143,18 @@ export async function handleAgentToolApi(req, res, url, deps) {
         });
       }
       try {
+        if (target.kind === 'private_user_agent_handoff') {
+          const { handoffMessage, deliveredAgentIds } = await deliverPrivateUserAgentHandoff(agent, target, content, traceId, startedAt);
+          sendJson(res, 200, {
+            ok: true,
+            proactive: true,
+            target: target.label,
+            message: handoffMessage,
+            deliveredAgentIds,
+            text: `Private handoff routed to ${target.label}.`,
+          });
+          return true;
+        }
         const posted = await postAgentResponse(agent, target.spaceType, target.spaceId, content, target.parentMessageId || null, {
           deliveryId: deliveryId || null,
           idempotencyKey: idempotencyKey || null,

@@ -1520,6 +1520,10 @@ button:disabled {
   pointer-events: none;
 }
 
+.mention-tag.mention-identity .agent-hover-card {
+  display: none;
+}
+
 .agent-identity-button:hover .agent-hover-card,
 .agent-identity-button:focus-visible .agent-hover-card,
 .human-identity-button:hover .agent-hover-card,
@@ -1534,6 +1538,11 @@ button:disabled {
 .member-profile-btn:focus-visible .agent-hover-card {
   visibility: visible;
   opacity: 1;
+}
+
+.mention-tag.mention-identity:hover .agent-hover-card,
+.mention-tag.mention-identity:focus-visible .agent-hover-card {
+  display: grid;
 }
 
 .agent-hover-head {
