@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
+const DAEMON_BIN = path.join(ROOT, 'daemon', 'bin', 'magclaw-daemon.js');
 let nextTestPort = 6800 + Math.floor(Math.random() * 300);
 
 async function launchIsolatedServer(tmp, extraEnv = {}) {
@@ -155,6 +156,26 @@ async function waitFor(fn, timeoutMs = 5000) {
     await new Promise((resolve) => setTimeout(resolve, 80));
   }
   throw new Error('timed out waiting for condition');
+}
+
+function commandProfile(command) {
+  const match = String(command || '').match(/--profile\s+(?:"([^"]+)"|'([^']+)'|([^#\s]+))/);
+  return String(match?.[1] || match?.[2] || match?.[3] || '').trim();
+}
+
+async function stopChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  child.kill('SIGINT');
+  const exited = await Promise.race([
+    new Promise((resolve) => child.once('exit', () => resolve(true))),
+    new Promise((resolve) => setTimeout(() => resolve(false), 1500)),
+  ]);
+  if (exited) return;
+  child.kill('SIGKILL');
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    new Promise((resolve) => setTimeout(resolve, 500)),
+  ]);
 }
 
 test('cloud deployment can require PostgreSQL explicitly', async () => {
@@ -906,7 +927,7 @@ test('owner registration protects app APIs and supports invites end to end', asy
     assert.match(pairing.data.command, /MAGCLAW_REPO_DIR="\/path\/to\/magclaw"; node "\$MAGCLAW_REPO_DIR\/daemon\/bin\/magclaw-daemon\.js"/);
     assert.match(pairing.data.command, /--api-key "?mc_machine_/);
     assert.doesNotMatch(pairing.data.command, /--pair-token/);
-    assert.doesNotMatch(pairing.data.command, /--background/);
+    assert.match(pairing.data.command, /--background/);
     assert.match(pairing.data.command, /--profile "?admin-team-cmp_/);
     assert.match(pairing.data.command, /# Admin Team/);
     assert.equal(pairing.data.provisional, true);
@@ -1055,7 +1076,7 @@ test('cloud pairing command can use the domain-friendly npm daemon launcher', as
     assert.match(pairing.data.command, /--server-url "?https:\/\/magclaw\.multiego\.me"?/);
     assert.match(pairing.data.command, /--api-key "?mc_machine_/);
     assert.doesNotMatch(pairing.data.command, /--pair-token/);
-    assert.doesNotMatch(pairing.data.command, /--background/);
+    assert.match(pairing.data.command, /--background/);
     assert.doesNotMatch(pairing.data.command, /MAGCLAW_REPO_DIR/);
     assert.equal(pairing.data.displayName, 'Cloud runner');
   } finally {
@@ -1078,6 +1099,7 @@ test('cloud pairing command carries the requested computer display name', async 
     assert.equal(pairing.data.displayName, 'Studio Mac');
     assert.equal(pairing.data.computer.name, 'Studio Mac');
     assert.match(pairing.data.command, /--display-name "?Studio Mac"?/);
+    assert.match(pairing.data.command, /--background/);
   } finally {
     await server.stop();
   }
@@ -1137,6 +1159,122 @@ test('cloud pairing tokens use the request-scoped server instead of the process 
     });
     assert.equal(firstState.data.computers.some((computer) => computer.id === pairing.data.computer.id), false);
   } finally {
+    await server.stop();
+  }
+});
+
+test('one local daemon home can run independent profiles for three server pairings', async () => {
+  const server = await startIsolatedServer({
+    MAGCLAW_DEPLOYMENT: 'cloud',
+    MAGCLAW_DAEMON_COMMAND_MODE: 'npm',
+  });
+  const daemonHome = await mkdtemp(path.join(os.tmpdir(), 'magclaw-multi-server-daemon-'));
+  const daemons = [];
+  try {
+    const admin = await registerOwnerServer(server, {
+      serverName: 'Alpha Team',
+      slug: 'alpha-team',
+    });
+    const second = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ name: 'Beta Team', slug: 'beta-team' }),
+    });
+    const third = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ name: 'Gamma Team', slug: 'gamma-team' }),
+    });
+    const targets = [
+      { slug: 'alpha-team', workspaceId: admin.server.id, name: 'Alpha Team' },
+      { slug: 'beta-team', workspaceId: second.data.server.id, name: 'Beta Team' },
+      { slug: 'gamma-team', workspaceId: third.data.server.id, name: 'Gamma Team' },
+    ];
+    const pairings = [];
+
+    for (const target of targets) {
+      const pairing = await request(server.baseUrl, '/api/cloud/computers/pairing-tokens', {
+        method: 'POST',
+        cookie: admin.cookie,
+        headers: { 'x-magclaw-server-slug': target.slug },
+        body: JSON.stringify({ displayName: 'Shared Studio Mac' }),
+      });
+      const profile = commandProfile(pairing.data.command);
+      assert.equal(pairing.data.computer.workspaceId, target.workspaceId);
+      assert.match(pairing.data.command, /--background/);
+      assert.match(profile, new RegExp(`^${target.slug}-cmp_`));
+      assert.match(pairing.data.command, new RegExp(`# ${target.name}`));
+      pairings.push({
+        slug: target.slug,
+        workspaceId: target.workspaceId,
+        computerId: pairing.data.computer.id,
+        apiKey: pairing.data.apiKey,
+        profile,
+      });
+    }
+
+    assert.equal(new Set(pairings.map((pairing) => pairing.profile)).size, 3);
+    assert.equal(new Set(pairings.map((pairing) => pairing.computerId)).size, 3);
+
+    for (const pairing of pairings) {
+      const child = spawn(process.execPath, [
+        DAEMON_BIN,
+        'connect',
+        '--server-url',
+        server.baseUrl,
+        '--api-key',
+        pairing.apiKey,
+        '--profile',
+        pairing.profile,
+      ], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          MAGCLAW_DAEMON_HOME: daemonHome,
+          MAGCLAW_INSTALL_CLI: '0',
+          CODEX_PATH: '/bin/false',
+          CLAUDE_PATH: '/bin/false',
+          GEMINI_PATH: '/bin/false',
+          KIMI_PATH: '/bin/false',
+          CURSOR_PATH: '/bin/false',
+          COPILOT_PATH: '/bin/false',
+          OPENCODE_PATH: '/bin/false',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      daemons.push(child);
+    }
+
+    const connected = await waitFor(async () => {
+      const snapshots = [];
+      for (const pairing of pairings) {
+        const snapshot = (await request(server.baseUrl, `/api/state?serverSlug=${pairing.slug}`, {
+          cookie: admin.cookie,
+          headers: { 'x-magclaw-server-slug': pairing.slug },
+        })).data;
+        const computer = snapshot.computers.find((item) => item.id === pairing.computerId);
+        if (computer?.status !== 'connected') return null;
+        snapshots.push(computer);
+      }
+      return snapshots;
+    }, 10_000);
+
+    assert.equal(connected.length, 3);
+
+    const fingerprints = [];
+    for (const pairing of pairings) {
+      const configPath = path.join(daemonHome, 'profiles', pairing.profile, 'config.json');
+      const config = JSON.parse(await readFile(configPath, 'utf8'));
+      assert.equal(config.computerId, pairing.computerId);
+      assert.equal(config.serverUrl, server.baseUrl);
+      assert.equal(config.token, pairing.apiKey);
+      assert.match(config.fingerprint, /^mfp_[a-f0-9]{64}$/);
+      fingerprints.push(config.fingerprint);
+    }
+    assert.equal(new Set(fingerprints).size, 1);
+  } finally {
+    await Promise.all(daemons.map((child) => stopChild(child)));
+    await rm(daemonHome, { recursive: true, force: true });
     await server.stop();
   }
 });

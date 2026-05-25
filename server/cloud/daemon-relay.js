@@ -553,6 +553,7 @@ export function createDaemonRelay(deps) {
     const comment = String(workspace.name || workspace.slug || workspace.id || 'local').trim() || profile;
     const displayName = normalizeDisplayName(options.displayName);
     const credentialFlag = options.credentialFlag || 'api-key';
+    const backgroundFlag = options.background === false ? '' : '--background';
     const template = process.env.MAGCLAW_DAEMON_CONNECT_COMMAND || '';
     if (template) {
       const rendered = template
@@ -564,6 +565,7 @@ export function createDaemonRelay(deps) {
         .replaceAll('{credentialFlag}', `--${credentialFlag}`)
         .replaceAll('{profile}', profile)
         .replaceAll('{displayName}', displayName)
+        .replaceAll('{backgroundFlag}', backgroundFlag)
         .replaceAll('{serverName}', comment);
       return credentialFlag === 'api-key' ? rendered.replace(/--pair-token\b/g, '--api-key') : rendered;
     }
@@ -583,6 +585,7 @@ export function createDaemonRelay(deps) {
       `--${credentialFlag} ${shellArg(credential)}`,
       `--profile ${shellArg(profile)}`,
       displayName ? `--display-name ${shellArg(displayName)}` : '',
+      backgroundFlag,
       `# ${comment}`,
     ].filter(Boolean).join(' ');
   }
