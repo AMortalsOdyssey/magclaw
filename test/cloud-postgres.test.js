@@ -160,7 +160,8 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     assert.match(sql, /\bmachine_fingerprint\b/);
     assert.match(sql, /\bruntime_details\b/);
     assert.match(sql, /\bstorage_mode\b/);
-  assert.match(sql, /component IN \('web', 'daemon'\)/);
+  assert.match(sql, /component IN \('web', 'daemon', 'computer'\)/);
+  assert.match(sql, /DROP CONSTRAINT IF EXISTS cloud_release_notes_component_check/);
   assert.match(sql, /role IN \('member', 'admin', 'owner'\)/);
   assert.match(sql, /DROP CONSTRAINT IF EXISTS cloud_computers_status_check/);
   assert.match(sql, /ADD CONSTRAINT cloud_computers_status_check[\s\S]*status IN \('pairing', 'connected', 'offline', 'disabled', 'upgrade_pending', 'upgrading', 'restarting', 'rollback', 'upgrade_failed'\)/);

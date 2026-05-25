@@ -682,7 +682,7 @@ CREATE INDEX IF NOT EXISTS cloud_realtime_events_created_idx
 
 CREATE TABLE IF NOT EXISTS cloud_release_notes (
   id TEXT PRIMARY KEY,
-  component TEXT NOT NULL CHECK (component IN ('web', 'daemon')),
+  component TEXT NOT NULL CHECK (component IN ('web', 'daemon', 'computer')),
   version TEXT NOT NULL,
   released_at DATE NOT NULL,
   title TEXT NOT NULL DEFAULT '',
@@ -695,6 +695,12 @@ CREATE TABLE IF NOT EXISTS cloud_release_notes (
 
 DO $$
 BEGIN
+  ALTER TABLE cloud_release_notes
+    DROP CONSTRAINT IF EXISTS cloud_release_notes_component_check;
+  ALTER TABLE cloud_release_notes
+    ADD CONSTRAINT cloud_release_notes_component_check
+    CHECK (component IN ('web', 'daemon', 'computer'));
+
   ALTER TABLE cloud_release_notes
     DROP CONSTRAINT IF EXISTS cloud_release_notes_category_check;
   ALTER TABLE cloud_release_notes
