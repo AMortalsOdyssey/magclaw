@@ -347,11 +347,12 @@ function agentReceiptStatus(item) {
   if (item?.status === 'stopped') return 'stopped';
   if (item?.respondedAt || item?.status === 'responded' || Number(item?.sendCount || 0) > 0) return 'responded';
   if (item?.deliveredAt || item?.status === 'delivered') return 'delivered';
+  if (item?.status === 'queued_remote') return 'queued_remote';
   return 'queued';
 }
 
 function agentReceiptRank(status) {
-  return { responded: 4, delivered: 3, queued: 2, stopped: 1 }[status] || 0;
+  return { responded: 4, delivered: 3, queued_remote: 2, queued: 2, stopped: 1 }[status] || 0;
 }
 
 function agentReceiptTime(item) {
@@ -419,6 +420,7 @@ function agentReceiptLabel(status) {
   return {
     responded: 'Responded',
     delivered: 'Received',
+    queued_remote: 'Queued',
     queued: 'Pending',
     stopped: 'Stopped',
   }[status] || 'Pending';

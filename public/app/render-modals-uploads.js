@@ -806,8 +806,29 @@ function connectBackgroundNoteHtml({ usesLocalRepoPlaceholder = false, className
   return `
     <p class="${escapeHtml(className)} connect-background-note">
       ${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your MagClaw checkout path before running. ' : ''}
-      Foreground mode keeps running in this terminal. To register it as a system daemon service, add <code>--background</code> to this same command before the trailing <code># Server Name</code> comment.
+      This command registers the daemon as a background service on this computer.
     </p>
+  `;
+}
+
+function setupCommandDisplayText(command = latestPairingCommand?.computerCommand || latestPairingCommand?.setupCommand || '') {
+  return command || computerPairingCommandError || 'Generating command...';
+}
+
+function renderPairingCommandOption({ title, badge = '', command = '', kind = 'connect', note = '', className = '' } = {}) {
+  const display = kind === 'computer' ? setupCommandDisplayText(command) : pairingCommandDisplayText(command);
+  return `
+    <section class="connect-option-card ${escapeHtml(className)}" data-command-kind="${escapeHtml(kind)}">
+      <div class="connect-option-title">
+        <span>${escapeHtml(title)}</span>
+        ${badge ? `<b>${escapeHtml(badge)}</b>` : ''}
+      </div>
+      <div class="connect-command-shell">
+        <pre><code>${escapeHtml(display)}</code></pre>
+        ${command ? pairingCommandCopyButtonHtml('', kind) : ''}
+      </div>
+      ${note ? `<p class="connect-command-note">${note}</p>` : ''}
+    </section>
   `;
 }
 
@@ -822,9 +843,11 @@ function renderComputerModal() {
     `;
   }
   const command = latestPairingCommand?.command || '';
+  const computerCommand = latestPairingCommand?.computerCommand || latestPairingCommand?.setupCommand || '';
   const pendingComputerId = latestPairingCommand?.computer?.id || '';
   const liveComputer = pendingComputerId ? byId(appState.computers, pendingComputerId) : null;
   const pairingComputer = liveComputer || latestPairingCommand?.computer || null;
+  const reconnectingExistingComputer = Boolean(pairingComputer?.id && latestPairingCommand?.provisional === false);
   const stale = Boolean(command && !pairingCommandIsUsable(latestPairingCommand));
   const connected = String(pairingComputer?.status || '').toLowerCase() === 'connected';
   const displayName = pairingDisplayNameValue();
@@ -844,11 +867,22 @@ function renderComputerModal() {
         <input id="computer-display-name-input" data-action="computer-display-name" maxlength="30" value="${escapeHtml(displayName)}" placeholder="${escapeHtml(defaultComputerPairingName(pairingComputer))}" autocomplete="off" />
         <small>Optional. This becomes the computer name after it connects.</small>
       </label>
-      <div class="connect-command-shell">
-        <pre><code>${escapeHtml(pairingCommandDisplayText(command))}</code></pre>
-        ${command ? pairingCommandCopyButtonHtml() : ''}
+      <div class="connect-options-frame">
+        ${renderPairingCommandOption({
+          title: 'Connect Command',
+          command,
+          kind: 'connect',
+          note: `${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your MagClaw checkout path before running. ' : ''}${reconnectingExistingComputer ? 'This command targets the selected Computer and registers its daemon as a background service.' : 'This command registers the daemon as a background service on this computer.'}`,
+        })}
+        ${reconnectingExistingComputer ? '' : renderPairingCommandOption({
+          title: 'Computer',
+          badge: 'Beta',
+          command: computerCommand,
+          kind: 'computer',
+          className: 'computer-setup-option',
+          note: 'Browser-approved setup. The same physical machine resumes here; different machines create their own Computers for this server.',
+        })}
       </div>
-      ${connectBackgroundNoteHtml({ usesLocalRepoPlaceholder })}
       <div class="pairing-wait-box ${connected ? 'connected' : ''} ${stale || commandError ? 'stale' : ''}">
         <span class="avatar-status-dot inline ${presenceClass(connected ? 'connected' : (stale || commandError) ? 'offline' : 'queued')}"></span>
         <strong>${connected ? 'Computer connected.' : stale ? 'This connect command is no longer valid.' : commandStatusText}</strong>

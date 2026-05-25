@@ -283,11 +283,11 @@ function displayServerSlug(value, fallback = '') {
   return slug;
 }
 
-function pairingCommandCopyButtonHtml(extraClass = '') {
+function pairingCommandCopyButtonHtml(extraClass = '', commandKind = 'connect') {
   const copied = Boolean(pairingCommandCopyAcknowledged);
   const label = copied ? 'Command copied' : 'Copy command';
   return `
-    <button class="connect-copy-btn ${copied ? 'is-copied' : ''} ${escapeHtml(extraClass)}" type="button" data-action="copy-pairing-command" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
+    <button class="connect-copy-btn ${copied ? 'is-copied' : ''} ${escapeHtml(extraClass)}" type="button" data-action="copy-pairing-command" data-command-kind="${escapeHtml(commandKind)}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
       <span aria-hidden="true">${copied ? '✓' : '⧉'}</span>
     </button>
   `;

@@ -35,6 +35,16 @@ function computerIsConnected(computer = {}) {
   return presenceTone(computer.status || 'offline') === 'online' || String(computer.status || '').toLowerCase() === 'connected';
 }
 
+function computerUpgradeBlocksAgentDelivery(computer = {}) {
+  if (!computer || computerIsDisabled(computer) || computerIsDeleted(computer)) return false;
+  const status = String(computer.status || '').toLowerCase();
+  if (['upgrade_pending', 'upgrading', 'restarting', 'rollback'].includes(status)) return true;
+  const metadata = computer.metadata && typeof computer.metadata === 'object' ? computer.metadata : {};
+  const upgrade = metadata.daemonUpgrade && typeof metadata.daemonUpgrade === 'object' ? metadata.daemonUpgrade : {};
+  const upgradeStatus = String(upgrade.status || '').toLowerCase();
+  return Boolean(upgradeStatus && !['succeeded', 'failed', 'rollback_succeeded', 'rollback_failed'].includes(upgradeStatus));
+}
+
 function computerCreatedMs(computer = {}) {
   if (!computer) return 0;
   const value = Date.parse(computer.createdAt || '');

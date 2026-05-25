@@ -1560,6 +1560,56 @@
   align-items: center;
 }
 
+.connect-options-frame {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 2px solid var(--border);
+  background: var(--bg-card);
+}
+
+.connect-option-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--settings-line, var(--border-faint));
+  background: var(--bg-main);
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.connect-option-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--border);
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+
+.connect-option-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.connect-option-title b {
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.connect-option-card .connect-command-shell pre {
+  min-height: 46px;
+  max-height: 118px;
+}
+
 .connect-command-shell pre {
   min-height: 94px;
   max-height: 150px;

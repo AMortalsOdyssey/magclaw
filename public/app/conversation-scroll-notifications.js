@@ -260,6 +260,7 @@ function agentDisplayStatus(agent) {
   if (agentIsWarming(agent)) return 'warming';
   if (computer && agent.computerId !== 'cmp_local' && typeof computerIsConnected === 'function' && !computerIsConnected(computer)) {
     const status = String(agent?.status || '').toLowerCase();
+    if (typeof computerUpgradeBlocksAgentDelivery === 'function' && computerUpgradeBlocksAgentDelivery(computer)) return 'waiting_for_upgrade';
     if (!['waiting_for_computer', 'waiting_for_upgrade', 'queued', 'starting', 'thinking', 'working', 'running', 'busy', 'warming', 'error'].includes(status)) return 'offline';
   }
   if (agentIsStandby(agent)) return 'standby';

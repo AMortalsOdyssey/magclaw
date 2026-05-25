@@ -265,6 +265,7 @@ const zhCnTranslations = {
   'human': '成员',
   'Responded': '已回应',
   'Received': '已收到',
+  'Queued': '已排队',
   'Pending': '待处理',
   'Stopped': '已停止',
   'Agent pickup': '智能体接收',

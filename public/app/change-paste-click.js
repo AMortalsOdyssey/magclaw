@@ -1246,6 +1246,12 @@ document.addEventListener('click', async (event) => {
     if (action === 'confirm-daemon-upgrade') {
       const computerId = daemonUpgradeConfirmState?.computerId || '';
       if (!computerId) return;
+      selectedComputerId = computerId;
+      activeView = 'computers';
+      railTab = 'computers';
+      daemonUpgradeConfirmState = { computerId: null };
+      modal = null;
+      render();
       const result = await api(`/api/computers/${encodeURIComponent(computerId)}/daemon-upgrade`, {
         method: 'POST',
         body: JSON.stringify({}),
@@ -1254,11 +1260,6 @@ document.addEventListener('click', async (event) => {
         const existing = byId(appState.computers, result.computer.id);
         if (existing) Object.assign(existing, result.computer);
       }
-      selectedComputerId = computerId;
-      activeView = 'computers';
-      railTab = 'computers';
-      daemonUpgradeConfirmState = { computerId: null };
-      modal = null;
       await refreshState().catch(() => {});
       render();
       toast('Daemon upgrade queued');
