@@ -1,7 +1,9 @@
 function releaseComponentForRender(component) {
   const fallback = component === 'daemon'
     ? { currentVersion: daemonLatestVersion(), latestVersion: daemonLatestVersion(), releases: [] }
-    : { currentVersion: MAGCLAW_WEB_PACKAGE_VERSION, latestVersion: MAGCLAW_WEB_PACKAGE_VERSION, releases: [] };
+    : component === 'computer'
+      ? { currentVersion: computerLatestVersion(), latestVersion: computerLatestVersion(), releases: [] }
+      : { currentVersion: MAGCLAW_WEB_PACKAGE_VERSION, latestVersion: MAGCLAW_WEB_PACKAGE_VERSION, releases: [] };
   return {
     ...fallback,
     ...(appState.releaseNotes?.[component] || {}),
@@ -89,6 +91,7 @@ function renderReleaseVersionCard(release) {
 function renderReleaseNotesSettingsTab() {
   const web = releaseComponentForRender('web');
   const daemon = releaseComponentForRender('daemon');
+  const computer = releaseComponentForRender('computer');
   const releases = Array.isArray(web.releases) ? web.releases : [];
   return `
     <section class="settings-release">
@@ -100,6 +103,7 @@ function renderReleaseNotesSettingsTab() {
         <div class="release-summary-grid">
           ${renderReleaseSummaryCard('web', 'Web Service', web)}
           ${renderReleaseSummaryCard('daemon', 'Daemon', daemon)}
+          ${renderReleaseSummaryCard('computer', 'Computer', computer)}
         </div>
       </div>
       ${releases.length ? releases.map(renderReleaseVersionCard).join('') : `

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createNpmPackageVersionResolver } from './npm-package-versions.js';
 import { defaultReleaseNotes, normalizeReleaseNotes } from './release-notes.js';
 import { normalizeCloudUrl, normalizeFanoutApiConfig, publicApiKeyPreview } from './runtime-config.js';
 
@@ -18,6 +19,7 @@ export function createSystemServices(deps) {
     httpError,
     makeId,
     now,
+    npmPackageVersions = createNpmPackageVersionResolver(),
     persistState,
     publicCloudState,
     projectsForSpace,
@@ -31,6 +33,7 @@ export function createSystemServices(deps) {
     get(_target, prop) { return getState()[prop]; },
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
+  let npmVersionRefreshInFlight = false;
 
   function records(value) {
     return Array.isArray(value) ? value.filter(Boolean) : [];
@@ -437,6 +440,8 @@ export function createSystemServices(deps) {
   
   function runtimeSnapshot() {
     const daemonPackageVersion = localDaemonPackageVersion();
+    const computerPackageVersion = localComputerPackageVersion();
+    scheduleNpmPackageVersionRefresh();
     return {
       node: process.version,
       platform: `${os.platform()} ${os.arch()}`,
@@ -448,6 +453,9 @@ export function createSystemServices(deps) {
       daemonPackageName: '@magclaw/daemon',
       daemonPackageVersion,
       daemonLatestVersion: latestDaemonPackageVersion(daemonPackageVersion),
+      computerPackageName: '@magclaw/computer',
+      computerPackageVersion,
+      computerLatestVersion: latestComputerPackageVersion(computerPackageVersion),
     };
   }
 
@@ -458,6 +466,8 @@ export function createSystemServices(deps) {
     normalized.web.latestVersion = latestWebPackageVersion(normalized.web.currentVersion);
     normalized.daemon.currentVersion = localDaemonPackageVersion() || normalized.daemon.currentVersion;
     normalized.daemon.latestVersion = latestDaemonPackageVersion(normalized.daemon.currentVersion);
+    normalized.computer.currentVersion = localComputerPackageVersion() || normalized.computer.currentVersion;
+    normalized.computer.latestVersion = latestComputerPackageVersion(normalized.computer.currentVersion);
     return normalized;
   }
 
@@ -494,11 +504,54 @@ export function createSystemServices(deps) {
   function latestDaemonPackageVersion(fallback = '') {
     return String(
       process.env.MAGCLAW_DAEMON_LATEST_VERSION
+      || npmPackageVersions?.latest?.('@magclaw/daemon', '')
       || state?.settings?.daemonVersionControl?.latestVersion
       || state?.settings?.daemonLatestVersion
       || fallback
       || '',
     ).trim();
+  }
+
+  function localComputerPackageVersion() {
+    const envVersion = String(process.env.MAGCLAW_COMPUTER_VERSION || '').trim();
+    if (envVersion) return envVersion;
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(ROOT, 'computer', 'package.json'), 'utf8'));
+      return String(pkg.version || '');
+    } catch {
+      return '';
+    }
+  }
+
+  function latestComputerPackageVersion(fallback = '') {
+    return String(
+      process.env.MAGCLAW_COMPUTER_LATEST_VERSION
+      || npmPackageVersions?.latest?.('@magclaw/computer', '')
+      || state?.settings?.computerVersionControl?.latestVersion
+      || state?.settings?.computerLatestVersion
+      || fallback
+      || '',
+    ).trim();
+  }
+
+  function scheduleNpmPackageVersionRefresh() {
+    const refresh = npmPackageVersions?.maybeRefreshAll || npmPackageVersions?.refreshAll;
+    if (!refresh || npmVersionRefreshInFlight) return;
+    const beforeDaemon = npmPackageVersions.latest?.('@magclaw/daemon', '') || '';
+    const beforeComputer = npmPackageVersions.latest?.('@magclaw/computer', '') || '';
+    npmVersionRefreshInFlight = true;
+    Promise.resolve(refresh.call(npmPackageVersions))
+      .then(() => {
+        const afterDaemon = npmPackageVersions.latest?.('@magclaw/daemon', '') || '';
+        const afterComputer = npmPackageVersions.latest?.('@magclaw/computer', '') || '';
+        if ((afterDaemon && afterDaemon !== beforeDaemon) || (afterComputer && afterComputer !== beforeComputer)) {
+          broadcastState?.();
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        npmVersionRefreshInFlight = false;
+      });
   }
   
   async function getRuntimeInfo() {

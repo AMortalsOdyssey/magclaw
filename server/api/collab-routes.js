@@ -62,6 +62,26 @@ export async function handleCollabApi(req, res, url, deps) {
     }
   }
 
+  function computerPackageName(computer = {}) {
+    const metadataPackage = computer.metadata && typeof computer.metadata === 'object' && computer.metadata.package && typeof computer.metadata.package === 'object'
+      ? computer.metadata.package
+      : {};
+    const name = String(computer.packageName || metadataPackage.name || '').trim();
+    if (name === '@magclaw/computer' || String(computer.packageKind || metadataPackage.kind || computer.connectedVia || '').toLowerCase() === 'computer') {
+      return '@magclaw/computer';
+    }
+    return '@magclaw/daemon';
+  }
+
+  function targetVersionForComputerPackage(computer = {}, body = {}) {
+    if (body.targetVersion || body.version) return body.targetVersion || body.version;
+    const packageName = computerPackageName(computer);
+    if (packageName === '@magclaw/computer') {
+      return state.runtime?.computerLatestVersion || state.runtime?.computerPackageVersion || state.runtime?.daemonLatestVersion || 'latest';
+    }
+    return state.runtime?.daemonLatestVersion || state.runtime?.daemonPackageVersion || 'latest';
+  }
+
   function addMemberToChannel(channel, memberId) {
     if (memberId.startsWith('agt_') && !agentParticipatesInChannels(findAgent(memberId))) {
       const error = new Error('Agent cannot be added as a channel member.');
@@ -446,9 +466,12 @@ export async function handleCollabApi(req, res, url, deps) {
         return true;
       }
       const body = await readJson(req);
+      const computer = findComputer(computerUpgradeMatch[1]) || {};
+      const packageName = body.packageName || computerPackageName(computer);
       try {
         const result = await daemonRelay.requestDaemonUpgrade(computerUpgradeMatch[1], {
-          targetVersion: body.targetVersion || body.version || state.runtime?.daemonLatestVersion || state.runtime?.daemonPackageVersion || 'latest',
+          targetVersion: targetVersionForComputerPackage(computer, body),
+          packageName,
           requestedBy: auth?.user?.id || auth?.member?.id || null,
         });
         sendJson(res, 200, {

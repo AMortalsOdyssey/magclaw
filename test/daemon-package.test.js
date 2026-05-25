@@ -174,7 +174,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.22');
+  assert.equal(DAEMON_VERSION, '0.1.23');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -384,7 +384,8 @@ test('computer npm package is a thin setup wrapper around the shared CLI core pa
   assert.equal(computerPackage.dependencies['@magclaw/daemon'], undefined);
   assert.match(computerBin, /@magclaw\/cli-core\/src\/cli\.js/);
   assert.doesNotMatch(computerBin, /@magclaw\/daemon\/src\/cli\.js/);
-  assert.match(computerBin, /args\[0\] === 'computer' \? args : \['computer', \.\.\.args\]/);
+  assert.match(computerBin, /MAGCLAW_COMPUTER_DAEMON/);
+  assert.match(computerBin, /\['computer', \.\.\.args\]/);
 
   const help = spawnSync(process.execPath, [COMPUTER_BIN, '--help'], {
     cwd: ROOT,
@@ -393,6 +394,61 @@ test('computer npm package is a thin setup wrapper around the shared CLI core pa
   assert.equal(help.status, 0, help.stderr || help.stdout);
   assert.match(help.stdout, /Usage: magclaw/);
   assert.match(help.stdout, /computer\s+Pair this local computer with a server using browser approval/);
+});
+
+test('computer wrapper marks background services as the computer package and can pass through daemon commands', async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), 'magclaw-computer-wrapper-'));
+  try {
+    const computerBin = await readFile(new URL('../computer/bin/magclaw-computer.js', import.meta.url), 'utf8');
+    assert.match(computerBin, /MAGCLAW_ENTRY_PACKAGE_NAME/);
+    assert.match(computerBin, /@magclaw\/computer/);
+    assert.match(computerBin, /MAGCLAW_DAEMON_PACKAGE_BIN/);
+    assert.match(computerBin, /MAGCLAW_COMPUTER_DAEMON/);
+
+    const result = spawnSync(process.execPath, [COMPUTER_BIN, 'status', '--profile', 'computer-pass-through'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        MAGCLAW_DAEMON_HOME: tempHome,
+        MAGCLAW_COMPUTER_DAEMON: '1',
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const status = JSON.parse(result.stdout);
+    assert.equal(status.profile, 'computer-pass-through');
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('upgrade worker targets the current entry package instead of always upgrading daemon', async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), 'magclaw-computer-upgrade-'));
+  try {
+    const result = spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'upgrade-worker',
+      '--dry-run',
+      '--profile',
+      'computer-upgrade',
+      '--target-version',
+      '0.1.30',
+      '--package-name',
+      '@magclaw/computer',
+    ], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        MAGCLAW_DAEMON_HOME: tempHome,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const plan = JSON.parse(result.stdout);
+    assert.equal(plan.packageSpec, '@magclaw/computer@0.1.30');
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
 });
 
 test('top-level CLI core npm package carries the shared command implementation', () => {
@@ -446,7 +502,9 @@ test('daemon package exposes one OpenClaw-style CLI bin for npx default executio
 test('shared CLI core does not pin computer-launched daemons to the CLI core version', async () => {
   const source = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /@magclaw\/daemon@\$\{DAEMON_VERSION\}/);
-  assert.match(source, /previousService\.packageSpec \|\| '@magclaw\/daemon@latest'/);
+  assert.match(source, /function runtimePackageInfo\(/);
+  assert.match(source, /previousService\.pendingCommandId/);
+  assert.match(source, /packageSpecForPackageName\(packageInfo\.name, 'latest'\)/);
 });
 
 test('daemon renders durable magclaw CLI shims for macOS Linux and Windows', () => {

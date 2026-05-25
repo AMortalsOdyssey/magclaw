@@ -701,10 +701,7 @@ function releaseEntriesFromNotes(releaseNotesInput) {
 
 function releaseNotesFromRows(rows, fallback) {
   const notes = normalizeReleaseNotes(fallback);
-  const grouped = {
-    web: new Map(),
-    daemon: new Map(),
-  };
+  const grouped = Object.fromEntries(RELEASE_COMPONENTS.map((component) => [component, new Map()]));
   for (const row of safeArray(rows)) {
     const component = RELEASE_COMPONENTS.includes(row.component) ? row.component : '';
     if (!component) continue;

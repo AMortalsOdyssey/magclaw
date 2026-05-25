@@ -132,7 +132,57 @@ test('collab route group restricts daemon upgrades to admins and owners', async 
   assert.equal(adminRes.data.commandId, 'dupgrade_test');
   assert.deepEqual(relayCall, {
     computerId: 'cmp_one',
-    options: { targetVersion: '0.1.11', requestedBy: 'usr_admin' },
+    options: { targetVersion: '0.1.11', packageName: '@magclaw/daemon', requestedBy: 'usr_admin' },
+  });
+});
+
+test('collab route targets the computer package latest version for computer-launched connections', async () => {
+  let relayCall = null;
+  const deps = routeDeps({
+    daemonRelay: {
+      requestDaemonUpgrade: async (computerId, options) => {
+        relayCall = { computerId, options };
+        return {
+          commandId: 'dupgrade_computer',
+          sent: true,
+          reused: false,
+          computer: { id: computerId, status: 'upgrade_pending' },
+          upgrade: { commandId: 'dupgrade_computer', status: 'pending_idle' },
+        };
+      },
+    },
+    currentActor: () => ({
+      user: { id: 'usr_owner' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_owner', role: 'owner' },
+    }),
+    readJson: async () => ({}),
+  });
+  deps.state.runtime = {
+    daemonLatestVersion: '0.1.30',
+    daemonPackageVersion: '0.1.22',
+    computerLatestVersion: '0.1.31',
+    computerPackageVersion: '0.1.22',
+  };
+  deps.state.computers[0].connectedVia = 'computer';
+  deps.state.computers[0].packageName = '@magclaw/computer';
+  deps.state.computers[0].packageVersion = '0.1.22';
+
+  const res = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/computers/cmp_one/daemon-upgrade'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(relayCall, {
+    computerId: 'cmp_one',
+    options: {
+      targetVersion: '0.1.31',
+      packageName: '@magclaw/computer',
+      requestedBy: 'usr_owner',
+    },
   });
 });
 

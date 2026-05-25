@@ -17,6 +17,9 @@ const TERMINAL_DELIVERY_STATUSES = new Set(['completed', 'failed', 'stopped']);
 const VALID_DELIVERY_STATUSES = new Set([...ACTIVE_DELIVERY_STATUSES, ...TERMINAL_DELIVERY_STATUSES]);
 const COMPUTER_UPGRADE_BLOCKING_STATUSES = new Set(['upgrade_pending', 'upgrading', 'restarting', 'rollback']);
 const DAEMON_UPGRADE_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'rollback_succeeded', 'rollback_failed']);
+const DAEMON_PACKAGE_NAME = '@magclaw/daemon';
+const COMPUTER_PACKAGE_NAME = '@magclaw/computer';
+const KNOWN_PACKAGE_NAMES = new Set([DAEMON_PACKAGE_NAME, COMPUTER_PACKAGE_NAME]);
 
 function readMsEnv(name, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
   const parsed = Number(process.env[name]);
@@ -30,6 +33,34 @@ function safeArray(value) {
 
 function objectValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function packageInfoFromSpec(packageSpec = '') {
+  const match = String(packageSpec || '').trim().match(/^(@magclaw\/(?:daemon|computer))(?:@(.+))?$/);
+  return {
+    name: match?.[1] || '',
+    version: match?.[2] || '',
+  };
+}
+
+function normalizePackageName(value = '', fallback = DAEMON_PACKAGE_NAME) {
+  const clean = String(value || '').trim();
+  if (KNOWN_PACKAGE_NAMES.has(clean)) return clean;
+  return fallback;
+}
+
+function packageKindForPackageName(packageName = '') {
+  return normalizePackageName(packageName) === COMPUTER_PACKAGE_NAME ? 'computer' : 'daemon';
+}
+
+function packageBinForPackageName(packageName = '') {
+  return packageKindForPackageName(packageName) === 'computer' ? 'magclaw-computer' : 'magclaw';
+}
+
+function packageSpecForPackageName(packageName = DAEMON_PACKAGE_NAME, version = 'latest') {
+  const name = normalizePackageName(packageName);
+  const cleanVersion = String(version || '').trim() || 'latest';
+  return `${name}@${cleanVersion}`;
 }
 
 function stableJson(value) {
@@ -301,6 +332,68 @@ export function createDaemonRelay(deps) {
   function computerDaemonServiceReady(computer = {}) {
     const service = objectValue(computer.service);
     return service.background === true && service.active === true;
+  }
+
+  function packageInfoForComputer(computer = {}, source = {}) {
+    const service = objectValue(source.service || computer.service);
+    const metadataPackage = objectValue(objectValue(computer.metadata).package);
+    const parsed = packageInfoFromSpec(source.packageSpec || service.packageSpec || computer.packageSpec || metadataPackage.spec || '');
+    const fallbackName = String(source.packageKind || computer.packageKind || service.packageKind || metadataPackage.kind || computer.connectedVia || '').toLowerCase() === 'computer'
+      ? COMPUTER_PACKAGE_NAME
+      : DAEMON_PACKAGE_NAME;
+    const packageName = normalizePackageName(
+      source.packageName
+        || service.packageName
+        || computer.packageName
+        || metadataPackage.name
+        || parsed.name,
+      fallbackName,
+    );
+    const packageVersion = String(
+      source.packageVersion
+        || service.packageVersion
+        || computer.packageVersion
+        || metadataPackage.version
+        || parsed.version
+        || computer.daemonVersion
+        || computer.version
+        || '',
+    ).trim();
+    const packageKind = String(source.packageKind || service.packageKind || computer.packageKind || metadataPackage.kind || packageKindForPackageName(packageName)).toLowerCase() === 'computer'
+      ? 'computer'
+      : 'daemon';
+    const packageBin = String(source.packageBin || service.packageBin || computer.packageBin || metadataPackage.bin || packageBinForPackageName(packageName)).trim() || packageBinForPackageName(packageName);
+    const packageSpec = String(source.packageSpec || service.packageSpec || computer.packageSpec || metadataPackage.spec || packageSpecForPackageName(packageName, packageVersion || 'latest')).trim();
+    return {
+      name: packageName,
+      version: packageVersion,
+      kind: packageKind,
+      bin: packageBin,
+      spec: packageSpec,
+      cliCoreVersion: String(source.cliCoreVersion || service.cliCoreVersion || computer.cliCoreVersion || metadataPackage.cliCoreVersion || '').trim(),
+    };
+  }
+
+  function storeComputerPackageInfo(computer, packageInfo) {
+    if (!computer || !packageInfo?.name) return;
+    computer.packageName = packageInfo.name;
+    computer.packageVersion = packageInfo.version || computer.packageVersion || computer.daemonVersion || '';
+    computer.packageKind = packageInfo.kind || packageKindForPackageName(packageInfo.name);
+    computer.packageSpec = packageInfo.spec || computer.packageSpec || '';
+    computer.packageBin = packageInfo.bin || packageBinForPackageName(packageInfo.name);
+    computer.cliCoreVersion = packageInfo.cliCoreVersion || computer.cliCoreVersion || '';
+    computer.connectedVia = computer.packageKind === 'computer' ? 'computer' : 'daemon';
+    computer.metadata = {
+      ...objectValue(computer.metadata),
+      package: {
+        name: computer.packageName,
+        version: computer.packageVersion,
+        kind: computer.packageKind,
+        spec: computer.packageSpec,
+        bin: computer.packageBin,
+        cliCoreVersion: computer.cliCoreVersion,
+      },
+    };
   }
 
   function computerStatusForUpgradeStatus(status) {
@@ -814,6 +907,12 @@ export function createDaemonRelay(deps) {
       os: String(body.os || body.platform || '').trim(),
       arch: String(body.arch || '').trim(),
       daemonVersion: String(body.daemonVersion || '').trim(),
+      packageName: normalizePackageName(body.packageName, COMPUTER_PACKAGE_NAME),
+      packageVersion: String(body.packageVersion || body.daemonVersion || '').trim(),
+      packageKind: String(body.packageKind || 'computer').toLowerCase() === 'daemon' ? 'daemon' : 'computer',
+      packageSpec: String(body.packageSpec || '').trim(),
+      packageBin: String(body.packageBin || 'magclaw-computer').trim(),
+      cliCoreVersion: String(body.cliCoreVersion || '').trim(),
       status: 'pending',
       createdAt,
       expiresAt,
@@ -894,14 +993,28 @@ export function createDaemonRelay(deps) {
         os: request.os || '',
         arch: request.arch || '',
         daemonVersion: request.daemonVersion || '',
+        packageName: request.packageName || COMPUTER_PACKAGE_NAME,
+        packageVersion: request.packageVersion || request.daemonVersion || '',
+        packageKind: request.packageKind || 'computer',
+        packageSpec: request.packageSpec || packageSpecForPackageName(request.packageName || COMPUTER_PACKAGE_NAME, request.packageVersion || request.daemonVersion || 'latest'),
+        packageBin: request.packageBin || 'magclaw-computer',
+        cliCoreVersion: request.cliCoreVersion || '',
         status: 'pairing',
         runtimeIds: [],
         capabilities: [],
         machineFingerprint: request.machineFingerprint,
-        connectedVia: 'daemon',
+        connectedVia: 'computer',
         metadata: {
           machineFingerprint: request.machineFingerprint,
           computerSetup: true,
+          package: {
+            name: request.packageName || COMPUTER_PACKAGE_NAME,
+            version: request.packageVersion || request.daemonVersion || '',
+            kind: request.packageKind || 'computer',
+            spec: request.packageSpec || packageSpecForPackageName(request.packageName || COMPUTER_PACKAGE_NAME, request.packageVersion || request.daemonVersion || 'latest'),
+            bin: request.packageBin || 'magclaw-computer',
+            cliCoreVersion: request.cliCoreVersion || '',
+          },
         },
         createdBy: approval.user?.id || null,
         createdAt: approvedAt,
@@ -915,6 +1028,8 @@ export function createDaemonRelay(deps) {
       computer.os = computer.os || request.os || '';
       computer.arch = computer.arch || request.arch || '';
       computer.machineFingerprint = computer.machineFingerprint || request.machineFingerprint;
+      computer.connectedVia = 'computer';
+      storeComputerPackageInfo(computer, packageInfoForComputer(computer, request));
       computer.metadata = {
         ...objectValue(computer.metadata),
         machineFingerprint: request.machineFingerprint,
@@ -1445,7 +1560,7 @@ export function createDaemonRelay(deps) {
     connection.tokenId = tokenRecord.id;
     connections.set(computer.id, connection);
     if (!computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
-    computer.connectedVia = 'daemon';
+    computer.connectedVia = String(computer.connectedVia || '').toLowerCase() === 'computer' ? 'computer' : 'daemon';
     clearPairingProvisionalMetadata(computer);
     computer.lastSeenAt = now();
     computer.daemonConnectedAt = now();
@@ -1786,12 +1901,22 @@ export function createDaemonRelay(deps) {
     if (readyMachineFingerprint) computer.machineFingerprint = readyMachineFingerprint;
     computer.os = String(message.os || computer.os || '');
     computer.arch = String(message.arch || computer.arch || '');
-    computer.daemonVersion = String(message.daemonVersion || computer.daemonVersion || '');
+    const packageInfo = packageInfoForComputer(computer, message);
+    computer.daemonVersion = String(message.daemonVersion || packageInfo.version || computer.daemonVersion || '');
+    storeComputerPackageInfo(computer, packageInfo);
     computer.runtimeIds = safeArray(message.runtimes || message.runtimeIds).map(String);
     computer.runtimeDetails = safeArray(message.runtimeDetails);
     computer.runningAgents = safeArray(message.runningAgents);
     computer.capabilities = safeArray(message.capabilities).map(String);
-    computer.service = objectValue(message.service);
+    computer.service = {
+      ...objectValue(message.service),
+      packageName: packageInfo.name,
+      packageVersion: packageInfo.version,
+      packageKind: packageInfo.kind,
+      packageSpec: packageInfo.spec,
+      packageBin: packageInfo.bin,
+      cliCoreVersion: packageInfo.cliCoreVersion,
+    };
     const reportedUpgrade = message.upgrade && typeof message.upgrade === 'object' ? message.upgrade : null;
     const previousUpgrade = daemonUpgradeState(computer);
     const upgradeCommandId = String(reportedUpgrade?.commandId || previousUpgrade.commandId || '').trim();
@@ -1800,7 +1925,7 @@ export function createDaemonRelay(deps) {
       upgradeCommandId
       && (
         reportedUpgrade?.status === 'succeeded'
-        || (targetVersion && String(message.daemonVersion || '') === targetVersion)
+        || (targetVersion && String(packageInfo.version || message.daemonVersion || '') === targetVersion)
       )
     );
     if (readyMatchesUpgrade) {
@@ -1992,6 +2117,10 @@ export function createDaemonRelay(deps) {
       message: message.message || (status === 'pending_idle' ? 'Waiting for all Agents to become idle.' : 'Daemon accepted upgrade request.'),
       previousVersion: message.previousVersion || daemonUpgradeState(computer).previousVersion || computer.daemonVersion || '',
       targetVersion: message.targetVersion || daemonUpgradeState(computer).targetVersion || '',
+      packageName: message.packageName || daemonUpgradeState(computer).packageName || computer.packageName || '',
+      packageKind: message.packageKind || daemonUpgradeState(computer).packageKind || computer.packageKind || '',
+      packageBin: message.packageBin || daemonUpgradeState(computer).packageBin || computer.packageBin || '',
+      packageSpec: message.packageSpec || daemonUpgradeState(computer).packageSpec || computer.packageSpec || '',
       error: '',
     });
     for (const agent of safeArray(state.agents)) {
@@ -2023,6 +2152,10 @@ export function createDaemonRelay(deps) {
       message: message.message || daemonUpgradeState(computer).message || '',
       previousVersion: message.previousVersion || daemonUpgradeState(computer).previousVersion || computer.daemonVersion || '',
       targetVersion: message.targetVersion || daemonUpgradeState(computer).targetVersion || '',
+      packageName: message.packageName || daemonUpgradeState(computer).packageName || computer.packageName || '',
+      packageKind: message.packageKind || daemonUpgradeState(computer).packageKind || computer.packageKind || '',
+      packageBin: message.packageBin || daemonUpgradeState(computer).packageBin || computer.packageBin || '',
+      packageSpec: message.packageSpec || daemonUpgradeState(computer).packageSpec || computer.packageSpec || '',
       error: message.error || '',
     });
     if (status === 'succeeded') {
@@ -2105,6 +2238,9 @@ export function createDaemonRelay(deps) {
         if (computer) {
           if (!computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
           if (message.daemonVersion) computer.daemonVersion = String(message.daemonVersion);
+          if (message.packageName || message.packageVersion || message.packageSpec || message.packageKind) {
+            storeComputerPackageInfo(computer, packageInfoForComputer(computer, message));
+          }
           computer.runningAgents = safeArray(message.runningAgents);
           computer.lastSeenAt = now();
           computer.updatedAt = now();
@@ -2594,8 +2730,13 @@ export function createDaemonRelay(deps) {
       throw error;
     }
     const commandId = makeId('dupgrade');
+    const packageInfo = packageInfoForComputer(computer, options);
+    const targetPackageName = normalizePackageName(options.packageName || packageInfo.name);
+    const targetPackageKind = packageKindForPackageName(targetPackageName);
+    const targetPackageBin = String(options.packageBin || packageInfo.bin || packageBinForPackageName(targetPackageName)).trim() || packageBinForPackageName(targetPackageName);
     const targetVersion = String(options.targetVersion || options.version || 'latest').trim() || 'latest';
-    const previousVersion = String(computer.daemonVersion || computer.version || '').trim();
+    const targetPackageSpec = String(options.packageSpec || packageSpecForPackageName(targetPackageName, targetVersion)).trim();
+    const previousVersion = String(packageInfo.version || computer.daemonVersion || computer.version || '').trim();
     const upgrade = patchDaemonUpgrade(computer, {
       commandId,
       status: 'pending_idle',
@@ -2604,6 +2745,10 @@ export function createDaemonRelay(deps) {
       message: '等待更新：正在等待所有 Agent 进入空闲状态。',
       previousVersion,
       targetVersion,
+      packageName: targetPackageName,
+      packageKind: targetPackageKind,
+      packageBin: targetPackageBin,
+      packageSpec: targetPackageSpec,
       requestedBy: options.requestedBy || null,
       requestedAt: now(),
       error: '',
@@ -2613,6 +2758,10 @@ export function createDaemonRelay(deps) {
       commandId,
       targetVersion,
       previousVersion,
+      packageName: targetPackageName,
+      packageKind: targetPackageKind,
+      packageBin: targetPackageBin,
+      packageSpec: targetPackageSpec,
       progressIntervalMs: 500,
       requestedAt: upgrade.requestedAt,
     });
@@ -2620,6 +2769,8 @@ export function createDaemonRelay(deps) {
       computerId: computer.id,
       commandId,
       targetVersion,
+      packageName: targetPackageName,
+      packageSpec: targetPackageSpec,
       previousVersion: previousVersion || null,
       sent,
     });

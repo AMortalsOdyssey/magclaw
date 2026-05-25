@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-export const RELEASE_COMPONENTS = ['web', 'daemon'];
+export const RELEASE_COMPONENTS = ['web', 'daemon', 'computer'];
 
 export const RELEASE_CATEGORY_KEYS = ['new', 'bugFix', 'approval', 'features', 'fixes', 'improved'];
 
@@ -305,6 +305,21 @@ const DAEMON_RELEASES = [
   },
 ];
 
+const COMPUTER_RELEASES = [
+  {
+    version: '0.1.23',
+    date: '2026-05-25',
+    title: 'Shared CLI core package',
+    new: [
+      'Computer now ships the shared MagClaw CLI core directly without depending on the daemon package.',
+    ],
+    bugFix: [
+      'Computer-launched background services keep their own package identity for future upgrades.',
+    ],
+    approval: [],
+  },
+];
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -388,6 +403,7 @@ function normalizeComponent(component, defaults = {}) {
 export function defaultReleaseNotes({ root = process.cwd(), env = process.env } = {}) {
   const webVersion = normalizeVersion(env.MAGCLAW_WEB_VERSION || readPackageVersion(root, 'web') || WEB_RELEASES[0].version);
   const daemonVersion = normalizeVersion(env.MAGCLAW_DAEMON_VERSION || readPackageVersion(root, 'daemon') || DAEMON_RELEASES[0].version);
+  const computerVersion = normalizeVersion(env.MAGCLAW_COMPUTER_VERSION || readPackageVersion(root, 'computer') || COMPUTER_RELEASES[0].version);
   return {
     web: normalizeComponent({
       component: 'web',
@@ -403,13 +419,21 @@ export function defaultReleaseNotes({ root = process.cwd(), env = process.env } 
       latestVersion: normalizeVersion(env.MAGCLAW_DAEMON_LATEST_VERSION || daemonVersion || DAEMON_RELEASES[0].version),
       releases: DAEMON_RELEASES,
     }),
+    computer: normalizeComponent({
+      component: 'computer',
+      packageName: '@magclaw/computer',
+      currentVersion: computerVersion,
+      latestVersion: normalizeVersion(env.MAGCLAW_COMPUTER_LATEST_VERSION || computerVersion || COMPUTER_RELEASES[0].version),
+      releases: COMPUTER_RELEASES,
+    }),
   };
 }
 
 export function normalizeReleaseNotes(value = {}, defaults = {}) {
-  const defaultNotes = defaults.web && defaults.daemon ? defaults : defaultReleaseNotes();
+  const defaultNotes = defaults.web && defaults.daemon && defaults.computer ? defaults : defaultReleaseNotes();
   return {
     web: normalizeComponent(value?.web, defaultNotes.web),
     daemon: normalizeComponent(value?.daemon, defaultNotes.daemon),
+    computer: normalizeComponent(value?.computer, defaultNotes.computer),
   };
 }

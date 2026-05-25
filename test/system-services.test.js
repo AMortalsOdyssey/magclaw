@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createSystemServices } from '../server/system-services.js';
 
-function makeServices(configureState = null) {
+function makeServices(configureState = null, options = {}) {
   const createdAt = '2026-05-18T00:00:00.000Z';
   const state = {
     connection: { workspaceId: 'local' },
@@ -53,6 +53,7 @@ function makeServices(configureState = null) {
     DATA_DIR: '/tmp',
     PORT: 6543,
     ROOT: process.cwd(),
+    ...options,
   });
 }
 
@@ -191,6 +192,26 @@ test('public state exposes configured public URL for share exports', () => {
     if (previous === undefined) delete process.env.MAGCLAW_PUBLIC_URL;
     else process.env.MAGCLAW_PUBLIC_URL = previous;
   }
+});
+
+test('runtime snapshot exposes independent NPM latest versions for daemon and computer', () => {
+  const services = makeServices(null, {
+    npmPackageVersions: {
+      latest: (packageName, fallback = '') => {
+        if (packageName === '@magclaw/daemon') return '0.1.30';
+        if (packageName === '@magclaw/computer') return '0.1.31';
+        return fallback;
+      },
+      refreshAll: () => {},
+    },
+  });
+
+  const runtime = services.runtimeSnapshot();
+
+  assert.equal(runtime.daemonPackageName, '@magclaw/daemon');
+  assert.equal(runtime.daemonLatestVersion, '0.1.30');
+  assert.equal(runtime.computerPackageName, '@magclaw/computer');
+  assert.equal(runtime.computerLatestVersion, '0.1.31');
 });
 
 test('public state includes minimal identities for visible external human mentions', () => {

@@ -2,17 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { defaultReleaseNotes, normalizeReleaseNotes } from '../server/release-notes.js';
 
-test('release notes expose independent Web and Daemon version catalogs', () => {
+test('release notes expose independent Web, Daemon, and Computer version catalogs', () => {
   const notes = defaultReleaseNotes({
     root: new URL('..', import.meta.url).pathname,
     env: {
       MAGCLAW_WEB_VERSION: '0.3.1',
       MAGCLAW_DAEMON_VERSION: '0.1.1',
+      MAGCLAW_COMPUTER_VERSION: '0.1.2',
     },
   });
 
   assert.equal(notes.web.currentVersion, '0.3.1');
   assert.equal(notes.daemon.currentVersion, '0.1.1');
+  assert.equal(notes.computer.currentVersion, '0.1.2');
+  assert.equal(notes.computer.packageName, '@magclaw/computer');
   assert.match(notes.web.releases[0].title, /Structured message references/);
   assert.equal(notes.web.releases[0].new[0], 'Messages now support structured quote and context references for selections, messages, threads, and visible conversations.');
   assert.equal(notes.web.releases[0].bugFix[0], 'Private or restricted conversation records cannot be smuggled through reference record ids.');
@@ -51,4 +54,5 @@ test('release notes normalization keeps the seeded catalog authoritative', () =>
   assert.equal(notes.web.releases[0].new[0], 'Messages now support structured quote and context references for selections, messages, threads, and visible conversations.');
   assert.equal(notes.web.releases[8].features[0], 'Feishu authorization login is now supported.');
   assert.equal(notes.daemon.releases[0].version, '0.1.17');
+  assert.equal(notes.computer.releases[0].version, '0.1.23');
 });

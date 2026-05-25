@@ -1242,6 +1242,8 @@ document.addEventListener('click', async (event) => {
     if (action === 'confirm-daemon-upgrade') {
       const computerId = daemonUpgradeConfirmState?.computerId || '';
       if (!computerId) return;
+      const computer = byId(appState.computers, computerId) || {};
+      const packageLabel = typeof computerPackageLabel === 'function' ? computerPackageLabel(computer) : 'Daemon';
       selectedComputerId = computerId;
       activeView = 'computers';
       railTab = 'computers';
@@ -1250,7 +1252,10 @@ document.addEventListener('click', async (event) => {
       render();
       const result = await api(`/api/computers/${encodeURIComponent(computerId)}/daemon-upgrade`, {
         method: 'POST',
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          packageName: computerPackageName(computer),
+          targetVersion: computerPackageLatestVersion(computer),
+        }),
       });
       if (result?.computer) {
         const existing = byId(appState.computers, result.computer.id);
@@ -1258,7 +1263,7 @@ document.addEventListener('click', async (event) => {
       }
       await refreshState().catch(() => {});
       render();
-      toast('Daemon upgrade queued');
+      toast(`${packageLabel} upgrade queued`);
     }
     if (action === 'close-modal') {
       const isBackdrop = event.target.classList.contains('modal-backdrop');

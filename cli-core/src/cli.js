@@ -39,6 +39,10 @@ const PACKAGE_JSON = (() => {
   }
 })();
 export const DAEMON_VERSION = String(PACKAGE_JSON.version || '0.0.0');
+export const CLI_CORE_VERSION = DAEMON_VERSION;
+const DAEMON_PACKAGE_NAME = '@magclaw/daemon';
+const COMPUTER_PACKAGE_NAME = '@magclaw/computer';
+const KNOWN_ENTRY_PACKAGE_NAMES = new Set([DAEMON_PACKAGE_NAME, COMPUTER_PACKAGE_NAME]);
 const SOURCE_CODEX_HOME = path.resolve(process.env.MAGCLAW_CODEX_HOME_SOURCE || process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
 const CODEX_HOME_SHARED_ENTRIES = ['auth.json', 'plugins', 'vendor_imports'];
 export const CAPABILITIES = [
@@ -54,6 +58,71 @@ export const CAPABILITIES = [
 
 function now() {
   return new Date().toISOString();
+}
+
+function packageInfoFromSpec(packageSpec = '') {
+  const match = String(packageSpec || '').trim().match(/^(@magclaw\/(?:daemon|computer))(?:@(.+))?$/);
+  return {
+    name: match?.[1] || '',
+    version: match?.[2] || '',
+  };
+}
+
+function normalizeEntryPackageName(value = '', fallback = DAEMON_PACKAGE_NAME) {
+  const clean = String(value || '').trim();
+  if (KNOWN_ENTRY_PACKAGE_NAMES.has(clean)) return clean;
+  return fallback;
+}
+
+function packageKindForPackageName(packageName = '') {
+  return normalizeEntryPackageName(packageName) === COMPUTER_PACKAGE_NAME ? 'computer' : 'daemon';
+}
+
+function packageBinForPackageName(packageName = '') {
+  return packageKindForPackageName(packageName) === 'computer' ? 'magclaw-computer' : 'magclaw';
+}
+
+function packageSpecForPackageName(packageName = DAEMON_PACKAGE_NAME, version = 'latest') {
+  const name = normalizeEntryPackageName(packageName);
+  const cleanVersion = String(version || '').trim() || 'latest';
+  return cleanVersion === 'latest' ? `${name}@latest` : `${name}@${cleanVersion}`;
+}
+
+function runtimePackageInfo(env = process.env, service = {}) {
+  const envSpec = String(env.MAGCLAW_DAEMON_PACKAGE_SPEC || '').trim();
+  const serviceSpec = String(service.packageSpec || '').trim();
+  const parsed = packageInfoFromSpec(envSpec || serviceSpec);
+  const packageName = normalizeEntryPackageName(
+    env.MAGCLAW_ENTRY_PACKAGE_NAME
+      || env.MAGCLAW_DAEMON_PACKAGE_NAME
+      || service.packageName
+      || parsed.name,
+  );
+  const packageVersion = String(
+    env.MAGCLAW_ENTRY_PACKAGE_VERSION
+      || env.MAGCLAW_DAEMON_PACKAGE_VERSION
+      || service.packageVersion
+      || parsed.version
+      || DAEMON_VERSION,
+  ).trim();
+  const packageKind = String(
+    env.MAGCLAW_DAEMON_PACKAGE_KIND
+      || service.packageKind
+      || packageKindForPackageName(packageName),
+  ).trim().toLowerCase() === 'computer' ? 'computer' : 'daemon';
+  const packageBin = String(
+    env.MAGCLAW_DAEMON_PACKAGE_BIN
+      || service.packageBin
+      || packageBinForPackageName(packageName),
+  ).trim() || packageBinForPackageName(packageName);
+  const packageSpec = envSpec || serviceSpec || packageSpecForPackageName(packageName, packageVersion || 'latest');
+  return {
+    name: packageName,
+    version: packageVersion,
+    kind: packageKind,
+    bin: packageBin,
+    spec: packageSpec,
+  };
 }
 
 function localTimestamp(date = new Date()) {
@@ -584,17 +653,25 @@ async function saveProfile(profile, config, env = process.env) {
 async function readServiceState(profile = DEFAULT_PROFILE, env = process.env) {
   const paths = profilePaths(profile, env);
   const state = await readJsonFile(paths.service, {});
+  const parsed = packageInfoFromSpec(state.packageSpec || '');
+  const packageName = normalizeEntryPackageName(state.packageName || parsed.name || DAEMON_PACKAGE_NAME);
+  const packageVersion = String(state.packageVersion || parsed.version || state.installedPackageVersion || state.installedDaemonVersion || '').trim();
   return {
+    ...state,
     version: 1,
     profile: paths.profile,
     mode: state.mode || 'foreground',
     background: Boolean(state.background),
     launcher: state.launcher || '',
     packageSpec: state.packageSpec || '',
+    packageName,
+    packageVersion,
+    packageKind: String(state.packageKind || packageKindForPackageName(packageName)).toLowerCase() === 'computer' ? 'computer' : 'daemon',
+    packageBin: state.packageBin || packageBinForPackageName(packageName),
     previousPackageSpec: state.previousPackageSpec || '',
     installedDaemonVersion: state.installedDaemonVersion || DAEMON_VERSION,
+    installedPackageVersion: state.installedPackageVersion || packageVersion || state.installedDaemonVersion || DAEMON_VERSION,
     updatedAt: state.updatedAt || '',
-    ...state,
   };
 }
 
@@ -3232,6 +3309,9 @@ class MagClawDaemon {
     this.upgradeWorkerStarting = true;
     const targetVersion = String(message.targetVersion || message.version || 'latest').trim() || 'latest';
     const previousVersion = String(message.previousVersion || DAEMON_VERSION).trim() || DAEMON_VERSION;
+    const packageName = normalizeEntryPackageName(message.packageName || packageInfoFromSpec(message.packageSpec || '').name || this.env.MAGCLAW_ENTRY_PACKAGE_NAME || this.env.MAGCLAW_DAEMON_PACKAGE_NAME);
+    const packageKind = packageKindForPackageName(packageName);
+    const packageBin = String(message.packageBin || packageBinForPackageName(packageName)).trim() || packageBinForPackageName(packageName);
     const service = await readServiceState(this.paths.profile, this.env);
     const activeService = backgroundServiceStatus(this.paths.profile, this.env);
     if (!service.background || !activeService.active) {
@@ -3245,6 +3325,10 @@ class MagClawDaemon {
         message: error,
         previousVersion,
         targetVersion,
+        packageName,
+        packageKind,
+        packageBin,
+        packageSpec: message.packageSpec || packageSpecForPackageName(packageName, targetVersion),
         error,
         service: activeService,
       }, this.env);
@@ -3257,6 +3341,9 @@ class MagClawDaemon {
         message: error,
         previousVersion,
         targetVersion,
+        packageName,
+        packageKind,
+        packageBin,
       });
       this.upgradeWorkerStarting = false;
       return false;
@@ -3270,7 +3357,10 @@ class MagClawDaemon {
       message: 'Upgrade worker is starting.',
       previousVersion,
       targetVersion,
-      packageSpec: message.packageSpec || '',
+      packageName,
+      packageKind,
+      packageBin,
+      packageSpec: message.packageSpec || packageSpecForPackageName(packageName, targetVersion),
       startedAt: now(),
     }, this.env);
     this.send({
@@ -3281,6 +3371,9 @@ class MagClawDaemon {
       progress: 1,
       previousVersion,
       targetVersion,
+      packageName,
+      packageKind,
+      packageBin,
       message: 'Upgrade worker is starting.',
     });
     const args = [
@@ -3296,6 +3389,8 @@ class MagClawDaemon {
       previousVersion,
     ];
     if (message.packageSpec) args.push('--package-spec', String(message.packageSpec));
+    args.push('--package-name', packageName);
+    args.push('--package-bin', packageBin);
     const child = spawn(process.execPath, args, {
       cwd: process.cwd(),
       detached: true,
@@ -3315,6 +3410,9 @@ class MagClawDaemon {
     const commandId = String(message.commandId || '').trim();
     const targetVersion = String(message.targetVersion || message.version || 'latest').trim() || 'latest';
     const previousVersion = String(message.previousVersion || DAEMON_VERSION).trim() || DAEMON_VERSION;
+    const packageName = normalizeEntryPackageName(message.packageName || packageInfoFromSpec(message.packageSpec || '').name || this.env.MAGCLAW_ENTRY_PACKAGE_NAME || this.env.MAGCLAW_DAEMON_PACKAGE_NAME);
+    const packageKind = packageKindForPackageName(packageName);
+    const packageBin = String(message.packageBin || packageBinForPackageName(packageName)).trim() || packageBinForPackageName(packageName);
     if (!commandId) {
       this.send({ type: 'daemon:upgrade:ack', status: 'failed', error: 'Missing commandId.' });
       return;
@@ -3327,7 +3425,10 @@ class MagClawDaemon {
       message: this.daemonIsIdleForUpgrade() ? 'Daemon accepted upgrade command.' : 'Waiting for all Agent work to become idle.',
       previousVersion,
       targetVersion,
-      packageSpec: message.packageSpec || '',
+      packageName,
+      packageKind,
+      packageBin,
+      packageSpec: message.packageSpec || packageSpecForPackageName(packageName, targetVersion),
       requestedAt: now(),
     }, this.env);
     if (!this.daemonIsIdleForUpgrade()) {
@@ -3340,6 +3441,9 @@ class MagClawDaemon {
         progress: 0,
         previousVersion,
         targetVersion,
+        packageName,
+        packageKind,
+        packageBin,
         message: 'Waiting for all Agent work to become idle.',
       });
       this.scheduleUpgradeIdleCheck();
@@ -3354,6 +3458,7 @@ class MagClawDaemon {
     const service = await readServiceState(this.paths.profile, this.env);
     const serviceStatus = backgroundServiceStatus(this.paths.profile, this.env);
     const upgrade = await readUpgradeHandoff(this.paths.profile, this.env);
+    const packageInfo = runtimePackageInfo(this.env, service);
     return {
       type: 'ready',
       computerId: this.config.computerId || null,
@@ -3363,7 +3468,13 @@ class MagClawDaemon {
       hostname: os.hostname(),
       os: `${os.platform()} ${os.release()}`,
       arch: os.arch(),
-      daemonVersion: DAEMON_VERSION,
+      daemonVersion: packageInfo.version || DAEMON_VERSION,
+      packageName: packageInfo.name,
+      packageVersion: packageInfo.version,
+      packageKind: packageInfo.kind,
+      packageSpec: packageInfo.spec,
+      packageBin: packageInfo.bin,
+      cliCoreVersion: CLI_CORE_VERSION,
       service: {
         mode: service.mode || serviceStatus.mode || 'foreground',
         background: Boolean(service.background),
@@ -3372,7 +3483,12 @@ class MagClawDaemon {
         serviceName: serviceStatus.serviceName || '',
         taskName: serviceStatus.taskName || '',
         launcher: service.launcher || '',
-        packageSpec: service.packageSpec || '',
+        packageSpec: service.packageSpec || packageInfo.spec || '',
+        packageName: service.packageName || packageInfo.name,
+        packageVersion: service.packageVersion || packageInfo.version,
+        packageKind: service.packageKind || packageInfo.kind,
+        packageBin: service.packageBin || packageInfo.bin,
+        cliCoreVersion: CLI_CORE_VERSION,
       },
       upgrade: upgrade || null,
       runtimes: runtimes.filter((runtime) => runtime.installed).map((runtime) => runtime.id),
@@ -3392,11 +3508,18 @@ class MagClawDaemon {
   }
 
   sendHeartbeat() {
+    const packageInfo = runtimePackageInfo(this.env);
     const sent = this.send({
       type: 'heartbeat',
       time: now(),
       computerId: this.config.computerId || null,
-      daemonVersion: DAEMON_VERSION,
+      daemonVersion: packageInfo.version || DAEMON_VERSION,
+      packageName: packageInfo.name,
+      packageVersion: packageInfo.version,
+      packageKind: packageInfo.kind,
+      packageSpec: packageInfo.spec,
+      packageBin: packageInfo.bin,
+      cliCoreVersion: CLI_CORE_VERSION,
       runningAgents: [...this.sessions.keys()],
     });
     logInfo('daemon', `Sent heartbeat (runningAgents=${this.sessions.size}, sent=${sent}).`);
@@ -4020,13 +4143,38 @@ async function writeLauncher(profile, env = process.env) {
   const launcher = path.join(paths.runDir, 'launcher.js');
   const fallbackBin = executablePath();
   const previousService = await readServiceState(paths.profile, env);
+  const preferPersistedPackage = Boolean(previousService.pendingCommandId);
+  const envPackageInfo = runtimePackageInfo(env, {});
+  const persistedPackageInfo = runtimePackageInfo({}, previousService);
+  const packageInfo = preferPersistedPackage ? persistedPackageInfo : runtimePackageInfo(env, previousService);
+  const packageSpec = preferPersistedPackage
+    ? (previousService.packageSpec || persistedPackageInfo.spec)
+    : (env.MAGCLAW_DAEMON_PACKAGE_SPEC || previousService.packageSpec || packageInfo.spec || packageSpecForPackageName(packageInfo.name, 'latest'));
+  const packageName = normalizeEntryPackageName(
+    packageInfoFromSpec(packageSpec).name
+      || packageInfo.name
+      || envPackageInfo.name
+      || previousService.packageName,
+  );
+  const packageVersion = String(packageInfoFromSpec(packageSpec).version || packageInfo.version || previousService.packageVersion || '').trim();
+  const packageKind = packageKindForPackageName(packageName);
+  const packageBin = String(
+    (preferPersistedPackage ? previousService.packageBin : env.MAGCLAW_DAEMON_PACKAGE_BIN)
+      || previousService.packageBin
+      || packageBinForPackageName(packageName),
+  ).trim() || packageBinForPackageName(packageName);
   const service = await writeServiceState(paths.profile, {
     mode: process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd' : process.platform === 'win32' ? 'schtasks' : 'foreground',
     background: true,
     launcher,
-    packageSpec: env.MAGCLAW_DAEMON_PACKAGE_SPEC || previousService.packageSpec || '@magclaw/daemon@latest',
+    packageSpec,
+    packageName,
+    packageVersion,
+    packageKind,
+    packageBin,
     previousPackageSpec: previousService.previousPackageSpec || '',
-    installedDaemonVersion: DAEMON_VERSION,
+    installedDaemonVersion: packageVersion || DAEMON_VERSION,
+    installedPackageVersion: packageVersion || DAEMON_VERSION,
     commandMode: useNpmLauncher ? 'npm' : 'local',
   }, env);
   const code = [
@@ -4045,14 +4193,31 @@ async function writeLauncher(profile, env = process.env) {
     "let service = {};",
     "try { service = JSON.parse(fs.readFileSync(serviceFile, 'utf8')); } catch {}",
     "const packageSpec = String(service.packageSpec || defaultPackageSpec || '@magclaw/daemon@latest');",
+    "const packageName = String(service.packageName || (packageSpec.startsWith('@magclaw/computer@') || packageSpec === '@magclaw/computer' ? '@magclaw/computer' : '@magclaw/daemon'));",
+    "const packageKind = String(service.packageKind || (packageName === '@magclaw/computer' ? 'computer' : 'daemon'));",
+    "const packageBin = String(service.packageBin || (packageKind === 'computer' ? 'magclaw-computer' : 'magclaw'));",
+    "const packageVersionMatch = packageSpec.match(/^@magclaw\\/(?:daemon|computer)@(.+)$/);",
+    "const packageVersion = String(service.packageVersion || (packageVersionMatch ? packageVersionMatch[1] : ''));",
     'const command = useNpmLauncher ? npmPath : process.execPath;',
     "const args = useNpmLauncher",
-    "  ? ['exec', '--yes', '--package', packageSpec, '--', 'magclaw', 'connect', '--profile', profile]",
+    "  ? ['exec', '--yes', '--package', packageSpec, '--', packageBin, 'connect', '--profile', profile]",
     "  : [fallbackBin, 'connect', '--profile', profile];",
     "const launchPath = [nodeDir, npmDir, process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].filter(Boolean).join(':');",
+    "const childEnv = {",
+    "  ...process.env,",
+    "  MAGCLAW_DAEMON_HOME: daemonHome,",
+    "  MAGCLAW_ENTRY_PACKAGE_NAME: packageName,",
+    "  MAGCLAW_ENTRY_PACKAGE_VERSION: packageVersion,",
+    "  MAGCLAW_DAEMON_PACKAGE_NAME: packageName,",
+    "  MAGCLAW_DAEMON_PACKAGE_SPEC: packageSpec,",
+    "  MAGCLAW_DAEMON_PACKAGE_KIND: packageKind,",
+    "  MAGCLAW_DAEMON_PACKAGE_BIN: packageBin,",
+    "  PATH: launchPath,",
+    "};",
+    "if (packageKind === 'computer') childEnv.MAGCLAW_COMPUTER_DAEMON = '1';",
     'const child = spawn(command, args, {',
     "  stdio: 'inherit',",
-    '  env: { ...process.env, MAGCLAW_DAEMON_HOME: daemonHome, PATH: launchPath },',
+    '  env: childEnv,',
     '});',
     "child.on('exit', (code, signal) => {",
     '  if (signal) process.kill(process.pid, signal);',
@@ -4573,13 +4738,24 @@ async function openUpgradeProgressSocket(url) {
 function packageSpecForUpgrade(targetVersion, flags = {}, env = process.env) {
   const explicit = String(flags.packageSpec || env.MAGCLAW_DAEMON_UPGRADE_PACKAGE_SPEC || '').trim();
   if (explicit) return explicit;
+  const packageName = normalizeEntryPackageName(
+    flags.packageName
+      || flags.package
+      || env.MAGCLAW_DAEMON_UPGRADE_PACKAGE_NAME
+      || env.MAGCLAW_ENTRY_PACKAGE_NAME
+      || env.MAGCLAW_DAEMON_PACKAGE_NAME
+      || packageInfoFromSpec(env.MAGCLAW_DAEMON_PACKAGE_SPEC || '').name,
+  );
   const target = String(targetVersion || '').trim();
-  return target && target !== 'latest' ? `@magclaw/daemon@${target}` : '@magclaw/daemon@latest';
+  return packageSpecForPackageName(packageName, target && target !== 'latest' ? target : 'latest');
 }
 
 function npmPackageLooksRemote(packageSpec) {
   const value = String(packageSpec || '').trim();
-  return value.startsWith('@magclaw/daemon@') || value === '@magclaw/daemon';
+  return value.startsWith('@magclaw/daemon@')
+    || value === '@magclaw/daemon'
+    || value.startsWith('@magclaw/computer@')
+    || value === '@magclaw/computer';
 }
 
 function preflightPackage(packageSpec, env = process.env) {
@@ -4642,12 +4818,15 @@ async function runUpgradeWorker(flags, env = process.env) {
   const targetVersion = String(flags.targetVersion || flags.version || flags.to || flags.tag || 'latest').trim() || 'latest';
   const previousVersion = String(flags.previousVersion || DAEMON_VERSION).trim() || DAEMON_VERSION;
   const packageSpec = packageSpecForUpgrade(targetVersion, flags, env);
+  const packageName = normalizeEntryPackageName(packageInfoFromSpec(packageSpec).name || flags.packageName || env.MAGCLAW_ENTRY_PACKAGE_NAME || env.MAGCLAW_DAEMON_PACKAGE_NAME);
+  const packageKind = packageKindForPackageName(packageName);
+  const packageBin = String(flags.packageBin || env.MAGCLAW_DAEMON_UPGRADE_PACKAGE_BIN || packageBinForPackageName(packageName)).trim() || packageBinForPackageName(packageName);
   const progressIntervalMs = Math.max(100, Math.min(5000, Number(flags.progressIntervalMs || env.MAGCLAW_DAEMON_UPGRADE_PROGRESS_MS || 500) || 500));
   const readyTimeoutMs = Math.max(5000, Math.min(10 * 60_000, Number(flags.readyTimeoutMs || env.MAGCLAW_DAEMON_UPGRADE_READY_TIMEOUT_MS || 120_000) || 120_000));
   const localOnly = Boolean(flags.localOnly || flags.local || flags.noWaitCloud);
   const assumeReady = Boolean(flags.assumeReady || env.MAGCLAW_DAEMON_UPGRADE_ASSUME_READY === '1');
   const serviceBefore = await readServiceState(profile, env);
-  const previousPackageSpec = serviceBefore.packageSpec || `@magclaw/daemon@${previousVersion}`;
+  const previousPackageSpec = serviceBefore.packageSpec || packageSpecForPackageName(packageName, previousVersion);
   const dryRunPlan = {
     ok: true,
     dryRun: Boolean(flags.dryRun),
@@ -4657,6 +4836,9 @@ async function runUpgradeWorker(flags, env = process.env) {
     previousVersion,
     targetVersion,
     packageSpec,
+    packageName,
+    packageKind,
+    packageBin,
     previousPackageSpec,
     service: serviceBefore,
     localOnly,
@@ -4731,6 +4913,10 @@ async function runUpgradeWorker(flags, env = process.env) {
       mode: serviceBefore.mode || (process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd' : process.platform === 'win32' ? 'schtasks' : 'foreground'),
       background: true,
       packageSpec,
+      packageName,
+      packageVersion: targetVersion === 'latest' ? '' : targetVersion,
+      packageKind,
+      packageBin,
       previousPackageSpec,
       pendingCommandId: commandId,
       pendingTargetVersion: targetVersion,
@@ -4749,19 +4935,19 @@ async function runUpgradeWorker(flags, env = process.env) {
     const complete = progressSocket ? await progressSocket.waitForComplete(readyTimeoutMs) : null;
     if (complete?.status === 'succeeded') {
       await emitProgress({ status: 'succeeded', phase: 'ready', progress: 100, message: 'Daemon upgrade completed.' });
-      await writeServiceState(profile, { installedDaemonVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
+      await writeServiceState(profile, { installedDaemonVersion: targetVersion, installedPackageVersion: targetVersion, packageVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
       return { ok: true, commandId, targetVersion, packageSpec };
     }
     if (localOnly) {
       const ready = await waitForLocalDaemonReady(profile, readyTimeoutMs, env);
       if (!ready.ok) throw new Error(ready.error || 'Timed out waiting for the local daemon to become ready.');
       await emitProgress({ status: 'succeeded', phase: 'ready', progress: 100, message: 'Daemon upgrade completed locally.' });
-      await writeServiceState(profile, { installedDaemonVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
+      await writeServiceState(profile, { installedDaemonVersion: targetVersion, installedPackageVersion: targetVersion, packageVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
       return { ok: true, commandId, targetVersion, packageSpec, localReady: ready };
     }
     if (!progressSocket && assumeReady) {
       await emitProgress({ status: 'succeeded', phase: 'ready', progress: 100, message: 'Daemon upgrade completed locally.' });
-      await writeServiceState(profile, { installedDaemonVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
+      await writeServiceState(profile, { installedDaemonVersion: targetVersion, installedPackageVersion: targetVersion, packageVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
       return { ok: true, commandId, targetVersion, packageSpec, assumedReady: true };
     }
     throw new Error('Timed out waiting for upgraded daemon ready acknowledgement.');
@@ -4774,8 +4960,14 @@ async function runUpgradeWorker(flags, env = process.env) {
     await emitProgress({ status: 'rollback', phase: 'rollback', progress: 82, message: `Rolling back: ${upgradeError}`, error: upgradeError });
     let rollbackError = '';
     try {
+      const previousPackageInfo = packageInfoFromSpec(previousPackageSpec);
+      const rollbackPackageName = normalizeEntryPackageName(previousPackageInfo.name || serviceBefore.packageName || packageName);
       await writeServiceState(profile, {
         packageSpec: previousPackageSpec,
+        packageName: rollbackPackageName,
+        packageVersion: previousPackageInfo.version || serviceBefore.packageVersion || previousVersion,
+        packageKind: packageKindForPackageName(rollbackPackageName),
+        packageBin: serviceBefore.packageBin || packageBinForPackageName(rollbackPackageName),
         previousPackageSpec: packageSpec,
         pendingCommandId: '',
         pendingTargetVersion: '',
@@ -4838,6 +5030,7 @@ async function runComputerSetup(flags, env = process.env) {
   const profile = safeProfileName(flags.profile && flags.profile !== DEFAULT_PROFILE ? flags.profile : serverSlug);
   const owner = await ensureMachineFingerprint(profile, env);
   const displayName = String(flags.displayName || flags.name || os.hostname()).trim();
+  const packageInfo = runtimePackageInfo(env);
   const started = await postSetupJson(serverUrl, '/api/cloud/computer/setup/start', {
     serverSlug,
     machineFingerprint: owner.fingerprint,
@@ -4845,7 +5038,13 @@ async function runComputerSetup(flags, env = process.env) {
     hostname: os.hostname(),
     os: os.platform(),
     arch: os.arch(),
-    daemonVersion: DAEMON_VERSION,
+    daemonVersion: packageInfo.version || DAEMON_VERSION,
+    packageName: packageInfo.name,
+    packageVersion: packageInfo.version,
+    packageKind: packageInfo.kind,
+    packageSpec: packageInfo.spec,
+    packageBin: packageInfo.bin,
+    cliCoreVersion: CLI_CORE_VERSION,
   });
   process.stdout.write(`To finish login, open: ${started.verificationUri}\n`);
   process.stdout.write(`and enter the code:   ${started.userCode}\n`);

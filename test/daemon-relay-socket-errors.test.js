@@ -375,6 +375,79 @@ test('daemon relay requests daemon upgrade and records waiting state', async () 
   assert.ok(cloud.daemonEvents.some((event) => event.type === 'daemon_upgrade_requested'));
 });
 
+test('daemon relay stores computer package identity and upgrades the matching package', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_computer';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+    daemonVersion: '0.1.22',
+    metadata: {},
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+  socket.emit('data', encodeFrame({
+    type: 'ready',
+    daemonVersion: '0.1.22',
+    packageName: '@magclaw/computer',
+    packageVersion: '0.1.22',
+    packageKind: 'computer',
+    packageSpec: '@magclaw/computer@0.1.22',
+    packageBin: 'magclaw-computer',
+    cliCoreVersion: '0.1.22',
+    runtimes: ['codex'],
+    service: {
+      mode: 'launchd',
+      background: true,
+      active: true,
+      packageSpec: '@magclaw/computer@0.1.22',
+      packageName: '@magclaw/computer',
+      packageVersion: '0.1.22',
+      packageKind: 'computer',
+      packageBin: 'magclaw-computer',
+    },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(state.computers[0].connectedVia, 'computer');
+  assert.equal(state.computers[0].packageName, '@magclaw/computer');
+  assert.equal(state.computers[0].packageVersion, '0.1.22');
+  assert.equal(state.computers[0].metadata.package.name, '@magclaw/computer');
+  assert.equal(state.computers[0].metadata.package.bin, 'magclaw-computer');
+
+  const result = await relay.requestDaemonUpgrade('cmp_remote', {
+    targetVersion: '0.1.31',
+    packageName: '@magclaw/computer',
+    requestedBy: 'usr_owner',
+  });
+
+  assert.equal(result.sent, true);
+  assert.equal(state.computers[0].metadata.daemonUpgrade.packageName, '@magclaw/computer');
+  assert.equal(state.computers[0].metadata.daemonUpgrade.packageSpec, '@magclaw/computer@0.1.31');
+  const upgrade = decodeServerMessages(socket).find((message) => message.type === 'daemon:upgrade');
+  assert.equal(upgrade.packageName, '@magclaw/computer');
+  assert.equal(upgrade.packageSpec, '@magclaw/computer@0.1.31');
+  assert.equal(upgrade.packageBin, 'magclaw-computer');
+});
+
 test('daemon relay rejects daemon upgrades when the reported background service is inactive', async () => {
   const { cloud, relay, state } = createRelay();
   const rawToken = 'mc_machine_existing';

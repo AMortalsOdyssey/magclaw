@@ -277,9 +277,8 @@ test('computer daemon upgrade UI only appears when actionable and shows one stat
   assert.match(app, /data-action="confirm-daemon-upgrade"/);
   assert.match(app, /if \(action === 'confirm-daemon-upgrade'\)/);
   assert.match(computerSource, /renderDaemonUpgradePanel\(computer/);
-  assert.match(computerSource, /Daemon Version[\s\S]*\$\{daemonUpgradePanel\}/);
+  assert.match(computerSource, /\$\{escapeHtml\(computerPackageLabel\(computer\)\)\} Version[\s\S]*\$\{daemonUpgradePanel\}/);
   assert.match(app, /'Update manually': '请手动更新'/);
-  assert.match(app, /'Only background daemons can update automatically. For foreground daemons, update manually.': '只有后台运行才允许自动更新，前台运行请手动更新。'/);
   assert.match(upgradeSource, /Waiting for update/);
   assert.match(upgradeSource, /Updating/);
   assert.match(upgradeSource, /Update manually/);
@@ -298,6 +297,25 @@ test('computer daemon upgrade UI only appears when actionable and shows one stat
   assert.match(styles, /\.daemon-upgrade-panel\.blocked/);
   assert.match(styles, /\.daemon-version-value\.upgrade-pending/);
   assert.match(styles, /\.daemon-version-value\.upgrading/);
+});
+
+test('computer upgrade UI is package-aware for daemon and computer entry packages', async () => {
+  const app = await readAppSource();
+  const computerSource = app.slice(app.indexOf('function renderComputerDetail'), app.indexOf('function renderComputerConfigCard()'));
+  const listSource = app.slice(app.indexOf('function renderComputerListItem'), app.indexOf('function renderReply'));
+  const confirmClickStart = app.indexOf("if (action === 'confirm-daemon-upgrade'");
+  const confirmClickSource = app.slice(confirmClickStart, app.indexOf("if (action === 'close-modal'", confirmClickStart));
+
+  assert.match(app, /function computerPackageKind\(/);
+  assert.match(app, /function computerPackageName\(/);
+  assert.match(app, /function computerPackageLatestVersion\(/);
+  assert.match(app, /function computerPackageVersionLabel\(/);
+  assert.match(app, /appState\.runtime\?\.computerLatestVersion/);
+  assert.match(computerSource, /\$\{escapeHtml\(computerPackageLabel\(computer\)\)\} Version/);
+  assert.match(listSource, /computerPackageVersionLabel\(computer\)/);
+  assert.match(confirmClickSource, /packageName: computerPackageName\(computer\)/);
+  assert.match(confirmClickSource, /targetVersion: computerPackageLatestVersion\(computer\)/);
+  assert.match(app, /Queue \$\{escapeHtml\(packageLabel\.toLowerCase\(\)\)\} upgrade/);
 });
 
 test('computers detail page preserves scroll through background renders', async () => {

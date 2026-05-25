@@ -5,7 +5,8 @@ const searchTimeRangeOptions = [
   ['30d', 'Last 30 Days'],
 ];
 
-const MAGCLAW_DAEMON_PACKAGE_VERSION = '0.1.4';
+const MAGCLAW_DAEMON_PACKAGE_VERSION = '0.1.23';
+const MAGCLAW_COMPUTER_PACKAGE_VERSION = '0.1.23';
 const MAGCLAW_WEB_PACKAGE_VERSION = '0.3.8';
 
 function searchTimeRangeLabel() {
@@ -430,8 +431,71 @@ function daemonLatestVersion() {
   );
 }
 
+function computerLatestVersion() {
+  return displayDaemonVersion(
+    appState.runtime?.computerLatestVersion,
+    appState.runtime?.computerPackageVersion,
+    MAGCLAW_COMPUTER_PACKAGE_VERSION,
+  );
+}
+
 function daemonUpdateAvailable(current = '', latest = daemonLatestVersion()) {
   return latest !== '--' && compareDaemonVersions(current, latest) < 0;
+}
+
+function computerPackageMetadata(computer = {}) {
+  const metadata = computer?.metadata && typeof computer.metadata === 'object' ? computer.metadata : {};
+  return metadata.package && typeof metadata.package === 'object' ? metadata.package : {};
+}
+
+function computerPackageKind(computer = {}) {
+  const packageInfo = computerPackageMetadata(computer);
+  const name = String(computer.packageName || packageInfo.name || '').trim();
+  if (name === '@magclaw/computer') return 'computer';
+  if (name === '@magclaw/daemon') return 'daemon';
+  const kind = String(computer.packageKind || packageInfo.kind || computer.connectedVia || '').toLowerCase();
+  return kind === 'computer' ? 'computer' : 'daemon';
+}
+
+function computerPackageName(computer = {}) {
+  return computerPackageKind(computer) === 'computer' ? '@magclaw/computer' : '@magclaw/daemon';
+}
+
+function computerPackageLabel(computer = {}) {
+  return computerPackageKind(computer) === 'computer' ? 'Computer' : 'Daemon';
+}
+
+function computerPackageCurrentVersion(computer = {}) {
+  const packageInfo = computerPackageMetadata(computer);
+  if (computerPackageKind(computer) === 'computer') {
+    return displayDaemonVersion(
+      computer.packageVersion,
+      packageInfo.version,
+      computer.daemonVersion,
+      computer.version,
+      appState.runtime?.computerPackageVersion,
+      MAGCLAW_COMPUTER_PACKAGE_VERSION,
+    );
+  }
+  return displayDaemonVersion(
+    computer.packageVersion,
+    packageInfo.version,
+    computer.daemonVersion,
+    computer.version,
+    appState.runtime?.daemonPackageVersion,
+    MAGCLAW_DAEMON_PACKAGE_VERSION,
+  );
+}
+
+function computerPackageLatestVersion(computer = {}) {
+  return computerPackageKind(computer) === 'computer' ? computerLatestVersion() : daemonLatestVersion();
+}
+
+function computerPackageVersionLabel(computer = {}) {
+  const current = computerPackageCurrentVersion(computer);
+  const prefix = computerPackageKind(computer) === 'computer' ? 'computer' : 'daemon';
+  if (!current || current === '--') return prefix;
+  return `${prefix} v${String(current).replace(/^v/i, '')}`;
 }
 
 function computerDaemonUpgradeState(computer = {}) {
@@ -467,13 +531,14 @@ function computerDaemonServiceReady(computer = {}) {
   return service.background === true && service.active === true;
 }
 
-function daemonUpgradeDisabledMessage(computer = {}, { updateAvailable = false, upgradeBusy = false } = {}) {
+function daemonUpgradeDisabledMessage(computer = {}, { updateAvailable = false, upgradeBusy = false, packageLabel = 'Daemon' } = {}) {
+  const lowerLabel = String(packageLabel || 'Daemon').toLowerCase();
   if (computerIsDisabled(computer)) return 'Computer disabled';
   if (!computerIsConnected(computer)) return 'Computer offline';
-  if (!(cloudCan('upgrade_computers') || cloudCan('manage_computers'))) return 'Only owners and admins can upgrade daemons.';
-  if (upgradeBusy) return 'Daemon upgrade is already in progress.';
+  if (!(cloudCan('upgrade_computers') || cloudCan('manage_computers'))) return `Only owners and admins can upgrade ${lowerLabel}s.`;
+  if (upgradeBusy) return `${packageLabel} upgrade is already in progress.`;
   if (updateAvailable && !computerDaemonServiceReady(computer)) {
-    return 'Only background daemons can update automatically. For foreground daemons, update manually.';
+    return `Only background ${lowerLabel}s can update automatically. For foreground ${lowerLabel}s, update manually.`;
   }
   return '';
 }
@@ -484,7 +549,7 @@ function renderDaemonVersionValue(...values) {
     : {};
   const version = displayDaemonVersion(...values);
   if (version === '--') return '<span class="daemon-version-value missing">--</span>';
-  const latest = daemonLatestVersion();
+  const latest = options.latestVersion || daemonLatestVersion();
   const label = version.startsWith('v') ? version : `v${version}`;
   const updateAvailable = latest !== '--' && compareDaemonVersions(version, latest) < 0;
   const upgrade = options.upgradeState || {};
@@ -512,27 +577,29 @@ function renderDaemonUpgradePanel(computer = {}, options = {}) {
     upgradeLabel = computerUpgradeStatusLabel(computer),
     updateAvailable = daemonUpdateAvailable(currentVersion, latestVersion),
     upgradeBusy = false,
+    packageLabel = 'Daemon',
   } = options;
   const upgradeVisible = Boolean(upgradeState.commandId && upgradeLabel && upgradeLabel !== 'Updated');
   const shouldShowUpgradePanel = updateAvailable || upgradeVisible;
   if (!shouldShowUpgradePanel) return '';
-  const disabledReason = daemonUpgradeDisabledMessage(computer, { updateAvailable, upgradeBusy });
+  const lowerLabel = String(packageLabel || 'Daemon').toLowerCase();
+  const disabledReason = daemonUpgradeDisabledMessage(computer, { updateAvailable, upgradeBusy, packageLabel });
   const blocked = Boolean(disabledReason && updateAvailable && !upgradeBusy);
   const active = Boolean(upgradeBusy);
   const upgrading = ['Updating', 'Restarting'].includes(upgradeLabel);
-  const title = upgradeLabel || 'Daemon update available';
+  const title = upgradeLabel || `${packageLabel} update available`;
   const range = latestVersion !== '--' ? `${currentVersion} -> ${latestVersion}` : currentVersion;
   const message = upgradeState.message
     || (blocked
       ? disabledReason
       : upgradeBusy
-        ? 'Waiting for the daemon to report the next upgrade step.'
-        : `A newer daemon is available (${range}). Upgrade after all Agents become idle.`);
+        ? `Waiting for the ${lowerLabel} to report the next upgrade step.`
+        : `A newer ${lowerLabel} is available (${range}). Upgrade after all Agents become idle.`);
   const buttonText = upgradeBusy
     ? upgradeLabel
     : blocked
       ? 'Update manually'
-      : 'Upgrade daemon';
+      : `Upgrade ${lowerLabel}`;
   const progress = Math.max(0, Math.min(100, Number(upgradeState.progress || 0) || 0));
   return `
     <div class="daemon-upgrade-panel ${active ? 'active' : ''} ${blocked ? 'blocked' : ''} ${updateAvailable && !blocked && !active ? 'available' : ''}" data-upgrade-status="${escapeHtml(upgradeState.status || (updateAvailable ? 'available' : ''))}">
@@ -578,27 +645,23 @@ function renderDaemonUpgradeConfirmModal() {
   const computer = computerUpgradeConfirmTarget();
   if (!computer) return modalHeader('Upgrade Daemon', 'Computer not found');
   const label = computer.name || computer.hostname || 'this computer';
-  const currentVersion = displayDaemonVersion(
-    computer.daemonVersion,
-    computer.version,
-    appState.runtime?.daemonPackageVersion,
-    MAGCLAW_DAEMON_PACKAGE_VERSION,
-  );
-  const latestVersion = daemonLatestVersion();
+  const packageLabel = computerPackageLabel(computer);
+  const currentVersion = computerPackageCurrentVersion(computer);
+  const latestVersion = computerPackageLatestVersion(computer);
   const range = latestVersion !== '--' ? `${currentVersion} -> ${latestVersion}` : currentVersion;
   return `
-    ${modalHeader('Upgrade Daemon', 'Computer')}
+    ${modalHeader(`Upgrade ${packageLabel}`, 'Computer')}
     <div class="confirm-stop-modal daemon-upgrade-confirm-modal">
       <div class="confirm-stop-icon">${settingsIcon('computer')}</div>
       <div class="confirm-stop-copy">
         <strong>Upgrade ${escapeHtml(label)}?</strong>
-        <p>MagClaw will ask the computer daemon to upgrade after all Agents on this computer become idle.</p>
+        <p>MagClaw will ask the computer ${escapeHtml(packageLabel.toLowerCase())} package to upgrade after all Agents on this computer become idle.</p>
         <small>${escapeHtml(range)}</small>
       </div>
     </div>
     <div class="modal-actions confirm-stop-actions">
       <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
-      <button type="button" class="primary-btn" data-action="confirm-daemon-upgrade">Queue daemon upgrade</button>
+      <button type="button" class="primary-btn" data-action="confirm-daemon-upgrade">Queue ${escapeHtml(packageLabel.toLowerCase())} upgrade</button>
     </div>
   `;
 }
@@ -616,20 +679,13 @@ function renderComputerDetail(computer) {
   const upgradeLabel = computerUpgradeStatusLabel(computer);
   const rolledBackLabel = 'Rolled back';
   const upgradeBusy = Boolean(upgradeState.commandId && upgradeLabel && !['Updated', 'Update failed', rolledBackLabel, 'Rollback failed'].includes(upgradeLabel));
-  const currentDaemonVersion = displayDaemonVersion(
-    computer.daemonVersion,
-    computer.version,
-    appState.runtime?.daemonPackageVersion,
-    MAGCLAW_DAEMON_PACKAGE_VERSION,
-  );
-  const latestDaemonVersion = daemonLatestVersion();
+  const currentDaemonVersion = computerPackageCurrentVersion(computer);
+  const latestDaemonVersion = computerPackageLatestVersion(computer);
+  const packageLabel = computerPackageLabel(computer);
   const updateAvailable = daemonUpdateAvailable(currentDaemonVersion, latestDaemonVersion);
   const daemonVersion = renderDaemonVersionValue(
-    computer.daemonVersion,
-    computer.version,
-    appState.runtime?.daemonPackageVersion,
-    MAGCLAW_DAEMON_PACKAGE_VERSION,
-    { upgradeState },
+    currentDaemonVersion,
+    { upgradeState, latestVersion: latestDaemonVersion },
   );
   const daemonUpgradePanel = renderDaemonUpgradePanel(computer, {
     currentVersion: currentDaemonVersion,
@@ -638,6 +694,7 @@ function renderComputerDetail(computer) {
     upgradeLabel,
     updateAvailable,
     upgradeBusy,
+    packageLabel,
   });
   const statusLabel = disabled ? 'disabled' : upgradeLabel || (connected ? 'connected' : 'offline');
   const nameIsEditing = computerNameEditState?.computerId === computer.id;
@@ -679,7 +736,7 @@ function renderComputerDetail(computer) {
         <div class="computer-section-label">Info</div>
         <dl class="computer-info-list">
           <div class="computer-info-row"><dt>OS</dt><dd>${escapeHtml([computer.os, computer.arch].filter(Boolean).join(' ') || '--')}</dd></div>
-          <div class="computer-info-row important"><dt>Daemon Version</dt><dd><div class="daemon-version-stack">${daemonVersion}${daemonUpgradePanel}</div></dd></div>
+          <div class="computer-info-row important"><dt>${escapeHtml(computerPackageLabel(computer))} Version</dt><dd><div class="daemon-version-stack">${daemonVersion}${daemonUpgradePanel}</div></dd></div>
           <div class="computer-info-row runtime-row"><dt>Detected Runtimes</dt><dd><span class="runtime-count">${escapeHtml(installedCount)}</span><div class="detected-runtime-list">${renderComputerRuntimeBadges(computer)}</div></dd></div>
           <div class="computer-info-row"><dt>Created</dt><dd>${escapeHtml(fmtFullDateTime(computer.createdAt))}</dd></div>
         </dl>

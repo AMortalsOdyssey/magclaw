@@ -651,13 +651,9 @@ function renderHumanListItem(human) {
 function renderComputerListItem(computer) {
   const active = selectedComputerId === computer.id ? ' active' : '';
   const name = computer.name || computer.hostname || computer.localHostname || 'Computer';
-  const daemonVersion = typeof displayDaemonVersion === 'function'
-    ? displayDaemonVersion(computer.daemonVersion, computer.version, appState.runtime?.daemonPackageVersion, MAGCLAW_DAEMON_PACKAGE_VERSION)
-    : '';
-  const versionLabel = daemonVersion && daemonVersion !== '--'
-    ? `v${String(daemonVersion).replace(/^v/i, '')}`
-    : '';
-  const meta = [computer.connectedVia || 'daemon', versionLabel].filter(Boolean).join('  ');
+  const meta = typeof computerPackageVersionLabel === 'function'
+    ? computerPackageVersionLabel(computer)
+    : (computer.connectedVia || 'daemon');
   return `
     <button class="space-btn member-btn${active}" type="button" data-action="select-computer" data-id="${escapeHtml(computer.id)}">
       <span class="dm-avatar-wrap">
