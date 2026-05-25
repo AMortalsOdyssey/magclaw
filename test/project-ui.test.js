@@ -174,9 +174,15 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.doesNotMatch(app, /let pairingCommandCopyAcknowledged = false/);
   assert.match(app, /function normalizedPairingCommandKind/);
   assert.match(app, /function resetPairingCommandCopyAcknowledgement/);
+  assert.match(app, /function updatePairingCommandCopyButtons/);
+  assert.match(app, /button\.classList\.toggle\('is-copied', copied\)/);
+  assert.match(app, /icon\.textContent = copied \? '✓' : '⧉'/);
   assert.match(app, /pairingCommandCopyAcknowledgedKind === normalizedKind/);
   assert.match(app, /pairingCommandCopyAcknowledgedKind = commandKind/);
   assert.match(app, /if \(pairingCommandCopyAcknowledgedKind === commandKind\) pairingCommandCopyAcknowledgedKind = ''/);
+  const copyPairingSource = app.slice(app.indexOf("if (action === 'copy-pairing-command')"), app.indexOf("if (action === 'dismiss-app-flash')"));
+  assert.match(copyPairingSource, /updatePairingCommandCopyButtons\(\)/);
+  assert.doesNotMatch(copyPairingSource, /render\(\)/);
   assert.match(app, /connect-option-card\[data-command-kind="connect"\]/);
   assert.match(app, /code\.textContent = pairingCommandDisplayText\(\)/);
   assert.match(app, /data-command-kind="\$\{escapeHtml\(normalizedKind\)\}"/);
@@ -191,6 +197,10 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(styles, /\.connect-options-frame:has\(\.connect-option-card:hover\) \.connect-option-card:not\(:hover\)/);
   assert.match(styles, /filter: grayscale\(0\.55\)/);
   assert.match(styles, /background: rgba\(230, 230, 230, 0\.56\)/);
+  const connectOptionHoverSource = styles.slice(styles.indexOf('.connect-option-card:hover'), styles.indexOf('.connect-options-frame:has(.connect-option-card:hover)'));
+  const connectCopyHoverSource = styles.slice(styles.indexOf('.connect-copy-btn:hover'), styles.indexOf('.connect-copy-btn.is-copied'));
+  assert.doesNotMatch(connectOptionHoverSource, /transform:/);
+  assert.doesNotMatch(connectCopyHoverSource, /transform:/);
   assert.match(modalSource, /computerPairingCommandError \|\| 'Generating command\.\.\.'/);
   assert.match(clickSource, /if \(modal === 'computer'\) renderShellOrModal\(\)/);
   assert.match(clickSource, /if \(modal !== 'computer'\) \{\s*await discardProvisionalPairingComputer\(pairingCommand\);\s*return;\s*\}\s*render\(\);/);

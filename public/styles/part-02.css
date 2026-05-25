@@ -1575,7 +1575,7 @@
   padding: 10px;
   border: 1px solid var(--settings-line, var(--border-faint));
   background: var(--bg-main);
-  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, opacity 160ms ease, filter 160ms ease;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease, opacity 160ms ease, filter 160ms ease;
 }
 
 .connect-option-card::after {
@@ -1591,9 +1591,9 @@
 
 .connect-option-card:hover {
   z-index: 2;
-  transform: translateY(-3px) scale(1.01);
   border-color: var(--border);
-  box-shadow: 5px 5px 0 var(--shadow);
+  background: var(--bg-card);
+  box-shadow: 4px 4px 0 var(--shadow);
 }
 
 .connect-options-frame:has(.connect-option-card:hover) .connect-option-card:not(:hover) {
@@ -1667,7 +1667,7 @@
 }
 
 .connect-copy-btn:hover {
-  transform: translateY(-1px);
+  background: var(--accent-soft);
 }
 
 .connect-copy-btn.is-copied {

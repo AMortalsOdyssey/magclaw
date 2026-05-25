@@ -267,11 +267,11 @@ async function prepareDocumentClick(event) {
       if (copied) {
         pairingCommandCopyAcknowledgedKind = commandKind;
         if (pairingCommandCopyResetTimer) window.clearTimeout(pairingCommandCopyResetTimer);
-        render();
+        updatePairingCommandCopyButtons();
         pairingCommandCopyResetTimer = window.setTimeout(() => {
           if (pairingCommandCopyAcknowledgedKind === commandKind) pairingCommandCopyAcknowledgedKind = '';
           pairingCommandCopyResetTimer = null;
-          render();
+          updatePairingCommandCopyButtons();
         }, 1600);
       }
       toast(copied ? 'Command copied' : 'Copy is unavailable');

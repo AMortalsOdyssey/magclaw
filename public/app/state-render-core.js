@@ -306,6 +306,19 @@ function pairingCommandCopyButtonHtml(extraClass = '', commandKind = 'connect') 
   `;
 }
 
+function updatePairingCommandCopyButtons() {
+  document.querySelectorAll('[data-action="copy-pairing-command"][data-command-kind]').forEach((button) => {
+    const commandKind = normalizedPairingCommandKind(button.dataset.commandKind || 'connect');
+    const copied = pairingCommandCopyAcknowledgedKind === commandKind;
+    const label = copied ? 'Command copied' : 'Copy command';
+    button.classList.toggle('is-copied', copied);
+    button.setAttribute('aria-label', label);
+    button.setAttribute('title', label);
+    const icon = button.querySelector('[aria-hidden="true"]');
+    if (icon) icon.textContent = copied ? '✓' : '⧉';
+  });
+}
+
 function consolePath(tab = consoleTab) {
   if (tab === 'invitations') return '/console/invitations';
   if (tab === 'servers') return '/console/servers';
