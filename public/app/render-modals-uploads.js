@@ -876,7 +876,6 @@ function renderComputerModal() {
         })}
         ${reconnectingExistingComputer ? '' : renderPairingCommandOption({
           title: 'Computer',
-          badge: 'Beta',
           command: computerCommand,
           kind: 'computer',
           className: 'computer-setup-option',

@@ -162,7 +162,7 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(modalSource, /reconnectingExistingComputer/);
   assert.match(modalSource, /Connect Command/);
   assert.match(modalSource, /title: 'Computer'/);
-  assert.match(modalSource, /badge: 'Beta'/);
+  assert.doesNotMatch(modalSource, /badge: 'Beta'/);
   assert.match(modalSource, /latestPairingCommand\?\.computerCommand/);
   assert.match(modalSource, /different machines create their own Computers for this server/);
   assert.match(modalSource, /targets the selected Computer/);
