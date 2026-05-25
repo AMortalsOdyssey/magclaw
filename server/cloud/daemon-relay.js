@@ -3,6 +3,7 @@ import os from 'node:os';
 import { conversationLaneKeyForMessage } from '../conversation-session.js';
 
 const MACHINE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 365;
+const COMPUTER_SETUP_TTL_MS = 1000 * 60 * 10;
 const MAX_DAEMON_EVENT_LOG = 300;
 const SENT_DELIVERY_RETRY_TTL_MS = Math.max(1000, Number(process.env.MAGCLAW_DAEMON_SENT_RETRY_TTL_MS || 1000 * 60 * 2));
 const DAEMON_PING_MS = readMsEnv('MAGCLAW_DAEMON_PING_MS', 30_000, { min: 0, max: 10 * 60_000 });
@@ -228,6 +229,7 @@ export function createDaemonRelay(deps) {
   const pendingSkillRequests = new Map();
   const upgradeProgressConnections = new Map();
   const pendingWorkspaceRequests = new Map();
+  const computerSetupRequests = new Map();
   const pendingRuntimePersists = new Map();
   const lastRuntimeBroadcastAt = new Map();
   const handlers = {
@@ -540,10 +542,47 @@ export function createDaemonRelay(deps) {
     return text.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 80) || fallback;
   }
 
+  function normalizeServerSlug(value = '') {
+    return String(value || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
+  }
+
   function daemonProfileForConnection(workspace, computer = null) {
     const workspacePart = safeDaemonProfilePart(workspace?.slug || workspace?.id || 'local');
     const computerPart = computer?.id ? safeDaemonProfilePart(computer.id, '') : '';
     return computerPart ? `${workspacePart}-${computerPart}`.slice(0, 80) : workspacePart;
+  }
+
+  function daemonProfileForComputerSetup(workspace) {
+    return safeDaemonProfilePart(workspace?.slug || workspace?.id || 'local');
+  }
+
+  function workspaceForSlug(slug = '') {
+    const normalized = normalizeServerSlug(slug).toLowerCase();
+    if (!normalized) return workspaceForRequest(null);
+    return safeArray(cloud().workspaces).find((workspace) => (
+      !workspace.deletedAt
+      && (
+        String(workspace.slug || '').toLowerCase() === normalized
+        || String(workspace.id || '').toLowerCase() === normalized
+      )
+    )) || null;
+  }
+
+  function computerSetupCommand(req, options = {}) {
+    const workspace = options.workspace || workspaceForRequest(req);
+    const publicUrl = publicUrlFromRequest(req);
+    const slug = normalizeServerSlug(workspace?.slug || workspace?.id || 'local') || 'local';
+    const commandMode = String(process.env.MAGCLAW_DAEMON_COMMAND_MODE || 'local-repo').trim().toLowerCase();
+    const useNpmCommand = ['npm', 'npx', 'package', 'cloud', 'remote'].includes(commandMode);
+    const localRepoDir = process.env.MAGCLAW_DAEMON_LOCAL_REPO_PLACEHOLDER || '/path/to/magclaw';
+    const launcher = useNpmCommand
+      ? 'npx @magclaw/computer@latest setup'
+      : `MAGCLAW_REPO_DIR=${shellArg(localRepoDir)}; node "$MAGCLAW_REPO_DIR/computer/bin/magclaw-computer.js" setup`;
+    return [
+      launcher,
+      shellArg(`/${slug}`),
+      `--server-url ${shellArg(publicUrl)}`,
+    ].join(' ');
   }
 
   function connectCommand(credential, req, options = {}) {
@@ -628,6 +667,7 @@ export function createDaemonRelay(deps) {
     });
     const displayName = requestedDisplayName || computerName || computer.name || 'My computer';
     const command = connectCommand(issued.raw, req, { displayName, workspace, computer, credentialFlag: 'api-key' });
+    const setupCommand = computerSetupCommand(req, { workspace });
     return {
       computer,
       provisional,
@@ -645,6 +685,8 @@ export function createDaemonRelay(deps) {
       },
       displayName,
       command,
+      computerCommand: setupCommand,
+      setupCommand,
       wsUrl: `${toWsUrl(publicUrlFromRequest(req))}/daemon/connect?token=${encodeURIComponent(issued.raw)}`,
     };
   }
@@ -703,6 +745,232 @@ export function createDaemonRelay(deps) {
     };
     cloud().computerTokens.push(record);
     return { raw, record };
+  }
+
+  function setupUserCode() {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const bytes = crypto.randomBytes(8);
+      const code = [...bytes].map((byte) => alphabet[byte % alphabet.length]).join('').slice(0, 8).replace(/^(.{4})(.{4})$/, '$1-$2');
+      if (![...computerSetupRequests.values()].some((request) => request.userCode === code && !request.consumedAt)) return code;
+    }
+    return `MC${String(Date.now()).slice(-6)}`;
+  }
+
+  function normalizeMachineFingerprint(value = '') {
+    const fingerprint = String(value || '').trim();
+    return /^mfp_[a-f0-9]{64}$/i.test(fingerprint) ? fingerprint.toLowerCase() : '';
+  }
+
+  function pruneComputerSetupRequests() {
+    const cutoff = nowMs();
+    for (const [key, request] of computerSetupRequests.entries()) {
+      if (Date.parse(request.expiresAt) <= cutoff || request.consumedAt) {
+        computerSetupRequests.delete(key);
+      }
+    }
+  }
+
+  function setupRequestByUserCode(userCode = '') {
+    pruneComputerSetupRequests();
+    const normalized = String(userCode || '').trim().toUpperCase();
+    return [...computerSetupRequests.values()].find((request) => request.userCode === normalized) || null;
+  }
+
+  function setupRequestByDeviceCode(deviceCode = '') {
+    pruneComputerSetupRequests();
+    const hash = cloudAuth.sha256(String(deviceCode || '').trim());
+    return computerSetupRequests.get(hash) || null;
+  }
+
+  function createComputerSetupRequest(body = {}, req) {
+    const serverSlug = normalizeServerSlug(body.serverSlug || body.server || body.slug || body.workspaceSlug);
+    const workspace = workspaceForSlug(serverSlug);
+    if (!workspace) {
+      const error = new Error('Server not found.');
+      error.status = 404;
+      throw error;
+    }
+    const machineFingerprint = normalizeMachineFingerprint(body.machineFingerprint || body.fingerprint);
+    if (!machineFingerprint) {
+      const error = new Error('A valid machine fingerprint is required.');
+      error.status = 400;
+      throw error;
+    }
+    const rawDeviceCode = cloudAuth.token('mc_device');
+    const deviceHash = cloudAuth.sha256(rawDeviceCode);
+    const createdAt = now();
+    const expiresAt = new Date(Date.now() + COMPUTER_SETUP_TTL_MS).toISOString();
+    const displayName = normalizeDisplayName(body.displayName, body.name, body.hostname, 'My computer');
+    const request = {
+      id: makeId('csetup'),
+      workspaceId: workspace.id,
+      serverSlug: workspace.slug || workspace.id,
+      userCode: setupUserCode(),
+      deviceHash,
+      machineFingerprint,
+      displayName,
+      hostname: String(body.hostname || '').trim(),
+      os: String(body.os || body.platform || '').trim(),
+      arch: String(body.arch || '').trim(),
+      daemonVersion: String(body.daemonVersion || '').trim(),
+      status: 'pending',
+      createdAt,
+      expiresAt,
+      approvedAt: null,
+      approvedBy: null,
+      consumedAt: null,
+      computerId: null,
+      machineToken: null,
+      tokenId: null,
+    };
+    computerSetupRequests.set(deviceHash, request);
+    return {
+      ok: true,
+      status: 'pending',
+      deviceCode: rawDeviceCode,
+      userCode: request.userCode,
+      verificationUri: `${publicUrlFromRequest(req).replace(/\/+$/, '')}/login/device?user_code=${encodeURIComponent(request.userCode)}`,
+      expiresAt,
+      intervalMs: 2000,
+      server: {
+        id: workspace.id,
+        slug: workspace.slug || workspace.id,
+        name: workspace.name || workspace.slug || workspace.id,
+      },
+      profile: daemonProfileForComputerSetup(workspace),
+    };
+  }
+
+  function userCanApproveComputerSetup(req, workspaceId) {
+    if (!cloudAuth?.isLoginRequired?.()) return { ok: true, user: null };
+    const user = cloudAuth.currentUser?.(req) || null;
+    if (!user) return { ok: false, status: 401, error: 'Sign in before approving this computer.' };
+    const member = safeArray(cloud().workspaceMembers).find((item) => (
+      item.userId === user.id
+      && item.workspaceId === workspaceId
+      && item.status !== 'removed'
+      && ['admin', 'owner'].includes(String(item.role || '').toLowerCase())
+    ));
+    if (!member) return { ok: false, status: 403, error: 'Only server admins and owners can approve computers.' };
+    return { ok: true, user, member };
+  }
+
+  function findComputerForSetupRequest(request) {
+    return safeArray(state.computers).find((computer) => (
+      computer?.workspaceId === request.workspaceId
+      && !computer.deletedAt
+      && (
+        computer.machineFingerprint === request.machineFingerprint
+        || computer.fingerprint === request.machineFingerprint
+        || computer.metadata?.machineFingerprint === request.machineFingerprint
+      )
+    )) || null;
+  }
+
+  async function approveComputerSetupRequest(userCode = '', req) {
+    const request = setupRequestByUserCode(userCode);
+    if (!request) {
+      const error = new Error('Device login request was not found or expired.');
+      error.status = 404;
+      throw error;
+    }
+    const approval = userCanApproveComputerSetup(req, request.workspaceId);
+    if (!approval.ok) {
+      const error = new Error(approval.error);
+      error.status = approval.status;
+      throw error;
+    }
+    const workspace = safeArray(cloud().workspaces).find((item) => item.id === request.workspaceId) || {};
+    const approvedAt = now();
+    let computer = findComputerForSetupRequest(request);
+    const resumed = Boolean(computer);
+    if (!computer) {
+      computer = {
+        id: makeId('cmp'),
+        workspaceId: request.workspaceId,
+        name: request.displayName || request.hostname || 'My computer',
+        hostname: request.hostname || '',
+        os: request.os || '',
+        arch: request.arch || '',
+        daemonVersion: request.daemonVersion || '',
+        status: 'pairing',
+        runtimeIds: [],
+        capabilities: [],
+        machineFingerprint: request.machineFingerprint,
+        connectedVia: 'daemon',
+        metadata: {
+          machineFingerprint: request.machineFingerprint,
+          computerSetup: true,
+        },
+        createdBy: approval.user?.id || null,
+        createdAt: approvedAt,
+        updatedAt: approvedAt,
+      };
+      state.computers.push(computer);
+      console.info(`[daemon-relay] computer setup created computer=${computer.id} workspace=${request.workspaceId}`);
+    } else {
+      computer.name = computer.name || request.displayName || request.hostname || 'My computer';
+      computer.hostname = computer.hostname || request.hostname || '';
+      computer.os = computer.os || request.os || '';
+      computer.arch = computer.arch || request.arch || '';
+      computer.machineFingerprint = computer.machineFingerprint || request.machineFingerprint;
+      computer.metadata = {
+        ...objectValue(computer.metadata),
+        machineFingerprint: request.machineFingerprint,
+        computerSetup: true,
+      };
+      computer.updatedAt = approvedAt;
+    }
+    const issued = issueMachineToken(computer, {
+      workspaceId: request.workspaceId,
+      label: `computer setup ${workspace.slug || request.serverSlug || computer.name}`,
+      createdAt: approvedAt,
+    });
+    request.status = 'approved';
+    request.approvedAt = approvedAt;
+    request.approvedBy = approval.user?.id || null;
+    request.computerId = computer.id;
+    request.machineToken = issued.raw;
+    request.tokenId = issued.record.id;
+    await persistRuntimeState(request.workspaceId, resumed ? 'computer_setup_resumed' : 'computer_setup_approved');
+    broadcastState();
+    return {
+      ok: true,
+      status: 'approved',
+      resumed,
+      computer,
+      profile: daemonProfileForComputerSetup(workspace),
+      workspaceId: request.workspaceId,
+      serverSlug: workspace.slug || request.serverSlug || '',
+      approvedAt,
+    };
+  }
+
+  function consumeComputerSetupToken(deviceCode = '') {
+    const request = setupRequestByDeviceCode(deviceCode);
+    if (!request) return { ok: false, status: 'expired', error: 'Device login request was not found or expired.' };
+    if (request.status !== 'approved' || !request.machineToken) {
+      return {
+        ok: true,
+        status: 'pending',
+        userCode: request.userCode,
+        expiresAt: request.expiresAt,
+        intervalMs: 2000,
+      };
+    }
+    const workspace = safeArray(cloud().workspaces).find((item) => item.id === request.workspaceId) || {};
+    request.consumedAt = now();
+    computerSetupRequests.delete(request.deviceHash);
+    return {
+      ok: true,
+      status: 'approved',
+      computerId: request.computerId,
+      workspaceId: request.workspaceId,
+      serverSlug: workspace.slug || request.serverSlug || '',
+      profile: daemonProfileForComputerSetup(workspace),
+      machineToken: request.machineToken,
+    };
   }
 
   function send(connection, payload) {
@@ -1184,6 +1452,35 @@ export function createDaemonRelay(deps) {
     tokenRecord.lastUsedAt = now();
   }
 
+  function machineFingerprintConflict(computer, claimedFingerprint = '') {
+    const fingerprint = normalizeMachineFingerprint(claimedFingerprint);
+    if (!computer || !fingerprint) return '';
+    const existing = normalizeMachineFingerprint(
+      computer.machineFingerprint
+      || computer.fingerprint
+      || computer.metadata?.machineFingerprint,
+    );
+    return existing && existing !== fingerprint ? existing : '';
+  }
+
+  function bindComputerMachineFingerprint(computer, claimedFingerprint = '') {
+    const fingerprint = normalizeMachineFingerprint(claimedFingerprint);
+    if (!computer || !fingerprint || machineFingerprintConflict(computer, fingerprint)) return false;
+    const existing = normalizeMachineFingerprint(
+      computer.machineFingerprint
+      || computer.fingerprint
+      || computer.metadata?.machineFingerprint,
+    );
+    if (existing) return false;
+    computer.machineFingerprint = fingerprint;
+    computer.metadata = {
+      ...objectValue(computer.metadata),
+      machineFingerprint: fingerprint,
+    };
+    computer.updatedAt = now();
+    return true;
+  }
+
   async function replayQueued(computerId) {
     if (computerUpgradeBlocksDelivery(findComputer(computerId))) return [];
     const pending = safeArray(cloud().agentDeliveries)
@@ -1483,7 +1780,8 @@ export function createDaemonRelay(deps) {
     }
     computer.hostname = String(message.hostname || computer.hostname || '');
     computer.name = String(message.name || computer.name || computer.hostname || os.hostname());
-    if (message.machineFingerprint) computer.machineFingerprint = String(message.machineFingerprint);
+    const readyMachineFingerprint = normalizeMachineFingerprint(message.machineFingerprint);
+    if (readyMachineFingerprint) computer.machineFingerprint = readyMachineFingerprint;
     computer.os = String(message.os || computer.os || '');
     computer.arch = String(message.arch || computer.arch || '');
     computer.daemonVersion = String(message.daemonVersion || computer.daemonVersion || '');
@@ -1966,6 +2264,11 @@ export function createDaemonRelay(deps) {
   async function authenticateConnection(req, url) {
     const rawPair = String(url.searchParams.get('pair_token') || url.searchParams.get('pairToken') || '').trim();
     const rawToken = String(url.searchParams.get('token') || url.searchParams.get('api_key') || url.searchParams.get('apiKey') || url.searchParams.get('key') || '').trim();
+    const claimedMachineFingerprint = normalizeMachineFingerprint(
+      url.searchParams.get('machine_fingerprint')
+      || url.searchParams.get('machineFingerprint')
+      || '',
+    );
     if (rawPair) {
       const pair = validatePairToken(rawPair);
       if (!pair) return { error: 'Invalid or expired pair token.' };
@@ -1993,6 +2296,10 @@ export function createDaemonRelay(deps) {
         state.computers.push(computer);
       }
       if (computerIsDisabled(computer)) return { error: 'Computer is disabled.' };
+      if (machineFingerprintConflict(computer, claimedMachineFingerprint)) {
+        return { error: 'Computer is already connected from another physical machine.' };
+      }
+      bindComputerMachineFingerprint(computer, claimedMachineFingerprint);
       const issued = issueMachineToken(computer, pair);
       pair.consumedAt = now();
       return {
@@ -2012,6 +2319,10 @@ export function createDaemonRelay(deps) {
       const computer = findComputer(tokenRecord.computerId);
       if (!computer) return { error: 'Computer token is not linked to a computer.' };
       if (computerIsDisabled(computer)) return { error: 'Computer is disabled.' };
+      if (machineFingerprintConflict(computer, claimedMachineFingerprint)) {
+        return { error: 'Computer is already connected from another physical machine.' };
+      }
+      bindComputerMachineFingerprint(computer, claimedMachineFingerprint);
       return {
         computer,
         tokenRecord,
@@ -2317,9 +2628,27 @@ export function createDaemonRelay(deps) {
 
   return {
     agentShouldUseRelay,
+    approveComputerSetupRequest,
     authenticateHttpRequest,
     beginDrain,
+    computerSetupRequestForUserCode: (userCode) => {
+      const request = setupRequestByUserCode(userCode);
+      if (!request) return null;
+      const workspace = safeArray(cloud().workspaces).find((item) => item.id === request.workspaceId) || {};
+      return {
+        id: request.id,
+        status: request.status,
+        workspaceId: request.workspaceId,
+        serverSlug: workspace.slug || request.serverSlug || '',
+        serverName: workspace.name || workspace.slug || request.serverSlug || '',
+        userCode: request.userCode,
+        expiresAt: request.expiresAt,
+        displayName: request.displayName,
+      };
+    },
+    consumeComputerSetupToken,
     createPairingToken,
+    createComputerSetupRequest,
     deliverToAgent,
     disconnectComputer,
     handleUpgrade,

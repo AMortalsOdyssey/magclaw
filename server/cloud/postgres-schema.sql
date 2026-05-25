@@ -275,7 +275,7 @@ CREATE TABLE IF NOT EXISTS cloud_computers (
   arch TEXT NOT NULL DEFAULT '',
   daemon_version TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'offline' CHECK (
-    status IN ('pairing', 'connected', 'offline', 'disabled')
+    status IN ('pairing', 'connected', 'offline', 'disabled', 'upgrade_pending', 'upgrading', 'restarting', 'rollback', 'upgrade_failed')
   ),
   connected_via TEXT NOT NULL DEFAULT 'daemon',
   runtime_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -298,6 +298,13 @@ ALTER TABLE cloud_computers
 
 ALTER TABLE cloud_computers
   ADD COLUMN IF NOT EXISTS machine_fingerprint TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE cloud_computers
+  DROP CONSTRAINT IF EXISTS cloud_computers_status_check;
+
+ALTER TABLE cloud_computers
+  ADD CONSTRAINT cloud_computers_status_check
+  CHECK (status IN ('pairing', 'connected', 'offline', 'disabled', 'upgrade_pending', 'upgrading', 'restarting', 'rollback', 'upgrade_failed'));
 
 CREATE INDEX IF NOT EXISTS cloud_computers_workspace_status_idx
   ON cloud_computers(workspace_id, status);

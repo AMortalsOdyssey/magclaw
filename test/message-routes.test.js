@@ -615,6 +615,51 @@ test('message route group saves messages with the authenticated human id', async
   assert.deepEqual(deps.state.messages[0].savedBy, ['hum_saved']);
 });
 
+test('message route group accepts DM messages to agents waiting for computer upgrade', async () => {
+  const deliveries = [];
+  const remoteAgent = {
+    id: 'agt_codex',
+    workspaceId: 'wsp_upgrade',
+    computerId: 'cmp_upgrade',
+    name: 'Remote Agent',
+    status: 'waiting_for_upgrade',
+  };
+  const deps = routeDeps({
+    deliverMessageToAgent: async (agent, spaceType, spaceId, message) => {
+      deliveries.push({ agent, spaceType, spaceId, message });
+    },
+    findAgent: (id) => (id === remoteAgent.id ? remoteAgent : null),
+    readJson: async () => ({ body: 'Please queue this while the daemon upgrades.' }),
+  });
+  deps.state.connection = { workspaceId: 'wsp_upgrade' };
+  deps.state.dms = [{ id: 'dm_upgrade', workspaceId: 'wsp_upgrade', participantIds: ['hum_local', remoteAgent.id] }];
+  deps.state.computers = [{
+    id: 'cmp_upgrade',
+    workspaceId: 'wsp_upgrade',
+    name: 'Remote Computer',
+    status: 'restarting',
+    connectedVia: 'daemon',
+    metadata: { daemonUpgrade: { commandId: 'dupgrade_test', status: 'restarting' } },
+  }];
+  deps.state.agents = [remoteAgent];
+  const res = makeResponse();
+
+  const handled = await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/spaces/dm/dm_upgrade/messages'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.data.message.spaceId, 'dm_upgrade');
+  assert.equal(res.data.message.body, 'Please queue this while the daemon upgrades.');
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].agent.id, remoteAgent.id);
+  assert.equal(deliveries[0].message.id, res.data.message.id);
+});
+
 test('message route group stores structured selected-text references on messages and replies', async () => {
   const deps = routeDeps();
   deps.state.channels = [{ id: 'chan_all', workspaceId: 'wsp_refs', memberIds: ['hum_local'], humanIds: ['hum_local'], agentIds: [] }];

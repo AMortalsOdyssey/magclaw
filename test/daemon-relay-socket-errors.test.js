@@ -190,6 +190,91 @@ test('daemon relay sends server draining control frame before closing live daemo
   assert.equal(socket.ended, true);
 });
 
+test('daemon relay rejects a live computer token from another physical machine', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_existing';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const firstFingerprint = 'mfp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const secondFingerprint = 'mfp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+    machineFingerprint: firstFingerprint,
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    createdAt: '2026-05-13T00:00:00.000Z',
+  });
+
+  const activeSocket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}&machine_fingerprint=${firstFingerprint}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, activeSocket), true);
+
+  const conflictingSocket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}&machine_fingerprint=${secondFingerprint}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key-2',
+    },
+    socket: {},
+  }, conflictingSocket), true);
+
+  const response = Buffer.concat(conflictingSocket.writes).toString('utf8');
+  assert.match(response, /401 Unauthorized/);
+  assert.match(response, /another physical machine/);
+  assert.equal(activeSocket.ended, undefined);
+});
+
+test('daemon relay rejects an offline computer token from another physical machine', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_existing';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const firstFingerprint = 'mfp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const secondFingerprint = 'mfp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'offline',
+    connectedVia: 'daemon',
+    machineFingerprint: firstFingerprint,
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    createdAt: '2026-05-13T00:00:00.000Z',
+  });
+
+  const conflictingSocket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}&machine_fingerprint=${secondFingerprint}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, conflictingSocket), true);
+
+  const response = Buffer.concat(conflictingSocket.writes).toString('utf8');
+  assert.match(response, /401 Unauthorized/);
+  assert.match(response, /another physical machine/);
+});
+
 test('daemon relay dispatches and records daemon release notice acknowledgements', async () => {
   const { cloud, persistCalls, relay, state } = createRelay();
   const rawToken = 'mc_machine_existing';

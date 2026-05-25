@@ -162,6 +162,8 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     assert.match(sql, /\bstorage_mode\b/);
   assert.match(sql, /component IN \('web', 'daemon'\)/);
   assert.match(sql, /role IN \('member', 'admin', 'owner'\)/);
+  assert.match(sql, /DROP CONSTRAINT IF EXISTS cloud_computers_status_check/);
+  assert.match(sql, /ADD CONSTRAINT cloud_computers_status_check[\s\S]*status IN \('pairing', 'connected', 'offline', 'disabled', 'upgrade_pending', 'upgrading', 'restarting', 'rollback', 'upgrade_failed'\)/);
   assert.match(sql, /status IN \('todo', 'in_progress', 'in_review', 'done', 'closed'\)/);
   assert.match(sql, /WHEN 'owner' THEN 'owner'/);
   assert.match(sql, /third_party_name/);
