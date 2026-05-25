@@ -210,6 +210,36 @@ test('system route group returns bootstrap state with route query options', asyn
   });
 });
 
+test('system route group returns package versions for computers page caching', async () => {
+  let requested = false;
+  const deps = routeDeps({
+    packageVersionSnapshot: async () => {
+      requested = true;
+      return {
+        ok: true,
+        cacheTtlMs: 10 * 60_000,
+        packages: {
+          '@magclaw/daemon': { packageName: '@magclaw/daemon', latest: '0.1.70', source: 'db' },
+          '@magclaw/computer': { packageName: '@magclaw/computer', latest: '0.1.71', source: 'db' },
+        },
+      };
+    },
+  });
+  const res = makeResponse();
+
+  assert.equal(await handleSystemApi(
+    { method: 'GET', on: () => {} },
+    res,
+    new URL('http://local/api/package-versions?serverSlug=team-a'),
+    deps,
+  ), true);
+
+  assert.equal(requested, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.cacheTtlMs, 10 * 60_000);
+  assert.equal(res.data.packages['@magclaw/daemon'].latest, '0.1.70');
+});
+
 test('system settings route updates runtime settings through injected state', async () => {
   const deps = routeDeps({
     readJson: async () => ({

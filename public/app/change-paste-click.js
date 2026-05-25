@@ -483,6 +483,7 @@ document.addEventListener('click', async (event) => {
       localStorage.setItem('railTab', railTab);
       render();
       syncBrowserRouteForActiveView();
+      refreshPackageVersionReminders();
     }
     if (action === 'set-ui-language') {
       if (typeof setMagclawLanguage === 'function') {
@@ -508,6 +509,7 @@ document.addEventListener('click', async (event) => {
       selectedSavedRecordId = null;
       render();
       syncBrowserRouteForActiveView();
+      refreshPackageVersionReminders();
     }
     if (action === 'toggle-server-switcher') {
       serverSwitcherOpen = !serverSwitcherOpen;
@@ -724,6 +726,7 @@ document.addEventListener('click', async (event) => {
       selectedTaskId = null;
       render();
       syncBrowserRouteForActiveView();
+      refreshPackageVersionReminders();
     }
     if (action === 'select-agent') {
       if (!installedRuntimes.length) await loadInstalledRuntimes();
@@ -810,6 +813,7 @@ document.addEventListener('click', async (event) => {
       modal = null;
       render();
       syncBrowserRouteForActiveView();
+      refreshPackageVersionReminders();
     }
     if (action === 'edit-computer-name') {
       clearComputerNameFieldDraft();
@@ -1671,6 +1675,7 @@ document.addEventListener('click', async (event) => {
       localStorage.setItem('railTab', railTab);
       render();
       syncBrowserRouteForActiveView();
+      refreshPackageVersionReminders();
     }
     if (action === 'confirm-revoke-join-link') {
       const joinLinkId = joinLinkRevokeConfirmState?.joinLinkId || '';

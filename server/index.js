@@ -1200,6 +1200,7 @@ const systemServices = createSystemServices({
   now,
   npmPackageVersions,
   persistState,
+  readPackageVersionManifest: (packageName, channel) => cloudRepository?.readPackageVersionManifest?.(packageName, channel),
   publicCloudState: (req) => cloudAuth.publicCloudState(req),
   projectsForSpace,
   runningProcesses,

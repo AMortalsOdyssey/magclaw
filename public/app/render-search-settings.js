@@ -498,6 +498,25 @@ function computerPackageVersionLabel(computer = {}) {
   return `${prefix} v${String(current).replace(/^v/i, '')}`;
 }
 
+function computerPackageUpdateAvailable(computer = {}) {
+  if (!computerIsConnected(computer)) return false;
+  const current = computerPackageCurrentVersion(computer);
+  const latest = computerPackageLatestVersion(computer);
+  return daemonUpdateAvailable(current, latest);
+}
+
+function connectedComputerPackageUpdateCount(computers = appState?.computers || []) {
+  return (computers || []).filter((computer) => computerPackageUpdateAvailable(computer)).length;
+}
+
+function computerPackageUpdateBadge(target = {}, options = {}) {
+  const count = Number(options.count ?? target.count ?? 0) || 0;
+  const visible = count > 0 || (target && target.id && computerPackageUpdateAvailable(target));
+  if (!visible) return '';
+  const label = count > 1 ? `${count} package updates available` : 'Package update available';
+  return `<span class="package-update-badge" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">!</span>`;
+}
+
 function computerDaemonUpgradeState(computer = {}) {
   const metadata = computer?.metadata && typeof computer.metadata === 'object' ? computer.metadata : {};
   const upgrade = metadata.daemonUpgrade && typeof metadata.daemonUpgrade === 'object' ? metadata.daemonUpgrade : {};
@@ -742,7 +761,7 @@ function renderComputerDetail(computer) {
         <div class="computer-section-label">Info</div>
         <dl class="computer-info-list">
           <div class="computer-info-row"><dt>OS</dt><dd>${escapeHtml([computer.os, computer.arch].filter(Boolean).join(' ') || '--')}</dd></div>
-          <div class="computer-info-row important"><dt>${escapeHtml(computerPackageLabel(computer))} Version</dt><dd><div class="daemon-version-stack">${daemonVersion}${daemonUpgradePanel}</div></dd></div>
+          <div class="computer-info-row important"><dt>${escapeHtml(computerPackageLabel(computer))} Version ${computerPackageUpdateBadge(computer)}</dt><dd><div class="daemon-version-stack">${daemonVersion}${daemonUpgradePanel}</div></dd></div>
           <div class="computer-info-row runtime-row"><dt>Detected Runtimes</dt><dd><span class="runtime-count">${escapeHtml(installedCount)}</span><div class="detected-runtime-list">${renderComputerRuntimeBadges(computer)}</div></dd></div>
           <div class="computer-info-row"><dt>Created</dt><dd>${escapeHtml(fmtFullDateTime(computer.createdAt))}</dd></div>
         </dl>

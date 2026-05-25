@@ -112,6 +112,7 @@ function openMobileRoot(nav = 'home') {
   localStorage.setItem('railTab', railTab);
   render();
   syncBrowserRouteForActiveView();
+  refreshPackageVersionReminders();
 }
 
 function mobileNavigateBack() {

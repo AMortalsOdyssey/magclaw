@@ -124,6 +124,9 @@ function renderRail() {
   const saved = savedRecords().length;
   const normalAgents = channelAssignableAgents();
   const serverProfile = currentServerProfile();
+  const packageUpdateCount = typeof connectedComputerPackageUpdateCount === 'function'
+    ? connectedComputerPackageUpdateCount()
+    : 0;
   const railMode = activeView === 'tasks'
     ? 'tasks'
     : activeView === 'console'
@@ -159,15 +162,16 @@ function renderRail() {
   const leftRailHtml = `
     <div class="magclaw-left-rail">
       <div class="server-switcher-anchor">
-        <button class="left-rail-avatar server-switcher-trigger" type="button" data-action="toggle-server-switcher" title="${escapeHtml(serverProfile.name || displayServerSlug(serverProfile.slug) || 'Server')}" aria-label="Switch server">
+        <button class="left-rail-avatar server-switcher-trigger${packageUpdateCount ? ' has-package-update' : ''}" type="button" data-action="toggle-server-switcher" title="${escapeHtml(serverProfile.name || displayServerSlug(serverProfile.slug) || 'Server')}" aria-label="Switch server">
           ${renderServerAvatar(serverProfile, 'left-rail-server-avatar')}
+          ${typeof computerPackageUpdateBadge === 'function' ? computerPackageUpdateBadge({ count: packageUpdateCount }) : ''}
         </button>
         ${renderServerSwitcherMenu()}
       </div>
       ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', chatUnreadCount || inbox.unreadCount || '')}
       ${renderLeftRailButton('tasks', railMode, 'Tasks', '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>')}
       ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>')}
-      ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>')}
+      ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>', packageUpdateCount ? '!' : '')}
       <span class="left-rail-spacer"></span>
       ${renderLeftRailButton('console', railMode, 'Console', '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 8h8"/><path d="M8 12h4"/><path d="M14 12h2"/><path d="M8 16h8"/>', sessionSummaryLlmIssueNotifications().length ? '!' : '')}
       ${renderAccountRailButton(railMode)}
@@ -349,9 +353,12 @@ function renderComputersRail() {
     ? sortComputersByAvailability(appState.computers || [])
     : (appState.computers || []);
   const canManageComputers = cloudCan('manage_computers');
+  const updateCount = typeof connectedComputerPackageUpdateCount === 'function'
+    ? connectedComputerPackageUpdateCount(computers)
+    : 0;
   return `
     <div class="rail-section" data-rail-scroll-section="computers" data-scroll-key="rail:computers:computers">
-      ${renderRailSectionTitle('computers', 'Computers', computers.length, { modal: canManageComputers ? 'computer' : '' })}
+      ${renderRailSectionTitle('computers', 'Computers', computers.length, { modal: canManageComputers ? 'computer' : '', badge: typeof computerPackageUpdateBadge === 'function' ? computerPackageUpdateBadge({ count: updateCount }) : '' })}
       ${collapsedSidebarSections.computers ? '' : computers.map((computer) => renderComputerListItem(computer)).join('')}
     </div>
   `;
@@ -423,7 +430,7 @@ function renderRailUnreadBadge(count, label = 'unread messages') {
   return `<span class="rail-unread-badge" aria-label="${escapeHtml(`${text} ${label}`)}">${escapeHtml(text)}</span>`;
 }
 
-function renderRailSectionTitle(section, label, count, { modal = '' } = {}) {
+function renderRailSectionTitle(section, label, count, { modal = '', badge = '' } = {}) {
   const collapsed = Boolean(collapsedSidebarSections[section]);
   const countLabel = count === undefined || count === null ? '' : `<em>${escapeHtml(count)}</em>`;
   return `
@@ -431,7 +438,7 @@ function renderRailSectionTitle(section, label, count, { modal = '' } = {}) {
       <button class="rail-collapse-btn" type="button" data-action="toggle-sidebar-section" data-section="${escapeHtml(section)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(label)}">
         <span aria-hidden="true">${collapsed ? '›' : '⌄'}</span>
       </button>
-      <span>${escapeHtml(label)} ${countLabel}</span>
+      <span>${escapeHtml(label)}${badge} ${countLabel}</span>
       ${modal ? `<button class="rail-add-btn" type="button" data-action="open-modal" data-modal="${escapeHtml(modal)}">+</button>` : '<span class="rail-title-spacer"></span>'}
     </div>
   `;

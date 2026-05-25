@@ -323,6 +323,39 @@ test('computer upgrade UI is package-aware for daemon and computer entry package
   assert.match(app, /Queue \$\{escapeHtml\(packageLabel\.toLowerCase\(\)\)\} upgrade/);
 });
 
+test('left rail navigation refreshes shared package versions and renders update reminders', async () => {
+  const app = await readAppSource();
+  const refreshStateSource = app.slice(app.indexOf('async function refreshState()'), app.indexOf('function cloudAuthErrorMessage'));
+  const packageCacheSource = app.slice(app.indexOf('let packageVersionRefreshInFlight'), app.indexOf('async function refreshState()'));
+  const railSource = app.slice(app.indexOf('function renderRail()'), app.indexOf('function accountRailInitial'));
+  const computerRailSource = app.slice(app.indexOf('function renderComputersRail()'), app.indexOf('function renderSettingsRail()'));
+  const computerSource = app.slice(app.indexOf('function renderComputerDetail'), app.indexOf('function renderComputerConfigCard()'));
+  const computerListSource = app.slice(app.indexOf('function renderComputerListItem'), app.indexOf('function cloudMemberForHuman'));
+  const navSource = app.slice(app.indexOf("if (action === 'set-left-nav'"), app.indexOf("if (action === 'select-agent'"));
+  const selectComputerSource = app.slice(app.indexOf("if (action === 'select-computer'"), app.indexOf("if (action === 'edit-computer-name'"));
+
+  assert.match(app, /const PACKAGE_VERSION_CACHE_KEY = 'magclawPackageVersions:v1'/);
+  assert.match(app, /const PACKAGE_VERSION_CACHE_TTL_MS = 10 \* 60_000/);
+  assert.match(app, /function readCachedPackageVersionSnapshot\(/);
+  assert.match(app, /function applyPackageVersionSnapshot\(/);
+  assert.match(app, /async function ensurePackageVersionsForCurrentServer/);
+  assert.match(app, /function connectedComputerPackageUpdateCount\(/);
+  assert.match(app, /function computerPackageUpdateBadge\(/);
+  assert.match(app, /function refreshPackageVersionReminders\(/);
+  assert.match(app, /api\('\/api\/package-versions'\)/);
+  assert.doesNotMatch(packageCacheSource, /serverSlug/);
+  assert.doesNotMatch(packageCacheSource, /activeView === 'computers'/);
+  assert.match(refreshStateSource, /await ensurePackageVersionsForCurrentServer\(\{ renderAfter: false \}\)/);
+  assert.match(navSource, /refreshPackageVersionReminders\(\)/);
+  assert.match(selectComputerSource, /refreshPackageVersionReminders\(\)/);
+  assert.match(railSource, /const packageUpdateCount = typeof connectedComputerPackageUpdateCount === 'function'[\s\S]*?connectedComputerPackageUpdateCount\(\)/);
+  assert.match(railSource, /server-switcher-trigger[^`]+has-package-update/);
+  assert.match(railSource, /renderLeftRailButton\('desktop'[\s\S]*packageUpdateCount \? '!' : ''/);
+  assert.match(computerRailSource, /computerPackageUpdateBadge\(\{ count: updateCount/);
+  assert.match(computerListSource, /computerPackageUpdateBadge\(computer/);
+  assert.match(computerSource, /computerPackageUpdateBadge\(computer/);
+});
+
 test('computers detail page preserves scroll through background renders', async () => {
   const app = await readAppSource();
   const computersSource = app.slice(app.indexOf('function renderComputers()'), app.indexOf('function fmtFullDateTime'));

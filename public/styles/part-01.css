@@ -206,6 +206,29 @@ button {
   font-style: normal;
 }
 
+.package-update-badge {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  place-items: center;
+  border: 2px solid var(--border);
+  background: var(--magclaw-rail-badge);
+  color: var(--magclaw-rail-badge-text);
+  box-shadow: var(--shadow-pixel-sm);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.left-rail-avatar .package-update-badge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  margin-left: 0;
+}
+
 .account-rail-button {
   overflow: visible;
 }

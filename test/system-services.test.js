@@ -237,6 +237,60 @@ test('runtime snapshot prefers DB package manifest before NPM latest fallback', 
   assert.equal(runtime.computerLatestVersion, '0.1.41');
 });
 
+test('package version snapshot reads DB once per 10 minute web cache window', async () => {
+  let nowMs = 1_000;
+  const calls = [];
+  const services = makeServices(null, {
+    nowMs: () => nowMs,
+    readPackageVersionManifest: async (packageName) => {
+      calls.push(packageName);
+      return { packageName, latest: packageName.endsWith('/daemon') ? '0.1.50' : '0.1.51', source: 'db' };
+    },
+    npmPackageVersions: {
+      latest: () => '',
+      refreshAll: () => {},
+    },
+  });
+
+  const first = await services.packageVersionSnapshot();
+  const second = await services.packageVersionSnapshot({ serverSlug: 'other-server' });
+  nowMs += 9 * 60_000;
+  const third = await services.packageVersionSnapshot();
+  nowMs += 60_000;
+  const fourth = await services.packageVersionSnapshot();
+
+  assert.equal(first.packages['@magclaw/daemon'].latest, '0.1.50');
+  assert.equal(second.packages['@magclaw/computer'].latest, '0.1.51');
+  assert.equal(third.cacheTtlMs, 10 * 60_000);
+  assert.deepEqual(calls, [
+    '@magclaw/daemon',
+    '@magclaw/computer',
+    '@magclaw/daemon',
+    '@magclaw/computer',
+  ]);
+  assert.equal(fourth.packages['@magclaw/daemon'].source, 'db');
+});
+
+test('package version snapshot falls back without PostgreSQL manifest access', async () => {
+  const services = makeServices((state) => {
+    state.packageVersions = {
+      '@magclaw/daemon': { latest: '0.1.60', source: 'state' },
+    };
+  }, {
+    npmPackageVersions: {
+      latest: (packageName, fallback = '') => (packageName === '@magclaw/computer' ? '0.1.61' : fallback),
+      refreshAll: () => {},
+    },
+  });
+
+  const snapshot = await services.packageVersionSnapshot();
+
+  assert.equal(snapshot.packages['@magclaw/daemon'].latest, '0.1.60');
+  assert.equal(snapshot.packages['@magclaw/daemon'].source, 'state');
+  assert.equal(snapshot.packages['@magclaw/computer'].latest, '0.1.61');
+  assert.equal(snapshot.packages['@magclaw/computer'].source, 'npm-cache');
+});
+
 test('public state includes minimal identities for visible external human mentions', () => {
   const services = makeServices((state) => {
     state.humans = [

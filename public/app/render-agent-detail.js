@@ -660,7 +660,7 @@ function renderComputerListItem(computer) {
         ${typeof renderComputerIcon === 'function' ? renderComputerIcon(computer, 16) : `<span class="dm-avatar">${settingsIcon('computer', 16)}</span>`}
       </span>
       <div class="member-info">
-        <span class="dm-name">${escapeHtml(name)}</span>
+        <span class="dm-name">${escapeHtml(name)}${typeof computerPackageUpdateBadge === 'function' ? computerPackageUpdateBadge(computer) : ''}</span>
         ${meta ? `<small class="computer-row-meta">${escapeHtml(meta)}</small>` : ''}
       </div>
       <span class="member-status-side">${avatarStatusDot(computer.status, 'Computer status')}</span>

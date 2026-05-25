@@ -143,6 +143,7 @@ export async function handleSystemApi(req, res, url, deps) {
     isDraining,
     persistState,
     presenceHeartbeat,
+    packageVersionSnapshot,
     publicBootstrapState,
     publicState,
     readJson,
@@ -275,6 +276,14 @@ export async function handleSystemApi(req, res, url, deps) {
     if (hydration) req.magclawBootstrapHydration = hydration;
     const bootstrapOptions = hydration ? { ...options, hydration } : options;
     sendJson(res, 200, (publicBootstrapState || publicState)(req, bootstrapOptions));
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/package-versions') {
+    const snapshot = typeof packageVersionSnapshot === 'function'
+      ? await packageVersionSnapshot({ force: url.searchParams.get('refresh') === '1' })
+      : { ok: true, cacheTtlMs: 0, packages: {} };
+    sendJson(res, 200, snapshot);
     return true;
   }
 

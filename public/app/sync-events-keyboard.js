@@ -8,6 +8,93 @@ function bootstrapStatePath() {
   return `/api/bootstrap?${params.toString()}`;
 }
 
+let packageVersionRefreshInFlight = null;
+
+function packageVersionSnapshotIsFresh(snapshot) {
+  const fetchedAtMs = Number(snapshot?.fetchedAtMs || 0);
+  if (!fetchedAtMs) return false;
+  return Date.now() - fetchedAtMs < PACKAGE_VERSION_CACHE_TTL_MS;
+}
+
+function readCachedPackageVersionSnapshot() {
+  try {
+    const raw = localStorage.getItem(PACKAGE_VERSION_CACHE_KEY);
+    if (!raw) return null;
+    const snapshot = JSON.parse(raw);
+    return packageVersionSnapshotIsFresh(snapshot) ? snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedPackageVersionSnapshot(snapshot) {
+  if (!snapshot?.packages) return;
+  try {
+    localStorage.setItem(PACKAGE_VERSION_CACHE_KEY, JSON.stringify({
+      ...snapshot,
+      fetchedAtMs: Date.now(),
+      cacheTtlMs: PACKAGE_VERSION_CACHE_TTL_MS,
+    }));
+  } catch {
+    // Browser storage can be unavailable in private or embedded contexts.
+  }
+}
+
+function packageLatestFromSnapshot(snapshot, packageName) {
+  const record = snapshot?.packages?.[packageName];
+  return String(record?.latest || record?.version || '').trim();
+}
+
+function applyPackageVersionSnapshot(snapshot, { persist = false } = {}) {
+  if (!appState || !snapshot?.packages) return false;
+  const daemonLatest = packageLatestFromSnapshot(snapshot, '@magclaw/daemon');
+  const computerLatest = packageLatestFromSnapshot(snapshot, '@magclaw/computer');
+  if (!daemonLatest && !computerLatest) return false;
+  const runtime = { ...(appState.runtime || {}) };
+  let changed = false;
+  if (daemonLatest && runtime.daemonLatestVersion !== daemonLatest) {
+    runtime.daemonLatestVersion = daemonLatest;
+    changed = true;
+  }
+  if (computerLatest && runtime.computerLatestVersion !== computerLatest) {
+    runtime.computerLatestVersion = computerLatest;
+    changed = true;
+  }
+  if (changed) appState = { ...appState, runtime };
+  if (persist) writeCachedPackageVersionSnapshot(snapshot);
+  return changed;
+}
+
+async function ensurePackageVersionsForCurrentServer({ renderAfter = true } = {}) {
+  const cached = readCachedPackageVersionSnapshot();
+  if (cached) {
+    const changed = applyPackageVersionSnapshot(cached);
+    if (changed && renderAfter) render();
+    return changed;
+  }
+  if (packageVersionRefreshInFlight) return packageVersionRefreshInFlight;
+  packageVersionRefreshInFlight = (async () => {
+    const snapshot = await api('/api/package-versions');
+    const changed = applyPackageVersionSnapshot(snapshot, { persist: true });
+    if (changed && renderAfter) render();
+    return changed;
+  })().catch((error) => {
+    console.warn('Failed to load package versions:', error);
+    return false;
+  }).finally(() => {
+    packageVersionRefreshInFlight = null;
+  });
+  return packageVersionRefreshInFlight;
+}
+
+async function ensureComputerPackageVersionsForComputersPage(options = {}) {
+  return ensurePackageVersionsForCurrentServer(options);
+}
+
+function refreshPackageVersionReminders() {
+  ensurePackageVersionsForCurrentServer().catch((error) => console.warn('Failed to load package versions:', error));
+}
+
 async function refreshState() {
   rememberPinnedBottomBeforeStateChange();
   const nextState = await api(bootstrapStatePath());
@@ -37,6 +124,7 @@ async function refreshState() {
   if (!installedRuntimes.length && (selectedAgentId || activeView === 'members' || activeView === 'computers')) {
     await loadInstalledRuntimes().catch(() => {});
   }
+  await ensurePackageVersionsForCurrentServer({ renderAfter: false });
   render();
 }
 
@@ -893,6 +981,7 @@ function applyStateUpdate(nextState) {
   const computerDetailBefore = computerDetailRenderSignature(appState);
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
+  applyPackageVersionSnapshot(readCachedPackageVersionSnapshot());
   if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   startHumanPresenceHeartbeat();
   if (modal) {

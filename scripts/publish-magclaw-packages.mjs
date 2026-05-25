@@ -24,6 +24,8 @@ const DEFAULT_PACKAGE_DIRS = Object.freeze([
   ['@magclaw/daemon', 'daemon'],
   ['@magclaw/computer', 'computer'],
 ]);
+const CLI_CORE_PACKAGE_NAME = '@magclaw/cli-core';
+const CLI_CORE_DEPENDENT_PACKAGE_NAMES = Object.freeze(['@magclaw/daemon', '@magclaw/computer']);
 
 function cleanText(value) {
   return String(value || '').trim();
@@ -217,6 +219,9 @@ export async function runPackagePublishRelease(options = {}) {
 export async function collectReleasePackages(options = {}) {
   const root = options.root || process.cwd();
   const selected = new Set(safeArray(options.packageNames).map(cleanText).filter(Boolean));
+  if (selected.has(CLI_CORE_PACKAGE_NAME)) {
+    for (const name of CLI_CORE_DEPENDENT_PACKAGE_NAMES) selected.add(name);
+  }
   const packages = [];
   for (const [expectedName, dirName] of DEFAULT_PACKAGE_DIRS) {
     if (selected.size && !selected.has(expectedName)) continue;
@@ -225,7 +230,7 @@ export async function collectReleasePackages(options = {}) {
     if (pkg.name !== expectedName) {
       throw new Error(`Package ${dirName} is ${pkg.name || 'unnamed'}, expected ${expectedName}.`);
     }
-    packages.push({ name: pkg.name, version: cleanText(pkg.version), dir });
+    packages.push({ name: pkg.name, version: cleanText(pkg.version), dir, manifest: pkg });
   }
   if (selected.size) {
     const known = new Set(MAGCLAW_RELEASE_PACKAGE_NAMES);
@@ -233,7 +238,27 @@ export async function collectReleasePackages(options = {}) {
       if (!known.has(name)) throw new Error(`Unsupported package: ${name}`);
     }
   }
+  validateCliCoreReleaseSet(packages);
   return packages;
+}
+
+function validateCliCoreReleaseSet(packages) {
+  const byName = new Map(packages.map((pkg) => [pkg.name, pkg]));
+  const cliCore = byName.get(CLI_CORE_PACKAGE_NAME);
+  if (!cliCore) return;
+  for (const dependentName of CLI_CORE_DEPENDENT_PACKAGE_NAMES) {
+    const dependent = byName.get(dependentName);
+    if (!dependent) {
+      throw new Error(`${dependentName} must be released with ${CLI_CORE_PACKAGE_NAME}.`);
+    }
+    if (dependent.version !== cliCore.version) {
+      throw new Error(`${dependentName} version ${dependent.version} must match ${CLI_CORE_PACKAGE_NAME} ${cliCore.version}.`);
+    }
+    const dependencyVersion = cleanText(dependent.manifest?.dependencies?.[CLI_CORE_PACKAGE_NAME]);
+    if (dependencyVersion !== cliCore.version) {
+      throw new Error(`${dependentName} depends on ${CLI_CORE_PACKAGE_NAME}@${dependencyVersion || 'missing'}, expected ${cliCore.version}.`);
+    }
+  }
 }
 
 export function parsePublishArgs(argv = []) {

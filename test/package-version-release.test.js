@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import os from 'node:os';
 import { runPackagePublishRelease } from '../scripts/publish-magclaw-packages.mjs';
+import { collectReleasePackages } from '../scripts/publish-magclaw-packages.mjs';
 import { createPackageVersionManifestStore } from '../server/package-version-manifest.js';
 
 const releasePackages = [
@@ -8,6 +12,39 @@ const releasePackages = [
   { name: '@magclaw/daemon', version: '0.1.40', dir: '/repo/daemon' },
   { name: '@magclaw/computer', version: '0.1.40', dir: '/repo/computer' },
 ];
+
+async function writePackage(root, dir, pkg) {
+  const packageDir = join(root, dir);
+  await mkdir(packageDir, { recursive: true });
+  await writeFile(join(packageDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+}
+
+test('collect release packages expands cli-core to daemon and computer and enforces matching versions', async () => {
+  const root = await mkdtemp(join(os.tmpdir(), 'magclaw-release-packages-'));
+  await writePackage(root, 'cli-core', { name: '@magclaw/cli-core', version: '0.1.80' });
+  await writePackage(root, 'daemon', { name: '@magclaw/daemon', version: '0.1.80', dependencies: { '@magclaw/cli-core': '0.1.80' } });
+  await writePackage(root, 'computer', { name: '@magclaw/computer', version: '0.1.80', dependencies: { '@magclaw/cli-core': '0.1.80' } });
+
+  const packages = await collectReleasePackages({ root, packageNames: ['@magclaw/cli-core'] });
+
+  assert.deepEqual(packages.map((pkg) => pkg.name), [
+    '@magclaw/cli-core',
+    '@magclaw/daemon',
+    '@magclaw/computer',
+  ]);
+});
+
+test('collect release packages rejects cli-core releases when dependents were not bumped', async () => {
+  const root = await mkdtemp(join(os.tmpdir(), 'magclaw-release-packages-'));
+  await writePackage(root, 'cli-core', { name: '@magclaw/cli-core', version: '0.1.81' });
+  await writePackage(root, 'daemon', { name: '@magclaw/daemon', version: '0.1.80', dependencies: { '@magclaw/cli-core': '0.1.81' } });
+  await writePackage(root, 'computer', { name: '@magclaw/computer', version: '0.1.81', dependencies: { '@magclaw/cli-core': '0.1.81' } });
+
+  await assert.rejects(
+    () => collectReleasePackages({ root, packageNames: ['@magclaw/cli-core'] }),
+    /@magclaw\/daemon version 0\.1\.80 must match @magclaw\/cli-core 0\.1\.81/,
+  );
+});
 
 test('package release runner marks DB pending, publishes, verifies npm, then finalizes DB atomically', async () => {
   const calls = [];

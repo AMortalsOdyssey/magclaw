@@ -11,6 +11,9 @@ import { normalizeCloudUrl, normalizeFanoutApiConfig, publicApiKeyPreview } from
 // System/runtime and local-project services.
 // HTTP route modules use this for public state shaping, installed-runtime
 // detection, the native folder picker, and project folder registration.
+const RUNTIME_PACKAGE_NAMES = Object.freeze(['@magclaw/daemon', '@magclaw/computer']);
+const DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS = 10 * 60_000;
+
 export function createSystemServices(deps) {
   const {
     addSystemEvent,
@@ -20,10 +23,13 @@ export function createSystemServices(deps) {
     httpError,
     makeId,
     now,
+    nowMs = () => Date.now(),
     npmPackageVersions = createNpmPackageVersionResolver(),
+    packageVersionCacheTtlMs = DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS,
     persistState,
     publicCloudState,
     projectsForSpace,
+    readPackageVersionManifest,
     runningProcesses,
     selectedDefaultSpaceId,
     DATA_DIR,
@@ -35,6 +41,9 @@ export function createSystemServices(deps) {
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
   let npmVersionRefreshInFlight = false;
+  let packageVersionSnapshotCache = null;
+  let packageVersionSnapshotInflight = null;
+  const packageVersionSnapshotTtlMs = Math.max(1000, Number(packageVersionCacheTtlMs) || DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS);
 
   function records(value) {
     return Array.isArray(value) ? value.filter(Boolean) : [];
@@ -458,6 +467,128 @@ export function createSystemServices(deps) {
       computerPackageVersion,
       computerLatestVersion: latestComputerPackageVersion(computerPackageVersion),
     };
+  }
+
+  function packageVersionRecordFromState(packageName) {
+    const manifest = state?.packageVersions;
+    const record = manifest && typeof manifest === 'object' ? manifest[packageName] : null;
+    if (!record) return null;
+    if (typeof record === 'string') {
+      const latest = String(record || '').trim();
+      return latest ? { packageName, latest, version: latest, source: 'state' } : null;
+    }
+    const latest = String(record.latest || record.version || '').trim();
+    if (!latest) return null;
+    return {
+      packageName,
+      latest,
+      version: latest,
+      source: record.source || 'state',
+      updatedAt: record.updatedAt || record.updated_at || '',
+    };
+  }
+
+  function localPackageVersionForName(packageName) {
+    if (packageName === '@magclaw/daemon') return localDaemonPackageVersion();
+    if (packageName === '@magclaw/computer') return localComputerPackageVersion();
+    return '';
+  }
+
+  function normalizePackageVersionRecord(packageName, record, source = 'db') {
+    const latest = String(
+      (typeof record === 'string' ? record : record?.latest || record?.version)
+      || '',
+    ).trim();
+    if (!latest) return null;
+    return {
+      packageName,
+      latest,
+      version: latest,
+      source: (typeof record === 'object' && record?.source) || source,
+      updatedAt: (typeof record === 'object' && (record.updatedAt || record.updated_at)) || '',
+    };
+  }
+
+  async function refreshFallbackPackageVersionCache() {
+    const refresh = npmPackageVersions?.maybeRefreshAll || npmPackageVersions?.refreshAll;
+    if (!refresh) return;
+    await Promise.resolve(refresh.call(npmPackageVersions)).catch(() => {});
+  }
+
+  async function readDbPackageVersionRecords() {
+    if (typeof readPackageVersionManifest !== 'function') return {};
+    const entries = await Promise.all(RUNTIME_PACKAGE_NAMES.map(async (packageName) => {
+      try {
+        const record = await readPackageVersionManifest(packageName, 'latest');
+        return [packageName, normalizePackageVersionRecord(packageName, record, 'db')];
+      } catch (error) {
+        console.warn(`[package-versions] DB manifest read failed package=${packageName} message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
+        return [packageName, null];
+      }
+    }));
+    return Object.fromEntries(entries.filter(([, record]) => record));
+  }
+
+  async function buildPackageVersionSnapshot() {
+    const checkedAtMs = Number(nowMs()) || Date.now();
+    const packages = await readDbPackageVersionRecords();
+    const missingAfterDb = RUNTIME_PACKAGE_NAMES.filter((packageName) => !packages[packageName]);
+
+    for (const packageName of missingAfterDb) {
+      const stateRecord = packageVersionRecordFromState(packageName);
+      if (stateRecord) packages[packageName] = stateRecord;
+    }
+
+    const missingAfterState = RUNTIME_PACKAGE_NAMES.filter((packageName) => !packages[packageName]);
+    if (missingAfterState.length) await refreshFallbackPackageVersionCache();
+
+    for (const packageName of missingAfterState) {
+      const npmLatest = String(npmPackageVersions?.latest?.(packageName, '') || '').trim();
+      if (npmLatest) {
+        packages[packageName] = {
+          packageName,
+          latest: npmLatest,
+          version: npmLatest,
+          source: 'npm-cache',
+        };
+        continue;
+      }
+      const localVersion = localPackageVersionForName(packageName);
+      packages[packageName] = {
+        packageName,
+        latest: localVersion,
+        version: localVersion,
+        source: 'local',
+      };
+    }
+
+    return {
+      ok: true,
+      cacheTtlMs: packageVersionSnapshotTtlMs,
+      checkedAt: new Date(checkedAtMs).toISOString(),
+      packages,
+    };
+  }
+
+  async function packageVersionSnapshot(options = {}) {
+    const checkedAtMs = Number(nowMs()) || Date.now();
+    if (
+      !options.force
+      && packageVersionSnapshotCache
+      && checkedAtMs - packageVersionSnapshotCache.checkedAtMs < packageVersionSnapshotTtlMs
+    ) {
+      return packageVersionSnapshotCache.snapshot;
+    }
+    if (packageVersionSnapshotInflight) return packageVersionSnapshotInflight;
+    packageVersionSnapshotInflight = buildPackageVersionSnapshot()
+      .then((snapshot) => {
+        packageVersionSnapshotCache = { checkedAtMs, snapshot };
+        return snapshot;
+      })
+      .finally(() => {
+        packageVersionSnapshotInflight = null;
+      });
+    return packageVersionSnapshotInflight;
   }
 
   function publicReleaseNotes() {
@@ -919,6 +1050,7 @@ export function createSystemServices(deps) {
     execText,
     getRuntimeInfo,
     pickFolderPath,
+    packageVersionSnapshot,
     publicConnection,
     publicSettings,
     publicBootstrapState,
