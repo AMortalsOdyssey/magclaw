@@ -263,6 +263,8 @@ test('computer daemon upgrade UI only appears when actionable and shows one stat
 
   assert.match(app, /function computerDaemonUpgradeState\(/);
   assert.match(app, /function computerUpgradeStatusLabel\(/);
+  assert.match(app, /function activeComputerUpgradeStatusLabel\(/);
+  assert.match(app, /if \(upgradeLabel === 'Updated' && updateAvailable\) return ''/);
   assert.match(app, /function computerDaemonServiceReady\(/);
   assert.match(app, /function daemonUpdateAvailable\(/);
   assert.match(app, /function renderDaemonUpgradePanel\(/);
@@ -270,6 +272,7 @@ test('computer daemon upgrade UI only appears when actionable and shows one stat
   assert.match(app, /service\.background === true/);
   assert.match(app, /service\.active === true/);
   assert.match(app, /const shouldShowUpgradePanel = updateAvailable \|\| upgradeVisible/);
+  assert.match(upgradeSource, /const activeUpgradeLabel = activeComputerUpgradeStatusLabel\(upgradeLabel, updateAvailable\)/);
   assert.match(app, /data-action="upgrade-computer-daemon"/);
   assert.match(app, /let daemonUpgradeConfirmState = \{ computerId: null \}/);
   assert.match(app, /'daemon-upgrade-confirm': renderDaemonUpgradeConfirmModal/);

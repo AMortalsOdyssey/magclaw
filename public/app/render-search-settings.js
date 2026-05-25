@@ -526,6 +526,11 @@ function computerUpgradeStatusLabel(computer = {}) {
   return '';
 }
 
+function activeComputerUpgradeStatusLabel(upgradeLabel = '', updateAvailable = false) {
+  if (upgradeLabel === 'Updated' && updateAvailable) return '';
+  return upgradeLabel;
+}
+
 function computerDaemonServiceReady(computer = {}) {
   const service = computer.service && typeof computer.service === 'object' ? computer.service : {};
   return service.background === true && service.active === true;
@@ -579,24 +584,25 @@ function renderDaemonUpgradePanel(computer = {}, options = {}) {
     upgradeBusy = false,
     packageLabel = 'Daemon',
   } = options;
-  const upgradeVisible = Boolean(upgradeState.commandId && upgradeLabel && upgradeLabel !== 'Updated');
+  const activeUpgradeLabel = activeComputerUpgradeStatusLabel(upgradeLabel, updateAvailable);
+  const upgradeVisible = Boolean(upgradeState.commandId && activeUpgradeLabel);
   const shouldShowUpgradePanel = updateAvailable || upgradeVisible;
   if (!shouldShowUpgradePanel) return '';
   const lowerLabel = String(packageLabel || 'Daemon').toLowerCase();
-  const disabledReason = daemonUpgradeDisabledMessage(computer, { updateAvailable, upgradeBusy, packageLabel });
-  const blocked = Boolean(disabledReason && updateAvailable && !upgradeBusy);
-  const active = Boolean(upgradeBusy);
-  const upgrading = ['Updating', 'Restarting'].includes(upgradeLabel);
-  const title = upgradeLabel || `${packageLabel} update available`;
+  const active = Boolean(upgradeBusy && activeUpgradeLabel);
+  const disabledReason = daemonUpgradeDisabledMessage(computer, { updateAvailable, upgradeBusy: active, packageLabel });
+  const blocked = Boolean(disabledReason && updateAvailable && !active);
+  const upgrading = ['Updating', 'Restarting'].includes(activeUpgradeLabel);
+  const title = activeUpgradeLabel || `${packageLabel} update available`;
   const range = latestVersion !== '--' ? `${currentVersion} -> ${latestVersion}` : currentVersion;
-  const message = upgradeState.message
+  const message = (activeUpgradeLabel ? upgradeState.message : '')
     || (blocked
       ? disabledReason
-      : upgradeBusy
+      : active
         ? `Waiting for the ${lowerLabel} to report the next upgrade step.`
         : `A newer ${lowerLabel} is available (${range}). Upgrade after all Agents become idle.`);
-  const buttonText = upgradeBusy
-    ? upgradeLabel
+  const buttonText = active
+    ? activeUpgradeLabel
     : blocked
       ? 'Update manually'
       : `Upgrade ${lowerLabel}`;
@@ -676,13 +682,13 @@ function renderComputerDetail(computer) {
   const runtimeDetails = computerRuntimeDetails(computer);
   const installedCount = runtimeDetails.filter((runtime) => runtime.installed !== false).length;
   const upgradeState = computerDaemonUpgradeState(computer);
-  const upgradeLabel = computerUpgradeStatusLabel(computer);
   const rolledBackLabel = 'Rolled back';
-  const upgradeBusy = Boolean(upgradeState.commandId && upgradeLabel && !['Updated', 'Update failed', rolledBackLabel, 'Rollback failed'].includes(upgradeLabel));
   const currentDaemonVersion = computerPackageCurrentVersion(computer);
   const latestDaemonVersion = computerPackageLatestVersion(computer);
   const packageLabel = computerPackageLabel(computer);
   const updateAvailable = daemonUpdateAvailable(currentDaemonVersion, latestDaemonVersion);
+  const upgradeLabel = activeComputerUpgradeStatusLabel(computerUpgradeStatusLabel(computer), updateAvailable);
+  const upgradeBusy = Boolean(upgradeState.commandId && upgradeLabel && !['Updated', 'Update failed', rolledBackLabel, 'Rollback failed'].includes(upgradeLabel));
   const daemonVersion = renderDaemonVersionValue(
     currentDaemonVersion,
     { upgradeState, latestVersion: latestDaemonVersion },
