@@ -457,13 +457,17 @@ export function parseCli(argv = process.argv) {
   const args = argv.slice(2);
   const command = args[0] && !args[0].startsWith('-') ? args.shift() : 'connect';
   const flags = {};
+  const positionals = [];
   for (let index = 0; index < args.length; index += 1) {
     const item = args[index];
     if (item === '-h') {
       flags.help = true;
       continue;
     }
-    if (!item.startsWith('--')) continue;
+    if (!item.startsWith('--')) {
+      positionals.push(item);
+      continue;
+    }
     const equalsIndex = item.indexOf('=');
     if (equalsIndex > 2) {
       flags[parseFlagKey(item.slice(0, equalsIndex))] = item.slice(equalsIndex + 1);
@@ -478,6 +482,7 @@ export function parseCli(argv = process.argv) {
       index += 1;
     }
   }
+  flags._ = positionals;
   flags.profile = safeProfileName(flags.profile || process.env.MAGCLAW_DAEMON_PROFILE || DEFAULT_PROFILE);
   return { command, flags };
 }
@@ -490,6 +495,7 @@ function renderHelp() {
     '',
     'Commands:',
     '  connect      Connect this Computer to MagClaw Cloud (foreground by default)',
+    '  computer     Pair this local computer with a server using browser approval',
     '  start        Start a saved background daemon profile',
     '  restart      Restart a saved background daemon profile',
     '  stop         Stop a daemon profile',
@@ -509,12 +515,17 @@ function renderHelp() {
     '  --api-key <key>        Machine API key for connect',
     '  --background           Install and run as a background service',
     '  --bin-dir <path>       install-cli target directory',
+    '  --to <version>         Upgrade target version (default: latest)',
+    '  --wait-cloud           Wait for Cloud heartbeat during manual upgrade',
+    '  --dry-run              Preview upgrade actions without restarting',
     '  --force                Overwrite an existing MagClaw CLI shim',
     '  -h, --help             Show this help',
     '',
     'Examples:',
+    '  magclaw computer setup /my-server --server-url https://magclaw.example.com',
     '  magclaw status --profile my-server',
     '  magclaw restart --profile my-server',
+    '  magclaw upgrade --profile my-server --to latest',
     '  magclaw stop --profile my-server',
     '  magclaw list',
     '',
@@ -1074,9 +1085,13 @@ export function toWebSocketUrl(serverUrl, config = {}) {
   const url = new URL(`${wsBase}/daemon/connect`);
   const token = String(config.token || config.machineToken || config.apiKey || '').trim();
   const pairToken = String(config.pairToken || '').trim();
+  const machineFingerprint = String(config.fingerprint || config.machineFingerprint || '').trim();
   if (token) url.searchParams.set('token', token);
   else if (pairToken) url.searchParams.set('pair_token', pairToken);
   else url.searchParams.set('token', '');
+  if (/^mfp_[a-f0-9]{64}$/i.test(machineFingerprint)) {
+    url.searchParams.set('machine_fingerprint', machineFingerprint.toLowerCase());
+  }
   return url;
 }
 
@@ -4551,15 +4566,52 @@ function preflightPackage(packageSpec, env = process.env) {
   };
 }
 
+function compactBackgroundServiceStatus(service = {}) {
+  return {
+    mode: service.mode || 'foreground',
+    active: Boolean(service.active),
+    label: service.label || '',
+    serviceName: service.serviceName || '',
+    taskName: service.taskName || '',
+    status: service.status || '',
+    error: service.error || '',
+  };
+}
+
+async function waitForLocalDaemonReady(profile, timeoutMs = 120_000, env = process.env) {
+  const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 120_000);
+  let lastService = null;
+  while (Date.now() < deadline) {
+    const service = backgroundServiceStatus(profile, env);
+    lastService = service;
+    const lock = await activeDaemonLock(profile, env);
+    if (service.active && lock?.pid) {
+      return {
+        ok: true,
+        pid: lock.pid,
+        service: compactBackgroundServiceStatus(service),
+      };
+    }
+    await sleep(250);
+  }
+  return {
+    ok: false,
+    error: 'Timed out waiting for the local daemon to become ready.',
+    service: compactBackgroundServiceStatus(lastService || backgroundServiceStatus(profile, env)),
+  };
+}
+
 async function runUpgradeWorker(flags, env = process.env) {
   const profile = safeProfileName(flags.profile || DEFAULT_PROFILE);
   const config = await buildConfig({ profile }, env);
   const commandId = String(flags.commandId || `local_upgrade_${Date.now()}`).trim();
-  const targetVersion = String(flags.targetVersion || flags.version || 'latest').trim() || 'latest';
+  const targetVersion = String(flags.targetVersion || flags.version || flags.to || flags.tag || 'latest').trim() || 'latest';
   const previousVersion = String(flags.previousVersion || DAEMON_VERSION).trim() || DAEMON_VERSION;
   const packageSpec = packageSpecForUpgrade(targetVersion, flags, env);
   const progressIntervalMs = Math.max(100, Math.min(5000, Number(flags.progressIntervalMs || env.MAGCLAW_DAEMON_UPGRADE_PROGRESS_MS || 500) || 500));
   const readyTimeoutMs = Math.max(5000, Math.min(10 * 60_000, Number(flags.readyTimeoutMs || env.MAGCLAW_DAEMON_UPGRADE_READY_TIMEOUT_MS || 120_000) || 120_000));
+  const localOnly = Boolean(flags.localOnly || flags.local || flags.noWaitCloud);
+  const assumeReady = Boolean(flags.assumeReady || env.MAGCLAW_DAEMON_UPGRADE_ASSUME_READY === '1');
   const serviceBefore = await readServiceState(profile, env);
   const previousPackageSpec = serviceBefore.packageSpec || `@magclaw/daemon@${previousVersion}`;
   const dryRunPlan = {
@@ -4573,6 +4625,8 @@ async function runUpgradeWorker(flags, env = process.env) {
     packageSpec,
     previousPackageSpec,
     service: serviceBefore,
+    localOnly,
+    waitForCloud: !localOnly && Boolean(config.computerId && config.token),
     progressIntervalMs,
     readyTimeoutMs,
   };
@@ -4614,7 +4668,7 @@ async function runUpgradeWorker(flags, env = process.env) {
     progressSocket?.send(latestProgress);
   };
 
-  if (config.computerId && config.token) {
+  if (!localOnly && config.computerId && config.token) {
     try {
       progressSocket = await openUpgradeProgressSocket(toUpgradeProgressWebSocketUrl(config.serverUrl, config, commandId));
     } catch (error) {
@@ -4664,7 +4718,14 @@ async function runUpgradeWorker(flags, env = process.env) {
       await writeServiceState(profile, { installedDaemonVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
       return { ok: true, commandId, targetVersion, packageSpec };
     }
-    if (!progressSocket && env.MAGCLAW_DAEMON_UPGRADE_ASSUME_READY === '1') {
+    if (localOnly) {
+      const ready = await waitForLocalDaemonReady(profile, readyTimeoutMs, env);
+      if (!ready.ok) throw new Error(ready.error || 'Timed out waiting for the local daemon to become ready.');
+      await emitProgress({ status: 'succeeded', phase: 'ready', progress: 100, message: 'Daemon upgrade completed locally.' });
+      await writeServiceState(profile, { installedDaemonVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
+      return { ok: true, commandId, targetVersion, packageSpec, localReady: ready };
+    }
+    if (!progressSocket && assumeReady) {
       await emitProgress({ status: 'succeeded', phase: 'ready', progress: 100, message: 'Daemon upgrade completed locally.' });
       await writeServiceState(profile, { installedDaemonVersion: targetVersion, pendingCommandId: '', pendingTargetVersion: '' }, env);
       return { ok: true, commandId, targetVersion, packageSpec, assumedReady: true };
@@ -4703,8 +4764,101 @@ async function runUpgradeWorker(flags, env = process.env) {
 }
 
 async function runManualUpgrade(flags, env = process.env) {
-  const plan = await runUpgradeWorker(flags.dryRun ? flags : { ...flags, commandId: flags.commandId || `manual_upgrade_${Date.now()}` }, env);
+  const waitCloud = Boolean(flags.waitCloud || flags.waitServer || flags.remote);
+  const manualFlags = {
+    ...flags,
+    localOnly: waitCloud ? false : true,
+    assumeReady: waitCloud ? flags.assumeReady : true,
+    commandId: flags.commandId || `manual_upgrade_${Date.now()}`,
+  };
+  const plan = await runUpgradeWorker(manualFlags, env);
   printJson(plan);
+}
+
+function normalizeSetupServerSlug(value = '') {
+  return String(value || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+async function postSetupJson(serverUrl, pathname, body = {}) {
+  const url = `${String(serverUrl || DEFAULT_SERVER_URL).replace(/\/+$/, '')}${pathname}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `${response.status} ${response.statusText}`);
+  }
+  return data;
+}
+
+async function runComputerSetup(flags, env = process.env) {
+  const subcommand = String(flags._?.[0] || '').trim();
+  if (subcommand !== 'setup') {
+    throw new Error('Usage: magclaw computer setup /<server-slug> --server-url <url>');
+  }
+  const serverSlug = normalizeSetupServerSlug(flags._?.[1] || flags.server || flags.serverSlug || flags.slug);
+  if (!serverSlug) throw new Error('Run computer setup with a server slug, for example: magclaw computer setup /my-server');
+  const serverUrl = String(flags.serverUrl || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL).replace(/\/+$/, '');
+  const profile = safeProfileName(flags.profile && flags.profile !== DEFAULT_PROFILE ? flags.profile : serverSlug);
+  const owner = await ensureMachineFingerprint(profile, env);
+  const displayName = String(flags.displayName || flags.name || os.hostname()).trim();
+  const started = await postSetupJson(serverUrl, '/api/cloud/computer/setup/start', {
+    serverSlug,
+    machineFingerprint: owner.fingerprint,
+    displayName,
+    hostname: os.hostname(),
+    os: os.platform(),
+    arch: os.arch(),
+    daemonVersion: DAEMON_VERSION,
+  });
+  process.stdout.write(`To finish login, open: ${started.verificationUri}\n`);
+  process.stdout.write(`and enter the code:   ${started.userCode}\n`);
+  process.stdout.write(`Waiting for approval (expires at ${started.expiresAt})...\n`);
+
+  const intervalMs = Math.max(1000, Math.min(10_000, Number(started.intervalMs || 2000) || 2000));
+  const expiresAtMs = Date.parse(started.expiresAt || '') || (Date.now() + 10 * 60_000);
+  let approved = null;
+  while (Date.now() < expiresAtMs) {
+    await sleep(intervalMs);
+    const status = await postSetupJson(serverUrl, '/api/cloud/computer/setup/token', {
+      deviceCode: started.deviceCode,
+    });
+    if (status.status === 'approved') {
+      approved = status;
+      break;
+    }
+    if (status.status === 'expired') {
+      throw new Error(status.error || 'Computer setup expired.');
+    }
+  }
+  if (!approved) throw new Error('Computer setup approval timed out.');
+
+  const config = await buildConfig({
+    ...flags,
+    profile: safeProfileName(approved.profile || profile),
+    serverUrl,
+    apiKey: approved.machineToken,
+    computerId: approved.computerId,
+    workspaceId: approved.workspaceId,
+    name: displayName,
+    fingerprint: owner.fingerprint,
+  }, env);
+  await saveProfile(config.profile, config, env);
+  const cli = await tryInstallCliShim(flags, env);
+  const result = await startBackground(config.profile, env);
+  printJson({
+    ...result,
+    cli,
+    computerId: config.computerId,
+    profile: config.profile,
+    serverSlug: approved.serverSlug || serverSlug,
+  });
+  if (!result.ok) {
+    logWarning('daemon', 'Falling back to foreground mode.');
+    await runForegroundDaemon(config, env);
+  }
 }
 
 async function buildConfig(flags, env = process.env) {
@@ -4806,6 +4960,9 @@ export async function main(argv = process.argv, env = process.env) {
   switch (command) {
     case 'connect':
       await runConnect(flags, env);
+      break;
+    case 'computer':
+      await runComputerSetup(flags, env);
       break;
     case 'start': {
       printJson(await startSavedBackground(flags, env));

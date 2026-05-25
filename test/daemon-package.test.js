@@ -26,6 +26,7 @@ import {
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DAEMON_BIN = path.join(ROOT, 'daemon', 'bin', 'magclaw-daemon.js');
+const COMPUTER_BIN = path.join(ROOT, 'computer', 'bin', 'magclaw-computer.js');
 const NPM_BIN = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -157,10 +158,23 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
   ]);
   assert.equal(apiKey.command, 'connect');
   assert.equal(apiKey.flags.apiKey, 'mc_machine_test');
+
+  const computerSetup = parseCli([
+    'node',
+    'magclaw',
+    'computer',
+    'setup',
+    '/second-team',
+    '--server-url',
+    'https://example.test',
+  ]);
+  assert.equal(computerSetup.command, 'computer');
+  assert.deepEqual(computerSetup.flags._, ['setup', '/second-team']);
+  assert.equal(computerSetup.flags.serverUrl, 'https://example.test');
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.17');
+  assert.equal(DAEMON_VERSION, '0.1.19');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -171,10 +185,12 @@ test('daemon websocket auth prefers durable api keys over stale pair tokens', ()
   const url = toWebSocketUrl('https://magclaw.multiego.me', {
     token: 'mc_machine_test',
     pairToken: 'mc_pair_stale',
+    fingerprint: 'mfp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   });
   assert.equal(url.protocol, 'wss:');
   assert.equal(url.searchParams.get('token'), 'mc_machine_test');
   assert.equal(url.searchParams.get('pair_token'), null);
+  assert.equal(url.searchParams.get('machine_fingerprint'), 'mfp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 });
 
 test('daemon sends a periodic heartbeat while the websocket is connected', async () => {
@@ -345,6 +361,45 @@ test('top-level daemon npm package dry-run excludes cloud server and deployment 
   assert.equal(files.includes('kizuna.json'), false);
 });
 
+test('computer npm package is a thin setup wrapper around the daemon package', async () => {
+  const computerPackage = JSON.parse(await readFile(new URL('../computer/package.json', import.meta.url), 'utf8'));
+  const computerBin = await readFile(new URL('../computer/bin/magclaw-computer.js', import.meta.url), 'utf8');
+
+  assert.equal(computerPackage.name, '@magclaw/computer');
+  assert.equal(computerPackage.version, DAEMON_VERSION);
+  assert.deepEqual(computerPackage.bin, { 'magclaw-computer': 'bin/magclaw-computer.js' });
+  assert.equal(computerPackage.dependencies['@magclaw/daemon'], DAEMON_VERSION);
+  assert.match(computerBin, /@magclaw\/daemon\/src\/cli\.js/);
+  assert.match(computerBin, /args\[0\] === 'computer' \? args : \['computer', \.\.\.args\]/);
+
+  const help = spawnSync(process.execPath, [COMPUTER_BIN, '--help'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  });
+  assert.equal(help.status, 0, help.stderr || help.stdout);
+  assert.match(help.stdout, /Usage: magclaw/);
+  assert.match(help.stdout, /computer\s+Pair this local computer with a server using browser approval/);
+});
+
+test('top-level computer npm package dry-run excludes cloud server and deployment files', () => {
+  const result = spawnSync(NPM_BIN, ['pack', '--dry-run', '--json', './computer'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const packed = JSON.parse(result.stdout)[0];
+  const files = packed.files.map((file) => file.path);
+  assert.ok(files.includes('bin/magclaw-computer.js'));
+  assert.ok(files.includes('README.md'));
+  assert.ok(files.includes('package.json'));
+  assert.equal(files.some((file) => file.startsWith('server/')), false);
+  assert.equal(files.some((file) => file.startsWith('public/')), false);
+  assert.equal(files.some((file) => file.startsWith('daemon/src/')), false);
+  assert.equal(files.some((file) => file.startsWith('web/')), false);
+  assert.equal(files.includes('Dockerfile'), false);
+});
+
 test('daemon package exposes one OpenClaw-style CLI bin for npx default execution', async () => {
   const daemonPackage = JSON.parse(await readFile(new URL('../daemon/package.json', import.meta.url), 'utf8'));
   assert.deepEqual(daemonPackage.bin, { magclaw: 'bin/magclaw.js' });
@@ -456,6 +511,7 @@ test('help flags describe restart list and daemon control commands', () => {
     const result = spawnSync(process.execPath, [DAEMON_BIN, ...args], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /Usage: magclaw/);
+    assert.match(result.stdout, /computer\s+Pair this local computer with a server using browser approval/);
     assert.match(result.stdout, /restart\s+Restart a saved background daemon profile/);
     assert.match(result.stdout, /list\s+List local daemon profiles and connected Computers/);
     assert.match(result.stdout, /stop\s+Stop a daemon profile/);
@@ -503,6 +559,30 @@ test('list command returns saved local daemon profiles and computer ids', async 
     assert.equal(payload.profiles[0].hasMachineToken, true);
     assert.equal(payload.profiles[0].token, undefined);
     assert.equal(payload.profiles[1].hasPairToken, true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('daemon upgrade dry-run accepts OpenClaw-style target aliases', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-upgrade-dry-run-'));
+  try {
+    const result = spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'upgrade',
+      '--to',
+      '0.1.11',
+      '--dry-run',
+      '--json',
+    ], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.dryRun, true);
+    assert.equal(payload.targetVersion, '0.1.11');
+    assert.equal(payload.packageSpec, '@magclaw/daemon@0.1.11');
   } finally {
     await rm(home, { recursive: true, force: true });
   }

@@ -1,17 +1,19 @@
 {
-  "name": "@magclaw/daemon",
+  "name": "@magclaw/computer",
   "version": "0.1.19",
-  "description": "Local MagClaw daemon that connects a user's computer to MagClaw Cloud.",
+  "description": "Browser-approved MagClaw Computer setup command.",
   "type": "module",
   "bin": {
-    "magclaw": "bin/magclaw.js"
+    "magclaw-computer": "bin/magclaw-computer.js"
+  },
+  "dependencies": {
+    "@magclaw/daemon": "0.1.19"
   },
   "publishConfig": {
     "access": "public"
   },
   "files": [
     "bin/",
-    "src/",
     "README.md"
   ],
   "engines": {
