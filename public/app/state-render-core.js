@@ -143,7 +143,7 @@ let consoleTab = initialRouteState.consoleTab || consoleTabFromPath() || initial
 let latestPairingCommand = null;
 let computerPairingDisplayName = '';
 let computerPairingCommandError = '';
-let pairingCommandCopyAcknowledged = false;
+let pairingCommandCopyAcknowledgedKind = '';
 let pairingCommandCopyResetTimer = null;
 let offlineComputerCommandRequestKey = '';
 let offlineComputerCommandInFlight = false;
@@ -283,11 +283,24 @@ function displayServerSlug(value, fallback = '') {
   return slug;
 }
 
+function normalizedPairingCommandKind(commandKind = 'connect') {
+  return String(commandKind || '').trim() === 'computer' ? 'computer' : 'connect';
+}
+
+function resetPairingCommandCopyAcknowledgement() {
+  pairingCommandCopyAcknowledgedKind = '';
+  if (pairingCommandCopyResetTimer) {
+    window.clearTimeout(pairingCommandCopyResetTimer);
+    pairingCommandCopyResetTimer = null;
+  }
+}
+
 function pairingCommandCopyButtonHtml(extraClass = '', commandKind = 'connect') {
-  const copied = Boolean(pairingCommandCopyAcknowledged);
+  const normalizedKind = normalizedPairingCommandKind(commandKind);
+  const copied = pairingCommandCopyAcknowledgedKind === normalizedKind;
   const label = copied ? 'Command copied' : 'Copy command';
   return `
-    <button class="connect-copy-btn ${copied ? 'is-copied' : ''} ${escapeHtml(extraClass)}" type="button" data-action="copy-pairing-command" data-command-kind="${escapeHtml(commandKind)}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
+    <button class="connect-copy-btn ${copied ? 'is-copied' : ''} ${escapeHtml(extraClass)}" type="button" data-action="copy-pairing-command" data-command-kind="${escapeHtml(normalizedKind)}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
       <span aria-hidden="true">${copied ? '✓' : '⧉'}</span>
     </button>
   `;

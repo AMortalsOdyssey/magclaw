@@ -125,7 +125,9 @@ test('computer and agent creation entrances honor cloud capabilities', async () 
 
 test('computer connect modal creates a fresh command before rendering stale state', async () => {
   const app = await readAppSource();
+  const styles = await readStylesSource();
   const modalSource = app.slice(app.indexOf('function pairingCommandIsUsable'), app.indexOf('function renderHumanModal()'));
+  const detailSource = app.slice(app.indexOf('function renderComputerDetail(computer)'), app.indexOf('function renderComputerConfigCard()'));
   const clickSource = app.slice(app.indexOf('async function generateFreshComputerPairingCommand'), app.indexOf("if (action === 'agent-stop-unavailable')"));
   const closeModalSource = app.slice(app.indexOf("if (action === 'close-modal')"), app.indexOf("if (localOnlyActions.has(action))"));
   const pairingActionsSource = app.slice(app.indexOf("if (action === 'create-computer-pairing')"), app.indexOf("if (action === 'copy-join-link')"));
@@ -168,11 +170,27 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(modalSource, /targets the selected Computer/);
   assert.match(modalSource, /background service/);
   assert.match(app, /let computerPairingCommandError = ''/);
+  assert.match(app, /let pairingCommandCopyAcknowledgedKind = ''/);
+  assert.doesNotMatch(app, /let pairingCommandCopyAcknowledged = false/);
+  assert.match(app, /function normalizedPairingCommandKind/);
+  assert.match(app, /function resetPairingCommandCopyAcknowledgement/);
+  assert.match(app, /pairingCommandCopyAcknowledgedKind === normalizedKind/);
+  assert.match(app, /pairingCommandCopyAcknowledgedKind = commandKind/);
+  assert.match(app, /if \(pairingCommandCopyAcknowledgedKind === commandKind\) pairingCommandCopyAcknowledgedKind = ''/);
   assert.match(app, /connect-option-card\[data-command-kind="connect"\]/);
   assert.match(app, /code\.textContent = pairingCommandDisplayText\(\)/);
-  assert.match(app, /data-command-kind="\$\{escapeHtml\(commandKind\)\}"/);
+  assert.match(app, /data-command-kind="\$\{escapeHtml\(normalizedKind\)\}"/);
   assert.match(app, /target\.dataset\.commandKind/);
   assert.match(app, /latestPairingCommand\?\.computerCommand \|\| latestPairingCommand\?\.setupCommand/);
+  assert.match(detailSource, /Connection Options/);
+  assert.match(detailSource, /computer-detail-connect-options/);
+  assert.match(detailSource, /renderPairingCommandOption\(\{\s*title: 'Connect Command'/);
+  assert.match(detailSource, /renderPairingCommandOption\(\{\s*title: 'Computer'/);
+  assert.match(detailSource, /currentPairingCommand\?\.computerCommand \|\| currentPairingCommand\?\.setupCommand/);
+  assert.match(styles, /\.connect-option-card:hover/);
+  assert.match(styles, /\.connect-options-frame:has\(\.connect-option-card:hover\) \.connect-option-card:not\(:hover\)/);
+  assert.match(styles, /filter: grayscale\(0\.55\)/);
+  assert.match(styles, /background: rgba\(230, 230, 230, 0\.56\)/);
   assert.match(modalSource, /computerPairingCommandError \|\| 'Generating command\.\.\.'/);
   assert.match(clickSource, /if \(modal === 'computer'\) renderShellOrModal\(\)/);
   assert.match(clickSource, /if \(modal !== 'computer'\) \{\s*await discardProvisionalPairingComputer\(pairingCommand\);\s*return;\s*\}\s*render\(\);/);
@@ -2614,11 +2632,11 @@ test('server settings, human detail, and computer detail mirror MagClaw structur
   assert.match(app, /computer-agent-tooltip/);
   assert.match(app, /data-action="generate-computer-command"/);
   assert.match(app, /function pairingCommandCopyButtonHtml/);
-  assert.match(app, /computer-connect-command-shell/);
+  assert.match(app, /computer-detail-connect-options/);
   assert.match(app, /connect-options-frame/);
   assert.match(app, /computer setup/);
   assert.match(app, /Generate Connect Command/);
-  assert.match(app, /pairingCommandCopyAcknowledged/);
+  assert.match(app, /pairingCommandCopyAcknowledgedKind/);
   assert.doesNotMatch(app, /<span>Connect Command<\/span><span>api key<\/span>/);
   assert.doesNotMatch(app, /Generate a fresh API-key command when you need to reconnect this computer\./);
   assert.doesNotMatch(app, /<span>Connect Command<\/span><span>short lived<\/span>/);

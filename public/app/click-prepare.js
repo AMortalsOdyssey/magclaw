@@ -258,18 +258,18 @@ async function prepareDocumentClick(event) {
     return;
   }
   if (action === 'copy-pairing-command') {
-    const commandKind = target.dataset.commandKind || 'connect';
+    const commandKind = normalizedPairingCommandKind(target.dataset.commandKind || 'connect');
     const rawCommand = commandKind === 'computer'
       ? (latestPairingCommand?.computerCommand || latestPairingCommand?.setupCommand || '')
       : (latestPairingCommand?.command || '');
     if (rawCommand) {
       const copied = await tryCopyTextToClipboard(commandKind === 'computer' ? rawCommand : pairingCommandText(rawCommand));
       if (copied) {
-        pairingCommandCopyAcknowledged = true;
+        pairingCommandCopyAcknowledgedKind = commandKind;
         if (pairingCommandCopyResetTimer) window.clearTimeout(pairingCommandCopyResetTimer);
         render();
         pairingCommandCopyResetTimer = window.setTimeout(() => {
-          pairingCommandCopyAcknowledged = false;
+          if (pairingCommandCopyAcknowledgedKind === commandKind) pairingCommandCopyAcknowledgedKind = '';
           pairingCommandCopyResetTimer = null;
           render();
         }, 1600);

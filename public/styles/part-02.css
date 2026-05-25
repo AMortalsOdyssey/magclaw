@@ -1569,18 +1569,40 @@
 }
 
 .connect-option-card {
+  position: relative;
   display: grid;
   gap: 8px;
   padding: 10px;
   border: 1px solid var(--settings-line, var(--border-faint));
   background: var(--bg-main);
-  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, opacity 160ms ease, filter 160ms ease;
+}
+
+.connect-option-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: rgba(230, 230, 230, 0.56);
+  opacity: 0;
+  transition: opacity 160ms ease;
 }
 
 .connect-option-card:hover {
-  transform: translateY(-1px);
+  z-index: 2;
+  transform: translateY(-3px) scale(1.01);
   border-color: var(--border);
-  box-shadow: 3px 3px 0 var(--shadow);
+  box-shadow: 5px 5px 0 var(--shadow);
+}
+
+.connect-options-frame:has(.connect-option-card:hover) .connect-option-card:not(:hover) {
+  opacity: 0.68;
+  filter: grayscale(0.55);
+}
+
+.connect-options-frame:has(.connect-option-card:hover) .connect-option-card:not(:hover)::after {
+  opacity: 1;
 }
 
 .connect-option-title {

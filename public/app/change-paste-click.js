@@ -1,10 +1,6 @@
 async function generateFreshComputerPairingCommand(body = {}) {
   computerPairingCommandError = '';
-  pairingCommandCopyAcknowledged = false;
-  if (pairingCommandCopyResetTimer) {
-    window.clearTimeout(pairingCommandCopyResetTimer);
-    pairingCommandCopyResetTimer = null;
-  }
+  resetPairingCommandCopyAcknowledgement();
   const requestedDisplayName = String(body.displayName || body.name || body.label || '').trim();
   try {
     latestPairingCommand = await api('/api/cloud/computers/pairing-tokens', {
