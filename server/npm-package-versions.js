@@ -1,5 +1,5 @@
 const DEFAULT_PACKAGE_NAMES = ['@magclaw/daemon', '@magclaw/computer'];
-const DEFAULT_TTL_MS = 10 * 60_000;
+const DEFAULT_TTL_MS = 30 * 60_000;
 const DEFAULT_REGISTRY_URL = 'https://registry.npmjs.org';
 
 function registryPackageUrl(packageName, registryUrl = DEFAULT_REGISTRY_URL) {
@@ -25,6 +25,7 @@ async function defaultFetchJson(url) {
 export function createNpmPackageVersionResolver(options = {}) {
   const packageNames = (options.packageNames || DEFAULT_PACKAGE_NAMES).map(String).filter(Boolean);
   const fetchJson = options.fetchJson || defaultFetchJson;
+  const fetchManifest = typeof options.fetchManifest === 'function' ? options.fetchManifest : null;
   const nowMs = typeof options.nowMs === 'function' ? options.nowMs : () => Date.now();
   const ttlMs = Math.max(1000, Number(options.ttlMs || process.env.MAGCLAW_NPM_VERSION_CACHE_MS || DEFAULT_TTL_MS) || DEFAULT_TTL_MS);
   const registryUrl = options.registryUrl || process.env.MAGCLAW_NPM_REGISTRY_URL || DEFAULT_REGISTRY_URL;
@@ -37,10 +38,27 @@ export function createNpmPackageVersionResolver(options = {}) {
     if (inflight.has(name)) return inflight.get(name);
     const task = (async () => {
       try {
+        if (fetchManifest) {
+          const manifestRecord = await fetchManifest(name).catch(() => null);
+          const manifestLatest = String(
+            (typeof manifestRecord === 'string' ? manifestRecord : manifestRecord?.latest || manifestRecord?.version)
+            || '',
+          ).trim();
+          if (manifestLatest) {
+            const record = {
+              latest: manifestLatest,
+              checkedAtMs: nowMs(),
+              error: '',
+              source: manifestRecord?.source || 'db',
+            };
+            cache.set(name, record);
+            return record;
+          }
+        }
         const data = await fetchJson(registryPackageUrl(name, registryUrl));
         const latest = String(data?.['dist-tags']?.latest || '').trim();
         if (!latest) throw new Error(`Missing latest dist-tag for ${name}.`);
-        const record = { latest, checkedAtMs: nowMs(), error: '' };
+        const record = { latest, checkedAtMs: nowMs(), error: '', source: 'npm' };
         cache.set(name, record);
         return record;
       } catch (error) {

@@ -114,6 +114,7 @@ import { createDaemonRelay } from './cloud/daemon-relay.js';
 import { createRoutingEngine } from './routing-engine.js';
 import { createMissionRunner } from './mission-runner.js';
 import { createOnboardingManager } from './onboarding.js';
+import { createNpmPackageVersionResolver } from './npm-package-versions.js';
 import { createSystemServices } from './system-services.js';
 import { createStateCore } from './state-core.js';
 import { createTaskOrchestrator } from './task-orchestrator.js';
@@ -543,6 +544,15 @@ function resilientCloudRepository(repository) {
         await disable(error);
       }
     },
+    async readPackageVersionManifest(packageName, channel = 'latest') {
+      if (disabled || typeof repository.readPackageVersionManifest !== 'function') return null;
+      try {
+        return await repository.readPackageVersionManifest(packageName, channel);
+      } catch (error) {
+        console.warn(`[cloud-postgres] package version manifest unavailable message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
+        return null;
+      }
+    },
     async loadConversationWindowIntoState(stateSnapshot, options = {}) {
       if (disabled || typeof repository.loadConversationWindowIntoState !== 'function') return null;
       try {
@@ -682,6 +692,9 @@ async function createCloudRepositoryFromEnv() {
 }
 
 const cloudRepository = await createCloudRepositoryFromEnv();
+const npmPackageVersions = createNpmPackageVersionResolver({
+  fetchManifest: (packageName) => cloudRepository?.readPackageVersionManifest?.(packageName),
+});
 const REALTIME_SOURCE_ID = makeId('rt');
 let realtimeReloadTimer = null;
 let realtimeReloadRunning = false;
@@ -1185,6 +1198,7 @@ const systemServices = createSystemServices({
   httpError,
   makeId,
   now,
+  npmPackageVersions,
   persistState,
   publicCloudState: (req) => cloudAuth.publicCloudState(req),
   projectsForSpace,

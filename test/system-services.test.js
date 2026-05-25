@@ -214,6 +214,29 @@ test('runtime snapshot exposes independent NPM latest versions for daemon and co
   assert.equal(runtime.computerLatestVersion, '0.1.31');
 });
 
+test('runtime snapshot prefers DB package manifest before NPM latest fallback', () => {
+  const services = makeServices((state) => {
+    state.packageVersions = {
+      '@magclaw/daemon': { latest: '0.1.40', source: 'db' },
+      '@magclaw/computer': { version: '0.1.41', source: 'db' },
+    };
+  }, {
+    npmPackageVersions: {
+      latest: (packageName, fallback = '') => {
+        if (packageName === '@magclaw/daemon') return '0.1.30';
+        if (packageName === '@magclaw/computer') return '0.1.31';
+        return fallback;
+      },
+      refreshAll: () => {},
+    },
+  });
+
+  const runtime = services.runtimeSnapshot();
+
+  assert.equal(runtime.daemonLatestVersion, '0.1.40');
+  assert.equal(runtime.computerLatestVersion, '0.1.41');
+});
+
 test('public state includes minimal identities for visible external human mentions', () => {
   const services = makeServices((state) => {
     state.humans = [

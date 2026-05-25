@@ -4,6 +4,7 @@ import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createNpmPackageVersionResolver } from './npm-package-versions.js';
+import { latestPackageVersionFromManifest } from './package-version-manifest.js';
 import { defaultReleaseNotes, normalizeReleaseNotes } from './release-notes.js';
 import { normalizeCloudUrl, normalizeFanoutApiConfig, publicApiKeyPreview } from './runtime-config.js';
 
@@ -504,6 +505,7 @@ export function createSystemServices(deps) {
   function latestDaemonPackageVersion(fallback = '') {
     return String(
       process.env.MAGCLAW_DAEMON_LATEST_VERSION
+      || latestPackageVersionFromManifest(state?.packageVersions, '@magclaw/daemon', '')
       || npmPackageVersions?.latest?.('@magclaw/daemon', '')
       || state?.settings?.daemonVersionControl?.latestVersion
       || state?.settings?.daemonLatestVersion
@@ -526,6 +528,7 @@ export function createSystemServices(deps) {
   function latestComputerPackageVersion(fallback = '') {
     return String(
       process.env.MAGCLAW_COMPUTER_LATEST_VERSION
+      || latestPackageVersionFromManifest(state?.packageVersions, '@magclaw/computer', '')
       || npmPackageVersions?.latest?.('@magclaw/computer', '')
       || state?.settings?.computerVersionControl?.latestVersion
       || state?.settings?.computerLatestVersion

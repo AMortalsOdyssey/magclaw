@@ -21,6 +21,8 @@
     "web:start": "node server/index.js",
     "web:check": "node --check server/index.js",
     "web:docker:build": "docker build -f web/Dockerfile -t magclaw-web .",
+    "packages:publish": "node scripts/publish-magclaw-packages.mjs",
+    "packages:publish:dry-run": "node scripts/publish-magclaw-packages.mjs --dry-run",
     "cli-core:pack": "npm pack --dry-run --json ./cli-core",
     "daemon:pack": "npm pack --dry-run --json ./daemon",
     "computer:pack": "npm pack --dry-run --json ./computer"

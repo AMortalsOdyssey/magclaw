@@ -16,6 +16,7 @@ import {
 } from './postgres.js';
 import { normalizeReleaseNotes, RELEASE_CATEGORY_KEYS, RELEASE_COMPONENTS } from '../release-notes.js';
 import { normalizeStoredConversationReferences } from '../conversation-references.js';
+import { packageVersionsFromRows, packageVersionFromRow } from '../package-version-manifest.js';
 
 const TRANSIENT_POSTGRES_PERSIST_ERROR_CODES = new Set(['55P03', '40001', '40P01']);
 const DURABLE_STATE_RECORD_ARRAY_KEYS = Object.freeze(['reminders', 'missions', 'runs', 'projects', 'agentRuntimeSessions', 'conversationGrants']);
@@ -3220,6 +3221,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const agentDeliveries = await client.query(`SELECT * FROM ${table('cloud_agent_deliveries')} ORDER BY created_at ASC, id ASC`);
       const realtimeEvents = await client.query(`SELECT * FROM ${table('cloud_realtime_events')} ORDER BY workspace_id ASC, seq ASC`);
       const releaseNotes = await client.query(`SELECT * FROM ${table('cloud_release_notes')} ORDER BY component ASC, released_at DESC, version DESC, category ASC, position ASC`);
+      const packageVersions = await client.query(`SELECT * FROM ${table('cloud_package_versions')} ORDER BY package_name ASC, channel ASC`);
       cloud.workspaces = workspaces.rows.map(workspaceFromRow);
       cloud.users = users.rows.map(userFromRow);
       cloud.workspaceMembers = members.rows.map(memberFromRow);
@@ -3263,8 +3265,27 @@ export function createCloudPostgresStore(optionsInput = {}) {
         resetTransientRuntimeStateAfterLoad(state, loadOptions.loadedAt || requiredIso());
       }
       state.releaseNotes = releaseNotesFromRows(releaseNotes.rows, state.releaseNotes);
+      state.packageVersions = packageVersionsFromRows(packageVersions.rows);
       state.cloud = cloud;
     });
+  }
+
+  async function readPackageVersionManifest(packageName, channel = 'latest') {
+    const cleanPackageName = String(packageName || '').trim();
+    const cleanChannel = String(channel || 'latest').trim() || 'latest';
+    if (!cleanPackageName) return null;
+    const result = await withClient((client) => client.query(
+      `
+        SELECT *
+        FROM ${table('cloud_package_versions')}
+        WHERE package_name = $1
+          AND channel = $2
+          AND status = 'published'
+        LIMIT 1
+      `,
+      [cleanPackageName, cleanChannel],
+    ));
+    return result.rows?.[0] ? packageVersionFromRow(result.rows[0]) : null;
   }
 
   async function loadAuthIntoState(state) {
@@ -3393,6 +3414,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     initialize,
     isEnabled: () => true,
     loadIntoState,
+    readPackageVersionManifest,
     loadAuthIntoState,
     loadWorkspaceIntoState,
     loadConversationWindowIntoState,

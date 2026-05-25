@@ -158,6 +158,7 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     'cloud_attachments',
     'cloud_agent_deliveries',
     'cloud_release_notes',
+    'cloud_package_versions',
     'cloud_markdown_documents',
     'cloud_markdown_operations',
     'cloud_markdown_maintenance_runs',
@@ -171,6 +172,9 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     assert.match(sql, /\bstorage_mode\b/);
   assert.match(sql, /component IN \('web', 'daemon', 'computer'\)/);
   assert.match(sql, /DROP CONSTRAINT IF EXISTS cloud_release_notes_component_check/);
+  assert.match(sql, /package_name IN \('@magclaw\/cli-core', '@magclaw\/daemon', '@magclaw\/computer'\)/);
+  assert.match(sql, /status IN \('pending', 'published', 'failed'\)/);
+  assert.match(sql, /cloud_package_versions_package_status_idx/);
   assert.match(sql, /role IN \('member', 'admin', 'owner'\)/);
   assert.match(sql, /DROP CONSTRAINT IF EXISTS cloud_computers_status_check/);
   assert.match(sql, /ADD CONSTRAINT cloud_computers_status_check[\s\S]*status IN \('pairing', 'connected', 'offline', 'disabled', 'upgrade_pending', 'upgrading', 'restarting', 'rollback', 'upgrade_failed'\)/);
@@ -819,6 +823,19 @@ test('postgres store can reset transient online state when loading a fresh serve
       created_at: createdAt,
       updated_at: createdAt,
     }],
+    cloud_package_versions: [{
+      package_name: '@magclaw/daemon',
+      channel: 'latest',
+      version: '0.1.40',
+      status: 'published',
+      publish_id: 'pkgrel_test',
+      npm_verified_at: createdAt,
+      db_synced_at: createdAt,
+      error: '',
+      created_at: createdAt,
+      updated_at: createdAt,
+      metadata: { registry: 'https://registry.npmjs.org' },
+    }],
     cloud_humans: [{
       id: 'hum_owner',
       workspace_id: 'wsp_main',
@@ -913,6 +930,8 @@ test('postgres store can reset transient online state when loading a fresh serve
   assert.equal(state.agents[0].status, 'idle');
   assert.deepEqual(state.agents[0].activeWorkItemIds, []);
   assert.equal(state.agents[0].runtimeActivity, null);
+  assert.equal(state.packageVersions['@magclaw/daemon'].latest, '0.1.40');
+  assert.equal(state.packageVersions['@magclaw/daemon'].source, 'db');
   assert.deepEqual(state.messages[0].reactions.map((item) => item.key), ['rocket']);
   assert.deepEqual(state.messages[0].followedBy, ['hum_owner']);
   assert.deepEqual(state.replies[0].reactions.map((item) => item.key), ['heart']);
