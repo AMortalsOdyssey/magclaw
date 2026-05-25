@@ -655,7 +655,7 @@ function renderDaemonUpgradeConfirmModal() {
       <div class="confirm-stop-icon">${settingsIcon('computer')}</div>
       <div class="confirm-stop-copy">
         <strong>Upgrade ${escapeHtml(label)}?</strong>
-        <p>MagClaw will ask the computer ${escapeHtml(packageLabel.toLowerCase())} package to upgrade after all Agents on this computer become idle.</p>
+        <p>MagClaw will ask the ${escapeHtml(packageLabel.toLowerCase())} package to upgrade after all Agents on this computer become idle.</p>
         <small>${escapeHtml(range)}</small>
       </div>
     </div>

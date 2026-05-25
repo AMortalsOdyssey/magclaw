@@ -315,6 +315,8 @@ test('computer upgrade UI is package-aware for daemon and computer entry package
   assert.match(listSource, /computerPackageVersionLabel\(computer\)/);
   assert.match(confirmClickSource, /packageName: computerPackageName\(computer\)/);
   assert.match(confirmClickSource, /targetVersion: computerPackageLatestVersion\(computer\)/);
+  assert.match(app, /MagClaw will ask the \$\{escapeHtml\(packageLabel\.toLowerCase\(\)\)\} package to upgrade/);
+  assert.doesNotMatch(app, /computer \$\{escapeHtml\(packageLabel\.toLowerCase\(\)\)\} package/);
   assert.match(app, /Queue \$\{escapeHtml\(packageLabel\.toLowerCase\(\)\)\} upgrade/);
 });
 
