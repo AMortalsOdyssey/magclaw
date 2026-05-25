@@ -572,9 +572,13 @@ if (args[0] === '--version') {
   console.log('2.1.71 (Claude Code)');
   process.exit(0);
 }
-if (args.includes('--print')) {
-  console.log('remote claude response');
-  process.exit(0);
+if (args.includes('--output-format') && args.includes('stream-json')) {
+  setTimeout(() => console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude_stream_session', model: 'claude-sonnet-4-6' })), 5);
+  setTimeout(() => console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'remote ' }] } })), 20);
+  setTimeout(() => console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'claude response' }] } })), 40);
+  setTimeout(() => console.log(JSON.stringify({ type: 'result', session_id: 'claude_stream_session', usage: { input_tokens: 3, output_tokens: 4 } })), 60);
+  setTimeout(() => process.exit(0), 80);
+  return;
 }
 process.exit(2);
 `);
@@ -607,21 +611,88 @@ process.exit(2);
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   try {
+    const delta = await waitFor(() => relay.messages.find((item) => item.type === 'agent:message_delta'));
+    assert.equal(delta.agentId, 'agt_claude_remote');
+    assert.equal(delta.payload.body, 'remote claude response');
+    assert.equal(delta.deliveryId, 'adl_test');
     const message = await waitFor(() => relay.messages.find((item) => item.type === 'agent:message'));
     assert.equal(message.agentId, 'agt_claude_remote');
     assert.equal(message.payload.body, 'remote claude response');
     assert.ok(relay.messages.some((item) => item.type === 'agent:deliver:ack' && item.commandId === 'adl_test'));
     assert.ok(relay.messages.some((item) => item.type === 'agent:status' && item.agentId === 'agt_claude_remote' && item.status === 'idle'));
     const entries = (await readFile(logPath, 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line));
-    assert.ok(entries.some((entry) => entry.args.includes('--print')));
+    assert.ok(entries.some((entry) => entry.args.includes('--output-format') && entry.args.includes('stream-json')));
+    assert.equal(entries.some((entry) => entry.args.includes('--print')), false);
     assert.equal(entries.some((entry) => entry.args.includes('app-server')), false);
-    const run = entries.find((entry) => entry.args.includes('--print'));
+    const run = entries.find((entry) => entry.args.includes('stream-json'));
     const claudeSettingsJson = path.join(run.cwd, 'runtime-hooks', 'claude-code', 'settings.json');
     const claudeHooksDir = path.join(run.cwd, 'runtime-hooks', 'claude-code', 'hooks');
     assert.deepEqual(JSON.parse(await readFile(claudeSettingsJson, 'utf8')), { hooks: {} });
     assert.equal((await lstat(claudeHooksDir)).isDirectory(), true);
     assert.equal(await realpath(path.join(run.cwd, '.claude', 'settings.json')), await realpath(claudeSettingsJson));
     assert.equal(await realpath(path.join(run.cwd, '.claude', 'hooks')), await realpath(claudeHooksDir));
+  } finally {
+    daemon.kill('SIGINT');
+    await Promise.race([
+      new Promise((resolve) => daemon.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 500)),
+    ]);
+    await relay.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('npm daemon finalizes streamed Claude Code text when the runner exits with an error', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-claude-error-'));
+  const fakeClaude = path.join(tmp, 'claude-fake.js');
+  await writeFile(fakeClaude, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  console.log('2.1.150 (Claude Code)');
+  process.exit(0);
+}
+if (args.includes('--output-format') && args.includes('stream-json')) {
+  console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Credit balance is too low' }] }, error: 'billing_error' }));
+  console.log(JSON.stringify({ type: 'result', is_error: true, result: 'Credit balance is too low', usage: { input_tokens: 0, output_tokens: 0 } }));
+  process.exit(1);
+}
+process.exit(2);
+`);
+  await chmod(fakeClaude, 0o755);
+  const relay = await startRelay({
+    agent: {
+      id: 'agt_claude_error',
+      name: 'Remote Claude Error',
+      runtime: 'claude-code',
+    },
+  });
+  const daemon = spawn(process.execPath, [
+    DAEMON_BIN,
+    'connect',
+    '--server-url',
+    relay.baseUrl,
+    '--pair-token',
+    'mc_pair_test',
+    '--profile',
+    'cloud-claude-error-test',
+  ], {
+    env: {
+      ...process.env,
+      MAGCLAW_DAEMON_HOME: path.join(tmp, 'daemon-home'),
+      CODEX_PATH: '/bin/false',
+      CLAUDE_PATH: fakeClaude,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    const delta = await waitFor(() => relay.messages.find((item) => item.type === 'agent:message_delta'));
+    assert.equal(delta.agentId, 'agt_claude_error');
+    assert.equal(delta.payload.body, 'Credit balance is too low');
+    const message = await waitFor(() => relay.messages.find((item) => item.type === 'agent:message'));
+    assert.equal(message.agentId, 'agt_claude_error');
+    assert.equal(message.payload.body, 'Credit balance is too low');
+    assert.ok(relay.messages.some((item) => item.type === 'agent:error' && item.agentId === 'agt_claude_error'));
+    assert.ok(relay.messages.some((item) => item.type === 'agent:status' && item.agentId === 'agt_claude_error' && item.status === 'error'));
   } finally {
     daemon.kill('SIGINT');
     await Promise.race([

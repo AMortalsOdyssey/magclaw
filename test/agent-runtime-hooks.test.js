@@ -86,6 +86,22 @@ test('agent workspace preserves Codex hooks when Claude Code hooks are added lat
   }
 });
 
+test('local Claude Code runtime honors CLAUDE_PATH when spawning', async () => {
+  const source = await readFile(new URL('../server/agent-runtime/process-start.js', import.meta.url), 'utf8');
+
+  assert.match(source, /const claudeCommand = process\.env\.CLAUDE_PATH \|\| 'claude'/);
+  assert.match(source, /spawn\(claudeCommand, args,/);
+  assert.doesNotMatch(source, /spawn\('claude', args,/);
+});
+
+test('local Claude Code spawn failures do not reset the agent back to idle', async () => {
+  const source = await readFile(new URL('../server/agent-runtime/process-start.js', import.meta.url), 'utf8');
+
+  assert.match(source, /let spawnError = null/);
+  assert.match(source, /spawnError = error/);
+  assert.match(source, /child\.on\('close', async \(code\) => \{\s+if \(spawnError\) return/);
+});
+
 test('agent workspace seeds MEMORY.md with progressive disclosure instructions', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-memory-guidance-'));
   try {

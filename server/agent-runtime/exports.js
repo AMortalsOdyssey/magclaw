@@ -55,6 +55,7 @@ return {
   markFallbackResponseWorkItem,
   markPassiveAwarenessWorkItemsObserved,
   markFallbackResponseWorkItems,
+  upsertAgentResponseStream,
   postAgentResponse,
   deliverMessageToAgent,
   createTaskFromMessage,

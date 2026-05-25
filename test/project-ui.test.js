@@ -1235,8 +1235,10 @@ test('messages and replies render markdown while preserving mention chips', asyn
 
   assert.match(app, /function renderMarkdownWithMentions\(content\)/);
   assert.match(app, /message-table/);
-  assert.match(app, /renderMarkdownWithMentions\(message\.body \|\| \(message\.references\?\.length \? '' : '\(attachment\)'\)\)/);
-  assert.match(app, /renderMarkdownWithMentions\(reply\.body \|\| \(reply\.references\?\.length \? '' : '\(attachment\)'\)\)/);
+  assert.match(app, /const fallback = message\.references\?\.length \? '' : '\(attachment\)'/);
+  assert.match(app, /const rendered = renderMarkdownWithMentions\(message\.body \|\| fallback\)/);
+  assert.match(app, /renderStreamingMessageMarkdown\(message\)/);
+  assert.match(app, /renderStreamingMessageMarkdown\(reply\)/);
   const styles = await readStylesSource();
   assert.match(styles, /\.message-table/);
   assert.match(styles, /\.message-table-wrap/);
@@ -1685,6 +1687,21 @@ test('search input preserves IME composition and updates results without full re
   assert.match(app, /searchVisibleCount = SEARCH_PAGE_SIZE/);
   assert.match(styles, /\.search-result-card/);
   assert.match(styles, /\.search-highlight/);
+});
+
+test('streaming agent replies render as a single updating message with visible typing state', async () => {
+  const app = await readFile(new URL('../public/app/render-space-chat-tasks.js', import.meta.url), 'utf8');
+  const detail = await readFile(new URL('../public/app/render-agent-detail.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../public/styles/part-01.css', import.meta.url), 'utf8');
+
+  assert.match(app, /function messageIsStreaming/);
+  assert.match(app, /streamStatus: messageIsStreaming\(record\) \? 'streaming' : ''/);
+  assert.match(app, /is-agent-streaming/);
+  assert.match(app, /agent-stream-cursor/);
+  assert.match(detail, /const streamingClass = messageIsStreaming\(reply\) \? ' is-agent-streaming' : ''/);
+  assert.match(detail, /renderStreamingMessageMarkdown\(reply\)/);
+  assert.match(styles, /\.magclaw-message\.is-agent-streaming/);
+  assert.match(styles, /\.agent-stream-cursor/);
 });
 
 test('search covers messages and replies with local ranking helpers', async () => {

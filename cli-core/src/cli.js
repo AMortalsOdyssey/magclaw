@@ -60,6 +60,68 @@ function now() {
   return new Date().toISOString();
 }
 
+function claudeStreamEvents(raw) {
+  if (!raw || typeof raw !== 'object') return [];
+  const event = raw;
+  const output = [];
+  if (event.type === 'system' && event.subtype === 'init') {
+    output.push({
+      type: 'system',
+      sessionId: event.session_id || event.sessionId || '',
+      model: event.model || '',
+      cwd: event.cwd || '',
+    });
+    return output;
+  }
+  const content = Array.isArray(event.message?.content) ? event.message.content : [];
+  if (event.type === 'assistant') {
+    for (const block of content) {
+      if (block?.type === 'text' && typeof block.text === 'string' && block.text) {
+        output.push({ type: 'text', delta: block.text });
+      } else if (block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) {
+        output.push({ type: 'thinking', delta: block.thinking });
+      } else if (block?.type === 'tool_use' && block.id && block.name) {
+        output.push({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
+      }
+    }
+    return output;
+  }
+  if (event.type === 'user') {
+    for (const block of content) {
+      if (block?.type === 'tool_result' && block.tool_use_id) {
+        output.push({
+          type: 'tool_result',
+          id: block.tool_use_id,
+          output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
+          isError: block.is_error === true,
+        });
+      }
+    }
+    return output;
+  }
+  if (event.type === 'result') {
+    if (event.usage) {
+      output.push({
+        type: 'usage',
+        inputTokens: event.usage.input_tokens,
+        outputTokens: event.usage.output_tokens,
+        costUsd: event.total_cost_usd,
+      });
+    }
+    output.push({ type: 'done', sessionId: event.session_id || event.sessionId || '' });
+  }
+  return output;
+}
+
+function claudeToolActivityDetail(event) {
+  if (!event || typeof event !== 'object') return 'Claude Code activity';
+  if (event.type === 'tool_use') return `Claude Code using ${event.name || 'tool'}`;
+  if (event.type === 'tool_result') return event.isError ? 'Claude Code tool returned an error' : 'Claude Code tool completed';
+  if (event.type === 'thinking') return 'Claude Code thinking';
+  if (event.type === 'usage') return `Claude Code usage input=${event.inputTokens || 0} output=${event.outputTokens || 0}`;
+  return 'Claude Code activity';
+}
+
 function packageInfoFromSpec(packageSpec = '') {
   const match = String(packageSpec || '').trim().match(/^(@magclaw\/(?:daemon|computer))(?:@(.+))?$/);
   return {
@@ -2938,6 +3000,11 @@ class ClaudeAgentSession {
     this.status = 'offline';
     this.started = false;
     this.activeDeliveryId = '';
+    this.responseBuffer = '';
+    this.lastSourceMessage = null;
+    this.pendingMessageDelta = null;
+    this.messageDeltaTimer = null;
+    this.trajectoryCoalesceMs = envInteger(this.env, 'MAGCLAW_DAEMON_TRAJECTORY_COALESCE_MS', DEFAULT_TRAJECTORY_COALESCE_MS, { min: 0, max: 5_000 });
   }
 
   agentDir() {
@@ -2989,6 +3056,87 @@ class ClaudeAgentSession {
     });
   }
 
+  queueMessageDelta(delta = '') {
+    const body = this.responseBuffer.trim();
+    if (!body) return;
+    this.pendingMessageDelta = {
+      type: 'agent:message_delta',
+      agentId: this.agent.id,
+      deliveryId: this.activeDeliveryId || null,
+      payload: {
+        body,
+        delta: String(delta || ''),
+        message: this.lastSourceMessage || null,
+        sourceMessage: this.lastSourceMessage || null,
+        spaceType: this.lastSourceMessage?.spaceType || 'channel',
+        spaceId: this.lastSourceMessage?.spaceId || 'chan_all',
+        parentMessageId: this.lastSourceMessage?.parentMessageId || null,
+        idempotencyKey: this.activeDeliveryId || null,
+      },
+    };
+    if (this.trajectoryCoalesceMs <= 0) {
+      this.flushMessageDelta();
+      return;
+    }
+    if (this.messageDeltaTimer) return;
+    this.messageDeltaTimer = setTimeout(() => {
+      this.messageDeltaTimer = null;
+      this.flushMessageDelta();
+    }, this.trajectoryCoalesceMs);
+    this.messageDeltaTimer.unref?.();
+  }
+
+  flushMessageDelta() {
+    if (this.messageDeltaTimer) {
+      clearTimeout(this.messageDeltaTimer);
+      this.messageDeltaTimer = null;
+    }
+    const payload = this.pendingMessageDelta;
+    this.pendingMessageDelta = null;
+    if (payload) this.send(payload);
+  }
+
+  handleClaudeStreamEvent(event) {
+    if (event.type === 'system') {
+      if (event.sessionId) {
+        this.send({
+          type: 'agent:session',
+          agentId: this.agent.id,
+          status: this.status,
+          sessionId: event.sessionId,
+          sessionKey: null,
+        });
+      }
+      return;
+    }
+    if (event.type === 'text') {
+      this.responseBuffer += String(event.delta || '');
+      this.queueMessageDelta(event.delta || '');
+      this.send({
+        type: 'agent:activity',
+        agentId: this.agent.id,
+        status: 'working',
+        deliveryId: this.activeDeliveryId || null,
+        activity: { source: 'claude-code-stream', chars: this.responseBuffer.length, at: now() },
+      });
+      return;
+    }
+    if (event.type === 'thinking' || event.type === 'tool_use' || event.type === 'tool_result' || event.type === 'usage') {
+      this.send({
+        type: 'agent:activity',
+        agentId: this.agent.id,
+        status: event.type === 'thinking' ? 'thinking' : 'working',
+        deliveryId: this.activeDeliveryId || null,
+        activity: {
+          source: 'claude-code-stream',
+          phase: event.type,
+          detail: claudeToolActivityDetail(event),
+          at: now(),
+        },
+      });
+    }
+  }
+
   async start() {
     if (this.started) return;
     await this.prepare();
@@ -2999,11 +3147,12 @@ class ClaudeAgentSession {
   async deliver(message = {}, workItem = null, deliveryId = '') {
     await this.start();
     this.activeDeliveryId = deliveryId || '';
+    this.responseBuffer = '';
+    this.lastSourceMessage = message || null;
     const prompt = deliveryPrompt(this.agent, message, workItem);
     const claudeCommand = this.env.CLAUDE_PATH || 'claude';
-    const args = ['--print'];
+    const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
     if (this.agent.model) args.push('--model', String(this.agent.model));
-    args.push(prompt);
     const timeoutMs = Number(this.env.MAGCLAW_DAEMON_RUNTIME_TIMEOUT_MS || 10 * 60 * 1000);
     if (this.activeDeliveryId) {
       await this.markDelivery(this.activeDeliveryId, 'started', {
@@ -3014,31 +3163,33 @@ class ClaudeAgentSession {
     }
     this.sendStatus('thinking', { source: 'claude-code', detail: 'Claude Code turn started', at: now() });
     await new Promise((resolve) => {
-      let stdout = '';
       let stderr = '';
+      let stdoutBuffer = '';
       let settled = false;
+      const finalMessageFrame = (body) => ({
+        type: 'agent:message',
+        agentId: this.agent.id,
+        deliveryId: this.activeDeliveryId || null,
+        payload: {
+          body,
+          message,
+          sourceMessage: message,
+          spaceType: message.spaceType || 'channel',
+          spaceId: message.spaceId || 'chan_all',
+          parentMessageId: message.parentMessageId || null,
+          idempotencyKey: this.activeDeliveryId || null,
+        },
+      });
       const finish = (status, detail) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        this.flushMessageDelta();
         this.child = null;
+        const body = this.responseBuffer.trim();
         if (status === 'idle') {
-          const body = stdout.trim();
           if (body) {
-            const frame = {
-              type: 'agent:message',
-              agentId: this.agent.id,
-              deliveryId: this.activeDeliveryId || null,
-              payload: {
-                body,
-                message,
-                sourceMessage: message,
-                spaceType: message.spaceType || 'channel',
-                spaceId: message.spaceId || 'chan_all',
-                parentMessageId: message.parentMessageId || null,
-                idempotencyKey: this.activeDeliveryId || null,
-              },
-            };
+            const frame = finalMessageFrame(body);
             this.send(frame);
             this.markDelivery(this.activeDeliveryId, 'completed', { resultFrame: frame }).catch(() => {});
           }
@@ -3046,8 +3197,10 @@ class ClaudeAgentSession {
           this.sendStatus('idle', { source: 'claude-code', detail: detail || 'Claude Code turn completed', at: now() });
         } else {
           const error = detail || stderr.trim() || 'Claude Code failed.';
+          const frame = body ? finalMessageFrame(body) : null;
+          if (frame) this.send(frame);
           this.send({ type: 'agent:error', commandId: this.activeDeliveryId || undefined, deliveryId: this.activeDeliveryId || null, agentId: this.agent.id, error });
-          this.markDelivery(this.activeDeliveryId, 'failed', { error }).catch(() => {});
+          this.markDelivery(this.activeDeliveryId, 'failed', { error, ...(frame ? { resultFrame: frame } : {}) }).catch(() => {});
           this.sendStatus('error', { source: 'claude-code', error, at: now() });
         }
         this.activeDeliveryId = '';
@@ -3070,19 +3223,40 @@ class ClaudeAgentSession {
         finish('error', 'Claude Code session timed out.');
       }, timeoutMs);
       this.child.stdout.on('data', (chunk) => {
-        stdout += chunk.toString();
-        this.send({
-          type: 'agent:activity',
-          agentId: this.agent.id,
-          status: 'working',
-          activity: { source: 'claude-code', chars: stdout.length, at: now() },
-        });
+        stdoutBuffer += chunk.toString();
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const raw = JSON.parse(line);
+            for (const event of claudeStreamEvents(raw)) this.handleClaudeStreamEvent(event);
+          } catch (error) {
+            stderr += `${line}\n`;
+            this.send({
+              type: 'agent:activity',
+              agentId: this.agent.id,
+              status: 'working',
+              deliveryId: this.activeDeliveryId || null,
+              activity: { source: 'claude-code-stream', error: `Invalid stream JSON: ${error.message}`, at: now() },
+            });
+          }
+        }
       });
       this.child.stderr.on('data', (chunk) => {
         stderr += chunk.toString();
       });
       this.child.on('error', (error) => finish('error', error.message));
       this.child.on('close', (code, signal) => {
+        if (stdoutBuffer.trim()) {
+          try {
+            const raw = JSON.parse(stdoutBuffer.trim());
+            for (const event of claudeStreamEvents(raw)) this.handleClaudeStreamEvent(event);
+          } catch (error) {
+            stderr += `${stdoutBuffer}\n`;
+          }
+          stdoutBuffer = '';
+        }
         if (code === 0) finish('idle');
         else finish('error', stderr.trim() || `Claude Code exited with code ${code ?? 'unknown'}${signal ? ` (${signal})` : ''}.`);
       });
@@ -3091,6 +3265,7 @@ class ClaudeAgentSession {
 
   stop() {
     this.status = 'stopping';
+    this.flushMessageDelta();
     if (this.child) this.child.kill('SIGTERM');
     this.started = false;
   }

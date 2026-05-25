@@ -70,6 +70,124 @@ async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
   return proc;
 }
 
+function claudeStreamEvents(raw) {
+  if (!raw || typeof raw !== 'object') return [];
+  const event = raw;
+  const output = [];
+  if (event.type === 'system' && event.subtype === 'init') {
+    output.push({
+      type: 'system',
+      sessionId: event.session_id || event.sessionId || '',
+      model: event.model || '',
+      cwd: event.cwd || '',
+    });
+    return output;
+  }
+  const content = Array.isArray(event.message?.content) ? event.message.content : [];
+  if (event.type === 'assistant') {
+    for (const block of content) {
+      if (block?.type === 'text' && typeof block.text === 'string' && block.text) {
+        output.push({ type: 'text', delta: block.text });
+      } else if (block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) {
+        output.push({ type: 'thinking', delta: block.thinking });
+      } else if (block?.type === 'tool_use' && block.id && block.name) {
+        output.push({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
+      }
+    }
+    return output;
+  }
+  if (event.type === 'user') {
+    for (const block of content) {
+      if (block?.type === 'tool_result' && block.tool_use_id) {
+        output.push({
+          type: 'tool_result',
+          id: block.tool_use_id,
+          output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
+          isError: block.is_error === true,
+        });
+      }
+    }
+    return output;
+  }
+  if (event.type === 'result') {
+    if (event.usage) {
+      output.push({
+        type: 'usage',
+        inputTokens: event.usage.input_tokens,
+        outputTokens: event.usage.output_tokens,
+        costUsd: event.total_cost_usd,
+      });
+    }
+    output.push({ type: 'done', sessionId: event.session_id || event.sessionId || '' });
+  }
+  return output;
+}
+
+function claudeActivityDetail(event) {
+  if (event.type === 'tool_use') return `Claude Code using ${event.name || 'tool'}`;
+  if (event.type === 'tool_result') return event.isError ? 'Claude Code tool returned an error' : 'Claude Code tool completed';
+  if (event.type === 'thinking') return 'Claude Code thinking';
+  if (event.type === 'usage') return `Claude Code usage input=${event.inputTokens || 0} output=${event.outputTokens || 0}`;
+  return 'Claude Code activity';
+}
+
+async function flushClaudeResponseStream(agent, proc) {
+  if (proc.claudeStreamTimer) {
+    clearTimeout(proc.claudeStreamTimer);
+    proc.claudeStreamTimer = null;
+  }
+  const body = String(proc.responseBuffer || '').trim();
+  if (!body || body === proc.claudeLastStreamBody) return null;
+  proc.claudeLastStreamBody = body;
+  return upsertAgentResponseStream(agent, proc.spaceType, proc.spaceId, body, proc.parentMessageId, {
+    sourceMessage: proc.lastSourceMessage,
+    streamId: proc.claudeStreamId,
+    source: 'local-claude-code',
+  });
+}
+
+function scheduleClaudeResponseStream(agent, proc, immediate = false) {
+  if (immediate) {
+    proc.claudeStreamQueue = (proc.claudeStreamQueue || Promise.resolve())
+      .then(() => flushClaudeResponseStream(agent, proc))
+      .catch((error) => addSystemEvent('agent_stream_error', `${agent.name} stream update failed: ${error.message}`, { agentId: agent.id }));
+    return;
+  }
+  if (proc.claudeStreamTimer) return;
+  proc.claudeStreamTimer = setTimeout(() => {
+    proc.claudeStreamTimer = null;
+    scheduleClaudeResponseStream(agent, proc, true);
+  }, 250);
+  proc.claudeStreamTimer.unref?.();
+}
+
+function handleClaudeStreamEvent(agent, proc, event) {
+  if (event.type === 'system') {
+    if (event.sessionId) {
+      updateRuntimeSession(agent, proc, {
+        status: 'running',
+        metadata: {
+          ...(ensureRuntimeSession(agent, proc).metadata || {}),
+          claudeSessionId: event.sessionId,
+          claudeModel: event.model || null,
+        },
+      });
+    }
+    return;
+  }
+  if (event.type === 'text') {
+    proc.responseBuffer += String(event.delta || '');
+    scheduleClaudeResponseStream(agent, proc, !proc.claudeLastStreamBody);
+    noteAgentRuntimeProgress(agent, proc, 'thinking', 'Streaming Claude Code response text.');
+    return;
+  }
+  if (event.type === 'thinking' || event.type === 'tool_use' || event.type === 'tool_result' || event.type === 'usage') {
+    addAgentRuntimeActivityEvent(agent, proc, 'agent_activity', event.type === 'thinking' ? 'thinking' : 'working', claudeActivityDetail(event), {
+      raw: { type: `claude_${event.type}` },
+    }, { broadcast: true });
+  }
+}
+
 async function startClaudeAgent(agent, proc, workspace) {
   if (typeof prepareAgentRuntimeHooks === 'function') {
     await prepareAgentRuntimeHooks(agent, 'claude-code');
@@ -82,10 +200,12 @@ async function startClaudeAgent(agent, proc, workspace) {
   const turnPrompt = createAgentTurnPrompt(promptMessages, agent);
   const fullPrompt = `${standingPrompt}\n\n---\n\n${turnPrompt}`;
 
-  // Claude Code headless mode using --print for simple response
   const args = [
-    '--print',
-    '-p', fullPrompt,
+    '-p',
+    fullPrompt,
+    '--output-format',
+    'stream-json',
+    '--verbose',
   ];
 
   if (agent.model) {
@@ -99,7 +219,8 @@ async function startClaudeAgent(agent, proc, workspace) {
   await persistState();
   broadcastState();
 
-  const child = spawn('claude', args, {
+  const claudeCommand = process.env.CLAUDE_PATH || 'claude';
+  const child = spawn(claudeCommand, args, {
     cwd: workspace,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
@@ -109,11 +230,30 @@ async function startClaudeAgent(agent, proc, workspace) {
   });
 
   proc.child = child;
-  let stdout = '';
+  let stdoutBuffer = '';
   let stderr = '';
+  proc.responseBuffer = '';
+  proc.claudeStreamId = makeId('stream');
+  proc.claudeLastStreamBody = '';
+  proc.claudeStreamQueue = Promise.resolve();
+  let spawnError = null;
 
   child.stdout.on('data', (chunk) => {
-    stdout += chunk.toString();
+    stdoutBuffer += chunk.toString();
+    const lines = stdoutBuffer.split(/\r?\n/);
+    stdoutBuffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const raw = JSON.parse(line);
+        for (const event of claudeStreamEvents(raw)) handleClaudeStreamEvent(agent, proc, event);
+      } catch (error) {
+        stderr += `${line}\n`;
+        addAgentRuntimeActivityEvent(agent, proc, 'agent_activity', 'working', `Invalid Claude Code stream JSON: ${error.message}`, {
+          raw: { type: 'claude_stream_parse_error' },
+        }, { broadcast: true });
+      }
+    }
   });
 
   child.stderr.on('data', (chunk) => {
@@ -121,6 +261,7 @@ async function startClaudeAgent(agent, proc, workspace) {
   });
 
   child.on('error', async (error) => {
+    spawnError = error;
     proc.status = 'error';
     setAgentStatus(agent, 'error', 'claude_error', { activeWorkItemIds: [] });
     addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
@@ -130,13 +271,25 @@ async function startClaudeAgent(agent, proc, workspace) {
   });
 
   child.on('close', async (code) => {
+    if (spawnError) return;
+    if (stdoutBuffer.trim()) {
+      try {
+        const raw = JSON.parse(stdoutBuffer.trim());
+        for (const event of claudeStreamEvents(raw)) handleClaudeStreamEvent(agent, proc, event);
+      } catch (error) {
+        stderr += `${stdoutBuffer}\n`;
+      }
+      stdoutBuffer = '';
+    }
+    await proc.claudeStreamQueue;
+    await flushClaudeResponseStream(agent, proc);
     const queuedMessages = proc.stopRequested ? (proc.restartMessagesAfterStop || []) : proc.inbox.slice(proc.promptMessageCount);
     const sourceMessage = proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null;
     proc.status = 'idle';
     setAgentStatus(agent, 'idle', 'claude_turn_closed', { activeWorkItemIds: [] });
 
 	    // Post the response back to the conversation
-	    const responseText = stdout.trim() || stderr.trim() || '(No response)';
+	    const responseText = proc.responseBuffer.trim() || stderr.trim() || '(No response)';
 	    const fallbackGuard = { workItemIds: [sourceMessage?.workItemId].filter(Boolean) };
 	    if (responseText && responseText !== '(No response)' && proc.suppressOutput) {
 	      addSystemEvent('agent_stdout_suppressed', `${agent.name} stopped before posting final stdout.`, {
@@ -161,7 +314,7 @@ async function startClaudeAgent(agent, proc, workspace) {
 	        messageId: sourceMessage?.id || null,
 	      });
 	    } else if (responseText && responseText !== '(No response)') {
-	      const posted = await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText, proc.parentMessageId, { sourceMessage });
+	      const posted = await postAgentResponse(agent, proc.spaceType, proc.spaceId, responseText, proc.parentMessageId, { sourceMessage, streamId: proc.claudeStreamId });
 	      markFallbackResponseWorkItem(sourceMessage, posted);
 	    }
 

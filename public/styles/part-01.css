@@ -1354,6 +1354,10 @@ button:disabled {
   box-shadow: var(--shadow-pixel-sm);
 }
 
+.magclaw-message.is-agent-streaming {
+  border-color: rgba(236, 72, 153, 0.42);
+}
+
 .magclaw-message.compact {
   padding: 5px 8px;
 }
@@ -1755,6 +1759,28 @@ button:disabled {
   padding-left: 9px;
   border-left: 3px solid var(--accent);
   color: var(--text-secondary);
+}
+
+.agent-stream-cursor {
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.12em;
+  background: var(--accent);
+  animation: agent-stream-cursor-blink 1s steps(2, start) infinite;
+}
+
+@keyframes agent-stream-cursor-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+
+  46%,
+  100% {
+    opacity: 0.25;
+  }
 }
 
 .message-table-wrap {

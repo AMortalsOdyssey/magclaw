@@ -601,7 +601,8 @@ function markFallbackResponseWorkItems(sourceMessage, record, workItemIds = []) 
 function findExistingAgentResponseForDelivery(agent, parentMessageId = null, options = {}) {
   const deliveryId = String(options.deliveryId || '').trim();
   const idempotencyKey = String(options.idempotencyKey || '').trim();
-  if (!deliveryId && !idempotencyKey) return null;
+  const streamId = String(options.streamId || '').trim();
+  if (!deliveryId && !idempotencyKey && !streamId) return null;
   const records = parentMessageId ? state.replies : state.messages;
   return (records || []).find((record) => (
     record?.authorType === 'agent'
@@ -610,6 +611,7 @@ function findExistingAgentResponseForDelivery(agent, parentMessageId = null, opt
     && (
       (deliveryId && record.deliveryId === deliveryId)
       || (idempotencyKey && record.idempotencyKey === idempotencyKey)
+      || (streamId && String(record.metadata?.agentStream?.streamId || '') === streamId)
     )
   )) || null;
 }
@@ -661,12 +663,137 @@ function attachAgentResponseDeliveryIdentity(record, options = {}) {
   return changed;
 }
 
+function setAgentResponseStreamMetadata(record, status, options = {}) {
+  if (!record) return false;
+  const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+    ? { ...record.metadata }
+    : {};
+  if (status === 'completed') {
+    if (!metadata.agentStream) return false;
+    delete metadata.agentStream;
+    if (Object.keys(metadata).length) record.metadata = metadata;
+    else delete record.metadata;
+    record.updatedAt = now();
+    normalizeConversationRecord(record);
+    return true;
+  }
+  metadata.agentStream = {
+    ...(metadata.agentStream || {}),
+    status,
+    streamId: String(options.streamId || options.deliveryId || options.idempotencyKey || '').trim() || metadata.agentStream?.streamId || '',
+    deliveryId: String(options.deliveryId || '').trim() || metadata.agentStream?.deliveryId || '',
+    source: String(options.source || 'runtime-stream'),
+    updatedAt: now(),
+  };
+  record.metadata = metadata;
+  record.updatedAt = now();
+  normalizeConversationRecord(record);
+  return true;
+}
+
 async function returnExistingAgentResponse(record, options = {}) {
-  if (attachAgentResponseDeliveryIdentity(record, options)) {
+  let changed = attachAgentResponseDeliveryIdentity(record, options);
+  if (options.finalBody !== undefined) {
+    const finalBody = prepareAgentResponseBody(options.finalBody);
+    if (finalBody && record.body !== finalBody) {
+      record.body = finalBody;
+      record.updatedAt = now();
+      normalizeConversationRecord(record);
+      changed = true;
+    }
+    if (setAgentResponseStreamMetadata(record, 'completed', options)) changed = true;
+  }
+  if (changed) {
     await persistState();
     broadcastState();
   }
   return record;
+}
+
+async function upsertAgentResponseStream(agent, spaceType, spaceId, body, parentMessageId = null, options = {}) {
+  const responseBody = prepareAgentResponseBody(body);
+  if (!responseBody) return null;
+  const streamOptions = {
+    ...options,
+    streamId: String(options.streamId || options.deliveryId || options.idempotencyKey || '').trim(),
+  };
+  const sourceDepth = Number(options.sourceMessage?.agentRelayDepth || 0);
+  const agentRelayDepth = sourceDepth + 1;
+  const parentForResponse = parentMessageId ? findMessage(parentMessageId) : null;
+  const existingResponse = findExistingAgentResponseForDelivery(agent, parentMessageId, streamOptions);
+  if (existingResponse) {
+    if (existingResponse.body !== responseBody) existingResponse.body = responseBody;
+    attachAgentResponseDeliveryIdentity(existingResponse, streamOptions);
+    setAgentResponseStreamMetadata(existingResponse, 'streaming', { ...streamOptions, source: options.source || 'runtime-stream' });
+    broadcastState({ skipCloudPush: true });
+    return existingResponse;
+  }
+  if (parentForResponse) {
+    const parent = parentForResponse;
+    const reply = normalizeConversationRecord({
+      id: makeId('rep'),
+      workspaceId: parent.workspaceId || options.sourceMessage?.workspaceId || workspaceIdForSpace(parent.spaceType || spaceType, parent.spaceId || spaceId, null, agent),
+      parentMessageId,
+      spaceType: parent.spaceType || spaceType,
+      spaceId: parent.spaceId || spaceId,
+      authorType: 'agent',
+      authorId: agent.id,
+      body: responseBody,
+      attachmentIds: [],
+      agentRelayDepth,
+      deliveryId: options.deliveryId || null,
+      idempotencyKey: options.idempotencyKey || null,
+      metadata: {
+        agentStream: {
+          status: 'streaming',
+          streamId: streamOptions.streamId,
+          deliveryId: String(options.deliveryId || '').trim(),
+          source: String(options.source || 'runtime-stream'),
+          updatedAt: now(),
+        },
+      },
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    state.replies.push(reply);
+    parent.replyCount = Math.max(
+      Number(parent.replyCount || 0) + 1,
+      state.replies.filter((item) => item.parentMessageId === parentMessageId).length,
+    );
+    parent.updatedAt = now();
+    broadcastState({ skipCloudPush: true });
+    return reply;
+  }
+
+  const message = normalizeConversationRecord({
+    id: makeId('msg'),
+    workspaceId: options.sourceMessage?.workspaceId || workspaceIdForSpace(spaceType, spaceId, null, agent),
+    spaceType,
+    spaceId,
+    authorType: 'agent',
+    authorId: agent.id,
+    body: responseBody,
+    attachmentIds: [],
+    agentRelayDepth,
+    deliveryId: options.deliveryId || null,
+    idempotencyKey: options.idempotencyKey || null,
+    metadata: {
+      agentStream: {
+        status: 'streaming',
+        streamId: streamOptions.streamId,
+        deliveryId: String(options.deliveryId || '').trim(),
+        source: String(options.source || 'runtime-stream'),
+        updatedAt: now(),
+      },
+    },
+    replyCount: 0,
+    savedBy: [],
+    createdAt: now(),
+    updatedAt: now(),
+  });
+  state.messages.push(message);
+  broadcastState({ skipCloudPush: true });
+  return message;
 }
 
 async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageId = null, options = {}) {
@@ -677,7 +804,21 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
   const dedupeSpaceType = parentForResponse?.spaceType || spaceType;
   const dedupeSpaceId = parentForResponse?.spaceId || spaceId;
   const existingResponse = findExistingAgentResponseForDelivery(agent, parentMessageId, options);
-  if (existingResponse) return returnExistingAgentResponse(existingResponse, options);
+  if (existingResponse) {
+    const wasStreaming = Boolean(existingResponse.metadata?.agentStream);
+    const posted = await returnExistingAgentResponse(existingResponse, { ...options, finalBody: responseBody });
+    if (wasStreaming) {
+      if (parentForResponse) {
+        addCollabEvent('agent_thread_response', `${agent.name} responded in thread`, { replyId: posted.id, messageId: parentMessageId, agentId: agent.id });
+        await relayAgentMentions(posted, { parentMessageId, sourceMessage: options.sourceMessage });
+      } else {
+        addCollabEvent('agent_response', `${agent.name} responded`, { messageId: posted.id, agentId: agent.id });
+        await relayAgentMentions(posted, { sourceMessage: options.sourceMessage });
+        await fanOutAgentChannelAwareness(posted, { sourceMessage: options.sourceMessage });
+      }
+    }
+    return posted;
+  }
   const recentDuplicate = findRecentDuplicateAgentResponse(agent, dedupeSpaceType, dedupeSpaceId, responseBody, parentMessageId, options);
   if (recentDuplicate) {
     addSystemEvent('agent_response_deduped', `${agent.name} repeated a recent message to the same target.`, {

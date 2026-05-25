@@ -1379,6 +1379,7 @@ const {
   markWorkItemResponded,
   markFallbackResponseWorkItem,
   markFallbackResponseWorkItems,
+  upsertAgentResponseStream,
   postAgentResponse,
   deliverMessageToAgent,
   createTaskFromMessage,
@@ -1571,6 +1572,15 @@ function stopMarkdownMaintenanceScheduler() {
 }
 
 daemonRelay.setHandlers({
+  onAgentMessageDelta: async ({ agent, body, spaceType, spaceId, parentMessageId, sourceMessage, deliveryId, idempotencyKey }) => {
+    await upsertAgentResponseStream(agent, spaceType, spaceId, body, parentMessageId, {
+      sourceMessage,
+      deliveryId,
+      idempotencyKey,
+      streamId: deliveryId || idempotencyKey || '',
+      source: 'daemon-runtime',
+    });
+  },
   onAgentMessage: async ({ agent, body, spaceType, spaceId, parentMessageId, sourceMessage, deliveryId, idempotencyKey }) => {
     const posted = await postAgentResponse(agent, spaceType, spaceId, body, parentMessageId, {
       sourceMessage,
