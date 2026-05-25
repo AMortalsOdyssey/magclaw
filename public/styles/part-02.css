@@ -437,15 +437,20 @@
 }
 
 .reply-count-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
-  min-height: 22px;
+  min-height: 18px;
   margin-top: 0;
-  padding: 0 7px;
+  padding: 0 6px;
   border: 1px solid var(--border);
   background: #e7fbff;
   color: var(--text-primary);
   font-size: 10px;
   font-weight: 900;
+  line-height: 1.05;
 }
 
 .agent-receipt-tray {
@@ -2196,29 +2201,33 @@
 
 /* Mention tags in messages */
 .mention-tag {
-  display: inline;
-  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 3px;
   margin: 0 1px;
   border: 1px solid var(--border);
   border-radius: 0;
   background: var(--identity);
   color: var(--identity-text);
   font-weight: 700;
+  line-height: 1.05;
+  vertical-align: -1px;
   cursor: pointer;
   transition: background 0.15s;
 }
 
 button.mention-tag {
+  appearance: none;
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   font: inherit;
   width: auto;
   min-width: 0;
   height: auto;
   min-height: 0;
-  line-height: inherit;
+  line-height: 1.05;
   white-space: nowrap;
-  vertical-align: baseline;
+  vertical-align: -1px;
 }
 
 .mention-tag:hover {

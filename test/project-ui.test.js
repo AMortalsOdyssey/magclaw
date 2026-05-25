@@ -1144,6 +1144,23 @@ test('messages and replies render markdown while preserving mention chips', asyn
   assert.match(styles, /\.message-table-wrap/);
 });
 
+test('message mention and reply chips stay compact in narrow chat panes', async () => {
+  const styles = await readStylesSource();
+  const mentionSource = styles.slice(styles.indexOf('/* Mention tags in messages */'), styles.indexOf('.project-strip'));
+  const replyChipSource = styles.slice(styles.indexOf('.reply-count-chip {'), styles.indexOf('.agent-receipt-tray'));
+
+  assert.match(mentionSource, /\.mention-tag \{[\s\S]*display: inline-flex/);
+  assert.match(mentionSource, /\.mention-tag \{[\s\S]*align-items: center/);
+  assert.match(mentionSource, /\.mention-tag \{[\s\S]*padding: 0 3px/);
+  assert.match(mentionSource, /\.mention-tag \{[\s\S]*line-height: 1\.05/);
+  assert.match(mentionSource, /button\.mention-tag \{[\s\S]*appearance: none/);
+  assert.match(mentionSource, /button\.mention-tag \{[\s\S]*line-height: 1\.05/);
+  assert.match(replyChipSource, /\.reply-count-chip \{[\s\S]*min-height: 18px/);
+  assert.match(replyChipSource, /\.reply-count-chip \{[\s\S]*padding: 0 6px/);
+  assert.match(replyChipSource, /\.reply-count-chip \{[\s\S]*line-height: 1\.05/);
+  assert.match(replyChipSource, /\.reply-count-chip \{[\s\S]*appearance: none/);
+});
+
 test('human mention chips use a distinct color from agent mentions', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
