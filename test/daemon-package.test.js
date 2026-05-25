@@ -352,6 +352,7 @@ test('top-level daemon npm package dry-run excludes cloud server and deployment 
   assert.ok(files.includes('bin/magclaw-daemon.js'));
   assert.ok(files.includes('bin/magclaw.js'));
   assert.ok(files.includes('src/cli.js'));
+  assert.ok(files.includes('src/list-renderer.js'));
   assert.ok(files.includes('src/mcp-bridge.js'));
   assert.equal(files.some((file) => file.startsWith('server/')), false);
   assert.equal(files.some((file) => file.startsWith('public/')), false);
@@ -514,12 +515,13 @@ test('help flags describe restart list and daemon control commands', () => {
     assert.match(result.stdout, /computer\s+Pair this local computer with a server using browser approval/);
     assert.match(result.stdout, /restart\s+Restart a saved background daemon profile/);
     assert.match(result.stdout, /list\s+List local daemon profiles and connected Computers/);
+    assert.match(result.stdout, /--json\s+Print machine-readable output for list/);
     assert.match(result.stdout, /stop\s+Stop a daemon profile/);
     assert.match(result.stdout, /restore\s+Legacy alias for restart/);
   }
 });
 
-test('list command returns saved local daemon profiles and computer ids', async () => {
+test('list command renders saved local daemon profiles as a readable table', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-list-profiles-'));
   try {
     const alpha = profilePaths('alpha server', { MAGCLAW_DAEMON_HOME: home });
@@ -533,6 +535,8 @@ test('list command returns saved local daemon profiles and computer ids', async 
       serverUrl: 'https://alpha.example',
       computerId: 'cmp_alpha',
       name: 'Studio Mac',
+      serverName: 'Alpha Team',
+      serverSlug: 'alpha-team',
       token: 'mc_machine_secret',
       createdAt: '2026-05-20T01:02:03.000Z',
       updatedAt: '2026-05-21T01:02:03.000Z',
@@ -542,10 +546,63 @@ test('list command returns saved local daemon profiles and computer ids', async 
       serverUrl: 'https://beta.example',
       computerId: 'cmp_beta',
       name: 'Windows Desk',
+      serverName: 'Beta Team',
+      serverSlug: 'beta-team',
       pairToken: 'mc_pair_legacy',
     }, null, 2));
 
-    const result = spawnSync(process.execPath, [DAEMON_BIN, 'list'], {
+    const result = spawnSync(process.execPath, [DAEMON_BIN, 'list', '--color'], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /MagClaw Computers/);
+    assert.match(result.stdout, /Computer Name/);
+    assert.match(result.stdout, /Server Name/);
+    assert.match(result.stdout, /Server Slug/);
+    assert.match(result.stdout, /Studio Mac/);
+    assert.match(result.stdout, /Alpha Team/);
+    assert.match(result.stdout, /alpha-team/);
+    assert.match(result.stdout, /Windows Desk/);
+    assert.match(result.stdout, /2026年05月21日 09:02:03/);
+    assert.match(result.stdout, /\u001b\[/);
+    assert.throws(() => JSON.parse(result.stdout));
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('list command keeps JSON output available for automation', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-list-json-'));
+  try {
+    const alpha = profilePaths('alpha server', { MAGCLAW_DAEMON_HOME: home });
+    const beta = profilePaths('beta', { MAGCLAW_DAEMON_HOME: home });
+    const empty = profilePaths('empty', { MAGCLAW_DAEMON_HOME: home });
+    await mkdir(path.dirname(alpha.config), { recursive: true });
+    await mkdir(path.dirname(beta.config), { recursive: true });
+    await mkdir(empty.dir, { recursive: true });
+    await writeFile(alpha.config, JSON.stringify({
+      profile: alpha.profile,
+      serverUrl: 'https://alpha.example',
+      computerId: 'cmp_alpha',
+      name: 'Studio Mac',
+      serverName: 'Alpha Team',
+      serverSlug: 'alpha-team',
+      token: 'mc_machine_secret',
+      createdAt: '2026-05-20T01:02:03.000Z',
+      updatedAt: '2026-05-21T01:02:03.000Z',
+    }, null, 2));
+    await writeFile(beta.config, JSON.stringify({
+      profile: beta.profile,
+      serverUrl: 'https://beta.example',
+      computerId: 'cmp_beta',
+      name: 'Windows Desk',
+      serverName: 'Beta Team',
+      serverSlug: 'beta-team',
+      pairToken: 'mc_pair_legacy',
+    }, null, 2));
+
+    const result = spawnSync(process.execPath, [DAEMON_BIN, 'list', '--json'], {
       env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
       encoding: 'utf8',
     });
@@ -556,6 +613,8 @@ test('list command returns saved local daemon profiles and computer ids', async 
     assert.deepEqual(payload.profiles.map((item) => item.profile), ['alpha_server', 'beta']);
     assert.deepEqual(payload.profiles.map((item) => item.computerId), ['cmp_alpha', 'cmp_beta']);
     assert.equal(payload.profiles[0].name, 'Studio Mac');
+    assert.equal(payload.profiles[0].serverName, 'Alpha Team');
+    assert.equal(payload.profiles[0].serverSlug, 'alpha-team');
     assert.equal(payload.profiles[0].hasMachineToken, true);
     assert.equal(payload.profiles[0].token, undefined);
     assert.equal(payload.profiles[1].hasPairToken, true);

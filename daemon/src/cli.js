@@ -7,6 +7,7 @@ import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, r
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { renderListProfiles, shouldUseColor } from './list-renderer.js';
 
 export const DEFAULT_PROFILE = 'default';
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
@@ -519,6 +520,7 @@ function renderHelp() {
     '  --wait-cloud           Wait for Cloud heartbeat during manual upgrade',
     '  --dry-run              Preview upgrade actions without restarting',
     '  --force                Overwrite an existing MagClaw CLI shim',
+    '  --json                 Print machine-readable output for list',
     '  -h, --help             Show this help',
     '',
     'Examples:',
@@ -565,6 +567,8 @@ async function saveProfile(profile, config, env = process.env) {
     workspaceId: config.workspaceId || config.workspace || 'local',
     computerId: config.computerId || null,
     name: config.name || os.hostname(),
+    serverName: config.serverName || '',
+    serverSlug: config.serverSlug || '',
     fingerprint: config.fingerprint || owner.fingerprint,
     token: pairToken ? '' : (config.token || ''),
     pairToken,
@@ -4380,6 +4384,9 @@ async function listProfiles(env = process.env) {
       serverUrl: config.serverUrl || '',
       computerId: config.computerId || null,
       name: config.name || '',
+      computerName: config.computerName || config.name || '',
+      serverName: config.serverName || config.serverSlug || paths.profile,
+      serverSlug: config.serverSlug || paths.profile,
       workspaceId: config.workspaceId || config.workspace || '',
       hasMachineToken: Boolean(config.token || config.machineToken || config.apiKey),
       hasPairToken: Boolean(config.pairToken),
@@ -4843,6 +4850,8 @@ async function runComputerSetup(flags, env = process.env) {
     computerId: approved.computerId,
     workspaceId: approved.workspaceId,
     name: displayName,
+    serverName: approved.serverName || approved.serverSlug || serverSlug,
+    serverSlug: approved.serverSlug || serverSlug,
     fingerprint: owner.fingerprint,
   }, env);
   await saveProfile(config.profile, config, env);
@@ -4853,6 +4862,7 @@ async function runComputerSetup(flags, env = process.env) {
     cli,
     computerId: config.computerId,
     profile: config.profile,
+    serverName: config.serverName,
     serverSlug: approved.serverSlug || serverSlug,
   });
   if (!result.ok) {
@@ -4981,7 +4991,13 @@ export async function main(argv = process.argv, env = process.env) {
       printJson(await status(flags.profile));
       break;
     case 'list':
-      printJson(await listProfiles(env));
+      if (flags.json) {
+        printJson(await listProfiles(env));
+      } else {
+        process.stdout.write(renderListProfiles(await listProfiles(env), {
+          color: shouldUseColor({ env, stream: process.stdout, flags }),
+        }));
+      }
       break;
     case 'logs':
       await logs(flags.profile);

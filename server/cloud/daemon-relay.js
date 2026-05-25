@@ -943,6 +943,7 @@ export function createDaemonRelay(deps) {
       profile: daemonProfileForComputerSetup(workspace),
       workspaceId: request.workspaceId,
       serverSlug: workspace.slug || request.serverSlug || '',
+      serverName: workspace.name || workspace.slug || request.serverSlug || '',
       approvedAt,
     };
   }
@@ -968,6 +969,7 @@ export function createDaemonRelay(deps) {
       computerId: request.computerId,
       workspaceId: request.workspaceId,
       serverSlug: workspace.slug || request.serverSlug || '',
+      serverName: workspace.name || workspace.slug || request.serverSlug || '',
       profile: daemonProfileForComputerSetup(workspace),
       machineToken: request.machineToken,
     };

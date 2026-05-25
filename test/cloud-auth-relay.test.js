@@ -1226,6 +1226,8 @@ test('browser-approved computer setup reuses one physical computer per server an
     });
     assert.equal(firstToken.data.status, 'approved');
     assert.equal(firstToken.data.computerId, firstApproval.data.computer.id);
+    assert.equal(firstToken.data.serverName, 'Alpha Team');
+    assert.equal(firstToken.data.serverSlug, 'alpha-team');
     assert.match(firstToken.data.machineToken, /^mc_machine_/);
 
     const repeatSetup = await request(server.baseUrl, '/api/cloud/computer/setup/start', {
