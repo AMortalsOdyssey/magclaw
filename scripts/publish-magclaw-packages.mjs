@@ -342,7 +342,8 @@ function usage() {
   return [
     'Usage: node scripts/publish-magclaw-packages.mjs [--dry-run|--sync-only] [--package <name>] [--registry <url>]',
     '',
-    'Publishes @magclaw/cli-core, @magclaw/daemon, and @magclaw/computer, then writes the DB version manifest.',
+    'Publishes selected MagClaw npm packages, then writes the DB version manifest.',
+    'If @magclaw/cli-core is selected, @magclaw/daemon and @magclaw/computer are included so shared CLI changes ship with both entry packages.',
     '--sync-only skips npm publish and reconciles DB from already-published npm versions.',
   ].join('\n');
 }

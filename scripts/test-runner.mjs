@@ -68,6 +68,11 @@ const suites = {
   ],
 };
 
+const pgFiles = new Set(suites.pg);
+const serialFiles = new Set([
+  ...suites.flow,
+]);
+
 function allTestFiles() {
   return readdirSync(path.join(ROOT, 'test'))
     .filter((name) => name.endsWith('.test.js'))
@@ -92,26 +97,54 @@ if (unexpectedArgs.length) {
   process.exit(1);
 }
 
-const serialSuites = new Set(['all', 'flow']);
-const args = [
-  '--test',
-  ...(serialSuites.has(suiteName) ? ['--test-concurrency=1'] : []),
-  ...extraNodeArgs,
-  ...files,
-];
-const child = spawn(process.execPath, args, {
-  cwd: ROOT,
-  stdio: 'inherit',
-  env: {
-    ...process.env,
-    MAGCLAW_ATTACHMENT_STORAGE: process.env.MAGCLAW_ATTACHMENT_STORAGE || 'local',
-  },
-});
+function runTestBatch(label, batchFiles, options = {}) {
+  if (!batchFiles.length) return Promise.resolve({ code: 0, signal: null });
+  console.error(`[test-runner] ${label}: ${batchFiles.length} file(s)`);
+  const args = [
+    '--test',
+    ...(options.serial ? ['--test-concurrency=1'] : []),
+    ...extraNodeArgs,
+    ...batchFiles,
+  ];
+  const child = spawn(process.execPath, args, {
+    cwd: ROOT,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      MAGCLAW_ATTACHMENT_STORAGE: process.env.MAGCLAW_ATTACHMENT_STORAGE || 'local',
+    },
+  });
+  return new Promise((resolve) => {
+    child.on('exit', (code, signal) => resolve({ code: code ?? 1, signal }));
+  });
+}
 
-child.on('exit', (code, signal) => {
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
+async function runBatches(batches) {
+  for (const batch of batches) {
+    const result = await runTestBatch(batch.label, batch.files, { serial: batch.serial });
+    if (result.signal) {
+      process.kill(process.pid, result.signal);
+      return;
+    }
+    if (result.code !== 0) {
+      process.exit(result.code);
+      return;
+    }
   }
-  process.exit(code ?? 1);
-});
+}
+
+if (suiteName === 'all') {
+  const parallelFiles = files.filter((file) => !serialFiles.has(file) && !pgFiles.has(file));
+  const allSerialFiles = files.filter((file) => serialFiles.has(file));
+  const allPgFiles = files.filter((file) => pgFiles.has(file));
+  await runBatches([
+    { label: 'all:parallel', files: parallelFiles, serial: false },
+    { label: 'all:serial-flow', files: allSerialFiles, serial: true },
+    { label: 'all:pg', files: allPgFiles, serial: true },
+  ]);
+} else {
+  const serialSuites = new Set(['flow', 'pg']);
+  await runBatches([
+    { label: suiteName, files, serial: serialSuites.has(suiteName) },
+  ]);
+}

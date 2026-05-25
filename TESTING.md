@@ -9,7 +9,7 @@ These rules are a living baseline for Codex sessions. Update them when the local
 - `npm run test:ui` runs static/browser-UI contract tests.
 - `npm run test:flow` runs the heavier end-to-end flow tests.
 - `npm run test:pg` runs PostgreSQL persistence tests; `test/cloud-auth-postgres.test.js` requires `MAGCLAW_TEST_DATABASE_URL`.
-- `npm run test:all` is a release or broad-refactor gate, not the default loop.
+- `npm run test:all` is a release or broad-refactor gate, not the default loop. It runs ordinary test files in parallel, then flow and PostgreSQL batches serially because those tests spawn servers, exercise daemon flows, or may share a live database.
 
 ## Local Tests
 
@@ -59,3 +59,4 @@ curl -fsS https://<magclaw-host>/api/readyz
 
 - Delete or quarantine tests that only protect pre-cloud defaults, pre-workspace-ID behavior, or migration-only compatibility after the production path no longer needs them.
 - Keep tests that protect current production contracts: request-scoped workspace selection, PostgreSQL persistence, realtime invalidation, daemon pairing, auth/session behavior, and visible UI state.
+- Keep `TEST_OPTIMIZATION.md` current when the suite topology changes. It is the long-term map for test ownership, serial/parallel boundaries, and candidates for future pruning.

@@ -46,6 +46,19 @@ test('collect release packages rejects cli-core releases when dependents were no
   );
 });
 
+test('collect release packages lets daemon and computer publish independently when cli-core is unchanged', async () => {
+  const root = await mkdtemp(join(os.tmpdir(), 'magclaw-release-packages-'));
+  await writePackage(root, 'cli-core', { name: '@magclaw/cli-core', version: '0.1.81' });
+  await writePackage(root, 'daemon', { name: '@magclaw/daemon', version: '0.1.82', dependencies: { '@magclaw/cli-core': '0.1.81' } });
+  await writePackage(root, 'computer', { name: '@magclaw/computer', version: '0.1.83', dependencies: { '@magclaw/cli-core': '0.1.81' } });
+
+  const daemonOnly = await collectReleasePackages({ root, packageNames: ['@magclaw/daemon'] });
+  const computerOnly = await collectReleasePackages({ root, packageNames: ['@magclaw/computer'] });
+
+  assert.deepEqual(daemonOnly.map((pkg) => `${pkg.name}@${pkg.version}`), ['@magclaw/daemon@0.1.82']);
+  assert.deepEqual(computerOnly.map((pkg) => `${pkg.name}@${pkg.version}`), ['@magclaw/computer@0.1.83']);
+});
+
 test('package release runner marks DB pending, publishes, verifies npm, then finalizes DB atomically', async () => {
   const calls = [];
   const db = new Map();

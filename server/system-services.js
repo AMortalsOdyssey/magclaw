@@ -4,7 +4,7 @@ import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createNpmPackageVersionResolver } from './npm-package-versions.js';
-import { latestPackageVersionFromManifest } from './package-version-manifest.js';
+import { latestPackageVersionFromManifest } from './package-version-shared.js';
 import { defaultReleaseNotes, normalizeReleaseNotes } from './release-notes.js';
 import { normalizeCloudUrl, normalizeFanoutApiConfig, publicApiKeyPreview } from './runtime-config.js';
 
