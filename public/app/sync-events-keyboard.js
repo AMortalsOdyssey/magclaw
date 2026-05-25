@@ -1097,23 +1097,31 @@ function connectEvents() {
   if (eventSource) disconnectEvents();
   eventSourcePath = eventPath;
   eventSource = new EventSource(eventPath);
+  const currentEventSource = eventSource;
+  const eventAppliesToCurrentStream = () => eventSource === currentEventSource && eventSourcePath === eventPath;
   eventSource.addEventListener('state-delta', (event) => {
+    if (!eventAppliesToCurrentStream()) return;
     applyStateDeltaEnvelope(JSON.parse(event.data));
   });
   eventSource.addEventListener('realtime-event', (event) => {
+    if (!eventAppliesToCurrentStream()) return;
     applyRealtimeJournalEvent(JSON.parse(event.data));
   });
   eventSource.addEventListener('state-resync-required', () => {
+    if (!eventAppliesToCurrentStream()) return;
     refreshAfterSseGap();
   });
   eventSource.addEventListener('state', (event) => {
+    if (!eventAppliesToCurrentStream()) return;
     queueStateUpdate(JSON.parse(event.data));
   });
   eventSource.addEventListener('run-event', (event) => {
+    if (!eventAppliesToCurrentStream()) return;
     const incoming = JSON.parse(event.data);
     applyRunEventUpdate(incoming);
   });
   eventSource.addEventListener('heartbeat', (event) => {
+    if (!eventAppliesToCurrentStream()) return;
     applyPresenceHeartbeat(JSON.parse(event.data));
   });
 }

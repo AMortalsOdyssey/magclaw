@@ -94,6 +94,24 @@ test('opening a thread refreshes scoped replies instead of relying on preview st
   assert.match(searchOpenSource, /render\(\);\s*refreshThreadSelection\(threadMessageId, \{ loadReplies: opensThread \}\);/);
 });
 
+test('realtime stream handlers ignore stale events after thread scope changes', async () => {
+  const app = await readAppSource();
+  const connectEventsSource = app.slice(
+    app.indexOf('function connectEvents()'),
+    app.indexOf('function disconnectEvents()'),
+  );
+
+  assert.match(connectEventsSource, /const currentEventSource = eventSource/);
+  assert.match(connectEventsSource, /const eventAppliesToCurrentStream = \(\) => eventSource === currentEventSource && eventSourcePath === eventPath/);
+  assert.match(connectEventsSource, /addEventListener\('state-delta'[\s\S]*if \(!eventAppliesToCurrentStream\(\)\) return;[\s\S]*applyStateDeltaEnvelope/);
+  assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*if \(!eventAppliesToCurrentStream\(\)\) return;[\s\S]*queueStateUpdate/);
+  assert.match(connectEventsSource, /addEventListener\('realtime-event'[\s\S]*if \(!eventAppliesToCurrentStream\(\)\) return;[\s\S]*applyRealtimeJournalEvent/);
+  assert.ok(
+    (connectEventsSource.match(/if \(!eventAppliesToCurrentStream\(\)\) return;/g) || []).length >= 6,
+    'every SSE event handler should reject callbacks from a closed or superseded stream',
+  );
+});
+
 test('chat and thread panes load older history without discarding loaded pages on SSE refresh', async () => {
   const app = await readAppSource();
   const applyStateSource = app.slice(
