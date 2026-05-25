@@ -605,8 +605,9 @@ function renderDaemonUpgradeConfirmModal() {
 
 function renderComputerDetail(computer) {
   const agents = computerAgents(computer.id);
-  const currentCommand = latestPairingCommand?.computer?.id === computer.id ? latestPairingCommand.command : '';
-  const renderedCommand = currentCommand ? pairingCommandText(currentCommand) : '';
+  const currentPairingCommand = latestPairingCommand?.computer?.id === computer.id ? latestPairingCommand : null;
+  const currentCommand = currentPairingCommand?.command || '';
+  const currentComputerCommand = currentPairingCommand?.computerCommand || currentPairingCommand?.setupCommand || '';
   const connected = computerIsConnected(computer);
   const disabled = computerIsDisabled(computer);
   const runtimeDetails = computerRuntimeDetails(computer);
@@ -686,13 +687,24 @@ function renderComputerDetail(computer) {
 
       ${connected || disabled ? '' : `
         <div class="pixel-panel cloud-card wide computer-connect-card">
-          <div class="panel-title"><span>${currentCommand ? 'Connect Command' : 'Connection'}</span></div>
+          <div class="panel-title"><span>${currentCommand ? 'Connection Options' : 'Connection'}</span></div>
           ${currentCommand ? `
-            <div class="connect-command-shell computer-connect-command-shell">
-              <pre><code>${escapeHtml(renderedCommand)}</code></pre>
-              ${pairingCommandCopyButtonHtml('computer-connect-copy')}
+            <div class="connect-options-frame computer-detail-connect-options">
+              ${renderPairingCommandOption({
+                title: 'Connect Command',
+                command: currentCommand,
+                kind: 'connect',
+                className: 'computer-detail-connect-option',
+                note: 'This command targets the selected Computer and registers its daemon as a background service.',
+              })}
+              ${renderPairingCommandOption({
+                title: 'Computer',
+                command: currentComputerCommand,
+                kind: 'computer',
+                className: 'computer-setup-option computer-detail-connect-option',
+                note: 'Browser-approved setup. The same physical machine resumes here; different machines create their own Computers for this server.',
+              })}
             </div>
-            ${connectBackgroundNoteHtml({ className: 'muted-note' })}
           ` : `
             <button class="primary-btn generate-connect-command-btn" type="button" data-action="generate-computer-command" data-id="${escapeHtml(computer.id)}" ${offlineComputerCommandInFlight ? 'disabled' : ''}>
               <span aria-hidden="true">↻</span>
