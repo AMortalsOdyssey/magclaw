@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 
-async function loadDaemonCli() {
+async function loadCliCore() {
   try {
-    return await import('@magclaw/daemon/src/cli.js');
+    return await import('@magclaw/cli-core/src/cli.js');
   } catch (error) {
-    const localDaemonCli = new URL('../../daemon/src/cli.js', import.meta.url);
+    const localCliCore = new URL('../../cli-core/src/cli.js', import.meta.url);
     try {
-      return await import(localDaemonCli.href);
+      return await import(localCliCore.href);
     } catch {
       throw error;
     }
   }
 }
 
-const { formatDaemonLogLine, main } = await loadDaemonCli();
+const { formatDaemonLogLine, main } = await loadCliCore();
 const args = process.argv.slice(2);
 const normalizedArgs = args[0] === 'computer' ? args : ['computer', ...args];
 

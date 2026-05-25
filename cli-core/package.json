@@ -1,19 +1,18 @@
 {
-  "name": "@magclaw/daemon",
+  "name": "@magclaw/cli-core",
   "version": "0.1.22",
-  "description": "Local MagClaw daemon that connects a user's computer to MagClaw Cloud.",
+  "description": "Shared local MagClaw CLI implementation used by daemon and computer packages.",
   "type": "module",
   "bin": {
-    "magclaw": "bin/magclaw.js"
+    "magclaw": "bin/magclaw.js",
+    "magclaw-daemon": "bin/magclaw-daemon.js"
   },
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@magclaw/cli-core": "0.1.22"
-  },
   "files": [
     "bin/",
+    "src/",
     "README.md"
   ],
   "engines": {

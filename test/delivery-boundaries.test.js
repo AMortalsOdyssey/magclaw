@@ -22,7 +22,11 @@ test('root exposes separate web service and daemon delivery scripts', async () =
 
   const daemonPackage = await readJson('daemon/package.json');
   assert.equal(daemonPackage.name, '@magclaw/daemon');
-  assert.deepEqual(daemonPackage.files, ['bin/', 'src/', 'README.md']);
+  assert.deepEqual(daemonPackage.files, ['bin/', 'README.md']);
+
+  const cliCorePackage = await readJson('cli-core/package.json');
+  assert.equal(cliCorePackage.name, '@magclaw/cli-core');
+  assert.deepEqual(cliCorePackage.files, ['bin/', 'src/', 'README.md']);
 });
 
 test('web Dockerfile builds the cloud service boundary and upload mount target', async () => {
@@ -46,7 +50,7 @@ test('shared route constants pin Console and Server URL surfaces', async () => {
   );
 });
 
-test('top-level daemon package is self-contained as an npm artifact', () => {
+test('top-level daemon package is a thin npm artifact over CLI core', () => {
   const result = spawnSync('npm', ['pack', '--dry-run', '--json', './daemon'], {
     cwd: ROOT,
     encoding: 'utf8',
@@ -55,8 +59,7 @@ test('top-level daemon package is self-contained as an npm artifact', () => {
   const packed = JSON.parse(result.stdout)[0];
   const files = packed.files.map((file) => file.path);
   assert.ok(files.includes('bin/magclaw-daemon.js'));
-  assert.ok(files.includes('src/cli.js'));
-  assert.ok(files.includes('src/mcp-bridge.js'));
+  assert.equal(files.some((file) => file.startsWith('src/')), false);
   assert.equal(files.some((file) => file.startsWith('server/')), false);
   assert.equal(files.some((file) => file.startsWith('public/')), false);
   assert.equal(files.some((file) => file.startsWith('web/')), false);

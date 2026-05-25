@@ -22,7 +22,7 @@ import {
   selectRuntimeCommandPath,
   toWebSocketUrl,
   windowsNpmShimScript,
-} from '../daemon/src/cli.js';
+} from '../cli-core/src/cli.js';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DAEMON_BIN = path.join(ROOT, 'daemon', 'bin', 'magclaw-daemon.js');
@@ -174,7 +174,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.21');
+  assert.equal(DAEMON_VERSION, '0.1.22');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -194,7 +194,7 @@ test('daemon websocket auth prefers durable api keys over stale pair tokens', ()
 });
 
 test('daemon sends a periodic heartbeat while the websocket is connected', async () => {
-  const daemonSource = await readFile(new URL('../daemon/src/cli.js', import.meta.url), 'utf8');
+  const daemonSource = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
   const relaySource = await readFile(new URL('../server/cloud/daemon-relay.js', import.meta.url), 'utf8');
 
   assert.match(daemonSource, /type: 'heartbeat'/);
@@ -221,8 +221,8 @@ test('daemon sends a periodic heartbeat while the websocket is connected', async
 });
 
 test('daemon agent starts and stream activity use Slock-style bounded scheduling', async () => {
-  const daemonSource = await readFile(new URL('../daemon/src/cli.js', import.meta.url), 'utf8');
-  const mcpBridgeSource = await readFile(new URL('../daemon/src/mcp-bridge.js', import.meta.url), 'utf8');
+  const daemonSource = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
+  const mcpBridgeSource = await readFile(new URL('../cli-core/src/mcp-bridge.js', import.meta.url), 'utf8');
 
   assert.match(daemonSource, /DEFAULT_MAX_CONCURRENT_AGENT_STARTS = 5/);
   assert.match(daemonSource, /DEFAULT_AGENT_START_INTERVAL_MS = 500/);
@@ -351,9 +351,7 @@ test('top-level daemon npm package dry-run excludes cloud server and deployment 
   const files = packed.files.map((file) => file.path);
   assert.ok(files.includes('bin/magclaw-daemon.js'));
   assert.ok(files.includes('bin/magclaw.js'));
-  assert.ok(files.includes('src/cli.js'));
-  assert.ok(files.includes('src/list-renderer.js'));
-  assert.ok(files.includes('src/mcp-bridge.js'));
+  assert.equal(files.some((file) => file.startsWith('src/')), false);
   assert.equal(files.some((file) => file.startsWith('server/')), false);
   assert.equal(files.some((file) => file.startsWith('public/')), false);
   assert.equal(files.some((file) => file.startsWith('web/')), false);
@@ -362,15 +360,30 @@ test('top-level daemon npm package dry-run excludes cloud server and deployment 
   assert.equal(files.includes('kizuna.json'), false);
 });
 
-test('computer npm package is a thin setup wrapper around the daemon package', async () => {
+test('daemon and computer packages share CLI core without depending on each other', async () => {
+  const daemonPackage = JSON.parse(await readFile(new URL('../daemon/package.json', import.meta.url), 'utf8'));
+  const computerPackage = JSON.parse(await readFile(new URL('../computer/package.json', import.meta.url), 'utf8'));
+  const cliCorePackage = JSON.parse(await readFile(new URL('../cli-core/package.json', import.meta.url), 'utf8'));
+
+  assert.equal(cliCorePackage.name, '@magclaw/cli-core');
+  assert.equal(cliCorePackage.version, DAEMON_VERSION);
+  assert.equal(daemonPackage.dependencies['@magclaw/cli-core'], DAEMON_VERSION);
+  assert.equal(computerPackage.dependencies['@magclaw/cli-core'], DAEMON_VERSION);
+  assert.equal(computerPackage.dependencies['@magclaw/daemon'], undefined);
+  assert.equal(daemonPackage.dependencies['@magclaw/computer'], undefined);
+});
+
+test('computer npm package is a thin setup wrapper around the shared CLI core package', async () => {
   const computerPackage = JSON.parse(await readFile(new URL('../computer/package.json', import.meta.url), 'utf8'));
   const computerBin = await readFile(new URL('../computer/bin/magclaw-computer.js', import.meta.url), 'utf8');
 
   assert.equal(computerPackage.name, '@magclaw/computer');
   assert.equal(computerPackage.version, DAEMON_VERSION);
   assert.deepEqual(computerPackage.bin, { 'magclaw-computer': 'bin/magclaw-computer.js' });
-  assert.equal(computerPackage.dependencies['@magclaw/daemon'], DAEMON_VERSION);
-  assert.match(computerBin, /@magclaw\/daemon\/src\/cli\.js/);
+  assert.equal(computerPackage.dependencies['@magclaw/cli-core'], DAEMON_VERSION);
+  assert.equal(computerPackage.dependencies['@magclaw/daemon'], undefined);
+  assert.match(computerBin, /@magclaw\/cli-core\/src\/cli\.js/);
+  assert.doesNotMatch(computerBin, /@magclaw\/daemon\/src\/cli\.js/);
   assert.match(computerBin, /args\[0\] === 'computer' \? args : \['computer', \.\.\.args\]/);
 
   const help = spawnSync(process.execPath, [COMPUTER_BIN, '--help'], {
@@ -380,6 +393,26 @@ test('computer npm package is a thin setup wrapper around the daemon package', a
   assert.equal(help.status, 0, help.stderr || help.stdout);
   assert.match(help.stdout, /Usage: magclaw/);
   assert.match(help.stdout, /computer\s+Pair this local computer with a server using browser approval/);
+});
+
+test('top-level CLI core npm package carries the shared command implementation', () => {
+  const result = spawnSync(NPM_BIN, ['pack', '--dry-run', '--json', './cli-core'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const packed = JSON.parse(result.stdout)[0];
+  const files = packed.files.map((file) => file.path);
+  assert.ok(files.includes('bin/magclaw.js'));
+  assert.ok(files.includes('bin/magclaw-daemon.js'));
+  assert.ok(files.includes('src/cli.js'));
+  assert.ok(files.includes('src/list-renderer.js'));
+  assert.ok(files.includes('src/mcp-bridge.js'));
+  assert.equal(files.some((file) => file.startsWith('server/')), false);
+  assert.equal(files.some((file) => file.startsWith('public/')), false);
+  assert.equal(files.some((file) => file.startsWith('web/')), false);
+  assert.equal(files.includes('Dockerfile'), false);
 });
 
 test('top-level computer npm package dry-run excludes cloud server and deployment files', () => {
@@ -403,25 +436,35 @@ test('top-level computer npm package dry-run excludes cloud server and deploymen
 
 test('daemon package exposes one OpenClaw-style CLI bin for npx default execution', async () => {
   const daemonPackage = JSON.parse(await readFile(new URL('../daemon/package.json', import.meta.url), 'utf8'));
+  const daemonBin = await readFile(new URL('../daemon/bin/magclaw.js', import.meta.url), 'utf8');
   assert.deepEqual(daemonPackage.bin, { magclaw: 'bin/magclaw.js' });
+  assert.equal(daemonPackage.dependencies['@magclaw/cli-core'], DAEMON_VERSION);
+  assert.match(daemonBin, /MAGCLAW_DAEMON_PACKAGE_SPEC/);
   assert.ok(CAPABILITIES.includes('daemon:upgrade'));
+});
+
+test('shared CLI core does not pin computer-launched daemons to the CLI core version', async () => {
+  const source = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /@magclaw\/daemon@\$\{DAEMON_VERSION\}/);
+  assert.match(source, /previousService\.packageSpec \|\| '@magclaw\/daemon@latest'/);
 });
 
 test('daemon renders durable magclaw CLI shims for macOS Linux and Windows', () => {
   const macFiles = renderCliShimFiles({
     platform: 'darwin',
     npmPath: '/opt/homebrew/bin/npm',
-    packageSpec: '@magclaw/daemon@latest',
+    packageSpec: '@magclaw/cli-core@latest',
   });
   assert.deepEqual(macFiles.map((file) => file.name), ['magclaw']);
   assert.match(macFiles[0].content, /^#!\/bin\/sh/);
-  assert.match(macFiles[0].content, /@magclaw\/daemon@latest/);
+  assert.match(macFiles[0].content, /MagClaw CLI shim generated by @magclaw\/cli-core/);
+  assert.match(macFiles[0].content, /@magclaw\/cli-core@latest/);
   assert.match(macFiles[0].content, /exec "\$NPM_BIN" exec --yes --package "\$PACKAGE_SPEC" -- magclaw "\$@"/);
 
   const linuxFiles = renderCliShimFiles({
     platform: 'linux',
     npmPath: '/usr/bin/npm',
-    packageSpec: '@magclaw/daemon@latest',
+    packageSpec: '@magclaw/cli-core@latest',
   });
   assert.deepEqual(linuxFiles.map((file) => file.name), ['magclaw']);
   assert.match(linuxFiles[0].content, /NPM_BIN='\/usr\/bin\/npm'/);
@@ -429,11 +472,11 @@ test('daemon renders durable magclaw CLI shims for macOS Linux and Windows', () 
   const windowsFiles = renderCliShimFiles({
     platform: 'win32',
     npmPath: 'C:\\Users\\tt\\AppData\\Roaming\\npm\\npm.cmd',
-    packageSpec: '@magclaw/daemon@latest',
+    packageSpec: '@magclaw/cli-core@latest',
   });
   assert.deepEqual(windowsFiles.map((file) => file.name), ['magclaw.cmd', 'magclaw.ps1']);
   assert.match(windowsFiles[0].content, /@echo off/);
-  assert.match(windowsFiles[0].content, /@magclaw\/daemon@latest/);
+  assert.match(windowsFiles[0].content, /@magclaw\/cli-core@latest/);
   assert.match(windowsFiles[0].content, /%ARGS%/);
   assert.match(windowsFiles[1].content, /@args/);
 });
@@ -457,8 +500,6 @@ test('install-cli command writes a durable magclaw command shim', async () => {
       'install-cli',
       '--bin-dir',
       binDir,
-      '--package-spec',
-      '@magclaw/daemon@latest',
     ], {
       env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
       encoding: 'utf8',
@@ -479,7 +520,7 @@ test('install-cli command writes a durable magclaw command shim', async () => {
       assert.deepEqual(files, ['magclaw']);
       const shim = await readFile(path.join(binDir, 'magclaw'), 'utf8');
       assert.match(shim, /exec "\$NPM_BIN" exec/);
-      assert.match(shim, /@magclaw\/daemon@latest/);
+      assert.match(shim, /@magclaw\/cli-core@latest/);
     }
   } finally {
     await rm(home, { recursive: true, force: true });
@@ -695,7 +736,7 @@ test('daemon upgrade dry-run accepts OpenClaw-style target aliases', async () =>
 });
 
 test('daemon reports and verifies active background service state before remote upgrades', async () => {
-  const source = await readFile(new URL('../daemon/src/cli.js', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
   assert.match(source, /function backgroundServiceStatus\(/);
   assert.match(source, /const activeService = backgroundServiceStatus\(this\.paths\.profile, this\.env\)/);
   assert.match(source, /!activeService\.active/);
