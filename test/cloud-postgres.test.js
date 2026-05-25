@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   databaseNameFromUrl,
   databaseUrlWithName,
+  isTransientPostgresMigrationError,
   loadSchemaSql,
   normalizeDatabaseUrl,
   normalizePostgresRuntimeOptions,
@@ -128,6 +129,14 @@ test('postgres runtime options parse timeouts and advisory lock serializes start
   assert.equal(result, 'locked');
   assert.equal(tries, 2);
   assert.ok(calls.some((call) => call.sql.includes('pg_advisory_unlock')));
+});
+
+test('postgres migration retries only transient startup errors', () => {
+  assert.equal(isTransientPostgresMigrationError({ code: '40P01' }), true);
+  assert.equal(isTransientPostgresMigrationError({ code: '40001' }), true);
+  assert.equal(isTransientPostgresMigrationError({ code: '55P03' }), true);
+  assert.equal(isTransientPostgresMigrationError({ code: '23514' }), false);
+  assert.equal(isTransientPostgresMigrationError(new Error('deadlock detected')), false);
 });
 
 test('postgres schema covers auth, relay, collaboration, attachments, and audit tables', async () => {

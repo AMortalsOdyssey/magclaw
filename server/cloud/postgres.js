@@ -14,6 +14,7 @@ export const DEFAULT_POSTGRES_RUNTIME_OPTIONS = Object.freeze({
   startupLockTimeoutMs: 30_000,
   connectTimeoutMs: 10_000,
 });
+export const TRANSIENT_POSTGRES_MIGRATION_ERROR_CODES = new Set(['55P03', '40001', '40P01']);
 
 function parseNonNegativeInteger(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -30,6 +31,11 @@ function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+export function isTransientPostgresMigrationError(error) {
+  const code = String(error?.code || '');
+  return TRANSIENT_POSTGRES_MIGRATION_ERROR_CODES.has(code);
 }
 
 export function normalizePostgresRuntimeOptions(options = {}) {
@@ -285,44 +291,58 @@ export async function migratePostgres(optionsInput = {}) {
     await configurePostgresSession(client, runtimeOptions, { applicationName: 'magclaw-migration' });
     let checksumChanged = false;
     const migrationLockKey = postgresAdvisoryLockKey('migration', options.database, options.schema);
-    await withPostgresAdvisoryLock(
-      client,
-      migrationLockKey,
-      async () => {
-        await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(options.schema)}`);
-        await client.query(`
-          CREATE TABLE IF NOT EXISTS ${quoteIdent(options.schema)}.magclaw_migrations (
-            id TEXT PRIMARY KEY,
-            checksum TEXT NOT NULL,
-            applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-          )
-        `);
+    const migrationRetryDelaysMs = [250, 750, 1500];
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await withPostgresAdvisoryLock(
+          client,
+          migrationLockKey,
+          async () => {
+            await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(options.schema)}`);
+            await client.query(`
+              CREATE TABLE IF NOT EXISTS ${quoteIdent(options.schema)}.magclaw_migrations (
+                id TEXT PRIMARY KEY,
+                checksum TEXT NOT NULL,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+              )
+            `);
 
-        const previous = await migrationStatus(client, options.schema, MIGRATION_ID);
-        checksumChanged = Boolean(previous && previous.checksum !== checksum);
+            const previous = await migrationStatus(client, options.schema, MIGRATION_ID);
+            checksumChanged = Boolean(previous && previous.checksum !== checksum);
 
-        await client.query('BEGIN');
-        try {
-          await applyLocalPostgresTimeouts(client, runtimeOptions);
-          await client.query(`SET LOCAL search_path TO ${quoteIdent(options.schema)}, public`);
-          await client.query(schemaSql);
-          await client.query(
-            `INSERT INTO ${quoteIdent(options.schema)}.magclaw_migrations (id, checksum)
-             VALUES ($1, $2)
-             ON CONFLICT (id) DO UPDATE SET checksum = EXCLUDED.checksum`,
-            [MIGRATION_ID, checksum],
-          );
-          await client.query('COMMIT');
-        } catch (error) {
-          await client.query('ROLLBACK');
-          throw error;
-        }
-      },
-      {
-        label: `migration database=${options.database} schema=${options.schema}`,
-        timeoutMs: runtimeOptions.startupLockTimeoutMs,
-      },
-    );
+            await client.query('BEGIN');
+            try {
+              await applyLocalPostgresTimeouts(client, runtimeOptions);
+              await client.query(`SET LOCAL search_path TO ${quoteIdent(options.schema)}, public`);
+              await client.query(schemaSql);
+              await client.query(
+                `INSERT INTO ${quoteIdent(options.schema)}.magclaw_migrations (id, checksum)
+                 VALUES ($1, $2)
+                 ON CONFLICT (id) DO UPDATE SET checksum = EXCLUDED.checksum`,
+                [MIGRATION_ID, checksum],
+              );
+              await client.query('COMMIT');
+            } catch (error) {
+              await client.query('ROLLBACK');
+              throw error;
+            }
+          },
+          {
+            label: `migration database=${options.database} schema=${options.schema}`,
+            timeoutMs: runtimeOptions.startupLockTimeoutMs,
+          },
+        );
+        break;
+      } catch (error) {
+        const delayMs = migrationRetryDelaysMs[attempt];
+        if (!isTransientPostgresMigrationError(error) || delayMs === undefined) throw error;
+        console.warn(
+          `[cloud-postgres] retrying migration after transient error `
+          + `code=${error.code} attempt=${attempt + 1}/${migrationRetryDelaysMs.length + 1}`,
+        );
+        await sleep(delayMs);
+      }
+    }
 
     const tableCount = await client.query(`
       SELECT COUNT(*)::int AS count
