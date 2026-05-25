@@ -50,6 +50,45 @@ export async function handleCloudApi(req, res, url, deps) {
     res.end();
   }
 
+  function htmlEscape(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function sendDeviceLoginHtml({ title = 'Approve computer login', body = '', action = '' } = {}) {
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+    });
+    res.end(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${htmlEscape(title)}</title>
+  <style>
+    body { margin: 0; font-family: Inter, Arial, sans-serif; background: #f8f8f5; color: #171717; }
+    header { height: 56px; display: flex; align-items: center; padding: 0 18px; border-bottom: 2px solid #171717; background: #fff; font-weight: 900; }
+    main { min-height: calc(100vh - 56px); display: grid; place-items: center; padding: 32px 16px; }
+    section { width: min(460px, 100%); display: grid; gap: 14px; }
+    h1 { margin: 0; font-size: 22px; }
+    p { margin: 0; color: #666; line-height: 1.5; }
+    code { display: block; padding: 16px; border: 2px solid #171717; background: #fff; text-align: center; font: 900 20px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; }
+    a, button { display: block; width: 100%; box-sizing: border-box; padding: 13px 16px; border: 2px solid #171717; background: #fff; color: #171717; text-align: center; text-decoration: none; font-weight: 900; cursor: pointer; box-shadow: 3px 3px 0 #171717; }
+    a.primary, button.primary { background: #111; color: #fff; }
+  </style>
+</head>
+<body>
+  <header>MAGCLAW</header>
+  <main><section>${body}${action}</section></main>
+</body>
+</html>`);
+  }
+
   function redirectWithAuthCallback(location, provider = 'feishu') {
     const raw = String(location || '/console');
     const [pathAndSearch, hash = ''] = raw.split('#');
@@ -63,6 +102,84 @@ export async function handleCloudApi(req, res, url, deps) {
   function requireCloudRole(allowedRoles = []) {
     if (!cloudAuth?.isLoginRequired?.()) return true;
     return Boolean(cloudAuth.requireUser(req, res, sendError, allowedRoles));
+  }
+
+  if (req.method === 'GET' && url.pathname === '/login/device') {
+    if (!daemonRelay || !cloudAuth) {
+      sendDeviceLoginHtml({
+        title: 'Computer login unavailable',
+        body: '<h1>Computer login unavailable</h1><p>Cloud relay service is unavailable.</p>',
+      });
+      return true;
+    }
+    const userCode = String(url.searchParams.get('user_code') || '').trim().toUpperCase();
+    const requestInfo = daemonRelay.computerSetupRequestForUserCode?.(userCode);
+    if (!requestInfo) {
+      sendDeviceLoginHtml({
+        title: 'Device code expired',
+        body: '<h1>Device code expired</h1><p>Start computer setup again from your terminal.</p>',
+      });
+      return true;
+    }
+    if (url.searchParams.get('approve') === '1') {
+      try {
+        const approved = await daemonRelay.approveComputerSetupRequest(userCode, req);
+        sendDeviceLoginHtml({
+          title: 'Computer approved',
+          body: `<h1>Computer approved</h1><p>${htmlEscape(approved.resumed ? 'This computer is already paired with this server. The local setup will resume it.' : 'This computer can now connect to this server.')}</p><code>${htmlEscape(userCode)}</code>`,
+        });
+      } catch (error) {
+        sendDeviceLoginHtml({
+          title: 'Approval failed',
+          body: `<h1>Approval failed</h1><p>${htmlEscape(error.message || 'Could not approve this computer.')}</p><code>${htmlEscape(userCode)}</code>`,
+        });
+      }
+      return true;
+    }
+    const currentUser = cloudAuth.currentUser?.(req);
+    const approveHref = `/login/device?user_code=${encodeURIComponent(userCode)}&approve=1`;
+    sendDeviceLoginHtml({
+      body: `
+        <h1>Approve computer login</h1>
+        <p>${currentUser ? `Signed in as ${htmlEscape(currentUser.email || currentUser.name || currentUser.id)}.` : 'Sign in to MagClaw, then reopen this page to approve.'}</p>
+        <code>${htmlEscape(userCode)}</code>
+        <p>Server: ${htmlEscape(requestInfo.serverName || requestInfo.serverSlug || requestInfo.workspaceId)}</p>
+      `,
+      action: currentUser ? `<a class="primary" href="${htmlEscape(approveHref)}">Approve computer login</a>` : '<a class="primary" href="/console">Sign in</a>',
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/computer/setup/start') {
+    if (!daemonRelay) {
+      sendError(res, 503, 'Cloud relay service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => daemonRelay.createComputerSetupRequest(body, req));
+    if (result) sendJson(res, 201, result);
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/computer/setup/token') {
+    if (!daemonRelay) {
+      sendError(res, 503, 'Cloud relay service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    sendJson(res, 200, daemonRelay.consumeComputerSetupToken(body.deviceCode || body.device_code || ''));
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cloud/computer/setup/approve') {
+    if (!daemonRelay || !cloudAuth) {
+      sendError(res, 503, 'Cloud relay service is unavailable.');
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await sendAction(() => daemonRelay.approveComputerSetupRequest(body.userCode || body.user_code || '', req));
+    if (result) sendJson(res, 200, result);
+    return true;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/cloud/health') {

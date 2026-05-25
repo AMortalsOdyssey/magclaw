@@ -2063,6 +2063,10 @@ async function handleRequest(req, res) {
   const url = new URL(req.url || '/', `http://${req.headers.host || `${HOST}:${PORT}`}`);
 
   try {
+    if (url.pathname === '/login/device') {
+      if (!(await handleCloudApi(req, res, url, cloudApiDeps()))) sendError(res, 404, 'Route not found.');
+      return;
+    }
     if (url.pathname.startsWith('/api/')) {
       const handled = await handleApi(req, res, url);
       if (!handled) sendError(res, 404, 'API route not found.');

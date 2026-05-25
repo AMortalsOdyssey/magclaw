@@ -930,6 +930,8 @@ test('owner registration protects app APIs and supports invites end to end', asy
     assert.match(pairing.data.command, /--background/);
     assert.match(pairing.data.command, /--profile "?admin-team-cmp_/);
     assert.match(pairing.data.command, /# Admin Team/);
+    assert.match(pairing.data.computerCommand, /magclaw-computer\.js" setup "?\/admin-team"?/);
+    assert.match(pairing.data.computerCommand, /--server-url/);
     assert.equal(pairing.data.provisional, true);
     assert.equal(pairing.data.displayName, 'CI runner');
     assert.equal(pairing.data.computer.status, 'pairing');
@@ -1078,6 +1080,8 @@ test('cloud pairing command can use the domain-friendly npm daemon launcher', as
     assert.doesNotMatch(pairing.data.command, /--pair-token/);
     assert.match(pairing.data.command, /--background/);
     assert.doesNotMatch(pairing.data.command, /MAGCLAW_REPO_DIR/);
+    assert.match(pairing.data.computerCommand, /^npx @magclaw\/computer@latest setup /);
+    assert.match(pairing.data.computerCommand, /"?\/admin-team"?/);
     assert.equal(pairing.data.displayName, 'Cloud runner');
   } finally {
     await server.stop();
@@ -1100,6 +1104,7 @@ test('cloud pairing command carries the requested computer display name', async 
     assert.equal(pairing.data.computer.name, 'Studio Mac');
     assert.match(pairing.data.command, /--display-name "?Studio Mac"?/);
     assert.match(pairing.data.command, /--background/);
+    assert.match(pairing.data.computerCommand, /^npx @magclaw\/computer@latest setup /);
   } finally {
     await server.stop();
   }
@@ -1146,6 +1151,7 @@ test('cloud pairing tokens use the request-scoped server instead of the process 
     assert.match(pairing.data.command, /# Second Team/);
     assert.match(pairing.data.command, /--api-key "?mc_machine_/);
     assert.doesNotMatch(pairing.data.command, /--pair-token/);
+    assert.match(pairing.data.computerCommand, /magclaw-computer\.js" setup "?\/second-team"?/);
 
     const secondState = await request(server.baseUrl, '/api/state?serverSlug=second-team', {
       cookie: admin.cookie,
@@ -1158,6 +1164,108 @@ test('cloud pairing tokens use the request-scoped server instead of the process 
       headers: { 'x-magclaw-server-slug': 'admin-team' },
     });
     assert.equal(firstState.data.computers.some((computer) => computer.id === pairing.data.computer.id), false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('browser-approved computer setup reuses one physical computer per server and separates servers', async () => {
+  const server = await startIsolatedServer({ MAGCLAW_DEPLOYMENT: 'cloud' });
+  const fingerprint = 'mfp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  try {
+    const admin = await registerOwnerServer(server, {
+      serverName: 'Alpha Team',
+      slug: 'alpha-team',
+    });
+    const second = await request(server.baseUrl, '/api/console/servers', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ name: 'Beta Team', slug: 'beta-team' }),
+    });
+
+    const firstSetup = await request(server.baseUrl, '/api/cloud/computer/setup/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        serverSlug: 'alpha-team',
+        machineFingerprint: fingerprint,
+        displayName: 'Shared Mac',
+        hostname: 'shared.local',
+        os: 'darwin',
+        arch: 'arm64',
+      }),
+    });
+    assert.equal(firstSetup.status, 201);
+    assert.match(firstSetup.data.userCode, /^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+    assert.match(firstSetup.data.verificationUri, /\/login\/device\?user_code=/);
+    assert.equal(firstSetup.data.profile, 'alpha-team');
+
+    const approvalPage = await fetch(`${server.baseUrl}/login/device?user_code=${encodeURIComponent(firstSetup.data.userCode)}`, {
+      headers: { cookie: admin.cookie },
+    });
+    assert.equal(approvalPage.status, 200);
+    assert.match(await approvalPage.text(), /Approve computer login/);
+
+    const firstApproval = await request(server.baseUrl, '/api/cloud/computer/setup/approve', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ userCode: firstSetup.data.userCode }),
+    });
+    assert.equal(firstApproval.data.status, 'approved');
+    assert.equal(firstApproval.data.resumed, false);
+    assert.equal(firstApproval.data.computer.workspaceId, admin.server.id);
+
+    const firstToken = await request(server.baseUrl, '/api/cloud/computer/setup/token', {
+      method: 'POST',
+      body: JSON.stringify({ deviceCode: firstSetup.data.deviceCode }),
+    });
+    assert.equal(firstToken.data.status, 'approved');
+    assert.equal(firstToken.data.computerId, firstApproval.data.computer.id);
+    assert.match(firstToken.data.machineToken, /^mc_machine_/);
+
+    const repeatSetup = await request(server.baseUrl, '/api/cloud/computer/setup/start', {
+      method: 'POST',
+      body: JSON.stringify({ serverSlug: 'alpha-team', machineFingerprint: fingerprint, displayName: 'Shared Mac Again' }),
+    });
+    const repeatApproval = await request(server.baseUrl, '/api/cloud/computer/setup/approve', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ userCode: repeatSetup.data.userCode }),
+    });
+    assert.equal(repeatApproval.data.status, 'approved');
+    assert.equal(repeatApproval.data.resumed, true);
+    assert.equal(repeatApproval.data.computer.id, firstApproval.data.computer.id);
+
+    const otherSetup = await request(server.baseUrl, '/api/cloud/computer/setup/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        serverSlug: 'alpha-team',
+        machineFingerprint: 'mfp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        displayName: 'Second Physical Mac',
+      }),
+    });
+    const otherApproval = await request(server.baseUrl, '/api/cloud/computer/setup/approve', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ userCode: otherSetup.data.userCode }),
+    });
+    assert.equal(otherApproval.data.status, 'approved');
+    assert.equal(otherApproval.data.resumed, false);
+    assert.equal(otherApproval.data.computer.workspaceId, admin.server.id);
+    assert.notEqual(otherApproval.data.computer.id, firstApproval.data.computer.id);
+
+    const betaSetup = await request(server.baseUrl, '/api/cloud/computer/setup/start', {
+      method: 'POST',
+      body: JSON.stringify({ serverSlug: 'beta-team', machineFingerprint: fingerprint, displayName: 'Shared Mac' }),
+    });
+    const betaApproval = await request(server.baseUrl, '/api/cloud/computer/setup/approve', {
+      method: 'POST',
+      cookie: admin.cookie,
+      body: JSON.stringify({ userCode: betaSetup.data.userCode }),
+    });
+    assert.equal(betaApproval.data.status, 'approved');
+    assert.equal(betaApproval.data.resumed, false);
+    assert.equal(betaApproval.data.computer.workspaceId, second.data.server.id);
+    assert.notEqual(betaApproval.data.computer.id, firstApproval.data.computer.id);
   } finally {
     await server.stop();
   }
