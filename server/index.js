@@ -565,6 +565,10 @@ function resilientCloudRepository(repository) {
       if (disabled || typeof repository.getMessageById !== 'function') return null;
       return repository.getMessageById(messageId, options);
     },
+    async markConversationRecordsRead(options = {}) {
+      if (disabled || typeof repository.markConversationRecordsRead !== 'function') return null;
+      return repository.markConversationRecordsRead(options);
+    },
     async publishRealtimeEvent(payload) {
       if (disabled || typeof repository.publishRealtimeEvent !== 'function') return;
       try {
@@ -1886,6 +1890,9 @@ function messageApiDeps() {
       : null,
     listThreadRepliesPage: typeof cloudRepository?.listThreadRepliesPage === 'function'
       ? (...args) => cloudRepository.listThreadRepliesPage(...args)
+      : null,
+    markConversationRecordsRead: typeof cloudRepository?.markConversationRecordsRead === 'function'
+      ? (...args) => cloudRepository.markConversationRecordsRead(...args)
       : null,
     makeId,
     normalizeIds,

@@ -156,39 +156,69 @@ function setWorkspaceActivityReadAtLocally(value, humanId = currentHumanId()) {
   };
 }
 
-async function markInboxRead({ recordIds = [], workspaceActivityReadAt: activityReadAt = null } = {}) {
+function unreadRecordIdsForThread(messageId, humanId = currentHumanId()) {
+  return threadRecordIds(messageId)
+    .filter((id) => recordUnreadForHuman(conversationRecord(id), humanId));
+}
+
+async function markInboxRead({
+  recordIds = [],
+  workspaceActivityReadAt: activityReadAt = null,
+  spaceType = '',
+  spaceId = '',
+  threadMessageId = '',
+} = {}) {
   const humanId = currentHumanId();
   const ids = [...new Set((recordIds || []).map(String).filter(Boolean))];
   markRecordsReadLocally(ids, humanId);
   if (activityReadAt) setWorkspaceActivityReadAtLocally(activityReadAt, humanId);
-  if (!ids.length) return null;
+  const body = {
+    recordIds: ids,
+  };
+  if (spaceType && spaceId) {
+    body.spaceType = spaceType;
+    body.spaceId = spaceId;
+  }
+  if (threadMessageId) body.threadMessageId = threadMessageId;
+  if (activityReadAt) body.workspaceActivityReadAt = activityReadAt;
+  if (!ids.length && !body.spaceId && !body.threadMessageId && !activityReadAt) return null;
   return api('/api/inbox/read', {
     method: 'POST',
-    body: JSON.stringify({
-      recordIds: ids,
-    }),
+    body: JSON.stringify(body),
   });
 }
 
-function markThreadRead(messageId) {
-  const recordIds = threadRecordIds(messageId);
-  if (!recordIds.length) return;
-  markInboxRead({ recordIds }).catch((error) => toast(error.message));
+function markThreadRead(messageId, { forceScope = true } = {}) {
+  const recordIds = forceScope ? threadRecordIds(messageId) : unreadRecordIdsForThread(messageId);
+  if (!recordIds.length && !forceScope) return;
+  markInboxRead({ recordIds, threadMessageId: messageId }).catch((error) => toast(error.message));
 }
 
 function markConversationRecordRead(record) {
   if (!record) return;
   const root = record.parentMessageId ? byId(appState?.messages, record.parentMessageId) : record;
-  const recordIds = root && (root.replyCount > 0 || root.taskId || record.parentMessageId)
+  const isThread = Boolean(root && (root.replyCount > 0 || root.taskId || record.parentMessageId));
+  const recordIds = isThread
     ? threadRecordIds(root.id)
     : [record.id];
-  markInboxRead({ recordIds }).catch((error) => toast(error.message));
+  markInboxRead({ recordIds, threadMessageId: isThread ? root.id : '' }).catch((error) => toast(error.message));
 }
 
-function markSpaceRead(spaceType, spaceId) {
+function markSpaceRead(spaceType, spaceId, { forceScope = true } = {}) {
   const recordIds = spaceUnreadRecordIds(spaceType, spaceId);
-  if (!recordIds.length) return;
-  markInboxRead({ recordIds }).catch((error) => toast(error.message));
+  if (!recordIds.length && !forceScope) return;
+  markInboxRead({ recordIds, spaceType, spaceId }).catch((error) => toast(error.message));
+}
+
+function markVisibleConversationRead() {
+  if (modal || activeView !== 'space' || activeTab !== 'chat') return;
+  if (threadMessageId) {
+    markThreadRead(threadMessageId, { forceScope: false });
+    return;
+  }
+  if (selectedSpaceType && selectedSpaceId) {
+    markSpaceRead(selectedSpaceType, selectedSpaceId, { forceScope: false });
+  }
 }
 
 function taskThreadMessage(task) {

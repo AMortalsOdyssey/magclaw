@@ -69,6 +69,7 @@ export async function handleMessageApi(req, res, url, deps) {
     getMessageById,
     listSpaceMessagesPage,
     listThreadRepliesPage,
+    markConversationRecordsRead,
     makeId,
     normalizeIds,
     normalizeConversationRecord,
@@ -582,13 +583,76 @@ export async function handleMessageApi(req, res, url, deps) {
     return readBy.size !== before;
   }
 
+  function canReadSpace(req, spaceType, spaceId) {
+    if (spaceType === 'dm') return canUseDm(req, spaceId);
+    if (spaceType === 'channel') return channelHasHuman(findChannel(spaceId), currentHumanId(req));
+    return false;
+  }
+
+  function recordMatchesSpace(record, spaceType, spaceId) {
+    const source = recordSourceSpace(record);
+    return source.spaceType === spaceType && source.spaceId === spaceId;
+  }
+
+  function localRecordsForSpace(spaceType, spaceId) {
+    return [
+      ...(state.messages || []),
+      ...(state.replies || []),
+    ].filter((record) => recordMatchesSpace(record, spaceType, spaceId));
+  }
+
+  function localRecordsForThread(parentMessageId) {
+    const parent = findMessage(parentMessageId);
+    return [
+      parent,
+      ...(state.replies || []).filter((reply) => reply.parentMessageId === parentMessageId),
+    ].filter(Boolean);
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/inbox/read') {
     const body = await readJson(req);
     const humanId = currentHumanId(req);
     const recordIds = Array.isArray(body.recordIds)
       ? [...new Set(body.recordIds.map(String).filter(Boolean))].slice(0, 500)
       : [];
-    if (!recordIds.length) {
+    const requestedSpaceType = ['channel', 'dm'].includes(body.spaceType) ? body.spaceType : '';
+    const requestedSpaceId = String(body.spaceId || '').trim();
+    const threadMessageId = String(body.threadMessageId || '').trim();
+    let scopedSpaceType = '';
+    let scopedSpaceId = '';
+    let scopedThreadMessageId = '';
+    let readWorkspaceId = workspaceIdForRequest(req);
+    if (requestedSpaceType && requestedSpaceId) {
+      scopedSpaceType = requestedSpaceType;
+      scopedSpaceId = resolveSpaceId(requestedSpaceType, requestedSpaceId, req);
+      const targetExists = scopedSpaceType === 'channel'
+        ? state.channels.some((channel) => channel.id === scopedSpaceId)
+        : state.dms.some((dm) => dm.id === scopedSpaceId);
+      if (!targetExists) {
+        sendError(res, 404, 'Conversation not found.');
+        return true;
+      }
+      if (!canReadSpace(req, scopedSpaceType, scopedSpaceId)) {
+        sendError(res, 403, 'Conversation is not available.');
+        return true;
+      }
+      readWorkspaceId = workspaceIdForSpace(scopedSpaceType, scopedSpaceId, req);
+    }
+    if (threadMessageId) {
+      const threadRoot = findMessage(threadMessageId)
+        || (typeof getMessageById === 'function' ? await getMessageById(threadMessageId, { workspaceId: readWorkspaceId }) : null);
+      if (!threadRoot) {
+        sendError(res, 404, 'Thread not found.');
+        return true;
+      }
+      if (!canReadSpace(req, threadRoot.spaceType, threadRoot.spaceId)) {
+        sendError(res, 403, 'Conversation is not available.');
+        return true;
+      }
+      scopedThreadMessageId = threadRoot.id;
+      readWorkspaceId = threadRoot.workspaceId || workspaceIdForSpace(threadRoot.spaceType, threadRoot.spaceId, req);
+    }
+    if (!recordIds.length && !scopedSpaceId && !scopedThreadMessageId) {
       if (body.workspaceActivityReadAt !== undefined) {
         console.info('[inbox] workspace activity read acknowledged locally', { humanId });
       }
@@ -601,25 +665,48 @@ export async function handleMessageApi(req, res, url, deps) {
     }
     const readState = ensureInboxReadState(humanId);
     let changed = false;
-    const markedRecordIds = [];
+    const markedRecordIds = new Set();
     for (const recordId of recordIds) {
       const record = findConversationRecord(recordId);
       if (!record) continue;
       if (markConversationRecordRead(record, humanId)) changed = true;
-      markedRecordIds.push(record.id);
+      markedRecordIds.add(record.id);
+    }
+    for (const record of scopedSpaceId ? localRecordsForSpace(scopedSpaceType, scopedSpaceId) : []) {
+      if (markConversationRecordRead(record, humanId)) changed = true;
+      markedRecordIds.add(record.id);
+    }
+    for (const record of scopedThreadMessageId ? localRecordsForThread(scopedThreadMessageId) : []) {
+      if (markConversationRecordRead(record, humanId)) changed = true;
+      markedRecordIds.add(record.id);
+    }
+    if (typeof markConversationRecordsRead === 'function') {
+      const durableRead = await markConversationRecordsRead({
+        workspaceId: readWorkspaceId,
+        humanId,
+        recordIds,
+        spaceType: scopedSpaceType,
+        spaceId: scopedSpaceId,
+        threadMessageId: scopedThreadMessageId,
+      });
+      for (const id of [...(durableRead?.messageIds || []), ...(durableRead?.replyIds || [])]) markedRecordIds.add(id);
+      if (durableRead?.count) changed = true;
     }
     readState.updatedAt = now();
     console.info('[inbox] mark read', {
       humanId,
-      recordCount: markedRecordIds.length,
+      recordCount: markedRecordIds.size,
+      scope: scopedThreadMessageId
+        ? `thread:${scopedThreadMessageId}`
+        : (scopedSpaceId ? `${scopedSpaceType}:${scopedSpaceId}` : 'records'),
     });
     if (changed) {
-      await persistState({ workspaceId: workspaceIdForRequest(req), reason: 'conversation_read_state_changed' });
+      await persistState({ workspaceId: readWorkspaceId, reason: 'conversation_read_state_changed' });
       broadcastState();
     }
     sendJson(res, 200, {
       ok: true,
-      readRecordIds: markedRecordIds,
+      readRecordIds: [...markedRecordIds],
       inboxReads: readState,
     });
     return true;

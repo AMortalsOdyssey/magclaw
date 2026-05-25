@@ -1539,6 +1539,79 @@ export function createCloudPostgresStore(optionsInput = {}) {
     });
   }
 
+  async function markConversationRecordsRead(options = {}) {
+    const workspaceId = String(options.workspaceId || '').trim();
+    const humanId = String(options.humanId || '').trim();
+    const recordIds = [...new Set(safeArray(options.recordIds).map(String).filter(Boolean))].slice(0, 500);
+    const cleanSpaceType = options.spaceType ? spaceType(options.spaceType) : '';
+    const spaceId = String(options.spaceId || '').trim();
+    const threadMessageId = String(options.threadMessageId || '').trim();
+    if (!workspaceId || !humanId || (!recordIds.length && !(cleanSpaceType && spaceId) && !threadMessageId)) {
+      return { messageIds: [], replyIds: [], count: 0 };
+    }
+
+    return withClient(async (client) => {
+      const messageIds = new Set();
+      const replyIds = new Set();
+
+      async function updateMessages(whereSql, params) {
+        const humanParam = params.push(humanId);
+        const result = await client.query(`
+          UPDATE ${table('cloud_messages')} AS message
+          SET read_by = COALESCE(message.read_by, '[]'::jsonb) || to_jsonb(ARRAY[$${humanParam}::text])
+          WHERE ${whereSql}
+            AND NOT (COALESCE(message.read_by, '[]'::jsonb) @> to_jsonb(ARRAY[$${humanParam}::text]))
+          RETURNING message.id
+        `, params);
+        for (const row of result.rows || []) messageIds.add(row.id);
+      }
+
+      async function updateReplies(whereSql, params) {
+        const humanParam = params.push(humanId);
+        const result = await client.query(`
+          UPDATE ${table('cloud_replies')} AS reply
+          SET read_by = COALESCE(reply.read_by, '[]'::jsonb) || to_jsonb(ARRAY[$${humanParam}::text])
+          WHERE ${whereSql}
+            AND NOT (COALESCE(reply.read_by, '[]'::jsonb) @> to_jsonb(ARRAY[$${humanParam}::text]))
+          RETURNING reply.id
+        `, params);
+        for (const row of result.rows || []) replyIds.add(row.id);
+      }
+
+      if (recordIds.length) {
+        await updateMessages('message.workspace_id = $1 AND message.id = ANY($2::text[])', [workspaceId, recordIds]);
+        await updateReplies('reply.workspace_id = $1 AND reply.id = ANY($2::text[])', [workspaceId, recordIds]);
+      }
+      if (cleanSpaceType && spaceId) {
+        await updateMessages('message.workspace_id = $1 AND message.space_type = $2 AND message.space_id = $3', [workspaceId, cleanSpaceType, spaceId]);
+        const humanParam = 4;
+        const result = await client.query(`
+          UPDATE ${table('cloud_replies')} AS reply
+          SET read_by = COALESCE(reply.read_by, '[]'::jsonb) || to_jsonb(ARRAY[$${humanParam}::text])
+          FROM ${table('cloud_messages')} AS message
+          WHERE reply.workspace_id = $1
+            AND message.workspace_id = $1
+            AND reply.parent_message_id = message.id
+            AND message.space_type = $2
+            AND message.space_id = $3
+            AND NOT (COALESCE(reply.read_by, '[]'::jsonb) @> to_jsonb(ARRAY[$${humanParam}::text]))
+          RETURNING reply.id
+        `, [workspaceId, cleanSpaceType, spaceId, humanId]);
+        for (const row of result.rows || []) replyIds.add(row.id);
+      }
+      if (threadMessageId) {
+        await updateMessages('message.workspace_id = $1 AND message.id = $2', [workspaceId, threadMessageId]);
+        await updateReplies('reply.workspace_id = $1 AND reply.parent_message_id = $2', [workspaceId, threadMessageId]);
+      }
+
+      return {
+        messageIds: [...messageIds],
+        replyIds: [...replyIds],
+        count: messageIds.size + replyIds.size,
+      };
+    });
+  }
+
   function mergeRecordsIntoState(state, key, records) {
     if (!records?.length) return;
     const byId = new Map(safeArray(state[key]).map((record) => [record?.id, record]).filter(([id]) => id));
@@ -3329,6 +3402,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     listSpaceMessagesPage,
     listThreadRepliesPage,
     getMessageById,
+    markConversationRecordsRead,
     publishRealtimeEvent,
     persistAuthOperation,
     persistAuthFromState,

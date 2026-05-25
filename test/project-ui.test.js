@@ -1073,7 +1073,8 @@ test('chat rail keeps Threads and adds Activities without a System notification 
   assert.match(app, /function buildSpaceUnreadCounts\(humanId = currentHumanId\(\), stateSnapshot = appState\)/);
   assert.match(app, /function chatUnreadCountFromSpaces\(spaceUnreadCounts\)/);
   assert.match(app, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| inbox\.unreadCount \|\| ''/);
-  assert.match(app, /function markSpaceRead\(spaceType, spaceId\)/);
+  assert.match(app, /function markSpaceRead\(spaceType, spaceId, \{ forceScope = true \} = \{\}\)/);
+  assert.match(app, /markInboxRead\(\{ recordIds, spaceType, spaceId \}\)/);
   assert.doesNotMatch(chatRailSource, /system-notifications|System Notification List/);
   assert.match(app, /if \(activeView === 'inbox'\) return renderInbox\(\)/);
   assert.doesNotMatch(app, /function renderSystemNotifications\(\)/);
@@ -1477,6 +1478,7 @@ test('workspace location and scroll position survive refreshes', async () => {
   assert.match(scrollListenerSource, /persistPaneScroll\('main', event\.target\)/);
   assert.match(scrollListenerSource, /persistPaneScroll\('thread', event\.target\)/);
   assert.match(selectSpaceSource, /persistVisiblePaneScrolls\(\);[\s\S]*selectedSpaceType = target\.dataset\.type/);
+  assert.match(selectSpaceSource, /markSpaceRead\(selectedSpaceType, selectedSpaceId\)/);
   assert.match(setTabSource, /persistVisiblePaneScrolls\(\);[\s\S]*activeTab = target\.dataset\.tab/);
 });
 

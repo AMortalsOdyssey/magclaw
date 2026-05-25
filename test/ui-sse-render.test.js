@@ -129,6 +129,7 @@ test('unread count changes do not force full render before active chat patching'
   assert.match(app, /function patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector = false \} = \{\}\)/);
   assert.match(app, /const activeConversationBefore = activeConversationSignature\(\)/);
   assert.match(app, /const activeConversationChanged = activeConversationBefore !== activeConversationSignature\(\)/);
+  assert.match(applyStateSource, /ensureSelection\(\);\s*const selectionChanged = selectionBefore !== `\$\{selectedSpaceType\}:\$\{selectedSpaceId\}`;\s*markVisibleConversationRead\(\);\s*const unreadChanged = unreadBefore !== railUnreadSignature\(\)/);
   assert.match(app, /const unreadChanged = unreadBefore !== railUnreadSignature\(\)/);
   assert.doesNotMatch(beforePatchSource, /selectionChanged \|\| unreadChanged/);
   assert.doesNotMatch(beforePatchSource, /if \([^{]*unreadChanged[^{]*\) \{\s*render\(\)/);

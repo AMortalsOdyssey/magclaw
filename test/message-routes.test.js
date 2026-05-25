@@ -242,6 +242,131 @@ test('message route group can page thread replies from repository when parent is
   assert.deepEqual(res.data.replies.map((reply) => reply.id), ['pg_rep']);
 });
 
+test('inbox read endpoint marks a full DM scope including loaded thread replies', async () => {
+  const deps = routeDeps();
+  deps.state.messages = [
+    {
+      id: 'msg_dm_agent',
+      workspaceId: 'local',
+      spaceType: 'dm',
+      spaceId: 'dm_1',
+      authorType: 'agent',
+      authorId: 'agt_codex',
+      body: 'unread dm',
+      readBy: [],
+      createdAt: '2026-05-03T00:00:00.000Z',
+    },
+    {
+      id: 'msg_dm_parent',
+      workspaceId: 'local',
+      spaceType: 'dm',
+      spaceId: 'dm_1',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: 'thread parent',
+      readBy: ['hum_local'],
+      createdAt: '2026-05-03T00:01:00.000Z',
+    },
+    {
+      id: 'msg_channel_agent',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_codex',
+      body: 'other space',
+      readBy: [],
+      createdAt: '2026-05-03T00:02:00.000Z',
+    },
+  ];
+  deps.state.replies = [
+    {
+      id: 'rep_dm_agent',
+      workspaceId: 'local',
+      parentMessageId: 'msg_dm_parent',
+      spaceType: 'dm',
+      spaceId: 'dm_1',
+      authorType: 'agent',
+      authorId: 'agt_codex',
+      body: 'unread dm reply',
+      readBy: [],
+      createdAt: '2026-05-03T00:03:00.000Z',
+    },
+    {
+      id: 'rep_channel_agent',
+      workspaceId: 'local',
+      parentMessageId: 'msg_channel_agent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_codex',
+      body: 'other reply',
+      readBy: [],
+      createdAt: '2026-05-03T00:04:00.000Z',
+    },
+  ];
+  deps.readJson = async () => ({ spaceType: 'dm', spaceId: 'dm_1' });
+
+  const res = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/inbox/read'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.ok(deps.state.messages.find((message) => message.id === 'msg_dm_agent')?.readBy.includes('hum_local'));
+  assert.ok(deps.state.replies.find((reply) => reply.id === 'rep_dm_agent')?.readBy.includes('hum_local'));
+  assert.deepEqual(deps.state.messages.find((message) => message.id === 'msg_channel_agent')?.readBy, []);
+  assert.deepEqual(deps.state.replies.find((reply) => reply.id === 'rep_channel_agent')?.readBy, []);
+  assert.deepEqual(new Set(res.data.readRecordIds), new Set(['msg_dm_agent', 'msg_dm_parent', 'rep_dm_agent']));
+});
+
+test('inbox read endpoint sends durable thread scope for replies that are not loaded yet', async () => {
+  let durableOptions = null;
+  const deps = routeDeps({
+    markConversationRecordsRead: async (options) => {
+      durableOptions = options;
+      return { messageIds: ['msg_3'], replyIds: ['rep_remote'], count: 1 };
+    },
+    readJson: async () => ({ threadMessageId: 'msg_3' }),
+  });
+  deps.state.messages[2].workspaceId = 'local';
+  deps.state.messages[2].authorType = 'agent';
+  deps.state.messages[2].authorId = 'agt_codex';
+  deps.state.messages[2].readBy = [];
+  deps.state.replies = [
+    {
+      id: 'rep_1',
+      workspaceId: 'local',
+      parentMessageId: 'msg_3',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_codex',
+      body: 'loaded reply',
+      readBy: [],
+      createdAt: '2026-05-03T01:00:00.000Z',
+    },
+  ];
+
+  const res = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/inbox/read'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(durableOptions.threadMessageId, 'msg_3');
+  assert.equal(durableOptions.workspaceId, 'local');
+  assert.ok(deps.state.messages[2].readBy.includes('hum_local'));
+  assert.ok(deps.state.replies[0].readBy.includes('hum_local'));
+  assert.ok(res.data.readRecordIds.includes('rep_remote'));
+});
+
 test('message route group can walk large channel, DM, and thread histories without duplicate pages', async () => {
   const deps = routeDeps();
   const isoMinute = (minute) => new Date(Date.UTC(2026, 4, 1, 0, minute)).toISOString();

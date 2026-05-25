@@ -859,6 +859,7 @@ function applyStateUpdate(nextState) {
   }
   ensureSelection();
   const selectionChanged = selectionBefore !== `${selectedSpaceType}:${selectedSpaceId}`;
+  markVisibleConversationRead();
   const unreadChanged = unreadBefore !== railUnreadSignature();
   const activeConversationChanged = activeConversationBefore !== activeConversationSignature();
   const serverProfileAfter = serverProfilePatchSignature();
