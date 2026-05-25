@@ -1203,7 +1203,13 @@ test('browser-approved computer setup reuses one physical computer per server an
       headers: { cookie: admin.cookie },
     });
     assert.equal(approvalPage.status, 200);
-    assert.match(await approvalPage.text(), /Approve computer login/);
+    const approvalHtml = await approvalPage.text();
+    assert.match(approvalHtml, /Approve computer login/);
+    assert.match(approvalHtml, /\/brand\/magclaw-logo\.png/);
+    assert.match(approvalHtml, /Device code/);
+    assert.match(approvalHtml, /--accent: #ff66cc/);
+    assert.match(approvalHtml, /body::before/);
+    assert.doesNotMatch(approvalHtml, /Use another account/i);
 
     const firstApproval = await request(server.baseUrl, '/api/cloud/computer/setup/approve', {
       method: 'POST',

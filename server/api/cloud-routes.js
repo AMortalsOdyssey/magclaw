@@ -71,22 +71,116 @@ export async function handleCloudApi(req, res, url, deps) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${htmlEscape(title)}</title>
   <style>
-    body { margin: 0; font-family: Inter, Arial, sans-serif; background: #f8f8f5; color: #171717; }
-    header { height: 56px; display: flex; align-items: center; padding: 0 18px; border-bottom: 2px solid #171717; background: #fff; font-weight: 900; }
-    main { min-height: calc(100vh - 56px); display: grid; place-items: center; padding: 32px 16px; }
-    section { width: min(460px, 100%); display: grid; gap: 14px; }
-    h1 { margin: 0; font-size: 22px; }
-    p { margin: 0; color: #666; line-height: 1.5; }
-    code { display: block; padding: 16px; border: 2px solid #171717; background: #fff; text-align: center; font: 900 20px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; }
-    a, button { display: block; width: 100%; box-sizing: border-box; padding: 13px 16px; border: 2px solid #171717; background: #fff; color: #171717; text-align: center; text-decoration: none; font-weight: 900; cursor: pointer; box-shadow: 3px 3px 0 #171717; }
-    a.primary, button.primary { background: #111; color: #fff; }
+    :root { --accent: #ff66cc; --accent-strong: #ff5fa2; --ink: #1a1a1a; --cream: #fffaf7; --soft: #fff2f8; }
+    * { box-sizing: border-box; }
+    body {
+      position: relative;
+      min-height: 100vh;
+      margin: 0;
+      overflow: hidden auto;
+      font-family: "Courier New", "IBM Plex Mono", Menlo, monospace;
+      background: var(--cream);
+      color: var(--ink);
+      isolation: isolate;
+    }
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      z-index: 0;
+      pointer-events: none;
+      background: url("/brand/magclaw-logo.png") center / contain no-repeat;
+    }
+    body::before {
+      width: clamp(420px, 76vmax, 1040px);
+      height: clamp(420px, 76vmax, 1040px);
+      left: calc(50% - clamp(320px, 40vmax, 630px));
+      top: calc(50% - clamp(330px, 42vmax, 660px));
+      opacity: .16;
+      filter: blur(clamp(10px, 1.8vw, 26px)) saturate(1.35);
+      transform: rotate(-14deg) skew(-10deg, 3deg) scale(1.15);
+    }
+    body::after {
+      width: clamp(260px, 40vmax, 640px);
+      height: clamp(260px, 40vmax, 640px);
+      right: max(-190px, -9vw);
+      top: clamp(80px, 13vh, 160px);
+      opacity: .1;
+      filter: blur(clamp(5px, .95vw, 13px)) saturate(1.18);
+      transform: rotate(23deg) skew(11deg, -7deg) scaleX(1.32);
+    }
+    header {
+      position: relative;
+      z-index: 1;
+      height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 18px;
+      border-bottom: 2px solid var(--ink);
+      background: rgba(255, 255, 255, .8);
+      font-weight: 900;
+      letter-spacing: .06em;
+      backdrop-filter: blur(10px);
+    }
+    header img { width: 30px; height: 30px; border: 1px solid var(--ink); border-radius: 6px; background: #1a0020; object-fit: cover; }
+    main { position: relative; z-index: 1; min-height: calc(100vh - 58px); display: grid; place-items: center; padding: 36px 16px; }
+    section {
+      width: min(470px, 100%);
+      display: grid;
+      gap: 14px;
+      padding: 30px;
+      border: 2px solid var(--ink);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .88);
+      box-shadow: 5px 5px 0 var(--ink), 0 26px 70px rgba(44, 8, 52, .14);
+    }
+    .device-brand { display: grid; place-items: center; gap: 12px; margin-bottom: 2px; text-align: center; }
+    .device-brand img { width: 64px; height: 64px; border: 2px solid var(--ink); border-radius: 8px; background: #1a0020; object-fit: cover; box-shadow: 3px 3px 0 var(--ink); }
+    h1 { margin: 0; font-size: 22px; line-height: 1.2; text-align: center; }
+    p { margin: 0; color: #5f4c5a; line-height: 1.5; }
+    .signed-in { text-align: center; color: #7d6075; font-size: 13px; font-weight: 900; }
+    .server-line { text-align: center; color: #3f303a; font-size: 13px; font-weight: 900; }
+    .device-code-field { display: grid; gap: 6px; }
+    .device-code-field span { color: #5f4c5a; font-size: 12px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+    code {
+      display: block;
+      padding: 16px;
+      border: 2px solid var(--ink);
+      border-radius: 4px;
+      background: var(--soft);
+      text-align: center;
+      font: 900 21px ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .12em;
+    }
+    a, button {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 13px 16px;
+      border: 2px solid var(--ink);
+      border-radius: 4px;
+      background: #fff;
+      color: var(--ink);
+      text-align: center;
+      text-decoration: none;
+      font-weight: 900;
+      cursor: pointer;
+      box-shadow: 3px 3px 0 var(--ink);
+    }
+    a.primary, button.primary { background: var(--accent); color: var(--ink); }
+    a.primary:hover, button.primary:hover { background: var(--accent-strong); transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--ink); }
   </style>
 </head>
 <body>
-  <header>MAGCLAW</header>
+  <header><img src="/brand/magclaw-logo.png" alt="" />MAGCLAW</header>
   <main><section>${body}${action}</section></main>
 </body>
 </html>`);
+  }
+
+  function deviceCodeHtml(userCode) {
+    return `<div class="device-code-field"><span>Device code</span><code>${htmlEscape(userCode)}</code></div>`;
   }
 
   function redirectWithAuthCallback(location, provider = 'feishu') {
@@ -126,12 +220,12 @@ export async function handleCloudApi(req, res, url, deps) {
         const approved = await daemonRelay.approveComputerSetupRequest(userCode, req);
         sendDeviceLoginHtml({
           title: 'Computer approved',
-          body: `<h1>Computer approved</h1><p>${htmlEscape(approved.resumed ? 'This computer is already paired with this server. The local setup will resume it.' : 'This computer can now connect to this server.')}</p><code>${htmlEscape(userCode)}</code>`,
+          body: `<div class="device-brand"><img src="/brand/magclaw-logo.png" alt="" /><h1>Computer approved</h1></div><p>${htmlEscape(approved.resumed ? 'This computer is already paired with this server. The local setup will resume it.' : 'This computer can now connect to this server.')}</p>${deviceCodeHtml(userCode)}`,
         });
       } catch (error) {
         sendDeviceLoginHtml({
           title: 'Approval failed',
-          body: `<h1>Approval failed</h1><p>${htmlEscape(error.message || 'Could not approve this computer.')}</p><code>${htmlEscape(userCode)}</code>`,
+          body: `<div class="device-brand"><img src="/brand/magclaw-logo.png" alt="" /><h1>Approval failed</h1></div><p>${htmlEscape(error.message || 'Could not approve this computer.')}</p>${deviceCodeHtml(userCode)}`,
         });
       }
       return true;
@@ -140,10 +234,10 @@ export async function handleCloudApi(req, res, url, deps) {
     const approveHref = `/login/device?user_code=${encodeURIComponent(userCode)}&approve=1`;
     sendDeviceLoginHtml({
       body: `
-        <h1>Approve computer login</h1>
-        <p>${currentUser ? `Signed in as ${htmlEscape(currentUser.email || currentUser.name || currentUser.id)}.` : 'Sign in to MagClaw, then reopen this page to approve.'}</p>
-        <code>${htmlEscape(userCode)}</code>
-        <p>Server: ${htmlEscape(requestInfo.serverName || requestInfo.serverSlug || requestInfo.workspaceId)}</p>
+        <div class="device-brand"><img src="/brand/magclaw-logo.png" alt="" /><h1>Approve computer login</h1></div>
+        <p class="signed-in">${currentUser ? `Signed in as ${htmlEscape(currentUser.email || currentUser.name || currentUser.id)}.` : 'Sign in to MagClaw, then reopen this page to approve.'}</p>
+        ${deviceCodeHtml(userCode)}
+        <p class="server-line">Server: ${htmlEscape(requestInfo.serverName || requestInfo.serverSlug || requestInfo.workspaceId)}</p>
       `,
       action: currentUser ? `<a class="primary" href="${htmlEscape(approveHref)}">Approve computer login</a>` : '<a class="primary" href="/console">Sign in</a>',
     });
