@@ -258,8 +258,12 @@ async function prepareDocumentClick(event) {
     return;
   }
   if (action === 'copy-pairing-command') {
-    if (latestPairingCommand?.command) {
-      const copied = await tryCopyTextToClipboard(pairingCommandText());
+    const commandKind = target.dataset.commandKind || 'connect';
+    const rawCommand = commandKind === 'computer'
+      ? (latestPairingCommand?.computerCommand || latestPairingCommand?.setupCommand || '')
+      : (latestPairingCommand?.command || '');
+    if (rawCommand) {
+      const copied = await tryCopyTextToClipboard(commandKind === 'computer' ? rawCommand : pairingCommandText(rawCommand));
       if (copied) {
         pairingCommandCopyAcknowledged = true;
         if (pairingCommandCopyResetTimer) window.clearTimeout(pairingCommandCopyResetTimer);
@@ -270,7 +274,7 @@ async function prepareDocumentClick(event) {
           render();
         }, 1600);
       }
-      toast(copied ? 'Connect command copied' : 'Copy is unavailable');
+      toast(copied ? 'Command copied' : 'Copy is unavailable');
     }
     return;
   }

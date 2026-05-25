@@ -830,6 +830,47 @@ function computerPairingModalRenderSignature(stateSnapshot = appState) {
   ].join('|');
 }
 
+function computerDetailRenderSignature(stateSnapshot = appState) {
+  if (modal || activeView !== 'computers') return '';
+  const computers = typeof sortComputersByAvailability === 'function'
+    ? sortComputersByAvailability(stateSnapshot?.computers || [])
+    : (stateSnapshot?.computers || []);
+  const selected = (selectedComputerId ? byId(computers, selectedComputerId) : null) || computers[0] || null;
+  if (!selected) return 'empty';
+  const agents = (stateSnapshot?.agents || [])
+    .filter((agent) => agent && agent.computerId === selected.id && !agent.deletedAt)
+    .map((agent) => [
+      agent.id,
+      agent.name || '',
+      agent.status || '',
+      agent.runtime || '',
+      agent.runtimeId || '',
+      agent.model || '',
+    ].join(':'))
+    .sort()
+    .join(',');
+  const runtimes = JSON.stringify(selected.runtimeDetails || selected.runtimeIds || []);
+  const upgrade = selected.metadata?.daemonUpgrade ? JSON.stringify(selected.metadata.daemonUpgrade) : '';
+  return [
+    selected.id,
+    selected.name || '',
+    selected.hostname || '',
+    selected.localHostname || '',
+    selected.os || '',
+    selected.arch || '',
+    selected.status || '',
+    selected.disabledAt || '',
+    selected.daemonVersion || selected.version || '',
+    selected.service?.active ? 'service-active' : '',
+    selected.service?.background ? 'service-bg' : '',
+    runtimes,
+    upgrade,
+    agents,
+    latestPairingCommand?.computer?.id === selected.id ? latestPairingCommand?.command || '' : '',
+    offlineComputerCommandInFlight ? 'command-loading' : '',
+  ].join('|');
+}
+
 function applyStateUpdate(nextState) {
   if (pendingStateUpdate && pendingStateUpdate !== nextState) clearPendingStateUpdate();
   nextState = preserveLoadedConversationHistory(appState, nextState);
@@ -849,6 +890,7 @@ function applyStateUpdate(nextState) {
   const serverSettingsVisibleBefore = serverSettingsVisibleSignature();
   const agentDetailBefore = agentDetailProfileSignature();
   const computerModalBefore = modal === 'computer' ? computerPairingModalRenderSignature(appState) : '';
+  const computerDetailBefore = computerDetailRenderSignature(appState);
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
   if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
@@ -865,9 +907,15 @@ function applyStateUpdate(nextState) {
   const serverProfileAfter = serverProfilePatchSignature();
   const serverSettingsVisibleAfter = serverSettingsVisibleSignature();
   const agentDetailAfter = agentDetailProfileSignature();
+  const computerDetailAfter = computerDetailRenderSignature(appState);
   const agentDetailUnchanged = Boolean(
     agentDetailBefore
     && agentDetailBefore === agentDetailAfter
+    && !selectionChanged
+  );
+  const computerDetailUnchanged = Boolean(
+    computerDetailBefore
+    && computerDetailBefore === computerDetailAfter
     && !selectionChanged
   );
   const serverSettingsUnchanged = activeView === 'cloud'
@@ -918,6 +966,11 @@ function applyStateUpdate(nextState) {
   }
   if (agentDetailInlineEditIsActive()) {
     captureAgentDetailFieldDraft();
+    if (unreadChanged) patchRailSurface();
+    window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
+    return;
+  }
+  if (computerDetailUnchanged) {
     if (unreadChanged) patchRailSurface();
     window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
     return;
@@ -1619,7 +1672,7 @@ document.addEventListener('input', async (event) => {
 
   if (event.target.id === 'computer-display-name-input') {
     computerPairingDisplayName = String(event.target.value || '').slice(0, 30);
-    const code = document.querySelector('.connect-command-shell code');
+    const code = document.querySelector('.connect-option-card[data-command-kind="connect"] .connect-command-shell code');
     if (code) code.textContent = pairingCommandDisplayText();
     return;
   }
