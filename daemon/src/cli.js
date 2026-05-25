@@ -484,6 +484,7 @@ export function parseCli(argv = process.argv) {
     }
   }
   flags._ = positionals;
+  flags.profileExplicit = Boolean(flags.profile);
   flags.profile = safeProfileName(flags.profile || process.env.MAGCLAW_DAEMON_PROFILE || DEFAULT_PROFILE);
   return { command, flags };
 }
@@ -4401,8 +4402,23 @@ async function listProfiles(env = process.env) {
       updatedAt: config.updatedAt || '',
     });
   }
-  profiles.sort((left, right) => left.profile.localeCompare(right.profile));
+  profiles.sort((left, right) => (
+    profileListStatusRank(left) - profileListStatusRank(right)
+    || profileListUpdatedMs(right) - profileListUpdatedMs(left)
+    || left.profile.localeCompare(right.profile)
+  ));
   return { ok: true, root, profiles };
+}
+
+function profileListStatusRank(profile = {}) {
+  if (profile.running) return 0;
+  if (profile.service?.active) return 1;
+  return 2;
+}
+
+function profileListUpdatedMs(profile = {}) {
+  const parsed = Date.parse(String(profile.updatedAt || profile.createdAt || ''));
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 async function doctor(env = process.env) {
@@ -4961,6 +4977,11 @@ async function restartSavedBackground(flags, env = process.env) {
   return { ...result, command: 'restart', cli };
 }
 
+function requireExplicitProfile(command, flags = {}) {
+  if (flags.profileExplicit) return;
+  throw new Error(`Usage: magclaw ${command} --profile <name>`);
+}
+
 export async function main(argv = process.argv, env = process.env) {
   const { command, flags } = parseCli(argv);
   if (command === 'help' || flags.help) {
@@ -4979,6 +5000,7 @@ export async function main(argv = process.argv, env = process.env) {
       break;
     }
     case 'stop':
+      requireExplicitProfile('stop', flags);
       printJson(await stopDaemon(flags.profile, env));
       break;
     case 'restart':

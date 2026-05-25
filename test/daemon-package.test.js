@@ -174,7 +174,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.20');
+  assert.equal(DAEMON_VERSION, '0.1.21');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -623,6 +623,53 @@ test('list command keeps JSON output available for automation', async () => {
   }
 });
 
+test('list command sorts running profiles first then by newest update time', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-list-sort-'));
+  try {
+    const runningOld = profilePaths('z-running-old', { MAGCLAW_DAEMON_HOME: home });
+    const stoppedNew = profilePaths('b-stopped-new', { MAGCLAW_DAEMON_HOME: home });
+    const stoppedOld = profilePaths('a-stopped-old', { MAGCLAW_DAEMON_HOME: home });
+    for (const paths of [runningOld, stoppedNew, stoppedOld]) {
+      await mkdir(path.dirname(paths.config), { recursive: true });
+    }
+    await mkdir(runningOld.runDir, { recursive: true });
+    await writeFile(runningOld.lockFile, JSON.stringify({
+      pid: process.pid,
+      profile: runningOld.profile,
+      startedAt: '2026-05-20T01:00:00.000Z',
+    }, null, 2));
+    await writeFile(runningOld.config, JSON.stringify({
+      profile: runningOld.profile,
+      name: 'Running Old',
+      updatedAt: '2026-05-20T01:00:00.000Z',
+    }, null, 2));
+    await writeFile(stoppedNew.config, JSON.stringify({
+      profile: stoppedNew.profile,
+      name: 'Stopped New',
+      updatedAt: '2026-05-25T09:00:00.000Z',
+    }, null, 2));
+    await writeFile(stoppedOld.config, JSON.stringify({
+      profile: stoppedOld.profile,
+      name: 'Stopped Old',
+      updatedAt: '2026-05-24T09:00:00.000Z',
+    }, null, 2));
+
+    const result = spawnSync(process.execPath, [DAEMON_BIN, 'list', '--json'], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.deepEqual(payload.profiles.map((item) => item.profile), [
+      'z-running-old',
+      'b-stopped-new',
+      'a-stopped-old',
+    ]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test('daemon upgrade dry-run accepts OpenClaw-style target aliases', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-upgrade-dry-run-'));
   try {
@@ -701,6 +748,21 @@ test('foreground daemon exits and clears its lock on SIGINT', async () => {
     if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await exitPromise?.catch(() => {});
     await server.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('stop command requires an explicit profile', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-stop-usage-'));
+  try {
+    const result = spawnSync(process.execPath, [DAEMON_BIN, 'stop'], {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /Usage: magclaw stop --profile <name>/);
+  } finally {
     await rm(home, { recursive: true, force: true });
   }
 });
