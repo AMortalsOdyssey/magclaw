@@ -72,6 +72,66 @@ test('bootstrap state reads active DM options from event stream requests', () =>
   assert.deepEqual(snapshot.messages.map((message) => message.body), ['dm hello']);
 });
 
+test('bootstrap state includes visible off-space unread agent messages for rail refresh', () => {
+  const unreadAt = '2026-05-18T00:05:00.000Z';
+  const readAt = '2026-05-18T00:06:00.000Z';
+  const services = makeServices((state) => {
+    state.dms.push(
+      { id: 'dm_other', workspaceId: 'local', participantIds: ['hum_1', 'agt_2'], createdAt: unreadAt, updatedAt: unreadAt },
+      { id: 'dm_hidden', workspaceId: 'local', participantIds: ['hum_other', 'agt_3'], createdAt: unreadAt, updatedAt: unreadAt },
+    );
+    state.messages.push(
+      {
+        id: 'msg_unread_other_dm',
+        workspaceId: 'local',
+        spaceType: 'dm',
+        spaceId: 'dm_other',
+        authorType: 'agent',
+        authorId: 'agt_2',
+        body: 'new unread off-space DM',
+        readBy: [],
+        createdAt: unreadAt,
+        updatedAt: unreadAt,
+      },
+      {
+        id: 'msg_read_other_dm',
+        workspaceId: 'local',
+        spaceType: 'dm',
+        spaceId: 'dm_other',
+        authorType: 'agent',
+        authorId: 'agt_2',
+        body: 'old read off-space DM',
+        readBy: ['hum_1'],
+        createdAt: readAt,
+        updatedAt: readAt,
+      },
+      {
+        id: 'msg_hidden_unread_dm',
+        workspaceId: 'local',
+        spaceType: 'dm',
+        spaceId: 'dm_hidden',
+        authorType: 'agent',
+        authorId: 'agt_3',
+        body: 'hidden unread DM',
+        readBy: [],
+        createdAt: unreadAt,
+        updatedAt: unreadAt,
+      },
+    );
+  });
+  const req = {
+    url: '/api/events?spaceType=dm&spaceId=dm_1&messageLimit=20&threadRootLimit=40',
+    headers: {},
+  };
+
+  const snapshot = services.publicBootstrapState(req);
+  const messageIds = snapshot.messages.map((message) => message.id);
+
+  assert.ok(messageIds.includes('msg_unread_other_dm'));
+  assert.equal(messageIds.includes('msg_read_other_dm'), false);
+  assert.equal(messageIds.includes('msg_hidden_unread_dm'), false);
+});
+
 test('bootstrap state limits selected thread replies to the loaded page', () => {
   const services = makeServices((state) => {
     state.messages[0].replyCount = 101;

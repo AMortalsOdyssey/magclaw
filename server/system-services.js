@@ -95,6 +95,33 @@ export function createSystemServices(deps) {
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  function conversationRecordUnreadForHuman(record, humanId) {
+    if (!humanId || !record?.id || record.authorType !== 'agent') return false;
+    const readBy = records(record.readBy).map(String);
+    return !readBy.includes(String(humanId));
+  }
+
+  function includeUnreadConversationRecords({
+    currentHumanId,
+    messages,
+    replies,
+    messageById,
+    replyById,
+  }) {
+    if (!currentHumanId) return;
+    const sourceMessages = records(messages);
+    const sourceMessageById = new Map(sourceMessages.map((message) => [message.id, message]).filter(([id]) => id));
+    for (const message of sourceMessages) {
+      if (conversationRecordUnreadForHuman(message, currentHumanId)) messageById.set(message.id, message);
+    }
+    for (const reply of records(replies)) {
+      if (!conversationRecordUnreadForHuman(reply, currentHumanId)) continue;
+      replyById.set(reply.id, reply);
+      const parent = sourceMessageById.get(reply.parentMessageId);
+      if (parent) messageById.set(parent.id, parent);
+    }
+  }
+
   function newestRecords(items, limit) {
     return records(items)
       .slice()
@@ -227,6 +254,7 @@ export function createSystemServices(deps) {
     const threadReplyLimit = clampLimit(effectiveOptions.replyLimit || effectiveOptions.messageLimit, 80, 300);
     const threadRootLimit = clampLimit(effectiveOptions.threadRootLimit, 120, 300);
     const eventLimit = clampLimit(effectiveOptions.eventLimit, 120, 300);
+    const currentHumanId = snapshot.cloud?.auth?.currentMember?.humanId || null;
 
     const selectedMessages = records(snapshot.messages)
       .filter((message) => message.spaceType === spaceType && String(message.spaceId) === spaceId)
@@ -275,6 +303,13 @@ export function createSystemServices(deps) {
         : null);
     const replyById = new Map();
     for (const reply of [...latestReplyByParent.values(), ...selectedThreadReplies]) replyById.set(reply.id, reply);
+    includeUnreadConversationRecords({
+      currentHumanId,
+      messages: snapshot.messages,
+      replies: snapshot.replies,
+      messageById,
+      replyById,
+    });
 
     const taskIds = new Set();
     for (const message of messageById.values()) {
@@ -282,7 +317,6 @@ export function createSystemServices(deps) {
     }
     const taskRecords = records(snapshot.tasks);
     const openStatuses = new Set(['todo', 'in_progress', 'in_review']);
-    const currentHumanId = snapshot.cloud?.auth?.currentMember?.humanId || null;
     const memberChannelIds = new Set(records(snapshot.channels)
       .filter((channel) => (
         !currentHumanId
