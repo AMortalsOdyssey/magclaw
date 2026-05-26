@@ -1168,6 +1168,90 @@
   background: var(--error);
 }
 
+.task-create-form {
+  gap: 12px;
+}
+
+.task-title-field {
+  display: block;
+}
+
+.task-title-field input {
+  height: 44px;
+  padding: 9px 10px;
+  font-size: 16px;
+  font-weight: 700;
+  box-shadow: 4px 4px 0 var(--border);
+}
+
+.task-assignee-picker {
+  display: grid;
+  max-height: min(260px, 34vh);
+  overflow: auto;
+  border: 2px solid var(--border);
+  background: var(--bg-card);
+}
+
+.task-assignee-option {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 10px 18px;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 10px 6px 12px;
+  border-bottom: 1px solid var(--border-faint);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.task-assignee-option:last-child {
+  border-bottom: 0;
+}
+
+.task-assignee-option:hover {
+  background: var(--accent-soft);
+}
+
+.task-assignee-option:has(input[type="checkbox"]:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.task-assignee-option:has(input[type="checkbox"]:checked) {
+  background: var(--bg-panel);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+.task-assignee-option input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.task-assignee-main {
+  min-width: 0;
+}
+
+.task-assignee-check {
+  display: none;
+  justify-self: end;
+  color: var(--accent);
+  font-weight: 900;
+}
+
+.task-assignee-option:has(input[type="checkbox"]:checked) .task-assignee-check {
+  display: inline;
+}
+
+.task-create-actions {
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
 /* Agent checkboxes in create channel modal */
 .agent-checkboxes {
   display: flex;

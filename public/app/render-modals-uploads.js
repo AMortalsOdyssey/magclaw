@@ -456,15 +456,49 @@ function renderDmModal() {
   `;
 }
 
-function renderTaskModal() {
+function taskAssignableAgents() {
+  if (selectedSpaceType === 'channel') {
+    const members = getChannelMembers(selectedSpaceId);
+    if (members.agents.length) return members.agents.filter(agentIsActiveInWorkspace);
+  }
+  if (selectedSpaceType === 'dm') {
+    const dm = currentSpace();
+    const agentIds = new Set((dm?.participantIds || []).filter((id) => id.startsWith('agt_')));
+    const agents = channelAssignableAgents().filter((agent) => agentIds.has(agent.id));
+    if (agents.length) return agents;
+  }
+  return channelAssignableAgents();
+}
+
+function renderTaskAssigneeOption(agent) {
   return `
-    ${modalHeader('New Task', spaceName(selectedSpaceType, selectedSpaceId))}
-    <form id="task-form" class="modal-form" autocomplete="off">
-      <label><span>Title</span><input name="title" autocomplete="off" required /></label>
-      <label><span>Body</span><textarea name="body" rows="4" autocomplete="off"></textarea></label>
-      <label><span>Assignees</span><select name="assigneeIds" multiple size="4">${channelAssignableAgents().map((agent) => `<option value="${agent.id}">${escapeHtml(agent.name)}</option>`).join('')}</select></label>
+    <label class="task-assignee-option">
+      <input type="checkbox" name="assigneeIds" value="${escapeHtml(agent.id)}" />
+      ${getAvatarHtml(agent.id, 'agent', 'dm-avatar member-avatar')}
+      <span class="add-member-candidate-main task-assignee-main">
+        <strong>${escapeHtml(agent.name)}</strong>
+        ${agent.description ? `<small>${escapeHtml(agent.description)}</small>` : ''}
+      </span>
+      <span class="add-member-status-dot ${presenceClass(agent.status)}" title="${escapeHtml(agent.status || 'offline')}"></span>
+      <span class="task-assignee-check">✓</span>
+    </label>
+  `;
+}
+
+function renderTaskModal() {
+  const agents = taskAssignableAgents();
+  return `
+    ${modalHeader('CREATE TASK', spaceName(selectedSpaceType, selectedSpaceId))}
+    <form id="task-form" class="modal-form task-create-form" autocomplete="off">
+      <label class="task-title-field" aria-label="Task title"><input name="title" placeholder="Task 1" autocomplete="off" required autofocus /></label>
+      <div class="task-assignee-picker" role="group" aria-label="Assign agents">
+        ${agents.length ? agents.map(renderTaskAssigneeOption).join('') : '<div class="empty-box small">No active agents available</div>'}
+      </div>
       <label class="checkline"><input type="checkbox" name="addAnother" /> Add another after create</label>
-      <button class="primary-btn" type="submit">Create Task</button>
+      <div class="modal-actions task-create-actions">
+        <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+        <button class="primary-btn" type="submit">Create Task</button>
+      </div>
     </form>
   `;
 }

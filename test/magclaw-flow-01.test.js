@@ -628,6 +628,140 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
+test('web-created task dispatches task-aware owner and collaborator prompts', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-web-task-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  const logPath = path.join(fakeCodexDir, 'codex-log.jsonl');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+const logPath = process.env.FAKE_CODEX_LOG;
+let buffer = '';
+let turnCount = 0;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify({ pid: process.pid, ...value }) + '\\n');
+}
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+function completeTurn(turnId, text) {
+  send({ method: 'turn/started', params: { turn: { id: turnId } } });
+  send({ method: 'item/agentMessage/delta', params: { itemId: 'item_' + turnId, delta: text } });
+  send({ method: 'turn/completed', params: { turn: { id: turnId, status: 'completed' } } });
+}
+function handle(message) {
+  log({ method: message.method, params: message.params });
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'initialized') return;
+  if (message.method === 'thread/start') {
+    send({ id: message.id, result: { thread: { id: 'thread_fake_web_task_' + process.pid } } });
+    return;
+  }
+  if (message.method === 'thread/resume') {
+    send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    return;
+  }
+  if (message.method === 'turn/start' || message.method === 'turn/steer') {
+    const turnId = 'turn_' + (++turnCount);
+    const prompt = message.params?.input?.[0]?.text || '';
+    log({ prompt });
+    send({ id: message.id, result: { turn: { id: turnId } } });
+    setTimeout(() => completeTurn(turnId, prompt.includes('assigned to you as Owner') ? 'owner acknowledged task' : 'collaborator acknowledged task'), 30);
+  }
+}
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (line.trim()) handle(JSON.parse(line));
+  }
+});
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const mock = await startMockFanoutApi((body) => {
+    const payload = JSON.parse(body.messages?.[1]?.content || '{}');
+    const ownerId = payload.allowedChannelAgentIds.find((id) => id === 'agt_codex');
+    const collaboratorIds = payload.allowedChannelAgentIds.filter((id) => id !== ownerId);
+    return {
+      mode: 'task_claim',
+      targetAgentIds: [ownerId, ...collaboratorIds],
+      claimantAgentId: ownerId,
+      confidence: 0.96,
+      reason: 'Codex owns the web-created task; selected peers collaborate.',
+    };
+  });
+  const server = await startIsolatedServer({
+    CODEX_PATH: fakeCodexPath,
+    FAKE_CODEX_LOG: logPath,
+  });
+  try {
+    await request(server.baseUrl, '/api/settings/fanout', {
+      method: 'POST',
+      body: JSON.stringify({
+        enabled: true,
+        baseUrl: `${mock.baseUrl}/v1`,
+        apiKey: 'web-task-router-key',
+        model: 'web-task-router',
+      }),
+    });
+    const { agent: helper } = await request(server.baseUrl, '/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Helper', description: 'Collaborator for task review', runtime: 'Codex CLI' }),
+    });
+    const { channel } = await request(server.baseUrl, '/api/channels', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'web-task-owner', description: 'web task dispatch', agentIds: ['agt_codex', helper.id] }),
+    });
+
+    const created = await request(server.baseUrl, '/api/tasks', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Build web task owner routing',
+        assigneeIds: ['agt_codex', helper.id],
+        spaceType: 'channel',
+        spaceId: channel.id,
+      }),
+    });
+    assert.equal(created.task.status, 'in_progress');
+    assert.equal(created.task.claimedBy, 'agt_codex');
+    assert.deepEqual(created.task.assigneeIds, [helper.id]);
+
+    const finalState = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const workItems = snapshot.workItems.filter((item) => item.sourceMessageId === created.message.id);
+      return workItems.length === 2 && workItems.every((item) => item.status === 'responded') ? snapshot : null;
+    }, 8000);
+    assert.ok(finalState);
+    const workItems = finalState.workItems.filter((item) => item.sourceMessageId === created.message.id);
+    assert.deepEqual(workItems.map((item) => item.agentId).sort(), ['agt_codex', helper.id].sort());
+    assert.ok(workItems.every((item) => item.parentMessageId === created.message.id));
+    assert.ok(workItems.every((item) => item.taskId === created.task.id));
+
+    const entries = await readJsonLines(logPath);
+    const prompts = entries.map((item) => item.prompt).filter(Boolean);
+    const ownerPrompt = prompts.find((prompt) => prompt.includes('assigned to you as Owner'));
+    const collaboratorPrompt = prompts.find((prompt) => prompt.includes('needs your collaboration'));
+    assert.ok(ownerPrompt);
+    assert.ok(collaboratorPrompt);
+    assert.match(ownerPrompt, /Task #1 has been assigned to you as Owner/);
+    assert.match(ownerPrompt, /Title: Build web task owner routing/);
+    assert.match(ownerPrompt, /Collaborators: @Helper/);
+    assert.match(ownerPrompt, new RegExp(`task=${created.task.id}`));
+    assert.match(ownerPrompt, /workItem=wi_/);
+    assert.match(collaboratorPrompt, /Owner: @/);
+    assert.match(collaboratorPrompt, /You are a Collaborator/);
+    assert.match(collaboratorPrompt, new RegExp(`Target thread: ${created.message.id}`));
+    assert.equal(mock.calls.length, 1);
+  } finally {
+    await server.stop();
+    await mock.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
 test('thread stop intent marks that task closed and lets other queued work continue', async () => {
   const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-thread-stop-'));
   const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');

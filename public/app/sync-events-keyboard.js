@@ -421,6 +421,26 @@ function syncBootstrapPagination(stateSnapshot = appState) {
   }
 }
 
+function conversationRecordFreshnessTime(record) {
+  return Math.max(
+    Date.parse(record?.updatedAt || '') || 0,
+    Date.parse(record?.createdAt || '') || 0,
+  );
+}
+
+function mergeConversationRecordKeepingFreshest(existing = null, incoming = null) {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  const existingIsFreshest = conversationRecordFreshnessTime(existing) >= conversationRecordFreshnessTime(incoming);
+  const merged = existingIsFreshest
+    ? { ...incoming, ...existing }
+    : { ...existing, ...incoming };
+  if (existing.replyCount !== undefined || incoming.replyCount !== undefined) {
+    merged.replyCount = Math.max(Number(existing.replyCount || 0), Number(incoming.replyCount || 0));
+  }
+  return merged;
+}
+
 function mergeSpaceMessagePageIntoState(stateSnapshot, spaceType, spaceId, messages = []) {
   if (!stateSnapshot || !spaceType || !spaceId) return stateSnapshot;
   const incoming = (messages || []).filter((message) => (
@@ -429,7 +449,7 @@ function mergeSpaceMessagePageIntoState(stateSnapshot, spaceType, spaceId, messa
   if (!incoming.length) return stateSnapshot;
   const messageById = new Map((stateSnapshot.messages || []).map((message) => [message.id, message]));
   for (const message of incoming) {
-    messageById.set(message.id, { ...(messageById.get(message.id) || {}), ...message });
+    messageById.set(message.id, mergeConversationRecordKeepingFreshest(messageById.get(message.id), message));
   }
   return {
     ...stateSnapshot,

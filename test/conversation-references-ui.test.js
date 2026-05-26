@@ -47,6 +47,7 @@ async function conversationReferenceHarness() {
     shareSelectionRecords() {
       return context.shareRecords;
     },
+    t: (value) => value,
     plainMentionText: (value) => String(value || ''),
     spaceName: (type, id) => (type === 'channel' && id === 'chan_all' ? '#all' : `${type}:${id}`),
     fmtTime: (value) => value || '',
@@ -75,6 +76,7 @@ async function conversationReferenceHarness() {
     },
     document: {
       querySelector: () => null,
+      getElementById: () => ({ scrollIntoView: () => {} }),
     },
     CSS: {
       escape: (value) => String(value),
@@ -367,6 +369,33 @@ test('selected message context prepends each unique sender mention once', async 
   assert.equal(context.composerDrafts['message:main'], '@Cindy @Owner ');
   assert.equal(context.composerMentionMaps['message:main']['@Cindy'], '<@agt_cindy>');
   assert.equal(context.composerMentionMaps['message:main']['@Owner'], '<@hum_owner>');
+});
+
+test('DM message reference cards do not repeat the same @ label for source and space', async () => {
+  const context = await conversationReferenceHarness();
+  context.spaceName = () => '@Cindy';
+
+  const html = context.renderMessageReferences({
+    id: 'msg_with_reference',
+    references: [{
+      id: 'ref_dm',
+      mode: 'context',
+      kind: 'message',
+      sourceRecordId: 'msg_source',
+      sourceKind: 'message',
+      spaceType: 'dm',
+      spaceId: 'dm_cindy',
+      authorType: 'agent',
+      authorId: 'agt_cindy',
+      authorName: 'Cindy',
+      bodyPreview: 'Referenced planning message',
+      recordIds: ['msg_source'],
+      createdAt: '2026-05-26T09:00:00.000Z',
+    }],
+  });
+
+  assert.equal((html.match(/@Cindy/g) || []).length, 1);
+  assert.doesNotMatch(html, /@Cindy\s*·\s*@Cindy/);
 });
 
 test('message context menu exposes one add-to-context action and hides thread context without replies', async () => {

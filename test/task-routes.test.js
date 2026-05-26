@@ -145,6 +145,131 @@ test('task route group creates conversation-backed tasks', async () => {
   assert.equal(deps.state.messages[0].taskId, 'task_new');
 });
 
+test('task route group dispatches selected agents into one owner and collaborators', async () => {
+  const deliveries = [];
+  const routeCalls = [];
+  const deps = routeDeps({
+    readJson: async () => ({
+      title: 'Refine task fanout',
+      assigneeIds: ['agt_owner', 'agt_peer'],
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    }),
+    findAgent: (id) => ({
+      id,
+      name: id === 'agt_owner' ? 'Owner Agent' : 'Peer Agent',
+      status: 'idle',
+    }),
+    routeTaskAssignees: async ({ task, message, selectedAgents }) => {
+      routeCalls.push({
+        taskId: task.id,
+        messageId: message.id,
+        selectedAgentIds: selectedAgents.map((agent) => agent.id),
+      });
+      return {
+        ownerAgentId: 'agt_owner',
+        collaboratorAgentIds: ['agt_peer'],
+        routeEvent: {
+          id: 'route_task_owner',
+          strategy: 'fanout',
+          selectedAgentIds: ['agt_owner', 'agt_peer'],
+          ownerAgentId: 'agt_owner',
+          collaboratorAgentIds: ['agt_peer'],
+        },
+      };
+    },
+    taskAssignmentDeliveryMessage: (task, sourceMessage, { recipientAgent, role, ownerAgent, collaboratorAgents }) => ({
+      ...sourceMessage,
+      id: `${sourceMessage.id}_${recipientAgent.id}_${role}`,
+      taskId: task.id,
+      mentionedAgentIds: [recipientAgent.id],
+      body: [
+        `Task #${task.number}: ${task.title}`,
+        `Role: ${role}`,
+        `Owner: ${ownerAgent.name}`,
+        `Collaborators: ${collaboratorAgents.map((agent) => agent.name).join(', ') || 'none'}`,
+        `workItem/task: ${task.id}`,
+      ].join('\n'),
+    }),
+    deliverMessageToAgent: async (agent, spaceType, spaceId, message, options) => {
+      deliveries.push({ agent, spaceType, spaceId, message, options });
+    },
+  });
+  const res = makeResponse();
+
+  const handled = await handleTaskApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/tasks'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.deepEqual(routeCalls, [{
+    taskId: 'task_new',
+    messageId: 'msg_new',
+    selectedAgentIds: ['agt_owner', 'agt_peer'],
+  }]);
+  assert.equal(res.data.task.claimedBy, 'agt_owner');
+  assert.equal(res.data.task.status, 'in_progress');
+  assert.deepEqual(res.data.task.assigneeIds, ['agt_peer']);
+  assert.equal(deliveries.length, 2);
+  assert.deepEqual(deliveries.map((item) => item.agent.id), ['agt_owner', 'agt_peer']);
+  assert.ok(deliveries.every((item) => item.options.parentMessageId === 'msg_new'));
+  assert.match(deliveries[0].message.body, /Role: owner/);
+  assert.match(deliveries[1].message.body, /Role: collaborator/);
+  assert.match(deliveries[1].message.body, /Owner: Owner Agent/);
+  assert.ok(res.data.task.history.some((item) => item.type === 'task_owner_selected'));
+});
+
+test('task route group keeps selected assignees as todo when no selected owner is available', async () => {
+  const deliveries = [];
+  const systemEvents = [];
+  const deps = routeDeps({
+    readJson: async () => ({
+      title: 'Need available owner',
+      assigneeIds: ['agt_sleeping'],
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    }),
+    findAgent: (id) => ({ id, name: 'Sleeping Agent', status: 'offline' }),
+    routeTaskAssignees: async () => ({
+      ownerAgentId: null,
+      collaboratorAgentIds: [],
+      routeEvent: {
+        id: 'route_task_skipped',
+        strategy: 'none',
+        selectedAgentIds: ['agt_sleeping'],
+        fallbackReason: 'No selected agents are available.',
+      },
+    }),
+    addSystemEvent: (type, message, extra = {}) => {
+      systemEvents.push({ type, message, extra });
+    },
+    deliverMessageToAgent: async (agent, spaceType, spaceId, message, options) => {
+      deliveries.push({ agent, spaceType, spaceId, message, options });
+    },
+  });
+  const res = makeResponse();
+
+  const handled = await handleTaskApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/tasks'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.data.task.status, 'todo');
+  assert.equal(res.data.task.claimedBy || null, null);
+  assert.deepEqual(res.data.task.assigneeIds, ['agt_sleeping']);
+  assert.equal(deliveries.length, 0);
+  assert.ok(res.data.task.history.some((item) => item.type === 'task_dispatch_skipped'));
+  assert.deepEqual(systemEvents.map((item) => item.type), ['task_dispatch_skipped']);
+});
+
 test('task route group persists known workspace changes with scoped options', async () => {
   const persistCalls = [];
   const deps = routeDeps({

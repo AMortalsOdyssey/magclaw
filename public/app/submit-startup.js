@@ -288,8 +288,7 @@ document.addEventListener('submit', async (event) => {
         method: 'POST',
         body: JSON.stringify({
           title: data.get('title'),
-          body: data.get('body'),
-          assigneeIds: [...form.querySelectorAll('select[name="assigneeIds"] option:checked')].map((option) => option.value),
+          assigneeIds: [...form.querySelectorAll('input[name="assigneeIds"]:checked')].map((input) => input.value),
           spaceType: selectedSpaceType,
           spaceId: selectedSpaceId,
         }),

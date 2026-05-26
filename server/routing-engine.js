@@ -1055,6 +1055,10 @@ export function createRoutingEngine(deps) {
       llmLatencyMs: Number.isFinite(Number(decision?.llmLatencyMs)) ? Number(decision.llmLatencyMs) : null,
       llmModel: decision?.llmModel ? String(decision.llmModel) : null,
       llmBaseUrl: decision?.llmBaseUrl ? String(decision.llmBaseUrl) : null,
+      selectedAgentIds: normalizeIds(decision?.selectedAgentIds || []),
+      ownerAgentId: decision?.ownerAgentId ? String(decision.ownerAgentId) : claimantAgentId,
+      collaboratorAgentIds: normalizeIds(decision?.collaboratorAgentIds || []),
+      fallbackReason: decision?.fallbackReason ? String(decision.fallbackReason) : null,
     };
   }
   
@@ -1279,6 +1283,10 @@ export function createRoutingEngine(deps) {
       llmAttempted: Boolean(decision.llmAttempted || decision.llmUsed),
       llmLatencyMs: Number.isFinite(Number(decision.llmLatencyMs)) ? Number(decision.llmLatencyMs) : null,
       llmModel: decision.llmModel || null,
+      selectedAgentIds: normalizeIds(decision.selectedAgentIds || []),
+      ownerAgentId: decision.ownerAgentId || decision.claimantAgentId || null,
+      collaboratorAgentIds: normalizeIds(decision.collaboratorAgentIds || []),
+      fallbackReason: decision.fallbackReason || null,
       createdAt: now(),
     };
     state.routeEvents.push(event);
@@ -1304,6 +1312,10 @@ export function createRoutingEngine(deps) {
       llmAttempted: event.llmAttempted,
       llmLatencyMs: event.llmLatencyMs,
       llmModel: event.llmModel,
+      selectedAgentIds: event.selectedAgentIds,
+      ownerAgentId: event.ownerAgentId,
+      collaboratorAgentIds: event.collaboratorAgentIds,
+      fallbackReason: event.fallbackReason,
     });
     console.info('[routing-engine] route_decision', JSON.stringify({
       routeEventId: event.id,
@@ -1328,8 +1340,186 @@ export function createRoutingEngine(deps) {
         };
       }),
       claimantAgentId: event.claimantAgentId || null,
+      ownerAgentId: event.ownerAgentId || null,
+      collaboratorAgentIds: event.collaboratorAgentIds || [],
     }));
     return event;
+  }
+
+  async function routeTaskAssignees({
+    selectedAgents = [],
+    selectedAgentIds = [],
+    message,
+    task,
+    spaceId,
+  } = {}) {
+    const selectedIds = normalizeIds(selectedAgentIds.length
+      ? selectedAgentIds
+      : (selectedAgents || []).map((agent) => agent?.id));
+    const selectedById = new Map((selectedAgents || [])
+      .filter(Boolean)
+      .map((agent) => [agent.id, agent]));
+    const candidates = availableChannelAgents(selectedIds
+      .map((id) => selectedById.get(id) || findAgent(id))
+      .filter(Boolean));
+    const candidateIds = candidates.map((agent) => agent.id);
+    const baseEvidence = [
+      routeEvidence('router', 'task_owner_selection'),
+      routeEvidence('selected_agents', selectedIds.join(', ') || 'none'),
+      routeEvidence('available_selected_agents', `${candidateIds.length}/${selectedIds.length}`),
+      routeEvidence('task', task ? `${taskLabel(task)} ${task.title || ''}` : ''),
+    ];
+    const taskIntent = {
+      title: task?.title || cleanTaskTitle(message?.body || ''),
+      kind: inferTaskIntentKind(`${task?.title || ''}\n${task?.body || message?.body || ''}`),
+    };
+
+    if (!candidates.length) {
+      const fallbackReason = 'No selected agents are available.';
+      const decision = normalizeRouteDecision({
+        mode: 'task_claim',
+        targetAgentIds: [],
+        claimantAgentId: null,
+        confidence: 0.1,
+        reason: 'Task was created with selected agents, but none are available to own it.',
+        evidence: [...baseEvidence, routeEvidence('skip_reason', fallbackReason)],
+        taskIntent,
+        selectedAgentIds: selectedIds,
+        collaboratorAgentIds: [],
+        fallbackReason,
+        strategy: 'none',
+      }, candidates);
+      const routeEvent = addRouteEvent(decision, { message, spaceId });
+      return {
+        ...decision,
+        ownerAgentId: null,
+        collaboratorAgentIds: [],
+        routeEvent,
+      };
+    }
+
+    if (candidates.length === 1) {
+      const owner = candidates[0];
+      const decision = normalizeRouteDecision({
+        mode: 'task_claim',
+        targetAgentIds: [owner.id],
+        claimantAgentId: owner.id,
+        confidence: 0.99,
+        reason: `${owner.name} is the only available selected agent, so it becomes Owner.`,
+        evidence: [...baseEvidence, routeEvidence('owner_rule', 'single_available_selected_agent')],
+        taskIntent,
+        selectedAgentIds: selectedIds,
+        ownerAgentId: owner.id,
+        collaboratorAgentIds: [],
+        strategy: 'single_selected_agent',
+      }, candidates);
+      const routeEvent = addRouteEvent(decision, { message, spaceId });
+      return {
+        ...decision,
+        ownerAgentId: owner.id,
+        collaboratorAgentIds: [],
+        routeEvent,
+      };
+    }
+
+    const trigger = {
+      type: 'created_task_owner_selection',
+      reason: 'Task was created with multiple selected agents; choose exactly one Owner from the selected candidates.',
+      namedAgentIds: candidateIds,
+    };
+    let allCards = null;
+    let fanoutError = null;
+    let owner = null;
+    let baseDecision = null;
+
+    if (fanoutApiConfigured()) {
+      try {
+        allCards = await buildAgentCards((state.agents || []).filter(agentParticipatesInChannels));
+        const fanoutDecision = await callFanoutApi({
+          channelAgents: candidates,
+          mentions: { agents: [], special: [] },
+          message,
+          spaceId,
+          allCards,
+          trigger,
+        });
+        const fanoutOwnerId = fanoutDecision.claimantAgentId || fanoutDecision.targetAgentIds[0] || null;
+        owner = candidates.find((agent) => agent.id === fanoutOwnerId) || null;
+        if (!owner) {
+          throw new Error('Fan-out did not return an available selected owner.');
+        }
+        baseDecision = {
+          ...fanoutDecision,
+          reason: fanoutDecision.reason || `${owner.name} selected as task Owner by Fan-out.`,
+          evidence: [
+            ...baseEvidence,
+            ...(fanoutDecision.evidence || []),
+            routeEvidence('owner_rule', 'fanout_selected_owner'),
+          ],
+          strategy: fanoutDecision.strategy || 'llm',
+          llmUsed: true,
+          llmAttempted: true,
+        };
+      } catch (error) {
+        fanoutError = error;
+        addSystemEvent('task_owner_fanout_fallback', `Task Owner Fan-out failed; using local agent-card scoring: ${error.message}`, {
+          messageId: message?.id || null,
+          taskId: task?.id || null,
+          selectedAgentIds: selectedIds,
+          spaceId,
+        });
+      }
+    }
+
+    if (!owner) {
+      allCards ||= await buildAgentCards((state.agents || []).filter(agentParticipatesInChannels));
+      const best = pickBestFitAgentWithCards(candidates, message, allCards, []);
+      owner = best.agent || candidates[0] || null;
+      const fallbackReason = fanoutError
+        ? `Fan-out fallback: ${fanoutError.message}`
+        : 'Fan-out is not configured.';
+      baseDecision = {
+        mode: 'task_claim',
+        targetAgentIds: owner ? [owner.id, ...candidateIds.filter((id) => id !== owner.id)] : [],
+        claimantAgentId: owner?.id || null,
+        confidence: owner ? Math.min(0.92, Math.max(0.62, 0.58 + (Number(best.score || 0) / 220))) : 0.2,
+        reason: owner
+          ? `${owner.name} selected as task Owner by local agent-card scoring.`
+          : 'No available selected agent could own the task.',
+        evidence: [
+          ...baseEvidence,
+          routeEvidence('owner_rule', 'local_agent_card_scoring'),
+          routeEvidence('agent_card', owner ? `${owner.name} score=${Number(best.score || 0).toFixed(1)}` : 'none'),
+          ...(fanoutError ? [routeEvidence('fallback_error', fanoutError.message)] : []),
+        ],
+        taskIntent,
+        fallbackUsed: true,
+        llmAttempted: Boolean(fanoutError || fanoutApiConfigured()),
+        strategy: 'fallback_rules',
+        fallbackReason,
+      };
+    }
+
+    const collaboratorIds = owner
+      ? candidateIds.filter((id) => id !== owner.id)
+      : [];
+    const decision = normalizeRouteDecision({
+      ...baseDecision,
+      mode: 'task_claim',
+      targetAgentIds: owner ? [owner.id, ...collaboratorIds] : [],
+      claimantAgentId: owner?.id || null,
+      selectedAgentIds: selectedIds,
+      ownerAgentId: owner?.id || null,
+      collaboratorAgentIds: collaboratorIds,
+      taskIntent,
+    }, candidates);
+    const routeEvent = addRouteEvent(decision, { message, spaceId });
+    return {
+      ...decision,
+      ownerAgentId: owner?.id || null,
+      collaboratorAgentIds: collaboratorIds,
+      routeEvent,
+    };
   }
   
   async function routeMessageForChannel({ channelAgents, mentions, message, spaceId }) {
@@ -1544,6 +1734,7 @@ export function createRoutingEngine(deps) {
     namedAgentsOutsideExplicitMentions,
     pickAvailableAgent,
     pickBestFitAgent,
+    routeTaskAssignees,
     routeMessageForChannel,
     routeThreadReplyForChannel,
     shouldAgentRespond,

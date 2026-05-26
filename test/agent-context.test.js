@@ -86,7 +86,8 @@ test('agent context pack includes recent channel messages, current message, task
       status: 'in_progress',
       spaceType: 'channel',
       spaceId: 'chan_all',
-      assigneeIds: ['agt_333'],
+      claimedBy: 'agt_333',
+      assigneeIds: ['agt_ccc'],
       sourceMessageId: 'msg_parent',
       threadMessageId: 'msg_parent',
     }],
@@ -142,6 +143,8 @@ test('agent context pack includes recent channel messages, current message, task
   assert.match(rendered, /Use channel activity to resolve implicit references/);
   assert.match(rendered, /Thread context/);
   assert.match(rendered, /task #7 \[in_progress\] 做一下任务/);
+  assert.match(rendered, /owner: @333 \(you\)/);
+  assert.match(rendered, /collaborators: @CCC/);
   assert.match(rendered, /note\.png image\/png 1234 bytes/);
   assert.doesNotMatch(rendered, /agt_333|agt_ccc|hum_local/);
 });
@@ -212,6 +215,7 @@ test('agent context pack renders structured conversation references for the curr
   const rendered = renderAgentContextPack(pack, { state, targetAgentId: 'agt_codex' });
 
   assert.match(rendered, /Referenced context supplied with the current message:/);
+  assert.match(rendered, /Treat these references as visible content attached by the user/);
   assert.match(rendered, /quote\/selection/);
   assert.match(rendered, /selected text: exact source paragraph/);
   assert.match(rendered, /The exact source paragraph Agent should inspect/);

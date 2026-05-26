@@ -1096,6 +1096,7 @@ const {
   determineRespondingAgents,
   displayActor,
   pickAvailableAgent,
+  routeTaskAssignees,
   routeMessageForChannel,
   routeThreadReplyForChannel,
   shouldAgentRespond,
@@ -1160,6 +1161,7 @@ const {
   finishTaskFromThread,
   shouldStartThreadForAgentDelivery,
   stopTaskFromThread,
+  taskAssignmentDeliveryMessage,
   taskThreadDeliveryMessage,
 } = taskOrchestrator;
 
@@ -1791,14 +1793,17 @@ function missionApiDeps() {
 function taskApiDeps() {
   return {
     addCollabEvent,
+    addSystemEvent,
     addSystemReply,
     addTaskHistory,
     addTaskTimelineMessage,
     broadcastState,
     claimTask,
     createTaskMessage,
+    deliverMessageToAgent,
     displayActor,
     ensureTaskThread,
+    findAgent,
     findTask,
     getState: () => state,
     makeId,
@@ -1807,10 +1812,12 @@ function taskApiDeps() {
     persistState,
     readJson,
     resolveConversationSpace,
+    routeTaskAssignees,
     root: ROOT,
     sendError,
     sendJson,
     startCodexRun,
+    taskAssignmentDeliveryMessage,
     taskIsClosed,
     taskLabel,
   };

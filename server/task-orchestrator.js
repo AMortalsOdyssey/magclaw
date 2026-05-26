@@ -124,6 +124,52 @@ export function createTaskOrchestrator(deps) {
     };
   }
 
+  function taskAgentName(agent) {
+    return agent?.name ? `@${agent.name}` : (agent?.id || 'unknown agent');
+  }
+
+  function taskAssignmentDeliveryMessage(task, message, {
+    recipientAgent = null,
+    role = 'owner',
+    ownerAgent = null,
+    collaboratorAgents = [],
+  } = {}) {
+    const isOwner = role === 'owner';
+    const details = String(task?.body || '').trim();
+    const collaborators = normalizeIds((collaboratorAgents || []).map((agent) => agent?.id))
+      .map((id) => (collaboratorAgents || []).find((agent) => agent?.id === id))
+      .filter(Boolean);
+    const collaboratorNames = collaborators.map(taskAgentName).join(', ') || 'none';
+    const threadId = task?.threadMessageId || task?.messageId || message?.id || '-';
+    const roleLines = isOwner
+      ? [
+        `Task ${taskLabel(task)} has been assigned to you as Owner.`,
+        `Collaborators: ${collaboratorNames}.`,
+        'Acknowledge ownership here, or ask for concrete missing context in this task thread before proceeding.',
+        'Do the work in this task thread and move the task to in_review when ready for human validation.',
+      ]
+      : [
+        `Task ${taskLabel(task)} needs your collaboration in this thread.`,
+        `Owner: ${taskAgentName(ownerAgent)}.`,
+        'You are a Collaborator. Coordinate in this task thread, share useful findings, and do not claim or take over unless ownership is handed off.',
+      ];
+    const body = [
+      ...roleLines,
+      `Title: ${task?.title || message?.body || 'Untitled task'}`,
+      details ? `Context:\n${details}` : '',
+      `Target thread: ${threadId}`,
+      `Task id: ${task?.id || message?.taskId || '-'}`,
+    ].filter(Boolean).join('\n\n');
+    return {
+      ...message,
+      authorType: message?.authorType || 'human',
+      authorId: message?.authorId || 'hum_local',
+      body,
+      mentionedAgentIds: normalizeIds([recipientAgent?.id]),
+      taskId: task?.id || message?.taskId || null,
+    };
+  }
+
   function ensureTaskThread(task) {
     if (task.threadMessageId && findMessage(task.threadMessageId)) return findMessage(task.threadMessageId);
     if (task.messageId && findMessage(task.messageId)) {
@@ -214,6 +260,7 @@ export function createTaskOrchestrator(deps) {
     finishTaskFromThread,
     shouldStartThreadForAgentDelivery,
     stopTaskFromThread,
+    taskAssignmentDeliveryMessage,
     taskThreadDeliveryMessage,
   };
 }

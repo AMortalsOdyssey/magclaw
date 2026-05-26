@@ -150,13 +150,32 @@ function referenceKindLabel(reference) {
   return labels[reference.kind] || 'message';
 }
 
+function referenceMetaKey(part) {
+  const text = String(part || '').trim();
+  if (text.startsWith('@')) return `actor:${text.slice(1).trim().toLowerCase()}`;
+  return `literal:${text.toLowerCase()}`;
+}
+
+function uniqueReferenceMetaParts(parts) {
+  const seen = new Set();
+  const result = [];
+  for (const part of parts) {
+    if (!part) continue;
+    const key = referenceMetaKey(part);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(part);
+  }
+  return result;
+}
+
 function renderConversationReferenceChip(reference, composerId, index = 0) {
   const source = reference.authorName || (reference.authorId ? displayName(reference.authorId) : '');
-  const meta = [
+  const meta = uniqueReferenceMetaParts([
     source ? `@${source}` : '',
     referenceRecordLabel(reference),
     reference.createdAt ? fmtTime(reference.createdAt) : '',
-  ].filter(Boolean).join(' · ');
+  ]).join(' · ');
   return `
     <span class="composer-reference-chip" data-reference-id="${escapeHtml(reference.id)}">
       <button type="button" class="composer-reference-jump" data-action="jump-to-reference-source" data-source-record-id="${escapeHtml(reference.sourceRecordId)}" data-parent-message-id="${escapeHtml(reference.parentMessageId)}" aria-label="Jump to reference source">
@@ -186,12 +205,12 @@ function renderMessageReferences(record) {
     <div class="message-reference-stack" aria-label="${escapeHtml(t('Message references'))}">
       ${references.map((reference) => {
         const source = reference.authorName || (reference.authorId ? displayName(reference.authorId) : '');
-        const meta = [
+        const meta = uniqueReferenceMetaParts([
           source ? `@${source}` : '',
           referenceRecordLabel(reference),
           reference.createdAt ? fmtTime(reference.createdAt) : '',
           reference.truncated ? 'truncated' : '',
-        ].filter(Boolean).join(' · ');
+        ]).join(' · ');
         const disabled = !reference.sourceRecordId && !reference.recordIds?.length;
         return `
           <button class="message-reference-card${disabled ? ' unavailable' : ''}" type="button"

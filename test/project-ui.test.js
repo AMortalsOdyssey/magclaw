@@ -55,6 +55,29 @@ test('task board exposes closed state and member proposal review controls', asyn
   assert.match(styles, /\.member-proposal-card/);
 });
 
+test('create task modal uses a title-only form and multi-agent picker rows', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const taskModalSource = app.slice(app.indexOf('function renderTaskAssigneeOption('), app.indexOf('function renderEnvVarsList()'));
+  const taskSubmitSource = app.slice(app.indexOf("if (form.id === 'task-form')"), app.indexOf("if (form.id === 'agent-form')"));
+
+  assert.match(taskModalSource, /modalHeader\('CREATE TASK'/);
+  assert.match(taskModalSource, /name="title"[\s\S]*required/);
+  assert.doesNotMatch(taskModalSource, />Body</);
+  assert.doesNotMatch(taskModalSource, /textarea name="body"/);
+  assert.doesNotMatch(taskModalSource, /select name="assigneeIds"/);
+  assert.match(taskModalSource, /task-assignee-picker/);
+  assert.match(taskModalSource, /task-assignee-option/);
+  assert.match(taskModalSource, /type="checkbox" name="assigneeIds"/);
+  assert.match(taskModalSource, /getAvatarHtml\(agent\.id, 'agent', 'dm-avatar[^']*'\)/);
+  assert.match(taskModalSource, /Add another after create/);
+  assert.match(taskModalSource, /data-action="close-modal"[\s\S]*Cancel/);
+  assert.match(taskSubmitSource, /input\[name="assigneeIds"\]:checked/);
+  assert.doesNotMatch(taskSubmitSource, /body:\s*data\.get\('body'\)/);
+  assert.match(styles, /\.task-assignee-picker/);
+  assert.match(styles, /\.task-assignee-option:has\(input\[type="checkbox"\]:checked\)/);
+});
+
 test('unjoined channels render read-only chat controls with a join action', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();

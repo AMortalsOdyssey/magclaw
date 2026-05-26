@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import test from 'node:test';
+import vm from 'node:vm';
 
 async function readAppSource() {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -13,6 +14,49 @@ async function readAppSource() {
       .map((name) => readFile(new URL(name, appDir), 'utf8')),
   );
   return [app, ...chunkSources].join('\n');
+}
+
+async function createRealtimeHarness() {
+  const source = await readFile(new URL('../public/app/sync-events-keyboard.js', import.meta.url), 'utf8');
+  const noop = () => {};
+  const context = {
+    console,
+    URL,
+    URLSearchParams,
+    setTimeout,
+    clearTimeout,
+    EventSource: function EventSource() {},
+    appState: { messages: [], replies: [] },
+    selectedSpaceType: 'channel',
+    selectedSpaceId: 'chan_all',
+    threadMessageId: null,
+    CONVERSATION_HISTORY_PAGE_SIZE: 80,
+    conversationHistoryPages: { main: {}, thread: {} },
+    conversationHistoryLoading: { main: {}, thread: {} },
+    byId: (items, id) => (items || []).find((item) => item.id === id) || null,
+    document: {
+      addEventListener: noop,
+      querySelector: () => null,
+      getElementById: () => null,
+      hasFocus: () => true,
+      visibilityState: 'visible',
+    },
+    window: {
+      addEventListener: noop,
+      requestAnimationFrame: (callback) => {
+        callback();
+        return 1;
+      },
+      cancelAnimationFrame: noop,
+      setTimeout,
+      clearTimeout,
+      location: { pathname: '/s/test/channels/chan_all', search: '', hash: '' },
+      history: { replaceState: noop, pushState: noop },
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+  return context;
 }
 
 test('state sync module loads before realtime and submit consumers', async () => {
@@ -66,6 +110,45 @@ test('state SSE updates route through the non-destructive state renderer', async
     /EventSource\('\/api\/events'\)[\s\S]*addEventListener\('state'[\s\S]*appState = JSON\.parse\(event\.data\);[\s\S]*render\(\);/.test(connectEventsSource),
     false,
   );
+});
+
+test('preserved conversation history does not overwrite fresher reply counts from SSE', async () => {
+  const context = await createRealtimeHarness();
+  const previousState = {
+    messages: [{
+      id: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      body: 'Parent',
+      replyCount: 0,
+      createdAt: '2026-05-26T09:00:00.000Z',
+      updatedAt: '2026-05-26T09:00:00.000Z',
+    }],
+    replies: [],
+  };
+  const nextState = {
+    messages: [{
+      ...previousState.messages[0],
+      replyCount: 1,
+      updatedAt: '2026-05-26T09:02:00.000Z',
+    }],
+    replies: [{
+      id: 'rep_agent',
+      parentMessageId: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      body: 'Agent reply',
+      createdAt: '2026-05-26T09:02:00.000Z',
+      updatedAt: '2026-05-26T09:02:00.000Z',
+    }],
+  };
+  context.conversationHistoryPages.main['channel:chan_all'] = { limit: 80, hasMore: false };
+  context.selectedSpaceType = 'channel';
+  context.selectedSpaceId = 'chan_all';
+
+  const merged = context.preserveLoadedConversationHistory(previousState, nextState);
+
+  assert.equal(merged.messages.find((message) => message.id === 'msg_parent')?.replyCount, 1);
 });
 
 test('opening a thread refreshes scoped replies instead of relying on preview state', async () => {

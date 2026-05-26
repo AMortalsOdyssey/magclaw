@@ -284,6 +284,7 @@ function tasksForContext(state, spaceType, spaceId, records, limit) {
       title: String(task.title || 'Untitled task'),
       body: String(task.body || ''),
       status: String(task.status || 'todo'),
+      claimedBy: task.claimedBy || '',
       assigneeIds: asArray(task.assigneeIds?.length ? task.assigneeIds : [task.assigneeId]).filter(Boolean),
       messageId: task.messageId || task.sourceMessageId || task.threadMessageId || '',
       threadMessageId: task.threadMessageId || '',
@@ -412,6 +413,10 @@ function renderActor(state, id) {
   return `@${actorName(state, id)}`;
 }
 
+function renderTaskActor(state, id, targetAgentId) {
+  return `${renderActor(state, id)}${id && id === targetAgentId ? ' (you)' : ''}`;
+}
+
 function renderTime(value) {
   if (!value) return '-';
   const date = new Date(value);
@@ -490,8 +495,11 @@ function renderConversationReferenceBlock(state, reference, targetAgentId, remai
 function renderReferencedContext(state, references, targetAgentId) {
   const refs = normalizeStoredConversationReferences(references);
   if (!refs.length) return '';
-  const lines = ['Referenced context supplied with the current message:'];
-  let used = lines[0].length;
+  const lines = [
+    'Referenced context supplied with the current message:',
+    'Treat these references as visible content attached by the user; do not ask the user to resend content that appears below.',
+  ];
+  let used = lines.join('\n').length;
   for (const reference of refs) {
     const remaining = CONVERSATION_REFERENCE_LIMITS.agentContextChars - used;
     if (remaining <= 120) {
@@ -568,14 +576,18 @@ function renderSuggestedMembers(pack) {
     .join('\n');
 }
 
-function renderTasks(state, tasks) {
+function renderTasks(state, tasks, targetAgentId = null) {
   if (!tasks.length) return '- (none)';
   return tasks.map((task) => {
-    const assignees = task.assigneeIds.length
-      ? ` assignees: ${task.assigneeIds.map((id) => renderActor(state, id)).join(', ')};`
-      : '';
+    const collaborators = task.assigneeIds.filter((id) => id !== task.claimedBy);
+    const owner = task.claimedBy
+      ? ` owner: ${renderTaskActor(state, task.claimedBy, targetAgentId)};`
+      : ' owner: unclaimed;';
+    const collaboratorText = collaborators.length
+      ? ` collaborators: ${collaborators.map((id) => renderTaskActor(state, id, targetAgentId)).join(', ')};`
+      : ' collaborators: none;';
     const msg = task.messageId ? ` msg=${task.messageId};` : '';
-    return `- task #${task.number || '?'} [${task.status}] ${task.title} (${assignees}${msg} thread=${task.threadMessageId || '-'})`;
+    return `- task #${task.number || '?'} [${task.status}] ${task.title} (${owner}${collaboratorText}${msg} thread=${task.threadMessageId || '-'})`;
   }).join('\n');
 }
 
@@ -738,7 +750,7 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
   lines.push(
     '',
     'Relevant tasks:',
-    renderTasks(sourceState, pack.tasks),
+    renderTasks(sourceState, pack.tasks, pack.targetAgentId),
     '',
     'Visible attachment metadata:',
     renderAttachments(pack.attachments),
