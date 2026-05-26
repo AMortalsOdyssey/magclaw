@@ -1394,6 +1394,10 @@ document.addEventListener('click', async (event) => {
 	      removeStagedAttachment(target.dataset.composerId, target.dataset.id);
 	    }
     if (action === 'pick-project-folder') {
+      if (!(typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled())) {
+        toast('Project folders are temporarily disabled');
+        return;
+      }
       const result = await api('/api/projects/pick-folder', {
         method: 'POST',
         body: JSON.stringify({
@@ -1410,9 +1414,11 @@ document.addEventListener('click', async (event) => {
       toast('Project folder added');
     }
     if (action === 'toggle-project-tree') {
+      if (!(typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled())) return;
       await toggleProjectTree(target.dataset.projectId, target.dataset.path || '');
     }
     if (action === 'open-project-file') {
+      if (!(typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled())) return;
       await openProjectFile(target.dataset.projectId, target.dataset.path || '');
     }
     if (action === 'close-project-preview') {
@@ -1441,6 +1447,7 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'remove-project') {
+      if (!(typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled())) return;
       clearProjectCaches(target.dataset.id);
       await api(`/api/projects/${target.dataset.id}`, { method: 'DELETE' });
       toast('Project folder removed');

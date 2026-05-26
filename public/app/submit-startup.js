@@ -238,6 +238,11 @@ document.addEventListener('submit', async (event) => {
       createChannelMemberSearchQuery = '';
     }
     if (form.id === 'project-form') {
+      if (!(typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled())) {
+        toast('Project folders are temporarily disabled');
+        modal = null;
+        return;
+      }
       await api('/api/projects', {
         method: 'POST',
         body: JSON.stringify({

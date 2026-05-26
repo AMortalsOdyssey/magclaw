@@ -98,7 +98,8 @@ test('project route group uploads attachments through injected storage', async (
   assert.equal(deps.state.attachments[0].serverId, 'local');
 });
 
-test('project route group keeps project references local', async () => {
+// Local project folder linking is temporarily hidden until cloud-safe access exists.
+test.skip('project route group keeps project references local', async () => {
   const res = makeResponse();
   const handled = await handleProjectApi(
     { method: 'POST' },

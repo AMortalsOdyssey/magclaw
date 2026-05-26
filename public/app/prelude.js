@@ -15,6 +15,13 @@ function writeJsonStorage(key, value) {
   }
 }
 
+const LOCAL_PROJECT_FOLDERS_ENABLED = false;
+
+function localProjectFoldersEnabled() {
+  // Temporarily keep local folder linking hidden until cloud-safe resource access exists.
+  return LOCAL_PROJECT_FOLDERS_ENABLED === true;
+}
+
 function workspaceActivityCacheScope() {
   const pathSlug = String(window.location.pathname || '').match(/^\/s\/([^/]+)/)?.[1] || '';
   const workspaceId = String(appState?.connection?.workspaceId || appState?.cloud?.workspaces?.[0]?.id || '').trim();

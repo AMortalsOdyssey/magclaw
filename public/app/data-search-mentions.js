@@ -933,6 +933,7 @@ function getMentionCandidates(query, spaceType = selectedSpaceType, spaceId = se
 }
 
 async function getProjectMentionCandidates(query, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  if (!(typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled())) return [];
   if (!(appState?.projects || []).some((project) => project.spaceType === spaceType && project.spaceId === spaceId)) return [];
   const params = new URLSearchParams({ spaceType, spaceId, q: query || '' });
   const result = await api(`/api/projects/search?${params.toString()}`);
@@ -1083,6 +1084,7 @@ function projectTreeIsExpanded(projectId, relPath = '') {
 }
 
 async function loadProjectTree(projectId, relPath = '') {
+  if (!(typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled())) return;
   const key = projectTreeKey(projectId, relPath);
   projectTreeCache[key] = { loading: true, entries: [], error: '' };
   render();
@@ -1110,6 +1112,7 @@ async function toggleProjectTree(projectId, relPath = '') {
 }
 
 async function openProjectFile(projectId, relPath = '') {
+  if (!(typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled())) return;
   const key = projectPreviewKey(projectId, relPath);
   selectedProjectFile = { projectId, path: relPath };
   threadMessageId = null;
