@@ -273,7 +273,7 @@ test('package version snapshot refreshes NPM once per 10 minute web cache window
   assert.equal(fourth.packages['@magclaw/daemon'].latest, '0.1.51');
 });
 
-test('package version polling refreshes NPM every 10 minutes and broadcasts updates', async () => {
+test('package version polling refreshes NPM every 10 minutes without broadcasting updates', async () => {
   let daemonLatest = '';
   let computerLatest = '';
   let refreshCount = 0;
@@ -319,7 +319,7 @@ test('package version polling refreshes NPM every 10 minutes and broadcasts upda
   assert.equal(timer.intervalMs, 10 * 60_000);
   assert.equal(timer.unrefed, true);
   assert.equal(refreshCount, 2);
-  assert.deepEqual(broadcasts, ['state', 'state']);
+  assert.deepEqual(broadcasts, []);
   assert.deepEqual(cleared, [timer]);
 });
 

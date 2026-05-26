@@ -502,7 +502,6 @@ export function createSystemServices(deps) {
         const after = currentNpmPackageVersions();
         if (npmPackageVersionsChanged(before, after)) {
           packageVersionSnapshotCache = null;
-          broadcastState?.();
         }
       })
       .catch(() => {})
