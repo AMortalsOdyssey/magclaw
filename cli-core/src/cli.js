@@ -1309,6 +1309,7 @@ async function writeCliShimFile(file, content, { force = false } = {}) {
     ...status,
     changed: true,
     written: true,
+    upToDate: true,
     reason: force && status.exists ? 'forced' : status.reason,
     previousHash: status.currentHash,
     currentHash: status.expectedHash,

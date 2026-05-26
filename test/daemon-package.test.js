@@ -226,7 +226,7 @@ test('daemon run service state preserves launchd background mode for service-lau
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.32');
+  assert.equal(DAEMON_VERSION, '0.1.33');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -793,6 +793,7 @@ test('install-cli command writes durable magclaw and computer command shims', as
     assert.equal(payload.pathReady, true);
     assert.ok(payload.files.length >= 1);
     assert.ok(payload.shims.every((shim) => shim.changed === true));
+    assert.ok(payload.shims.every((shim) => shim.upToDate === true));
     assert.ok(payload.shims.every((shim) => shim.currentHash === shim.expectedHash));
 
     const files = await readdir(binDir);
@@ -907,8 +908,10 @@ test('install-cli repairs a missing magclaw-computer shim next to existing magcl
     const computerShimPayload = payload.shims.find((shim) => shim.command === 'magclaw-computer');
     assert.equal(magclawShim.reason, 'outdated');
     assert.equal(magclawShim.changed, true);
+    assert.equal(magclawShim.upToDate, true);
     assert.equal(computerShimPayload.reason, 'missing');
     assert.equal(computerShimPayload.changed, true);
+    assert.equal(computerShimPayload.upToDate, true);
 
     const files = await readdir(binDir);
     assert.deepEqual(files.sort(), ['magclaw', 'magclaw-computer']);
