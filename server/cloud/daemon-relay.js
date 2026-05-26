@@ -63,6 +63,22 @@ function packageSpecForPackageName(packageName = DAEMON_PACKAGE_NAME, version = 
   return `${name}@${cleanVersion}`;
 }
 
+function packageVersionParts(value = '') {
+  const match = String(value || '').trim().match(/(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$/);
+  if (!match) return null;
+  return [Number(match[1] || 0), Number(match[2] || 0), Number(match[3] || 0)];
+}
+
+function comparePackageVersions(current = '', target = '') {
+  const currentParts = packageVersionParts(current);
+  const targetParts = packageVersionParts(target);
+  if (!currentParts || !targetParts) return null;
+  for (let index = 0; index < 3; index += 1) {
+    if (currentParts[index] !== targetParts[index]) return currentParts[index] - targetParts[index];
+  }
+  return 0;
+}
+
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
   if (!value || typeof value !== 'object') return JSON.stringify(value);
@@ -341,6 +357,9 @@ export function createDaemonRelay(deps) {
     const fallbackName = String(source.packageKind || computer.packageKind || service.packageKind || metadataPackage.kind || computer.connectedVia || '').toLowerCase() === 'computer'
       ? COMPUTER_PACKAGE_NAME
       : DAEMON_PACKAGE_NAME;
+    const servicePackageName = normalizePackageName(service.packageName || packageInfoFromSpec(service.packageSpec || '').name || '', '');
+    const computerPackageName = normalizePackageName(computer.packageName || packageInfoFromSpec(computer.packageSpec || '').name || '', '');
+    const metadataPackageName = normalizePackageName(metadataPackage.name || packageInfoFromSpec(metadataPackage.spec || '').name || '', '');
     const packageName = normalizePackageName(
       source.packageName
         || service.packageName
@@ -349,21 +368,31 @@ export function createDaemonRelay(deps) {
         || parsed.name,
       fallbackName,
     );
+    const packageKind = packageKindForPackageName(packageName);
     const packageVersion = String(
       source.packageVersion
-        || service.packageVersion
-        || computer.packageVersion
-        || metadataPackage.version
         || parsed.version
         || computer.daemonVersion
+        || (servicePackageName === packageName ? service.packageVersion : '')
+        || (computerPackageName === packageName ? computer.packageVersion : '')
+        || (metadataPackageName === packageName ? metadataPackage.version : '')
         || computer.version
         || '',
     ).trim();
-    const packageKind = String(source.packageKind || service.packageKind || computer.packageKind || metadataPackage.kind || packageKindForPackageName(packageName)).toLowerCase() === 'computer'
-      ? 'computer'
-      : 'daemon';
-    const packageBin = String(source.packageBin || service.packageBin || computer.packageBin || metadataPackage.bin || packageBinForPackageName(packageName)).trim() || packageBinForPackageName(packageName);
-    const packageSpec = String(source.packageSpec || service.packageSpec || computer.packageSpec || metadataPackage.spec || packageSpecForPackageName(packageName, packageVersion || 'latest')).trim();
+    const packageBin = String(
+      source.packageBin
+        || (servicePackageName === packageName ? service.packageBin : '')
+        || (computerPackageName === packageName ? computer.packageBin : '')
+        || (metadataPackageName === packageName ? metadataPackage.bin : '')
+        || packageBinForPackageName(packageName),
+    ).trim() || packageBinForPackageName(packageName);
+    const packageSpec = String(
+      source.packageSpec
+        || (servicePackageName === packageName ? service.packageSpec : '')
+        || (computerPackageName === packageName ? computer.packageSpec : '')
+        || (metadataPackageName === packageName ? metadataPackage.spec : '')
+        || packageSpecForPackageName(packageName, packageVersion || 'latest'),
+    ).trim();
     return {
       name: packageName,
       version: packageVersion,
@@ -685,7 +714,7 @@ export function createDaemonRelay(deps) {
     const comment = String(workspace.name || workspace.slug || workspace.id || 'local').trim() || profile;
     const displayName = normalizeDisplayName(options.displayName);
     const credentialFlag = options.credentialFlag || 'api-key';
-    const backgroundFlag = options.background === false ? '' : '--background';
+    const backgroundFlag = options.background === true ? '--background' : '';
     const template = process.env.MAGCLAW_DAEMON_CONNECT_COMMAND || '';
     if (template) {
       const rendered = template
@@ -1380,6 +1409,35 @@ export function createDaemonRelay(deps) {
         forceEvent: true,
         event: { computerId },
       });
+      changed += 1;
+    }
+    return changed;
+  }
+
+  function markAgentsForComputerClosed(computerId) {
+    let changed = 0;
+    for (const agent of safeArray(state.agents)) {
+      if (agentIsUnavailable(agent) || agent.computerId !== computerId) continue;
+      if (agent.status === 'offline') continue;
+      setAgentStatus(agent, 'offline', 'computer_close_requested', {
+        forceEvent: true,
+        event: { computerId },
+      });
+      changed += 1;
+    }
+    return changed;
+  }
+
+  function markComputerDeliveriesStopped(computerId, error = 'Computer close requested.') {
+    let changed = 0;
+    for (const delivery of safeArray(cloud().agentDeliveries)) {
+      if (delivery.computerId !== computerId) continue;
+      const status = String(delivery.status || '').toLowerCase();
+      if (!ACTIVE_DELIVERY_STATUSES.has(status)) continue;
+      delivery.status = 'stopped';
+      delivery.completedAt = delivery.completedAt || now();
+      delivery.updatedAt = now();
+      delivery.error = error;
       changed += 1;
     }
     return changed;
@@ -2174,6 +2232,32 @@ export function createDaemonRelay(deps) {
     broadcastState();
   }
 
+  async function handleComputerCloseAck(connection, message) {
+    const computer = findComputer(connection.computerId);
+    if (!computer) return;
+    const metadata = objectValue(computer.metadata);
+    computer.metadata = {
+      ...metadata,
+      remoteClose: {
+        ...objectValue(metadata.remoteClose),
+        commandId: message.commandId || objectValue(metadata.remoteClose).commandId || null,
+        status: String(message.status || 'stopping'),
+        acknowledgedAt: now(),
+        service: objectValue(message.service),
+      },
+    };
+    if (!computerIsDisabled(computer)) computer.status = 'offline';
+    computer.disconnectedAt = now();
+    computer.updatedAt = now();
+    recordDaemonEvent('computer_close_acked', 'Computer acknowledged close request.', {
+      computerId: computer.id,
+      commandId: message.commandId || null,
+      status: message.status || null,
+    });
+    await persistRuntimeState(workspaceIdForComputer(computer, connection), 'computer_close_acked');
+    broadcastState();
+  }
+
   async function handleUpgradeProgressMessage(connection, message) {
     const computer = findComputer(connection.computerId);
     if (!computer) return;
@@ -2260,6 +2344,9 @@ export function createDaemonRelay(deps) {
         break;
       case 'daemon:upgrade:status':
         await handleDaemonUpgradeStatus(connection, message);
+        break;
+      case 'daemon:close:ack':
+        await handleComputerCloseAck(connection, message);
         break;
       case 'agent:start:ack':
       case 'agent:deliver:ack':
@@ -2737,6 +2824,11 @@ export function createDaemonRelay(deps) {
     const targetVersion = String(options.targetVersion || options.version || 'latest').trim() || 'latest';
     const targetPackageSpec = String(options.packageSpec || packageSpecForPackageName(targetPackageName, targetVersion)).trim();
     const previousVersion = String(packageInfo.version || computer.daemonVersion || computer.version || '').trim();
+    if (targetVersion !== 'latest' && previousVersion && comparePackageVersions(previousVersion, targetVersion) === 0) {
+      const error = new Error(`This computer is already running ${targetPackageName}@${targetVersion}.`);
+      error.status = 409;
+      throw error;
+    }
     const upgrade = patchDaemonUpgrade(computer, {
       commandId,
       status: 'pending_idle',
@@ -2779,6 +2871,72 @@ export function createDaemonRelay(deps) {
     return { commandId, sent, reused: false, computer, upgrade };
   }
 
+  async function requestComputerClose(computerId, options = {}) {
+    const computer = findComputer(computerId);
+    if (!computer) {
+      const error = new Error('Computer not found.');
+      error.status = 404;
+      throw error;
+    }
+    if (computerIsDisabled(computer)) {
+      const error = new Error('Computer is disabled.');
+      error.status = 400;
+      throw error;
+    }
+    const commandId = makeId('dclose');
+    const timestamp = now();
+    const reason = String(options.reason || 'closed_from_cloud');
+    const stopAgents = options.stopAgents !== false;
+    const disableBackground = options.disableBackground !== false;
+    const connection = connections.get(computer.id);
+    computer.metadata = {
+      ...objectValue(computer.metadata),
+      remoteClose: {
+        commandId,
+        status: 'requested',
+        reason,
+        requestedBy: options.requestedBy || null,
+        requestedAt: timestamp,
+        stopAgents,
+        disableBackground,
+        service: objectValue(computer.service),
+      },
+    };
+    if (!computerIsDisabled(computer)) computer.status = 'offline';
+    computer.reconnectingSince = null;
+    computer.disconnectedAt = timestamp;
+    computer.updatedAt = timestamp;
+    const stoppedAgents = stopAgents ? markAgentsForComputerClosed(computer.id) : 0;
+    const stoppedDeliveries = stopAgents ? markComputerDeliveriesStopped(computer.id, 'Computer close requested.') : 0;
+    const sent = send(connection, {
+      type: 'daemon:close',
+      commandId,
+      reason,
+      stopAgents,
+      disableBackground,
+      requestedAt: timestamp,
+    });
+    if (connection && sent) {
+      connection.forceOffline = true;
+      const closeTimer = setTimeout(() => {
+        safeSocketEnd(connection.socket);
+      }, 1200);
+      closeTimer.unref?.();
+    }
+    recordDaemonEvent(sent ? 'computer_close_requested' : 'computer_close_queued', 'Computer close requested.', {
+      computerId: computer.id,
+      commandId,
+      reason,
+      sent,
+      stoppedAgents,
+      stoppedDeliveries,
+      disableBackground,
+    });
+    await persistRuntimeState(workspaceIdForComputer(computer, connection), 'computer_close_requested');
+    broadcastState();
+    return { commandId, sent, computer, stoppedAgents, stoppedDeliveries };
+  }
+
   return {
     agentShouldUseRelay,
     approveComputerSetupRequest,
@@ -2807,6 +2965,7 @@ export function createDaemonRelay(deps) {
     handleUpgrade,
     probeStaleAgentHeartbeats,
     publicRelayState,
+    requestComputerClose,
     requestDaemonUpgrade,
     requestAgentSkills,
     requestAgentWorkspaceFile,

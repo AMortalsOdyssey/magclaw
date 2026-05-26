@@ -1269,6 +1269,30 @@ document.addEventListener('click', async (event) => {
       render();
       toast(`${packageLabel} upgrade queued`);
     }
+    if (action === 'confirm-computer-close') {
+      const computerId = computerCloseConfirmState?.computerId || '';
+      if (!computerId) throw new Error('Computer is missing.');
+      selectedComputerId = computerId;
+      activeView = 'computers';
+      railTab = 'computers';
+      computerCloseConfirmState = { computerId: null };
+      modal = null;
+      render();
+      const result = await api(`/api/computers/${encodeURIComponent(computerId)}/close`, {
+        method: 'POST',
+        body: JSON.stringify({
+          stopAgents: true,
+          disableBackground: true,
+        }),
+      });
+      if (result?.computer) {
+        const existing = byId(appState.computers, result.computer.id);
+        if (existing) Object.assign(existing, result.computer);
+      }
+      await refreshState().catch(() => {});
+      renderShellOrModal();
+      toast('Computer close requested');
+    }
     if (action === 'close-modal') {
       const isBackdrop = event.target.classList.contains('modal-backdrop');
       const isCloseBtn = event.target.closest('.modal-head button[data-action="close-modal"]');
@@ -1293,6 +1317,9 @@ document.addEventListener('click', async (event) => {
         }
         if (modal === 'daemon-upgrade-confirm') {
           daemonUpgradeConfirmState = { computerId: null };
+        }
+        if (modal === 'computer-close-confirm') {
+          computerCloseConfirmState = { computerId: null };
         }
         if (modal === 'join-link-revoke-confirm') {
           joinLinkRevokeConfirmState = { joinLinkId: null };
@@ -1628,6 +1655,16 @@ document.addEventListener('click', async (event) => {
       railTab = 'computers';
       daemonUpgradeConfirmState = { computerId };
       modal = 'daemon-upgrade-confirm';
+      render();
+    }
+    if (action === 'open-computer-close-confirm') {
+      const computerId = target.dataset.id || '';
+      if (!computerId) return;
+      selectedComputerId = computerId;
+      activeView = 'computers';
+      railTab = 'computers';
+      computerCloseConfirmState = { computerId };
+      modal = 'computer-close-confirm';
       render();
     }
     if (action === 'regenerate-computer-command') {

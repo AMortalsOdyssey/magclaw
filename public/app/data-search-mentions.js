@@ -1281,6 +1281,8 @@ function clickLoadingMeta(action, target) {
     'confirm-agent-start': ['Requesting agent start...', detailSurface],
     'confirm-agent-restart': ['Requesting agent restart...', detailSurface],
     'confirm-daemon-upgrade': ['Queuing daemon upgrade...', 'modal'],
+    'open-computer-close-confirm': ['Preparing close confirmation...', 'main'],
+    'confirm-computer-close': ['Closing computer...', 'modal'],
     'pick-project-folder': ['Opening folder picker...', 'main'],
     'toggle-project-tree': ['Loading folder...', 'main'],
     'open-project-file': ['Loading file...', detailSurface],

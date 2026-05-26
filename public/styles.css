@@ -122,3 +122,55 @@
   background: #62f4ff;
   box-shadow: 0 0 10px rgba(98, 244, 255, 0.7);
 }
+
+.computer-row-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.computer-row-name .dm-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-row-name .package-update-badge {
+  flex: 0 0 auto;
+  margin-left: 0;
+}
+
+.modal-computer-close-confirm .computer-close-mode {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+}
+
+.modal-computer-close-confirm .computer-close-mode div {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.modal-computer-close-confirm .computer-close-mode dt {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.modal-computer-close-confirm .computer-close-mode dd {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.modal-computer-close-confirm .computer-close-mode small {
+  color: var(--text-muted);
+  line-height: 1.35;
+}

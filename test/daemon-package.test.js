@@ -174,11 +174,18 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.23');
+  assert.equal(DAEMON_VERSION, '0.1.24');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
   );
+});
+
+test('foreground daemon connection log includes the running package version', async () => {
+  const source = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
+  const connectSource = source.slice(source.indexOf('async connectOnce()'), source.indexOf('async runForever()'));
+  assert.match(connectSource, /const packageInfo = runtimePackageInfo\(this\.env\)/);
+  assert.match(connectSource, /Connecting MagClaw daemon v\$\{packageInfo\.version \|\| DAEMON_VERSION\} profile/);
 });
 
 test('daemon websocket auth prefers durable api keys over stale pair tokens', () => {
@@ -802,6 +809,20 @@ test('daemon reports and verifies active background service state before remote 
   assert.match(source, /active: Boolean\(serviceStatus\.active\)/);
 });
 
+test('daemon close command stops agents and disables background relaunchers', async () => {
+  const source = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
+
+  assert.match(source, /'daemon:close'/);
+  assert.match(source, /case 'daemon:close':[\s\S]*await this\.handleDaemonClose\(message\)/);
+  assert.match(source, /async handleDaemonClose\(message\)/);
+  assert.match(source, /for \(const session of this\.sessions\.values\(\)\) session\.stop\(\)/);
+  assert.match(source, /this\.send\(\{ type: 'daemon:close:ack'/);
+  assert.match(source, /stopBackground\(this\.paths\.profile, this\.env, \{ disable: message\.disableBackground !== false \}\)/);
+  assert.match(source, /spawnSync\('launchctl', \['disable', `gui\/\$\{process\.getuid\(\)\}\/\$\{label\}`\]/);
+  assert.match(source, /spawnSync\('launchctl', \['enable', `gui\/\$\{process\.getuid\(\)\}\/\$\{label\}`\]/);
+  assert.match(source, /case 'stop':[\s\S]*stopDaemon\(flags\.profile, env, \{ disable: Boolean\(flags\.disable\) \}\)/);
+});
+
 test('foreground daemon exits and clears its lock on SIGINT', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-sigint-'));
   const server = await startHoldingWebSocketServer();
@@ -822,7 +843,7 @@ test('foreground daemon exits and clears its lock on SIGINT', async () => {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     exitPromise = waitForExit(child);
-    await waitForOutput(child, /Connecting MagClaw daemon profile "sigint-test"/);
+    await waitForOutput(child, /Connecting MagClaw daemon v0\.1\.24 profile "sigint-test"/);
     child.kill('SIGINT');
     const exit = await exitPromise;
     if (process.platform === 'win32') {
@@ -886,7 +907,7 @@ test('stop command stops a foreground daemon for the selected profile', async ()
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     exitPromise = waitForExit(child);
-    await waitForOutput(child, /Connecting MagClaw daemon profile "stop-test"/);
+    await waitForOutput(child, /Connecting MagClaw daemon v0\.1\.24 profile "stop-test"/);
 
     const stopped = spawnSync(process.execPath, [
       DAEMON_BIN,

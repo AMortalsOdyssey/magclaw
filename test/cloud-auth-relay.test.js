@@ -927,7 +927,7 @@ test('owner registration protects app APIs and supports invites end to end', asy
     assert.match(pairing.data.command, /MAGCLAW_REPO_DIR="\/path\/to\/magclaw"; node "\$MAGCLAW_REPO_DIR\/daemon\/bin\/magclaw-daemon\.js"/);
     assert.match(pairing.data.command, /--api-key "?mc_machine_/);
     assert.doesNotMatch(pairing.data.command, /--pair-token/);
-    assert.match(pairing.data.command, /--background/);
+    assert.doesNotMatch(pairing.data.command, /--background/);
     assert.match(pairing.data.command, /--profile "?admin-team-cmp_/);
     assert.match(pairing.data.command, /# Admin Team/);
     assert.match(pairing.data.computerCommand, /magclaw-computer\.js" setup "?\/admin-team"?/);
@@ -1078,7 +1078,7 @@ test('cloud pairing command can use the domain-friendly npm daemon launcher', as
     assert.match(pairing.data.command, /--server-url "?https:\/\/magclaw\.multiego\.me"?/);
     assert.match(pairing.data.command, /--api-key "?mc_machine_/);
     assert.doesNotMatch(pairing.data.command, /--pair-token/);
-    assert.match(pairing.data.command, /--background/);
+    assert.doesNotMatch(pairing.data.command, /--background/);
     assert.doesNotMatch(pairing.data.command, /MAGCLAW_REPO_DIR/);
     assert.match(pairing.data.computerCommand, /^npx @magclaw\/computer@latest setup /);
     assert.match(pairing.data.computerCommand, /"?\/admin-team"?/);
@@ -1103,7 +1103,7 @@ test('cloud pairing command carries the requested computer display name', async 
     assert.equal(pairing.data.displayName, 'Studio Mac');
     assert.equal(pairing.data.computer.name, 'Studio Mac');
     assert.match(pairing.data.command, /--display-name "?Studio Mac"?/);
-    assert.match(pairing.data.command, /--background/);
+    assert.doesNotMatch(pairing.data.command, /--background/);
     assert.match(pairing.data.computerCommand, /^npx @magclaw\/computer@latest setup /);
   } finally {
     await server.stop();
@@ -1317,7 +1317,7 @@ test('one local daemon home can run independent profiles for three server pairin
       });
       const profile = commandProfile(pairing.data.command);
       assert.equal(pairing.data.computer.workspaceId, target.workspaceId);
-      assert.match(pairing.data.command, /--background/);
+      assert.doesNotMatch(pairing.data.command, /--background/);
       assert.match(profile, new RegExp(`^${target.slug}-cmp_`));
       assert.match(pairing.data.command, new RegExp(`# ${target.name}`));
       pairings.push({

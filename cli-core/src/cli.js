@@ -52,6 +52,7 @@ export const CAPABILITIES = [
   'agent:stop',
   'agent:skills:list',
   'daemon:upgrade',
+  'daemon:close',
   'daemon:release_notice',
   'machine:runtime_models:detect',
 ];
@@ -585,6 +586,7 @@ function renderHelp() {
     '  --server-url <url>     MagClaw Cloud URL',
     '  --api-key <key>        Machine API key for connect',
     '  --background           Install and run as a background service',
+    '  --disable              With stop: suppress background relaunch until next start',
     '  --bin-dir <path>       install-cli target directory',
     '  --to <version>         Upgrade target version (default: latest)',
     '  --wait-cloud           Wait for Cloud heartbeat during manual upgrade',
@@ -3452,6 +3454,41 @@ class MagClawDaemon {
     await this.startUpgradeWorker(message);
   }
 
+  async handleDaemonClose(message) {
+    const commandId = String(message.commandId || '').trim();
+    const service = await readServiceState(this.paths.profile, this.env);
+    const serviceStatus = backgroundServiceStatus(this.paths.profile, this.env);
+    const packageInfo = runtimePackageInfo(this.env, service);
+    const runMode = {
+      mode: service.mode || serviceStatus.mode || 'foreground',
+      background: Boolean(service.background),
+      active: Boolean(serviceStatus.active),
+      label: serviceStatus.label || '',
+      serviceName: serviceStatus.serviceName || '',
+      taskName: serviceStatus.taskName || '',
+      packageName: packageInfo.name,
+      packageVersion: packageInfo.version,
+      packageKind: packageInfo.kind,
+      packageSpec: packageInfo.spec,
+      packageBin: packageInfo.bin,
+    };
+    logWarning('daemon', `Remote close requested (${message.reason || 'closed_from_cloud'}).`);
+    for (const session of this.sessions.values()) session.stop();
+    this.sessions.clear();
+    this.send({ type: 'daemon:close:ack',
+      commandId,
+      status: 'stopping',
+      reason: message.reason || 'closed_from_cloud',
+      service: runMode,
+      at: now(),
+    });
+    const background = stopBackground(this.paths.profile, this.env, { disable: message.disableBackground !== false });
+    logInfo('daemon', `Close request stopped background service mode=${background.mode || 'foreground'} ok=${Boolean(background.ok)}.`);
+    this.close();
+    process.exitCode = 0;
+    setTimeout(() => process.exit(0), 50).unref?.();
+  }
+
   async readyPayload() {
     const runtimes = await detectRuntimes(this.env);
     const owner = await ensureMachineFingerprint(this.paths.profile, this.env);
@@ -3656,6 +3693,9 @@ class MagClawDaemon {
         break;
       case 'daemon:upgrade':
         await this.handleDaemonUpgrade(message);
+        break;
+      case 'daemon:close':
+        await this.handleDaemonClose(message);
         break;
       case 'agent:start':
         await this.handleAgentStart(message);
@@ -3996,7 +4036,9 @@ class MagClawDaemon {
     const requestModule = url.protocol === 'wss:' ? https : http;
     const requestUrl = new URL(url.href.replace(/^ws/, 'http'));
     const key = crypto.randomBytes(16).toString('base64');
-    logInfo('daemon', `Connecting MagClaw daemon profile "${this.paths.profile}" to ${this.config.serverUrl}...`);
+    const packageInfo = runtimePackageInfo(this.env);
+    logInfo('daemon', `Connecting MagClaw daemon v${packageInfo.version || DAEMON_VERSION} profile "${this.paths.profile}" to ${this.config.serverUrl}...`);
+    if (this.closed) return;
     return new Promise((resolve, reject) => {
       let settled = false;
       const finish = (callback, value) => {
@@ -4285,6 +4327,7 @@ async function startMacBackground(profile, env = process.env) {
   ].join('\n');
   await writeFile(plist, xml);
   spawnSync('launchctl', ['bootout', `gui/${process.getuid()}`, plist], { stdio: 'ignore' });
+  spawnSync('launchctl', ['enable', `gui/${process.getuid()}/${label}`], { stdio: 'ignore' });
   const boot = spawnSync('launchctl', ['bootstrap', `gui/${process.getuid()}`, plist], { encoding: 'utf8' });
   if (boot.status !== 0) {
     const load = spawnSync('launchctl', ['load', plist], { encoding: 'utf8' });
@@ -4451,32 +4494,49 @@ async function stopActiveDaemon(profile, env = process.env) {
   return { ok: stopped, running: !stopped, pid, signal };
 }
 
-function stopBackground(profile, env = process.env) {
+function stopBackground(profile, env = process.env, options = {}) {
   if (process.platform === 'darwin') {
     const paths = profilePaths(profile, env);
     const label = launchAgentLabel(paths.profile);
     const plist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+    if (options.disable) {
+      const disabled = spawnSync('launchctl', ['disable', `gui/${process.getuid()}/${label}`], { encoding: 'utf8' });
+      const stopped = spawnSync('launchctl', ['stop', label], { encoding: 'utf8' });
+      if (stopped.status !== 0) spawnSync('launchctl', ['bootout', `gui/${process.getuid()}`, plist], { stdio: 'ignore' });
+      return {
+        ok: disabled.status === 0 || stopped.status === 0,
+        mode: 'launchd',
+        label,
+        file: plist,
+        disabled: disabled.status === 0,
+        stopped: stopped.status === 0,
+        error: disabled.status === 0 && stopped.status === 0 ? '' : String(stopped.stderr || disabled.stderr || stopped.stdout || disabled.stdout || '').trim(),
+      };
+    }
     spawnSync('launchctl', ['bootout', `gui/${process.getuid()}`, plist], { stdio: 'ignore' });
     return { ok: true, mode: 'launchd', label, file: plist };
   }
   if (process.platform === 'linux') {
     const paths = profilePaths(profile, env);
     const serviceName = systemdServiceName(paths.profile);
-    const result = spawnSync('systemctl', ['--user', 'disable', '--now', serviceName], { encoding: 'utf8' });
+    const result = options.disable
+      ? spawnSync('systemctl', ['--user', 'disable', '--now', serviceName], { encoding: 'utf8' })
+      : spawnSync('systemctl', ['--user', 'stop', serviceName], { encoding: 'utf8' });
     return { ok: result.status === 0, mode: 'systemd', serviceName, error: result.stderr || '' };
   }
   if (process.platform === 'win32') {
     const paths = profilePaths(profile, env);
     const taskName = windowsTaskName(paths.profile);
     spawnSync('schtasks.exe', ['/End', '/TN', taskName], { stdio: 'ignore' });
+    if (!options.disable) return { ok: true, mode: 'schtasks', taskName };
     const result = spawnSync('schtasks.exe', ['/Change', '/TN', taskName, '/DISABLE'], { encoding: 'utf8' });
     return { ok: result.status === 0, mode: 'schtasks', taskName, error: result.stderr || result.stdout || '' };
   }
   return { ok: false, mode: 'foreground' };
 }
 
-async function stopDaemon(profile, env = process.env) {
-  const background = stopBackground(profile, env);
+async function stopDaemon(profile, env = process.env, options = {}) {
+  const background = stopBackground(profile, env, options);
   const processResult = await stopActiveDaemon(profile, env);
   const backgroundRequired = background.mode !== 'foreground';
   return {
@@ -5211,7 +5271,7 @@ export async function main(argv = process.argv, env = process.env) {
     }
     case 'stop':
       requireExplicitProfile('stop', flags);
-      printJson(await stopDaemon(flags.profile, env));
+      printJson(await stopDaemon(flags.profile, env, { disable: Boolean(flags.disable) }));
       break;
     case 'restart':
       printJson(await restartSavedBackground(flags, env));

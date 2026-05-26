@@ -13,6 +13,5 @@ export const PAIRING_COMMAND_TEMPLATE = [
   '--server-url {serverUrl}',
   '--api-key {apiKey}',
   '--profile {profile}',
-  '--background',
   '# {serverName}',
 ].join(' ');

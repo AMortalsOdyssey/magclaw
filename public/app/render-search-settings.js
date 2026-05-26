@@ -546,7 +546,8 @@ function computerUpgradeStatusLabel(computer = {}) {
 }
 
 function activeComputerUpgradeStatusLabel(upgradeLabel = '', updateAvailable = false) {
-  if (upgradeLabel === 'Updated' && updateAvailable) return '';
+  void updateAvailable;
+  if (upgradeLabel === 'Updated') return '';
   return upgradeLabel;
 }
 
@@ -691,6 +692,61 @@ function renderDaemonUpgradeConfirmModal() {
   `;
 }
 
+function computerCloseConfirmTarget() {
+  const computerId = computerCloseConfirmState?.computerId || '';
+  return computerId ? byId(appState?.computers, computerId) : null;
+}
+
+function computerRunModeLabel(computer = {}) {
+  const service = computer.service && typeof computer.service === 'object' ? computer.service : {};
+  const serviceMode = String(service.mode || '').toLowerCase();
+  const packageKind = typeof computerPackageKind === 'function' ? computerPackageKind(computer) : String(computer.packageKind || computer.connectedVia || '').toLowerCase();
+  if (packageKind === 'computer' || computer.connectedVia === 'computer') {
+    return {
+      label: 'Computer mode',
+      detail: 'Browser-approved background connection. MagClaw will close the paired computer process and stop its local Agent sessions.',
+    };
+  }
+  if (service.background === true || ['launchd', 'systemd', 'schtasks'].includes(serviceMode)) {
+    return {
+      label: 'Background service',
+      detail: serviceMode
+        ? `Runs as ${serviceMode}. MagClaw will disable auto-restart before stopping it.`
+        : 'Runs as a background service. MagClaw will disable auto-restart before stopping it.',
+    };
+  }
+  return {
+    label: 'Foreground terminal',
+    detail: 'Runs in the terminal that started the connect command. MagClaw will ask that process to stop immediately.',
+  };
+}
+
+function renderComputerCloseConfirmModal() {
+  const computer = computerCloseConfirmTarget();
+  if (!computer) return modalHeader('Close Computer', 'Computer not found');
+  const label = computer.name || computer.hostname || computer.localHostname || 'this computer';
+  const mode = computerRunModeLabel(computer);
+  const agents = computerAgents(computer.id);
+  return `
+    ${modalHeader('Close Computer', 'Computer')}
+    <div class="confirm-stop-modal computer-close-confirm-modal">
+      <div class="confirm-stop-icon">${settingsIcon('computer')}</div>
+      <div class="confirm-stop-copy">
+        <strong>Close ${escapeHtml(label)}?</strong>
+        <p>This will stop all local Agent sessions, disconnect foreground and background links, and pause background relaunchers when they exist.</p>
+        <dl class="computer-close-mode">
+          <div><dt>Runtime mode</dt><dd><strong>${escapeHtml(mode.label)}</strong><small>${escapeHtml(mode.detail)}</small></dd></div>
+          <div><dt>Agents</dt><dd><strong>${escapeHtml(agents.length)}</strong><small>Agent sessions on this computer will be stopped.</small></dd></div>
+        </dl>
+      </div>
+    </div>
+    <div class="modal-actions confirm-stop-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+      <button type="button" class="danger-btn" data-action="confirm-computer-close">Close Computer</button>
+    </div>
+  `;
+}
+
 function renderComputerDetail(computer) {
   const agents = computerAgents(computer.id);
   const currentPairingCommand = latestPairingCommand?.computer?.id === computer.id ? latestPairingCommand : null;
@@ -777,7 +833,7 @@ function renderComputerDetail(computer) {
                 command: currentCommand,
                 kind: 'connect',
                 className: 'computer-detail-connect-option',
-                note: 'This command targets the selected Computer and registers its daemon as a background service.',
+                note: 'This command targets the selected Computer. Optional: add <code>--background</code> before the server name comment to run it as a background service.',
               })}
               ${renderPairingCommandOption({
                 title: 'Computer',
@@ -814,6 +870,13 @@ function renderComputerDetail(computer) {
             <p>${disabled ? 'Allow this computer to reconnect and run Agents again.' : 'Stop this computer from reconnecting or receiving Agent work.'}</p>
           </div>
           <button class="${disabled ? 'secondary-btn' : 'danger-btn'}" type="button" data-action="${disabled ? 'enable-computer' : 'disable-computer'}" data-id="${escapeHtml(computer.id)}">${disabled ? 'Enable Computer' : 'Disable Computer'}</button>
+        </div>
+        <div class="danger-row">
+          <div>
+            <strong>Close Computer</strong>
+            <p>Stop local Agent processes and disconnect this computer now.</p>
+          </div>
+          <button class="danger-btn" type="button" data-action="open-computer-close-confirm" data-id="${escapeHtml(computer.id)}" ${connected ? '' : 'disabled'}>Close Computer</button>
         </div>
       </div>
     </section>

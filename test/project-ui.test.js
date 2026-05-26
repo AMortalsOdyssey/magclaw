@@ -169,7 +169,8 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(modalSource, /latestPairingCommand\?\.computerCommand/);
   assert.match(modalSource, /different machines create their own Computers for this server/);
   assert.match(modalSource, /targets the selected Computer/);
-  assert.match(modalSource, /background service/);
+  assert.match(modalSource, /Optional: add <code>--background<\/code>/);
+  assert.doesNotMatch(modalSource, /registers its daemon as a background service\./);
   assert.match(app, /let computerPairingCommandError = ''/);
   assert.match(app, /let pairingCommandCopyAcknowledgedKind = ''/);
   assert.doesNotMatch(app, /let pairingCommandCopyAcknowledged = false/);
@@ -265,7 +266,8 @@ test('computer daemon upgrade UI only appears when actionable and shows one stat
   assert.match(app, /function computerDaemonUpgradeState\(/);
   assert.match(app, /function computerUpgradeStatusLabel\(/);
   assert.match(app, /function activeComputerUpgradeStatusLabel\(/);
-  assert.match(app, /if \(upgradeLabel === 'Updated' && updateAvailable\) return ''/);
+  assert.match(app, /if \(upgradeLabel === 'Updated'\) return ''/);
+  assert.doesNotMatch(app, /if \(upgradeLabel === 'Updated' && updateAvailable\) return ''/);
   assert.match(app, /function computerDaemonServiceReady\(/);
   assert.match(app, /function daemonUpdateAvailable\(/);
   assert.match(app, /function renderDaemonUpgradePanel\(/);
@@ -350,11 +352,40 @@ test('left rail navigation refreshes shared package versions and renders update 
   assert.match(navSource, /refreshPackageVersionReminders\(\)/);
   assert.match(selectComputerSource, /refreshPackageVersionReminders\(\)/);
   assert.match(railSource, /const packageUpdateCount = typeof connectedComputerPackageUpdateCount === 'function'[\s\S]*?connectedComputerPackageUpdateCount\(\)/);
-  assert.match(railSource, /server-switcher-trigger[^`]+has-package-update/);
+  assert.doesNotMatch(railSource, /server-switcher-trigger[^`]+has-package-update/);
+  assert.doesNotMatch(railSource, /server-switcher-trigger[\s\S]*computerPackageUpdateBadge\(\{ count: packageUpdateCount/);
   assert.match(railSource, /renderLeftRailButton\('desktop'[\s\S]*packageUpdateCount \? '!' : ''/);
-  assert.match(computerRailSource, /computerPackageUpdateBadge\(\{ count: updateCount/);
+  assert.doesNotMatch(railSource, /renderLeftRailButton\('console'[\s\S]*sessionSummaryLlmIssueNotifications\(\)\.length \? '!' : ''/);
+  assert.doesNotMatch(computerRailSource, /computerPackageUpdateBadge\(\{ count: updateCount/);
   assert.match(computerListSource, /computerPackageUpdateBadge\(computer/);
   assert.match(computerSource, /computerPackageUpdateBadge\(computer/);
+});
+
+test('computer close UI uses a mode-aware confirmation modal', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const modalSource = app.slice(app.indexOf('function renderModal()'), app.indexOf('function renderServerCreateModal()'));
+  const computerSource = app.slice(app.indexOf('function renderComputerDetail'), app.indexOf('function renderComputerConfigCard()'));
+  const confirmStart = app.indexOf("if (action === 'confirm-computer-close'");
+  const confirmSource = app.slice(confirmStart, app.indexOf("if (action === 'close-modal'", confirmStart));
+  const closeModalSource = app.slice(app.indexOf("if (action === 'close-modal'"), app.indexOf("if (localOnlyActions.has(action))"));
+
+  assert.match(app, /let computerCloseConfirmState = \{ computerId: null \}/);
+  assert.match(app, /function computerRunModeLabel\(/);
+  assert.match(app, /function renderComputerCloseConfirmModal\(\)/);
+  assert.match(modalSource, /'computer-close-confirm': renderComputerCloseConfirmModal/);
+  assert.match(computerSource, /data-action="open-computer-close-confirm"/);
+  assert.match(computerSource, /Close Computer/);
+  assert.match(app, /Runtime mode/);
+  assert.match(app, /Foreground terminal/);
+  assert.match(app, /Background service/);
+  assert.match(app, /Computer mode/);
+  assert.match(app, /data-action="confirm-computer-close"/);
+  assert.match(confirmSource, /\/api\/computers\/\$\{encodeURIComponent\(computerId\)\}\/close/);
+  assert.match(confirmSource, /method: 'POST'/);
+  assert.doesNotMatch(confirmSource, /window\.confirm/);
+  assert.match(closeModalSource, /computerCloseConfirmState = \{ computerId: null \}/);
+  assert.match(styles, /\.modal-computer-close-confirm/);
 });
 
 test('computers detail page preserves scroll through background renders', async () => {
@@ -2304,7 +2335,7 @@ test('console surfaces show session summary LLM alerts without exposing internal
   const consoleSource = app.slice(app.indexOf('function renderConsoleOverview()'), app.indexOf('function renderConsoleInvitations()'));
 
   assert.match(app, /function sessionSummaryLlmIssueNotifications\(\)/);
-  assert.match(railSource, /renderLeftRailButton\('console'[\s\S]*sessionSummaryLlmIssueNotifications\(\)\.length \? '!' : ''/);
+  assert.doesNotMatch(railSource, /renderLeftRailButton\('console'[\s\S]*sessionSummaryLlmIssueNotifications\(\)\.length \? '!' : ''/);
   assert.match(consoleSource, /会话总结的 LLM 异常/);
   assert.doesNotMatch(consoleSource, /detail|stack|error/i);
   assert.match(styles, /\.console-alert-card/);

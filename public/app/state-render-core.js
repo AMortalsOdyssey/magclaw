@@ -88,6 +88,7 @@ let modal = null;
 let agentStartState = { agentId: null };
 let agentRestartState = { agentId: null, mode: 'restart' };
 let daemonUpgradeConfirmState = { computerId: null };
+let computerCloseConfirmState = { computerId: null };
 let joinLinkRevokeConfirmState = { joinLinkId: null };
 let searchQuery = '';
 let searchIsComposing = false;

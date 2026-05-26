@@ -186,6 +186,111 @@ test('collab route targets the computer package latest version for computer-laun
   });
 });
 
+test('collab route trusts explicit daemon package name over stale computer kind', async () => {
+  let relayCall = null;
+  const deps = routeDeps({
+    daemonRelay: {
+      requestDaemonUpgrade: async (computerId, options) => {
+        relayCall = { computerId, options };
+        return {
+          commandId: 'dupgrade_daemon',
+          sent: true,
+          reused: false,
+          computer: { id: computerId, status: 'upgrade_pending' },
+          upgrade: { commandId: 'dupgrade_daemon', status: 'pending_idle' },
+        };
+      },
+    },
+    currentActor: () => ({
+      user: { id: 'usr_owner' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_owner', role: 'owner' },
+    }),
+    readJson: async () => ({}),
+  });
+  deps.state.runtime = {
+    daemonLatestVersion: '0.1.30',
+    computerLatestVersion: '0.1.31',
+  };
+  deps.state.computers[0].connectedVia = 'computer';
+  deps.state.computers[0].packageName = '@magclaw/daemon';
+  deps.state.computers[0].packageKind = 'computer';
+  deps.state.computers[0].packageVersion = '0.1.23';
+  deps.state.computers[0].metadata = {
+    package: {
+      name: '@magclaw/daemon',
+      kind: 'computer',
+      version: '0.1.23',
+    },
+  };
+
+  const res = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/computers/cmp_one/daemon-upgrade'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(relayCall, {
+    computerId: 'cmp_one',
+    options: {
+      targetVersion: '0.1.30',
+      packageName: '@magclaw/daemon',
+      requestedBy: 'usr_owner',
+    },
+  });
+});
+
+test('collab route requests a remote computer close for owners', async () => {
+  let relayCall = null;
+  const deps = routeDeps({
+    daemonRelay: {
+      requestComputerClose: async (computerId, options) => {
+        relayCall = { computerId, options };
+        return {
+          commandId: 'dclose_test',
+          sent: true,
+          computer: { id: computerId, status: 'offline', metadata: { closeRequestedAt: '2026-05-02T00:00:00.000Z' } },
+          stoppedAgents: 2,
+        };
+      },
+    },
+    currentActor: () => ({
+      user: { id: 'usr_owner' },
+      member: { workspaceId: 'wsp_main', humanId: 'hum_owner', role: 'owner' },
+    }),
+    readJson: async () => ({}),
+  });
+  deps.state.computers[0].status = 'connected';
+  deps.state.agents[0].computerId = 'cmp_one';
+  deps.state.agents[0].status = 'working';
+  deps.state.agents[1].computerId = 'cmp_one';
+  deps.state.agents[1].status = 'thinking';
+
+  const res = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/computers/cmp_one/close'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(relayCall, {
+    computerId: 'cmp_one',
+    options: {
+      requestedBy: 'usr_owner',
+      reason: 'closed_from_cloud',
+      stopAgents: true,
+      disableBackground: true,
+    },
+  });
+  assert.equal(res.data.commandId, 'dclose_test');
+  assert.equal(res.data.sent, true);
+  assert.equal(res.data.stoppedAgents, 2);
+});
+
 test('collab route group stamps cloud channels and DMs with the current workspace', async () => {
   const deps = routeDeps({
     currentActor: () => ({

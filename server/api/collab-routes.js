@@ -67,9 +67,9 @@ export async function handleCollabApi(req, res, url, deps) {
       ? computer.metadata.package
       : {};
     const name = String(computer.packageName || metadataPackage.name || '').trim();
-    if (name === '@magclaw/computer' || String(computer.packageKind || metadataPackage.kind || computer.connectedVia || '').toLowerCase() === 'computer') {
-      return '@magclaw/computer';
-    }
+    if (name === '@magclaw/computer') return '@magclaw/computer';
+    if (name === '@magclaw/daemon') return '@magclaw/daemon';
+    if (String(computer.packageKind || metadataPackage.kind || computer.connectedVia || '').toLowerCase() === 'computer') return '@magclaw/computer';
     return '@magclaw/daemon';
   }
 
@@ -484,6 +484,40 @@ export async function handleCollabApi(req, res, url, deps) {
         });
       } catch (error) {
         sendError(res, error.status || 500, error.message || 'Failed to request daemon upgrade.');
+      }
+      return true;
+    }
+
+    const computerCloseMatch = url.pathname.match(/^\/api\/computers\/([^/]+)\/close$/);
+    if (req.method === 'POST' && computerCloseMatch) {
+      const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+      const role = String(auth?.member?.role || '').toLowerCase();
+      if (!['owner', 'admin'].includes(role)) {
+        sendError(res, auth ? 403 : 401, auth ? 'Workspace role is not allowed.' : 'Login is required.');
+        return true;
+      }
+      if (!daemonRelay?.requestComputerClose) {
+        sendError(res, 503, 'Daemon relay is unavailable.');
+        return true;
+      }
+      const body = await readJson(req);
+      try {
+        const result = await daemonRelay.requestComputerClose(computerCloseMatch[1], {
+          requestedBy: auth?.user?.id || auth?.member?.id || null,
+          reason: 'closed_from_cloud',
+          stopAgents: body.stopAgents !== false,
+          disableBackground: body.disableBackground !== false,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          commandId: result.commandId,
+          sent: Boolean(result.sent),
+          computer: result.computer,
+          stoppedAgents: result.stoppedAgents || 0,
+          stoppedDeliveries: result.stoppedDeliveries || 0,
+        });
+      } catch (error) {
+        sendError(res, error.status || 500, error.message || 'Failed to close computer.');
       }
       return true;
     }

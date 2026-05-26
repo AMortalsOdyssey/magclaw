@@ -654,13 +654,16 @@ function renderComputerListItem(computer) {
   const meta = typeof computerPackageVersionLabel === 'function'
     ? computerPackageVersionLabel(computer)
     : (computer.connectedVia || 'daemon');
+  const updateBadge = typeof computerPackageUpdateBadge === 'function'
+    ? computerPackageUpdateBadge(computer)
+    : '';
   return `
     <button class="space-btn member-btn${active}" type="button" data-action="select-computer" data-id="${escapeHtml(computer.id)}">
       <span class="dm-avatar-wrap">
         ${typeof renderComputerIcon === 'function' ? renderComputerIcon(computer, 16) : `<span class="dm-avatar">${settingsIcon('computer', 16)}</span>`}
       </span>
       <div class="member-info">
-        <span class="dm-name">${escapeHtml(name)}${typeof computerPackageUpdateBadge === 'function' ? computerPackageUpdateBadge(computer) : ''}</span>
+        <span class="computer-row-name"><span class="dm-name">${escapeHtml(name)}</span>${updateBadge}</span>
         ${meta ? `<small class="computer-row-meta">${escapeHtml(meta)}</small>` : ''}
       </div>
       <span class="member-status-side">${avatarStatusDot(computer.status, 'Computer status')}</span>

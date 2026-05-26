@@ -22,6 +22,7 @@ function renderModal() {
     'agent-start': renderAgentStartModal,
     'agent-restart': renderAgentRestartModal,
     'daemon-upgrade-confirm': renderDaemonUpgradeConfirmModal,
+    'computer-close-confirm': renderComputerCloseConfirmModal,
     computer: renderComputerModal,
     human: renderHumanModal,
   };
@@ -812,7 +813,7 @@ function connectBackgroundNoteHtml({ usesLocalRepoPlaceholder = false, className
   return `
     <p class="${escapeHtml(className)} connect-background-note">
       ${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your MagClaw checkout path before running. ' : ''}
-      This command registers the daemon as a background service on this computer.
+      Optional: add <code>--background</code> before the server name comment to run it as a background service.
     </p>
   `;
 }
@@ -878,7 +879,7 @@ function renderComputerModal() {
           title: 'Connect Command',
           command,
           kind: 'connect',
-          note: `${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your MagClaw checkout path before running. ' : ''}${reconnectingExistingComputer ? 'This command targets the selected Computer and registers its daemon as a background service.' : 'This command registers the daemon as a background service on this computer.'}`,
+          note: `${usesLocalRepoPlaceholder ? 'Set MAGCLAW_REPO_DIR to your MagClaw checkout path before running. ' : ''}${reconnectingExistingComputer ? 'This command targets the selected Computer. ' : ''}Optional: add <code>--background</code> before the server name comment to run it as a background service.`,
         })}
         ${reconnectingExistingComputer ? '' : renderPairingCommandOption({
           title: 'Computer',
