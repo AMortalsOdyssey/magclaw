@@ -3,6 +3,8 @@ import test from 'node:test';
 import { createCloudAuth } from '../server/cloud/auth.js';
 import { SESSION_COOKIE, sha256, scryptPassword } from '../server/cloud/auth-primitives.js';
 
+const FUTURE_EXPIRES_AT = '2099-05-26T00:00:00.000Z';
+
 function makeAuth(repository, initialState = {}) {
   let id = 0;
   const createdAt = '2026-05-12T00:00:00.000Z';
@@ -321,7 +323,7 @@ test('public cloud state keeps the current human online after a stale presence r
         userId: 'usr_present',
         tokenHash: sha256(token),
         createdAt,
-        expiresAt: '2026-05-26T00:00:00.000Z',
+        expiresAt: FUTURE_EXPIRES_AT,
       }],
       workspaceMembers: [{
         id: 'wmem_present',
@@ -942,7 +944,7 @@ test('join link acceptance works for a signed-in Feishu account without email', 
         userId: 'usr_no_email',
         tokenHash: sha256(rawSession),
         createdAt,
-        expiresAt: '2026-05-26T00:00:00.000Z',
+        expiresAt: FUTURE_EXPIRES_AT,
       }],
       workspaces: [
         { id: 'local', slug: 'local', name: 'Local', createdAt, updatedAt: createdAt },
@@ -954,7 +956,7 @@ test('join link acceptance works for a signed-in Feishu account without email', 
         tokenHash: sha256(rawJoin),
         maxUses: 1,
         usedCount: 0,
-        expiresAt: '2026-05-26T00:00:00.000Z',
+        expiresAt: FUTURE_EXPIRES_AT,
         revokedAt: null,
         createdBy: 'usr_owner',
         createdAt,
@@ -1001,7 +1003,7 @@ test('console server switch stays local to the handling process', async () => {
         userId: 'usr_switch',
         tokenHash: sha256(token),
         createdAt,
-        expiresAt: '2026-05-26T00:00:00.000Z',
+        expiresAt: FUTURE_EXPIRES_AT,
       }],
       workspaces: [
         { id: 'wsp_local', slug: 'local', name: 'Local', createdAt, updatedAt: createdAt },
@@ -1053,7 +1055,7 @@ test('request workspace headers scope current actor and public cloud state', asy
         userId: 'usr_header',
         tokenHash: sha256(token),
         createdAt,
-        expiresAt: '2026-05-26T00:00:00.000Z',
+        expiresAt: FUTURE_EXPIRES_AT,
       }],
       workspaces: [
         { id: 'wsp_local', slug: 'local', name: 'Local', createdAt, updatedAt: createdAt },
@@ -1109,7 +1111,7 @@ test('public cloud state falls back from an inaccessible requested workspace', a
         userId: 'usr_feishu',
         tokenHash: sha256(token),
         createdAt,
-        expiresAt: '2026-05-26T00:00:00.000Z',
+        expiresAt: FUTURE_EXPIRES_AT,
       }],
       workspaces: [
         { id: 'wsp_own', slug: 'own-team', name: 'Own Team', createdAt, updatedAt: createdAt },
@@ -1213,7 +1215,7 @@ test('console server creation waits for auth persistence before returning', asyn
         userId: 'usr_create',
         tokenHash: sha256(token),
         createdAt,
-        expiresAt: '2026-05-26T00:00:00.000Z',
+        expiresAt: FUTURE_EXPIRES_AT,
       }],
       workspaces: [
         { id: 'wsp_local', slug: 'local', name: 'Local', createdAt, updatedAt: createdAt },
