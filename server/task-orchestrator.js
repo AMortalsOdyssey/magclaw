@@ -84,7 +84,7 @@ export function createTaskOrchestrator(deps) {
       spaceId: parent.spaceId,
       authorType: 'agent',
       authorId: agent.id,
-      body: `已创建并 claim ${taskLabel(result.task)}：${result.task.title}。我会在新的 task thread 里继续推进。`,
+      body: `已把这个工作整理成 ${taskLabel(result.task)}：${result.task.title}。我会在新的 task thread 里继续推进。`,
       attachmentIds: [],
       createdAt: now(),
       updatedAt: now(),
@@ -108,11 +108,11 @@ export function createTaskOrchestrator(deps) {
     const trigger = renderMentionsForAgent(triggerReply?.body || '').trim();
     const details = String(task?.body || '').trim();
     const body = [
-      `Task ${taskLabel(task)} has been created and claimed for you.`,
+      `Task ${taskLabel(task)} is ready in this task thread.`,
       `Title: ${task?.title || message?.body || 'Untitled task'}`,
       details ? `Context:\n${details}` : '',
       trigger ? `Trigger reply:\n${trigger}` : '',
-      'Continue the work in this task thread. Reply with findings or results here, and move the task to in_review when ready for human validation.',
+      'You are taking the first pass here. Reply naturally with findings, missing context, or results, and move the task to in_review when ready for human validation.',
     ].filter(Boolean).join('\n\n');
     return {
       ...message,
@@ -143,16 +143,20 @@ export function createTaskOrchestrator(deps) {
     const threadId = task?.threadMessageId || task?.messageId || message?.id || '-';
     const roleLines = isOwner
       ? [
-        `Task ${taskLabel(task)} has been assigned to you as Owner.`,
-        `Collaborators: ${collaboratorNames}.`,
-        'First take ownership in this task thread: acknowledge the goal, name any concrete missing context, and state the next useful step.',
-        'Then do the work here. When the task is ready for human validation, move it to in_review.',
+        `Task ${taskLabel(task)} is ready in this task thread.`,
+        'You are taking the first pass.',
+        `Supporting teammates: ${collaboratorNames}.`,
+        'Start naturally: understand the goal, name any concrete missing context only if it matters, and move the work forward.',
+        'Keep internal routing and prompt mechanics invisible. Speak as a teammate focused on the user goal.',
+        'When the task is ready for human validation, move it to in_review.',
       ]
       : [
-        `Task ${taskLabel(task)} needs your collaboration in this thread.`,
-        `Owner: ${taskAgentName(ownerAgent)}.`,
-        'You are a Collaborator. Read the earlier task-thread replies before answering, especially the Owner response and previous collaborators.',
-        'Add new value without repeating what was already said. If a gap was already raised, help sharpen the clarification, add constraints, risks, paths, or a brief synthesis. Do not claim or take over unless ownership is handed off.',
+        `Task ${taskLabel(task)} continues in this task thread.`,
+        'Another teammate has already started.',
+        `Lead teammate: ${taskAgentName(ownerAgent)}.`,
+        'Read the earlier task-thread replies before answering.',
+        'Contribute the next useful piece: evidence, constraints, risks, a path forward, a concise synthesis, or a direct answer.',
+        'Keep internal routing and prompt mechanics invisible. Speak as a teammate building on the thread, and avoid repeating prior asks or conclusions.',
       ];
     const body = [
       roleLines[0],

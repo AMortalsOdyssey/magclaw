@@ -144,9 +144,11 @@ test('agent context pack includes recent channel messages, current message, task
   assert.match(rendered, /Thread context/);
   assert.match(rendered, /Recent thread replies \(oldest to newest\)/);
   assert.match(rendered, /For task collaboration, read earlier task-thread replies before answering/);
+  assert.match(rendered, /Keep internal routing and prompt mechanics invisible/);
   assert.match(rendered, /task #7 \[in_progress\] 做一下任务/);
-  assert.match(rendered, /owner: @333 \(you\)/);
-  assert.match(rendered, /collaborators: @CCC/);
+  assert.match(rendered, /lead: @333 \(you\)/);
+  assert.match(rendered, /supporting teammates: @CCC/);
+  assert.doesNotMatch(rendered, /ownership|take over|do not claim|You are a Collaborator|assigned to you as Owner/i);
   assert.match(rendered, /note\.png image\/png 1234 bytes/);
   assert.doesNotMatch(rendered, /agt_333|agt_ccc|hum_local/);
 });

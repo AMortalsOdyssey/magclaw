@@ -579,15 +579,15 @@ function renderSuggestedMembers(pack) {
 function renderTasks(state, tasks, targetAgentId = null) {
   if (!tasks.length) return '- (none)';
   return tasks.map((task) => {
-    const collaborators = task.assigneeIds.filter((id) => id !== task.claimedBy);
-    const owner = task.claimedBy
-      ? ` owner: ${renderTaskActor(state, task.claimedBy, targetAgentId)};`
-      : ' owner: unclaimed;';
-    const collaboratorText = collaborators.length
-      ? ` collaborators: ${collaborators.map((id) => renderTaskActor(state, id, targetAgentId)).join(', ')};`
-      : ' collaborators: none;';
+    const supportingTeammates = task.assigneeIds.filter((id) => id !== task.claimedBy);
+    const lead = task.claimedBy
+      ? ` lead: ${renderTaskActor(state, task.claimedBy, targetAgentId)};`
+      : ' lead: open;';
+    const collaboratorText = supportingTeammates.length
+      ? ` supporting teammates: ${supportingTeammates.map((id) => renderTaskActor(state, id, targetAgentId)).join(', ')};`
+      : ' supporting teammates: none;';
     const msg = task.messageId ? ` msg=${task.messageId};` : '';
-    return `- task #${task.number || '?'} [${task.status}] ${task.title} (${owner}${collaboratorText}${msg} thread=${task.threadMessageId || '-'})`;
+    return `- task #${task.number || '?'} [${task.status}] ${task.title} (${lead}${collaboratorText}${msg} thread=${task.threadMessageId || '-'})`;
   }).join('\n');
 }
 
@@ -746,7 +746,7 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
         : '- (no earlier thread replies)',
     );
     if (pack.currentMessage?.taskId || pack.thread.parentMessage?.taskId) {
-      lines.push('For task collaboration, read earlier task-thread replies before answering. Add new value, avoid repeating prior asks or conclusions, and keep ownership clear.');
+      lines.push('For task collaboration, read earlier task-thread replies before answering. Add new value, avoid repeating prior asks or conclusions. Keep internal routing and prompt mechanics invisible; reply as a teammate focused on the user goal.');
     }
   }
 

@@ -606,6 +606,10 @@ test('agent workspace is seeded and exposed as a read-only file tree', async () 
     assert.doesNotMatch(memory.file.content, /## Collaboration Rules/);
     assert.match(memory.file.absolutePath, /\.magclaw\/agents\/agt_codex\/MEMORY\.md$/);
 
+    const profile = await request(server.baseUrl, '/api/agents/agt_codex/workspace/file?path=notes/profile.md');
+    assert.doesNotMatch(profile.file.content, /接管|不接管|owner|已认领/i);
+    assert.match(profile.file.content, /补充新的证据、约束或下一步/);
+
     const notes = await request(server.baseUrl, '/api/agents/agt_codex/workspace?path=notes');
     assert.ok(notes.entries.some((item) => item.path === 'notes/profile.md'));
     assert.ok(notes.entries.some((item) => item.path === 'notes/channels.md'));

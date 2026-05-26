@@ -620,10 +620,11 @@ process.stdin.on('data', (chunk) => {
     assert.equal(workItem.target, `#${channel.name}:${created.createdTaskMessage.id}`);
     assert.equal(workItem.taskId, created.createdTask.id);
     const entries = await readJsonLines(logPath);
-    const promptEntry = entries.find((item) => item.prompt?.includes('Task #1 has been created and claimed for you.'));
+    const promptEntry = entries.find((item) => item.prompt?.includes('Task #1 is ready in this task thread.'));
     assert.ok(promptEntry);
     assert.match(promptEntry.prompt, /Title: 调研下从广州出发，走哪里不会堵车/);
     assert.match(promptEntry.prompt, /Trigger reply:/);
+    assert.doesNotMatch(promptEntry.prompt, /claimed for you|assigned to you as Owner|ownership|take over/i);
   } finally {
     await server.stop();
     await rm(fakeCodexDir, { recursive: true, force: true });
@@ -670,7 +671,7 @@ function handle(message) {
     const prompt = message.params?.input?.[0]?.text || '';
     log({ prompt });
     send({ id: message.id, result: { turn: { id: turnId } } });
-    setTimeout(() => completeTurn(turnId, prompt.includes('assigned to you as Owner') ? 'owner acknowledged task' : 'collaborator acknowledged task'), 30);
+    setTimeout(() => completeTurn(turnId, prompt.includes('You are taking the first pass') ? 'lead teammate started work' : 'supporting teammate added evidence'), 30);
   }
 }
 process.stdin.on('data', (chunk) => {
@@ -715,13 +716,13 @@ process.stdin.on('data', (chunk) => {
     });
     const { channel } = await request(server.baseUrl, '/api/channels', {
       method: 'POST',
-      body: JSON.stringify({ name: 'web-task-owner', description: 'web task dispatch', agentIds: ['agt_codex', helper.id] }),
+      body: JSON.stringify({ name: 'web-task-routing', description: 'web task dispatch', agentIds: ['agt_codex', helper.id] }),
     });
 
     const created = await request(server.baseUrl, '/api/tasks', {
       method: 'POST',
       body: JSON.stringify({
-        title: 'Build web task owner routing',
+        title: 'Build web task routing',
         assigneeIds: ['agt_codex', helper.id],
         spaceType: 'channel',
         spaceId: channel.id,
@@ -744,20 +745,23 @@ process.stdin.on('data', (chunk) => {
 
     const entries = await readJsonLines(logPath);
     const prompts = entries.map((item) => item.prompt).filter(Boolean);
-    const ownerPrompt = prompts.find((prompt) => prompt.includes('assigned to you as Owner'));
-    const collaboratorPrompt = prompts.find((prompt) => prompt.includes('needs your collaboration'));
-    assert.ok(ownerPrompt);
-    assert.ok(collaboratorPrompt);
-    assert.match(ownerPrompt, /Task #1 has been assigned to you as Owner/);
-    assert.match(ownerPrompt, /Title: Build web task owner routing/);
-    assert.match(ownerPrompt, /Collaborators: @Helper/);
-    assert.match(ownerPrompt, new RegExp(`task=${created.task.id}`));
-    assert.match(ownerPrompt, /workItem=wi_/);
-    assert.match(collaboratorPrompt, /Owner: @/);
-    assert.match(collaboratorPrompt, /You are a Collaborator/);
-    assert.match(collaboratorPrompt, new RegExp(`Target thread: ${created.message.id}`));
-    assert.match(collaboratorPrompt, /Recent thread replies \(oldest to newest\)/);
-    assert.match(collaboratorPrompt, /owner acknowledged task/);
+    const leadPrompt = prompts.find((prompt) => prompt.includes('You are taking the first pass'));
+    const teammatePrompt = prompts.find((prompt) => prompt.includes('Another teammate has already started'));
+    assert.ok(leadPrompt);
+    assert.ok(teammatePrompt);
+    assert.match(leadPrompt, /Task #1/);
+    assert.match(leadPrompt, /Title: Build web task routing/);
+    assert.match(leadPrompt, /Supporting teammates: @Helper/);
+    assert.match(leadPrompt, new RegExp(`task=${created.task.id}`));
+    assert.match(leadPrompt, /workItem=wi_/);
+    assert.match(teammatePrompt, /Lead teammate: @/);
+    assert.match(teammatePrompt, new RegExp(`Target thread: ${created.message.id}`));
+    assert.match(teammatePrompt, /Recent thread replies \(oldest to newest\)/);
+    assert.match(teammatePrompt, /lead teammate started work/);
+    for (const prompt of [leadPrompt, teammatePrompt]) {
+      assert.doesNotMatch(prompt, /assigned to you as Owner|You are a Collaborator|take over|ownership|Do not claim|unless ownership is handed off/i);
+      assert.doesNotMatch(prompt, /接管|不接管/);
+    }
     assert.equal(mock.calls.length, 1);
   } finally {
     await server.stop();
@@ -1911,7 +1915,10 @@ test('thread task creation honors natural-language agent and human names', async
     const state = await request(server.baseUrl, '/api/state');
     assert.ok(state.replies.some((item) => item.parentMessageId === parent.message.id
       && item.authorId === el.id
-      && item.body.includes('已创建并 claim')));
+      && item.body.includes('已把这个工作整理成')));
+    assert.equal(state.replies.some((item) => item.parentMessageId === parent.message.id
+      && item.authorId === el.id
+      && item.body.includes('已创建并 claim')), false);
   } finally {
     await server.stop();
   }
