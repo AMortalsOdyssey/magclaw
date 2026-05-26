@@ -164,8 +164,9 @@ also supported:
 npx @magclaw/daemon@latest --server-url https://magclaw.multiego.me --api-key "$MAGCLAW_MACHINE_API_KEY" --profile my-server --background
 ```
 
-The first connect command installs a durable `magclaw` CLI shim when it can find
-a writable user bin directory on `PATH`. Useful daemon commands:
+The first connect command installs durable `magclaw` and `magclaw-computer`
+CLI shims when it can find a writable user bin directory on `PATH`. Useful
+daemon commands:
 
 ```bash
 magclaw status --profile my-server

@@ -9,7 +9,9 @@ npx @magclaw/computer@latest setup /my-server --server-url https://magclaw.multi
 
 The setup command opens a browser approval flow, saves the resulting daemon
 profile under `~/.magclaw/daemon/profiles/<server>/`, and starts the
-background service for that profile.
+background service for that profile. It also installs durable `magclaw` and
+`magclaw-computer` shims when it can find a writable user bin directory on
+`PATH`.
 
 Run the same command again on the same physical computer to resume the existing
 Computer for that Server. Run it on another physical computer to create a new
