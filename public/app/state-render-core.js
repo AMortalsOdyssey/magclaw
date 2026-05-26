@@ -386,7 +386,7 @@ const RAIL_MIN_WIDTH = 260;
 const RAIL_MAX_WIDTH = 460;
 const INSPECTOR_WIDTH_KEY = 'magclawInspectorWidth';
 const INSPECTOR_MIN_WIDTH = 260;
-const INSPECTOR_MAX_WIDTH = 620;
+const INSPECTOR_MAX_WIDTH = 1800;
 let railWidth = readStoredRailWidth();
 let inspectorWidth = readStoredInspectorWidth();
 

@@ -1522,7 +1522,7 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
 
   assert.match(app, /const inspectorHtml = renderInspector\(\)/);
   assert.match(app, /inspectorHtml \? `[\s\S]*collab-inspector/);
-  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{tabletInspectorMain \? ' tablet-inspector-main thread-open' : ''\}\$\{taskFocusLayout \? ' task-focus' : ''\}[\s\S]*\$\{notificationBanner \? ' notification-banner-active' : ''\}"/);
+  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{threadMessageId \? `\$\{inspectorHtml \? ' tablet-inspector-main' : ''\} thread-open` : ''\}\$\{taskFocusLayout \? ' task-focus' : ''\}[\s\S]*\$\{notificationBanner \? ' notification-banner-active' : ''\}"/);
   assert.match(app, /let selectedTaskId = null/);
   assert.match(app, /function renderInspector\(\)[\s\S]*if \(selectedAgentId\)/);
   assert.match(app, /selectedAgentId = null;[\s\S]*selectedSpaceType = target\.dataset\.type/);
@@ -1533,12 +1533,22 @@ test('tablet thread layout promotes the thread inspector into the main content c
   const app = await readAppSource();
   const styles = await readStylesSource();
 
-  assert.match(app, /const tabletInspectorMain = Boolean\(inspectorHtml && threadMessageId\)/);
-  assert.match(app, /\$\{tabletInspectorMain \? ' tablet-inspector-main thread-open' : ''\}/);
+  assert.match(app, /\$\{threadMessageId \? `\$\{inspectorHtml \? ' tablet-inspector-main' : ''\} thread-open` : ''\}/);
   assert.match(styles, /@media \(min-width: 768px\) and \(max-width: 1099px\)[\s\S]*\.app-frame\.tablet-inspector-main \{/);
   assert.match(styles, /\.app-frame\.tablet-inspector-main \.workspace \{[\s\S]*display: none/);
   assert.match(styles, /\.app-frame\.tablet-inspector-main \.inspector \{[\s\S]*display: grid[\s\S]*align-content: stretch/);
   assert.match(styles, /\.app-frame\.tablet-inspector-main \.thread-drawer \{[\s\S]*border-left: 2px solid var\(--border\)/);
+});
+
+test('desktop thread inspector can expand to a Slock-like reading width', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+
+  assert.match(app, /\$\{threadMessageId \? `\$\{inspectorHtml \? ' tablet-inspector-main' : ''\} thread-open` : ''\}/);
+  assert.match(app, /const INSPECTOR_MAX_WIDTH = 1800/);
+  assert.match(styles, /\.collab-frame \{[\s\S]*grid-template-columns: minmax\(240px, min\(var\(--rail-width, 300px\), 420px\)\) 4px minmax\(360px, 1fr\) 4px minmax\(260px, min\(var\(--inspector-width, 340px\), 40vw\)\)/);
+  assert.match(styles, /\.collab-frame\.thread-open \{[\s\S]*grid-template-columns: minmax\(240px, min\(var\(--rail-width, 300px\), 420px\)\) 4px minmax\(360px, 1fr\) 4px minmax\(260px, min\(var\(--inspector-width, 340px\), 60vw\)\)/);
+  assert.match(styles, /@media \(max-width: 1200px\)[\s\S]*\.collab-frame\.thread-open \{[\s\S]*grid-template-columns: minmax\(180px, min\(var\(--rail-width, 220px\), 320px\)\) 4px minmax\(300px, 1fr\) 4px minmax\(240px, min\(var\(--inspector-width, 320px\), 52vw\)\)/);
 });
 
 test('members navigation restores the last detail and falls back to the first agent', async () => {

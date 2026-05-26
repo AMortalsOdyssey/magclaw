@@ -83,6 +83,10 @@
   line-height: 1.4;
 }
 
+.collab-frame.thread-open {
+  grid-template-columns: minmax(240px, min(var(--rail-width, 300px), 420px)) 4px minmax(360px, 1fr) 4px minmax(260px, min(var(--inspector-width, 340px), 60vw));
+}
+
 .collab-frame.no-inspector {
   grid-template-columns: minmax(240px, min(var(--rail-width, 300px), 420px)) 4px minmax(360px, 1fr);
 }
@@ -622,6 +626,10 @@
 @media (max-width: 1200px) {
   .collab-frame {
     grid-template-columns: minmax(180px, min(var(--rail-width, 220px), 320px)) 4px minmax(300px, 1fr) 4px minmax(240px, min(var(--inspector-width, 320px), 38vw));
+  }
+
+  .collab-frame.thread-open {
+    grid-template-columns: minmax(180px, min(var(--rail-width, 220px), 320px)) 4px minmax(300px, 1fr) 4px minmax(240px, min(var(--inspector-width, 320px), 52vw));
   }
 
   .collab-frame.no-inspector {
