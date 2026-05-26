@@ -1612,6 +1612,23 @@ export function createDaemonRelay(deps) {
     return changed;
   }
 
+  function messageHasRuntimeReport(message = {}) {
+    return Array.isArray(message.runtimes)
+      || Array.isArray(message.runtimeIds)
+      || Array.isArray(message.runtimeDetails);
+  }
+
+  function applyComputerRuntimeReport(computer, message = {}) {
+    if (!computer || !messageHasRuntimeReport(message)) return false;
+    if (Array.isArray(message.runtimes) || Array.isArray(message.runtimeIds)) {
+      computer.runtimeIds = safeArray(message.runtimes || message.runtimeIds).map(String);
+    }
+    if (Array.isArray(message.runtimeDetails)) {
+      computer.runtimeDetails = safeArray(message.runtimeDetails);
+    }
+    return true;
+  }
+
   function requeueUnackedSentDeliveries(computerId, errorMessage) {
     const requeued = [];
     for (const delivery of safeArray(cloud().agentDeliveries)) {
@@ -2194,8 +2211,7 @@ export function createDaemonRelay(deps) {
     const packageInfo = packageInfoForComputer(computer, message);
     computer.daemonVersion = String(message.daemonVersion || packageInfo.version || computer.daemonVersion || '');
     storeComputerPackageInfo(computer, packageInfo);
-    computer.runtimeIds = safeArray(message.runtimes || message.runtimeIds).map(String);
-    computer.runtimeDetails = safeArray(message.runtimeDetails);
+    applyComputerRuntimeReport(computer, message);
     computer.runningAgents = safeArray(message.runningAgents);
     computer.capabilities = safeArray(message.capabilities).map(String);
     computer.service = normalizeComputerServiceInfo({
@@ -2256,6 +2272,32 @@ export function createDaemonRelay(deps) {
     await replayQueued(computer.id);
     markAgentsForComputerReady(computer.id);
     await persistRuntimeState(workspaceIdForComputer(computer, connection), 'daemon_computer_ready');
+    broadcastState();
+  }
+
+  async function handleRuntimeStatus(connection, message) {
+    const computer = findComputer(connection.computerId);
+    if (!computer) return;
+    if (computerIsDisabled(computer)) return;
+    const packageInfo = packageInfoForComputer(computer, message);
+    if (message.daemonVersion || packageInfo.version) {
+      computer.daemonVersion = String(message.daemonVersion || packageInfo.version || computer.daemonVersion || '');
+    }
+    storeComputerPackageInfo(computer, packageInfo);
+    const changed = applyComputerRuntimeReport(computer, message);
+    computer.lastSeenAt = now();
+    computer.updatedAt = now();
+    if (!computerRemoteClosePending(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
+    recordDaemonEvent(
+      changed ? 'computer_runtime_status' : 'computer_runtime_status_empty',
+      changed ? `Computer runtime status updated: ${computer.name}` : `Computer runtime status reported no runtimes: ${computer.name}`,
+      {
+        computerId: computer.id,
+        runtimes: computer.runtimeIds || [],
+        reason: message.reason || null,
+      },
+    );
+    await persistRuntimeState(workspaceIdForComputer(computer, connection), 'daemon_runtime_status');
     broadcastState();
   }
 
@@ -2583,6 +2625,9 @@ export function createDaemonRelay(deps) {
             },
           );
         }
+        break;
+      case 'daemon:runtime_status':
+        await handleRuntimeStatus(connection, message);
         break;
       case 'daemon:stopping':
         handleDaemonStopping(connection, message);

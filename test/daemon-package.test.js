@@ -226,7 +226,7 @@ test('daemon run service state preserves launchd background mode for service-lau
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.28');
+  assert.equal(DAEMON_VERSION, '0.1.29');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -238,6 +238,16 @@ test('foreground daemon connection log includes the running package version', as
   const connectSource = source.slice(source.indexOf('async connectOnce()'), source.indexOf('async runForever()'));
   assert.match(connectSource, /const packageInfo = runtimePackageInfo\(this\.env, service\)/);
   assert.match(connectSource, /Connecting MagClaw daemon v\$\{packageInfo\.version \|\| DAEMON_VERSION\} profile/);
+});
+
+test('foreground daemon sends lightweight ready before deferred runtime scan', async () => {
+  const source = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
+  const readyPayloadSource = source.slice(source.indexOf('async readyPayload()'), source.indexOf('async sendReady()'));
+  const readyAckSource = source.slice(source.indexOf("case 'ready:ack':"), source.indexOf("case 'ping':"));
+  assert.doesNotMatch(readyPayloadSource, /detectRuntimes/);
+  assert.match(readyPayloadSource, /runtimeScanPending: true/);
+  assert.match(readyAckSource, /this\.scheduleRuntimeStatus\('ready_ack'\)/);
+  assert.match(source, /type: 'daemon:runtime_status'/);
 });
 
 test('daemon websocket auth prefers durable api keys over stale pair tokens', () => {
@@ -477,26 +487,68 @@ test('daemon and computer packages share CLI core without depending on each othe
 });
 
 test('computer npm package is a thin setup wrapper around the shared CLI core package', async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), 'magclaw-computer-cli-'));
   const computerPackage = JSON.parse(await readFile(new URL('../computer/package.json', import.meta.url), 'utf8'));
   const computerBin = await readFile(new URL('../computer/bin/magclaw-computer.js', import.meta.url), 'utf8');
 
-  assert.equal(computerPackage.name, '@magclaw/computer');
-  assert.equal(computerPackage.version, DAEMON_VERSION);
-  assert.deepEqual(computerPackage.bin, { 'magclaw-computer': 'bin/magclaw-computer.js' });
-  assert.equal(computerPackage.dependencies['@magclaw/cli-core'], DAEMON_VERSION);
-  assert.equal(computerPackage.dependencies['@magclaw/daemon'], undefined);
-  assert.match(computerBin, /@magclaw\/cli-core\/src\/cli\.js/);
-  assert.doesNotMatch(computerBin, /@magclaw\/daemon\/src\/cli\.js/);
-  assert.match(computerBin, /MAGCLAW_COMPUTER_DAEMON/);
-  assert.match(computerBin, /\['computer', \.\.\.args\]/);
+  try {
+    assert.equal(computerPackage.name, '@magclaw/computer');
+    assert.equal(computerPackage.version, DAEMON_VERSION);
+    assert.deepEqual(computerPackage.bin, { 'magclaw-computer': 'bin/magclaw-computer.js' });
+    assert.equal(computerPackage.dependencies['@magclaw/cli-core'], DAEMON_VERSION);
+    assert.equal(computerPackage.dependencies['@magclaw/daemon'], undefined);
+    assert.match(computerBin, /@magclaw\/cli-core\/src\/cli\.js/);
+    assert.doesNotMatch(computerBin, /@magclaw\/daemon\/src\/cli\.js/);
+    assert.match(computerBin, /MAGCLAW_COMPUTER_DAEMON/);
+    assert.match(computerBin, /\['computer', \.\.\.args\]/);
 
-  const help = spawnSync(process.execPath, [COMPUTER_BIN, '--help'], {
-    cwd: ROOT,
-    encoding: 'utf8',
-  });
-  assert.equal(help.status, 0, help.stderr || help.stdout);
-  assert.match(help.stdout, /Usage: magclaw/);
-  assert.match(help.stdout, /computer\s+Pair this local computer with a server using browser approval/);
+    const help = spawnSync(process.execPath, [COMPUTER_BIN, '--help'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    assert.equal(help.status, 0, help.stderr || help.stdout);
+    assert.match(help.stdout, /MagClaw Computer CLI/);
+    assert.match(help.stdout, /login \[options\] <serverSlug>/);
+    assert.match(help.stdout, /attach \[options\] <serverSlug>/);
+    assert.match(help.stdout, /doctor \[options\] \[serverSlug\]/);
+    assert.match(help.stdout, /runners\s+Computer runner control plane/);
+
+    const attachHelp = spawnSync(process.execPath, [COMPUTER_BIN, 'attach', '--help'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    assert.equal(attachHelp.status, 0, attachHelp.stderr || attachHelp.stdout);
+    assert.match(attachHelp.stdout, /Usage: magclaw-computer attach/);
+    assert.match(attachHelp.stdout, /--no-run/);
+
+    const statusResult = spawnSync(process.execPath, [COMPUTER_BIN, 'status', '--json'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        MAGCLAW_DAEMON_HOME: tempHome,
+      },
+    });
+    assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);
+    const statusReport = JSON.parse(statusResult.stdout);
+    assert.equal(statusReport.supervisor.model, 'per-profile-service');
+    assert.deepEqual(statusReport.profiles, []);
+
+    const runnersResult = spawnSync(process.execPath, [COMPUTER_BIN, 'runners', 'list'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        MAGCLAW_DAEMON_HOME: tempHome,
+      },
+    });
+    assert.equal(runnersResult.status, 0, runnersResult.stderr || runnersResult.stdout);
+    const runnersReport = JSON.parse(runnersResult.stdout);
+    assert.match(runnersReport.note, /Per-agent runner stop\/list remains/);
+    assert.deepEqual(runnersReport.profiles, []);
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
 });
 
 test('computer wrapper marks background services as the computer package and can pass through daemon commands', async () => {

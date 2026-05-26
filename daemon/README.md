@@ -1,6 +1,13 @@
 # @magclaw/daemon
 
-Local daemon for connecting a user's computer to MagClaw Cloud.
+Local MagClaw CLI and daemon for connecting a user's computer to MagClaw Cloud.
+
+MagClaw publishes two local entry commands:
+
+- `magclaw` from `@magclaw/daemon`: the main daemon/profile command.
+- `magclaw-computer` from `@magclaw/computer`: the browser-approved Computer
+  control-plane command for setup, status, doctor, logs, channel, and upgrade
+  workflows.
 
 Typical connect command:
 

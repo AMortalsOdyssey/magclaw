@@ -385,6 +385,10 @@ function rootLockPaths(env = process.env) {
   };
 }
 
+function computerChannelPath(env = process.env) {
+  return path.join(daemonRoot(env), 'channel');
+}
+
 export function profilePaths(profile = DEFAULT_PROFILE, env = process.env) {
   const profileName = safeProfileName(profile);
   const dir = path.join(daemonRoot(env), 'profiles', profileName);
@@ -541,6 +545,10 @@ export function parseCli(argv = process.argv) {
       flags.help = true;
       continue;
     }
+    if (item === '-V') {
+      flags.version = true;
+      continue;
+    }
     if (!item.startsWith('--')) {
       positionals.push(item);
       continue;
@@ -608,6 +616,150 @@ function renderHelp() {
     '  magclaw upgrade --profile my-server --to latest',
     '  magclaw stop --profile my-server',
     '  magclaw list',
+    '',
+  ].join('\n');
+}
+
+function renderComputerHelp(subcommand = '') {
+  const command = String(subcommand || '').trim();
+  const usage = {
+    login: [
+      'Usage: magclaw-computer login [options] <serverSlug>',
+      '',
+      'Start MagClaw browser approval for one server. This is an alias for setup.',
+      '',
+      'Options:',
+      '  --server-url <url>  MagClaw Cloud URL',
+      '  --name <name>       Computer display name',
+      '  --no-start          Save the approved profile without starting the daemon',
+      '  -h, --help          Show this help',
+    ],
+    attach: [
+      'Usage: magclaw-computer attach [options] <serverSlug>',
+      '',
+      'Attach this Computer to one MagClaw server using browser approval.',
+      '',
+      'Options:',
+      '  --server-url <url>  MagClaw Cloud URL',
+      '  --name <name>       Computer display name',
+      '  --no-run            Save the approved profile without starting the daemon',
+      '  --foreground        Run foreground if background service cannot start',
+      '  -h, --help          Show this help',
+    ],
+    setup: [
+      'Usage: magclaw-computer setup [options] <serverSlug>',
+      '',
+      'Set up this Computer for one server, then start its daemon unless --no-start is set.',
+      '',
+      'Options:',
+      '  --server-url <url>  MagClaw Cloud URL',
+      '  --name <name>       Computer display name',
+      '  --no-start          Save the approved profile without starting the daemon',
+      '  --foreground        Run foreground if background service cannot start',
+      '  -h, --help          Show this help',
+    ],
+    detach: [
+      'Usage: magclaw-computer detach <serverSlug>',
+      '',
+      'Stop one local profile and remove its local attachment state.',
+    ],
+    status: [
+      'Usage: magclaw-computer status [options] [serverSlug]',
+      '',
+      'Show aggregate Computer state, or one server profile when a slug is provided.',
+      '',
+      'Options:',
+      '  --json      Emit the machine-readable report',
+      '  -h, --help  Show this help',
+    ],
+    start: [
+      'Usage: magclaw-computer start [options] [serverSlug]',
+      '',
+      'Start one saved background daemon profile, or all saved profiles when no slug is provided.',
+      '',
+      'Options:',
+      '  --foreground  Run in this terminal for one selected profile',
+    ],
+    stop: [
+      'Usage: magclaw-computer stop [options] [serverSlug]',
+      '',
+      'Stop one daemon profile, or all saved profiles when no slug is provided.',
+      '',
+      'Options:',
+      '  --disable  Suppress background relaunch until the next start',
+    ],
+    doctor: [
+      'Usage: magclaw-computer doctor [options] [serverSlug]',
+      '',
+      'Diagnose local profiles, service state, runtime availability, and stale pidfiles.',
+      '',
+      'Options:',
+      '  --json      Emit the machine-readable report',
+      '  --cleanup   Clear stale local locks while diagnosing',
+      '  --fix       Alias for --cleanup',
+    ],
+    logs: [
+      'Usage: magclaw-computer logs [options] [serverSlug]',
+      '',
+      'Print recent daemon logs for one attached server profile.',
+      '',
+      'Options:',
+      '  --lines <n>      Number of trailing lines to print (default 120)',
+      '  --server <slug>  Select a server profile',
+    ],
+    runners: [
+      'Usage: magclaw-computer runners <command> [options]',
+      '',
+      'Computer runner control plane.',
+      '',
+      'Commands:',
+      '  list            List local daemon profiles and known Computer bindings',
+      '  stop <agentId>  Not available locally; stop Agents from the MagClaw web console',
+    ],
+    channel: [
+      'Usage: magclaw-computer channel [set <channel>]',
+      '',
+      'Show or set the local Computer release channel (latest | alpha | pinned:<semver>).',
+    ],
+    upgrade: [
+      'Usage: magclaw-computer upgrade [options]',
+      '',
+      'Upgrade the background Computer package for a saved profile.',
+      '',
+      'Options:',
+      '  --dry-run                  Preview upgrade actions',
+      '  --channel <name>           latest | alpha | pinned:<semver>',
+      '  --target-version <semver>  Explicit target version',
+      '  --force                    Accepted for Slock parity; currently maps to the normal upgrade path',
+    ],
+  };
+  if (command && usage[command]) return `${usage[command].join('\n')}\n`;
+  return [
+    `MagClaw Computer CLI ${DAEMON_VERSION}`,
+    '',
+    'Usage: magclaw-computer [options] [command]',
+    '',
+    'MagClaw Computer - local-machine control plane (browser approval + per-server profiles).',
+    '',
+    'Options:',
+    '  -V, --version                        output the version number',
+    '  -h, --help                           show help for command',
+    '',
+    'Commands:',
+    '  login [options] <serverSlug>          Browser-approved login for one server (alias for setup)',
+    '  attach [options] <serverSlug>         Attach this Computer to one server',
+    '  setup [options] <serverSlug>          Login/attach if needed, then start',
+    '  adopt-legacy [options] <serverSlug>   Migrate from legacy pair-token style setup when possible',
+    '  detach <serverSlug>                   Remove one local server attachment',
+    '  status [options] [serverSlug]         Show aggregate or per-profile state',
+    '  start [options] [serverSlug]          Start one or all saved profiles',
+    '  stop [options] [serverSlug]           Stop one or all saved profiles',
+    '  doctor [options] [serverSlug]         Diagnose local profiles and runtime state',
+    '  logs [options] [serverSlug]           Print one profile daemon log',
+    '  runners                              Computer runner control plane',
+    '  channel                              Show or set release channel',
+    '  upgrade [options]                    Upgrade the Computer package',
+    '  help [command]                       show help for command',
     '',
   ].join('\n');
 }
@@ -3286,6 +3438,8 @@ class MagClawDaemon {
     this.pendingUpgradeRequest = null;
     this.upgradeIdleTimer = null;
     this.upgradeWorkerStarting = false;
+    this.runtimeStatusTimer = null;
+    this.runtimeStatusInFlight = false;
   }
 
   send(payload) {
@@ -3656,7 +3810,6 @@ class MagClawDaemon {
   }
 
   async readyPayload() {
-    const runtimes = await detectRuntimes(this.env);
     const owner = await ensureMachineFingerprint(this.paths.profile, this.env);
     const service = await readServiceState(this.paths.profile, this.env);
     const serviceStatus = backgroundServiceStatus(this.paths.profile, this.env);
@@ -3695,8 +3848,7 @@ class MagClawDaemon {
         cliCoreVersion: CLI_CORE_VERSION,
       },
       upgrade: upgrade || null,
-      runtimes: runtimes.filter((runtime) => runtime.installed).map((runtime) => runtime.id),
-      runtimeDetails: runtimes,
+      runtimeScanPending: true,
       runningAgents: [...this.sessions.keys()],
       capabilities: CAPABILITIES,
     };
@@ -3707,8 +3859,66 @@ class MagClawDaemon {
     const sent = this.send(payload);
     logInfo(
       'daemon',
-      `Sent ready payload for computer ${payload.computerId || 'unpaired'} (runtimes=${payload.runtimes.join(', ') || 'none'}, runningAgents=${payload.runningAgents.length}, sent=${sent}).`,
+      `Sent ready payload for computer ${payload.computerId || 'unpaired'} (runtimes=deferred, runningAgents=${payload.runningAgents.length}, sent=${sent}).`,
     );
+  }
+
+  runtimeStatusDelayMs() {
+    return envInteger(this.env, 'MAGCLAW_DAEMON_RUNTIME_STATUS_DELAY_MS', 1000, { min: 0, max: 60_000 });
+  }
+
+  clearRuntimeStatusTimer() {
+    if (!this.runtimeStatusTimer) return;
+    clearTimeout(this.runtimeStatusTimer);
+    this.runtimeStatusTimer = null;
+  }
+
+  scheduleRuntimeStatus(reason = 'ready_ack') {
+    if (this.closed || this.runtimeStatusTimer || this.runtimeStatusInFlight) return;
+    this.runtimeStatusTimer = setTimeout(() => {
+      this.runtimeStatusTimer = null;
+      this.sendRuntimeStatus(reason).catch((error) => {
+        logWarning('daemon', `Failed to send runtime status: ${error.message}`);
+      });
+    }, this.runtimeStatusDelayMs());
+    this.runtimeStatusTimer.unref?.();
+  }
+
+  async runtimeStatusPayload(reason = 'ready_ack') {
+    const runtimes = await detectRuntimes(this.env);
+    const packageInfo = runtimePackageInfo(this.env);
+    return {
+      type: 'daemon:runtime_status',
+      time: now(),
+      reason,
+      computerId: this.config.computerId || null,
+      daemonVersion: packageInfo.version || DAEMON_VERSION,
+      packageName: packageInfo.name,
+      packageVersion: packageInfo.version,
+      packageKind: packageInfo.kind,
+      packageSpec: packageInfo.spec,
+      packageBin: packageInfo.bin,
+      cliCoreVersion: CLI_CORE_VERSION,
+      runtimes: runtimes.filter((runtime) => runtime.installed).map((runtime) => runtime.id),
+      runtimeDetails: runtimes,
+      runningAgents: [...this.sessions.keys()],
+    };
+  }
+
+  async sendRuntimeStatus(reason = 'ready_ack') {
+    if (this.closed || this.runtimeStatusInFlight) return false;
+    this.runtimeStatusInFlight = true;
+    try {
+      const payload = await this.runtimeStatusPayload(reason);
+      const sent = this.send(payload);
+      logInfo(
+        'daemon',
+        `Sent runtime status for computer ${payload.computerId || 'unpaired'} (runtimes=${payload.runtimes.join(', ') || 'none'}, sent=${sent}).`,
+      );
+      return sent;
+    } finally {
+      this.runtimeStatusInFlight = false;
+    }
   }
 
   sendHeartbeat() {
@@ -3838,6 +4048,7 @@ class MagClawDaemon {
         break;
       case 'ready:ack':
         logInfo('daemon', `MagClaw daemon ready for computer ${message.computerId || this.config.computerId}.`);
+        this.scheduleRuntimeStatus('ready_ack');
         break;
       case 'ping':
         this.send({ type: 'pong', time: now() });
@@ -4199,6 +4410,7 @@ class MagClawDaemon {
     this.sessions.clear();
     this.stopHeartbeat();
     this.clearInboundWatchdog();
+    this.clearRuntimeStatusTimer();
     if (this.agentStartPumpTimer) {
       clearTimeout(this.agentStartPumpTimer);
       this.agentStartPumpTimer = null;
@@ -4251,6 +4463,7 @@ class MagClawDaemon {
         settled = true;
         this.stopHeartbeat();
         this.clearInboundWatchdog();
+        this.clearRuntimeStatusTimer();
         if (this.socket && this.socket.destroyed) this.socket = null;
         if (this.request === req) this.request = null;
         callback(value);
@@ -4872,14 +5085,15 @@ async function status(profile) {
   };
 }
 
-async function logs(profile) {
+async function logs(profile, options = {}) {
   const paths = profilePaths(profile);
+  const lines = Math.max(1, Math.min(5000, Number(options.lines || 120) || 120));
   const files = [path.join(paths.logDir, 'daemon.log'), path.join(paths.logDir, 'daemon.err.log')];
   for (const file of files) {
     if (!existsSync(file)) continue;
     process.stdout.write(`\n==> ${file} <==\n`);
     const text = await readFile(file, 'utf8').catch(() => '');
-    process.stdout.write(text.split(/\r?\n/).slice(-120).join('\n'));
+    process.stdout.write(text.split(/\r?\n/).slice(-lines).join('\n'));
     process.stdout.write('\n');
   }
 }
@@ -5367,10 +5581,22 @@ async function postSetupJson(serverUrl, pathname, body = {}) {
   return data;
 }
 
+function hasComputerTarget(flags = {}) {
+  return Boolean(flags.profileExplicit || flags.server || flags.serverSlug || flags.slug || flags._?.[1]);
+}
+
+function profileFromComputerTarget(value = '') {
+  return safeProfileName(normalizeSetupServerSlug(value) || value || DEFAULT_PROFILE);
+}
+
+function computerTargetProfile(flags = {}, fallback = DEFAULT_PROFILE) {
+  return profileFromComputerTarget(flags.server || flags.serverSlug || flags.slug || flags._?.[1] || flags.profile || fallback);
+}
+
 async function runComputerSetup(flags, env = process.env) {
   const subcommand = String(flags._?.[0] || '').trim();
-  if (subcommand !== 'setup') {
-    throw new Error('Usage: magclaw computer setup /<server-slug> --server-url <url>');
+  if (!['setup', 'attach', 'login'].includes(subcommand)) {
+    throw new Error('Usage: magclaw-computer setup /<server-slug> --server-url <url>');
   }
   const serverSlug = normalizeSetupServerSlug(flags._?.[1] || flags.server || flags.serverSlug || flags.slug);
   if (!serverSlug) throw new Error('Run computer setup with a server slug, for example: magclaw computer setup /my-server');
@@ -5431,6 +5657,20 @@ async function runComputerSetup(flags, env = process.env) {
   await saveProfile(config.profile, config, env);
   await clearRemoteClosedServiceState(config.profile, env);
   const cli = await tryInstallCliShim(flags, env);
+  if (flags.noStart || flags.noRun) {
+    printJson({
+      ok: true,
+      started: false,
+      cli,
+      computerId: config.computerId,
+      computerName: config.computerName || config.name || displayName,
+      profile: config.profile,
+      serverName: config.serverName,
+      serverSlug: approved.serverSlug || serverSlug,
+      next: `Run magclaw-computer start ${config.profile} when ready.`,
+    });
+    return;
+  }
   const result = await startBackground(config.profile, env);
   printJson({
     ...result,
@@ -5444,6 +5684,255 @@ async function runComputerSetup(flags, env = process.env) {
   if (!result.ok) {
     logWarning('daemon', 'Falling back to foreground mode.');
     await runForegroundDaemon(config, env);
+  }
+}
+
+async function renderComputerAggregateStatus(env = process.env) {
+  const report = await listProfiles(env);
+  return {
+    ok: true,
+    root: report.root,
+    loggedIn: report.profiles.some((profile) => profile.configured),
+    supervisor: {
+      model: 'per-profile-service',
+      running: report.profiles.some((profile) => profile.running || profile.service?.active),
+      managedProfiles: report.profiles.length,
+    },
+    profiles: report.profiles,
+  };
+}
+
+function formatComputerStatus(report = {}) {
+  const profiles = report.profiles || [];
+  if (report.profile) {
+    return [
+      `Profile:      ${report.profile}`,
+      `Configured:   ${report.configured ? 'yes' : 'no'}`,
+      `Daemon:       ${report.running ? `running (pid ${report.pid})` : 'stopped'}`,
+      `Service:      ${report.service?.mode || 'foreground'}${report.service?.active ? ' active' : ''}`,
+      `Server URL:   ${report.serverUrl || '-'}`,
+      `Computer ID:  ${report.computerId || '-'}`,
+      `Config:       ${report.configPath}`,
+      '',
+    ].join('\n');
+  }
+  return [
+    'MagClaw Computers',
+    `Profiles: ${profiles.length}  Running: ${profiles.filter((profile) => profile.running || profile.service?.active).length}`,
+    `Root: ${report.root || '-'}`,
+    '',
+    ...profiles.map((profile) => [
+      `${profile.running || profile.service?.active ? 'online ' : 'offline'}  ${profile.profile}`,
+      `  server=${profile.serverSlug || profile.serverName || '-'} computer=${profile.computerId || '-'} service=${profile.service?.mode || 'foreground'}`,
+    ].join('\n')),
+    profiles.length ? '' : 'No profiles. Run `magclaw-computer setup /<serverSlug>` first.',
+    '',
+  ].join('\n');
+}
+
+async function computerStatus(flags = {}, env = process.env) {
+  if (hasComputerTarget(flags)) return status(computerTargetProfile(flags, flags.profile || DEFAULT_PROFILE));
+  return renderComputerAggregateStatus(env);
+}
+
+async function startAllComputerProfiles(env = process.env) {
+  const report = await listProfiles(env);
+  const results = [];
+  for (const profile of report.profiles) {
+    if (!profile.configured) continue;
+    results.push({ profile: profile.profile, ...(await startSavedBackground({ profile: profile.profile }, env)) });
+  }
+  return { ok: results.every((item) => item.ok), count: results.length, results };
+}
+
+async function stopAllComputerProfiles(flags = {}, env = process.env) {
+  const report = await listProfiles(env);
+  const results = [];
+  for (const profile of report.profiles) {
+    results.push({ profile: profile.profile, ...(await stopDaemon(profile.profile, env, { disable: Boolean(flags.disable) })) });
+  }
+  return { ok: results.every((item) => item.ok), count: results.length, results };
+}
+
+async function detachComputerProfile(flags = {}, env = process.env) {
+  const profile = computerTargetProfile(flags);
+  if (!profile || profile === DEFAULT_PROFILE && !hasComputerTarget(flags)) {
+    throw new Error('Usage: magclaw-computer detach <serverSlug>');
+  }
+  const paths = profilePaths(profile, env);
+  const stopped = await uninstallBackground(profile, env);
+  await rm(paths.dir, { recursive: true, force: true });
+  return { ok: true, profile, detached: true, stopped };
+}
+
+async function cleanupComputerResidue(env = process.env) {
+  const report = await listProfiles(env);
+  const cleaned = [];
+  await activeComputerLock(env);
+  for (const profile of report.profiles) {
+    const paths = profilePaths(profile.profile, env);
+    const before = existsSync(paths.lockFile);
+    await activeDaemonLock(profile.profile, env);
+    if (before && !existsSync(paths.lockFile)) cleaned.push(paths.lockFile);
+  }
+  return cleaned;
+}
+
+async function computerDoctor(flags = {}, env = process.env) {
+  const cleanup = Boolean(flags.cleanup || flags.fix);
+  const target = hasComputerTarget(flags) ? computerTargetProfile(flags, flags.profile || DEFAULT_PROFILE) : '';
+  const runtime = await doctor(env);
+  const aggregate = await renderComputerAggregateStatus(env);
+  const selected = target ? await status(target) : null;
+  const cleaned = cleanup ? await cleanupComputerResidue(env) : [];
+  const checks = [
+    { name: 'MAGCLAW_DAEMON_HOME', ok: true, detail: aggregate.root },
+    { name: 'profiles', ok: aggregate.profiles.length > 0, detail: `${aggregate.profiles.length} configured` },
+    { name: 'runtime', ok: runtime.runtimes.some((item) => item.available), detail: runtime.runtimes.filter((item) => item.available).map((item) => item.id).join(', ') || 'none detected' },
+  ];
+  if (selected) {
+    checks.push(
+      { name: `profile ${target}`, ok: selected.configured, detail: selected.configPath },
+      { name: `daemon ${target}`, ok: selected.running || selected.service?.active, detail: selected.running ? `running (pid ${selected.pid})` : (selected.service?.active ? 'service active' : 'stopped') },
+    );
+  }
+  return {
+    ok: checks.every((check) => check.ok !== false),
+    checks,
+    runtime,
+    aggregate,
+    ...(selected ? { profile: selected } : {}),
+    cleanup: { requested: cleanup, staleLocksCleared: cleaned },
+  };
+}
+
+async function readComputerChannel(env = process.env) {
+  const file = computerChannelPath(env);
+  const value = existsSync(file) ? String(await readFile(file, 'utf8')).trim() : 'latest';
+  return value || 'latest';
+}
+
+function validateComputerChannel(value = '') {
+  const channel = String(value || '').trim();
+  if (channel === 'latest' || channel === 'alpha' || /^pinned:[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(channel)) return channel;
+  throw new Error('Channel must be latest, alpha, or pinned:<semver>.');
+}
+
+async function setComputerChannel(value, env = process.env) {
+  const channel = validateComputerChannel(value);
+  const file = computerChannelPath(env);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${channel}\n`);
+  return channel;
+}
+
+async function computerChannel(flags = {}, env = process.env) {
+  const action = String(flags._?.[1] || flags._?.[0] || '').trim();
+  const value = String(flags._?.[2] || flags.channel || '').trim();
+  if (action === 'set') {
+    const channel = await setComputerChannel(value, env);
+    return { ok: true, channel };
+  }
+  return { ok: true, channel: await readComputerChannel(env), file: computerChannelPath(env) };
+}
+
+async function computerRunners(flags = {}, env = process.env) {
+  const action = String(flags._?.[1] || 'list').trim();
+  if (action === 'list') {
+    const aggregate = await renderComputerAggregateStatus(env);
+    return {
+      ok: true,
+      note: 'MagClaw local CLI can list Computer profiles. Per-agent runner stop/list remains a cloud console or agent-tool operation.',
+      profiles: aggregate.profiles.map((profile) => ({
+        profile: profile.profile,
+        serverSlug: profile.serverSlug,
+        computerId: profile.computerId,
+        running: profile.running || profile.service?.active,
+      })),
+    };
+  }
+  if (action === 'stop') {
+    throw new Error('Local runner stop is not available yet. Stop Agents from the MagClaw web console or agent runtime controls.');
+  }
+  throw new Error(`Unknown runners command: ${action}`);
+}
+
+async function computerUpgrade(flags = {}, env = process.env) {
+  const channel = flags.channel ? validateComputerChannel(flags.channel) : await readComputerChannel(env);
+  const targetVersion = flags.targetVersion || flags.to || flags.version || (String(channel).startsWith('pinned:') ? String(channel).slice('pinned:'.length) : channel);
+  await runManualUpgrade({
+    ...flags,
+    to: targetVersion,
+    targetVersion,
+    packageName: COMPUTER_PACKAGE_NAME,
+    packageBin: 'magclaw-computer',
+  }, {
+    ...env,
+    MAGCLAW_ENTRY_PACKAGE_NAME: COMPUTER_PACKAGE_NAME,
+    MAGCLAW_DAEMON_PACKAGE_NAME: COMPUTER_PACKAGE_NAME,
+    MAGCLAW_DAEMON_PACKAGE_KIND: 'computer',
+    MAGCLAW_DAEMON_PACKAGE_BIN: 'magclaw-computer',
+  });
+}
+
+async function runComputerCommand(flags, env = process.env) {
+  const subcommand = String(flags._?.[0] || 'help').trim();
+  if (subcommand === 'help' || flags.help) {
+    process.stdout.write(renderComputerHelp(subcommand === 'help' ? flags._?.[1] : subcommand));
+    return;
+  }
+  switch (subcommand) {
+    case 'login':
+    case 'attach':
+    case 'setup':
+      await runComputerSetup(flags, env);
+      break;
+    case 'adopt-legacy':
+      throw new Error('MagClaw legacy adoption is handled by `magclaw-computer setup /<serverSlug>` or `magclaw connect --pair-token <token>`.');
+    case 'detach':
+      printJson(await detachComputerProfile(flags, env));
+      break;
+    case 'status': {
+      const report = await computerStatus(flags, env);
+      if (flags.json) printJson(report);
+      else process.stdout.write(formatComputerStatus(report));
+      break;
+    }
+    case 'start':
+      if (hasComputerTarget(flags)) {
+        if (flags.foreground) {
+          await runForegroundDaemon(await buildConfig({ ...flags, profile: computerTargetProfile(flags) }, env), env);
+        } else {
+          printJson(await startSavedBackground({ ...flags, profile: computerTargetProfile(flags) }, env));
+        }
+      } else {
+        printJson(await startAllComputerProfiles(env));
+      }
+      break;
+    case 'stop':
+      if (hasComputerTarget(flags)) printJson(await stopDaemon(computerTargetProfile(flags), env, { disable: Boolean(flags.disable) }));
+      else printJson(await stopAllComputerProfiles(flags, env));
+      break;
+    case 'doctor': {
+      const report = await computerDoctor(flags, env);
+      if (flags.json) printJson(report);
+      else process.stdout.write(`${report.checks.map((check) => `${check.ok ? 'ok' : 'fail'}  ${check.name}: ${check.detail}`).join('\n')}\n`);
+      break;
+    }
+    case 'logs':
+      await logs(computerTargetProfile(flags), { lines: flags.lines || flags.lineCount });
+      break;
+    case 'runners':
+      printJson(await computerRunners(flags, env));
+      break;
+    case 'channel':
+      printJson(await computerChannel(flags, env));
+      break;
+    case 'upgrade':
+      await computerUpgrade(flags, env);
+      break;
+    default:
+      throw new Error(`Unknown computer command: ${subcommand}`);
   }
 }
 
@@ -5546,6 +6035,14 @@ function requireExplicitProfile(command, flags = {}) {
 
 export async function main(argv = process.argv, env = process.env) {
   const { command, flags } = parseCli(argv);
+  if (flags.version) {
+    process.stdout.write(`${DAEMON_VERSION}\n`);
+    return;
+  }
+  if (command === 'computer' && flags.help) {
+    process.stdout.write(renderComputerHelp(flags._?.[0] || ''));
+    return;
+  }
   if (command === 'help' || flags.help) {
     process.stdout.write(renderHelp());
     return;
@@ -5555,7 +6052,7 @@ export async function main(argv = process.argv, env = process.env) {
       await runConnect(flags, env);
       break;
     case 'computer':
-      await runComputerSetup(flags, env);
+      await runComputerCommand(flags, env);
       break;
     case 'start': {
       printJson(await startSavedBackground(flags, env));

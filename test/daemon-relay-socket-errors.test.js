@@ -1857,6 +1857,63 @@ test('daemon relay restores connected status from any live websocket frame', asy
   assert.equal(state.computers[0].lastSeenAt, '2026-05-13T00:00:00.000Z');
 });
 
+test('daemon relay accepts lightweight ready and applies deferred runtime status', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_deferred_runtime';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'offline',
+    connectedVia: 'daemon',
+    runtimeIds: ['codex'],
+    runtimeDetails: [{ id: 'codex', name: 'Codex CLI', installed: true }],
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  socket.emit('data', encodeFrame({ type: 'ready', runtimeScanPending: true }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  let messages = decodeServerMessages(socket);
+  assert.equal(messages.some((message) => message.type === 'ready:ack'), true);
+  assert.equal(state.computers[0].status, 'connected');
+  assert.deepEqual(state.computers[0].runtimeIds, ['codex']);
+
+  socket.emit('data', encodeFrame({
+    type: 'daemon:runtime_status',
+    reason: 'ready_ack',
+    runtimes: ['codex', 'claude-code'],
+    runtimeDetails: [
+      { id: 'codex', name: 'Codex CLI', installed: true },
+      { id: 'claude-code', name: 'Claude Code', installed: true },
+    ],
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  messages = decodeServerMessages(socket);
+  assert.equal(messages.some((message) => message.type === 'ready:ack'), true);
+  assert.deepEqual(state.computers[0].runtimeIds, ['codex', 'claude-code']);
+  assert.equal(state.computers[0].runtimeDetails.length, 2);
+  assert.ok(cloud.daemonEvents.some((event) => event.type === 'computer_runtime_status'));
+});
+
 test('daemon relay marks offline after reconnect grace expires', async () => {
   const { cloud, relay, state } = createRelay({ reconnectGraceMs: 25 });
   const rawToken = 'mc_machine_existing';
