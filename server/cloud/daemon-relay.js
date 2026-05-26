@@ -17,6 +17,9 @@ const TERMINAL_DELIVERY_STATUSES = new Set(['completed', 'failed', 'stopped']);
 const VALID_DELIVERY_STATUSES = new Set([...ACTIVE_DELIVERY_STATUSES, ...TERMINAL_DELIVERY_STATUSES]);
 const COMPUTER_UPGRADE_BLOCKING_STATUSES = new Set(['upgrade_pending', 'upgrading', 'restarting', 'rollback']);
 const DAEMON_UPGRADE_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'rollback_succeeded', 'rollback_failed']);
+const COMPUTER_CLOSE_PENDING_STATUSES = new Set(['requested', 'stopping', 'replayed']);
+const BACKGROUND_SERVICE_MODES = new Set(['launchd', 'systemd', 'schtasks']);
+const AGENT_COMMAND_INTENT_TTL_MS = 30_000;
 const DAEMON_PACKAGE_NAME = '@magclaw/daemon';
 const COMPUTER_PACKAGE_NAME = '@magclaw/computer';
 const KNOWN_PACKAGE_NAMES = new Set([DAEMON_PACKAGE_NAME, COMPUTER_PACKAGE_NAME]);
@@ -276,6 +279,7 @@ export function createDaemonRelay(deps) {
   const pendingSkillRequests = new Map();
   const upgradeProgressConnections = new Map();
   const pendingWorkspaceRequests = new Map();
+  const agentCommandIntents = new Map();
   const computerSetupRequests = new Map();
   const pendingRuntimePersists = new Map();
   const lastRuntimeBroadcastAt = new Map();
@@ -350,6 +354,55 @@ export function createDaemonRelay(deps) {
     return service.background === true && service.active === true;
   }
 
+  function computerRemoteCloseState(computer = {}) {
+    return objectValue(objectValue(computer?.metadata).remoteClose);
+  }
+
+  function computerRemoteClosePending(computer = {}) {
+    const status = String(computerRemoteCloseState(computer).status || '').toLowerCase();
+    return COMPUTER_CLOSE_PENDING_STATUSES.has(status);
+  }
+
+  function queryBoolean(value, fallback = false) {
+    const clean = String(value ?? '').trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(clean)) return true;
+    if (['0', 'false', 'no', 'off'].includes(clean)) return false;
+    return fallback;
+  }
+
+  function connectionMetadataFromUrl(url) {
+    const packageName = normalizePackageName(url.searchParams.get('package_name') || url.searchParams.get('packageName') || '', '');
+    const packageVersion = String(url.searchParams.get('package_version') || url.searchParams.get('packageVersion') || '').trim();
+    const packageKind = String(url.searchParams.get('package_kind') || url.searchParams.get('packageKind') || '').trim().toLowerCase();
+    const packageSpec = String(url.searchParams.get('package_spec') || url.searchParams.get('packageSpec') || '').trim();
+    const packageBin = String(url.searchParams.get('package_bin') || url.searchParams.get('packageBin') || '').trim();
+    const cliCoreVersion = String(url.searchParams.get('cli_core_version') || url.searchParams.get('cliCoreVersion') || '').trim();
+    const daemonVersion = String(url.searchParams.get('daemon_version') || url.searchParams.get('daemonVersion') || packageVersion || '').trim();
+    const serviceMode = String(url.searchParams.get('service_mode') || url.searchParams.get('serviceMode') || '').trim().toLowerCase();
+    const hasServiceBackground = url.searchParams.has('service_background') || url.searchParams.has('serviceBackground');
+    const hasServiceActive = url.searchParams.has('service_active') || url.searchParams.has('serviceActive');
+    const service = {};
+    if (serviceMode) service.mode = serviceMode;
+    if (hasServiceBackground) service.background = queryBoolean(url.searchParams.get('service_background') || url.searchParams.get('serviceBackground'), false);
+    if (hasServiceActive) service.active = queryBoolean(url.searchParams.get('service_active') || url.searchParams.get('serviceActive'), false);
+    if (packageName) service.packageName = packageName;
+    if (packageVersion) service.packageVersion = packageVersion;
+    if (packageKind) service.packageKind = packageKind === 'computer' ? 'computer' : 'daemon';
+    if (packageSpec) service.packageSpec = packageSpec;
+    if (packageBin) service.packageBin = packageBin;
+    if (cliCoreVersion) service.cliCoreVersion = cliCoreVersion;
+    return {
+      daemonVersion,
+      packageName,
+      packageVersion,
+      packageKind: packageKind === 'computer' ? 'computer' : (packageKind === 'daemon' ? 'daemon' : ''),
+      packageSpec,
+      packageBin,
+      cliCoreVersion,
+      service,
+    };
+  }
+
   function packageInfoForComputer(computer = {}, source = {}) {
     const service = objectValue(source.service || computer.service);
     const metadataPackage = objectValue(objectValue(computer.metadata).package);
@@ -401,6 +454,30 @@ export function createDaemonRelay(deps) {
       spec: packageSpec,
       cliCoreVersion: String(source.cliCoreVersion || service.cliCoreVersion || computer.cliCoreVersion || metadataPackage.cliCoreVersion || '').trim(),
     };
+  }
+
+  function applyConnectionMetadata(computer, metadata = {}) {
+    if (!computer || !metadata) return;
+    const hasPackageInfo = Boolean(metadata.packageName || metadata.packageVersion || metadata.packageSpec || metadata.packageKind);
+    const hasServiceInfo = Boolean(Object.keys(objectValue(metadata.service)).length);
+    if (!hasPackageInfo && !hasServiceInfo && !metadata.daemonVersion) return;
+    const packageInfo = packageInfoForComputer(computer, metadata);
+    if (metadata.daemonVersion || packageInfo.version) {
+      computer.daemonVersion = String(metadata.daemonVersion || packageInfo.version || computer.daemonVersion || '');
+    }
+    storeComputerPackageInfo(computer, packageInfo);
+    if (hasServiceInfo) {
+      computer.service = {
+        ...objectValue(computer.service),
+        ...objectValue(metadata.service),
+        packageName: packageInfo.name,
+        packageVersion: packageInfo.version,
+        packageKind: packageInfo.kind,
+        packageSpec: packageInfo.spec,
+        packageBin: packageInfo.bin,
+        cliCoreVersion: packageInfo.cliCoreVersion,
+      };
+    }
   }
 
   function storeComputerPackageInfo(computer, packageInfo) {
@@ -1134,6 +1211,34 @@ export function createDaemonRelay(deps) {
     return send(connections.get(computerId), payload);
   }
 
+  function clearAgentCommandIntent(commandId = '') {
+    const id = String(commandId || '');
+    const record = agentCommandIntents.get(id);
+    if (!record) return null;
+    if (record.timer) clearTimeout(record.timer);
+    agentCommandIntents.delete(id);
+    return record;
+  }
+
+  function rememberReadOnlyAgentCommand(commandId = '', meta = {}) {
+    const id = String(commandId || '');
+    if (!id) return;
+    clearAgentCommandIntent(id);
+    const timer = setTimeout(() => {
+      agentCommandIntents.delete(id);
+    }, AGENT_COMMAND_INTENT_TTL_MS);
+    timer.unref?.();
+    agentCommandIntents.set(id, {
+      intent: 'read_only',
+      ...meta,
+      timer,
+    });
+  }
+
+  function agentCommandIsReadOnly(commandId = '') {
+    return agentCommandIntents.get(String(commandId || ''))?.intent === 'read_only';
+  }
+
   function requestAgentSkills(agent, { timeoutMs = 5_000 } = {}) {
     return new Promise((resolve, reject) => {
       if (!agent?.id) {
@@ -1161,6 +1266,10 @@ export function createDaemonRelay(deps) {
         reject,
         timer,
       });
+      rememberReadOnlyAgentCommand(commandId, {
+        agentId: agent.id,
+        type: 'agent:skills:list',
+      });
       const sent = send(connection, {
         type: 'agent:skills:list',
         commandId,
@@ -1181,6 +1290,7 @@ export function createDaemonRelay(deps) {
       if (!sent) {
         clearTimeout(timer);
         pendingSkillRequests.delete(commandId);
+        clearAgentCommandIntent(commandId);
         reject(new Error('Could not send skills request to daemon.'));
       }
     });
@@ -1214,6 +1324,11 @@ export function createDaemonRelay(deps) {
         timer,
         resultLabel,
       });
+      rememberReadOnlyAgentCommand(commandId, {
+        agentId: agent.id,
+        type: frameType,
+        path,
+      });
       const sent = send(connection, {
         type: frameType,
         commandId,
@@ -1236,6 +1351,7 @@ export function createDaemonRelay(deps) {
       if (!sent) {
         clearTimeout(timer);
         pendingWorkspaceRequests.delete(commandId);
+        clearAgentCommandIntent(commandId);
         reject(new Error(`Could not send ${resultLabel} request to daemon.`));
       }
     });
@@ -1603,7 +1719,7 @@ export function createDaemonRelay(deps) {
     ).catch(() => {});
   }
 
-  function adoptConnection(connection, computer, tokenRecord) {
+  function adoptConnection(connection, computer, tokenRecord, connectionMetadata = {}) {
     clearPendingDisconnect(computer.id);
     const previous = connections.get(computer.id);
     if (previous && previous !== connection) {
@@ -1617,8 +1733,14 @@ export function createDaemonRelay(deps) {
     connection.workspaceId = tokenRecord.workspaceId || computer.workspaceId || cloud().workspaces[0]?.id;
     connection.tokenId = tokenRecord.id;
     connections.set(computer.id, connection);
-    if (!computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
+    if (computerRemoteClosePending(computer)) {
+      computer.status = 'offline';
+      computer.reconnectingSince = null;
+    } else if (!computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) {
+      computer.status = 'connected';
+    }
     computer.connectedVia = String(computer.connectedVia || '').toLowerCase() === 'computer' ? 'computer' : 'daemon';
+    applyConnectionMetadata(computer, connectionMetadata);
     clearPairingProvisionalMetadata(computer);
     computer.lastSeenAt = now();
     computer.daemonConnectedAt = now();
@@ -1937,6 +2059,67 @@ export function createDaemonRelay(deps) {
     return { revoked: matches.map(publicComputerToken) };
   }
 
+  function shouldReplayPendingComputerClose(computer = {}, message = {}) {
+    const remoteClose = computerRemoteCloseState(computer);
+    if (!computerRemoteClosePending(computer)) return false;
+    if (remoteClose.disableBackground === false) return false;
+    const packageInfo = packageInfoForComputer(computer, message);
+    const service = objectValue(message.service || computer.service);
+    const serviceMode = String(service.mode || '').toLowerCase();
+    return packageInfo.kind === 'computer'
+      || service.background === true
+      || BACKGROUND_SERVICE_MODES.has(serviceMode);
+  }
+
+  async function replayPendingComputerClose(connection, computer, message = {}) {
+    const remoteClose = computerRemoteCloseState(computer);
+    const commandId = String(remoteClose.commandId || '').trim() || makeId('dclose');
+    const timestamp = now();
+    const reason = String(remoteClose.reason || 'closed_from_cloud');
+    const stopAgents = remoteClose.stopAgents !== false;
+    const disableBackground = remoteClose.disableBackground !== false;
+    computer.metadata = {
+      ...objectValue(computer.metadata),
+      remoteClose: {
+        ...remoteClose,
+        commandId,
+        status: 'replayed',
+        reason,
+        stopAgents,
+        disableBackground,
+        replayedAt: timestamp,
+        service: objectValue(message.service || computer.service),
+      },
+    };
+    computer.status = 'offline';
+    computer.reconnectingSince = null;
+    computer.disconnectedAt = timestamp;
+    computer.updatedAt = timestamp;
+    const sent = send(connection, {
+      type: 'daemon:close',
+      commandId,
+      reason,
+      stopAgents,
+      disableBackground,
+      requestedAt: remoteClose.requestedAt || timestamp,
+      replayedAt: timestamp,
+    });
+    connection.forceOffline = true;
+    const closeTimer = setTimeout(() => {
+      safeSocketEnd(connection.socket);
+    }, 1200);
+    closeTimer.unref?.();
+    recordDaemonEvent('computer_close_replayed', 'Replayed pending close command to a background computer relaunch.', {
+      computerId: computer.id,
+      commandId,
+      sent,
+      disableBackground,
+    });
+    await persistRuntimeState(workspaceIdForComputer(computer, connection), 'computer_close_replayed');
+    broadcastState();
+    return true;
+  }
+
   async function handleReady(connection, message) {
     const computer = findComputer(connection.computerId);
     if (!computer) return;
@@ -1975,6 +2158,22 @@ export function createDaemonRelay(deps) {
       packageBin: packageInfo.bin,
       cliCoreVersion: packageInfo.cliCoreVersion,
     };
+    if (shouldReplayPendingComputerClose(computer, message)) {
+      await replayPendingComputerClose(connection, computer, message);
+      return;
+    }
+    if (computerRemoteClosePending(computer)) {
+      const metadata = objectValue(computer.metadata);
+      computer.metadata = {
+        ...metadata,
+        remoteClose: {
+          ...computerRemoteCloseState(computer),
+          status: 'cleared',
+          clearedAt: now(),
+          service: objectValue(message.service || computer.service),
+        },
+      };
+    }
     const reportedUpgrade = message.upgrade && typeof message.upgrade === 'object' ? message.upgrade : null;
     const previousUpgrade = daemonUpgradeState(computer);
     const upgradeCommandId = String(reportedUpgrade?.commandId || previousUpgrade.commandId || '').trim();
@@ -2037,7 +2236,10 @@ export function createDaemonRelay(deps) {
       });
     }
     const agent = delivery ? findAgent(delivery.agentId) : findAgent(message.agentId);
-    if (agent && message.status) setAgentStatus(agent, String(message.status), 'daemon_relay_ack');
+    if (agent && message.status && delivery) {
+      setAgentStatus(agent, String(message.status), 'daemon_relay_ack');
+    }
+    if (!delivery) clearAgentCommandIntent(id);
     await persistRuntimeState(
       workspaceIdForAgent(agent, workspaceIdForComputer(findComputer(connection.computerId), connection)),
       'daemon_delivery_acked',
@@ -2300,7 +2502,7 @@ export function createDaemonRelay(deps) {
     refreshConnectionWatchdog(connection);
     const computer = findComputer(connection.computerId);
     if (computer) {
-      if (!computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
+      if (!computerRemoteClosePending(computer) && !computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
       computer.lastSeenAt = now();
       computer.updatedAt = now();
     }
@@ -2320,7 +2522,7 @@ export function createDaemonRelay(deps) {
         break;
       case 'heartbeat':
         if (computer) {
-          if (!computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
+          if (!computerRemoteClosePending(computer) && !computerIsDisabled(computer) && !computerUpgradeBlocksDelivery(computer)) computer.status = 'connected';
           if (message.daemonVersion) computer.daemonVersion = String(message.daemonVersion);
           if (message.packageName || message.packageVersion || message.packageSpec || message.packageKind) {
             storeComputerPackageInfo(computer, packageInfoForComputer(computer, message));
@@ -2447,6 +2649,8 @@ export function createDaemonRelay(deps) {
       case 'agent:error':
         {
           const agent = findAgent(message.agentId);
+          const commandId = String(message.commandId || message.deliveryId || '');
+          const readOnlyError = agentCommandIsReadOnly(commandId);
           const pendingSkill = pendingSkillRequests.get(message.commandId);
           if (pendingSkill) {
             clearTimeout(pendingSkill.timer);
@@ -2459,7 +2663,8 @@ export function createDaemonRelay(deps) {
             pendingWorkspaceRequests.delete(message.commandId);
             pendingWorkspace.reject(new Error(String(message.error || 'Agent error')));
           }
-          if (agent) {
+          clearAgentCommandIntent(commandId);
+          if (agent && !readOnlyError) {
             setAgentStatus(agent, 'error', 'daemon_error', { forceEvent: true });
             markDeliveryFinished(message.commandId || message.deliveryId || null, 'failed', String(message.error || 'Agent error'));
             agent.runtimeActivity = {
@@ -2689,7 +2894,7 @@ export function createDaemonRelay(deps) {
       pingTimer: null,
       watchdogTimer: null,
     };
-    adoptConnection(connection, auth.computer, auth.tokenRecord);
+    adoptConnection(connection, auth.computer, auth.tokenRecord, connectionMetadataFromUrl(url));
     refreshConnectionWatchdog(connection);
     startConnectionPing(connection);
     send(connection, auth.welcome);

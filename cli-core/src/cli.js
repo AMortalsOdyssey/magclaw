@@ -404,6 +404,12 @@ export function profilePaths(profile = DEFAULT_PROFILE, env = process.env) {
   };
 }
 
+function sleepSync(ms) {
+  const timeout = Math.max(0, Number(ms) || 0);
+  if (!timeout) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, timeout);
+}
+
 function machineFingerprintValue() {
   return `mfp_${crypto.createHash('sha256')
     .update([
@@ -673,6 +679,10 @@ async function readServiceState(profile = DEFAULT_PROFILE, env = process.env) {
     previousPackageSpec: state.previousPackageSpec || '',
     installedDaemonVersion: state.installedDaemonVersion || DAEMON_VERSION,
     installedPackageVersion: state.installedPackageVersion || packageVersion || state.installedDaemonVersion || DAEMON_VERSION,
+    remoteClosed: Boolean(state.remoteClosed),
+    remoteClosedAt: state.remoteClosedAt || '',
+    remoteCloseReason: state.remoteCloseReason || '',
+    remoteCloseCommandId: state.remoteCloseCommandId || '',
     updatedAt: state.updatedAt || '',
   };
 }
@@ -689,6 +699,31 @@ async function writeServiceState(profile = DEFAULT_PROFILE, patch = {}, env = pr
   };
   await writeJsonFile(paths.service, next);
   return next;
+}
+
+async function clearRemoteClosedServiceState(profile = DEFAULT_PROFILE, env = process.env) {
+  return writeServiceState(profile, {
+    remoteClosed: false,
+    remoteClosedAt: '',
+    remoteCloseReason: '',
+    remoteCloseCommandId: '',
+  }, env);
+}
+
+async function markForegroundServiceState(profile = DEFAULT_PROFILE, env = process.env) {
+  const packageInfo = runtimePackageInfo(env);
+  return writeServiceState(profile, {
+    mode: 'foreground',
+    background: false,
+    launcher: 'foreground',
+    packageSpec: packageInfo.spec,
+    packageName: packageInfo.name,
+    packageVersion: packageInfo.version,
+    packageKind: packageInfo.kind,
+    packageBin: packageInfo.bin,
+    installedDaemonVersion: packageInfo.version || DAEMON_VERSION,
+    installedPackageVersion: packageInfo.version || DAEMON_VERSION,
+  }, env);
 }
 
 async function readUpgradeHandoff(profile = DEFAULT_PROFILE, env = process.env) {
@@ -1187,6 +1222,27 @@ export function toWebSocketUrl(serverUrl, config = {}) {
   if (/^mfp_[a-f0-9]{64}$/i.test(machineFingerprint)) {
     url.searchParams.set('machine_fingerprint', machineFingerprint.toLowerCase());
   }
+  const packageName = String(config.packageName || '').trim();
+  const packageVersion = String(config.packageVersion || config.daemonVersion || '').trim();
+  const packageKind = String(config.packageKind || '').trim();
+  const packageSpec = String(config.packageSpec || '').trim();
+  const packageBin = String(config.packageBin || '').trim();
+  const cliCoreVersion = String(config.cliCoreVersion || '').trim();
+  const serviceMode = String(config.serviceMode || '').trim();
+  const serviceBackground = Boolean(config.serviceBackground);
+  const serviceActive = Boolean(config.serviceActive);
+  if (packageName) url.searchParams.set('package_name', packageName);
+  if (packageVersion) {
+    url.searchParams.set('package_version', packageVersion);
+    url.searchParams.set('daemon_version', packageVersion);
+  }
+  if (packageKind) url.searchParams.set('package_kind', packageKind);
+  if (packageSpec) url.searchParams.set('package_spec', packageSpec);
+  if (packageBin) url.searchParams.set('package_bin', packageBin);
+  if (cliCoreVersion) url.searchParams.set('cli_core_version', cliCoreVersion);
+  if (serviceMode) url.searchParams.set('service_mode', serviceMode);
+  url.searchParams.set('service_background', String(serviceBackground));
+  url.searchParams.set('service_active', String(serviceActive));
   return url;
 }
 
@@ -3098,6 +3154,12 @@ class ClaudeAgentSession {
   }
 }
 
+function readOnlySessionAckStatus(session) {
+  const status = String(session?.status || '').toLowerCase();
+  if ((!status || status === 'offline') && !session?.started) return 'idle';
+  return session?.status || 'idle';
+}
+
 class MagClawDaemon {
   constructor(config, env = process.env) {
     this.env = env;
@@ -3473,6 +3535,12 @@ class MagClawDaemon {
       packageBin: packageInfo.bin,
     };
     logWarning('daemon', `Remote close requested (${message.reason || 'closed_from_cloud'}).`);
+    await writeServiceState(this.paths.profile, {
+      remoteClosed: true,
+      remoteClosedAt: now(),
+      remoteCloseReason: message.reason || 'closed_from_cloud',
+      remoteCloseCommandId: commandId,
+    }, this.env);
     for (const session of this.sessions.values()) session.stop();
     this.sessions.clear();
     this.send({ type: 'daemon:close:ack',
@@ -3746,7 +3814,7 @@ class MagClawDaemon {
         ? await session.listSkills()
         : { agent: { id: agent.id, name: agent.name || agent.id }, global: [], workspace: [], plugin: [], tools: [] };
       this.send({ type: 'agent:skills:list_result', commandId: message.commandId, agentId: agent.id, skills });
-      this.send({ type: 'agent:ack', commandId: message.commandId, agentId: agent.id, status: session.status || 'idle' });
+      this.send({ type: 'agent:ack', commandId: message.commandId, agentId: agent.id, status: readOnlySessionAckStatus(session) });
     } catch (error) {
       this.send({ type: 'agent:skills:list_result', commandId: message.commandId, agentId: agent.id, skills: { agent: { id: agent.id, name: agent.name || agent.id }, global: [], workspace: [], plugin: [], tools: [], error: error.message } });
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
@@ -3771,7 +3839,7 @@ class MagClawDaemon {
       const session = await this.sessionForWorkspaceRequest(message);
       const tree = await session.listWorkspace(message.path || message.payload?.path || '');
       this.send({ type: 'agent:workspace:list_result', commandId: message.commandId, agentId: session.agent.id, tree });
-      this.send({ type: 'agent:ack', commandId: message.commandId, agentId: session.agent.id, status: session.status || 'idle' });
+      this.send({ type: 'agent:ack', commandId: message.commandId, agentId: session.agent.id, status: readOnlySessionAckStatus(session) });
     } catch (error) {
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: message.agentId || null, error: error.message });
     }
@@ -3782,7 +3850,7 @@ class MagClawDaemon {
       const session = await this.sessionForWorkspaceRequest(message);
       const file = await session.readWorkspaceFile(message.path || message.payload?.path || 'MEMORY.md');
       this.send({ type: 'agent:workspace:file_result', commandId: message.commandId, agentId: session.agent.id, file: file.file });
-      this.send({ type: 'agent:ack', commandId: message.commandId, agentId: session.agent.id, status: session.status || 'idle' });
+      this.send({ type: 'agent:ack', commandId: message.commandId, agentId: session.agent.id, status: readOnlySessionAckStatus(session) });
     } catch (error) {
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: message.agentId || null, error: error.message });
     }
@@ -4032,11 +4100,24 @@ class MagClawDaemon {
   async connectOnce() {
     if (this.closed) return;
     await this.refreshConfigFromDisk();
-    const url = toWebSocketUrl(this.config.serverUrl, this.config);
+    const service = await readServiceState(this.paths.profile, this.env);
+    const serviceStatus = backgroundServiceStatus(this.paths.profile, this.env);
+    const packageInfo = runtimePackageInfo(this.env, service);
+    const url = toWebSocketUrl(this.config.serverUrl, {
+      ...this.config,
+      packageName: packageInfo.name,
+      packageVersion: packageInfo.version,
+      packageKind: packageInfo.kind,
+      packageSpec: packageInfo.spec,
+      packageBin: packageInfo.bin,
+      cliCoreVersion: CLI_CORE_VERSION,
+      serviceMode: service.mode || serviceStatus.mode || 'foreground',
+      serviceBackground: Boolean(service.background),
+      serviceActive: Boolean(serviceStatus.active),
+    });
     const requestModule = url.protocol === 'wss:' ? https : http;
     const requestUrl = new URL(url.href.replace(/^ws/, 'http'));
     const key = crypto.randomBytes(16).toString('base64');
-    const packageInfo = runtimePackageInfo(this.env);
     logInfo('daemon', `Connecting MagClaw daemon v${packageInfo.version || DAEMON_VERSION} profile "${this.paths.profile}" to ${this.config.serverUrl}...`);
     if (this.closed) return;
     return new Promise((resolve, reject) => {
@@ -4218,6 +4299,10 @@ async function writeLauncher(profile, env = process.env) {
     installedDaemonVersion: packageVersion || DAEMON_VERSION,
     installedPackageVersion: packageVersion || DAEMON_VERSION,
     commandMode: useNpmLauncher ? 'npm' : 'local',
+    remoteClosed: false,
+    remoteClosedAt: '',
+    remoteCloseReason: '',
+    remoteCloseCommandId: '',
   }, env);
   const code = [
     '#!/usr/bin/env node',
@@ -4234,6 +4319,11 @@ async function writeLauncher(profile, env = process.env) {
     `const defaultPackageSpec = ${JSON.stringify(service.packageSpec)};`,
     "let service = {};",
     "try { service = JSON.parse(fs.readFileSync(serviceFile, 'utf8')); } catch {}",
+    "if (service.remoteClosed) {",
+    "  const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);",
+    "  console.error(`${stamp} INFO DAEMON profile ${profile} is closed from MagClaw Cloud; run magclaw start/restart/connect to reconnect.`);",
+    "  process.exit(0);",
+    "}",
     "const packageSpec = String(service.packageSpec || defaultPackageSpec || '@magclaw/daemon@latest');",
     "const packageName = String(service.packageName || (packageSpec.startsWith('@magclaw/computer@') || packageSpec === '@magclaw/computer' ? '@magclaw/computer' : '@magclaw/daemon'));",
     "const packageKind = String(service.packageKind || (packageName === '@magclaw/computer' ? 'computer' : 'daemon'));",
@@ -4446,6 +4536,29 @@ function backgroundServiceStatus(profile, env = process.env) {
   return { mode: 'foreground', active: false };
 }
 
+function launchctlResultIsNotLoaded(result) {
+  const detail = String(result?.stderr || result?.stdout || '').toLowerCase();
+  return detail.includes('no such process') || detail.includes('could not find service') || detail.includes('not found');
+}
+
+function launchctlServiceIsStopped(serviceTarget) {
+  const result = spawnSync('launchctl', ['print', serviceTarget], { encoding: 'utf8' });
+  if (result.status !== 0) return launchctlResultIsNotLoaded(result);
+  const output = String(result.stdout || result.stderr || '');
+  if (/\bstate\s*=\s*running\b/i.test(output)) return false;
+  if (/\bpid\s*=\s*[1-9][0-9]*\b/i.test(output)) return false;
+  return true;
+}
+
+function waitForBackgroundServiceStopped(serviceTarget, timeoutMs = 2000) {
+  const deadline = Date.now() + Math.max(250, Number(timeoutMs) || 2000);
+  while (Date.now() < deadline) {
+    if (launchctlServiceIsStopped(serviceTarget)) return true;
+    sleepSync(100);
+  }
+  return launchctlServiceIsStopped(serviceTarget);
+}
+
 async function waitForPidExit(pid, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -4498,23 +4611,32 @@ function stopBackground(profile, env = process.env, options = {}) {
   if (process.platform === 'darwin') {
     const paths = profilePaths(profile, env);
     const label = launchAgentLabel(paths.profile);
+    const serviceTarget = `gui/${process.getuid()}/${label}`;
     const plist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
     if (options.disable) {
-      const disabled = spawnSync('launchctl', ['disable', `gui/${process.getuid()}/${label}`], { encoding: 'utf8' });
+      const disabled = spawnSync('launchctl', ['disable', serviceTarget], { encoding: 'utf8' });
       const stopped = spawnSync('launchctl', ['stop', label], { encoding: 'utf8' });
+      const stoppedConfirmed = stopped.status === 0 && waitForBackgroundServiceStopped(serviceTarget);
+      const needsBootout = disabled.status !== 0 || !stoppedConfirmed;
+      const bootout = needsBootout
+        ? spawnSync('launchctl', ['bootout', serviceTarget], { encoding: 'utf8' })
+        : null;
+      const bootoutOk = bootout ? (bootout.status === 0 || launchctlResultIsNotLoaded(bootout)) : false;
       if (stopped.status !== 0) spawnSync('launchctl', ['bootout', `gui/${process.getuid()}`, plist], { stdio: 'ignore' });
       return {
-        ok: disabled.status === 0 || stopped.status === 0,
+        ok: disabled.status === 0 && (stoppedConfirmed || bootoutOk),
         mode: 'launchd',
         label,
+        serviceTarget,
         file: plist,
         disabled: disabled.status === 0,
-        stopped: stopped.status === 0,
-        error: disabled.status === 0 && stopped.status === 0 ? '' : String(stopped.stderr || disabled.stderr || stopped.stdout || disabled.stdout || '').trim(),
+        stopped: stoppedConfirmed || bootoutOk,
+        bootout: bootout ? bootout.status === 0 : false,
+        error: disabled.status === 0 && (stoppedConfirmed || bootoutOk) ? '' : String(bootout?.stderr || stopped.stderr || disabled.stderr || bootout?.stdout || stopped.stdout || disabled.stdout || '').trim(),
       };
     }
-    spawnSync('launchctl', ['bootout', `gui/${process.getuid()}`, plist], { stdio: 'ignore' });
-    return { ok: true, mode: 'launchd', label, file: plist };
+    const bootout = spawnSync('launchctl', ['bootout', serviceTarget], { encoding: 'utf8' });
+    return { ok: bootout.status === 0 || launchctlResultIsNotLoaded(bootout), mode: 'launchd', label, serviceTarget, file: plist, error: bootout.stderr || bootout.stdout || '' };
   }
   if (process.platform === 'linux') {
     const paths = profilePaths(profile, env);
@@ -5141,6 +5263,7 @@ async function runComputerSetup(flags, env = process.env) {
     fingerprint: owner.fingerprint,
   }, env);
   await saveProfile(config.profile, config, env);
+  await clearRemoteClosedServiceState(config.profile, env);
   const cli = await tryInstallCliShim(flags, env);
   const result = await startBackground(config.profile, env);
   printJson({
@@ -5179,6 +5302,7 @@ async function buildConfig(flags, env = process.env) {
 
 async function runForegroundDaemon(config, env = process.env) {
   const releaseLock = await acquireDaemonLock(config.profile, config, env);
+  await markForegroundServiceState(config.profile, env);
   const daemon = new MagClawDaemon(config, env);
   let forceExitTimer = null;
   const shutdown = (signal) => {
@@ -5205,6 +5329,7 @@ async function runConnect(flags, env = process.env) {
     throw new Error('Run connect with --api-key, --pair-token for legacy pairing, or use a saved profile with a machine token.');
   }
   await saveProfile(config.profile, config, env);
+  await clearRemoteClosedServiceState(config.profile, env);
   const cli = await tryInstallCliShim(flags, env);
   if (flags.background) {
     const result = await startBackground(config.profile, env);
