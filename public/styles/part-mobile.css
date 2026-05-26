@@ -942,6 +942,11 @@
   -webkit-overflow-scrolling: touch;
 }
 
+.mobile-app-shell .task-empty-state {
+  min-height: 100%;
+  padding: 48px 18px calc(48px + env(safe-area-inset-bottom));
+}
+
 .mobile-app-shell .task-column,
 .mobile-app-shell .task-list-section {
   min-width: 0;

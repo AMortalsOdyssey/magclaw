@@ -1782,6 +1782,27 @@ test('global task board follows MagClaw board list channel filtering without sto
   assert.match(styles, /\.task-list-view/);
 });
 
+test('task pages use scoped empty states for filters channels and status columns', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const taskSource = app.slice(app.indexOf('function renderTaskBoard'), app.indexOf('function renderTaskCard'));
+
+  assert.match(app, /function renderTaskPageEmptyState\(variant\)/);
+  assert.match(app, /No tasks match this filter/);
+  assert.match(app, /Try a different combination or clear the current selection\./);
+  assert.match(app, /No tasks yet/);
+  assert.match(app, /Create one with the New Task button\./);
+  assert.match(app, /filteredTasks\.length \? \(taskViewMode === 'list' \? renderTaskListView\(filteredTasks\) : renderTaskBoard\(filteredTasks\)\) : renderTaskPageEmptyState\(channelTasks\.length \? 'filter' : 'empty'\)/);
+  assert.match(app, /renderTaskSurface\(spaceTasks\(\), \{ emptyVariant: 'channel' \}\)/);
+  assert.match(taskSource, /function renderTaskColumnEmpty\(status, label\)/);
+  assert.match(taskSource, /No \$\{escapeHtml\(label\.toLowerCase\(\)\)\} tasks\./);
+  assert.match(styles, /\.task-empty-state/);
+  assert.match(styles, /\.task-empty-icon/);
+  assert.match(styles, /\.workspace > \.task-empty-state \{[\s\S]*grid-row:\s*3 \/ -1/);
+  assert.match(styles, /\.empty-box\.task-empty-box \{[\s\S]*border:\s*1px dashed rgba\(46, 52, 64, 0\.18\)/);
+  assert.match(styles, /\.empty-box\.task-empty-box \{[\s\S]*background:\s*rgba\(255, 254, 251, 0\.62\)/);
+});
+
 test('task status icons sync across messages threads saved and task detail', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();

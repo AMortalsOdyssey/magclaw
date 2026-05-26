@@ -381,11 +381,12 @@ function renderMobileTaskSurface(tasks, options = {}) {
     : options.useStatusFilter
     ? (taskFilter === 'all' ? tasks : tasks.filter((task) => task.status === taskFilter))
     : tasks;
+  const emptyVariant = visibleTasks.length ? '' : (tasks.length ? 'filter' : (options.emptyVariant || 'channel'));
   return `
     <section class="mobile-task-surface task-page">
       ${renderMobileTaskToolbar(tasks, visibleTasks, options)}
       <div class="mobile-task-view ${taskViewMode === 'list' ? 'is-list' : 'is-board'}">
-        ${taskViewMode === 'list' ? renderTaskListView(visibleTasks) : renderTaskBoard(visibleTasks)}
+        ${visibleTasks.length ? (taskViewMode === 'list' ? renderTaskListView(visibleTasks) : renderTaskBoard(visibleTasks)) : renderTaskPageEmptyState(emptyVariant)}
       </div>
     </section>
   `;

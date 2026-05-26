@@ -131,7 +131,7 @@ function renderSpace() {
       <button class="${activeTab === 'tasks' ? 'active' : ''}" type="button" data-action="set-tab" data-tab="tasks">TASKS</button>
     </div>
     ${selectedSpaceType === 'channel' ? renderProjectStrip({ canWrite: canWriteChannel }) : ''}
-    ${activeTab === 'tasks' ? renderTaskBoard(spaceTasks()) : renderChat()}
+    ${activeTab === 'tasks' ? renderTaskSurface(spaceTasks(), { emptyVariant: 'channel' }) : renderChat()}
   `;
 }
 
@@ -1648,7 +1648,7 @@ function renderTaskBoard(tasks) {
             <strong>${columnTasks.length}</strong>
             <button class="column-toggle" type="button" data-action="toggle-task-column" data-status="${status}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(label)}">${collapsed ? '›' : '⌄'}</button>
           </div>
-          ${collapsed ? '' : `<div class="task-column-body">${columnTasks.map(renderTaskCard).join('') || '<div class="empty-box small task-empty-box">No tasks.</div>'}</div>`}
+          ${collapsed ? '' : `<div class="task-column-body">${columnTasks.map(renderTaskCard).join('') || renderTaskColumnEmpty(status, label)}</div>`}
         </div>
       `;
       }).join('')}
@@ -1669,12 +1669,48 @@ function renderTaskListView(tasks) {
               <strong>${sectionTasks.length}</strong>
               <button class="column-toggle" type="button" data-action="toggle-task-column" data-status="${status}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(label)}">${collapsed ? '›' : '⌄'}</button>
             </div>
-            ${collapsed ? '' : `<div class="task-list-body">${sectionTasks.map(renderTaskCard).join('') || '<div class="empty-box small task-empty-box">No tasks.</div>'}</div>`}
+            ${collapsed ? '' : `<div class="task-list-body">${sectionTasks.map(renderTaskCard).join('') || renderTaskColumnEmpty(status, label)}</div>`}
           </div>
         `;
       }).join('')}
     </section>
   `;
+}
+
+function renderTaskColumnEmpty(status, label) {
+  return `<div class="empty-box small task-empty-box task-empty-${escapeHtml(status)}">No ${escapeHtml(label.toLowerCase())} tasks.</div>`;
+}
+
+function renderTaskPageEmptyState(variant) {
+  const copy = {
+    filter: [
+      'No tasks match this filter',
+      'Try a different combination or clear the current selection.',
+    ],
+    channel: [
+      'No tasks yet',
+      'Create one with the New Task button.',
+    ],
+    empty: [
+      'No tasks yet',
+      'Create one with the New Task button.',
+    ],
+  }[variant] || [
+    'No tasks yet',
+    'Create one with the New Task button.',
+  ];
+  return `
+    <section class="task-empty-state" role="status" aria-live="polite">
+      <span class="task-empty-icon" aria-hidden="true">${channelActionIcon('task')}</span>
+      <strong>${escapeHtml(copy[0])}</strong>
+      <p>${escapeHtml(copy[1])}</p>
+    </section>
+  `;
+}
+
+function renderTaskSurface(tasks, options = {}) {
+  if (!tasks.length) return renderTaskPageEmptyState(options.emptyVariant || 'empty');
+  return taskViewMode === 'list' ? renderTaskListView(tasks) : renderTaskBoard(tasks);
 }
 
 function renderTaskViewToggle() {
@@ -1830,7 +1866,7 @@ function renderGlobalTasks() {
         ${renderTaskViewToggle()}
       </header>
       ${renderTaskToolbar(channelTasks, filteredTasks)}
-      ${taskViewMode === 'list' ? renderTaskListView(filteredTasks) : renderTaskBoard(filteredTasks)}
+      ${filteredTasks.length ? (taskViewMode === 'list' ? renderTaskListView(filteredTasks) : renderTaskBoard(filteredTasks)) : renderTaskPageEmptyState(channelTasks.length ? 'filter' : 'empty')}
     </section>
   `;
 }
