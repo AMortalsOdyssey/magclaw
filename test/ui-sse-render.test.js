@@ -34,6 +34,7 @@ async function createRealtimeHarness() {
     conversationHistoryPages: { main: {}, thread: {} },
     conversationHistoryLoading: { main: {}, thread: {} },
     byId: (items, id) => (items || []).find((item) => item.id === id) || null,
+    deliveryReceiptSignature: (record) => (record.workItemVersion || ''),
     document: {
       addEventListener: noop,
       querySelector: () => null,
@@ -149,6 +150,91 @@ test('preserved conversation history does not overwrite fresher reply counts fro
   const merged = context.preserveLoadedConversationHistory(previousState, nextState);
 
   assert.equal(merged.messages.find((message) => message.id === 'msg_parent')?.replyCount, 1);
+});
+
+test('thread visible signatures ignore heartbeat, read, and task metadata churn', async () => {
+  const context = await createRealtimeHarness();
+  const baseTask = {
+    id: 'task_1',
+    number: 1,
+    status: 'in_progress',
+    claimedBy: 'agt_owner',
+    assigneeIds: ['agt_helper'],
+    metadata: { startupCollaboration: { status: 'waiting', cursor: 1 } },
+    history: [
+      { type: 'created', actorId: 'hum_local', at: '2026-05-26T10:00:00.000Z' },
+      { type: 'claimed', actorId: 'agt_owner', at: '2026-05-26T10:00:01.000Z' },
+    ],
+  };
+  const baseState = {
+    agents: [
+      { id: 'agt_owner', name: 'Owner', status: 'idle' },
+      { id: 'agt_helper', name: 'Helper', status: 'idle' },
+    ],
+    tasks: [baseTask],
+    messages: [{
+      id: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: 'Task root',
+      taskId: 'task_1',
+      replyCount: 1,
+      readBy: [],
+      createdAt: '2026-05-26T10:00:00.000Z',
+      updatedAt: '2026-05-26T10:00:00.000Z',
+    }],
+    replies: [{
+      id: 'rep_owner',
+      parentMessageId: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_owner',
+      body: 'I will take this.',
+      readBy: [],
+      createdAt: '2026-05-26T10:00:02.000Z',
+      updatedAt: '2026-05-26T10:00:02.000Z',
+    }],
+  };
+  context.activeView = 'space';
+  context.activeTab = 'chat';
+  context.threadMessageId = 'msg_parent';
+  context.selectedSpaceType = 'channel';
+  context.selectedSpaceId = 'chan_all';
+  context.appState = baseState;
+
+  const before = context.activeConversationSignature();
+  context.appState = {
+    ...baseState,
+    agents: baseState.agents.map((agent) => (
+      agent.id === 'agt_owner' ? { ...agent, status: 'thinking', runtimeLastTurnAt: '2026-05-26T10:00:05.000Z' } : agent
+    )),
+    tasks: [{
+      ...baseTask,
+      updatedAt: '2026-05-26T10:00:05.000Z',
+      metadata: { startupCollaboration: { status: 'waiting', cursor: 2 } },
+    }],
+    messages: [{ ...baseState.messages[0], readBy: ['hum_local'] }],
+    replies: [{ ...baseState.replies[0], readBy: ['hum_local'] }],
+  };
+
+  assert.equal(context.activeConversationSignature(), before);
+
+  context.appState = {
+    ...baseState,
+    tasks: [{
+      ...baseTask,
+      status: 'in_review',
+      history: [
+        ...baseTask.history,
+        { type: 'review_requested', actorId: 'agt_owner', at: '2026-05-26T10:00:10.000Z' },
+      ],
+    }],
+  };
+
+  assert.notEqual(context.activeConversationSignature(), before);
 });
 
 test('opening a thread refreshes scoped replies instead of relying on preview state', async () => {

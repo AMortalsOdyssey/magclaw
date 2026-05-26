@@ -406,11 +406,11 @@ function deliveryReceiptSignature(record) {
     .map((receipt) => [
       receipt.agent.id,
       receipt.agent.avatar || '',
-      receipt.agent.status || '',
+      receipt.agent.name || '',
       receipt.status,
+      receipt.item.createdAt || '',
       receipt.item.deliveredAt || '',
       receipt.item.respondedAt || '',
-      receipt.item.updatedAt || '',
       receipt.item.sendCount || 0,
     ].join(':'))
     .join('|');
@@ -1496,23 +1496,19 @@ async function saveShareImage() {
 
 function renderRecordKey(record) {
   const task = record?.taskId ? byId(appState?.tasks, record.taskId) : null;
-  const author = record?.authorType === 'agent'
-    ? byId(appState?.agents, record.authorId)
-    : record?.authorType === 'human'
-      ? byId(appState?.humans, record.authorId)
-      : null;
   return JSON.stringify({
     id: record?.id || '',
     authorId: record?.authorId || '',
     authorType: record?.authorType || '',
-    authorStatus: author?.status || '',
     body: record?.body || '',
     createdAt: record?.createdAt || '',
     updatedAt: record?.updatedAt || '',
     replyCount: record?.replyCount || 0,
     taskId: record?.taskId || '',
+    taskNumber: task?.number || '',
     taskStatus: task?.status || '',
-    taskUpdatedAt: task?.updatedAt || '',
+    taskClaimedBy: task?.claimedBy || '',
+    taskAssigneeIds: task?.assigneeIds || [],
     attachmentIds: record?.attachmentIds || [],
     savedBy: record?.savedBy || [],
     reactions: record?.reactions || [],

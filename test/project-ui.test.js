@@ -2070,16 +2070,17 @@ test('codex agent startup repairs stale configured Codex paths before spawning',
   assert.match(legacySource, /shell: runtimeCommandNeedsShell\(state\.settings\.codexPath \|\| 'codex'\)/);
 });
 
-test('message rows re-render when author presence changes from heartbeat', async () => {
+test('message status dots render without making heartbeat part of message row keys', async () => {
   const app = await readAppSource();
   const renderKeySource = app.slice(app.indexOf('function renderRecordKey'), app.indexOf('function renderSystemEvent'));
   const humanStatusSource = app.slice(app.indexOf('function humanStatusDot'), app.indexOf('function attachmentLinks'));
 
-  assert.match(renderKeySource, /authorStatus: author\?\.status \|\| ''/);
-  assert.match(renderKeySource, /record\?\.authorType === 'agent'/);
+  assert.doesNotMatch(renderKeySource, /authorStatus/);
+  assert.doesNotMatch(renderKeySource, /record\?\.authorType === 'agent'/);
   assert.match(app, /function applyPresenceHeartbeat\(heartbeat\)/);
   assert.match(app, /const incomingHumansById = new Map/);
   assert.match(app, /humans,\n    updatedAt: heartbeat\.updatedAt/);
+  assert.match(app, /function agentStatusDot\(authorId, authorType\)/);
   assert.match(humanStatusSource, /humanByIdAny\(authorId\)/);
 });
 

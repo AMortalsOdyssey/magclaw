@@ -608,7 +608,27 @@ function maybeLoadOlderConversationHistory(targetName, node) {
   }
 }
 
-function recordPatchSignature(record) {
+function taskVisiblePatchSignature(task) {
+  if (!task) return '';
+  const history = (Array.isArray(task.history) ? task.history : [])
+    .slice(-4)
+    .map((item) => [
+      item?.type || '',
+      item?.actorId || '',
+      item?.at || '',
+    ]);
+  return JSON.stringify({
+    id: task.id || '',
+    number: task.number || '',
+    status: task.status || '',
+    claimedBy: task.claimedBy || '',
+    assigneeIds: task.assigneeIds || [],
+    history,
+  });
+}
+
+function recordPatchSignature(record, stateSnapshot = appState) {
+  const task = record?.taskId ? byId(stateSnapshot?.tasks, record.taskId) : null;
   return [
     record?.id || '',
     record?.updatedAt || '',
@@ -616,9 +636,9 @@ function recordPatchSignature(record) {
     record?.body || '',
     record?.replyCount || 0,
     record?.taskId || '',
+    taskVisiblePatchSignature(task),
     (record?.attachmentIds || []).join(','),
     (record?.savedBy || []).join(','),
-    (record?.readBy || []).join(','),
     deliveryReceiptSignature(record),
   ].join('::');
 }
@@ -628,10 +648,10 @@ function activeConversationSignature(stateSnapshot = appState) {
   if (threadMessageId) {
     const root = byId(stateSnapshot.messages, threadMessageId);
     const records = root ? [root, ...stateThreadReplies(stateSnapshot, root.id)] : [];
-    return records.map(recordPatchSignature).join('|');
+    return records.map((record) => recordPatchSignature(record, stateSnapshot)).join('|');
   }
   return stateSpaceMessages(stateSnapshot)
-    .map(recordPatchSignature)
+    .map((record) => recordPatchSignature(record, stateSnapshot))
     .join('|');
 }
 
