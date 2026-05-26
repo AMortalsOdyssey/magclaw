@@ -290,7 +290,24 @@ function rememberReferenceAuthorMention(composerId, record) {
   return true;
 }
 
-function addConversationReferenceToComposer(composerId, reference, { mentionRecord = null } = {}) {
+function rememberReferenceAuthorMentions(composerId, records = []) {
+  const authors = [];
+  const seen = new Set();
+  for (const record of records) {
+    if (!record?.authorId || !['agent', 'human'].includes(record.authorType)) continue;
+    const key = `${record.authorType}:${record.authorId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    authors.push(record);
+  }
+  let changed = false;
+  for (const record of authors.slice().reverse()) {
+    changed = rememberReferenceAuthorMention(composerId, record) || changed;
+  }
+  return changed;
+}
+
+function addConversationReferenceToComposer(composerId, reference, { mentionRecord = null, mentionRecords = [] } = {}) {
   const normalized = normalizeConversationReferenceDraft(reference);
   if (!composerId || !normalized) return false;
   const references = composerReferences(composerId);
@@ -301,6 +318,7 @@ function addConversationReferenceToComposer(composerId, reference, { mentionReco
   }
   setComposerReferences(composerId, [...references, normalized]);
   if (mentionRecord) rememberReferenceAuthorMention(composerId, mentionRecord);
+  if (mentionRecords.length) rememberReferenceAuthorMentions(composerId, mentionRecords);
   updateComposerReferenceStrip(composerId);
   pendingComposerFocusId = composerId;
   toast(normalized.mode === 'quote' ? 'Quote added' : 'Context added');
@@ -365,7 +383,9 @@ function addSelectedMessagesReferenceToComposer() {
     recordIds: records.map((record) => record.id),
     truncated: records.length > CONVERSATION_REFERENCE_LIMITS_UI.recordsPerReference,
   });
-  return addConversationReferenceToComposer(composerIdFor('message'), reference);
+  return addConversationReferenceToComposer(composerIdFor('message'), reference, {
+    mentionRecords: records,
+  });
 }
 
 function jumpToConversationReferenceSource(sourceRecordId, parentMessageId = '') {

@@ -20,12 +20,16 @@ async function conversationReferenceHarness() {
     composerMentionMaps: {},
     pendingComposerFocusId: '',
     byId: (items, id) => (items || []).find((item) => item.id === id) || null,
-    displayName: (id) => ({ hum_owner: 'Owner', agt_cindy: 'Cindy' }[id] || id || 'Unknown'),
+    shareRecords: [],
+    displayName: (id) => ({ hum_owner: 'Owner', hum_guest: 'Guest', agt_cindy: 'Cindy' }[id] || id || 'Unknown'),
     composerIdFor(kind, id = 'main') {
       return kind === 'thread' ? `thread:${id || 'main'}` : 'message:main';
     },
     threadReplies(parentId) {
       return context.appState.replies.filter((reply) => reply.parentMessageId === parentId);
+    },
+    shareSelectionRecords() {
+      return context.shareRecords;
     },
     plainMentionText: (value) => String(value || ''),
     spaceName: (type, id) => (type === 'channel' && id === 'chan_all' ? '#all' : `${type}:${id}`),
@@ -156,6 +160,88 @@ test('thread context references prepend the selected message sender mention', as
 
   assert.equal(context.composerDrafts['message:main'], '@Cindy ');
   assert.equal(context.composerMentionMaps['message:main']['@Cindy'], '<@agt_cindy>');
+});
+
+test('context references do not duplicate an author mention already in the composer', async () => {
+  const context = await conversationReferenceHarness();
+  const first = {
+    id: 'msg_agent_1',
+    authorType: 'agent',
+    authorId: 'agt_cindy',
+    body: 'First context',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+  };
+  const second = {
+    ...first,
+    id: 'msg_agent_2',
+    body: 'Second context',
+  };
+
+  assert.equal(context.quoteRecordToComposer(first, 'context'), true);
+  context.composerDrafts['message:main'] = '@Cindy I already started typing';
+  assert.equal(context.quoteRecordToComposer(second, 'context'), true);
+
+  assert.equal(context.composerDrafts['message:main'], '@Cindy I already started typing');
+});
+
+test('context references restore an author mention after the user manually deletes it', async () => {
+  const context = await conversationReferenceHarness();
+  const first = {
+    id: 'msg_agent_1',
+    authorType: 'agent',
+    authorId: 'agt_cindy',
+    body: 'First context',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+  };
+  const second = {
+    ...first,
+    id: 'msg_agent_2',
+    body: 'Second context',
+  };
+
+  assert.equal(context.quoteRecordToComposer(first, 'context'), true);
+  context.composerDrafts['message:main'] = 'I removed the mention but kept this note';
+  assert.equal(context.quoteRecordToComposer(second, 'context'), true);
+
+  assert.equal(context.composerDrafts['message:main'], '@Cindy I removed the mention but kept this note');
+});
+
+test('selected message context prepends each unique sender mention once', async () => {
+  const context = await conversationReferenceHarness();
+  context.shareRecords = [
+    {
+      id: 'msg_agent_1',
+      authorType: 'agent',
+      authorId: 'agt_cindy',
+      body: 'Agent context',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+    {
+      id: 'msg_human_1',
+      authorType: 'human',
+      authorId: 'hum_owner',
+      body: 'Human context',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+    {
+      id: 'msg_agent_2',
+      authorType: 'agent',
+      authorId: 'agt_cindy',
+      body: 'Another agent context',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+  ];
+
+  assert.equal(context.addSelectedMessagesReferenceToComposer(), true);
+
+  assert.equal(context.composerDrafts['message:main'], '@Cindy @Owner ');
+  assert.equal(context.composerMentionMaps['message:main']['@Cindy'], '<@agt_cindy>');
+  assert.equal(context.composerMentionMaps['message:main']['@Owner'], '<@hum_owner>');
 });
 
 test('message context menu exposes one add-to-context action and hides thread context without replies', async () => {
