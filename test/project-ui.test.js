@@ -388,6 +388,20 @@ test('computer close UI uses a mode-aware confirmation modal', async () => {
   assert.match(styles, /\.modal-computer-close-confirm/);
 });
 
+test('computer detail shows a one-line connection summary', async () => {
+  const app = await readAppSource();
+  const computerSource = app.slice(app.indexOf('function renderComputerDetail'), app.indexOf('function renderComputerConfigCard()'));
+
+  assert.match(app, /function computerConnectionSummary\(/);
+  assert.match(app, /Connection:/);
+  assert.match(app, /Daemon · Background service/);
+  assert.match(app, /Daemon · Foreground terminal/);
+  assert.match(app, /Computer · Browser-paired background/);
+  assert.match(computerSource, /const connectionSummary = computerConnectionSummary\(computer\)/);
+  assert.match(computerSource, /class="computer-connection-line"/);
+  assert.match(computerSource, /connectionSummary\.label/);
+});
+
 test('computers detail page preserves scroll through background renders', async () => {
   const app = await readAppSource();
   const computersSource = app.slice(app.indexOf('function renderComputers()'), app.indexOf('function fmtFullDateTime'));

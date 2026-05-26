@@ -721,6 +721,28 @@ function computerRunModeLabel(computer = {}) {
   };
 }
 
+function computerConnectionSummary(computer = {}) {
+  const mode = computerRunModeLabel(computer);
+  const service = computer.service && typeof computer.service === 'object' ? computer.service : {};
+  const serviceMode = String(service.mode || '').trim();
+  if (mode.label === 'Computer mode') {
+    return {
+      label: 'Computer · Browser-paired background',
+      detail: 'Connected through MagClaw Computer setup.',
+    };
+  }
+  if (mode.label === 'Background service') {
+    return {
+      label: serviceMode ? `Daemon · Background service (${serviceMode})` : 'Daemon · Background service',
+      detail: 'Connected through daemon with --background enabled.',
+    };
+  }
+  return {
+    label: 'Daemon · Foreground terminal',
+    detail: 'Connected through daemon without --background.',
+  };
+}
+
 function renderComputerCloseConfirmModal() {
   const computer = computerCloseConfirmTarget();
   if (!computer) return modalHeader('Close Computer', 'Computer not found');
@@ -781,6 +803,7 @@ function renderComputerDetail(computer) {
   const nameIsEditing = computerNameEditState?.computerId === computer.id;
   const displayName = computer.name || computer.hostname || 'Computer';
   const nameDraft = computerNameFieldValueForRender(computer, computer.name || '');
+  const connectionSummary = computerConnectionSummary(computer);
   return `
     <section class="computer-detail-page magclaw-computer-detail">
       <div class="pixel-panel cloud-card wide computer-detail-card computer-profile-card">
@@ -790,6 +813,7 @@ function renderComputerDetail(computer) {
             <h2>${escapeHtml(displayName)}</h2>
             <p><span class="avatar-status-dot inline ${presenceClass(disabled ? 'disabled' : computer.status || 'offline')}"></span>${escapeHtml(statusLabel)}</p>
             <small>${escapeHtml(computer.hostname || computer.localHostname || '')}</small>
+            <small class="computer-connection-line" title="${escapeHtml(connectionSummary.detail)}"><span>Connection:</span> ${escapeHtml(connectionSummary.label)}</small>
           </div>
         </div>
       </div>
