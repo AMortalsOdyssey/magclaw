@@ -214,7 +214,7 @@ test('runtime snapshot exposes independent NPM latest versions for daemon and co
   assert.equal(runtime.computerLatestVersion, '0.1.31');
 });
 
-test('runtime snapshot prefers DB package manifest before NPM latest fallback', () => {
+test('runtime snapshot ignores legacy state package versions and uses NPM latest', () => {
   const services = makeServices((state) => {
     state.packageVersions = {
       '@magclaw/daemon': { latest: '0.1.40', source: 'db' },
@@ -233,22 +233,27 @@ test('runtime snapshot prefers DB package manifest before NPM latest fallback', 
 
   const runtime = services.runtimeSnapshot();
 
-  assert.equal(runtime.daemonLatestVersion, '0.1.40');
-  assert.equal(runtime.computerLatestVersion, '0.1.41');
+  assert.equal(runtime.daemonLatestVersion, '0.1.30');
+  assert.equal(runtime.computerLatestVersion, '0.1.31');
 });
 
-test('package version snapshot reads DB once per 10 minute web cache window', async () => {
+test('package version snapshot refreshes NPM once per 10 minute web cache window', async () => {
   let nowMs = 1_000;
   const calls = [];
+  let refreshCount = 0;
   const services = makeServices(null, {
     nowMs: () => nowMs,
-    readPackageVersionManifest: async (packageName) => {
-      calls.push(packageName);
-      return { packageName, latest: packageName.endsWith('/daemon') ? '0.1.50' : '0.1.51', source: 'db' };
-    },
     npmPackageVersions: {
-      latest: () => '',
-      refreshAll: () => {},
+      latest: (packageName) => {
+        calls.push(['latest', packageName, refreshCount]);
+        if (packageName === '@magclaw/daemon') return `0.1.${49 + refreshCount}`;
+        if (packageName === '@magclaw/computer') return `0.1.${50 + refreshCount}`;
+        return '';
+      },
+      maybeRefreshAll: () => {
+        refreshCount += 1;
+        calls.push(['refresh', refreshCount]);
+      },
     },
   });
 
@@ -262,16 +267,63 @@ test('package version snapshot reads DB once per 10 minute web cache window', as
   assert.equal(first.packages['@magclaw/daemon'].latest, '0.1.50');
   assert.equal(second.packages['@magclaw/computer'].latest, '0.1.51');
   assert.equal(third.cacheTtlMs, 10 * 60_000);
-  assert.deepEqual(calls, [
-    '@magclaw/daemon',
-    '@magclaw/computer',
-    '@magclaw/daemon',
-    '@magclaw/computer',
-  ]);
-  assert.equal(fourth.packages['@magclaw/daemon'].source, 'db');
+  assert.equal(refreshCount, 2);
+  assert.equal(calls.filter((call) => call[0] === 'refresh').length, 2);
+  assert.equal(fourth.packages['@magclaw/daemon'].source, 'npm-cache');
+  assert.equal(fourth.packages['@magclaw/daemon'].latest, '0.1.51');
 });
 
-test('package version snapshot falls back without PostgreSQL manifest access', async () => {
+test('package version polling refreshes NPM every 10 minutes and broadcasts updates', async () => {
+  let daemonLatest = '';
+  let computerLatest = '';
+  let refreshCount = 0;
+  const broadcasts = [];
+  const timers = [];
+  const cleared = [];
+  const services = makeServices(null, {
+    broadcastState: () => broadcasts.push('state'),
+    packageVersionPollIntervalMs: 10 * 60_000,
+    setIntervalFn: (callback, intervalMs) => {
+      const timer = {
+        callback,
+        intervalMs,
+        unrefed: false,
+        unref() {
+          this.unrefed = true;
+        },
+      };
+      timers.push(timer);
+      return timer;
+    },
+    clearIntervalFn: (timer) => cleared.push(timer),
+    npmPackageVersions: {
+      latest: (packageName) => {
+        if (packageName === '@magclaw/daemon') return daemonLatest;
+        if (packageName === '@magclaw/computer') return computerLatest;
+        return '';
+      },
+      maybeRefreshAll: () => {
+        refreshCount += 1;
+        daemonLatest = `0.1.${40 + refreshCount}`;
+        computerLatest = `0.1.${50 + refreshCount}`;
+      },
+    },
+  });
+
+  const timer = services.startPackageVersionPolling();
+  await new Promise((resolve) => setImmediate(resolve));
+  await timer.callback();
+  services.stopPackageVersionPolling();
+
+  assert.equal(timers.length, 1);
+  assert.equal(timer.intervalMs, 10 * 60_000);
+  assert.equal(timer.unrefed, true);
+  assert.equal(refreshCount, 2);
+  assert.deepEqual(broadcasts, ['state', 'state']);
+  assert.deepEqual(cleared, [timer]);
+});
+
+test('package version snapshot falls back to local versions when NPM is unavailable', async () => {
   const services = makeServices((state) => {
     state.packageVersions = {
       '@magclaw/daemon': { latest: '0.1.60', source: 'state' },
@@ -285,8 +337,8 @@ test('package version snapshot falls back without PostgreSQL manifest access', a
 
   const snapshot = await services.packageVersionSnapshot();
 
-  assert.equal(snapshot.packages['@magclaw/daemon'].latest, '0.1.60');
-  assert.equal(snapshot.packages['@magclaw/daemon'].source, 'state');
+  assert.notEqual(snapshot.packages['@magclaw/daemon'].latest, '0.1.60');
+  assert.equal(snapshot.packages['@magclaw/daemon'].source, 'local');
   assert.equal(snapshot.packages['@magclaw/computer'].latest, '0.1.61');
   assert.equal(snapshot.packages['@magclaw/computer'].source, 'npm-cache');
 });

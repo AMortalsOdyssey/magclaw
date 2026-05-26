@@ -714,45 +714,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS cloud_release_notes_component_position_uidx
 CREATE INDEX IF NOT EXISTS cloud_release_notes_component_released_idx
   ON cloud_release_notes(component, released_at DESC, version DESC);
 
-CREATE TABLE IF NOT EXISTS cloud_package_versions (
-  package_name TEXT NOT NULL CHECK (package_name IN ('@magclaw/cli-core', '@magclaw/daemon', '@magclaw/computer')),
-  channel TEXT NOT NULL DEFAULT 'latest' CHECK (channel IN ('latest')),
-  version TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'published', 'failed')),
-  publish_id TEXT NOT NULL DEFAULT '',
-  npm_verified_at TIMESTAMPTZ,
-  db_synced_at TIMESTAMPTZ,
-  error TEXT NOT NULL DEFAULT '',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  PRIMARY KEY (package_name, channel)
-);
-
-DO $$
-BEGIN
-  ALTER TABLE cloud_package_versions
-    DROP CONSTRAINT IF EXISTS cloud_package_versions_package_name_check;
-  ALTER TABLE cloud_package_versions
-    ADD CONSTRAINT cloud_package_versions_package_name_check
-    CHECK (package_name IN ('@magclaw/cli-core', '@magclaw/daemon', '@magclaw/computer'));
-
-  ALTER TABLE cloud_package_versions
-    DROP CONSTRAINT IF EXISTS cloud_package_versions_channel_check;
-  ALTER TABLE cloud_package_versions
-    ADD CONSTRAINT cloud_package_versions_channel_check
-    CHECK (channel IN ('latest'));
-
-  ALTER TABLE cloud_package_versions
-    DROP CONSTRAINT IF EXISTS cloud_package_versions_status_check;
-  ALTER TABLE cloud_package_versions
-    ADD CONSTRAINT cloud_package_versions_status_check
-    CHECK (status IN ('pending', 'published', 'failed'));
-END $$;
-
-CREATE INDEX IF NOT EXISTS cloud_package_versions_package_status_idx
-  ON cloud_package_versions(package_name, channel, status, updated_at DESC);
-
 CREATE TABLE IF NOT EXISTS cloud_markdown_documents (
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
   agent_id TEXT NOT NULL REFERENCES cloud_agents(id) ON DELETE CASCADE,

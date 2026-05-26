@@ -4,7 +4,6 @@ import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createNpmPackageVersionResolver } from './npm-package-versions.js';
-import { latestPackageVersionFromManifest } from './package-version-shared.js';
 import { defaultReleaseNotes, normalizeReleaseNotes } from './release-notes.js';
 import { normalizeCloudUrl, normalizeFanoutApiConfig, publicApiKeyPreview } from './runtime-config.js';
 
@@ -26,12 +25,14 @@ export function createSystemServices(deps) {
     nowMs = () => Date.now(),
     npmPackageVersions = createNpmPackageVersionResolver(),
     packageVersionCacheTtlMs = DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS,
+    packageVersionPollIntervalMs = packageVersionCacheTtlMs,
     persistState,
     publicCloudState,
     projectsForSpace,
-    readPackageVersionManifest,
     runningProcesses,
     selectedDefaultSpaceId,
+    setIntervalFn = globalThis.setInterval?.bind(globalThis),
+    clearIntervalFn = globalThis.clearInterval?.bind(globalThis),
     DATA_DIR,
     PORT,
     ROOT,
@@ -40,10 +41,12 @@ export function createSystemServices(deps) {
     get(_target, prop) { return getState()[prop]; },
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
-  let npmVersionRefreshInFlight = false;
+  let npmVersionRefreshInFlight = null;
+  let packageVersionPollingTimer = null;
   let packageVersionSnapshotCache = null;
   let packageVersionSnapshotInflight = null;
   const packageVersionSnapshotTtlMs = Math.max(1000, Number(packageVersionCacheTtlMs) || DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS);
+  const packageVersionPollingIntervalMs = Math.max(1000, Number(packageVersionPollIntervalMs) || packageVersionSnapshotTtlMs);
 
   function records(value) {
     return Array.isArray(value) ? value.filter(Boolean) : [];
@@ -469,80 +472,69 @@ export function createSystemServices(deps) {
     };
   }
 
-  function packageVersionRecordFromState(packageName) {
-    const manifest = state?.packageVersions;
-    const record = manifest && typeof manifest === 'object' ? manifest[packageName] : null;
-    if (!record) return null;
-    if (typeof record === 'string') {
-      const latest = String(record || '').trim();
-      return latest ? { packageName, latest, version: latest, source: 'state' } : null;
-    }
-    const latest = String(record.latest || record.version || '').trim();
-    if (!latest) return null;
-    return {
-      packageName,
-      latest,
-      version: latest,
-      source: record.source || 'state',
-      updatedAt: record.updatedAt || record.updated_at || '',
-    };
-  }
-
   function localPackageVersionForName(packageName) {
     if (packageName === '@magclaw/daemon') return localDaemonPackageVersion();
     if (packageName === '@magclaw/computer') return localComputerPackageVersion();
     return '';
   }
 
-  function normalizePackageVersionRecord(packageName, record, source = 'db') {
-    const latest = String(
-      (typeof record === 'string' ? record : record?.latest || record?.version)
-      || '',
-    ).trim();
-    if (!latest) return null;
-    return {
+  function currentNpmPackageVersions() {
+    return Object.fromEntries(RUNTIME_PACKAGE_NAMES.map((packageName) => [
       packageName,
-      latest,
-      version: latest,
-      source: (typeof record === 'object' && record?.source) || source,
-      updatedAt: (typeof record === 'object' && (record.updatedAt || record.updated_at)) || '',
-    };
+      String(npmPackageVersions?.latest?.(packageName, '') || '').trim(),
+    ]));
   }
 
-  async function refreshFallbackPackageVersionCache() {
+  function npmPackageVersionsChanged(before, after) {
+    return RUNTIME_PACKAGE_NAMES.some((packageName) => {
+      const latest = after[packageName];
+      return latest && latest !== before[packageName];
+    });
+  }
+
+  function scheduleNpmPackageVersionRefresh() {
     const refresh = npmPackageVersions?.maybeRefreshAll || npmPackageVersions?.refreshAll;
-    if (!refresh) return;
-    await Promise.resolve(refresh.call(npmPackageVersions)).catch(() => {});
+    if (!refresh) return Promise.resolve();
+    if (npmVersionRefreshInFlight) return npmVersionRefreshInFlight;
+    const before = currentNpmPackageVersions();
+    npmVersionRefreshInFlight = Promise.resolve(refresh.call(npmPackageVersions))
+      .then(() => {
+        const after = currentNpmPackageVersions();
+        if (npmPackageVersionsChanged(before, after)) {
+          packageVersionSnapshotCache = null;
+          broadcastState?.();
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        npmVersionRefreshInFlight = null;
+      });
+    return npmVersionRefreshInFlight;
   }
 
-  async function readDbPackageVersionRecords() {
-    if (typeof readPackageVersionManifest !== 'function') return {};
-    const entries = await Promise.all(RUNTIME_PACKAGE_NAMES.map(async (packageName) => {
-      try {
-        const record = await readPackageVersionManifest(packageName, 'latest');
-        return [packageName, normalizePackageVersionRecord(packageName, record, 'db')];
-      } catch (error) {
-        console.warn(`[package-versions] DB manifest read failed package=${packageName} message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
-        return [packageName, null];
-      }
-    }));
-    return Object.fromEntries(entries.filter(([, record]) => record));
+  async function refreshPackageVersionCache() {
+    await scheduleNpmPackageVersionRefresh();
+  }
+
+  function startPackageVersionPolling() {
+    if (packageVersionPollingTimer || typeof setIntervalFn !== 'function') return packageVersionPollingTimer;
+    scheduleNpmPackageVersionRefresh();
+    packageVersionPollingTimer = setIntervalFn(() => scheduleNpmPackageVersionRefresh(), packageVersionPollingIntervalMs);
+    packageVersionPollingTimer?.unref?.();
+    return packageVersionPollingTimer;
+  }
+
+  function stopPackageVersionPolling() {
+    if (!packageVersionPollingTimer || typeof clearIntervalFn !== 'function') return;
+    clearIntervalFn(packageVersionPollingTimer);
+    packageVersionPollingTimer = null;
   }
 
   async function buildPackageVersionSnapshot() {
     const checkedAtMs = Number(nowMs()) || Date.now();
-    const packages = await readDbPackageVersionRecords();
-    const missingAfterDb = RUNTIME_PACKAGE_NAMES.filter((packageName) => !packages[packageName]);
-
-    for (const packageName of missingAfterDb) {
-      const stateRecord = packageVersionRecordFromState(packageName);
-      if (stateRecord) packages[packageName] = stateRecord;
-    }
-
-    const missingAfterState = RUNTIME_PACKAGE_NAMES.filter((packageName) => !packages[packageName]);
-    if (missingAfterState.length) await refreshFallbackPackageVersionCache();
-
-    for (const packageName of missingAfterState) {
+    await refreshPackageVersionCache();
+    const packages = {};
+    for (const packageName of RUNTIME_PACKAGE_NAMES) {
       const npmLatest = String(npmPackageVersions?.latest?.(packageName, '') || '').trim();
       if (npmLatest) {
         packages[packageName] = {
@@ -636,7 +628,6 @@ export function createSystemServices(deps) {
   function latestDaemonPackageVersion(fallback = '') {
     return String(
       process.env.MAGCLAW_DAEMON_LATEST_VERSION
-      || latestPackageVersionFromManifest(state?.packageVersions, '@magclaw/daemon', '')
       || npmPackageVersions?.latest?.('@magclaw/daemon', '')
       || state?.settings?.daemonVersionControl?.latestVersion
       || state?.settings?.daemonLatestVersion
@@ -659,7 +650,6 @@ export function createSystemServices(deps) {
   function latestComputerPackageVersion(fallback = '') {
     return String(
       process.env.MAGCLAW_COMPUTER_LATEST_VERSION
-      || latestPackageVersionFromManifest(state?.packageVersions, '@magclaw/computer', '')
       || npmPackageVersions?.latest?.('@magclaw/computer', '')
       || state?.settings?.computerVersionControl?.latestVersion
       || state?.settings?.computerLatestVersion
@@ -668,26 +658,6 @@ export function createSystemServices(deps) {
     ).trim();
   }
 
-  function scheduleNpmPackageVersionRefresh() {
-    const refresh = npmPackageVersions?.maybeRefreshAll || npmPackageVersions?.refreshAll;
-    if (!refresh || npmVersionRefreshInFlight) return;
-    const beforeDaemon = npmPackageVersions.latest?.('@magclaw/daemon', '') || '';
-    const beforeComputer = npmPackageVersions.latest?.('@magclaw/computer', '') || '';
-    npmVersionRefreshInFlight = true;
-    Promise.resolve(refresh.call(npmPackageVersions))
-      .then(() => {
-        const afterDaemon = npmPackageVersions.latest?.('@magclaw/daemon', '') || '';
-        const afterComputer = npmPackageVersions.latest?.('@magclaw/computer', '') || '';
-        if ((afterDaemon && afterDaemon !== beforeDaemon) || (afterComputer && afterComputer !== beforeComputer)) {
-          broadcastState?.();
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        npmVersionRefreshInFlight = false;
-      });
-  }
-  
   async function getRuntimeInfo() {
     const codexPath = await resolveCodexPath();
     const version = await execText(codexPath, ['--version']).catch((error) => error.message);
@@ -1113,6 +1083,8 @@ export function createSystemServices(deps) {
     publicBootstrapState,
     publicState,
     runtimeSnapshot,
+    startPackageVersionPolling,
+    stopPackageVersionPolling,
     updateFanoutApiConfig,
   };
 }

@@ -544,15 +544,6 @@ function resilientCloudRepository(repository) {
         await disable(error);
       }
     },
-    async readPackageVersionManifest(packageName, channel = 'latest') {
-      if (disabled || typeof repository.readPackageVersionManifest !== 'function') return null;
-      try {
-        return await repository.readPackageVersionManifest(packageName, channel);
-      } catch (error) {
-        console.warn(`[cloud-postgres] package version manifest unavailable message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
-        return null;
-      }
-    },
     async loadConversationWindowIntoState(stateSnapshot, options = {}) {
       if (disabled || typeof repository.loadConversationWindowIntoState !== 'function') return null;
       try {
@@ -692,9 +683,7 @@ async function createCloudRepositoryFromEnv() {
 }
 
 const cloudRepository = await createCloudRepositoryFromEnv();
-const npmPackageVersions = createNpmPackageVersionResolver({
-  fetchManifest: (packageName) => cloudRepository?.readPackageVersionManifest?.(packageName),
-});
+const npmPackageVersions = createNpmPackageVersionResolver();
 const REALTIME_SOURCE_ID = makeId('rt');
 let realtimeReloadTimer = null;
 let realtimeReloadRunning = false;
@@ -1200,7 +1189,6 @@ const systemServices = createSystemServices({
   now,
   npmPackageVersions,
   persistState,
-  readPackageVersionManifest: (packageName, channel) => cloudRepository?.readPackageVersionManifest?.(packageName, channel),
   publicCloudState: (req) => cloudAuth.publicCloudState(req),
   projectsForSpace,
   runningProcesses,
@@ -1219,6 +1207,8 @@ const {
   publicConnection,
   publicBootstrapState,
   publicState,
+  startPackageVersionPolling,
+  stopPackageVersionPolling,
   updateFanoutApiConfig,
 } = systemServices;
 
@@ -2185,6 +2175,7 @@ heartbeatTimer.unref?.();
 
 server.listen(PORT, HOST, () => {
   addSystemEvent('server_started', `Magclaw local server started at http://${HOST}:${PORT}`);
+  startPackageVersionPolling?.();
   startReminderScheduler();
   startMarkdownMaintenanceScheduler();
   fireDueReminders().catch((error) => {
@@ -2206,6 +2197,7 @@ function shutdown(signal = 'SIGTERM') {
   forceExit.unref?.();
   setTimeout(() => {
     clearInterval(heartbeatTimer);
+    stopPackageVersionPolling?.();
     stopReminderScheduler();
     stopMarkdownMaintenanceScheduler();
     for (const child of runningProcesses.values()) child.kill('SIGTERM');

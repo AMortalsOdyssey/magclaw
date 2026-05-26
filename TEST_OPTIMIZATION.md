@@ -51,5 +51,5 @@ This note is the running map for making MagClaw's tests faster without hollowing
 ## Cleanup Done
 
 - Removed the accidental global serial bottleneck from `test:all`; only flow and PG batches remain serial.
-- Fixed the package-version helper boundary so local/isolated server tests do not load PG-only manifest code unless the PG store is actually used.
+- Switched runtime package-version discovery to server-side NPM polling, so local and production release checks no longer need PostgreSQL manifest access.
 - Added a regression for independent daemon/computer package publishing when `cli-core` is unchanged.

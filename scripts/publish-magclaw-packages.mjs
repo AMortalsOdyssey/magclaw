@@ -5,25 +5,13 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  createPackageVersionManifestStore,
-  MAGCLAW_RELEASE_PACKAGE_NAMES,
-} from '../server/package-version-manifest.js';
-import {
-  DEFAULT_DATABASE,
-  DEFAULT_MAINTENANCE_DATABASE,
-  DEFAULT_SCHEMA,
-  databaseNameFromUrl,
-  migratePostgres,
-  normalizeDatabaseUrl,
-  postgresRuntimeOptionsFromEnv,
-} from '../server/cloud/postgres.js';
 
 const DEFAULT_PACKAGE_DIRS = Object.freeze([
   ['@magclaw/cli-core', 'cli-core'],
   ['@magclaw/daemon', 'daemon'],
   ['@magclaw/computer', 'computer'],
 ]);
+const MAGCLAW_RELEASE_PACKAGE_NAMES = Object.freeze(DEFAULT_PACKAGE_DIRS.map(([name]) => name));
 const CLI_CORE_PACKAGE_NAME = '@magclaw/cli-core';
 const CLI_CORE_DEPENDENT_PACKAGE_NAMES = Object.freeze(['@magclaw/daemon', '@magclaw/computer']);
 
@@ -33,10 +21,6 @@ function cleanText(value) {
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
-}
-
-function nowIso() {
-  return new Date().toISOString();
 }
 
 function makePublishId() {
@@ -67,25 +51,6 @@ function runCommand(command, args, options = {}) {
   });
 }
 
-function releaseRecord(pkg, context = {}) {
-  return {
-    packageName: pkg.name,
-    version: pkg.version,
-    channel: 'latest',
-    publishId: context.publishId || '',
-    npmVerifiedAt: context.npmVerifiedAt || null,
-    metadata: {
-      packageDir: pkg.dir || '',
-      npm: context.npm || null,
-      registry: context.registryUrl || '',
-    },
-  };
-}
-
-function releaseRecords(packages, context = {}) {
-  return packages.map((pkg) => releaseRecord(pkg, context));
-}
-
 function packageVersionFromNpmResult(result) {
   if (typeof result === 'string') return result;
   return cleanText(result?.version || result?.latest);
@@ -102,39 +67,13 @@ function verifyNpmPackage(pkg, npmResult) {
   }
 }
 
-async function verifyDbPublished(manifestStore, packages) {
-  const rows = await manifestStore.read(packages.map((pkg) => pkg.name), { publishedOnly: true });
-  const byName = new Map(rows.map((row) => [row.packageName, row]));
-  for (const pkg of packages) {
-    const record = byName.get(pkg.name);
-    if (!record) throw new Error(`DB manifest is missing published ${pkg.name}@${pkg.version}.`);
-    if (record.version !== pkg.version) {
-      throw new Error(`DB manifest has ${pkg.name}@${record.version}, expected ${pkg.version}.`);
-    }
-    if (record.status && record.status !== 'published') {
-      throw new Error(`DB manifest has ${pkg.name} status ${record.status}, expected published.`);
-    }
-  }
-}
-
 function wrapReleaseError(phase, error, publishId) {
   const detail = cleanText(error?.message || error);
-  const recovery = phase === 'db-published' || phase === 'db-verify'
-    ? ' NPM may already be published; run: node scripts/publish-magclaw-packages.mjs --sync-only'
-    : '';
-  const wrapped = new Error(`${phase} failed for ${publishId}: ${detail}.${recovery}`);
+  const wrapped = new Error(`${phase} failed for ${publishId}: ${detail}.`);
   wrapped.cause = error;
   wrapped.phase = phase;
   wrapped.publishId = publishId;
   return wrapped;
-}
-
-async function bestEffortMarkFailed(manifestStore, records, context, logger) {
-  try {
-    await manifestStore.markFailed(records, context);
-  } catch (error) {
-    logger?.error?.(`[packages:publish] failed to mark DB manifest failed: ${error.message || error}`);
-  }
 }
 
 export async function runPackagePublishRelease(options = {}) {
@@ -149,70 +88,42 @@ export async function runPackagePublishRelease(options = {}) {
   const publishId = options.publishId || makePublishId();
   const registryUrl = cleanText(options.registryUrl);
   const dryRun = Boolean(options.dryRun);
-  const syncOnly = Boolean(options.syncOnly);
-  const manifestStore = options.manifestStore;
+  const verifyOnly = Boolean(options.verifyOnly || options.syncOnly);
   const npmPublish = options.npmPublish || defaultNpmPublish;
   const npmVerify = options.npmVerify || defaultNpmVerify;
   const packDryRun = options.packDryRun || defaultNpmPackDryRun;
-  const records = releaseRecords(packages, { publishId, registryUrl });
+  const verified = [];
   let phase = 'init';
-  const verifiedRecords = [];
-
-  if (dryRun) {
-    phase = 'npm-pack-dry-run';
-    for (const pkg of packages) {
-      logger.info?.(`[packages:publish] dry-run packing ${pkg.name}@${pkg.version}`);
-      await packDryRun(pkg, { registryUrl });
-    }
-    return { ok: true, dryRun: true, publishId, packages };
-  }
-
-  if (!manifestStore) throw new Error('A DB manifest store is required for package publishing.');
 
   try {
-    if (!syncOnly) {
-      phase = 'db-pending';
-      await manifestStore.markPending(records, { publishId, now: nowIso() });
+    if (dryRun) {
+      phase = 'npm-pack-dry-run';
+      for (const pkg of packages) {
+        logger.info?.(`[packages:publish] dry-run packing ${pkg.name}@${pkg.version}`);
+        await packDryRun(pkg, { registryUrl });
+      }
+      return { ok: true, dryRun: true, publishId, packages };
     }
 
     for (const pkg of packages) {
-      if (!syncOnly) {
+      if (!verifyOnly) {
         phase = 'npm-publish';
         logger.info?.(`[packages:publish] publishing ${pkg.name}@${pkg.version}`);
         await npmPublish(pkg, { registryUrl, publishId });
       } else {
-        logger.info?.(`[packages:publish] sync-only verifying ${pkg.name}@${pkg.version}`);
+        logger.info?.(`[packages:publish] verify-only checking ${pkg.name}@${pkg.version}`);
       }
 
       phase = 'npm-verify';
       const npmResult = await npmVerify(pkg, { registryUrl, publishId });
       verifyNpmPackage(pkg, npmResult);
-      verifiedRecords.push(releaseRecord(pkg, {
-        publishId,
-        registryUrl,
-        npmVerifiedAt: nowIso(),
-        npm: npmResult,
-      }));
+      verified.push({ packageName: pkg.name, version: pkg.version, npm: npmResult });
     }
-
-    phase = 'db-published';
-    await manifestStore.markPublished(verifiedRecords, { publishId, now: nowIso() });
-
-    phase = 'db-verify';
-    await verifyDbPublished(manifestStore, packages);
 
     logger.info?.(`[packages:publish] completed ${publishId}`);
-    return { ok: true, publishId, packages };
+    return { ok: true, publishId, packages, verified, verifyOnly };
   } catch (error) {
-    const wrapped = wrapReleaseError(phase, error, publishId);
-    if (['npm-publish', 'npm-verify', 'db-published'].includes(phase)) {
-      await bestEffortMarkFailed(manifestStore, records, {
-        publishId,
-        now: nowIso(),
-        error: wrapped.message,
-      }, logger);
-    }
-    throw wrapped;
+    throw wrapReleaseError(phase, error, publishId);
   }
 }
 
@@ -264,6 +175,7 @@ function validateCliCoreReleaseSet(packages) {
 export function parsePublishArgs(argv = []) {
   const options = {
     dryRun: false,
+    verifyOnly: false,
     syncOnly: false,
     packageNames: [],
     registryUrl: '',
@@ -272,15 +184,18 @@ export function parsePublishArgs(argv = []) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--dry-run') options.dryRun = true;
-    else if (arg === '--sync-only') options.syncOnly = true;
-    else if (arg === '--help' || arg === '-h') options.help = true;
+    else if (arg === '--verify-only') options.verifyOnly = true;
+    else if (arg === '--sync-only') {
+      options.syncOnly = true;
+      options.verifyOnly = true;
+    } else if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg === '--registry') options.registryUrl = cleanText(argv[++index]);
     else if (arg.startsWith('--registry=')) options.registryUrl = cleanText(arg.slice('--registry='.length));
     else if (arg === '--package') options.packageNames.push(cleanText(argv[++index]));
     else if (arg.startsWith('--package=')) options.packageNames.push(cleanText(arg.slice('--package='.length)));
     else throw new Error(`Unknown argument: ${arg}`);
   }
-  if (options.dryRun && options.syncOnly) throw new Error('--dry-run and --sync-only cannot be used together.');
+  if (options.dryRun && options.verifyOnly) throw new Error('--dry-run and --verify-only/--sync-only cannot be used together.');
   return options;
 }
 
@@ -314,41 +229,18 @@ async function defaultNpmVerify(pkg, options = {}) {
   };
 }
 
-async function createManifestStoreFromEnv(env = process.env) {
-  const databaseUrl = normalizeDatabaseUrl(env.MAGCLAW_DATABASE_URL || '');
-  if (!databaseUrl) {
-    throw new Error('MAGCLAW_DATABASE_URL is required to publish MagClaw packages with DB manifest sync.');
-  }
-  const database = env.MAGCLAW_DATABASE || databaseNameFromUrl(databaseUrl, DEFAULT_DATABASE);
-  const schema = env.MAGCLAW_DATABASE_SCHEMA || DEFAULT_SCHEMA;
-  const maintenanceDatabase = env.MAGCLAW_MAINTENANCE_DATABASE || DEFAULT_MAINTENANCE_DATABASE;
-  await migratePostgres({
-    databaseUrl,
-    database,
-    schema,
-    maintenanceDatabase,
-    createDatabase: env.MAGCLAW_DATABASE_CREATE !== '0',
-    runtimeOptions: postgresRuntimeOptionsFromEnv(env),
-  });
-  return createPackageVersionManifestStore({
-    databaseUrl,
-    database,
-    schema,
-    poolMax: 1,
-  });
-}
-
 function usage() {
   return [
-    'Usage: node scripts/publish-magclaw-packages.mjs [--dry-run|--sync-only] [--package <name>] [--registry <url>]',
+    'Usage: node scripts/publish-magclaw-packages.mjs [--dry-run|--verify-only|--sync-only] [--package <name>] [--registry <url>]',
     '',
-    'Publishes selected MagClaw npm packages, then writes the DB version manifest.',
+    'Publishes selected MagClaw npm packages, then verifies npm latest dist-tags.',
     'If @magclaw/cli-core is selected, @magclaw/daemon and @magclaw/computer are included so shared CLI changes ship with both entry packages.',
-    '--sync-only skips npm publish and reconciles DB from already-published npm versions.',
+    '--verify-only verifies already-published npm versions without publishing; --sync-only is kept as a deprecated alias.',
+    'No production database access is required.',
   ].join('\n');
 }
 
-async function main(argv = process.argv.slice(2), env = process.env) {
+async function main(argv = process.argv.slice(2)) {
   const options = parsePublishArgs(argv);
   if (options.help) {
     console.log(usage());
@@ -356,26 +248,12 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const packages = await collectReleasePackages({ root, packageNames: options.packageNames });
-  if (options.dryRun) {
-    await runPackagePublishRelease({
-      packages,
-      dryRun: true,
-      registryUrl: options.registryUrl,
-    });
-    return;
-  }
-
-  const manifestStore = await createManifestStoreFromEnv(env);
-  try {
-    await runPackagePublishRelease({
-      packages,
-      manifestStore,
-      syncOnly: options.syncOnly,
-      registryUrl: options.registryUrl,
-    });
-  } finally {
-    await manifestStore.close?.();
-  }
+  await runPackagePublishRelease({
+    packages,
+    dryRun: options.dryRun,
+    verifyOnly: options.verifyOnly,
+    registryUrl: options.registryUrl,
+  });
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

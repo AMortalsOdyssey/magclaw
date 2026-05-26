@@ -103,8 +103,9 @@ function stripBundledJsLineComments(source) {
 
   for (const line of lines) {
     if (state === 'normal' && (line.trim() === '' || line.trimStart().startsWith('//'))) continue;
-    output.push(line);
-    state = advanceState(line, state);
+    const nextState = advanceState(line, state);
+    output.push(state === 'normal' && nextState === 'normal' ? line.trim() : line);
+    state = nextState;
   }
 
   return output.join('\n');

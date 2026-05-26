@@ -114,7 +114,6 @@ export function createStateCore(deps) {
         }),
       },
       releaseNotes: defaultReleaseNotes({ root: ROOT }),
-      packageVersions: {},
       connection: {
         mode: process.env.MAGCLAW_MODE === 'cloud' ? 'cloud' : 'local',
         deployment: process.env.MAGCLAW_DEPLOYMENT || 'local',

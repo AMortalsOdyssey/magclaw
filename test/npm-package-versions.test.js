@@ -39,7 +39,7 @@ test('npm package version resolver keeps fallback while background refresh is pe
   assert.equal(resolver.latest('@magclaw/daemon', '0.1.22'), '0.1.22');
 });
 
-test('npm package version resolver defaults to a 30 minute refresh cache', async () => {
+test('npm package version resolver defaults to a 10 minute refresh cache', async () => {
   let now = 1000;
   const requested = [];
   const resolver = createNpmPackageVersionResolver({
@@ -54,7 +54,7 @@ test('npm package version resolver defaults to a 30 minute refresh cache', async
   await resolver.maybeRefreshAll();
   assert.equal(resolver.latest('@magclaw/daemon'), '0.1.1');
 
-  now += 29 * 60_000;
+  now += 9 * 60_000;
   await resolver.maybeRefreshAll();
   assert.equal(resolver.latest('@magclaw/daemon'), '0.1.1');
   assert.equal(requested.length, 1);
@@ -63,23 +63,4 @@ test('npm package version resolver defaults to a 30 minute refresh cache', async
   await resolver.maybeRefreshAll();
   assert.equal(resolver.latest('@magclaw/daemon'), '0.1.2');
   assert.equal(requested.length, 2);
-});
-
-test('npm package version resolver prefers DB package manifest before npm registry', async () => {
-  const resolver = createNpmPackageVersionResolver({
-    nowMs: () => 1000,
-    fetchManifest: async (packageName) => {
-      if (packageName === '@magclaw/daemon') return { latest: '0.1.40', source: 'db' };
-      return null;
-    },
-    fetchJson: async () => {
-      throw new Error('registry should not be used when DB manifest is current');
-    },
-    packageNames: ['@magclaw/daemon'],
-    ttlMs: 60_000,
-  });
-
-  await resolver.refreshAll();
-
-  assert.equal(resolver.latest('@magclaw/daemon'), '0.1.40');
 });
