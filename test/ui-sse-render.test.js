@@ -187,19 +187,45 @@ test('background state updates do not repaint unchanged agent detail runtime for
   );
 
   assert.match(app, /function agentDetailProfileSignature\(stateSnapshot = appState\)/);
+  assert.match(app, /function agentDetailVisibleSignature\(stateSnapshot = appState\)/);
   assert.match(app, /function patchAgentDetailSurface\(scrollSnapshot = \{\}\)/);
+  assert.match(app, /function patchAgentDetailBody\(agent\)/);
   assert.match(app, /data-page-scroll-surface data-scroll-key="agent:\$\{escapeHtml\(agent\.id\)\}:\$\{escapeHtml\(normalizeAgentDetailTab\(agentDetailTab\)\)\}"/);
-  assert.match(applyStateSource, /const agentDetailBefore = agentDetailProfileSignature\(\)/);
-  assert.match(applyStateSource, /const agentDetailAfter = agentDetailProfileSignature\(\)/);
-  assert.match(applyStateSource, /const agentDetailUnchanged = Boolean\([\s\S]*agentDetailBefore[\s\S]*agentDetailBefore === agentDetailAfter[\s\S]*!selectionChanged[\s\S]*\)/);
-  assert.match(applyStateSource, /if \(agentDetailUnchanged && patchAgentDetailSurface\(scrollSnapshot\)\) return;/);
+  assert.match(applyStateSource, /const agentDetailBefore = agentDetailVisibleSignature\(\)/);
+  assert.match(applyStateSource, /const agentDetailAfter = agentDetailVisibleSignature\(\)/);
+  assert.match(applyStateSource, /const agentDetailVisible = Boolean\([\s\S]*agentDetailBefore[\s\S]*agentDetailAfter[\s\S]*!selectionChanged[\s\S]*\)/);
+  assert.match(applyStateSource, /if \(agentDetailVisible\) \{[\s\S]*patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: true \}\)[\s\S]*patchAgentDetailSurface\(scrollSnapshot\)[\s\S]*return;/);
   assert.doesNotMatch(
     applyStateSource.slice(
-      applyStateSource.indexOf('if (agentDetailUnchanged && patchAgentDetailSurface(scrollSnapshot))'),
+      applyStateSource.indexOf('if (agentDetailVisible)'),
       applyStateSource.indexOf('if (patchActiveThreadSurface(scrollSnapshot)) return;'),
     ),
     /render\(\)/,
   );
+});
+
+test('background state updates keep agent workspace detail isolated from chat repainting', async () => {
+  const app = await readAppSource();
+  const signatureSource = app.slice(
+    app.indexOf('function agentDetailVisibleSignature'),
+    app.indexOf('function agentDetailRuntimeControlIsActive'),
+  );
+  const patchSource = app.slice(
+    app.indexOf('function patchAgentDetailSurface'),
+    app.indexOf('function patchOpenThreadDrawerSurface'),
+  );
+  const bodyPatchSource = app.slice(
+    app.indexOf('function patchAgentDetailBody'),
+    app.indexOf('function patchAgentDetailSurface'),
+  );
+
+  assert.match(signatureSource, /const tab = normalizeAgentDetailTab\(agentDetailTab\)/);
+  assert.match(signatureSource, /if \(tab === 'profile'\) return agentDetailProfileSignature\(stateSnapshot\)/);
+  assert.match(signatureSource, /JSON\.stringify\(\{[\s\S]*tab,[\s\S]*agentId: agent\.id/);
+  assert.match(patchSource, /patchAgentDetailChrome\(agent\)/);
+  assert.match(patchSource, /patchAgentDetailBody\(agent\)/);
+  assert.match(bodyPatchSource, /renderAgentDetailBody\(agent\)/);
+  assert.doesNotMatch(patchSource, /root\.innerHTML|render\(\)/);
 });
 
 test('run-event SSE updates do not repaint selected agent detail', async () => {

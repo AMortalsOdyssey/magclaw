@@ -760,6 +760,21 @@ function agentDetailProfileSignature(stateSnapshot = appState) {
   });
 }
 
+function agentDetailVisibleSignature(stateSnapshot = appState) {
+  if (!selectedAgentId) return '';
+  const agent = byId(stateSnapshot?.agents, selectedAgentId);
+  if (!agent || agentDetailTabIsLoading(agent)) return '';
+  const tab = normalizeAgentDetailTab(agentDetailTab);
+  if (tab === 'profile') return agentDetailProfileSignature(stateSnapshot);
+  return JSON.stringify({
+    tab,
+    agentId: agent.id || '',
+    editField: agentDetailEditState?.field || '',
+    envEditAgentId: agentEnvEditState?.agentId || '',
+    loading: agentDetailTabLoading.agentId === agent.id ? agentDetailTabLoading.tab || '' : '',
+  });
+}
+
 function agentDetailRuntimeControlIsActive() {
   const active = document.activeElement;
   return Boolean(
@@ -780,22 +795,40 @@ function patchAgentDetailLiveSurfaces(agent) {
   });
 }
 
+function patchAgentDetailChrome(agent) {
+  const shell = document.querySelector('.agent-detail-shell');
+  if (!agent || !shell) return false;
+  const topbar = shell.querySelector('.agent-detail-topbar');
+  const nextTopbar = htmlToElement(renderAgentDetailTopbar(agent));
+  if (topbar && nextTopbar && topbar.outerHTML !== nextTopbar.outerHTML) topbar.replaceWith(nextTopbar);
+  const tabs = shell.querySelector('.agent-detail-tabs');
+  const nextTabs = htmlToElement(renderAgentDetailTabs());
+  if (tabs && nextTabs && tabs.outerHTML !== nextTabs.outerHTML) tabs.replaceWith(nextTabs);
+  return true;
+}
+
+function patchAgentDetailBody(agent) {
+  const shell = document.querySelector('.agent-detail-shell');
+  const content = shell?.querySelector('.agent-detail-content');
+  if (!agent || !content) return false;
+  const tab = normalizeAgentDetailTab(agentDetailTab);
+  if (tab === 'profile' && (agentDetailInlineEditIsActive() || agentDetailRuntimeControlIsActive())) return true;
+  const nextBody = renderAgentDetailBody(agent);
+  if (content.innerHTML.trim() !== nextBody.trim()) {
+    content.innerHTML = nextBody;
+  }
+  return true;
+}
+
 function patchAgentDetailSurface(scrollSnapshot = {}) {
   if (!selectedAgentId) return false;
   const agent = byId(appState.agents, selectedAgentId);
   const shell = document.querySelector('.agent-detail-shell');
   if (!agent || !shell) return false;
   patchRailSurface();
+  patchAgentDetailChrome(agent);
   if (!agentDetailRuntimeControlIsActive()) patchAgentDetailLiveSurfaces(agent);
-  const tab = normalizeAgentDetailTab(agentDetailTab);
-  if (tab === 'activity') {
-    const activityTab = shell.querySelector('.agent-activity-tab');
-    if (activityTab) activityTab.outerHTML = renderAgentActivityTab(agent);
-  }
-  if (tab === 'dms') {
-    const dmsTab = shell.querySelector('.agent-dms-tab');
-    if (dmsTab) dmsTab.outerHTML = renderAgentDmsTab(agent);
-  }
+  patchAgentDetailBody(agent);
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);
     restorePageScroll(scrollSnapshot.page);
@@ -1005,7 +1038,7 @@ function applyStateUpdate(nextState) {
   const serverProfileBefore = serverProfilePatchSignature();
   const serverSettingsSupportBefore = serverSettingsSupportSignature();
   const serverSettingsVisibleBefore = serverSettingsVisibleSignature();
-  const agentDetailBefore = agentDetailProfileSignature();
+  const agentDetailBefore = agentDetailVisibleSignature();
   const computerModalBefore = modal === 'computer' ? computerPairingModalRenderSignature(appState) : '';
   const computerDetailBefore = computerDetailRenderSignature(appState);
   rememberPinnedBottomBeforeStateChange();
@@ -1026,11 +1059,11 @@ function applyStateUpdate(nextState) {
   const activeConversationChanged = activeConversationBefore !== activeConversationSignature();
   const serverProfileAfter = serverProfilePatchSignature();
   const serverSettingsVisibleAfter = serverSettingsVisibleSignature();
-  const agentDetailAfter = agentDetailProfileSignature();
+  const agentDetailAfter = agentDetailVisibleSignature();
   const computerDetailAfter = computerDetailRenderSignature(appState);
-  const agentDetailUnchanged = Boolean(
+  const agentDetailVisible = Boolean(
     agentDetailBefore
-    && agentDetailBefore === agentDetailAfter
+    && agentDetailAfter
     && !selectionChanged
   );
   const computerDetailUnchanged = Boolean(
@@ -1100,7 +1133,16 @@ function applyStateUpdate(nextState) {
     render();
     return;
   }
-  if (agentDetailUnchanged && patchAgentDetailSurface(scrollSnapshot)) return;
+  if (agentDetailVisible) {
+    const conversationNeedsPatch = activeView === 'space'
+      && activeTab === 'chat'
+      && !threadMessageId
+      && (activeConversationChanged || unreadChanged);
+    const conversationPatched = conversationNeedsPatch
+      ? patchActiveConversationSurface(scrollSnapshot, { allowInspector: true })
+      : true;
+    if (conversationPatched && patchAgentDetailSurface(scrollSnapshot)) return;
+  }
   if (patchActiveThreadSurface(scrollSnapshot)) return;
   if (patchActiveConversationSurface(scrollSnapshot, { allowInspector: activeConversationChanged || unreadChanged })) return;
   if (railNeedsPatch) patchRailSurface();
