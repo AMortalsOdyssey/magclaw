@@ -3520,14 +3520,15 @@ class MagClawDaemon {
     const commandId = String(message.commandId || '').trim();
     const service = await readServiceState(this.paths.profile, this.env);
     const serviceStatus = backgroundServiceStatus(this.paths.profile, this.env);
+    const serviceRunMode = daemonServiceRunMode(service, serviceStatus);
     const packageInfo = runtimePackageInfo(this.env, service);
     const runMode = {
-      mode: service.mode || serviceStatus.mode || 'foreground',
-      background: Boolean(service.background),
-      active: Boolean(serviceStatus.active),
-      label: serviceStatus.label || '',
-      serviceName: serviceStatus.serviceName || '',
-      taskName: serviceStatus.taskName || '',
+      mode: serviceRunMode.mode,
+      background: serviceRunMode.background,
+      active: serviceRunMode.active,
+      label: serviceRunMode.background ? serviceStatus.label || '' : '',
+      serviceName: serviceRunMode.background ? serviceStatus.serviceName || '' : '',
+      taskName: serviceRunMode.background ? serviceStatus.taskName || '' : '',
       packageName: packageInfo.name,
       packageVersion: packageInfo.version,
       packageKind: packageInfo.kind,
@@ -3550,8 +3551,15 @@ class MagClawDaemon {
       service: runMode,
       at: now(),
     });
-    const background = stopBackground(this.paths.profile, this.env, { disable: message.disableBackground !== false });
-    logInfo('daemon', `Close request stopped background service mode=${background.mode || 'foreground'} ok=${Boolean(background.ok)}.`);
+    const shouldStopBackground = Boolean(runMode.background);
+    const background = shouldStopBackground
+      ? stopBackground(this.paths.profile, this.env, { disable: message.disableBackground !== false })
+      : { ok: true, mode: runMode.mode || 'foreground', skipped: true };
+    if (shouldStopBackground) {
+      logInfo('daemon', `Close request stopped background service mode=${background.mode || 'foreground'} ok=${Boolean(background.ok)}.`);
+    } else {
+      logInfo('daemon', 'Foreground close request did not stop background service.');
+    }
     this.close();
     process.exitCode = 0;
     setTimeout(() => process.exit(0), 50).unref?.();
@@ -3562,6 +3570,7 @@ class MagClawDaemon {
     const owner = await ensureMachineFingerprint(this.paths.profile, this.env);
     const service = await readServiceState(this.paths.profile, this.env);
     const serviceStatus = backgroundServiceStatus(this.paths.profile, this.env);
+    const serviceRunMode = daemonServiceRunMode(service, serviceStatus);
     const upgrade = await readUpgradeHandoff(this.paths.profile, this.env);
     const packageInfo = runtimePackageInfo(this.env, service);
     return {
@@ -3581,12 +3590,12 @@ class MagClawDaemon {
       packageBin: packageInfo.bin,
       cliCoreVersion: CLI_CORE_VERSION,
       service: {
-        mode: service.mode || serviceStatus.mode || 'foreground',
-        background: Boolean(service.background),
-        active: Boolean(serviceStatus.active),
-        label: serviceStatus.label || '',
-        serviceName: serviceStatus.serviceName || '',
-        taskName: serviceStatus.taskName || '',
+        mode: serviceRunMode.mode,
+        background: serviceRunMode.background,
+        active: serviceRunMode.active,
+        label: serviceRunMode.background ? serviceStatus.label || '' : '',
+        serviceName: serviceRunMode.background ? serviceStatus.serviceName || '' : '',
+        taskName: serviceRunMode.background ? serviceStatus.taskName || '' : '',
         launcher: service.launcher || '',
         packageSpec: service.packageSpec || packageInfo.spec || '',
         packageName: service.packageName || packageInfo.name,
@@ -4102,6 +4111,7 @@ class MagClawDaemon {
     await this.refreshConfigFromDisk();
     const service = await readServiceState(this.paths.profile, this.env);
     const serviceStatus = backgroundServiceStatus(this.paths.profile, this.env);
+    const serviceRunMode = daemonServiceRunMode(service, serviceStatus);
     const packageInfo = runtimePackageInfo(this.env, service);
     const url = toWebSocketUrl(this.config.serverUrl, {
       ...this.config,
@@ -4111,9 +4121,9 @@ class MagClawDaemon {
       packageSpec: packageInfo.spec,
       packageBin: packageInfo.bin,
       cliCoreVersion: CLI_CORE_VERSION,
-      serviceMode: service.mode || serviceStatus.mode || 'foreground',
-      serviceBackground: Boolean(service.background),
-      serviceActive: Boolean(serviceStatus.active),
+      serviceMode: serviceRunMode.mode,
+      serviceBackground: serviceRunMode.background,
+      serviceActive: serviceRunMode.active,
     });
     const requestModule = url.protocol === 'wss:' ? https : http;
     const requestUrl = new URL(url.href.replace(/^ws/, 'http'));
@@ -4534,6 +4544,15 @@ function backgroundServiceStatus(profile, env = process.env) {
     };
   }
   return { mode: 'foreground', active: false };
+}
+
+function daemonServiceRunMode(service = {}, serviceStatus = {}) {
+  const background = service.background === true;
+  return {
+    mode: background ? (service.mode || serviceStatus.mode || 'foreground') : 'foreground',
+    background,
+    active: background ? Boolean(serviceStatus.active) : false,
+  };
 }
 
 function launchctlResultIsNotLoaded(result) {

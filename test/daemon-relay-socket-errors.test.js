@@ -510,6 +510,79 @@ test('daemon relay re-closes background relaunches while a computer close is pen
   assert.ok(cloud.daemonEvents.some((event) => event.type === 'computer_close_replayed'));
 });
 
+test('browser-approved computer setup clears a pending cloud close before reconnecting', async () => {
+  const { relay, state } = createRelay();
+  const fingerprint = 'mfp_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'offline',
+    connectedVia: 'computer',
+    machineFingerprint: fingerprint,
+    packageName: '@magclaw/computer',
+    packageKind: 'computer',
+    daemonVersion: '0.1.23',
+    metadata: {
+      machineFingerprint: fingerprint,
+      remoteClose: {
+        commandId: 'dclose_existing',
+        status: 'stopping',
+        reason: 'closed_from_cloud',
+        stopAgents: true,
+        disableBackground: true,
+        requestedAt: '2026-05-13T00:00:00.000Z',
+      },
+    },
+  });
+
+  const setup = relay.createComputerSetupRequest({
+    serverSlug: 'test',
+    machineFingerprint: fingerprint,
+    displayName: 'Remote',
+    packageName: '@magclaw/computer',
+    packageVersion: '0.1.25',
+    packageKind: 'computer',
+    packageSpec: '@magclaw/computer@0.1.25',
+    packageBin: 'magclaw-computer',
+  }, { headers: { host: 'magclaw.multiego.me' } });
+  const approval = await relay.approveComputerSetupRequest(setup.userCode, { headers: { host: 'magclaw.multiego.me' } });
+  assert.equal(approval.resumed, true);
+  assert.equal(approval.computer.id, 'cmp_remote');
+  assert.equal(state.computers[0].metadata.remoteClose.status, 'cleared');
+
+  const token = relay.consumeComputerSetupToken(setup.deviceCode);
+  assert.equal(token.status, 'approved');
+  const tokenHash = crypto.createHash('sha256').update(token.machineToken).digest('hex');
+  assert.ok(state.cloud.computerTokens.some((item) => item.computerId === 'cmp_remote' && item.tokenHash === tokenHash));
+
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${token.machineToken}&machine_fingerprint=${fingerprint}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  socket.emit('data', encodeFrame({
+    type: 'ready',
+    daemonVersion: '0.1.25',
+    packageName: '@magclaw/computer',
+    packageVersion: '0.1.25',
+    packageKind: 'computer',
+    runtimes: ['codex'],
+    service: { mode: 'launchd', background: true, active: true },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const messages = decodeServerMessages(socket);
+  assert.equal(messages.some((message) => message.type === 'daemon:close'), false);
+  assert.equal(messages.some((message) => message.type === 'ready:ack'), true);
+  assert.equal(state.computers[0].status, 'connected');
+});
+
 test('daemon relay clears pending close when a foreground daemon is manually started again', async () => {
   const { cloud, relay, state } = createRelay();
   const rawToken = 'mc_machine_close_foreground_reconnect';
@@ -564,6 +637,65 @@ test('daemon relay clears pending close when a foreground daemon is manually sta
   assert.equal(messages.some((message) => message.type === 'daemon:close'), false);
   assert.equal(messages.some((message) => message.type === 'ready:ack'), true);
   assert.equal(state.computers[0].status, 'connected');
+  assert.equal(state.computers[0].metadata.remoteClose.status, 'cleared');
+});
+
+test('daemon relay treats launchd mode as foreground when background flag is false', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_close_launchd_foreground_reconnect';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'offline',
+    connectedVia: 'daemon',
+    daemonVersion: '0.1.23',
+    metadata: {
+      remoteClose: {
+        commandId: 'dclose_existing',
+        status: 'stopping',
+        reason: 'closed_from_cloud',
+        stopAgents: true,
+        disableBackground: true,
+        requestedAt: '2026-05-13T00:00:00.000Z',
+      },
+    },
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  socket.emit('data', encodeFrame({
+    type: 'ready',
+    daemonVersion: '0.1.23',
+    packageName: '@magclaw/daemon',
+    packageVersion: '0.1.23',
+    packageKind: 'daemon',
+    runtimes: ['codex'],
+    service: { mode: 'launchd', background: false, active: false },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const messages = decodeServerMessages(socket);
+  assert.equal(messages.some((message) => message.type === 'daemon:close'), false);
+  assert.equal(messages.some((message) => message.type === 'ready:ack'), true);
+  assert.equal(state.computers[0].status, 'connected');
+  assert.equal(state.computers[0].service.mode, 'foreground');
+  assert.equal(state.computers[0].service.background, false);
   assert.equal(state.computers[0].metadata.remoteClose.status, 'cleared');
 });
 

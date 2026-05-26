@@ -707,7 +707,7 @@ function computerRunModeLabel(computer = {}) {
       detail: 'Browser-approved background connection. MagClaw will close the paired computer process and stop its local Agent sessions.',
     };
   }
-  if (service.background === true || ['launchd', 'systemd', 'schtasks'].includes(serviceMode)) {
+  if (service.background === true) {
     return {
       label: 'Background service',
       detail: serviceMode

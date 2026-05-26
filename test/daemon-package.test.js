@@ -178,7 +178,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.25');
+  assert.equal(DAEMON_VERSION, '0.1.26');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -810,7 +810,9 @@ test('daemon reports and verifies active background service state before remote 
   assert.match(source, /const activeService = backgroundServiceStatus\(this\.paths\.profile, this\.env\)/);
   assert.match(source, /!activeService\.active/);
   assert.match(source, /const serviceStatus = backgroundServiceStatus\(this\.paths\.profile, this\.env\)/);
-  assert.match(source, /active: Boolean\(serviceStatus\.active\)/);
+  assert.match(source, /function daemonServiceRunMode\(service = \{\}, serviceStatus = \{\}\)/);
+  assert.match(source, /const serviceRunMode = daemonServiceRunMode\(service, serviceStatus\)/);
+  assert.match(source, /active: serviceRunMode\.active/);
 });
 
 test('daemon close command stops agents and disables background relaunchers', async () => {
@@ -823,7 +825,9 @@ test('daemon close command stops agents and disables background relaunchers', as
   assert.match(source, /this\.send\(\{ type: 'daemon:close:ack'/);
   assert.match(source, /writeServiceState\(this\.paths\.profile,[\s\S]*remoteClosed: true/);
   assert.match(source, /service\.remoteClosed/);
-  assert.match(source, /stopBackground\(this\.paths\.profile, this\.env, \{ disable: message\.disableBackground !== false \}\)/);
+  assert.match(source, /const shouldStopBackground = Boolean\(runMode\.background\)/);
+  assert.match(source, /const background = shouldStopBackground[\s\S]*stopBackground\(this\.paths\.profile, this\.env, \{ disable: message\.disableBackground !== false \}\)[\s\S]*: \{ ok: true, mode: runMode\.mode \|\| 'foreground'/);
+  assert.match(source, /Foreground close request did not stop background service/);
   assert.match(source, /const serviceTarget = `gui\/\$\{process\.getuid\(\)\}\/\$\{label\}`/);
   assert.match(source, /spawnSync\('launchctl', \['disable', serviceTarget\]/);
   assert.match(source, /waitForBackgroundServiceStopped\(serviceTarget\)/);

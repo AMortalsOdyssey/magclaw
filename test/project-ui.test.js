@@ -438,6 +438,30 @@ test('computer detail shows a one-line connection summary', async () => {
   assert.match(computerSource, /connectionSummary\.label/);
 });
 
+test('computer connection summary treats launchd as foreground when background flag is false', async () => {
+  const app = await readAppSource();
+  const source = app.slice(app.indexOf('function computerRunModeLabel'), app.indexOf('function renderComputerCloseConfirmModal'));
+  const helpers = vm.runInNewContext(`${source}; ({ computerRunModeLabel, computerConnectionSummary });`, {
+    computerPackageKind: (computer = {}) => String(computer.packageKind || computer.connectedVia || 'daemon').toLowerCase(),
+  });
+
+  const foregroundComputer = {
+    connectedVia: 'daemon',
+    packageKind: 'daemon',
+    service: { mode: 'launchd', background: false, active: false },
+  };
+  assert.equal(helpers.computerRunModeLabel(foregroundComputer).label, 'Foreground terminal');
+  assert.equal(helpers.computerConnectionSummary(foregroundComputer).label, 'Daemon · Foreground terminal');
+
+  const backgroundComputer = {
+    connectedVia: 'daemon',
+    packageKind: 'daemon',
+    service: { mode: 'launchd', background: true, active: true },
+  };
+  assert.equal(helpers.computerRunModeLabel(backgroundComputer).label, 'Background service');
+  assert.equal(helpers.computerConnectionSummary(backgroundComputer).label, 'Daemon · Background service (launchd)');
+});
+
 test('computers detail page preserves scroll through background renders', async () => {
   const app = await readAppSource();
   const computersSource = app.slice(app.indexOf('function renderComputers()'), app.indexOf('function fmtFullDateTime'));

@@ -38,6 +38,17 @@ function objectValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function normalizeComputerServiceInfo(service = {}, packageKind = '') {
+  const next = { ...objectValue(service) };
+  const kind = String(packageKind || next.packageKind || '').toLowerCase();
+  const mode = String(next.mode || '').trim().toLowerCase();
+  if (mode) next.mode = mode;
+  if (kind !== 'computer' && next.background === false && BACKGROUND_SERVICE_MODES.has(mode)) {
+    next.mode = 'foreground';
+  }
+  return next;
+}
+
 function packageInfoFromSpec(packageSpec = '') {
   const match = String(packageSpec || '').trim().match(/^(@magclaw\/(?:daemon|computer))(?:@(.+))?$/);
   return {
@@ -363,6 +374,24 @@ export function createDaemonRelay(deps) {
     return COMPUTER_CLOSE_PENDING_STATUSES.has(status);
   }
 
+  function clearComputerRemoteClose(computer = {}, options = {}) {
+    if (!computerRemoteClosePending(computer)) return false;
+    const metadata = objectValue(computer.metadata);
+    const clearedAt = options.clearedAt || now();
+    computer.metadata = {
+      ...metadata,
+      remoteClose: {
+        ...computerRemoteCloseState(computer),
+        status: 'cleared',
+        clearedAt,
+        clearedBy: options.clearedBy || null,
+        clearReason: options.reason || 'reconnected',
+        service: objectValue(options.service || computer.service),
+      },
+    };
+    return true;
+  }
+
   function queryBoolean(value, fallback = false) {
     const clean = String(value ?? '').trim().toLowerCase();
     if (['1', 'true', 'yes', 'on'].includes(clean)) return true;
@@ -399,7 +428,7 @@ export function createDaemonRelay(deps) {
       packageSpec,
       packageBin,
       cliCoreVersion,
-      service,
+      service: normalizeComputerServiceInfo(service, packageKind),
     };
   }
 
@@ -467,9 +496,10 @@ export function createDaemonRelay(deps) {
     }
     storeComputerPackageInfo(computer, packageInfo);
     if (hasServiceInfo) {
+      const service = normalizeComputerServiceInfo(metadata.service, packageInfo.kind);
       computer.service = {
         ...objectValue(computer.service),
-        ...objectValue(metadata.service),
+        ...service,
         packageName: packageInfo.name,
         packageVersion: packageInfo.version,
         packageKind: packageInfo.kind,
@@ -1136,6 +1166,13 @@ export function createDaemonRelay(deps) {
       computer.machineFingerprint = computer.machineFingerprint || request.machineFingerprint;
       computer.connectedVia = 'computer';
       storeComputerPackageInfo(computer, packageInfoForComputer(computer, request));
+      if (clearComputerRemoteClose(computer, {
+        clearedAt: approvedAt,
+        clearedBy: approval.user?.id || null,
+        reason: 'computer_setup_resumed',
+      }) && String(computer.status || '').toLowerCase() === 'offline') {
+        computer.status = 'pairing';
+      }
       computer.metadata = {
         ...objectValue(computer.metadata),
         machineFingerprint: request.machineFingerprint,
@@ -2064,11 +2101,9 @@ export function createDaemonRelay(deps) {
     if (!computerRemoteClosePending(computer)) return false;
     if (remoteClose.disableBackground === false) return false;
     const packageInfo = packageInfoForComputer(computer, message);
-    const service = objectValue(message.service || computer.service);
-    const serviceMode = String(service.mode || '').toLowerCase();
+    const service = normalizeComputerServiceInfo(message.service || computer.service, packageInfo.kind);
     return packageInfo.kind === 'computer'
-      || service.background === true
-      || BACKGROUND_SERVICE_MODES.has(serviceMode);
+      || service.background === true;
   }
 
   async function replayPendingComputerClose(connection, computer, message = {}) {
@@ -2149,7 +2184,7 @@ export function createDaemonRelay(deps) {
     computer.runtimeDetails = safeArray(message.runtimeDetails);
     computer.runningAgents = safeArray(message.runningAgents);
     computer.capabilities = safeArray(message.capabilities).map(String);
-    computer.service = {
+    computer.service = normalizeComputerServiceInfo({
       ...objectValue(message.service),
       packageName: packageInfo.name,
       packageVersion: packageInfo.version,
@@ -2157,22 +2192,16 @@ export function createDaemonRelay(deps) {
       packageSpec: packageInfo.spec,
       packageBin: packageInfo.bin,
       cliCoreVersion: packageInfo.cliCoreVersion,
-    };
+    }, packageInfo.kind);
     if (shouldReplayPendingComputerClose(computer, message)) {
       await replayPendingComputerClose(connection, computer, message);
       return;
     }
     if (computerRemoteClosePending(computer)) {
-      const metadata = objectValue(computer.metadata);
-      computer.metadata = {
-        ...metadata,
-        remoteClose: {
-          ...computerRemoteCloseState(computer),
-          status: 'cleared',
-          clearedAt: now(),
-          service: objectValue(message.service || computer.service),
-        },
-      };
+      clearComputerRemoteClose(computer, {
+        reason: 'ready_reconnect',
+        service: message.service || computer.service,
+      });
     }
     const reportedUpgrade = message.upgrade && typeof message.upgrade === 'object' ? message.upgrade : null;
     const previousUpgrade = daemonUpgradeState(computer);
