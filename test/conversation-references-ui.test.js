@@ -17,9 +17,16 @@ async function conversationReferenceHarness() {
     threadMessageId: null,
     composerReferenceDrafts: {},
     composerDrafts: {},
+    composerMentionMaps: {},
     pendingComposerFocusId: '',
     byId: (items, id) => (items || []).find((item) => item.id === id) || null,
     displayName: (id) => ({ hum_owner: 'Owner', agt_cindy: 'Cindy' }[id] || id || 'Unknown'),
+    composerIdFor(kind, id = 'main') {
+      return kind === 'thread' ? `thread:${id || 'main'}` : 'message:main';
+    },
+    threadReplies(parentId) {
+      return context.appState.replies.filter((reply) => reply.parentMessageId === parentId);
+    },
     plainMentionText: (value) => String(value || ''),
     spaceName: (type, id) => (type === 'channel' && id === 'chan_all' ? '#all' : `${type}:${id}`),
     fmtTime: (value) => value || '',
@@ -30,6 +37,10 @@ async function conversationReferenceHarness() {
     },
     CSS: {
       escape: (value) => String(value),
+    },
+    rememberComposerMention(composerId, item) {
+      context.composerMentionMaps[composerId] = context.composerMentionMaps[composerId] || {};
+      context.composerMentionMaps[composerId][`@${item.name}`] = `<@${item.id}>`;
     },
   };
   vm.createContext(context);
@@ -99,6 +110,52 @@ test('composer references replace prior quote or selection entries for the same 
   assert.equal(references[0].id, 'ref_context');
   assert.equal(references[0].mode, 'context');
   assert.equal(references[0].selectedText, 'beta gamma');
+});
+
+test('message context references prepend the sender mention in the target composer', async () => {
+  const context = await conversationReferenceHarness();
+  const record = {
+    id: 'msg_agent',
+    authorType: 'agent',
+    authorId: 'agt_cindy',
+    body: 'Here is the handoff context',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+  };
+
+  assert.equal(context.quoteRecordToComposer(record, 'context'), true);
+
+  assert.equal(context.composerDrafts['message:main'], '@Cindy ');
+  assert.equal(context.composerMentionMaps['message:main']['@Cindy'], '<@agt_cindy>');
+});
+
+test('thread context references prepend the selected message sender mention', async () => {
+  const context = await conversationReferenceHarness();
+  context.appState.messages = [
+    {
+      id: 'msg_root',
+      authorType: 'human',
+      authorId: 'hum_owner',
+      body: 'Can you inspect this?',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+  ];
+  const reply = {
+    id: 'rep_agent',
+    parentMessageId: 'msg_root',
+    authorType: 'agent',
+    authorId: 'agt_cindy',
+    body: 'I found the issue.',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+  };
+  context.appState.replies = [reply];
+
+  assert.equal(context.addThreadReferenceToComposer(reply), true);
+
+  assert.equal(context.composerDrafts['message:main'], '@Cindy ');
+  assert.equal(context.composerMentionMaps['message:main']['@Cindy'], '<@agt_cindy>');
 });
 
 test('message context menu exposes one add-to-context action and hides thread context without replies', async () => {

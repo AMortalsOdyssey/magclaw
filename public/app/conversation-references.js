@@ -334,13 +334,15 @@ function quoteRecordToComposer(record, mode = 'quote', selectedText = '') {
   const composerId = targetComposerIdForRecord(record);
   const reference = referenceFromRecord(record, { mode, kind, selectedText });
   return addConversationReferenceToComposer(composerId, reference, {
-    mentionRecord: mode === 'quote' ? record : null,
+    mentionRecord: record,
   });
 }
 
 function addThreadReferenceToComposer(record) {
   const reference = threadReferenceFromRecord(record, 'context');
-  return addConversationReferenceToComposer(targetComposerIdForRecord(record), reference);
+  return addConversationReferenceToComposer(targetComposerIdForRecord(record), reference, {
+    mentionRecord: record,
+  });
 }
 
 function addSelectedMessagesReferenceToComposer() {
