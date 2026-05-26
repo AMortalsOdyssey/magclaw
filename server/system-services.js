@@ -726,6 +726,60 @@ export function createSystemServices(deps) {
     return [value, ...exts.map((ext) => `${value}${ext}`)];
   }
 
+  function pathEntries(value = process.env.PATH || '') {
+    return String(value || '')
+      .split(path.delimiter)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function uniquePathEntries(entries = []) {
+    const seen = new Set();
+    const result = [];
+    for (const entry of entries) {
+      const value = String(entry || '').trim();
+      if (!value) continue;
+      const key = process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(value);
+    }
+    return result;
+  }
+
+  function runtimeSearchDirs() {
+    const home = String(process.env.HOME || process.env.USERPROFILE || os.homedir() || '').trim();
+    const userEntries = home ? [
+      path.join(home, '.local', 'bin'),
+      path.join(home, 'bin'),
+      path.join(home, '.npm-global', 'bin'),
+      path.join(home, '.volta', 'bin'),
+      path.join(home, '.bun', 'bin'),
+      process.platform === 'win32' ? path.join(home, 'AppData', 'Roaming', 'npm') : '',
+    ] : [];
+    const platformEntries = process.platform === 'darwin'
+      ? ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin']
+      : process.platform === 'win32'
+        ? []
+        : ['/usr/local/bin', '/usr/local/sbin'];
+    return uniquePathEntries([
+      ...pathEntries(),
+      process.env.NVM_BIN,
+      process.env.VOLTA_HOME ? path.join(process.env.VOLTA_HOME, 'bin') : '',
+      process.env.BUN_INSTALL ? path.join(process.env.BUN_INSTALL, 'bin') : '',
+      path.dirname(process.execPath),
+      ...userEntries,
+      ...platformEntries,
+    ]);
+  }
+
+  function runtimeExecutionEnv() {
+    return {
+      ...process.env,
+      PATH: runtimeSearchDirs().join(path.delimiter),
+    };
+  }
+
   async function resolveCodexPath() {
     const configured = state.settings?.codexPath || '';
     const candidates = [configured, defaultCodexPath(), 'codex']
@@ -746,8 +800,11 @@ export function createSystemServices(deps) {
     const names = commandNameCandidates(command);
     return [...new Set(names.flatMap((name) => [
       name,
-      commandHasPathSeparator(name) ? '' : path.join(path.dirname(process.execPath), name),
-      commandHasPathSeparator(name) ? '' : path.join(os.homedir(), '.local', 'bin', name),
+      ...(
+        commandHasPathSeparator(name)
+          ? []
+          : runtimeSearchDirs().map((dir) => path.join(dir, name))
+      ),
     ]).filter(Boolean))];
   }
 
@@ -937,7 +994,7 @@ export function createSystemServices(deps) {
   
   function execText(command, args) {
     return new Promise((resolve, reject) => {
-      execFile(command, args, { timeout: 10_000, shell: commandNeedsShell(command) }, (error, stdout, stderr) => {
+      execFile(command, args, { timeout: 10_000, shell: commandNeedsShell(command), env: runtimeExecutionEnv() }, (error, stdout, stderr) => {
         if (error) {
           reject(new Error(stderr.trim() || error.message));
           return;
@@ -949,7 +1006,7 @@ export function createSystemServices(deps) {
   
   function execFileResult(command, args, options = {}) {
     return new Promise((resolve) => {
-      execFile(command, args, { ...options, shell: options.shell ?? commandNeedsShell(command) }, (error, stdout, stderr) => {
+      execFile(command, args, { ...options, env: options.env || runtimeExecutionEnv(), shell: options.shell ?? commandNeedsShell(command) }, (error, stdout, stderr) => {
         resolve({
           code: typeof error?.code === 'number' ? error.code : 0,
           signal: error?.signal || null,

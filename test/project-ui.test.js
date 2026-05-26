@@ -353,6 +353,7 @@ test('left rail navigation refreshes shared package versions and renders update 
   assert.match(refreshStateSource, /await ensurePackageVersionsForCurrentServer\(\{ renderAfter: false \}\)/);
   assert.match(navSource, /refreshPackageVersionReminders\(\)/);
   assert.match(selectComputerSource, /refreshPackageVersionReminders\(\)/);
+  assert.match(applyStateSource, /if \(activeView === 'computers'\) \{[\s\S]*render\(\);[\s\S]*return;/);
   assert.match(railSource, /const packageUpdateCount = typeof connectedComputerPackageUpdateCount === 'function'[\s\S]*?connectedComputerPackageUpdateCount\(\)/);
   assert.doesNotMatch(railSource, /server-switcher-trigger[^`]+has-package-update/);
   assert.doesNotMatch(railSource, /server-switcher-trigger[\s\S]*computerPackageUpdateBadge\(\{ count: packageUpdateCount/);
@@ -422,6 +423,17 @@ test('computer close UI uses a mode-aware confirmation modal', async () => {
   assert.match(styles, /\.modal-computer-close-confirm \.computer-close-mode-list/);
   assert.match(styles, /\.modal-computer-close-confirm \.computer-close-mode-row/);
   assert.match(styles, /grid-template-columns: minmax\(104px, 0\.34fr\) minmax\(0, 1fr\)/);
+});
+
+test('computer runtime fallback cannot downgrade computer-reported installed runtimes', async () => {
+  const app = await readAppSource();
+  const runtimeSource = app.slice(app.indexOf('function computerRuntimeDetails'), app.indexOf('function runtimeNameForId'));
+
+  assert.match(runtimeSource, /function mergeComputerRuntimeDetail/);
+  assert.match(runtimeSource, /const baseInstalled = Object\.prototype\.hasOwnProperty\.call\(base, 'installed'\)[\s\S]*base\.installed !== false/);
+  assert.match(runtimeSource, /installed: runtime\.installed !== false \|\| baseInstalled/);
+  assert.match(runtimeSource, /version: runtime\.version \|\| base\.version \|\| ''/);
+  assert.match(runtimeSource, /path: runtime\.path \|\| base\.path \|\| ''/);
 });
 
 test('computer detail shows a one-line connection summary', async () => {

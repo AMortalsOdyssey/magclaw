@@ -785,17 +785,66 @@ export function selectRuntimeCommandPath(output, fallback = '', platform = proce
     .sort((left, right) => left.score - right.score || left.index - right.index)[0]?.file || paths[0];
 }
 
+function homeDirForEnv(env = process.env) {
+  return String(env.HOME || env.USERPROFILE || os.homedir() || '').trim();
+}
+
+function uniquePathEntries(entries = []) {
+  const seen = new Set();
+  const result = [];
+  for (const entry of entries) {
+    const value = String(entry || '').trim();
+    if (!value) continue;
+    const key = durablePathKey(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
+}
+
+export function runtimeSearchPathEntries(env = process.env) {
+  const home = homeDirForEnv(env);
+  const userEntries = home ? [
+    path.join(home, '.local', 'bin'),
+    path.join(home, 'bin'),
+    path.join(home, '.npm-global', 'bin'),
+    path.join(home, '.volta', 'bin'),
+    path.join(home, '.bun', 'bin'),
+    process.platform === 'win32' ? path.join(home, 'AppData', 'Roaming', 'npm') : '',
+  ] : [];
+  const platformEntries = process.platform === 'darwin'
+    ? ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin']
+    : process.platform === 'win32'
+      ? []
+      : ['/usr/local/bin', '/usr/local/sbin'];
+  return uniquePathEntries([
+    ...pathDirs(env),
+    env.NVM_BIN,
+    env.VOLTA_HOME ? path.join(env.VOLTA_HOME, 'bin') : '',
+    env.BUN_INSTALL ? path.join(env.BUN_INSTALL, 'bin') : '',
+    path.dirname(process.execPath),
+    ...userEntries,
+    ...platformEntries,
+  ]);
+}
+
+function runtimeDetectionEnv(env = process.env) {
+  return {
+    ...env,
+    PATH: runtimeSearchPathEntries(env).join(path.delimiter),
+  };
+}
+
 function commandExists(command, env = process.env) {
+  const runtimeEnv = runtimeDetectionEnv(env);
   const checker = process.platform === 'win32' ? 'where' : 'command';
   const args = process.platform === 'win32' ? [command] : ['-v', command];
   const result = process.platform === 'win32'
-    ? commandOutput(checker, args, { env, timeoutMs: 1500 })
-    : commandOutput('/bin/sh', ['-lc', `command -v ${JSON.stringify(command)}`], { env, timeoutMs: 1500 });
+    ? commandOutput(checker, args, { env: runtimeEnv, timeoutMs: 1500 })
+    : commandOutput('/bin/sh', ['-lc', `command -v ${JSON.stringify(command)}`], { env: runtimeEnv, timeoutMs: 1500 });
   if (result.ok) return selectRuntimeCommandPath(result.stdout, command);
-  for (const candidate of [
-    path.join(path.dirname(process.execPath), command),
-    path.join(os.homedir(), '.local', 'bin', command),
-  ]) {
+  for (const candidate of runtimeSearchPathEntries(runtimeEnv).map((dir) => path.join(dir, command))) {
     if (existsSync(candidate)) return candidate;
   }
   return '';
@@ -1046,13 +1095,15 @@ async function tryInstallCliShim(options = {}, env = process.env) {
 }
 
 function runtimeVersion(command, env = process.env) {
-  const result = commandOutput(command, ['--version'], { env, timeoutMs: 3000 });
+  const runtimeEnv = runtimeDetectionEnv(env);
+  const result = commandOutput(command, ['--version'], { env: runtimeEnv, timeoutMs: 3000 });
   if (!result.ok && result.error?.code === 'ENOENT') return '';
   return result.stdout || result.stderr || '';
 }
 
 function codexAppServerCapable(command, env = process.env) {
-  const result = commandOutput(command, ['app-server', '--help'], { env, timeoutMs: 3000 });
+  const runtimeEnv = runtimeDetectionEnv(env);
+  const result = commandOutput(command, ['app-server', '--help'], { env: runtimeEnv, timeoutMs: 3000 });
   if (result.error?.code === 'ENOENT') return false;
   if (result.ok) return true;
   const output = `${result.stdout}\n${result.stderr}`.toLowerCase();
@@ -1060,6 +1111,7 @@ function codexAppServerCapable(command, env = process.env) {
 }
 
 function defaultCodexCommand(env = process.env) {
+  const runtimeEnv = runtimeDetectionEnv(env);
   const macAppBinary = '/Applications/Codex.app/Contents/Resources/codex';
   const candidates = [env.CODEX_PATH, env.MAGCLAW_CODEX_PATH, macAppBinary, 'codex']
     .map((item) => String(item || '').trim())
@@ -1067,9 +1119,9 @@ function defaultCodexCommand(env = process.env) {
   for (const candidate of [...new Set(candidates)]) {
     const command = runtimeCommandHasPathSeparator(candidate)
       ? candidate
-      : commandExists(candidate, env) || candidate;
+      : commandExists(candidate, runtimeEnv) || candidate;
     if (runtimeCommandHasPathSeparator(command) && !existsSync(command)) continue;
-    const result = commandOutput(command, ['--version'], { env, timeoutMs: 3000 });
+    const result = commandOutput(command, ['--version'], { env: runtimeEnv, timeoutMs: 3000 });
     if (result.ok) return command;
   }
   return candidates[0] || 'codex';
@@ -1088,7 +1140,7 @@ function codexRuntimeModels(command, env = process.env) {
     reasoningEffort: ['low', 'medium', 'high', 'xhigh'],
     defaultReasoningEffort: 'medium',
   };
-  const result = commandOutput(command, ['debug', 'models'], { env, timeoutMs: 5000 });
+  const result = commandOutput(command, ['debug', 'models'], { env: runtimeDetectionEnv(env), timeoutMs: 5000 });
   if (!result.ok) return fallback;
   try {
     const data = JSON.parse(result.stdout || '{}');
@@ -1121,14 +1173,15 @@ function codexRuntimeModels(command, env = process.env) {
 }
 
 export async function detectRuntimes(env = process.env) {
-  const codexCommand = defaultCodexCommand(env);
+  const runtimeEnv = runtimeDetectionEnv(env);
+  const codexCommand = defaultCodexCommand(runtimeEnv);
   const candidates = [
     {
       id: 'codex',
       name: 'Codex CLI',
       command: codexCommand,
       createSupported: true,
-      modelsFor: (command) => codexRuntimeModels(command, env),
+      modelsFor: (command) => codexRuntimeModels(command, runtimeEnv),
     },
     {
       id: 'claude-code',
@@ -1180,10 +1233,10 @@ export async function detectRuntimes(env = process.env) {
     },
   ];
   return candidates.map((item) => {
-    const pathValue = runtimeCommandHasPathSeparator(item.command) ? (existsSync(item.command) ? item.command : '') : commandExists(item.command, env);
+    const pathValue = runtimeCommandHasPathSeparator(item.command) ? (existsSync(item.command) ? item.command : '') : commandExists(item.command, runtimeEnv);
     const runtimeCommand = pathValue || item.command;
     const installed = Boolean(pathValue);
-    const version = installed ? runtimeVersion(runtimeCommand, env) : '';
+    const version = installed ? runtimeVersion(runtimeCommand, runtimeEnv) : '';
     const modelInfo = installed && item.modelsFor ? item.modelsFor(runtimeCommand) : {
       models: item.models || [],
       modelNames: (item.models || []).map((model) => ({ slug: model, name: model })),
@@ -1199,7 +1252,7 @@ export async function detectRuntimes(env = process.env) {
       installed,
       version,
       createSupported: item.createSupported !== false,
-      appServer: item.id === 'codex' && installed ? codexAppServerCapable(runtimeCommand, env) : false,
+      appServer: item.id === 'codex' && installed ? codexAppServerCapable(runtimeCommand, runtimeEnv) : false,
       ...modelInfo,
     };
   });
@@ -4271,6 +4324,10 @@ async function writeLauncher(profile, env = process.env) {
   const npmPath = commandExists('npm', env);
   const nodeDir = path.dirname(process.execPath);
   const npmDir = npmPath ? path.dirname(npmPath) : '';
+  const launchPathEntries = runtimeSearchPathEntries({
+    ...env,
+    PATH: [nodeDir, npmDir, env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].filter(Boolean).join(path.delimiter),
+  });
   const commandMode = String(env.MAGCLAW_DAEMON_COMMAND_MODE || '').trim().toLowerCase();
   const useNpmLauncher = Boolean(npmPath) && !['local', 'local-repo', 'repo', 'source'].includes(commandMode);
   const launcher = path.join(paths.runDir, 'launcher.js');
@@ -4322,6 +4379,8 @@ async function writeLauncher(profile, env = process.env) {
     `const useNpmLauncher = ${JSON.stringify(useNpmLauncher)};`,
     `const nodeDir = ${JSON.stringify(nodeDir)};`,
     `const npmDir = ${JSON.stringify(npmDir)};`,
+    `const pathDelimiter = ${JSON.stringify(path.delimiter)};`,
+    `const launchPathEntries = ${JSON.stringify(launchPathEntries)};`,
     `const fallbackBin = ${JSON.stringify(fallbackBin)};`,
     `const profile = ${JSON.stringify(paths.profile)};`,
     `const daemonHome = ${JSON.stringify(daemonRoot(env))};`,
@@ -4344,7 +4403,7 @@ async function writeLauncher(profile, env = process.env) {
     "const args = useNpmLauncher",
     "  ? ['exec', '--yes', '--package', packageSpec, '--', packageBin, 'connect', '--profile', profile]",
     "  : [fallbackBin, 'connect', '--profile', profile];",
-    "const launchPath = [nodeDir, npmDir, process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].filter(Boolean).join(':');",
+    "const launchPath = [...launchPathEntries, nodeDir, npmDir, process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].filter(Boolean).join(pathDelimiter);",
     "const childEnv = {",
     "  ...process.env,",
     "  MAGCLAW_DAEMON_HOME: daemonHome,",
@@ -5289,6 +5348,7 @@ async function runComputerSetup(flags, env = process.env) {
     ...result,
     cli,
     computerId: config.computerId,
+    computerName: config.computerName || config.name || displayName,
     profile: config.profile,
     serverName: config.serverName,
     serverSlug: approved.serverSlug || serverSlug,

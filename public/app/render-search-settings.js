@@ -318,20 +318,28 @@ function computerRuntimeDetails(computer = {}, options = {}) {
     { id: 'opencode', name: 'OpenCode' },
   ];
   const merged = new Map(known.map((item) => [item.id, { ...item, installed: false, known: true }]));
-  const explicit = Array.isArray(computer.runtimeDetails) && computer.runtimeDetails.length
-    ? computer.runtimeDetails
-    : (computer.runtimeIds || []).map((id) => ({ id, name: runtimeNameForId(id), installed: true }));
-  for (const runtime of explicit) {
+  function mergeComputerRuntimeDetail(runtime = {}) {
     const id = String(runtime.id || runtime.name || '').toLowerCase();
-    if (!id) continue;
+    if (!id) return;
     const base = merged.get(id) || {};
+    const baseInstalled = Object.prototype.hasOwnProperty.call(base, 'installed')
+      ? base.installed !== false
+      : false;
     merged.set(id, {
       ...base,
       ...runtime,
       id: runtime.id || base.id || id,
       name: runtime.name || base.name || runtimeNameForId(id),
-      installed: runtime.installed !== false,
+      path: runtime.path || base.path || '',
+      version: runtime.version || base.version || '',
+      installed: runtime.installed !== false || baseInstalled,
     });
+  }
+  const explicit = Array.isArray(computer.runtimeDetails) && computer.runtimeDetails.length
+    ? computer.runtimeDetails
+    : (computer.runtimeIds || []).map((id) => ({ id, name: runtimeNameForId(id), installed: true }));
+  for (const runtime of explicit) {
+    mergeComputerRuntimeDetail(runtime);
   }
   const hasDaemonDetails = Array.isArray(computer.runtimeDetails) && computer.runtimeDetails.length;
   const runtimeHost = String(appState.runtime?.host || '').toLowerCase().replace(/\.local$/, '');
@@ -342,16 +350,7 @@ function computerRuntimeDetails(computer = {}, options = {}) {
   const includeLocalFallback = options.includeLocalFallback ?? (!hasDaemonDetails || computer.connectedVia !== 'daemon' || matchesLocalRuntimeHost);
   if (includeLocalFallback) {
     for (const runtime of installedRuntimes || []) {
-      const id = String(runtime.id || runtime.name || '').toLowerCase();
-      if (!id) continue;
-      const base = merged.get(id) || {};
-      merged.set(id, {
-        ...base,
-        ...runtime,
-        id: runtime.id || base.id || id,
-        name: runtime.name || base.name || runtimeNameForId(id),
-        installed: runtime.installed !== false,
-      });
+      mergeComputerRuntimeDetail(runtime);
     }
   }
   return [

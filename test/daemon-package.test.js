@@ -17,6 +17,7 @@ import {
   pathLooksEphemeralCli,
   profilePaths,
   renderCliShimFiles,
+  runtimeSearchPathEntries,
   runtimeCommandHasPathSeparator,
   runtimeCommandNeedsShell,
   selectRuntimeCommandPath,
@@ -178,7 +179,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.26');
+  assert.equal(DAEMON_VERSION, '0.1.27');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -315,6 +316,46 @@ process.exit(2);
   assert.ok(runtimes.find((runtime) => runtime.id === 'gemini'));
   assert.ok(runtimes.find((runtime) => runtime.id === 'copilot'));
   assert.ok(runtimes.find((runtime) => runtime.id === 'opencode'));
+});
+
+test('daemon runtime detection searches user bin directories with a minimal launchd path', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-user-bin-'));
+  const fakeHome = path.join(tmp, 'home');
+  const userBin = path.join(fakeHome, '.local', 'bin');
+  await mkdir(userBin, { recursive: true });
+  const fakeKimi = path.join(userBin, process.platform === 'win32' ? 'kimi.cmd' : 'kimi');
+  if (process.platform === 'win32') {
+    await writeFile(fakeKimi, '@echo off\necho kimi, version 9.8.7\n');
+  } else {
+    await writeFile(fakeKimi, '#!/bin/sh\necho "kimi, version 9.8.7"\n');
+    await chmod(fakeKimi, 0o755);
+  }
+
+  const env = {
+    PATH: process.platform === 'win32' ? 'C:\\Windows\\System32' : '/usr/bin:/bin:/usr/sbin:/sbin',
+    HOME: fakeHome,
+    USERPROFILE: fakeHome,
+    KIMI_PATH: '',
+    CLAUDE_PATH: path.join(tmp, 'missing-claude'),
+    GEMINI_PATH: path.join(tmp, 'missing-gemini'),
+    CURSOR_PATH: path.join(tmp, 'missing-cursor'),
+    COPILOT_PATH: path.join(tmp, 'missing-copilot'),
+    OPENCODE_PATH: path.join(tmp, 'missing-opencode'),
+  };
+  const entries = runtimeSearchPathEntries(env);
+  assert.ok(entries.includes(userBin));
+  const runtimes = await detectRuntimes(env);
+  const kimi = runtimes.find((runtime) => runtime.id === 'kimi');
+  assert.equal(kimi.installed, true);
+  assert.equal(path.resolve(kimi.path), path.resolve(fakeKimi));
+  assert.match(kimi.version, /9\.8\.7/);
+});
+
+test('computer setup result prints the connected computer name', async () => {
+  const source = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
+  const setupSource = source.slice(source.indexOf('async function runComputerSetup'), source.indexOf('async function buildConfig'));
+  assert.match(setupSource, /computerName: config\.computerName \|\| config\.name \|\| displayName/);
+  assert.ok(setupSource.indexOf('computerId: config.computerId') < setupSource.indexOf('computerName:'));
 });
 
 test('daemon runtime command helpers handle Windows Codex CLI paths', () => {

@@ -1095,6 +1095,11 @@ function applyStateUpdate(nextState) {
     window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
     return;
   }
+  if (activeView === 'computers') {
+    if (railNeedsPatch) patchRailSurface();
+    render();
+    return;
+  }
   if (agentDetailUnchanged && patchAgentDetailSurface(scrollSnapshot)) return;
   if (patchActiveThreadSurface(scrollSnapshot)) return;
   if (patchActiveConversationSurface(scrollSnapshot, { allowInspector: activeConversationChanged || unreadChanged })) return;
