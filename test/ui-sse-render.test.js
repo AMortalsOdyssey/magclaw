@@ -163,10 +163,13 @@ test('background state updates do not repaint unchanged server settings forms', 
 
   assert.match(app, /function fanoutApiSettingsSignature\(stateSnapshot = appState\)/);
   assert.match(app, /function serverSettingsVisibleSignature\(stateSnapshot = appState\)/);
+  assert.match(app, /function railComputerSignature\(stateSnapshot = appState\)/);
   assert.match(applyStateSource, /const serverSettingsVisibleBefore = serverSettingsVisibleSignature\(\)/);
   assert.match(applyStateSource, /const serverSettingsVisibleAfter = serverSettingsVisibleSignature\(\)/);
+  assert.match(applyStateSource, /const railComputersChanged = railComputersBefore !== railComputerSignature\(appState\)/);
+  assert.match(applyStateSource, /const railNeedsPatch = unreadChanged \|\| railComputersChanged/);
   assert.match(applyStateSource, /const serverSettingsUnchanged = activeView === 'cloud'[\s\S]*settingsTab === 'server'[\s\S]*serverSettingsVisibleBefore === serverSettingsVisibleAfter[\s\S]*!selectionChanged/);
-  assert.match(applyStateSource, /if \(serverSettingsUnchanged\) \{[\s\S]*if \(unreadChanged\) patchRailSurface\(\);[\s\S]*patchServerProfileSettingsSurface\(\);[\s\S]*return;/);
+  assert.match(applyStateSource, /if \(serverSettingsUnchanged\) \{[\s\S]*if \(railNeedsPatch\) patchRailSurface\(\);[\s\S]*patchServerProfileSettingsSurface\(\);[\s\S]*return;/);
   assert.doesNotMatch(
     applyStateSource.slice(
       applyStateSource.indexOf('if (serverSettingsUnchanged)'),

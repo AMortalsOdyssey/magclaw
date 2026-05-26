@@ -918,6 +918,29 @@ function computerPairingModalRenderSignature(stateSnapshot = appState) {
   ].join('|');
 }
 
+function railComputerSignature(stateSnapshot = appState) {
+  const computers = typeof sortComputersByAvailability === 'function'
+    ? sortComputersByAvailability(stateSnapshot?.computers || [])
+    : (stateSnapshot?.computers || []);
+  return computers.map((computer) => [
+    computer?.id || '',
+    computer?.name || '',
+    computer?.hostname || '',
+    computer?.localHostname || '',
+    computer?.status || '',
+    computer?.disabledAt || '',
+    computer?.connectedVia || '',
+    computer?.daemonVersion || '',
+    computer?.packageName || '',
+    computer?.packageVersion || '',
+    computer?.packageKind || '',
+    computer?.service?.mode || '',
+    computer?.service?.background ? 'service-bg' : '',
+    computer?.service?.packageVersion || '',
+    computer?.metadata?.package?.version || '',
+  ].join(':')).join('|');
+}
+
 function computerDetailRenderSignature(stateSnapshot = appState) {
   if (modal || activeView !== 'computers') return '';
   const computers = typeof sortComputersByAvailability === 'function'
@@ -949,8 +972,13 @@ function computerDetailRenderSignature(stateSnapshot = appState) {
     selected.status || '',
     selected.disabledAt || '',
     selected.daemonVersion || selected.version || '',
+    selected.packageName || '',
+    selected.packageVersion || '',
+    selected.packageKind || '',
+    selected.service?.mode || '',
     selected.service?.active ? 'service-active' : '',
     selected.service?.background ? 'service-bg' : '',
+    selected.service?.packageVersion || '',
     runtimes,
     upgrade,
     agents,
@@ -972,6 +1000,7 @@ function applyStateUpdate(nextState) {
   };
   const selectionBefore = `${selectedSpaceType}:${selectedSpaceId}`;
   const unreadBefore = railUnreadSignature();
+  const railComputersBefore = railComputerSignature(appState);
   const activeConversationBefore = activeConversationSignature();
   const serverProfileBefore = serverProfilePatchSignature();
   const serverSettingsSupportBefore = serverSettingsSupportSignature();
@@ -992,6 +1021,8 @@ function applyStateUpdate(nextState) {
   const selectionChanged = selectionBefore !== `${selectedSpaceType}:${selectedSpaceId}`;
   markVisibleConversationRead();
   const unreadChanged = unreadBefore !== railUnreadSignature();
+  const railComputersChanged = railComputersBefore !== railComputerSignature(appState);
+  const railNeedsPatch = unreadChanged || railComputersChanged;
   const activeConversationChanged = activeConversationBefore !== activeConversationSignature();
   const serverProfileAfter = serverProfilePatchSignature();
   const serverSettingsVisibleAfter = serverSettingsVisibleSignature();
@@ -1033,7 +1064,7 @@ function applyStateUpdate(nextState) {
   }
   if (serverSettingsUnchanged) {
     if (pendingServerProfilePatchSignature === serverProfileAfter) pendingServerProfilePatchSignature = '';
-    if (unreadChanged) patchRailSurface();
+    if (railNeedsPatch) patchRailSurface();
     patchServerProfileSettingsSurface();
     return;
   }
@@ -1049,25 +1080,25 @@ function applyStateUpdate(nextState) {
   }
   if (computerNameEditIsActive()) {
     captureComputerNameFieldDraft();
-    if (unreadChanged) patchRailSurface();
+    if (railNeedsPatch) patchRailSurface();
     window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
     return;
   }
   if (agentDetailInlineEditIsActive()) {
     captureAgentDetailFieldDraft();
-    if (unreadChanged) patchRailSurface();
+    if (railNeedsPatch) patchRailSurface();
     window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
     return;
   }
   if (computerDetailUnchanged) {
-    if (unreadChanged) patchRailSurface();
+    if (railNeedsPatch) patchRailSurface();
     window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
     return;
   }
   if (agentDetailUnchanged && patchAgentDetailSurface(scrollSnapshot)) return;
   if (patchActiveThreadSurface(scrollSnapshot)) return;
   if (patchActiveConversationSurface(scrollSnapshot, { allowInspector: activeConversationChanged || unreadChanged })) return;
-  if (unreadChanged) patchRailSurface();
+  if (railNeedsPatch) patchRailSurface();
   render();
 }
 

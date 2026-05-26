@@ -658,7 +658,7 @@ function renderComputerListItem(computer) {
     ? computerPackageUpdateBadge(computer)
     : '';
   return `
-    <button class="space-btn member-btn${active}" type="button" data-action="select-computer" data-id="${escapeHtml(computer.id)}">
+    <button class="space-btn member-btn${active}" type="button" data-action="select-computer" data-id="${escapeHtml(computer.id)}" title="${escapeHtml(name)}" aria-label="${escapeHtml(name)}">
       <span class="dm-avatar-wrap">
         ${typeof renderComputerIcon === 'function' ? renderComputerIcon(computer, 16) : `<span class="dm-avatar">${settingsIcon('computer', 16)}</span>`}
       </span>

@@ -263,11 +263,11 @@ document.addEventListener('click', async (event) => {
       return;
     }
 	    if (action === 'copy-message-markdown') {
-      const record = conversationRecord(target.dataset.id);
-      const copied = await tryCopyTextToClipboard(messageRecordMarkdown(record));
-      messageContextMenu = null;
-      toast(copied ? 'Message markdown copied' : 'Copy failed');
-      render();
+	      const record = conversationRecord(target.dataset.id);
+	      const copied = await tryCopyTextToClipboard(messageRecordMarkdown(record));
+	      messageContextMenu = null;
+	      toast(copied ? 'Message markdown copied' : 'Copy failed');
+	      render();
 	      return;
 	    }
 	    if (action === 'copy-selected-message-text') {
@@ -277,25 +277,10 @@ document.addEventListener('click', async (event) => {
 	      render();
 	      return;
 	    }
-	    if (action === 'quote-selected-text') {
-	      const record = conversationRecord(target.dataset.id);
-	      const selectedText = messageContextMenu?.selectionText || '';
-	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'quote', selectedText);
-	      messageContextMenu = null;
-	      render();
-	      return;
-	    }
 	    if (action === 'add-selected-text-context') {
 	      const record = conversationRecord(target.dataset.id);
 	      const selectedText = messageContextMenu?.selectionText || '';
 	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'context', selectedText);
-	      messageContextMenu = null;
-	      render();
-	      return;
-	    }
-	    if (action === 'quote-message-reply') {
-	      const record = conversationRecord(target.dataset.id);
-	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'quote');
 	      messageContextMenu = null;
 	      render();
 	      return;
@@ -1110,10 +1095,6 @@ document.addEventListener('click', async (event) => {
 	      persistVisiblePaneScrolls();
 	      activeTab = target.dataset.tab;
 	      if (activeTab !== 'tasks') selectedTaskId = null;
-	      render();
-	    }
-	    if (action === 'add-visible-conversation-context') {
-	      if (typeof addVisibleConversationReferenceToComposer === 'function') addVisibleConversationReferenceToComposer();
 	      render();
 	    }
     if (action === 'task-filter') {

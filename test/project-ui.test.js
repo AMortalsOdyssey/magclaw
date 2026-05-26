@@ -329,6 +329,8 @@ test('computer upgrade UI is package-aware for daemon and computer entry package
 test('left rail navigation refreshes shared package versions and renders update reminders', async () => {
   const app = await readAppSource();
   const refreshStateSource = app.slice(app.indexOf('async function refreshState()'), app.indexOf('function cloudAuthErrorMessage'));
+  const applyStateSource = app.slice(app.indexOf('function applyStateUpdate'), app.indexOf('function applyRunEventUpdate'));
+  const computerDetailSignatureSource = app.slice(app.indexOf('function computerDetailRenderSignature'), app.indexOf('function applyStateUpdate'));
   const packageCacheSource = app.slice(app.indexOf('let packageVersionRefreshInFlight'), app.indexOf('async function refreshState()'));
   const railSource = app.slice(app.indexOf('function renderRail()'), app.indexOf('function accountRailInitial'));
   const computerRailSource = app.slice(app.indexOf('function renderComputersRail()'), app.indexOf('function renderSettingsRail()'));
@@ -358,7 +360,31 @@ test('left rail navigation refreshes shared package versions and renders update 
   assert.doesNotMatch(railSource, /renderLeftRailButton\('console'[\s\S]*sessionSummaryLlmIssueNotifications\(\)\.length \? '!' : ''/);
   assert.doesNotMatch(computerRailSource, /computerPackageUpdateBadge\(\{ count: updateCount/);
   assert.match(computerListSource, /computerPackageUpdateBadge\(computer/);
+  assert.match(computerListSource, /title="\$\{escapeHtml\(name\)\}"/);
   assert.match(computerSource, /computerPackageUpdateBadge\(computer/);
+  assert.match(app, /function railComputerSignature\(/);
+  assert.match(applyStateSource, /const railComputersBefore = railComputerSignature\(appState\)/);
+  assert.match(applyStateSource, /const railComputersChanged = railComputersBefore !== railComputerSignature\(appState\)/);
+  assert.match(applyStateSource, /const railNeedsPatch = unreadChanged \|\| railComputersChanged/);
+  assert.match(applyStateSource, /if \(railNeedsPatch\) patchRailSurface\(\)/);
+  assert.match(computerDetailSignatureSource, /selected\.packageVersion/);
+  assert.match(computerDetailSignatureSource, /selected\.service\?\.mode/);
+});
+
+test('computer rail rows truncate long names without horizontal scrolling', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const rootStyles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const computerListSource = app.slice(app.indexOf('function renderComputerListItem'), app.indexOf('function cloudMemberForHuman'));
+
+  assert.match(computerListSource, /title="\$\{escapeHtml\(name\)\}"/);
+  assert.match(styles, /\.rail-section \{[\s\S]*overflow-x: hidden;[\s\S]*overflow-y: auto;/);
+  assert.match(styles, /\.rail-title span \{[\s\S]*overflow: hidden;[\s\S]*text-overflow: ellipsis;/);
+  assert.match(styles, /\.member-info \{[\s\S]*min-width: 0;[\s\S]*overflow: hidden;/);
+  assert.match(styles, /\.computer-row-name \{[\s\S]*min-width: 0;[\s\S]*max-width: 100%;[\s\S]*overflow: hidden;/);
+  assert.match(styles, /\.computer-row-name \.dm-name \{[\s\S]*text-overflow: ellipsis;/);
+  assert.match(styles, /\.computer-row-meta \{[\s\S]*max-width: 100%;[\s\S]*text-overflow: ellipsis;/);
+  assert.doesNotMatch(rootStyles, /\.computer-row-name/);
 });
 
 test('computer close UI uses a mode-aware confirmation modal', async () => {
@@ -376,16 +402,26 @@ test('computer close UI uses a mode-aware confirmation modal', async () => {
   assert.match(modalSource, /'computer-close-confirm': renderComputerCloseConfirmModal/);
   assert.match(computerSource, /data-action="open-computer-close-confirm"/);
   assert.match(computerSource, /Close Computer/);
+  const closeActionIndex = computerSource.indexOf('<strong>Close Computer</strong>');
+  const disableActionIndex = computerSource.indexOf("<strong>${disabled ? 'Enable Computer' : 'Disable Computer'}</strong>");
+  assert.ok(closeActionIndex !== -1);
+  assert.ok(disableActionIndex !== -1);
+  assert.ok(closeActionIndex < disableActionIndex, 'Close Computer should appear before Disable Computer');
   assert.match(app, /Runtime mode/);
   assert.match(app, /Foreground terminal/);
   assert.match(app, /Background service/);
   assert.match(app, /Computer mode/);
+  assert.match(app, /computer-close-mode-list/);
+  assert.match(app, /computer-close-mode-row/);
   assert.match(app, /data-action="confirm-computer-close"/);
   assert.match(confirmSource, /\/api\/computers\/\$\{encodeURIComponent\(computerId\)\}\/close/);
   assert.match(confirmSource, /method: 'POST'/);
   assert.doesNotMatch(confirmSource, /window\.confirm/);
   assert.match(closeModalSource, /computerCloseConfirmState = \{ computerId: null \}/);
   assert.match(styles, /\.modal-computer-close-confirm/);
+  assert.match(styles, /\.modal-computer-close-confirm \.computer-close-mode-list/);
+  assert.match(styles, /\.modal-computer-close-confirm \.computer-close-mode-row/);
+  assert.match(styles, /grid-template-columns: minmax\(104px, 0\.34fr\) minmax\(0, 1fr\)/);
 });
 
 test('computer detail shows a one-line connection summary', async () => {
@@ -2010,6 +2046,7 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   const renderKeySource = app.slice(app.indexOf('function renderRecordKey'), app.indexOf('function renderSystemEvent'));
   const localOnlySource = app.slice(app.indexOf('const localOnlyActions = new Set'), app.indexOf('// Environment variable actions'));
   const shareImageSource = app.slice(app.indexOf('async function generateShareImageDataUrl'), app.indexOf('function saveShareImage'));
+  const messageContextMenuSource = app.slice(app.indexOf('function renderMessageContextMenu()'), app.indexOf('function renderShareSelectionBar()'));
 
   assert.match(app, /const MAGCLAW_MESSAGE_REACTIONS = \[/);
   assert.match(app, /key: 'rocket'/);
@@ -2108,12 +2145,16 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /data-context-scope="saved"/);
 	  assert.match(app, /Copy markdown/);
 	  assert.match(app, /Share messages\.\.\./);
-	  assert.match(app, /引用消息回复/);
-	  assert.match(app, /renderContextMenuItem\('quote-message-reply'/);
-	  assert.match(app, /renderContextMenuItem\('quote-selected-text'/);
-	  assert.match(app, /renderContextMenuItem\('add-selected-text-context'/);
-	  assert.match(app, /function selectedMessageTextForEvent\(event\)/);
-	  assert.match(app, /function renderComposerReferenceStrip\(composerId\)/);
+			  assert.doesNotMatch(messageContextMenuSource, /引用消息回复|添加到对话/);
+			  assert.doesNotMatch(messageContextMenuSource, /renderContextMenuItem\('quote-message-reply'/);
+			  assert.doesNotMatch(messageContextMenuSource, /renderContextMenuItem\('quote-selected-text'/);
+			  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-message-context', t\('Add to context'\), record\.id\)/);
+			  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-selected-text-context', t\('Add to context'\), record\.id\)/);
+			  assert.match(messageContextMenuSource, /recordHasThreadContext\(record\)/);
+			  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-thread-context', t\('Add thread to context'\), record\.id\)/);
+		  assert.match(app, /renderContextMenuItem\('add-selected-text-context'/);
+		  assert.match(app, /function selectedMessageTextForEvent\(event\)/);
+		  assert.match(app, /function renderComposerReferenceStrip\(composerId\)/);
 	  assert.match(app, /function renderMessageReferences\(record\)/);
 	  assert.match(app, /referencePreviewDisplayText\(reference\)/);
 	  assert.match(app, /escapeHtml\(referencePreviewDisplayText\(reference\)\)/);
@@ -2124,10 +2165,10 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(localOnlySource, /'start-message-share'/);
   assert.match(localOnlySource, /'toggle-share-selection'/);
 	  assert.match(localOnlySource, /'toggle-share-select-all'/);
-	  assert.match(localOnlySource, /'quote-message-reply'/);
-	  assert.match(localOnlySource, /'quote-selected-text'/);
-	  assert.match(localOnlySource, /'add-selected-text-context'/);
-	  assert.match(localOnlySource, /'add-visible-conversation-context'/);
+		  assert.doesNotMatch(localOnlySource, /'quote-message-reply'/);
+		  assert.doesNotMatch(localOnlySource, /'quote-selected-text'/);
+		  assert.match(localOnlySource, /'add-selected-text-context'/);
+		  assert.doesNotMatch(localOnlySource, /'add-visible-conversation-context'/);
 	  assert.match(localOnlySource, /'toggle-message-reaction'/);
 	  assert.match(styles, /\.message-context-menu/);
 	  assert.match(styles, /\.composer-reference-strip/);
@@ -2796,7 +2837,7 @@ test('server profile saves patch settings and open thread surfaces without full 
   assert.match(stateUpdateSource, /const serverProfileBefore = serverProfilePatchSignature\(\)/);
   assert.match(stateUpdateSource, /const serverSettingsVisibleBefore = serverSettingsVisibleSignature\(\)/);
   assert.match(stateUpdateSource, /const serverSettingsUnchanged = activeView === 'cloud'[\s\S]*settingsTab === 'server'[\s\S]*serverSettingsVisibleBefore === serverSettingsVisibleAfter/);
-  assert.match(stateUpdateSource, /if \(serverSettingsUnchanged\) \{[\s\S]*if \(unreadChanged\) patchRailSurface\(\);[\s\S]*patchServerProfileSettingsSurface\(\);[\s\S]*return;/);
+  assert.match(stateUpdateSource, /if \(serverSettingsUnchanged\) \{[\s\S]*if \(railNeedsPatch\) patchRailSurface\(\);[\s\S]*patchServerProfileSettingsSurface\(\);[\s\S]*return;/);
   assert.match(stateUpdateSource, /const serverProfileOnlyChanged = activeView === 'cloud'[\s\S]*serverSettingsSupportBefore === serverSettingsSupportSignature\(\)/);
   assert.match(stateUpdateSource, /patchServerProfileSettingsSurface\(\);[\s\S]*patchOpenThreadDrawerSurface\(scrollSnapshot\);[\s\S]*return;/);
   assert.match(submitSource, /pendingServerProfilePatchSignature = serverProfilePatchSignature\(\)/);

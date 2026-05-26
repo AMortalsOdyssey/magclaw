@@ -440,6 +440,7 @@
 .member-info {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -468,6 +469,36 @@
 
 .member-info .dm-name {
   width: 100%;
+}
+
+.computer-row-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.computer-row-name .dm-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-row-name .package-update-badge {
+  flex: 0 0 auto;
+  margin-left: 0;
+}
+
+.computer-row-meta {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .member-third-party-name {
@@ -633,6 +664,50 @@
 
 .confirm-stop-copy small {
   font-size: 11px;
+}
+
+.modal-computer-close-confirm .computer-close-confirm-modal {
+  align-items: start;
+}
+
+.modal-computer-close-confirm .computer-close-mode-list {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(26, 0, 32, 0.18);
+}
+
+.modal-computer-close-confirm .computer-close-mode-row {
+  display: grid;
+  grid-template-columns: minmax(104px, 0.34fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.modal-computer-close-confirm .computer-close-mode-row dt {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.modal-computer-close-confirm .computer-close-mode-row dd {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+}
+
+.modal-computer-close-confirm .computer-close-mode-row dd strong {
+  line-height: 1.25;
+}
+
+.modal-computer-close-confirm .computer-close-mode-row small {
+  color: var(--text-muted);
+  line-height: 1.35;
 }
 
 .stop-unavailable-modal {

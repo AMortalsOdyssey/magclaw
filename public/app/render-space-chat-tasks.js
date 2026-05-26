@@ -112,17 +112,15 @@ function renderSpace() {
   const showProjectFolders = typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled();
   const actions = selectedSpaceType === 'channel' ? `
     ${canWriteChannel ? `
-		      ${showProjectFolders ? `<button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>` : ''}
-		      <button class="channel-action channel-action-context" type="button" data-action="add-visible-conversation-context" data-tooltip="Add visible conversation to composer" aria-label="Add visible conversation to composer">${channelActionIcon('quote')}<span>Context</span></button>
-		      <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
-	      <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
+      ${showProjectFolders ? `<button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>` : ''}
+      <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
+      <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
       ${allChannelSelected ? '' : `<button class="channel-action channel-action-leave" type="button" data-action="leave-channel" data-tooltip="Leave channel" aria-label="Leave channel">${channelActionIcon('leave')}<span>Leave</span></button>`}
     ` : ''}
     <button class="channel-action channel-action-members" type="button" data-action="open-modal" data-modal="channel-members" data-tooltip="Members" aria-label="View ${memberCount} participants">${channelActionIcon('members')}<strong>${memberCount}</strong></button>
     ${canWriteChannel ? `<button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" title="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)" aria-label="Stop All Agents - Stop all Agent actions in this channel (temporarily unavailable)">${channelActionIcon('stop')}</button>` : ''}
   ` : `
-	    <button class="channel-action channel-action-context" type="button" data-action="add-visible-conversation-context" data-tooltip="Add visible conversation to composer" aria-label="Add visible conversation to composer">${channelActionIcon('quote')}<span>Context</span></button>
-	    <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
+    <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
     <button class="channel-action channel-action-icon-only channel-action-danger" type="button" data-action="open-modal" data-modal="confirm-stop-all" data-tooltip="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)" title="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)" aria-label="Stop All Agents - Stop all Agent actions in this DM (temporarily unavailable)">${channelActionIcon('stop')}</button>
   `;
 
@@ -775,6 +773,13 @@ function messageThreadRoot(record) {
   return record.parentMessageId ? byId(appState?.messages, record.parentMessageId) : record;
 }
 
+function recordHasThreadContext(record) {
+  const root = messageThreadRoot(record);
+  if (!root?.id) return false;
+  if (Number(root.replyCount || 0) > 0) return true;
+  return threadReplies(root.id).length > 0;
+}
+
 function messageRecordLink(record) {
   if (!record) return '';
   const root = messageThreadRoot(record) || record;
@@ -850,7 +855,7 @@ function renderMessageContextMenu() {
   const left = Number.isFinite(messageContextMenu.x) ? messageContextMenu.x : 120;
   const top = Number.isFinite(messageContextMenu.y) ? messageContextMenu.y : 120;
   const positionStyle = `--menu-x: ${Math.max(8, left)}px; --menu-y: ${Math.max(8, top)}px;`;
-	  if (scope === 'saved') {
+  if (scope === 'saved') {
     return `
       <div class="message-context-menu pixel-panel" data-context-scope="saved" style="${positionStyle}" role="menu">
         ${renderContextMenuItem('copy-message-link', 'Copy link', record.id)}
@@ -859,26 +864,24 @@ function renderMessageContextMenu() {
         ${renderContextMenuItem('remove-saved-message', 'Remove from saved', record.id)}
       </div>
     `;
-	  }
-	  if (messageContextMenu.selectionText) {
-	    return `
-	      <div class="message-context-menu pixel-panel selection-menu" data-context-scope="selection" style="${positionStyle}" role="menu">
-	        ${renderContextMenuItem('quote-selected-text', '引用到', record.id)}
-	        ${renderContextMenuItem('add-selected-text-context', '添加到对话', record.id)}
-	        ${renderContextMenuItem('copy-selected-message-text', 'Copy', record.id)}
-	      </div>
-	    `;
-	  }
-	  const threadLabel = record.parentMessageId ? 'View in channel' : 'Open thread';
+  }
+  if (messageContextMenu.selectionText) {
+    return `
+      <div class="message-context-menu pixel-panel selection-menu" data-context-scope="selection" style="${positionStyle}" role="menu">
+        ${renderContextMenuItem('add-selected-text-context', t('Add to context'), record.id)}
+        ${renderContextMenuItem('copy-selected-message-text', t('Copy'), record.id)}
+      </div>
+    `;
+  }
+  const threadLabel = record.parentMessageId ? 'View in channel' : 'Open thread';
   const threadAction = record.parentMessageId ? 'view-in-channel' : 'open-thread';
   const threadId = record.parentMessageId ? root?.id || record.parentMessageId : record.id;
   return `
     <div class="message-context-menu pixel-panel" data-context-scope="message" style="${positionStyle}" role="menu">
-	      ${renderMessageReactionGrid(record)}
-	      <div class="message-menu-separator"></div>
-	      ${renderContextMenuItem('quote-message-reply', '引用消息回复', record.id)}
-	      ${renderContextMenuItem('add-message-context', '添加到对话', record.id)}
-	      ${root ? renderContextMenuItem('add-thread-context', 'Add thread to conversation', record.id) : ''}
+      ${renderMessageReactionGrid(record)}
+      <div class="message-menu-separator"></div>
+      ${renderContextMenuItem('add-message-context', t('Add to context'), record.id)}
+      ${recordHasThreadContext(record) ? renderContextMenuItem('add-thread-context', t('Add thread to context'), record.id) : ''}
 	      <div class="message-menu-separator"></div>
 	      ${renderContextMenuItem('copy-message-link', 'Copy link', record.id)}
       ${renderContextMenuItem('copy-message-markdown', 'Copy markdown', record.id)}
@@ -908,7 +911,7 @@ function renderShareSelectionBar() {
         ${threadMode ? `<button type="button" data-action="toggle-share-select-all" ${selectableCount ? '' : 'disabled'} aria-label="${escapeHtml(t(selectAllAria))}">${escapeHtml(t(selectAllLabel))}</button>` : ''}
         <button type="button" data-action="cancel-message-share" aria-label="${escapeHtml(t('Cancel'))}">${escapeHtml(t('Cancel'))}</button>
 	        <button class="share-image-action" type="button" data-action="download-selected-image" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Download as image'))}">${escapeHtml(t('Download as image'))}</button>
-	        <button type="button" data-action="add-selected-messages-context" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Add to conversation'))}">${escapeHtml(t('Add to conversation'))}</button>
+        <button type="button" data-action="add-selected-messages-context" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Add to context'))}">${escapeHtml(t('Add to context'))}</button>
 	        <button type="button" data-action="copy-selected-markdown" ${count ? '' : 'disabled'} aria-label="${escapeHtml(t('Copy as Markdown'))}">${escapeHtml(t('Copy as Markdown'))}</button>
       </div>
     </div>

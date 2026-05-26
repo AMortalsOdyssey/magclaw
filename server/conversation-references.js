@@ -106,23 +106,58 @@ function normalizedReference(input, index = 0, options = {}) {
 }
 
 export function normalizeStoredConversationReferences(input, options = {}) {
-  const seen = new Set();
-  return (Array.isArray(input) ? input : [])
+  const references = (Array.isArray(input) ? input : [])
     .map((item, index) => normalizedReference(item, index, options))
-    .filter(Boolean)
-    .filter((reference) => {
-      const signature = [
-        reference.mode,
-        reference.kind,
-        reference.sourceRecordId || '',
-        reference.selectedText || '',
-        (reference.recordIds || []).join(','),
-      ].join(':');
-      if (seen.has(signature)) return false;
-      seen.add(signature);
-      return true;
-    })
-    .slice(0, CONVERSATION_REFERENCE_LIMITS.referencesPerMessage);
+    .filter(Boolean);
+  return mergeConversationReferencesBySource(references)
+    .slice(-CONVERSATION_REFERENCE_LIMITS.referencesPerMessage);
+}
+
+function referenceConflictIds(reference) {
+  const ids = new Set();
+  if (!reference || reference.kind === 'conversation') return ids;
+  if (reference.kind === 'thread') {
+    for (const id of reference.recordIds || []) ids.add(id);
+    if (reference.sourceRecordId) ids.add(reference.sourceRecordId);
+    if (reference.parentMessageId) ids.add(reference.parentMessageId);
+    return ids;
+  }
+  if (reference.sourceRecordId) ids.add(reference.sourceRecordId);
+  return ids;
+}
+
+function conversationReferenceSignature(reference) {
+  return [
+    reference.kind || '',
+    reference.sourceRecordId || '',
+    reference.spaceType || '',
+    reference.spaceId || '',
+    (reference.recordIds || []).join(','),
+  ].join(':');
+}
+
+function referencesConflict(existing, incoming) {
+  if (!existing || !incoming) return false;
+  if (existing.kind === 'conversation' || incoming.kind === 'conversation') {
+    return existing.kind === incoming.kind
+      && conversationReferenceSignature(existing) === conversationReferenceSignature(incoming);
+  }
+  const existingIds = referenceConflictIds(existing);
+  for (const id of referenceConflictIds(incoming)) {
+    if (existingIds.has(id)) return true;
+  }
+  return false;
+}
+
+function mergeConversationReferencesBySource(references) {
+  const merged = [];
+  for (const reference of references) {
+    for (let index = merged.length - 1; index >= 0; index -= 1) {
+      if (referencesConflict(merged[index], reference)) merged.splice(index, 1);
+    }
+    merged.push(reference);
+  }
+  return merged;
 }
 
 export function conversationReferenceText(reference) {
@@ -133,4 +168,3 @@ export function conversationReferenceText(reference) {
 export function compactConversationReferenceText(value, limit = CONVERSATION_REFERENCE_LIMITS.previewChars) {
   return cleanString(value, limit);
 }
-

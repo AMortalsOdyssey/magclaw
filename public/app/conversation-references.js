@@ -58,23 +58,58 @@ function normalizeConversationReferenceDraft(input) {
 }
 
 function normalizeConversationReferenceDrafts(input) {
-  const seen = new Set();
-  return (Array.isArray(input) ? input : [])
+  const references = (Array.isArray(input) ? input : [])
     .map(normalizeConversationReferenceDraft)
-    .filter(Boolean)
-    .filter((reference) => {
-      const signature = [
-        reference.mode,
-        reference.kind,
-        reference.sourceRecordId,
-        reference.selectedText,
-        reference.recordIds.join(','),
-      ].join(':');
-      if (seen.has(signature)) return false;
-      seen.add(signature);
-      return true;
-    })
-    .slice(0, CONVERSATION_REFERENCE_LIMITS_UI.referencesPerMessage);
+    .filter(Boolean);
+  return mergeConversationReferenceDraftsBySource(references)
+    .slice(-CONVERSATION_REFERENCE_LIMITS_UI.referencesPerMessage);
+}
+
+function referenceConflictIds(reference) {
+  const ids = new Set();
+  if (!reference || reference.kind === 'conversation') return ids;
+  if (reference.kind === 'thread') {
+    for (const id of reference.recordIds || []) ids.add(id);
+    if (reference.sourceRecordId) ids.add(reference.sourceRecordId);
+    if (reference.parentMessageId) ids.add(reference.parentMessageId);
+    return ids;
+  }
+  if (reference.sourceRecordId) ids.add(reference.sourceRecordId);
+  return ids;
+}
+
+function conversationReferenceSignature(reference) {
+  return [
+    reference.kind || '',
+    reference.sourceRecordId || '',
+    reference.spaceType || '',
+    reference.spaceId || '',
+    (reference.recordIds || []).join(','),
+  ].join(':');
+}
+
+function conversationReferencesConflict(existing, incoming) {
+  if (!existing || !incoming) return false;
+  if (existing.kind === 'conversation' || incoming.kind === 'conversation') {
+    return existing.kind === incoming.kind
+      && conversationReferenceSignature(existing) === conversationReferenceSignature(incoming);
+  }
+  const existingIds = referenceConflictIds(existing);
+  for (const id of referenceConflictIds(incoming)) {
+    if (existingIds.has(id)) return true;
+  }
+  return false;
+}
+
+function mergeConversationReferenceDraftsBySource(references) {
+  const merged = [];
+  for (const reference of references) {
+    for (let index = merged.length - 1; index >= 0; index -= 1) {
+      if (conversationReferencesConflict(merged[index], reference)) merged.splice(index, 1);
+    }
+    merged.push(reference);
+  }
+  return merged;
 }
 
 function composerReferences(composerId) {
@@ -101,8 +136,8 @@ function referencePreviewDisplayText(reference) {
 }
 
 function referenceModeLabel(reference) {
-  if (reference.mode === 'quote') return 'Quote';
-  return 'Context';
+  if (reference.mode === 'quote') return t('Quote');
+  return t('Context');
 }
 
 function referenceKindLabel(reference) {
@@ -137,12 +172,9 @@ function renderConversationReferenceChip(reference, composerId, index = 0) {
 function renderComposerReferenceStrip(composerId) {
   const references = composerReferences(composerId);
   if (!references.length) return '';
-  const visible = references.slice(0, 3);
-  const hiddenCount = Math.max(0, references.length - visible.length);
   return `
-    <div class="composer-reference-strip" data-reference-strip="${escapeHtml(composerId)}" aria-label="Conversation references">
-      ${visible.map((reference, index) => renderConversationReferenceChip(reference, composerId, index)).join('')}
-      ${hiddenCount ? `<span class="composer-reference-more">${hiddenCount} more references</span>` : ''}
+    <div class="composer-reference-strip" data-reference-strip="${escapeHtml(composerId)}" aria-label="${escapeHtml(t('Conversation references'))}">
+      ${references.map((reference, index) => renderConversationReferenceChip(reference, composerId, index)).join('')}
     </div>
   `;
 }
@@ -151,7 +183,7 @@ function renderMessageReferences(record) {
   const references = normalizeConversationReferenceDrafts(record?.references || record?.metadata?.references);
   if (!references.length) return '';
   return `
-    <div class="message-reference-stack" aria-label="Message references">
+    <div class="message-reference-stack" aria-label="${escapeHtml(t('Message references'))}">
       ${references.map((reference) => {
         const source = reference.authorName || (reference.authorId ? displayName(reference.authorId) : '');
         const meta = [
@@ -228,28 +260,6 @@ function threadReferenceFromRecord(record, mode = 'context') {
   });
 }
 
-function visibleConversationReference(mode = 'context') {
-  const records = (typeof spaceMessages === 'function' ? spaceMessages() : [])
-    .slice(-CONVERSATION_REFERENCE_LIMITS_UI.recordsPerReference);
-  const latest = records[records.length - 1];
-  const reference = normalizeConversationReferenceDraft({
-    mode,
-    kind: 'conversation',
-    sourceRecordId: latest?.id || '',
-    sourceKind: latest ? 'message' : '',
-    spaceType: selectedSpaceType,
-    spaceId: selectedSpaceId,
-    authorType: latest?.authorType || '',
-    authorId: latest?.authorId || '',
-    authorName: latest ? displayName(latest.authorId) : '',
-    createdAt: latest?.createdAt || '',
-    bodyPreview: records.length ? `${records.length} visible messages in ${spaceName(selectedSpaceType, selectedSpaceId)}` : 'No visible messages',
-    recordIds: records.map((record) => record.id),
-    truncated: records.length >= CONVERSATION_REFERENCE_LIMITS_UI.recordsPerReference,
-  });
-  return reference;
-}
-
 function targetComposerIdForRecord(record) {
   if (threadMessageId && record && (record.id === threadMessageId || record.parentMessageId === threadMessageId)) {
     return composerIdFor('thread', threadMessageId);
@@ -284,7 +294,8 @@ function addConversationReferenceToComposer(composerId, reference, { mentionReco
   const normalized = normalizeConversationReferenceDraft(reference);
   if (!composerId || !normalized) return false;
   const references = composerReferences(composerId);
-  if (references.length >= CONVERSATION_REFERENCE_LIMITS_UI.referencesPerMessage) {
+  const replacesExisting = references.some((existing) => conversationReferencesConflict(existing, normalized));
+  if (!replacesExisting && references.length >= CONVERSATION_REFERENCE_LIMITS_UI.referencesPerMessage) {
     toast(`You can attach up to ${CONVERSATION_REFERENCE_LIMITS_UI.referencesPerMessage} references.`);
     return false;
   }
@@ -330,11 +341,6 @@ function quoteRecordToComposer(record, mode = 'quote', selectedText = '') {
 function addThreadReferenceToComposer(record) {
   const reference = threadReferenceFromRecord(record, 'context');
   return addConversationReferenceToComposer(targetComposerIdForRecord(record), reference);
-}
-
-function addVisibleConversationReferenceToComposer() {
-  const reference = visibleConversationReference('context');
-  return addConversationReferenceToComposer(composerIdFor('message'), reference);
 }
 
 function addSelectedMessagesReferenceToComposer() {

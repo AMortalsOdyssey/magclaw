@@ -755,10 +755,16 @@ function renderComputerCloseConfirmModal() {
       <div class="confirm-stop-icon">${settingsIcon('computer')}</div>
       <div class="confirm-stop-copy">
         <strong>Close ${escapeHtml(label)}?</strong>
-        <p>This will stop all local Agent sessions, disconnect foreground and background links, and pause background relaunchers when they exist.</p>
-        <dl class="computer-close-mode">
-          <div><dt>Runtime mode</dt><dd><strong>${escapeHtml(mode.label)}</strong><small>${escapeHtml(mode.detail)}</small></dd></div>
-          <div><dt>Agents</dt><dd><strong>${escapeHtml(agents.length)}</strong><small>Agent sessions on this computer will be stopped.</small></dd></div>
+        <p>MagClaw will stop local Agent sessions, close this connection, and pause any background relauncher for the detected run mode.</p>
+        <dl class="computer-close-mode-list">
+          <div class="computer-close-mode-row">
+            <dt>Runtime mode</dt>
+            <dd><strong>${escapeHtml(mode.label)}</strong><small>${escapeHtml(mode.detail)}</small></dd>
+          </div>
+          <div class="computer-close-mode-row">
+            <dt>Agents</dt>
+            <dd><strong>${escapeHtml(agents.length)}</strong><small>Agent sessions on this computer will be stopped.</small></dd>
+          </div>
         </dl>
       </div>
     </div>
@@ -890,17 +896,17 @@ function renderComputerDetail(computer) {
         <div class="panel-title"><span>Actions</span></div>
         <div class="danger-row">
           <div>
-            <strong>${disabled ? 'Enable Computer' : 'Disable Computer'}</strong>
-            <p>${disabled ? 'Allow this computer to reconnect and run Agents again.' : 'Stop this computer from reconnecting or receiving Agent work.'}</p>
-          </div>
-          <button class="${disabled ? 'secondary-btn' : 'danger-btn'}" type="button" data-action="${disabled ? 'enable-computer' : 'disable-computer'}" data-id="${escapeHtml(computer.id)}">${disabled ? 'Enable Computer' : 'Disable Computer'}</button>
-        </div>
-        <div class="danger-row">
-          <div>
             <strong>Close Computer</strong>
             <p>Stop local Agent processes and disconnect this computer now.</p>
           </div>
           <button class="danger-btn" type="button" data-action="open-computer-close-confirm" data-id="${escapeHtml(computer.id)}" ${connected ? '' : 'disabled'}>Close Computer</button>
+        </div>
+        <div class="danger-row">
+          <div>
+            <strong>${disabled ? 'Enable Computer' : 'Disable Computer'}</strong>
+            <p>${disabled ? 'Allow this computer to reconnect and run Agents again.' : 'Stop this computer from reconnecting or receiving Agent work.'}</p>
+          </div>
+          <button class="${disabled ? 'secondary-btn' : 'danger-btn'}" type="button" data-action="${disabled ? 'enable-computer' : 'disable-computer'}" data-id="${escapeHtml(computer.id)}">${disabled ? 'Enable Computer' : 'Disable Computer'}</button>
         </div>
       </div>
     </section>
