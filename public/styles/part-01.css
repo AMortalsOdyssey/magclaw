@@ -1350,6 +1350,10 @@ button:disabled {
   background: transparent;
 }
 
+.magclaw-message {
+  -webkit-touch-callout: none;
+}
+
 .magclaw-message:hover,
 .magclaw-message.highlighted,
 .magclaw-message.focus-pulse {

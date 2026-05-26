@@ -217,10 +217,81 @@ function openMessageContextMenu(recordId, event, scope = 'message', options = {}
 	    selectionText: cleanReferenceText(options.selectionText || '', CONVERSATION_REFERENCE_LIMITS_UI?.selectedTextChars || 4000),
 	    x: Number.isFinite(event?.clientX) ? event.clientX : (rect ? rect.right - 8 : 120),
     y: Number.isFinite(event?.clientY) ? event.clientY : (rect ? rect.top + 24 : 120),
+    source: options.source || '',
+    viewportWidth: Number.isFinite(window.innerWidth) ? window.innerWidth : 0,
+    viewportHeight: Number.isFinite(window.innerHeight) ? window.innerHeight : 0,
   };
   render();
   return true;
 }
+
+const MESSAGE_LONG_PRESS_MS = 520;
+const MESSAGE_LONG_PRESS_MOVE_TOLERANCE = 12;
+let messageLongPressTimer = null;
+let messageLongPressStart = null;
+let messageLongPressSuppressClickUntil = 0;
+
+function clearMessageLongPressTimer() {
+  if (messageLongPressTimer) clearTimeout(messageLongPressTimer);
+  messageLongPressTimer = null;
+  messageLongPressStart = null;
+}
+
+function messageRecordIdFromInteractionTarget(target) {
+  const message = target?.closest?.('.magclaw-message');
+  if (!message) return '';
+  return message.dataset.messageId || message.dataset.replyId || '';
+}
+
+function messageLongPressIgnoredTarget(target) {
+  return Boolean(target?.closest?.('button, a, input, textarea, select, label, .message-context-menu, .share-selection-bar, .share-preview-modal'));
+}
+
+function messageLongPressPoint(event) {
+  const touch = event?.changedTouches?.[0] || event?.touches?.[0];
+  if (!touch) return null;
+  return {
+    clientX: touch.clientX,
+    clientY: touch.clientY,
+  };
+}
+
+function handleMessageLongPressStart(event) {
+  if (messageLongPressIgnoredTarget(event.target)) return;
+  const recordId = messageRecordIdFromInteractionTarget(event.target);
+  const point = messageLongPressPoint(event);
+  if (!recordId || !point) return;
+  clearMessageLongPressTimer();
+  const target = event.target;
+  messageLongPressStart = { ...point, recordId };
+  messageLongPressTimer = setTimeout(() => {
+    const payload = { ...point, target, currentTarget: target };
+    messageLongPressTimer = null;
+    messageLongPressSuppressClickUntil = Date.now() + 700;
+    openMessageContextMenu(recordId, payload, 'message', { source: 'message-long-press' });
+  }, MESSAGE_LONG_PRESS_MS);
+}
+
+function handleMessageLongPressMove(event) {
+  if (!messageLongPressStart) return;
+  const point = messageLongPressPoint(event);
+  if (!point) return;
+  const moved = Math.hypot(point.clientX - messageLongPressStart.clientX, point.clientY - messageLongPressStart.clientY);
+  if (moved > MESSAGE_LONG_PRESS_MOVE_TOLERANCE) clearMessageLongPressTimer();
+}
+
+function handleMessageLongPressClick(event) {
+  if (Date.now() > messageLongPressSuppressClickUntil) return;
+  if (!messageRecordIdFromInteractionTarget(event.target)) return;
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+document.addEventListener('touchstart', handleMessageLongPressStart, { passive: true });
+document.addEventListener('touchmove', handleMessageLongPressMove, { passive: true });
+document.addEventListener('touchend', clearMessageLongPressTimer, { passive: true });
+document.addEventListener('touchcancel', clearMessageLongPressTimer, { passive: true });
+document.addEventListener('click', handleMessageLongPressClick, true);
 
 document.addEventListener('contextmenu', (event) => {
   const savedRow = event.target.closest?.('.saved-row[data-message-id]');

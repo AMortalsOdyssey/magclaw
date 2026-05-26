@@ -2056,6 +2056,14 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /const SHARE_IMAGE_RENDER_MIN_MS = 240/);
   assert.match(app, /function shareSelectionLimitMessage\(\)/);
   assert.match(app, /function renderMessageContextMenu\(\)/);
+  assert.match(app, /function messageContextMenuPlacement\(menu = messageContextMenu\)/);
+  assert.match(app, /data-menu-placement="\$\{escapeHtml\(placement\.placement\)\}"/);
+  assert.match(app, /--menu-max-height: \$\{placement\.maxHeight\}px/);
+  assert.match(app, /viewportHeight: Number\.isFinite\(window\.innerHeight\) \? window\.innerHeight : 0/);
+  assert.match(app, /const MESSAGE_LONG_PRESS_MS = 520/);
+  assert.match(app, /function messageRecordIdFromInteractionTarget\(target\)/);
+  assert.match(app, /document\.addEventListener\('touchstart', handleMessageLongPressStart/);
+  assert.match(app, /openMessageContextMenu\(recordId, payload, 'message', \{ source: 'message-long-press' \}\)/);
   assert.match(app, /function renderShareSelectionBar\(\)/);
   assert.match(app, /function renderSharePreviewModal\(\)/);
   assert.match(app, /function messageShareStateForRecord\(record\)/);
@@ -2171,6 +2179,9 @@ test('message reactions, context menus, and share mode expose Slock-style intera
 		  assert.doesNotMatch(localOnlySource, /'add-visible-conversation-context'/);
 	  assert.match(localOnlySource, /'toggle-message-reaction'/);
 	  assert.match(styles, /\.message-context-menu/);
+	  assert.match(styles, /\.message-context-menu \{[\s\S]*left: clamp\(var\(--menu-margin\), var\(--menu-x\), calc\(100vw - var\(--menu-width\) - var\(--menu-margin\)\)\);[\s\S]*max-height: var\(--menu-max-height\);[\s\S]*overflow-y: auto;/);
+	  assert.match(styles, /\.message-context-menu\[data-menu-placement="above"\] \{[\s\S]*top: auto;[\s\S]*bottom: max\(var\(--menu-margin\), calc\(100vh - var\(--menu-y\)\)\);/);
+	  assert.match(styles, /\.magclaw-message \{[\s\S]*-webkit-touch-callout: none;/);
 	  assert.match(styles, /\.composer-reference-strip/);
 	  assert.match(styles, /\.message-reference-card/);
   assert.match(styles, /\.message-reaction-grid/);

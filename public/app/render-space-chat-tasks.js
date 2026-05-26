@@ -845,6 +845,35 @@ function renderContextMenuItem(action, label, recordId, extra = {}) {
   return `<button type="button" data-action="${escapeHtml(action)}" data-id="${escapeHtml(recordId)}"${attrs}>${escapeHtml(label)}</button>`;
 }
 
+function messageContextMenuNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function messageContextMenuPlacement(menu = messageContextMenu) {
+  const margin = 8;
+  const shadowSpace = 6;
+  const menuWidth = menu?.selectionText ? 178 : 236;
+  const viewportWidth = Math.max(menuWidth + margin * 2, messageContextMenuNumber(menu?.viewportWidth, window.innerWidth || 360));
+  const viewportHeight = Math.max(180, messageContextMenuNumber(menu?.viewportHeight, window.innerHeight || 640));
+  const rawX = messageContextMenuNumber(menu?.x, 120);
+  const rawY = messageContextMenuNumber(menu?.y, 120);
+  const x = Math.min(Math.max(margin, rawX), Math.max(margin, viewportWidth - menuWidth - margin));
+  const y = Math.min(Math.max(margin, rawY), Math.max(margin, viewportHeight - margin));
+  const above = Math.max(0, y - margin);
+  const below = Math.max(0, viewportHeight - y - margin);
+  const placement = below < 340 && above > below ? 'above' : 'below';
+  const available = placement === 'above' ? above : below;
+  const maxHeight = Math.max(80, Math.floor(available - shadowSpace));
+  return {
+    x,
+    y,
+    width: menuWidth,
+    maxHeight,
+    placement,
+  };
+}
+
 function renderMessageContextMenu() {
   const record = contextMenuRecord();
   if (!record || !messageContextMenu) return '';
@@ -852,12 +881,11 @@ function renderMessageContextMenu() {
   const root = messageThreadRoot(record);
   const saved = (record.savedBy || []).map(String).includes(currentHumanId());
   const followed = (root?.followedBy || []).map(String).includes(currentHumanId());
-  const left = Number.isFinite(messageContextMenu.x) ? messageContextMenu.x : 120;
-  const top = Number.isFinite(messageContextMenu.y) ? messageContextMenu.y : 120;
-  const positionStyle = `--menu-x: ${Math.max(8, left)}px; --menu-y: ${Math.max(8, top)}px;`;
+  const placement = messageContextMenuPlacement();
+  const positionStyle = `--menu-x: ${placement.x}px; --menu-y: ${placement.y}px; --menu-width: ${placement.width}px; --menu-max-height: ${placement.maxHeight}px;`;
   if (scope === 'saved') {
     return `
-      <div class="message-context-menu pixel-panel" data-context-scope="saved" style="${positionStyle}" role="menu">
+      <div class="message-context-menu pixel-panel" data-context-scope="saved" data-menu-placement="${escapeHtml(placement.placement)}" style="${positionStyle}" role="menu">
         ${renderContextMenuItem('copy-message-link', 'Copy link', record.id)}
         ${renderContextMenuItem('copy-message-markdown', 'Copy markdown', record.id)}
         <div class="message-menu-separator"></div>
@@ -867,7 +895,7 @@ function renderMessageContextMenu() {
   }
   if (messageContextMenu.selectionText) {
     return `
-      <div class="message-context-menu pixel-panel selection-menu" data-context-scope="selection" style="${positionStyle}" role="menu">
+      <div class="message-context-menu pixel-panel selection-menu" data-context-scope="selection" data-menu-placement="${escapeHtml(placement.placement)}" style="${positionStyle}" role="menu">
         ${renderContextMenuItem('add-selected-text-context', t('Add to context'), record.id)}
         ${renderContextMenuItem('copy-selected-message-text', t('Copy'), record.id)}
       </div>
@@ -877,7 +905,7 @@ function renderMessageContextMenu() {
   const threadAction = record.parentMessageId ? 'view-in-channel' : 'open-thread';
   const threadId = record.parentMessageId ? root?.id || record.parentMessageId : record.id;
   return `
-    <div class="message-context-menu pixel-panel" data-context-scope="message" style="${positionStyle}" role="menu">
+    <div class="message-context-menu pixel-panel" data-context-scope="message" data-menu-placement="${escapeHtml(placement.placement)}" style="${positionStyle}" role="menu">
       ${renderMessageReactionGrid(record)}
       <div class="message-menu-separator"></div>
       ${renderContextMenuItem('add-message-context', t('Add to context'), record.id)}

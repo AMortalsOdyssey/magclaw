@@ -203,15 +203,26 @@
 }
 
 .message-context-menu {
+  --menu-margin: 8px;
+  --menu-width: 236px;
+  --menu-max-height: calc(100vh - 16px);
   position: fixed;
-  left: min(var(--menu-x), calc(100vw - 250px));
-  top: min(var(--menu-y), calc(100vh - 330px));
+  left: clamp(var(--menu-margin), var(--menu-x), calc(100vw - var(--menu-width) - var(--menu-margin)));
+  top: var(--menu-y);
   z-index: 250;
-  width: 236px;
+  width: var(--menu-width);
+  max-height: var(--menu-max-height);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0;
   border: 2px solid var(--border);
   background: var(--bg-card);
   box-shadow: 4px 4px 0 var(--border);
+}
+
+.message-context-menu[data-menu-placement="above"] {
+  top: auto;
+  bottom: max(var(--menu-margin), calc(100vh - var(--menu-y)));
 }
 
 .message-context-menu button {
@@ -233,7 +244,7 @@
 }
 
 .message-context-menu.selection-menu {
-  width: 178px;
+  --menu-width: 178px;
 }
 
 .message-reaction-grid {
