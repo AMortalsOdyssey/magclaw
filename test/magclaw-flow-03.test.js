@@ -1268,7 +1268,8 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
-test('uploads use year-month folders while project file mentions stay local', async () => {
+// Local project folder linking is temporarily hidden until cloud-safe access exists.
+test.skip('uploads use year-month folders while project file mentions stay local', async () => {
   const server = await startIsolatedServer();
   const projectDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-project-'));
   try {

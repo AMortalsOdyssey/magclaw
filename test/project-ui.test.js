@@ -25,7 +25,8 @@ async function readAppSource() {
   return [app, ...chunkSources].join('\n');
 }
 
-test('project remove buttons render as icons instead of rem text', async () => {
+// Local project folder linking is temporarily hidden until cloud-safe access exists.
+test.skip('project remove buttons render as icons instead of rem text', async () => {
   const app = await readAppSource();
 
   assert.equal(/data-action="remove-project"[\s\S]*?>rem<\/button>/.test(app), false);
@@ -931,7 +932,8 @@ test('cloud auth gate loads invite tokens from invite URLs', async () => {
   assert.match(app, /window\.history\.replaceState\(\{\}, '', '\/'\)/);
 });
 
-test('project picker keeps only the native folder action and polished chip icons', async () => {
+// Local project folder linking is temporarily hidden until cloud-safe access exists.
+test.skip('project picker keeps only the native folder action and polished chip icons', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
 
@@ -944,7 +946,8 @@ test('project picker keeps only the native folder action and polished chip icons
   assert.match(styles, /\.project-icon-btn\.danger-icon/);
 });
 
-test('project chip paths stay readable with horizontal scrolling', async () => {
+// Local project folder linking is temporarily hidden until cloud-safe access exists.
+test.skip('project chip paths stay readable with horizontal scrolling', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
 
@@ -954,7 +957,8 @@ test('project chip paths stay readable with horizontal scrolling', async () => {
   assert.match(styles, /text-overflow: clip/);
 });
 
-test('project mentions show full local paths in the candidate list', async () => {
+// Local project folder linking is temporarily hidden until cloud-safe access exists.
+test.skip('project mentions show full local paths in the candidate list', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
 

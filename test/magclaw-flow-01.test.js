@@ -15,7 +15,8 @@ import {
   waitFor,
 } from './helpers/magclaw-flow.js';
 
-test('project folder picker adds the selected local folder without typing a path', async () => {
+// Local project folder linking is temporarily hidden until cloud-safe access exists.
+test.skip('project folder picker adds the selected local folder without typing a path', async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-picked-project-'));
   const server = await startIsolatedServer({ MAGCLAW_PICK_FOLDER_PATH: projectDir });
   try {

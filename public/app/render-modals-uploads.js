@@ -176,6 +176,12 @@ function renderAgentRestartModal() {
 function renderProjectModal() {
   const channel = selectedSpaceType === 'channel' ? currentSpace() : null;
   const projects = projectsForSpace();
+  if (!(typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled())) {
+    return `
+      ${modalHeader('Open Project', channel ? `#${channel.name}` : 'Channel project')}
+      <div class="empty-box small">Local project folders are temporarily disabled.</div>
+    `;
+  }
   return `
     ${modalHeader('Open Project', channel ? `#${channel.name}` : 'Channel project')}
     <div class="folder-picker-panel">

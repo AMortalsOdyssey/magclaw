@@ -109,12 +109,13 @@ function renderSpace() {
   const memberCount = members ? members.agents.length + members.humans.length : 0;
   const allChannelSelected = selectedSpaceType === 'channel' && isAllChannel(space);
   const canWriteChannel = selectedSpaceType !== 'channel' || currentUserIsChannelMember(space);
+  const showProjectFolders = typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled();
   const actions = selectedSpaceType === 'channel' ? `
     ${canWriteChannel ? `
-	      <button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>
-	      <button class="channel-action channel-action-context" type="button" data-action="add-visible-conversation-context" data-tooltip="Add visible conversation to composer" aria-label="Add visible conversation to composer">${channelActionIcon('quote')}<span>Context</span></button>
-	      <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
-      <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
+		      ${showProjectFolders ? `<button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>` : ''}
+		      <button class="channel-action channel-action-context" type="button" data-action="add-visible-conversation-context" data-tooltip="Add visible conversation to composer" aria-label="Add visible conversation to composer">${channelActionIcon('quote')}<span>Context</span></button>
+		      <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
+	      <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
       ${allChannelSelected ? '' : `<button class="channel-action channel-action-leave" type="button" data-action="leave-channel" data-tooltip="Leave channel" aria-label="Leave channel">${channelActionIcon('leave')}<span>Leave</span></button>`}
     ` : ''}
     <button class="channel-action channel-action-members" type="button" data-action="open-modal" data-modal="channel-members" data-tooltip="Members" aria-label="View ${memberCount} participants">${channelActionIcon('members')}<strong>${memberCount}</strong></button>
@@ -163,6 +164,7 @@ function renderDmHeader() {
 }
 
 function renderProjectStrip(options = {}) {
+  if (!(typeof localProjectFoldersEnabled === 'function' && localProjectFoldersEnabled())) return '';
   const projects = projectsForSpace();
   const canWrite = options.canWrite !== false;
   return `

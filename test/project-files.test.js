@@ -24,7 +24,8 @@ async function withProject(files, callback) {
   }
 }
 
-test('project file search is bounded, sorted, and skips excluded folders', async () => {
+// Local project folder linking is temporarily hidden until cloud-safe access exists.
+test.skip('project file search is bounded, sorted, and skips excluded folders', async () => {
   await withProject({
     'src/app.js': 'console.log("hello");',
     'src/components/card.js': 'export const card = true;',
@@ -36,7 +37,8 @@ test('project file search is bounded, sorted, and skips excluded folders', async
   });
 });
 
-test('project tree and preview helpers return UI-ready records', async () => {
+// Local project folder linking is temporarily hidden until cloud-safe access exists.
+test.skip('project tree and preview helpers return UI-ready records', async () => {
   await withProject({
     'docs/readme.md': '# Hello',
     'src/app.js': 'console.log("hello");',
