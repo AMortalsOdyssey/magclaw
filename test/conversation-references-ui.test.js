@@ -32,6 +32,10 @@ async function conversationReferenceHarness() {
     scrollToMessageCalls: [],
     scrollToReplyCalls: [],
     delayedReferenceScrollDelays: [],
+    loadOlderMainMessagesCalls: 0,
+    loadOlderThreadRepliesCalls: 0,
+    referenceTargetPulseEvents: [],
+    referenceTargetNodes: new Map(),
     byId: (items, id) => (items || []).find((item) => item.id === id) || null,
     conversationRecord(id) {
       return context.byId(context.appState.messages, id) || context.byId(context.appState.replies, id);
@@ -65,6 +69,8 @@ async function conversationReferenceHarness() {
     scrollToReply(replyId) {
       context.scrollToReplyCalls.push(replyId);
     },
+    loadOlderMainMessages: async () => false,
+    loadOlderThreadReplies: async () => false,
     requestAnimationFrame(callback) {
       callback();
     },
@@ -75,7 +81,13 @@ async function conversationReferenceHarness() {
       },
     },
     document: {
-      querySelector: () => null,
+      querySelector: (selector) => {
+        const messageMatch = String(selector).match(/^#message-list #message-(.+)$/);
+        if (messageMatch) return context.referenceTargetNodes.get(`message:${messageMatch[1]}`) || null;
+        const replyMatch = String(selector).match(/^#thread-context #reply-(.+)$/);
+        if (replyMatch) return context.referenceTargetNodes.get(`reply:${replyMatch[1]}`) || null;
+        return null;
+      },
       getElementById: () => ({ scrollIntoView: () => {} }),
     },
     CSS: {
@@ -89,6 +101,28 @@ async function conversationReferenceHarness() {
   vm.createContext(context);
   vm.runInContext(source, context);
   return context;
+}
+
+function createReferenceTargetNode(context, key) {
+  const classes = new Set();
+  const node = {
+    offsetWidth: 1,
+    classList: {
+      add(className) {
+        classes.add(className);
+        context.referenceTargetPulseEvents.push({ key, action: 'add', className });
+      },
+      remove(className) {
+        classes.delete(className);
+        context.referenceTargetPulseEvents.push({ key, action: 'remove', className });
+      },
+      contains(className) {
+        return classes.has(className);
+      },
+    },
+  };
+  context.referenceTargetNodes.set(key, node);
+  return node;
 }
 
 test('reference source jump returns root messages to the main message list', async () => {
@@ -105,7 +139,7 @@ test('reference source jump returns root messages to the main message list', asy
     },
   ];
 
-  assert.equal(context.jumpToConversationReferenceSource('msg_source', ''), true);
+  assert.equal(await context.jumpToConversationReferenceSource('msg_source', ''), true);
 
   assert.equal(context.threadMessageId, null);
   assert.equal(context.selectedSavedRecordId, 'msg_source');
@@ -146,7 +180,7 @@ test('reference source jump opens the parent thread for reply sources', async ()
     },
   ];
 
-  assert.equal(context.jumpToConversationReferenceSource('rep_source', 'msg_root'), true);
+  assert.equal(await context.jumpToConversationReferenceSource('rep_source', 'msg_root'), true);
 
   assert.equal(context.threadMessageId, 'msg_root');
   assert.equal(context.selectedSavedRecordId, 'rep_source');
@@ -171,12 +205,190 @@ test('reference source jump targets reply ids that are not hydrated yet', async 
     },
   ];
 
-  assert.equal(context.jumpToConversationReferenceSource('rep_missing', 'msg_root'), true);
+  assert.equal(await context.jumpToConversationReferenceSource('rep_missing', 'msg_root'), true);
 
   assert.equal(context.threadMessageId, 'msg_root');
   assert.equal(context.selectedSavedRecordId, 'rep_missing');
   assert.deepEqual(context.scrollToMessageCalls, ['msg_root', 'msg_root']);
   assert.deepEqual(context.scrollToReplyCalls, ['rep_missing', 'rep_missing']);
+});
+
+test('reference source jump auto-loads older main pages until a quoted root message is visible', async () => {
+  const context = await conversationReferenceHarness();
+  context.appState.messages = [
+    {
+      id: 'msg_newer',
+      authorType: 'human',
+      authorId: 'hum_owner',
+      body: 'Newer visible message',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      createdAt: '2026-05-26T10:00:00.000Z',
+    },
+  ];
+  context.conversationHistoryPages = {
+    main: {
+      'channel:chan_all': {
+        limit: 80,
+        hasMore: true,
+        nextBefore: '2026-05-26T10:00:00.000Z',
+        nextBeforeId: 'msg_newer',
+      },
+    },
+    thread: {},
+  };
+  const pages = [
+    {
+      message: {
+        id: 'msg_middle',
+        authorType: 'human',
+        authorId: 'hum_guest',
+        body: 'Still not the source',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        createdAt: '2026-05-26T09:00:00.000Z',
+      },
+      hasMore: true,
+      nextBefore: '2026-05-26T09:00:00.000Z',
+      nextBeforeId: 'msg_middle',
+    },
+    {
+      message: {
+        id: 'msg_source',
+        authorType: 'human',
+        authorId: 'hum_owner',
+        body: 'Quoted source',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        createdAt: '2026-05-26T08:00:00.000Z',
+      },
+      hasMore: false,
+      nextBefore: '',
+      nextBeforeId: '',
+    },
+  ];
+  context.loadOlderMainMessages = async () => {
+    context.loadOlderMainMessagesCalls += 1;
+    const page = pages.shift();
+    if (!page) return false;
+    context.appState.messages = [page.message, ...context.appState.messages];
+    context.conversationHistoryPages.main['channel:chan_all'] = {
+      limit: 80,
+      hasMore: page.hasMore,
+      nextBefore: page.nextBefore,
+      nextBeforeId: page.nextBeforeId,
+    };
+    if (page.message.id === 'msg_source') createReferenceTargetNode(context, 'message:msg_source');
+    return true;
+  };
+
+  assert.equal(await context.jumpToConversationReferenceSource('msg_source', '', {
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+  }), true);
+
+  assert.equal(context.loadOlderMainMessagesCalls, 2);
+  assert.equal(context.threadMessageId, null);
+  assert.equal(context.selectedSavedRecordId, 'msg_source');
+  assert.ok(context.scrollToMessageCalls.includes('msg_source'));
+  assert.deepEqual(
+    context.referenceTargetPulseEvents.filter((event) => event.action === 'add'),
+    [{ key: 'message:msg_source', action: 'add', className: 'reference-target-pulse' }],
+  );
+});
+
+test('reference source jump auto-loads older thread replies without stealing the thread target', async () => {
+  const context = await conversationReferenceHarness();
+  context.appState.messages = [
+    {
+      id: 'msg_root',
+      authorType: 'human',
+      authorId: 'hum_owner',
+      body: 'Thread root',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      createdAt: '2026-05-26T08:00:00.000Z',
+    },
+  ];
+  context.conversationHistoryPages = {
+    main: {
+      'channel:chan_all': {
+        limit: 80,
+        hasMore: false,
+        nextBefore: '',
+        nextBeforeId: '',
+      },
+    },
+    thread: {
+      msg_root: {
+        limit: 80,
+        hasMore: true,
+        nextBefore: '2026-05-26T08:20:00.000Z',
+        nextBeforeId: 'rep_newer',
+      },
+    },
+  };
+  const replyPages = [
+    {
+      reply: {
+        id: 'rep_middle',
+        parentMessageId: 'msg_root',
+        authorType: 'agent',
+        authorId: 'agt_cindy',
+        body: 'Earlier but not the source',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        createdAt: '2026-05-26T08:10:00.000Z',
+      },
+      hasMore: true,
+      nextBefore: '2026-05-26T08:10:00.000Z',
+      nextBeforeId: 'rep_middle',
+    },
+    {
+      reply: {
+        id: 'rep_source',
+        parentMessageId: 'msg_root',
+        authorType: 'human',
+        authorId: 'hum_guest',
+        body: 'Quoted reply source',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        createdAt: '2026-05-26T08:05:00.000Z',
+      },
+      hasMore: false,
+      nextBefore: '',
+      nextBeforeId: '',
+    },
+  ];
+  context.loadOlderThreadReplies = async () => {
+    context.loadOlderThreadRepliesCalls += 1;
+    const page = replyPages.shift();
+    if (!page) return false;
+    context.appState.replies = [page.reply, ...context.appState.replies];
+    context.conversationHistoryPages.thread.msg_root = {
+      limit: 80,
+      hasMore: page.hasMore,
+      nextBefore: page.nextBefore,
+      nextBeforeId: page.nextBeforeId,
+    };
+    if (page.reply.id === 'rep_source') createReferenceTargetNode(context, 'reply:rep_source');
+    return true;
+  };
+
+  assert.equal(await context.jumpToConversationReferenceSource('rep_source', 'msg_root', {
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+  }), true);
+
+  assert.equal(context.loadOlderThreadRepliesCalls, 2);
+  assert.equal(context.threadMessageId, 'msg_root');
+  assert.equal(context.selectedSavedRecordId, 'rep_source');
+  assert.ok(context.scrollToMessageCalls.includes('msg_root'));
+  assert.ok(context.scrollToReplyCalls.includes('rep_source'));
+  assert.deepEqual(
+    context.referenceTargetPulseEvents.filter((event) => event.action === 'add'),
+    [{ key: 'reply:rep_source', action: 'add', className: 'reference-target-pulse' }],
+  );
 });
 
 test('conversation reference normalization keeps the latest action for the same source message', async () => {
@@ -414,4 +626,13 @@ test('message context menu exposes one add-to-context action and hides thread co
   assert.doesNotMatch(clickSource, /quote-message-reply|quote-selected-text|add-visible-conversation-context/);
   assert.doesNotMatch(prepareSource, /quote-message-reply|quote-selected-text|add-visible-conversation-context/);
   assert.doesNotMatch(referencesSource, /more references|slice\(0, 3\)/);
+});
+
+test('reference target highlight uses a pale quote-blue breathing animation for about five seconds', async () => {
+  const styles = await readFile(new URL('../public/styles/part-01.css', import.meta.url), 'utf8');
+
+  assert.match(styles, /@keyframes conversation-reference-target-breathe/);
+  assert.match(styles, /\.magclaw-message\.reference-target-pulse/);
+  assert.match(styles, /animation:\s*conversation-reference-target-breathe 5s/);
+  assert.match(styles, /#f4fbff|#eef8ff/);
 });

@@ -1461,7 +1461,13 @@ document.addEventListener('click', async (event) => {
 	    }
 	    if (action === 'jump-to-reference-source') {
 	      if (typeof jumpToConversationReferenceSource === 'function') {
-	        jumpToConversationReferenceSource(target.dataset.sourceRecordId, target.dataset.parentMessageId);
+	        jumpToConversationReferenceSource(target.dataset.sourceRecordId, target.dataset.parentMessageId, {
+	          spaceType: target.dataset.sourceSpaceType,
+	          spaceId: target.dataset.sourceSpaceId,
+	          sourceKind: target.dataset.sourceKind,
+	        }).catch((error) => {
+	          console.warn('Failed to jump to conversation reference source:', error);
+	        });
 	      }
 	    }
 	    if (action === 'remove-composer-reference') {
