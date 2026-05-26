@@ -1698,13 +1698,65 @@ test('message composers do not submit while IME composition is active', async ()
   const keydownSource = app.slice(app.indexOf("document.addEventListener('keydown'"), app.indexOf("document.addEventListener('pointerdown'"));
 
   assert.match(app, /let composerIsComposing = false/);
-  assert.match(app, /function isImeComposing\(event\)/);
+  assert.match(app, /let composingComposerId = null/);
+  assert.match(app, /function isImeComposing\(event, textarea = null\)/);
   assert.match(app, /event\?\.keyCode === 229/);
   assert.match(compositionStartSource, /textarea\[data-mention-input\]/);
   assert.match(compositionStartSource, /composerIsComposing = true/);
+  assert.match(compositionStartSource, /composingComposerId = event\.target\.dataset\.composerId \|\| null/);
   assert.match(compositionEndSource, /textarea\[data-mention-input\]/);
   assert.match(compositionEndSource, /composerIsComposing = false/);
-  assert.match(keydownSource, /if \(textarea && isImeComposing\(event\)\) return/);
+  assert.match(compositionEndSource, /composingComposerId = null/);
+  assert.match(keydownSource, /if \(textarea && isImeComposing\(event, textarea\)\) return/);
+});
+
+test('message composers submit channel and thread textareas on plain Enter', async () => {
+  const source = await readFile(new URL('../public/app/sync-events-keyboard.js', import.meta.url), 'utf8');
+  const helperStart = source.indexOf('const ENTER_SUBMIT_COMPOSER_FORM_IDS');
+  const helperEnd = source.indexOf("document.addEventListener('keydown'");
+  assert.notEqual(helperStart, -1);
+  assert.notEqual(helperEnd, -1);
+
+  const context = {
+    Event,
+    document: {
+      getElementById: () => null,
+    },
+    isImeComposing: () => false,
+    mentionPopup: { active: false, composerId: null, items: [] },
+  };
+  const helpers = vm.runInNewContext(`${source.slice(helperStart, helperEnd)}; ({
+    composerFormForEnterSubmit,
+    shouldSubmitComposerOnEnter,
+    submitComposerFromEnter,
+  });`, context);
+  const createTextarea = (form) => ({
+    dataset: { composerId: form.id === 'reply-form' ? 'thread:msg_1' : 'message' },
+    closest: (selector) => (selector === 'form' ? form : null),
+  });
+
+  for (const id of ['message-form', 'reply-form']) {
+    let submitted = 0;
+    const form = { id, requestSubmit: () => { submitted += 1; } };
+    const textarea = createTextarea(form);
+    assert.equal(helpers.composerFormForEnterSubmit(textarea), form);
+    assert.equal(helpers.shouldSubmitComposerOnEnter({ key: 'Enter' }, textarea), true);
+    assert.equal(helpers.shouldSubmitComposerOnEnter({ key: 'Enter', shiftKey: true }, textarea), false);
+    assert.equal(helpers.submitComposerFromEnter(textarea), true);
+    assert.equal(submitted, 1);
+  }
+
+  let fallbackSubmitted = 0;
+  const fallbackForm = {
+    id: 'message-form',
+    dispatchEvent: (event) => {
+      fallbackSubmitted += event.type === 'submit' ? 1 : 0;
+      return true;
+    },
+  };
+  assert.equal(helpers.submitComposerFromEnter(createTextarea(fallbackForm)), true);
+  assert.equal(fallbackSubmitted, 1);
+  assert.equal(helpers.composerFormForEnterSubmit({ closest: () => ({ id: 'profile-form' }) }), null);
 });
 
 test('workspace location and scroll position survive refreshes', async () => {
@@ -2132,6 +2184,18 @@ test('messages use MagClaw-style hover save actions and saved messages open cont
   assert.match(styles, /\.saved-list-panel/);
   assert.match(styles, /\.saved-row/);
   assert.match(styles, /\.saved-remove/);
+});
+
+test('message row actions stay hidden until the row is hovered or focused', async () => {
+  const styles = await readStylesSource();
+  const hoverSource = styles.slice(styles.indexOf('.message-hover-actions {'), styles.indexOf('.message-icon-action,'));
+
+  assert.match(hoverSource, /opacity: 0/);
+  assert.match(hoverSource, /pointer-events: none/);
+  assert.match(styles, /\.magclaw-message:hover \.message-hover-actions/);
+  assert.match(styles, /\.magclaw-message:focus-within \.message-hover-actions/);
+  assert.doesNotMatch(styles, /\.message-hover-actions\.thread-only[\s\S]*opacity: 1/);
+  assert.doesNotMatch(styles, /\.magclaw-message\.highlighted \.message-hover-actions/);
 });
 
 test('message reactions, context menus, and share mode expose Slock-style interactions with MagClaw styling', async () => {

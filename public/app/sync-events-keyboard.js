@@ -1485,6 +1485,7 @@ document.addEventListener('compositionstart', (event) => {
   }
   if (event.target?.closest?.('textarea[data-mention-input]')) {
     composerIsComposing = true;
+    composingComposerId = event.target.dataset.composerId || null;
   }
   if (event.target?.closest?.('#profile-form')) {
     profileFormIsComposing = true;
@@ -1500,6 +1501,7 @@ document.addEventListener('compositionend', (event) => {
   }
   if (event.target?.closest?.('textarea[data-mention-input]')) {
     composerIsComposing = false;
+    composingComposerId = null;
   }
   const profileForm = event.target?.closest?.('#profile-form');
   if (profileForm) {
@@ -1518,6 +1520,40 @@ document.addEventListener('compositionend', (event) => {
     syncConsoleServerSlug(consoleServerForm);
   }
 });
+
+const ENTER_SUBMIT_COMPOSER_FORM_IDS = new Set(['message-form', 'reply-form']);
+
+function composerFormForEnterSubmit(textarea) {
+  const form = textarea?.closest?.('form');
+  if (!form || !ENTER_SUBMIT_COMPOSER_FORM_IDS.has(form.id)) return null;
+  return form;
+}
+
+function mentionPopupHandlesEnter(textarea) {
+  if (!textarea || !mentionPopup.active || mentionPopup.composerId !== textarea.dataset?.composerId) return false;
+  if (!Array.isArray(mentionPopup.items) || !mentionPopup.items.length) return false;
+  return Boolean(document.getElementById('mention-popup'));
+}
+
+function shouldSubmitComposerOnEnter(event, textarea) {
+  if (!textarea || event?.key !== 'Enter') return false;
+  if (event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) return false;
+  if (!composerFormForEnterSubmit(textarea)) return false;
+  if (isImeComposing(event, textarea)) return false;
+  if (mentionPopupHandlesEnter(textarea)) return false;
+  return true;
+}
+
+function submitComposerFromEnter(textarea) {
+  const form = composerFormForEnterSubmit(textarea);
+  if (!form) return false;
+  if (typeof form.requestSubmit === 'function') {
+    form.requestSubmit();
+  } else {
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  }
+  return true;
+}
 
 document.addEventListener('keydown', async (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key?.toLowerCase() === 'k') {
@@ -1543,7 +1579,7 @@ document.addEventListener('keydown', async (event) => {
   }
 
   const textarea = event.target.closest('textarea[data-mention-input]');
-  if (textarea && isImeComposing(event)) return;
+  if (textarea && isImeComposing(event, textarea)) return;
 
   if (event.target.id === 'member-invite-input' && !isImeComposing(event)) {
     if (event.key === 'Enter' || event.key === ' ' || event.code === 'Space' || event.key === ',' || event.key === '，' || event.key === ';' || event.key === '；' || event.key === 'Tab') {
@@ -1566,6 +1602,12 @@ document.addEventListener('keydown', async (event) => {
     return;
   }
 
+  if (textarea && shouldSubmitComposerOnEnter(event, textarea)) {
+    event.preventDefault();
+    submitComposerFromEnter(textarea);
+    return;
+  }
+
   // Handle mention popup keyboard navigation
   if (textarea && mentionPopup.active && mentionPopup.composerId === textarea.dataset.composerId) {
     if (event.key === 'ArrowDown') {
@@ -1580,7 +1622,7 @@ document.addEventListener('keydown', async (event) => {
       updateMentionPopupSelection();
       return;
     }
-    if (event.key === 'Enter' || event.key === 'Tab') {
+    if ((event.key === 'Enter' || event.key === 'Tab') && mentionPopupHandlesEnter(textarea)) {
       event.preventDefault();
       const item = mentionPopup.items[mentionPopup.selectedIndex];
       if (item) {
@@ -1600,12 +1642,6 @@ document.addEventListener('keydown', async (event) => {
     }
   }
 
-  // Regular Enter to submit message (only when popup not active)
-  if (textarea && event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault();
-    const form = textarea.closest('form');
-    if (form) form.requestSubmit();
-  }
 });
 
 document.addEventListener('pointerdown', (event) => {
@@ -1801,6 +1837,10 @@ document.addEventListener('input', async (event) => {
   const messageTextarea = event.target.closest('textarea[data-mention-input]');
   if (messageTextarea) {
     const { selectionStart, value } = messageTextarea;
+    if (!event.isComposing && event.inputType !== 'insertCompositionText' && composingComposerId === messageTextarea.dataset.composerId) {
+      composerIsComposing = false;
+      composingComposerId = null;
+    }
     if (messageTextarea.dataset.composerId) composerDrafts[messageTextarea.dataset.composerId] = value;
     const atMatch = findMentionTrigger(value, selectionStart);
     if (atMatch) {

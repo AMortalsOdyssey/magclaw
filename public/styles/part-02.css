@@ -57,8 +57,7 @@
 }
 
 .magclaw-message:hover .message-hover-actions,
-.magclaw-message.highlighted .message-hover-actions,
-.message-hover-actions.thread-only {
+.magclaw-message:focus-within .message-hover-actions {
   opacity: 1;
   pointer-events: auto;
 }

@@ -93,6 +93,7 @@ let joinLinkRevokeConfirmState = { joinLinkId: null };
 let searchQuery = '';
 let searchIsComposing = false;
 let composerIsComposing = false;
+let composingComposerId = null;
 let searchMineOnly = false;
 let searchTimeRange = 'any';
 let searchTimeMenuOpen = false;
@@ -365,13 +366,12 @@ function syncBrowserRouteForActiveView({ replace = false } = {}) {
   if (eventSource && typeof connectEvents === 'function') connectEvents();
 }
 
-function isImeComposing(event) {
-  return Boolean(
-    event?.isComposing ||
-    event?.keyCode === 229 ||
-    event?.which === 229 ||
-    composerIsComposing,
-  );
+function isImeComposing(event, textarea = null) {
+  if (event?.isComposing || event?.keyCode === 229 || event?.which === 229) return true;
+  if (!composerIsComposing) return false;
+  if (!textarea) return true;
+  const composerId = textarea?.dataset?.composerId || null;
+  return Boolean(composerId && composingComposerId === composerId);
 }
 
 // Track known agent receipts per message to only animate new arrivals
