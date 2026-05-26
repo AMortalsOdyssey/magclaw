@@ -226,7 +226,7 @@ test('daemon run service state preserves launchd background mode for service-lau
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.30');
+  assert.equal(DAEMON_VERSION, '0.1.31');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
