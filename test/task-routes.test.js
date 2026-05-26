@@ -85,6 +85,15 @@ function routeDeps(overrides = {}) {
   return { ...deps, ...overrides, state };
 }
 
+async function waitForCondition(fn, timeoutMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fn()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return false;
+}
+
 test('task route group ignores unrelated API paths', async () => {
   const res = makeResponse();
   const handled = await handleTaskApi(
@@ -145,36 +154,40 @@ test('task route group creates conversation-backed tasks', async () => {
   assert.equal(deps.state.messages[0].taskId, 'task_new');
 });
 
-test('task route group dispatches selected agents into one owner and collaborators', async () => {
+test('task route group starts selected agents as sequential owner and collaborators', async () => {
   const deliveries = [];
   const routeCalls = [];
+  const workItems = [];
   const deps = routeDeps({
     readJson: async () => ({
       title: 'Refine task fanout',
-      assigneeIds: ['agt_owner', 'agt_peer'],
+      assigneeIds: ['agt_owner', 'agt_peer', 'agt_third'],
       spaceType: 'channel',
       spaceId: 'chan_all',
     }),
     findAgent: (id) => ({
       id,
-      name: id === 'agt_owner' ? 'Owner Agent' : 'Peer Agent',
+      name: id === 'agt_owner' ? 'Owner Agent' : (id === 'agt_peer' ? 'Peer Agent' : 'Third Agent'),
       status: 'idle',
     }),
-    routeTaskAssignees: async ({ task, message, selectedAgents }) => {
+    routeTaskAssignees: async ({ task, message, selectedAgents, maxParticipants }) => {
       routeCalls.push({
         taskId: task.id,
         messageId: message.id,
         selectedAgentIds: selectedAgents.map((agent) => agent.id),
+        maxParticipants,
       });
       return {
         ownerAgentId: 'agt_owner',
-        collaboratorAgentIds: ['agt_peer'],
+        collaboratorAgentIds: ['agt_peer', 'agt_third'],
+        participantAgentIds: ['agt_owner', 'agt_peer', 'agt_third'],
+        cappedAgentIds: [],
         routeEvent: {
           id: 'route_task_owner',
           strategy: 'fanout',
-          selectedAgentIds: ['agt_owner', 'agt_peer'],
+          selectedAgentIds: ['agt_owner', 'agt_peer', 'agt_third'],
           ownerAgentId: 'agt_owner',
-          collaboratorAgentIds: ['agt_peer'],
+          collaboratorAgentIds: ['agt_peer', 'agt_third'],
         },
       };
     },
@@ -192,8 +205,12 @@ test('task route group dispatches selected agents into one owner and collaborato
       ].join('\n'),
     }),
     deliverMessageToAgent: async (agent, spaceType, spaceId, message, options) => {
-      deliveries.push({ agent, spaceType, spaceId, message, options });
+      const workItem = { id: `wi_${agent.id}`, agentId: agent.id, status: 'delivered' };
+      workItems.push(workItem);
+      deliveries.push({ agent, spaceType, spaceId, message, options, workItem });
+      return workItem;
     },
+    taskStartupWaitMs: 200,
   });
   const res = makeResponse();
 
@@ -209,18 +226,84 @@ test('task route group dispatches selected agents into one owner and collaborato
   assert.deepEqual(routeCalls, [{
     taskId: 'task_new',
     messageId: 'msg_new',
-    selectedAgentIds: ['agt_owner', 'agt_peer'],
+    selectedAgentIds: ['agt_owner', 'agt_peer', 'agt_third'],
+    maxParticipants: 4,
   }]);
   assert.equal(res.data.task.claimedBy, 'agt_owner');
   assert.equal(res.data.task.status, 'in_progress');
-  assert.deepEqual(res.data.task.assigneeIds, ['agt_peer']);
-  assert.equal(deliveries.length, 2);
-  assert.deepEqual(deliveries.map((item) => item.agent.id), ['agt_owner', 'agt_peer']);
+  assert.deepEqual(res.data.task.assigneeIds, ['agt_peer', 'agt_third']);
+  assert.equal(deliveries.length, 1);
+  assert.deepEqual(deliveries.map((item) => item.agent.id), ['agt_owner']);
   assert.ok(deliveries.every((item) => item.options.parentMessageId === 'msg_new'));
   assert.match(deliveries[0].message.body, /Role: owner/);
+  workItems[0].status = 'responded';
+  assert.equal(await waitForCondition(() => deliveries.length === 2), true);
   assert.match(deliveries[1].message.body, /Role: collaborator/);
   assert.match(deliveries[1].message.body, /Owner: Owner Agent/);
+  workItems[1].status = 'responded';
+  assert.equal(await waitForCondition(() => deliveries.length === 3), true);
+  assert.match(deliveries[2].message.body, /Role: collaborator/);
+  assert.deepEqual(deliveries.map((item) => item.agent.id), ['agt_owner', 'agt_peer', 'agt_third']);
   assert.ok(res.data.task.history.some((item) => item.type === 'task_owner_selected'));
+  assert.equal(res.data.task.metadata.startupCollaboration.status, 'running');
+  assert.deepEqual(res.data.task.metadata.startupCollaboration.participantAgentIds, ['agt_owner', 'agt_peer', 'agt_third']);
+});
+
+test('task route group caps startup collaborators and continues after timeout', async () => {
+  const deliveries = [];
+  const deps = routeDeps({
+    readJson: async () => ({
+      title: 'Cap startup speakers',
+      assigneeIds: ['agt_owner', 'agt_a', 'agt_b', 'agt_c', 'agt_d'],
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    }),
+    findAgent: (id) => ({ id, name: id.replace('agt_', '').toUpperCase(), status: 'idle' }),
+    routeTaskAssignees: async () => ({
+      ownerAgentId: 'agt_owner',
+      collaboratorAgentIds: ['agt_a', 'agt_b', 'agt_c'],
+      participantAgentIds: ['agt_owner', 'agt_a', 'agt_b', 'agt_c'],
+      cappedAgentIds: ['agt_d'],
+      routeEvent: {
+        id: 'route_capped',
+        strategy: 'fallback_rules',
+        selectedAgentIds: ['agt_owner', 'agt_a', 'agt_b', 'agt_c', 'agt_d'],
+        ownerAgentId: 'agt_owner',
+        collaboratorAgentIds: ['agt_a', 'agt_b', 'agt_c'],
+        cappedAgentIds: ['agt_d'],
+      },
+    }),
+    taskAssignmentDeliveryMessage: (task, sourceMessage, { recipientAgent, role }) => ({
+      ...sourceMessage,
+      id: `${sourceMessage.id}_${recipientAgent.id}_${role}`,
+      taskId: task.id,
+      mentionedAgentIds: [recipientAgent.id],
+      body: `Role: ${role}`,
+    }),
+    deliverMessageToAgent: async (agent, spaceType, spaceId, message, options) => {
+      const workItem = { id: `wi_${agent.id}`, agentId: agent.id, status: 'delivered' };
+      deliveries.push({ agent, spaceType, spaceId, message, options, workItem });
+      return workItem;
+    },
+    taskStartupWaitMs: 15,
+  });
+  const res = makeResponse();
+
+  const handled = await handleTaskApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/tasks'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(deliveries.length, 1);
+  assert.equal(await waitForCondition(() => deliveries.length === 4, 300), true);
+  assert.deepEqual(deliveries.map((item) => item.agent.id), ['agt_owner', 'agt_a', 'agt_b', 'agt_c']);
+  assert.deepEqual(res.data.task.assigneeIds, ['agt_a', 'agt_b', 'agt_c']);
+  assert.deepEqual(res.data.task.metadata.startupCollaboration.cappedAgentIds, ['agt_d']);
+  assert.ok(res.data.task.history.some((item) => item.type === 'task_startup_timeout'));
 });
 
 test('task route group keeps selected assignees as todo when no selected owner is available', async () => {

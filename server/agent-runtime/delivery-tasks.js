@@ -77,7 +77,7 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
   }));
   if (cloudRelay?.agentShouldUseRelay?.(agent)) {
     await cloudRelay.deliverToAgent(agent, deliveryMessage, workItem);
-    return;
+    return workItem;
   }
   if (runtimeOverride) {
     addSystemEvent('agent_fast_chat_runtime', `${agent.name} using low-latency chat runtime.`, {
@@ -99,14 +99,14 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
       queueCodexBusyDelivery(agent, proc, deliveryMessage);
       await persistState();
       broadcastState();
-      return;
+      return workItem;
     }
     if (proc.child && !proc.child.killed && proc.status === 'idle' && proc.threadId) {
       applyAgentProcessDeliveryScope(proc, spaceType, spaceId, parentMessageId);
       if (await sendCodexAppServerMessages(agent, proc, [deliveryMessage], { mode: 'turn' })) {
         await persistState();
         broadcastState();
-        return;
+        return workItem;
       }
     }
   } else if (proc && (proc.status === 'running' || proc.status === 'starting')) {
@@ -116,7 +116,7 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
     addSystemEvent('message_queued', `Message queued for busy agent ${agent.name}`, { agentId: agent.id, messageId: message.id, parentMessageId });
     await persistState();
     broadcastState();
-    return;
+    return workItem;
   }
 
   // Start the agent process with this message
@@ -131,9 +131,10 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
     });
     await persistState();
     broadcastState();
-    return;
+    return workItem;
   }
   await startAgentProcess(agent, spaceType, spaceId, deliveryMessage);
+  return workItem;
 }
 
 function workspaceIdForSpace(spaceType, spaceId) {

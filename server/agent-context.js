@@ -745,6 +745,9 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
         ? recentReplies.map((record) => messageLine(sourceState, record, targetAgentId)).join('\n')
         : '- (no earlier thread replies)',
     );
+    if (pack.currentMessage?.taskId || pack.thread.parentMessage?.taskId) {
+      lines.push('For task collaboration, read earlier task-thread replies before answering. Add new value, avoid repeating prior asks or conclusions, and keep ownership clear.');
+    }
   }
 
   lines.push(

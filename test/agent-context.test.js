@@ -142,6 +142,8 @@ test('agent context pack includes recent channel messages, current message, task
   assert.match(rendered, /@CCC joined chan_all/);
   assert.match(rendered, /Use channel activity to resolve implicit references/);
   assert.match(rendered, /Thread context/);
+  assert.match(rendered, /Recent thread replies \(oldest to newest\)/);
+  assert.match(rendered, /For task collaboration, read earlier task-thread replies before answering/);
   assert.match(rendered, /task #7 \[in_progress\] 做一下任务/);
   assert.match(rendered, /owner: @333 \(you\)/);
   assert.match(rendered, /collaborators: @CCC/);

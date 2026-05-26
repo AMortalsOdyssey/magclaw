@@ -145,20 +145,23 @@ export function createTaskOrchestrator(deps) {
       ? [
         `Task ${taskLabel(task)} has been assigned to you as Owner.`,
         `Collaborators: ${collaboratorNames}.`,
-        'Acknowledge ownership here, or ask for concrete missing context in this task thread before proceeding.',
-        'Do the work in this task thread and move the task to in_review when ready for human validation.',
+        'First take ownership in this task thread: acknowledge the goal, name any concrete missing context, and state the next useful step.',
+        'Then do the work here. When the task is ready for human validation, move it to in_review.',
       ]
       : [
         `Task ${taskLabel(task)} needs your collaboration in this thread.`,
         `Owner: ${taskAgentName(ownerAgent)}.`,
-        'You are a Collaborator. Coordinate in this task thread, share useful findings, and do not claim or take over unless ownership is handed off.',
+        'You are a Collaborator. Read the earlier task-thread replies before answering, especially the Owner response and previous collaborators.',
+        'Add new value without repeating what was already said. If a gap was already raised, help sharpen the clarification, add constraints, risks, paths, or a brief synthesis. Do not claim or take over unless ownership is handed off.',
       ];
     const body = [
-      ...roleLines,
+      roleLines[0],
+      roleLines[1],
       `Title: ${task?.title || message?.body || 'Untitled task'}`,
-      details ? `Context:\n${details}` : '',
       `Target thread: ${threadId}`,
       `Task id: ${task?.id || message?.taskId || '-'}`,
+      ...roleLines.slice(2),
+      details ? `Context:\n${details}` : '',
     ].filter(Boolean).join('\n\n');
     return {
       ...message,

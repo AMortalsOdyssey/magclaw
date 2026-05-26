@@ -484,7 +484,9 @@ test('MagClaw-style message task stores mentions, channel task number, assignees
     assert.deepEqual(created.message.mentionedHumanIds, []);
     assert.deepEqual(created.message.readBy, ['hum_local']);
     assert.equal(created.task.number, 1);
-    assert.deepEqual(created.task.assigneeIds, ['agt_codex']);
+    assert.deepEqual(created.task.assigneeIds, []);
+    assert.equal(created.task.claimedBy, 'agt_codex');
+    assert.equal(created.task.status, 'in_progress');
     assert.equal(created.task.sourceMessageId, created.message.id);
 
     await request(server.baseUrl, `/api/tasks/${created.task.id}/claim`, {
@@ -754,6 +756,8 @@ process.stdin.on('data', (chunk) => {
     assert.match(collaboratorPrompt, /Owner: @/);
     assert.match(collaboratorPrompt, /You are a Collaborator/);
     assert.match(collaboratorPrompt, new RegExp(`Target thread: ${created.message.id}`));
+    assert.match(collaboratorPrompt, /Recent thread replies \(oldest to newest\)/);
+    assert.match(collaboratorPrompt, /owner acknowledged task/);
     assert.equal(mock.calls.length, 1);
   } finally {
     await server.stop();
@@ -1058,16 +1062,19 @@ test('task APIs create top-level task messages and reject direct reply-as-task p
       }),
     });
 
-    const rejected = await fetch(`${server.baseUrl}/api/messages/${parent.message.id}/replies`, {
+    const promoted = await request(server.baseUrl, `/api/messages/${parent.message.id}/replies`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        body: '这条 reply 不能直接变 task',
+        body: '这条 reply 可以直接变 task',
         asTask: true,
       }),
     });
-    assert.equal(rejected.status, 400);
-    assert.match((await rejected.json()).error, /Thread replies cannot become tasks/i);
+    assert.equal(promoted.createdTask.number, 1);
+    assert.equal(promoted.createdTask.sourceMessageId, parent.message.id);
+    assert.equal(promoted.createdTask.sourceReplyId, promoted.reply.id);
+    assert.equal(promoted.createdTask.claimedBy, 'agt_codex');
+    assert.equal(promoted.createdTaskMessage.authorType, 'human');
+    assert.equal(promoted.createdTaskMessage.taskId, promoted.createdTask.id);
 
     const manual = await request(server.baseUrl, '/api/tasks', {
       method: 'POST',
@@ -1081,7 +1088,7 @@ test('task APIs create top-level task messages and reject direct reply-as-task p
         sourceReplyId: reply.reply.id,
       }),
     });
-    assert.equal(manual.task.number, 1);
+    assert.equal(manual.task.number, 2);
     assert.equal(manual.task.sourceMessageId, parent.message.id);
     assert.equal(manual.task.sourceReplyId, reply.reply.id);
     assert.equal(manual.message.authorType, 'human');
@@ -1103,7 +1110,7 @@ test('task APIs create top-level task messages and reject direct reply-as-task p
       }),
     });
     assert.equal(created.tasks.length, 1);
-    assert.equal(created.tasks[0].taskNumber, 2);
+    assert.equal(created.tasks[0].taskNumber, 3);
     assert.match(created.tasks[0].threadTarget, /^#all:msg_/);
     assert.equal(created.tasks[0].task.status, 'in_progress');
     assert.equal(created.tasks[0].task.createdBy, 'agt_codex');

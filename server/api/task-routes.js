@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createTaskStartupCollaboration } from '../task-startup-collaboration.js';
 
 const TASK_STATUS_VALUES = ['todo', 'in_progress', 'in_review', 'done', 'closed'];
 const TASK_STATUS_ERROR = `Unsupported task status. Use one of: ${TASK_STATUS_VALUES.join(', ')}.`;
@@ -41,6 +42,7 @@ export async function handleTaskApi(req, res, url, deps) {
   } = deps;
   const state = getState();
   const allowedTaskStatuses = new Set(TASK_STATUS_VALUES);
+  const { startTaskStartupCollaboration } = createTaskStartupCollaboration(deps);
 
   function broadcastTaskStatusState() {
     broadcastState();
@@ -73,105 +75,10 @@ export async function handleTaskApi(req, res, url, deps) {
   }
 
   async function dispatchCreatedTask(task, message, selectedAgentIds) {
-    const selectedIds = normalizeIds(selectedAgentIds || []);
-    if (!selectedIds.length) return;
-    if ((message?.authorType || 'human') !== 'human') return;
-    if (!findAgent || !routeTaskAssignees) return;
-
-    const selectedAgents = selectedIds
-      .map((id) => findAgent(id))
-      .filter(Boolean);
-    let route;
     try {
-      route = await routeTaskAssignees({
-        task,
-        message,
-        selectedAgentIds: selectedIds,
-        selectedAgents,
-        spaceType: task.spaceType,
-        spaceId: task.spaceId,
-      });
+      await startTaskStartupCollaboration(task, message, selectedAgentIds);
     } catch (error) {
-      addTaskHistory(task, 'task_dispatch_skipped', `Owner selection failed: ${error.message}`, 'system', {
-        selectedAgentIds: selectedIds,
-        fallbackReason: error.message,
-      });
-      addSystemEvent('task_dispatch_skipped', `Task ${taskLabel(task)} was created but not dispatched because owner selection failed.`, {
-        taskId: task.id,
-        messageId: message.id,
-        selectedAgentIds: selectedIds,
-        fallbackReason: error.message,
-      });
-      return;
-    }
-
-    const ownerId = route?.ownerAgentId || route?.claimantAgentId || null;
-    const ownerAgent = ownerId ? findAgent(ownerId) : null;
-    if (!ownerAgent) {
-      addTaskHistory(task, 'task_dispatch_skipped', 'No selected agent could be selected as Owner.', 'system', {
-        selectedAgentIds: selectedIds,
-        routeEventId: route?.routeEvent?.id || null,
-        routingStrategy: route?.strategy || route?.routeEvent?.strategy || 'none',
-        fallbackReason: route?.fallbackReason || route?.routeEvent?.fallbackReason || 'No selected agents are available.',
-      });
-      addSystemEvent('task_dispatch_skipped', `Task ${taskLabel(task)} stayed Todo because no selected agent is available to own it.`, {
-        taskId: task.id,
-        messageId: message.id,
-        selectedAgentIds: selectedIds,
-        routeEventId: route?.routeEvent?.id || null,
-        routingStrategy: route?.strategy || route?.routeEvent?.strategy || 'none',
-        fallbackReason: route?.fallbackReason || route?.routeEvent?.fallbackReason || null,
-      });
-      return;
-    }
-
-    const collaboratorIds = normalizeIds(route?.collaboratorAgentIds?.length
-      ? route.collaboratorAgentIds
-      : selectedIds.filter((id) => id !== ownerAgent.id))
-      .filter((id) => id !== ownerAgent.id);
-    const collaboratorAgents = collaboratorIds
-      .map((id) => findAgent(id))
-      .filter(Boolean);
-
-    claimTask(task, ownerAgent.id, { force: true });
-    task.assigneeIds = collaboratorIds;
-    task.assigneeId = collaboratorIds[0] || null;
-    task.updatedAt = now();
-    addTaskHistory(task, 'task_owner_selected', `Owner selected: ${displayActor(ownerAgent.id)}.`, ownerAgent.id, {
-      selectedAgentIds: selectedIds,
-      ownerAgentId: ownerAgent.id,
-      collaboratorAgentIds: collaboratorIds,
-      routeEventId: route?.routeEvent?.id || null,
-      routingStrategy: route?.strategy || route?.routeEvent?.strategy || 'rules',
-      fallbackReason: route?.fallbackReason || route?.routeEvent?.fallbackReason || null,
-    });
-    addSystemEvent('task_owner_selected', `Task ${taskLabel(task)} assigned to ${ownerAgent.name} as Owner.`, {
-      taskId: task.id,
-      messageId: message.id,
-      selectedAgentIds: selectedIds,
-      ownerAgentId: ownerAgent.id,
-      collaboratorAgentIds: collaboratorIds,
-      routeEventId: route?.routeEvent?.id || null,
-      routingStrategy: route?.strategy || route?.routeEvent?.strategy || 'rules',
-      fallbackReason: route?.fallbackReason || route?.routeEvent?.fallbackReason || null,
-    });
-
-    const recipients = [
-      { agent: ownerAgent, role: 'owner' },
-      ...collaboratorAgents.map((agent) => ({ agent, role: 'collaborator' })),
-    ];
-    if (!deliverMessageToAgent || !taskAssignmentDeliveryMessage) return;
-    for (const item of recipients) {
-      const deliveryMessage = taskAssignmentDeliveryMessage(task, message, {
-        recipientAgent: item.agent,
-        role: item.role,
-        ownerAgent,
-        collaboratorAgents,
-        routeEvent: route?.routeEvent || null,
-      });
-      deliverMessageToAgent(item.agent, task.spaceType, task.spaceId, deliveryMessage, {
-        parentMessageId: message.id,
-      }).catch(deliveryErrorHandler(task, item.agent, message));
+      deliveryErrorHandler(task, null, message)(error);
     }
   }
 

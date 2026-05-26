@@ -902,8 +902,12 @@ function patchOpenThreadDrawerSurface(scrollSnapshot) {
   return true;
 }
 
-function patchActiveThreadSurface(scrollSnapshot) {
+function patchActiveThreadSurface(scrollSnapshot, { visibleChanged = true } = {}) {
   if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
+  if (!visibleChanged) {
+    patchRailSurface();
+    return Boolean(threadMessageId && !selectedProjectFile && !selectedAgentId && !selectedTaskId);
+  }
   return patchOpenThreadDrawerSurface(scrollSnapshot);
 }
 
@@ -1125,7 +1129,7 @@ function applyStateUpdate(nextState) {
     pendingServerProfilePatchSignature = '';
     patchRailSurface();
     patchServerProfileSettingsSurface();
-    patchOpenThreadDrawerSurface(scrollSnapshot);
+    if (activeConversationChanged) patchOpenThreadDrawerSurface(scrollSnapshot);
     return;
   }
   if (pendingServerProfilePatchSignature && pendingServerProfilePatchSignature !== serverProfileAfter) {
@@ -1163,7 +1167,7 @@ function applyStateUpdate(nextState) {
       : true;
     if (conversationPatched && patchAgentDetailSurface(scrollSnapshot)) return;
   }
-  if (patchActiveThreadSurface(scrollSnapshot)) return;
+  if (patchActiveThreadSurface(scrollSnapshot, { visibleChanged: activeConversationChanged })) return;
   if (patchActiveConversationSurface(scrollSnapshot, { allowInspector: activeConversationChanged || unreadChanged })) return;
   if (railNeedsPatch) patchRailSurface();
   render();

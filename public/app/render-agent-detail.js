@@ -993,7 +993,7 @@ function renderThreadDrawer(message) {
         ${task ? renderTaskInlineBadge(task, { showAssignee: false, interactive: canReply }) : ''}
       </div>
       ${canReply
-        ? renderComposer({ id: composerId, kind: 'thread', placeholder: 'Message thread' })
+        ? renderComposer({ id: composerId, kind: 'thread', placeholder: 'Message thread', showTaskToggle: true })
         : renderChannelJoinPanel(message.spaceId, { thread: true })}
     </section>
   `;

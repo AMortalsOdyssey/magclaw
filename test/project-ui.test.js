@@ -1682,12 +1682,12 @@ test('message composers refocus after enter-submit sends', async () => {
   assert.match(renderSource, /restorePendingComposerFocus\(\)/);
   assert.match(submitSource, /let focusComposerId = null/);
   assert.match(submitSource, /const messageSnapshot = snapshotComposerState\(form, composerId, \{ includeTask: true \}\);[\s\S]*clearComposerForSubmit\(form, composerId, \{ clearTask: true \}\);[\s\S]*const result = await api/);
-  assert.match(submitSource, /const replySnapshot = snapshotComposerState\(form, composerId\);[\s\S]*clearComposerForSubmit\(form, composerId\);[\s\S]*await api/);
+  assert.match(submitSource, /const replySnapshot = snapshotComposerState\(form, composerId, \{ includeTask: true \}\);[\s\S]*clearComposerForSubmit\(form, composerId, \{ clearTask: true \}\);[\s\S]*await api/);
   assert.match(submitSource, /`\/api\/messages\/\$\{threadMessageId\}\/replies`/);
   assert.match(submitSource, /restoreComposerAfterFailedSubmit\(form, composerId, messageSnapshot, \{ restoreTask: true \}\)/);
-  assert.match(submitSource, /restoreComposerAfterFailedSubmit\(form, composerId, replySnapshot\)/);
+  assert.match(submitSource, /restoreComposerAfterFailedSubmit\(form, composerId, replySnapshot, \{ restoreTask: true \}\)/);
   assert.match(submitSource, /focusComposerId = shouldOpenTaskThread && result\.message\?\.id \? composerIdFor\('thread', result\.message\.id\) : composerId/);
-  assert.match(submitSource, /focusComposerId = composerId/);
+  assert.match(submitSource, /focusComposerId = shouldOpenTaskThread && result\.createdTaskMessage\?\.id \? composerIdFor\('thread', result\.createdTaskMessage\.id\) : composerId/);
   assert.match(submitSource, /if \(focusComposerId\) requestComposerFocus\(focusComposerId\)/);
 });
 
@@ -1751,6 +1751,9 @@ test('task cards open their thread conversation and keep compact blocks without 
   assert.match(app, /if \(selectedTaskId\)[\s\S]*renderTaskDetail\(task\)/);
   assert.equal(app.includes('data-action="delete-task"'), false);
   assert.equal(cardSource.includes('pill(task.status'), false);
+  assert.doesNotMatch(cardSource, /creator @/);
+  assert.doesNotMatch(cardSource, /assignee @/);
+  assert.doesNotMatch(cardSource, /task-card-foot/);
   assert.match(styles, /\.compact-task-card/);
   assert.match(styles, /\.task-detail-panel/);
 });
@@ -2919,7 +2922,7 @@ test('server profile saves patch settings and open thread surfaces without full 
   assert.match(stateUpdateSource, /const serverSettingsUnchanged = activeView === 'cloud'[\s\S]*settingsTab === 'server'[\s\S]*serverSettingsVisibleBefore === serverSettingsVisibleAfter/);
   assert.match(stateUpdateSource, /if \(serverSettingsUnchanged\) \{[\s\S]*if \(railNeedsPatch\) patchRailSurface\(\);[\s\S]*patchServerProfileSettingsSurface\(\);[\s\S]*return;/);
   assert.match(stateUpdateSource, /const serverProfileOnlyChanged = activeView === 'cloud'[\s\S]*serverSettingsSupportBefore === serverSettingsSupportSignature\(\)/);
-  assert.match(stateUpdateSource, /patchServerProfileSettingsSurface\(\);[\s\S]*patchOpenThreadDrawerSurface\(scrollSnapshot\);[\s\S]*return;/);
+  assert.match(stateUpdateSource, /patchServerProfileSettingsSurface\(\);[\s\S]*if \(activeConversationChanged\) patchOpenThreadDrawerSurface\(scrollSnapshot\);[\s\S]*return;/);
   assert.match(submitSource, /pendingServerProfilePatchSignature = serverProfilePatchSignature\(\)/);
   assert.match(submitSource, /skipFinalRefresh = true/);
 });

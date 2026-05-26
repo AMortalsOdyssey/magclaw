@@ -190,10 +190,11 @@ document.addEventListener('submit', async (event) => {
       const composerId = form.dataset.composerId || composerIdFor('thread', threadMessageId);
 	      const rawBody = composerDrafts[composerId] ?? data.get('body');
 	      const encodedBody = encodeComposerMentions(rawBody, composerId);
+	      const shouldOpenTaskThread = Boolean(composerTaskFlags[composerId] ?? data.get('asTask'));
 	      const attachmentIds = stagedFor(composerId).ids;
 	      const references = typeof outgoingComposerReferences === 'function' ? outgoingComposerReferences(composerId) : [];
-	      const replySnapshot = snapshotComposerState(form, composerId);
-      clearComposerForSubmit(form, composerId);
+	      const replySnapshot = snapshotComposerState(form, composerId, { includeTask: true });
+      clearComposerForSubmit(form, composerId, { clearTask: true });
       const optimisticReply = optimisticConversationRecord({
         kind: 'reply',
 	        parentMessage,
@@ -207,19 +208,21 @@ document.addEventListener('submit', async (event) => {
       try {
         result = await api(`/api/messages/${threadMessageId}/replies`, {
           method: 'POST',
-	          body: JSON.stringify({ body: encodedBody, attachmentIds, references }),
+	          body: JSON.stringify({ body: encodedBody, asTask: shouldOpenTaskThread, attachmentIds, references }),
 	        });
       } catch (error) {
         applySubmittedConversationResult({}, { removeOptimisticId: optimisticReply.id });
-        restoreComposerAfterFailedSubmit(form, composerId, replySnapshot);
+        restoreComposerAfterFailedSubmit(form, composerId, replySnapshot, { restoreTask: true });
         throw error;
       }
       const appliedReplyResult = applySubmittedConversationResult(result, { removeOptimisticId: optimisticReply.id });
+      if (shouldOpenTaskThread && result.createdTaskMessage?.id) threadMessageId = result.createdTaskMessage.id;
+      if (shouldOpenTaskThread && result.createdTaskMessage?.id) refreshThreadSelection(threadMessageId);
       if (appliedReplyResult) skipFinalRefresh = true;
       requestPaneBottomScroll('thread');
       submittedBottomTarget = '#thread-context';
-      focusComposerId = composerId;
-      toast('Reply added');
+      focusComposerId = shouldOpenTaskThread && result.createdTaskMessage?.id ? composerIdFor('thread', result.createdTaskMessage.id) : composerId;
+      toast(shouldOpenTaskThread ? 'Task created' : 'Reply added');
     }
     if (form.id === 'channel-form') {
       const agentIds = [...form.querySelectorAll('input[name="agentIds"]:checked')].map((el) => el.value);

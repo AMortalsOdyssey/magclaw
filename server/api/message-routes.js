@@ -10,6 +10,7 @@ import {
   compactConversationReferenceText,
   normalizeStoredConversationReferences,
 } from '../conversation-references.js';
+import { createTaskStartupCollaboration } from '../task-startup-collaboration.js';
 
 const MESSAGE_REACTION_OPTIONS = [
   { key: 'thumbs_up', emoji: '👍' },
@@ -41,6 +42,7 @@ export async function handleMessageApi(req, res, url, deps) {
     addCollabEvent,
     addSystemEvent,
     addSystemReply,
+    addTaskHistory,
     agentAvailableForAutoWork,
     agentCapabilityQuestionIntent,
     agentMemoryWriteIntent,
@@ -49,11 +51,14 @@ export async function handleMessageApi(req, res, url, deps) {
     broadcastState,
     channelAgentIds,
     channelHumanIds,
+    claimTask,
     createOrClaimTaskForMessage,
     createTaskFromMessage,
+    createTaskMessage,
     createTaskFromThreadIntent,
     currentActor,
     deliverMessageToAgent,
+    displayActor,
     extractMentions,
     findAgent,
     findChannel,
@@ -78,6 +83,7 @@ export async function handleMessageApi(req, res, url, deps) {
     pickAvailableAgent,
     readJson,
     routeMessageForChannel,
+    routeTaskAssignees,
     routeThreadReplyForChannel,
     recordAgentPermissionGrant,
     recordConversationGrant,
@@ -86,14 +92,17 @@ export async function handleMessageApi(req, res, url, deps) {
     sendError,
     sendJson,
     stopTaskFromThread,
+    taskAssignmentDeliveryMessage,
     taskCreationIntent,
     taskEndIntent,
     taskStopIntent,
     taskThreadDeliveryMessage,
+    taskLabel,
     textAddressesAgent,
     userPreferenceIntent,
   } = deps;
   const state = getState();
+  const { startTaskStartupCollaboration } = createTaskStartupCollaboration(deps);
 
   function publicRouteDecision(routeDecision) {
     if (!routeDecision) return null;
@@ -161,6 +170,38 @@ export async function handleMessageApi(req, res, url, deps) {
       .filter((item) => item.index >= 0 && matcher(item.actor, text))
       .sort((a, b) => a.index - b.index || a.fallbackIndex - b.fallbackIndex)
       .map((item) => item.actor);
+  }
+
+  function taskCandidateIdsFromChannel(channelAgents, mentions, text) {
+    const named = actorsNamedInText(channelAgents, text, textAddressesAgent).map((agent) => agent.id);
+    const explicit = normalizeIds([...(mentions?.agents || []), ...named]);
+    return explicit.length ? explicit : channelAgents.map((agent) => agent.id);
+  }
+
+  function taskCandidateIdsFromThread(parentMessage, reply, channelAgents, mentions, linkedTask) {
+    const channelAgentIdsSet = new Set((channelAgents || []).map((agent) => agent.id));
+    const named = actorsNamedInText(channelAgents, reply?.body || '', textAddressesAgent).map((agent) => agent.id);
+    const parentAuthor = String(parentMessage?.authorId || '').startsWith('agt_') ? [parentMessage.authorId] : [];
+    const replyAuthor = String(reply?.authorId || '').startsWith('agt_') ? [reply.authorId] : [];
+    const threadReplyAuthors = safeThreadReplies(parentMessage?.id)
+      .map((item) => String(item?.authorId || ''))
+      .filter((id) => id.startsWith('agt_'));
+    const ids = normalizeIds([
+      ...(mentions?.agents || []),
+      ...named,
+      ...parentAuthor,
+      ...replyAuthor,
+      ...threadReplyAuthors,
+      ...(linkedTask?.claimedBy ? [linkedTask.claimedBy] : []),
+      ...(linkedTask?.assigneeIds || []),
+      ...(parentMessage?.mentionedAgentIds || []),
+    ]).filter((id) => channelAgentIdsSet.has(id));
+    return ids.length ? ids : (channelAgents || []).map((agent) => agent.id);
+  }
+
+  function safeThreadReplies(parentMessageId) {
+    if (!parentMessageId) return [];
+    return (state.replies || []).filter((reply) => reply.parentMessageId === parentMessageId);
   }
 
   function dmAgent(spaceId) {
@@ -1035,26 +1076,34 @@ export async function handleMessageApi(req, res, url, deps) {
         const channelAgents = channelAgentIds(channel)
           .map(id => findAgent(id))
           .filter(Boolean);
-        routeDecision = await routeMessageForChannel({
-          channelAgents,
-          mentions,
-          message,
-          spaceId,
-        });
-        respondingAgents = routeDecision.targetAgentIds
-          .map((id) => channelAgents.find((agent) => agent.id === id))
-          .filter(Boolean);
-        const claimant = routeDecision.claimantAgentId
-          ? channelAgents.find((agent) => agent.id === routeDecision.claimantAgentId)
-          : null;
-        if (claimant && routeDecision.mode === 'task_claim' && routeDecision.taskIntent) {
-          task = createOrClaimTaskForMessage(message, claimant, {
-            title: body.taskTitle || routeDecision.taskIntent.title || text,
-            createdBy: message.authorId,
+        if (body.asTask && task) {
+          const selectedTaskAgentIds = taskCandidateIdsFromChannel(channelAgents, mentions, text);
+          await startTaskStartupCollaboration(task, message, selectedTaskAgentIds);
+        } else {
+          routeDecision = await routeMessageForChannel({
+            channelAgents,
+            mentions,
+            message,
+            spaceId,
           });
-          message.taskId = task.id;
+          respondingAgents = routeDecision.targetAgentIds
+            .map((id) => channelAgents.find((agent) => agent.id === id))
+            .filter(Boolean);
+          const claimant = routeDecision.claimantAgentId
+            ? channelAgents.find((agent) => agent.id === routeDecision.claimantAgentId)
+            : null;
+          if (claimant && routeDecision.mode === 'task_claim' && routeDecision.taskIntent) {
+            task = createOrClaimTaskForMessage(message, claimant, {
+              title: body.taskTitle || routeDecision.taskIntent.title || text,
+              createdBy: message.authorId,
+            });
+            message.taskId = task.id;
+          }
         }
       }
+    } else if (message.authorType === 'human' && spaceType === 'dm' && body.asTask && task) {
+      const agent = dmAgent(spaceId);
+      if (agent) await startTaskStartupCollaboration(task, message, [agent.id]);
     }
 
     const peerMemorySearch = await buildPeerMemorySearchContext({
@@ -1079,7 +1128,7 @@ export async function handleMessageApi(req, res, url, deps) {
 
     // Delivery happens after the message is durably stored so a background
     // Agent turn can always read the source record and thread context.
-    if (message.authorType === 'human') {
+    if (message.authorType === 'human' && !body.asTask) {
       if (spaceType === 'dm') {
         const dm = state.dms.find(d => d.id === spaceId);
         if (dm) {
@@ -1185,10 +1234,7 @@ export async function handleMessageApi(req, res, url, deps) {
       return true;
     }
     const body = await readJson(req);
-    if (body.asTask) {
-      sendError(res, 400, 'Thread replies cannot become tasks. Create a new top-level task message instead.');
-      return true;
-    }
+    const replyAsTask = Boolean(body.asTask);
 	    const text = String(body.body || '').trim();
 	    const attachmentIds = Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String) : [];
 	    const mentions = extractMentions(text);
@@ -1252,7 +1298,37 @@ export async function handleMessageApi(req, res, url, deps) {
       endedThreadTask = linkedTask;
       addSystemReply(message.id, 'Task marked done from thread request.');
     }
-    if (reply.authorType === 'human' && message.spaceType === 'channel' && taskCreationIntent(text)) {
+    if (reply.authorType === 'human' && replyAsTask && message.spaceType === 'channel') {
+      const channel = findChannel(message.spaceId);
+      const channelAgents = channel
+        ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
+        : [];
+      const selectedTaskAgentIds = taskCandidateIdsFromThread(message, reply, channelAgents, mentions, linkedTask);
+      if (selectedTaskAgentIds.length && typeof createTaskMessage === 'function') {
+        const threadTaskBody = [
+          `Created from thread in ${message.spaceType}:${message.spaceId}.`,
+          '',
+          `Parent: ${message.body || ''}`,
+          `Trigger: ${reply.body || ''}`,
+        ].join('\n');
+        const created = createTaskMessage({
+          title: text || message.body || 'Thread task',
+          body: threadTaskBody,
+          workspaceId: replyWorkspaceId,
+          spaceType: message.spaceType,
+          spaceId: message.spaceId,
+          authorType: reply.authorType,
+          authorId: reply.authorId,
+          assigneeIds: selectedTaskAgentIds,
+          attachmentIds,
+          sourceMessageId: message.id,
+          sourceReplyId: reply.id,
+        });
+        createdThreadTask = created.task;
+        createdThreadTaskMessage = created.message;
+        await startTaskStartupCollaboration(created.task, created.message, selectedTaskAgentIds);
+      }
+    } else if (reply.authorType === 'human' && message.spaceType === 'channel' && taskCreationIntent(text)) {
       const channel = findChannel(message.spaceId);
       const channelAgents = channel
         ? channelAgentIds(channel).map(id => findAgent(id)).filter(Boolean)
@@ -1283,7 +1359,7 @@ export async function handleMessageApi(req, res, url, deps) {
     await persistConversationState(reply, message.spaceType, message.spaceId, req);
     broadcastState();
 
-    if (createdThreadTask && createdThreadTaskMessage) {
+    if (createdThreadTask && createdThreadTaskMessage && !createdThreadTask.metadata?.startupCollaboration) {
       const taskAgent = findAgent(createdThreadTask.claimedBy || createdThreadTask.assigneeId);
       if (taskAgent) {
         const taskDeliveryMessage = taskThreadDeliveryMessage(createdThreadTask, createdThreadTaskMessage, reply, taskAgent);

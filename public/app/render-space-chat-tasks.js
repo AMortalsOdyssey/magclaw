@@ -1729,9 +1729,6 @@ function renderTaskToolbar(tasks, filteredTasks) {
 }
 
 function renderTaskCard(task) {
-  const assigneeIds = task.assigneeIds?.length ? task.assigneeIds : (task.assigneeId ? [task.assigneeId] : []);
-  const assignee = assigneeIds.length ? assigneeIds.map(displayName).join(', ') : 'unassigned';
-  const creator = task.createdBy ? displayName(task.createdBy) : 'Unknown';
   const thread = taskThreadMessage(task);
   const active = threadMessageId === thread?.id ? ' active' : '';
   return `
@@ -1741,10 +1738,6 @@ function renderTaskCard(task) {
         ${renderTaskInlineBadge(task, { showAssignee: false, hover: false, interactive: false })}
       </div>
       <strong class="task-card-title">${escapeHtml(plainMentionText(task.title || 'Untitled task'))}</strong>
-      <div class="task-card-foot">
-        <small>creator @${escapeHtml(creator)}</small>
-        <small>assignee @${escapeHtml(assignee)}</small>
-      </div>
     </button>
   `;
 }

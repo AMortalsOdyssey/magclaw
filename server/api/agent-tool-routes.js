@@ -2,10 +2,12 @@
 // These endpoints are called by running Agents, not by the human UI. They let an
 // Agent inspect bounded history, send a routed response tied to a work item, and
 // create/claim/update tasks without reaching across channel boundaries.
+import { createTaskStartupCollaboration } from '../task-startup-collaboration.js';
 
 export async function handleAgentToolApi(req, res, url, deps) {
   const {
     addSystemEvent,
+    addTaskHistory,
     broadcastState,
     cancelReminder,
     claimTask,
@@ -35,6 +37,8 @@ export async function handleAgentToolApi(req, res, url, deps) {
     readJson,
     resolveConversationSpace,
     resolveMessageTarget,
+    routeTaskAssignees,
+    scheduleAgentMemoryWriteback,
     listReminders,
     searchAgentMessageHistory,
     searchAgentMemory,
@@ -42,11 +46,13 @@ export async function handleAgentToolApi(req, res, url, deps) {
     sendJson,
     submitAgentMarkdownOperation = null,
     taskLabel,
+    taskAssignmentDeliveryMessage,
     updateTaskForAgent,
     writeAgentMemoryUpdate,
     workItemTargetMatches,
   } = deps;
   const state = getState();
+  const { startTaskStartupCollaboration } = createTaskStartupCollaboration(deps);
   const TASK_CREATE_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
   const PROACTIVE_MESSAGE_DEDUPE_WINDOW_MS = 3 * 1000;
 
@@ -1586,7 +1592,11 @@ export async function handleAgentToolApi(req, res, url, deps) {
           sourceMessageId,
           sourceReplyId,
         });
-        if (body.claim) claimTask(task, agent.id, { force: body.force });
+        const shouldStartCollaboration = assigneeIds.length > 1 && typeof routeTaskAssignees === 'function';
+        if (body.claim && !shouldStartCollaboration) claimTask(task, agent.id, { force: body.force });
+        if (shouldStartCollaboration) {
+          await startTaskStartupCollaboration(task, message, assigneeIds);
+        }
         createdCount += 1;
         created.push({
           task,

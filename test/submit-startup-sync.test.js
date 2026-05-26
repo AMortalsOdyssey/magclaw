@@ -73,7 +73,7 @@ test('message and reply submits render an optimistic local record before waiting
   assert.match(messageFormSource, /applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticMessage\.id \}\)/);
   assert.match(replyFormSource, /const optimisticReply = optimisticConversationRecord\(\{[\s\S]*kind: 'reply'[\s\S]*applySubmittedConversationResult\(\{ reply: optimisticReply \}\)/);
   assert.match(replyFormSource, /const references = typeof outgoingComposerReferences === 'function' \? outgoingComposerReferences\(composerId\) : \[\]/);
-  assert.match(replyFormSource, /body: JSON\.stringify\(\{ body: encodedBody, attachmentIds, references \}\)/);
+  assert.match(replyFormSource, /body: JSON\.stringify\(\{ body: encodedBody, asTask: shouldOpenTaskThread, attachmentIds, references \}\)/);
   assert.ok(
     replyFormSource.indexOf('applySubmittedConversationResult({ reply: optimisticReply })') < replyFormSource.indexOf('result = await api'),
     'reply optimistic render must happen before awaiting the API',
@@ -116,7 +116,7 @@ test('successful message and reply submits skip the final full state refresh aft
     'reply submit should only skip the final refresh after the server result is locally merged',
   );
   assert.ok(
-    replyFormSource.indexOf('skipFinalRefresh = true') < replyFormSource.indexOf("toast('Reply added')"),
+    replyFormSource.indexOf('skipFinalRefresh = true') < replyFormSource.indexOf("toast(shouldOpenTaskThread ? 'Task created' : 'Reply added')"),
     'reply submit should suppress the final full refresh on the normal success path',
   );
 });

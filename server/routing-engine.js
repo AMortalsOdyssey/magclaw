@@ -1058,6 +1058,9 @@ export function createRoutingEngine(deps) {
       selectedAgentIds: normalizeIds(decision?.selectedAgentIds || []),
       ownerAgentId: decision?.ownerAgentId ? String(decision.ownerAgentId) : claimantAgentId,
       collaboratorAgentIds: normalizeIds(decision?.collaboratorAgentIds || []),
+      participantAgentIds: normalizeIds(decision?.participantAgentIds || []),
+      cappedAgentIds: normalizeIds(decision?.cappedAgentIds || []),
+      maxParticipants: Number.isFinite(Number(decision?.maxParticipants)) ? Number(decision.maxParticipants) : null,
       fallbackReason: decision?.fallbackReason ? String(decision.fallbackReason) : null,
     };
   }
@@ -1349,6 +1352,7 @@ export function createRoutingEngine(deps) {
   async function routeTaskAssignees({
     selectedAgents = [],
     selectedAgentIds = [],
+    maxParticipants = 4,
     message,
     task,
     spaceId,
@@ -1363,6 +1367,7 @@ export function createRoutingEngine(deps) {
       .map((id) => selectedById.get(id) || findAgent(id))
       .filter(Boolean));
     const candidateIds = candidates.map((agent) => agent.id);
+    const participantLimit = Math.max(1, Number(maxParticipants || 4));
     const baseEvidence = [
       routeEvidence('router', 'task_owner_selection'),
       routeEvidence('selected_agents', selectedIds.join(', ') || 'none'),
@@ -1411,6 +1416,9 @@ export function createRoutingEngine(deps) {
         selectedAgentIds: selectedIds,
         ownerAgentId: owner.id,
         collaboratorAgentIds: [],
+        participantAgentIds: [owner.id],
+        cappedAgentIds: candidateIds.slice(participantLimit),
+        maxParticipants: participantLimit,
         strategy: 'single_selected_agent',
       }, candidates);
       const routeEvent = addRouteEvent(decision, { message, spaceId });
@@ -1500,9 +1508,14 @@ export function createRoutingEngine(deps) {
       };
     }
 
-    const collaboratorIds = owner
+    const availableCollaboratorIds = owner
       ? candidateIds.filter((id) => id !== owner.id)
       : [];
+    const collaboratorIds = availableCollaboratorIds.slice(0, Math.max(0, participantLimit - 1));
+    const participantAgentIds = owner ? [owner.id, ...collaboratorIds] : [];
+    const cappedAgentIds = owner
+      ? availableCollaboratorIds.slice(Math.max(0, participantLimit - 1))
+      : candidateIds.slice(participantLimit);
     const decision = normalizeRouteDecision({
       ...baseDecision,
       mode: 'task_claim',
@@ -1511,13 +1524,23 @@ export function createRoutingEngine(deps) {
       selectedAgentIds: selectedIds,
       ownerAgentId: owner?.id || null,
       collaboratorAgentIds: collaboratorIds,
+      participantAgentIds,
+      cappedAgentIds,
+      maxParticipants: participantLimit,
       taskIntent,
+      evidence: [
+        ...(baseDecision.evidence || []),
+        routeEvidence('startup_participants', participantAgentIds.join(', ') || 'none'),
+        cappedAgentIds.length ? routeEvidence('startup_capped_agents', cappedAgentIds.join(', ')) : null,
+      ].filter(Boolean),
     }, candidates);
     const routeEvent = addRouteEvent(decision, { message, spaceId });
     return {
       ...decision,
       ownerAgentId: owner?.id || null,
       collaboratorAgentIds: collaboratorIds,
+      participantAgentIds,
+      cappedAgentIds,
       routeEvent,
     };
   }

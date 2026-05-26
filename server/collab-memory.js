@@ -131,6 +131,10 @@ export function createCollabMemoryManager(deps) {
     }
     if (payload.task) {
       const task = payload.task;
+      if (trigger === 'task_collaboration') {
+        const peers = payload.peerAgentIds?.map(displayActor).join(', ') || 'none';
+        return `- ${stamp} [${trigger}] ${taskLabel(task)} ${markdownBulletText(task.title)} role=${payload.role || 'participant'} peers=${markdownBulletText(peers)} pattern=read-prior-thread-replies-and-add-new-value`;
+      }
       return `- ${stamp} [${trigger}] ${taskLabel(task)} ${markdownBulletText(task.title)} status=${task.status || 'todo'} channel=${spaceDisplayName(task.spaceType, task.spaceId)}`;
     }
     if (payload.channel) {

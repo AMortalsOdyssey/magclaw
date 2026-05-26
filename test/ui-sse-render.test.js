@@ -92,7 +92,7 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(app, /function applyRunEventUpdate\(incoming\)/);
   assert.match(app, /function applyPresenceHeartbeat\(heartbeat\)/);
   assert.match(app, /function patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector = false \} = \{\}\)/);
-  assert.match(app, /function patchActiveThreadSurface\(scrollSnapshot\)/);
+  assert.match(app, /function patchActiveThreadSurface\(scrollSnapshot, \{ visibleChanged = true \} = \{\}\)/);
   assert.match(app, /function patchThreadReplyList\(context, replies\)/);
   assert.match(app, /function activeConversationSignature\(stateSnapshot = appState\)/);
   assert.match(connectEventsSource, /addEventListener\('state-delta'[\s\S]*applyStateDeltaEnvelope\(JSON\.parse\(event\.data\)\)/);
@@ -103,7 +103,7 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(connectEventsSource, /applyRunEventUpdate\(incoming\)/);
   assert.match(connectEventsSource, /eventSource\.addEventListener\('heartbeat'/);
   assert.match(connectEventsSource, /applyPresenceHeartbeat\(JSON\.parse\(event\.data\)\)/);
-  assert.match(app, /if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;\n  if \(patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: activeConversationChanged \|\| unreadChanged \}\)\) return;/);
+  assert.match(app, /if \(patchActiveThreadSurface\(scrollSnapshot, \{ visibleChanged: activeConversationChanged \}\)\) return;\n  if \(patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: activeConversationChanged \|\| unreadChanged \}\)\) return;/);
   assert.match(app, /syncRecordList\(list, spaceMessages\(\), renderMessage, 'messageId', emptyHtml\)/);
   assert.match(app, /syncRecordList\(list, replies, renderReply, 'replyId', ''\)/);
   assert.equal(
@@ -223,7 +223,7 @@ test('unread count changes do not force full render before active chat patching'
     app.indexOf('function applyStateUpdate(nextState)'),
     app.indexOf('function applyRunEventUpdate(incoming)'),
   );
-  const beforePatchSource = applyStateSource.slice(0, applyStateSource.indexOf('if (patchActiveThreadSurface(scrollSnapshot)) return;'));
+  const beforePatchSource = applyStateSource.slice(0, applyStateSource.indexOf('if (patchActiveThreadSurface(scrollSnapshot, { visibleChanged: activeConversationChanged })) return;'));
 
   assert.match(app, /function railUnreadSignature\(stateSnapshot = appState\)/);
   assert.match(app, /function patchRailSurface\(/);
@@ -234,7 +234,7 @@ test('unread count changes do not force full render before active chat patching'
   assert.match(app, /const unreadChanged = unreadBefore !== railUnreadSignature\(\)/);
   assert.doesNotMatch(beforePatchSource, /selectionChanged \|\| unreadChanged/);
   assert.doesNotMatch(beforePatchSource, /if \([^{]*unreadChanged[^{]*\) \{\s*render\(\)/);
-  assert.match(applyStateSource, /if \(selectionChanged\) \{[\s\S]*render\(\);\s*return;\s*\}[\s\S]*if \(serverSettingsUnchanged\) \{[\s\S]*return;\s*\}[\s\S]*if \(serverProfileOnlyChanged \|\| serverProfileEcho\) \{[\s\S]*return;\s*\}[\s\S]*if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;[\s\S]*if \(patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: activeConversationChanged \|\| unreadChanged \}\)\) return;/);
+  assert.match(applyStateSource, /if \(selectionChanged\) \{[\s\S]*render\(\);\s*return;\s*\}[\s\S]*if \(serverSettingsUnchanged\) \{[\s\S]*return;\s*\}[\s\S]*if \(serverProfileOnlyChanged \|\| serverProfileEcho\) \{[\s\S]*return;\s*\}[\s\S]*if \(patchActiveThreadSurface\(scrollSnapshot, \{ visibleChanged: activeConversationChanged \}\)\) return;[\s\S]*if \(patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: activeConversationChanged \|\| unreadChanged \}\)\) return;/);
 });
 
 test('background state updates do not repaint unchanged server settings forms', async () => {
@@ -281,7 +281,7 @@ test('background state updates do not repaint unchanged agent detail runtime for
   assert.doesNotMatch(
     applyStateSource.slice(
       applyStateSource.indexOf('if (agentDetailVisible)'),
-      applyStateSource.indexOf('if (patchActiveThreadSurface(scrollSnapshot)) return;'),
+      applyStateSource.indexOf('if (patchActiveThreadSurface(scrollSnapshot, { visibleChanged: activeConversationChanged })) return;'),
     ),
     /render\(\)/,
   );
@@ -462,7 +462,7 @@ test('full refresh fallback preserves chat, thread, and page scroll positions', 
   assert.match(renderSource, /const scrollSnapshot = \{[\s\S]*main: paneScrollSnapshot\('main'\),[\s\S]*thread: paneScrollSnapshot\('thread'\),[\s\S]*page: pageScrollSnapshot\(\)/);
   assert.match(renderSource, /root\.innerHTML = `[\s\S]*window\.requestAnimationFrame\(\(\) => \{[\s\S]*restorePaneScrolls\(scrollSnapshot\);[\s\S]*restorePageScroll\(scrollSnapshot\.page\)/);
   assert.match(applyStateSource, /const scrollSnapshot = \{[\s\S]*main: paneScrollSnapshot\('main'\),[\s\S]*thread: paneScrollSnapshot\('thread'\),[\s\S]*page: pageScrollSnapshot\(\)/);
-  assert.match(applyStateSource, /if \(patchActiveThreadSurface\(scrollSnapshot\)\) return;[\s\S]*if \(patchActiveConversationSurface\(scrollSnapshot,[\s\S]*\) return;[\s\S]*render\(\);/);
+  assert.match(applyStateSource, /if \(patchActiveThreadSurface\(scrollSnapshot, \{ visibleChanged: activeConversationChanged \}\)\) return;[\s\S]*if \(patchActiveConversationSurface\(scrollSnapshot,[\s\S]*\) return;[\s\S]*render\(\);/);
   assert.match(paneRestoreSource, /const forceBottom = pendingBottomScroll\[targetName\]/);
   assert.match(paneRestoreSource, /const shouldFollowBottom = forceBottom \|\| \(hasPosition \? candidate\.atBottom : targetDefaultAtBottom\(targetName\)\)/);
   assert.match(paneRestoreSource, /if \(!shouldFollowBottom && hasPosition\) \{[\s\S]*node\.scrollTop = Math\.min\(Math\.max\(0, candidate\.top \|\| 0\), maxTop\)/);
