@@ -554,6 +554,71 @@ test('full refresh fallback preserves chat, thread, and page scroll positions', 
   assert.match(paneRestoreSource, /if \(!shouldFollowBottom && hasPosition\) \{[\s\S]*node\.scrollTop = Math\.min\(Math\.max\(0, candidate\.top \|\| 0\), maxTop\)/);
 });
 
+test('full refresh fallback restores focused thread composer draft and caret', async () => {
+  const app = await readAppSource();
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
+  const focusStart = app.indexOf('function composerFocusSnapshot()');
+  const focusEnd = app.indexOf('function focusComposerTextarea');
+  assert.notEqual(focusStart, -1);
+  assert.notEqual(focusEnd, -1);
+  const helpersSource = app.slice(focusStart, focusEnd);
+  const context = {
+    CSS: { escape: (value) => String(value).replace(/"/g, '\\"') },
+    composerDrafts: {},
+    document: {
+      activeElement: null,
+      querySelector: () => null,
+    },
+  };
+  const focusedTextarea = {
+    dataset: { composerId: 'thread:msg_parent' },
+    value: 'draft before repaint',
+    selectionStart: 7,
+    selectionEnd: 12,
+    matches: (selector) => selector === 'textarea[data-composer-id]',
+  };
+  context.document.activeElement = focusedTextarea;
+  const helpers = vm.runInNewContext(`${helpersSource}; ({ composerFocusSnapshot, restoreComposerFocus });`, context);
+
+  const snapshot = helpers.composerFocusSnapshot();
+  assert.deepEqual(JSON.parse(JSON.stringify(snapshot)), {
+    composerId: 'thread:msg_parent',
+    value: 'draft before repaint',
+    selectionStart: 7,
+    selectionEnd: 12,
+  });
+
+  let preventScroll = false;
+  const restoredTextarea = {
+    dataset: { composerId: 'thread:msg_parent' },
+    value: '',
+    selectionStart: 0,
+    selectionEnd: 0,
+    matches: () => true,
+    focus(options) {
+      preventScroll = Boolean(options?.preventScroll);
+      context.document.activeElement = this;
+    },
+    setSelectionRange(start, end) {
+      this.selectionStart = start;
+      this.selectionEnd = end;
+    },
+  };
+  context.document.querySelector = (selector) => (
+    selector === 'textarea[data-composer-id="thread:msg_parent"]' ? restoredTextarea : null
+  );
+
+  assert.equal(helpers.restoreComposerFocus(snapshot), true);
+  assert.equal(context.document.activeElement, restoredTextarea);
+  assert.equal(restoredTextarea.value, 'draft before repaint');
+  assert.equal(restoredTextarea.selectionStart, 7);
+  assert.equal(restoredTextarea.selectionEnd, 12);
+  assert.equal(context.composerDrafts['thread:msg_parent'], 'draft before repaint');
+  assert.equal(preventScroll, true);
+  assert.match(renderSource, /const composerFocus = composerFocusSnapshot\(\)/);
+  assert.match(renderSource, /restoreComposerFocus\(composerFocus\);[\s\S]*restorePendingComposerFocus\(\)/);
+});
+
 test('task clicks merge returned task updates before falling back to full refresh', async () => {
   const app = await readAppSource();
   const mergeSource = app.slice(

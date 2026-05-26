@@ -27,6 +27,7 @@ function render() {
   const profileFocus = profileFormFocusSnapshot();
   const agentDetailFocus = agentDetailFieldFocusSnapshot();
   const computerNameFocus = computerNameFieldFocusSnapshot();
+  const composerFocus = composerFocusSnapshot();
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
@@ -60,6 +61,7 @@ function render() {
       restoreProfileFormFocus(profileFocus);
       restoreAgentDetailFieldFocus(agentDetailFocus);
       restoreComputerNameFieldFocus(computerNameFocus);
+      restoreComposerFocus(composerFocus);
       restorePendingComposerFocus();
       if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
         workspaceActivityScrollToBottom = false;
@@ -104,6 +106,7 @@ function render() {
     restoreProfileFormFocus(profileFocus);
     restoreAgentDetailFieldFocus(agentDetailFocus);
     restoreComputerNameFieldFocus(computerNameFocus);
+    restoreComposerFocus(composerFocus);
     restorePendingComposerFocus();
     if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
       workspaceActivityScrollToBottom = false;

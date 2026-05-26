@@ -661,6 +661,42 @@ function scrollWorkspaceActivityToBottom(behavior = 'auto') {
   window.setTimeout(scroll, 120);
 }
 
+function composerFocusSnapshot() {
+  const textarea = document.activeElement;
+  if (!textarea?.matches?.('textarea[data-composer-id]')) return null;
+  const composerId = textarea.dataset?.composerId || '';
+  if (!composerId) return null;
+  const value = textarea.value || '';
+  const end = value.length;
+  const selectionStart = Number.isFinite(textarea.selectionStart) ? textarea.selectionStart : end;
+  const selectionEnd = Number.isFinite(textarea.selectionEnd) ? textarea.selectionEnd : selectionStart;
+  return {
+    composerId,
+    value,
+    selectionStart,
+    selectionEnd,
+  };
+}
+
+function restoreComposerFocus(snapshot) {
+  if (!snapshot?.composerId) return false;
+  const textarea = document.querySelector(`textarea[data-composer-id="${CSS.escape(snapshot.composerId)}"]`);
+  if (!textarea) return false;
+  const value = String(snapshot.value ?? composerDrafts[snapshot.composerId] ?? textarea.value ?? '');
+  if (textarea.value !== value) textarea.value = value;
+  composerDrafts[snapshot.composerId] = value;
+  try {
+    textarea.focus({ preventScroll: true });
+  } catch {
+    textarea.focus();
+  }
+  const max = textarea.value.length;
+  const selectionStart = Math.max(0, Math.min(Number(snapshot.selectionStart ?? max), max));
+  const selectionEnd = Math.max(0, Math.min(Number(snapshot.selectionEnd ?? selectionStart), max));
+  if (typeof textarea.setSelectionRange === 'function') textarea.setSelectionRange(selectionStart, selectionEnd);
+  return document.activeElement === textarea;
+}
+
 function focusComposerTextarea(composerId) {
   if (!composerId) return false;
   const textarea = document.querySelector(`textarea[data-composer-id="${CSS.escape(composerId)}"]`);
