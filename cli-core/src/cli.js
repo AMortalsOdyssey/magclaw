@@ -12,7 +12,7 @@ import { renderListProfiles, shouldUseColor } from './list-renderer.js';
 export const DEFAULT_PROFILE = 'default';
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
 const DEFAULT_DAEMON_HEARTBEAT_MS = 25_000;
-const DEFAULT_DAEMON_INBOUND_WATCHDOG_MS = 70_000;
+const DEFAULT_DAEMON_INBOUND_WATCHDOG_MS = 15_000;
 const DEFAULT_DAEMON_RECONNECT_MIN_MS = 1_000;
 const DEFAULT_DAEMON_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_MAX_CONCURRENT_AGENT_STARTS = 5;
@@ -3613,7 +3613,7 @@ class MagClawDaemon {
     } else {
       logInfo('daemon', 'Foreground close request did not stop background service.');
     }
-    this.close();
+    this.close({ notify: false, reason: 'cloud_close' });
     process.exitCode = 0;
     setTimeout(() => process.exit(0), 50).unref?.();
   }
@@ -3856,7 +3856,7 @@ class MagClawDaemon {
         break;
       case 'token:revoked':
         logError('daemon', 'Machine token was revoked by the server.');
-        this.close();
+        this.close({ notify: false, reason: 'token_revoked' });
         process.exitCode = 2;
         break;
       default:
@@ -4134,8 +4134,29 @@ class MagClawDaemon {
     });
   }
 
-  close() {
+  sendStoppingNotice(reason = 'local_stop') {
+    const packageInfo = runtimePackageInfo(this.env);
+    const sent = this.send({
+      type: 'daemon:stopping',
+      time: now(),
+      reason,
+      computerId: this.config.computerId || null,
+      daemonVersion: packageInfo.version || DAEMON_VERSION,
+      packageName: packageInfo.name,
+      packageVersion: packageInfo.version,
+      packageKind: packageInfo.kind,
+      packageSpec: packageInfo.spec,
+      packageBin: packageInfo.bin,
+      runningAgents: [...this.sessions.keys()],
+    });
+    if (sent) logInfo('daemon', `Sent stopping notice (${reason}).`);
+    return sent;
+  }
+
+  close(options = {}) {
     if (this.closed) return;
+    const notify = options.notify !== false;
+    if (notify) this.sendStoppingNotice(options.reason || 'local_stop');
     this.closed = true;
     for (const session of this.sessions.values()) session.stop();
     this.sessions.clear();
@@ -4155,7 +4176,10 @@ class MagClawDaemon {
       this.request.destroy(new Error('MagClaw daemon is shutting down.'));
       this.request = null;
     }
-    if (this.socket && !this.socket.destroyed) this.socket.destroy();
+    if (this.socket && !this.socket.destroyed) {
+      if (notify) this.socket.end();
+      else this.socket.destroy();
+    }
     this.socket = null;
   }
 
@@ -5386,7 +5410,7 @@ async function runForegroundDaemon(config, env = process.env) {
   let forceExitTimer = null;
   const shutdown = (signal) => {
     process.exitCode = signal === 'SIGINT' ? 130 : 143;
-    daemon.close();
+    daemon.close({ reason: signal === 'SIGINT' ? 'sigint' : 'sigterm' });
     forceExitTimer ||= setTimeout(() => process.exit(process.exitCode || 1), 5000);
     forceExitTimer.unref?.();
   };

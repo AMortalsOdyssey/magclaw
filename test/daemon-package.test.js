@@ -179,7 +179,7 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.27');
+  assert.equal(DAEMON_VERSION, '0.1.28');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -219,15 +219,19 @@ test('daemon sends a periodic heartbeat while the websocket is connected', async
   assert.match(daemonSource, /MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS/);
   assert.match(daemonSource, /resetInboundWatchdog\(\)/);
   assert.match(daemonSource, /No inbound daemon traffic/);
+  assert.match(daemonSource, /type: 'daemon:stopping'/);
   assert.match(daemonSource, /MAGCLAW_DAEMON_RECONNECT_MAX_MS/);
   assert.match(daemonSource, /agent:activity_probe/);
   assert.match(daemonSource, /handleAgentActivityProbe\(message\)/);
   assert.match(relaySource, /case 'heartbeat':/);
   assert.match(relaySource, /MAGCLAW_DAEMON_PING_MS/);
   assert.match(relaySource, /MAGCLAW_DAEMON_ACTIVITY_PROBE_TIMEOUT_MS/);
-  assert.match(relaySource, /DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv\('MAGCLAW_DAEMON_RECONNECT_GRACE_MS', 60_000, \{ min: 0, max: 5 \* 60_000 \}\)/);
+  assert.match(relaySource, /DAEMON_PING_MS = readMsEnv\('MAGCLAW_DAEMON_PING_MS', 5_000, \{ min: 0, max: 10 \* 60_000 \}\)/);
+  assert.match(relaySource, /DAEMON_INBOUND_WATCHDOG_MS = readMsEnv\('MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS', 15_000, \{ min: 0, max: 10 \* 60_000 \}\)/);
+  assert.match(relaySource, /DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv\('MAGCLAW_DAEMON_RECONNECT_GRACE_MS', 10_000, \{ min: 0, max: 5 \* 60_000 \}\)/);
   assert.match(relaySource, /startConnectionPing\(connection\)/);
   assert.match(relaySource, /probeStaleAgentHeartbeats\(\)/);
+  assert.match(relaySource, /case 'daemon:stopping':/);
   assert.match(relaySource, /case 'pong':/);
   assert.match(relaySource, /computer\.status = 'connected'/);
 });

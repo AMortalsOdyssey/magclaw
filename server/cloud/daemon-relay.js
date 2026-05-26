@@ -6,12 +6,12 @@ const MACHINE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 365;
 const COMPUTER_SETUP_TTL_MS = 1000 * 60 * 10;
 const MAX_DAEMON_EVENT_LOG = 300;
 const SENT_DELIVERY_RETRY_TTL_MS = Math.max(1000, Number(process.env.MAGCLAW_DAEMON_SENT_RETRY_TTL_MS || 1000 * 60 * 2));
-const DAEMON_PING_MS = readMsEnv('MAGCLAW_DAEMON_PING_MS', 30_000, { min: 0, max: 10 * 60_000 });
-const DAEMON_INBOUND_WATCHDOG_MS = readMsEnv('MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS', 70_000, { min: 0, max: 10 * 60_000 });
+const DAEMON_PING_MS = readMsEnv('MAGCLAW_DAEMON_PING_MS', 5_000, { min: 0, max: 10 * 60_000 });
+const DAEMON_INBOUND_WATCHDOG_MS = readMsEnv('MAGCLAW_DAEMON_INBOUND_WATCHDOG_MS', 15_000, { min: 0, max: 10 * 60_000 });
 const ACTIVITY_PROBE_TIMEOUT_MS = readMsEnv('MAGCLAW_DAEMON_ACTIVITY_PROBE_TIMEOUT_MS', 5_000, { min: 250, max: 60_000 });
 const DAEMON_RUNTIME_COALESCE_MS = readMsEnv('MAGCLAW_DAEMON_RUNTIME_COALESCE_MS', 3_000, { min: 250, max: 60_000 });
 const DAEMON_ACTIVITY_BROADCAST_MIN_MS = readMsEnv('MAGCLAW_DAEMON_ACTIVITY_BROADCAST_MIN_MS', 2_000, { min: 0, max: 60_000 });
-const DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv('MAGCLAW_DAEMON_RECONNECT_GRACE_MS', 60_000, { min: 0, max: 5 * 60_000 });
+const DEFAULT_DAEMON_RECONNECT_GRACE_MS = readMsEnv('MAGCLAW_DAEMON_RECONNECT_GRACE_MS', 10_000, { min: 0, max: 5 * 60_000 });
 const ACTIVE_DELIVERY_STATUSES = new Set(['queued', 'sent', 'acked']);
 const TERMINAL_DELIVERY_STATUSES = new Set(['completed', 'failed', 'stopped']);
 const VALID_DELIVERY_STATUSES = new Set([...ACTIVE_DELIVERY_STATUSES, ...TERMINAL_DELIVERY_STATUSES]);
@@ -1756,6 +1756,20 @@ export function createDaemonRelay(deps) {
     ).catch(() => {});
   }
 
+  function handleDaemonStopping(connection, message = {}) {
+    if (!connection?.computerId) return;
+    connection.forceOffline = true;
+    connection.disconnected = true;
+    connection.closed = true;
+    stopConnectionTimers(connection);
+    recordDaemonEvent('computer_stopping', `Computer stopping: ${findComputer(connection.computerId)?.name || connection.computerId}`, {
+      computerId: connection.computerId,
+      reason: String(message.reason || 'local_stop'),
+    });
+    finalizeComputerDisconnected(connection);
+    safeSocketDestroy(connection.socket);
+  }
+
   function adoptConnection(connection, computer, tokenRecord, connectionMetadata = {}) {
     clearPendingDisconnect(computer.id);
     const previous = connections.get(computer.id);
@@ -2569,6 +2583,9 @@ export function createDaemonRelay(deps) {
             },
           );
         }
+        break;
+      case 'daemon:stopping':
+        handleDaemonStopping(connection, message);
         break;
       case 'daemon:upgrade:ack':
         await handleDaemonUpgradeAck(connection, message);
