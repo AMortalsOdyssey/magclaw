@@ -388,25 +388,82 @@ function addSelectedMessagesReferenceToComposer() {
   });
 }
 
+function referenceJumpAfterRender(callback) {
+  const run = () => {
+    callback();
+    if (typeof window !== 'undefined' && typeof window.setTimeout === 'function') {
+      window.setTimeout(callback, 220);
+    }
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(run);
+    return;
+  }
+  run();
+}
+
+function referenceJumpRootRecord(sourceRecord, parentMessageId) {
+  if (sourceRecord?.parentMessageId) {
+    return conversationRecord(sourceRecord.parentMessageId) || null;
+  }
+  if (parentMessageId) return conversationRecord(parentMessageId) || sourceRecord || null;
+  return sourceRecord || null;
+}
+
+function referenceJumpTargetsReply(sourceRecord, sourceRecordId, parentMessageId) {
+  if (sourceRecord?.parentMessageId) return true;
+  return Boolean(sourceRecordId && parentMessageId && sourceRecordId !== parentMessageId);
+}
+
+function referenceJumpOpensThread(sourceRecord, sourceRecordId, parentMessageId) {
+  if (referenceJumpTargetsReply(sourceRecord, sourceRecordId, parentMessageId)) return true;
+  if (!sourceRecord) return Boolean(parentMessageId);
+  return Boolean(parentMessageId && parentMessageId === sourceRecord.id);
+}
+
+function referenceJumpSelectedRecordId(sourceRecord, rootRecord, sourceRecordId, parentMessageId) {
+  if (referenceJumpTargetsReply(sourceRecord, sourceRecordId, parentMessageId)) return sourceRecordId;
+  return (sourceRecord || rootRecord)?.id || '';
+}
+
+function scrollToReferenceRecord(sourceRecord, rootRecord, opensThread, sourceRecordId = '') {
+  if (rootRecord?.id && typeof scrollToMessage === 'function') scrollToMessage(rootRecord.id);
+  const replyId = sourceRecord?.parentMessageId
+    ? sourceRecord.id
+    : (opensThread && sourceRecordId && rootRecord?.id !== sourceRecordId ? sourceRecordId : '');
+  if (replyId && typeof scrollToReply === 'function') {
+    scrollToReply(replyId);
+  }
+}
+
 function jumpToConversationReferenceSource(sourceRecordId, parentMessageId = '') {
   const id = String(sourceRecordId || '').trim();
   const parentId = String(parentMessageId || '').trim();
-  const record = conversationRecord(id) || (parentId ? conversationRecord(parentId) : null);
-  if (!record) {
+  const sourceRecord = id ? conversationRecord(id) : null;
+  const rootRecord = referenceJumpRootRecord(sourceRecord, parentId);
+  const targetRecord = sourceRecord || rootRecord;
+  if (!targetRecord) {
     toast('Reference source is unavailable');
     return false;
   }
-  const space = referenceRecordSpace(record);
+  const space = referenceRecordSpace(targetRecord);
+  const opensThread = referenceJumpOpensThread(sourceRecord, id, parentId);
   selectedSpaceType = space.spaceType;
   selectedSpaceId = space.spaceId;
   activeView = 'space';
   activeTab = 'chat';
-  if (record.parentMessageId || parentId) threadMessageId = record.parentMessageId || parentId;
-  selectedSavedRecordId = record.id;
+  mobileHomeOpen = false;
+  workspaceActivityDrawerOpen = false;
+  selectedAgentId = null;
+  selectedTaskId = null;
+  selectedProjectFile = null;
+  threadMessageId = opensThread && rootRecord?.id ? rootRecord.id : null;
+  selectedSavedRecordId = referenceJumpSelectedRecordId(sourceRecord, rootRecord, id, parentId);
   render();
-  requestAnimationFrame(() => {
-    const elementId = record.parentMessageId ? `reply-${record.id}` : `message-${record.id}`;
-    document.getElementById(elementId)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (threadMessageId) refreshThreadSelection(threadMessageId);
+  else refreshThreadSelection(null, { loadReplies: false });
+  referenceJumpAfterRender(() => {
+    scrollToReferenceRecord(targetRecord, rootRecord, opensThread, id);
   });
   return true;
 }

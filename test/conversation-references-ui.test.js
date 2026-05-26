@@ -19,7 +19,23 @@ async function conversationReferenceHarness() {
     composerDrafts: {},
     composerMentionMaps: {},
     pendingComposerFocusId: '',
+    activeView: 'space',
+    activeTab: 'chat',
+    mobileHomeOpen: true,
+    workspaceActivityDrawerOpen: true,
+    selectedSavedRecordId: '',
+    selectedAgentId: 'agt_cindy',
+    selectedTaskId: 'task_1',
+    selectedProjectFile: 'README.md',
+    renderCalls: 0,
+    refreshThreadSelectionCalls: [],
+    scrollToMessageCalls: [],
+    scrollToReplyCalls: [],
+    delayedReferenceScrollDelays: [],
     byId: (items, id) => (items || []).find((item) => item.id === id) || null,
+    conversationRecord(id) {
+      return context.byId(context.appState.messages, id) || context.byId(context.appState.replies, id);
+    },
     shareRecords: [],
     displayName: (id) => ({ hum_owner: 'Owner', hum_guest: 'Guest', agt_cindy: 'Cindy' }[id] || id || 'Unknown'),
     composerIdFor(kind, id = 'main') {
@@ -36,6 +52,27 @@ async function conversationReferenceHarness() {
     fmtTime: (value) => value || '',
     escapeHtml: (value) => String(value ?? ''),
     toast: () => {},
+    render() {
+      context.renderCalls += 1;
+    },
+    refreshThreadSelection(messageId, options = {}) {
+      context.refreshThreadSelectionCalls.push({ messageId, options });
+    },
+    scrollToMessage(messageId) {
+      context.scrollToMessageCalls.push(messageId);
+    },
+    scrollToReply(replyId) {
+      context.scrollToReplyCalls.push(replyId);
+    },
+    requestAnimationFrame(callback) {
+      callback();
+    },
+    window: {
+      setTimeout(callback, delay) {
+        context.delayedReferenceScrollDelays.push(delay);
+        callback();
+      },
+    },
     document: {
       querySelector: () => null,
     },
@@ -51,6 +88,94 @@ async function conversationReferenceHarness() {
   vm.runInContext(source, context);
   return context;
 }
+
+test('reference source jump returns root messages to the main message list', async () => {
+  const context = await conversationReferenceHarness();
+  context.threadMessageId = 'msg_open_thread';
+  context.appState.messages = [
+    {
+      id: 'msg_source',
+      authorType: 'human',
+      authorId: 'hum_owner',
+      body: 'Original message',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+  ];
+
+  assert.equal(context.jumpToConversationReferenceSource('msg_source', ''), true);
+
+  assert.equal(context.threadMessageId, null);
+  assert.equal(context.selectedSavedRecordId, 'msg_source');
+  assert.equal(context.mobileHomeOpen, false);
+  assert.equal(context.workspaceActivityDrawerOpen, false);
+  assert.equal(context.selectedAgentId, null);
+  assert.equal(context.selectedTaskId, null);
+  assert.equal(context.selectedProjectFile, null);
+  assert.equal(context.refreshThreadSelectionCalls.length, 1);
+  assert.equal(context.refreshThreadSelectionCalls[0].messageId, null);
+  assert.equal(context.refreshThreadSelectionCalls[0].options.loadReplies, false);
+  assert.deepEqual(context.delayedReferenceScrollDelays, [220]);
+  assert.deepEqual(context.scrollToMessageCalls, ['msg_source', 'msg_source']);
+  assert.deepEqual(context.scrollToReplyCalls, []);
+});
+
+test('reference source jump opens the parent thread for reply sources', async () => {
+  const context = await conversationReferenceHarness();
+  context.appState.messages = [
+    {
+      id: 'msg_root',
+      authorType: 'human',
+      authorId: 'hum_owner',
+      body: 'Thread root',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+  ];
+  context.appState.replies = [
+    {
+      id: 'rep_source',
+      parentMessageId: 'msg_root',
+      authorType: 'agent',
+      authorId: 'agt_cindy',
+      body: 'Thread reply source',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+  ];
+
+  assert.equal(context.jumpToConversationReferenceSource('rep_source', 'msg_root'), true);
+
+  assert.equal(context.threadMessageId, 'msg_root');
+  assert.equal(context.selectedSavedRecordId, 'rep_source');
+  assert.deepEqual(context.refreshThreadSelectionCalls, [
+    { messageId: 'msg_root', options: {} },
+  ]);
+  assert.deepEqual(context.delayedReferenceScrollDelays, [220]);
+  assert.deepEqual(context.scrollToMessageCalls, ['msg_root', 'msg_root']);
+  assert.deepEqual(context.scrollToReplyCalls, ['rep_source', 'rep_source']);
+});
+
+test('reference source jump targets reply ids that are not hydrated yet', async () => {
+  const context = await conversationReferenceHarness();
+  context.appState.messages = [
+    {
+      id: 'msg_root',
+      authorType: 'human',
+      authorId: 'hum_owner',
+      body: 'Thread root',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+  ];
+
+  assert.equal(context.jumpToConversationReferenceSource('rep_missing', 'msg_root'), true);
+
+  assert.equal(context.threadMessageId, 'msg_root');
+  assert.equal(context.selectedSavedRecordId, 'rep_missing');
+  assert.deepEqual(context.scrollToMessageCalls, ['msg_root', 'msg_root']);
+  assert.deepEqual(context.scrollToReplyCalls, ['rep_missing', 'rep_missing']);
+});
 
 test('conversation reference normalization keeps the latest action for the same source message', async () => {
   const references = normalizeStoredConversationReferences([
