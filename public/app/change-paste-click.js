@@ -1515,11 +1515,11 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'set-agent-workspace-preview-mode') {
       agentWorkspacePreviewMode = target.dataset.mode || 'preview';
-      render();
+      renderAgentWorkspaceUpdate(selectedAgentId);
     }
     if (action === 'close-agent-workspace-file') {
       selectedAgentWorkspaceFile = null;
-      render();
+      renderAgentWorkspaceUpdate(selectedAgentId);
     }
     if (action === 'confirm-avatar-crop') {
       await confirmAvatarCropSelection();

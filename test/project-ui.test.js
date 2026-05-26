@@ -2904,8 +2904,19 @@ test('server profile saves patch settings and open thread surfaces without full 
 test('agent workspace tab has split tree and raw/preview markdown controls', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
+  const workspaceActionSource = app.slice(
+    app.indexOf('async function loadAgentWorkspace'),
+    app.indexOf('function clearAgentWorkspaceCaches'),
+  );
 
   assert.match(app, /function displayHomePath\(value = ''\)/);
+  assert.match(app, /function renderAgentDetailUpdate\(agentId\)/);
+  assert.match(app, /function renderAgentWorkspaceUpdate\(agentId\)/);
+  assert.match(app, /patchAgentDetailSurface\(\)/);
+  assert.match(workspaceActionSource, /async function loadAgentWorkspace\(agentId, relPath = '', \{ renderLoading = true, renderAfter = true \} = \{\}\)/);
+  assert.match(workspaceActionSource, /async function openAgentWorkspaceFile\(agentId, relPath = '', \{ renderLoading = true, renderAfter = true \} = \{\}\)/);
+  assert.match(workspaceActionSource, /await Promise\.all\(\[/);
+  assert.doesNotMatch(workspaceActionSource, /\n\s*render\(\);/);
   assert.match(app, /function renderAgentWorkspaceTab\(agent\)/);
   assert.match(app, /class="agent-workspace-tab"/);
   assert.match(app, /data-action="refresh-agent-workspace"/);

@@ -1149,10 +1149,22 @@ function agentWorkspaceIsExpanded(agentId, relPath = '') {
   return Boolean(expandedAgentWorkspaceTrees[agentWorkspaceKey(agentId, relPath)]);
 }
 
-async function loadAgentWorkspace(agentId, relPath = '') {
+function renderAgentDetailUpdate(agentId) {
+  if (selectedAgentId !== agentId) return;
+  const shell = document.querySelector('.agent-detail-shell');
+  if (shell && typeof patchAgentDetailSurface === 'function' && patchAgentDetailSurface()) return;
+  render();
+}
+
+function renderAgentWorkspaceUpdate(agentId) {
+  if (selectedAgentId !== agentId || normalizeAgentDetailTab(agentDetailTab) !== 'workspace') return;
+  renderAgentDetailUpdate(agentId);
+}
+
+async function loadAgentWorkspace(agentId, relPath = '', { renderLoading = true, renderAfter = true } = {}) {
   const key = agentWorkspaceKey(agentId, relPath);
   agentWorkspaceTreeCache[key] = { loading: true, entries: [], error: '' };
-  render();
+  if (renderLoading) renderAgentWorkspaceUpdate(agentId);
   try {
     const params = new URLSearchParams();
     if (relPath) params.set('path', relPath);
@@ -1161,53 +1173,66 @@ async function loadAgentWorkspace(agentId, relPath = '') {
   } catch (error) {
     agentWorkspaceTreeCache[key] = { loading: false, entries: [], error: error.message };
   }
-  render();
+  if (renderAfter) renderAgentWorkspaceUpdate(agentId);
 }
 
 async function toggleAgentWorkspace(agentId, relPath = '') {
   const key = agentWorkspaceKey(agentId, relPath);
   if (expandedAgentWorkspaceTrees[key]) {
     delete expandedAgentWorkspaceTrees[key];
-    render();
+    renderAgentWorkspaceUpdate(agentId);
     return;
   }
   expandedAgentWorkspaceTrees[key] = true;
   if (!agentWorkspaceTreeCache[key]) await loadAgentWorkspace(agentId, relPath);
-  else render();
+  else renderAgentWorkspaceUpdate(agentId);
 }
 
-async function openAgentWorkspaceFile(agentId, relPath = '') {
+async function openAgentWorkspaceFile(agentId, relPath = '', { renderLoading = true, renderAfter = true } = {}) {
   const key = agentWorkspaceKey(agentId, relPath);
   selectedAgentWorkspaceFile = { agentId, path: relPath };
   agentWorkspaceFilePreviews[key] = agentWorkspaceFilePreviews[key] || { loading: true, file: null, error: '' };
-  render();
+  if (renderLoading) renderAgentWorkspaceUpdate(agentId);
   try {
     const params = new URLSearchParams({ path: relPath });
     agentWorkspaceFilePreviews[key] = await api(`/api/agents/${encodeURIComponent(agentId)}/workspace/file?${params.toString()}`);
   } catch (error) {
     agentWorkspaceFilePreviews[key] = { loading: false, file: null, error: error.message };
   }
-  render();
+  if (renderAfter) renderAgentWorkspaceUpdate(agentId);
 }
 
 async function prepareAgentWorkspaceTab(agentId) {
   if (!agentId) return;
   const rootKey = agentWorkspaceKey(agentId, '');
   expandedAgentWorkspaceTrees[rootKey] = true;
-  if (!agentWorkspaceTreeCache[rootKey]) await loadAgentWorkspace(agentId, '');
-  if (!selectedAgentWorkspaceFile || selectedAgentWorkspaceFile.agentId !== agentId) {
-    await openAgentWorkspaceFile(agentId, 'MEMORY.md');
-  } else {
-    render();
+  const previewPath = selectedAgentWorkspaceFile?.agentId === agentId
+    ? selectedAgentWorkspaceFile.path
+    : 'MEMORY.md';
+  const previewKey = agentWorkspaceKey(agentId, previewPath);
+  const tasks = [];
+  if (!agentWorkspaceTreeCache[rootKey]) {
+    tasks.push(loadAgentWorkspace(agentId, '', { renderLoading: false }));
   }
+  if (!agentWorkspaceFilePreviews[previewKey]) {
+    tasks.push(openAgentWorkspaceFile(agentId, previewPath, { renderLoading: false }));
+  } else if (!selectedAgentWorkspaceFile || selectedAgentWorkspaceFile.agentId !== agentId) {
+    selectedAgentWorkspaceFile = { agentId, path: previewPath };
+  }
+  renderAgentWorkspaceUpdate(agentId);
+  if (tasks.length) await Promise.all(tasks);
 }
 
 async function refreshAgentWorkspace(agentId) {
   if (!agentId) return;
   clearAgentWorkspaceCaches(agentId);
   expandedAgentWorkspaceTrees[agentWorkspaceKey(agentId, '')] = true;
-  await loadAgentWorkspace(agentId, '');
-  await openAgentWorkspaceFile(agentId, 'MEMORY.md');
+  selectedAgentWorkspaceFile = { agentId, path: 'MEMORY.md' };
+  renderAgentWorkspaceUpdate(agentId);
+  await Promise.all([
+    loadAgentWorkspace(agentId, '', { renderLoading: false }),
+    openAgentWorkspaceFile(agentId, 'MEMORY.md', { renderLoading: false }),
+  ]);
 }
 
 function clearAgentWorkspaceCaches(agentId) {
@@ -1482,13 +1507,13 @@ async function switchAgentDetailTab(agentId, tab) {
 
   if (!shouldShowLoading) {
     agentDetailTabLoading = { agentId: null, tab: null, token };
-    render();
+    renderAgentDetailUpdate(agentId);
     await warmAgentDetailTab(agentId, nextTab);
     return;
   }
 
   agentDetailTabLoading = { agentId, tab: nextTab, token };
-  render();
+  renderAgentDetailUpdate(agentId);
 
   try {
     await Promise.all([
@@ -1502,7 +1527,7 @@ async function switchAgentDetailTab(agentId, tab) {
       && agentDetailTabLoading.tab === nextTab
     ) {
       agentDetailTabLoading = { agentId: null, tab: null, token };
-      render();
+      renderAgentDetailUpdate(agentId);
     }
   }
 }
@@ -1511,11 +1536,11 @@ async function loadAgentSkills(agentId, { force = false } = {}) {
   if (!agentId) return;
   if (!force && agentSkillsCache[agentId] && !agentSkillsCache[agentId].error) return;
   agentSkillsCache[agentId] = { loading: true, global: [], workspace: [], plugin: [], tools: [], error: '' };
-  render();
+  renderAgentDetailUpdate(agentId);
   try {
     agentSkillsCache[agentId] = await api(`/api/agents/${encodeURIComponent(agentId)}/skills`);
   } catch (error) {
     agentSkillsCache[agentId] = { loading: false, global: [], workspace: [], plugin: [], tools: [], error: error.message };
   }
-  render();
+  renderAgentDetailUpdate(agentId);
 }
