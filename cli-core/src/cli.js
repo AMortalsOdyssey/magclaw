@@ -710,12 +710,49 @@ async function clearRemoteClosedServiceState(profile = DEFAULT_PROFILE, env = pr
   }, env);
 }
 
+export function daemonRunLaunchedByBackgroundService(env = process.env) {
+  return String(env.MAGCLAW_DAEMON_BACKGROUND_SERVICE || '').trim() === '1';
+}
+
+function backgroundServiceModeForPlatform(platform = process.platform) {
+  if (platform === 'darwin') return 'launchd';
+  if (platform === 'linux') return 'systemd';
+  if (platform === 'win32') return 'schtasks';
+  return 'foreground';
+}
+
+export function serviceStatePatchForDaemonRun(service = {}, env = process.env, platform = process.platform) {
+  if (daemonRunLaunchedByBackgroundService(env)) {
+    return {
+      mode: service.mode || backgroundServiceModeForPlatform(platform),
+      background: true,
+    };
+  }
+  return { mode: 'foreground', background: false };
+}
+
 async function markForegroundServiceState(profile = DEFAULT_PROFILE, env = process.env) {
   const packageInfo = runtimePackageInfo(env);
   return writeServiceState(profile, {
     mode: 'foreground',
     background: false,
     launcher: 'foreground',
+    packageSpec: packageInfo.spec,
+    packageName: packageInfo.name,
+    packageVersion: packageInfo.version,
+    packageKind: packageInfo.kind,
+    packageBin: packageInfo.bin,
+    installedDaemonVersion: packageInfo.version || DAEMON_VERSION,
+    installedPackageVersion: packageInfo.version || DAEMON_VERSION,
+  }, env);
+}
+
+async function markDaemonRunServiceState(profile = DEFAULT_PROFILE, env = process.env) {
+  if (!daemonRunLaunchedByBackgroundService(env)) return markForegroundServiceState(profile, env);
+  const service = await readServiceState(profile, env);
+  const packageInfo = runtimePackageInfo(env, service);
+  return writeServiceState(profile, {
+    ...serviceStatePatchForDaemonRun(service, env),
     packageSpec: packageInfo.spec,
     packageName: packageInfo.name,
     packageVersion: packageInfo.version,
@@ -4437,6 +4474,7 @@ async function writeLauncher(profile, env = process.env) {
     "  MAGCLAW_DAEMON_PACKAGE_SPEC: packageSpec,",
     "  MAGCLAW_DAEMON_PACKAGE_KIND: packageKind,",
     "  MAGCLAW_DAEMON_PACKAGE_BIN: packageBin,",
+    "  MAGCLAW_DAEMON_BACKGROUND_SERVICE: '1',",
     "  PATH: launchPath,",
     "};",
     "if (packageKind === 'computer') childEnv.MAGCLAW_COMPUTER_DAEMON = '1';",
@@ -4591,17 +4629,40 @@ async function startBackground(profile, env = process.env) {
   return { ok: false, mode: 'foreground', message: 'Background daemon is only automated on macOS launchd, Linux user systemd, and Windows schtasks.' };
 }
 
+export function parseLaunchdPrintStatus(result = {}) {
+  const stdout = String(result.stdout || '');
+  const stderr = String(result.stderr || '');
+  const state = (stdout.match(/^\s*state\s*=\s*(.+?)\s*$/m)?.[1] || '').trim();
+  const activeCountValue = Number(stdout.match(/^\s*active count\s*=\s*(\d+)\s*$/m)?.[1] || NaN);
+  const stateStatus = state || (result.status === 0 ? 'loaded' : 'inactive');
+  const active = result.status === 0 && (
+    stateStatus.toLowerCase() === 'running'
+    || (!state && Number.isFinite(activeCountValue) && activeCountValue > 0)
+  );
+  return {
+    active,
+    status: active ? 'running' : stateStatus,
+    state,
+    activeCount: Number.isFinite(activeCountValue) ? activeCountValue : null,
+    error: result.status === 0 ? '' : String(stderr || stdout || '').trim(),
+  };
+}
+
 function backgroundServiceStatus(profile, env = process.env) {
   const paths = profilePaths(profile, env);
   if (process.platform === 'darwin') {
     const label = launchAgentLabel(paths.profile);
     const result = spawnSync('launchctl', ['print', `gui/${process.getuid()}/${label}`], { encoding: 'utf8' });
+    const parsed = parseLaunchdPrintStatus(result);
     return {
       mode: 'launchd',
-      active: result.status === 0,
+      active: parsed.active,
       label,
       file: path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`),
-      error: result.status === 0 ? '' : String(result.stderr || result.stdout || '').trim(),
+      status: parsed.status,
+      state: parsed.state,
+      activeCount: parsed.activeCount,
+      error: parsed.error,
     };
   }
   if (process.platform === 'linux') {
@@ -4857,6 +4918,9 @@ async function listProfiles(env = process.env) {
         label: service.label || '',
         serviceName: service.serviceName || '',
         taskName: service.taskName || '',
+        status: service.status || '',
+        state: service.state || '',
+        activeCount: service.activeCount ?? null,
       },
       createdAt: config.createdAt || '',
       updatedAt: config.updatedAt || '',
@@ -5405,7 +5469,7 @@ async function buildConfig(flags, env = process.env) {
 
 async function runForegroundDaemon(config, env = process.env) {
   const releaseLock = await acquireDaemonLock(config.profile, config, env);
-  await markForegroundServiceState(config.profile, env);
+  await markDaemonRunServiceState(config.profile, env);
   const daemon = new MagClawDaemon(config, env);
   let forceExitTimer = null;
   const shutdown = (signal) => {

@@ -20,7 +20,9 @@ import {
   runtimeSearchPathEntries,
   runtimeCommandHasPathSeparator,
   runtimeCommandNeedsShell,
+  parseLaunchdPrintStatus,
   selectRuntimeCommandPath,
+  serviceStatePatchForDaemonRun,
   toWebSocketUrl,
   windowsNpmShimScript,
 } from '../cli-core/src/cli.js';
@@ -176,6 +178,51 @@ test('daemon profiles are isolated from localhost MagClaw state', () => {
   assert.equal(computerSetup.command, 'computer');
   assert.deepEqual(computerSetup.flags._, ['setup', '/second-team']);
   assert.equal(computerSetup.flags.serverUrl, 'https://example.test');
+});
+
+test('launchd status only reports active for actually running services', () => {
+  const running = parseLaunchdPrintStatus({
+    status: 0,
+    stdout: [
+      'gui/501/ai.magclaw.daemon.example = {',
+      '\tactive count = 1',
+      '\tstate = running',
+      '}',
+    ].join('\n'),
+  });
+  assert.equal(running.active, true);
+  assert.equal(running.status, 'running');
+
+  const scheduled = parseLaunchdPrintStatus({
+    status: 0,
+    stdout: [
+      'gui/501/ai.magclaw.daemon.example = {',
+      '\tactive count = 0',
+      '\tstate = spawn scheduled',
+      '\tlast exit code = 0',
+      '}',
+    ].join('\n'),
+  });
+  assert.equal(scheduled.active, false);
+  assert.equal(scheduled.status, 'spawn scheduled');
+
+  const missing = parseLaunchdPrintStatus({
+    status: 113,
+    stderr: 'Could not find service "ai.magclaw.daemon.example" in domain.',
+  });
+  assert.equal(missing.active, false);
+  assert.match(missing.error, /Could not find service/);
+});
+
+test('daemon run service state preserves launchd background mode for service-launched workers', () => {
+  assert.deepEqual(
+    serviceStatePatchForDaemonRun({ mode: 'launchd', background: true }, { MAGCLAW_DAEMON_BACKGROUND_SERVICE: '1' }, 'darwin'),
+    { mode: 'launchd', background: true },
+  );
+  assert.deepEqual(
+    serviceStatePatchForDaemonRun({}, {}, 'darwin'),
+    { mode: 'foreground', background: false },
+  );
 });
 
 test('daemon version and foreground log lines are structured', () => {
@@ -878,6 +925,7 @@ test('daemon close command stops agents and disables background relaunchers', as
   assert.match(source, /waitForBackgroundServiceStopped\(serviceTarget\)/);
   assert.match(source, /spawnSync\('launchctl', \['bootout', serviceTarget\]/);
   assert.match(source, /spawnSync\('launchctl', \['enable', `gui\/\$\{process\.getuid\(\)\}\/\$\{label\}`\]/);
+  assert.match(source, /MAGCLAW_DAEMON_BACKGROUND_SERVICE: '1'/);
   assert.match(source, /case 'stop':[\s\S]*stopDaemon\(flags\.profile, env, \{ disable: Boolean\(flags\.disable\) \}\)/);
 });
 
@@ -889,7 +937,9 @@ test('foreground daemon connect reports foreground mode and package metadata imm
   assert.match(source, /background: false/);
   assert.match(source, /packageName: packageInfo\.name/);
   assert.match(source, /packageVersion: packageInfo\.version/);
-  assert.match(source, /async function runForegroundDaemon\(config, env = process\.env\)[\s\S]*await markForegroundServiceState\(config\.profile, env\)/);
+  assert.match(source, /async function markDaemonRunServiceState\(profile = DEFAULT_PROFILE, env = process\.env\)/);
+  assert.match(source, /daemonRunLaunchedByBackgroundService\(env\)/);
+  assert.match(source, /async function runForegroundDaemon\(config, env = process\.env\)[\s\S]*await markDaemonRunServiceState\(config\.profile, env\)/);
   assert.match(source, /url\.searchParams\.set\('package_name', packageName\)/);
   assert.match(source, /url\.searchParams\.set\('package_version', packageVersion\)/);
   assert.match(source, /url\.searchParams\.set\('service_mode', serviceMode\)/);

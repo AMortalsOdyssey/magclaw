@@ -57,7 +57,8 @@ function statusLabel(profile, color) {
 
 function serviceLabel(profile) {
   const mode = fallback(profile.service?.mode, 'foreground');
-  return profile.service?.active ? `${mode}: active` : `${mode}: inactive`;
+  const status = fallback(profile.service?.status || (profile.service?.active ? 'active' : 'inactive'), 'inactive');
+  return `${mode}: ${status}`;
 }
 
 export function shouldUseColor({ env = process.env, stream = process.stdout, flags = {} } = {}) {
