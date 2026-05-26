@@ -11,7 +11,8 @@ The setup command opens a browser approval flow, saves the resulting daemon
 profile under `~/.magclaw/daemon/profiles/<server>/`, and starts the
 background service for that profile. It also installs durable `magclaw` and
 `magclaw-computer` shims when it can find a writable user bin directory on
-`PATH`.
+`PATH`. The shims are generated text launchers for macOS, Linux, and Windows;
+setup compares their content hashes and only rewrites missing or outdated files.
 
 Run the same command again on the same physical computer to resume the existing
 Computer for that Server. Run it on another physical computer to create a new

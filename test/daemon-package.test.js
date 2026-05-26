@@ -226,7 +226,7 @@ test('daemon run service state preserves launchd background mode for service-lau
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.31');
+  assert.equal(DAEMON_VERSION, '0.1.32');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -789,8 +789,11 @@ test('install-cli command writes durable magclaw and computer command shims', as
     assert.equal(payload.command, 'magclaw');
     assert.deepEqual(payload.commands, ['magclaw', 'magclaw-computer']);
     assert.equal(payload.installed, true);
+    assert.equal(payload.reason, 'installed');
     assert.equal(payload.pathReady, true);
     assert.ok(payload.files.length >= 1);
+    assert.ok(payload.shims.every((shim) => shim.changed === true));
+    assert.ok(payload.shims.every((shim) => shim.currentHash === shim.expectedHash));
 
     const files = await readdir(binDir);
     if (process.platform === 'win32') {
@@ -807,6 +810,42 @@ test('install-cli command writes durable magclaw and computer command shims', as
       assert.match(computerShim, /exec "\$NPM_BIN" exec/);
       assert.match(computerShim, /@magclaw\/computer@latest/);
     }
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(binDir, { recursive: true, force: true });
+  }
+});
+
+test('install-cli skips current command shims after content hash inspection', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cli-current-home-'));
+  const binDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cli-current-bin-'));
+  try {
+    const args = [
+      DAEMON_BIN,
+      'install-cli',
+      '--bin-dir',
+      binDir,
+    ];
+    const first = spawnSync(process.execPath, args, {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+
+    const second = spawnSync(process.execPath, args, {
+      env: { ...process.env, MAGCLAW_DAEMON_HOME: home },
+      encoding: 'utf8',
+    });
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    const payload = JSON.parse(second.stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.installed, false);
+    assert.equal(payload.updated, false);
+    assert.equal(payload.reason, 'already_current');
+    assert.deepEqual(payload.changedFiles, []);
+    assert.ok(payload.shims.every((shim) => shim.changed === false));
+    assert.ok(payload.shims.every((shim) => shim.reason === 'current'));
+    assert.ok(payload.shims.every((shim) => shim.currentHash === shim.expectedHash));
   } finally {
     await rm(home, { recursive: true, force: true });
     await rm(binDir, { recursive: true, force: true });
@@ -861,8 +900,15 @@ test('install-cli repairs a missing magclaw-computer shim next to existing magcl
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.ok, true);
     assert.equal(payload.installed, true);
+    assert.equal(payload.reason, 'updated');
     assert.equal(payload.binDir, binDir);
     assert.ok(payload.files.some((file) => path.basename(file) === 'magclaw-computer'));
+    const magclawShim = payload.shims.find((shim) => shim.command === 'magclaw');
+    const computerShimPayload = payload.shims.find((shim) => shim.command === 'magclaw-computer');
+    assert.equal(magclawShim.reason, 'outdated');
+    assert.equal(magclawShim.changed, true);
+    assert.equal(computerShimPayload.reason, 'missing');
+    assert.equal(computerShimPayload.changed, true);
 
     const files = await readdir(binDir);
     assert.deepEqual(files.sort(), ['magclaw', 'magclaw-computer']);

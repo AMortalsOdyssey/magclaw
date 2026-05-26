@@ -49,7 +49,9 @@ npx @magclaw/daemon@latest --server-url https://magclaw.multiego.me --api-key mc
 ```
 
 The first connect command installs durable `magclaw` and `magclaw-computer`
-CLI shims when it can find a writable user bin directory on `PATH`.
+CLI shims when it can find a writable user bin directory on `PATH`. The shims
+are generated text launchers for macOS, Linux, and Windows; `install-cli`
+compares their content hashes and only rewrites missing or outdated files.
 
 Stop a background daemon:
 

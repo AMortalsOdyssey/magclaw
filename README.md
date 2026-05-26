@@ -165,8 +165,11 @@ npx @magclaw/daemon@latest --server-url https://magclaw.multiego.me --api-key "$
 ```
 
 The first connect command installs durable `magclaw` and `magclaw-computer`
-CLI shims when it can find a writable user bin directory on `PATH`. Useful
-daemon commands:
+CLI shims when it can find a writable user bin directory on `PATH`. These are
+small generated text launchers, not compiled binaries: POSIX shell scripts on
+macOS/Linux and `.cmd`/PowerShell shims on Windows. Re-running setup or
+`install-cli` checks the shim content hash and only rewrites outdated or missing
+files. Useful daemon commands:
 
 ```bash
 magclaw status --profile my-server
@@ -178,7 +181,7 @@ magclaw restart --profile my-server
 magclaw uninstall --profile my-server
 ```
 
-If the command is not on `PATH`, reinstall only the CLI shim with
+If either command is not on `PATH`, reinstall or repair the CLI shims with
 `npx @magclaw/daemon@latest install-cli`.
 
 MagClaw prevents duplicate daemon processes for the same `--profile` by using a
