@@ -542,28 +542,34 @@ function renderAgentDetailBody(agent) {
   return renderAgentProfileTab(agent);
 }
 
-function renderAgentDetail(agent) {
+function renderAgentDetailTopbar(agent) {
   const running = agentIsRunning(agent);
 
   return `
-    <section class="pixel-panel inspector-panel agent-detail agent-detail-shell">
-      <div class="agent-detail-topbar">
-        <div class="agent-detail-title">
-          <span class="agent-detail-avatar-frame mini">${getAvatarHtml(agent.id, 'agent', 'agent-detail-avatar-preview')}</span>
-          <div>
-            <strong>${escapeHtml(agent.name)}</strong>
-            <small>${escapeHtml(agent.description || agent.runtime || 'Agent')}</small>
-          </div>
-        </div>
-        <div class="agent-header-actions">
-          <button class="secondary-btn" type="button" data-action="open-dm-with-agent" data-id="${escapeHtml(agent.id)}">Message</button>
-          <button class="secondary-btn disabled-action" type="button" data-action="agent-stop-unavailable" data-id="${escapeHtml(agent.id)}" aria-disabled="true">Stop Agent</button>
-          ${running
-              ? `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Restart</button>`
-              : `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Start / Restart</button>`}
-          <button class="icon-btn small" type="button" data-action="close-agent-detail" aria-label="Close agent detail">×</button>
+    <div class="agent-detail-topbar">
+      <div class="agent-detail-title">
+        <span class="agent-detail-avatar-frame mini">${getAvatarHtml(agent.id, 'agent', 'agent-detail-avatar-preview')}</span>
+        <div>
+          <strong>${escapeHtml(agent.name)}</strong>
+          <small>${escapeHtml(agent.description || agent.runtime || 'Agent')}</small>
         </div>
       </div>
+      <div class="agent-header-actions">
+        <button class="secondary-btn" type="button" data-action="open-dm-with-agent" data-id="${escapeHtml(agent.id)}">Message</button>
+        <button class="secondary-btn disabled-action" type="button" data-action="agent-stop-unavailable" data-id="${escapeHtml(agent.id)}" aria-disabled="true">Stop Agent</button>
+        ${running
+            ? `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Restart</button>`
+            : `<button class="secondary-btn" type="button" data-action="open-agent-restart" data-id="${escapeHtml(agent.id)}">Start / Restart</button>`}
+        <button class="icon-btn small" type="button" data-action="close-agent-detail" aria-label="Close agent detail">×</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderAgentDetail(agent) {
+  return `
+    <section class="pixel-panel inspector-panel agent-detail agent-detail-shell">
+      ${renderAgentDetailTopbar(agent)}
       ${renderAgentDetailTabs()}
       <div class="agent-detail-content" data-page-scroll-surface data-scroll-key="agent:${escapeHtml(agent.id)}:${escapeHtml(normalizeAgentDetailTab(agentDetailTab))}">
         ${renderAgentDetailBody(agent)}
