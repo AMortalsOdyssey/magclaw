@@ -312,6 +312,7 @@ test('postgres store persists relay core state without durable activity logs', a
       storageKey: 'uploads/att_remote',
       filename: 'note.txt',
       mimeType: 'text/plain',
+      bytes: 42,
       createdAt,
     }],
     projects: [{
@@ -428,6 +429,7 @@ test('postgres store persists relay core state without durable activity logs', a
   const messageInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_messages"') && query.params[0] === 'msg_remote');
   const replyInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_replies"') && query.params[0] === 'rep_remote');
   const taskInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_tasks"') && query.params[0] === 'task_remote');
+  const attachmentInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_attachments"') && query.params[0] === 'att_remote');
   assert.equal(computerInsert.params[7], 'offline');
   assert.equal(humanInsert.params[6], 'offline');
   assert.equal(agentInsert.params[9], 'idle');
@@ -439,6 +441,7 @@ test('postgres store persists relay core state without durable activity logs', a
   assert.match(JSON.stringify(messageInsert.params), /hum_owner/);
   assert.match(JSON.stringify(replyInsert.params), /heart/);
   assert.equal(taskInsert.params[7], 'closed');
+  assert.equal(attachmentInsert.params[6], 42);
 });
 
 test('postgres store indexes markdown document operations and maintenance runs', async () => {

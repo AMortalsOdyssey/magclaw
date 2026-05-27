@@ -40,6 +40,7 @@ function makeStreamResponse() {
 }
 
 function routeDeps(overrides = {}) {
+  const persistCalls = [];
   const state = {
     settings: { defaultWorkspace: '/tmp' },
     projects: [{ id: 'proj_1', name: 'Project One', path: '/tmp/project-one' }],
@@ -55,11 +56,14 @@ function routeDeps(overrides = {}) {
     getState: () => state,
     listProjectTree: async () => ({ entries: [] }),
     maxAttachmentUploads: 2,
-    persistState: async () => {},
+    currentActor: () => null,
+    persistState: async (options) => {
+      persistCalls.push(options || {});
+    },
     pickFolderPath: async () => '',
     readJson: async () => ({}),
     readProjectFilePreview: async () => ({ file: { path: 'README.md' } }),
-    saveAttachmentBuffer: async ({ name, type, buffer, source }) => ({
+    saveAttachmentBuffer: async ({ name, type, buffer, source, extra }) => ({
       id: 'att_1',
       name,
       type,
@@ -69,6 +73,7 @@ function routeDeps(overrides = {}) {
       storageMode: 'pvc',
       storageKey: 'attachments/local/att_1-note.txt',
       serverId: 'local',
+      ...extra,
     }),
     searchProjectItems: async () => [],
     selectedDefaultSpaceId: () => 'chan_all',
@@ -80,6 +85,7 @@ function routeDeps(overrides = {}) {
       res.statusCode = statusCode;
       res.data = data;
     },
+    persistCalls,
     state,
     ...overrides,
   };
@@ -120,6 +126,37 @@ test('project route group uploads attachments through injected storage', async (
   assert.equal(deps.state.attachments[0].storageMode, 'pvc');
   assert.equal(deps.state.attachments[0].storageKey, 'attachments/local/att_1-note.txt');
   assert.equal(deps.state.attachments[0].serverId, 'local');
+});
+
+test('project route group stores uploads in the authenticated workspace', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({
+      member: {
+        workspaceId: 'wsp_current',
+        humanId: 'hum_owner',
+      },
+    }),
+    readJson: async () => ({
+      files: [{
+        name: 'note.txt',
+        dataUrl: `data:text/plain;base64,${Buffer.from('hello').toString('base64')}`,
+      }],
+    }),
+  });
+  const res = makeResponse();
+
+  await handleProjectApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/attachments'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(deps.state.attachments[0].workspaceId, 'wsp_current');
+  assert.equal(deps.state.attachments[0].serverId, 'wsp_current');
+  assert.equal(deps.state.attachments[0].createdBy, 'hum_owner');
+  assert.deepEqual(deps.persistCalls, [{ workspaceId: 'wsp_current', reason: 'attachments_added' }]);
 });
 
 test('project route group serves cloud attachments restored with storage keys', async () => {

@@ -1948,7 +1948,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
         attachment.storageMode || 'pvc',
         attachment.filename || attachment.name || attachment.id,
         attachment.mimeType || attachment.type || '',
-        Number(attachment.sizeBytes || attachment.size || 0),
+        Number(attachment.sizeBytes || attachment.size || attachment.bytes || 0),
         attachment.checksumSha256 || '',
         attachment.source || 'upload',
         attachment.createdBy || attachment.authorId || '',

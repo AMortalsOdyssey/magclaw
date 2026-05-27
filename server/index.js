@@ -1613,6 +1613,7 @@ function projectApiDeps() {
     sendError,
     sendJson,
     attachmentStorageDir: ATTACHMENTS_DIR,
+    currentActor: (req) => cloudAuth.currentActor(req),
   };
 }
 

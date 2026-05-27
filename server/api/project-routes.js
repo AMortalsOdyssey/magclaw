@@ -28,6 +28,7 @@ export async function handleProjectApi(req, res, url, deps) {
     sendError,
     sendJson,
     attachmentStorageDir,
+    currentActor,
   } = deps;
   const state = getState();
 
@@ -146,6 +147,15 @@ export async function handleProjectApi(req, res, url, deps) {
       sendError(res, 400, `A single upload can include at most ${maxAttachmentUploads} files.`);
       return true;
     }
+    const actor = typeof currentActor === 'function' ? currentActor(req) : null;
+    const workspaceId = String(
+      actor?.member?.workspaceId
+      || body.workspaceId
+      || state.connection?.workspaceId
+      || state.cloud?.workspace?.id
+      || '',
+    ).trim();
+    const createdBy = String(actor?.member?.humanId || '').trim();
     const created = [];
 
     for (const file of files) {
@@ -158,13 +168,17 @@ export async function handleProjectApi(req, res, url, deps) {
         type,
         buffer,
         source: file.source === 'clipboard' ? 'clipboard' : 'upload',
+        extra: {
+          ...(workspaceId ? { workspaceId, serverId: workspaceId } : {}),
+          ...(createdBy ? { createdBy } : {}),
+        },
       });
       state.attachments.push(attachment);
       created.push(attachment);
     }
 
     addSystemEvent('attachments_added', `${created.length} attachment(s) added.`);
-    await persistState();
+    await persistState(workspaceId ? { workspaceId, reason: 'attachments_added' } : { reason: 'attachments_added' });
     broadcastState();
     sendJson(res, 201, { attachments: created });
     return true;
