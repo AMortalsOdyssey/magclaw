@@ -103,6 +103,30 @@ function waitForExit(child, timeoutMs = 3000) {
   });
 }
 
+async function waitForDaemonStatus(env, profile, predicate, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastPayload = null;
+  let lastOutput = '';
+  while (Date.now() < deadline) {
+    const result = spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'status',
+      '--profile',
+      profile,
+    ], {
+      env,
+      encoding: 'utf8',
+    });
+    lastOutput = result.stderr || result.stdout;
+    if (result.status === 0) {
+      lastPayload = JSON.parse(result.stdout);
+      if (predicate(lastPayload)) return lastPayload;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for daemon status: ${lastOutput || JSON.stringify(lastPayload)}`);
+}
+
 function regexpEscape(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -220,13 +244,17 @@ test('daemon run service state preserves launchd background mode for service-lau
     { mode: 'launchd', background: true },
   );
   assert.deepEqual(
+    serviceStatePatchForDaemonRun({}, { MAGCLAW_DAEMON_BACKGROUND_SERVICE: '1', MAGCLAW_DAEMON_SERVICE_MODE: 'container' }, 'linux'),
+    { mode: 'container', background: true },
+  );
+  assert.deepEqual(
     serviceStatePatchForDaemonRun({}, {}, 'darwin'),
     { mode: 'foreground', background: false },
   );
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.33');
+  assert.equal(DAEMON_VERSION, '0.1.34');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -1264,6 +1292,96 @@ test('stop command stops a foreground daemon for the selected profile', async ()
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await exitPromise?.catch(() => {});
+    await server.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('container background mode supervises daemon restarts and supports stop disable', { skip: process.platform === 'win32' }, async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-container-'));
+  const server = await startHoldingWebSocketServer();
+  const env = {
+    ...process.env,
+    MAGCLAW_DAEMON_HOME: home,
+    MAGCLAW_DAEMON_COMMAND_MODE: 'local',
+    MAGCLAW_DAEMON_SERVICE_MODE: 'container',
+    MAGCLAW_DAEMON_CONTAINER_RESTART_SEC: '1',
+  };
+  try {
+    const started = spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'connect',
+      '--server-url',
+      server.baseUrl,
+      '--pair-token',
+      'mc_pair_test',
+      '--profile',
+      'container-test',
+      '--background',
+      '--json',
+    ], {
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(started.status, 0, started.stderr || started.stdout);
+    const startPayload = JSON.parse(started.stdout);
+    assert.equal(startPayload.ok, true);
+    assert.equal(startPayload.mode, 'container');
+    assert.ok(startPayload.supervisorPid);
+
+    const running = await waitForDaemonStatus(env, 'container-test', (payload) => (
+      payload.running
+      && payload.service.mode === 'container'
+      && payload.service.active
+      && payload.service.status === 'running'
+      && payload.service.supervisorPid
+    ));
+    assert.ok(running.pid);
+    const serviceState = JSON.parse(await readFile(profilePaths('container-test', env).service, 'utf8'));
+    assert.equal(serviceState.mode, 'container');
+    assert.equal(serviceState.packageName, '@magclaw/daemon');
+    assert.equal(serviceState.packageKind, 'daemon');
+    assert.equal(serviceState.packageVersion, DAEMON_VERSION);
+    assert.equal(serviceState.packageSpec, `@magclaw/daemon@${DAEMON_VERSION}`);
+
+    process.kill(running.pid, 'SIGTERM');
+    const restarted = await waitForDaemonStatus(env, 'container-test', (payload) => (
+      payload.running
+      && payload.pid
+      && payload.pid !== running.pid
+      && payload.service.mode === 'container'
+    ), 8000);
+    assert.ok(restarted.pid);
+
+    const stopped = spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'stop',
+      '--profile',
+      'container-test',
+      '--disable',
+    ], {
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(stopped.status, 0, stopped.stderr || stopped.stdout);
+    const stoppedPayload = JSON.parse(stopped.stdout);
+    assert.equal(stoppedPayload.ok, true);
+    assert.equal(stoppedPayload.background.mode, 'container');
+
+    await waitForDaemonStatus(env, 'container-test', (payload) => (
+      !payload.running && !payload.service.active
+    ));
+  } finally {
+    spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'stop',
+      '--profile',
+      'container-test',
+      '--disable',
+    ], {
+      env,
+      encoding: 'utf8',
+    });
     await server.close();
     await rm(home, { recursive: true, force: true });
   }
