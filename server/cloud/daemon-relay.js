@@ -296,6 +296,7 @@ export function createDaemonRelay(deps) {
   const lastRuntimeBroadcastAt = new Map();
   const handlers = {
     onAgentMessage: null,
+    onAgentMessageDelta: null,
   };
 
   function nowMs() {
@@ -2449,6 +2450,25 @@ export function createDaemonRelay(deps) {
     }
   }
 
+  async function handleAgentMessageDelta(message) {
+    const agent = findAgent(message.agentId);
+    if (!agent) return;
+    const payload = message.payload || message;
+    if (handlers.onAgentMessageDelta) {
+      await handlers.onAgentMessageDelta({
+        agent,
+        body: String(payload.body || payload.content || ''),
+        delta: String(payload.delta || ''),
+        spaceType: payload.spaceType || payload.message?.spaceType || 'channel',
+        spaceId: payload.spaceId || payload.message?.spaceId || 'chan_all',
+        parentMessageId: payload.parentMessageId || payload.message?.parentMessageId || null,
+        sourceMessage: payload.sourceMessage || payload.message || null,
+        deliveryId: message.deliveryId || payload.deliveryId || null,
+        idempotencyKey: payload.idempotencyKey || message.idempotencyKey || message.deliveryId || payload.deliveryId || null,
+      });
+    }
+  }
+
   async function handleDaemonUpgradeAck(connection, message) {
     const computer = findComputer(connection.computerId);
     if (!computer) return;
@@ -2665,6 +2685,9 @@ export function createDaemonRelay(deps) {
         break;
       case 'agent:activity':
         await handleAgentActivity(message);
+        break;
+      case 'agent:message_delta':
+        await handleAgentMessageDelta(message);
         break;
       case 'agent:message':
         await handleAgentMessage(message);

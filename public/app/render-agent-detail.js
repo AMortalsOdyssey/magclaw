@@ -882,10 +882,11 @@ function renderReply(reply) {
 	  const shareSelectable = messageShareState.active && recordMatchesShareScope(reply);
   const shareSelecting = shareSelectable ? ' share-selecting' : '';
   const shareSelected = shareSelectable && shareSelectedIds().includes(String(reply.id)) ? ' share-selected' : '';
+  const streamingClass = messageIsStreaming(reply) ? ' is-agent-streaming' : '';
   const receiptTray = renderAgentReceiptTray(reply);
   const footer = renderMessageFooter({ receiptTray });
   return `
-    <article class="message-card magclaw-message reply-card author-${authorClass}${highlighted}${shareSelecting}${shareSelected}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
+    <article class="message-card magclaw-message reply-card author-${authorClass}${highlighted}${shareSelecting}${shareSelected}${streamingClass}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
       ${renderShareSelector(reply, { selectable: shareSelectable })}
       ${renderActorAvatar(reply.authorId, reply.authorType)}
       <div class="message-body"${shareBodyToggleAttrs(reply, { selectable: shareSelectable })}>
@@ -895,7 +896,7 @@ function renderReply(reply) {
           <time>${fmtTime(reply.createdAt)}</time>
         </div>
 	        ${renderMessageReferences(reply)}
-	        <div class="message-markdown">${renderMarkdownWithMentions(reply.body || (reply.references?.length ? '' : '(attachment)'))}</div>
+	        <div class="message-markdown">${renderStreamingMessageMarkdown(reply)}</div>
         <div class="message-attachments">${attachmentLinks(reply.attachmentIds)}</div>
         ${renderMessageReactionTray(reply)}
         ${renderMessageActions(reply, { threadContext: true })}

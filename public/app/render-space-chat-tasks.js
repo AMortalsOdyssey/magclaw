@@ -1521,7 +1521,19 @@ function renderRecordKey(record) {
     followedBy: record?.followedBy || [],
     receipts: deliveryReceiptSignature(record),
     highlighted: threadMessageId === record?.id || selectedSavedRecordId === record?.id,
+    streamStatus: messageIsStreaming(record) ? 'streaming' : '',
   });
+}
+
+function messageIsStreaming(record) {
+  return record?.metadata?.agentStream?.status === 'streaming';
+}
+
+function renderStreamingMessageMarkdown(message) {
+  const fallback = message.references?.length ? '' : '(attachment)';
+  const rendered = renderMarkdownWithMentions(message.body || fallback);
+  if (!messageIsStreaming(message)) return rendered;
+  return `${rendered}<span class="agent-stream-cursor" aria-label="Agent is still writing"></span>`;
 }
 
 function renderSystemEvent(message) {
@@ -1586,13 +1598,14 @@ function renderMessage(message, options = {}) {
   const shareSelecting = shareSelectable ? ' share-selecting' : '';
   const shareSelected = shareSelectable && shareSelectedIds().includes(String(message.id)) ? ' share-selected' : '';
   const authorClass = ['agent', 'human', 'system'].includes(message.authorType) ? message.authorType : 'unknown';
+  const streamingClass = messageIsStreaming(message) ? ' is-agent-streaming' : '';
   const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
   const agentAuthorAttr = message.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(message.authorId)}"` : '';
   const receiptTray = renderAgentReceiptTray(message);
   const replyCountChip = !options.compact && replyCount ? `<button class="reply-count-chip" type="button" data-action="open-thread" data-id="${escapeHtml(message.id)}">${replyActionLabel}</button>` : '';
   const footer = renderMessageFooter({ replyCountChip, receiptTray });
   return `
-	    <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${shareSelecting}${shareSelected}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
+	    <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${shareSelecting}${shareSelected}${streamingClass}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
       ${renderShareSelector(message, { selectable: shareSelectable })}
       ${renderActorAvatar(message.authorId, message.authorType)}
       <div class="message-body"${shareBodyToggleAttrs(message, { selectable: shareSelectable })}>
@@ -1603,7 +1616,7 @@ function renderMessage(message, options = {}) {
           ${task ? renderTaskInlineBadge(task) : ''}
         </div>
 	        ${renderMessageReferences(message)}
-	        <div class="message-markdown">${renderMarkdownWithMentions(message.body || (message.references?.length ? '' : '(attachment)'))}</div>
+	        <div class="message-markdown">${renderStreamingMessageMarkdown(message)}</div>
         <div class="message-attachments">${attachmentLinks(message.attachmentIds)}</div>
         ${renderMessageReactionTray(message)}
         ${renderMessageActions(message, options)}
