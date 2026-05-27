@@ -323,6 +323,7 @@ function rememberReferenceAuthorMention(composerId, record) {
   if (textarea) {
     textarea.value = next;
     textarea.defaultValue = next;
+    if (typeof maybeAutosizeComposerTextarea === 'function') maybeAutosizeComposerTextarea(textarea);
     textarea.focus();
     textarea.setSelectionRange(next.length, next.length);
   }

@@ -1013,6 +1013,7 @@ async function insertMention(textarea, item) {
       toast(`${item.type === 'file' ? 'File' : 'Folder'} referenced from project`);
     }
   }
+  if (typeof maybeAutosizeComposerTextarea === 'function') maybeAutosizeComposerTextarea(textarea);
   mentionPopup.active = false;
   mentionPopup.items = [];
   mentionPopup.selectedIndex = 0;

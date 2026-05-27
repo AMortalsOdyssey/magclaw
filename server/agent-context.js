@@ -291,7 +291,21 @@ function tasksForContext(state, spaceType, spaceId, records, limit) {
     }));
 }
 
-function attachmentsForContext(state, records, limit) {
+function attachmentContextUrl(attachment, toolBaseUrl = '') {
+  const url = String(attachment?.url || attachment?.downloadUrl || '').trim();
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith('/') && toolBaseUrl) {
+    try {
+      return new URL(url, toolBaseUrl).toString();
+    } catch {
+      return url;
+    }
+  }
+  return url;
+}
+
+function attachmentsForContext(state, records, limit, toolBaseUrl = '') {
   const messageByAttachment = new Map();
   for (const record of asArray(records)) {
     for (const id of asArray(record?.attachmentIds)) {
@@ -306,6 +320,8 @@ function attachmentsForContext(state, records, limit) {
       name: attachment.name || attachment.filename || attachment.id,
       type: attachment.type || attachment.mime || 'file',
       bytes: Number(attachment.bytes || attachment.sizeBytes || 0),
+      path: attachment.path || '',
+      url: attachmentContextUrl(attachment, toolBaseUrl),
       messageId: messageByAttachment.get(attachment.id),
     }));
 }
@@ -396,7 +412,7 @@ export function buildAgentContextPack({
     thread,
     recentEvents: recentEventsForSpace(state, spaceType, spaceId, current, effectiveLimits.recentEvents),
     tasks: tasksForContext(state, spaceType, spaceId, visibleRecords, effectiveLimits.tasks),
-    attachments: attachmentsForContext(state, visibleRecords, effectiveLimits.attachments),
+    attachments: attachmentsForContext(state, visibleRecords, effectiveLimits.attachments, toolBaseUrl),
     peerMemorySearch,
     historyTools: {
       baseUrl: toolBaseUrl,
@@ -606,7 +622,15 @@ function renderTasks(state, tasks, targetAgentId = null) {
 function renderAttachments(attachments) {
   if (!attachments.length) return '- (none)';
   return attachments
-    .map((item) => `- ${item.name} ${item.type} ${item.bytes} bytes (id=${item.id}, from msg=${item.messageId})`)
+    .map((item) => {
+      const details = [
+        `id=${item.id}`,
+        `from msg=${item.messageId}`,
+        item.path ? `path=${item.path}` : '',
+        item.url ? `url=${item.url}` : '',
+      ].filter(Boolean).join(', ');
+      return `- ${item.name} ${item.type} ${item.bytes} bytes (${details})`;
+    })
     .join('\n');
 }
 

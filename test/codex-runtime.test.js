@@ -5,6 +5,7 @@ import {
   codexRuntimeOverrideForMessages,
   codexStreamRetryLimit,
   codexThreadConfig,
+  codexTurnInputForPrompt,
   parseCodexStreamRetry,
   resolveCodexRuntime,
 } from '../server/codex-runtime.js';
@@ -61,4 +62,22 @@ test('codex runtime helpers resolve consistent batched overrides', () => {
     fastChat: true,
   });
   assert.deepEqual(codexThreadConfig({ reasoningEffort: 'low' }), { model_reasoning_effort: 'low' });
+});
+
+test('codex turn input carries visible image attachments as local images', () => {
+  const input = codexTurnInputForPrompt('Inspect the attached screenshot.', [{
+    contextPack: {
+      attachments: [
+        { id: 'att_img', type: 'image/png', path: '/tmp/screen.png' },
+        { id: 'att_file', type: 'text/plain', path: '/tmp/readme.txt' },
+        { id: 'att_remote', type: 'image/webp', url: 'https://example.test/screen.webp' },
+      ],
+    },
+  }]);
+
+  assert.deepEqual(input, [
+    { type: 'text', text: 'Inspect the attached screenshot.' },
+    { type: 'localImage', path: '/tmp/screen.png' },
+    { type: 'image', url: 'https://example.test/screen.webp' },
+  ]);
 });

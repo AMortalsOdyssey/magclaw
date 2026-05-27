@@ -140,6 +140,7 @@ document.addEventListener('submit', async (event) => {
         throw new Error('Join this channel before sending messages.');
       }
       const composerId = form.dataset.composerId || composerIdFor('message');
+      await waitForComposerAttachments(composerId);
       const rawBody = composerDrafts[composerId] ?? data.get('body');
 	      const encodedBody = encodeComposerMentions(rawBody, composerId);
 	      const shouldOpenTaskThread = Boolean(composerTaskFlags[composerId] ?? data.get('asTask'));
@@ -188,6 +189,7 @@ document.addEventListener('submit', async (event) => {
         throw new Error('Join this channel before replying in the thread.');
       }
       const composerId = form.dataset.composerId || composerIdFor('thread', threadMessageId);
+      await waitForComposerAttachments(composerId);
 	      const rawBody = composerDrafts[composerId] ?? data.get('body');
 	      const encodedBody = encodeComposerMentions(rawBody, composerId);
 	      const shouldOpenTaskThread = Boolean(composerTaskFlags[composerId] ?? data.get('asTask'));
