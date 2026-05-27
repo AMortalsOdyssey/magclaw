@@ -293,7 +293,7 @@ test('daemon sends a periodic heartbeat while the websocket is connected', async
   assert.match(relaySource, /computer\.status = 'connected'/);
 });
 
-test('daemon agent starts and stream activity use Slock-style bounded scheduling', async () => {
+test('daemon agent starts and stream activity use MagClaw bounded scheduling', async () => {
   const daemonSource = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
   const mcpBridgeSource = await readFile(new URL('../cli-core/src/mcp-bridge.js', import.meta.url), 'utf8');
 

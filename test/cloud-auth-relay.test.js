@@ -353,25 +353,24 @@ test('human onboarding uses the selected agent in #all, follows context language
 
     const onboarded = await waitFor(async () => {
       const snapshot = await request(server.baseUrl, '/api/state', { cookie });
-      const message = snapshot.data.messages.find((item) => item.eventType === 'human_onboarding_task');
-      const workItem = message
-        ? snapshot.data.workItems.find((item) => item.sourceMessageId === message.id && item.agentId === cindy.data.agent.id)
+      const event = snapshot.data.events.find((item) => (
+        item.type === 'human_onboarding_task_created'
+        && item.agentId === cindy.data.agent.id
+      ));
+      const workItem = event
+        ? snapshot.data.workItems.find((item) => item.sourceMessageId === event.messageId && item.agentId === cindy.data.agent.id)
         : null;
-      return message && workItem ? { snapshot: snapshot.data, message, workItem } : null;
+      return event && workItem ? { snapshot: snapshot.data, event, workItem } : null;
     }, 5000);
     const allChannel = onboarded.snapshot.channels.find((channel) => (
       channel.workspaceId === owner.server.id
       && (channel.defaultChannel || channel.name === 'all')
     ));
     assert.ok(allChannel);
-    assert.equal(onboarded.message.spaceType, 'channel');
-    assert.equal(onboarded.message.spaceId, allChannel.id);
-    assert.equal(onboarded.message.authorType, 'system');
-    assert.match(onboarded.message.body, /new human member onboarding/i);
-    assert.match(onboarded.message.body, new RegExp(`<@${member.data.member.humanId}>`));
-    assert.match(onboarded.message.body, /Recent #all language context: English \(en\)/);
-    assert.doesNotMatch(onboarded.message.body, /Target human language preference|Chinese \(zh-CN\).*Use this language|ask what language|what language they prefer|你希望用英语还是中文/);
-    assert.match(onboarded.message.body, /MEMORY\.md\/notes/);
+    assert.equal(onboarded.snapshot.messages.some((item) => item.eventType === 'human_onboarding_task'), false);
+    assert.equal(onboarded.snapshot.messages.some((item) => /Onboarding task \(system-triggered\): This is a new human member onboarding/.test(item.body || '')), false);
+    assert.equal(onboarded.event.channelId, allChannel.id);
+    assert.equal(onboarded.event.humanId, member.data.member.humanId);
     assert.equal(onboarded.workItem.spaceId, allChannel.id);
     assert.equal(onboarded.workItem.target, '#all');
     assert.equal(onboarded.snapshot.channels.some((channel) => /^onboarding-/i.test(channel.name || '')), false);
@@ -403,7 +402,8 @@ test('human onboarding uses the selected agent in #all, follows context language
     });
     await new Promise((resolve) => setTimeout(resolve, 200));
     const disabledState = await request(server.baseUrl, '/api/state', { cookie });
-    assert.equal(disabledState.data.messages.filter((item) => item.eventType === 'human_onboarding_task').length, 1);
+    assert.equal(disabledState.data.events.filter((item) => item.type === 'human_onboarding_task_created').length, 1);
+    assert.equal(disabledState.data.messages.some((item) => item.eventType === 'human_onboarding_task'), false);
   } finally {
     await server.stop();
   }

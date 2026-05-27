@@ -54,7 +54,6 @@ function agentBelongsToWorkspace(agent, workspaceId) {
 export function createOnboardingManager(deps) {
   const {
     addSystemEvent,
-    addSystemMessage,
     broadcastState,
     deliverMessageToAgent,
     findAgent,
@@ -188,10 +187,10 @@ export function createOnboardingManager(deps) {
       `Onboarding task (system-triggered): This is a new human member onboarding. Please proactively onboard ${humanMention} in #all.`,
       languageInstruction,
       'Generate the visible greeting yourself from your onboarding role, Agent profile, MEMORY.md/notes, and recent server context. Do not copy this system task text.',
-      'Goals (soft guidance, do not force): 1) Help them understand what Slock is and what this server is for. 2) Introduce relevant humans/channels/agents for their current work, not a full catalog dump. 3) Suggest where they should start collaborating right away.',
+      'Goals (soft guidance, do not force): 1) Help them understand what MagClaw is and what this server is for. 2) Introduce relevant humans/channels/agents for their current work, not a full catalog dump. 3) Suggest where they should start collaborating right away.',
       'Do NOT ask them to set up the server or create agents/channels. If they are already working on a concrete task, keep onboarding lightweight and adapt to their flow.',
     ].join(' ');
-    const message = addSystemMessage('channel', channel.id, body, {
+    const message = internalOnboardingTaskMessage('channel', channel.id, body, {
       workspaceId,
       eventType: 'human_onboarding_task',
       mentionedAgentIds: [agent.id],

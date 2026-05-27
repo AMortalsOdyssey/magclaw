@@ -1523,6 +1523,7 @@ test('channel views hide internal new-agent greeting tasks', async () => {
 
   assert.match(app, /function isInternalOnboardingTaskMessage\(message\)/);
   assert.match(app, /message\?\.eventType === 'agent_onboarding_greeting_task'/);
+  assert.match(app, /message\?\.eventType === 'human_onboarding_task'/);
   assert.match(spaceMessagesSource, /\.filter\(\(message\) => !isInternalOnboardingTaskMessage\(message\)\)/);
 });
 
@@ -1581,7 +1582,7 @@ test('tablet thread layout promotes the thread inspector into the main content c
   assert.match(styles, /\.app-frame\.tablet-inspector-main \.thread-drawer \{[\s\S]*border-left: 2px solid var\(--border\)/);
 });
 
-test('desktop thread inspector can expand to a Slock-like reading width', async () => {
+test('desktop thread inspector can expand to a MagClaw-like reading width', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
 
@@ -2241,7 +2242,7 @@ test('message row actions stay hidden until the row is hovered or focused', asyn
   assert.doesNotMatch(styles, /\.magclaw-message\.highlighted \.message-hover-actions/);
 });
 
-test('message reactions, context menus, and share mode expose Slock-style interactions with MagClaw styling', async () => {
+test('message reactions, context menus, and share mode expose MagClaw-style interactions with MagClaw styling', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
   const renderKeySource = app.slice(app.indexOf('function renderRecordKey'), app.indexOf('function renderSystemEvent'));

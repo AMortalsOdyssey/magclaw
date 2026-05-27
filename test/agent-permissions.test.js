@@ -6,7 +6,7 @@ import {
   renderAgentPermissionGuidance,
 } from '../server/agent-permissions.js';
 
-test('agent permission grants recognize Slock-style development access', () => {
+test('agent permission grants recognize MagClaw-style development access', () => {
   const grant = inferAgentPermissionGrant('好的，给你开发完全访问权限。');
 
   assert.equal(grant.kind, 'development_full_access');

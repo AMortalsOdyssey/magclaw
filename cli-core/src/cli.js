@@ -730,7 +730,7 @@ function renderComputerHelp(subcommand = '') {
       '  --dry-run                  Preview upgrade actions',
       '  --channel <name>           latest | alpha | pinned:<semver>',
       '  --target-version <semver>  Explicit target version',
-      '  --force                    Accepted for Slock parity; currently maps to the normal upgrade path',
+      '  --force                    Accepted for MagClaw compatibility; currently maps to the normal upgrade path',
     ],
   };
   if (command && usage[command]) return `${usage[command].join('\n')}\n`;

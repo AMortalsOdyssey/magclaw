@@ -1056,6 +1056,7 @@ function isInternalOnboardingTaskMessage(message) {
     message?.hiddenFromChannel === true
     || metadata.hiddenFromChannel === true
     || metadata.visibility === 'internal'
+    || message?.eventType === 'human_onboarding_task'
     || message?.eventType === 'agent_onboarding_greeting_task'
   );
 }

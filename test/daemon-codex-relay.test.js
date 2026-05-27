@@ -431,7 +431,7 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
-test('npm daemon applies Slock-style Codex permission policy instead of hanging the turn', async () => {
+test('npm daemon applies MagClaw Codex permission policy instead of hanging the turn', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-approval-'));
   const fakeCodex = path.join(tmp, 'codex-fake.js');
   const logPath = path.join(tmp, 'codex-log.jsonl');
