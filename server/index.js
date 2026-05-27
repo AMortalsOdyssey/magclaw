@@ -679,7 +679,7 @@ async function createCloudRepositoryFromEnv() {
     return null;
   }
   const { createCloudPostgresStore } = await import('./cloud/postgres-store.js');
-  return resilientCloudRepository(createCloudPostgresStore());
+  return resilientCloudRepository(createCloudPostgresStore({ attachmentBaseDir: ATTACHMENTS_DIR }));
 }
 
 const cloudRepository = await createCloudRepositoryFromEnv();
@@ -1612,6 +1612,7 @@ function projectApiDeps() {
     selectedDefaultSpaceId,
     sendError,
     sendJson,
+    attachmentStorageDir: ATTACHMENTS_DIR,
   };
 }
 

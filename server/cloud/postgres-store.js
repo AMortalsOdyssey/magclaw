@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import path from 'node:path';
 import {
   DEFAULT_DATABASE,
   DEFAULT_MAINTENANCE_DATABASE,
@@ -16,6 +17,7 @@ import {
 } from './postgres.js';
 import { normalizeReleaseNotes, RELEASE_CATEGORY_KEYS, RELEASE_COMPONENTS } from '../release-notes.js';
 import { normalizeStoredConversationReferences } from '../conversation-references.js';
+import { safePathWithin } from '../path-utils.js';
 
 const TRANSIENT_POSTGRES_PERSIST_ERROR_CODES = new Set(['55P03', '40001', '40P01']);
 const DURABLE_STATE_RECORD_ARRAY_KEYS = Object.freeze(['reminders', 'missions', 'runs', 'projects', 'agentRuntimeSessions', 'conversationGrants']);
@@ -580,23 +582,45 @@ function workItemFromRow(row) {
   });
 }
 
-function attachmentFromRow(row) {
-  return recordFromMetadata(row, {
+function attachmentPathFromStorageKey(storageKey, attachmentBaseDir = '') {
+  const key = String(storageKey || '').trim();
+  const baseDir = String(attachmentBaseDir || '').trim();
+  if (!key || !baseDir) return '';
+  if (path.isAbsolute(key)) {
+    const resolved = path.resolve(key);
+    const relative = path.relative(path.resolve(baseDir), resolved);
+    if (relative && (relative.startsWith('..') || path.isAbsolute(relative))) return '';
+    return resolved;
+  }
+  return safePathWithin(baseDir, key) || '';
+}
+
+function attachmentFromRow(row, options = {}) {
+  const filename = row.filename || '';
+  const storageKey = row.storage_key || '';
+  const sizeBytes = Number(row.size_bytes || 0);
+  const filePath = attachmentPathFromStorageKey(storageKey, options.attachmentBaseDir);
+  const base = {
     id: row.id,
     workspaceId: row.workspace_id,
-    storageKey: row.storage_key,
+    storageKey,
+    relativePath: path.isAbsolute(String(storageKey || '')) ? '' : storageKey,
     storageMode: row.storage_mode || 'pvc',
-    name: row.filename || '',
-    filename: row.filename || '',
+    name: filename,
+    filename,
     type: row.mime_type || '',
     mimeType: row.mime_type || '',
-    size: Number(row.size_bytes || 0),
-    sizeBytes: Number(row.size_bytes || 0),
+    bytes: sizeBytes,
+    size: sizeBytes,
+    sizeBytes,
     checksumSha256: row.checksum_sha256 || '',
     source: row.source || 'upload',
     createdBy: row.created_by || '',
     createdAt: requiredIso(row.created_at),
-  });
+    url: row.id ? `/api/attachments/${row.id}/${encodeURIComponent(filename || 'attachment')}` : '',
+  };
+  if (filePath) base.path = filePath;
+  return recordFromMetadata(row, base);
 }
 
 function computerTokenFromRow(row) {
@@ -774,6 +798,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     RECENT_REPLY_HYDRATION_LIMIT,
     2000,
   );
+  const attachmentBaseDir = String(options.attachmentBaseDir || process.env.MAGCLAW_UPLOAD_DIR || '').trim();
   let pool = options.pool || null;
   let realtimeClient = null;
   let realtimeStopper = null;
@@ -3242,7 +3267,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       state.replies = replies.rows.map(replyFromRow).sort(compareRecordCreatedAsc);
       state.tasks = tasks.rows.map(taskFromRow);
       state.workItems = workItems.rows.map(workItemFromRow);
-      state.attachments = attachments.rows.map(attachmentFromRow);
+      state.attachments = attachments.rows.map((row) => attachmentFromRow(row, { attachmentBaseDir }));
       state.events = [];
       state.routeEvents = [];
       state.systemNotifications = [];
@@ -3345,7 +3370,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       replaceWorkspaceRows('replies', replies.rows.map(replyFromRow).sort(compareRecordCreatedAsc));
       replaceWorkspaceRows('tasks', tasks.rows.map(taskFromRow));
       replaceWorkspaceRows('workItems', workItems.rows.map(workItemFromRow));
-      replaceWorkspaceRows('attachments', attachments.rows.map(attachmentFromRow));
+      replaceWorkspaceRows('attachments', attachments.rows.map((row) => attachmentFromRow(row, { attachmentBaseDir })));
       cloud.realtimeEvents = [
         ...safeArray(cloud.realtimeEvents).filter((item) => String(item?.workspaceId || '') !== scopedWorkspaceId),
         ...realtimeEvents.rows.map(realtimeEventFromRow),

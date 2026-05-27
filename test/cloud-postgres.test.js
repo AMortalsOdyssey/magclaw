@@ -885,6 +885,19 @@ test('postgres store can reset transient online state when loading a fresh serve
       created_at: createdAt,
       updated_at: createdAt,
     }],
+    cloud_attachments: [{
+      id: 'att_image',
+      workspace_id: 'wsp_main',
+      storage_key: '2026/05/att_image-note.png',
+      storage_mode: 'pvc',
+      filename: 'note.png',
+      mime_type: 'image/png',
+      size_bytes: 8,
+      checksum_sha256: 'sha256-demo',
+      source: 'upload',
+      created_by: 'hum_owner',
+      created_at: createdAt,
+    }],
   };
   const pool = {
     async connect() {
@@ -902,6 +915,7 @@ test('postgres store can reset transient online state when loading a fresh serve
     database: 'magclaw_cloud',
     schema: 'magclaw',
     pool,
+    attachmentBaseDir: '/var/lib/magclaw/uploads',
   });
   const state = {};
   await store.loadIntoState(state, { resetTransientRuntimeState: true, loadedAt: '2026-05-13T10:26:00.000Z' });
@@ -914,6 +928,10 @@ test('postgres store can reset transient online state when loading a fresh serve
   assert.deepEqual(state.agents[0].activeWorkItemIds, []);
   assert.equal(state.agents[0].runtimeActivity, null);
   assert.equal(state.packageVersions, undefined);
+  assert.equal(state.attachments[0].url, '/api/attachments/att_image/note.png');
+  assert.equal(state.attachments[0].path, '/var/lib/magclaw/uploads/2026/05/att_image-note.png');
+  assert.equal(state.attachments[0].relativePath, '2026/05/att_image-note.png');
+  assert.equal(state.attachments[0].bytes, 8);
   assert.deepEqual(state.messages[0].reactions.map((item) => item.key), ['rocket']);
   assert.deepEqual(state.messages[0].followedBy, ['hum_owner']);
   assert.deepEqual(state.replies[0].reactions.map((item) => item.key), ['heart']);

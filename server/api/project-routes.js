@@ -1,4 +1,6 @@
 import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { safePathWithin } from '../path-utils.js';
 
 // Project and attachment API routes.
 // This route group owns local project folder registration, project search/tree
@@ -25,8 +27,17 @@ export async function handleProjectApi(req, res, url, deps) {
     selectedDefaultSpaceId,
     sendError,
     sendJson,
+    attachmentStorageDir,
   } = deps;
   const state = getState();
+
+  function attachmentFilePath(attachment = {}) {
+    const directPath = String(attachment.path || '').trim();
+    if (directPath) return directPath;
+    const storageKey = String(attachment.storageKey || attachment.relativePath || '').trim();
+    if (!storageKey || !attachmentStorageDir) return '';
+    return safePathWithin(attachmentStorageDir, storageKey) || '';
+  }
 
   if (req.method === 'POST' && url.pathname === '/api/projects') {
     const body = await readJson(req);
@@ -172,12 +183,25 @@ export async function handleProjectApi(req, res, url, deps) {
       sendError(res, 404, 'Attachment not found.');
       return true;
     }
+    const filePath = attachmentFilePath(attachment);
+    if (!filePath) {
+      sendError(res, 404, 'Attachment file is unavailable.');
+      return true;
+    }
+    let fileStat;
+    try {
+      fileStat = await stat(filePath);
+    } catch {
+      sendError(res, 404, 'Attachment file is unavailable.');
+      return true;
+    }
+    attachment.path = filePath;
     res.writeHead(200, {
       'content-type': attachment.type || 'application/octet-stream',
-      'content-length': attachment.bytes,
+      'content-length': Number(attachment.bytes || attachment.sizeBytes || attachment.size || fileStat.size),
       'cache-control': 'private, max-age=3600',
     });
-    createReadStream(attachment.path).pipe(res);
+    createReadStream(filePath).pipe(res);
     return true;
   }
 
