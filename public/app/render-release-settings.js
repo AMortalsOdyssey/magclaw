@@ -16,25 +16,6 @@ function releaseVersionLabel(version = '') {
   return clean.startsWith('v') ? clean : `v${clean}`;
 }
 
-function releaseUpdateNote(component) {
-  const current = String(component.currentVersion || '').trim();
-  const latest = String(component.latestVersion || '').trim();
-  if (!current || !latest || compareDaemonVersions(current, latest) >= 0) return '';
-  return `${releaseVersionLabel(latest)} available`;
-}
-
-function renderReleaseSummaryCard(componentId, label, component) {
-  void componentId;
-  const update = releaseUpdateNote(component);
-  return `
-    <div class="release-summary-card">
-      <span>${escapeHtml(label)}</span>
-      <strong>${escapeHtml(releaseVersionLabel(component.currentVersion))}</strong>
-      <small>${escapeHtml(update || `Latest ${releaseVersionLabel(component.latestVersion || component.currentVersion)}`)}</small>
-    </div>
-  `;
-}
-
 function releaseBadgeClass(key) {
   const classes = {
     new: 'new',
@@ -90,8 +71,6 @@ function renderReleaseVersionCard(release) {
 
 function renderReleaseNotesSettingsTab() {
   const web = releaseComponentForRender('web');
-  const daemon = releaseComponentForRender('daemon');
-  const computer = releaseComponentForRender('computer');
   const releases = Array.isArray(web.releases) ? web.releases : [];
   return `
     <section class="settings-release">
@@ -99,11 +78,6 @@ function renderReleaseNotesSettingsTab() {
         <div>
           <p class="eyebrow">Versioned changelog</p>
           <h3>What's New</h3>
-        </div>
-        <div class="release-summary-grid">
-          ${renderReleaseSummaryCard('web', 'Web Service', web)}
-          ${renderReleaseSummaryCard('daemon', 'Daemon', daemon)}
-          ${renderReleaseSummaryCard('computer', 'Computer', computer)}
         </div>
       </div>
       ${releases.length ? releases.map(renderReleaseVersionCard).join('') : `

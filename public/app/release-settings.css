@@ -7,9 +7,7 @@
 
 .release-heading {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 16px;
+  gap: 6px;
 }
 
 .release-heading h3,
@@ -17,37 +15,6 @@
   margin: 0;
   font-size: 22px;
   line-height: 1.15;
-}
-
-.release-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(120px, 1fr));
-  gap: 8px;
-}
-
-.release-summary-card {
-  display: grid;
-  gap: 2px;
-  min-width: 136px;
-  padding: 9px 11px;
-  border: 1px solid var(--settings-line, var(--border-faint));
-  border-radius: 6px;
-  background: var(--panel-soft);
-}
-
-.release-summary-card span,
-.release-summary-card small {
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.release-summary-card strong {
-  color: var(--accent);
-  font-size: 18px;
-  line-height: 1.1;
 }
 
 .settings-release-label {
@@ -247,9 +214,5 @@
   .release-note-group {
     grid-template-columns: 1fr;
     gap: 6px;
-  }
-
-  .release-summary-grid {
-    grid-template-columns: 1fr;
   }
 }

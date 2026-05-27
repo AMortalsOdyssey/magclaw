@@ -16,6 +16,25 @@ export const RELEASE_CATEGORY_LABELS = {
 
 const WEB_RELEASES = [
   {
+    version: '0.4.0',
+    date: '2026-05-27',
+    title: 'K8s and context upgrades',
+    new: [
+      'Containerized daemon profiles can now run on K8s with server-managed lifecycle support.',
+      'Context packs now include multiple message sources when agents need richer conversation context.',
+      'Remote background daemons can be upgraded from the Web without opening the connected machine.',
+      'Agent-to-Agent delivery is more reliable across DMs, threads, and routed work.',
+      'Agent status surfaces now show clearer working, idle, warming, and upgrade states.',
+      'Message context menus now expose more reliable actions for saved, referenced, and shared messages.',
+      'Quoted messages now jump directly to their source conversation item.',
+      'Task creation now dispatches work to the right owner and collaborators more consistently.',
+    ],
+    bugFix: [
+      'Thread context references now stay in the thread instead of jumping back to the channel.',
+    ],
+    approval: [],
+  },
+  {
     version: '0.3.8',
     date: '2026-05-23',
     title: 'Structured message references',

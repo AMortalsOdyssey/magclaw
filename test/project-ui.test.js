@@ -2566,11 +2566,14 @@ test('sidebar settings and skill panels support collapsible MagClaw UI sections'
   assert.doesNotMatch(app, /id: 'system'/);
   assert.doesNotMatch(app, /System Config/);
   assert.match(app, /Release Notes/);
-  assert.match(app, /MAGCLAW_WEB_PACKAGE_VERSION = '0\.3\.8'/);
+  assert.match(app, /MAGCLAW_WEB_PACKAGE_VERSION = '0\.4\.0'/);
   assert.match(app, /function renderReleaseVersionCard\(release\)/);
   assert.match(app, /bugFix: 'bug-fix'/);
   assert.match(app, /features: 'feature'/);
   assert.match(app, /Versioned changelog/);
+  assert.doesNotMatch(app, /renderReleaseSummaryCard/);
+  assert.doesNotMatch(app, /release-summary-grid/);
+  assert.doesNotMatch(app, /release-summary-card/);
   assert.match(app, /Agent warmup/);
   assert.match(index, /<link rel="stylesheet" href="\/app\/release-settings\.css" \/>/);
   assert.match(styles, /\.rail-collapse-btn/);
@@ -2579,7 +2582,8 @@ test('sidebar settings and skill panels support collapsible MagClaw UI sections'
   assert.match(styles, /\.settings-page-header/);
   assert.match(releaseStyles, /\.settings-release/);
   assert.match(releaseStyles, /\.release-version-card/);
-  assert.match(releaseStyles, /\.release-summary-card/);
+  assert.doesNotMatch(releaseStyles, /\.release-summary-card/);
+  assert.doesNotMatch(releaseStyles, /\.release-summary-grid/);
   assert.match(releaseStyles, /\.release-note-row/);
 });
 
