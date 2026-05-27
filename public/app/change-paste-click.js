@@ -193,9 +193,11 @@ document.addEventListener('change', async (event) => {
   }
 });
 function clipboardImageFiles(clipboardData) {
+  const clipboardFiles = Array.from(clipboardData?.files || []);
+  const clipboardItems = Array.from(clipboardData?.items || []);
   const files = [
-    ...(clipboardData?.files || []),
-    ...(clipboardData?.items || [])
+    ...clipboardFiles,
+    ...clipboardItems
       .filter((item) => String(item.type || '').startsWith('image/'))
       .map((item) => item.getAsFile?.())
       .filter(Boolean),
@@ -211,14 +213,54 @@ function clipboardImageFiles(clipboardData) {
     .map((file, index) => normalizeClipboardFile(file, index));
 }
 
-document.addEventListener('paste', async (event) => {
-  const textarea = event.target.closest?.('textarea[data-mention-input]');
-  if (!textarea) return;
-  const files = clipboardImageFiles(event.clipboardData);
-  if (!files.length) return;
-  event.preventDefault();
+function clipboardDataMayContainImage(clipboardData) {
+  return Array.from(clipboardData?.types || [])
+    .some((type) => type === 'Files' || String(type || '').startsWith('image/'));
+}
+
+function composerTextareaFromPasteTarget(target) {
+  const textarea = target?.closest?.('textarea[data-mention-input]');
+  if (textarea) return textarea;
+  const active = document.activeElement;
+  return active?.closest?.('textarea[data-mention-input]') || null;
+}
+
+async function clipboardImageFilesFromNavigator() {
+  if (!navigator.clipboard?.read) return [];
   try {
-    await uploadFiles(files, textarea.dataset.composerId, 'clipboard');
+    const items = await navigator.clipboard.read();
+    const files = [];
+    for (const item of items || []) {
+      for (const type of item.types || []) {
+        if (!String(type || '').startsWith('image/')) continue;
+        const blob = await item.getType(type);
+        files.push(new File([blob], clipboardScreenshotName(files.length, type), {
+          type,
+          lastModified: Date.now(),
+        }));
+      }
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+document.addEventListener('paste', async (event) => {
+  const textarea = composerTextareaFromPasteTarget(event.target);
+  const composerId = textarea?.dataset?.composerId;
+  if (!composerId) return;
+  const clipboardTypes = Array.from(event.clipboardData?.types || []);
+  const mayContainImage = clipboardDataMayContainImage(event.clipboardData);
+  if (mayContainImage) event.preventDefault();
+  let files = clipboardImageFiles(event.clipboardData);
+  if (!files.length && (mayContainImage || !clipboardTypes.length)) {
+    files = await clipboardImageFilesFromNavigator();
+  }
+  if (!files.length) return;
+  if (!event.defaultPrevented) event.preventDefault();
+  try {
+    await uploadFiles(files, composerId, 'clipboard');
   } catch (error) {
     toast(error.message);
   }

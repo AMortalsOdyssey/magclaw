@@ -1819,11 +1819,21 @@ test('composer attachments and textarea autosize stay live while sending', async
 test('pasted screenshots are read from clipboard items as well as files', async () => {
   const app = await readAppSource();
   const pasteSource = app.slice(app.indexOf('function clipboardImageFiles'), app.indexOf("document.addEventListener('paste'"));
+  const pasteListenerSource = app.slice(app.indexOf("document.addEventListener('paste'"), app.indexOf('function openMessageContextMenu'));
 
+  assert.match(pasteSource, /Array\.from\(clipboardData\?\.files \|\| \[\]\)/);
+  assert.match(pasteSource, /Array\.from\(clipboardData\?\.items \|\| \[\]\)/);
   assert.match(pasteSource, /clipboardData\?\.files/);
   assert.match(pasteSource, /clipboardData\?\.items/);
   assert.match(pasteSource, /item\.getAsFile\?\.\(\)/);
   assert.match(pasteSource, /normalizeClipboardFile\(file, index\)/);
+  assert.match(app, /function composerTextareaFromPasteTarget\(target\)/);
+  assert.match(app, /document\.activeElement/);
+  assert.match(app, /function clipboardImageFilesFromNavigator\(\)/);
+  assert.match(app, /navigator\.clipboard\?\.read/);
+  assert.match(app, /item\.getType\(type\)/);
+  assert.match(pasteListenerSource, /composerTextareaFromPasteTarget\(event\.target\)/);
+  assert.match(pasteListenerSource, /clipboardImageFilesFromNavigator\(\)/);
 });
 
 test('workspace location and scroll position survive refreshes', async () => {
