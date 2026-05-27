@@ -40,6 +40,15 @@ export async function handleProjectApi(req, res, url, deps) {
     return safePathWithin(attachmentStorageDir, storageKey) || '';
   }
 
+  function scopedAttachmentUrl(attachment = {}, workspaceId = '') {
+    const id = String(attachment.id || '').trim();
+    if (!id) return '';
+    const name = attachment.name || attachment.filename || 'attachment';
+    const base = `/api/attachments/${id}/${encodeURIComponent(name)}`;
+    const scope = String(workspaceId || '').trim();
+    return scope ? `${base}?workspaceId=${encodeURIComponent(scope)}` : base;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/projects') {
     const body = await readJson(req);
     try {
@@ -173,6 +182,7 @@ export async function handleProjectApi(req, res, url, deps) {
           ...(createdBy ? { createdBy } : {}),
         },
       });
+      if (workspaceId) attachment.url = scopedAttachmentUrl(attachment, workspaceId);
       state.attachments.push(attachment);
       created.push(attachment);
     }

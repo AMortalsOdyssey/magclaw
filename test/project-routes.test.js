@@ -156,6 +156,7 @@ test('project route group stores uploads in the authenticated workspace', async 
   assert.equal(deps.state.attachments[0].workspaceId, 'wsp_current');
   assert.equal(deps.state.attachments[0].serverId, 'wsp_current');
   assert.equal(deps.state.attachments[0].createdBy, 'hum_owner');
+  assert.equal(deps.state.attachments[0].url, '/api/attachments/att_1/note.txt?workspaceId=wsp_current');
   assert.deepEqual(deps.persistCalls, [{ workspaceId: 'wsp_current', reason: 'attachments_added' }]);
 });
 

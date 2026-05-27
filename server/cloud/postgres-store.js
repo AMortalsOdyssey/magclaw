@@ -595,6 +595,14 @@ function attachmentPathFromStorageKey(storageKey, attachmentBaseDir = '') {
   return safePathWithin(baseDir, key) || '';
 }
 
+function attachmentUrl(id, filename = 'attachment', workspaceId = '') {
+  const attachmentId = String(id || '').trim();
+  if (!attachmentId) return '';
+  const base = `/api/attachments/${attachmentId}/${encodeURIComponent(filename || 'attachment')}`;
+  const scope = String(workspaceId || '').trim();
+  return scope ? `${base}?workspaceId=${encodeURIComponent(scope)}` : base;
+}
+
 function attachmentFromRow(row, options = {}) {
   const filename = row.filename || '';
   const storageKey = row.storage_key || '';
@@ -617,7 +625,7 @@ function attachmentFromRow(row, options = {}) {
     source: row.source || 'upload',
     createdBy: row.created_by || '',
     createdAt: requiredIso(row.created_at),
-    url: row.id ? `/api/attachments/${row.id}/${encodeURIComponent(filename || 'attachment')}` : '',
+    url: attachmentUrl(row.id, filename, row.workspace_id),
   };
   if (filePath) base.path = filePath;
   return recordFromMetadata(row, base);

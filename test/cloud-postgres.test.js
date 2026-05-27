@@ -931,7 +931,7 @@ test('postgres store can reset transient online state when loading a fresh serve
   assert.deepEqual(state.agents[0].activeWorkItemIds, []);
   assert.equal(state.agents[0].runtimeActivity, null);
   assert.equal(state.packageVersions, undefined);
-  assert.equal(state.attachments[0].url, '/api/attachments/att_image/note.png');
+  assert.equal(state.attachments[0].url, '/api/attachments/att_image/note.png?workspaceId=wsp_main');
   assert.equal(state.attachments[0].path, '/var/lib/magclaw/uploads/2026/05/att_image-note.png');
   assert.equal(state.attachments[0].relativePath, '2026/05/att_image-note.png');
   assert.equal(state.attachments[0].bytes, 8);
