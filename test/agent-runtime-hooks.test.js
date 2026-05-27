@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createAgentWorkspaceManager } from '../server/agent-workspace.js';
@@ -13,7 +13,7 @@ function workspaceManager(tmp) {
     getState: () => ({ agents: [] }),
     now: () => '2026-05-21T10:00:00.000Z',
     AGENTS_DIR: path.join(tmp, 'agents'),
-    CODEX_HOME_CONFIG_VERSION: 8,
+    CODEX_HOME_CONFIG_VERSION: 9,
     CODEX_HOME_SHARED_ENTRIES: [],
     CODEX_HOME_STALE_SHARED_ENTRIES: ['hooks.json', 'hooks'],
     MAX_AGENT_WORKSPACE_FILE_BYTES: 1024 * 1024,
@@ -81,6 +81,96 @@ test('agent workspace preserves Codex hooks when Claude Code hooks are added lat
     assert.equal(await realpath(exposedClaudeSettings), await realpath(claudeSettingsJson));
     assert.equal(await realpath(exposedClaudeHooks), await realpath(claudeHooksDir));
     assert.equal(await pathExists(path.join(agentRoot, 'workspace', 'runtime-hooks', 'codex', 'hooks.json')), true);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('agent workspace skills stay local and compose into Codex home', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-workspace-skills-'));
+  try {
+    const sourceSkillsRoot = path.join(tmp, 'source-codex-home', 'skills');
+    const externalGlobalSkill = path.join(tmp, 'external-global-skill');
+    await mkdir(sourceSkillsRoot, { recursive: true });
+    await mkdir(externalGlobalSkill, { recursive: true });
+    await writeFile(path.join(externalGlobalSkill, 'SKILL.md'), [
+      '---',
+      'name: repo-global',
+      'description: Global skill linked from another checkout.',
+      '---',
+      '',
+      '# Repo Global',
+    ].join('\n'), 'utf8');
+    await symlink(externalGlobalSkill, path.join(sourceSkillsRoot, 'repo-global'), 'dir');
+
+    const manager = workspaceManager(tmp);
+    const agent = { id: 'agt_skills', name: 'Skill Agent', runtime: 'Codex CLI', runtimeId: 'codex' };
+
+    await manager.ensureAgentWorkspace(agent);
+
+    const agentRoot = manager.agentDataDir(agent);
+    const workspaceSkills = path.join(agentRoot, 'workspace', 'skills');
+    const workspaceSkillsStat = await lstat(workspaceSkills);
+    assert.equal(workspaceSkillsStat.isDirectory(), true);
+    assert.equal(workspaceSkillsStat.isSymbolicLink(), false);
+
+    const localSkillRoot = path.join(workspaceSkills, 'local-coach');
+    await mkdir(localSkillRoot, { recursive: true });
+    await writeFile(path.join(localSkillRoot, 'SKILL.md'), [
+      '---',
+      'name: local-coach',
+      'description: Agent-local coaching skill.',
+      '---',
+      '',
+      '# Local Coach',
+    ].join('\n'), 'utf8');
+
+    await manager.prepareAgentCodexHome(agent);
+
+    const skills = await manager.listAgentSkills(agent);
+    assert.ok(skills.global.some((skill) => skill.name === 'repo-global'));
+    assert.equal(skills.workspace.some((skill) => skill.name === 'repo-global'), false);
+    const localSkill = skills.workspace.find((skill) => skill.name === 'local-coach');
+    assert.ok(localSkill);
+    assert.equal(localSkill.path, 'workspace/skills/local-coach/SKILL.md');
+    assert.equal(
+      await realpath(path.join(agentRoot, 'codex-home', 'skills', 'local-coach')),
+      await realpath(localSkillRoot),
+    );
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('agent workspace skills are runtime-neutral for Claude Code agents', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-workspace-skills-'));
+  try {
+    const manager = workspaceManager(tmp);
+    const agent = { id: 'agt_claude_skills', name: 'Claude Skill Agent', runtime: 'Claude Code', runtimeId: 'claude-code' };
+
+    await manager.ensureAgentWorkspace(agent);
+
+    const agentRoot = manager.agentDataDir(agent);
+    const workspaceSkills = path.join(agentRoot, 'workspace', 'skills');
+    const workspaceSkillsStat = await lstat(workspaceSkills);
+    assert.equal(workspaceSkillsStat.isDirectory(), true);
+    assert.equal(workspaceSkillsStat.isSymbolicLink(), false);
+
+    const localSkillRoot = path.join(workspaceSkills, 'claude-coach');
+    await mkdir(localSkillRoot, { recursive: true });
+    await writeFile(path.join(localSkillRoot, 'SKILL.md'), [
+      '---',
+      'name: claude-coach',
+      'description: Agent-local skill available regardless of runtime.',
+      '---',
+      '',
+      '# Claude Coach',
+    ].join('\n'), 'utf8');
+
+    const skills = await manager.listAgentSkills(agent);
+    const localSkill = skills.workspace.find((skill) => skill.name === 'claude-coach');
+    assert.ok(localSkill);
+    assert.equal(localSkill.path, 'workspace/skills/claude-coach/SKILL.md');
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

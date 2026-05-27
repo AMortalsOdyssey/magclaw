@@ -2555,7 +2555,8 @@ test('sidebar settings and skill panels support collapsible MagClaw UI sections'
   assert.match(app, /function renderRailSectionTitle\(section, label, count/);
   assert.match(app, /data-action="toggle-sidebar-section"/);
   assert.match(app, /data-action="toggle-agent-skill-section"/);
-  assert.match(app, /Agent-Isolated Skills/);
+  assert.match(app, /Agent Workspace Skills/);
+  assert.match(app, /No agent workspace skills installed yet\./);
   assert.match(app, /Global Codex Skills/);
   assert.match(app, /Plugin Skills/);
   assert.match(app, /function renderSettingsRail\(\)/);

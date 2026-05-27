@@ -2,8 +2,8 @@ import http from 'node:http';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -489,6 +489,38 @@ export async function activeComputerLock(env = process.env) {
   return activeLockFile(paths.lockFile, { scope: 'computer' });
 }
 
+function readJsonFileSync(file, fallback = {}) {
+  if (!existsSync(file)) return fallback;
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonFileSync(file, value) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function readServiceStateSync(profile = DEFAULT_PROFILE, env = process.env) {
+  const paths = profilePaths(profile, env);
+  return readJsonFileSync(paths.service, {});
+}
+
+function activeDaemonLockSync(profile = DEFAULT_PROFILE, env = process.env) {
+  const paths = profilePaths(profile, env);
+  const lock = readJsonFileSync(paths.lockFile, null);
+  if (lock?.pid && pidIsRunning(lock.pid)) {
+    return {
+      profile: paths.profile,
+      ...lock,
+      lockFile: paths.lockFile,
+    };
+  }
+  return null;
+}
+
 async function writeLockFile(file, lock) {
   const handle = await open(file, 'wx');
   try {
@@ -873,10 +905,24 @@ function backgroundServiceModeForPlatform(platform = process.platform) {
   return 'foreground';
 }
 
+function normalizeBackgroundServiceMode(value = '') {
+  const mode = String(value || '').trim().toLowerCase();
+  if (['container', 'k8s', 'kubernetes', 'pod'].includes(mode)) return 'container';
+  if (['launchd', 'systemd', 'schtasks', 'foreground'].includes(mode)) return mode;
+  return '';
+}
+
+function requestedBackgroundServiceMode(env = process.env, platform = process.platform) {
+  return normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_SERVICE_MODE)
+    || normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_BACKGROUND_MODE)
+    || backgroundServiceModeForPlatform(platform);
+}
+
 export function serviceStatePatchForDaemonRun(service = {}, env = process.env, platform = process.platform) {
   if (daemonRunLaunchedByBackgroundService(env)) {
+    const serviceMode = normalizeBackgroundServiceMode(service.mode);
     return {
-      mode: service.mode || backgroundServiceModeForPlatform(platform),
+      mode: serviceMode && serviceMode !== 'foreground' ? serviceMode : requestedBackgroundServiceMode(env, platform),
       background: true,
     };
   }
@@ -2153,32 +2199,152 @@ async function globalSkillRoots() {
   return roots;
 }
 
-async function syncGlobalSkillsIntoAgentHome(codexHome, workspace) {
+function pathIsWithinResolvedRoots(resolvedPath, roots = []) {
+  const cleanPath = path.resolve(resolvedPath);
+  return roots.some((root) => cleanPath === root || cleanPath.startsWith(`${root}${path.sep}`));
+}
+
+async function resolvedRoots(roots = []) {
+  const resolved = [];
+  for (const root of roots) {
+    const logical = path.resolve(root);
+    if (!resolved.includes(logical)) resolved.push(logical);
+    const physical = await realpath(root).catch(() => logical);
+    if (!resolved.includes(physical)) resolved.push(physical);
+  }
+  return resolved;
+}
+
+async function ensureWorkspaceSkillsDir(workspace, codexHome = '', agent = {}) {
+  const workspaceSkills = path.join(workspace, 'skills');
+  const legacyGeneratedSkills = codexHome ? path.join(codexHome, 'skills') : '';
+  await mkdir(path.dirname(workspaceSkills), { recursive: true });
+  try {
+    const existing = await lstat(workspaceSkills);
+    if (existing.isSymbolicLink()) {
+      const current = await readlink(workspaceSkills);
+      const resolved = path.resolve(path.dirname(workspaceSkills), current);
+      if (legacyGeneratedSkills && resolved === path.resolve(legacyGeneratedSkills)) {
+        await unlink(workspaceSkills);
+        await mkdir(workspaceSkills, { recursive: true });
+        logInfo('skills', `Repaired workspace skills directory for agent ${agent.id || 'unknown'}.`);
+      } else {
+        logWarning('skills', `Workspace skills path for agent ${agent.id || 'unknown'} is a custom symlink; leaving it untouched.`);
+      }
+    } else if (!existing.isDirectory()) {
+      logWarning('skills', `Workspace skills path for agent ${agent.id || 'unknown'} is not a directory; leaving it untouched.`);
+      return null;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    await mkdir(workspaceSkills, { recursive: true });
+  }
+  return workspaceSkills;
+}
+
+async function migrateLegacyAgentSkills(codexHome, workspaceSkills, globalResolvedRoots, agent = {}) {
+  const codexSkillsRoot = path.join(codexHome, 'skills');
+  if (!workspaceSkills || !existsSync(codexSkillsRoot)) return;
+  const entries = await readdir(codexSkillsRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name === '.system') continue;
+    const source = path.join(codexSkillsRoot, entry.name);
+    const target = path.join(workspaceSkills, entry.name);
+    if (existsSync(target)) continue;
+    const sourceInfo = await lstat(source).catch(() => null);
+    if (!sourceInfo) continue;
+    try {
+      if (sourceInfo.isSymbolicLink()) {
+        const current = await readlink(source);
+        const resolved = path.resolve(path.dirname(source), current);
+        if (pathIsWithinResolvedRoots(resolved, globalResolvedRoots)) continue;
+        const realTarget = await realpath(resolved).catch(() => resolved);
+        if (pathIsWithinResolvedRoots(realTarget, globalResolvedRoots)) continue;
+        const targetInfo = await stat(realTarget).catch(() => null);
+        if (!targetInfo) continue;
+        await symlink(realTarget, target, targetInfo.isDirectory() ? 'dir' : 'file');
+        await unlink(source);
+      } else {
+        await rename(source, target);
+      }
+      logInfo('skills', `Migrated legacy local skill ${entry.name} for agent ${agent.id || 'unknown'}.`);
+    } catch (error) {
+      logWarning('skills', `Could not migrate legacy local skill ${entry.name} for agent ${agent.id || 'unknown'}: ${error.message}`);
+    }
+  }
+}
+
+async function linkRuntimeSkillEntry(source, target, agent = {}) {
+  const linked = await linkPathEntry(source, target);
+  if (linked) return true;
+  const existing = await lstat(target).catch(() => null);
+  if (existing && !existing.isSymbolicLink() && path.resolve(source) !== path.resolve(target)) {
+    logWarning('skills', `Could not link skill ${path.basename(target)} for agent ${agent.id || 'unknown'} because the runtime path is not a symlink.`);
+  }
+  return false;
+}
+
+async function linkSkillRootEntries(sourceRoot, targetRoot, agent = {}, { includeSystem = false } = {}) {
+  const desired = new Set();
+  if (!sourceRoot || !existsSync(sourceRoot)) return desired;
+  const entries = await readdir(sourceRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') && !(includeSystem && entry.name === '.system')) continue;
+    const source = path.join(sourceRoot, entry.name);
+    if (includeSystem && entry.name === '.system' && (entry.isDirectory() || entry.isSymbolicLink())) {
+      desired.add(entry.name);
+      const targetSystemRoot = path.join(targetRoot, '.system');
+      await mkdir(targetSystemRoot, { recursive: true });
+      const systemEntries = await readdir(source, { withFileTypes: true }).catch(() => []);
+      for (const systemEntry of systemEntries) {
+        if (!systemEntry.isDirectory() && !systemEntry.isSymbolicLink() && !systemEntry.isFile()) continue;
+        const systemSource = path.join(source, systemEntry.name);
+        const systemTarget = path.join(targetSystemRoot, systemEntry.name);
+        await linkRuntimeSkillEntry(systemSource, systemTarget, agent).catch((error) => {
+          logWarning('skills', `Could not link system skill ${systemEntry.name} for agent ${agent.id || 'unknown'}: ${error.message}`);
+        });
+      }
+      continue;
+    }
+    if (!entry.isDirectory() && !entry.isSymbolicLink() && !entry.isFile()) continue;
+    desired.add(entry.name);
+    const target = path.join(targetRoot, entry.name);
+    await linkRuntimeSkillEntry(source, target, agent).catch((error) => {
+      logWarning('skills', `Could not link skill ${entry.name} for agent ${agent.id || 'unknown'}: ${error.message}`);
+    });
+  }
+  return desired;
+}
+
+async function pruneGeneratedSkillLinks(targetSkillsRoot, desiredNames, agent = {}) {
+  const entries = await readdir(targetSkillsRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') && entry.name !== '.system') continue;
+    if (desiredNames.has(entry.name)) continue;
+    const target = path.join(targetSkillsRoot, entry.name);
+    const existing = await lstat(target).catch(() => null);
+    if (!existing) continue;
+    if (existing.isSymbolicLink()) {
+      await unlink(target);
+    } else if (entry.name !== '.system') {
+      logWarning('skills', `Stale runtime skill ${entry.name} for agent ${agent.id || 'unknown'} was not removed because it is not a symlink.`);
+    }
+  }
+}
+
+async function syncGlobalSkillsIntoAgentHome(codexHome, workspace, agent = {}) {
   const targetSkillsRoot = path.join(codexHome, 'skills');
   await mkdir(targetSkillsRoot, { recursive: true });
   const roots = await globalSkillRoots();
+  const globalResolvedRoots = await resolvedRoots(roots);
+  const workspaceSkills = await ensureWorkspaceSkillsDir(workspace, codexHome, agent);
+  await migrateLegacyAgentSkills(codexHome, workspaceSkills, globalResolvedRoots, agent);
+  const desiredNames = new Set();
   for (const sourceSkillsRoot of [...roots].reverse()) {
-    const entries = await readdir(sourceSkillsRoot, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
-      const source = path.join(sourceSkillsRoot, entry.name);
-      if (entry.name === '.system' && (entry.isDirectory() || entry.isSymbolicLink())) {
-        const targetSystemRoot = path.join(targetSkillsRoot, '.system');
-        await mkdir(targetSystemRoot, { recursive: true });
-        const systemEntries = await readdir(source, { withFileTypes: true }).catch(() => []);
-        for (const systemEntry of systemEntries) {
-          const systemSource = path.join(source, systemEntry.name);
-          const systemTarget = path.join(targetSystemRoot, systemEntry.name);
-          await linkPathEntry(systemSource, systemTarget).catch(() => {});
-        }
-        continue;
-      }
-      if (!entry.isDirectory() && !entry.isSymbolicLink() && !entry.isFile()) continue;
-      await linkPathEntry(source, path.join(targetSkillsRoot, entry.name)).catch(() => {});
-    }
+    for (const name of await linkSkillRootEntries(sourceSkillsRoot, targetSkillsRoot, agent, { includeSystem: true })) desiredNames.add(name);
   }
-
-  const workspaceSkillsLink = path.join(workspace, 'skills');
-  await linkPathEntry(targetSkillsRoot, workspaceSkillsLink).catch(() => {});
+  for (const name of await linkSkillRootEntries(workspaceSkills, targetSkillsRoot, agent)) desiredNames.add(name);
+  await pruneGeneratedSkillLinks(targetSkillsRoot, desiredNames, agent);
 }
 
 function firstFrontmatterValue(content, keys) {
@@ -2231,11 +2397,12 @@ function shortenSkillPath(absPath, { agentRoot = '', codexHome = '' } = {}) {
 async function parseSkillFile(filePath, scope, context = {}) {
   const content = await readFile(filePath, 'utf8').catch(() => '');
   const resolvedFilePath = await realpath(filePath).catch(() => filePath);
+  const logicalFilePath = path.resolve(filePath);
   const name = firstFrontmatterValue(content, ['name', 'title']) || skillNameFromPath(filePath);
   const description = firstFrontmatterValue(content, ['description', 'summary', 'short_description', 'short-description'])
     || firstMarkdownParagraph(content)
     || 'No description provided.';
-  const shortPath = shortenSkillPath(resolvedFilePath, context);
+  const shortPath = shortenSkillPath(logicalFilePath, context);
   return {
     id: `${scope}:${shortPath}`,
     name,
@@ -2326,15 +2493,6 @@ async function findPluginSkillFiles(root, { maxEntries = 400 } = {}) {
   return found;
 }
 
-async function resolvedRoots(paths) {
-  const roots = [];
-  for (const item of paths) {
-    if (!item || !existsSync(item)) continue;
-    roots.push(await realpath(item).catch(() => path.resolve(item)));
-  }
-  return roots;
-}
-
 function uniqueSkills(items) {
   const seen = new Set();
   return items.filter((item) => {
@@ -2364,6 +2522,35 @@ function daemonSkillTools() {
     'list_reminders',
     'cancel_reminder',
   ];
+}
+
+async function listDaemonAgentSkills({ agent, agentDir, workspace, codexHome = '' }) {
+  const context = { agentRoot: agentDir, codexHome };
+  const roots = await globalSkillRoots();
+  const globalSkills = [];
+  for (const root of roots) globalSkills.push(...await scanSkillsDir(root, 'global', context));
+  const agentRoots = [
+    path.join(workspace, 'skills'),
+    path.join(agentDir, '.codex', 'skills'),
+    path.join(agentDir, '.agents', 'skills'),
+  ];
+  const agentSkills = [];
+  for (const root of agentRoots) agentSkills.push(...await scanSkillsDir(root, 'agent', context));
+  const pluginFiles = await findPluginSkillFiles(path.join(SOURCE_CODEX_HOME, 'plugins', 'cache'));
+  const pluginSkills = [];
+  for (const file of pluginFiles) pluginSkills.push(await parseSkillFile(file, 'plugin', context));
+  return {
+    agent: {
+      id: agent.id,
+      name: agent.name || agent.id,
+      codexHome: codexHome || undefined,
+      workspacePath: workspace,
+    },
+    global: uniqueSkills(globalSkills),
+    workspace: uniqueSkills(agentSkills),
+    plugin: uniqueSkills(pluginSkills),
+    tools: daemonSkillTools(),
+  };
 }
 
 const DAEMON_PROGRESSIVE_DISCLOSURE_SECTION = [
@@ -2650,7 +2837,7 @@ class CodexAgentSession {
       codexHome: this.codexHome(),
       runtimeKind: 'codex',
     });
-    await syncGlobalSkillsIntoAgentHome(this.codexHome(), this.workspace());
+    await syncGlobalSkillsIntoAgentHome(this.codexHome(), this.workspace(), this.agent);
     await writeFile(path.join(this.codexHome(), 'config.toml'), [
       'wire_api = "responses"',
       '',
@@ -2668,8 +2855,8 @@ class CodexAgentSession {
       '',
       'This workspace is isolated for a MagClaw cloud-connected agent.',
       'Do not assume files from the user localhost MagClaw instance are present here.',
-      'Global Codex skills are linked into `./skills` for read-only reuse when available.',
       'Agent-specific skills can be installed under `./skills/<skill-name>/SKILL.md`; this path belongs to this agent only.',
+      'Runtime-generated adapter directories are not skill install targets.',
       '',
     ].join('\n'));
   }
@@ -2684,40 +2871,12 @@ class CodexAgentSession {
 
   async listSkills() {
     await this.prepare();
-    const context = {
-      agentRoot: this.agentDir(),
+    return listDaemonAgentSkills({
+      agent: this.agent,
+      agentDir: this.agentDir(),
+      workspace: this.workspace(),
       codexHome: this.codexHome(),
-    };
-    const roots = await globalSkillRoots();
-    const globalSkills = [];
-    for (const root of roots) globalSkills.push(...await scanSkillsDir(root, 'global', context));
-    const globalResolvedRoots = await resolvedRoots(roots);
-    const agentRoots = [
-      path.join(this.codexHome(), 'skills'),
-      path.join(this.agentDir(), '.codex', 'skills'),
-      path.join(this.agentDir(), '.agents', 'skills'),
-    ];
-    const agentSkills = [];
-    for (const root of agentRoots) agentSkills.push(...await scanSkillsDir(root, 'agent', context));
-    const workspaceSkills = agentSkills.filter((skill) => {
-      const resolved = path.resolve(skill.absolutePath);
-      return !globalResolvedRoots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
     });
-    const pluginFiles = await findPluginSkillFiles(path.join(SOURCE_CODEX_HOME, 'plugins', 'cache'));
-    const pluginSkills = [];
-    for (const file of pluginFiles) pluginSkills.push(await parseSkillFile(file, 'plugin', context));
-    return {
-      agent: {
-        id: this.agent.id,
-        name: this.agent.name || this.agent.id,
-        codexHome: this.codexHome(),
-        workspacePath: this.workspace(),
-      },
-      global: uniqueSkills(globalSkills),
-      workspace: uniqueSkills(workspaceSkills),
-      plugin: uniqueSkills(pluginSkills),
-      tools: daemonSkillTools(),
-    };
   }
 
   sendStatus(status, activity = null) {
@@ -3348,6 +3507,7 @@ class ClaudeAgentSession {
 
   async prepare() {
     await mkdir(this.workspace(), { recursive: true });
+    await ensureWorkspaceSkillsDir(this.workspace(), path.join(this.agentDir(), 'codex-home'), this.agent);
     await ensureDaemonAgentWorkspaceRoot(this.agentDir(), this.agent);
     await prepareRuntimeHooks({
       agentDir: this.agentDir(),
@@ -3358,6 +3518,8 @@ class ClaudeAgentSession {
       '# MagClaw Remote Claude Agent Workspace',
       '',
       'This workspace is isolated for a MagClaw cloud-connected Claude Code agent.',
+      'Agent-specific skills can be installed under `./skills/<skill-name>/SKILL.md`; this path belongs to this agent only.',
+      'Runtime-generated adapter directories are not skill install targets.',
       '',
     ].join('\n'));
   }
@@ -3368,6 +3530,15 @@ class ClaudeAgentSession {
 
   async readWorkspaceFile(relPath = 'MEMORY.md') {
     return readDaemonAgentWorkspaceFile(this.agentDir(), this.agent, relPath);
+  }
+
+  async listSkills() {
+    await this.prepare();
+    return listDaemonAgentSkills({
+      agent: this.agent,
+      agentDir: this.agentDir(),
+      workspace: this.workspace(),
+    });
   }
 
   sendStatus(status, activity = null) {
@@ -4725,8 +4896,12 @@ async function writeLauncher(profile, env = process.env) {
       || previousService.packageBin
       || packageBinForPackageName(packageName),
   ).trim() || packageBinForPackageName(packageName);
+  const envServiceMode = normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_SERVICE_MODE)
+    || normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_BACKGROUND_MODE);
+  const previousMode = normalizeBackgroundServiceMode(previousService.mode);
+  const serviceMode = envServiceMode || (previousMode && previousMode !== 'foreground' ? previousMode : backgroundServiceModeForPlatform(process.platform));
   const service = await writeServiceState(paths.profile, {
-    mode: process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd' : process.platform === 'win32' ? 'schtasks' : 'foreground',
+    mode: serviceMode,
     background: true,
     launcher,
     packageSpec,
@@ -4809,6 +4984,72 @@ async function writeLauncher(profile, env = process.env) {
   return launcher;
 }
 
+async function writeContainerSupervisor(profile, launcher, env = process.env) {
+  const paths = profilePaths(profile, env);
+  await mkdir(paths.runDir, { recursive: true });
+  await mkdir(paths.logDir, { recursive: true });
+  const supervisor = path.join(paths.runDir, 'container-supervisor.js');
+  const restartSec = Math.max(1, Math.min(60, Number(env.MAGCLAW_DAEMON_CONTAINER_RESTART_SEC || 3) || 3));
+  const code = [
+    '#!/usr/bin/env node',
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    `const launcher = ${JSON.stringify(launcher)};`,
+    `const serviceFile = ${JSON.stringify(paths.service)};`,
+    `const logDir = ${JSON.stringify(paths.logDir)};`,
+    `const restartMs = ${JSON.stringify(restartSec * 1000)};`,
+    'let child = null;',
+    'let stopping = false;',
+    'function readService() {',
+    "  try { return JSON.parse(fs.readFileSync(serviceFile, 'utf8')); } catch { return {}; }",
+    '}',
+    'function shouldStop() {',
+    '  const service = readService();',
+    '  return Boolean(service.remoteClosed || service.containerSupervisorDisabled);',
+    '}',
+    'function openLog(name) {',
+    '  fs.mkdirSync(logDir, { recursive: true });',
+    "  return fs.openSync(path.join(logDir, name), 'a');",
+    '}',
+    'function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }',
+    'function stop(signal) {',
+    '  stopping = true;',
+    "  if (child && child.exitCode === null && child.signalCode === null) child.kill(signal || 'SIGTERM');",
+    '  setTimeout(() => process.exit(0), 5000).unref?.();',
+    '}',
+    "process.once('SIGINT', () => stop('SIGINT'));",
+    "process.once('SIGTERM', () => stop('SIGTERM'));",
+    '(async () => {',
+    '  while (!stopping) {',
+    '    if (shouldStop()) break;',
+    "    const out = openLog('daemon.log');",
+    "    const err = openLog('daemon.err.log');",
+    '    child = spawn(process.execPath, [launcher], {',
+    "      stdio: ['ignore', out, err],",
+    '      env: {',
+    '        ...process.env,',
+    "        MAGCLAW_DAEMON_SERVICE_MODE: 'container',",
+    '      },',
+    '    });',
+    "    await new Promise((resolve) => child.once('exit', resolve));",
+    '    fs.closeSync(out);',
+    '    fs.closeSync(err);',
+    '    child = null;',
+    '    if (stopping || shouldStop()) break;',
+    '    await sleep(restartMs);',
+    '  }',
+    '})().catch((error) => {',
+    "  console.error(`[magclaw-container-supervisor] ${error && error.stack ? error.stack : error}`);",
+    '  process.exit(1);',
+    '});',
+    '',
+  ].join('\n');
+  await writeFile(supervisor, code);
+  await chmod(supervisor, 0o755).catch(() => {});
+  return supervisor;
+}
+
 function launchAgentLabel(profile) {
   return `ai.magclaw.daemon.${safeProfileName(profile)}`;
 }
@@ -4822,6 +5063,61 @@ function plistEscape(value) {
 
 async function ensureExecutable(file) {
   await chmod(file, 0o755).catch(() => {});
+}
+
+async function startContainerBackground(profile, env = process.env) {
+  const paths = profilePaths(profile, env);
+  await mkdir(paths.logDir, { recursive: true });
+  const launcher = await writeLauncher(paths.profile, { ...env, MAGCLAW_DAEMON_SERVICE_MODE: 'container' });
+  await ensureExecutable(launcher);
+  const supervisor = await writeContainerSupervisor(paths.profile, launcher, env);
+  await ensureExecutable(supervisor);
+  await writeServiceState(paths.profile, {
+    mode: 'container',
+    background: true,
+    launcher,
+    containerSupervisor: supervisor,
+    containerSupervisorDisabled: false,
+  }, env);
+  const current = backgroundServiceStatus(paths.profile, env);
+  if (current.active) {
+    return {
+      ok: true,
+      mode: 'container',
+      active: true,
+      alreadyRunning: true,
+      pid: current.pid || null,
+      supervisorPid: current.supervisorPid || null,
+      file: supervisor,
+      launcher,
+      status: current.status || 'running',
+    };
+  }
+  const child = spawn(process.execPath, [supervisor], {
+    cwd: process.cwd(),
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...env,
+      MAGCLAW_DAEMON_SERVICE_MODE: 'container',
+    },
+  });
+  child.unref();
+  await writeServiceState(paths.profile, {
+    mode: 'container',
+    background: true,
+    launcher,
+    containerSupervisor: supervisor,
+    containerSupervisorPid: child.pid || null,
+  }, env);
+  return {
+    ok: true,
+    mode: 'container',
+    active: true,
+    supervisorPid: child.pid || null,
+    file: supervisor,
+    launcher,
+  };
 }
 
 async function startMacBackground(profile, env = process.env) {
@@ -4934,6 +5230,11 @@ async function startWindowsBackground(profile, env = process.env) {
 }
 
 async function startBackground(profile, env = process.env) {
+  const service = await readServiceState(profile, env);
+  const mode = normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_SERVICE_MODE)
+    || normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_BACKGROUND_MODE)
+    || normalizeBackgroundServiceMode(service.mode);
+  if (mode === 'container') return startContainerBackground(profile, env);
   if (process.platform === 'darwin') return startMacBackground(profile, env);
   if (process.platform === 'linux') return startLinuxBackground(profile, env);
   if (process.platform === 'win32') return startWindowsBackground(profile, env);
@@ -4961,6 +5262,25 @@ export function parseLaunchdPrintStatus(result = {}) {
 
 function backgroundServiceStatus(profile, env = process.env) {
   const paths = profilePaths(profile, env);
+  const serviceState = readServiceStateSync(paths.profile, env);
+  const requestedMode = normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_SERVICE_MODE)
+    || normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_BACKGROUND_MODE);
+  if (requestedMode === 'container' || normalizeBackgroundServiceMode(serviceState.mode) === 'container') {
+    const lock = activeDaemonLockSync(paths.profile, env);
+    const supervisorPid = Number(serviceState.containerSupervisorPid || 0);
+    const supervisorRunning = Number.isInteger(supervisorPid) && supervisorPid > 0 && pidIsRunning(supervisorPid);
+    const daemonRunning = Boolean(lock?.pid);
+    return {
+      mode: 'container',
+      active: daemonRunning || supervisorRunning,
+      pid: lock?.pid || null,
+      supervisorPid: supervisorRunning ? supervisorPid : null,
+      file: serviceState.containerSupervisor || '',
+      launcher: serviceState.launcher || '',
+      status: daemonRunning ? 'running' : supervisorRunning ? 'supervising' : 'inactive',
+      error: '',
+    };
+  }
   if (process.platform === 'darwin') {
     const label = launchAgentLabel(paths.profile);
     const result = spawnSync('launchctl', ['print', `gui/${process.getuid()}/${label}`], { encoding: 'utf8' });
@@ -5081,9 +5401,77 @@ async function stopActiveDaemon(profile, env = process.env) {
   return { ok: stopped, running: !stopped, pid, signal };
 }
 
+function waitForPidExitSync(pid, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!pidIsRunning(pid)) return true;
+    sleepSync(100);
+  }
+  return !pidIsRunning(pid);
+}
+
+function stopPidSync(pid, { allowCurrent = false, timeoutMs = 2000 } = {}) {
+  const value = Number(pid);
+  if (!Number.isInteger(value) || value <= 0) return { ok: true, running: false };
+  if (!allowCurrent && value === process.pid) {
+    return { ok: true, running: true, pid: value, skippedCurrent: true };
+  }
+  try {
+    process.kill(value, 'SIGTERM');
+  } catch (error) {
+    if (error?.code === 'ESRCH') return { ok: true, running: false, pid: value, stale: true };
+    return { ok: false, running: true, pid: value, error: error.message };
+  }
+  if (waitForPidExitSync(value, timeoutMs)) return { ok: true, running: false, pid: value, signal: 'SIGTERM' };
+  try {
+    process.kill(value, 'SIGKILL');
+  } catch (error) {
+    if (error?.code === 'ESRCH') return { ok: true, running: false, pid: value, signal: 'SIGKILL' };
+    return { ok: false, running: true, pid: value, signal: 'SIGKILL', error: error.message };
+  }
+  const stopped = waitForPidExitSync(value, 1000);
+  return { ok: stopped, running: !stopped, pid: value, signal: 'SIGKILL' };
+}
+
+function stopContainerBackground(profile, env = process.env, options = {}) {
+  const paths = profilePaths(profile, env);
+  const state = readServiceStateSync(paths.profile, env);
+  const lock = activeDaemonLockSync(paths.profile, env);
+  const supervisor = stopPidSync(state.containerSupervisorPid);
+  const daemon = stopPidSync(lock?.pid);
+  if (options.disable) {
+    writeJsonFileSync(paths.service, {
+      ...state,
+      version: 1,
+      profile: paths.profile,
+      mode: 'container',
+      background: true,
+      containerSupervisorDisabled: true,
+      updatedAt: now(),
+    });
+  }
+  return {
+    ok: Boolean(supervisor.ok && daemon.ok),
+    mode: 'container',
+    supervisorPid: state.containerSupervisorPid || null,
+    pid: lock?.pid || null,
+    supervisor,
+    process: daemon,
+    file: state.containerSupervisor || '',
+    launcher: state.launcher || '',
+    disabled: Boolean(options.disable),
+  };
+}
+
 function stopBackground(profile, env = process.env, options = {}) {
+  const paths = profilePaths(profile, env);
+  const state = readServiceStateSync(paths.profile, env);
+  const requestedMode = normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_SERVICE_MODE)
+    || normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_BACKGROUND_MODE);
+  if (requestedMode === 'container' || normalizeBackgroundServiceMode(state.mode) === 'container') {
+    return stopContainerBackground(paths.profile, env, options);
+  }
   if (process.platform === 'darwin') {
-    const paths = profilePaths(profile, env);
     const label = launchAgentLabel(paths.profile);
     const serviceTarget = `gui/${process.getuid()}/${label}`;
     const plist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
@@ -5570,7 +5958,10 @@ async function runUpgradeWorker(flags, env = process.env) {
 
     await emitProgress({ status: 'upgrading', phase: 'stage_service', progress: 45, message: 'Staging service launcher.' });
     await writeServiceState(profile, {
-      mode: serviceBefore.mode || (process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd' : process.platform === 'win32' ? 'schtasks' : 'foreground'),
+      mode: normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_SERVICE_MODE)
+        || normalizeBackgroundServiceMode(env.MAGCLAW_DAEMON_BACKGROUND_MODE)
+        || normalizeBackgroundServiceMode(serviceBefore.mode)
+        || backgroundServiceModeForPlatform(process.platform),
       background: true,
       packageSpec,
       packageName,

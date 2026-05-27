@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -219,8 +219,10 @@ async function startRelay(options = {}) {
 test('npm daemon pairs, starts fake Codex app-server, and returns an agent message', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-relay-'));
   const sourceHome = path.join(tmp, 'source-codex-home');
-  await mkdir(path.join(sourceHome, 'skills', 'itinerary-scout'), { recursive: true });
-  await writeFile(path.join(sourceHome, 'skills', 'itinerary-scout', 'SKILL.md'), [
+  const externalGlobalSkill = path.join(tmp, 'external-global-skills', 'itinerary-scout');
+  await mkdir(path.join(sourceHome, 'skills'), { recursive: true });
+  await mkdir(externalGlobalSkill, { recursive: true });
+  await writeFile(path.join(externalGlobalSkill, 'SKILL.md'), [
     '---',
     'name: itinerary-scout',
     'description: Finds practical travel routes.',
@@ -228,6 +230,7 @@ test('npm daemon pairs, starts fake Codex app-server, and returns an agent messa
     '',
     '# Itinerary Scout',
   ].join('\n'));
+  await symlink(externalGlobalSkill, path.join(sourceHome, 'skills', 'itinerary-scout'), 'dir');
   const fakeCodex = path.join(tmp, 'codex-fake.js');
   const logPath = path.join(tmp, 'codex-log.jsonl');
   await writeFile(fakeCodex, `#!/usr/bin/env node
@@ -329,10 +332,31 @@ process.stdin.on('data', (chunk) => {
     });
     await waitFor(() => relay.messages.filter((item) => item.type === 'agent:deliver:ack' && item.commandId === 'adl_test').length >= 2);
     await new Promise((resolve) => setTimeout(resolve, 250));
+    const daemonAgentRoot = path.join(tmp, 'daemon-home', 'profiles', 'cloud-test', 'agents', 'agt_remote');
+    const workspaceSkillsRoot = path.join(daemonAgentRoot, 'workspace', 'skills');
+    const localSkillRoot = path.join(workspaceSkillsRoot, 'route-coach');
+    await mkdir(localSkillRoot, { recursive: true });
+    await writeFile(path.join(localSkillRoot, 'SKILL.md'), [
+      '---',
+      'name: route-coach',
+      'description: Agent-local route coaching skill.',
+      '---',
+      '',
+      '# Route Coach',
+    ].join('\n'));
     relay.send({ type: 'agent:skills:list', commandId: 'skills_test', agentId: 'agt_remote' });
     const skillResult = await waitFor(() => relay.messages.find((item) => item.type === 'agent:skills:list_result'));
     assert.equal(skillResult.commandId, 'skills_test');
     assert.ok(skillResult.skills.global.some((skill) => skill.name === 'itinerary-scout'));
+    assert.equal(skillResult.skills.workspace.some((skill) => skill.name === 'itinerary-scout'), false);
+    assert.ok(skillResult.skills.workspace.some((skill) => skill.name === 'route-coach'));
+    const workspaceSkillsStat = await lstat(workspaceSkillsRoot);
+    assert.equal(workspaceSkillsStat.isDirectory(), true);
+    assert.equal(workspaceSkillsStat.isSymbolicLink(), false);
+    assert.equal(
+      await realpath(path.join(daemonAgentRoot, 'codex-home', 'skills', 'route-coach')),
+      await realpath(localSkillRoot),
+    );
     assert.ok(skillResult.skills.tools.includes('send_message'));
     relay.send({
       type: 'daemon:release_notice',
@@ -622,6 +646,27 @@ process.exit(2);
     assert.equal((await lstat(claudeHooksDir)).isDirectory(), true);
     assert.equal(await realpath(path.join(run.cwd, '.claude', 'settings.json')), await realpath(claudeSettingsJson));
     assert.equal(await realpath(path.join(run.cwd, '.claude', 'hooks')), await realpath(claudeHooksDir));
+    const workspaceSkillsRoot = path.join(run.cwd, 'skills');
+    const workspaceSkillsStat = await lstat(workspaceSkillsRoot);
+    assert.equal(workspaceSkillsStat.isDirectory(), true);
+    assert.equal(workspaceSkillsStat.isSymbolicLink(), false);
+    const localSkillRoot = path.join(workspaceSkillsRoot, 'claude-route-coach');
+    await mkdir(localSkillRoot, { recursive: true });
+    await writeFile(path.join(localSkillRoot, 'SKILL.md'), [
+      '---',
+      'name: claude-route-coach',
+      'description: Agent-local skill for a Claude runtime agent.',
+      '---',
+      '',
+      '# Claude Route Coach',
+    ].join('\n'));
+    relay.send({ type: 'agent:skills:list', commandId: 'claude_skills_test', agentId: 'agt_claude_remote' });
+    const skillResult = await waitFor(() => relay.messages.find((item) => item.type === 'agent:skills:list_result' && item.commandId === 'claude_skills_test'));
+    assert.ok(skillResult.skills.workspace.some((skill) => skill.name === 'claude-route-coach'));
+    assert.equal(
+      skillResult.skills.workspace.find((skill) => skill.name === 'claude-route-coach')?.path,
+      'workspace/skills/claude-route-coach/SKILL.md',
+    );
   } finally {
     daemon.kill('SIGINT');
     await Promise.race([

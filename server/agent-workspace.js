@@ -8,6 +8,7 @@ import {
   readlink,
   readdir,
   realpath,
+  rename,
   stat,
   symlink,
   unlink,
@@ -171,6 +172,7 @@ export function createAgentWorkspaceManager(deps) {
       '# MagClaw Agent Runtime',
       '',
       '- 这个 Codex home 由 MagClaw 管理，只用于聊天 Agent 的运行回合。',
+      '- `skills/` 是运行时生成的组合视图；Agent 本地 skill 的安装目标是 workspace 里的 `skills/<skill-name>/SKILL.md`。',
       '- 不要在 MagClaw 聊天回合里启动 Codex 原生记忆写入、整理或 profile 更新流程。',
       '- 需要记录长期偏好、专长或表达风格时，使用 MagClaw 受控 memory writeback。',
       '- 当前频道、thread 或 task 的具体指令，以 MagClaw 注入的运行提示为准。',
@@ -179,23 +181,24 @@ export function createAgentWorkspaceManager(deps) {
   }
 
   async function linkSkillEntry(source, target) {
-    if (!existsSync(source)) return;
-    if (path.resolve(source) === path.resolve(target)) return;
+    if (!existsSync(source)) return false;
+    if (path.resolve(source) === path.resolve(target)) return false;
     try {
       const existing = await lstat(target);
       if (existing.isSymbolicLink()) {
         const current = await readlink(target);
         const resolved = path.resolve(path.dirname(target), current);
-        if (resolved === source) return;
+        if (resolved === source) return true;
         await unlink(target);
       } else {
-        return;
+        return false;
       }
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
     const sourceStat = await stat(source);
     await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
+    return true;
   }
 
   function runtimeHookConfigName(runtimeKind) {
@@ -276,50 +279,189 @@ export function createAgentWorkspaceManager(deps) {
     return roots;
   }
 
+  function pathIsWithinResolvedRoots(resolvedPath, roots = []) {
+    const cleanPath = path.resolve(resolvedPath);
+    return roots.some((root) => cleanPath === root || cleanPath.startsWith(`${root}${path.sep}`));
+  }
+
+  async function resolvedRoots(roots = []) {
+    const resolved = [];
+    for (const root of roots) {
+      const logical = path.resolve(root);
+      if (!resolved.includes(logical)) resolved.push(logical);
+      const physical = await realpath(root).catch(() => logical);
+      if (!resolved.includes(physical)) resolved.push(physical);
+    }
+    return resolved;
+  }
+
+  async function ensureAgentWorkspaceSkillsDir(agent, codexHome = agentCodexHomeDir(agent)) {
+    const workspaceSkills = path.join(agentDataDir(agent), 'workspace', 'skills');
+    const legacyGeneratedSkills = codexHome ? path.join(codexHome, 'skills') : '';
+    await mkdir(path.dirname(workspaceSkills), { recursive: true });
+    try {
+      const existing = await lstat(workspaceSkills);
+      if (existing.isSymbolicLink()) {
+        const current = await readlink(workspaceSkills);
+        const resolved = path.resolve(path.dirname(workspaceSkills), current);
+        if (legacyGeneratedSkills && resolved === path.resolve(legacyGeneratedSkills)) {
+          await unlink(workspaceSkills);
+          await mkdir(workspaceSkills, { recursive: true });
+          addSystemEvent('agent_workspace_skills_repaired', `${agent?.name || 'Agent'} workspace skills directory repaired.`, {
+            agentId: agent?.id,
+            path: workspaceSkills,
+            previousTarget: legacyGeneratedSkills,
+          });
+        } else {
+          addSystemEvent('agent_workspace_skills_skipped', `${agent?.name || 'Agent'} workspace skills path is a custom symlink.`, {
+            agentId: agent?.id,
+            path: workspaceSkills,
+            target: resolved,
+          });
+        }
+      } else if (!existing.isDirectory()) {
+        addSystemEvent('agent_workspace_skills_skipped', `${agent?.name || 'Agent'} workspace skills path is not a directory.`, {
+          agentId: agent?.id,
+          path: workspaceSkills,
+        });
+        return null;
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      await mkdir(workspaceSkills, { recursive: true });
+    }
+    return workspaceSkills;
+  }
+
+  async function migrateLegacyAgentSkills(codexHome, workspaceSkills, globalResolvedRoots, agent) {
+    const codexSkillsRoot = path.join(codexHome, 'skills');
+    if (!workspaceSkills || !existsSync(codexSkillsRoot)) return;
+    const entries = await readdir(codexSkillsRoot, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || entry.name === '.system') continue;
+      const source = path.join(codexSkillsRoot, entry.name);
+      const target = path.join(workspaceSkills, entry.name);
+      if (existsSync(target)) continue;
+      const sourceInfo = await lstat(source).catch(() => null);
+      if (!sourceInfo) continue;
+      try {
+        if (sourceInfo.isSymbolicLink()) {
+          const current = await readlink(source);
+          const resolved = path.resolve(path.dirname(source), current);
+          if (pathIsWithinResolvedRoots(resolved, globalResolvedRoots)) continue;
+          const realTarget = await realpath(resolved).catch(() => resolved);
+          if (pathIsWithinResolvedRoots(realTarget, globalResolvedRoots)) continue;
+          const targetInfo = await stat(realTarget).catch(() => null);
+          if (!targetInfo) continue;
+          await symlink(realTarget, target, targetInfo.isDirectory() ? 'dir' : 'file');
+          await unlink(source);
+        } else {
+          await rename(source, target);
+        }
+        addSystemEvent('agent_workspace_skill_migrated', `${agent?.name || 'Agent'} legacy local skill moved into workspace skills.`, {
+          agentId: agent?.id,
+          name: entry.name,
+          from: source,
+          to: target,
+        });
+      } catch (error) {
+        addSystemEvent('agent_workspace_skill_migration_skipped', `Could not migrate local skill ${entry.name}: ${error.message}`, {
+          agentId: agent?.id,
+          source,
+          target,
+        });
+      }
+    }
+  }
+
+  async function linkRuntimeSkillEntry(source, target, agent) {
+    const linked = await linkSkillEntry(source, target);
+    if (linked) return true;
+    const existing = await lstat(target).catch(() => null);
+    if (existing && !existing.isSymbolicLink() && path.resolve(source) !== path.resolve(target)) {
+      addSystemEvent('agent_skill_link_skipped', `Could not link skill ${path.basename(target)} because the generated runtime path is not a symlink.`, {
+        agentId: agent?.id,
+        source,
+        target,
+      });
+    }
+    return false;
+  }
+
+  async function linkSkillRootEntries(sourceRoot, targetRoot, agent, { includeSystem = false } = {}) {
+    const desired = new Set();
+    if (!sourceRoot || !existsSync(sourceRoot)) return desired;
+    const entries = await readdir(sourceRoot, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') && !(includeSystem && entry.name === '.system')) continue;
+      const source = path.join(sourceRoot, entry.name);
+      if (includeSystem && entry.name === '.system' && (entry.isDirectory() || entry.isSymbolicLink())) {
+        desired.add(entry.name);
+        const targetSystemRoot = path.join(targetRoot, '.system');
+        await mkdir(targetSystemRoot, { recursive: true });
+        const systemEntries = await readdir(source, { withFileTypes: true }).catch(() => []);
+        for (const systemEntry of systemEntries) {
+          if (!systemEntry.isDirectory() && !systemEntry.isSymbolicLink() && !systemEntry.isFile()) continue;
+          const systemSource = path.join(source, systemEntry.name);
+          const systemTarget = path.join(targetSystemRoot, systemEntry.name);
+          await linkRuntimeSkillEntry(systemSource, systemTarget, agent).catch((error) => {
+            addSystemEvent('agent_skill_link_skipped', `Could not link system skill ${systemEntry.name}: ${error.message}`, {
+              agentId: agent?.id,
+              source: systemSource,
+              target: systemTarget,
+            });
+          });
+        }
+        continue;
+      }
+      if (!entry.isDirectory() && !entry.isSymbolicLink() && !entry.isFile()) continue;
+      desired.add(entry.name);
+      const target = path.join(targetRoot, entry.name);
+      await linkRuntimeSkillEntry(source, target, agent).catch((error) => {
+        addSystemEvent('agent_skill_link_skipped', `Could not link skill ${entry.name}: ${error.message}`, {
+          agentId: agent?.id,
+          source,
+          target,
+        });
+      });
+    }
+    return desired;
+  }
+
+  async function pruneGeneratedSkillLinks(targetSkillsRoot, desiredNames, agent) {
+    const entries = await readdir(targetSkillsRoot, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') && entry.name !== '.system') continue;
+      if (desiredNames.has(entry.name)) continue;
+      const target = path.join(targetSkillsRoot, entry.name);
+      const existing = await lstat(target).catch(() => null);
+      if (!existing) continue;
+      if (existing.isSymbolicLink()) {
+        await unlink(target);
+        continue;
+      }
+      if (entry.name !== '.system') {
+        addSystemEvent('agent_skill_prune_skipped', `Stale generated skill ${entry.name} was not removed because it is not a symlink.`, {
+          agentId: agent?.id,
+          target,
+        });
+      }
+    }
+  }
+
   async function syncSourceSkillsIntoAgentHome(codexHome, agent) {
     const targetSkillsRoot = path.join(codexHome, 'skills');
     await mkdir(targetSkillsRoot, { recursive: true });
     const roots = await globalSkillRoots();
+    const globalResolvedRoots = await resolvedRoots(roots);
+    const workspaceSkills = await ensureAgentWorkspaceSkillsDir(agent, codexHome);
+    await migrateLegacyAgentSkills(codexHome, workspaceSkills, globalResolvedRoots, agent);
+    const desiredNames = new Set();
     for (const sourceSkillsRoot of [...roots].reverse()) {
-      const entries = await readdir(sourceSkillsRoot, { withFileTypes: true }).catch(() => []);
-      for (const entry of entries) {
-        const source = path.join(sourceSkillsRoot, entry.name);
-        if (entry.name === '.system' && (entry.isDirectory() || entry.isSymbolicLink())) {
-          const targetSystemRoot = path.join(targetSkillsRoot, '.system');
-          await mkdir(targetSystemRoot, { recursive: true });
-          const systemEntries = await readdir(source, { withFileTypes: true }).catch(() => []);
-          for (const systemEntry of systemEntries) {
-            const systemSource = path.join(source, systemEntry.name);
-            const systemTarget = path.join(targetSystemRoot, systemEntry.name);
-            await linkSkillEntry(systemSource, systemTarget).catch((error) => {
-              addSystemEvent('agent_skill_link_skipped', `Could not link system skill ${systemEntry.name}: ${error.message}`, {
-                agentId: agent?.id,
-                source: systemSource,
-                target: systemTarget,
-              });
-            });
-          }
-          continue;
-        }
-        if (!entry.isDirectory() && !entry.isSymbolicLink() && !entry.isFile()) continue;
-        const target = path.join(targetSkillsRoot, entry.name);
-        await linkSkillEntry(source, target).catch((error) => {
-          addSystemEvent('agent_skill_link_skipped', `Could not link skill ${entry.name}: ${error.message}`, {
-            agentId: agent?.id,
-            source,
-            target,
-          });
-        });
-      }
+      for (const name of await linkSkillRootEntries(sourceSkillsRoot, targetSkillsRoot, agent, { includeSystem: true })) desiredNames.add(name);
     }
-    const workspaceSkills = path.join(agentDataDir(agent), 'workspace', 'skills');
-    await linkSkillEntry(targetSkillsRoot, workspaceSkills).catch((error) => {
-      addSystemEvent('agent_skill_link_skipped', `Could not link workspace skills: ${error.message}`, {
-        agentId: agent?.id,
-        source: targetSkillsRoot,
-        target: workspaceSkills,
-      });
-    });
+    for (const name of await linkSkillRootEntries(workspaceSkills, targetSkillsRoot, agent)) desiredNames.add(name);
+    await pruneGeneratedSkillLinks(targetSkillsRoot, desiredNames, agent);
   }
   async function prepareAgentCodexHome(agent) {
     const codexHome = agentCodexHomeDir(agent);
@@ -423,17 +565,18 @@ export function createAgentWorkspaceManager(deps) {
   async function parseSkillFile(filePath, agent, { source = '' } = {}) {
     const content = await readFile(filePath, 'utf8').catch(() => '');
     const resolvedFilePath = await realpath(filePath).catch(() => filePath);
+    const logicalFilePath = path.resolve(filePath);
     const name = firstFrontmatterValue(content, ['name', 'title']) || skillNameFromPath(filePath);
     const description = firstFrontmatterValue(content, ['description', 'summary', 'short_description', 'short-description'])
       || firstMarkdownParagraph(content)
       || 'No description provided.';
     return {
-      id: `${source || skillPathScope(resolvedFilePath, agent)}:${shortenSkillPath(resolvedFilePath, agent)}`,
+      id: `${source || skillPathScope(logicalFilePath, agent)}:${shortenSkillPath(logicalFilePath, agent)}`,
       name,
       description: description.slice(0, 500),
-      path: shortenSkillPath(resolvedFilePath, agent),
+      path: shortenSkillPath(logicalFilePath, agent),
       absolutePath: resolvedFilePath,
-      scope: source || skillPathScope(resolvedFilePath, agent),
+      scope: source || skillPathScope(logicalFilePath, agent),
       kind: path.basename(filePath) === 'SKILL.md' ? 'skill' : 'command',
       plugin: pluginNameFromPath(resolvedFilePath),
     };
@@ -495,18 +638,11 @@ export function createAgentWorkspaceManager(deps) {
     const roots = await globalSkillRoots();
     const globalSkills = [];
     for (const root of roots) globalSkills.push(...await scanSkillsDir(root, agent, { source: 'global' }));
-    const globalResolvedRoots = [];
-    for (const root of roots) {
-      globalResolvedRoots.push(await realpath(root).catch(() => path.resolve(root)));
-    }
     const agentSkills = [
-      ...await scanSkillsDir(path.join(codexHome, 'skills'), agent, { source: 'agent' }),
+      ...await scanSkillsDir(path.join(agentRoot, 'workspace', 'skills'), agent, { source: 'agent' }),
       ...await scanSkillsDir(path.join(agentRoot, '.codex', 'skills'), agent, { source: 'agent' }),
       ...await scanSkillsDir(path.join(agentRoot, '.agents', 'skills'), agent, { source: 'agent' }),
-    ].filter((skill) => {
-      const resolved = path.resolve(skill.absolutePath);
-      return skill.scope === 'agent' && !globalResolvedRoots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
-    });
+    ];
     const pluginFiles = await findPluginSkillFiles(path.join(SOURCE_CODEX_HOME, 'plugins', 'cache'));
     const pluginSkills = [];
     for (const file of pluginFiles) pluginSkills.push(await parseSkillFile(file, agent, { source: 'plugin' }));
@@ -666,6 +802,7 @@ export function createAgentWorkspaceManager(deps) {
       '这个目录用于保存该 Agent 的临时文件、生成产物、下载资料和交付物。',
       '',
       '- 长期知识放在 `../MEMORY.md` 和 `../notes/`。',
+      '- Agent 私有 skill 放在 `skills/<skill-name>/SKILL.md`；各 runtime 生成的适配目录不是安装目标。',
       '- 任务相关文件尽量按项目或任务分组。',
       '',
     ].join('\n');
@@ -840,6 +977,7 @@ export function createAgentWorkspaceManager(deps) {
     agent.workspacePath = dir;
     await mkdir(path.join(dir, 'notes'), { recursive: true });
     await mkdir(path.join(dir, 'workspace'), { recursive: true });
+    await ensureAgentWorkspaceSkillsDir(agent);
     const memoryPath = path.join(dir, 'MEMORY.md');
     if (!existsSync(memoryPath)) {
       await writeFile(memoryPath, defaultAgentMemory(agent));
