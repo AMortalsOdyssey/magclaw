@@ -82,6 +82,22 @@ export async function handleTaskApi(req, res, url, deps) {
     }
   }
 
+  function workspaceIdForRecord(record = null, fallback = '') {
+    return String(
+      record?.workspaceId
+      || fallback
+      || state.connection?.workspaceId
+      || state.cloud?.workspace?.id
+      || state.cloud?.workspaces?.[0]?.id
+      || '',
+    ).trim();
+  }
+
+  function persistTaskState(record = null, reason = 'task_changed') {
+    const workspaceId = workspaceIdForRecord(record);
+    return persistState(workspaceId ? { workspaceId, reason } : { reason });
+  }
+
   function paginationLimit(value, fallback = 80, max = 200) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
