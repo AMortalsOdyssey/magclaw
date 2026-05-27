@@ -907,13 +907,14 @@ function renderMessageContextMenu() {
   const threadAction = record.parentMessageId ? 'view-in-channel' : 'open-thread';
   const threadId = record.parentMessageId ? root?.id || record.parentMessageId : record.id;
   const showChannelContext = typeof recordTargetsThreadComposer === 'function' && recordTargetsThreadComposer(record);
+  const showThreadContext = !showChannelContext && recordHasThreadContext(record);
   return `
     <div class="message-context-menu pixel-panel" data-context-scope="message" data-menu-placement="${escapeHtml(placement.placement)}" style="${positionStyle}" role="menu">
       ${renderMessageReactionGrid(record)}
       <div class="message-menu-separator"></div>
       ${renderContextMenuItem('add-message-context', t('Add to context'), record.id)}
       ${showChannelContext ? renderContextMenuItem('add-message-channel-context', t('Add to channel context'), record.id) : ''}
-      ${recordHasThreadContext(record) ? renderContextMenuItem('add-thread-context', t('Add thread to context'), record.id) : ''}
+      ${showThreadContext ? renderContextMenuItem('add-thread-context', t('Add thread to context'), record.id) : ''}
 	      <div class="message-menu-separator"></div>
 	      ${renderContextMenuItem('copy-message-link', 'Copy link', record.id)}
       ${renderContextMenuItem('copy-message-markdown', 'Copy markdown', record.id)}

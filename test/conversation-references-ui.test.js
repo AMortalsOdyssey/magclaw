@@ -103,6 +103,42 @@ async function conversationReferenceHarness() {
   return context;
 }
 
+async function messageContextMenuHarness() {
+  const source = await readFile(new URL('../public/app/render-space-chat-tasks.js', import.meta.url), 'utf8');
+  const context = {
+    appState: {
+      messages: [],
+      replies: [],
+    },
+    messageContextMenu: null,
+    MAGCLAW_MESSAGE_REACTIONS: [],
+    window: {
+      innerWidth: 1200,
+      innerHeight: 800,
+    },
+    byId: (items, id) => (items || []).find((item) => item.id === id) || null,
+    currentHumanId: () => 'hum_owner',
+    normalizedMessageReactions: () => [],
+    recordTargetsThreadComposer: () => false,
+    threadReplies(parentId) {
+      return context.appState.replies.filter((reply) => reply.parentMessageId === parentId);
+    },
+    conversationRecord(id) {
+      return context.byId(context.appState.messages, id) || context.byId(context.appState.replies, id);
+    },
+    t: (value) => value,
+    escapeHtml: (value) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;'),
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+  return context;
+}
+
 function createReferenceTargetNode(context, key) {
   const classes = new Set();
   const node = {
@@ -692,6 +728,54 @@ test('DM message reference cards do not repeat the same @ label for source and s
 
   assert.equal((html.match(/@Cindy/g) || []).length, 1);
   assert.doesNotMatch(html, /@Cindy\s*·\s*@Cindy/);
+});
+
+test('thread context menus hide whole-thread context while channel menus keep it', async () => {
+  const context = await messageContextMenuHarness();
+  context.appState.messages = [{
+    id: 'msg_root',
+    authorType: 'human',
+    authorId: 'hum_owner',
+    body: 'Thread root',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    replyCount: 1,
+    followedBy: [],
+  }];
+  context.appState.replies = [{
+    id: 'rep_agent',
+    parentMessageId: 'msg_root',
+    authorType: 'agent',
+    authorId: 'agt_cindy',
+    body: 'Thread reply',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+  }];
+  context.messageContextMenu = {
+    recordId: 'rep_agent',
+    scope: 'message',
+    x: 120,
+    y: 120,
+    viewportWidth: 1200,
+    viewportHeight: 800,
+  };
+  context.recordTargetsThreadComposer = () => true;
+
+  const threadMenu = context.renderMessageContextMenu();
+
+  assert.match(threadMenu, /Add to context/);
+  assert.match(threadMenu, /Add to channel context/);
+  assert.doesNotMatch(threadMenu, /Add thread to context/);
+
+  context.messageContextMenu = {
+    ...context.messageContextMenu,
+    recordId: 'msg_root',
+  };
+  context.recordTargetsThreadComposer = () => false;
+
+  const channelMenu = context.renderMessageContextMenu();
+
+  assert.match(channelMenu, /Add thread to context/);
 });
 
 test('message context menu exposes context actions and hides thread context without replies', async () => {
