@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { handleAgentToolApi } from '../server/api/agent-tool-routes.js';
 
 function makeResponse() {
@@ -15,6 +18,7 @@ function routeDeps(overrides = {}) {
     agents: [],
     tasks: [],
     reminders: [],
+    attachments: [],
     messages: [{ id: 'msg_1', body: 'source', authorType: 'human', spaceType: 'channel', spaceId: 'chan_all' }],
   };
   const agent = { id: 'agt_one', name: 'Agent One' };
@@ -820,6 +824,10 @@ test('agent tool file read requires an explicit path for detailed workspace disc
 
 test('agent tool APIs list and read workspace-scoped agent profiles', async () => {
   const deps = routeDeps();
+  deps.agent.description = 'I am the local Codex teammate.';
+  deps.agent.runtime = 'codex';
+  deps.agent.runtimeId = 'Codex';
+  deps.agent.avatar = '/avatars/avatar_self.svg';
   deps.state.connection = { workspaceId: 'wsp_fallback' };
   deps.state.channels = [
     {
@@ -880,6 +888,21 @@ test('agent tool APIs list and read workspace-scoped agent profiles', async () =
   assert.equal(readRes.data.agent.id, 'agt_two');
   assert.match(readRes.data.text, /Runtime: Codex/);
 
+  const selfRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
+    selfRes,
+    new URL('http://local/api/agent-tools/agents/read?agentId=agt_one&targetAgentId=me'),
+    deps,
+  ), true);
+  assert.equal(selfRes.statusCode, 200);
+  assert.equal(selfRes.data.agent.id, 'agt_one');
+  assert.equal(selfRes.data.agent.name, 'Agent One');
+  assert.equal(selfRes.data.agent.avatar, '/avatars/avatar_self.svg');
+  assert.equal(selfRes.data.agent.avatarKind, 'path');
+  assert.match(selfRes.data.text, /Description: I am the local Codex teammate\./);
+  assert.match(selfRes.data.text, /Avatar: \/avatars\/avatar_self\.svg/);
+
   const hiddenRes = makeResponse();
   assert.equal(await handleAgentToolApi(
     { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
@@ -888,4 +911,69 @@ test('agent tool APIs list and read workspace-scoped agent profiles', async () =
     deps,
   ), true);
   assert.equal(hiddenRes.statusCode, 404);
+});
+
+test('agent attachment tools list and read original uploaded files', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-agent-attachment-tools-'));
+  const storageKey = '2026/05/att_note-note.txt';
+  const filePath = path.join(tmp, storageKey);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, 'hello from the original attachment\n', 'utf8');
+
+  const deps = routeDeps({
+    attachmentStorageDir: tmp,
+  });
+  deps.state.connection = { workspaceId: 'wsp_test' };
+  deps.state.channels = [{
+    id: 'chan_all',
+    name: 'all',
+    workspaceId: 'wsp_test',
+    memberIds: ['agt_one'],
+    agentIds: ['agt_one'],
+  }];
+  deps.state.messages = [{
+    id: 'msg_attach',
+    workspaceId: 'wsp_test',
+    body: '<@agt_one> read this file',
+    authorType: 'human',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    attachmentIds: ['att_note'],
+  }];
+  deps.state.attachments.push({
+    id: 'att_note',
+    workspaceId: 'wsp_test',
+    name: 'note.txt',
+    type: 'text/plain',
+    bytes: 35,
+    storageKey,
+    createdBy: 'hum_local',
+    url: '/api/attachments/att_note/note.txt?workspaceId=wsp_test',
+  });
+
+  const listRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
+    listRes,
+    new URL('http://local/api/agent-tools/attachments?agentId=agt_one&messageId=msg_attach'),
+    deps,
+  ), true);
+  assert.equal(listRes.statusCode, 200, listRes.error || '');
+  assert.equal(listRes.data.attachments.length, 1);
+  assert.equal(listRes.data.attachments[0].id, 'att_note');
+  assert.equal(listRes.data.attachments[0].path, filePath);
+  assert.match(listRes.data.text, /read_attachment\(attachmentId="att_note"\)/);
+
+  const readRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
+    readRes,
+    new URL('http://local/api/agent-tools/attachments/read?agentId=agt_one&attachmentId=att_note'),
+    deps,
+  ), true);
+  assert.equal(readRes.statusCode, 200, readRes.error || '');
+  assert.equal(readRes.data.attachment.id, 'att_note');
+  assert.equal(readRes.data.file.path, filePath);
+  assert.equal(readRes.data.contentText, 'hello from the original attachment\n');
+  assert.equal(readRes.data.contentBase64, Buffer.from('hello from the original attachment\n').toString('base64'));
 });

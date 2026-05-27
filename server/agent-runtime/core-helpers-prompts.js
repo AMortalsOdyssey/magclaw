@@ -357,6 +357,8 @@ function canonicalMagClawToolName(name) {
     'read_agent_memory',
     'list_agents',
     'read_agent_profile',
+    'list_attachments',
+    'read_attachment',
     'write_memory',
     'list_tasks',
     'create_tasks',
@@ -377,6 +379,7 @@ function summarizeToolArguments(name, args = {}) {
     contentLength: args.content ? String(args.content).trim().length : 0,
     queryLength: args.query || args.q ? String(args.query || args.q).length : 0,
     taskId: args.taskId || null,
+    attachmentId: args.attachmentId || args.attachment_id || args.id || null,
     reminderId: args.reminderId || args.reminder_id || args.id || null,
     taskNumber: args.taskNumber || null,
     status: args.status || args.nextStatus || null,
@@ -452,6 +455,16 @@ const CODEX_WARMUP_PROMPT = [
   'Do not call tools, do not inspect files, and do not write memory.',
 ].join('\n');
 
+function promptAvatarDescription(agent = {}) {
+  const avatar = String(agent.avatar || agent.avatarUrl || '').trim();
+  if (!avatar) return 'not set';
+  if (/^data:/i.test(avatar)) {
+    const mime = avatar.match(/^data:([^;,]+)/i)?.[1] || 'data';
+    return `${mime} data URL (${avatar.length} chars)`;
+  }
+  return avatar;
+}
+
 function createAgentStandingPrompt(agent, spaceType, spaceId) {
   const channel = spaceType === 'channel' ? findChannel(spaceId) : null;
   const spaceName = spaceType === 'dm'
@@ -469,6 +482,16 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
   return [
     `You are ${agent.name}, an AI agent running in MagClaw.`,
     agent.description ? `Your role: ${agent.description}` : '',
+    '',
+    'Your MagClaw identity:',
+    `- Visible name: ${agent.name}`,
+    `- Agent id: ${agent.id}`,
+    `- Runtime: ${agent.runtime || 'unknown'}${agent.runtimeId ? ` (${agent.runtimeId})` : ''}`,
+    agent.model || agent.defaultModel ? `- Model: ${agent.model || agent.defaultModel}` : '',
+    agent.reasoningEffort ? `- Reasoning effort: ${agent.reasoningEffort}` : '',
+    agent.description ? `- Description: ${agent.description}` : '',
+    `- Avatar: ${promptAvatarDescription(agent)}`,
+    '- If the user asks your name or who you are, answer from this identity using your visible name. Do not answer with only an @mention token.',
     '',
     'Context:',
     `- You are in: ${spaceName}`,
@@ -498,14 +521,16 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     '- Task statuses are exactly: todo, in_progress, in_review, done, closed. Do not use completed, complete, finished, resolved, canceled, or other synonyms as status values.',
     '- Use done only when the requested work is completed and ready/accepted. Use closed when the user asks to close/stop/cancel/terminate a task or says the work is no longer needed.',
     '- If a user asks you to bring a workspace member into a channel and that member is not currently in the channel, do not say you have no permission and do not add them directly. Create a channel member proposal for human review.',
-    '- Prefer the native MagClaw MCP tools when they are available: send_message, list_agents, read_agent_profile, read_history, search_messages, search_agent_memory, read_agent_memory, write_memory, list_tasks, create_tasks, claim_tasks, update_task_status, propose_channel_members, schedule_reminder, list_reminders, and cancel_reminder. Their runtime names may be prefixed by the Codex MCP bridge.',
-    '- If MCP tools are unavailable, you may call the controlled MagClaw agent tool APIs when needed: GET /api/agent-tools/agents, GET /api/agent-tools/agents/read, GET /api/agent-tools/history, GET /api/agent-tools/search, GET /api/agent-tools/memory/search, GET /api/agent-tools/memory/read, GET /api/agent-tools/tasks, GET /api/agent-tools/reminders, POST /api/agent-tools/messages/send, POST /api/agent-tools/memory, POST /api/agent-tools/tasks, POST /api/agent-tools/tasks/claim, POST /api/agent-tools/tasks/update, POST /api/agent-tools/channel-member-proposals, POST /api/agent-tools/reminders, and POST /api/agent-tools/reminders/cancel.',
+    '- Prefer the native MagClaw MCP tools when they are available: send_message, list_agents, read_agent_profile, read_history, search_messages, list_attachments, read_attachment, search_agent_memory, read_agent_memory, write_memory, list_tasks, create_tasks, claim_tasks, update_task_status, propose_channel_members, schedule_reminder, list_reminders, and cancel_reminder. Their runtime names may be prefixed by the Codex MCP bridge.',
+    '- If MCP tools are unavailable, you may call the controlled MagClaw agent tool APIs when needed: GET /api/agent-tools/agents, GET /api/agent-tools/agents/read, GET /api/agent-tools/history, GET /api/agent-tools/search, GET /api/agent-tools/attachments, GET /api/agent-tools/attachments/read, GET /api/agent-tools/memory/search, GET /api/agent-tools/memory/read, GET /api/agent-tools/tasks, GET /api/agent-tools/reminders, POST /api/agent-tools/messages/send, POST /api/agent-tools/memory, POST /api/agent-tools/tasks, POST /api/agent-tools/tasks/claim, POST /api/agent-tools/tasks/update, POST /api/agent-tools/channel-member-proposals, POST /api/agent-tools/reminders, and POST /api/agent-tools/reminders/cancel.',
     typeof renderAgentPermissionGuidance === 'function' ? renderAgentPermissionGuidance(agent) : '',
     `- Create a new task with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/tasks -H 'content-type: application/json' -d '{"agentId":"${agent.id}","channel":"${toolTarget}","claim":true,"sourceMessageId":"msg_xxx","tasks":[{"title":"Task title"}]}'. Use the current header msg=... as sourceMessageId so retries reuse the same task.`,
     `- Update a claimed task with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/tasks/update -H 'content-type: application/json' -d '{"agentId":"${agent.id}","taskId":"task_xxx","status":"in_review"}'. Valid statuses are only "todo", "in_progress", "in_review", "done", and "closed"; use "closed" for close/stop/cancel/terminated work. If the user only asks to close an unclaimed task, update it to "closed" with "force": true instead of claiming it first.`,
     `- Suggest adding a channel member with human review: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/channel-member-proposals -H 'content-type: application/json' -d '{"agentId":"${agent.id}","channelId":"${spaceId}","memberIds":["hum_xxx"],"reason":"Why this person is needed"}'`,
     `- Record durable memory with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/memory -H 'content-type: application/json' -d '{"agentId":"${agent.id}","kind":"preference","summary":"Short durable fact"}'. Use kind=capability, communication_style, preference, or memory.`,
     `- Search peer memory when name/role is not enough: curl -s "http://${HOST}:${PORT}/api/agent-tools/memory/search?agentId=${agent.id}&q=<query>&limit=10". Read a result with /api/agent-tools/memory/read?agentId=${agent.id}&targetAgentId=agt_xxx&path=notes/profile.md.`,
+    `- Read your own profile when identity details matter: curl -s "http://${HOST}:${PORT}/api/agent-tools/agents/read?agentId=${agent.id}&targetAgentId=me".`,
+    `- Read an uploaded attachment's original file when the user references an attachment or asks about an image/file: curl -s "http://${HOST}:${PORT}/api/agent-tools/attachments/read?agentId=${agent.id}&attachmentId=att_xxx". Image attachments are also supplied to Codex as image input when possible; use read_attachment if the image/file is missing from direct context.`,
     `- For a simple "remind me" request, schedule a reminder instead of creating a task: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/reminders -H 'content-type: application/json' -d '{"agentId":"${agent.id}","target":"${toolTarget}","title":"Reminder title","delaySeconds":300}'. Use the exact thread target from the header when the reminder belongs in a thread.`,
     '- Create or claim tasks only for durable work with progress/state: coding changes, debugging, deployment, docs/report deliverables, multi-step research, migrations, reviews, or when the user explicitly says task/as task/创建任务.',
     '- When a user asks for actionable durable work, claim the existing task if MagClaw already created one for you, then continue the work in the task thread.',

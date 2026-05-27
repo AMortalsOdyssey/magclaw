@@ -1782,6 +1782,7 @@ function agentToolApiDeps() {
     updateTaskForAgent,
     writeAgentMemoryUpdate,
     workItemTargetMatches,
+    attachmentStorageDir: ATTACHMENTS_DIR,
   };
 }
 

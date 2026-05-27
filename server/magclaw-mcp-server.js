@@ -35,6 +35,7 @@ function summarizeToolArgs(name, args = {}) {
   if (args.query || args.q) summary.queryLength = String(args.query || args.q).length;
   if (args.path) summary.path = args.path;
   if (args.targetAgentId || args.targetAgent) summary.targetAgentId = args.targetAgentId || args.targetAgent;
+  if (args.attachmentId || args.attachment_id || args.id) summary.attachmentId = args.attachmentId || args.attachment_id || args.id;
   if (args.taskId) summary.taskId = args.taskId;
   if (args.reminderId || args.id) summary.reminderId = args.reminderId || args.id;
   if (args.taskNumber) summary.taskNumber = args.taskNumber;
@@ -128,10 +129,31 @@ const tools = [
   },
   {
     name: 'read_agent_profile',
-    description: 'Read a concise MagClaw agent profile with runtime, description, channels, and safe public fields.',
+    description: 'Read a concise MagClaw agent profile with runtime, description, avatar, channels, and safe public fields. Omit targetAgentId or use "me" for your own profile.',
     inputSchema: schema({
-      targetAgentId: { type: 'string', description: 'Target agent id or name.' },
-      targetAgent: { type: 'string', description: 'Target agent id or name.' },
+      targetAgentId: { type: 'string', description: 'Target agent id or name. Optional; use "me" for yourself.' },
+      targetAgent: { type: 'string', description: 'Target agent id or name. Optional; use "me" for yourself.' },
+    }),
+  },
+  {
+    name: 'list_attachments',
+    description: 'List MagClaw attachment metadata visible to this agent. Use messageId or target to scope to the relevant conversation/thread.',
+    inputSchema: schema({
+      target: { type: 'string', description: 'Optional conversation target such as #all or #all:msg_id.' },
+      channel: { type: 'string', description: 'Channel label/name/id alternative to target.' },
+      workItemId: { type: 'string', description: 'Optional current work item id for private scoped reads.' },
+      messageId: { type: 'string', description: 'Optional message/reply id to list attachments from.' },
+      limit: { type: 'number', description: 'Maximum attachments to return.' },
+    }),
+  },
+  {
+    name: 'read_attachment',
+    description: 'Read an uploaded MagClaw attachment original file. Returns metadata, local file path when available, text for text files, base64 content, and a data URL.',
+    inputSchema: schema({
+      attachmentId: { type: 'string', description: 'Attachment id such as att_xxx.' },
+      id: { type: 'string', description: 'Attachment id alternative.' },
+      maxBytes: { type: 'number', description: 'Maximum bytes to return, capped by the server.' },
+      format: { type: 'string', description: 'Optional format hint such as text.' },
     }),
   },
   {
@@ -380,6 +402,25 @@ async function callTool(name, args = {}) {
     return request('/api/agent-tools/agents/read', {
       query: withAgentId({
         targetAgentId: args.targetAgentId || args.targetAgent,
+      }),
+    });
+  }
+  if (name === 'list_attachments') {
+    return request('/api/agent-tools/attachments', {
+      query: withAgentId({
+        target: args.target || args.channel,
+        workItemId: args.workItemId || args.work_item_id,
+        messageId: args.messageId || args.message_id,
+        limit: args.limit,
+      }),
+    });
+  }
+  if (name === 'read_attachment') {
+    return request('/api/agent-tools/attachments/read', {
+      query: withAgentId({
+        attachmentId: args.attachmentId || args.attachment_id || args.id,
+        maxBytes: args.maxBytes || args.max_bytes,
+        format: args.format,
       }),
     });
   }

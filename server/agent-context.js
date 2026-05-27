@@ -628,6 +628,7 @@ function renderAttachments(attachments) {
         `from msg=${item.messageId}`,
         item.path ? `path=${item.path}` : '',
         item.url ? `url=${item.url}` : '',
+        `tool=read_attachment(attachmentId="${item.id}")`,
       ].filter(Boolean).join(', ');
       return `- ${item.name} ${item.type} ${item.bytes} bytes (${details})`;
     })
@@ -707,6 +708,8 @@ function renderHistoryToolHints(pack) {
     `- read_agent_profile(targetAgentId="agt_xxx"): curl -s "${baseUrl}/api/agent-tools/agents/read?agentId=${encodeURIComponent(agentId)}&targetAgentId=agt_xxx"`,
     `- read_history(target="${target}", limit=30): curl -s "${baseUrl}/api/agent-tools/history?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&limit=30"`,
     `- search_message_history(query="<query>", target="${target}", limit=10): curl -s "${baseUrl}/api/agent-tools/search?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&q=<query>&limit=10"`,
+    `- list_attachments(target="${target}", limit=20): curl -s "${baseUrl}/api/agent-tools/attachments?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&limit=20"`,
+    `- read_attachment(attachmentId="att_xxx"): curl -s "${baseUrl}/api/agent-tools/attachments/read?agentId=${encodeURIComponent(agentId)}&attachmentId=att_xxx"`,
     `- search_agent_memory(query="<query>", limit=10): curl -s "${baseUrl}/api/agent-tools/memory/search?agentId=${encodeURIComponent(agentId)}&q=<query>&limit=10"`,
     `- read_agent_memory(targetAgentId="agt_xxx", path="MEMORY.md|notes/profile.md"): curl -s "${baseUrl}/api/agent-tools/memory/read?agentId=${encodeURIComponent(agentId)}&targetAgentId=agt_xxx&path=MEMORY.md"`,
   ];
@@ -791,7 +794,7 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
     'Relevant tasks:',
     renderTasks(sourceState, pack.tasks, pack.targetAgentId),
     '',
-    'Visible attachment metadata:',
+    'Visible attachment metadata and original-file tools:',
     renderAttachments(pack.attachments),
     '',
     renderPeerMemorySearch(pack.peerMemorySearch),

@@ -152,7 +152,7 @@ test('agent context pack includes recent channel messages, current message, task
   assert.match(rendered, /lead: @333 \(you\)/);
   assert.match(rendered, /supporting teammates: @CCC/);
   assert.doesNotMatch(rendered, /ownership|take over|do not claim|You are a Collaborator|assigned to you as Owner/i);
-  assert.match(rendered, /note\.png image\/png 1234 bytes \(id=att_1, from msg=msg_2, path=\/tmp\/note\.png, url=\/api\/attachments\/att_1\/note\.png\)/);
+  assert.match(rendered, /note\.png image\/png 1234 bytes \(id=att_1, from msg=msg_2, path=\/tmp\/note\.png, url=\/api\/attachments\/att_1\/note\.png, tool=read_attachment\(attachmentId="att_1"\)\)/);
   assert.doesNotMatch(rendered, /agt_333|agt_ccc|hum_local/);
 });
 

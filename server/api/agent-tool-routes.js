@@ -2,7 +2,12 @@
 // These endpoints are called by running Agents, not by the human UI. They let an
 // Agent inspect bounded history, send a routed response tied to a work item, and
 // create/claim/update tasks without reaching across channel boundaries.
+import { open, stat } from 'node:fs/promises';
+import { safePathWithin } from '../path-utils.js';
 import { createTaskStartupCollaboration } from '../task-startup-collaboration.js';
+
+const DEFAULT_ATTACHMENT_READ_MAX_BYTES = 2 * 1024 * 1024;
+const HARD_ATTACHMENT_READ_MAX_BYTES = 8 * 1024 * 1024;
 
 export async function handleAgentToolApi(req, res, url, deps) {
   const {
@@ -50,6 +55,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     updateTaskForAgent,
     writeAgentMemoryUpdate,
     workItemTargetMatches,
+    attachmentStorageDir,
   } = deps;
   const state = getState();
   const { startTaskStartupCollaboration } = createTaskStartupCollaboration(deps);
@@ -122,6 +128,30 @@ export async function handleAgentToolApi(req, res, url, deps) {
 
   function runtimeLabel(agent) {
     return compactText(agent?.runtimeId || agent?.runtime || agent?.model || 'unknown', 80);
+  }
+
+  function avatarValue(agent) {
+    return String(agent?.avatar || agent?.avatarUrl || '').trim();
+  }
+
+  function avatarKind(value) {
+    const avatar = String(value || '').trim();
+    if (!avatar) return 'none';
+    if (/^data:/i.test(avatar)) return 'data_url';
+    if (/^https?:\/\//i.test(avatar)) return 'url';
+    if (avatar.startsWith('/')) return 'path';
+    return 'value';
+  }
+
+  function avatarDescription(value) {
+    const avatar = String(value || '').trim();
+    const kind = avatarKind(avatar);
+    if (kind === 'none') return '';
+    if (kind === 'data_url') {
+      const mime = avatar.match(/^data:([^;,]+)/i)?.[1] || 'data';
+      return `${mime} data URL (${avatar.length} chars)`;
+    }
+    return avatar;
   }
 
   function normalizedTaskText(value) {
@@ -200,6 +230,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
 
   function publicAgentSummary(agent, { detailed = false } = {}) {
     const creatorId = agent.ownerId || agent.createdBy || agent.creatorId || '';
+    const avatar = avatarValue(agent);
     return {
       id: agent.id,
       name: agent.name || agent.id,
@@ -215,6 +246,9 @@ export async function handleAgentToolApi(req, res, url, deps) {
       creatorName: findHumanName(creatorId) || displayActor(creatorId) || creatorId || '',
       createdAt: agent.createdAt || '',
       updatedAt: agent.updatedAt || '',
+      avatar,
+      avatarKind: avatarKind(avatar),
+      avatarDescription: avatarDescription(avatar),
       channels: agentChannelNames(agent),
     };
   }
@@ -243,6 +277,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       summary.creatorName ? `Creator: ${summary.creatorName}` : '',
       summary.createdAt ? `Created: ${summary.createdAt}` : '',
       summary.updatedAt ? `Updated: ${summary.updatedAt}` : '',
+      summary.avatar ? `Avatar: ${summary.avatarDescription || summary.avatar}` : '',
       summary.channels?.length ? `Channels: ${summary.channels.join(', ')}` : '',
     ].filter(Boolean).join('\n');
   }
@@ -270,6 +305,237 @@ export async function handleAgentToolApi(req, res, url, deps) {
       || agent.name === value
       || `@${agent.name}` === value
     )) || null;
+  }
+
+  function findReadableAgentProfile(agentId, targetAgentRef, workspaceId = requestWorkspaceId()) {
+    const requester = findAgent(String(agentId || ''));
+    const value = String(targetAgentRef || '').trim();
+    if (!value || ['me', 'self', 'myself', requester?.id, requester?.name, `@${requester?.name || ''}`].includes(value)) {
+      return requester || null;
+    }
+    return findWorkspaceAgent(value, workspaceId);
+  }
+
+  function allConversationRecords() {
+    return [
+      ...(Array.isArray(state.messages) ? state.messages : []),
+      ...(Array.isArray(state.replies) ? state.replies : []),
+    ];
+  }
+
+  function recordAttachmentIds(record = {}) {
+    return Array.isArray(record.attachmentIds) ? record.attachmentIds.map(String) : [];
+  }
+
+  function findConversationRecordAny(id) {
+    const key = String(id || '').trim();
+    if (!key) return null;
+    return findConversationRecord(key)
+      || findMessage(key)
+      || allConversationRecords().find((record) => record.id === key)
+      || null;
+  }
+
+  function attachmentWorkspaceMatches(attachment, workspaceId = requestWorkspaceId()) {
+    const target = String(workspaceId || '').trim();
+    if (!target) return true;
+    const attachmentWorkspace = String(attachment?.workspaceId || attachment?.serverId || '').trim();
+    if (attachmentWorkspace) return attachmentWorkspace === target;
+    return workspaceMatches(attachment, target);
+  }
+
+  function recordVisibleToAgent(record, agent, workspaceId = requestWorkspaceId()) {
+    if (!record || !agent || !workspaceMatches(record, workspaceId)) return false;
+    if (record.spaceType === 'dm') {
+      const dm = (state.dms || []).find((item) => item.id === record.spaceId && workspaceMatches(item, workspaceId));
+      return Boolean(dmHasParticipant(dm, agent.id) || record.authorId === agent.id);
+    }
+    if (record.spaceType === 'channel') {
+      const channel = (state.channels || []).find((item) => item.id === record.spaceId && workspaceMatches(item, workspaceId));
+      if (!channel) return true;
+      return !channelRequiresMembership(channel) || channelHasMember(channel, agent.id);
+    }
+    return true;
+  }
+
+  function attachmentLinkedRecords(attachment, workspaceId = requestWorkspaceId()) {
+    const id = String(attachment?.id || '').trim();
+    if (!id) return [];
+    return allConversationRecords().filter((record) => (
+      workspaceMatches(record, workspaceId)
+      && recordAttachmentIds(record).includes(id)
+    ));
+  }
+
+  function attachmentMessageIds(attachment, workspaceId = requestWorkspaceId()) {
+    return attachmentLinkedRecords(attachment, workspaceId)
+      .map((record) => record.id)
+      .filter(Boolean);
+  }
+
+  function attachmentFilePath(attachment = {}) {
+    const directPath = String(attachment.path || '').trim();
+    if (directPath) {
+      if (!attachmentStorageDir) return directPath;
+      return safePathWithin(attachmentStorageDir, directPath) || '';
+    }
+    const storageKey = String(attachment.storageKey || attachment.relativePath || '').trim();
+    if (!storageKey || !attachmentStorageDir) return '';
+    return safePathWithin(attachmentStorageDir, storageKey) || '';
+  }
+
+  function attachmentName(attachment = {}) {
+    return String(attachment.name || attachment.filename || attachment.id || 'attachment');
+  }
+
+  function attachmentType(attachment = {}) {
+    return String(attachment.type || attachment.mime || attachment.mimeType || 'application/octet-stream');
+  }
+
+  function scopedAttachmentUrl(attachment = {}, workspaceId = requestWorkspaceId()) {
+    const existing = String(attachment.url || attachment.downloadUrl || '').trim();
+    if (existing) return existing;
+    const id = String(attachment.id || '').trim();
+    if (!id) return '';
+    const base = `/api/attachments/${id}/${encodeURIComponent(attachmentName(attachment))}`;
+    const scope = String(workspaceId || '').trim();
+    return scope ? `${base}?workspaceId=${encodeURIComponent(scope)}` : base;
+  }
+
+  function publicAttachmentSummary(attachment, workspaceId = requestWorkspaceId()) {
+    const filePath = attachmentFilePath(attachment);
+    const messageIds = attachmentMessageIds(attachment, workspaceId);
+    return {
+      id: String(attachment.id || ''),
+      name: attachmentName(attachment),
+      type: attachmentType(attachment),
+      bytes: Number(attachment.bytes || attachment.sizeBytes || attachment.size || 0),
+      source: attachment.source || '',
+      createdAt: attachment.createdAt || '',
+      createdBy: attachment.createdBy || '',
+      workspaceId: attachment.workspaceId || attachment.serverId || workspaceId || '',
+      storageMode: attachment.storageMode || '',
+      storageKey: attachment.storageKey || '',
+      relativePath: attachment.relativePath || '',
+      checksumSha256: attachment.checksumSha256 || '',
+      path: filePath,
+      url: scopedAttachmentUrl(attachment, workspaceId),
+      messageIds,
+      messageId: messageIds[0] || '',
+      toolCall: `read_attachment(attachmentId="${String(attachment.id || '')}")`,
+    };
+  }
+
+  function renderAttachmentSummaryLine(summary) {
+    const details = [
+      `id=${summary.id}`,
+      summary.messageId ? `from msg=${summary.messageId}` : '',
+      summary.path ? `path=${summary.path}` : '',
+      summary.url ? `url=${summary.url}` : '',
+      `tool=read_attachment(attachmentId="${summary.id}")`,
+    ].filter(Boolean).join(', ');
+    return `- ${summary.name} ${summary.type} ${summary.bytes} bytes (${details})`;
+  }
+
+  function attachmentText(attachments) {
+    if (!attachments.length) return 'No visible attachments.';
+    return [
+      'Visible attachments:',
+      ...attachments.map(renderAttachmentSummaryLine),
+    ].join('\n');
+  }
+
+  function resolveAttachmentForAgent(attachmentId, agent, workspaceId = requestWorkspaceId()) {
+    const id = String(attachmentId || '').trim();
+    if (!id) return null;
+    const attachment = (state.attachments || []).find((item) => String(item.id || '') === id);
+    if (!attachment || !attachmentWorkspaceMatches(attachment, workspaceId)) return null;
+    const linkedRecords = attachmentLinkedRecords(attachment, workspaceId);
+    if (!linkedRecords.length) return attachment;
+    return linkedRecords.some((record) => recordVisibleToAgent(record, agent, workspaceId)) ? attachment : null;
+  }
+
+  function attachmentRecordsForQuery(agent, workspaceId = requestWorkspaceId()) {
+    const messageId = String(url.searchParams.get('messageId') || url.searchParams.get('message_id') || '').trim();
+    if (messageId) {
+      const record = findConversationRecordAny(messageId);
+      if (!record || !recordVisibleToAgent(record, agent, workspaceId)) {
+        throw httpError(404, 'Message not found or not visible.');
+      }
+      return [record];
+    }
+    const target = String(url.searchParams.get('target') || url.searchParams.get('channel') || '').trim();
+    if (target) {
+      const history = readAgentHistory(state, {
+        agentId: agent.id,
+        target,
+        workItemId: url.searchParams.get('workItemId') || url.searchParams.get('work_item_id') || undefined,
+        limit: url.searchParams.get('limit') || 50,
+        workspaceId,
+      });
+      return Array.isArray(history?.messages) ? history.messages : [];
+    }
+    return allConversationRecords().filter((record) => recordVisibleToAgent(record, agent, workspaceId));
+  }
+
+  function visibleAttachmentsForQuery(agent, workspaceId = requestWorkspaceId()) {
+    const records = attachmentRecordsForQuery(agent, workspaceId);
+    const ids = new Set(records.flatMap(recordAttachmentIds));
+    const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') || 20)));
+    return (state.attachments || [])
+      .filter((attachment) => attachmentWorkspaceMatches(attachment, workspaceId))
+      .filter((attachment) => ids.has(String(attachment.id || '')))
+      .map((attachment) => publicAttachmentSummary(attachment, workspaceId))
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+      .slice(0, limit);
+  }
+
+  function attachmentReadMaxBytes() {
+    const raw = Number(url.searchParams.get('maxBytes') || url.searchParams.get('max_bytes') || DEFAULT_ATTACHMENT_READ_MAX_BYTES);
+    if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_ATTACHMENT_READ_MAX_BYTES;
+    return Math.max(1, Math.min(HARD_ATTACHMENT_READ_MAX_BYTES, Math.floor(raw)));
+  }
+
+  function isTextLikeAttachment(attachment) {
+    const type = attachmentType(attachment).toLowerCase();
+    const name = attachmentName(attachment).toLowerCase();
+    return type.startsWith('text/')
+      || [
+        'application/json',
+        'application/xml',
+        'application/javascript',
+        'application/x-javascript',
+        'application/yaml',
+        'application/x-yaml',
+      ].includes(type)
+      || /\.(txt|md|markdown|json|jsonl|csv|tsv|xml|html|css|js|ts|tsx|jsx|yaml|yml|log)$/i.test(name);
+  }
+
+  async function readAttachmentContent(attachment) {
+    const filePath = attachmentFilePath(attachment);
+    if (!filePath) throw httpError(404, 'Attachment file is not available on this server.');
+    let fileStat = null;
+    try {
+      fileStat = await stat(filePath);
+    } catch {
+      throw httpError(404, 'Attachment file is not available on this server.');
+    }
+    const maxBytes = attachmentReadMaxBytes();
+    const readBytes = Math.min(fileStat.size, maxBytes);
+    const buffer = Buffer.alloc(readBytes);
+    const handle = await open(filePath, 'r');
+    try {
+      if (readBytes > 0) await handle.read(buffer, 0, readBytes, 0);
+    } finally {
+      await handle.close();
+    }
+    return {
+      filePath,
+      fileSize: fileStat.size,
+      readBytes,
+      truncated: fileStat.size > readBytes,
+      buffer,
+    };
   }
 
   function resolveProposalChannel(body = {}) {
@@ -849,6 +1115,93 @@ export async function handleAgentToolApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/attachments') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const agent = findAgent(String(agentId || ''));
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    const workspaceId = requestWorkspaceId();
+    try {
+      const attachments = visibleAttachmentsForQuery(agent, workspaceId);
+      addSystemEvent('agent_attachments_listed', `${displayActor(agentId) || 'Agent'} listed attachments.`, {
+        agentId,
+        workspaceId: workspaceId || null,
+        resultCount: attachments.length,
+      });
+      sendJson(res, 200, {
+        ok: true,
+        workspaceId: workspaceId || null,
+        count: attachments.length,
+        attachments,
+        text: attachmentText(attachments),
+      });
+    } catch (error) {
+      sendError(res, error.status || 400, error.message);
+    }
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/attachments/read') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const agent = findAgent(String(agentId || ''));
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    const workspaceId = requestWorkspaceId();
+    const attachmentId = url.searchParams.get('attachmentId') || url.searchParams.get('attachment_id') || url.searchParams.get('id') || '';
+    const attachment = resolveAttachmentForAgent(attachmentId, agent, workspaceId);
+    if (!attachment) {
+      sendError(res, 404, 'Attachment not found or not visible.');
+      return true;
+    }
+    try {
+      const summary = publicAttachmentSummary(attachment, workspaceId);
+      const content = await readAttachmentContent(attachment);
+      const type = summary.type || 'application/octet-stream';
+      const contentBase64 = content.buffer.toString('base64');
+      const includeText = isTextLikeAttachment(attachment)
+        || ['text', 'utf8', 'utf-8'].includes(String(url.searchParams.get('format') || '').toLowerCase());
+      const contentText = includeText ? content.buffer.toString('utf8') : '';
+      const dataUrl = `data:${type};base64,${contentBase64}`;
+      addSystemEvent('agent_attachment_read', `${displayActor(agentId) || 'Agent'} read an attachment.`, {
+        agentId,
+        workspaceId: workspaceId || null,
+        attachmentId: summary.id,
+        bytes: content.readBytes,
+        truncated: content.truncated,
+      });
+      sendJson(res, 200, {
+        ok: true,
+        workspaceId: workspaceId || null,
+        attachment: summary,
+        file: {
+          path: content.filePath,
+          name: summary.name,
+          type,
+          sizeBytes: content.fileSize,
+          readBytes: content.readBytes,
+          truncated: content.truncated,
+        },
+        contentText,
+        contentBase64,
+        dataUrl,
+        text: [
+          `Attachment ${summary.id} (${summary.name})`,
+          `MIME: ${type}`,
+          `Bytes: ${content.fileSize}${content.truncated ? ` (returned first ${content.readBytes})` : ''}`,
+          `Path: ${content.filePath}`,
+          contentText ? `Text:\n${contentText}` : `Base64 content returned in contentBase64; data URL returned in dataUrl.`,
+        ].join('\n'),
+      });
+    } catch (error) {
+      sendError(res, error.status || 500, error.message);
+    }
+    return true;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/agent-tools/agents') {
     const agentId = url.searchParams.get('agentId') || '';
     const workspaceId = requestWorkspaceId();
@@ -904,7 +1257,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
     const agentId = url.searchParams.get('agentId') || '';
     const workspaceId = requestWorkspaceId();
     const targetAgentRef = url.searchParams.get('targetAgentId') || url.searchParams.get('targetAgent') || '';
-    const targetAgent = findWorkspaceAgent(targetAgentRef, workspaceId);
+    const targetAgent = findReadableAgentProfile(agentId, targetAgentRef, workspaceId);
     if (!targetAgent) {
       sendError(res, 404, 'Target agent not found.');
       return true;
