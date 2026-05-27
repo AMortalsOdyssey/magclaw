@@ -632,8 +632,17 @@
     grid-template-columns: minmax(180px, min(var(--rail-width, 220px), 320px)) 4px minmax(300px, 1fr) 4px minmax(240px, min(var(--inspector-width, 320px), 52vw));
   }
 
+  .collab-frame.task-focus,
+  .collab-frame.thread-open.task-focus {
+    grid-template-columns: 60px minmax(0, 1fr) 4px minmax(240px, min(var(--inspector-width, 320px), 52vw));
+  }
+
   .collab-frame.no-inspector {
     grid-template-columns: minmax(180px, min(var(--rail-width, 220px), 320px)) 4px minmax(300px, 1fr);
+  }
+
+  .collab-frame.task-focus.no-inspector {
+    grid-template-columns: 60px minmax(0, 1fr);
   }
 }
 

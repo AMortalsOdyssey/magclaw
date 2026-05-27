@@ -946,12 +946,41 @@ function safeMarkdownHref(value) {
   return '#';
 }
 
+function splitAutolinkUrl(value) {
+  const raw = String(value || '');
+  const trailing = raw.match(/[.,;:!?，。；：！？、]+$/)?.[0] || '';
+  if (!trailing) return { href: raw, trailing: '' };
+  return {
+    href: raw.slice(0, Math.max(0, raw.length - trailing.length)),
+    trailing,
+  };
+}
+
+function renderAutolinkedUrls(html) {
+  return String(html || '').replace(/https?:\/\/[^\s<]+/g, (raw) => {
+    const { href, trailing } = splitAutolinkUrl(raw);
+    if (!href) return raw;
+    return `<a href="${escapeHtml(safeMarkdownHref(href))}" target="_blank" rel="noreferrer">${href}</a>${trailing}`;
+  });
+}
+
 function renderMarkdownInline(value) {
-  return escapeHtml(value)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
+  const protectedTokens = [];
+  const protect = (html) => {
+    const marker = `MAGCLAWINLINE${protectedTokens.length}TOKEN`;
+    protectedTokens.push(html);
+    return marker;
+  };
+  let html = escapeHtml(value)
+    .replace(/`([^`]+)`/g, (_, code) => protect(`<code>${code}</code>`))
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => protect(`<a href="${escapeHtml(safeMarkdownHref(href))}" target="_blank" rel="noreferrer">${label}</a>`))
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => `<a href="${escapeHtml(safeMarkdownHref(href))}" target="_blank" rel="noreferrer">${label}</a>`);
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = renderAutolinkedUrls(html);
+  protectedTokens.forEach((token, index) => {
+    html = html.replaceAll(`MAGCLAWINLINE${index}TOKEN`, token);
+  });
+  return html;
 }
 
 function renderMarkdown(content) {

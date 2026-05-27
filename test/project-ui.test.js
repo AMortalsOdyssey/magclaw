@@ -1376,11 +1376,29 @@ test('workspace uses dark icon rail, pink chat sidebar, and white main surfaces'
 
 test('messages and replies render markdown while preserving mention chips', async () => {
   const app = await readAppSource();
+  const coreSource = await readFile(new URL('../public/app/state-render-core.js', import.meta.url), 'utf8');
+  const markdownSource = coreSource.slice(
+    coreSource.indexOf('function safeMarkdownHref'),
+    coreSource.indexOf('function renderMarkdownWithMentions'),
+  );
+  const context = {
+    escapeHtml: (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;',
+    }[char])),
+  };
+  vm.createContext(context);
+  vm.runInContext(markdownSource, context);
 
   assert.match(app, /function renderMarkdownWithMentions\(content\)/);
   assert.match(app, /message-table/);
   assert.match(app, /renderMarkdownWithMentions\(message\.body \|\| \(message\.references\?\.length \? '' : '\(attachment\)'\)\)/);
   assert.match(app, /renderMarkdownWithMentions\(reply\.body \|\| \(reply\.references\?\.length \? '' : '\(attachment\)'\)\)/);
+  const rendered = context.renderMarkdownInline('广州销售品资费公示 PDF：https://gd.189.cn/gz/support/fee/sale/gzxsp2023731.pdf');
+  assert.match(rendered, /<a href="https:\/\/gd\.189\.cn\/gz\/support\/fee\/sale\/gzxsp2023731\.pdf" target="_blank" rel="noreferrer">https:\/\/gd\.189\.cn\/gz\/support\/fee\/sale\/gzxsp2023731\.pdf<\/a>/);
   const styles = await readStylesSource();
   assert.match(styles, /\.message-table/);
   assert.match(styles, /\.message-table-wrap/);
@@ -1572,6 +1590,14 @@ test('desktop thread inspector can expand to a Slock-like reading width', async 
   assert.match(styles, /\.collab-frame \{[\s\S]*grid-template-columns: minmax\(240px, min\(var\(--rail-width, 300px\), 420px\)\) 4px minmax\(360px, 1fr\) 4px minmax\(260px, min\(var\(--inspector-width, 340px\), 40vw\)\)/);
   assert.match(styles, /\.collab-frame\.thread-open \{[\s\S]*grid-template-columns: minmax\(240px, min\(var\(--rail-width, 300px\), 420px\)\) 4px minmax\(360px, 1fr\) 4px minmax\(260px, min\(var\(--inspector-width, 340px\), 60vw\)\)/);
   assert.match(styles, /@media \(max-width: 1200px\)[\s\S]*\.collab-frame\.thread-open \{[\s\S]*grid-template-columns: minmax\(180px, min\(var\(--rail-width, 220px\), 320px\)\) 4px minmax\(300px, 1fr\) 4px minmax\(240px, min\(var\(--inspector-width, 320px\), 52vw\)\)/);
+});
+
+test('task thread layout keeps task focus grid through the desktop-tablet breakpoint', async () => {
+  const styles = await readStylesSource();
+  const breakpointSource = styles.slice(styles.indexOf('@media (max-width: 1200px)'));
+
+  assert.match(breakpointSource, /\.collab-frame\.thread-open\.task-focus \{[\s\S]*grid-template-columns: 60px minmax\(0, 1fr\) 4px minmax\(240px, min\(var\(--inspector-width, 320px\), 52vw\)\)/);
+  assert.match(breakpointSource, /\.collab-frame\.task-focus\.no-inspector \{[\s\S]*grid-template-columns: 60px minmax\(0, 1fr\)/);
 });
 
 test('members navigation restores the last detail and falls back to the first agent', async () => {
@@ -1984,6 +2010,21 @@ test('member rail lists keep status dots on the far right only in the agent tab'
   const app = await readAppSource();
   const styles = await readStylesSource();
   const agentListSource = app.slice(app.indexOf('function renderAgentListItem'), app.indexOf('function renderHumanListItem'));
+  const liveActivitySource = app.slice(app.indexOf('function agentRailActivityText'), app.indexOf('function renderAgentActivityTab'));
+  const context = {
+    escapeHtml: (value) => String(value ?? ''),
+    presenceClass: (value) => `status-${value}`,
+    fmtTime: (value) => value,
+    agentLiveActivitySummary: () => ({
+      status: 'idle',
+      label: 'Idle',
+      detail: 'operation index persist failed for notes/work-log.md',
+      at: '2026-05-27T10:00:00.000Z',
+    }),
+  };
+  vm.createContext(context);
+  vm.runInContext(liveActivitySource, context);
+  const compactHtml = context.renderAgentLiveActivityBar({ id: 'agt_one' }, { compact: true });
   const humanListSource = app.slice(app.indexOf('function renderHumanListItem'), app.indexOf('function renderComputerListItem'));
   const computerListSource = app.slice(app.indexOf('function renderComputerListItem'), app.indexOf('function renderReply'));
 
@@ -1996,6 +2037,8 @@ test('member rail lists keep status dots on the far right only in the agent tab'
   assert.match(styles, /\.member-info \.agent-live-activity-bar\.compact \.agent-activity-dot \{[\s\S]*display: none/);
   assert.match(styles, /\.member-btn \.dm-avatar-wrap \.avatar-status-dot/);
   assert.match(styles, /\.message-card \.avatar-status-dot/);
+  assert.match(compactHtml, />Idle</);
+  assert.doesNotMatch(compactHtml, /operation index persist failed|Turn completed|reported daemon activity/);
 });
 
 test('human identity UI shows third-party names only as secondary identity metadata', async () => {
@@ -2309,38 +2352,42 @@ test('message reactions, context menus, and share mode expose Slock-style intera
   assert.match(app, /sharePreviewState = \{ open: false, imageUrl: '', recordIds: \[\] \}/);
   assert.match(app, /upsertConversationRecord\(appState\.messages, result\.message\)/);
   assert.match(app, /data-context-scope="saved"/);
-	  assert.match(app, /Copy markdown/);
-	  assert.match(app, /Share messages\.\.\./);
-			  assert.doesNotMatch(messageContextMenuSource, /引用消息回复|添加到对话/);
-			  assert.doesNotMatch(messageContextMenuSource, /renderContextMenuItem\('quote-message-reply'/);
-			  assert.doesNotMatch(messageContextMenuSource, /renderContextMenuItem\('quote-selected-text'/);
-			  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-message-context', t\('Add to context'\), record\.id\)/);
-			  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-selected-text-context', t\('Add to context'\), record\.id\)/);
-			  assert.match(messageContextMenuSource, /recordHasThreadContext\(record\)/);
-			  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-thread-context', t\('Add thread to context'\), record\.id\)/);
-		  assert.match(app, /renderContextMenuItem\('add-selected-text-context'/);
-		  assert.match(app, /function selectedMessageTextForEvent\(event\)/);
-		  assert.match(app, /function renderComposerReferenceStrip\(composerId\)/);
-	  assert.match(app, /function renderMessageReferences\(record\)/);
-	  assert.match(app, /referencePreviewDisplayText\(reference\)/);
-	  assert.match(app, /escapeHtml\(referencePreviewDisplayText\(reference\)\)/);
-	  assert.match(app, /references: typeof normalizeConversationReferenceDrafts === 'function'/);
-	  assert.match(app, /Follow Thread/);
+  assert.match(app, /Copy markdown/);
+  assert.match(app, /Share messages\.\.\./);
+  assert.doesNotMatch(messageContextMenuSource, /引用消息回复|添加到对话/);
+  assert.doesNotMatch(messageContextMenuSource, /renderContextMenuItem\('quote-message-reply'/);
+  assert.doesNotMatch(messageContextMenuSource, /renderContextMenuItem\('quote-selected-text'/);
+  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-message-context', t\('Add to context'\), record\.id\)/);
+  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-selected-text-context', t\('Add to context'\), record\.id\)/);
+  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-message-channel-context', t\('Add to channel context'\), record\.id\)/);
+  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-selected-text-channel-context', t\('Add to channel context'\), record\.id\)/);
+  assert.match(messageContextMenuSource, /recordHasThreadContext\(record\)/);
+  assert.match(messageContextMenuSource, /renderContextMenuItem\('add-thread-context', t\('Add thread to context'\), record\.id\)/);
+  assert.match(app, /renderContextMenuItem\('add-selected-text-context'/);
+  assert.match(app, /function selectedMessageTextForEvent\(event\)/);
+  assert.match(app, /function renderComposerReferenceStrip\(composerId\)/);
+  assert.match(app, /function renderMessageReferences\(record\)/);
+  assert.match(app, /referencePreviewDisplayText\(reference\)/);
+  assert.match(app, /escapeHtml\(referencePreviewDisplayText\(reference\)\)/);
+  assert.match(app, /references: typeof normalizeConversationReferenceDrafts === 'function'/);
+  assert.match(app, /Follow Thread/);
   assert.doesNotMatch(app, /shareThreadClass/);
   assert.match(localOnlySource, /'open-message-context-menu'/);
   assert.match(localOnlySource, /'start-message-share'/);
   assert.match(localOnlySource, /'toggle-share-selection'/);
-	  assert.match(localOnlySource, /'toggle-share-select-all'/);
-		  assert.doesNotMatch(localOnlySource, /'quote-message-reply'/);
-		  assert.doesNotMatch(localOnlySource, /'quote-selected-text'/);
-		  assert.match(localOnlySource, /'add-selected-text-context'/);
-		  assert.doesNotMatch(localOnlySource, /'add-visible-conversation-context'/);
-	  assert.match(localOnlySource, /'toggle-message-reaction'/);
-	  assert.match(styles, /\.message-context-menu/);
-	  assert.match(styles, /\.message-context-menu \{[\s\S]*left: clamp\(var\(--menu-margin\), var\(--menu-x\), calc\(100vw - var\(--menu-width\) - var\(--menu-margin\)\)\);[\s\S]*max-height: var\(--menu-max-height\);[\s\S]*overflow-y: auto;/);
-	  assert.match(styles, /\.message-context-menu\[data-menu-placement="above"\] \{[\s\S]*top: auto;[\s\S]*bottom: max\(var\(--menu-margin\), calc\(100vh - var\(--menu-y\)\)\);/);
-	  assert.match(styles, /\.magclaw-message \{[\s\S]*-webkit-touch-callout: none;/);
-	  assert.match(styles, /\.composer-reference-strip/);
+  assert.match(localOnlySource, /'toggle-share-select-all'/);
+  assert.doesNotMatch(localOnlySource, /'quote-message-reply'/);
+  assert.doesNotMatch(localOnlySource, /'quote-selected-text'/);
+  assert.match(localOnlySource, /'add-selected-text-context'/);
+  assert.match(localOnlySource, /'add-message-channel-context'/);
+  assert.match(localOnlySource, /'add-selected-text-channel-context'/);
+  assert.doesNotMatch(localOnlySource, /'add-visible-conversation-context'/);
+  assert.match(localOnlySource, /'toggle-message-reaction'/);
+  assert.match(styles, /\.message-context-menu/);
+  assert.match(styles, /\.message-context-menu \{[\s\S]*left: clamp\(var\(--menu-margin\), var\(--menu-x\), calc\(100vw - var\(--menu-width\) - var\(--menu-margin\)\)\);[\s\S]*max-height: var\(--menu-max-height\);[\s\S]*overflow-y: auto;/);
+  assert.match(styles, /\.message-context-menu\[data-menu-placement="above"\] \{[\s\S]*top: auto;[\s\S]*bottom: max\(var\(--menu-margin\), calc\(100vh - var\(--menu-y\)\)\);/);
+  assert.match(styles, /\.magclaw-message \{[\s\S]*-webkit-touch-callout: none;/);
+  assert.match(styles, /\.composer-reference-strip/);
 	  assert.match(styles, /\.message-reference-card/);
   assert.match(styles, /\.message-reaction-grid/);
   assert.match(styles, /\.message-reaction-tray/);

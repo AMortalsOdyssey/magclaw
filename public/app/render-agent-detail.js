@@ -480,16 +480,27 @@ function agentLiveActivitySummary(agent) {
   };
 }
 
+function agentRailActivityText(summary = {}) {
+  const status = String(summary.status || '').toLowerCase();
+  if (summary.label) return summary.label;
+  if (status === 'standby') return 'Standby';
+  if (status === 'idle') return 'Idle';
+  if (status === 'waiting_for_computer') return 'Waiting for computer';
+  if (status === 'offline') return 'Offline';
+  return status ? `${status.charAt(0).toUpperCase()}${status.slice(1)}` : 'Offline';
+}
+
 function renderAgentLiveActivityBar(agent, { compact = false } = {}) {
   const summary = agentLiveActivitySummary(agent);
   const tag = compact ? 'span' : 'button';
   const actionAttrs = compact ? '' : ' type="button" data-action="set-agent-detail-tab" data-tab="activity"';
+  const detail = compact ? agentRailActivityText(summary) : summary.detail;
   return `
     <${tag} class="agent-live-activity-bar${compact ? ' compact' : ''} ${presenceClass(summary.status)}" data-agent-id="${escapeHtml(agent.id)}" data-compact="${compact ? 'true' : 'false'}"${actionAttrs}>
       <span class="agent-activity-dot ${presenceClass(summary.status)}"></span>
       <strong>${escapeHtml(summary.label)}</strong>
-      <span>${escapeHtml(summary.detail)}</span>
-      ${summary.at ? `<time>${fmtTime(summary.at)}</time>` : ''}
+      <span>${escapeHtml(detail)}</span>
+      ${!compact && summary.at ? `<time>${fmtTime(summary.at)}</time>` : ''}
     </${tag}>
   `;
 }
