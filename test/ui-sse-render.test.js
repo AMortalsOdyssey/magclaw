@@ -244,6 +244,71 @@ test('thread visible signatures ignore heartbeat, read, and task metadata churn'
   assert.notEqual(context.activeConversationSignature(), before);
 });
 
+test('open thread chat signatures include main channel messages for channel composer submits', async () => {
+  const context = await createRealtimeHarness();
+  const baseState = {
+    tasks: [],
+    messages: [{
+      id: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_owner',
+      body: 'Thread root',
+      replyCount: 1,
+      createdAt: '2026-05-27T05:03:17.000Z',
+      updatedAt: '2026-05-27T05:03:17.000Z',
+    }],
+    replies: [{
+      id: 'rep_context',
+      parentMessageId: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_owner',
+      body: 'Referenced reply',
+      createdAt: '2026-05-27T05:03:32.000Z',
+      updatedAt: '2026-05-27T05:03:32.000Z',
+    }],
+  };
+  context.activeView = 'space';
+  context.activeTab = 'chat';
+  context.threadMessageId = 'msg_parent';
+  context.selectedSpaceType = 'channel';
+  context.selectedSpaceId = 'chan_all';
+  context.appState = baseState;
+
+  const before = context.activeConversationSignature();
+  context.appState = {
+    ...baseState,
+    messages: [
+      ...baseState.messages,
+      {
+        id: 'msg_channel_context_submit',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'human',
+        authorId: 'hum_owner',
+        body: '<@agt_owner> Can you check this?',
+        references: [{
+          id: 'ref_context',
+          mode: 'context',
+          kind: 'message',
+          sourceRecordId: 'rep_context',
+          parentMessageId: 'msg_parent',
+          spaceType: 'channel',
+          spaceId: 'chan_all',
+        }],
+        replyCount: 0,
+        createdAt: '2026-05-27T05:59:51.000Z',
+        updatedAt: '2026-05-27T05:59:51.000Z',
+      },
+    ],
+  };
+
+  assert.notEqual(context.activeConversationSignature(), before);
+});
+
 test('task tab thread signatures track the open thread instead of disappearing', async () => {
   const context = await createRealtimeHarness();
   const baseState = {

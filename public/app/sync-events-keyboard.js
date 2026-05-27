@@ -647,7 +647,16 @@ function activeConversationSignature(stateSnapshot = appState) {
   if (!stateSnapshot) return '';
   if (threadMessageId) {
     const root = byId(stateSnapshot.messages, threadMessageId);
-    const records = root ? [root, ...stateThreadReplies(stateSnapshot, root.id)] : [];
+    const threadRecords = root ? [root, ...stateThreadReplies(stateSnapshot, root.id)] : [];
+    const visibleSpaceRecords = activeView === 'space' && activeTab === 'chat'
+      ? stateSpaceMessages(stateSnapshot)
+      : [];
+    const seen = new Set();
+    const records = [...visibleSpaceRecords, ...threadRecords].filter((record) => {
+      if (!record?.id || seen.has(record.id)) return false;
+      seen.add(record.id);
+      return true;
+    });
     return records.map((record) => recordPatchSignature(record, stateSnapshot)).join('|');
   }
   if (activeView !== 'space' || activeTab !== 'chat') return '';
