@@ -878,6 +878,7 @@ function renderMessageContextMenu() {
   const record = contextMenuRecord();
   if (!record || !messageContextMenu) return '';
   const scope = messageContextMenu.scope === 'saved' ? 'saved' : 'message';
+  const isThreadSurface = messageContextMenu.surface === 'thread';
   const root = messageThreadRoot(record);
   const saved = (record.savedBy || []).map(String).includes(currentHumanId());
   const followed = (root?.followedBy || []).map(String).includes(currentHumanId());
@@ -894,7 +895,7 @@ function renderMessageContextMenu() {
     `;
   }
   if (messageContextMenu.selectionText) {
-    const showChannelContext = typeof recordTargetsThreadComposer === 'function' && recordTargetsThreadComposer(record);
+    const showChannelContext = isThreadSurface && typeof recordTargetsThreadComposer === 'function' && recordTargetsThreadComposer(record);
     return `
       <div class="message-context-menu pixel-panel selection-menu" data-context-scope="selection" data-menu-placement="${escapeHtml(placement.placement)}" style="${positionStyle}" role="menu">
         ${renderContextMenuItem('add-selected-text-context', t('Add to context'), record.id)}
@@ -906,7 +907,7 @@ function renderMessageContextMenu() {
   const threadLabel = record.parentMessageId ? 'View in channel' : 'Open thread';
   const threadAction = record.parentMessageId ? 'view-in-channel' : 'open-thread';
   const threadId = record.parentMessageId ? root?.id || record.parentMessageId : record.id;
-  const showChannelContext = typeof recordTargetsThreadComposer === 'function' && recordTargetsThreadComposer(record);
+  const showChannelContext = isThreadSurface && typeof recordTargetsThreadComposer === 'function' && recordTargetsThreadComposer(record);
   const showThreadContext = !showChannelContext && recordHasThreadContext(record);
   return `
     <div class="message-context-menu pixel-panel" data-context-scope="message" data-menu-placement="${escapeHtml(placement.placement)}" style="${positionStyle}" role="menu">

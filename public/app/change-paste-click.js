@@ -211,9 +211,11 @@ function openMessageContextMenu(recordId, event, scope = 'message', options = {}
   const id = String(recordId || '').trim();
   if (!id || !conversationRecord(id)) return false;
   const rect = event?.currentTarget?.getBoundingClientRect?.() || event?.target?.getBoundingClientRect?.();
+  const surface = options.surface || messageContextSurfaceFromTarget(event?.target) || messageContextSurfaceFromTarget(event?.currentTarget);
   messageContextMenu = {
     recordId: id,
 	    scope,
+	    surface,
 	    selectionText: cleanReferenceText(options.selectionText || '', CONVERSATION_REFERENCE_LIMITS_UI?.selectedTextChars || 4000),
 	    x: Number.isFinite(event?.clientX) ? event.clientX : (rect ? rect.right - 8 : 120),
     y: Number.isFinite(event?.clientY) ? event.clientY : (rect ? rect.top + 24 : 120),
@@ -223,6 +225,12 @@ function openMessageContextMenu(recordId, event, scope = 'message', options = {}
   };
   render();
   return true;
+}
+
+function messageContextSurfaceFromTarget(target) {
+  if (target?.closest?.('#thread-context')) return 'thread';
+  if (target?.closest?.('#message-list')) return 'channel';
+  return '';
 }
 
 const MESSAGE_LONG_PRESS_MS = 520;

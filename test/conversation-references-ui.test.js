@@ -754,6 +754,7 @@ test('thread context menus hide whole-thread context while channel menus keep it
   context.messageContextMenu = {
     recordId: 'rep_agent',
     scope: 'message',
+    surface: 'thread',
     x: 120,
     y: 120,
     viewportWidth: 1200,
@@ -770,11 +771,13 @@ test('thread context menus hide whole-thread context while channel menus keep it
   context.messageContextMenu = {
     ...context.messageContextMenu,
     recordId: 'msg_root',
+    surface: 'channel',
   };
-  context.recordTargetsThreadComposer = () => false;
+  context.recordTargetsThreadComposer = () => true;
 
   const channelMenu = context.renderMessageContextMenu();
 
+  assert.doesNotMatch(channelMenu, /Add to channel context/);
   assert.match(channelMenu, /Add thread to context/);
 });
 
