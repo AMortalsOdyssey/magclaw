@@ -107,6 +107,7 @@ let taskChannelMenuOpen = false;
 let openTaskStatusMenuId = null;
 let collapsedTaskColumns = readCollapsedTaskColumns();
 let stagedByComposer = {};
+let pendingAttachmentUploadsByComposer = {};
 let composerDrafts = {};
 let composerReferenceDrafts = {};
 let composerTaskFlags = {};

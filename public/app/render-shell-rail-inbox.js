@@ -63,6 +63,7 @@ function render() {
       restoreComputerNameFieldFocus(computerNameFocus);
       restoreComposerFocus(composerFocus);
       restorePendingComposerFocus();
+      if (typeof maybeAutosizeAllComposerTextareas === 'function') maybeAutosizeAllComposerTextareas();
       if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
         workspaceActivityScrollToBottom = false;
         scrollWorkspaceActivityToBottom('auto');
@@ -108,6 +109,7 @@ function render() {
     restoreComputerNameFieldFocus(computerNameFocus);
     restoreComposerFocus(composerFocus);
     restorePendingComposerFocus();
+    if (typeof maybeAutosizeAllComposerTextareas === 'function') maybeAutosizeAllComposerTextareas();
     if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
       workspaceActivityScrollToBottom = false;
       scrollWorkspaceActivityToBottom('auto');

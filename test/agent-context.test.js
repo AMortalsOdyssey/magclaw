@@ -97,6 +97,7 @@ test('agent context pack includes recent channel messages, current message, task
       type: 'image/png',
       bytes: 1234,
       path: '/tmp/note.png',
+      url: '/api/attachments/att_1/note.png',
     }],
     events: [{
       id: 'evt_join',
@@ -130,6 +131,8 @@ test('agent context pack includes recent channel messages, current message, task
   assert.equal(pack.recentEvents[0].type, 'channel_member_added');
   assert.equal(pack.tasks[0].number, 7);
   assert.equal(pack.attachments[0].id, 'att_1');
+  assert.equal(pack.attachments[0].path, '/tmp/note.png');
+  assert.equal(pack.attachments[0].url, '/api/attachments/att_1/note.png');
 
   const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_333' });
   assert.match(rendered, /Context snapshot for #all/);
@@ -149,7 +152,7 @@ test('agent context pack includes recent channel messages, current message, task
   assert.match(rendered, /lead: @333 \(you\)/);
   assert.match(rendered, /supporting teammates: @CCC/);
   assert.doesNotMatch(rendered, /ownership|take over|do not claim|You are a Collaborator|assigned to you as Owner/i);
-  assert.match(rendered, /note\.png image\/png 1234 bytes/);
+  assert.match(rendered, /note\.png image\/png 1234 bytes \(id=att_1, from msg=msg_2, path=\/tmp\/note\.png, url=\/api\/attachments\/att_1\/note\.png\)/);
   assert.doesNotMatch(rendered, /agt_333|agt_ccc|hum_local/);
 });
 

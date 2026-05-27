@@ -468,7 +468,7 @@
 
 .collab-frame .chat-composer textarea {
   min-height: 54px;
-  max-height: 72px;
+  max-height: 220px;
   padding: 8px 10px;
 }
 

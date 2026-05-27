@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { selectAgentAwarenessTargets } from './agent-awareness.js';
 import { buildAgentContextPack, renderAgentContextPack } from './agent-context.js';
-import { codexThreadConfig, parseCodexStreamRetry } from './codex-runtime.js';
+import { codexThreadConfig, codexTurnInputForPrompt, parseCodexStreamRetry } from './codex-runtime.js';
 import {
   codexPermissionDecision,
   renderAgentPermissionGuidance,
@@ -66,6 +66,7 @@ export function createAgentRuntimeManager(deps) {
     renderAgentPermissionGuidance,
     selectAgentAwarenessTargets,
     codexThreadConfig,
+    codexTurnInputForPrompt,
     parseCodexStreamRetry,
     normalizeIds,
     agentRuntimeProcessKey,

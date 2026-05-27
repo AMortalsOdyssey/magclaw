@@ -81,3 +81,41 @@ export function codexThreadConfig(runtime = {}) {
     ? { model_reasoning_effort: runtime.reasoningEffort }
     : null;
 }
+
+function isImageAttachment(attachment) {
+  return String(attachment?.type || '').toLowerCase().startsWith('image/');
+}
+
+function absoluteImageUrl(value) {
+  const url = String(value || '').trim();
+  return /^https?:\/\//i.test(url) ? url : '';
+}
+
+function imageInputsForMessages(messages = []) {
+  const inputs = [];
+  const seen = new Set();
+  for (const message of Array.isArray(messages) ? messages : [messages]) {
+    const attachments = Array.isArray(message?.contextPack?.attachments)
+      ? message.contextPack.attachments
+      : [];
+    for (const attachment of attachments) {
+      if (!isImageAttachment(attachment)) continue;
+      const path = String(attachment.path || '').trim();
+      const url = absoluteImageUrl(attachment.url || attachment.downloadUrl);
+      const key = path ? `path:${path}` : (url ? `url:${url}` : '');
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      inputs.push(path
+        ? { type: 'localImage', path }
+        : { type: 'image', url });
+    }
+  }
+  return inputs;
+}
+
+export function codexTurnInputForPrompt(prompt, messages = []) {
+  return [
+    { type: 'text', text: String(prompt || '') },
+    ...imageInputsForMessages(messages),
+  ];
+}

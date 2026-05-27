@@ -1786,6 +1786,44 @@ test('message composers submit channel and thread textareas on plain Enter', asy
   assert.equal(helpers.composerFormForEnterSubmit({ closest: () => ({ id: 'profile-form' }) }), null);
 });
 
+test('message image attachments render as stacked previews under the message text', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const attachmentSource = app.slice(app.indexOf('function attachmentLinks'), app.indexOf('function composerIdFor'));
+
+  assert.match(attachmentSource, /class="message-attachment-list"/);
+  assert.match(attachmentSource, /message-attachment-preview \$\{isImage \? 'image-attachment' : 'file-attachment'\}/);
+  assert.match(attachmentSource, /<img src="\$\{escapeHtml\(url\)\}"/);
+  assert.match(attachmentSource, /file-attachment/);
+  assert.doesNotMatch(attachmentSource, /class="mini-attachment/);
+  assert.match(styles, /\.message-attachments[\s\S]*display:\s*grid/);
+  assert.match(styles, /\.message-attachment-list[\s\S]*display:\s*grid/);
+  assert.match(styles, /\.message-attachment-preview img[\s\S]*max-width:\s*min\(520px, 100%\)/);
+});
+
+test('composer attachments and textarea autosize stay live while sending', async () => {
+  const app = await readAppSource();
+  const submitSource = app.slice(app.indexOf("if (form.id === 'message-form')"), app.indexOf("if (form.id === 'channel-form')"));
+
+  assert.match(app, /let pendingAttachmentUploadsByComposer = \{\}/);
+  assert.match(app, /function waitForComposerAttachments\(composerId\)/);
+  assert.match(app, /function autosizeComposerTextarea\(textarea\)/);
+  assert.match(app, /data-composer-autosize/);
+  assert.match(app, /maybeAutosizeComposerTextarea\(messageTextarea\)/);
+  assert.match(app, /maybeAutosizeAllComposerTextareas\(\)/);
+  assert.match(submitSource, /await waitForComposerAttachments\(composerId\);[\s\S]*const attachmentIds = stagedFor\(composerId\)\.ids/);
+});
+
+test('pasted screenshots are read from clipboard items as well as files', async () => {
+  const app = await readAppSource();
+  const pasteSource = app.slice(app.indexOf('function clipboardImageFiles'), app.indexOf("document.addEventListener('paste'"));
+
+  assert.match(pasteSource, /clipboardData\?\.files/);
+  assert.match(pasteSource, /clipboardData\?\.items/);
+  assert.match(pasteSource, /item\.getAsFile\?\.\(\)/);
+  assert.match(pasteSource, /normalizeClipboardFile\(file, index\)/);
+});
+
 test('workspace location and scroll position survive refreshes', async () => {
   const app = await readAppSource();
   const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));

@@ -795,8 +795,8 @@
 
 .mobile-app-shell .chat-composer textarea {
   min-height: 42px;
-  max-height: 120px;
-  resize: vertical;
+  max-height: 220px;
+  resize: none;
 }
 
 .mobile-app-shell .composer-row {

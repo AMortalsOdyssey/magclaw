@@ -80,7 +80,9 @@ function applyAgentProcessDeliveryScope(proc, spaceType, spaceId, parentMessageI
 
 function startCodexAppServerTurn(agent, proc, prompt, { mode = 'turn', messages = [], runtimeOverride = null } = {}) {
   if (!proc.threadId) return false;
-  const input = [{ type: 'text', text: prompt }];
+  const input = typeof codexTurnInputForPrompt === 'function'
+    ? codexTurnInputForPrompt(prompt, messages)
+    : [{ type: 'text', text: prompt }];
   const runtime = runtimeOverride
     ? { ...runtimeOverride }
     : mode === 'steer' && proc.currentCodexRuntime

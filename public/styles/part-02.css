@@ -1808,24 +1808,70 @@
   border-top: 1px solid var(--border);
 }
 
-.mini-attachment {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin: 4px 6px 0 0;
-  padding: 4px 7px;
+.message-attachments {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.message-attachment-list {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.message-attachment-preview {
+  display: grid;
+  gap: 5px;
+  max-width: min(520px, 100%);
   border: 2px solid var(--border);
   color: var(--text-primary);
   text-decoration: none;
   background: var(--bg-input);
-  font-size: 12px;
 }
 
-.mini-attachment img {
-  width: 44px;
-  height: 34px;
-  object-fit: cover;
+.message-attachment-preview.image-attachment {
+  padding: 5px;
+}
+
+.message-attachment-preview.file-attachment {
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.message-attachment-preview img {
+  display: block;
+  width: auto;
+  max-width: min(520px, 100%);
+  max-height: 360px;
+  object-fit: contain;
   border: 1px solid var(--border);
+}
+
+.message-attachment-meta {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: 0 2px 1px;
+}
+
+.message-attachment-meta strong,
+.message-attachment-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-attachment-meta strong {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.message-attachment-meta small {
+  color: var(--text-muted);
+  font-size: 10px;
 }
 
 .file-glyph {
@@ -1847,9 +1893,11 @@
 
 .chat-composer textarea {
   min-height: 58px;
-  max-height: 76px;
+  max-height: 220px;
   padding: 9px 10px;
   resize: none;
+  overflow-y: hidden;
+  transition: height 80ms ease-out;
 }
 
 .composer-row {
@@ -2084,6 +2132,10 @@
 
 .composer-attachment-chip button:hover {
   background: var(--accent-soft);
+}
+
+.composer-attachment-chip.is-uploading {
+  opacity: 0.76;
 }
 
 /* ===== @ Mention Autocomplete ===== */

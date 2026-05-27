@@ -1004,7 +1004,7 @@ function readFileAsDataUrl(file, source = 'upload') {
 }
 
 async function uploadFiles(files, composerId, source = 'upload') {
-  const currentCount = stagedFor(composerId).attachments.length;
+  const currentCount = stagedFor(composerId).attachments.length + pendingAttachmentUploadCount(composerId);
   const remaining = MAX_ATTACHMENTS_PER_COMPOSER - currentCount;
   if (remaining <= 0) {
     toast(`最多只能暂存 ${MAX_ATTACHMENTS_PER_COMPOSER} 个附件`);
@@ -1014,20 +1014,24 @@ async function uploadFiles(files, composerId, source = 'upload') {
   if (files.length > remaining) {
     toast(`最多只能暂存 ${MAX_ATTACHMENTS_PER_COMPOSER} 个附件，已添加前 ${remaining} 个`);
   }
-  const payload = await Promise.all(selectedFiles.map((file) => readFileAsDataUrl(file, source)));
-  const result = await api('/api/attachments', {
-    method: 'POST',
-    body: JSON.stringify({ files: payload }),
-  });
-  const next = [...stagedFor(composerId).attachments, ...(result.attachments || [])];
-  setStagedFor(composerId, next);
-  const known = new Set((appState.attachments || []).map((item) => item.id));
-  appState.attachments = [
-    ...(appState.attachments || []),
-    ...(result.attachments || []).filter((item) => !known.has(item.id)),
-  ];
-  updateComposerAttachmentStrip(composerId);
-  toast(`${(result.attachments || []).length} attachment(s) staged`);
+  const uploadPromise = (async () => {
+    const payload = await Promise.all(selectedFiles.map((file) => readFileAsDataUrl(file, source)));
+    const result = await api('/api/attachments', {
+      method: 'POST',
+      body: JSON.stringify({ files: payload }),
+    });
+    const next = [...stagedFor(composerId).attachments, ...(result.attachments || [])];
+    setStagedFor(composerId, next);
+    const known = new Set((appState.attachments || []).map((item) => item.id));
+    appState.attachments = [
+      ...(appState.attachments || []),
+      ...(result.attachments || []).filter((item) => !known.has(item.id)),
+    ];
+    updateComposerAttachmentStrip(composerId);
+    toast(`${(result.attachments || []).length} attachment(s) staged`);
+    return result;
+  })();
+  return trackComposerAttachmentUpload(composerId, uploadPromise);
 }
 
 function clipboardScreenshotName(index = 0, type = 'image/png') {

@@ -305,17 +305,25 @@ function humanStatusDot(authorId, authorType) {
 }
 
 function attachmentLinks(ids = []) {
-  return ids
+  const items = ids
     .map((id) => byId(appState?.attachments, id))
     .filter(Boolean)
-    .map((item) => `
-      <a class="mini-attachment ${String(item.type || '').startsWith('image/') ? 'image-attachment' : ''}" href="${item.url}" target="_blank" rel="noreferrer">
-        ${String(item.type || '').startsWith('image/') ? `<img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}" />` : '<span class="file-glyph">□</span>'}
-        <span>${escapeHtml(item.name)}</span>
-        <small>${bytes(item.bytes)}</small>
-      </a>
-    `)
-    .join('');
+    .map((item) => {
+      const isImage = String(item.type || '').startsWith('image/');
+      const url = item.url || '#';
+      return `
+        <a class="message-attachment-preview ${isImage ? 'image-attachment' : 'file-attachment'}" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">
+          ${isImage
+            ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(item.name)}" loading="lazy" />`
+            : '<span class="file-glyph">□</span>'}
+          <span class="message-attachment-meta">
+            <strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong>
+            <small>${escapeHtml(item.type || 'file')} · ${bytes(item.bytes)}</small>
+          </span>
+        </a>
+      `;
+    });
+  return items.length ? `<div class="message-attachment-list">${items.join('')}</div>` : '';
 }
 
 function composerIdFor(kind, id = '') {
@@ -325,6 +333,41 @@ function composerIdFor(kind, id = '') {
 
 function stagedFor(composerId) {
   return stagedByComposer[composerId] || { attachments: [], ids: [] };
+}
+
+function pendingAttachmentUploadCount(composerId) {
+  return (pendingAttachmentUploadsByComposer[composerId] || []).length;
+}
+
+function updateComposerUploadState(composerId) {
+  const form = document.querySelector(`form[data-composer-id="${CSS.escape(composerId || '')}"]`);
+  if (form) form.classList.toggle('is-uploading-attachments', pendingAttachmentUploadCount(composerId) > 0);
+  updateComposerAttachmentStrip(composerId);
+}
+
+function trackComposerAttachmentUpload(composerId, promise) {
+  if (!composerId || !promise) return Promise.resolve(promise);
+  pendingAttachmentUploadsByComposer[composerId] = pendingAttachmentUploadsByComposer[composerId] || [];
+  const tracked = Promise.resolve(promise).finally(() => {
+    const pending = pendingAttachmentUploadsByComposer[composerId] || [];
+    pendingAttachmentUploadsByComposer[composerId] = pending.filter((item) => item !== tracked);
+    if (!pendingAttachmentUploadsByComposer[composerId].length) delete pendingAttachmentUploadsByComposer[composerId];
+    updateComposerUploadState(composerId);
+  });
+  pendingAttachmentUploadsByComposer[composerId].push(tracked);
+  updateComposerUploadState(composerId);
+  return tracked;
+}
+
+async function waitForComposerAttachments(composerId) {
+  const pending = [...(pendingAttachmentUploadsByComposer[composerId] || [])];
+  if (!pending.length) return;
+  const results = await Promise.allSettled(pending);
+  const failed = results.find((result) => result.status === 'rejected');
+  if (failed) throw new Error(failed.reason?.message || 'Attachment upload failed. Please retry before sending.');
+  if ((pendingAttachmentUploadsByComposer[composerId] || []).length) {
+    await waitForComposerAttachments(composerId);
+  }
 }
 
 function setStagedFor(composerId, attachments) {
@@ -347,7 +390,17 @@ function clearStagedFor(composerId) {
 
 function renderAttachmentStrip(composerId) {
   const staged = stagedFor(composerId).attachments;
-  return staged.map((item) => {
+  const uploading = Array.from({ length: pendingAttachmentUploadCount(composerId) }, (_, index) => `
+    <span class="composer-attachment-chip is-uploading" data-attachment-uploading="${index + 1}">
+      <span class="composer-file-icon">IMG</span>
+      <span class="composer-attachment-meta">
+        <strong>Uploading attachment...</strong>
+        <small>Please wait before sending</small>
+      </span>
+      <span></span>
+    </span>
+  `);
+  return [...uploading, ...staged.map((item) => {
     const isImage = String(item.type || '').startsWith('image/');
     return `
       <span class="composer-attachment-chip ${isImage ? 'is-image' : ''}" data-attachment-id="${escapeHtml(item.id)}">
@@ -361,15 +414,38 @@ function renderAttachmentStrip(composerId) {
         <button type="button" data-action="remove-staged-attachment" data-composer-id="${escapeHtml(composerId)}" data-id="${escapeHtml(item.id)}" title="Remove attachment" aria-label="Remove ${escapeHtml(item.name)}">&times;</button>
       </span>
     `;
-  }).join('');
+  })].join('');
 }
 
 function updateComposerAttachmentStrip(composerId) {
   const strip = document.querySelector(`[data-attachment-strip="${CSS.escape(composerId)}"]`);
   if (!strip) return;
-  const hasAttachments = stagedFor(composerId).attachments.length > 0;
+  const hasAttachments = stagedFor(composerId).attachments.length > 0 || pendingAttachmentUploadCount(composerId) > 0;
   strip.innerHTML = renderAttachmentStrip(composerId);
   strip.classList.toggle('hidden', !hasAttachments);
+}
+
+function autosizeComposerTextarea(textarea) {
+  if (!textarea?.matches?.('textarea[data-composer-autosize]')) return false;
+  const maxHeight = Number(textarea.dataset.maxHeight || 220);
+  const minHeight = Number(textarea.dataset.minHeight || 42);
+  textarea.style.height = 'auto';
+  const nextHeight = Math.max(minHeight, Math.min(textarea.scrollHeight || minHeight, maxHeight));
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = (textarea.scrollHeight || 0) > maxHeight ? 'auto' : 'hidden';
+  return true;
+}
+
+function autosizeAllComposerTextareas(rootNode = document) {
+  rootNode.querySelectorAll?.('textarea[data-composer-autosize]').forEach((textarea) => autosizeComposerTextarea(textarea));
+}
+
+function maybeAutosizeComposerTextarea(textarea) {
+  if (typeof autosizeComposerTextarea === 'function') autosizeComposerTextarea(textarea);
+}
+
+function maybeAutosizeAllComposerTextareas(rootNode = document) {
+  if (typeof autosizeAllComposerTextareas === 'function') autosizeAllComposerTextareas(rootNode);
 }
 
 function removeStagedAttachment(composerId, attachmentId) {
@@ -395,6 +471,7 @@ function clearComposerForSubmit(form, composerId, { clearTask = false } = {}) {
   if (textarea) {
     textarea.value = '';
     textarea.defaultValue = '';
+    if (typeof maybeAutosizeComposerTextarea === 'function') maybeAutosizeComposerTextarea(textarea);
   }
   const taskInput = form?.querySelector('input[name="asTask"]');
   if (clearTask && taskInput) taskInput.checked = false;
@@ -423,6 +500,7 @@ function restoreComposerAfterFailedSubmit(form, composerId, snapshot, { restoreT
   if (textarea) {
     textarea.value = body;
     textarea.defaultValue = body;
+    if (typeof maybeAutosizeComposerTextarea === 'function') maybeAutosizeComposerTextarea(textarea);
   }
   const taskInput = form?.querySelector('input[name="asTask"]');
   if (restoreTask && taskInput) taskInput.checked = Boolean(snapshot?.task);
@@ -684,6 +762,7 @@ function restoreComposerFocus(snapshot) {
   if (!textarea) return false;
   const value = String(snapshot.value ?? composerDrafts[snapshot.composerId] ?? textarea.value ?? '');
   if (textarea.value !== value) textarea.value = value;
+  if (typeof maybeAutosizeComposerTextarea === 'function') maybeAutosizeComposerTextarea(textarea);
   composerDrafts[snapshot.composerId] = value;
   try {
     textarea.focus({ preventScroll: true });
@@ -707,6 +786,7 @@ function focusComposerTextarea(composerId) {
     textarea.focus();
   }
   const end = textarea.value.length;
+  if (typeof maybeAutosizeComposerTextarea === 'function') maybeAutosizeComposerTextarea(textarea);
   textarea.setSelectionRange(end, end);
   return document.activeElement === textarea;
 }

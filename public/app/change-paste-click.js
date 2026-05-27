@@ -192,12 +192,29 @@ document.addEventListener('change', async (event) => {
     toast(error.message);
   }
 });
+function clipboardImageFiles(clipboardData) {
+  const files = [
+    ...(clipboardData?.files || []),
+    ...(clipboardData?.items || [])
+      .filter((item) => String(item.type || '').startsWith('image/'))
+      .map((item) => item.getAsFile?.())
+      .filter(Boolean),
+  ].filter((file) => String(file.type || '').startsWith('image/'));
+  const seen = new Set();
+  return files
+    .filter((file) => {
+      const key = `${file.name || ''}:${file.type || ''}:${file.size || 0}:${file.lastModified || 0}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((file, index) => normalizeClipboardFile(file, index));
+}
+
 document.addEventListener('paste', async (event) => {
   const textarea = event.target.closest?.('textarea[data-mention-input]');
   if (!textarea) return;
-  const files = [...(event.clipboardData?.files || [])]
-    .filter((file) => String(file.type || '').startsWith('image/'))
-    .map(normalizeClipboardFile);
+  const files = clipboardImageFiles(event.clipboardData);
   if (!files.length) return;
   event.preventDefault();
   try {

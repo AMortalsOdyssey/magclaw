@@ -1622,7 +1622,7 @@ function renderComposer({ id, kind, placeholder, showTaskToggle = false }) {
         ${renderAttachmentStrip(id)}
       </div>
       <div class="composer-input-wrapper">
-        <textarea name="body" rows="3" placeholder="${escapeHtml(placeholder)}" data-mention-input data-composer-id="${escapeHtml(id)}">${escapeHtml(composerDrafts[id] || '')}</textarea>
+        <textarea name="body" rows="2" placeholder="${escapeHtml(placeholder)}" data-mention-input data-composer-autosize data-min-height="42" data-max-height="220" data-composer-id="${escapeHtml(id)}">${escapeHtml(composerDrafts[id] || '')}</textarea>
         ${mentionPopup.composerId === id ? renderMentionPopup() : ''}
       </div>
       <div class="composer-row">

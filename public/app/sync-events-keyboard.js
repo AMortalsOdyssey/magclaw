@@ -1958,6 +1958,7 @@ document.addEventListener('input', async (event) => {
   const messageTextarea = event.target.closest('textarea[data-mention-input]');
   if (messageTextarea) {
     const { selectionStart, value } = messageTextarea;
+    if (typeof maybeAutosizeComposerTextarea === 'function') maybeAutosizeComposerTextarea(messageTextarea);
     if (!event.isComposing && event.inputType !== 'insertCompositionText' && composingComposerId === messageTextarea.dataset.composerId) {
       composerIsComposing = false;
       composingComposerId = null;
