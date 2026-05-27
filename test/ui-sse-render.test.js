@@ -27,8 +27,15 @@ async function createRealtimeHarness() {
     clearTimeout,
     EventSource: function EventSource() {},
     appState: { messages: [], replies: [] },
+    pendingStateUpdate: null,
+    pendingStateUpdateFrame: null,
+    clearPendingStateUpdate: noop,
     selectedSpaceType: 'channel',
     selectedSpaceId: 'chan_all',
+    taskViewMode: 'board',
+    taskColumns: [['todo', 'Todo'], ['in_progress', 'In Progress'], ['in_review', 'In Review'], ['done', 'Done'], ['closed', 'Closed']],
+    collapsedTaskColumns: {},
+    taskChannelFilterIds: [],
     threadMessageId: null,
     CONVERSATION_HISTORY_PAGE_SIZE: 80,
     conversationHistoryPages: { main: {}, thread: {} },
@@ -235,6 +242,161 @@ test('thread visible signatures ignore heartbeat, read, and task metadata churn'
   };
 
   assert.notEqual(context.activeConversationSignature(), before);
+});
+
+test('task tab thread signatures track the open thread instead of disappearing', async () => {
+  const context = await createRealtimeHarness();
+  const baseState = {
+    tasks: [{
+      id: 'task_1',
+      number: 1,
+      status: 'in_progress',
+      claimedBy: 'agt_owner',
+      assigneeIds: ['agt_helper'],
+      history: [
+        { type: 'created', actorId: 'hum_local', at: '2026-05-27T10:00:00.000Z' },
+      ],
+    }],
+    messages: [{
+      id: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: 'Task root',
+      taskId: 'task_1',
+      replyCount: 1,
+      createdAt: '2026-05-27T10:00:00.000Z',
+      updatedAt: '2026-05-27T10:00:00.000Z',
+    }],
+    replies: [{
+      id: 'rep_owner',
+      parentMessageId: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_owner',
+      body: 'First reply',
+      createdAt: '2026-05-27T10:01:00.000Z',
+      updatedAt: '2026-05-27T10:01:00.000Z',
+    }],
+  };
+  context.activeView = 'space';
+  context.activeTab = 'tasks';
+  context.threadMessageId = 'msg_parent';
+  context.selectedAgentId = null;
+  context.selectedTaskId = null;
+  context.selectedProjectFile = null;
+  context.modal = null;
+  context.pendingServerProfilePatchSignature = '';
+  context.settingsTab = 'server';
+  context.agentDetailTab = 'profile';
+  context.agentDetailEditState = null;
+  context.agentEnvEditState = null;
+  context.agentDetailTabLoading = {};
+  context.selectedSpaceType = 'channel';
+  context.selectedSpaceId = 'chan_all';
+  context.appState = baseState;
+
+  const before = context.activeConversationSignature();
+  assert.match(before, /msg_parent/);
+  assert.match(before, /rep_owner/);
+
+  context.appState = {
+    ...baseState,
+    replies: [{ ...baseState.replies[0], body: 'Updated visible reply' }],
+  };
+  assert.notEqual(context.activeConversationSignature(), before);
+});
+
+test('task tab background updates use scoped task/thread patching instead of full render', async () => {
+  const context = await createRealtimeHarness();
+  const baseState = {
+    agents: [
+      { id: 'agt_owner', name: 'Owner', status: 'idle' },
+    ],
+    humans: [],
+    channels: [{ id: 'chan_all', name: 'all' }],
+    tasks: [{
+      id: 'task_1',
+      number: 1,
+      status: 'in_progress',
+      title: 'Task root',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      claimedBy: 'agt_owner',
+      assigneeIds: [],
+      messageId: 'msg_parent',
+      history: [],
+    }],
+    messages: [{
+      id: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: 'Task root',
+      taskId: 'task_1',
+      replyCount: 0,
+      createdAt: '2026-05-27T10:00:00.000Z',
+      updatedAt: '2026-05-27T10:00:00.000Z',
+    }],
+    replies: [],
+  };
+  context.activeView = 'space';
+  context.activeTab = 'tasks';
+  context.threadMessageId = 'msg_parent';
+  context.selectedAgentId = null;
+  context.selectedTaskId = null;
+  context.selectedProjectFile = null;
+  context.modal = null;
+  context.pendingServerProfilePatchSignature = '';
+  context.settingsTab = 'server';
+  context.agentDetailTab = 'profile';
+  context.agentDetailEditState = null;
+  context.agentEnvEditState = null;
+  context.agentDetailTabLoading = {};
+  context.selectedSpaceType = 'channel';
+  context.selectedSpaceId = 'chan_all';
+  context.initialLoadComplete = true;
+  context.appState = baseState;
+  context.trackFanoutRouteEvents = () => {};
+  context.trackAgentNotifications = () => {};
+  context.serverSlugFromPath = () => 'test';
+  context.currentServerSlug = () => 'test';
+  context.agentDetailTabIsLoading = () => false;
+  context.normalizeAgentDetailTab = (value) => value || 'profile';
+  context.agentCreatorInfo = () => ({});
+  context.runtimeOptionsForAgent = () => [];
+  context.railUnreadSignature = () => '';
+  context.railComputerSignature = () => '';
+  context.paneScrollSnapshot = () => ({ top: 0, atBottom: true });
+  context.pageScrollSnapshot = () => ({ top: 0 });
+  context.rememberPinnedBottomBeforeStateChange = () => {};
+  context.applyPackageVersionSnapshot = () => {};
+  context.readCachedPackageVersionSnapshot = () => null;
+  context.applyMagclawAccountLanguage = () => {};
+  context.startHumanPresenceHeartbeat = () => {};
+  context.markVisibleConversationRead = () => {};
+  context.ensureSelection = () => {};
+  context.computerNameEditIsActive = () => false;
+  context.agentDetailInlineEditIsActive = () => false;
+  let renderCount = 0;
+  let taskPatchCount = 0;
+  context.render = () => { renderCount += 1; };
+  context.patchRailSurface = () => {};
+  context.patchActiveTaskSurface = () => {
+    taskPatchCount += 1;
+    return true;
+  };
+
+  context.applyStateUpdate({
+    ...baseState,
+    agents: [{ ...baseState.agents[0], status: 'working', runtimeLastTurnAt: '2026-05-27T10:01:00.000Z' }],
+  });
+
+  assert.equal(taskPatchCount, 1);
+  assert.equal(renderCount, 0);
 });
 
 test('opening a thread refreshes scoped replies instead of relying on preview state', async () => {

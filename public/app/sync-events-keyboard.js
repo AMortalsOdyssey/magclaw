@@ -644,15 +644,74 @@ function recordPatchSignature(record, stateSnapshot = appState) {
 }
 
 function activeConversationSignature(stateSnapshot = appState) {
-  if (!stateSnapshot || activeView !== 'space' || activeTab !== 'chat') return '';
+  if (!stateSnapshot) return '';
   if (threadMessageId) {
     const root = byId(stateSnapshot.messages, threadMessageId);
     const records = root ? [root, ...stateThreadReplies(stateSnapshot, root.id)] : [];
     return records.map((record) => recordPatchSignature(record, stateSnapshot)).join('|');
   }
+  if (activeView !== 'space' || activeTab !== 'chat') return '';
   return stateSpaceMessages(stateSnapshot)
     .map((record) => recordPatchSignature(record, stateSnapshot))
     .join('|');
+}
+
+function taskSurfaceTaskSignature(task) {
+  return [
+    task?.id || '',
+    task?.number || '',
+    task?.spaceType || '',
+    task?.spaceId || '',
+    task?.status || '',
+    task?.title || '',
+    task?.claimedBy || '',
+    (task?.assigneeIds || []).join(','),
+  ].join('::');
+}
+
+function stateSpaceTasks(stateSnapshot = appState) {
+  return (stateSnapshot?.tasks || [])
+    .filter((task) => task.spaceType === selectedSpaceType && task.spaceId === selectedSpaceId)
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
+}
+
+function stateVisibleGlobalTasks(stateSnapshot = appState) {
+  return (stateSnapshot?.tasks || [])
+    .filter((task) => task?.spaceType === 'channel')
+    .filter((task) => !taskChannelFilterIds.length || taskChannelFilterIds.includes(task.spaceId))
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
+}
+
+function taskColumnStateSignature() {
+  const collapsed = {};
+  for (const [status] of taskColumns || []) {
+    collapsed[status] = Boolean(collapsedTaskColumns?.[status]);
+  }
+  return collapsed;
+}
+
+function visibleTaskSurfaceSignature(stateSnapshot = appState) {
+  if (!stateSnapshot) return '';
+  if (activeView === 'space' && activeTab === 'tasks') {
+    return JSON.stringify({
+      surface: 'space-tasks',
+      spaceType: selectedSpaceType || '',
+      spaceId: selectedSpaceId || '',
+      viewMode: taskViewMode || 'board',
+      collapsed: taskColumnStateSignature(),
+      tasks: stateSpaceTasks(stateSnapshot).map(taskSurfaceTaskSignature),
+    });
+  }
+  if (activeView === 'tasks') {
+    return JSON.stringify({
+      surface: 'global-tasks',
+      viewMode: taskViewMode || 'board',
+      filters: [...(taskChannelFilterIds || [])].sort(),
+      collapsed: taskColumnStateSignature(),
+      tasks: stateVisibleGlobalTasks(stateSnapshot).map(taskSurfaceTaskSignature),
+    });
+  }
+  return '';
 }
 
 function currentServerProfileFromState(stateSnapshot = appState) {
@@ -922,11 +981,61 @@ function patchOpenThreadDrawerSurface(scrollSnapshot) {
   return true;
 }
 
+function activeTaskSurfaceIsVisible() {
+  return activeView === 'tasks' || (activeView === 'space' && activeTab === 'tasks');
+}
+
+function renderActiveTaskSurface() {
+  if (activeView === 'space' && activeTab === 'tasks') {
+    const tasks = typeof spaceTasks === 'function' ? spaceTasks() : stateSpaceTasks(appState);
+    if (selectedSpaceType === 'dm' && typeof renderDmTasks === 'function') return renderDmTasks(tasks);
+    return renderTaskSurface(tasks, { emptyVariant: selectedSpaceType === 'channel' ? 'channel' : 'empty' });
+  }
+  if (activeView === 'tasks') return renderGlobalTasks();
+  return '';
+}
+
+function activeTaskSurfaceNode() {
+  if (activeView === 'tasks') return document.querySelector('.workspace .task-page');
+  if (activeView === 'space' && activeTab === 'tasks') {
+    return document.querySelector('.workspace .dm-task-view, .workspace .task-board, .workspace .task-list-view, .workspace .task-empty-state');
+  }
+  return null;
+}
+
+function patchVisibleTaskSurface(scrollSnapshot = {}) {
+  if (!activeTaskSurfaceIsVisible()) return false;
+  const current = activeTaskSurfaceNode();
+  const nextHtml = renderActiveTaskSurface();
+  const next = nextHtml ? htmlToElement(nextHtml) : null;
+  if (!current || !next) return false;
+  if (current.outerHTML !== next.outerHTML) current.replaceWith(next);
+  window.requestAnimationFrame(() => {
+    restorePaneScrolls(scrollSnapshot);
+    restorePageScroll(scrollSnapshot.page);
+  });
+  return true;
+}
+
+function activeThreadDrawerIsVisible() {
+  return Boolean(threadMessageId && !selectedProjectFile && !selectedAgentId && !selectedTaskId && activeView !== 'members');
+}
+
+function patchActiveTaskSurface(scrollSnapshot, { visibleChanged = true, threadVisibleChanged = true } = {}) {
+  if (modal || !activeTaskSurfaceIsVisible()) return false;
+  const taskPatched = visibleChanged ? patchVisibleTaskSurface(scrollSnapshot) : true;
+  if (!taskPatched) return false;
+  if (activeThreadDrawerIsVisible() && threadVisibleChanged) return patchOpenThreadDrawerSurface(scrollSnapshot);
+  patchRailSurface();
+  if (!visibleChanged) window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
+  return true;
+}
+
 function patchActiveThreadSurface(scrollSnapshot, { visibleChanged = true } = {}) {
-  if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
+  if (modal || !activeThreadDrawerIsVisible()) return false;
   if (!visibleChanged) {
     patchRailSurface();
-    return Boolean(threadMessageId && !selectedProjectFile && !selectedAgentId && !selectedTaskId);
+    return true;
   }
   return patchOpenThreadDrawerSurface(scrollSnapshot);
 }
@@ -1079,6 +1188,7 @@ function applyStateUpdate(nextState) {
   const unreadBefore = railUnreadSignature();
   const railComputersBefore = railComputerSignature(appState);
   const activeConversationBefore = activeConversationSignature();
+  const activeTaskSurfaceBefore = visibleTaskSurfaceSignature();
   const serverProfileBefore = serverProfilePatchSignature();
   const serverSettingsSupportBefore = serverSettingsSupportSignature();
   const serverSettingsVisibleBefore = serverSettingsVisibleSignature();
@@ -1101,6 +1211,7 @@ function applyStateUpdate(nextState) {
   const railComputersChanged = railComputersBefore !== railComputerSignature(appState);
   const railNeedsPatch = unreadChanged || railComputersChanged;
   const activeConversationChanged = activeConversationBefore !== activeConversationSignature();
+  const activeTaskSurfaceChanged = activeTaskSurfaceBefore !== visibleTaskSurfaceSignature();
   const serverProfileAfter = serverProfilePatchSignature();
   const serverSettingsVisibleAfter = serverSettingsVisibleSignature();
   const agentDetailAfter = agentDetailVisibleSignature();
@@ -1187,6 +1298,7 @@ function applyStateUpdate(nextState) {
       : true;
     if (conversationPatched && patchAgentDetailSurface(scrollSnapshot)) return;
   }
+  if (patchActiveTaskSurface(scrollSnapshot, { visibleChanged: activeTaskSurfaceChanged, threadVisibleChanged: activeConversationChanged })) return;
   if (patchActiveThreadSurface(scrollSnapshot, { visibleChanged: activeConversationChanged })) return;
   if (patchActiveConversationSurface(scrollSnapshot, { allowInspector: activeConversationChanged || unreadChanged })) return;
   if (railNeedsPatch) patchRailSurface();
