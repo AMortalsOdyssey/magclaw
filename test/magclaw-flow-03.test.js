@@ -982,6 +982,95 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
+test('agent send_message dedupes near-identical retries for the same source message', async () => {
+  const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-send-dedupe-'));
+  const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');
+  await writeFile(fakeCodexPath, `#!/usr/bin/env node
+let buffer = '';
+let turnCount = 0;
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+async function handle(message) {
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'initialized') return;
+  if (message.method === 'thread/start') {
+    send({ id: message.id, result: { thread: { id: 'thread_send_dedupe' } } });
+    return;
+  }
+  if (message.method === 'turn/start') {
+    const turnId = 'turn_' + (++turnCount);
+    const prompt = message.params?.input?.[0]?.text || '';
+    const target = prompt.match(/target=([^\\s\\]]+)/)?.[1];
+    const workItemId = prompt.match(/workItem=(wi_[^\\s\\]]+)/)?.[1];
+    send({ id: message.id, result: { turn: { id: turnId } } });
+    send({ method: 'turn/started', params: { turn: { id: turnId } } });
+    if (target && workItemId) {
+      const first = '已按这个原则重新整理。\\n\\n- 只保留入口规则\\n- 按需读取 /workspace/AGENT.md';
+      const retry = '已按这个原则重新整理。\\n- 只保留入口规则\\n- 按需读取 /workspace/AGENT.md';
+      for (const content of [first, retry]) {
+        await fetch('http://127.0.0.1:' + process.env.PORT + '/api/agent-tools/messages/send', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            agentId: 'agt_codex',
+            workItemId,
+            target,
+            content,
+          }),
+        });
+      }
+    }
+    send({ method: 'item/agentMessage/delta', params: { itemId: 'item_' + turnId, delta: 'stdout fallback should be suppressed' } });
+    send({ method: 'turn/completed', params: { turn: { id: turnId, status: 'completed' } } });
+  }
+}
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    Promise.resolve(handle(JSON.parse(line))).catch((error) => {
+      send({ method: 'error', params: { message: error.message } });
+    });
+  }
+});
+`);
+  await chmod(fakeCodexPath, 0o755);
+  const server = await startIsolatedServer({ CODEX_PATH: fakeCodexPath });
+  try {
+    const created = await request(server.baseUrl, '/api/spaces/channel/chan_all/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        body: '<@agt_codex> retry the same structured reply',
+        attachmentIds: [],
+      }),
+    });
+
+    const finalState = await waitFor(async () => {
+      const snapshot = await request(server.baseUrl, '/api/state');
+      const replies = snapshot.replies.filter((reply) => reply.parentMessageId === created.message.id);
+      const matching = replies.filter((reply) => reply.body.includes('只保留入口规则'));
+      const agent = snapshot.agents.find((item) => item.id === 'agt_codex');
+      return matching.length >= 2
+        || (matching.length >= 1 && agent?.status === 'idle')
+        ? snapshot
+        : null;
+    }, 6000);
+    const replies = finalState.replies.filter((reply) => reply.parentMessageId === created.message.id && reply.body.includes('只保留入口规则'));
+    assert.equal(replies.length, 1);
+    assert.equal(finalState.events.some((event) => event.type === 'agent_tool_send_message_deduped'), true);
+    assert.equal(finalState.replies.some((reply) => reply.body === 'stdout fallback should be suppressed'), false);
+  } finally {
+    await server.stop();
+    await rm(fakeCodexDir, { recursive: true, force: true });
+  }
+});
+
 test('busy Codex agent isolates different channel thread lanes without steering', async () => {
   const fakeCodexDir = await mkdtemp(path.join(os.tmpdir(), 'magclaw-fake-busy-batch-'));
   const fakeCodexPath = path.join(fakeCodexDir, 'codex-fake.js');

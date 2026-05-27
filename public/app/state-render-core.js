@@ -983,11 +983,62 @@ function renderMarkdownInline(value) {
   return html;
 }
 
+function markdownListLine(line) {
+  const match = String(line || '').match(/^(\s*)([-*+]|\d+\.)\s+(.+)$/);
+  if (!match) return null;
+  return {
+    indent: match[1].replace(/\t/g, '  ').length,
+    type: /^\d+\./.test(match[2]) ? 'ol' : 'ul',
+    text: match[3],
+  };
+}
+
+function renderMarkdownListNode(node) {
+  const tag = node.type === 'ol' ? 'ol' : 'ul';
+  return `<${tag}>${node.items.map((item) => (
+    `<li>${renderMarkdownInline(item.text)}${item.children.map(renderMarkdownListNode).join('')}</li>`
+  )).join('')}</${tag}>`;
+}
+
+function renderMarkdownList(lines) {
+  const root = { type: 'root', children: [] };
+  const stack = [{ indent: -1, node: root }];
+  const appendList = (parent, indent, type) => {
+    const node = { type, items: [] };
+    if (parent.type === 'root') {
+      parent.children.push(node);
+    } else {
+      const parentItem = parent.items[parent.items.length - 1];
+      if (parentItem) parentItem.children.push(node);
+      else root.children.push(node);
+    }
+    const frame = { indent, node };
+    stack.push(frame);
+    return frame;
+  };
+
+  for (const line of lines) {
+    const item = markdownListLine(line);
+    if (!item) continue;
+    while (stack.length > 1 && item.indent < stack[stack.length - 1].indent) stack.pop();
+    let frame = stack[stack.length - 1];
+    if (frame.node.type === 'root' || item.indent > frame.indent) {
+      frame = appendList(frame.node, item.indent, item.type);
+    } else if (item.indent === frame.indent && frame.node.type !== item.type) {
+      stack.pop();
+      frame = appendList(stack[stack.length - 1].node, item.indent, item.type);
+    }
+    frame.node.items.push({ text: item.text, children: [] });
+  }
+
+  return root.children.map(renderMarkdownListNode).join('');
+}
+
 function renderMarkdown(content) {
   const lines = String(content || '').split(/\r?\n/);
   const blocks = [];
   let paragraph = [];
-  let list = [];
+  let listLines = [];
   let tableRows = [];
   let inCode = false;
   let codeLines = [];
@@ -998,9 +1049,9 @@ function renderMarkdown(content) {
     paragraph = [];
   };
   const flushList = () => {
-    if (!list.length) return;
-    blocks.push(`<ul>${list.map((item) => `<li>${renderMarkdownInline(item)}</li>`).join('')}</ul>`);
-    list = [];
+    if (!listLines.length) return;
+    blocks.push(renderMarkdownList(listLines));
+    listLines = [];
   };
   const isTableRow = (line) => {
     const trimmed = line.trim();
@@ -1068,11 +1119,11 @@ function renderMarkdown(content) {
       blocks.push(`<h${level}>${renderMarkdownInline(heading[2])}</h${level}>`);
       continue;
     }
-    const listItem = line.match(/^\s*(?:[-*+]|\d+\.)\s+(.+)$/);
+    const listItem = line.match(/^(\s*)([-*+]|\d+\.)\s+(.+)$/);
     if (listItem) {
       flushParagraph();
       flushTable();
-      list.push(listItem[1]);
+      listLines.push(line);
       continue;
     }
     const quote = line.match(/^>\s?(.+)$/);

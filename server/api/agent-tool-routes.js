@@ -56,6 +56,16 @@ export async function handleAgentToolApi(req, res, url, deps) {
   const TASK_CREATE_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
   const PROACTIVE_MESSAGE_DEDUPE_WINDOW_MS = 3 * 1000;
 
+  function canonicalAgentResponseText(value) {
+    return String(value || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n[ \t]+/g, '\n')
+      .replace(/\n{2,}/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+  }
+
   function broadcastTaskStatusState() {
     broadcastState();
   }
@@ -1313,7 +1323,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       && workItem.lastSentTarget === target.label
       && previousResponse.authorType === 'agent'
       && previousResponse.authorId === agent.id
-      && String(previousResponse.body || '').trim() === content
+      && canonicalAgentResponseText(previousResponse.body) === canonicalAgentResponseText(content)
     ) {
       addSystemEvent('agent_tool_send_message_deduped', `${agent.name} repeated the same routed message to ${target.label}.`, {
         traceId,

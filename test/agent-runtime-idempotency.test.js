@@ -45,7 +45,8 @@ test('agent responses can dedupe recent relay echoes with the same target and bo
   assert.match(helperSource, /record\.authorId === agent\.id/);
   assert.match(helperSource, /record\.spaceType === spaceType/);
   assert.match(helperSource, /record\.spaceId === spaceId/);
-  assert.match(helperSource, /String\(record\.body \|\| ''\)\.trim\(\) === responseBody/);
+  assert.match(helperSource, /const canonicalResponseBody = canonicalAgentResponseText\(responseBody\)/);
+  assert.match(helperSource, /canonicalAgentResponseText\(record\.body\) === canonicalResponseBody/);
   assert.match(postSource, /const parentForResponse = parentMessageId \? findMessage\(parentMessageId\) : null/);
   assert.match(postSource, /const dedupeSpaceType = parentForResponse\?\.spaceType \|\| spaceType/);
   assert.match(postSource, /const dedupeSpaceId = parentForResponse\?\.spaceId \|\| spaceId/);

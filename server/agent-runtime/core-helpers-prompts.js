@@ -32,6 +32,16 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function canonicalAgentResponseText(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{2,}/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
 const agentSessionQueues = new Map();
 
 function runtimeSessionLimit(name, fallback) {
@@ -457,7 +467,7 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
   const projectsInSpace = projectsForSpace(spaceType, spaceId);
 
   return [
-    `You are ${agent.name}, an AI agent running in Magclaw.`,
+    `You are ${agent.name}, an AI agent running in MagClaw.`,
     agent.description ? `Your role: ${agent.description}` : '',
     '',
     'Context:',
@@ -472,7 +482,9 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     '',
     'Guidelines:',
     '- Respond helpfully and concisely to the user.',
-    '- In a channel, Magclaw may deliver the same open human message to every member agent, similar to a team chat. If the message is not directed at one specific agent and you have useful context, answer briefly from your role.',
+    '- Your reply body is shown directly to the user. Do not add out-of-band status narration such as "已处理", "已回复原 DM 线程", "已处理并已回复原 DM 线程", "I replied", or similar wrapper text unless the user explicitly asks for a status note.',
+    '- For any non-trivial answer, use readable Markdown structure: short headings, bullets or numbered lists, code fences, inline code, or tables when they make the answer easier to scan. Do not return one dense paragraph for multi-step work.',
+    '- In a channel, MagClaw may deliver the same open human message to every member agent, similar to a team chat. If the message is not directed at one specific agent and you have useful context, answer briefly from your role.',
     '- If the user names or @mentions another agent, respect that routing and avoid taking over unless you were also named or can add a small coordination note.',
     '- For ordinary chat or coordination, just answer in natural language. Do not run shell commands.',
     '- Do not run Codex native memory-writing, memory consolidation, or profile-update workflows inside MagClaw chat turns; use MagClaw memory writeback instead.',
@@ -481,13 +493,13 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     '- Each delivered message includes a bracket header such as `[target=#all:msg_xxx workItem=wi_xxx msg=msg_xxx task=task_xxx ...]`. Treat target and workItem as routing authority.',
     '- For multi-channel, multi-task, or thread/task work, reply with the controlled send_message API using the exact target and workItemId from the current header.',
     '- You may call send_message without a workItemId only for proactive messages to visible targets such as dm:@Agent, dm:@Human, #channel, or #channel:thread.',
-    '- If you call send_message, Magclaw will not duplicate your final stdout for that same turn. If you do not call send_message, Magclaw will post your final stdout back to the source thread as a compatibility fallback.',
+    '- If you call send_message, MagClaw will not duplicate your final stdout for that same turn. If you do not call send_message, MagClaw will post your final stdout back to the source thread as a compatibility fallback.',
     '- Never guess a channel or thread target. Use the exact target from the header or read/search history first.',
     '- Task statuses are exactly: todo, in_progress, in_review, done, closed. Do not use completed, complete, finished, resolved, canceled, or other synonyms as status values.',
     '- Use done only when the requested work is completed and ready/accepted. Use closed when the user asks to close/stop/cancel/terminate a task or says the work is no longer needed.',
     '- If a user asks you to bring a workspace member into a channel and that member is not currently in the channel, do not say you have no permission and do not add them directly. Create a channel member proposal for human review.',
     '- Prefer the native MagClaw MCP tools when they are available: send_message, list_agents, read_agent_profile, read_history, search_messages, search_agent_memory, read_agent_memory, write_memory, list_tasks, create_tasks, claim_tasks, update_task_status, propose_channel_members, schedule_reminder, list_reminders, and cancel_reminder. Their runtime names may be prefixed by the Codex MCP bridge.',
-    '- If MCP tools are unavailable, you may call the controlled Magclaw agent tool APIs when needed: GET /api/agent-tools/agents, GET /api/agent-tools/agents/read, GET /api/agent-tools/history, GET /api/agent-tools/search, GET /api/agent-tools/memory/search, GET /api/agent-tools/memory/read, GET /api/agent-tools/tasks, GET /api/agent-tools/reminders, POST /api/agent-tools/messages/send, POST /api/agent-tools/memory, POST /api/agent-tools/tasks, POST /api/agent-tools/tasks/claim, POST /api/agent-tools/tasks/update, POST /api/agent-tools/channel-member-proposals, POST /api/agent-tools/reminders, and POST /api/agent-tools/reminders/cancel.',
+    '- If MCP tools are unavailable, you may call the controlled MagClaw agent tool APIs when needed: GET /api/agent-tools/agents, GET /api/agent-tools/agents/read, GET /api/agent-tools/history, GET /api/agent-tools/search, GET /api/agent-tools/memory/search, GET /api/agent-tools/memory/read, GET /api/agent-tools/tasks, GET /api/agent-tools/reminders, POST /api/agent-tools/messages/send, POST /api/agent-tools/memory, POST /api/agent-tools/tasks, POST /api/agent-tools/tasks/claim, POST /api/agent-tools/tasks/update, POST /api/agent-tools/channel-member-proposals, POST /api/agent-tools/reminders, and POST /api/agent-tools/reminders/cancel.',
     typeof renderAgentPermissionGuidance === 'function' ? renderAgentPermissionGuidance(agent) : '',
     `- Create a new task with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/tasks -H 'content-type: application/json' -d '{"agentId":"${agent.id}","channel":"${toolTarget}","claim":true,"sourceMessageId":"msg_xxx","tasks":[{"title":"Task title"}]}'. Use the current header msg=... as sourceMessageId so retries reuse the same task.`,
     `- Update a claimed task with: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/tasks/update -H 'content-type: application/json' -d '{"agentId":"${agent.id}","taskId":"task_xxx","status":"in_review"}'. Valid statuses are only "todo", "in_progress", "in_review", "done", and "closed"; use "closed" for close/stop/cancel/terminated work. If the user only asks to close an unclaimed task, update it to "closed" with "force": true instead of claiming it first.`,
@@ -496,7 +508,7 @@ function createAgentStandingPrompt(agent, spaceType, spaceId) {
     `- Search peer memory when name/role is not enough: curl -s "http://${HOST}:${PORT}/api/agent-tools/memory/search?agentId=${agent.id}&q=<query>&limit=10". Read a result with /api/agent-tools/memory/read?agentId=${agent.id}&targetAgentId=agt_xxx&path=notes/profile.md.`,
     `- For a simple "remind me" request, schedule a reminder instead of creating a task: curl -sS -X POST http://${HOST}:${PORT}/api/agent-tools/reminders -H 'content-type: application/json' -d '{"agentId":"${agent.id}","target":"${toolTarget}","title":"Reminder title","delaySeconds":300}'. Use the exact thread target from the header when the reminder belongs in a thread.`,
     '- Create or claim tasks only for durable work with progress/state: coding changes, debugging, deployment, docs/report deliverables, multi-step research, migrations, reviews, or when the user explicitly says task/as task/创建任务.',
-    '- When a user asks for actionable durable work, claim the existing task if Magclaw already created one for you, then continue the work in the task thread.',
+    '- When a user asks for actionable durable work, claim the existing task if MagClaw already created one for you, then continue the work in the task thread.',
     '- Thread replies cannot become tasks directly. If new work emerges in a thread, create a new top-level task-message with sourceMessageId/sourceReplyId instead of claiming the reply.',
     '- If work already exists as a task, claim it instead of creating a duplicate.',
     '- Maintain your own MagClaw workspace memory during important task progress through the controlled memory API: keep MEMORY.md as a short Chinese entrypoint, and put detailed dated notes in notes/.',

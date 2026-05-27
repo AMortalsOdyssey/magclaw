@@ -625,6 +625,7 @@ function findRecentDuplicateAgentResponse(agent, spaceType, spaceId, responseBod
   const baselineMs = Date.parse(options.dedupeNow || now());
   if (!Number.isFinite(baselineMs)) return null;
   const records = parentMessageId ? state.replies : state.messages;
+  const canonicalResponseBody = canonicalAgentResponseText(responseBody);
   return (records || []).slice().reverse().find((record) => {
     const createdMs = responseCreatedTimeMs(record);
     return (
@@ -633,7 +634,7 @@ function findRecentDuplicateAgentResponse(agent, spaceType, spaceId, responseBod
       && record.spaceType === spaceType
       && record.spaceId === spaceId
       && String(record.parentMessageId || '') === String(parentMessageId || '')
-      && String(record.body || '').trim() === responseBody
+      && canonicalAgentResponseText(record.body) === canonicalResponseBody
       && createdMs > 0
       && baselineMs >= createdMs
       && baselineMs - createdMs <= dedupeWindowMs
