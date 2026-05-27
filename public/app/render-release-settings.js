@@ -76,7 +76,6 @@ function renderReleaseNotesSettingsTab() {
     <section class="settings-release">
       <div class="release-heading">
         <div>
-          <p class="eyebrow">Versioned changelog</p>
           <h3>What's New</h3>
         </div>
       </div>

@@ -981,7 +981,7 @@ function settingsPageMeta(tab = settingsTab) {
     members: { title: 'Members', icon: 'members', section: 'MEMBERS' },
     'lost-space': { title: 'Lost Space', icon: 'lost', section: 'LOST SPACE' },
     language: { title: 'Language', icon: 'language', section: 'LANGUAGE' },
-    release: { title: 'Release Notes', icon: 'release', section: "WHAT'S NEW" },
+    release: { title: 'Release Notes', icon: 'release', section: '' },
   };
   return metas[tab] || metas.account;
 }
@@ -1003,10 +1003,10 @@ function renderSettingsChrome(body, actions = '') {
         </div>
         ${actions ? `<div class="action-row">${actions}</div>` : ''}
       </header>
-      <div class="settings-section-label">
+      ${meta.section ? `<div class="settings-section-label">
         ${settingsIcon(meta.icon, 18)}
         <span>${escapeHtml(meta.section)}</span>
-      </div>
+      </div>` : ''}
       <nav class="settings-page-mobile-tabs" aria-label="Settings sections">
         ${mobileTabs}
       </nav>

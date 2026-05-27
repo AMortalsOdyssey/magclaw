@@ -138,7 +138,6 @@ const zhCnTranslations = {
   'LOST SPACE': '失落空间',
   "WHAT'S NEW": '更新内容',
   'Release Notes': '更新日志',
-  'Versioned changelog': '版本更新记录',
   "What's New": '更新内容',
   'Web Service': 'Web 服务',
   'Daemon': '守护进程',
