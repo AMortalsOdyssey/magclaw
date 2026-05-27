@@ -356,9 +356,24 @@ document.addEventListener('click', async (event) => {
 	      render();
 	      return;
 	    }
+	    if (action === 'add-selected-text-channel-context') {
+	      const record = conversationRecord(target.dataset.id);
+	      const selectedText = messageContextMenu?.selectionText || '';
+	      if (record && typeof addChannelContextReferenceToComposer === 'function') addChannelContextReferenceToComposer(record, selectedText);
+	      messageContextMenu = null;
+	      render();
+	      return;
+	    }
 	    if (action === 'add-message-context') {
 	      const record = conversationRecord(target.dataset.id);
 	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'context');
+	      messageContextMenu = null;
+	      render();
+	      return;
+	    }
+	    if (action === 'add-message-channel-context') {
+	      const record = conversationRecord(target.dataset.id);
+	      if (record && typeof addChannelContextReferenceToComposer === 'function') addChannelContextReferenceToComposer(record);
 	      messageContextMenu = null;
 	      render();
 	      return;

@@ -188,7 +188,51 @@ test('reference source jump opens the parent thread for reply sources', async ()
     { messageId: 'msg_root', options: {} },
   ]);
   assert.deepEqual(context.delayedReferenceScrollDelays, [220]);
-  assert.deepEqual(context.scrollToMessageCalls, ['msg_root', 'msg_root']);
+  assert.deepEqual(context.scrollToMessageCalls, []);
+  assert.deepEqual(context.scrollToReplyCalls, ['rep_source', 'rep_source']);
+});
+
+test('reference source jump inside an already open thread stays scoped to the thread drawer', async () => {
+  const context = await conversationReferenceHarness();
+  context.activeView = 'tasks';
+  context.activeTab = 'tasks';
+  context.threadMessageId = 'msg_root';
+  context.mobileHomeOpen = false;
+  context.workspaceActivityDrawerOpen = false;
+  context.selectedAgentId = null;
+  context.selectedTaskId = null;
+  context.selectedProjectFile = null;
+  context.appState.messages = [
+    {
+      id: 'msg_root',
+      authorType: 'human',
+      authorId: 'hum_owner',
+      body: 'Thread root',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+  ];
+  context.appState.replies = [
+    {
+      id: 'rep_source',
+      parentMessageId: 'msg_root',
+      authorType: 'agent',
+      authorId: 'agt_cindy',
+      body: 'Thread reply source',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+  ];
+
+  assert.equal(await context.jumpToConversationReferenceSource('rep_source', 'msg_root'), true);
+
+  assert.equal(context.activeView, 'tasks');
+  assert.equal(context.activeTab, 'tasks');
+  assert.equal(context.threadMessageId, 'msg_root');
+  assert.equal(context.selectedSavedRecordId, 'rep_source');
+  assert.equal(context.renderCalls, 0);
+  assert.deepEqual(context.refreshThreadSelectionCalls, []);
+  assert.deepEqual(context.scrollToMessageCalls, []);
   assert.deepEqual(context.scrollToReplyCalls, ['rep_source', 'rep_source']);
 });
 
@@ -209,7 +253,7 @@ test('reference source jump targets reply ids that are not hydrated yet', async 
 
   assert.equal(context.threadMessageId, 'msg_root');
   assert.equal(context.selectedSavedRecordId, 'rep_missing');
-  assert.deepEqual(context.scrollToMessageCalls, ['msg_root', 'msg_root']);
+  assert.deepEqual(context.scrollToMessageCalls, []);
   assert.deepEqual(context.scrollToReplyCalls, ['rep_missing', 'rep_missing']);
 });
 
@@ -383,7 +427,7 @@ test('reference source jump auto-loads older thread replies without stealing the
   assert.equal(context.loadOlderThreadRepliesCalls, 2);
   assert.equal(context.threadMessageId, 'msg_root');
   assert.equal(context.selectedSavedRecordId, 'rep_source');
-  assert.ok(context.scrollToMessageCalls.includes('msg_root'));
+  assert.deepEqual(context.scrollToMessageCalls, []);
   assert.ok(context.scrollToReplyCalls.includes('rep_source'));
   assert.deepEqual(
     context.referenceTargetPulseEvents.filter((event) => event.action === 'add'),
@@ -501,6 +545,46 @@ test('thread context references prepend the selected message sender mention', as
   assert.equal(context.composerMentionMaps['message:main']['@Cindy'], '<@agt_cindy>');
 });
 
+test('thread reply channel context references land in the channel composer with parent context', async () => {
+  const context = await conversationReferenceHarness();
+  context.threadMessageId = 'msg_root';
+  context.appState.messages = [
+    {
+      id: 'msg_root',
+      authorType: 'human',
+      authorId: 'hum_owner',
+      body: 'Top message that started the thread.',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+    },
+  ];
+  const reply = {
+    id: 'rep_agent',
+    parentMessageId: 'msg_root',
+    authorType: 'agent',
+    authorId: 'agt_cindy',
+    body: 'Reply that should be reused in channel.',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    createdAt: '2026-05-27T03:00:00.000Z',
+  };
+  context.appState.replies = [reply];
+
+  assert.equal(context.addChannelContextReferenceToComposer(reply), true);
+
+  assert.equal(context.composerReferences('thread:msg_root').length, 0);
+  const references = context.composerReferences('message:main');
+  assert.equal(references.length, 1);
+  assert.equal(references[0].mode, 'context');
+  assert.equal(references[0].kind, 'message');
+  assert.equal(references[0].sourceRecordId, 'rep_agent');
+  assert.equal(references[0].sourceKind, 'reply');
+  assert.equal(references[0].parentMessageId, 'msg_root');
+  assert.deepEqual(Array.from(references[0].recordIds), ['msg_root', 'rep_agent']);
+  assert.equal(context.composerDrafts['message:main'], '@Cindy ');
+  assert.equal(context.composerMentionMaps['message:main']['@Cindy'], '<@agt_cindy>');
+});
+
 test('context references do not duplicate an author mention already in the composer', async () => {
   const context = await conversationReferenceHarness();
   const first = {
@@ -610,7 +694,7 @@ test('DM message reference cards do not repeat the same @ label for source and s
   assert.doesNotMatch(html, /@Cindy\s*·\s*@Cindy/);
 });
 
-test('message context menu exposes one add-to-context action and hides thread context without replies', async () => {
+test('message context menu exposes context actions and hides thread context without replies', async () => {
   const renderSource = await readFile(new URL('../public/app/render-space-chat-tasks.js', import.meta.url), 'utf8');
   const clickSource = await readFile(new URL('../public/app/change-paste-click.js', import.meta.url), 'utf8');
   const prepareSource = await readFile(new URL('../public/app/click-prepare.js', import.meta.url), 'utf8');
@@ -620,9 +704,15 @@ test('message context menu exposes one add-to-context action and hides thread co
   assert.doesNotMatch(renderSource, /quote-message-reply|quote-selected-text/);
   assert.match(renderSource, /renderContextMenuItem\('add-message-context', t\('Add to context'\), record\.id\)/);
   assert.match(renderSource, /renderContextMenuItem\('add-selected-text-context', t\('Add to context'\), record\.id\)/);
+  assert.match(renderSource, /renderContextMenuItem\('add-message-channel-context', t\('Add to channel context'\), record\.id\)/);
+  assert.match(renderSource, /renderContextMenuItem\('add-selected-text-channel-context', t\('Add to channel context'\), record\.id\)/);
   assert.match(renderSource, /recordHasThreadContext\(record\)/);
   assert.match(renderSource, /renderContextMenuItem\('add-thread-context', t\('Add thread to context'\), record\.id\)/);
   assert.doesNotMatch(renderSource, /data-action="add-visible-conversation-context"/);
+  assert.match(clickSource, /addChannelContextReferenceToComposer\(record, selectedText\)/);
+  assert.match(clickSource, /addChannelContextReferenceToComposer\(record\)/);
+  assert.match(prepareSource, /'add-message-channel-context'/);
+  assert.match(prepareSource, /'add-selected-text-channel-context'/);
   assert.doesNotMatch(clickSource, /quote-message-reply|quote-selected-text|add-visible-conversation-context/);
   assert.doesNotMatch(prepareSource, /quote-message-reply|quote-selected-text|add-visible-conversation-context/);
   assert.doesNotMatch(referencesSource, /more references|slice\(0, 3\)/);

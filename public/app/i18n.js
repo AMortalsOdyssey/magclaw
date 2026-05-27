@@ -284,6 +284,7 @@ const zhCnTranslations = {
   'Conversation references': '对话引用',
   'Message references': '消息引用',
   'Add to context': '添加到对话',
+  'Add to channel context': '添加到频道上下文',
   'Add thread to context': '添加线程到对话',
   'Reply in thread': '在线程中回复',
   'Remove from saved': '从已保存移除',

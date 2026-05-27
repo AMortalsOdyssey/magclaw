@@ -284,11 +284,26 @@ function threadReferenceFromRecord(record, mode = 'context') {
   });
 }
 
+function recordTargetsThreadComposer(record) {
+  return Boolean(threadMessageId && record && (record.id === threadMessageId || record.parentMessageId === threadMessageId));
+}
+
 function targetComposerIdForRecord(record) {
-  if (threadMessageId && record && (record.id === threadMessageId || record.parentMessageId === threadMessageId)) {
+  if (recordTargetsThreadComposer(record)) {
     return composerIdFor('thread', threadMessageId);
   }
   return composerIdFor('message');
+}
+
+function channelContextRecordIdsForRecord(record) {
+  if (!record?.id) return [];
+  const ids = [];
+  if (record.parentMessageId) {
+    const parent = byId(appState?.messages, record.parentMessageId);
+    ids.push(parent?.id || record.parentMessageId);
+  }
+  ids.push(record.id);
+  return [...new Set(ids.filter(Boolean))];
 }
 
 function rememberReferenceAuthorMention(composerId, record) {
@@ -380,6 +395,19 @@ function quoteRecordToComposer(record, mode = 'quote', selectedText = '') {
   });
 }
 
+function addChannelContextReferenceToComposer(record, selectedText = '') {
+  const kind = selectedText ? 'selection' : 'message';
+  const reference = referenceFromRecord(record, {
+    mode: 'context',
+    kind,
+    selectedText,
+    recordIds: channelContextRecordIdsForRecord(record),
+  });
+  return addConversationReferenceToComposer(composerIdFor('message'), reference, {
+    mentionRecord: record,
+  });
+}
+
 function addThreadReferenceToComposer(record) {
   const reference = threadReferenceFromRecord(record, 'context');
   return addConversationReferenceToComposer(targetComposerIdForRecord(record), reference, {
@@ -450,13 +478,28 @@ function referenceJumpSelectedRecordId(sourceRecord, rootRecord, sourceRecordId,
   return (sourceRecord || rootRecord)?.id || '';
 }
 
+function referenceJumpThreadRootId(sourceRecord, sourceRecordId, parentMessageId) {
+  if (sourceRecord?.parentMessageId) return sourceRecord.parentMessageId;
+  if (parentMessageId) return parentMessageId;
+  if (sourceRecordId && sourceRecord?.id === sourceRecordId && parentMessageId === sourceRecordId) return sourceRecordId;
+  return '';
+}
+
+function referenceJumpIsInOpenThread(sourceRecord, sourceRecordId, parentMessageId) {
+  const rootId = referenceJumpThreadRootId(sourceRecord, sourceRecordId, parentMessageId);
+  return Boolean(threadMessageId && rootId && threadMessageId === rootId);
+}
+
 function scrollToReferenceRecord(sourceRecord, rootRecord, opensThread, sourceRecordId = '') {
-  if (rootRecord?.id && typeof scrollToMessage === 'function') scrollToMessage(rootRecord.id);
   const replyId = sourceRecord?.parentMessageId
     ? sourceRecord.id
     : (opensThread && sourceRecordId && rootRecord?.id !== sourceRecordId ? sourceRecordId : '');
   if (replyId && typeof scrollToReply === 'function') {
     scrollToReply(replyId);
+    return;
+  }
+  if (!opensThread && rootRecord?.id && typeof scrollToMessage === 'function') {
+    scrollToMessage(rootRecord.id);
   }
 }
 
@@ -466,6 +509,8 @@ function referenceJumpTargetNode(sourceRecord, rootRecord, opensThread, sourceRe
     : (opensThread && sourceRecordId && rootRecord?.id !== sourceRecordId ? sourceRecordId : '');
   const selector = replyId
     ? `#thread-context #reply-${CSS.escape(replyId)}`
+    : (opensThread && rootRecord?.id)
+      ? `#thread-context .thread-parent-card #message-${CSS.escape(rootRecord.id)}`
     : (rootRecord?.id ? `#message-list #message-${CSS.escape(rootRecord.id)}` : '');
   return selector ? document.querySelector(selector) : null;
 }
@@ -573,9 +618,27 @@ async function jumpToConversationReferenceSource(sourceRecordId, parentMessageId
     return false;
   }
 
+  if (referenceJumpIsInOpenThread(sourceRecord, id, parentId)) {
+    let opensThread = referenceJumpOpensThread(sourceRecord, id, parentId);
+    const selectedRecordId = referenceJumpSelectedRecordId(sourceRecord, rootRecord, id, parentId);
+    selectedSavedRecordId = selectedRecordId;
+    if (opensThread && id && rootRecord?.id && !conversationRecord(id)) {
+      await autoLoadOlderReferencePages('thread', rootRecord.id, () => Boolean(conversationRecord(id)));
+      sourceRecord = conversationRecord(id);
+      rootRecord = referenceJumpRootRecord(sourceRecord, parentId);
+      opensThread = referenceJumpOpensThread(sourceRecord, id, parentId);
+    }
+    scheduleReferenceJumpScroll(sourceRecord || rootRecord, rootRecord, opensThread, id);
+    return true;
+  }
+
+  const initialThreadId = referenceJumpOpensThread(sourceRecord, id, parentId) && rootRecord?.id
+    ? rootRecord.id
+    : null;
   applyReferenceJumpRoute({
     spaceType: targetSpace.spaceType,
     spaceId: targetSpace.spaceId,
+    threadId: initialThreadId,
     selectedRecordId: id || parentId,
   });
 

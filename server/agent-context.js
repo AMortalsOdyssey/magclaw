@@ -468,10 +468,22 @@ function referenceSpaceLabel(state, reference) {
   return spaceName(state, reference.spaceType, reference.spaceId);
 }
 
+function referenceSourceLocationParts(reference) {
+  const parts = [];
+  if (reference?.sourceKind) parts.push(`source=${reference.sourceKind}`);
+  if (reference?.parentMessageId) {
+    parts.push(reference.sourceKind === 'reply'
+      ? `thread=${reference.parentMessageId}`
+      : `parent=${reference.parentMessageId}`);
+  }
+  return parts;
+}
+
 function renderConversationReferenceBlock(state, reference, targetAgentId, remainingChars) {
   const records = recordsForConversationReference(state, reference);
   const header = [
     `- ${reference.mode || 'context'}/${reference.kind || 'message'}`,
+    ...referenceSourceLocationParts(reference),
     reference.authorName ? `from @${reference.authorName}` : '',
     referenceSpaceLabel(state, reference),
     reference.createdAt ? `at ${renderTime(reference.createdAt)}` : '',

@@ -225,6 +225,88 @@ test('agent context pack renders structured conversation references for the curr
   assert.match(rendered, /The exact source paragraph Agent should inspect/);
 });
 
+test('agent context pack identifies channel references imported from thread replies', () => {
+  const state = {
+    humans: [{ id: 'hum_local', name: 'You' }],
+    agents: [{ id: 'agt_codex', name: 'Codex', runtime: 'codex', status: 'idle' }],
+    channels: [{
+      id: 'chan_all',
+      name: 'all',
+      humanIds: ['hum_local'],
+      agentIds: ['agt_codex'],
+      memberIds: ['hum_local', 'agt_codex'],
+    }],
+    dms: [],
+    messages: [
+      {
+        id: 'msg_top',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'human',
+        authorId: 'hum_local',
+        body: 'Top channel message that owns the thread.',
+        attachmentIds: [],
+        createdAt: '2026-05-27T02:58:00.000Z',
+      },
+      {
+        id: 'msg_current',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'human',
+        authorId: 'hum_local',
+        body: '<@agt_codex> use this reply context',
+        attachmentIds: [],
+        references: [{
+          id: 'ref_reply',
+          mode: 'context',
+          kind: 'message',
+          sourceRecordId: 'rep_agent',
+          sourceKind: 'reply',
+          parentMessageId: 'msg_top',
+          spaceType: 'channel',
+          spaceId: 'chan_all',
+          authorType: 'agent',
+          authorId: 'agt_codex',
+          authorName: 'Codex',
+          bodyPreview: 'Thread reply with the useful detail.',
+          recordIds: ['msg_top', 'rep_agent'],
+          createdAt: '2026-05-27T03:00:00.000Z',
+        }],
+        createdAt: '2026-05-27T03:05:00.000Z',
+      },
+    ],
+    replies: [{
+      id: 'rep_agent',
+      parentMessageId: 'msg_top',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_codex',
+      body: 'Thread reply with the useful detail.',
+      attachmentIds: [],
+      createdAt: '2026-05-27T03:00:00.000Z',
+    }],
+    tasks: [],
+    attachments: [],
+    events: [],
+  };
+
+  const pack = buildAgentContextPack({
+    state,
+    agentId: 'agt_codex',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    currentMessage: state.messages[1],
+  });
+  const rendered = renderAgentContextPack(pack, { state, targetAgentId: 'agt_codex' });
+
+  assert.match(rendered, /context\/message/);
+  assert.match(rendered, /source=reply/);
+  assert.match(rendered, /thread=msg_top/);
+  assert.match(rendered, /Top channel message that owns the thread/);
+  assert.match(rendered, /Thread reply with the useful detail/);
+});
+
 test('agent context pack renders required peer memory search grounding', () => {
   const state = {
     humans: [{ id: 'hum_local', name: 'You', role: 'admin' }],
