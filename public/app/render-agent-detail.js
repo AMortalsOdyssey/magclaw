@@ -438,16 +438,17 @@ function agentRuntimeErrorMessage(agent) {
 }
 
 function agentEventDetail(event = {}) {
-  const activity = event.activity || event.raw?.activity || {};
+  const safeEvent = event && typeof event === 'object' ? event : {};
+  const activity = safeEvent.activity || safeEvent.raw?.activity || {};
   return String(
     activity.error
     || activity.detail
     || activity.note
     || activity.text
     || activity.tool
-    || event.raw?.error
-    || event.error
-    || event.message
+    || safeEvent.raw?.error
+    || safeEvent.error
+    || safeEvent.message
     || ''
   ).trim();
 }

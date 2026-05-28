@@ -3222,6 +3222,32 @@ test('agent activity tab renders newest first with second-level timestamps and a
   assert.match(styles, /\.agent-live-activity-bar\.compact/);
 });
 
+test('agent live activity summary tolerates agents without visible activity events', async () => {
+  const app = await readAppSource();
+  const liveActivitySource = app.slice(app.indexOf('function agentActivityEvents'), app.indexOf('function renderAgentErrorNotice'));
+  const context = {
+    appState: { events: [] },
+    AGENT_ACTIVITY_EVENT_LIMIT: 5000,
+    agentActivityCacheFor: () => ({ events: [] }),
+    agentDisplayStatus: () => 'idle',
+    agentStatusLabel: () => 'Idle',
+    presenceClass: (value) => `status-${value}`,
+  };
+  vm.createContext(context);
+  vm.runInContext(liveActivitySource, context);
+
+  assert.doesNotThrow(() => context.agentLiveActivitySummary({
+    id: 'agt_one',
+    status: 'idle',
+    runtimeActivity: null,
+  }));
+  assert.equal(context.agentLiveActivitySummary({
+    id: 'agt_one',
+    status: 'idle',
+    runtimeActivity: null,
+  }).detail, 'Idle');
+});
+
 test('mobile shell renders root tabs, detail pages, and safe-area navigation', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
