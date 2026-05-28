@@ -492,8 +492,63 @@ function searchRangeBounds(range) {
   return {};
 }
 
+function actorSearchLabel(id = '') {
+  const actorId = String(id || '').trim();
+  if (!actorId) return 'Unknown';
+  if (actorId === 'system') return 'System';
+  return displayName(actorId) || actorId;
+}
+
+function actorSearchType(id = '') {
+  const actorId = String(id || '').trim();
+  if (!actorId) return 'unknown';
+  if (actorId === 'system') return 'system';
+  if ((appState?.humans || []).some((human) => human.id === actorId)) return 'human';
+  if ((appState?.agents || []).some((agent) => agent.id === actorId)) return 'agent';
+  return 'unknown';
+}
+
+function searchSenderOptions() {
+  const seen = new Map();
+  const add = (id, type = '') => {
+    const actorId = String(id || '').trim();
+    if (!actorId || seen.has(actorId)) return;
+    seen.set(actorId, {
+      id: actorId,
+      label: actorSearchLabel(actorId),
+      type: type || actorSearchType(actorId),
+      isMe: actorId === currentHumanId(),
+    });
+  };
+  add(currentHumanId(), 'human');
+  for (const human of appState?.humans || []) add(human.id, 'human');
+  for (const agent of appState?.agents || []) add(agent.id, 'agent');
+  for (const record of [...(appState?.messages || []), ...(appState?.replies || [])]) {
+    add(record?.authorId, record?.authorType || '');
+  }
+  return [...seen.values()].sort((a, b) => {
+    if (a.isMe !== b.isMe) return a.isMe ? -1 : 1;
+    const typeRank = { human: 0, agent: 1, system: 2, unknown: 3 };
+    const rank = (typeRank[a.type] ?? 9) - (typeRank[b.type] ?? 9);
+    return rank || a.label.localeCompare(b.label);
+  });
+}
+
+function selectedSearchSender() {
+  return searchSenderOptions().find((item) => item.id === searchSenderId) || null;
+}
+
+function filteredSearchSenderOptions() {
+  const query = normalizeSearchText(searchSenderQuery);
+  const options = searchSenderOptions();
+  if (!query) return options;
+  return options.filter((item) => normalizeSearchText(`${item.label} ${item.type}`).includes(query));
+}
+
 function searchRecordMatchesFilters(record) {
-  if (searchMineOnly && record?.authorId !== 'hum_local') return false;
+  const currentUserId = currentHumanId();
+  if (searchMineOnly && record?.authorId !== currentUserId) return false;
+  if (searchSenderId && record?.authorId !== searchSenderId) return false;
   const bounds = searchRangeBounds(searchTimeRange);
   if (bounds.after) {
     const created = new Date(record?.createdAt || 0).getTime();

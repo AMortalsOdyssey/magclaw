@@ -2038,9 +2038,15 @@ test('search page matches MagClaw shortcuts filters persistence and thread drawe
   assert.match(app, /function focusSearchInputEnd\(\)/);
   assert.match(setViewSource, /if \(activeView === 'search'\) focusSearchInputEnd\(\)/);
   assert.match(app, /data-action="toggle-search-mine"/);
+  assert.match(app, /data-action="toggle-search-sender-menu"/);
+  assert.match(app, /data-action="set-search-sender"/);
+  assert.match(app, /function searchSenderOptions\(\)/);
+  assert.match(app, /record\?\.authorId !== searchSenderId/);
+  assert.match(app, /searchMineOnly = false/);
   assert.match(app, /data-action="toggle-search-range-menu"/);
   assert.match(app, /data-action="clear-search-all"/);
   assert.match(app, /data-action="load-more-search"/);
+  assert.match(app, /id="search-sender-input"/);
   assert.match(app, /placeholder="Search channels, DIRECT MESSAGES, messages\.\.\."/);
   assert.match(searchResultSource, /activeView === 'search' && opensThread/);
   assert.match(searchResultSource, /threadMessageId = root\.id/);
@@ -2049,6 +2055,7 @@ test('search page matches MagClaw shortcuts filters persistence and thread drawe
   assert.match(styles, /\.search-filter-row/);
   assert.match(styles, /\.search-center-state/);
   assert.match(styles, /\.search-time-menu/);
+  assert.match(styles, /\.search-sender-menu/);
 });
 
 test('thread list rows keep the latest actor avatar at the far left', async () => {

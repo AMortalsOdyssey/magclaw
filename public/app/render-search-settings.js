@@ -13,6 +13,19 @@ function searchTimeRangeLabel() {
   return searchTimeRangeOptions.find(([value]) => value === searchTimeRange)?.[1] || 'Any Time';
 }
 
+function searchSenderTypeLabel(type = '') {
+  return {
+    human: 'Human',
+    agent: 'Agent',
+    system: 'System',
+  }[String(type || '').toLowerCase()] || 'Sender';
+}
+
+function searchSenderFilterLabel() {
+  const sender = selectedSearchSender();
+  return sender ? `From: ${sender.label}` : 'From';
+}
+
 function renderSearchLensIcon(size = 18) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>`;
 }
@@ -73,10 +86,32 @@ function renderSearchEmptyState(kind, query = '') {
 }
 
 function renderSearchFilters() {
-  const filtersActive = searchMineOnly || searchTimeRange !== 'any';
+  const filtersActive = searchMineOnly || Boolean(searchSenderId) || searchTimeRange !== 'any';
+  const senderOptions = filteredSearchSenderOptions();
   return `
     <div class="search-filter-row" data-search-filters>
       <button class="search-filter-btn${searchMineOnly ? ' active' : ''}" type="button" data-action="toggle-search-mine">My Messages</button>
+      <div class="search-time-filter search-sender-filter${searchSenderMenuOpen ? ' open' : ''}">
+        <button class="search-filter-btn search-time-btn${searchSenderId ? ' active cyan' : ''}" type="button" data-action="toggle-search-sender-menu" aria-expanded="${searchSenderMenuOpen ? 'true' : 'false'}">
+          <span>${escapeHtml(searchSenderFilterLabel())}</span>
+          <span aria-hidden="true">⌄</span>
+        </button>
+        ${searchSenderMenuOpen ? `
+          <div class="search-time-menu search-sender-menu" role="menu">
+            <label class="search-sender-input-wrap">
+              <span>Search sender</span>
+              <input id="search-sender-input" value="${escapeHtml(searchSenderQuery)}" placeholder="Name or agent..." autocomplete="off" />
+            </label>
+            ${searchSenderId ? '<button type="button" data-action="clear-search-sender" role="menuitem">Any Sender</button>' : ''}
+            ${senderOptions.length ? senderOptions.map((sender) => `
+              <button class="${searchSenderId === sender.id ? 'active' : ''}" type="button" data-action="set-search-sender" data-sender-id="${escapeHtml(sender.id)}" role="menuitem">
+                <span>${escapeHtml(sender.isMe ? 'Me' : sender.label)}</span>
+                <em>${escapeHtml(searchSenderTypeLabel(sender.type))}</em>
+              </button>
+            `).join('') : '<div class="search-sender-empty">No senders found</div>'}
+          </div>
+        ` : ''}
+      </div>
       <div class="search-time-filter${searchTimeMenuOpen ? ' open' : ''}">
         <button class="search-filter-btn search-time-btn${searchTimeRange !== 'any' ? ' active cyan' : ''}" type="button" data-action="toggle-search-range-menu" aria-expanded="${searchTimeMenuOpen ? 'true' : 'false'}">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/></svg>

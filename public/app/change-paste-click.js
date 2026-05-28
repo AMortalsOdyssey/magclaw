@@ -779,12 +779,42 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'toggle-search-mine') {
       searchMineOnly = !searchMineOnly;
+      if (searchMineOnly) searchSenderId = '';
+      searchSenderMenuOpen = false;
+      searchVisibleCount = SEARCH_PAGE_SIZE;
+      updateSearchResults();
+      focusSearchInputEnd();
+    }
+    if (action === 'toggle-search-sender-menu') {
+      searchSenderMenuOpen = !searchSenderMenuOpen;
+      searchTimeMenuOpen = false;
+      updateSearchResults();
+      if (searchSenderMenuOpen) {
+        window.setTimeout(() => document.getElementById('search-sender-input')?.focus({ preventScroll: true }), 0);
+      } else {
+        focusSearchInputEnd();
+      }
+    }
+    if (action === 'set-search-sender') {
+      searchSenderId = target.dataset.senderId || '';
+      searchSenderQuery = '';
+      searchSenderMenuOpen = false;
+      searchMineOnly = false;
+      searchVisibleCount = SEARCH_PAGE_SIZE;
+      updateSearchResults();
+      focusSearchInputEnd();
+    }
+    if (action === 'clear-search-sender') {
+      searchSenderId = '';
+      searchSenderQuery = '';
+      searchSenderMenuOpen = false;
       searchVisibleCount = SEARCH_PAGE_SIZE;
       updateSearchResults();
       focusSearchInputEnd();
     }
     if (action === 'toggle-search-range-menu') {
       searchTimeMenuOpen = !searchTimeMenuOpen;
+      searchSenderMenuOpen = false;
       updateSearchResults();
       focusSearchInputEnd();
     }
@@ -804,6 +834,9 @@ document.addEventListener('click', async (event) => {
     if (action === 'clear-search-all') {
       searchQuery = '';
       searchMineOnly = false;
+      searchSenderId = '';
+      searchSenderQuery = '';
+      searchSenderMenuOpen = false;
       searchTimeRange = 'any';
       searchTimeMenuOpen = false;
       searchVisibleCount = SEARCH_PAGE_SIZE;

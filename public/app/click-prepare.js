@@ -97,8 +97,9 @@ async function prepareDocumentClick(event) {
       return;
     }
   }
-  if (searchTimeMenuOpen && !clickedSearchFilter) {
+  if ((searchTimeMenuOpen || searchSenderMenuOpen) && !clickedSearchFilter) {
     searchTimeMenuOpen = false;
+    searchSenderMenuOpen = false;
     if (activeView === 'search') {
       updateSearchResults();
       if (!target) return;
@@ -150,6 +151,9 @@ async function prepareDocumentClick(event) {
     'task-filter',
     'set-task-view',
     'toggle-search-mine',
+    'toggle-search-sender-menu',
+    'set-search-sender',
+    'clear-search-sender',
     'toggle-search-range-menu',
     'set-search-range',
     'clear-search-query',

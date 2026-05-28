@@ -2020,6 +2020,15 @@ document.addEventListener('input', async (event) => {
     return;
   }
 
+  if (event.target.id === 'search-sender-input') {
+    searchSenderQuery = event.target.value;
+    updateSearchResults();
+    const input = document.getElementById('search-sender-input');
+    input?.focus({ preventScroll: true });
+    input?.setSelectionRange(searchSenderQuery.length, searchSenderQuery.length);
+    return;
+  }
+
   if (event.target.id === 'add-member-search') {
     addMemberSearchQuery = event.target.value;
     render();
