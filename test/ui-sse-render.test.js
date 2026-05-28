@@ -101,7 +101,7 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(app, /function applyStateUpdate\(nextState\)/);
   assert.match(app, /function applyStateDeltaEnvelope\(envelope\)/);
   assert.match(app, /function applyRealtimeJournalEvent\(envelope\)/);
-  assert.match(app, /function refreshAfterSseGap\(\)/);
+  assert.match(app, /function refreshAfterSseGap\(envelope = \{\}\)/);
   assert.match(app, /function applyRunEventUpdate\(incoming\)/);
   assert.match(app, /function applyPresenceHeartbeat\(heartbeat\)/);
   assert.match(app, /function patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector = false \} = \{\}\)/);

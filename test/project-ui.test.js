@@ -1902,14 +1902,16 @@ test('global task board follows MagClaw board list channel filtering without sto
   assert.equal(app.includes("['done', 'stopped']"), false);
   assert.equal(server.includes("task.status = 'stopped'"), false);
   assert.equal(server.includes('stopped_from_thread'), false);
-  assert.match(app, /let taskViewMode = 'board'/);
+  assert.match(app, /let taskViewMode = taskViewModeForScope\('global'\)/);
+  assert.match(app, /function taskViewModeForScope\(/);
+  assert.match(app, /function setTaskViewModeForScope\(/);
   assert.match(app, /let taskChannelFilterIds = \[\]/);
   assert.match(app, /function renderTaskToolbar\(tasks, filteredTasks\)/);
   assert.match(app, /function renderTaskViewToggle\(\)/);
   assert.match(app, /function renderTaskChannelFilter\(\)/);
   assert.match(app, /function renderTaskListView\(tasks\)/);
   assert.match(app, /const channelTasks = \(appState\.tasks \|\| \[\]\)\.filter\(isVisibleChannelTask\)/);
-  assert.match(app, /taskViewMode === 'list' \? renderTaskListView\(filteredTasks\) : renderTaskBoard\(filteredTasks\)/);
+  assert.match(app, /viewMode === 'list' \? renderTaskListView\(filteredTasks\) : renderTaskBoard\(filteredTasks\)/);
   assert.match(styles, /\.task-page-header/);
   assert.match(styles, /\.task-view-toggle/);
   assert.match(styles, /\.task-channel-menu/);
@@ -1926,7 +1928,7 @@ test('task pages use scoped empty states for filters channels and status columns
   assert.match(app, /Try a different combination or clear the current selection\./);
   assert.match(app, /No tasks yet/);
   assert.match(app, /Create one with the New Task button\./);
-  assert.match(app, /filteredTasks\.length \? \(taskViewMode === 'list' \? renderTaskListView\(filteredTasks\) : renderTaskBoard\(filteredTasks\)\) : renderTaskPageEmptyState\(channelTasks\.length \? 'filter' : 'empty'\)/);
+  assert.match(app, /filteredTasks\.length \? \(viewMode === 'list' \? renderTaskListView\(filteredTasks\) : renderTaskBoard\(filteredTasks\)\) : renderTaskPageEmptyState\(channelTasks\.length \? 'filter' : 'empty'\)/);
   assert.match(app, /renderTaskSurface\(spaceTasks\(\), \{ emptyVariant: 'channel' \}\)/);
   assert.match(taskSource, /function renderTaskColumnEmpty\(status, label\)/);
   assert.match(taskSource, /No \$\{escapeHtml\(label\.toLowerCase\(\)\)\} tasks\./);

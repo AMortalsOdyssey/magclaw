@@ -715,6 +715,14 @@ function taskColumnStateSignature() {
   return collapsed;
 }
 
+function taskViewModeForSignature() {
+  if (typeof taskViewModeForScope === 'function') {
+    const scope = typeof taskViewScope === 'function' ? taskViewScope() : 'global';
+    return taskViewModeForScope(scope);
+  }
+  return taskViewMode || 'board';
+}
+
 function visibleTaskSurfaceSignature(stateSnapshot = appState) {
   if (!stateSnapshot) return '';
   if (activeView === 'space' && activeTab === 'tasks') {
@@ -722,7 +730,7 @@ function visibleTaskSurfaceSignature(stateSnapshot = appState) {
       surface: 'space-tasks',
       spaceType: selectedSpaceType || '',
       spaceId: selectedSpaceId || '',
-      viewMode: taskViewModeForScope(taskViewScope()),
+      viewMode: taskViewModeForSignature(),
       collapsed: taskColumnStateSignature(),
       tasks: stateSpaceTasks(stateSnapshot).map(taskSurfaceTaskSignature),
     });
@@ -730,7 +738,7 @@ function visibleTaskSurfaceSignature(stateSnapshot = appState) {
   if (activeView === 'tasks') {
     return JSON.stringify({
       surface: 'global-tasks',
-      viewMode: taskViewModeForScope(taskViewScope()),
+      viewMode: taskViewModeForSignature(),
       filters: [...(taskChannelFilterIds || [])].sort(),
       collapsed: taskColumnStateSignature(),
       tasks: stateVisibleGlobalTasks(stateSnapshot).map(taskSurfaceTaskSignature),
