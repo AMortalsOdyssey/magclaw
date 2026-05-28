@@ -99,8 +99,12 @@ async function startCodexAgentLegacy(agent, proc, workspace) {
 
   child.on('error', async (error) => {
     proc.status = 'error';
-    setAgentStatus(agent, 'error', 'codex_legacy_error');
-    addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
+    const runtimeError = setAgentRuntimeError(agent, 'codex_legacy_error', error, {
+      runtime: 'codex',
+      phase: 'legacy-exec',
+      source: 'codex-exec',
+    }, { activeWorkItemIds: [] });
+    addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id, runtimeError });
     await persistState();
     broadcastState();
     deleteAgentProcess(proc, agent.id);

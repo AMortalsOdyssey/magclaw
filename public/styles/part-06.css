@@ -455,7 +455,7 @@
 
 .agent-error-notice {
   display: grid;
-  grid-template-columns: 10px auto minmax(0, 1fr) auto;
+  grid-template-columns: 10px auto minmax(0, 1fr) minmax(0, 0.9fr) auto;
   align-items: center;
   gap: 8px;
   min-height: 34px;
@@ -467,6 +467,16 @@
 
 .agent-error-notice span:nth-child(3) {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-error-notice small {
+  min-width: 0;
+  color: color-mix(in srgb, var(--text) 72%, transparent);
+  font-size: 11px;
+  font-weight: 800;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

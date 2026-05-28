@@ -263,8 +263,12 @@ async function startClaudeAgent(agent, proc, workspace) {
   child.on('error', async (error) => {
     spawnError = error;
     proc.status = 'error';
-    setAgentStatus(agent, 'error', 'claude_error', { activeWorkItemIds: [] });
-    addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
+    const runtimeError = setAgentRuntimeError(agent, 'claude_error', error, {
+      runtime: 'claude-code',
+      phase: 'spawn',
+      source: 'claude-code',
+    }, { activeWorkItemIds: [] });
+    addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id, runtimeError });
     await persistState();
     broadcastState();
     deleteAgentProcess(proc, agent.id);
@@ -496,8 +500,12 @@ async function startCodexAgent(agent, proc, workspace) {
       return;
     }
     proc.status = 'error';
-    setAgentStatus(agent, 'error', 'codex_app_server_error');
-    addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id });
+    const runtimeError = setAgentRuntimeError(agent, 'codex_app_server_error', error, {
+      runtime: 'codex',
+      phase: 'app-server',
+      source: 'codex-app-server',
+    }, { activeWorkItemIds: [] });
+    addSystemEvent('agent_error', `${agent.name} error: ${error.message}`, { agentId: agent.id, runtimeError });
     await persistState();
     broadcastState();
     deleteAgentProcess(proc, agent.id);
@@ -545,9 +553,17 @@ async function startCodexAgent(agent, proc, workspace) {
       addSystemEvent('agent_stdout_suppressed', `${agent.name} stopped before posting buffered output.`, { agentId: agent.id });
     }
     proc.status = proc.stopRequested || code === 0 ? 'idle' : 'error';
-    setAgentStatus(agent, proc.stopRequested
-      ? (proc.restartMessagesAfterStop?.length ? 'queued' : 'idle')
-      : (code === 0 ? 'idle' : 'error'), 'codex_app_server_closed');
+    if (proc.stopRequested || code === 0) {
+      setAgentStatus(agent, proc.stopRequested
+        ? (proc.restartMessagesAfterStop?.length ? 'queued' : 'idle')
+        : 'idle', 'codex_app_server_closed');
+    } else {
+      setAgentRuntimeError(agent, 'codex_app_server_closed', new Error(`Codex app-server exited (code ${code ?? 'unknown'}).`), {
+        runtime: 'codex',
+        phase: 'app-server-close',
+        source: 'codex-app-server',
+      }, { activeWorkItemIds: [] });
+    }
     addSystemEvent(proc.stopRequested ? 'agent_stopped' : (code === 0 ? 'agent_app_server_closed' : 'agent_error'), `${agent.name} Codex app-server ${proc.stopRequested ? 'stopped' : 'exited'} (code ${code ?? 'unknown'})`, { agentId: agent.id });
     await writeAgentSessionFile(agent).catch(() => {});
     await persistState();

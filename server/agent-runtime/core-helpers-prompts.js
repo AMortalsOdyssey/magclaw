@@ -450,6 +450,31 @@ function noteAgentRuntimeProgress(agent, proc, activity, detail, extra = {}) {
   updateAgentRuntimeActivity(agent, proc, activity, detail, extra);
 }
 
+function runtimeErrorActivity(error, context = {}) {
+  if (typeof runtimeActivityWithStructuredError === 'function') {
+    return runtimeActivityWithStructuredError({
+      source: context.source || context.runtime || 'agent-runtime',
+      activity: 'error',
+      at: now(),
+    }, error, context);
+  }
+  return {
+    source: context.source || 'agent-runtime',
+    activity: 'error',
+    error: error?.message || String(error || 'Runtime error'),
+    at: now(),
+  };
+}
+
+function setAgentRuntimeError(agent, reason, error, context = {}, extra = {}) {
+  const runtimeActivity = runtimeErrorActivity(error, context);
+  setAgentStatus(agent, 'error', reason, {
+    ...extra,
+    runtimeActivity,
+  });
+  return runtimeActivity;
+}
+
 const CODEX_WARMUP_PROMPT = [
   'Runtime warmup for MagClaw.',
   'Reply with exactly: ready',

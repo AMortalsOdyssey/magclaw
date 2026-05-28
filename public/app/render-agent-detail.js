@@ -437,6 +437,20 @@ function agentRuntimeErrorMessage(agent) {
   return activity.error ? message : '';
 }
 
+function agentRuntimeErrorInfo(agent) {
+  const activity = agent?.runtimeActivity && typeof agent.runtimeActivity === 'object' ? agent.runtimeActivity : {};
+  const runtimeError = activity.runtimeError && typeof activity.runtimeError === 'object' ? activity.runtimeError : {};
+  const message = agentRuntimeErrorMessage(agent);
+  if (!message) return null;
+  return {
+    code: String(activity.errorCode || runtimeError.code || '').trim(),
+    title: String(activity.errorTitle || runtimeError.title || 'Runtime error').trim(),
+    message,
+    action: String(activity.userAction || runtimeError.userAction || '').trim(),
+    recoverable: Boolean(activity.recoverable ?? runtimeError.recoverable),
+  };
+}
+
 function agentEventDetail(event = {}) {
   const safeEvent = event && typeof event === 'object' ? event : {};
   const activity = safeEvent.activity || safeEvent.raw?.activity || {};
@@ -541,13 +555,15 @@ function renderAgentLiveActivityBar(agent, { compact = false } = {}) {
 }
 
 function renderAgentErrorNotice(agent) {
-  const message = agentRuntimeErrorMessage(agent);
-  if (!message) return '';
+  const info = agentRuntimeErrorInfo(agent);
+  if (!info) return '';
+  const title = info.code ? `${info.title} · ${info.code}` : info.title;
   return `
     <div class="agent-error-notice" role="status">
       <span class="agent-activity-dot status-error"></span>
-      <strong>Error:</strong>
-      <span>${escapeHtml(message)}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(info.message)}</span>
+      ${info.action ? `<small>${escapeHtml(info.action)}</small>` : ''}
       <button class="secondary-btn small" type="button" data-action="set-agent-detail-tab" data-tab="activity">View logs</button>
     </div>
   `;

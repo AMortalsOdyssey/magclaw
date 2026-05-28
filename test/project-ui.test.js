@@ -3206,8 +3206,13 @@ test('agent activity tab renders newest first with second-level timestamps and a
   assert.match(app, /fmtTime\(event\.createdAt\)/);
   assert.match(app, /function agentLiveActivitySummary\(agent\)/);
   assert.match(app, /function agentRuntimeErrorMessage\(agent\)/);
+  assert.match(app, /function agentRuntimeErrorInfo\(agent\)/);
   assert.match(app, /function renderAgentErrorNotice\(agent\)/);
   assert.match(app, /agent\?\.runtimeActivity && typeof agent\.runtimeActivity === 'object'/);
+  assert.match(app, /activity\.runtimeError && typeof activity\.runtimeError === 'object'/);
+  assert.match(app, /activity\.errorCode \|\| runtimeError\.code/);
+  assert.match(app, /info\.title/);
+  assert.match(app, /info\.action/);
   assert.match(app, /function agentActivityIsUserVisible\(event\)/);
   assert.match(app, /rawType === 'daemon_result'/);
   assert.match(app, /resultType === 'agent:skills:list_result'/);
@@ -3225,6 +3230,7 @@ test('agent activity tab renders newest first with second-level timestamps and a
   assert.match(app, /function renderAgentActivityTab\(agent\)/);
   assert.match(styles, /\.agent-activity-list/);
   assert.match(styles, /\.agent-error-notice/);
+  assert.match(styles, /\.agent-error-notice small/);
   assert.match(styles, /\.agent-activity-toolbar/);
   assert.match(styles, /\.agent-activity-dot/);
   assert.match(styles, /\.agent-activity-dot\.status-output/);

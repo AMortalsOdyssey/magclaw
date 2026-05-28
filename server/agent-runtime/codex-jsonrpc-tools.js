@@ -53,6 +53,7 @@ function sendCodexAppServerRequest(proc, method, params = {}) {
   proc.pendingAppServerRequests.set(id, {
     method,
     summary,
+    params,
     startedAt: Date.now(),
   });
   addSystemEvent('agent_codex_request_sent', `${agent?.name || proc.agentId} sent Codex ${method}.`, {

@@ -521,6 +521,8 @@ test('daemon relay promotes Codex websocket stderr activity to agent error', asy
 
   assert.equal(state.agents[0].status, 'error');
   assert.match(state.agents[0].runtimeActivity.error, /responses_websocket/);
+  assert.equal(state.agents[0].runtimeActivity.errorCode, 'network_or_proxy_failure');
+  assert.equal(state.agents[0].runtimeActivity.runtimeError.recoveryAction, 'check_proxy_then_retry');
 });
 
 test('daemon relay re-closes background relaunches while a computer close is pending', async () => {

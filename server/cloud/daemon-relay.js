@@ -1,6 +1,10 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { conversationLaneKeyForMessage } from '../conversation-session.js';
+import {
+  classifyRuntimeError,
+  runtimeActivityWithStructuredError,
+} from '../runtime-errors.js';
 
 const MACHINE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 365;
 const COMPUTER_SETUP_TTL_MS = 1000 * 60 * 10;
@@ -54,22 +58,23 @@ function daemonRuntimeErrorDetail(activity = {}) {
   if (!text) return '';
   const source = String(activity?.source || '').toLowerCase();
   const lower = text.toLowerCase();
-  const fromCodex = source.includes('codex') || lower.includes('codex_api::');
+  const fromCodex = source.includes('codex') || lower.includes('codex_api::') || source.includes('@magclaw/daemon');
   if (!fromCodex) return '';
-  if (lower.includes('responses_websocket') && lower.includes('error')) return text.slice(0, 2000);
-  if (lower.includes('failed to connect to websocket') && lower.includes('/v1/responses')) return text.slice(0, 2000);
-  if (lower.includes('authentication') && lower.includes('openai')) return text.slice(0, 2000);
-  if (lower.includes('not logged in') || lower.includes('login is required')) return text.slice(0, 2000);
-  return '';
+  const runtimeError = classifyRuntimeError(activity, {
+    source: activity?.source || 'daemon-runtime',
+    runtime: activity?.runtime || 'codex',
+    phase: activity?.phase || 'daemon-activity',
+  });
+  return runtimeError.code === 'unknown_runtime_error' ? '' : text.slice(0, 2000);
 }
 
 function runtimeActivityWithError(activity = {}, errorDetail = '') {
   if (!errorDetail) return activity || null;
-  return {
-    ...objectValue(activity),
+  return runtimeActivityWithStructuredError(objectValue(activity), errorDetail || activity, {
     source: activity?.source || 'daemon-runtime-error',
-    error: errorDetail,
-  };
+    runtime: activity?.runtime || 'codex',
+    phase: activity?.phase || 'daemon-activity',
+  });
 }
 
 function normalizeComputerServiceInfo(service = {}, packageKind = '') {
@@ -2841,11 +2846,14 @@ export function createDaemonRelay(deps) {
           if (agent && !readOnlyError) {
             setAgentStatus(agent, 'error', 'daemon_error', { forceEvent: true });
             markDeliveryFinished(message.commandId || message.deliveryId || null, 'failed', String(message.error || 'Agent error'));
-            agent.runtimeActivity = {
+            agent.runtimeActivity = runtimeActivityWithStructuredError({
               source: '@magclaw/daemon',
-              error: String(message.error || 'Agent error'),
               at: now(),
-            };
+            }, String(message.error || 'Agent error'), {
+              runtime: agent.runtimeId || agent.runtime || '',
+              phase: 'daemon_agent_error',
+              source: '@magclaw/daemon',
+            });
             agent.heartbeatAt = now();
           }
           recordDaemonEvent('agent_error', String(message.error || 'Agent error'), {

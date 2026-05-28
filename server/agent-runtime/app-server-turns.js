@@ -333,6 +333,58 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
   broadcastState();
 }
 
+const CODEX_CRITICAL_APP_SERVER_METHODS = new Set([
+  'thread/start',
+  'thread/resume',
+  'turn/start',
+  'turn/steer',
+]);
+
+async function recoverCodexThreadResume(agent, proc, runtimeError, pending = {}) {
+  if (pending?.method !== 'thread/resume') return false;
+  if (proc.codexResumeRecoveryAttempted) return false;
+  if (typeof isRuntimeSessionReplayError !== 'function' || !isRuntimeSessionReplayError(runtimeError)) return false;
+  if (!proc.child?.stdin?.writable) return false;
+  proc.codexResumeRecoveryAttempted = true;
+  const staleThreadId = proc.threadId || pending.params?.threadId || agent.runtimeSessionId || null;
+  const params = {
+    ...(pending.params || {}),
+  };
+  delete params.threadId;
+  proc.threadId = null;
+  proc.threadReady = false;
+  agent.runtimeSessionId = null;
+  proc.status = 'starting';
+  const session = findRuntimeSession(agent, proc.sessionKey);
+  updateRuntimeSession(agent, proc, {
+    codexThreadId: null,
+    status: 'recovering',
+    metadata: {
+      ...(session?.metadata || {}),
+      recoveredFromThreadId: staleThreadId,
+      recoveryReason: runtimeError.code,
+      recoveredAt: now(),
+    },
+  });
+  noteAgentRuntimeProgress(agent, proc, 'working', 'Recovering stale runtime session.', {
+    errorCode: runtimeError.code,
+    errorTitle: runtimeError.title,
+    recoveryAction: runtimeError.recoveryAction,
+    recoveredFromThreadId: staleThreadId,
+  });
+  addSystemEvent('agent_runtime_recovery', `${agent.name} is starting a fresh Codex session after a stale resume.`, {
+    agentId: agent.id,
+    staleThreadId,
+    errorCode: runtimeError.code,
+    recoveryAction: runtimeError.recoveryAction,
+  });
+  const requestId = sendCodexAppServerRequest(proc, 'thread/start', params);
+  if (!requestId) return false;
+  await persistState();
+  broadcastState({ realtimeOnly: true });
+  return true;
+}
+
 async function handleCodexAppServerLine(agent, proc, line) {
   if (!line.trim()) return;
   let message;
@@ -381,8 +433,48 @@ async function handleCodexAppServerLine(agent, proc, line) {
   }
 
   if (message.error) {
+    const pending = message.id !== undefined && message.id !== null
+      ? proc.pendingAppServerRequests?.get(message.id)
+      : null;
+    const runtimeError = typeof classifyRuntimeError === 'function'
+      ? classifyRuntimeError(message.error, {
+        runtime: 'codex',
+        phase: pending?.method || 'app-server-request',
+        source: 'codex-app-server',
+      })
+      : { code: 'unknown_runtime_error', title: 'Runtime error', message: message.error?.message || 'unknown error' };
+    if (pending?.method === 'thread/resume' && await recoverCodexThreadResume(agent, proc, runtimeError, pending)) {
+      recordCodexRequestFailed(agent, proc, message.id, message.error);
+      return;
+    }
     if (message.id !== undefined && message.id !== null) recordCodexRequestFailed(agent, proc, message.id, message.error);
-    addSystemEvent('agent_error', `${agent.name} app-server request failed: ${message.error.message || 'unknown error'}`, { agentId: agent.id, raw: message.error });
+    addSystemEvent('agent_error', `${agent.name} app-server request failed: ${runtimeError.message || message.error.message || 'unknown error'}`, {
+      agentId: agent.id,
+      method: pending?.method || null,
+      runtimeError,
+      raw: message.error,
+    });
+    if (CODEX_CRITICAL_APP_SERVER_METHODS.has(pending?.method)) {
+      proc.status = 'error';
+      setAgentRuntimeError(agent, 'codex_app_server_request_failed', runtimeError, {
+        runtime: 'codex',
+        phase: pending?.method || 'app-server-request',
+        source: 'codex-app-server',
+      }, { activeWorkItemIds: [] });
+      const session = findRuntimeSession(agent, proc.sessionKey);
+      updateRuntimeSession(agent, proc, {
+        status: 'error',
+        metadata: {
+          ...(session?.metadata || {}),
+          errorCode: runtimeError.code,
+          errorTitle: runtimeError.title,
+          recoveryAction: runtimeError.recoveryAction,
+          erroredAt: now(),
+        },
+      });
+      await persistState();
+      broadcastState();
+    }
     return;
   }
 

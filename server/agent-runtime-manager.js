@@ -13,6 +13,11 @@ import {
 } from './agent-permissions.js';
 import { normalizeIds } from './mentions.js';
 import {
+  classifyRuntimeError,
+  isRuntimeSessionReplayError,
+  runtimeActivityWithStructuredError,
+} from './runtime-errors.js';
+import {
   agentRuntimeProcessKey,
   conversationLaneKeyForMessage,
   workspaceIdForConversation,
@@ -69,6 +74,9 @@ export function createAgentRuntimeManager(deps) {
     codexTurnInputForPrompt,
     parseCodexStreamRetry,
     normalizeIds,
+    classifyRuntimeError,
+    isRuntimeSessionReplayError,
+    runtimeActivityWithStructuredError,
     agentRuntimeProcessKey,
     conversationLaneKeyForMessage,
     workspaceIdForConversation,
