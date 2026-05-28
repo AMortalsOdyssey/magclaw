@@ -86,6 +86,51 @@ async function discardProvisionalPairingComputer(pairingCommand = latestPairingC
   }
 }
 
+async function openAttachmentPreview(attachmentId) {
+  const attachment = byId(appState?.attachments, attachmentId);
+  if (!attachment) throw new Error('Attachment is missing.');
+  const kind = attachmentPreviewKind(attachment);
+  attachmentPreviewState = {
+    attachmentId: attachment.id,
+    loading: kind === 'markdown',
+    content: '',
+    error: '',
+  };
+  modal = 'attachment-preview';
+  renderShellOrModal();
+  if (kind !== 'markdown') return;
+  const maxPreviewBytes = 1024 * 1024;
+  if (Number(attachment.bytes || 0) > maxPreviewBytes) {
+    attachmentPreviewState = {
+      ...attachmentPreviewState,
+      loading: false,
+      error: 'Markdown preview is limited to 1 MB. Open the original file to inspect the full attachment.',
+    };
+    if (modal === 'attachment-preview') renderShellOrModal();
+    return;
+  }
+  try {
+    const response = await fetch(attachment.url || '', {
+      headers: { accept: 'text/markdown,text/plain,*/*' },
+    });
+    if (!response.ok) throw new Error(`Preview request failed (${response.status}).`);
+    const content = await response.text();
+    attachmentPreviewState = {
+      ...attachmentPreviewState,
+      loading: false,
+      content,
+      error: '',
+    };
+  } catch (error) {
+    attachmentPreviewState = {
+      ...attachmentPreviewState,
+      loading: false,
+      error: error.message || 'Preview failed.',
+    };
+  }
+  if (modal === 'attachment-preview' && attachmentPreviewState.attachmentId === attachment.id) renderShellOrModal();
+}
+
 async function switchConsoleServerAndLoadState(slug) {
   const nextSlug = String(slug || '').trim();
   if (!nextSlug) throw new Error('Server slug is missing.');
@@ -1471,6 +1516,9 @@ document.addEventListener('click', async (event) => {
         if (modal === 'channel') {
           createChannelMemberSearchQuery = '';
         }
+        if (modal === 'attachment-preview') {
+          attachmentPreviewState = { attachmentId: null, loading: false, content: '', error: '' };
+        }
         if (modal === 'agent-start') {
           agentStartState = { agentId: null };
         }
@@ -1518,6 +1566,9 @@ document.addEventListener('click', async (event) => {
         modal = nextModal;
         renderShellOrModal();
       }
+    }
+    if (action === 'open-attachment-preview') {
+      await openAttachmentPreview(target.dataset.id);
     }
     if (action === 'open-thread') {
       threadMessageId = target.dataset.id;

@@ -176,6 +176,7 @@ async function prepareDocumentClick(event) {
     'copy-pairing-command',
     'computer-display-name',
     'open-thread',
+    'open-attachment-preview',
     'open-search-result',
     'open-search-entity',
     'open-saved-message',

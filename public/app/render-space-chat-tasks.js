@@ -979,6 +979,130 @@ function renderSharePreviewModal() {
   `;
 }
 
+function attachmentPreviewKind(attachment = {}) {
+  const type = String(attachment.type || '').toLowerCase();
+  const name = String(attachment.name || '').toLowerCase();
+  if (type.startsWith('image/')) return 'image';
+  if (type === 'video/mp4' || name.endsWith('.mp4')) return 'video';
+  if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+  if (type === 'text/markdown' || type === 'text/x-markdown' || name.endsWith('.md') || name.endsWith('.markdown')) return 'markdown';
+  if (type === 'text/html' || name.endsWith('.html') || name.endsWith('.htm')) return 'html';
+  return 'file';
+}
+
+function markdownPreviewSlug(text, seen = {}) {
+  const base = String(text || '')
+    .toLowerCase()
+    .replace(/<[^>]+>/g, '')
+    .replace(/[`*_~[\]()#>]/g, '')
+    .replace(/&[a-z0-9#]+;/gi, '')
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'section';
+  const count = seen[base] || 0;
+  seen[base] = count + 1;
+  return count ? `${base}-${count + 1}` : base;
+}
+
+function markdownPreviewOutline(content) {
+  const seen = {};
+  return String(content || '')
+    .split(/\r?\n/)
+    .map((line) => line.match(/^(#{1,3})\s+(.+?)\s*#*\s*$/))
+    .filter(Boolean)
+    .map((match) => {
+      const text = match[2].trim();
+      return {
+        level: match[1].length,
+        text,
+        id: markdownPreviewSlug(text, seen),
+      };
+    });
+}
+
+function renderMarkdownWithPreviewAnchors(content) {
+  const outline = markdownPreviewOutline(content);
+  let index = 0;
+  return renderMarkdown(content).replace(/<h([1-3])>([\s\S]*?)<\/h\1>/g, (match, level, inner) => {
+    const item = outline[index++] || {};
+    const id = item.id || `section-${index}`;
+    return `<h${level} id="${escapeHtml(id)}" tabindex="-1">${inner}</h${level}>`;
+  });
+}
+
+function renderAttachmentMarkdownPreview() {
+  if (attachmentPreviewState.loading) {
+    return `
+      <div class="share-preview-loading" role="status" aria-live="polite">
+        <span class="share-preview-spinner" aria-hidden="true"></span>
+        <strong>${escapeHtml(t('Loading preview...'))}</strong>
+      </div>
+    `;
+  }
+  if (attachmentPreviewState.error) {
+    return `<div class="empty-box small attachment-preview-error">${escapeHtml(attachmentPreviewState.error)}</div>`;
+  }
+  const content = attachmentPreviewState.content || '';
+  const outline = markdownPreviewOutline(content);
+  return `
+    <div class="attachment-preview-document">
+      <nav class="attachment-preview-outline" aria-label="${escapeHtml(t('Document outline'))}">
+        <strong>${escapeHtml(t('Outline'))}</strong>
+        ${outline.length ? `
+          <ol>
+            ${outline.map((item) => `
+              <li class="outline-level-${item.level}">
+                <a href="#${escapeHtml(item.id)}">${escapeHtml(item.text)}</a>
+              </li>
+            `).join('')}
+          </ol>
+        ` : `<small>${escapeHtml(t('No headings found.'))}</small>`}
+      </nav>
+      <article class="message-markdown attachment-preview-markdown">
+        ${renderMarkdownWithPreviewAnchors(content)}
+      </article>
+    </div>
+  `;
+}
+
+function renderAttachmentPreviewModal() {
+  const attachment = byId(appState?.attachments, attachmentPreviewState.attachmentId);
+  if (!attachment) return '';
+  const kind = attachmentPreviewKind(attachment);
+  const url = attachment.url || '#';
+  const safeName = escapeHtml(attachment.name || 'Attachment');
+  const safeUrl = escapeHtml(url);
+  let body = '';
+  if (kind === 'image') {
+    body = `<div class="attachment-preview-media image"><img src="${safeUrl}" alt="${safeName}" /></div>`;
+  } else if (kind === 'video') {
+    body = `<div class="attachment-preview-media video"><video controls preload="metadata" class="attachment-preview-video" src="${safeUrl}"></video></div>`;
+  } else if (kind === 'pdf') {
+    body = `<iframe class="attachment-preview-frame" sandbox="" src="${safeUrl}" title="${safeName}"></iframe>`;
+  } else if (kind === 'markdown') {
+    body = renderAttachmentMarkdownPreview();
+  } else if (kind === 'html') {
+    body = `
+      <div class="attachment-preview-safe-note">
+        <strong>${escapeHtml(t('No active HTML preview'))}</strong>
+        <p>${escapeHtml(t('Open the original file in a new tab when you trust the source.'))}</p>
+      </div>
+    `;
+  } else {
+    body = `<div class="empty-box small">${escapeHtml(t('Preview is not available for this attachment type.'))}</div>`;
+  }
+  return `
+    ${modalHeader(attachment.name || 'Attachment', `${attachment.type || 'file'} · ${bytes(attachment.bytes)}`)}
+    <div class="attachment-preview-modal">
+      ${body}
+      <div class="attachment-preview-meta">
+        <span>${escapeHtml(t('Read-only preview'))}</span>
+        <a href="${safeUrl}" target="_blank" rel="noreferrer">${escapeHtml(t('Open original'))}</a>
+      </div>
+    </div>
+  `;
+}
+
 function renderMessageInteractionOverlays() {
   return `
     ${renderMessageContextMenu()}

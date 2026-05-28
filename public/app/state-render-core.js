@@ -84,6 +84,7 @@ let selectedSavedRecordId = null;
 let messageContextMenu = null;
 let messageShareState = { active: false, selectedIds: [], scope: 'all', threadRootId: '' };
 let sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
+let attachmentPreviewState = { attachmentId: null, loading: false, content: '', error: '' };
 let modal = null;
 let agentStartState = { agentId: null };
 let agentRestartState = { agentId: null, mode: 'restart' };

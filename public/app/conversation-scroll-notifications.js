@@ -318,7 +318,7 @@ function attachmentLinks(ids = []) {
       const isImage = String(item.type || '').startsWith('image/');
       const url = item.url || '#';
       return `
-        <a class="message-attachment-preview ${isImage ? 'image-attachment' : 'file-attachment'}" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">
+        <button class="message-attachment-preview ${isImage ? 'image-attachment' : 'file-attachment'}" type="button" data-action="open-attachment-preview" data-id="${escapeHtml(item.id)}">
           ${isImage
             ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(item.name)}" loading="lazy" />`
             : '<span class="file-glyph">□</span>'}
@@ -326,7 +326,7 @@ function attachmentLinks(ids = []) {
             <strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong>
             <small>${escapeHtml(item.type || 'file')} · ${bytes(item.bytes)}</small>
           </span>
-        </a>
+        </button>
       `;
     });
   return items.length ? `<div class="message-attachment-list">${items.join('')}</div>` : '';

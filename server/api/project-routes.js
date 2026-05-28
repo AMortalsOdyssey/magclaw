@@ -7,6 +7,30 @@ import { attachmentPathWithinStorage } from '../path-utils.js';
 // previews, and attachment upload/download. It receives app state and side
 // effects through dependencies so index.js can stay a thin HTTP dispatcher.
 
+function parseAttachmentRange(rangeHeader, size) {
+  const value = String(rangeHeader || '').trim();
+  if (!value || !Number.isFinite(size) || size < 0) return null;
+  const match = value.match(/^bytes=(\d*)-(\d*)$/i);
+  if (!match) return { unsatisfiable: true };
+  let [, rawStart, rawEnd] = match;
+  if (!rawStart && !rawEnd) return { unsatisfiable: true };
+  if (!size) return { unsatisfiable: true };
+
+  if (!rawStart) {
+    const suffixLength = Number(rawEnd);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return { unsatisfiable: true };
+    const start = Math.max(0, size - suffixLength);
+    return { start, end: size - 1 };
+  }
+
+  const start = Number(rawStart);
+  const end = rawEnd ? Number(rawEnd) : size - 1;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= size) {
+    return { unsatisfiable: true };
+  }
+  return { start, end: Math.min(end, size - 1) };
+}
+
 export async function handleProjectApi(req, res, url, deps) {
   const {
     addProjectFolder,
@@ -216,10 +240,34 @@ export async function handleProjectApi(req, res, url, deps) {
       return true;
     }
     attachment.path = filePath;
-    res.writeHead(200, {
+    const size = Number(fileStat.size || attachment.bytes || attachment.sizeBytes || attachment.size || 0);
+    const baseHeaders = {
       'content-type': attachment.type || 'application/octet-stream',
-      'content-length': Number(attachment.bytes || attachment.sizeBytes || attachment.size || fileStat.size),
+      'accept-ranges': 'bytes',
       'cache-control': 'private, max-age=3600',
+    };
+    const range = parseAttachmentRange(req.headers?.range, size);
+    if (range?.unsatisfiable) {
+      res.writeHead(416, {
+        ...baseHeaders,
+        'content-range': `bytes */${size}`,
+      });
+      res.end?.();
+      return true;
+    }
+    if (range) {
+      const contentLength = range.end - range.start + 1;
+      res.writeHead(206, {
+        ...baseHeaders,
+        'content-length': contentLength,
+        'content-range': `bytes ${range.start}-${range.end}/${size}`,
+      });
+      createReadStream(filePath, { start: range.start, end: range.end }).pipe(res);
+      return true;
+    }
+    res.writeHead(200, {
+      ...baseHeaders,
+      'content-length': size,
     });
     createReadStream(filePath).pipe(res);
     return true;

@@ -13,6 +13,7 @@ function renderModal() {
     'member-reset-link': renderMemberResetLinkModal,
     'join-link-revoke-confirm': renderJoinLinkRevokeConfirmModal,
     'server-create': renderServerCreateModal,
+    'attachment-preview': renderAttachmentPreviewModal,
     project: renderProjectModal,
     dm: renderDmModal,
     task: renderTaskModal,

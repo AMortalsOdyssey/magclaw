@@ -195,6 +195,80 @@ test('project route group serves cloud attachments restored with storage keys', 
   }
 });
 
+test('project route group serves attachment byte ranges for media seeking', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-attachment-range-route-'));
+  try {
+    const storageKey = '2026/05/att_1-demo.mp4';
+    const bytes = Buffer.from('0123456789abcdef');
+    await mkdir(path.dirname(path.join(tmp, storageKey)), { recursive: true });
+    await writeFile(path.join(tmp, storageKey), bytes);
+    const deps = routeDeps({
+      attachmentStorageDir: tmp,
+    });
+    deps.state.attachments.push({
+      id: 'att_1',
+      name: 'demo.mp4',
+      type: 'video/mp4',
+      bytes: bytes.length,
+      storageMode: 'pvc',
+      storageKey,
+    });
+    const res = makeStreamResponse();
+
+    const handled = await handleProjectApi(
+      { method: 'GET', headers: { range: 'bytes=2-5' } },
+      res,
+      new URL('http://local/api/attachments/att_1/demo.mp4'),
+      deps,
+    );
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 206, res.error || '');
+    await new Promise((resolve) => res.on('finish', resolve));
+    assert.equal(res.headers['content-type'], 'video/mp4');
+    assert.equal(res.headers['accept-ranges'], 'bytes');
+    assert.equal(res.headers['content-range'], `bytes 2-5/${bytes.length}`);
+    assert.equal(res.headers['content-length'], 4);
+    assert.equal(res.body().toString('utf8'), '2345');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('project route group rejects unsatisfiable attachment byte ranges', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-attachment-range-416-route-'));
+  try {
+    const storageKey = '2026/05/att_1-demo.mp4';
+    await mkdir(path.dirname(path.join(tmp, storageKey)), { recursive: true });
+    await writeFile(path.join(tmp, storageKey), Buffer.from('0123456789'));
+    const deps = routeDeps({
+      attachmentStorageDir: tmp,
+    });
+    deps.state.attachments.push({
+      id: 'att_1',
+      name: 'demo.mp4',
+      type: 'video/mp4',
+      bytes: 10,
+      storageMode: 'pvc',
+      storageKey,
+    });
+    const res = makeStreamResponse();
+
+    const handled = await handleProjectApi(
+      { method: 'GET', headers: { range: 'bytes=99-120' } },
+      res,
+      new URL('http://local/api/attachments/att_1/demo.mp4'),
+      deps,
+    );
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 416);
+    assert.equal(res.headers['content-range'], 'bytes */10');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('project route group serves PVC storage key when restored path is stale', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-attachment-pvc-route-'));
   try {
