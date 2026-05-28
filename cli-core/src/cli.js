@@ -1909,6 +1909,24 @@ function renderContextTargetAgentAvatar(pack) {
   return `- Your profile avatar: ${avatar.description || 'configured'}, but no visual input is available.`;
 }
 
+function contextParticipantAvatarVisualInputs(pack, targetAgentId = '') {
+  return compactContextParticipants(pack, targetAgentId).selected.filter((item) => (
+    item.id !== targetAgentId
+    && item.type === 'agent'
+    && item.avatar
+    && item.avatar.kind !== 'none'
+    && item.avatar.visualInput !== false
+    && isContextImageReference(item.avatar)
+  ));
+}
+
+function renderContextParticipantAvatarInputs(pack, targetAgentId = '') {
+  const visible = contextParticipantAvatarVisualInputs(pack, targetAgentId);
+  if (!visible.length) return '';
+  const names = visible.map((item) => `@${item.name || item.id}`).join(', ');
+  return `- Participant avatar visual inputs: ${names}. Use these when comparing an uploaded image to another Agent avatar; call read_agent_avatar if the relevant Agent is omitted.`;
+}
+
 function renderContextEventMembers(pack, event = {}) {
   const ids = [
     ...contextArray(event.memberIds),
@@ -2032,6 +2050,7 @@ function renderRemoteAgentContextPack(pack, targetAgentId = '') {
     pack.space?.description ? `- Channel description: ${contextSnippet(pack.space.description, 180)}` : '',
     `- Participants shown: ${participants.selected.map((item) => renderContextParticipant(item, targetAgentId)).join(', ') || '(none)'}`,
     renderContextTargetAgentAvatar(pack),
+    renderContextParticipantAvatarInputs(pack, targetAgentId),
     participants.omitted ? `- Participants omitted: ${participants.omitted}. Use list_agents/read_agent_profile or search_agent_memory when a broader roster or specialties matter.` : '',
     pack.space?.type === 'channel' && !pack.space?.defaultChannel ? renderContextSuggestedMembers(pack) : '',
     '',
@@ -2065,7 +2084,7 @@ function renderRemoteAgentContextPack(pack, targetAgentId = '') {
     '',
     renderContextPeerMemory(pack),
     '',
-    'Progressive context tools: list_agents, read_agent_profile, read_history, search_messages, list_attachments, read_attachment, search_agent_memory, read_agent_memory, read_agent_file, and list_tasks are available through MagClaw MCP.',
+    'Progressive context tools: list_agents, read_agent_profile, read_agent_avatar, read_history, search_messages, list_attachments, read_attachment, search_agent_memory, read_agent_memory, read_agent_file, and list_tasks are available through MagClaw MCP.',
     'For "who can we bring in" or agent suitability questions, use the server member list above first; call list_agents without a target for the server-wide agent roster, because target filters to the current channel.',
     'For agent capability or specialty questions, use peer memory first; if memory is empty or weak, search_messages/read_history for earlier user role assignments before saying the fact is unknown.',
     'Use this compact snapshot first. Call the tools only when the answer depends on omitted participants, deeper history, memory, or task details.',
@@ -2173,6 +2192,7 @@ function canonicalMagClawToolName(name) {
     'read_agent_file',
     'list_agents',
     'read_agent_profile',
+    'read_agent_avatar',
     'write_memory',
     'list_tasks',
     'create_tasks',
@@ -2663,6 +2683,7 @@ function daemonSkillTools() {
     'read_agent_file',
     'list_agents',
     'read_agent_profile',
+    'read_agent_avatar',
     'write_memory',
     'list_tasks',
     'create_tasks',
@@ -3220,6 +3241,17 @@ class CodexAgentSession {
         inputs.push(resolved.input);
       }
     }
+    const targetAgentId = String(pack?.targetAgentId || pack?.targetAgent?.id || this.agent.id || '');
+    for (const participant of contextArray(pack.participants)) {
+      if (participant?.type !== 'agent') continue;
+      if (targetAgentId && String(participant.id || '') === targetAgentId) continue;
+      const participantAvatar = participant.avatar || null;
+      if (!participantAvatar || participantAvatar.visualInput === false || !isContextImageReference(participantAvatar)) continue;
+      const resolved = await this.imageInputFromContextReference(participantAvatar);
+      if (!resolved || seen.has(resolved.key)) continue;
+      seen.add(resolved.key);
+      inputs.push(resolved.input);
+    }
     return inputs;
   }
 
@@ -3318,6 +3350,14 @@ class CodexAgentSession {
           query: {
             agentId: args.agentId,
             targetAgentId: args.targetAgentId || args.targetAgent,
+          },
+        });
+      case 'read_agent_avatar':
+        return this.requestMagClawTool('/api/agent-tools/agents/avatar/read', {
+          query: {
+            agentId: args.agentId,
+            targetAgentId: args.targetAgentId || args.targetAgent,
+            maxBytes: args.maxBytes || args.max_bytes,
           },
         });
       case 'write_memory':

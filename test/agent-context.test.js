@@ -11,7 +11,14 @@ test('agent context pack includes recent channel messages, current message, task
     humans: [{ id: 'hum_local', name: 'You', role: 'admin' }],
     agents: [
       { id: 'agt_333', name: '333', description: 'solver', runtime: 'codex', status: 'idle' },
-      { id: 'agt_ccc', name: 'CCC', description: 'reviewer', runtime: 'claude-code', status: 'idle' },
+      {
+        id: 'agt_ccc',
+        name: 'CCC',
+        description: 'reviewer',
+        runtime: 'claude-code',
+        status: 'idle',
+        avatar: `data:image/png;base64,${Buffer.from('ccc-avatar').toString('base64')}`,
+      },
     ],
     channels: [{
       id: 'chan_all',
@@ -123,6 +130,8 @@ test('agent context pack includes recent channel messages, current message, task
   assert.deepEqual(pack.participants.map((item) => item.name), ['You', '333', 'CCC']);
   assert.equal(pack.participants.find((item) => item.name === '333').description, 'solver');
   assert.equal(pack.participants.find((item) => item.name === '333').runtime, 'codex');
+  assert.equal(pack.participants.find((item) => item.name === 'CCC').avatar.kind, 'data_url');
+  assert.equal(pack.participants.find((item) => item.name === 'CCC').avatar.visualInput, true);
   assert.equal(pack.currentMessage.id, 'msg_current');
   assert.ok(pack.recentMessages.some((item) => item.id === 'msg_1'));
   assert.ok(pack.recentMessages.some((item) => item.id === 'msg_2'));
@@ -137,6 +146,7 @@ test('agent context pack includes recent channel messages, current message, task
   const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_333' });
   assert.match(rendered, /Context snapshot for #all/);
   assert.match(rendered, /Participants: @You - human; role=admin, @333 \(you\) - agent; runtime=codex; status=idle; description=solver, @CCC - agent; runtime=claude-code; status=idle; description=reviewer/);
+  assert.match(rendered, /Participant avatar visual inputs: @CCC/);
   assert.match(rendered, /\[msg=msg_1 .* @You: @CCC 你叫什么/);
   assert.match(rendered, /\[msg=msg_2 .* @CCC: 我叫 CCC。/);
   assert.match(rendered, /Current message/);

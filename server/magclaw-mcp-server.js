@@ -136,6 +136,15 @@ const tools = [
     }),
   },
   {
+    name: 'read_agent_avatar',
+    description: 'Read a MagClaw agent avatar image. Returns metadata plus image content for visual comparison with uploaded attachments.',
+    inputSchema: schema({
+      targetAgentId: { type: 'string', description: 'Target agent id or name. Optional; use "me" for yourself.' },
+      targetAgent: { type: 'string', description: 'Target agent id or name. Optional; use "me" for yourself.' },
+      maxBytes: { type: 'number', description: 'Maximum bytes to return, capped by the server.' },
+    }),
+  },
+  {
     name: 'list_attachments',
     description: 'List MagClaw attachment metadata visible to this agent. Use messageId or target to scope to the relevant conversation/thread.',
     inputSchema: schema({
@@ -286,10 +295,20 @@ function sendError(id, code, message, data = null) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message, data } })}\n`);
 }
 
-function textResult(text) {
-  return {
-    content: [{ type: 'text', text: String(text || '') }],
-  };
+function imageResultContent(value = {}) {
+  const type = String(value?.avatar?.type || value?.file?.type || value?.attachment?.type || '').toLowerCase();
+  if (!type.startsWith('image/')) return null;
+  if (value?.file?.truncated || value?.avatar?.truncated) return null;
+  const data = String(value?.contentBase64 || '').trim();
+  if (!data) return null;
+  return { type: 'image', data, mimeType: type };
+}
+
+function contentResult(value) {
+  const content = [{ type: 'text', text: jsonText(value) }];
+  const image = imageResultContent(value);
+  if (image) content.push(image);
+  return { content };
 }
 
 function jsonText(value) {
@@ -402,6 +421,14 @@ async function callTool(name, args = {}) {
     return request('/api/agent-tools/agents/read', {
       query: withAgentId({
         targetAgentId: args.targetAgentId || args.targetAgent,
+      }),
+    });
+  }
+  if (name === 'read_agent_avatar') {
+    return request('/api/agent-tools/agents/avatar/read', {
+      query: withAgentId({
+        targetAgentId: args.targetAgentId || args.targetAgent,
+        maxBytes: args.maxBytes || args.max_bytes,
       }),
     });
   }
@@ -551,7 +578,7 @@ async function handle(message) {
         durationMs: Date.now() - startedAt,
         ok: data?.ok !== false,
       });
-      sendMessage(id, textResult(jsonText(data)));
+      sendMessage(id, contentResult(data));
       return;
     }
     if (id !== undefined && id !== null) sendError(id, -32601, `Method not found: ${method}`);

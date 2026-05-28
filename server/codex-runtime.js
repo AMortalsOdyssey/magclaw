@@ -121,6 +121,22 @@ function imageInputsForMessages(messages = []) {
         inputs.push(resolved.input);
       }
     }
+    const targetAgentId = String(message?.contextPack?.targetAgentId || message?.contextPack?.targetAgent?.id || '');
+    const participants = Array.isArray(message?.contextPack?.participants)
+      ? message.contextPack.participants
+      : [];
+    for (const participant of participants) {
+      if (participant?.type !== 'agent') continue;
+      if (targetAgentId && String(participant.id || '') === targetAgentId) continue;
+      const participantAvatar = participant.avatar || null;
+      if (!participantAvatar || participantAvatar.visualInput === false) continue;
+      const type = String(participantAvatar.type || '').toLowerCase();
+      if (type && !type.startsWith('image')) continue;
+      const resolved = imageInputFromReference(participantAvatar);
+      if (!resolved || seen.has(resolved.key)) continue;
+      seen.add(resolved.key);
+      inputs.push(resolved.input);
+    }
   }
   return inputs;
 }

@@ -100,32 +100,37 @@ async function startRelay(options = {}) {
   const messages = [];
   const sockets = new Set();
   let activeSocket = null;
-  const attachmentDataUrl = `data:image/png;base64,${Buffer.from('remote-image').toString('base64')}`;
+  const clipboardAttachmentDataUrl = `data:image/png;base64,${Buffer.from('remote-clipboard-image').toString('base64')}`;
+  const uploadAttachmentDataUrl = `data:image/jpeg;base64,${Buffer.from('remote-upload-image').toString('base64')}`;
   const avatarDataUrl = `data:image/png;base64,${Buffer.from('remote-avatar').toString('base64')}`;
+  const peerAvatarDataUrl = `data:image/png;base64,${Buffer.from('peer-avatar').toString('base64')}`;
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1');
     if (url.pathname === '/api/agent-tools/attachments/read') {
       assert.equal(req.headers.authorization, 'Bearer mc_machine_test');
       assert.equal(url.searchParams.get('agentId'), options.agent?.id || 'agt_remote');
-      assert.equal(url.searchParams.get('attachmentId'), 'att_clip');
+      const attachmentId = url.searchParams.get('attachmentId');
+      const isUpload = attachmentId === 'att_upload';
+      const isClipboard = attachmentId === 'att_clip';
+      assert.equal(isUpload || isClipboard, true);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
         attachment: {
-          id: 'att_clip',
-          name: 'clip.png',
-          type: 'image/png',
+          id: attachmentId,
+          name: isUpload ? 'upload.jpeg' : 'clip.png',
+          type: isUpload ? 'image/jpeg' : 'image/png',
           bytes: 12,
-          source: 'clipboard',
+          source: isUpload ? 'upload' : 'clipboard',
         },
         file: {
-          name: 'clip.png',
-          type: 'image/png',
+          name: isUpload ? 'upload.jpeg' : 'clip.png',
+          type: isUpload ? 'image/jpeg' : 'image/png',
           sizeBytes: 12,
           readBytes: 12,
           truncated: false,
         },
-        dataUrl: attachmentDataUrl,
+        dataUrl: isUpload ? uploadAttachmentDataUrl : clipboardAttachmentDataUrl,
       }));
       return;
     }
@@ -184,7 +189,7 @@ async function startRelay(options = {}) {
                 spaceId: 'chan_all',
                 parentMessageId: null,
                 workItemId: 'wi_test',
-                attachmentIds: ['att_clip'],
+                attachmentIds: ['att_upload', 'att_clip'],
                 contextPack: {
                   targetAgentId: options.agent?.id || 'agt_remote',
                   targetAgent: {
@@ -208,7 +213,20 @@ async function startRelay(options = {}) {
                       runtime: options.agent?.runtime || 'codex',
                       status: 'idle',
                     },
-                    { id: 'agt_ka', name: 'KA', type: 'agent', description: 'Likes telling jokes', runtime: 'codex', status: 'idle' },
+                    {
+                      id: 'agt_ka',
+                      name: 'KA',
+                      type: 'agent',
+                      description: 'Likes telling jokes',
+                      runtime: 'codex',
+                      status: 'idle',
+                      avatar: {
+                        kind: 'data_url',
+                        type: 'image/png',
+                        dataUrl: peerAvatarDataUrl,
+                        visualInput: true,
+                      },
+                    },
                   ],
                   suggestedMembers: [
                     { id: 'agt_research', name: 'Research', type: 'agent', description: 'Finds background information', runtime: 'codex', status: 'idle' },
@@ -220,7 +238,7 @@ async function startRelay(options = {}) {
                     authorId: 'hum_test',
                     body: 'Who is good at jokes?',
                     mentionedAgentIds: [],
-                    attachmentIds: ['att_clip'],
+                    attachmentIds: ['att_upload', 'att_clip'],
                     createdAt: '2026-05-14T06:13:30.000Z',
                   },
                   recentMessages: [],
@@ -234,6 +252,14 @@ async function startRelay(options = {}) {
                   }],
                   tasks: [],
                   attachments: [{
+                    id: 'att_upload',
+                    name: 'upload.jpeg',
+                    type: 'image/jpeg',
+                    bytes: 12,
+                    url: '/api/attachments/att_upload/upload.jpeg?workspaceId=wsp_test',
+                    source: 'upload',
+                    messageId: 'msg_test',
+                  }, {
                     id: 'att_clip',
                     name: 'clip.png',
                     type: 'image/png',
@@ -486,12 +512,16 @@ process.stdin.on('data', (chunk) => {
     const turnStart = entries.find((entry) => entry.method === 'turn/start');
     const promptText = turnStart.params.input[0].text;
     assert.deepEqual(turnStart.params.input.slice(1), [
-      { type: 'image', url: `data:image/png;base64,${Buffer.from('remote-image').toString('base64')}` },
+      { type: 'image', url: `data:image/jpeg;base64,${Buffer.from('remote-upload-image').toString('base64')}` },
+      { type: 'image', url: `data:image/png;base64,${Buffer.from('remote-clipboard-image').toString('base64')}` },
       { type: 'image', url: `data:image/png;base64,${Buffer.from('remote-avatar').toString('base64')}` },
+      { type: 'image', url: `data:image/png;base64,${Buffer.from('peer-avatar').toString('base64')}` },
     ]);
     assert.match(promptText, /Agent description: Remote agent that loves concise jokes/);
     assert.match(promptText, /Participants shown: @Human - human; role=owner; status=online, @Remote Codex \(you\) - agent; runtime=codex; status=idle; description=Remote agent that loves concise jokes, @KA - agent; runtime=codex; status=idle; description=Likes telling jokes/);
     assert.match(promptText, /Your profile avatar: image supplied as visual input/);
+    assert.match(promptText, /Participant avatar visual inputs: @KA/);
+    assert.match(promptText, /Visible attachment metadata and original-file tools:[\s\S]*upload\.jpeg image\/jpeg 12 bytes \(id=att_upload, from msg=msg_test, source=upload/);
     assert.match(promptText, /Visible attachment metadata and original-file tools:[\s\S]*clip\.png image\/png 12 bytes \(id=att_clip, from msg=msg_test, source=clipboard/);
     assert.match(promptText, /Server members not in this channel yet:/);
     assert.match(promptText, /Agents available to suggest adding:[\s\S]*@Research - agent; runtime=codex; status=idle; description=Finds background information/);
@@ -499,7 +529,7 @@ process.stdin.on('data', (chunk) => {
     assert.match(promptText, /Recent channel activity/);
     assert.match(promptText, /@KA joined this channel/);
     assert.match(promptText, /Use channel activity to resolve implicit references/);
-    assert.match(promptText, /Progressive context tools: list_agents, read_agent_profile, read_history/);
+    assert.match(promptText, /Progressive context tools: list_agents, read_agent_profile, read_agent_avatar, read_history/);
     assert.match(promptText, /call list_agents without a target for the server-wide agent roster/);
     assert.match(promptText, /MAGCLAW_MACHINE_TOKEN/);
     assert.match(promptText, /Current message:\n\[msg=msg_test .* @Human: Who is good at jokes\?/);

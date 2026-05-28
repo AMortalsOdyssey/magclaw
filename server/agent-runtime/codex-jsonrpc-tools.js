@@ -260,6 +260,15 @@ async function executeMagClawLocalTool(agent, name, args = {}) {
       },
     });
   }
+  if (tool === 'read_agent_avatar') {
+    return requestMagClawLocalTool('/api/agent-tools/agents/avatar/read', {
+      query: {
+        agentId,
+        targetAgentId: args.targetAgentId || args.targetAgent,
+        maxBytes: args.maxBytes || args.max_bytes,
+      },
+    });
+  }
   if (tool === 'list_attachments') {
     return requestMagClawLocalTool('/api/agent-tools/attachments', {
       query: {

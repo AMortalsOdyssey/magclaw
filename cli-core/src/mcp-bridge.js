@@ -247,6 +247,36 @@ const tools = [
     }),
   },
   {
+    name: 'read_agent_avatar',
+    description: 'Read a MagClaw agent avatar image for visual comparison with uploaded attachments.',
+    inputSchema: schema({
+      targetAgentId: { type: 'string' },
+      targetAgent: { type: 'string' },
+      maxBytes: { type: 'number' },
+    }),
+  },
+  {
+    name: 'list_attachments',
+    description: 'List MagClaw attachment metadata visible to this agent.',
+    inputSchema: schema({
+      target: { type: 'string' },
+      channel: { type: 'string' },
+      workItemId: { type: 'string' },
+      messageId: { type: 'string' },
+      limit: { type: 'number' },
+    }),
+  },
+  {
+    name: 'read_attachment',
+    description: 'Read an uploaded MagClaw attachment original file. Image attachments are returned as MCP image content when possible.',
+    inputSchema: schema({
+      attachmentId: { type: 'string' },
+      id: { type: 'string' },
+      maxBytes: { type: 'number' },
+      format: { type: 'string' },
+    }),
+  },
+  {
     name: 'write_memory',
     description: 'Record a concise durable memory for this agent.',
     inputSchema: schema({
@@ -358,8 +388,20 @@ function sendError(id, code, message, data = null) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message, data } })}\n`);
 }
 
-function textResult(text) {
-  return { content: [{ type: 'text', text: String(text || '') }] };
+function imageResultContent(value = {}) {
+  const type = String(value?.avatar?.type || value?.file?.type || value?.attachment?.type || '').toLowerCase();
+  if (!type.startsWith('image/')) return null;
+  if (value?.file?.truncated || value?.avatar?.truncated) return null;
+  const data = String(value?.contentBase64 || '').trim();
+  if (!data) return null;
+  return { type: 'image', data, mimeType: type };
+}
+
+function contentResult(value) {
+  const content = [{ type: 'text', text: jsonText(value) }];
+  const image = imageResultContent(value);
+  if (image) content.push(image);
+  return { content };
 }
 
 function jsonText(value) {
@@ -511,6 +553,33 @@ async function callTool(name, rawArgs = {}) {
           targetAgentId: args.targetAgentId || args.targetAgent,
         },
       });
+    case 'read_agent_avatar':
+      return request('/api/agent-tools/agents/avatar/read', {
+        query: {
+          agentId: args.agentId,
+          targetAgentId: args.targetAgentId || args.targetAgent,
+          maxBytes: args.maxBytes || args.max_bytes,
+        },
+      });
+    case 'list_attachments':
+      return request('/api/agent-tools/attachments', {
+        query: {
+          agentId: args.agentId,
+          target: args.target || args.channel,
+          workItemId: args.workItemId || args.work_item_id,
+          messageId: args.messageId || args.message_id,
+          limit: args.limit,
+        },
+      });
+    case 'read_attachment':
+      return request('/api/agent-tools/attachments/read', {
+        query: {
+          agentId: args.agentId,
+          attachmentId: args.attachmentId || args.attachment_id || args.id,
+          maxBytes: args.maxBytes || args.max_bytes,
+          format: args.format,
+        },
+      });
     case 'list_tasks':
       return request('/api/agent-tools/tasks', {
         query: {
@@ -587,7 +656,7 @@ async function handle(message) {
     }
     if (message.method === 'tools/call') {
       const result = await callTool(message.params?.name, message.params?.arguments || {});
-      send(id, textResult(jsonText(result)));
+      send(id, contentResult(result));
       return;
     }
     if (message.method === 'notifications/initialized' || message.method === 'initialized') return;

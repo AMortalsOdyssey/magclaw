@@ -2,12 +2,18 @@
 // These endpoints are called by running Agents, not by the human UI. They let an
 // Agent inspect bounded history, send a routed response tied to a work item, and
 // create/claim/update tasks without reaching across channel boundaries.
-import { open, stat } from 'node:fs/promises';
-import { safePathWithin } from '../path-utils.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { open, readFile, stat } from 'node:fs/promises';
+import { mimeForPath, safePathWithin } from '../path-utils.js';
 import { createTaskStartupCollaboration } from '../task-startup-collaboration.js';
 
 const DEFAULT_ATTACHMENT_READ_MAX_BYTES = 2 * 1024 * 1024;
 const HARD_ATTACHMENT_READ_MAX_BYTES = 8 * 1024 * 1024;
+const DEFAULT_AVATAR_READ_MAX_BYTES = 512 * 1024;
+const HARD_AVATAR_READ_MAX_BYTES = 2 * 1024 * 1024;
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = path.resolve(MODULE_DIR, '../..', 'public');
 
 export async function handleAgentToolApi(req, res, url, deps) {
   const {
@@ -154,6 +160,171 @@ export async function handleAgentToolApi(req, res, url, deps) {
     return avatar;
   }
 
+  function imageMimeFromName(value = '') {
+    const mime = mimeForPath(String(value || '').split(/[?#]/)[0], '');
+    return mime.startsWith('image/') ? mime : '';
+  }
+
+  function avatarReadMaxBytes() {
+    const raw = Number(url.searchParams.get('maxBytes') || url.searchParams.get('max_bytes') || DEFAULT_AVATAR_READ_MAX_BYTES);
+    if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_AVATAR_READ_MAX_BYTES;
+    return Math.max(1, Math.min(HARD_AVATAR_READ_MAX_BYTES, Math.floor(raw)));
+  }
+
+  function decodeAvatarDataUrl(value = '') {
+    const match = String(value || '').match(/^data:([^;,]+)(;base64)?,([\s\S]*)$/i);
+    if (!match) return null;
+    const type = String(match[1] || '').toLowerCase();
+    if (!type.startsWith('image/')) return null;
+    const body = match[3] || '';
+    let decodedBody = body;
+    if (!match[2]) {
+      try {
+        decodedBody = decodeURIComponent(body);
+      } catch {
+        decodedBody = body;
+      }
+    }
+    const buffer = match[2]
+      ? Buffer.from(body, 'base64')
+      : Buffer.from(decodedBody, 'utf8');
+    return { type, buffer };
+  }
+
+  function avatarPublicAssetPath(value = '') {
+    const raw = String(value || '').trim().split(/[?#]/)[0];
+    if (!raw.startsWith('/avatars/') && !raw.startsWith('/brand/')) return '';
+    let decoded = raw;
+    try {
+      decoded = decodeURIComponent(raw);
+    } catch {
+      decoded = raw;
+    }
+    return safePathWithin(PUBLIC_DIR, `.${decoded}`) || '';
+  }
+
+  async function readResponseBodyWithLimit(response, maxBytes) {
+    const chunks = [];
+    let total = 0;
+    let truncated = false;
+    if (!response.body?.getReader) {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      return {
+        buffer: buffer.length > maxBytes ? buffer.subarray(0, maxBytes) : buffer,
+        sizeBytes: buffer.length,
+        truncated: buffer.length > maxBytes,
+      };
+    }
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value);
+        const remaining = maxBytes - total;
+        if (remaining <= 0) {
+          truncated = true;
+          await reader.cancel().catch(() => {});
+          break;
+        }
+        if (chunk.length > remaining) {
+          chunks.push(chunk.subarray(0, remaining));
+          total += remaining;
+          truncated = true;
+          await reader.cancel().catch(() => {});
+          break;
+        }
+        chunks.push(chunk);
+        total += chunk.length;
+      }
+    } finally {
+      reader.releaseLock?.();
+    }
+    return {
+      buffer: Buffer.concat(chunks),
+      sizeBytes: total,
+      truncated,
+    };
+  }
+
+  async function fetchAvatarUrlContent(avatarUrl, maxBytes) {
+    let parsed = null;
+    try {
+      parsed = new URL(avatarUrl);
+    } catch {
+      throw httpError(400, 'Avatar URL is invalid.');
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw httpError(400, 'Avatar URL protocol is not supported.');
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch(parsed, {
+        headers: { accept: 'image/*' },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw httpError(response.status || 502, `Avatar URL fetch failed: HTTP ${response.status}`);
+      const type = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+        || imageMimeFromName(parsed.pathname);
+      if (!type.startsWith('image/')) throw httpError(415, 'Avatar URL did not return an image.');
+      const body = await readResponseBodyWithLimit(response, maxBytes);
+      return {
+        type,
+        source: 'url',
+        sourceUrl: parsed.toString(),
+        sizeBytes: body.sizeBytes,
+        readBytes: body.buffer.length,
+        truncated: body.truncated,
+        buffer: body.buffer,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function readAvatarImageContent(summary) {
+    const avatar = String(summary?.avatar || '').trim();
+    if (!avatar) throw httpError(404, 'Agent avatar is not set.');
+    const maxBytes = avatarReadMaxBytes();
+    const dataUrl = decodeAvatarDataUrl(avatar);
+    if (dataUrl) {
+      const buffer = dataUrl.buffer.length > maxBytes ? dataUrl.buffer.subarray(0, maxBytes) : dataUrl.buffer;
+      return {
+        type: dataUrl.type,
+        source: 'data_url',
+        sizeBytes: dataUrl.buffer.length,
+        readBytes: buffer.length,
+        truncated: dataUrl.buffer.length > maxBytes,
+        buffer,
+      };
+    }
+    const publicPath = avatarPublicAssetPath(avatar);
+    if (publicPath) {
+      let fileStat = null;
+      try {
+        fileStat = await stat(publicPath);
+      } catch {
+        throw httpError(404, 'Avatar asset is not available on this server.');
+      }
+      const type = imageMimeFromName(publicPath);
+      if (!type) throw httpError(415, 'Avatar asset is not an image.');
+      const fileBuffer = await readFile(publicPath);
+      const buffer = fileBuffer.length > maxBytes ? fileBuffer.subarray(0, maxBytes) : fileBuffer;
+      return {
+        type,
+        source: 'public_asset',
+        path: publicPath,
+        sizeBytes: fileStat.size,
+        readBytes: buffer.length,
+        truncated: fileBuffer.length > maxBytes,
+        buffer,
+      };
+    }
+    if (/^https?:\/\//i.test(avatar)) return fetchAvatarUrlContent(avatar, maxBytes);
+    throw httpError(404, 'Avatar image content is not available on this server.');
+  }
+
   function normalizedTaskText(value) {
     return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
   }
@@ -260,6 +431,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       `runtime=${summary.runtimeLabel}`,
       summary.status ? `status=${summary.status}` : '',
       summary.description ? `desc=${summary.description}` : '',
+      summary.avatar ? `avatar=${summary.avatarDescription || summary.avatar}; tool=read_agent_avatar(targetAgentId="${summary.id}")` : '',
       summary.channels?.length ? `channels=${summary.channels.join(',')}` : '',
     ].filter(Boolean);
     return `- ${pieces.join(' | ')}`;
@@ -278,6 +450,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
       summary.createdAt ? `Created: ${summary.createdAt}` : '',
       summary.updatedAt ? `Updated: ${summary.updatedAt}` : '',
       summary.avatar ? `Avatar: ${summary.avatarDescription || summary.avatar}` : '',
+      summary.avatar ? `Avatar image tool: read_agent_avatar(targetAgentId="${summary.id}")` : '',
       summary.channels?.length ? `Channels: ${summary.channels.join(', ')}` : '',
     ].filter(Boolean).join('\n');
   }
@@ -1273,6 +1446,64 @@ export async function handleAgentToolApi(req, res, url, deps) {
       workspaceId: workspaceId || null,
       agent: summary,
       text: renderAgentProfile(summary),
+    });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-tools/agents/avatar/read') {
+    const agentId = url.searchParams.get('agentId') || '';
+    const workspaceId = requestWorkspaceId();
+    const targetAgentRef = url.searchParams.get('targetAgentId') || url.searchParams.get('targetAgent') || '';
+    const targetAgent = findReadableAgentProfile(agentId, targetAgentRef, workspaceId);
+    if (!targetAgent) {
+      sendError(res, 404, 'Target agent not found.');
+      return true;
+    }
+    const summary = publicAgentSummary(targetAgent, { detailed: true });
+    let content = null;
+    try {
+      content = await readAvatarImageContent(summary);
+    } catch (error) {
+      sendError(res, error.status || 500, error.message || 'Avatar image content is not available.');
+      return true;
+    }
+    const contentBase64 = content.buffer.toString('base64');
+    addSystemEvent('agent_avatar_read', `${displayActor(agentId) || 'Agent'} read ${targetAgent.name} avatar image.`, {
+      agentId,
+      workspaceId: workspaceId || null,
+      targetAgentId: targetAgent.id,
+      source: content.source || null,
+      type: content.type || null,
+      readBytes: content.readBytes || 0,
+      truncated: Boolean(content.truncated),
+    });
+    sendJson(res, 200, {
+      ok: true,
+      workspaceId: workspaceId || null,
+      agent: summary,
+      avatar: {
+        kind: summary.avatarKind,
+        type: content.type,
+        description: summary.avatarDescription || summary.avatar || '',
+        source: content.source || '',
+        sourceUrl: content.sourceUrl || '',
+        path: content.source === 'public_asset' ? summary.avatar : '',
+      },
+      file: {
+        type: content.type,
+        sizeBytes: content.sizeBytes,
+        readBytes: content.readBytes,
+        truncated: Boolean(content.truncated),
+      },
+      contentBase64,
+      dataUrl: content.truncated ? '' : `data:${content.type};base64,${contentBase64}`,
+      text: [
+        `Avatar image for @${summary.name} (${summary.id})`,
+        `Type: ${content.type}`,
+        `Source: ${content.source || 'unknown'}`,
+        `Read bytes: ${content.readBytes}/${content.sizeBytes}`,
+        content.truncated ? 'Content is truncated; request a larger maxBytes value if you need the full image.' : 'Full image content is included as base64/dataUrl.',
+      ].join('\n'),
     });
     return true;
   }

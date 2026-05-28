@@ -338,6 +338,9 @@ test('daemon agent starts and stream activity use MagClaw bounded scheduling', a
   assert.match(daemonSource, /\/api\/agent-tools\/channel-member-proposals/);
   assert.match(mcpBridgeSource, /name: 'propose_channel_members'/);
   assert.match(mcpBridgeSource, /\/api\/agent-tools\/channel-member-proposals/);
+  assert.match(mcpBridgeSource, /name: 'read_agent_avatar'/);
+  assert.match(mcpBridgeSource, /\/api\/agent-tools\/agents\/avatar\/read/);
+  assert.match(mcpBridgeSource, /type: 'image'/);
 });
 
 test('daemon machine fingerprint is stable inside a server profile', async () => {

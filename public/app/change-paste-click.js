@@ -195,13 +195,13 @@ document.addEventListener('change', async (event) => {
 function clipboardImageFiles(clipboardData) {
   const clipboardFiles = Array.from(clipboardData?.files || []);
   const clipboardItems = Array.from(clipboardData?.items || []);
-  const files = [
-    ...clipboardFiles,
-    ...clipboardItems
+  let files = clipboardFiles.filter((file) => String(file.type || '').startsWith('image/'));
+  if (!files.length) {
+    files = clipboardItems
       .filter((item) => String(item.type || '').startsWith('image/'))
       .map((item) => item.getAsFile?.())
-      .filter(Boolean),
-  ].filter((file) => String(file.type || '').startsWith('image/'));
+      .filter((file) => file && String(file.type || '').startsWith('image/'));
+  }
   const seen = new Set();
   return files
     .filter((file) => {
@@ -218,7 +218,7 @@ function clipboardImageSignature(file) {
   const size = Number(file?.size || 0);
   const name = String(file?.name || '').trim().toLowerCase();
   if (!type.startsWith('image/')) return `${name}:${type}:${size}`;
-  const genericName = !name || /^image\.(png|jpe?g|webp|gif|bmp|tiff?)$/i.test(name);
+  const genericName = !name || /^(image\.(png|jpe?g|webp|gif|bmp|tiff?)$|screenshot[-_\s.]|screen shot[-_\s.])/i.test(name);
   return genericName ? `${type}:${size}` : `${name}:${type}:${size}`;
 }
 

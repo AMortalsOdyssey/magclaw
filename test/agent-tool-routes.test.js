@@ -853,6 +853,7 @@ test('agent tool APIs list and read workspace-scoped agent profiles', async () =
       runtime: 'codex',
       runtimeId: 'Codex',
       ownerId: 'hum_local',
+      avatar: `data:image/png;base64,${Buffer.from('bug-fixer-avatar').toString('base64')}`,
       createdAt: '2026-05-14T08:00:00.000Z',
       workspaceId: 'wsp_test',
     },
@@ -887,6 +888,22 @@ test('agent tool APIs list and read workspace-scoped agent profiles', async () =
   assert.equal(readRes.statusCode, 200);
   assert.equal(readRes.data.agent.id, 'agt_two');
   assert.match(readRes.data.text, /Runtime: Codex/);
+  assert.match(readRes.data.text, /read_agent_avatar\(targetAgentId="agt_two"\)/);
+
+  const avatarRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
+    avatarRes,
+    new URL('http://local/api/agent-tools/agents/avatar/read?agentId=agt_one&targetAgent=Bug%20Fixer'),
+    deps,
+  ), true);
+  assert.equal(avatarRes.statusCode, 200);
+  assert.equal(avatarRes.data.agent.id, 'agt_two');
+  assert.equal(avatarRes.data.avatar.type, 'image/png');
+  assert.equal(avatarRes.data.contentBase64, Buffer.from('bug-fixer-avatar').toString('base64'));
+  assert.match(avatarRes.data.dataUrl, /^data:image\/png;base64,/);
+  assert.match(avatarRes.data.text, /Avatar image for @Bug Fixer/);
+  assert.ok(deps.events.some((event) => event.type === 'agent_avatar_read' && event.extra.targetAgentId === 'agt_two'));
 
   const selfRes = makeResponse();
   assert.equal(await handleAgentToolApi(

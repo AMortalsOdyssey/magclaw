@@ -131,3 +131,37 @@ test('codex turn input carries the target agent library avatar URL as visual con
     { type: 'image', url: 'http://127.0.0.1:6543/avatars/avatar_0001.svg' },
   ]);
 });
+
+test('codex turn input carries other visible agent avatars as visual context', () => {
+  const peerAvatar = `data:image/png;base64,${Buffer.from('peer-avatar').toString('base64')}`;
+  const input = codexTurnInputForPrompt('Which agent avatar matches the attachment?', [{
+    contextPack: {
+      targetAgentId: 'agt_self',
+      targetAgent: {
+        id: 'agt_self',
+        name: 'Self',
+      },
+      participants: [
+        { id: 'hum_user', type: 'human', name: 'Human' },
+        { id: 'agt_self', type: 'agent', name: 'Self' },
+        {
+          id: 'agt_peer',
+          type: 'agent',
+          name: 'Peer',
+          avatar: {
+            kind: 'data_url',
+            type: 'image/png',
+            dataUrl: peerAvatar,
+            visualInput: true,
+          },
+        },
+      ],
+      attachments: [],
+    },
+  }]);
+
+  assert.deepEqual(input, [
+    { type: 'text', text: 'Which agent avatar matches the attachment?' },
+    { type: 'image', url: peerAvatar },
+  ]);
+});

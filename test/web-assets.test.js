@@ -61,3 +61,12 @@ test('web asset build emits hashed bundled assets with precompressed variants', 
     await rm(tmp, { recursive: true, force: true });
   }
 });
+
+test('clipboard image paste path dedupes duplicate file and item views', async () => {
+  const pasteSource = await readFile(path.join(ROOT, 'public', 'app', 'change-paste-click.js'), 'utf8');
+
+  assert.match(pasteSource, /let files = clipboardFiles\.filter/);
+  assert.match(pasteSource, /if \(!files\.length\)/);
+  assert.match(pasteSource, /screenshot\[-_\\s\.\]/);
+  assert.match(pasteSource, /clipboardPasteBatchSignature/);
+});

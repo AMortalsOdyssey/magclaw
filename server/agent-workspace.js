@@ -668,6 +668,7 @@ export function createAgentWorkspaceManager(deps) {
         'read_agent_memory',
         'list_agents',
         'read_agent_profile',
+        'read_agent_avatar',
         'write_memory',
         'list_tasks',
         'create_tasks',

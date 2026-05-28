@@ -24,3 +24,13 @@ test('task MCP tools expose the canonical task status enum', async () => {
   assert.doesNotMatch(updateTaskSource, /e\.g\./i);
   assert.doesNotMatch(updateTaskSource, /completed/);
 });
+
+test('MCP tools expose image-readable attachment and agent avatar content', async () => {
+  const source = await readMcpBridgeSource();
+
+  assert.match(source, /name: 'read_attachment'/);
+  assert.match(source, /name: 'read_agent_avatar'/);
+  assert.match(source, /\/api\/agent-tools\/agents\/avatar\/read/);
+  assert.match(source, /type: 'image'/);
+  assert.match(source, /mimeType: type/);
+});

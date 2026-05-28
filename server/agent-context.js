@@ -149,7 +149,7 @@ function participantIdsForSpace(state, spaceType, spaceId) {
   return [];
 }
 
-function participantsForSpace(state, spaceType, spaceId) {
+function participantsForSpace(state, spaceType, spaceId, toolBaseUrl = '') {
   return uniqueById(
     participantIdsForSpace(state, spaceType, spaceId)
       .map((id) => actorById(state, id))
@@ -165,6 +165,7 @@ function participantsForSpace(state, spaceType, spaceId) {
     status: actor.status || '',
     creator: actor.creatorName || actor.createdByName || actor.createdBy || '',
     createdAt: actor.createdAt || '',
+    avatar: avatarContext(avatarValue(actor), toolBaseUrl),
   }));
 }
 
@@ -497,7 +498,7 @@ export function buildAgentContextPack({
       workspaceId: space?.workspaceId || state?.connection?.workspaceId || 'local',
       defaultChannel: Boolean(spaceType === 'channel' && isWorkspaceAllChannel(space)),
     },
-    participants: participantsForSpace(state, spaceType, spaceId),
+    participants: participantsForSpace(state, spaceType, spaceId, toolBaseUrl),
     suggestedMembers: suggestedMembersForSpace(state, spaceType, spaceId, agentId),
     targetAgent: targetAgentForContext(state, agentId, toolBaseUrl),
     currentMessage: current,
@@ -745,6 +746,23 @@ function renderTargetAgentAvatar(pack) {
   return `- Your profile avatar: ${avatar.description || 'configured'}, but no visual input is available.`;
 }
 
+function participantAvatarVisualInputs(pack, targetAgentId) {
+  return compactParticipants(pack, targetAgentId).selected.filter((item) => (
+    item.id !== targetAgentId
+    && item.type === 'agent'
+    && item.avatar
+    && item.avatar.kind !== 'none'
+    && item.avatar.visualInput !== false
+  ));
+}
+
+function renderParticipantAvatarInputs(pack, targetAgentId) {
+  const visible = participantAvatarVisualInputs(pack, targetAgentId);
+  if (!visible.length) return '';
+  const names = visible.map((item) => `@${item.name || item.id}`).join(', ');
+  return `- Participant avatar visual inputs: ${names}. Use these when comparing an uploaded image to another Agent avatar; call read_agent_avatar if the relevant Agent is omitted.`;
+}
+
 function renderEventMemberList(state, event) {
   const ids = uniqueById([
     ...asArray(event?.memberIds).map((id) => ({ id })),
@@ -816,6 +834,7 @@ function renderHistoryToolHints(pack) {
     '- The recent context above is only a compact snapshot. Do not assume it is the whole conversation.',
     `- list_agents(target="${target}", limit=10): curl -s "${baseUrl}/api/agent-tools/agents?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&limit=10"`,
     `- read_agent_profile(targetAgentId="agt_xxx"): curl -s "${baseUrl}/api/agent-tools/agents/read?agentId=${encodeURIComponent(agentId)}&targetAgentId=agt_xxx"`,
+    `- read_agent_avatar(targetAgentId="agt_xxx"): curl -s "${baseUrl}/api/agent-tools/agents/avatar/read?agentId=${encodeURIComponent(agentId)}&targetAgentId=agt_xxx"`,
     `- read_history(target="${target}", limit=30): curl -s "${baseUrl}/api/agent-tools/history?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&limit=30"`,
     `- search_message_history(query="<query>", target="${target}", limit=10): curl -s "${baseUrl}/api/agent-tools/search?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&q=<query>&limit=10"`,
     `- list_attachments(target="${target}", limit=20): curl -s "${baseUrl}/api/agent-tools/attachments?agentId=${encodeURIComponent(agentId)}&target=${encodedTarget}&limit=20"`,
@@ -862,6 +881,7 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
     pack.space.description ? `- Channel description: ${compactText(pack.space.description, 180)}` : '',
     `- Participants: ${renderParticipants(pack, targetAgentId) || '(none)'}`,
     renderTargetAgentAvatar(pack),
+    renderParticipantAvatarInputs(pack, targetAgentId),
     participants.omitted ? `- Participants omitted: ${participants.omitted}. Use list_agents/read_agent_profile or search_agent_memory when a broader roster or specialties matter.` : '',
     pack.space.type === 'channel' && !pack.space.defaultChannel
       ? `- Workspace members you may suggest adding with human review:\n${renderSuggestedMembers(pack)}`
