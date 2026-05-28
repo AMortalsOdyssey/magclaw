@@ -66,6 +66,7 @@ export async function handleAgentApi(req, res, url, deps) {
     findComputer,
     getState,
     hasAgentProcess,
+    listAgentActivity,
     listAgentMemoryMirrorWorkspace,
     listAgentSkills,
     listAgentWorkspace,
@@ -485,6 +486,30 @@ export async function handleAgentApi(req, res, url, deps) {
     try {
       const tree = await listWorkspaceForAgent(agent, url.searchParams.get('path') || '');
       sendJson(res, 200, tree);
+    } catch (error) {
+      sendError(res, error.status || 500, error.message);
+    }
+    return true;
+  }
+
+  const agentActivityMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/activity$/);
+  if (req.method === 'GET' && agentActivityMatch) {
+    if (!requireAgentCapability(['admin'])) return true;
+    const agent = findAgent(agentActivityMatch[1]);
+    if (!agent) {
+      sendError(res, 404, 'Agent not found.');
+      return true;
+    }
+    if (typeof listAgentActivity !== 'function') {
+      sendError(res, 501, 'Agent activity is not available.');
+      return true;
+    }
+    try {
+      sendJson(res, 200, await listAgentActivity(agent.id, {
+        days: url.searchParams.get('days') || '',
+        limit: url.searchParams.get('limit') || '',
+        before: url.searchParams.get('before') || '',
+      }));
     } catch (error) {
       sendError(res, error.status || 500, error.message);
     }

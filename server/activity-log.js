@@ -123,6 +123,41 @@ export function createActivityLog(options = {}) {
     return safeArray(records);
   }
 
+  async function readWindow({ start = '', end = '', limit = 5000 } = {}) {
+    const startMs = Date.parse(start || '');
+    const endMs = Date.parse(end || '');
+    const hasStart = Number.isFinite(startMs);
+    const hasEnd = Number.isFinite(endMs);
+    const files = await listFiles();
+    const records = [];
+    for (const item of files.slice(-normalizeLimit(maxFiles, DEFAULT_MAX_FILES))) {
+      const text = await readFile(item.file, 'utf8').catch(() => '');
+      if (!text) continue;
+      for (const line of text.split(/\r?\n/).filter(Boolean)) {
+        let record = null;
+        try {
+          record = JSON.parse(line);
+        } catch {
+          record = null;
+        }
+        if (!record) continue;
+        const createdMs = Date.parse(record.createdAt || '');
+        if (!Number.isFinite(createdMs)) continue;
+        if (hasStart && createdMs < startMs) continue;
+        if (hasEnd && createdMs > endMs) continue;
+        records.push(record);
+      }
+    }
+    return records
+      .sort((a, b) => {
+        const left = Date.parse(a.createdAt || '');
+        const right = Date.parse(b.createdAt || '');
+        if (left !== right) return right - left;
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      })
+      .slice(0, normalizeLimit(limit, 5000));
+  }
+
   function flush() {
     return writeChain;
   }
@@ -130,6 +165,7 @@ export function createActivityLog(options = {}) {
   return {
     append,
     flush,
+    readWindow,
     readTail,
   };
 }

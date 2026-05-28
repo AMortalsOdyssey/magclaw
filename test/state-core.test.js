@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -158,6 +158,73 @@ test('state core writes activity events to JSONL and restores recent activity ta
     });
     await second.ensureStorage();
     assert.ok(second.stateFullSnapshot().events.some((event) => event.type === 'activity_probe' && event.agentId === 'agt_codex'));
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('state core reads a deduped seven day agent activity window from state and JSONL logs', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-agent-activity-'));
+  const activityDir = path.join(tmp, 'activity-logs');
+  try {
+    await mkdir(activityDir, { recursive: true });
+    await writeFile(path.join(activityDir, 'activity-2026-05-10.jsonl'), [
+      JSON.stringify({
+        id: 'evt_yesterday',
+        type: 'agent_activity',
+        message: 'Ada reported daemon activity.',
+        agentId: 'agt_ada',
+        createdAt: '2026-05-10T08:00:00.000Z',
+      }),
+      JSON.stringify({
+        id: 'evt_other',
+        type: 'agent_activity',
+        message: 'Other agent activity.',
+        agentId: 'agt_other',
+        createdAt: '2026-05-10T09:00:00.000Z',
+      }),
+    ].join('\n') + '\n');
+    await writeFile(path.join(activityDir, 'activity-2026-05-03.jsonl'), `${JSON.stringify({
+      id: 'evt_old',
+      type: 'agent_activity',
+      message: 'Old Ada activity.',
+      agentId: 'agt_ada',
+      createdAt: '2026-05-03T08:00:00.000Z',
+    })}\n`);
+
+    const core = makeStateCore(tmp, {
+      USE_SQLITE_STATE: false,
+      ACTIVITY_LOG_DIR: activityDir,
+      now: () => '2026-05-11T12:00:00.000Z',
+    });
+    await core.ensureStorage();
+    core.addSystemEvent('agent_status_changed', 'Ada is idle.', {
+      id: 'evt_today',
+      agentId: 'agt_ada',
+      status: 'idle',
+      createdAt: '2026-05-11T10:00:00.000Z',
+    });
+    core.addSystemEvent('agent_activity', 'Duplicate state event should win.', {
+      id: 'evt_yesterday',
+      agentId: 'agt_ada',
+      createdAt: '2026-05-10T08:30:00.000Z',
+    });
+    await core.flushActivityLog();
+
+    const result = await core.agentActivityWindow('agt_ada', {
+      days: 7,
+      limit: 2,
+      before: '2026-05-11T12:00:00.000Z',
+    });
+
+    assert.equal(result.agentId, 'agt_ada');
+    assert.equal(result.events.length, 2);
+    assert.deepEqual(result.events.map((event) => event.id), ['evt_today', 'evt_yesterday']);
+    assert.equal(result.events[1].message, 'Duplicate state event should win.');
+    assert.equal(result.hasMore, false);
+    assert.equal(result.nextBefore, '');
+    assert.equal(result.windowStart, '2026-05-04T12:00:00.000Z');
+    assert.equal(result.windowEnd, '2026-05-11T12:00:00.000Z');
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

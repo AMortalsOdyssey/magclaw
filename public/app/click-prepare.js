@@ -218,6 +218,7 @@ async function prepareDocumentClick(event) {
     'close-message-context-menu',
     'copy-message-link',
     'copy-message-markdown',
+    'copy-agent-activity-diagnostic',
     'add-message-context',
     'add-message-channel-context',
     'add-thread-context',

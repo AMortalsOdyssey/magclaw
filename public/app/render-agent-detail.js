@@ -363,6 +363,7 @@ function renderAgentProfileTab(agent) {
           <p>${escapeHtml(agentHandle(agent))}</p>
         </div>
       </div>
+      ${renderAgentErrorNotice(agent)}
       ${renderAgentLiveActivityBar(agent)}
       ${renderAgentAvatarEditor(agent)}
       ${renderAgentInlineField(agent, 'name', 'Display Name', { placeholder: 'Display name' })}
@@ -411,8 +412,11 @@ function renderAgentRemindersTab() {
 }
 
 function agentActivityEvents(agent) {
-  return (appState?.events || [])
-    .filter((event) => event.agentId === agent.id || event.meta?.agentId === agent.id || event.raw?.agentId === agent.id)
+  if (!agent?.id) return [];
+  const cached = agentActivityCacheFor(agent?.id || '');
+  const source = cached?.events?.length ? cached.events : (appState?.events || []);
+  return source
+    .filter((event) => event?.agentId === agent.id || event?.meta?.agentId === agent.id || event?.raw?.agentId === agent.id)
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .slice(0, AGENT_ACTIVITY_EVENT_LIMIT);
 }
@@ -425,6 +429,29 @@ function agentActivityLabel(event) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function agentRuntimeErrorMessage(agent) {
+  const activity = agent?.runtimeActivity && typeof agent.runtimeActivity === 'object' ? agent.runtimeActivity : {};
+  const status = String(agent?.status || '').toLowerCase();
+  const message = String(activity.error || activity.detail || activity.message || '').trim();
+  if (status === 'error') return message || 'Agent runtime error.';
+  return activity.error ? message : '';
+}
+
+function agentEventDetail(event = {}) {
+  const activity = event.activity || event.raw?.activity || {};
+  return String(
+    activity.error
+    || activity.detail
+    || activity.note
+    || activity.text
+    || activity.tool
+    || event.raw?.error
+    || event.error
+    || event.message
+    || ''
+  ).trim();
+}
+
 function agentActivityTone(event) {
   const text = `${event?.type || ''} ${event?.message || ''} ${event?.raw?.type || ''}`.toLowerCase();
   if (text.includes('error') || text.includes('failed')) return 'error';
@@ -434,6 +461,11 @@ function agentActivityTone(event) {
   if (text.includes('idle')) return 'idle';
   if (text.includes('connected')) return 'online';
   return 'queued';
+}
+
+function agentActivityToneClass(event) {
+  const tone = agentActivityTone(event);
+  return tone === 'output' ? 'status-output' : presenceClass(tone);
 }
 
 function agentActivityIsUserVisible(event) {
@@ -449,11 +481,13 @@ function agentLiveActivitySummary(agent) {
   const value = String(status || 'offline').toLowerCase();
   const activity = agent?.runtimeActivity && typeof agent.runtimeActivity === 'object' ? agent.runtimeActivity : {};
   const latestEvent = agentActivityEvents(agent).find(agentActivityIsUserVisible) || null;
+  const errorMessage = agentRuntimeErrorMessage(agent);
   const detail = String(
-    activity.detail
+    errorMessage ? `Error: ${errorMessage}` : activity.detail
     || activity.note
     || activity.text
     || activity.tool
+    || agentEventDetail(latestEvent)
     || latestEvent?.raw?.activity?.detail
     || latestEvent?.raw?.activity?.note
     || latestEvent?.raw?.activity?.text
@@ -505,24 +539,66 @@ function renderAgentLiveActivityBar(agent, { compact = false } = {}) {
   `;
 }
 
+function renderAgentErrorNotice(agent) {
+  const message = agentRuntimeErrorMessage(agent);
+  if (!message) return '';
+  return `
+    <div class="agent-error-notice" role="status">
+      <span class="agent-activity-dot status-error"></span>
+      <strong>Error:</strong>
+      <span>${escapeHtml(message)}</span>
+      <button class="secondary-btn small" type="button" data-action="set-agent-detail-tab" data-tab="activity">View logs</button>
+    </div>
+  `;
+}
+
+function agentActivityDiagnosticText(agent) {
+  const cache = agentActivityCacheFor(agent?.id || '');
+  const events = agentActivityEvents(agent);
+  return JSON.stringify({
+    agent: {
+      id: agent?.id || '',
+      name: agent?.name || '',
+      status: agentDisplayStatus(agent),
+      runtimeActivity: agent?.runtimeActivity || null,
+    },
+    activityWindow: {
+      windowStart: cache?.windowStart || '',
+      windowEnd: cache?.windowEnd || '',
+      count: events.length,
+    },
+    events,
+  }, null, 2);
+}
+
 function renderAgentActivityTab(agent) {
+  const cache = agentActivityCacheFor(agent.id);
   const events = agentActivityEvents(agent);
   return `
     <div class="agent-activity-tab">
+      <div class="agent-activity-toolbar">
+        <div>
+          <strong>Activity diagnostics</strong>
+          <span>${escapeHtml(cache?.windowStart ? `${fmtTime(cache.windowStart)} - ${fmtTime(cache.windowEnd)}` : `Last ${AGENT_ACTIVITY_HISTORY_DAYS} days`)}</span>
+        </div>
+        <button class="secondary-btn small" type="button" data-action="copy-agent-activity-diagnostic" data-agent-id="${escapeHtml(agent.id)}">Copy Diagnostic Info</button>
+      </div>
+      ${cache?.error ? `<div class="empty-box small error-text">${escapeHtml(cache.error)}</div>` : ''}
+      ${cache?.loading ? '<div class="empty-box small">Loading activity...</div>' : ''}
       ${events.length ? `
         <div class="agent-activity-list">
           ${events.map((event) => `
             <div class="agent-activity-row">
               <time>${fmtTime(event.createdAt)}</time>
-              <span class="agent-activity-dot ${presenceClass(agentActivityTone(event))}"></span>
+              <span class="agent-activity-dot ${agentActivityToneClass(event)}"></span>
               <div>
                 <strong>${escapeHtml(agentActivityLabel(event))}</strong>
-                <span>${escapeHtml(event.message || '')}</span>
+                <span>${escapeHtml(agentEventDetail(event))}</span>
               </div>
             </div>
           `).join('')}
         </div>
-      ` : '<div class="empty-box small">No activity recorded yet.</div>'}
+      ` : (cache?.loading ? '' : '<div class="empty-box small">No activity recorded yet.</div>')}
     </div>
   `;
 }
@@ -581,6 +657,7 @@ function renderAgentDetail(agent) {
   return `
     <section class="pixel-panel inspector-panel agent-detail agent-detail-shell">
       ${renderAgentDetailTopbar(agent)}
+      ${renderAgentErrorNotice(agent)}
       ${renderAgentDetailTabs()}
       <div class="agent-detail-content" data-page-scroll-surface data-scroll-key="agent:${escapeHtml(agent.id)}:${escapeHtml(normalizeAgentDetailTab(agentDetailTab))}">
         ${renderAgentDetailBody(agent)}

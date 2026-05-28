@@ -929,6 +929,69 @@ export function createStateCore(deps) {
     }
   }
 
+  function eventAgentId(event = {}) {
+    return String(event.agentId || event.meta?.agentId || event.raw?.agentId || event.activity?.agentId || '');
+  }
+
+  function eventCreatedMs(event = {}) {
+    const value = Date.parse(event.createdAt || '');
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function parseActivityLimit(value, fallback = 5000) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.min(5000, Math.max(1, Math.trunc(parsed)));
+  }
+
+  function parseActivityDays(value, fallback = 7) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.min(30, Math.max(1, Math.trunc(parsed)));
+  }
+
+  async function agentActivityWindow(agentId, options = {}) {
+    const cleanAgentId = String(agentId || '').trim();
+    const limit = parseActivityLimit(options.limit);
+    const days = parseActivityDays(options.days);
+    const parsedEnd = Date.parse(options.before || '');
+    const windowEndDate = Number.isFinite(parsedEnd) ? new Date(parsedEnd) : new Date(now());
+    const windowStartDate = new Date(windowEndDate.getTime() - days * 24 * 60 * 60 * 1000);
+    const windowStart = windowStartDate.toISOString();
+    const windowEnd = windowEndDate.toISOString();
+    const logRecords = await activityLog.readWindow({
+      start: windowStart,
+      end: windowEnd,
+      limit: limit + 1,
+    }).catch((error) => {
+      console.warn(`[activity-log] agent activity read failed: ${error.message}`);
+      return [];
+    });
+    const inWindow = (event) => {
+      const created = eventCreatedMs(event);
+      return created >= windowStartDate.getTime() && created <= windowEndDate.getTime();
+    };
+    const sameAgent = (event) => eventAgentId(event) === cleanAgentId;
+    const recordsById = new Map();
+    for (const event of logRecords.filter((item) => sameAgent(item) && inWindow(item))) {
+      if (event?.id) recordsById.set(event.id, event);
+    }
+    for (const event of (Array.isArray(state?.events) ? state.events : []).filter((item) => sameAgent(item) && inWindow(item))) {
+      if (event?.id) recordsById.set(event.id, event);
+    }
+    const events = [...recordsById.values()]
+      .sort((a, b) => eventCreatedMs(b) - eventCreatedMs(a) || String(b.id || '').localeCompare(String(a.id || '')));
+    const visible = events.slice(0, limit);
+    return {
+      agentId: cleanAgentId,
+      events: visible,
+      hasMore: events.length > limit,
+      nextBefore: events.length > limit ? (visible.at(-1)?.createdAt || '') : '',
+      windowStart,
+      windowEnd,
+    };
+  }
+
   function primaryWorkspaceId() {
     return state?.connection?.workspaceId
       || state?.cloud?.workspaces?.[0]?.id
@@ -1393,6 +1456,7 @@ export function createStateCore(deps) {
   return {
     addRunEvent,
     addSystemEvent,
+    agentActivityWindow,
     agentParticipatesInChannels,
     agentStatusIsBusy,
     broadcast,

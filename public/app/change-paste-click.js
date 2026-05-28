@@ -430,13 +430,19 @@ document.addEventListener('click', async (event) => {
 	      render();
 	      return;
 	    }
-	    if (action === 'copy-selected-message-text') {
-	      const copied = await tryCopyTextToClipboard(messageContextMenu?.selectionText || '');
-	      messageContextMenu = null;
-	      toast(copied ? 'Selected text copied' : 'Copy failed');
-	      render();
-	      return;
-	    }
+    if (action === 'copy-selected-message-text') {
+      const copied = await tryCopyTextToClipboard(messageContextMenu?.selectionText || '');
+      messageContextMenu = null;
+      toast(copied ? 'Selected text copied' : 'Copy failed');
+      render();
+      return;
+    }
+    if (action === 'copy-agent-activity-diagnostic') {
+      const agent = byId(appState.agents, target.dataset.agentId || selectedAgentId);
+      const copied = await tryCopyTextToClipboard(agentActivityDiagnosticText(agent));
+      toast(copied ? 'Diagnostic info copied' : 'Copy failed');
+      return;
+    }
 	    if (action === 'add-selected-text-context') {
 	      const record = conversationRecord(target.dataset.id);
 	      const selectedText = messageContextMenu?.selectionText || '';

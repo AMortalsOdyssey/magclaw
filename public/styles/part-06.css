@@ -301,6 +301,27 @@
   padding: 10px 14px 30px;
 }
 
+.agent-activity-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-faint);
+  background: var(--surface-subtle);
+}
+
+.agent-activity-toolbar div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.agent-activity-toolbar span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .agent-activity-row {
   display: grid;
   grid-template-columns: 72px 12px minmax(0, 1fr);
@@ -344,6 +365,10 @@
 
 .agent-activity-dot.status-error {
   background: var(--error);
+}
+
+.agent-activity-dot.status-output {
+  background: var(--info);
 }
 
 .agent-activity-row div {
@@ -426,6 +451,25 @@
 
 .member-info .agent-live-activity-bar.compact .agent-activity-dot {
   display: none;
+}
+
+.agent-error-notice {
+  display: grid;
+  grid-template-columns: 10px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-faint);
+  background: color-mix(in srgb, var(--error) 9%, var(--surface));
+  color: var(--text);
+}
+
+.agent-error-notice span:nth-child(3) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Member list items in rail */

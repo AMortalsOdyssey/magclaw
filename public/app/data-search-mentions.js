@@ -1466,6 +1466,10 @@ function waitForAgentDetailTabDebugDelay(delayMs) {
 function agentDetailTabDataReady(agentId, tab) {
   const normalized = normalizeAgentDetailTab(tab);
   if (!agentId) return true;
+  if (normalized === 'activity') {
+    const activity = agentActivityCache[agentId];
+    return Boolean(activity && !activity.loading && !activity.error);
+  }
   if (normalized === 'skills') {
     const skills = agentSkillsCache[agentId];
     return Boolean(skills && !skills.loading && !skills.error);
@@ -1490,6 +1494,10 @@ async function warmAgentDetailTab(agentId, tab) {
   }
   if (normalized === 'skills') {
     await loadAgentSkills(agentId);
+    return;
+  }
+  if (normalized === 'activity') {
+    await loadAgentActivity(agentId);
     return;
   }
   if (normalized === 'profile') {
@@ -1543,6 +1551,43 @@ async function loadAgentSkills(agentId, { force = false } = {}) {
     agentSkillsCache[agentId] = await api(`/api/agents/${encodeURIComponent(agentId)}/skills`);
   } catch (error) {
     agentSkillsCache[agentId] = { loading: false, global: [], workspace: [], plugin: [], tools: [], error: error.message };
+  }
+  renderAgentDetailUpdate(agentId);
+}
+
+function agentActivityCacheFor(agentId) {
+  return agentActivityCache[agentId] || null;
+}
+
+async function loadAgentActivity(agentId, { force = false } = {}) {
+  if (!agentId) return;
+  const cached = agentActivityCache[agentId];
+  if (!force && cached && !cached.loading && !cached.error) return;
+  agentActivityCache[agentId] = {
+    loading: true,
+    error: '',
+    events: cached?.events || [],
+    hasMore: false,
+    nextBefore: '',
+    windowStart: '',
+    windowEnd: '',
+  };
+  renderAgentDetailUpdate(agentId);
+  const params = new URLSearchParams();
+  params.set('days', String(AGENT_ACTIVITY_HISTORY_DAYS));
+  params.set('limit', String(AGENT_ACTIVITY_EVENT_LIMIT));
+  try {
+    agentActivityCache[agentId] = await api(`/api/agents/${encodeURIComponent(agentId)}/activity?${params.toString()}`);
+  } catch (error) {
+    agentActivityCache[agentId] = {
+      loading: false,
+      error: error.message,
+      events: cached?.events || [],
+      hasMore: false,
+      nextBefore: '',
+      windowStart: cached?.windowStart || '',
+      windowEnd: cached?.windowEnd || '',
+    };
   }
   renderAgentDetailUpdate(agentId);
 }

@@ -40,6 +40,7 @@ function routeDeps(overrides = {}) {
     hasAgentProcess: () => false,
     listAgentSkills: async () => ({ global: [], workspace: [], plugin: [], tools: [] }),
     listAgentWorkspace: async () => ({ entries: [] }),
+    listAgentActivity: async () => ({ agentId: 'agt_1', events: [], hasMore: false, nextBefore: '', windowStart: '', windowEnd: '' }),
     makeId: (prefix) => `${prefix}_new`,
     normalizeCodexModelName: (model, fallback) => String(model || fallback || ''),
     normalizeIds: (ids) => [...new Set((ids || []).filter(Boolean).map(String))],
@@ -499,6 +500,57 @@ test('agent skills route requests daemon skills for remote agents', async () => 
   assert.equal(requestedAgentId, 'agt_1');
   assert.equal(res.data.global[0].name, 'itinerary-scout');
   assert.deepEqual(res.data.tools, ['send_message']);
+});
+
+test('agent activity route returns the selected agent activity window', async () => {
+  let activityArgs = null;
+  const deps = routeDeps({
+    listAgentActivity: async (agentId, options) => {
+      activityArgs = { agentId, options };
+      return {
+        agentId,
+        events: [
+          { id: 'evt_today', agentId, type: 'agent_status_changed', message: 'Ada is idle.', createdAt: '2026-05-11T10:00:00.000Z' },
+          { id: 'evt_yesterday', agentId, type: 'agent_activity', message: 'Ada reported daemon activity.', createdAt: '2026-05-10T08:00:00.000Z' },
+        ],
+        hasMore: false,
+        nextBefore: '',
+        windowStart: '2026-05-04T12:00:00.000Z',
+        windowEnd: '2026-05-11T12:00:00.000Z',
+      };
+    },
+  });
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/api/agents/agt_1/activity?days=7&limit=5000&before=2026-05-11T12%3A00%3A00.000Z'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(activityArgs.agentId, 'agt_1');
+  assert.deepEqual(activityArgs.options, {
+    days: '7',
+    limit: '5000',
+    before: '2026-05-11T12:00:00.000Z',
+  });
+  assert.deepEqual(res.data.events.map((event) => event.id), ['evt_today', 'evt_yesterday']);
+});
+
+test('agent activity route returns 404 for a missing agent', async () => {
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/api/agents/missing/activity'),
+    routeDeps(),
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.error, 'Agent not found.');
 });
 
 test('agent workspace route falls back to cloud MEMORY.md mirror for offline remote agents', async () => {
