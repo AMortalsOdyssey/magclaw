@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -47,4 +48,83 @@ test('runtime keeps agent channel awareness passive unless the agent explicitly 
   assert.match(appServerSource, /sourceMessage\?\.passiveAwareness/);
   assert.match(appServerSource, /agent_passive_awareness_stdout_suppressed/);
   assert.match(appServerSource, /markPassiveAwarenessWorkItemsObserved/);
+});
+
+test('remote delivery inlines current image attachment data before daemon dispatch', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-runtime-inline-image-'));
+  const attachmentRoot = path.join(tmp, 'attachments');
+  const imagePath = path.join(attachmentRoot, 'wsp_test', 'att_current.png');
+  await mkdir(path.dirname(imagePath), { recursive: true });
+  await writeFile(imagePath, Buffer.from('current-image'));
+  const state = {
+    humans: [{ id: 'hum_test', name: 'Human', role: 'owner' }],
+    agents: [{
+      id: 'agt_remote',
+      name: 'Remote',
+      runtime: 'codex',
+      computerId: 'cmp_remote',
+      workspaceId: 'wsp_test',
+    }],
+    channels: [{
+      id: 'chan_all',
+      name: 'all',
+      workspaceId: 'wsp_test',
+      humanIds: ['hum_test'],
+      agentIds: ['agt_remote'],
+      memberIds: ['hum_test', 'agt_remote'],
+    }],
+    dms: [],
+    messages: [],
+    replies: [],
+    tasks: [],
+    workItems: [],
+    attachments: [{
+      id: 'att_current',
+      name: 'current.png',
+      type: 'image/png',
+      bytes: 13,
+      storageKey: 'wsp_test/att_current.png',
+      source: 'upload',
+    }],
+    events: [],
+  };
+  let delivered = null;
+  const runtime = createAgentRuntimeManager({
+    ROOT,
+    HOST: '127.0.0.1',
+    PORT: 6543,
+    attachmentStorageDir: attachmentRoot,
+    getState: () => state,
+    makeId: () => 'wi_inline',
+    now: () => '2026-05-28T10:00:00.000Z',
+    addSystemEvent: () => {},
+    targetForConversation: () => '#all',
+    findMessage: () => null,
+    findTaskForThreadMessage: () => null,
+    shouldStartThreadForAgentDelivery: () => false,
+    codexRuntimeOverrideForDelivery: () => null,
+    cloudRelay: {
+      agentShouldUseRelay: () => true,
+      deliverToAgent: async (_agent, message) => {
+        delivered = message;
+      },
+    },
+  });
+
+  try {
+    await runtime.deliverMessageToAgent(state.agents[0], 'channel', 'chan_all', {
+      id: 'msg_current',
+      workspaceId: 'wsp_test',
+      authorType: 'human',
+      authorId: 'hum_test',
+      body: '现在能看到吗',
+      attachmentIds: ['att_current'],
+    });
+
+    const attachment = delivered?.contextPack?.attachments?.find((item) => item.id === 'att_current');
+    assert.equal(attachment?.visualInput, true);
+    assert.equal(attachment?.dataUrl, `data:image/png;base64,${Buffer.from('current-image').toString('base64')}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 });

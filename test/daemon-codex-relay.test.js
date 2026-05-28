@@ -98,6 +98,7 @@ function waitFor(fn, timeoutMs = 30000) {
 
 async function startRelay(options = {}) {
   const messages = [];
+  const readAttachmentRequests = [];
   const sockets = new Set();
   let activeSocket = null;
   const clipboardAttachmentDataUrl = `data:image/png;base64,${Buffer.from('remote-clipboard-image').toString('base64')}`;
@@ -110,6 +111,7 @@ async function startRelay(options = {}) {
       assert.equal(req.headers.authorization, 'Bearer mc_machine_test');
       assert.equal(url.searchParams.get('agentId'), options.agent?.id || 'agt_remote');
       const attachmentId = url.searchParams.get('attachmentId');
+      readAttachmentRequests.push(attachmentId);
       const isUpload = attachmentId === 'att_upload';
       const isClipboard = attachmentId === 'att_clip';
       assert.equal(isUpload || isClipboard, true);
@@ -252,11 +254,20 @@ async function startRelay(options = {}) {
                   }],
                   tasks: [],
                   attachments: [{
+                    id: 'att_old',
+                    name: 'old.png',
+                    type: 'image/png',
+                    bytes: 12,
+                    url: '/api/attachments/att_old/old.png?workspaceId=wsp_test',
+                    source: 'upload',
+                    messageId: 'msg_old',
+                  }, {
                     id: 'att_upload',
                     name: 'upload.jpeg',
                     type: 'image/jpeg',
                     bytes: 12,
                     url: '/api/attachments/att_upload/upload.jpeg?workspaceId=wsp_test',
+                    dataUrl: uploadAttachmentDataUrl,
                     source: 'upload',
                     messageId: 'msg_test',
                   }, {
@@ -285,6 +296,7 @@ async function startRelay(options = {}) {
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
     messages,
+    readAttachmentRequests,
     send(payload) {
       activeSocket?.write(encodeServerFrame(payload));
     },
@@ -519,6 +531,7 @@ process.stdin.on('data', (chunk) => {
       { type: 'image', url: `data:image/png;base64,${Buffer.from('remote-avatar').toString('base64')}` },
       { type: 'image', url: `data:image/png;base64,${Buffer.from('peer-avatar').toString('base64')}` },
     ]);
+    assert.deepEqual(relay.readAttachmentRequests, ['att_clip']);
     assert.match(promptText, /Agent description: Remote agent that loves concise jokes/);
     assert.match(promptText, /Participants shown: @Human - human; role=owner; status=online, @Remote Codex \(you\) - agent; runtime=codex; status=idle; description=Remote agent that loves concise jokes, @KA - agent; runtime=codex; status=idle; description=Likes telling jokes/);
     assert.match(promptText, /Your profile avatar: image supplied as visual input/);

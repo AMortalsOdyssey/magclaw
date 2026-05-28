@@ -1785,6 +1785,15 @@ function contextArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function errorDetail(error) {
+  const parts = [
+    error?.message,
+    error?.cause?.code,
+    error?.cause?.message,
+  ].map((item) => String(item || '').trim()).filter(Boolean);
+  return [...new Set(parts)].join(' / ') || 'unknown error';
+}
+
 function contextText(value, limit = 1200) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
 }
@@ -3233,23 +3242,23 @@ class CodexAgentSession {
         input: { type: 'image', url: dataUrl },
       };
     } catch (error) {
-      logWarning('attachments', `Could not read image attachment ${attachmentId} for agent ${this.agent.id}: ${error.message}`);
+      logWarning('attachments', `Could not read image attachment ${attachmentId} for agent ${this.agent.id}: ${errorDetail(error)}`);
       return null;
     }
   }
 
   async imageInputFromContextReference(reference = {}, { preferReadAttachment = false } = {}) {
     if (!isContextImageReference(reference)) return null;
-    if (preferReadAttachment) {
-      const resolved = await this.readAttachmentImageInput(reference);
-      if (resolved) return resolved;
-    }
     const dataUrl = contextDataImageUrl(reference.dataUrl || reference.url || reference.downloadUrl);
     if (dataUrl) {
       return {
         key: `url:${dataUrl}`,
         input: { type: 'image', url: dataUrl },
       };
+    }
+    if (preferReadAttachment) {
+      const resolved = await this.readAttachmentImageInput(reference);
+      if (resolved) return resolved;
     }
     const url = remoteImageUrl(reference.url || reference.downloadUrl || '', this.serverUrl, reference.description);
     if (url) {
@@ -3272,7 +3281,12 @@ class CodexAgentSession {
     const inputs = [];
     const seen = new Set();
     const pack = message?.contextPack || {};
-    const attachments = contextArray(pack.attachments);
+    const allAttachments = contextArray(pack.attachments);
+    const currentAttachmentIds = new Set(contextArray(message?.attachmentIds).map((id) => String(id || '').trim()).filter(Boolean));
+    const attachmentsById = new Map(allAttachments.map((attachment) => [String(attachment?.id || '').trim(), attachment]));
+    const attachments = currentAttachmentIds.size
+      ? [...currentAttachmentIds].map((id) => attachmentsById.get(id) || { id, type: 'image/*' })
+      : allAttachments;
     for (const attachment of attachments) {
       const resolved = await this.imageInputFromContextReference(attachment, { preferReadAttachment: true });
       if (!resolved || seen.has(resolved.key)) continue;

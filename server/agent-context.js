@@ -405,13 +405,18 @@ function attachmentContextUrl(attachment, toolBaseUrl = '') {
 
 function attachmentsForContext(state, records, limit, toolBaseUrl = '') {
   const messageByAttachment = new Map();
+  const attachmentById = new Map(asArray(state?.attachments).map((attachment) => [String(attachment?.id || ''), attachment]));
+  const ordered = [];
   for (const record of asArray(records)) {
     for (const id of asArray(record?.attachmentIds)) {
-      if (!messageByAttachment.has(id)) messageByAttachment.set(id, record.id);
+      const attachmentId = String(id || '').trim();
+      if (!attachmentId || messageByAttachment.has(attachmentId)) continue;
+      messageByAttachment.set(attachmentId, record.id);
+      const attachment = attachmentById.get(attachmentId);
+      if (attachment) ordered.push(attachment);
     }
   }
-  return asArray(state?.attachments)
-    .filter((attachment) => messageByAttachment.has(attachment.id))
+  return ordered
     .slice(0, limit)
     .map((attachment) => ({
       id: attachment.id,
@@ -479,10 +484,10 @@ export function buildAgentContextPack({
   const recentMessages = recentMessagesForSpace(state, spaceType, spaceId, current, effectiveLimits.recentMessages);
   const thread = threadContextFor(state, parentMessageId, current, effectiveLimits.threadReplies);
   const visibleRecords = uniqueById([
-    ...recentMessages,
     current,
     thread?.parentMessage,
     ...asArray(thread?.recentReplies),
+    ...recentMessages,
   ].filter(Boolean));
   const space = spaceRecord(state, spaceType, spaceId);
 

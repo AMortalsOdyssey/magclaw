@@ -1244,6 +1244,7 @@ const agentRuntime = createAgentRuntimeManager({
   agentAvailableForAutoWork,
   agentDataDir,
   agentProcesses,
+  attachmentStorageDir: ATTACHMENTS_DIR,
   autoTaskMessageIntent,
   broadcastState,
   channelAgentIds,

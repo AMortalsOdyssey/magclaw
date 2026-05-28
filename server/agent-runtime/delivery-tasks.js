@@ -1,5 +1,6 @@
 const TASK_STATUS_VALUES = ['todo', 'in_progress', 'in_review', 'done', 'closed'];
 const TASK_STATUS_ERROR = `Unsupported task status. Use one of: ${TASK_STATUS_VALUES.join(', ')}.`;
+const INLINE_IMAGE_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
 
 function compactLogText(value, limit = 120) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
@@ -29,9 +30,64 @@ function deliveryContextLogSummary(agent, contextPack) {
     threadReplies: Array.isArray(contextPack?.thread?.recentReplies) ? contextPack.thread.recentReplies.length : 0,
     recentEvents: Array.isArray(contextPack?.recentEvents) ? contextPack.recentEvents.length : 0,
     tasks: Array.isArray(contextPack?.tasks) ? contextPack.tasks.length : 0,
+    attachments: Array.isArray(contextPack?.attachments) ? contextPack.attachments.length : 0,
+    attachmentIds: Array.isArray(contextPack?.attachments) ? contextPack.attachments.map((item) => item.id).filter(Boolean) : [],
+    inlineImageAttachments: Array.isArray(contextPack?.attachments)
+      ? contextPack.attachments.filter((item) => item.dataUrl && String(item.type || '').startsWith('image/')).length
+      : 0,
     peerMemoryRequired: Boolean(contextPack?.peerMemorySearch?.required),
     peerMemoryResults: Array.isArray(contextPack?.peerMemorySearch?.results) ? contextPack.peerMemorySearch.results.length : 0,
   };
+}
+
+function safeAttachmentStoragePath(attachment = {}) {
+  const configuredStorageDir = typeof attachmentStorageDir === 'undefined' ? '' : attachmentStorageDir;
+  const baseDir = String(configuredStorageDir || '').trim();
+  if (!baseDir) return String(attachment.path || '').trim();
+  const relative = String(attachment.storageKey || attachment.relativePath || '').trim();
+  if (relative) {
+    const resolved = path.resolve(baseDir, relative);
+    const relativeToBase = path.relative(baseDir, resolved);
+    if (relativeToBase && !relativeToBase.startsWith('..') && !path.isAbsolute(relativeToBase)) return resolved;
+    if (!relativeToBase) return resolved;
+  }
+  const direct = String(attachment.path || '').trim();
+  if (!direct) return '';
+  const resolvedDirect = path.resolve(direct);
+  const relativeToBase = path.relative(baseDir, resolvedDirect);
+  if (relativeToBase && !relativeToBase.startsWith('..') && !path.isAbsolute(relativeToBase)) return resolvedDirect;
+  if (!relativeToBase) return resolvedDirect;
+  return '';
+}
+
+async function hydrateContextPackCurrentAttachmentDataUrls(contextPack, currentMessage) {
+  const currentIds = new Set((Array.isArray(currentMessage?.attachmentIds) ? currentMessage.attachmentIds : []).map(String));
+  if (!currentIds.size || !Array.isArray(contextPack?.attachments)) return;
+  const attachmentsState = typeof state === 'undefined' ? {} : state;
+  const stateAttachments = new Map((Array.isArray(attachmentsState.attachments) ? attachmentsState.attachments : [])
+    .map((attachment) => [String(attachment?.id || ''), attachment]));
+  for (const attachment of contextPack.attachments) {
+    const attachmentId = String(attachment?.id || '').trim();
+    if (!attachmentId || !currentIds.has(attachmentId) || attachment.dataUrl) continue;
+    const source = stateAttachments.get(attachmentId) || attachment;
+    const type = String(source.type || source.mime || source.mimeType || attachment.type || '').toLowerCase();
+    if (!type.startsWith('image/')) continue;
+    const filePath = safeAttachmentStoragePath(source);
+    if (!filePath) continue;
+    try {
+      const buffer = await readFile(filePath);
+      if (buffer.length > INLINE_IMAGE_ATTACHMENT_MAX_BYTES) continue;
+      attachment.type = source.type || source.mime || source.mimeType || attachment.type || 'image/*';
+      attachment.dataUrl = `data:${attachment.type};base64,${buffer.toString('base64')}`;
+      attachment.visualInput = true;
+    } catch (error) {
+      console.warn('[agent-delivery] attachment_inline_image_failed', JSON.stringify({
+        attachmentId,
+        messageId: currentMessage?.id || null,
+        error: error.message,
+      }));
+    }
+  }
 }
 
 async function deliverMessageToAgent(agent, spaceType, spaceId, message, options = {}) {
@@ -59,6 +115,7 @@ async function deliverMessageToAgent(agent, spaceType, spaceId, message, options
     toolBaseUrl: `http://${HOST}:${PORT}`,
     limits: options.contextLimits || {},
   });
+  await hydrateContextPackCurrentAttachmentDataUrls(contextPack, routedMessage);
   const deliveryMessage = {
     ...routedMessage,
     spaceType,

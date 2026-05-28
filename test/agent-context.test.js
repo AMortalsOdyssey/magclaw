@@ -231,6 +231,73 @@ test('agent context pack exposes current image attachments and the target agent 
   assert.match(rendered, /source=clipboard/);
 });
 
+test('agent context pack prioritizes current-message attachments over older thread images', () => {
+  const state = {
+    humans: [{ id: 'hum_local', name: 'You', role: 'owner' }],
+    agents: [{ id: 'agt_codex', name: 'Codex', runtime: 'codex' }],
+    channels: [{
+      id: 'chan_all',
+      name: 'all',
+      humanIds: ['hum_local'],
+      agentIds: ['agt_codex'],
+      memberIds: ['hum_local', 'agt_codex'],
+    }],
+    dms: [],
+    messages: [{
+      id: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: '<@agt_codex> 这张旧图是什么',
+      attachmentIds: ['att_old'],
+      createdAt: '2026-05-28T02:00:00.000Z',
+    }],
+    replies: [{
+      id: 'msg_current',
+      parentMessageId: 'msg_parent',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: '现在这张能看到吗',
+      attachmentIds: ['att_new'],
+      createdAt: '2026-05-28T02:01:00.000Z',
+    }],
+    tasks: [],
+    attachments: [{
+      id: 'att_old',
+      name: 'old.png',
+      type: 'image/png',
+      bytes: 4096,
+      path: '/tmp/old.png',
+      source: 'upload',
+      createdAt: '2026-05-28T02:00:00.000Z',
+    }, {
+      id: 'att_new',
+      name: 'new.png',
+      type: 'image/png',
+      bytes: 4096,
+      path: '/tmp/new.png',
+      source: 'upload',
+      createdAt: '2026-05-28T02:01:00.000Z',
+    }],
+    events: [],
+  };
+
+  const pack = buildAgentContextPack({
+    state,
+    agentId: 'agt_codex',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    currentMessage: state.replies[0],
+    parentMessageId: 'msg_parent',
+    toolBaseUrl: 'http://127.0.0.1:6543',
+  });
+
+  assert.deepEqual(pack.attachments.map((attachment) => attachment.id), ['att_new', 'att_old']);
+});
+
 test('agent context pack resolves the target agent library avatar as visual input', () => {
   const state = {
     humans: [{ id: 'hum_local', name: 'You', role: 'owner' }],
