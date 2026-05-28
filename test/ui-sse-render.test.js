@@ -41,6 +41,11 @@ async function createRealtimeHarness() {
     conversationHistoryPages: { main: {}, thread: {} },
     conversationHistoryLoading: { main: {}, thread: {} },
     byId: (items, id) => (items || []).find((item) => item.id === id) || null,
+    actorStatusRenderKey: (authorId, authorType, stateSnapshot) => {
+      if (authorType !== 'agent') return '';
+      const agent = (stateSnapshot?.agents || []).find((item) => item.id === authorId);
+      return agent?.status || 'offline';
+    },
     deliveryReceiptSignature: (record) => (record.workItemVersion || ''),
     document: {
       addEventListener: noop,
@@ -159,7 +164,7 @@ test('preserved conversation history does not overwrite fresher reply counts fro
   assert.equal(merged.messages.find((message) => message.id === 'msg_parent')?.replyCount, 1);
 });
 
-test('thread visible signatures ignore heartbeat, read, and task metadata churn', async () => {
+test('thread visible signatures track agent status but ignore read and task metadata churn', async () => {
   const context = await createRealtimeHarness();
   const baseTask = {
     id: 'task_1',
@@ -215,9 +220,6 @@ test('thread visible signatures ignore heartbeat, read, and task metadata churn'
   const before = context.activeConversationSignature();
   context.appState = {
     ...baseState,
-    agents: baseState.agents.map((agent) => (
-      agent.id === 'agt_owner' ? { ...agent, status: 'thinking', runtimeLastTurnAt: '2026-05-26T10:00:05.000Z' } : agent
-    )),
     tasks: [{
       ...baseTask,
       updatedAt: '2026-05-26T10:00:05.000Z',
@@ -228,6 +230,15 @@ test('thread visible signatures ignore heartbeat, read, and task metadata churn'
   };
 
   assert.equal(context.activeConversationSignature(), before);
+
+  context.appState = {
+    ...baseState,
+    agents: baseState.agents.map((agent) => (
+      agent.id === 'agt_owner' ? { ...agent, status: 'thinking', runtimeLastTurnAt: '2026-05-26T10:00:05.000Z' } : agent
+    )),
+  };
+
+  assert.notEqual(context.activeConversationSignature(), before);
 
   context.appState = {
     ...baseState,

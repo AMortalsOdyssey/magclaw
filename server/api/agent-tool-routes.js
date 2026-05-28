@@ -5,7 +5,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { open, readFile, stat } from 'node:fs/promises';
-import { mimeForPath, safePathWithin } from '../path-utils.js';
+import { attachmentPathWithinStorage, mimeForPath, safePathWithin } from '../path-utils.js';
 import { createTaskStartupCollaboration } from '../task-startup-collaboration.js';
 
 const DEFAULT_ATTACHMENT_READ_MAX_BYTES = 2 * 1024 * 1024;
@@ -547,14 +547,7 @@ export async function handleAgentToolApi(req, res, url, deps) {
   }
 
   function attachmentFilePath(attachment = {}) {
-    const directPath = String(attachment.path || '').trim();
-    if (directPath) {
-      if (!attachmentStorageDir) return directPath;
-      return safePathWithin(attachmentStorageDir, directPath) || '';
-    }
-    const storageKey = String(attachment.storageKey || attachment.relativePath || '').trim();
-    if (!storageKey || !attachmentStorageDir) return '';
-    return safePathWithin(attachmentStorageDir, storageKey) || '';
+    return attachmentPathWithinStorage(attachment, attachmentStorageDir);
   }
 
   function attachmentName(attachment = {}) {

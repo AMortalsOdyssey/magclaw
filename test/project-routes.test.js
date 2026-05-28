@@ -195,6 +195,43 @@ test('project route group serves cloud attachments restored with storage keys', 
   }
 });
 
+test('project route group serves PVC storage key when restored path is stale', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-attachment-pvc-route-'));
+  try {
+    const storageKey = '2026/05/att_1-note.png';
+    await mkdir(path.dirname(path.join(tmp, storageKey)), { recursive: true });
+    await writeFile(path.join(tmp, storageKey), Buffer.from('png-data'));
+    const deps = routeDeps({
+      attachmentStorageDir: tmp,
+    });
+    deps.state.attachments.push({
+      id: 'att_1',
+      name: 'note.png',
+      type: 'image/png',
+      bytes: 8,
+      storageMode: 'pvc',
+      storageKey,
+      path: path.join(os.tmpdir(), 'old-magclaw-upload-root', storageKey),
+    });
+    const res = makeStreamResponse();
+
+    const handled = await handleProjectApi(
+      { method: 'GET' },
+      res,
+      new URL('http://local/api/attachments/att_1/note.png'),
+      deps,
+    );
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200, res.error || '');
+    await new Promise((resolve) => res.on('finish', resolve));
+    assert.equal(res.headers['content-type'], 'image/png');
+    assert.equal(res.body().toString('utf8'), 'png-data');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 // Local project folder linking is temporarily hidden until cloud-safe access exists.
 test.skip('project route group keeps project references local', async () => {
   const res = makeResponse();

@@ -1506,6 +1506,7 @@ function renderRecordKey(record) {
     id: record?.id || '',
     authorId: record?.authorId || '',
     authorType: record?.authorType || '',
+    authorStatus: actorStatusRenderKey(record?.authorId, record?.authorType),
     body: record?.body || '',
     createdAt: record?.createdAt || '',
     updatedAt: record?.updatedAt || '',

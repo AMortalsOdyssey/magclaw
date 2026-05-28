@@ -2144,7 +2144,7 @@ test('agent warmup renders as Warming with a distinct pink status dot', async ()
 
   assert.match(app, /function agentIsWarming\(agent\)/);
   assert.match(app, /agent\?\.runtimeActivity/);
-  assert.match(app, /function agentDisplayStatus\(agent\)/);
+  assert.match(app, /function agentDisplayStatus\(agent, stateSnapshot = appState\)/);
   assert.match(serverWarmSource, /isWarmup \? 'warming' : 'thinking'/);
   assert.match(app, /if \(agentIsWarming\(agent\)\) return 'warming'/);
   assert.match(app, /!computerIsConnected\(computer\)/);
@@ -2234,18 +2234,19 @@ test('codex agent startup repairs stale configured Codex paths before spawning',
   assert.match(legacySource, /shell: runtimeCommandNeedsShell\(state\.settings\.codexPath \|\| 'codex'\)/);
 });
 
-test('message status dots render without making heartbeat part of message row keys', async () => {
+test('message status dots render with agent status in message row keys only', async () => {
   const app = await readAppSource();
   const renderKeySource = app.slice(app.indexOf('function renderRecordKey'), app.indexOf('function renderSystemEvent'));
   const humanStatusSource = app.slice(app.indexOf('function humanStatusDot'), app.indexOf('function attachmentLinks'));
 
-  assert.doesNotMatch(renderKeySource, /authorStatus/);
-  assert.doesNotMatch(renderKeySource, /record\?\.authorType === 'agent'/);
+  assert.match(renderKeySource, /authorStatus/);
+  assert.match(renderKeySource, /actorStatusRenderKey\(record\?\.authorId, record\?\.authorType\)/);
   assert.match(app, /function applyPresenceHeartbeat\(heartbeat\)/);
   assert.match(app, /const incomingHumansById = new Map/);
   assert.match(app, /humans,\n    updatedAt: heartbeat\.updatedAt/);
   assert.match(app, /function agentStatusDot\(authorId, authorType\)/);
   assert.match(humanStatusSource, /humanByIdAny\(authorId\)/);
+  assert.doesNotMatch(renderKeySource, /humanByIdAny/);
 });
 
 test('mention candidates hide deleted agents', async () => {

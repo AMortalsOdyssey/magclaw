@@ -637,6 +637,7 @@ function recordPatchSignature(record, stateSnapshot = appState) {
     record?.replyCount || 0,
     record?.taskId || '',
     taskVisiblePatchSignature(task),
+    actorStatusRenderKey(record?.authorId, record?.authorType, stateSnapshot),
     (record?.attachmentIds || []).join(','),
     (record?.savedBy || []).join(','),
     deliveryReceiptSignature(record),

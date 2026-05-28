@@ -251,10 +251,10 @@ function agentIsStandby(agent) {
     && agentHasWarmRuntimeSession(agent);
 }
 
-function agentDisplayStatus(agent) {
+function agentDisplayStatus(agent, stateSnapshot = appState) {
   if (!agent) return 'offline';
   if (agent.deletedAt || agent.archivedAt) return 'deleted';
-  const computer = agent.computerId ? byId(appState?.computers, agent.computerId) : null;
+  const computer = agent.computerId ? byId(stateSnapshot?.computers, agent.computerId) : null;
   if (computer && typeof computerIsDisabled === 'function' && computerIsDisabled(computer)) return 'disabled';
   if (computer?.deletedAt || computer?.archivedAt) return 'deleted';
   if (agentIsWarming(agent)) return 'warming';
@@ -265,6 +265,12 @@ function agentDisplayStatus(agent) {
   }
   if (agentIsStandby(agent)) return 'standby';
   return agent?.status || 'offline';
+}
+
+function actorStatusRenderKey(authorId, authorType, stateSnapshot = appState) {
+  if (authorType !== 'agent') return '';
+  const agent = byId(stateSnapshot?.agents, authorId);
+  return agent ? agentDisplayStatus(agent, stateSnapshot) : 'offline';
 }
 
 function presenceTone(status) {

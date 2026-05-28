@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { safePathWithin } from '../path-utils.js';
+import { attachmentPathWithinStorage } from '../path-utils.js';
 
 // Project and attachment API routes.
 // This route group owns local project folder registration, project search/tree
@@ -33,11 +33,7 @@ export async function handleProjectApi(req, res, url, deps) {
   const state = getState();
 
   function attachmentFilePath(attachment = {}) {
-    const directPath = String(attachment.path || '').trim();
-    if (directPath) return directPath;
-    const storageKey = String(attachment.storageKey || attachment.relativePath || '').trim();
-    if (!storageKey || !attachmentStorageDir) return '';
-    return safePathWithin(attachmentStorageDir, storageKey) || '';
+    return attachmentPathWithinStorage(attachment, attachmentStorageDir);
   }
 
   function scopedAttachmentUrl(attachment = {}, workspaceId = '') {

@@ -994,3 +994,57 @@ test('agent attachment tools list and read original uploaded files', async () =>
   assert.equal(readRes.data.contentText, 'hello from the original attachment\n');
   assert.equal(readRes.data.contentBase64, Buffer.from('hello from the original attachment\n').toString('base64'));
 });
+
+test('agent attachment tools read PVC storage key when restored path is stale', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-agent-attachment-pvc-'));
+  const storageKey = '2026/05/att_image-note.png';
+  const filePath = path.join(tmp, storageKey);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, Buffer.from('png-data'));
+
+  const deps = routeDeps({
+    attachmentStorageDir: tmp,
+  });
+  deps.state.connection = { workspaceId: 'wsp_test' };
+  deps.state.channels = [{
+    id: 'chan_all',
+    name: 'all',
+    workspaceId: 'wsp_test',
+    memberIds: ['agt_one'],
+    agentIds: ['agt_one'],
+  }];
+  deps.state.messages = [{
+    id: 'msg_attach',
+    workspaceId: 'wsp_test',
+    body: '<@agt_one> read this image',
+    authorType: 'human',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    attachmentIds: ['att_image'],
+  }];
+  deps.state.attachments.push({
+    id: 'att_image',
+    workspaceId: 'wsp_test',
+    name: 'note.png',
+    type: 'image/png',
+    bytes: 8,
+    storageMode: 'pvc',
+    storageKey,
+    path: path.join(os.tmpdir(), 'old-magclaw-upload-root', storageKey),
+    createdBy: 'hum_local',
+    url: '/api/attachments/att_image/note.png?workspaceId=wsp_test',
+  });
+
+  const readRes = makeResponse();
+  assert.equal(await handleAgentToolApi(
+    { method: 'GET', daemonAuth: { workspaceId: 'wsp_test' } },
+    readRes,
+    new URL('http://local/api/agent-tools/attachments/read?agentId=agt_one&attachmentId=att_image'),
+    deps,
+  ), true);
+
+  assert.equal(readRes.statusCode, 200, readRes.error || '');
+  assert.equal(readRes.data.file.path, filePath);
+  assert.equal(readRes.data.contentBase64, Buffer.from('png-data').toString('base64'));
+  assert.equal(readRes.data.dataUrl, `data:image/png;base64,${Buffer.from('png-data').toString('base64')}`);
+});

@@ -40,6 +40,20 @@ export function safePathWithin(base, target = '.') {
   return resolved;
 }
 
+export function attachmentPathWithinStorage(attachment = {}, attachmentStorageDir = '') {
+  const baseDir = String(attachmentStorageDir || '').trim();
+  const storageKey = String(attachment.storageKey || attachment.relativePath || '').trim();
+  if (storageKey && baseDir) {
+    const resolved = safePathWithin(baseDir, storageKey);
+    if (resolved) return resolved;
+  }
+
+  const directPath = String(attachment.path || '').trim();
+  if (!directPath) return '';
+  if (!baseDir) return directPath;
+  return safePathWithin(baseDir, directPath) || '';
+}
+
 export function toPosixPath(value) {
   return String(value || '').replace(/\\/g, '/').split(path.sep).join('/');
 }
