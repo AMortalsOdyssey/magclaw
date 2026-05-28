@@ -1438,6 +1438,69 @@
   opacity: 0.5;
 }
 
+.join-channel-discovery {
+  display: grid;
+  gap: 14px;
+}
+
+.join-channel-discovery-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(52vh, 460px);
+  overflow: auto;
+}
+
+.join-channel-discovery-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 9px 10px;
+  border: 2px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  text-align: left;
+  box-shadow: var(--shadow-pixel-sm);
+  cursor: pointer;
+}
+
+.join-channel-discovery-row:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--border);
+}
+
+.join-channel-discovery-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--border);
+  background: var(--accent-soft);
+  font-weight: 900;
+}
+
+.join-channel-discovery-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.join-channel-discovery-copy strong,
+.join-channel-discovery-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.join-channel-discovery-copy small,
+.join-channel-discovery-row em {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+}
+
 /* Avatar Picker */
 .avatar-picker {
   margin-bottom: 12px;

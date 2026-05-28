@@ -14,6 +14,7 @@ function renderModal() {
     'join-link-revoke-confirm': renderJoinLinkRevokeConfirmModal,
     'server-create': renderServerCreateModal,
     'attachment-preview': renderAttachmentPreviewModal,
+    'join-channel-discovery': renderJoinChannelDiscoveryModal,
     project: renderProjectModal,
     dm: renderDmModal,
     task: renderTaskModal,
@@ -49,7 +50,13 @@ function renderServerCreateModal() {
     ${modalHeader('Create Server', 'Console')}
     <form id="console-server-form" class="modal-form">
       <label><span>Server name</span><input name="name" placeholder="My Team" autocomplete="off" data-console-server-name required /></label>
-      <label><span>URL slug</span><input name="slug" placeholder="my-team" autocomplete="off" spellcheck="false" minlength="5" maxlength="63" pattern="(?=.{5,63}$)[a-z0-9](?:[a-z0-9\\-]*[a-z0-9])?" data-console-server-slug data-auto-slug="1" required /></label>
+      <label>
+        <span>URL slug</span>
+        <span class="server-slug-input-wrap">
+          <span class="server-slug-prefix" aria-hidden="true">/</span>
+          <input name="slug" placeholder="my-team" autocomplete="off" spellcheck="false" minlength="5" maxlength="63" pattern="(?=.{5,63}$)[a-z0-9](?:[a-z0-9\\-]*[a-z0-9])?" data-console-server-slug data-auto-slug="1" required />
+        </span>
+      </label>
       <small class="form-hint">Generated from the server name unless you edit it. Use 5-63 lowercase letters, numbers, and hyphens.</small>
       <div class="form-error console-server-error" data-console-server-error role="alert" aria-live="polite" hidden></div>
       <div class="modal-actions">
@@ -362,6 +369,40 @@ function renderMemberProposalCard(proposal) {
       <div class="member-proposal-actions">
         <button class="secondary-btn compact-btn" type="button" data-action="decline-member-proposal" data-proposal-id="${escapeHtml(proposal.id)}">Decline</button>
         <button class="primary-btn compact-btn" type="button" data-action="accept-member-proposal" data-proposal-id="${escapeHtml(proposal.id)}">Accept</button>
+      </div>
+    </div>
+  `;
+}
+
+function joinableChannels() {
+  return (appState?.channels || [])
+    .filter((channel) => channel && !isAllChannel(channel) && !currentUserIsChannelMember(channel))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+}
+
+function renderJoinChannelDiscoveryModal() {
+  const channels = joinableChannels();
+  return `
+    ${modalHeader('Join Channel', 'Channels')}
+    <div class="join-channel-discovery">
+      <div class="join-channel-discovery-list">
+        ${channels.length ? channels.map((channel) => {
+          const memberCount = channelMemberIdSet(channel).size;
+          return `
+            <button class="join-channel-discovery-row" type="button" data-action="join-channel" data-id="${escapeHtml(channel.id)}">
+              <span class="join-channel-discovery-icon">#</span>
+              <span class="join-channel-discovery-copy">
+                <strong>${escapeHtml(channel.name || 'channel')}</strong>
+                ${channel.description ? `<small>${escapeHtml(channel.description)}</small>` : '<small>Open channel</small>'}
+              </span>
+              <em>${memberCount} ${memberCount === 1 ? 'member' : 'members'}</em>
+            </button>
+          `;
+        }).join('') : '<div class="empty-box small">No channels to join right now.</div>'}
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+        <button type="button" class="primary-btn" data-action="open-modal" data-modal="channel">Create Channel</button>
       </div>
     </div>
   `;

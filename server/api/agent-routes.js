@@ -15,6 +15,38 @@ function agentNameUniqueKey(value) {
   return normalizeAgentName(value).replace(/\s+/g, '');
 }
 
+const RESERVED_AGENT_NAME_KEYS = new Set([
+  'all',
+  'agent',
+  'agents',
+  'assistant',
+  'bot',
+  'channel',
+  'channels',
+  'computer',
+  'computers',
+  'console',
+  'directmessages',
+  'dm',
+  'dms',
+  'magclaw',
+  'me',
+  'member',
+  'members',
+  'server',
+  'settings',
+  'system',
+  'task',
+  'tasks',
+  'you',
+]);
+
+function reservedAgentNameMessage(name) {
+  const key = agentNameUniqueKey(name).toLowerCase();
+  if (!key || !RESERVED_AGENT_NAME_KEYS.has(key)) return '';
+  return 'Agent name is reserved. Choose a more specific name.';
+}
+
 function agentWorkspaceKey(agent = {}, fallback = 'local') {
   return String(agent.workspaceId || fallback || 'local').trim() || 'local';
 }
@@ -275,6 +307,11 @@ export async function handleAgentApi(req, res, url, deps) {
     const name = normalizeAgentName(body.name, 'New Agent');
     if (!name) {
       sendError(res, 400, 'Agent name is required.');
+      return true;
+    }
+    const reservedMessage = reservedAgentNameMessage(name);
+    if (reservedMessage) {
+      sendError(res, 400, reservedMessage);
       return true;
     }
     const conflict = findAgentNameConflict(state, workspaceId || 'local', name);
@@ -576,6 +613,11 @@ export async function handleAgentApi(req, res, url, deps) {
       const name = normalizeAgentName(body.name);
       if (!name) {
         sendError(res, 400, 'Agent name is required.');
+        return true;
+      }
+      const reservedMessage = reservedAgentNameMessage(name);
+      if (reservedMessage) {
+        sendError(res, 400, reservedMessage);
         return true;
       }
       const workspaceId = agent.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local';

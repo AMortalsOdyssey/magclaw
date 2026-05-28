@@ -64,3 +64,18 @@ test('console server slug pattern is valid for browser html validation', async (
   assert.equal(typeof pattern, 'string');
   assert.doesNotThrow(() => new RegExp(renderedPattern, 'v'));
 });
+
+test('console server slug presents a leading slash while normalizing typed slashes away', async () => {
+  const renderSource = await readFile(new URL('../public/app/render-modals-uploads.js', import.meta.url), 'utf8');
+  const syncSource = await readFile(new URL('../public/app/sync-events-keyboard.js', import.meta.url), 'utf8');
+  const formHelpersSource = syncSource.slice(
+    syncSource.indexOf('const CONSOLE_SERVER_SLUG_MIN_LENGTH'),
+    syncSource.indexOf("document.addEventListener('input'"),
+  );
+  const { normalizeConsoleServerSlugInput } = Function(`${formHelpersSource}; return { normalizeConsoleServerSlugInput };`)();
+
+  assert.match(renderSource, /class="server-slug-input-wrap"/);
+  assert.match(renderSource, /class="server-slug-prefix"[^>]*>\/<\/span>/);
+  assert.equal(normalizeConsoleServerSlugInput('/Happy Team/'), 'happy-team');
+  assert.equal(normalizeConsoleServerSlugInput('///valid-slug'), 'valid-slug');
+});

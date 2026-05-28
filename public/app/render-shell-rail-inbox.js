@@ -318,7 +318,7 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
     </div>
 
     <div class="rail-section" data-rail-scroll-section="channels" data-scroll-key="rail:spaces:channels">
-      ${renderRailSectionTitle('channels', 'Channels', channels.length, { modal: 'channel' })}
+      ${renderRailSectionTitle('channels', 'Channels', channels.length, { modal: 'join-channel-discovery' })}
       ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel, unreadCountForSpace(spaceUnreadCounts, 'channel', channel.id))).join('')}
     </div>
 

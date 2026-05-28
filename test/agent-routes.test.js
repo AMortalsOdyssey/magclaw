@@ -251,6 +251,28 @@ test('agent route group rejects duplicate agent names in the same workspace afte
   assert.equal(deps.state.agents.filter((agent) => agent.name.replace(/\s+/g, '') === 'Builder').length, 1);
 });
 
+test('agent route group rejects reserved agent names on create', async () => {
+  const deps = routeDeps({
+    readJson: async () => ({
+      name: 'all',
+      runtime: 'Codex CLI',
+      runtimeId: 'codex',
+    }),
+  });
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/agents'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 400);
+  assert.match(res.error, /reserved/i);
+  assert.equal(deps.state.agents.length, 1);
+});
+
 test('agent route group allows differently cased names in the same workspace', async () => {
   const deps = routeDeps({
     currentActor: () => ({
@@ -331,6 +353,23 @@ test('agent route group rejects renaming to another agent name in the same works
 
   assert.equal(res.statusCode, 409);
   assert.match(res.error, /Agent name already exists/i);
+  assert.equal(deps.state.agents[0].name, 'Ada');
+});
+
+test('agent route group rejects reserved agent names on rename', async () => {
+  const deps = routeDeps({
+    readJson: async () => ({ name: 'System' }),
+  });
+  const res = makeResponse();
+  await handleAgentApi(
+    { method: 'PATCH' },
+    res,
+    new URL('http://local/api/agents/agt_1'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 400);
+  assert.match(res.error, /reserved/i);
   assert.equal(deps.state.agents[0].name, 'Ada');
 });
 

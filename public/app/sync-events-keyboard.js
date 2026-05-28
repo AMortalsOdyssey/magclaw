@@ -1897,6 +1897,10 @@ function consoleServerSlugFromName(value) {
     .replace(/-$/g, '');
 }
 
+function normalizeConsoleServerSlugInput(value) {
+  return consoleServerSlugFromName(String(value || '').replace(/^\/+/, ''));
+}
+
 function clearConsoleServerFormError(form = document.getElementById('console-server-form')) {
   const errorNode = form?.querySelector?.('[data-console-server-error]');
   if (!errorNode) return;
@@ -1993,7 +1997,7 @@ document.addEventListener('input', async (event) => {
     }
     if (event.target.matches?.('[data-console-server-slug]')) {
       event.target.dataset.autoSlug = '0';
-      const normalized = consoleServerSlugFromName(event.target.value);
+      const normalized = normalizeConsoleServerSlugInput(event.target.value);
       if (event.target.value !== normalized) event.target.value = normalized;
       if (!normalized) syncConsoleServerSlug(consoleServerForm, { force: true });
       validateConsoleServerForm(consoleServerForm, { report: false });

@@ -537,6 +537,31 @@
   font-size: 12px;
 }
 
+.server-slug-input-wrap {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  border: 2px solid var(--border);
+  background: var(--bg-input);
+}
+
+.server-slug-prefix {
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  min-width: 34px;
+  border-right: 2px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--text-muted);
+  font-weight: 900;
+}
+
+.server-slug-input-wrap input {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .modal-form .char-count {
   display: block;
   text-align: right;
