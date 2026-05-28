@@ -2401,7 +2401,7 @@ function renderInspector() {
   if (activeView === 'members') return '';
   if (workspaceActivityDrawerOpen) return renderWorkspaceActivityDrawer();
 
-  const thread = threadMessageId ? byId(appState.messages, threadMessageId) : null;
+  const thread = threadMessageId && activeView !== 'tasks' ? byId(appState.messages, threadMessageId) : null;
   if (thread) return renderThreadDrawer(thread);
 
   if (selectedProjectFile) return renderProjectFilePreview();

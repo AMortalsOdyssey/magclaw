@@ -1103,6 +1103,19 @@ function renderAttachmentPreviewModal() {
   `;
 }
 
+function renderTaskThreadModal() {
+  if (!(activeView === 'tasks' && threadMessageId)) return '';
+  const thread = byId(appState?.messages, threadMessageId);
+  if (!thread) return '';
+  return `
+    <div class="modal-backdrop task-thread-modal-backdrop" data-action="close-thread">
+      <section class="modal-card task-thread-modal" data-action="none" role="dialog" aria-modal="true" aria-label="${escapeHtml(t('Task thread'))}">
+        ${renderThreadDrawer(thread)}
+      </section>
+    </div>
+  `;
+}
+
 function renderMessageInteractionOverlays() {
   return `
     ${renderMessageContextMenu()}
@@ -1850,14 +1863,16 @@ function renderTaskPageEmptyState(variant) {
 
 function renderTaskSurface(tasks, options = {}) {
   if (!tasks.length) return renderTaskPageEmptyState(options.emptyVariant || 'empty');
-  return taskViewMode === 'list' ? renderTaskListView(tasks) : renderTaskBoard(tasks);
+  const viewMode = currentTaskViewMode();
+  return viewMode === 'list' ? renderTaskListView(tasks) : renderTaskBoard(tasks);
 }
 
 function renderTaskViewToggle() {
+  const viewMode = currentTaskViewMode();
   return `
     <div class="task-view-toggle" role="group" aria-label="Task view">
-      <button class="${taskViewMode === 'board' ? 'active' : ''}" type="button" data-action="set-task-view" data-view="board">▥ Board</button>
-      <button class="${taskViewMode === 'list' ? 'active' : ''}" type="button" data-action="set-task-view" data-view="list">☷ List</button>
+      <button class="${viewMode === 'board' ? 'active' : ''}" type="button" data-action="set-task-view" data-view="board">▥ Board</button>
+      <button class="${viewMode === 'list' ? 'active' : ''}" type="button" data-action="set-task-view" data-view="list">☷ List</button>
     </div>
   `;
 }
@@ -1993,6 +2008,7 @@ function renderGlobalTasks() {
   const channelTasks = (appState.tasks || []).filter(isVisibleChannelTask);
   const filteredTasks = channelTasks.filter(taskMatchesChannelFilter);
   const subtitle = taskCountLabel(channelTasks.length, filteredTasks.length);
+  const viewMode = currentTaskViewMode();
   return `
     <section class="task-page">
       <header class="task-page-header pixel-panel">
@@ -2006,7 +2022,7 @@ function renderGlobalTasks() {
         ${renderTaskViewToggle()}
       </header>
       ${renderTaskToolbar(channelTasks, filteredTasks)}
-      ${filteredTasks.length ? (taskViewMode === 'list' ? renderTaskListView(filteredTasks) : renderTaskBoard(filteredTasks)) : renderTaskPageEmptyState(channelTasks.length ? 'filter' : 'empty')}
+      ${filteredTasks.length ? (viewMode === 'list' ? renderTaskListView(filteredTasks) : renderTaskBoard(filteredTasks)) : renderTaskPageEmptyState(channelTasks.length ? 'filter' : 'empty')}
     </section>
   `;
 }

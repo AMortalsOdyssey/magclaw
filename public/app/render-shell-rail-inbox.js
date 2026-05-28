@@ -47,6 +47,7 @@ function render() {
       ${appFlashBanner}
       ${renderMobileShell()}
       ${modal ? renderModal() : ''}
+      ${typeof renderTaskThreadModal === 'function' ? renderTaskThreadModal() : ''}
       ${typeof renderMessageInteractionOverlays === 'function' ? renderMessageInteractionOverlays() : ''}
     `;
     if (typeof translatePage === 'function') translatePage(root);
@@ -93,6 +94,7 @@ function render() {
       ` : ''}
     </div>
     ${modal ? renderModal() : ''}
+    ${typeof renderTaskThreadModal === 'function' ? renderTaskThreadModal() : ''}
     ${typeof renderMessageInteractionOverlays === 'function' ? renderMessageInteractionOverlays() : ''}
   `;
   if (typeof translatePage === 'function') translatePage(root);

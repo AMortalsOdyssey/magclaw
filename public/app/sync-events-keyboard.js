@@ -499,6 +499,21 @@ async function refreshOpenThreadReplies(parentMessageId = threadMessageId) {
   return true;
 }
 
+async function refreshActiveSpaceMessages(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  const targetType = String(spaceType || '').trim();
+  const targetId = String(spaceId || '').trim();
+  if (!appState || !targetType || !targetId) return false;
+  const params = new URLSearchParams();
+  params.set('limit', String(CONVERSATION_HISTORY_PAGE_SIZE));
+  const result = await api(`/api/spaces/${targetType}/${targetId}/messages?${params.toString()}`);
+  if (!appState || selectedSpaceType !== targetType || selectedSpaceId !== targetId) return false;
+  updateMainHistoryPage(targetType, targetId, result.pagination || {});
+  const nextState = mergeSpaceMessagePageIntoState(appState, targetType, targetId, result.messages || []);
+  if (nextState === appState) return false;
+  applyStateUpdate(nextState);
+  return true;
+}
+
 function refreshThreadSelection(messageId = threadMessageId, { loadReplies = true } = {}) {
   if (typeof connectEvents === 'function') connectEvents();
   if (!loadReplies || !messageId) return;
@@ -707,7 +722,7 @@ function visibleTaskSurfaceSignature(stateSnapshot = appState) {
       surface: 'space-tasks',
       spaceType: selectedSpaceType || '',
       spaceId: selectedSpaceId || '',
-      viewMode: taskViewMode || 'board',
+      viewMode: taskViewModeForScope(taskViewScope()),
       collapsed: taskColumnStateSignature(),
       tasks: stateSpaceTasks(stateSnapshot).map(taskSurfaceTaskSignature),
     });
@@ -715,7 +730,7 @@ function visibleTaskSurfaceSignature(stateSnapshot = appState) {
   if (activeView === 'tasks') {
     return JSON.stringify({
       surface: 'global-tasks',
-      viewMode: taskViewMode || 'board',
+      viewMode: taskViewModeForScope(taskViewScope()),
       filters: [...(taskChannelFilterIds || [])].sort(),
       collapsed: taskColumnStateSignature(),
       tasks: stateVisibleGlobalTasks(stateSnapshot).map(taskSurfaceTaskSignature),
@@ -1360,7 +1375,7 @@ function applySseSeq(seqInput) {
 
 function applyRealtimeJournalEvent(envelope) {
   if (applySseSeq(envelope?.seq)) {
-    refreshAfterSseGap();
+    refreshAfterSseGap(envelope);
     return;
   }
   const eventType = String(envelope?.eventType || '');
@@ -1442,11 +1457,42 @@ function applyPresenceHeartbeat(heartbeat) {
   });
 }
 
-async function refreshAfterSseGap() {
+function realtimeBusinessObjectTarget(envelope = {}) {
+  const payload = envelope?.payload || {};
+  if (threadMessageId) return { type: 'thread', id: threadMessageId };
+  const parentMessageId = payload.reply?.parentMessageId || payload.message?.parentMessageId || '';
+  if (parentMessageId) return { type: 'thread', id: parentMessageId };
+  if (activeView === 'tasks' || activeTab === 'tasks') {
+    return { type: 'tasks', scope: taskViewScope() };
+  }
+  if (activeView === 'space' && selectedSpaceType && selectedSpaceId) {
+    return { type: 'space', spaceType: selectedSpaceType, spaceId: selectedSpaceId };
+  }
+  return { type: 'bootstrap' };
+}
+
+async function refreshRealtimeBusinessObject(target = realtimeBusinessObjectTarget()) {
+  if (target?.type === 'thread' && target.id) {
+    const refreshed = await refreshOpenThreadReplies(target.id);
+    if (refreshed) return true;
+  }
+  if (target?.type === 'space' && target.spaceType && target.spaceId) {
+    const refreshed = await refreshActiveSpaceMessages(target.spaceType, target.spaceId);
+    if (refreshed) return true;
+  }
+  if (target?.type === 'tasks') {
+    applyStateUpdate(await api(bootstrapStatePath()));
+    return true;
+  }
+  applyStateUpdate(await api(bootstrapStatePath()));
+  return true;
+}
+
+async function refreshAfterSseGap(envelope = {}) {
   if (sseGapRefreshInFlight) return;
   sseGapRefreshInFlight = true;
   try {
-    applyStateUpdate(await api(bootstrapStatePath()));
+    await refreshRealtimeBusinessObject(realtimeBusinessObjectTarget(envelope));
   } catch (error) {
     console.warn('Failed to compensate SSE gap:', error);
   } finally {
@@ -1456,7 +1502,7 @@ async function refreshAfterSseGap() {
 
 function applyStateDeltaEnvelope(envelope) {
   if (applySseSeq(envelope?.seq)) {
-    refreshAfterSseGap();
+    refreshAfterSseGap(envelope);
     return;
   }
   if (envelope?.type === 'state_patch' && envelope.payload) {

@@ -2,6 +2,7 @@ const root = document.querySelector('#root');
 const UI_STATE_KEY = 'magclawUiState';
 const PANE_SCROLL_KEY = 'magclawPaneScroll';
 const TASK_COLUMN_COLLAPSE_KEY = 'magclawTaskColumnCollapse';
+const TASK_VIEW_MODE_STORAGE_KEY = 'magclawTaskViewModeByScope';
 const SIDEBAR_SECTION_COLLAPSE_KEY = 'magclawSidebarSectionCollapse';
 const SKILL_SECTION_COLLAPSE_KEY = 'magclawSkillSectionCollapse';
 const NOTIFICATION_PREF_KEY = 'magclawNotificationPrefs';
@@ -105,7 +106,7 @@ let searchVisibleCount = 20;
 let addMemberSearchQuery = '';
 let createChannelMemberSearchQuery = '';
 let taskFilter = 'all';
-let taskViewMode = 'board';
+let taskViewMode = taskViewModeForScope('global');
 let taskChannelFilterIds = [];
 let taskChannelMenuOpen = false;
 let openTaskStatusMenuId = null;
@@ -506,6 +507,49 @@ function taskStatusIcon(status) {
 
 function taskStatusLabel(status) {
   return taskStatusInfo(status).label;
+}
+
+function normalizeTaskViewMode(value) {
+  return value === 'list' ? 'list' : 'board';
+}
+
+function readTaskViewModeByScope() {
+  const parsed = readJsonStorage(TASK_VIEW_MODE_STORAGE_KEY, {});
+  return parsed && typeof parsed === 'object' ? parsed : {};
+}
+
+function taskViewScope() {
+  if (activeView === 'space' && activeTab === 'tasks' && selectedSpaceType === 'channel' && selectedSpaceId) {
+    return `channel:${selectedSpaceId}`;
+  }
+  if (activeView === 'tasks' && taskChannelFilterIds.length === 1) {
+    return `channel:${taskChannelFilterIds[0]}`;
+  }
+  return 'global';
+}
+
+function taskViewModeForScope(scope = taskViewScope()) {
+  const key = String(scope || 'global');
+  const modes = readTaskViewModeByScope();
+  return normalizeTaskViewMode(modes[key] || modes.global || 'board');
+}
+
+function setTaskViewModeForScope(value, scope = taskViewScope()) {
+  const key = String(scope || 'global');
+  const nextMode = normalizeTaskViewMode(value);
+  const modes = {
+    ...readTaskViewModeByScope(),
+    [key]: nextMode,
+  };
+  if (!modes.global) modes.global = nextMode;
+  writeJsonStorage(TASK_VIEW_MODE_STORAGE_KEY, modes);
+  taskViewMode = nextMode;
+  return nextMode;
+}
+
+function currentTaskViewMode() {
+  taskViewMode = taskViewModeForScope(taskViewScope());
+  return taskViewMode;
 }
 
 function renderTaskStatusBadge(status, options = {}) {

@@ -1361,7 +1361,7 @@ document.addEventListener('click', async (event) => {
       render();
     }
     if (action === 'set-task-view') {
-      taskViewMode = target.dataset.view === 'list' ? 'list' : 'board';
+      setTaskViewModeForScope(target.dataset.view);
       taskChannelMenuOpen = false;
       render();
     }
