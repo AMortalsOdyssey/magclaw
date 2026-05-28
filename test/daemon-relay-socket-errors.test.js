@@ -1697,6 +1697,62 @@ test('daemon relay requeues unacked sent deliveries when the socket disconnects'
   assert.equal(delivery.attempts, 2);
 });
 
+test('daemon relay delivers remote agent messages with the source workspace in multi-workspace clouds', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_prod';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  cloud.workspaces.push({ id: 'wsp_prod', slug: 'prod', name: 'Prod' });
+  state.computers.push({
+    id: 'cmp_prod',
+    workspaceId: 'wsp_prod',
+    name: 'Prod computer',
+    status: 'connected',
+    connectedVia: 'daemon',
+  });
+  state.agents.push({
+    id: 'agt_prod',
+    workspaceId: 'wsp_prod',
+    computerId: 'cmp_prod',
+    name: 'Prod Agent',
+    runtime: 'codex',
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_prod',
+    workspaceId: 'wsp_prod',
+    computerId: 'cmp_prod',
+    tokenHash,
+    revokedAt: null,
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  const result = await relay.deliverToAgent(state.agents[0], {
+    id: 'msg_prod',
+    workspaceId: 'wsp_prod',
+    spaceType: 'dm',
+    spaceId: 'dm_prod',
+    body: 'Look at this image.',
+    attachmentIds: ['att_prod'],
+    contextPack: {
+      space: { workspaceId: 'wsp_prod' },
+      attachments: [{ id: 'att_prod', name: 'logo.png', type: 'image/png' }],
+    },
+  });
+
+  assert.equal(result, true);
+  assert.equal(cloud.agentDeliveries[0].workspaceId, 'wsp_prod');
+  const delivered = decodeServerMessages(socket).find((message) => message.type === 'agent:deliver');
+  assert.equal(delivered?.workspaceId, 'wsp_prod');
+  assert.equal(delivered?.payload?.message?.workspaceId, 'wsp_prod');
+});
+
 test('daemon relay keeps offline agent presence while queuing delivery for a stopped daemon', async () => {
   const { cloud, relay, state } = createRelay();
   state.computers.push({

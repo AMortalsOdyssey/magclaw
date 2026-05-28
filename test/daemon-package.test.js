@@ -254,7 +254,7 @@ test('daemon run service state preserves launchd background mode for service-lau
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.35');
+  assert.equal(DAEMON_VERSION, '0.1.36');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -448,6 +448,16 @@ test('computer setup result prints the connected computer name', async () => {
   const setupSource = source.slice(source.indexOf('async function runComputerSetup'), source.indexOf('async function buildConfig'));
   assert.match(setupSource, /computerName: config\.computerName \|\| config\.name \|\| displayName/);
   assert.ok(setupSource.indexOf('computerId: config.computerId') < setupSource.indexOf('computerName:'));
+});
+
+test('remote delivery workspace prefers the source message over the relay envelope', async () => {
+  const source = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
+  const deliverSource = source.slice(source.indexOf('async handleAgentDeliver'), source.indexOf('async handleAgentStop'));
+  assert.match(deliverSource, /message\.payload\?\.message\?\.workspaceId/);
+  assert.match(deliverSource, /message\.workspaceId/);
+  assert.ok(
+    deliverSource.indexOf('message.payload?.message?.workspaceId') < deliverSource.indexOf('message.workspaceId'),
+  );
 });
 
 test('computer setup reuses a saved matched profile without opening device approval', async () => {

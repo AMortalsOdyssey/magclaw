@@ -376,6 +376,17 @@ export function createDaemonRelay(deps) {
     return workspaceIdForRuntime(computer, connection?.workspaceId || '');
   }
 
+  function workspaceIdForDeliveryPayload(agent, computer, payload = {}) {
+    return workspaceIdForRuntime(
+      payload?.message,
+      workspaceIdForRuntime(
+        payload?.workItem,
+        String(payload?.workspaceId || '').trim()
+          || workspaceIdForAgent(agent, workspaceIdForComputer(computer)),
+      ),
+    );
+  }
+
   function upgradeKey(computerId, commandId) {
     return `${String(computerId || '').trim()}:${String(commandId || '').trim()}`;
   }
@@ -715,6 +726,9 @@ export function createDaemonRelay(deps) {
       threadReplies: safeArray(pack?.thread?.recentReplies).length,
       recentEvents: safeArray(pack?.recentEvents).length,
       tasks: safeArray(pack?.tasks).length,
+      attachments: safeArray(pack?.attachments).length,
+      attachmentIds: safeArray(pack?.attachments).map((item) => item.id).filter(Boolean),
+      workspaceId: pack?.space?.workspaceId || '',
       peerMemoryRequired: Boolean(pack?.peerMemorySearch?.required),
       peerMemoryResults: safeArray(pack?.peerMemorySearch?.results).length,
     };
@@ -1980,7 +1994,11 @@ export function createDaemonRelay(deps) {
     const computer = findComputer(agent.computerId);
     if (!computer) return { queued: false, error: 'Computer not found.' };
     if (computerIsDisabled(computer)) return { queued: false, error: 'Computer is disabled.' };
-    const workspace = store.workspaces[0];
+    const workspaceId = workspaceIdForDeliveryPayload(agent, computer, payload);
+    const workspace = safeArray(store.workspaces).find((item) => item.id === workspaceId)
+      || safeArray(store.workspaces).find((item) => item.id === workspaceIdForAgent(agent))
+      || safeArray(store.workspaces).find((item) => item.id === workspaceIdForComputer(computer))
+      || store.workspaces[0];
     const messageId = payload.message?.id || payload.messageId || null;
     const workItemId = payload.workItem?.id || payload.workItemId || null;
     if (commandType === 'agent:deliver') {
@@ -2002,7 +2020,7 @@ export function createDaemonRelay(deps) {
     }
     const delivery = {
       id: makeId('adl'),
-      workspaceId: workspace.id,
+      workspaceId: workspaceId || workspace?.id || '',
       agentId: agent.id,
       computerId: computer.id,
       messageId,

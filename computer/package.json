@@ -1,13 +1,13 @@
 {
   "name": "@magclaw/computer",
-  "version": "0.1.35",
+  "version": "0.1.36",
   "description": "Browser-approved MagClaw Computer setup command.",
   "type": "module",
   "bin": {
     "magclaw-computer": "bin/magclaw-computer.js"
   },
   "dependencies": {
-    "@magclaw/cli-core": "0.1.35"
+    "@magclaw/cli-core": "0.1.36"
   },
   "publishConfig": {
     "access": "public"

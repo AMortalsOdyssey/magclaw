@@ -5075,7 +5075,11 @@ class MagClawDaemon {
       }
       const sessionContext = {
         sessionKey: message.payload?.sessionKey || message.sessionKey || '',
-        workspaceId: message.workspaceId || message.payload?.workspaceId || '',
+        workspaceId: message.payload?.message?.workspaceId
+          || message.payload?.workItem?.workspaceId
+          || message.payload?.workspaceId
+          || message.workspaceId
+          || '',
         message: message.payload?.message || {},
       };
       const sessionKey = sessionContext.sessionKey || daemonConversationLaneKey({
