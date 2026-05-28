@@ -418,7 +418,7 @@ document.addEventListener('click', async (event) => {
 	    if (action === 'add-selected-text-context') {
 	      const record = conversationRecord(target.dataset.id);
 	      const selectedText = messageContextMenu?.selectionText || '';
-	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'context', selectedText);
+	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'context', selectedText, { surface: messageContextMenu?.surface || '' });
 	      messageContextMenu = null;
 	      render();
 	      return;
@@ -433,7 +433,7 @@ document.addEventListener('click', async (event) => {
 	    }
 	    if (action === 'add-message-context') {
 	      const record = conversationRecord(target.dataset.id);
-	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'context');
+	      if (record && typeof quoteRecordToComposer === 'function') quoteRecordToComposer(record, 'context', '', { surface: messageContextMenu?.surface || '' });
 	      messageContextMenu = null;
 	      render();
 	      return;
@@ -447,7 +447,7 @@ document.addEventListener('click', async (event) => {
 	    }
 	    if (action === 'add-thread-context') {
 	      const record = conversationRecord(target.dataset.id);
-	      if (record && typeof addThreadReferenceToComposer === 'function') addThreadReferenceToComposer(record);
+	      if (record && typeof addThreadReferenceToComposer === 'function') addThreadReferenceToComposer(record, { surface: messageContextMenu?.surface || '' });
 	      messageContextMenu = null;
 	      render();
 	      return;

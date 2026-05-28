@@ -288,10 +288,12 @@ function recordTargetsThreadComposer(record) {
   return Boolean(threadMessageId && record && (record.id === threadMessageId || record.parentMessageId === threadMessageId));
 }
 
-function targetComposerIdForRecord(record) {
-  if (recordTargetsThreadComposer(record)) {
+function targetComposerIdForRecord(record, { surface = '' } = {}) {
+  if (surface === 'channel') return composerIdFor('message');
+  if (surface === 'thread' && recordTargetsThreadComposer(record)) {
     return composerIdFor('thread', threadMessageId);
   }
+  if (recordTargetsThreadComposer(record)) return composerIdFor('thread', threadMessageId);
   return composerIdFor('message');
 }
 
@@ -387,9 +389,9 @@ function selectedMessageTextForEvent(event) {
   return { recordId, text };
 }
 
-function quoteRecordToComposer(record, mode = 'quote', selectedText = '') {
+function quoteRecordToComposer(record, mode = 'quote', selectedText = '', options = {}) {
   const kind = selectedText ? 'selection' : 'message';
-  const composerId = targetComposerIdForRecord(record);
+  const composerId = targetComposerIdForRecord(record, options);
   const reference = referenceFromRecord(record, { mode, kind, selectedText });
   return addConversationReferenceToComposer(composerId, reference, {
     mentionRecord: record,
@@ -409,9 +411,9 @@ function addChannelContextReferenceToComposer(record, selectedText = '') {
   });
 }
 
-function addThreadReferenceToComposer(record) {
+function addThreadReferenceToComposer(record, options = {}) {
   const reference = threadReferenceFromRecord(record, 'context');
-  return addConversationReferenceToComposer(targetComposerIdForRecord(record), reference, {
+  return addConversationReferenceToComposer(targetComposerIdForRecord(record, options), reference, {
     mentionRecord: record,
   });
 }

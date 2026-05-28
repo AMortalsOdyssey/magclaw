@@ -552,6 +552,50 @@ test('message context references prepend the sender mention in the target compos
   assert.equal(context.composerMentionMaps['message:main']['@Cindy'], '<@agt_cindy>');
 });
 
+test('channel-surface context for an open thread parent stays in the channel composer', async () => {
+  const context = await conversationReferenceHarness();
+  context.threadMessageId = 'msg_root';
+  const record = {
+    id: 'msg_root',
+    authorType: 'agent',
+    authorId: 'agt_cindy',
+    body: 'This top-level channel message has an open thread.',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+  };
+  context.appState.messages = [record];
+
+  assert.equal(context.quoteRecordToComposer(record, 'context', '', { surface: 'channel' }), true);
+
+  assert.equal(context.composerReferences('thread:msg_root').length, 0);
+  const references = context.composerReferences('message:main');
+  assert.equal(references.length, 1);
+  assert.equal(references[0].sourceRecordId, 'msg_root');
+  assert.equal(context.composerDrafts['message:main'], '@Cindy ');
+});
+
+test('thread-surface context for an open thread parent stays in the thread composer', async () => {
+  const context = await conversationReferenceHarness();
+  context.threadMessageId = 'msg_root';
+  const record = {
+    id: 'msg_root',
+    authorType: 'agent',
+    authorId: 'agt_cindy',
+    body: 'This parent is rendered inside the open thread panel.',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+  };
+  context.appState.messages = [record];
+
+  assert.equal(context.quoteRecordToComposer(record, 'context', '', { surface: 'thread' }), true);
+
+  assert.equal(context.composerReferences('message:main').length, 0);
+  const references = context.composerReferences('thread:msg_root');
+  assert.equal(references.length, 1);
+  assert.equal(references[0].sourceRecordId, 'msg_root');
+  assert.equal(context.composerDrafts['thread:msg_root'], '@Cindy ');
+});
+
 test('thread context references prepend the selected message sender mention', async () => {
   const context = await conversationReferenceHarness();
   context.appState.messages = [
@@ -796,6 +840,9 @@ test('message context menu exposes context actions and hides thread context with
   assert.match(renderSource, /recordHasThreadContext\(record\)/);
   assert.match(renderSource, /renderContextMenuItem\('add-thread-context', t\('Add thread to context'\), record\.id\)/);
   assert.doesNotMatch(renderSource, /data-action="add-visible-conversation-context"/);
+  assert.match(clickSource, /quoteRecordToComposer\(record, 'context', selectedText, \{ surface: messageContextMenu\?\.surface \|\| '' \}\)/);
+  assert.match(clickSource, /quoteRecordToComposer\(record, 'context', '', \{ surface: messageContextMenu\?\.surface \|\| '' \}\)/);
+  assert.match(clickSource, /addThreadReferenceToComposer\(record, \{ surface: messageContextMenu\?\.surface \|\| '' \}\)/);
   assert.match(clickSource, /addChannelContextReferenceToComposer\(record, selectedText\)/);
   assert.match(clickSource, /addChannelContextReferenceToComposer\(record\)/);
   assert.match(prepareSource, /'add-message-channel-context'/);
