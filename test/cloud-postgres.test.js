@@ -1107,6 +1107,55 @@ test('postgres store can persist a single workspace runtime snapshot', async () 
   assert.equal(queries.some((query) => query.params?.includes?.('chan_one') || query.params?.includes?.('msg_one') || query.params?.includes?.('cmp_one')), true);
 });
 
+test('postgres store does not mis-scope or duplicate channel rows during workspace runtime persistence', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const updatedAt = '2026-05-13T00:00:01.000Z';
+
+  await store.persistWorkspaceFromState({
+    connection: { workspaceId: 'wsp_two' },
+    cloud: {
+      workspaces: [
+        { id: 'wsp_one', slug: 'one', name: 'One', createdAt, updatedAt: createdAt },
+        { id: 'wsp_two', slug: 'two', name: 'Two', createdAt, updatedAt: createdAt },
+      ],
+    },
+    channels: [
+      { id: 'chan_shared', workspaceId: 'wsp_one', name: 'all', createdAt, updatedAt: createdAt },
+      { id: 'chan_shared', name: 'all', createdAt, updatedAt: createdAt },
+      { id: 'chan_two', workspaceId: 'wsp_two', name: 'two-old', createdAt, updatedAt: createdAt },
+      { id: 'chan_two', workspaceId: 'wsp_two', name: 'two-latest', createdAt, updatedAt },
+    ],
+  }, 'wsp_two');
+
+  const channelInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_channels"'));
+  assert.ok(channelInsert);
+  const rows = [];
+  for (let index = 0; index < channelInsert.params.length; index += 8) {
+    rows.push(channelInsert.params.slice(index, index + 8));
+  }
+  assert.deepEqual(rows.map((row) => row[0]), ['chan_two']);
+  assert.equal(rows[0][1], 'wsp_two');
+  assert.equal(rows[0][2], 'two-latest');
+});
+
 test('postgres store runs different workspace runtime persists concurrently', async () => {
   const entered = {
     wsp_one: deferred(),

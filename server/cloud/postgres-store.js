@@ -271,6 +271,14 @@ function workspaceIdFor(record, state, cloud) {
   return defaultWorkspaceId(state, cloud);
 }
 
+function workspaceIdForRuntimeRecord(record, cloud) {
+  const ids = workspaceIds(cloud);
+  if (!ids.length) return '';
+  const explicit = record?.workspaceId || record?.workspace_id;
+  if (explicit) return ids.includes(explicit) ? explicit : '';
+  return ids.length === 1 ? ids[0] : '';
+}
+
 function userIdForHuman(human, cloud) {
   if (human?.authUserId) return human.authUserId;
   const member = safeArray(cloud?.workspaceMembers).find((item) => item.humanId && item.humanId === human?.id);
@@ -1431,6 +1439,22 @@ export function createCloudPostgresStore(optionsInput = {}) {
     `, params);
   }
 
+  function dedupeRowsByColumn(rows, columnIndex = 0) {
+    const deduped = new Map();
+    const withoutKey = [];
+    for (const row of rows) {
+      const key = row?.[columnIndex];
+      if (!key) {
+        withoutKey.push(row);
+        continue;
+      }
+      const normalizedKey = String(key);
+      if (deduped.has(normalizedKey)) deduped.delete(normalizedKey);
+      deduped.set(normalizedKey, row);
+    }
+    return [...withoutKey, ...deduped.values()];
+  }
+
   async function batchUpsertStateRecords(client, rows) {
     const deduped = new Map();
     for (const row of rows) {
@@ -1742,7 +1766,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const stateRecordRows = [];
 
     for (const human of safeArray(state.humans)) {
-      const workspaceId = workspaceIdFor(human, state, cloud);
+      const workspaceId = workspaceIdForRuntimeRecord(human, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       const durableStatus = humanStatus(human.status);
       humanRows.push([
@@ -1764,7 +1788,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
     for (const computer of safeArray(state.computers)) {
       if (!computer?.id) continue;
-      const workspaceId = workspaceIdFor(computer, state, cloud);
+      const workspaceId = workspaceIdForRuntimeRecord(computer, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       computerRows.push([
         computer.id,
@@ -1793,7 +1817,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     }
 
     for (const agent of safeArray(state.agents)) {
-      const workspaceId = workspaceIdFor(agent, state, cloud);
+      const workspaceId = workspaceIdForRuntimeRecord(agent, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       const durableStatus = agentStatus(agent.status);
       agentRows.push([
@@ -1821,7 +1845,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     }
 
     for (const channel of safeArray(state.channels)) {
-      const workspaceId = workspaceIdFor(channel, state, cloud);
+      const workspaceId = workspaceIdForRuntimeRecord(channel, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       channelRows.push([
         channel.id,
@@ -1836,7 +1860,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     }
 
     for (const dm of safeArray(state.dms)) {
-      const workspaceId = workspaceIdFor(dm, state, cloud);
+      const workspaceId = workspaceIdForRuntimeRecord(dm, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       dmRows.push([
         dm.id,
@@ -1849,7 +1873,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     }
 
     for (const message of safeArray(state.messages)) {
-      const workspaceId = workspaceIdFor(message, state, cloud);
+      const workspaceId = workspaceIdForRuntimeRecord(message, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       messageRows.push([
         message.id,
@@ -1874,7 +1898,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     }
 
     for (const reply of safeArray(state.replies)) {
-      const workspaceId = workspaceIdFor(reply, state, cloud);
+      const workspaceId = workspaceIdForRuntimeRecord(reply, cloud);
       if (!workspaceId || !inScope(workspaceId) || !reply.parentMessageId || !messageIds.has(reply.parentMessageId)) continue;
       replyRows.push([
         reply.id,
@@ -1896,7 +1920,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     }
 
     for (const task of safeArray(state.tasks)) {
-      const workspaceId = workspaceIdFor(task, state, cloud);
+      const workspaceId = workspaceIdForRuntimeRecord(task, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       taskRows.push([
         task.id,
@@ -1926,7 +1950,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     }
 
     for (const item of safeArray(state.workItems)) {
-      const workspaceId = workspaceIdFor(item, state, cloud);
+      const workspaceId = workspaceIdForRuntimeRecord(item, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       workItemRows.push([
         item.id,
@@ -1947,7 +1971,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     }
 
     for (const attachment of safeArray(state.attachments)) {
-      const workspaceId = workspaceIdFor(attachment, state, cloud);
+      const workspaceId = workspaceIdForRuntimeRecord(attachment, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       attachmentRows.push([
         attachment.id,
@@ -2024,7 +2048,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'created_at',
       'updated_at',
       'metadata',
-    ], humanRows, { metadata: '::jsonb' }, humanRuntimeConflictSuffix());
+    ], dedupeRowsByColumn(humanRows), { metadata: '::jsonb' }, humanRuntimeConflictSuffix());
     await batchInsertRows(client, 'cloud_computers', [
       'id',
       'workspace_id',
@@ -2048,7 +2072,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'disconnected_at',
       'disabled_at',
       'metadata',
-    ], computerRows, {
+    ], dedupeRowsByColumn(computerRows), {
       runtime_ids: '::jsonb',
       runtime_details: '::jsonb',
       capabilities: '::jsonb',
@@ -2072,7 +2096,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'updated_at',
       'status_updated_at',
       'metadata',
-    ], agentRows, { metadata: '::jsonb' }, agentRuntimeConflictSuffix());
+    ], dedupeRowsByColumn(agentRows), { metadata: '::jsonb' }, agentRuntimeConflictSuffix());
     await batchInsertRows(client, 'cloud_channels', [
       'id',
       'workspace_id',
@@ -2082,7 +2106,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'created_at',
       'updated_at',
       'metadata',
-    ], channelRows, { metadata: '::jsonb' });
+    ], dedupeRowsByColumn(channelRows), { metadata: '::jsonb' });
     await batchInsertRows(client, 'cloud_dms', [
       'id',
       'workspace_id',
@@ -2090,7 +2114,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'created_at',
       'updated_at',
       'metadata',
-    ], dmRows, { participant_ids: '::jsonb', metadata: '::jsonb' });
+    ], dedupeRowsByColumn(dmRows), { participant_ids: '::jsonb', metadata: '::jsonb' });
     await batchInsertRows(client, 'cloud_messages', [
       'id',
       'workspace_id',
@@ -2110,7 +2134,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'created_at',
       'updated_at',
       'metadata',
-    ], messageRows, {
+    ], dedupeRowsByColumn(messageRows), {
       attachment_ids: '::jsonb',
       mentioned_agent_ids: '::jsonb',
       mentioned_human_ids: '::jsonb',
@@ -2136,7 +2160,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'created_at',
       'updated_at',
       'metadata',
-    ], replyRows, {
+    ], dedupeRowsByColumn(replyRows), {
       attachment_ids: '::jsonb',
       mentioned_agent_ids: '::jsonb',
       mentioned_human_ids: '::jsonb',
@@ -2169,7 +2193,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'created_at',
       'updated_at',
       'metadata',
-    ], taskRows, {
+    ], dedupeRowsByColumn(taskRows), {
       assignee_ids: '::jsonb',
       attachment_ids: '::jsonb',
       local_references: '::jsonb',
@@ -2191,7 +2215,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'updated_at',
       'completed_at',
       'metadata',
-    ], workItemRows, { target: '::jsonb', payload: '::jsonb', metadata: '::jsonb' });
+    ], dedupeRowsByColumn(workItemRows), { target: '::jsonb', payload: '::jsonb', metadata: '::jsonb' });
     await batchInsertRows(client, 'cloud_attachments', [
       'id',
       'workspace_id',
@@ -2205,7 +2229,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'created_by',
       'created_at',
       'metadata',
-    ], attachmentRows, { metadata: '::jsonb' });
+    ], dedupeRowsByColumn(attachmentRows), { metadata: '::jsonb' });
     await batchUpsertStateRecords(client, stateRecordRows);
   }
 
