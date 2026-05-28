@@ -1821,6 +1821,9 @@ test('pasted screenshots are read from clipboard items as well as files', async 
   const pasteSource = app.slice(app.indexOf('function clipboardImageFiles'), app.indexOf("document.addEventListener('paste'"));
   const pasteListenerSource = app.slice(app.indexOf("document.addEventListener('paste'"), app.indexOf('function openMessageContextMenu'));
 
+  assert.match(pasteSource, /function clipboardImageSignature\(file\)/);
+  assert.match(pasteSource, /const key = clipboardImageSignature\(file\)/);
+  assert.doesNotMatch(pasteSource, /file\.lastModified/);
   assert.match(pasteSource, /Array\.from\(clipboardData\?\.files \|\| \[\]\)/);
   assert.match(pasteSource, /Array\.from\(clipboardData\?\.items \|\| \[\]\)/);
   assert.match(pasteSource, /clipboardData\?\.files/);

@@ -156,6 +156,119 @@ test('agent context pack includes recent channel messages, current message, task
   assert.doesNotMatch(rendered, /agt_333|agt_ccc|hum_local/);
 });
 
+test('agent context pack exposes current image attachments and the target agent avatar', () => {
+  const avatarDataUrl = `data:image/png;base64,${Buffer.from('avatar').toString('base64')}`;
+  const state = {
+    humans: [{ id: 'hum_local', name: 'You', role: 'owner' }],
+    agents: [{
+      id: 'agt_codex',
+      name: 'Codex',
+      runtime: 'codex',
+      status: 'idle',
+      description: 'image-aware assistant',
+      avatar: avatarDataUrl,
+    }],
+    channels: [{
+      id: 'chan_all',
+      name: 'all',
+      humanIds: ['hum_local'],
+      agentIds: ['agt_codex'],
+      memberIds: ['hum_local', 'agt_codex'],
+    }],
+    dms: [],
+    messages: [{
+      id: 'msg_current',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: '<@agt_codex> 看一下我粘贴的截图，并说说你的头像是什么',
+      attachmentIds: ['att_clip'],
+      createdAt: '2026-05-28T02:00:00.000Z',
+    }],
+    replies: [],
+    tasks: [],
+    attachments: [{
+      id: 'att_clip',
+      name: 'screenshot-20260528.png',
+      type: 'image/png',
+      bytes: 4096,
+      path: '/tmp/screenshot-20260528.png',
+      source: 'clipboard',
+      createdAt: '2026-05-28T02:00:00.000Z',
+    }],
+    events: [],
+  };
+
+  const pack = buildAgentContextPack({
+    state,
+    agentId: 'agt_codex',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    currentMessage: state.messages[0],
+    toolBaseUrl: 'http://127.0.0.1:6543',
+  });
+
+  assert.equal(pack.targetAgent.id, 'agt_codex');
+  assert.equal(pack.targetAgent.avatar.kind, 'data_url');
+  assert.equal(pack.targetAgent.avatar.dataUrl, avatarDataUrl);
+  assert.equal(pack.attachments[0].id, 'att_clip');
+  assert.equal(pack.attachments[0].source, 'clipboard');
+
+  const rendered = renderAgentContextPack(pack, { state, targetAgentId: 'agt_codex' });
+  assert.match(rendered, /Your profile avatar: image supplied as visual input/);
+  assert.match(rendered, /screenshot-20260528\.png image\/png 4096 bytes/);
+  assert.match(rendered, /source=clipboard/);
+});
+
+test('agent context pack resolves the target agent library avatar as visual input', () => {
+  const state = {
+    humans: [{ id: 'hum_local', name: 'You', role: 'owner' }],
+    agents: [{
+      id: 'agt_codex',
+      name: 'Codex',
+      runtime: 'codex',
+      avatar: '/avatars/avatar_0001.svg',
+    }],
+    channels: [{
+      id: 'chan_all',
+      name: 'all',
+      humanIds: ['hum_local'],
+      agentIds: ['agt_codex'],
+      memberIds: ['hum_local', 'agt_codex'],
+    }],
+    dms: [],
+    messages: [{
+      id: 'msg_current',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: '<@agt_codex> 你的头像是什么',
+      attachmentIds: [],
+    }],
+    replies: [],
+    tasks: [],
+    attachments: [],
+    events: [],
+  };
+
+  const pack = buildAgentContextPack({
+    state,
+    agentId: 'agt_codex',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    currentMessage: state.messages[0],
+    toolBaseUrl: 'http://127.0.0.1:6543',
+  });
+
+  assert.equal(pack.targetAgent.avatar.kind, 'path');
+  assert.equal(pack.targetAgent.avatar.type, 'image/svg+xml');
+  assert.equal(pack.targetAgent.avatar.url, 'http://127.0.0.1:6543/avatars/avatar_0001.svg');
+  assert.equal(pack.targetAgent.avatar.visualInput, true);
+  assert.match(renderAgentContextPack(pack, { state, targetAgentId: 'agt_codex' }), /Your profile avatar: image supplied as visual input/);
+});
+
 test('agent context pack renders structured conversation references for the current message', () => {
   const state = {
     humans: [{ id: 'hum_local', name: 'You' }],

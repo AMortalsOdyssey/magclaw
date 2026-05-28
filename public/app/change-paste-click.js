@@ -205,12 +205,25 @@ function clipboardImageFiles(clipboardData) {
   const seen = new Set();
   return files
     .filter((file) => {
-      const key = `${file.name || ''}:${file.type || ''}:${file.size || 0}:${file.lastModified || 0}`;
+      const key = clipboardImageSignature(file);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     })
     .map((file, index) => normalizeClipboardFile(file, index));
+}
+
+function clipboardImageSignature(file) {
+  const type = String(file?.type || '').toLowerCase();
+  const size = Number(file?.size || 0);
+  const name = String(file?.name || '').trim().toLowerCase();
+  if (!type.startsWith('image/')) return `${name}:${type}:${size}`;
+  const genericName = !name || /^image\.(png|jpe?g|webp|gif|bmp|tiff?)$/i.test(name);
+  return genericName ? `${type}:${size}` : `${name}:${type}:${size}`;
+}
+
+function clipboardPasteBatchSignature(files = []) {
+  return files.map((file) => clipboardImageSignature(file)).filter(Boolean).join('|');
 }
 
 function clipboardDataMayContainImage(clipboardData) {
@@ -246,6 +259,8 @@ async function clipboardImageFilesFromNavigator() {
   }
 }
 
+let recentClipboardPasteBatchesByComposer = {};
+
 document.addEventListener('paste', async (event) => {
   const textarea = composerTextareaFromPasteTarget(event.target);
   const composerId = textarea?.dataset?.composerId;
@@ -259,6 +274,13 @@ document.addEventListener('paste', async (event) => {
   }
   if (!files.length) return;
   if (!event.defaultPrevented) event.preventDefault();
+  const batchSignature = clipboardPasteBatchSignature(files);
+  const previousBatch = recentClipboardPasteBatchesByComposer[composerId];
+  const nowMs = Date.now();
+  if (batchSignature && previousBatch?.signature === batchSignature && nowMs - previousBatch.at < 1500) {
+    return;
+  }
+  recentClipboardPasteBatchesByComposer[composerId] = { signature: batchSignature, at: nowMs };
   try {
     await uploadFiles(files, composerId, 'clipboard');
   } catch (error) {

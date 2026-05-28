@@ -168,6 +168,103 @@ function participantsForSpace(state, spaceType, spaceId) {
   }));
 }
 
+function imageMimeFromName(value = '') {
+  const name = String(value || '').toLowerCase();
+  if (name.endsWith('.png')) return 'image/png';
+  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+  if (name.endsWith('.webp')) return 'image/webp';
+  if (name.endsWith('.gif')) return 'image/gif';
+  if (name.endsWith('.svg')) return 'image/svg+xml';
+  return '';
+}
+
+function dataUrlMime(value = '') {
+  return String(value || '').match(/^data:([^;,]+)[;,]/i)?.[1] || '';
+}
+
+function contextUrl(value = '', toolBaseUrl = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw) || /^data:image\//i.test(raw)) return raw;
+  if (raw.startsWith('/') && toolBaseUrl) {
+    try {
+      return new URL(raw, toolBaseUrl).toString();
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
+
+function avatarValue(actor = {}) {
+  return String(actor.avatar || actor.avatarUrl || '').trim();
+}
+
+function avatarContext(value = '', toolBaseUrl = '') {
+  const avatar = String(value || '').trim();
+  if (!avatar) return { kind: 'none', description: '', visualInput: false };
+  if (/^data:image\//i.test(avatar)) {
+    const type = dataUrlMime(avatar) || 'image';
+    return {
+      kind: 'data_url',
+      type,
+      dataUrl: avatar,
+      description: `${type} data URL (${avatar.length} chars)`,
+      visualInput: true,
+    };
+  }
+  if (/^https?:\/\//i.test(avatar)) {
+    return {
+      kind: 'url',
+      type: imageMimeFromName(avatar) || 'image',
+      url: avatar,
+      description: avatar,
+      visualInput: true,
+    };
+  }
+  if (avatar.startsWith('/avatars/') || avatar.startsWith('/brand/') || avatar.startsWith('/api/')) {
+    const url = contextUrl(avatar, toolBaseUrl);
+    return {
+      kind: 'path',
+      type: imageMimeFromName(avatar) || 'image',
+      url,
+      description: avatar,
+      visualInput: /^https?:\/\//i.test(url),
+    };
+  }
+  if (avatar.startsWith('/')) {
+    return {
+      kind: 'file',
+      type: imageMimeFromName(avatar) || 'image',
+      path: avatar,
+      description: avatar,
+      visualInput: true,
+    };
+  }
+  return {
+    kind: 'value',
+    type: imageMimeFromName(avatar) || '',
+    description: avatar,
+    visualInput: false,
+  };
+}
+
+function targetAgentForContext(state, agentId, toolBaseUrl = '') {
+  const agent = byId(state?.agents, agentId);
+  if (!agent) return null;
+  return {
+    id: agent.id,
+    name: agent.name || agent.id,
+    description: agent.description || '',
+    runtime: agent.runtime || '',
+    runtimeId: agent.runtimeId || '',
+    status: agent.status || '',
+    model: agent.model || '',
+    reasoningEffort: agent.reasoningEffort || '',
+    avatar: avatarContext(avatarValue(agent), toolBaseUrl),
+  };
+}
+
 function suggestedMembersForSpace(state, spaceType, spaceId, targetAgentId) {
   if (spaceType !== 'channel') return [];
   const space = spaceRecord(state, spaceType, spaceId);
@@ -322,6 +419,7 @@ function attachmentsForContext(state, records, limit, toolBaseUrl = '') {
       bytes: Number(attachment.bytes || attachment.sizeBytes || 0),
       path: attachment.path || '',
       url: attachmentContextUrl(attachment, toolBaseUrl),
+      source: attachment.source || '',
       messageId: messageByAttachment.get(attachment.id),
     }));
 }
@@ -401,6 +499,7 @@ export function buildAgentContextPack({
     },
     participants: participantsForSpace(state, spaceType, spaceId),
     suggestedMembers: suggestedMembersForSpace(state, spaceType, spaceId, agentId),
+    targetAgent: targetAgentForContext(state, agentId, toolBaseUrl),
     currentMessage: current,
     workItem: workItem ? {
       id: workItem.id,
@@ -626,6 +725,7 @@ function renderAttachments(attachments) {
       const details = [
         `id=${item.id}`,
         `from msg=${item.messageId}`,
+        item.source ? `source=${item.source}` : '',
         item.path ? `path=${item.path}` : '',
         item.url ? `url=${item.url}` : '',
         `tool=read_attachment(attachmentId="${item.id}")`,
@@ -633,6 +733,16 @@ function renderAttachments(attachments) {
       return `- ${item.name} ${item.type} ${item.bytes} bytes (${details})`;
     })
     .join('\n');
+}
+
+function renderTargetAgentAvatar(pack) {
+  const avatar = pack?.targetAgent?.avatar;
+  if (!avatar || avatar.kind === 'none') return '';
+  const description = avatar.description ? ` (${avatar.description})` : '';
+  if (avatar.visualInput) {
+    return `- Your profile avatar: image supplied as visual input${description}. Use it when the user asks what your avatar shows.`;
+  }
+  return `- Your profile avatar: ${avatar.description || 'configured'}, but no visual input is available.`;
 }
 
 function renderEventMemberList(state, event) {
@@ -751,6 +861,7 @@ export function renderAgentContextPack(pack, { state, targetAgentId = pack?.targ
     pack.space.workspaceId ? `- Workspace: ${pack.space.workspaceId}` : '',
     pack.space.description ? `- Channel description: ${compactText(pack.space.description, 180)}` : '',
     `- Participants: ${renderParticipants(pack, targetAgentId) || '(none)'}`,
+    renderTargetAgentAvatar(pack),
     participants.omitted ? `- Participants omitted: ${participants.omitted}. Use list_agents/read_agent_profile or search_agent_memory when a broader roster or specialties matter.` : '',
     pack.space.type === 'channel' && !pack.space.defaultChannel
       ? `- Workspace members you may suggest adding with human review:\n${renderSuggestedMembers(pack)}`

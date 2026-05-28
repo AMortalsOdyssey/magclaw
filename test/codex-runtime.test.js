@@ -81,3 +81,53 @@ test('codex turn input carries visible image attachments as local images', () =>
     { type: 'image', url: 'https://example.test/screen.webp' },
   ]);
 });
+
+test('codex turn input carries the target agent avatar as visual context', () => {
+  const avatarDataUrl = `data:image/png;base64,${Buffer.from('avatar-png').toString('base64')}`;
+  const input = codexTurnInputForPrompt('What is shown in my profile picture?', [{
+    contextPack: {
+      targetAgent: {
+        id: 'agt_self',
+        name: 'Self',
+        avatar: {
+          kind: 'data_url',
+          type: 'image/png',
+          dataUrl: avatarDataUrl,
+          description: 'image/png data URL',
+        },
+      },
+      attachments: [
+        { id: 'att_clip', type: 'image/png', path: '/tmp/clipboard.png' },
+      ],
+    },
+  }]);
+
+  assert.deepEqual(input, [
+    { type: 'text', text: 'What is shown in my profile picture?' },
+    { type: 'localImage', path: '/tmp/clipboard.png' },
+    { type: 'image', url: avatarDataUrl },
+  ]);
+});
+
+test('codex turn input carries the target agent library avatar URL as visual context', () => {
+  const input = codexTurnInputForPrompt('What is shown in my profile picture?', [{
+    contextPack: {
+      targetAgent: {
+        id: 'agt_self',
+        name: 'Self',
+        avatar: {
+          kind: 'path',
+          type: 'image/svg+xml',
+          url: 'http://127.0.0.1:6543/avatars/avatar_0001.svg',
+          visualInput: true,
+        },
+      },
+      attachments: [],
+    },
+  }]);
+
+  assert.deepEqual(input, [
+    { type: 'text', text: 'What is shown in my profile picture?' },
+    { type: 'image', url: 'http://127.0.0.1:6543/avatars/avatar_0001.svg' },
+  ]);
+});

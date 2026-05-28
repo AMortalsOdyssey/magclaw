@@ -88,7 +88,15 @@ function isImageAttachment(attachment) {
 
 function absoluteImageUrl(value) {
   const url = String(value || '').trim();
-  return /^https?:\/\//i.test(url) ? url : '';
+  return /^https?:\/\//i.test(url) || /^data:image\//i.test(url) ? url : '';
+}
+
+function imageInputFromReference(reference = {}) {
+  const path = String(reference.path || '').trim();
+  if (path) return { key: `path:${path}`, input: { type: 'localImage', path } };
+  const url = absoluteImageUrl(reference.url || reference.downloadUrl || reference.dataUrl);
+  if (url) return { key: `url:${url}`, input: { type: 'image', url } };
+  return null;
 }
 
 function imageInputsForMessages(messages = []) {
@@ -100,14 +108,18 @@ function imageInputsForMessages(messages = []) {
       : [];
     for (const attachment of attachments) {
       if (!isImageAttachment(attachment)) continue;
-      const path = String(attachment.path || '').trim();
-      const url = absoluteImageUrl(attachment.url || attachment.downloadUrl);
-      const key = path ? `path:${path}` : (url ? `url:${url}` : '');
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      inputs.push(path
-        ? { type: 'localImage', path }
-        : { type: 'image', url });
+      const resolved = imageInputFromReference(attachment);
+      if (!resolved || seen.has(resolved.key)) continue;
+      seen.add(resolved.key);
+      inputs.push(resolved.input);
+    }
+    const avatar = message?.contextPack?.targetAgent?.avatar || null;
+    if (avatar?.visualInput !== false && String(avatar?.type || '').toLowerCase().startsWith('image')) {
+      const resolved = imageInputFromReference(avatar);
+      if (resolved && !seen.has(resolved.key)) {
+        seen.add(resolved.key);
+        inputs.push(resolved.input);
+      }
     }
   }
   return inputs;
