@@ -1783,6 +1783,60 @@ function contextSnippet(value, limit = 240) {
   return text.length >= limit ? `${text.slice(0, Math.max(0, limit - 3)).trim()}...` : text;
 }
 
+function contextImageMimeFromName(value = '') {
+  const name = String(value || '').toLowerCase().split(/[?#]/)[0];
+  if (name.endsWith('.png')) return 'image/png';
+  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+  if (name.endsWith('.webp')) return 'image/webp';
+  if (name.endsWith('.gif')) return 'image/gif';
+  if (name.endsWith('.svg')) return 'image/svg+xml';
+  return '';
+}
+
+function contextDataImageUrl(value = '') {
+  const text = String(value || '').trim();
+  return /^data:image\//i.test(text) ? text : '';
+}
+
+function contextImageType(reference = {}) {
+  const explicit = String(reference.type || reference.mime || reference.mimeType || '').toLowerCase();
+  if (explicit.startsWith('image/')) return explicit;
+  const data = contextDataImageUrl(reference.dataUrl || reference.url || reference.downloadUrl);
+  if (data) return data.match(/^data:([^;,]+)[;,]/i)?.[1]?.toLowerCase() || 'image';
+  return contextImageMimeFromName(reference.name || reference.filename || reference.url || reference.downloadUrl || reference.path || reference.description);
+}
+
+function isContextImageReference(reference = {}) {
+  return contextImageType(reference).startsWith('image/');
+}
+
+function remoteImageUrl(value = '', serverUrl = '', fallbackPath = '') {
+  const raw = String(value || '').trim();
+  if (contextDataImageUrl(raw)) return raw;
+  const base = String(serverUrl || DEFAULT_SERVER_URL).replace(/\/+$/, '');
+  const candidate = raw || String(fallbackPath || '').trim();
+  if (!candidate) return '';
+  if (candidate.startsWith('/')) {
+    try {
+      return new URL(candidate, base).toString();
+    } catch {
+      return '';
+    }
+  }
+  if (/^https?:\/\//i.test(candidate)) {
+    try {
+      const parsed = new URL(candidate);
+      if (['0.0.0.0', '127.0.0.1', 'localhost', '::1'].includes(parsed.hostname) && base) {
+        return new URL(`${parsed.pathname}${parsed.search}${parsed.hash}`, base).toString();
+      }
+      return parsed.toString();
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 function contextActorName(pack, id) {
   const value = String(id || '').trim();
   if (!value) return 'unknown';
@@ -1827,6 +1881,32 @@ function renderContextTasks(pack) {
     const assignees = contextArray(task.assigneeIds).map((id) => `@${contextActorName(pack, id)}`).join(', ');
     return `- task #${task.number || '?'} [${task.status || 'todo'}] ${contextText(task.title, 240)}${assignees ? ` (assignees: ${assignees})` : ''}`;
   }).join('\n');
+}
+
+function renderContextAttachments(pack) {
+  const attachments = contextArray(pack?.attachments);
+  if (!attachments.length) return '- (none)';
+  return attachments.map((item) => {
+    const details = [
+      item.id ? `id=${item.id}` : '',
+      item.messageId ? `from msg=${item.messageId}` : '',
+      item.source ? `source=${item.source}` : '',
+      item.path ? `path=${item.path}` : '',
+      item.url ? `url=${item.url}` : '',
+      item.id ? `tool=read_attachment(attachmentId="${item.id}")` : '',
+    ].filter(Boolean).join(', ');
+    return `- ${item.name || item.filename || item.id || 'attachment'} ${item.type || item.mime || 'file'} ${Number(item.bytes || item.sizeBytes || 0)} bytes${details ? ` (${details})` : ''}`;
+  }).join('\n');
+}
+
+function renderContextTargetAgentAvatar(pack) {
+  const avatar = pack?.targetAgent?.avatar;
+  if (!avatar || avatar.kind === 'none') return '';
+  const description = avatar.description ? ` (${avatar.description})` : '';
+  if (avatar.visualInput !== false && isContextImageReference(avatar)) {
+    return `- Your profile avatar: image supplied as visual input${description}. Use it when the user asks what your avatar shows.`;
+  }
+  return `- Your profile avatar: ${avatar.description || 'configured'}, but no visual input is available.`;
 }
 
 function renderContextEventMembers(pack, event = {}) {
@@ -1951,6 +2031,7 @@ function renderRemoteAgentContextPack(pack, targetAgentId = '') {
     `- Space: ${pack.space?.type || 'space'} (${pack.space?.visibility || 'public'}${pack.space?.defaultChannel ? ', default workspace channel' : ''})`,
     pack.space?.description ? `- Channel description: ${contextSnippet(pack.space.description, 180)}` : '',
     `- Participants shown: ${participants.selected.map((item) => renderContextParticipant(item, targetAgentId)).join(', ') || '(none)'}`,
+    renderContextTargetAgentAvatar(pack),
     participants.omitted ? `- Participants omitted: ${participants.omitted}. Use list_agents/read_agent_profile or search_agent_memory when a broader roster or specialties matter.` : '',
     pack.space?.type === 'channel' && !pack.space?.defaultChannel ? renderContextSuggestedMembers(pack) : '',
     '',
@@ -1979,9 +2060,12 @@ function renderRemoteAgentContextPack(pack, targetAgentId = '') {
     'Relevant tasks:',
     renderContextTasks(pack),
     '',
+    'Visible attachment metadata and original-file tools:',
+    renderContextAttachments(pack),
+    '',
     renderContextPeerMemory(pack),
     '',
-    'Progressive context tools: list_agents, read_agent_profile, read_history, search_messages, search_agent_memory, read_agent_memory, read_agent_file, and list_tasks are available through MagClaw MCP.',
+    'Progressive context tools: list_agents, read_agent_profile, read_history, search_messages, list_attachments, read_attachment, search_agent_memory, read_agent_memory, read_agent_file, and list_tasks are available through MagClaw MCP.',
     'For "who can we bring in" or agent suitability questions, use the server member list above first; call list_agents without a target for the server-wide agent roster, because target filters to the current channel.',
     'For agent capability or specialty questions, use peer memory first; if memory is empty or weak, search_messages/read_history for earlier user role assignments before saying the fact is unknown.',
     'Use this compact snapshot first. Call the tools only when the answer depends on omitted participants, deeper history, memory, or task details.',
@@ -2082,6 +2166,8 @@ function canonicalMagClawToolName(name) {
     'send_message',
     'read_history',
     'search_messages',
+    'list_attachments',
+    'read_attachment',
     'search_agent_memory',
     'read_agent_memory',
     'read_agent_file',
@@ -2570,6 +2656,8 @@ function daemonSkillTools() {
     'send_message',
     'read_history',
     'search_messages',
+    'list_attachments',
+    'read_attachment',
     'search_agent_memory',
     'read_agent_memory',
     'read_agent_file',
@@ -3060,6 +3148,81 @@ class CodexAgentSession {
     }
   }
 
+  async readAttachmentImageInput(reference = {}) {
+    const attachmentId = String(reference.id || reference.attachmentId || reference.attachment_id || '').trim();
+    if (!attachmentId) return null;
+    try {
+      const data = await this.requestMagClawTool('/api/agent-tools/attachments/read', {
+        query: {
+          agentId: this.agent.id,
+          attachmentId,
+          maxBytes: 8 * 1024 * 1024,
+        },
+      });
+      const dataUrl = contextDataImageUrl(data?.dataUrl);
+      if (!dataUrl || data?.file?.truncated) return null;
+      return {
+        key: `attachment:${attachmentId}`,
+        input: { type: 'image', url: dataUrl },
+      };
+    } catch (error) {
+      logWarning('attachments', `Could not read image attachment ${attachmentId} for agent ${this.agent.id}: ${error.message}`);
+      return null;
+    }
+  }
+
+  async imageInputFromContextReference(reference = {}, { preferReadAttachment = false } = {}) {
+    if (!isContextImageReference(reference)) return null;
+    if (preferReadAttachment) {
+      const resolved = await this.readAttachmentImageInput(reference);
+      if (resolved) return resolved;
+    }
+    const dataUrl = contextDataImageUrl(reference.dataUrl || reference.url || reference.downloadUrl);
+    if (dataUrl) {
+      return {
+        key: `url:${dataUrl}`,
+        input: { type: 'image', url: dataUrl },
+      };
+    }
+    const url = remoteImageUrl(reference.url || reference.downloadUrl || '', this.serverUrl, reference.description);
+    if (url) {
+      return {
+        key: `url:${url}`,
+        input: { type: 'image', url },
+      };
+    }
+    const filePath = String(reference.path || '').trim();
+    if (filePath && existsSync(filePath)) {
+      return {
+        key: `path:${filePath}`,
+        input: { type: 'localImage', path: filePath },
+      };
+    }
+    return null;
+  }
+
+  async imageInputsForDelivery(message = {}) {
+    const inputs = [];
+    const seen = new Set();
+    const pack = message?.contextPack || {};
+    const attachments = contextArray(pack.attachments);
+    for (const attachment of attachments) {
+      const resolved = await this.imageInputFromContextReference(attachment, { preferReadAttachment: true });
+      if (!resolved || seen.has(resolved.key)) continue;
+      seen.add(resolved.key);
+      inputs.push(resolved.input);
+    }
+    const avatar = pack?.targetAgent?.avatar || null;
+    if (avatar?.visualInput !== false) {
+      const resolved = await this.imageInputFromContextReference(avatar);
+      if (resolved && !seen.has(resolved.key)) {
+        seen.add(resolved.key);
+        inputs.push(resolved.input);
+      }
+    }
+    return inputs;
+  }
+
   async executeMagClawTool(name, rawArgs = {}) {
     const args = { ...rawArgs, agentId: rawArgs.agentId || this.agent.id };
     switch (name) {
@@ -3095,6 +3258,25 @@ class CodexAgentSession {
             target: args.target || args.channel,
             workItemId: args.workItemId || args.work_item_id,
             limit: args.limit,
+          },
+        });
+      case 'list_attachments':
+        return this.requestMagClawTool('/api/agent-tools/attachments', {
+          query: {
+            agentId: args.agentId,
+            target: args.target || args.channel,
+            workItemId: args.workItemId || args.work_item_id,
+            messageId: args.messageId || args.message_id,
+            limit: args.limit,
+          },
+        });
+      case 'read_attachment':
+        return this.requestMagClawTool('/api/agent-tools/attachments/read', {
+          query: {
+            agentId: args.agentId,
+            attachmentId: args.attachmentId || args.attachment_id || args.id,
+            maxBytes: args.maxBytes || args.max_bytes,
+            format: args.format,
           },
         });
       case 'search_agent_memory':
@@ -3363,19 +3545,20 @@ class CodexAgentSession {
       this.pendingPrompts.push({ prompt, message, workItem, deliveryId });
       return;
     }
-    this.startTurn(prompt, message, workItem, deliveryId);
+    await this.startTurn(prompt, message, workItem, deliveryId);
   }
 
-  startTurn(prompt, message = {}, workItem = null, deliveryId = '') {
+  async startTurn(prompt, message = {}, workItem = null, deliveryId = '') {
     if (!this.threadId) return false;
     this.activeDeliveryId = deliveryId || '';
     this.activeTurnToolSignatures = new Set();
     this.activeTurnUsedSendMessage = false;
     const model = this.agent.model || undefined;
     const effort = this.agent.reasoningEffort || undefined;
+    const imageInputs = await this.imageInputsForDelivery(message);
     const params = {
       threadId: this.threadId,
-      input: [{ type: 'text', text: prompt }],
+      input: [{ type: 'text', text: prompt }, ...imageInputs],
       approvalPolicy: codexApprovalPolicy(this.env),
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
@@ -3444,7 +3627,7 @@ class CodexAgentSession {
         this.send({ type: 'agent:session', agentId: this.agent.id, status: 'idle', sessionId: this.threadId, sessionKey: this.sessionKey || null });
         this.sendStatus('idle', { source: '@magclaw/daemon', detail: 'Codex session ready', at: now() });
         const queued = this.pendingPrompts.splice(0);
-        for (const item of queued) this.startTurn(item.prompt, item.message, item.workItem, item.deliveryId);
+        for (const item of queued) await this.startTurn(item.prompt, item.message, item.workItem, item.deliveryId);
       } else if (pending?.method === 'turn/start' || pending?.method === 'turn/steer') {
         this.activeTurnId = message.result?.turn?.id || message.result?.turnId || this.activeTurnId;
       }

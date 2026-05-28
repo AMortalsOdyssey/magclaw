@@ -100,7 +100,38 @@ async function startRelay(options = {}) {
   const messages = [];
   const sockets = new Set();
   let activeSocket = null;
-  const server = http.createServer();
+  const attachmentDataUrl = `data:image/png;base64,${Buffer.from('remote-image').toString('base64')}`;
+  const avatarDataUrl = `data:image/png;base64,${Buffer.from('remote-avatar').toString('base64')}`;
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    if (url.pathname === '/api/agent-tools/attachments/read') {
+      assert.equal(req.headers.authorization, 'Bearer mc_machine_test');
+      assert.equal(url.searchParams.get('agentId'), options.agent?.id || 'agt_remote');
+      assert.equal(url.searchParams.get('attachmentId'), 'att_clip');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        attachment: {
+          id: 'att_clip',
+          name: 'clip.png',
+          type: 'image/png',
+          bytes: 12,
+          source: 'clipboard',
+        },
+        file: {
+          name: 'clip.png',
+          type: 'image/png',
+          sizeBytes: 12,
+          readBytes: 12,
+          truncated: false,
+        },
+        dataUrl: attachmentDataUrl,
+      }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+  });
   server.on('upgrade', (req, socket) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1');
     assert.equal(url.pathname, '/daemon/connect');
@@ -153,8 +184,19 @@ async function startRelay(options = {}) {
                 spaceId: 'chan_all',
                 parentMessageId: null,
                 workItemId: 'wi_test',
+                attachmentIds: ['att_clip'],
                 contextPack: {
                   targetAgentId: options.agent?.id || 'agt_remote',
+                  targetAgent: {
+                    id: options.agent?.id || 'agt_remote',
+                    name: options.agent?.name || 'Remote Codex',
+                    avatar: {
+                      kind: 'data_url',
+                      type: 'image/png',
+                      dataUrl: avatarDataUrl,
+                      visualInput: true,
+                    },
+                  },
                   space: { type: 'channel', id: 'chan_all', label: '#all', visibility: 'public', defaultChannel: false },
                   participants: [
                     { id: 'hum_test', name: 'Human', type: 'human', role: 'owner', status: 'online' },
@@ -178,6 +220,7 @@ async function startRelay(options = {}) {
                     authorId: 'hum_test',
                     body: 'Who is good at jokes?',
                     mentionedAgentIds: [],
+                    attachmentIds: ['att_clip'],
                     createdAt: '2026-05-14T06:13:30.000Z',
                   },
                   recentMessages: [],
@@ -190,6 +233,16 @@ async function startRelay(options = {}) {
                     createdAt: '2026-05-14T06:13:00.000Z',
                   }],
                   tasks: [],
+                  attachments: [{
+                    id: 'att_clip',
+                    name: 'clip.png',
+                    type: 'image/png',
+                    bytes: 12,
+                    path: '/var/lib/magclaw/uploads/2026/05/att_clip.png',
+                    url: '/api/attachments/att_clip/clip.png?workspaceId=wsp_test',
+                    source: 'clipboard',
+                    messageId: 'msg_test',
+                  }],
                   peerMemorySearch: { required: false, results: [] },
                 },
               },
@@ -432,8 +485,14 @@ process.stdin.on('data', (chunk) => {
     assert.equal(ledgerRecord.status, 'completed');
     const turnStart = entries.find((entry) => entry.method === 'turn/start');
     const promptText = turnStart.params.input[0].text;
+    assert.deepEqual(turnStart.params.input.slice(1), [
+      { type: 'image', url: `data:image/png;base64,${Buffer.from('remote-image').toString('base64')}` },
+      { type: 'image', url: `data:image/png;base64,${Buffer.from('remote-avatar').toString('base64')}` },
+    ]);
     assert.match(promptText, /Agent description: Remote agent that loves concise jokes/);
     assert.match(promptText, /Participants shown: @Human - human; role=owner; status=online, @Remote Codex \(you\) - agent; runtime=codex; status=idle; description=Remote agent that loves concise jokes, @KA - agent; runtime=codex; status=idle; description=Likes telling jokes/);
+    assert.match(promptText, /Your profile avatar: image supplied as visual input/);
+    assert.match(promptText, /Visible attachment metadata and original-file tools:[\s\S]*clip\.png image\/png 12 bytes \(id=att_clip, from msg=msg_test, source=clipboard/);
     assert.match(promptText, /Server members not in this channel yet:/);
     assert.match(promptText, /Agents available to suggest adding:[\s\S]*@Research - agent; runtime=codex; status=idle; description=Finds background information/);
     assert.match(promptText, /These are server-scoped members across connected computers/);
