@@ -448,6 +448,81 @@ test('daemon relay requests a remote computer close and stops bound work', async
   assert.ok(cloud.daemonEvents.some((event) => event.type === 'computer_close_requested'));
 });
 
+test('daemon relay promotes Codex websocket stderr activity to agent error', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_runtime_error';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+    daemonVersion: '0.1.30',
+    metadata: {},
+  });
+  state.agents.push({
+    id: 'agt_codex_error',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    name: 'Codex Error',
+    status: 'thinking',
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+  socket.emit('data', encodeFrame({
+    type: 'ready',
+    daemonVersion: '0.1.30',
+    runtimes: ['codex'],
+    service: { mode: 'foreground', background: false, active: true },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  socket.emit('data', encodeFrame({
+    type: 'agent:activity',
+    agentId: 'agt_codex_error',
+    status: 'thinking',
+    activity: {
+      source: 'codex-stderr',
+      text: '2026-05-28T08:48:14.957761Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Connection reset by peer (os error 104), url: wss://api.openai.com/v1/responses',
+    },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(state.agents[0].status, 'error');
+  assert.ok(cloud.daemonEvents.some((event) => event.type === 'agent_activity'));
+
+  socket.emit('data', encodeFrame({
+    type: 'agent:activity',
+    agentId: 'agt_codex_error',
+    status: 'thinking',
+    probeId: 'probe_1',
+    activity: {
+      source: '@magclaw/daemon',
+      detail: 'Current daemon runtime status: thinking',
+      probeId: 'probe_1',
+    },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(state.agents[0].status, 'error');
+  assert.match(state.agents[0].runtimeActivity.error, /responses_websocket/);
+});
+
 test('daemon relay re-closes background relaunches while a computer close is pending', async () => {
   const { cloud, relay, state } = createRelay();
   const rawToken = 'mc_machine_close_relaunch';

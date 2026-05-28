@@ -616,6 +616,23 @@ function findExistingAgentResponseForDelivery(agent, parentMessageId = null, opt
   )) || null;
 }
 
+function findExistingAgentResponseForSourceWorkItem(agent, parentMessageId = null, options = {}) {
+  const sourceWorkItemId = String(options.sourceMessage?.workItemId || '').trim();
+  if (!sourceWorkItemId) return null;
+  const item = findWorkItem(sourceWorkItemId);
+  if (!item || item.agentId !== agent.id || !item.lastResponseId || Number(item.sendCount || 0) <= 0) return null;
+  const record = findConversationRecord(item.lastResponseId);
+  if (
+    !record
+    || record.authorType !== 'agent'
+    || record.authorId !== agent.id
+    || String(record.parentMessageId || '') !== String(parentMessageId || '')
+  ) {
+    return null;
+  }
+  return record;
+}
+
 function responseCreatedTimeMs(record) {
   const parsed = Date.parse(record?.createdAt || record?.updatedAt || '');
   return Number.isFinite(parsed) ? parsed : 0;
@@ -819,6 +836,18 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
       }
     }
     return posted;
+  }
+  const sourceWorkItemResponse = findExistingAgentResponseForSourceWorkItem(agent, parentMessageId, options);
+  if (sourceWorkItemResponse) {
+    addSystemEvent('agent_stdout_suppressed_after_send_message', `${agent.name} used send_message; final stdout fallback was linked to the existing response.`, {
+      agentId: agent.id,
+      responseId: sourceWorkItemResponse.id,
+      sourceMessageId: options.sourceMessage?.id || null,
+      workItemId: options.sourceMessage?.workItemId || null,
+      deliveryId: options.deliveryId || null,
+      idempotencyKey: options.idempotencyKey || null,
+    });
+    return returnExistingAgentResponse(sourceWorkItemResponse, options);
   }
   const recentDuplicate = findRecentDuplicateAgentResponse(agent, dedupeSpaceType, dedupeSpaceId, responseBody, parentMessageId, options);
   if (recentDuplicate) {

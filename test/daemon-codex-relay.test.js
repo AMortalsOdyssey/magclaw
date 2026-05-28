@@ -349,6 +349,7 @@ process.stdin.on('data', (chunk) => {
       send({ id: message.id, result: { turn: { id: 'turn_remote_fake' } } });
       send({ method: 'turn/started', params: { turn: { id: 'turn_remote_fake' } } });
       send({ method: 'item/agentMessage/delta', params: { itemId: 'item_remote_fake', delta: 'remote fake response' } });
+      send({ method: 'item/completed', params: { item: { id: 'item_remote_fake', type: 'agentMessage', text: 'remote fake response' } } });
       send({ method: 'turn/completed', params: { turn: { id: 'turn_remote_fake', status: 'completed' } } });
     }
   }
@@ -379,6 +380,7 @@ process.stdin.on('data', (chunk) => {
     const message = await waitFor(() => relay.messages.find((item) => item.type === 'agent:message'));
     assert.equal(message.agentId, 'agt_remote');
     assert.equal(message.payload.body, 'remote fake response');
+    assert.equal((message.payload.body.match(/remote fake response/g) || []).length, 1);
     assert.equal(message.payload.spaceType, 'channel');
     assert.equal(message.payload.spaceId, 'chan_all');
     assert.ok(relay.messages.some((item) => item.type === 'agent:deliver:ack' && item.commandId === 'adl_test'));
@@ -533,6 +535,84 @@ process.stdin.on('data', (chunk) => {
     assert.match(promptText, /call list_agents without a target for the server-wide agent roster/);
     assert.match(promptText, /MAGCLAW_MACHINE_TOKEN/);
     assert.match(promptText, /Current message:\n\[msg=msg_test .* @Human: Who is good at jokes\?/);
+  } finally {
+    daemon.kill('SIGINT');
+    await Promise.race([
+      new Promise((resolve) => daemon.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 500)),
+    ]);
+    await relay.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('npm daemon reports Codex responses websocket stderr as an agent error', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-codex-stderr-error-'));
+  const fakeCodex = path.join(tmp, 'codex-fake.js');
+  await writeFile(fakeCodex, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+if (args[0] === '--version') {
+  console.log('codex-cli fake-daemon-error-test');
+  process.exit(0);
+}
+if (args[0] === 'app-server' && args[1] === '--help') {
+  console.log('Usage: codex app-server --listen stdio://');
+  process.exit(0);
+}
+if (args[0] !== 'app-server') process.exit(2);
+let buffer = '';
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+    } else if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_remote_error' } } });
+    } else if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_remote_error' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_remote_error' } } });
+      setTimeout(() => {
+        process.stderr.write('2026-05-28T08:48:14.957761Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Connection reset by peer (os error 104), url: wss://api.openai.com/v1/responses\\n');
+      }, 20);
+    }
+  }
+});
+`);
+  await chmod(fakeCodex, 0o755);
+  const relay = await startRelay({ welcomeInUpgradeHead: true });
+  const daemon = spawn(process.execPath, [
+    DAEMON_BIN,
+    'connect',
+    '--server-url',
+    relay.baseUrl,
+    '--pair-token',
+    'mc_pair_test',
+    '--profile',
+    'cloud-codex-error-test',
+  ], {
+    env: {
+      ...process.env,
+      MAGCLAW_DAEMON_HOME: path.join(tmp, 'daemon-home'),
+      CODEX_PATH: fakeCodex,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    const status = await waitFor(() => relay.messages.find((item) => item.type === 'agent:status' && item.agentId === 'agt_remote' && item.status === 'error'), 5000);
+    assert.equal(status.deliveryId, 'adl_test');
+    assert.match(status.activity?.error || status.activity?.text || '', /responses_websocket/);
+    assert.ok(relay.messages.some((item) => item.type === 'agent:error' && item.agentId === 'agt_remote'));
+    const ledger = JSON.parse(await readFile(path.join(tmp, 'daemon-home', 'profiles', 'cloud-codex-error-test', 'delivery-ledger.json'), 'utf8'));
+    const delivery = ledger.records.find((record) => record.deliveryId === 'adl_test');
+    assert.equal(delivery.status, 'failed');
+    assert.match(delivery.error, /responses_websocket/);
   } finally {
     daemon.kill('SIGINT');
     await Promise.race([

@@ -1642,7 +1642,9 @@ test('message human avatars open right-side human details without changing the c
   assert.match(avatarSource, /renderHumanHoverCard\(human\)/);
   assert.match(actorNameSource, /class="human-author-name"/);
   assert.match(actorNameSource, /data-action="select-human-inspector"/);
-  assert.match(actorNameSource, /<strong>@\$\{escapeHtml\(displayName\(authorId\)\)\}<\/strong>/);
+  assert.match(actorNameSource, /<strong>\$\{escapeHtml\(displayName\(authorId\)\)\}<\/strong>/);
+  assert.doesNotMatch(actorNameSource, /<strong>@\$\{escapeHtml\(displayName\(authorId\)\)\}<\/strong>/);
+  assert.doesNotMatch(actorNameSource, /<strong>@\$\{escapeHtml\(agent\.name\)\}<\/strong>/);
   assert.match(actorNameSource, /renderHumanHoverCard\(human\)/);
   assert.match(clickSource, /if \(activeView !== 'space'\)/);
   assert.match(clickSource, /if \(activeView === 'members'\) syncBrowserRouteForActiveView\(\)/);

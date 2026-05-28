@@ -23,6 +23,7 @@ const AGENT_COMMAND_INTENT_TTL_MS = 30_000;
 const DAEMON_PACKAGE_NAME = '@magclaw/daemon';
 const COMPUTER_PACKAGE_NAME = '@magclaw/computer';
 const KNOWN_PACKAGE_NAMES = new Set([DAEMON_PACKAGE_NAME, COMPUTER_PACKAGE_NAME]);
+const BUSY_AGENT_ACTIVITY_STATUSES = new Set(['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming']);
 
 function readMsEnv(name, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
   const parsed = Number(process.env[name]);
@@ -36,6 +37,39 @@ function safeArray(value) {
 
 function objectValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function activityText(activity = {}) {
+  if (!activity || typeof activity !== 'object') return '';
+  return [
+    activity.error,
+    activity.detail,
+    activity.text,
+    activity.message,
+  ].filter((item) => item !== undefined && item !== null && item !== '').map(String).join('\n').trim();
+}
+
+function daemonRuntimeErrorDetail(activity = {}) {
+  const text = activityText(activity);
+  if (!text) return '';
+  const source = String(activity?.source || '').toLowerCase();
+  const lower = text.toLowerCase();
+  const fromCodex = source.includes('codex') || lower.includes('codex_api::');
+  if (!fromCodex) return '';
+  if (lower.includes('responses_websocket') && lower.includes('error')) return text.slice(0, 2000);
+  if (lower.includes('failed to connect to websocket') && lower.includes('/v1/responses')) return text.slice(0, 2000);
+  if (lower.includes('authentication') && lower.includes('openai')) return text.slice(0, 2000);
+  if (lower.includes('not logged in') || lower.includes('login is required')) return text.slice(0, 2000);
+  return '';
+}
+
+function runtimeActivityWithError(activity = {}, errorDetail = '') {
+  if (!errorDetail) return activity || null;
+  return {
+    ...objectValue(activity),
+    source: activity?.source || 'daemon-runtime-error',
+    error: errorDetail,
+  };
 }
 
 function normalizeComputerServiceInfo(service = {}, packageKind = '') {
@@ -2338,15 +2372,15 @@ export function createDaemonRelay(deps) {
     if (!agent) return;
     if (message.probeId) pendingActivityProbes.delete(agent.id);
     const runtimeActivity = message.activity || agent.runtimeActivity || null;
-    setAgentStatus(agent, String(message.status || 'idle'), 'daemon_status', {
-      forceEvent: true,
-      runtimeActivity,
+    const runtimeError = daemonRuntimeErrorDetail(runtimeActivity);
+    const nextStatus = String(runtimeError ? 'error' : (message.status || 'idle')).toLowerCase();
+    setAgentStatus(agent, nextStatus, 'daemon_status', {
+      runtimeActivity: runtimeActivityWithError(runtimeActivity, runtimeError),
     });
-    const nextStatus = String(message.status || '').toLowerCase();
     if (message.deliveryId && ['idle', 'offline'].includes(nextStatus)) {
       markDeliveryFinished(message.deliveryId, 'completed');
     } else if (message.deliveryId && nextStatus === 'error') {
-      markDeliveryFinished(message.deliveryId, 'failed', message.activity?.error || message.activity?.detail || 'Agent delivery failed.');
+      markDeliveryFinished(message.deliveryId, 'failed', runtimeError || message.activity?.error || message.activity?.detail || 'Agent delivery failed.');
     }
     if (message.sessionId !== undefined) {
       agent.runtimeSessionId = message.sessionId || null;
@@ -2357,7 +2391,7 @@ export function createDaemonRelay(deps) {
         session.updatedAt = now();
       }
     }
-    agent.runtimeActivity = runtimeActivity;
+    agent.runtimeActivity = runtimeActivityWithError(runtimeActivity, runtimeError);
     agent.heartbeatAt = now();
     if (!message.status) recordAgentRealtimeSnapshot(agent);
     const immediate = Boolean(
@@ -2384,21 +2418,29 @@ export function createDaemonRelay(deps) {
     if (!agent) return;
     if (message.probeId) pendingActivityProbes.delete(agent.id);
     const runtimeActivity = message.activity || agent.runtimeActivity || null;
-    if (message.status) {
-      setAgentStatus(agent, String(message.status), 'daemon_activity', {
-        forceEvent: true,
-        runtimeActivity,
+    const runtimeError = daemonRuntimeErrorDetail(runtimeActivity);
+    const nextStatus = String(runtimeError ? 'error' : (message.status || '')).toLowerCase();
+    const currentStatus = String(agent.status || '').toLowerCase();
+    const suppressBusyActivityAfterError = Boolean(nextStatus && !runtimeError && currentStatus === 'error' && BUSY_AGENT_ACTIVITY_STATUSES.has(nextStatus));
+    if (nextStatus && !suppressBusyActivityAfterError) {
+      setAgentStatus(agent, nextStatus, 'daemon_activity', {
+        runtimeActivity: runtimeActivityWithError(runtimeActivity, runtimeError),
       });
     }
-    agent.runtimeActivity = runtimeActivity;
+    if (!suppressBusyActivityAfterError) {
+      agent.runtimeActivity = runtimeActivityWithError(runtimeActivity, runtimeError);
+    }
     agent.heartbeatAt = now();
-    if (!message.status) recordAgentRealtimeSnapshot(agent);
+    if (!message.status && !runtimeError) recordAgentRealtimeSnapshot(agent);
     recordDaemonEvent('agent_activity', `${agent.name} reported daemon activity.`, {
       agentId: agent.id,
       computerId: message.computerId || agent.computerId || null,
       activity: message.activity || null,
       deliveryId: message.deliveryId || null,
     });
+    if (message.deliveryId && nextStatus === 'error') {
+      markDeliveryFinished(message.deliveryId, 'failed', runtimeError || message.activity?.error || message.activity?.detail || 'Agent delivery failed.');
+    }
     if (message.deliveryId) {
       await persistRuntimeState(workspaceIdForAgent(agent), 'daemon_agent_activity');
       broadcastState();

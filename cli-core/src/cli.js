@@ -123,6 +123,17 @@ function claudeToolActivityDetail(event) {
   return 'Claude Code activity';
 }
 
+function codexStderrRuntimeError(text = '') {
+  const detail = String(text || '').trim();
+  if (!detail) return '';
+  const lower = detail.toLowerCase();
+  if (lower.includes('responses_websocket') && lower.includes('error')) return detail.slice(0, 2000);
+  if (lower.includes('failed to connect to websocket') && lower.includes('/v1/responses')) return detail.slice(0, 2000);
+  if (lower.includes('authentication') && lower.includes('openai')) return detail.slice(0, 2000);
+  if (lower.includes('not logged in') || lower.includes('login is required')) return detail.slice(0, 2000);
+  return '';
+}
+
 function packageInfoFromSpec(packageSpec = '') {
   const match = String(packageSpec || '').trim().match(/^(@magclaw\/(?:daemon|computer))(?:@(.+))?$/);
   return {
@@ -2979,9 +2990,12 @@ class CodexAgentSession {
     this.completedToolCallIds = new Set();
     this.activeTurnToolSignatures = new Set();
     this.activeTurnUsedSendMessage = false;
+    this.activeTurnSawResponseDelta = false;
+    this.activeTurnDeltaItemIds = new Set();
     this.codexMessageQueue = Promise.resolve();
     this.streamActivityTimer = null;
     this.pendingStreamActivity = null;
+    this.lastRuntimeError = '';
     this.trajectoryCoalesceMs = envInteger(this.env, 'MAGCLAW_DAEMON_TRAJECTORY_COALESCE_MS', DEFAULT_TRAJECTORY_COALESCE_MS, { min: 0, max: 5_000 });
   }
 
@@ -3129,6 +3143,38 @@ class CodexAgentSession {
     const payload = this.pendingStreamActivity;
     this.pendingStreamActivity = null;
     if (payload) this.send(payload);
+  }
+
+  async reportRuntimeError(errorText, rawText = '') {
+    const error = String(errorText || rawText || 'Codex runtime error.').trim().slice(0, 2000);
+    if (!error) return;
+    if (this.status === 'error' && this.lastRuntimeError === error) return;
+    this.lastRuntimeError = error;
+    const activity = {
+      source: 'codex-stderr',
+      error,
+      text: String(rawText || error).trim().slice(0, 2000),
+      at: now(),
+    };
+    this.send({
+      type: 'agent:error',
+      commandId: this.activeDeliveryId || undefined,
+      deliveryId: this.activeDeliveryId || null,
+      agentId: this.agent.id,
+      error,
+    });
+    if (this.activeDeliveryId) {
+      await this.markDelivery(this.activeDeliveryId, 'failed', {
+        agentId: this.agent.id,
+        sessionKey: this.sessionKey || null,
+        messageId: this.lastSourceMessage?.id || null,
+        workItemId: this.lastSourceMessage?.workItemId || null,
+        error,
+      }).catch((markError) => {
+        logWarning('daemon', `Failed to mark delivery ${this.activeDeliveryId} failed after Codex runtime error: ${markError.message}`);
+      });
+    }
+    this.sendStatus('error', activity);
   }
 
   async requestMagClawTool(pathname, { method = 'GET', query = {}, body = null } = {}) {
@@ -3445,6 +3491,18 @@ class CodexAgentSession {
     }
   }
 
+  appendCompletedAgentText(text = '', { hadDelta = false } = {}) {
+    const value = String(text || '');
+    if (!value) return;
+    if (hadDelta) {
+      if (this.responseBuffer.endsWith(value) || this.responseBuffer.includes(value)) return;
+      if (value.startsWith(this.responseBuffer)) this.responseBuffer = value;
+      else this.responseBuffer += value;
+      return;
+    }
+    if (!this.responseBuffer.includes(value)) this.responseBuffer += value;
+  }
+
   async executeCodexToolItem(item = {}, requestId = null, params = {}) {
     const callId = codexToolCallId(item) || String(params.callId || params.call_id || '');
     const name = canonicalMagClawToolName(codexToolName(item));
@@ -3541,10 +3599,18 @@ class CodexAgentSession {
     this.child.stderr.on('data', (chunk) => {
       const text = chunk.toString().trim();
       if (!text) return;
+      const runtimeError = codexStderrRuntimeError(text);
+      if (runtimeError) {
+        this.reportRuntimeError(runtimeError, text).catch((error) => {
+          logWarning('daemon', `Failed to report Codex runtime error for ${this.agent.id}: ${error.message}`);
+        });
+        return;
+      }
       this.send({
         type: 'agent:activity',
         agentId: this.agent.id,
         status: this.status || 'working',
+        deliveryId: this.activeDeliveryId || null,
         activity: { source: 'codex-stderr', text: text.slice(0, 2000), at: now() },
       });
     });
@@ -3593,6 +3659,9 @@ class CodexAgentSession {
     this.activeDeliveryId = deliveryId || '';
     this.activeTurnToolSignatures = new Set();
     this.activeTurnUsedSendMessage = false;
+    this.activeTurnSawResponseDelta = false;
+    this.activeTurnDeltaItemIds = new Set();
+    this.lastRuntimeError = '';
     const model = this.agent.model || undefined;
     const effort = this.agent.reasoningEffort || undefined;
     const imageInputs = await this.imageInputsForDelivery(message);
@@ -3703,6 +3772,9 @@ class CodexAgentSession {
     }
     if (method === 'item/agentMessage/delta' || method === 'response/output_text/delta') {
       this.responseBuffer += String(params.delta || params.text || '');
+      const itemId = String(params.itemId || params.item_id || params.item?.id || '');
+      if (itemId) this.activeTurnDeltaItemIds.add(itemId);
+      this.activeTurnSawResponseDelta = true;
       this.queueCodexStreamActivity();
       return;
     }
@@ -3710,7 +3782,10 @@ class CodexAgentSession {
       const item = params.item || {};
       if (await this.executeCodexToolItem(item, null, params)) return;
       const text = item?.text || item?.message || params.text || '';
-      if (text) this.responseBuffer += String(text);
+      const itemId = String(item?.id || item?.itemId || item?.item_id || '');
+      this.appendCompletedAgentText(text, {
+        hadDelta: Boolean((itemId && this.activeTurnDeltaItemIds.has(itemId)) || this.activeTurnSawResponseDelta),
+      });
       return;
     }
     if (method === 'turn/completed' || method === 'turn/failed') {
@@ -3742,6 +3817,8 @@ class CodexAgentSession {
       this.responseBuffer = '';
       this.activeTurnId = '';
       this.activeTurnUsedSendMessage = false;
+      this.activeTurnSawResponseDelta = false;
+      this.activeTurnDeltaItemIds.clear();
       this.sendStatus(method === 'turn/completed' ? 'idle' : 'error', {
         source: '@magclaw/daemon',
         detail: method === 'turn/completed' ? 'Turn completed' : 'Turn failed',

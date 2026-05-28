@@ -299,7 +299,7 @@ function renderActorName(authorId, authorType) {
     const youLabel = renderHumanYouLabel(human);
     return `
       <button class="human-author-name" type="button" data-action="select-human-inspector" data-id="${escapeHtml(authorId)}">
-        <strong>@${escapeHtml(displayName(authorId))}</strong>${youLabel}${humanBadgeHtml()}
+        <strong>${escapeHtml(displayName(authorId))}</strong>${youLabel}${humanBadgeHtml()}
         ${human ? renderHumanHoverCard(human) : ''}
       </button>
     `;
@@ -309,7 +309,7 @@ function renderActorName(authorId, authorType) {
   if (!agent) return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
   return `
     <button class="agent-author-name" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}">
-      <strong>@${escapeHtml(agent.name)}</strong>
+      <strong>${escapeHtml(agent.name)}</strong>
       ${renderAgentHoverCard(agent)}
     </button>
   `;

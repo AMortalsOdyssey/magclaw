@@ -83,3 +83,30 @@ test('agent responses can dedupe recent relay echoes with the same target and bo
     'recent duplicate top-level messages must be detected before insertion',
   );
 });
+
+test('agent stdout fallback links to an existing send_message work item response', async () => {
+  const source = await readFile(new URL('../server/agent-runtime/warm-control-relay.js', import.meta.url), 'utf8');
+  const helperSource = source.slice(
+    source.indexOf('function findExistingAgentResponseForSourceWorkItem'),
+    source.indexOf('function responseCreatedTimeMs'),
+  );
+  const postSource = source.slice(
+    source.indexOf('async function postAgentResponse'),
+  );
+
+  assert.match(helperSource, /const sourceWorkItemId = String\(options\.sourceMessage\?\.workItemId \|\| ''\)\.trim\(\)/);
+  assert.match(helperSource, /const item = findWorkItem\(sourceWorkItemId\)/);
+  assert.match(helperSource, /item\.lastResponseId/);
+  assert.match(helperSource, /Number\(item\.sendCount \|\| 0\) <= 0/);
+  assert.match(helperSource, /const record = findConversationRecord\(item\.lastResponseId\)/);
+  assert.match(helperSource, /record\.authorType !== 'agent'/);
+  assert.match(helperSource, /record\.authorId !== agent\.id/);
+  assert.match(postSource, /findExistingAgentResponseForSourceWorkItem\(agent, parentMessageId, options\)/);
+  assert.match(postSource, /agent_stdout_suppressed_after_send_message/);
+  assert.match(postSource, /returnExistingAgentResponse\(sourceWorkItemResponse, options\)/);
+  assert.ok(
+    postSource.indexOf('findExistingAgentResponseForSourceWorkItem(agent, parentMessageId, options)')
+      < postSource.indexOf('state.messages.push(message)'),
+    'final stdout fallback must be linked before a second top-level message can be inserted',
+  );
+});
