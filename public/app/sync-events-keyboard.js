@@ -1732,6 +1732,14 @@ function submitComposerFromEnter(textarea) {
 }
 
 document.addEventListener('keydown', async (event) => {
+  if (event.key === 'Escape' && modal === 'attachment-preview') {
+    event.preventDefault();
+    attachmentPreviewState = { attachmentId: null, loading: false, content: '', error: '' };
+    modal = null;
+    renderShellOrModal();
+    return;
+  }
+
   if ((event.metaKey || event.ctrlKey) && event.key?.toLowerCase() === 'k') {
     event.preventDefault();
     openSearchView();

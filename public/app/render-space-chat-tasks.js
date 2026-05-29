@@ -1030,6 +1030,47 @@ function renderMarkdownWithPreviewAnchors(content) {
   });
 }
 
+function markdownPreviewContentParts(content) {
+  const source = String(content || '');
+  if (!source.startsWith('---\n') && !source.startsWith('---\r\n')) {
+    return { frontmatter: '', body: source };
+  }
+  const lines = source.split(/\r?\n/);
+  const endIndex = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
+  if (endIndex <= 0) return { frontmatter: '', body: source };
+  return {
+    frontmatter: lines.slice(1, endIndex).join('\n'),
+    body: lines.slice(endIndex + 1).join('\n').replace(/^\s+/, ''),
+  };
+}
+
+function renderMarkdownPreviewFrontmatter(frontmatter = '') {
+  const lines = String(frontmatter || '').split(/\r?\n/).filter((line) => line.trim());
+  if (!lines.length) return '';
+  return `
+    <section class="attachment-preview-frontmatter" aria-label="${escapeHtml(t('Document metadata'))}">
+      ${lines.map((line) => {
+        const indent = Math.min(4, Math.floor((line.match(/^\s*/) || [''])[0].length / 2));
+        const trimmed = line.trim();
+        const field = trimmed.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+        const listItem = trimmed.match(/^-\s+(.+)$/);
+        if (field) {
+          return `
+            <div class="attachment-preview-frontmatter-row is-field" style="--indent: ${indent}">
+              <strong>${escapeHtml(field[1])}:</strong>
+              ${field[2] ? `<span>${renderMarkdownInline(field[2])}</span>` : ''}
+            </div>
+          `;
+        }
+        if (listItem) {
+          return `<div class="attachment-preview-frontmatter-row is-list" style="--indent: ${indent}"><span>${renderMarkdownInline(listItem[1])}</span></div>`;
+        }
+        return `<div class="attachment-preview-frontmatter-row" style="--indent: ${indent}"><span>${renderMarkdownInline(trimmed)}</span></div>`;
+      }).join('')}
+    </section>
+  `;
+}
+
 function renderAttachmentMarkdownPreview() {
   if (attachmentPreviewState.loading) {
     return `
@@ -1043,11 +1084,16 @@ function renderAttachmentMarkdownPreview() {
     return `<div class="empty-box small attachment-preview-error">${escapeHtml(attachmentPreviewState.error)}</div>`;
   }
   const content = attachmentPreviewState.content || '';
-  const outline = markdownPreviewOutline(content);
+  const { frontmatter, body } = markdownPreviewContentParts(content);
+  const outline = markdownPreviewOutline(body);
   return `
     <div class="attachment-preview-document">
+      <article class="message-markdown attachment-preview-markdown">
+        ${renderMarkdownPreviewFrontmatter(frontmatter)}
+        ${renderMarkdownWithPreviewAnchors(body)}
+      </article>
       <nav class="attachment-preview-outline" aria-label="${escapeHtml(t('Document outline'))}">
-        <strong>${escapeHtml(t('Outline'))}</strong>
+        <strong>${escapeHtml(t('Outline')).toUpperCase()}</strong>
         ${outline.length ? `
           <ol>
             ${outline.map((item) => `
@@ -1058,11 +1104,17 @@ function renderAttachmentMarkdownPreview() {
           </ol>
         ` : `<small>${escapeHtml(t('No headings found.'))}</small>`}
       </nav>
-      <article class="message-markdown attachment-preview-markdown">
-        ${renderMarkdownWithPreviewAnchors(content)}
-      </article>
     </div>
   `;
+}
+
+function attachmentPreviewLabel(kind) {
+  if (kind === 'markdown') return 'MARKDOWN PREVIEW';
+  if (kind === 'image') return 'IMAGE PREVIEW';
+  if (kind === 'video') return 'VIDEO PREVIEW';
+  if (kind === 'pdf') return 'PDF PREVIEW';
+  if (kind === 'html') return 'HTML FILE';
+  return 'FILE PREVIEW';
 }
 
 function renderAttachmentPreviewModal() {
@@ -1092,12 +1144,26 @@ function renderAttachmentPreviewModal() {
     body = `<div class="empty-box small">${escapeHtml(t('Preview is not available for this attachment type.'))}</div>`;
   }
   return `
-    ${modalHeader(attachment.name || 'Attachment', `${attachment.type || 'file'} · ${bytes(attachment.bytes)}`)}
-    <div class="attachment-preview-modal">
-      ${body}
-      <div class="attachment-preview-meta">
-        <span>${escapeHtml(t('Read-only preview'))}</span>
-        <a href="${safeUrl}" target="_blank" rel="noreferrer">${escapeHtml(t('Open original'))}</a>
+    <div class="attachment-preview-fullscreen">
+      <header class="attachment-preview-topbar">
+        <div class="attachment-preview-file-head">
+          <span class="attachment-preview-file-meta">${escapeHtml(attachment.type || 'file')} · ${bytes(attachment.bytes)}</span>
+          <span class="attachment-preview-file-name" title="${safeName}">${safeName}</span>
+        </div>
+        <div class="attachment-preview-actions">
+          <span class="attachment-preview-kind-pill">${escapeHtml(attachmentPreviewLabel(kind))}</span>
+          <a class="attachment-preview-action attachment-preview-download" href="${safeUrl}" download="${safeName}" title="${escapeHtml(t('Download'))}" aria-label="${escapeHtml(t('Download'))}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+          </a>
+          <button class="attachment-preview-action attachment-preview-close" type="button" data-action="close-modal" title="${escapeHtml(t('Close'))}" aria-label="${escapeHtml(t('Close'))}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </header>
+      <div class="attachment-preview-stage">
+        <div class="attachment-preview-modal">
+          ${body}
+        </div>
       </div>
     </div>
   `;

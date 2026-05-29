@@ -52,3 +52,31 @@ test('staged composer attachments can open previews and show markdown identity',
   assert.match(styles, /\.markdown-file-icon/);
   assert.match(styles, /\.markdown-file-icon-arrow/);
 });
+
+test('markdown attachment preview uses full screen document layout with right outline and download controls', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+
+  assert.match(app, /function renderMarkdownPreviewFrontmatter\(/);
+  assert.match(app, /function markdownPreviewContentParts\(/);
+  assert.match(app, /class="attachment-preview-fullscreen"/);
+  assert.match(app, /attachment-preview-download/);
+  assert.match(app, /download="\$\{safeName\}"/);
+  assert.doesNotMatch(app, /Open original/);
+  assert.match(styles, /\.modal-attachment-preview-backdrop[\s\S]*position:\s*fixed/);
+  assert.match(styles, /\.modal-card\.modal-attachment-preview[\s\S]*width:\s*100vw[\s\S]*height:\s*100vh/);
+  assert.match(styles, /\.attachment-preview-document[\s\S]*grid-template-columns:\s*minmax\(0, 760px\) minmax\(240px, 360px\)/);
+  assert.match(styles, /\.attachment-preview-outline a:hover[\s\S]*font-weight:\s*900/);
+  assert.match(styles, /\.attachment-preview-action:hover[\s\S]*transform:\s*translateY\(-1px\)/);
+  assert.match(styles, /\.attachment-preview-markdown pre[\s\S]*background:\s*#111827/);
+  assert.match(styles, /\.attachment-preview-markdown pre code[\s\S]*white-space:\s*pre/);
+  assert.match(styles, /\.attachment-preview-frontmatter[\s\S]*border-top:[\s\S]*border-bottom:/);
+});
+
+test('markdown attachment preview closes with Escape', async () => {
+  const app = await readAppSource();
+  const keydownSource = app.slice(app.indexOf("document.addEventListener('keydown'"), app.indexOf("document.addEventListener('pointerdown'"));
+
+  assert.match(keydownSource, /event\.key === 'Escape'[\s\S]*modal === 'attachment-preview'/);
+  assert.match(keydownSource, /attachmentPreviewState = \{ attachmentId: null, loading: false, content: '', error: '' \}/);
+});
