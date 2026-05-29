@@ -441,15 +441,15 @@
   overflow: hidden;
   padding: 0;
   border: 0;
-  background: #fffaf0;
+  background: var(--bg-chat);
   box-shadow: none;
 }
 
-.modal-attachment-preview-backdrop {
+.modal-backdrop.modal-attachment-preview-backdrop {
   position: fixed;
   inset: 0;
   padding: 0;
-  background: #fffaf0;
+  background: var(--bg-chat);
   z-index: 120;
 }
 
@@ -460,7 +460,7 @@
   min-height: 0;
   display: grid;
   grid-template-rows: 44px minmax(0, 1fr);
-  background: #fffaf0;
+  background: var(--bg-chat);
   color: #171717;
 }
 
@@ -472,7 +472,7 @@
   min-width: 0;
   padding: 0 12px;
   border-bottom: 2px solid #171717;
-  background: #fffaf0;
+  background: var(--bg-elevated);
 }
 
 .attachment-preview-file-head {
@@ -511,10 +511,10 @@
   align-items: center;
   min-height: 22px;
   padding: 0 10px;
-  border: 1px solid #d6d0c2;
+  border: 1px solid rgba(255, 95, 162, 0.36);
   border-radius: 999px;
-  background: #fffdfa;
-  color: #73706a;
+  background: var(--accent-soft);
+  color: #5d2143;
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 900;
@@ -527,7 +527,7 @@
   width: 28px;
   height: 28px;
   border: 2px solid #171717;
-  background: #fffdfa;
+  background: var(--accent-soft);
   color: #171717;
   text-decoration: none;
   transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
@@ -535,7 +535,7 @@
 
 .attachment-preview-action:hover {
   transform: translateY(-1px);
-  background: #ffe8f3;
+  background: var(--accent);
   box-shadow: 2px 2px 0 #171717;
 }
 
@@ -594,10 +594,11 @@
 .attachment-preview-document {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 760px) minmax(240px, 360px);
-  justify-content: center;
-  overflow: hidden;
-  background: #fffaf0;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 340px);
+  justify-content: stretch;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--bg-chat);
 }
 
 .attachment-preview-outline {
@@ -608,7 +609,7 @@
   overflow: auto;
   padding: 24px 28px;
   border-left: 2px solid #171717;
-  background: #fff8ea;
+  background: var(--bg-elevated);
 }
 
 .attachment-preview-outline strong {
@@ -656,14 +657,14 @@
 .attachment-preview-outline a:hover {
   color: #171717;
   font-weight: 900;
-  background: #fffdfa;
+  background: #fff7fc;
   transform: translateX(2px);
 }
 
 .attachment-preview-markdown {
   min-width: 0;
-  max-width: 760px;
-  overflow: auto;
+  max-width: none;
+  overflow: visible;
   padding: 28px 34px 54px;
   border-left: 2px solid #171717;
   border-right: 2px solid #171717;
@@ -723,10 +724,10 @@
 
 .attachment-preview-markdown pre {
   display: block;
+  height: auto;
   max-width: 100%;
   max-height: none;
-  overflow-x: auto;
-  overflow-y: visible;
+  overflow: visible;
   padding: 16px 18px;
   border: 2px solid #171717;
   background: #111827;
@@ -742,7 +743,7 @@
   font-weight: 800;
   line-height: 1.55;
   overflow-wrap: normal;
-  white-space: pre;
+  white-space: pre-wrap;
   word-break: normal;
 }
 

@@ -43,11 +43,14 @@ test('attachment preview modal supports markdown outline and media viewers', asy
 test('staged composer attachments can open previews and show markdown identity', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
+  const openPreviewSource = app.slice(app.indexOf('async function openAttachmentPreview'), app.indexOf('async function switchConsoleServerAndLoadState'));
 
   assert.match(app, /function attachmentPreviewIcon\(/);
   assert.match(app, /markdown-file-icon/);
   assert.match(app, /composer-attachment-preview-btn[\s\S]*data-action="open-attachment-preview"/);
   assert.match(app, /attachmentPreviewKind\(item\) === 'markdown'/);
+  assert.match(openPreviewSource, /findAttachmentForPreview\(attachmentId\)/);
+  assert.match(app, /function findStagedAttachment\(attachmentId\)/);
   assert.match(styles, /\.composer-attachment-preview-btn/);
   assert.match(styles, /\.markdown-file-icon/);
   assert.match(styles, /\.markdown-file-icon-arrow/);
@@ -63,13 +66,17 @@ test('markdown attachment preview uses full screen document layout with right ou
   assert.match(app, /attachment-preview-download/);
   assert.match(app, /download="\$\{safeName\}"/);
   assert.doesNotMatch(app, /Open original/);
-  assert.match(styles, /\.modal-attachment-preview-backdrop[\s\S]*position:\s*fixed/);
+  assert.match(styles, /\.modal-backdrop\.modal-attachment-preview-backdrop[\s\S]*position:\s*fixed[\s\S]*padding:\s*0/);
   assert.match(styles, /\.modal-card\.modal-attachment-preview[\s\S]*width:\s*100vw[\s\S]*height:\s*100vh/);
-  assert.match(styles, /\.attachment-preview-document[\s\S]*grid-template-columns:\s*minmax\(0, 760px\) minmax\(240px, 360px\)/);
+  assert.match(styles, /\.modal-card\.modal-attachment-preview[\s\S]*background:\s*var\(--bg-chat\)/);
+  assert.match(styles, /\.attachment-preview-document[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(240px, 340px\)/);
+  assert.doesNotMatch(styles, /background:\s*#fffaf0/);
   assert.match(styles, /\.attachment-preview-outline a:hover[\s\S]*font-weight:\s*900/);
   assert.match(styles, /\.attachment-preview-action:hover[\s\S]*transform:\s*translateY\(-1px\)/);
-  assert.match(styles, /\.attachment-preview-markdown pre[\s\S]*background:\s*#111827/);
-  assert.match(styles, /\.attachment-preview-markdown pre code[\s\S]*white-space:\s*pre/);
+  assert.match(styles, /\.attachment-preview-action[\s\S]*background:\s*var\(--accent-soft\)/);
+  assert.match(styles, /\.attachment-preview-markdown[\s\S]*max-width:\s*none[\s\S]*overflow:\s*visible/);
+  assert.match(styles, /\.attachment-preview-markdown pre[\s\S]*height:\s*auto[\s\S]*overflow:\s*visible[\s\S]*background:\s*#111827/);
+  assert.match(styles, /\.attachment-preview-markdown pre code[\s\S]*white-space:\s*pre-wrap/);
   assert.match(styles, /\.attachment-preview-frontmatter[\s\S]*border-top:[\s\S]*border-bottom:/);
 });
 
