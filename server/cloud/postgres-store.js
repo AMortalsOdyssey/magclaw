@@ -1633,7 +1633,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       `, [scopedWorkspaceIds]);
       return;
     }
-    const params = [...scopedWorkspaceIds];
+    const params = [scopedWorkspaceIds];
     const valuesSql = rows.map((row) => {
       params.push(row[0], row[1], row[2]);
       const index = params.length - 2;

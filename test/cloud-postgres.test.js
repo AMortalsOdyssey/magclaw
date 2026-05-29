@@ -443,6 +443,10 @@ test('postgres store persists relay core state without durable activity logs', a
   const humanInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_humans"') && query.params[0] === 'hum_owner');
   const agentInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_agents"') && query.params[0] === 'agt_remote');
   const channelMemberInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_channel_members"') && query.params[0] === 'wsp_main');
+  const channelMemberStaleUpdate = queries.find((query) => (
+    query.sql.includes('WITH active_members(workspace_id, channel_id, human_id) AS')
+    && query.sql.includes('UPDATE "magclaw"."cloud_channel_members" AS member')
+  ));
   const sequenceInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_conversation_sequences"') && query.params[0] === 'wsp_main');
   const messageInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_messages"') && query.params[0] === 'msg_remote');
   const replyInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_replies"') && query.params[0] === 'rep_remote');
@@ -454,6 +458,10 @@ test('postgres store persists relay core state without durable activity logs', a
   assert.equal(JSON.parse(agentInsert.params[15]).state.status, 'idle');
   assert.equal(channelMemberInsert.params[1], 'chan_all');
   assert.equal(channelMemberInsert.params[2], 'hum_owner');
+  assert.deepEqual(channelMemberStaleUpdate.params[0], ['wsp_main']);
+  assert.equal(channelMemberStaleUpdate.params[1], 'wsp_main');
+  assert.equal(channelMemberStaleUpdate.params[2], 'chan_all');
+  assert.equal(channelMemberStaleUpdate.params[3], 'hum_owner');
   assert.equal(sequenceInsert.params[1], 'dm');
   assert.equal(sequenceInsert.params[2], 'dm_remote');
   assert.equal(sequenceInsert.params[3], 2);
