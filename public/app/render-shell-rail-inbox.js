@@ -180,6 +180,7 @@ function render() {
       restoreComposerFocus(composerFocus);
       restorePendingComposerFocus();
       if (typeof maybeAutosizeAllComposerTextareas === 'function') maybeAutosizeAllComposerTextareas();
+      if (typeof requestAttachmentPreviewOutlineSync === 'function') requestAttachmentPreviewOutlineSync();
       if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
         workspaceActivityScrollToBottom = false;
         scrollWorkspaceActivityToBottom('auto');
@@ -227,6 +228,7 @@ function render() {
     restoreComposerFocus(composerFocus);
     restorePendingComposerFocus();
     if (typeof maybeAutosizeAllComposerTextareas === 'function') maybeAutosizeAllComposerTextareas();
+    if (typeof requestAttachmentPreviewOutlineSync === 'function') requestAttachmentPreviewOutlineSync();
     if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
       workspaceActivityScrollToBottom = false;
       scrollWorkspaceActivityToBottom('auto');

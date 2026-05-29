@@ -997,6 +997,125 @@ function attachmentPreviewKind(attachment = {}) {
   return 'file';
 }
 
+let attachmentPreviewOutlineSyncFrame = 0;
+let attachmentPreviewSyncedHashKey = '';
+
+function attachmentPreviewHashId() {
+  const hash = String(window.location.hash || '').replace(/^#/, '');
+  if (!hash) return '';
+  try {
+    return decodeURIComponent(hash);
+  } catch {
+    return hash;
+  }
+}
+
+function attachmentPreviewHashSyncKey(id = attachmentPreviewHashId()) {
+  return `${attachmentPreviewState?.attachmentId || ''}:${id || ''}`;
+}
+
+function attachmentPreviewSelectorValue(value) {
+  const raw = String(value || '');
+  if (window.CSS?.escape) return CSS.escape(raw);
+  return raw.replace(/["\\]/g, '\\$&');
+}
+
+function attachmentPreviewHeadingById(scroller, id) {
+  if (!scroller || !id) return null;
+  const selectorValue = attachmentPreviewSelectorValue(id);
+  return scroller.querySelector(`[data-preview-heading-id="${selectorValue}"]`);
+}
+
+function setAttachmentPreviewOutlineActive(outline, activeId) {
+  if (!outline || !activeId) return;
+  let activeLink = null;
+  outline.querySelectorAll('[data-preview-outline-id]').forEach((link) => {
+    const active = link.dataset.previewOutlineId === activeId;
+    link.classList.toggle('active', active);
+    if (active) {
+      link.setAttribute('aria-current', 'true');
+      activeLink = link;
+    } else {
+      link.removeAttribute('aria-current');
+    }
+  });
+  if (!activeLink) return;
+  const outlineRect = outline.getBoundingClientRect();
+  const linkRect = activeLink.getBoundingClientRect();
+  if (linkRect.top < outlineRect.top + 8 || linkRect.bottom > outlineRect.bottom - 8) {
+    activeLink.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+}
+
+function scrollAttachmentPreviewToHeading(id, { updateHash = false } = {}) {
+  const scroller = document.querySelector('[data-attachment-preview-scroll]');
+  const heading = attachmentPreviewHeadingById(scroller, id);
+  if (!scroller || !heading) return false;
+  const top = Math.max(0, heading.offsetTop - 18);
+  scroller.scrollTo({ top, behavior: 'auto' });
+  attachmentPreviewSyncedHashKey = attachmentPreviewHashSyncKey(id);
+  if (updateHash && window.history?.replaceState) {
+    const encoded = encodeURIComponent(id);
+    window.history.replaceState({}, '', `${window.location.pathname}${window.location.search}#${encoded}`);
+  }
+  syncAttachmentPreviewOutline();
+  heading.focus?.({ preventScroll: true });
+  return true;
+}
+
+function syncAttachmentPreviewOutline() {
+  const scroller = document.querySelector('[data-attachment-preview-scroll]');
+  const outline = document.querySelector('[data-attachment-preview-outline]');
+  if (!scroller || !outline) return;
+  const hashId = attachmentPreviewHashId();
+  const hashKey = attachmentPreviewHashSyncKey(hashId);
+  if (hashId && attachmentPreviewSyncedHashKey !== hashKey) {
+    const heading = attachmentPreviewHeadingById(scroller, hashId);
+    if (heading) {
+      attachmentPreviewSyncedHashKey = hashKey;
+      scroller.scrollTo({ top: Math.max(0, heading.offsetTop - 18), behavior: 'auto' });
+    }
+  }
+  const headings = [...scroller.querySelectorAll('[data-preview-heading-id]')];
+  if (!headings.length) return;
+  const threshold = scroller.scrollTop + 80;
+  let activeId = headings[0].dataset.previewHeadingId || headings[0].id || '';
+  for (const heading of headings) {
+    if (heading.offsetTop <= threshold) activeId = heading.dataset.previewHeadingId || heading.id || activeId;
+    else break;
+  }
+  if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 8) {
+    const last = headings[headings.length - 1];
+    activeId = last.dataset.previewHeadingId || last.id || activeId;
+  }
+  setAttachmentPreviewOutlineActive(outline, activeId);
+}
+
+function requestAttachmentPreviewOutlineSync() {
+  if (attachmentPreviewOutlineSyncFrame) window.cancelAnimationFrame(attachmentPreviewOutlineSyncFrame);
+  attachmentPreviewOutlineSyncFrame = window.requestAnimationFrame(() => {
+    attachmentPreviewOutlineSyncFrame = 0;
+    syncAttachmentPreviewOutline();
+  });
+}
+
+const attachmentPreviewScrollEventName = 'scroll';
+
+if (typeof document !== 'undefined') {
+  document.addEventListener(attachmentPreviewScrollEventName, (event) => {
+    if (event.target?.matches?.('[data-attachment-preview-scroll]')) {
+      requestAttachmentPreviewOutlineSync();
+    }
+  }, true);
+
+  document.addEventListener('click', (event) => {
+    const outlineLink = event.target?.closest?.('[data-attachment-preview-outline] a[data-preview-outline-id]');
+    if (!outlineLink) return;
+    event.preventDefault();
+    scrollAttachmentPreviewToHeading(outlineLink.dataset.previewOutlineId || '', { updateHash: true });
+  });
+}
+
 function markdownPreviewSlug(text, seen = {}) {
   const base = String(text || '')
     .toLowerCase()
@@ -1033,7 +1152,7 @@ function renderMarkdownWithPreviewAnchors(content) {
   return renderMarkdown(content).replace(/<h([1-3])>([\s\S]*?)<\/h\1>/g, (match, level, inner) => {
     const item = outline[index++] || {};
     const id = item.id || `section-${index}`;
-    return `<h${level} id="${escapeHtml(id)}" tabindex="-1">${inner}</h${level}>`;
+    return `<h${level} id="${escapeHtml(id)}" data-preview-heading-id="${escapeHtml(id)}" tabindex="-1">${inner}</h${level}>`;
   });
 }
 
@@ -1095,17 +1214,17 @@ function renderAttachmentMarkdownPreview() {
   const outline = markdownPreviewOutline(body);
   return `
     <div class="attachment-preview-document">
-      <article class="message-markdown attachment-preview-markdown">
+      <article class="message-markdown attachment-preview-markdown" data-attachment-preview-scroll>
         ${renderMarkdownPreviewFrontmatter(frontmatter)}
         ${renderMarkdownWithPreviewAnchors(body)}
       </article>
-      <nav class="attachment-preview-outline" aria-label="${escapeHtml(t('Document outline'))}">
+      <nav class="attachment-preview-outline" data-attachment-preview-outline aria-label="${escapeHtml(t('Document outline'))}">
         <strong>${escapeHtml(t('Outline')).toUpperCase()}</strong>
         ${outline.length ? `
           <ol>
             ${outline.map((item) => `
               <li class="outline-level-${item.level}">
-                <a href="#${escapeHtml(item.id)}">${escapeHtml(item.text)}</a>
+                <a href="#${escapeHtml(item.id)}" data-preview-outline-id="${escapeHtml(item.id)}">${escapeHtml(item.text)}</a>
               </li>
             `).join('')}
           </ol>

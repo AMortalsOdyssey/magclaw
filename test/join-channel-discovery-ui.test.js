@@ -37,5 +37,7 @@ test('channel rail opens a Slock-style create-only menu from the plus button', a
   assert.match(app, /data-action="join-channel"/);
   assert.match(app, /data-action="open-modal" data-modal="channel"/);
   assert.match(styles, /\.channel-create-menu/);
+  assert.match(styles, /\.rail-title > span\.channel-create-anchor[\s\S]*flex:\s*0 0 auto[\s\S]*overflow:\s*visible/);
+  assert.match(styles, /\.rail-title \.channel-create-menu[\s\S]*display:\s*block[\s\S]*overflow:\s*visible/);
   assert.match(styles, /\.channel-create-menu-item/);
 });
