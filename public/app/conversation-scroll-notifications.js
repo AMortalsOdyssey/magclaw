@@ -205,10 +205,17 @@ async function markInboxRead({
   });
 }
 
+function isConversationUnavailableError(error) {
+  return Number(error?.status || 0) === 403
+    && String(error?.message || '').trim().toLowerCase() === 'conversation is not available.';
+}
+
 function markThreadRead(messageId, { forceScope = true } = {}) {
   const recordIds = forceScope ? threadRecordIds(messageId) : unreadRecordIdsForThread(messageId);
   if (!recordIds.length && !forceScope) return;
-  markInboxRead({ recordIds, threadMessageId: messageId }).catch((error) => toast(error.message));
+  markInboxRead({ recordIds, threadMessageId: messageId }).catch((error) => {
+    if (!isConversationUnavailableError(error)) toast(error.message);
+  });
 }
 
 function markConversationRecordRead(record) {
@@ -218,7 +225,9 @@ function markConversationRecordRead(record) {
   const recordIds = isThread
     ? threadRecordIds(root.id)
     : [record.id];
-  markInboxRead({ recordIds, threadMessageId: isThread ? root.id : '' }).catch((error) => toast(error.message));
+  markInboxRead({ recordIds, threadMessageId: isThread ? root.id : '' }).catch((error) => {
+    if (!isConversationUnavailableError(error)) toast(error.message);
+  });
 }
 
 function markSpaceRead(spaceType, spaceId, { forceScope = true } = {}) {

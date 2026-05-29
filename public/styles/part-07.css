@@ -290,26 +290,12 @@
 
 .collab-frame .space-btn.dragging {
   opacity: 0.55;
+  cursor: grabbing;
 }
 
-.collab-frame .space-btn.drag-over {
-  position: relative;
-  background: #ffe4ec;
-  border-color: var(--workspace-line-strong);
-}
-
-.collab-frame .space-btn.drag-over::before {
-  content: "";
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  top: 0;
-  border-top: 2px solid var(--magclaw-pink);
-}
-
-.collab-frame .space-btn.drag-over.drag-after::before {
-  top: auto;
-  bottom: 0;
+.collab-frame .space-btn.drag-animating {
+  transition: transform 140ms ease;
+  will-change: transform;
 }
 
 .collab-frame .space-btn .rail-message-count {

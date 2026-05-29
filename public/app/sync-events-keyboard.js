@@ -1660,12 +1660,105 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') sendHumanPresenceHeartbeat();
 });
 
+function spaceDragRows(kind) {
+  const dragKind = kind === 'dm' ? 'dm' : 'channel';
+  return [...document.querySelectorAll(`[data-space-drag-kind="${dragKind}"][data-space-drag-id][draggable="true"]`)];
+}
+
+function spaceDragOrderFromDom(kind) {
+  return spaceDragRows(kind)
+    .map((row) => String(row.dataset.spaceDragId || '').trim())
+    .filter(Boolean);
+}
+
+function sameSpaceDragOrder(left = [], right = []) {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function animateSpaceDragRows(beforeRects, rows) {
+  const animated = [];
+  rows.forEach((row) => {
+    const first = beforeRects.get(row);
+    if (!first) return;
+    const last = row.getBoundingClientRect();
+    const deltaX = first.left - last.left;
+    const deltaY = first.top - last.top;
+    if (!deltaX && !deltaY) return;
+    row.classList.remove('drag-animating');
+    row.style.transition = 'none';
+    row.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+    animated.push(row);
+  });
+  if (!animated.length) return;
+  animated.forEach((row) => row.getBoundingClientRect());
+  window.requestAnimationFrame(() => {
+    animated.forEach((row) => {
+      row.style.transition = '';
+      row.classList.add('drag-animating');
+      row.style.transform = '';
+      window.setTimeout(() => {
+        row.classList.remove('drag-animating');
+        row.style.transform = '';
+      }, 180);
+    });
+  });
+}
+
+function moveSpaceOrderDuringDrag(targetRow, beforeTarget = false) {
+  if (!spaceOrderDrag || !targetRow) return false;
+  const kind = spaceOrderDrag.kind === 'dm' ? 'dm' : 'channel';
+  if (targetRow.dataset.spaceDragKind !== kind) return false;
+  const draggedId = String(spaceOrderDrag.id || '');
+  const targetId = String(targetRow.dataset.spaceDragId || '');
+  if (!draggedId || !targetId || draggedId === targetId) return false;
+  const rows = spaceDragRows(kind);
+  const rowById = new Map(rows.map((row) => [String(row.dataset.spaceDragId || ''), row]));
+  const draggedRow = rowById.get(draggedId);
+  if (!draggedRow || !rowById.has(targetId) || draggedRow.parentElement !== targetRow.parentElement) return false;
+  const current = rows.map((row) => String(row.dataset.spaceDragId || ''));
+  const next = current.filter((id) => id !== draggedId);
+  const targetIndex = next.indexOf(targetId);
+  if (targetIndex < 0) return false;
+  next.splice(beforeTarget ? targetIndex : targetIndex + 1, 0, draggedId);
+  if (sameSpaceDragOrder(current, next)) return false;
+  const beforeRects = new Map(rows.map((row) => [row, row.getBoundingClientRect()]));
+  const nextIndex = next.indexOf(draggedId);
+  const nextSibling = next[nextIndex + 1] ? rowById.get(next[nextIndex + 1]) : null;
+  targetRow.parentElement.insertBefore(draggedRow, nextSibling || null);
+  spaceOrderDrag.order = next;
+  animateSpaceDragRows(beforeRects, spaceDragRows(kind));
+  return true;
+}
+
+function finalizeSpaceOrderDrag() {
+  if (!spaceOrderDrag) return false;
+  const kind = spaceOrderDrag.kind === 'dm' ? 'dm' : 'channel';
+  const order = (spaceOrderDrag.order && spaceOrderDrag.order.length)
+    ? spaceOrderDrag.order
+    : spaceDragOrderFromDom(kind);
+  if (!order.length || sameSpaceDragOrder(spaceOrderDrag.initialOrder || [], order)) return false;
+  persistSpaceOrderPreference(kind, order);
+  return true;
+}
+
+function clearSpaceOrderDragState() {
+  document.querySelectorAll('.space-btn.dragging, .space-btn.drag-animating').forEach((item) => {
+    item.classList.remove('dragging', 'drag-animating');
+    item.style.transform = '';
+    item.style.transition = '';
+  });
+  spaceOrderDrag = null;
+}
+
 document.addEventListener('dragstart', (event) => {
   const row = event.target?.closest?.('[data-space-drag-kind][data-space-drag-id]');
   if (!row || row.getAttribute('draggable') !== 'true') return;
+  const order = spaceDragOrderFromDom(row.dataset.spaceDragKind);
   spaceOrderDrag = {
     kind: row.dataset.spaceDragKind,
     id: row.dataset.spaceDragId,
+    initialOrder: order,
+    order,
   };
   row.classList.add('dragging');
   event.dataTransfer?.setData('text/plain', `${spaceOrderDrag.kind}:${spaceOrderDrag.id}`);
@@ -1674,32 +1767,25 @@ document.addEventListener('dragstart', (event) => {
 
 document.addEventListener('dragover', (event) => {
   const row = event.target?.closest?.('[data-space-drag-kind][data-space-drag-id]');
-  if (!row || !spaceOrderDrag || row.dataset.spaceDragKind !== spaceOrderDrag.kind || row.dataset.spaceDragId === spaceOrderDrag.id) return;
-  if (row.getAttribute('draggable') !== 'true') return;
-  event.preventDefault();
-  document.querySelectorAll('.space-btn.drag-over').forEach((item) => item.classList.remove('drag-over', 'drag-after'));
-  const rect = row.getBoundingClientRect();
-  const after = event.clientY > rect.top + rect.height / 2;
-  row.classList.add('drag-over');
-  if (after) row.classList.add('drag-after');
-});
-
-document.addEventListener('drop', (event) => {
-  const row = event.target?.closest?.('[data-space-drag-kind][data-space-drag-id]');
   if (!row || !spaceOrderDrag || row.dataset.spaceDragKind !== spaceOrderDrag.kind) return;
   if (row.getAttribute('draggable') !== 'true') return;
   event.preventDefault();
+  if (row.dataset.spaceDragId === spaceOrderDrag.id) return;
   const rect = row.getBoundingClientRect();
   const before = event.clientY <= rect.top + rect.height / 2;
-  const changed = reorderSpaceOrderForDrag(spaceOrderDrag.kind, spaceOrderDrag.id, row.dataset.spaceDragId, before);
-  document.querySelectorAll('.space-btn.drag-over, .space-btn.dragging').forEach((item) => item.classList.remove('drag-over', 'drag-after', 'dragging'));
-  spaceOrderDrag = null;
-  if (changed) render();
+  moveSpaceOrderDuringDrag(row, before);
+});
+
+document.addEventListener('drop', (event) => {
+  if (!spaceOrderDrag) return;
+  event.preventDefault();
+  finalizeSpaceOrderDrag();
+  clearSpaceOrderDragState();
 });
 
 document.addEventListener('dragend', () => {
-  document.querySelectorAll('.space-btn.drag-over, .space-btn.dragging').forEach((item) => item.classList.remove('drag-over', 'drag-after', 'dragging'));
-  spaceOrderDrag = null;
+  finalizeSpaceOrderDrag();
+  clearSpaceOrderDragState();
 });
 
 document.addEventListener('compositionstart', (event) => {

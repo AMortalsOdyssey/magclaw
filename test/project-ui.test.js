@@ -2166,8 +2166,19 @@ test('left rail search and personal drag sorting follow Slock rail behavior', as
   assert.match(dmSource, /data-space-drag-kind="dm"/);
   assert.match(app, /function persistSpaceOrderPreference\(/);
   assert.match(app, /\/api\/cloud\/auth\/preferences/);
-  assert.match(styles, /\.space-btn\.drag-over/);
+  assert.match(app, /function moveSpaceOrderDuringDrag\(/);
+  assert.match(app, /function finalizeSpaceOrderDrag\(/);
+  assert.match(styles, /\.space-btn\.drag-animating/);
+  assert.doesNotMatch(styles, /\.space-btn\.drag-over::before/);
   assert.match(styles, /\.space-btn\.dragging/);
+});
+
+test('opening unavailable channel threads does not toast the permission response', async () => {
+  const app = await readAppSource();
+  const readSource = app.slice(app.indexOf('function markThreadRead('), app.indexOf('function markConversationRecordRead('));
+
+  assert.match(app, /function isConversationUnavailableError\(/);
+  assert.match(readSource, /if \(!isConversationUnavailableError\(error\)\) toast\(error\.message\)/);
 });
 
 test('thread list rows keep the latest actor avatar at the far left', async () => {
