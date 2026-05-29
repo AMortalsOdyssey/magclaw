@@ -1805,6 +1805,17 @@ test('message image attachments render as stacked previews under the message tex
   assert.match(styles, /\.message-attachment-preview img[\s\S]*max-width:\s*min\(520px, 100%\)/);
 });
 
+test('message file attachments render without a leading file glyph', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const attachmentSource = app.slice(app.indexOf('function attachmentLinks'), app.indexOf('function composerIdFor'));
+  const fileAttachmentStyles = styles.match(/\.message-attachment-preview\.file-attachment\s*\{[^}]+\}/)?.[0] || '';
+
+  assert.doesNotMatch(attachmentSource, /attachmentPreviewIcon\(item\)/);
+  assert.match(fileAttachmentStyles, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.doesNotMatch(fileAttachmentStyles, /grid-template-columns:\s*26px/);
+});
+
 test('composer attachments and textarea autosize stay live while sending', async () => {
   const app = await readAppSource();
   const submitSource = app.slice(app.indexOf("if (form.id === 'message-form')"), app.indexOf("if (form.id === 'channel-form')"));

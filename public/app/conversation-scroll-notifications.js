@@ -351,7 +351,7 @@ function attachmentLinks(ids = []) {
         <button class="message-attachment-preview ${isImage ? 'image-attachment' : 'file-attachment'}" type="button" data-action="open-attachment-preview" data-id="${escapeHtml(item.id)}">
           ${isImage
             ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(item.name)}" loading="lazy" />`
-            : attachmentPreviewIcon(item)}
+            : ''}
           <span class="message-attachment-meta">
             <strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong>
             <small>${escapeHtml(item.type || 'file')} · ${bytes(item.bytes)}</small>

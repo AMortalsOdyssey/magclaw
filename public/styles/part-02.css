@@ -2243,10 +2243,9 @@
 }
 
 .message-attachment-preview.file-attachment {
-  grid-template-columns: 26px minmax(0, 1fr);
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: min(300px, 100%);
+  padding: 8px 12px;
 }
 
 .message-attachment-preview img {
