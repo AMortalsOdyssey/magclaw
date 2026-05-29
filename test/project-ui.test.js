@@ -2047,16 +2047,22 @@ test('search input preserves IME composition and updates results without full re
   const app = await readAppSource();
   const styles = await readStylesSource();
   const searchInputSource = app.slice(app.indexOf("if (event.target.id === 'search-input')"), app.indexOf("if (event.target.id === 'add-member-search')"));
+  const applyStateSource = app.slice(app.indexOf('function applyStateUpdate(nextState)'), app.indexOf('function applyRunEventUpdate(incoming)'));
 
   assert.match(app, /let searchIsComposing = false/);
   assert.match(app, /document\.addEventListener\('compositionstart'/);
   assert.match(app, /document\.addEventListener\('compositionend'/);
-  assert.match(searchInputSource, /updateSearchResults\(\)/);
+  assert.match(searchInputSource, /queueSearchResultsRefresh\(\)/);
   assert.equal(searchInputSource.includes('render();'), false);
   assert.match(app, /data-search-results/);
+  assert.match(app, /function searchFocusSnapshot\(\)/);
+  assert.match(app, /function restoreSearchFocus\(/);
+  assert.match(app, /function patchSearchSurface\(/);
+  assert.match(applyStateSource, /activeView === 'search'[\s\S]*patchSearchSurface/);
   assert.match(app, /searchVisibleCount = SEARCH_PAGE_SIZE/);
   assert.match(styles, /\.search-result-card/);
   assert.match(styles, /\.search-highlight/);
+  assert.doesNotMatch(styles, /\.search-input-shell:focus-within[\s\S]*border-color:\s*#ef4444/);
 });
 
 test('streaming agent replies render as a single updating message with visible typing state', async () => {
@@ -2074,48 +2080,94 @@ test('streaming agent replies render as a single updating message with visible t
   assert.match(styles, /\.agent-stream-cursor/);
 });
 
-test('search covers messages and replies with local ranking helpers', async () => {
+test('search uses server-backed history and supports filter-only result fetching', async () => {
   const app = await readAppSource();
 
   assert.match(app, /function searchRecords\(query\)/);
-  assert.match(app, /\.\.\.\(appState\?\.messages \|\| \[\]\), \.\.\.\(appState\?\.replies \|\| \[\]\)/);
   assert.match(app, /function searchScore\(record, query\)/);
+  assert.match(app, /let searchRemoteResults = \[\]/);
+  assert.match(app, /async function fetchSearchResults\(\)/);
+  assert.match(app, /\/api\/search\/messages\?/);
+  assert.match(app, /function searchHasActiveCriteria\(\)/);
+  assert.match(app, /searchTimeRange !== 'any'/);
+  assert.match(app, /searchChannelId/);
+  assert.match(app, /function mergeSearchResponseIntoState/);
   assert.match(app, /function highlightSearchText\(text, query\)/);
   assert.match(app, /data-action="open-search-result"/);
   assert.match(app, /function openSearchResult\(record\)/);
   assert.match(app, /function scrollToReply\(replyId\)/);
 });
 
-test('search page matches MagClaw shortcuts filters persistence and thread drawer behavior', async () => {
+test('search page matches Slock shortcuts filters persistence and master detail behavior', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
   const keydownSource = app.slice(app.indexOf("document.addEventListener('keydown'"), app.indexOf("document.addEventListener('pointerdown'"));
   const setViewSource = app.slice(app.indexOf("if (action === 'set-view')"), app.indexOf("if (action === 'set-rail-tab')"));
   const searchResultSource = app.slice(app.indexOf('function openSearchResult'), app.indexOf('function openSearchEntity'));
+  const renderSearchSource = app.slice(app.indexOf('function renderSearch()'), app.indexOf('function renderMissions()'));
 
   assert.match(keydownSource, /event\.key\?\.toLowerCase\(\) === 'k'/);
   assert.match(keydownSource, /openSearchView\(\)/);
+  assert.match(keydownSource, /event\.key === 'Escape'[\s\S]*restoreSearchReturnState\(\)/);
   assert.match(app, /function focusSearchInputEnd\(\)/);
   assert.match(setViewSource, /if \(activeView === 'search'\) focusSearchInputEnd\(\)/);
-  assert.match(app, /data-action="toggle-search-mine"/);
   assert.match(app, /data-action="toggle-search-sender-menu"/);
   assert.match(app, /data-action="set-search-sender"/);
+  assert.match(app, /data-action="toggle-search-channel-menu"/);
+  assert.match(app, /data-action="set-search-channel"/);
+  assert.match(app, /data-action="clear-search-channel"/);
   assert.match(app, /function searchSenderOptions\(\)/);
+  assert.match(app, /function searchChannelOptions\(\)/);
   assert.match(app, /record\?\.authorId !== searchSenderId/);
-  assert.match(app, /searchMineOnly = false/);
   assert.match(app, /data-action="toggle-search-range-menu"/);
+  assert.match(app, /data-action="clear-search-range"/);
   assert.match(app, /data-action="clear-search-all"/);
   assert.match(app, /data-action="load-more-search"/);
   assert.match(app, /id="search-sender-input"/);
-  assert.match(app, /placeholder="Search channels, DIRECT MESSAGES, messages\.\.\."/);
-  assert.match(searchResultSource, /activeView === 'search' && opensThread/);
+  assert.match(app, /id="search-channel-input"/);
+  assert.match(app, /placeholder="Search channels, DMs, messages\.\.\."/);
+  assert.match(app, /Search channels, DMs, people, agents, and message history\./);
+  assert.match(searchResultSource, /activeView = 'search'/);
   assert.match(searchResultSource, /threadMessageId = root\.id/);
-  assert.equal(searchResultSource.includes("activeView = 'space';\n  activeTab = 'chat';\n  threadMessageId = opensThread"), true);
+  assert.doesNotMatch(searchResultSource, /activeView = 'space'/);
+  assert.match(searchResultSource, /pulseSearchResultDetail\(record\)/);
+  assert.match(app, /function restoreSearchReturnState\(\)/);
+  assert.match(app, /function captureSearchReturnState\(\)/);
+  assert.match(app, /function persistSearchState\(\)/);
   assert.match(styles, /\.search-topbar/);
   assert.match(styles, /\.search-filter-row/);
   assert.match(styles, /\.search-center-state/);
   assert.match(styles, /\.search-time-menu/);
   assert.match(styles, /\.search-sender-menu/);
+  assert.match(styles, /\.search-result-card:hover[\s\S]*background:\s*#ffe4ec/);
+  assert.match(styles, /\.search-time-menu button:hover[\s\S]*background:\s*#ffe4ec/);
+  assert.doesNotMatch(styles, /#22d3ee|#12c7e8/);
+});
+
+test('left rail search and personal drag sorting follow Slock rail behavior', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const railSource = app.slice(app.indexOf('function renderRail()'), app.indexOf('function accountRailInitial'));
+  const chatRailSource = app.slice(app.indexOf('function renderChatRail('), app.indexOf('function renderMembersRail('));
+  const channelSource = app.slice(app.indexOf('function renderChannelItem('), app.indexOf('function renderDmItem('));
+  const dmSource = app.slice(app.indexOf('function renderDmItem('), app.indexOf('function renderQuick('));
+  const leftNavSource = app.slice(app.indexOf("if (action === 'set-left-nav')"), app.indexOf("if (action === 'select-agent')"));
+
+  assert.match(railSource, /renderLeftRailButton\('search', railMode, 'Search'/);
+  assert.doesNotMatch(chatRailSource, /renderNavItem\('search'/);
+  assert.match(leftNavSource, /nav === 'search'[\s\S]*openSearchView\(\)/);
+  assert.match(app, /function orderedChannelsForRail\(channels/);
+  assert.match(app, /function orderedDmsForRail\(dms/);
+  assert.match(app, /function isPinnedAllChannelForRail/);
+  assert.match(channelSource, /draggable="\$\{draggable \? 'true' : 'false'\}"/);
+  assert.match(channelSource, /data-space-drag-kind="channel"/);
+  assert.match(channelSource, /isPinnedAllChannelForRail\(channel\)/);
+  assert.match(dmSource, /draggable="true"/);
+  assert.match(dmSource, /data-space-drag-kind="dm"/);
+  assert.match(app, /function persistSpaceOrderPreference\(/);
+  assert.match(app, /\/api\/cloud\/auth\/preferences/);
+  assert.match(styles, /\.space-btn\.drag-over/);
+  assert.match(styles, /\.space-btn\.dragging/);
 });
 
 test('thread list rows keep the latest actor avatar at the far left', async () => {

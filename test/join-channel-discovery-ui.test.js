@@ -20,17 +20,22 @@ async function readAppSource() {
   return [app, ...chunkSources].join('\n');
 }
 
-test('channel rail opens a join discovery modal before channel creation', async () => {
+test('channel rail opens a Slock-style create-only menu from the plus button', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
+  const chatRailSource = app.slice(app.indexOf('function renderChatRail('), app.indexOf('function renderMembersRail('));
+  const titleSource = app.slice(app.indexOf('function renderRailSectionTitle('), app.indexOf('function settingsNavItems('));
 
   assert.match(app, /'join-channel-discovery': renderJoinChannelDiscoveryModal/);
   assert.match(app, /function renderJoinChannelDiscoveryModal\(/);
-  assert.match(app, /modal: 'join-channel-discovery'/);
+  assert.doesNotMatch(chatRailSource, /modal: 'join-channel-discovery'/);
+  assert.match(chatRailSource, /renderRailSectionTitle\('channels', 'Channels', channels\.length, \{ createMenu: true \}\)/);
+  assert.match(titleSource, /data-action="toggle-channel-create-menu"/);
+  assert.match(titleSource, /data-action="open-channel-create"/);
+  assert.match(titleSource, />\+ Create Channel</);
   assert.match(app, /joinableChannels/);
   assert.match(app, /data-action="join-channel"/);
   assert.match(app, /data-action="open-modal" data-modal="channel"/);
-  assert.match(styles, /\.join-channel-discovery-list/);
-  assert.match(styles, /\.join-channel-discovery-row/);
+  assert.match(styles, /\.channel-create-menu/);
+  assert.match(styles, /\.channel-create-menu-item/);
 });
-

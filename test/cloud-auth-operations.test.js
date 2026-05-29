@@ -120,6 +120,43 @@ test('open account registration rolls back local auth state when durable persist
   assert.equal(res.headers.length, 0);
 });
 
+test('user preferences persist workspace-scoped personal rail ordering without changing shared spaces', async () => {
+  const { auth, state } = makeAuth(null, {
+    channels: [
+      { id: 'chan_all', name: 'all' },
+      { id: 'chan_a', name: 'a' },
+      { id: 'chan_b', name: 'b' },
+    ],
+    dms: [
+      { id: 'dm_a', participantIds: ['hum_1', 'agt_a'] },
+      { id: 'dm_b', participantIds: ['hum_1', 'agt_b'] },
+    ],
+  });
+  const res = response();
+  const registration = await auth.registerOpenAccount({
+    name: 'Order User',
+    email: 'order@example.test',
+    password: 'password123',
+  }, request(), res);
+  const cookie = cookieHeaderFromSetCookie(res.headers.find(([name]) => name === 'Set-Cookie')?.[1] || '');
+
+  const result = await auth.updateUserPreferences({
+    ui: {
+      spaceOrder: {
+        workspaceId: 'local',
+        channels: ['chan_b', 'chan_all', 'chan_a', 'chan_b', '../bad'],
+        dms: ['dm_b', 'dm_a', 'dm_b'],
+      },
+    },
+  }, request(cookie));
+
+  assert.equal(result.user.id, registration.user.id);
+  assert.deepEqual(result.user.metadata.ui.spaceOrderByWorkspace.local.channels, ['chan_b', 'chan_all', 'chan_a']);
+  assert.deepEqual(result.user.metadata.ui.spaceOrderByWorkspace.local.dms, ['dm_b', 'dm_a']);
+  assert.deepEqual(state.channels.map((channel) => channel.id), ['chan_all', 'chan_a', 'chan_b']);
+  assert.deepEqual(state.dms.map((dm) => dm.id), ['dm_a', 'dm_b']);
+});
+
 test('login persists a narrow auth operation before issuing a session cookie', async () => {
   let persisted = false;
   const operations = [];

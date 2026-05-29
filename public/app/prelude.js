@@ -177,6 +177,19 @@ function readStoredUiState() {
   };
 }
 
+function readStoredSearchState() {
+  const parsed = readJsonStorage('magclawSearchState', {});
+  const range = ['any', 'today', '7d', '30d'].includes(parsed.timeRange) ? parsed.timeRange : 'any';
+  return {
+    query: String(parsed.query || '').slice(0, 500),
+    senderId: String(parsed.senderId || ''),
+    channelId: String(parsed.channelId || ''),
+    timeRange: range,
+    visibleCount: Number.isFinite(Number(parsed.visibleCount)) ? Math.max(20, Math.min(200, Number(parsed.visibleCount))) : 20,
+    selectedResultId: parsed.selectedResultId ? String(parsed.selectedResultId) : null,
+  };
+}
+
 function normalizeMembersLayout(value = {}) {
   const mode = MEMBERS_LAYOUT_MODES.has(value?.mode) ? value.mode : 'channel';
   const agentId = value?.agentId ? String(value.agentId) : null;

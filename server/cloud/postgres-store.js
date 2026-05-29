@@ -1593,6 +1593,108 @@ export function createCloudPostgresStore(optionsInput = {}) {
     });
   }
 
+  async function searchConversationRecords(options = {}) {
+    const workspaceId = String(options.workspaceId || '').trim();
+    if (!workspaceId) {
+      return {
+        results: [],
+        messages: [],
+        replies: [],
+        parents: [],
+        pagination: {
+          limit: parsePageLimit(options.limit),
+          hasMore: false,
+          nextBefore: '',
+          nextBeforeId: '',
+        },
+      };
+    }
+    const limit = parsePageLimit(options.limit, MESSAGE_PAGE_DEFAULT_LIMIT, 400);
+    return withClient(async (client) => {
+      const params = [workspaceId];
+      const messageWhere = ['workspace_id = $1'];
+      const replyWhere = ['workspace_id = $1'];
+      const queryTerms = String(options.query || '').trim().split(/\s+/).filter(Boolean).slice(0, 8);
+      for (const term of queryTerms) {
+        const param = params.push(`%${term}%`);
+        messageWhere.push(`body ILIKE $${param}`);
+        replyWhere.push(`body ILIKE $${param}`);
+      }
+      const senderId = String(options.senderId || '').trim();
+      if (senderId) {
+        const param = params.push(senderId);
+        messageWhere.push(`author_id = $${param}`);
+        replyWhere.push(`author_id = $${param}`);
+      }
+      const channelId = String(options.channelId || '').trim();
+      if (channelId) {
+        const param = params.push(channelId);
+        messageWhere.push(`space_type = 'channel' AND space_id = $${param}`);
+        replyWhere.push(`COALESCE(metadata #>> '{state,spaceType}', '') = 'channel' AND COALESCE(metadata #>> '{state,spaceId}', '') = $${param}`);
+      }
+      const after = iso(options.after);
+      if (after) {
+        const param = params.push(after);
+        messageWhere.push(`created_at >= $${param}::timestamptz`);
+        replyWhere.push(`created_at >= $${param}::timestamptz`);
+      }
+      const cursor = cursorClause(params, options.before, options.beforeId, 'created_at', 'id');
+      if (cursor) {
+        messageWhere.push(cursor.replace(/^ AND /, ''));
+        replyWhere.push(cursor.replace(/^ AND /, ''));
+      }
+      const limitParam = params.push(limit + 1);
+      const rows = await client.query(`
+        SELECT 'message' AS record_kind, *
+        FROM ${table('cloud_messages')}
+        WHERE ${messageWhere.join(' AND ')}
+        UNION ALL
+        SELECT 'reply' AS record_kind, *
+        FROM ${table('cloud_replies')}
+        WHERE ${replyWhere.join(' AND ')}
+        ORDER BY created_at DESC, id DESC
+        LIMIT $${limitParam}
+      `, params);
+      const rawPage = rows.rows.slice(0, limit);
+      const messages = rawPage.filter((row) => row.record_kind === 'message').map(messageFromRow);
+      const replies = rawPage.filter((row) => row.record_kind === 'reply').map(replyFromRow);
+      const parentIds = [...new Set(replies.map((reply) => reply.parentMessageId).filter(Boolean))];
+      let parents = [];
+      if (parentIds.length) {
+        const parentRows = await client.query(`
+          SELECT *
+          FROM ${table('cloud_messages')}
+          WHERE workspace_id = $1
+            AND id = ANY($2::text[])
+        `, [workspaceId, parentIds]);
+        parents = parentRows.rows.map(messageFromRow);
+      }
+      const parentById = new Map(parents.map((parent) => [parent.id, parent]));
+      for (const reply of replies) {
+        if ((!reply.spaceType || !reply.spaceId) && parentById.has(reply.parentMessageId)) {
+          const parent = parentById.get(reply.parentMessageId);
+          reply.spaceType = parent.spaceType;
+          reply.spaceId = parent.spaceId;
+        }
+      }
+      const byId = new Map([...messages, ...replies].map((record) => [record.id, record]));
+      const results = rawPage.map((row) => byId.get(row.id)).filter(Boolean);
+      const last = results[results.length - 1] || null;
+      return {
+        results,
+        messages,
+        replies,
+        parents,
+        pagination: {
+          limit,
+          hasMore: rows.rows.length > rawPage.length,
+          nextBefore: last?.createdAt || '',
+          nextBeforeId: last?.id || '',
+        },
+      };
+    });
+  }
+
   async function markConversationRecordsRead(options = {}) {
     const workspaceId = String(options.workspaceId || '').trim();
     const humanId = String(options.humanId || '').trim();
@@ -3454,6 +3556,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     loadWorkspaceIntoState,
     loadConversationWindowIntoState,
     listSpaceMessagesPage,
+    searchConversationRecords,
     listThreadRepliesPage,
     getMessageById,
     markConversationRecordsRead,

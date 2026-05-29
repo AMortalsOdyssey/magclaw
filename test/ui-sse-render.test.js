@@ -487,7 +487,7 @@ test('opening a thread refreshes scoped replies instead of relying on preview st
   );
   const searchOpenSource = app.slice(
     app.indexOf('function openSearchResult(record)'),
-    app.indexOf('function closeSearchOverlay()'),
+    app.indexOf('function openSearchEntity'),
   );
 
   assert.match(app, /function mergeThreadReplyPageIntoState\(stateSnapshot, parentMessageId, replies = \[\]\)/);
@@ -497,8 +497,10 @@ test('opening a thread refreshes scoped replies instead of relying on preview st
   assert.match(app, /if \(typeof connectEvents === 'function'\) connectEvents\(\)/);
   assert.match(threadOpenSource, /render\(\);\s*refreshThreadSelection\(threadMessageId\);\s*scrollToMessage\(threadMessageId\)/);
   assert.match(threadCloseSource, /render\(\);\s*refreshThreadSelection\(null, \{ loadReplies: false \}\)/);
-  assert.match(searchOpenSource, /render\(\);\s*refreshThreadSelection\(root\.id\);/);
-  assert.match(searchOpenSource, /render\(\);\s*refreshThreadSelection\(threadMessageId, \{ loadReplies: opensThread \}\);/);
+  assert.match(searchOpenSource, /activeView = 'search'/);
+  assert.match(searchOpenSource, /threadMessageId = root\.id/);
+  assert.match(searchOpenSource, /render\(\);\s*refreshThreadSelection\(root\.id\);\s*pulseSearchResultDetail\(record\);/);
+  assert.doesNotMatch(searchOpenSource, /loadReplies: opensThread/);
 });
 
 test('realtime stream handlers ignore stale events after thread scope changes', async () => {

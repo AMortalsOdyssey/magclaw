@@ -12,6 +12,121 @@ function renderAppFlashBanner() {
   `;
 }
 
+function spaceOrderWorkspaceKey() {
+  return String(appState?.cloud?.workspace?.id || appState?.connection?.workspaceId || currentServerSlug?.() || 'local').trim() || 'local';
+}
+
+function spaceOrderStorageKey() {
+  const humanId = typeof currentHumanId === 'function' ? currentHumanId() : 'local';
+  return `magclawSpaceOrder:${window.location.host}:${spaceOrderWorkspaceKey()}:${humanId}`;
+}
+
+function accountSpaceOrderPreference() {
+  const user = appState?.cloud?.auth?.currentUser || {};
+  const byWorkspace = user.metadata?.ui?.spaceOrderByWorkspace || {};
+  return byWorkspace[spaceOrderWorkspaceKey()] || {};
+}
+
+function localSpaceOrderPreference() {
+  return readJsonStorage(spaceOrderStorageKey(), {});
+}
+
+function currentSpaceOrderPreference() {
+  return {
+    ...localSpaceOrderPreference(),
+    ...accountSpaceOrderPreference(),
+  };
+}
+
+function normalizeRailOrder(ids = [], availableIds = []) {
+  const available = new Set(availableIds.map(String));
+  const seen = new Set();
+  const ordered = [];
+  for (const id of ids || []) {
+    const clean = String(id || '').trim();
+    if (!available.has(clean) || seen.has(clean)) continue;
+    seen.add(clean);
+    ordered.push(clean);
+  }
+  for (const id of availableIds) {
+    const clean = String(id || '');
+    if (!seen.has(clean)) ordered.push(clean);
+  }
+  return ordered;
+}
+
+function isPinnedAllChannelForRail(channel) {
+  return typeof isAllChannel === 'function'
+    ? isAllChannel(channel)
+    : String(channel?.id || '') === 'chan_all' || String(channel?.name || '').toLowerCase() === 'all';
+}
+
+function orderedChannelsForRail(channels = []) {
+  const all = channels.find(isPinnedAllChannelForRail) || null;
+  const movable = channels.filter((channel) => channel && channel !== all);
+  const order = normalizeRailOrder(currentSpaceOrderPreference().channels || [], movable.map((channel) => channel.id));
+  const byId = new Map(movable.map((channel) => [channel.id, channel]));
+  return [...(all ? [all] : []), ...order.map((id) => byId.get(id)).filter(Boolean)];
+}
+
+function orderedDmsForRail(dms = []) {
+  const order = normalizeRailOrder(currentSpaceOrderPreference().dms || [], dms.map((dm) => dm.id));
+  const byId = new Map(dms.map((dm) => [dm.id, dm]));
+  return order.map((id) => byId.get(id)).filter(Boolean);
+}
+
+function updateCurrentUserSpaceOrderPreference(order) {
+  const user = appState?.cloud?.auth?.currentUser;
+  if (!user) return;
+  user.metadata = user.metadata && typeof user.metadata === 'object' ? user.metadata : {};
+  const ui = user.metadata.ui && typeof user.metadata.ui === 'object' ? user.metadata.ui : {};
+  const byWorkspace = ui.spaceOrderByWorkspace && typeof ui.spaceOrderByWorkspace === 'object' ? ui.spaceOrderByWorkspace : {};
+  byWorkspace[spaceOrderWorkspaceKey()] = {
+    channels: order.channels || [],
+    dms: order.dms || [],
+    updatedAt: new Date().toISOString(),
+  };
+  user.metadata.ui = { ...ui, spaceOrderByWorkspace: byWorkspace };
+}
+
+function persistSpaceOrderPreference(kind, ids) {
+  const previous = currentSpaceOrderPreference();
+  const next = {
+    channels: kind === 'channel' ? ids : (previous.channels || []),
+    dms: kind === 'dm' ? ids : (previous.dms || []),
+  };
+  writeJsonStorage(spaceOrderStorageKey(), next);
+  updateCurrentUserSpaceOrderPreference(next);
+  if (appState?.cloud?.auth?.currentUser) {
+    api('/api/cloud/auth/preferences', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        ui: {
+          spaceOrder: {
+            workspaceId: spaceOrderWorkspaceKey(),
+            channels: next.channels,
+            dms: next.dms,
+          },
+        },
+      }),
+    }).catch((error) => toast(error.message));
+  }
+}
+
+function reorderSpaceOrderForDrag(kind, draggedId, targetId, beforeTarget = false) {
+  const dragKind = kind === 'dm' ? 'dm' : 'channel';
+  const source = dragKind === 'dm'
+    ? orderedDmsForRail(appState?.dms || [])
+    : orderedChannelsForRail(appState?.channels || []).filter((channel) => !isPinnedAllChannelForRail(channel));
+  const availableIds = source.map((item) => item.id);
+  if (!availableIds.includes(draggedId) || !availableIds.includes(targetId) || draggedId === targetId) return false;
+  const next = availableIds.filter((id) => id !== draggedId);
+  const targetIndex = next.indexOf(targetId);
+  next.splice(beforeTarget ? targetIndex : targetIndex + 1, 0, draggedId);
+  persistSpaceOrderPreference(dragKind, next);
+  return true;
+}
+
 function render() {
   if (!appState) {
     root.innerHTML = '<div class="boot">MAGCLAW / BOOTING</div>';
@@ -120,8 +235,8 @@ function render() {
 }
 
 function renderRail() {
-  const channels = appState.channels || [];
-  const dms = appState.dms || [];
+  const channels = orderedChannelsForRail(appState.channels || []);
+  const dms = orderedDmsForRail(appState.dms || []);
   const inbox = buildInboxModel();
   const spaceUnreadCounts = buildSpaceUnreadCounts(inbox.humanId);
   const spaceMessageCounts = buildSpaceMessageCounts();
@@ -134,7 +249,9 @@ function renderRail() {
   const packageUpdateCount = typeof connectedComputerPackageUpdateCount === 'function'
     ? connectedComputerPackageUpdateCount()
     : 0;
-  const railMode = activeView === 'tasks'
+  const railMode = activeView === 'search'
+    ? 'search'
+    : activeView === 'tasks'
     ? 'tasks'
     : activeView === 'console'
       ? 'console'
@@ -145,7 +262,9 @@ function renderRail() {
         : railTab === 'members'
           ? 'members'
           : 'chat';
-  const railHeading = railMode === 'tasks'
+  const railHeading = railMode === 'search'
+    ? 'Search'
+    : railMode === 'tasks'
     ? 'Tasks'
     : railMode === 'members'
       ? 'Members'
@@ -174,6 +293,7 @@ function renderRail() {
         </button>
         ${renderServerSwitcherMenu()}
       </div>
+      ${renderLeftRailButton('search', railMode, 'Search', '<circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/>')}
       ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', chatUnreadCount || inbox.unreadCount || '')}
       ${renderLeftRailButton('tasks', railMode, 'Tasks', '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>')}
       ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>')}
@@ -184,7 +304,7 @@ function renderRail() {
     </div>
   `;
 
-  if (activeView === 'tasks') {
+  if (activeView === 'tasks' || activeView === 'search') {
     return `
       <aside class="${railClass} rail-icon-only">
         ${leftRailHtml}
@@ -311,7 +431,6 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
     .filter((item) => item?.dm?.id && item?.peer);
   return `
     <div class="nav-list">
-      ${renderNavItem('search', 'Search', 'search', searchQuery ? '⌘K' : '⌘K')}
       ${renderNavItem('inbox', 'Activities', 'inbox', inboxUnread || '', { badgeKind: 'unread' })}
       ${renderNavItem('threads', 'Threads', 'message', unreadThreads || '')}
       ${renderNavItem('tasks', 'Tasks', 'file', openTasks || '')}
@@ -319,7 +438,7 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
     </div>
 
     <div class="rail-section" data-rail-scroll-section="channels" data-scroll-key="rail:spaces:channels">
-      ${renderRailSectionTitle('channels', 'Channels', channels.length, { modal: 'join-channel-discovery' })}
+      ${renderRailSectionTitle('channels', 'Channels', channels.length, { createMenu: true })}
       ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel, messageCountForSpace(spaceMessageCounts, 'channel', channel.id))).join('')}
     </div>
 
@@ -440,16 +559,28 @@ function renderRailMessageCount(count, label = 'messages') {
   return `<span class="rail-unread-badge rail-message-count" aria-label="${escapeHtml(`${text} ${label}`)}">${escapeHtml(text)}</span>`;
 }
 
-function renderRailSectionTitle(section, label, count, { modal = '', badge = '' } = {}) {
+function renderRailSectionTitle(section, label, count, { modal = '', badge = '', createMenu = false } = {}) {
   const collapsed = Boolean(collapsedSidebarSections[section]);
   const countLabel = count === undefined || count === null ? '' : `<em>${escapeHtml(count)}</em>`;
+  const addControl = createMenu
+    ? `
+      <span class="channel-create-anchor">
+        <button class="rail-add-btn" type="button" data-action="toggle-channel-create-menu" aria-expanded="${channelCreateMenuOpen ? 'true' : 'false'}">+</button>
+        ${channelCreateMenuOpen ? `
+          <span class="channel-create-menu pixel-panel" role="menu">
+            <button class="channel-create-menu-item" type="button" data-action="open-channel-create" role="menuitem">+ Create Channel</button>
+          </span>
+        ` : ''}
+      </span>
+    `
+    : (modal ? `<button class="rail-add-btn" type="button" data-action="open-modal" data-modal="${escapeHtml(modal)}">+</button>` : '<span class="rail-title-spacer"></span>');
   return `
     <div class="rail-title">
       <button class="rail-collapse-btn" type="button" data-action="toggle-sidebar-section" data-section="${escapeHtml(section)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(label)}">
         <span aria-hidden="true">${collapsed ? '›' : '⌄'}</span>
       </button>
       <span>${escapeHtml(label)}${badge} ${countLabel}</span>
-      ${modal ? `<button class="rail-add-btn" type="button" data-action="open-modal" data-modal="${escapeHtml(modal)}">+</button>` : '<span class="rail-title-spacer"></span>'}
+      ${addControl}
     </div>
   `;
 }
@@ -513,8 +644,10 @@ function renderChannelItem(channel, messageCount = 0) {
   const active = activeView === 'space' && selectedSpaceType === 'channel' && selectedSpaceId === channel.id ? ' active' : '';
   const readable = typeof currentUserCanReadChannel === 'function' ? currentUserCanReadChannel(channel) : true;
   const unjoined = readable ? '' : ' unjoined-channel';
+  const pinned = isPinnedAllChannelForRail(channel);
+  const draggable = !pinned;
   return `
-    <button class="space-btn${active}${unjoined}" type="button" data-action="select-space" data-type="channel" data-id="${channel.id}">
+    <button class="space-btn${active}${unjoined}${pinned ? ' pinned-space' : ''}" type="button" data-action="select-space" data-type="channel" data-id="${channel.id}" draggable="${draggable ? 'true' : 'false'}" data-space-drag-kind="channel" data-space-drag-id="${escapeHtml(channel.id)}">
       <span class="channel-icon">#</span>
       <span class="channel-name">${escapeHtml(channel.name)}</span>
       ${renderRailMessageCount(messageCount, `messages in #${channel.name}`)}
@@ -527,7 +660,7 @@ function renderDmItem(id, name, status, avatar, unreadCount = 0) {
   const label = String(name || 'Unknown').trim() || 'Unknown';
   const initials = label.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
   return `
-    <button class="space-btn dm-btn${active}" type="button" data-action="select-space" data-type="dm" data-id="${id}">
+    <button class="space-btn dm-btn${active}" type="button" data-action="select-space" data-type="dm" data-id="${id}" draggable="true" data-space-drag-kind="dm" data-space-drag-id="${escapeHtml(id)}">
       <span class="dm-avatar-wrap">
         <span class="dm-avatar">${avatar ? `<img src="${escapeHtml(avatar)}" alt="">` : escapeHtml(initials)}</span>
         ${avatarStatusDot(status, 'DM status')}

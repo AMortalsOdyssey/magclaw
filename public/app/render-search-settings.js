@@ -26,6 +26,11 @@ function searchSenderFilterLabel() {
   return sender ? `From: ${sender.label}` : 'From';
 }
 
+function searchChannelFilterLabel() {
+  const channel = selectedSearchChannel();
+  return channel ? channel.label : 'Channel';
+}
+
 function renderSearchLensIcon(size = 18) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>`;
 }
@@ -72,37 +77,42 @@ function renderSearchEmptyState(kind, query = '') {
       <div class="search-center-state">
         <span class="search-center-icon">${renderSearchLensIcon(58)}</span>
         <strong>Search everything</strong>
-        <span>Search channels, DIRECT MESSAGES, people, agents, and message history.</span>
+        <span>Search channels, DMs, people, agents, and message history.</span>
       </div>
     `;
   }
   return `
     <div class="search-center-state search-no-results">
       <span class="search-center-icon">${renderSearchLensIcon(58)}</span>
-      <strong>No results for "${escapeHtml(query)}"</strong>
-      <span>Try different keywords or a shorter phrase.</span>
+      <strong>${query ? `No results for "${escapeHtml(query)}"` : 'No matching messages'}</strong>
+      <span>Try a different filter set.</span>
     </div>
   `;
 }
 
 function renderSearchFilters() {
-  const filtersActive = searchMineOnly || Boolean(searchSenderId) || searchTimeRange !== 'any';
+  const filtersActive = searchMineOnly || Boolean(searchSenderId) || Boolean(searchChannelId) || searchTimeRange !== 'any';
   const senderOptions = filteredSearchSenderOptions();
+  const channelOptions = filteredSearchChannelOptions();
+  const senderActive = Boolean(searchSenderId);
+  const channelActive = Boolean(searchChannelId);
+  const rangeActive = searchTimeRange !== 'any';
   return `
     <div class="search-filter-row" data-search-filters>
-      <button class="search-filter-btn${searchMineOnly ? ' active' : ''}" type="button" data-action="toggle-search-mine">My Messages</button>
       <div class="search-time-filter search-sender-filter${searchSenderMenuOpen ? ' open' : ''}">
-        <button class="search-filter-btn search-time-btn${searchSenderId ? ' active cyan' : ''}" type="button" data-action="toggle-search-sender-menu" aria-expanded="${searchSenderMenuOpen ? 'true' : 'false'}">
-          <span>${escapeHtml(searchSenderFilterLabel())}</span>
-          <span aria-hidden="true">⌄</span>
-        </button>
+        <span class="search-filter-chip">
+          <button class="search-filter-btn search-time-btn${senderActive ? ' active' : ''}" type="button" data-action="toggle-search-sender-menu" aria-expanded="${searchSenderMenuOpen ? 'true' : 'false'}">
+            <span>${escapeHtml(searchSenderFilterLabel())}</span>
+            <span aria-hidden="true">⌄</span>
+          </button>
+          ${senderActive ? '<button class="search-filter-x" type="button" data-action="clear-search-sender" aria-label="Clear From">×</button>' : ''}
+        </span>
         ${searchSenderMenuOpen ? `
           <div class="search-time-menu search-sender-menu" role="menu">
+            <div class="search-menu-head"><span>FROM</span>${senderActive ? '<button type="button" data-action="clear-search-sender">CLEAR</button>' : ''}</div>
             <label class="search-sender-input-wrap">
-              <span>Search sender</span>
               <input id="search-sender-input" value="${escapeHtml(searchSenderQuery)}" placeholder="Name or agent..." autocomplete="off" />
             </label>
-            ${searchSenderId ? '<button type="button" data-action="clear-search-sender" role="menuitem">Any Sender</button>' : ''}
             ${senderOptions.length ? senderOptions.map((sender) => `
               <button class="${searchSenderId === sender.id ? 'active' : ''}" type="button" data-action="set-search-sender" data-sender-id="${escapeHtml(sender.id)}" role="menuitem">
                 <span>${escapeHtml(sender.isMe ? 'Me' : sender.label)}</span>
@@ -112,12 +122,39 @@ function renderSearchFilters() {
           </div>
         ` : ''}
       </div>
+      <div class="search-time-filter search-channel-filter${searchChannelMenuOpen ? ' open' : ''}">
+        <span class="search-filter-chip">
+          <button class="search-filter-btn search-time-btn${channelActive ? ' active' : ''}" type="button" data-action="toggle-search-channel-menu" aria-expanded="${searchChannelMenuOpen ? 'true' : 'false'}">
+            <span>#</span>
+            <span>${escapeHtml(searchChannelFilterLabel())}</span>
+            <span aria-hidden="true">⌄</span>
+          </button>
+          ${channelActive ? '<button class="search-filter-x" type="button" data-action="clear-search-channel" aria-label="Clear Channel">×</button>' : ''}
+        </span>
+        ${searchChannelMenuOpen ? `
+          <div class="search-time-menu search-channel-menu" role="menu">
+            <div class="search-menu-head"><span>CHANNEL</span>${channelActive ? '<button type="button" data-action="clear-search-channel">CLEAR</button>' : ''}</div>
+            <label class="search-sender-input-wrap">
+              <input id="search-channel-input" value="${escapeHtml(searchChannelQuery)}" placeholder="Search channels..." autocomplete="off" />
+            </label>
+            ${channelOptions.length ? channelOptions.map((channel) => `
+              <button class="${searchChannelId === channel.id ? 'active' : ''}" type="button" data-action="set-search-channel" data-channel-id="${escapeHtml(channel.id)}" role="menuitem">
+                <span>${escapeHtml(channel.label)}</span>
+                <em>${escapeHtml(channel.meta)}</em>
+              </button>
+            `).join('') : '<div class="search-sender-empty">No channels found</div>'}
+          </div>
+        ` : ''}
+      </div>
       <div class="search-time-filter${searchTimeMenuOpen ? ' open' : ''}">
-        <button class="search-filter-btn search-time-btn${searchTimeRange !== 'any' ? ' active cyan' : ''}" type="button" data-action="toggle-search-range-menu" aria-expanded="${searchTimeMenuOpen ? 'true' : 'false'}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/></svg>
-          <span>${escapeHtml(searchTimeRangeLabel())}</span>
-          <span aria-hidden="true">⌄</span>
-        </button>
+        <span class="search-filter-chip">
+          <button class="search-filter-btn search-time-btn${rangeActive ? ' active' : ''}" type="button" data-action="toggle-search-range-menu" aria-expanded="${searchTimeMenuOpen ? 'true' : 'false'}">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/></svg>
+            <span>${escapeHtml(searchTimeRangeLabel())}</span>
+            <span aria-hidden="true">⌄</span>
+          </button>
+          ${rangeActive ? '<button class="search-filter-x" type="button" data-action="clear-search-range" aria-label="Clear date range">×</button>' : ''}
+        </span>
         ${searchTimeMenuOpen ? `
           <div class="search-time-menu" role="menu">
             ${searchTimeRangeOptions.map(([value, label]) => `
@@ -126,6 +163,7 @@ function renderSearchFilters() {
           </div>
         ` : ''}
       </div>
+      <button class="search-filter-btn search-relevance-btn" type="button" disabled>Relevant</button>
       ${filtersActive || searchQuery.trim() ? '<button class="search-clear-all" type="button" data-action="clear-search-all">Clear All</button>' : ''}
     </div>
   `;
@@ -133,12 +171,32 @@ function renderSearchFilters() {
 
 function renderSearchResults() {
   const query = searchQuery.trim();
-  if (!query) return renderSearchEmptyState('empty');
+  if (!searchHasActiveCriteria()) return renderSearchEmptyState('empty');
 
-  const entities = searchMineOnly || searchTimeRange !== 'any' ? [] : searchEntityResults(query);
+  const entities = query && !searchSenderId && !searchChannelId && searchTimeRange === 'any' ? searchEntityResults(query) : [];
   const messageResults = currentSearchMessageResults();
   const visibleMessages = messageResults.slice(0, searchVisibleCount);
   const total = entities.length + messageResults.length;
+  if (searchRemoteLoading && !total) {
+    return `
+      <div class="search-summary">Searching</div>
+      <div class="search-center-state search-loading-state">
+        <span class="search-center-icon">${renderSearchLensIcon(58)}</span>
+        <strong>Searching messages</strong>
+        <span>Checking message history.</span>
+      </div>
+    `;
+  }
+  if (searchRemoteError && !total) {
+    return `
+      <div class="search-summary">0 results</div>
+      <div class="search-center-state search-no-results">
+        <span class="search-center-icon">${renderSearchLensIcon(58)}</span>
+        <strong>Search failed</strong>
+        <span>${escapeHtml(searchRemoteError)}</span>
+      </div>
+    `;
+  }
   if (!total) {
     return `
       <div class="search-summary">0 results</div>
@@ -163,7 +221,30 @@ function renderSearchResults() {
   `;
 }
 
-function updateSearchResults() {
+function searchFocusSnapshot() {
+  const active = document.activeElement;
+  if (!active || !['search-input', 'search-sender-input', 'search-channel-input'].includes(active.id)) return null;
+  return {
+    id: active.id,
+    start: active.selectionStart,
+    end: active.selectionEnd,
+  };
+}
+
+function restoreSearchFocus(snapshot) {
+  if (!snapshot?.id) return;
+  window.requestAnimationFrame(() => {
+    const input = document.getElementById(snapshot.id);
+    if (!input) return;
+    input.focus({ preventScroll: true });
+    const start = Number.isFinite(snapshot.start) ? snapshot.start : input.value.length;
+    const end = Number.isFinite(snapshot.end) ? snapshot.end : start;
+    input.setSelectionRange(start, end);
+  });
+}
+
+function updateSearchResults({ skipFetch = false } = {}) {
+  const focusSnapshot = searchFocusSnapshot();
   const input = document.getElementById('search-input');
   if (input && input.value !== searchQuery && !searchIsComposing) input.value = searchQuery;
   const container = document.querySelector('[data-search-results]');
@@ -172,7 +253,13 @@ function updateSearchResults() {
   if (filters) filters.outerHTML = renderSearchFilters();
   const clearButton = document.querySelector('[data-search-clear]');
   if (clearButton) clearButton.hidden = !searchQuery.trim();
+  restoreSearchFocus(focusSnapshot);
   if (typeof translatePage === 'function') translatePage(document.querySelector('.search-page') || document.body);
+  if (!skipFetch) queueSearchResultsRefresh();
+}
+
+function patchSearchSurface() {
+  updateSearchResults({ skipFetch: true });
 }
 
 function openSearchResult(record) {
@@ -181,29 +268,34 @@ function openSearchResult(record) {
   markConversationRecordRead(record);
   workspaceActivityDrawerOpen = false;
   selectedSavedRecordId = record.id;
+  persistSearchState();
   selectedAgentId = null;
   selectedTaskId = null;
   selectedProjectFile = null;
   inspectorReturnThreadId = null;
-  const opensThread = Boolean(parent || root.replyCount > 0 || root.taskId);
-  if (activeView === 'search' && opensThread) {
-    threadMessageId = root.id;
-    render();
-    refreshThreadSelection(root.id);
-    if (record.parentMessageId) scrollToReply(record.id);
-    focusSearchInputEnd();
-    return;
-  }
-  selectedSpaceType = root.spaceType;
-  selectedSpaceId = root.spaceId;
-  activeView = 'space';
+  activeView = 'search';
   activeTab = 'chat';
-  threadMessageId = opensThread ? root.id : null;
+  threadMessageId = root.id;
   mobileHomeOpen = false;
   render();
-  refreshThreadSelection(threadMessageId, { loadReplies: opensThread });
-  scrollToMessage(root.id);
-  if (record.parentMessageId) scrollToReply(record.id);
+  refreshThreadSelection(root.id);
+  pulseSearchResultDetail(record);
+  focusSearchInputEnd();
+}
+
+function pulseSearchResultDetail(record) {
+  window.setTimeout(() => {
+    if (record?.parentMessageId) {
+      scrollToReply(record.id);
+      return;
+    }
+    const node = document.querySelector(`#thread-context [data-message-id="${CSS.escape(record.id)}"], #thread-context #message-${CSS.escape(record.id)}`);
+    if (!node) return;
+    node.classList.remove('focus-pulse');
+    void node.offsetWidth;
+    node.classList.add('focus-pulse');
+    window.setTimeout(() => node.classList.remove('focus-pulse'), 1200);
+  }, 80);
 }
 
 function openSearchEntity(targetType, targetId) {
@@ -244,7 +336,61 @@ function focusSearchInputEnd() {
   window.setTimeout(focusInput, 120);
 }
 
+function captureSearchReturnState() {
+  if (activeView === 'search') return searchReturnState;
+  return {
+    activeView,
+    activeTab,
+    railTab,
+    selectedSpaceType,
+    selectedSpaceId,
+    selectedAgentId,
+    selectedHumanId,
+    selectedComputerId,
+    selectedTaskId,
+    selectedProjectFile,
+    threadMessageId,
+    mobileHomeOpen,
+    consoleTab,
+    settingsTab,
+  };
+}
+
+function restoreSearchReturnState() {
+  if (!searchReturnState) {
+    activeView = 'space';
+    railTab = 'spaces';
+    render();
+    syncBrowserRouteForActiveView();
+    return;
+  }
+  ({
+    activeView,
+    activeTab,
+    railTab,
+    selectedSpaceType,
+    selectedSpaceId,
+    selectedAgentId,
+    selectedHumanId,
+    selectedComputerId,
+    selectedTaskId,
+    selectedProjectFile,
+    threadMessageId,
+    mobileHomeOpen,
+    consoleTab,
+    settingsTab,
+  } = searchReturnState);
+  searchReturnState = null;
+  searchSenderMenuOpen = false;
+  searchChannelMenuOpen = false;
+  searchTimeMenuOpen = false;
+  render();
+  syncBrowserRouteForActiveView();
+  refreshThreadSelection(threadMessageId, { loadReplies: Boolean(threadMessageId) });
+}
+
 function openSearchView() {
+  searchReturnState = captureSearchReturnState();
   activeView = 'search';
   mobileHomeOpen = false;
   activeTab = 'chat';
@@ -254,7 +400,9 @@ function openSearchView() {
   selectedAgentId = null;
   selectedTaskId = null;
   render();
+  syncBrowserRouteForActiveView();
   focusSearchInputEnd();
+  queueSearchResultsRefresh();
 }
 
 function renderSearch() {
@@ -263,7 +411,7 @@ function renderSearch() {
       <div class="search-topbar">
         <button class="search-top-icon" type="button" aria-label="Search">${renderSearchLensIcon(18)}</button>
         <div class="search-input-shell">
-          <input id="search-input" value="${escapeHtml(searchQuery)}" placeholder="Search channels, DIRECT MESSAGES, messages..." autocomplete="off" autofocus />
+          <input id="search-input" value="${escapeHtml(searchQuery)}" placeholder="Search channels, DMs, messages..." autocomplete="off" autofocus />
           <button class="search-clear-btn" type="button" data-action="clear-search-query" data-search-clear aria-label="Clear search" ${searchQuery.trim() ? '' : 'hidden'}>×</button>
         </div>
       </div>

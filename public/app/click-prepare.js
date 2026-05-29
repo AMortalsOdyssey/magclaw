@@ -66,6 +66,7 @@ async function prepareDocumentClick(event) {
   const clickedTaskChannelFilter = event.target.closest('.task-channel-filter');
   const clickedTaskStatusMenu = event.target.closest('.task-inline-badge');
   const clickedSearchFilter = event.target.closest('.search-time-filter');
+  const clickedChannelCreateMenu = event.target.closest('.channel-create-anchor');
   const clickedServerSwitcher = event.target.closest('.server-switcher-anchor');
   const clickedMessageInteraction = event.target.closest('.message-context-menu, .share-selection-bar, .share-preview-modal');
   const target = event.target.closest('[data-action]');
@@ -97,12 +98,20 @@ async function prepareDocumentClick(event) {
       return;
     }
   }
-  if ((searchTimeMenuOpen || searchSenderMenuOpen) && !clickedSearchFilter) {
+  if ((searchTimeMenuOpen || searchSenderMenuOpen || searchChannelMenuOpen) && !clickedSearchFilter) {
     searchTimeMenuOpen = false;
     searchSenderMenuOpen = false;
+    searchChannelMenuOpen = false;
     if (activeView === 'search') {
       updateSearchResults();
       if (!target) return;
+    }
+  }
+  if (channelCreateMenuOpen && !clickedChannelCreateMenu) {
+    channelCreateMenuOpen = false;
+    if (!target) {
+      render();
+      return;
     }
   }
   if (!target) return;
@@ -118,6 +127,8 @@ async function prepareDocumentClick(event) {
     'set-console-tab',
     'set-rail-tab',
     'toggle-sidebar-section',
+    'toggle-channel-create-menu',
+    'open-channel-create',
     'toggle-server-switcher',
     'open-console-server-switcher',
     'select-agent',
@@ -154,8 +165,12 @@ async function prepareDocumentClick(event) {
     'toggle-search-sender-menu',
     'set-search-sender',
     'clear-search-sender',
+    'toggle-search-channel-menu',
+    'set-search-channel',
+    'clear-search-channel',
     'toggle-search-range-menu',
     'set-search-range',
+    'clear-search-range',
     'clear-search-query',
     'clear-search-all',
     'load-more-search',

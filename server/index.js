@@ -559,6 +559,10 @@ function resilientCloudRepository(repository) {
       if (disabled || typeof repository.listSpaceMessagesPage !== 'function') return null;
       return repository.listSpaceMessagesPage(options);
     },
+    async searchConversationRecords(options = {}) {
+      if (disabled || typeof repository.searchConversationRecords !== 'function') return null;
+      return repository.searchConversationRecords(options);
+    },
     async listThreadRepliesPage(options = {}) {
       if (disabled || typeof repository.listThreadRepliesPage !== 'function') return null;
       return repository.listThreadRepliesPage(options);
@@ -1923,6 +1927,9 @@ function messageApiDeps() {
     inferConversationDisclosureGrant,
     listSpaceMessagesPage: typeof cloudRepository?.listSpaceMessagesPage === 'function'
       ? (...args) => cloudRepository.listSpaceMessagesPage(...args)
+      : null,
+    searchConversationRecords: typeof cloudRepository?.searchConversationRecords === 'function'
+      ? (...args) => cloudRepository.searchConversationRecords(...args)
       : null,
     listThreadRepliesPage: typeof cloudRepository?.listThreadRepliesPage === 'function'
       ? (...args) => cloudRepository.listThreadRepliesPage(...args)

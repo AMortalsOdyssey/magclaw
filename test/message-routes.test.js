@@ -242,6 +242,128 @@ test('message route group can page thread replies from repository when parent is
   assert.deepEqual(res.data.replies.map((reply) => reply.id), ['pg_rep']);
 });
 
+test('message search supports filter-only newest-first results and conversation privacy', async () => {
+  const deps = routeDeps();
+  deps.state.channels = [
+    { id: 'chan_all', workspaceId: 'local', name: 'all', memberIds: ['hum_local'], humanIds: ['hum_local'], agentIds: [] },
+    { id: 'chan_public', workspaceId: 'local', name: 'public', visibility: 'public', memberIds: [], humanIds: [], agentIds: [] },
+    { id: 'chan_private', workspaceId: 'local', name: 'private', visibility: 'private', memberIds: [], humanIds: [], agentIds: [] },
+  ];
+  deps.state.dms = [
+    { id: 'dm_1', workspaceId: 'local', participantIds: ['hum_local', 'agt_codex'] },
+    { id: 'dm_hidden', workspaceId: 'local', participantIds: ['hum_other', 'agt_codex'] },
+  ];
+  deps.state.messages = [
+    {
+      id: 'msg_old_alpha',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: 'alpha older',
+      createdAt: '2026-05-03T00:00:00.000Z',
+    },
+    {
+      id: 'msg_new_alpha',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_codex',
+      body: 'alpha newer',
+      createdAt: '2026-05-04T01:00:00.000Z',
+    },
+    {
+      id: 'msg_public_unjoined',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_public',
+      authorType: 'human',
+      authorId: 'hum_public',
+      body: 'public channel is searchable',
+      createdAt: '2026-05-04T02:00:00.000Z',
+    },
+    {
+      id: 'msg_private_hidden',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_private',
+      authorType: 'human',
+      authorId: 'hum_private',
+      body: 'private channel is not searchable',
+      createdAt: '2026-05-04T03:00:00.000Z',
+    },
+    {
+      id: 'msg_dm_visible',
+      workspaceId: 'local',
+      spaceType: 'dm',
+      spaceId: 'dm_1',
+      authorType: 'agent',
+      authorId: 'agt_codex',
+      body: 'private direct visible',
+      createdAt: '2026-05-04T04:00:00.000Z',
+    },
+    {
+      id: 'msg_dm_hidden',
+      workspaceId: 'local',
+      spaceType: 'dm',
+      spaceId: 'dm_hidden',
+      authorType: 'agent',
+      authorId: 'agt_codex',
+      body: 'private direct hidden',
+      createdAt: '2026-05-04T05:00:00.000Z',
+    },
+  ];
+  deps.state.replies = [
+    {
+      id: 'rep_alpha',
+      workspaceId: 'local',
+      parentMessageId: 'msg_new_alpha',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_local',
+      body: 'alpha reply newest',
+      createdAt: '2026-05-04T06:00:00.000Z',
+    },
+  ];
+
+  const alpha = makeResponse();
+  await handleMessageApi(
+    { method: 'GET' },
+    alpha,
+    new URL('http://local/api/search/messages?q=alpha&limit=10'),
+    deps,
+  );
+  assert.equal(alpha.statusCode, 200);
+  assert.deepEqual(alpha.data.results.map((record) => record.id), ['rep_alpha', 'msg_new_alpha', 'msg_old_alpha']);
+  assert.deepEqual(alpha.data.parents.map((record) => record.id), ['msg_new_alpha']);
+
+  const today = makeResponse();
+  await handleMessageApi(
+    { method: 'GET' },
+    today,
+    new URL('http://local/api/search/messages?range=today&limit=20'),
+    deps,
+  );
+  assert.equal(today.statusCode, 200);
+  assert.ok(today.data.results.some((record) => record.id === 'msg_public_unjoined'));
+  assert.ok(today.data.results.some((record) => record.id === 'msg_dm_visible'));
+  assert.equal(today.data.results.some((record) => record.id === 'msg_private_hidden'), false);
+  assert.equal(today.data.results.some((record) => record.id === 'msg_dm_hidden'), false);
+
+  const sender = makeResponse();
+  await handleMessageApi(
+    { method: 'GET' },
+    sender,
+    new URL('http://local/api/search/messages?senderId=hum_local&range=today&limit=20'),
+    deps,
+  );
+  assert.equal(sender.statusCode, 200);
+  assert.deepEqual(sender.data.results.map((record) => record.id), ['rep_alpha']);
+});
+
 test('inbox read endpoint marks a full DM scope including loaded thread replies', async () => {
   const deps = routeDeps();
   deps.state.messages = [

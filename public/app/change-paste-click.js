@@ -86,8 +86,22 @@ async function discardProvisionalPairingComputer(pairingCommand = latestPairingC
   }
 }
 
+function findStagedAttachment(attachmentId) {
+  const id = String(attachmentId || '');
+  if (!id) return null;
+  for (const staged of Object.values(stagedByComposer || {})) {
+    const attachment = (staged?.attachments || []).find((item) => item?.id === id);
+    if (attachment) return attachment;
+  }
+  return null;
+}
+
+function findAttachmentForPreview(attachmentId) {
+  return byId(appState?.attachments, attachmentId) || findStagedAttachment(attachmentId);
+}
+
 async function openAttachmentPreview(attachmentId) {
-  const attachment = byId(appState?.attachments, attachmentId);
+  const attachment = findAttachmentForPreview(attachmentId);
   if (!attachment) throw new Error('Attachment is missing.');
   const kind = attachmentPreviewKind(attachment);
   attachmentPreviewState = {
@@ -656,7 +670,13 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'set-view') {
       if (railTab === 'members') rememberMembersLayoutFromCurrent();
-      activeView = target.dataset.view;
+      const wasSearchView = activeView === 'search';
+      const nextView = target.dataset.view;
+      if (nextView === 'search') {
+        openSearchView();
+        return;
+      }
+      activeView = nextView;
       mobileHomeOpen = false;
       if (activeView === 'cloud') railTab = 'settings';
       if (activeView === 'console') consoleTab = consoleTab || 'overview';
@@ -671,7 +691,7 @@ document.addEventListener('click', async (event) => {
       selectedHumanId = null;
       selectedComputerId = null;
       selectedTaskId = null;
-      selectedSavedRecordId = null;
+      if (!wasSearchView) selectedSavedRecordId = null;
       render();
       syncBrowserRouteForActiveView();
       if (activeView === 'search') focusSearchInputEnd();
@@ -777,16 +797,26 @@ document.addEventListener('click', async (event) => {
       toggleSidebarSection(target.dataset.section || '');
       render();
     }
+    if (action === 'toggle-channel-create-menu') {
+      channelCreateMenuOpen = !channelCreateMenuOpen;
+      render();
+    }
+    if (action === 'open-channel-create') {
+      channelCreateMenuOpen = false;
+      modal = 'channel';
+      renderShellOrModal();
+    }
     if (action === 'toggle-search-mine') {
       searchMineOnly = !searchMineOnly;
       if (searchMineOnly) searchSenderId = '';
       searchSenderMenuOpen = false;
       searchVisibleCount = SEARCH_PAGE_SIZE;
-      updateSearchResults();
+      queueSearchResultsRefresh();
       focusSearchInputEnd();
     }
     if (action === 'toggle-search-sender-menu') {
       searchSenderMenuOpen = !searchSenderMenuOpen;
+      searchChannelMenuOpen = false;
       searchTimeMenuOpen = false;
       updateSearchResults();
       if (searchSenderMenuOpen) {
@@ -801,7 +831,7 @@ document.addEventListener('click', async (event) => {
       searchSenderMenuOpen = false;
       searchMineOnly = false;
       searchVisibleCount = SEARCH_PAGE_SIZE;
-      updateSearchResults();
+      queueSearchResultsRefresh();
       focusSearchInputEnd();
     }
     if (action === 'clear-search-sender') {
@@ -809,12 +839,40 @@ document.addEventListener('click', async (event) => {
       searchSenderQuery = '';
       searchSenderMenuOpen = false;
       searchVisibleCount = SEARCH_PAGE_SIZE;
+      queueSearchResultsRefresh();
+      focusSearchInputEnd();
+    }
+    if (action === 'toggle-search-channel-menu') {
+      searchChannelMenuOpen = !searchChannelMenuOpen;
+      searchSenderMenuOpen = false;
+      searchTimeMenuOpen = false;
       updateSearchResults();
+      if (searchChannelMenuOpen) {
+        window.setTimeout(() => document.getElementById('search-channel-input')?.focus({ preventScroll: true }), 0);
+      } else {
+        focusSearchInputEnd();
+      }
+    }
+    if (action === 'set-search-channel') {
+      searchChannelId = target.dataset.channelId || '';
+      searchChannelQuery = '';
+      searchChannelMenuOpen = false;
+      searchVisibleCount = SEARCH_PAGE_SIZE;
+      queueSearchResultsRefresh();
+      focusSearchInputEnd();
+    }
+    if (action === 'clear-search-channel') {
+      searchChannelId = '';
+      searchChannelQuery = '';
+      searchChannelMenuOpen = false;
+      searchVisibleCount = SEARCH_PAGE_SIZE;
+      queueSearchResultsRefresh();
       focusSearchInputEnd();
     }
     if (action === 'toggle-search-range-menu') {
       searchTimeMenuOpen = !searchTimeMenuOpen;
       searchSenderMenuOpen = false;
+      searchChannelMenuOpen = false;
       updateSearchResults();
       focusSearchInputEnd();
     }
@@ -822,13 +880,20 @@ document.addEventListener('click', async (event) => {
       searchTimeRange = target.dataset.range || 'any';
       searchTimeMenuOpen = false;
       searchVisibleCount = SEARCH_PAGE_SIZE;
-      updateSearchResults();
+      queueSearchResultsRefresh();
+      focusSearchInputEnd();
+    }
+    if (action === 'clear-search-range') {
+      searchTimeRange = 'any';
+      searchTimeMenuOpen = false;
+      searchVisibleCount = SEARCH_PAGE_SIZE;
+      queueSearchResultsRefresh();
       focusSearchInputEnd();
     }
     if (action === 'clear-search-query') {
       searchQuery = '';
       searchVisibleCount = SEARCH_PAGE_SIZE;
-      updateSearchResults();
+      queueSearchResultsRefresh();
       focusSearchInputEnd();
     }
     if (action === 'clear-search-all') {
@@ -837,15 +902,18 @@ document.addEventListener('click', async (event) => {
       searchSenderId = '';
       searchSenderQuery = '';
       searchSenderMenuOpen = false;
+      searchChannelId = '';
+      searchChannelQuery = '';
+      searchChannelMenuOpen = false;
       searchTimeRange = 'any';
       searchTimeMenuOpen = false;
       searchVisibleCount = SEARCH_PAGE_SIZE;
-      updateSearchResults();
+      queueSearchResultsRefresh();
       focusSearchInputEnd();
     }
     if (action === 'load-more-search') {
       searchVisibleCount += SEARCH_PAGE_SIZE;
-      updateSearchResults();
+      queueSearchResultsRefresh();
       focusSearchInputEnd();
     }
     if (action === 'set-inbox-category') {
@@ -931,6 +999,13 @@ document.addEventListener('click', async (event) => {
         selectedHumanId = null;
         selectedComputerId = null;
         workspaceActivityDrawerOpen = false;
+      } else if (nav === 'search') {
+        railTab = 'spaces';
+        openSearchView();
+        localStorage.setItem('railTab', railTab);
+        syncBrowserRouteForActiveView();
+        refreshPackageVersionReminders();
+        return;
       } else if (nav === 'tasks') {
         railTab = 'spaces';
         activeView = 'tasks';

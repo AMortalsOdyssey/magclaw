@@ -252,6 +252,66 @@
   color: #6f666d;
 }
 
+.collab-frame .channel-create-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.collab-frame .channel-create-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 35;
+  min-width: 150px;
+  padding: 4px;
+  background: #fff;
+}
+
+.collab-frame .channel-create-menu-item {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--workspace-line-strong);
+  background: #fff;
+  color: #111;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.collab-frame .channel-create-menu-item:hover {
+  background: #ffe4ec;
+}
+
+.collab-frame .space-btn[draggable="true"] {
+  cursor: grab;
+}
+
+.collab-frame .space-btn.dragging {
+  opacity: 0.55;
+}
+
+.collab-frame .space-btn.drag-over {
+  position: relative;
+  background: #ffe4ec;
+  border-color: var(--workspace-line-strong);
+}
+
+.collab-frame .space-btn.drag-over::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 0;
+  border-top: 2px solid var(--magclaw-pink);
+}
+
+.collab-frame .space-btn.drag-over.drag-after::before {
+  top: auto;
+  bottom: 0;
+}
+
 .collab-frame .space-btn .rail-message-count {
   margin-left: auto;
 }

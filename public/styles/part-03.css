@@ -1264,6 +1264,19 @@
   font-size: 14px;
 }
 
+.search-input-shell input:focus,
+.search-sender-input-wrap input:focus {
+  outline: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.collab-frame .search-input-shell:focus-within,
+.collab-frame .search-sender-input-wrap input:focus {
+  border-color: var(--workspace-line-strong);
+  box-shadow: none;
+}
+
 .search-input-shell input::placeholder {
   color: #9a968d;
 }
@@ -1324,12 +1337,30 @@
   box-shadow: var(--shadow-pixel-sm);
 }
 
-.search-filter-btn.cyan {
-  background: #12c7e8;
-}
-
 .search-time-filter {
   position: relative;
+}
+
+.search-filter-chip {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.search-filter-x {
+  min-width: 28px;
+  min-height: 30px;
+  margin-left: -2px;
+  padding: 0 8px;
+  border: 2px solid #000;
+  background: var(--magclaw-pink);
+  color: #000;
+  font-weight: 900;
+  box-shadow: var(--shadow-pixel-sm);
+}
+
+.search-relevance-btn:disabled {
+  opacity: 0.58;
+  cursor: default;
 }
 
 .search-time-btn {
@@ -1371,24 +1402,61 @@
 
 .search-time-menu button:hover,
 .search-time-menu button.active {
-  background: #12c7e8;
+  background: #ffe4ec;
 }
 
 .search-sender-menu {
   width: 238px;
 }
 
-.search-sender-menu button {
+.search-channel-menu {
+  width: 238px;
+}
+
+.search-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-faint);
+  color: rgba(0, 0, 0, 0.58);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.search-menu-head button {
+  width: auto;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  color: #111;
+  background: transparent;
+}
+
+.search-sender-menu button,
+.search-channel-menu button {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
-.search-sender-menu button em {
+.search-sender-menu button em,
+.search-channel-menu button em {
   color: rgba(0, 0, 0, 0.52);
   font-size: 10px;
   font-style: normal;
+}
+
+.search-menu-head button {
+  display: inline-flex;
+  width: auto;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .search-sender-input-wrap {
@@ -1607,7 +1675,7 @@
 .search-result-card:hover,
 .search-result-card.active {
   border-color: #000;
-  background: #fff;
+  background: #ffe4ec;
   box-shadow: var(--shadow-pixel-sm);
 }
 

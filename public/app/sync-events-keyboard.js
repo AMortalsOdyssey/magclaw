@@ -1321,6 +1321,11 @@ function applyStateUpdate(nextState) {
     render();
     return;
   }
+  if (activeView === 'search') {
+    if (railNeedsPatch) patchRailSurface();
+    patchSearchSurface(scrollSnapshot);
+    return;
+  }
   if (agentDetailVisible) {
     const conversationNeedsPatch = activeView === 'space'
       && activeTab === 'chat'
@@ -1655,6 +1660,48 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') sendHumanPresenceHeartbeat();
 });
 
+document.addEventListener('dragstart', (event) => {
+  const row = event.target?.closest?.('[data-space-drag-kind][data-space-drag-id]');
+  if (!row || row.getAttribute('draggable') !== 'true') return;
+  spaceOrderDrag = {
+    kind: row.dataset.spaceDragKind,
+    id: row.dataset.spaceDragId,
+  };
+  row.classList.add('dragging');
+  event.dataTransfer?.setData('text/plain', `${spaceOrderDrag.kind}:${spaceOrderDrag.id}`);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+});
+
+document.addEventListener('dragover', (event) => {
+  const row = event.target?.closest?.('[data-space-drag-kind][data-space-drag-id]');
+  if (!row || !spaceOrderDrag || row.dataset.spaceDragKind !== spaceOrderDrag.kind || row.dataset.spaceDragId === spaceOrderDrag.id) return;
+  if (row.getAttribute('draggable') !== 'true') return;
+  event.preventDefault();
+  document.querySelectorAll('.space-btn.drag-over').forEach((item) => item.classList.remove('drag-over', 'drag-after'));
+  const rect = row.getBoundingClientRect();
+  const after = event.clientY > rect.top + rect.height / 2;
+  row.classList.add('drag-over');
+  if (after) row.classList.add('drag-after');
+});
+
+document.addEventListener('drop', (event) => {
+  const row = event.target?.closest?.('[data-space-drag-kind][data-space-drag-id]');
+  if (!row || !spaceOrderDrag || row.dataset.spaceDragKind !== spaceOrderDrag.kind) return;
+  if (row.getAttribute('draggable') !== 'true') return;
+  event.preventDefault();
+  const rect = row.getBoundingClientRect();
+  const before = event.clientY <= rect.top + rect.height / 2;
+  const changed = reorderSpaceOrderForDrag(spaceOrderDrag.kind, spaceOrderDrag.id, row.dataset.spaceDragId, before);
+  document.querySelectorAll('.space-btn.drag-over, .space-btn.dragging').forEach((item) => item.classList.remove('drag-over', 'drag-after', 'dragging'));
+  spaceOrderDrag = null;
+  if (changed) render();
+});
+
+document.addEventListener('dragend', () => {
+  document.querySelectorAll('.space-btn.drag-over, .space-btn.dragging').forEach((item) => item.classList.remove('drag-over', 'drag-after', 'dragging'));
+  spaceOrderDrag = null;
+});
+
 document.addEventListener('compositionstart', (event) => {
   if (event.target?.id === 'search-input') {
     searchIsComposing = true;
@@ -1673,7 +1720,7 @@ document.addEventListener('compositionend', (event) => {
     searchIsComposing = false;
     searchQuery = event.target.value;
     searchVisibleCount = SEARCH_PAGE_SIZE;
-    updateSearchResults();
+    queueSearchResultsRefresh();
   }
   if (event.target?.closest?.('textarea[data-mention-input]')) {
     composerIsComposing = false;
@@ -1737,6 +1784,12 @@ document.addEventListener('keydown', async (event) => {
     attachmentPreviewState = { attachmentId: null, loading: false, content: '', error: '' };
     modal = null;
     renderShellOrModal();
+    return;
+  }
+
+  if (event.key === 'Escape' && activeView === 'search' && !modal) {
+    event.preventDefault();
+    restoreSearchReturnState();
     return;
   }
 
@@ -2081,7 +2134,7 @@ document.addEventListener('input', async (event) => {
     searchQuery = event.target.value;
     searchVisibleCount = SEARCH_PAGE_SIZE;
     if (!searchIsComposing && !event.isComposing && event.inputType !== 'insertCompositionText') {
-      updateSearchResults();
+      queueSearchResultsRefresh();
     }
     return;
   }
@@ -2092,6 +2145,15 @@ document.addEventListener('input', async (event) => {
     const input = document.getElementById('search-sender-input');
     input?.focus({ preventScroll: true });
     input?.setSelectionRange(searchSenderQuery.length, searchSenderQuery.length);
+    return;
+  }
+
+  if (event.target.id === 'search-channel-input') {
+    searchChannelQuery = event.target.value;
+    updateSearchResults();
+    const input = document.getElementById('search-channel-input');
+    input?.focus({ preventScroll: true });
+    input?.setSelectionRange(searchChannelQuery.length, searchChannelQuery.length);
     return;
   }
 

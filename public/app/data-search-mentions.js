@@ -545,10 +545,44 @@ function filteredSearchSenderOptions() {
   return options.filter((item) => normalizeSearchText(`${item.label} ${item.type}`).includes(query));
 }
 
+function searchChannelOptions() {
+  return (appState?.channels || [])
+    .filter((channel) => channel && !channel.archived && !channel.archivedAt)
+    .map((channel) => ({
+      id: channel.id,
+      label: `#${channel.name || channel.id}`,
+      meta: typeof currentUserIsChannelMember === 'function' && currentUserIsChannelMember(channel) ? 'Channel' : 'Channel',
+    }))
+    .sort((a, b) => {
+      if (a.id === 'chan_all') return -1;
+      if (b.id === 'chan_all') return 1;
+      return a.label.localeCompare(b.label);
+    });
+}
+
+function selectedSearchChannel() {
+  return searchChannelOptions().find((item) => item.id === searchChannelId) || null;
+}
+
+function filteredSearchChannelOptions() {
+  const query = normalizeSearchText(searchChannelQuery);
+  const options = searchChannelOptions();
+  if (!query) return options;
+  return options.filter((item) => normalizeSearchText(`${item.label} ${item.meta}`).includes(query));
+}
+
+function searchHasActiveCriteria() {
+  return Boolean(searchQuery.trim() || searchSenderId || searchChannelId || searchTimeRange !== 'any');
+}
+
 function searchRecordMatchesFilters(record) {
   const currentUserId = currentHumanId();
   if (searchMineOnly && record?.authorId !== currentUserId) return false;
   if (searchSenderId && record?.authorId !== searchSenderId) return false;
+  if (searchChannelId) {
+    const root = record?.parentMessageId ? byId(appState?.messages, record.parentMessageId) : record;
+    if (root?.spaceType !== 'channel' || root?.spaceId !== searchChannelId) return false;
+  }
   const bounds = searchRangeBounds(searchTimeRange);
   if (bounds.after) {
     const created = new Date(record?.createdAt || 0).getTime();
@@ -558,7 +592,101 @@ function searchRecordMatchesFilters(record) {
 }
 
 function currentSearchMessageResults() {
+  if (searchRemoteResults.length || searchHasActiveCriteria()) {
+    return searchRemoteResults.filter(searchRecordMatchesFilters);
+  }
   return searchRecords(searchQuery).filter(searchRecordMatchesFilters);
+}
+
+function mergeSearchResponseIntoState(result = {}) {
+  const mergeById = (key, records = []) => {
+    if (!Array.isArray(appState?.[key])) return;
+    const byId = new Map(appState[key].map((record, index) => [record.id, { record, index }]));
+    for (const record of records || []) {
+      if (!record?.id) continue;
+      const existing = byId.get(record.id);
+      if (existing) {
+        appState[key][existing.index] = { ...existing.record, ...record };
+      } else {
+        appState[key].push(record);
+      }
+    }
+  };
+  mergeById('messages', [...(result.messages || []), ...(result.parents || [])]);
+  mergeById('replies', result.replies || []);
+}
+
+function searchRequestParams() {
+  const params = new URLSearchParams();
+  if (searchQuery.trim()) params.set('q', searchQuery.trim());
+  if (searchSenderId) params.set('senderId', searchSenderId);
+  if (searchChannelId) params.set('channelId', searchChannelId);
+  if (searchTimeRange !== 'any') params.set('range', searchTimeRange);
+  params.set('limit', String(Math.max(SEARCH_PAGE_SIZE, searchVisibleCount)));
+  return params;
+}
+
+function persistSearchState() {
+  writeJsonStorage('magclawSearchState', {
+    query: searchQuery,
+    senderId: searchSenderId,
+    channelId: searchChannelId,
+    timeRange: searchTimeRange,
+    visibleCount: searchVisibleCount,
+    selectedResultId: selectedSavedRecordId,
+  });
+}
+
+async function fetchSearchResults() {
+  const params = searchRequestParams();
+  const requestKey = params.toString();
+  if (!searchHasActiveCriteria()) {
+    searchRemoteResults = [];
+    searchRemoteParents = [];
+    searchRemoteLoading = false;
+    searchRemoteError = '';
+    searchLastRequestKey = '';
+    updateSearchResults({ skipFetch: true });
+    return;
+  }
+  const seq = searchRequestSeq + 1;
+  searchRequestSeq = seq;
+  searchRemoteLoading = true;
+  searchRemoteError = '';
+  searchLastRequestKey = requestKey;
+  updateSearchResults({ skipFetch: true });
+  try {
+    const result = await api(`/api/search/messages?${requestKey}`);
+    if (seq !== searchRequestSeq) return;
+    mergeSearchResponseIntoState(result);
+    searchRemoteResults = Array.isArray(result.results) ? result.results : [];
+    searchRemoteParents = Array.isArray(result.parents) ? result.parents : [];
+    searchRemoteLoading = false;
+    searchRemoteError = '';
+  } catch (error) {
+    if (seq !== searchRequestSeq) return;
+    searchRemoteLoading = false;
+    searchRemoteError = error.message || 'Search failed';
+  }
+  updateSearchResults({ skipFetch: true });
+}
+
+function queueSearchResultsRefresh() {
+  persistSearchState();
+  if (searchRequestTimer) window.clearTimeout(searchRequestTimer);
+  if (!searchHasActiveCriteria()) {
+    searchRemoteResults = [];
+    searchRemoteParents = [];
+    searchRemoteLoading = false;
+    searchRemoteError = '';
+    searchLastRequestKey = '';
+    updateSearchResults({ skipFetch: true });
+    return;
+  }
+  updateSearchResults({ skipFetch: true });
+  searchRequestTimer = window.setTimeout(() => {
+    fetchSearchResults();
+  }, 120);
 }
 
 function searchEntityScore(text, query) {

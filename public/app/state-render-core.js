@@ -50,6 +50,7 @@ const MAGCLAW_MESSAGE_REACTIONS = [
 ];
 const MAGCLAW_MESSAGE_REACTION_KEYS = new Set(MAGCLAW_MESSAGE_REACTIONS.map((reaction) => reaction.key));
 const initialUiState = readStoredUiState();
+const initialSearchState = typeof readStoredSearchState === 'function' ? readStoredSearchState() : {};
 canonicalizeLegacyRoutePath();
 const initialRouteState = routeStateFromLocation(window.location.pathname || '');
 
@@ -81,7 +82,7 @@ let membersLayout = normalizeMembersLayout(
       : initialUiState.membersLayout
 );
 let selectedTaskId = null;
-let selectedSavedRecordId = null;
+let selectedSavedRecordId = initialSearchState.selectedResultId || null;
 let messageContextMenu = null;
 let messageShareState = { active: false, selectedIds: [], scope: 'all', threadRootId: '' };
 let sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
@@ -92,17 +93,30 @@ let agentRestartState = { agentId: null, mode: 'restart' };
 let daemonUpgradeConfirmState = { computerId: null };
 let computerCloseConfirmState = { computerId: null };
 let joinLinkRevokeConfirmState = { joinLinkId: null };
-let searchQuery = '';
+let searchQuery = initialSearchState.query || '';
 let searchIsComposing = false;
 let composerIsComposing = false;
 let composingComposerId = null;
 let searchMineOnly = false;
-let searchSenderId = '';
+let searchSenderId = initialSearchState.senderId || '';
 let searchSenderMenuOpen = false;
 let searchSenderQuery = '';
-let searchTimeRange = 'any';
+let searchChannelId = initialSearchState.channelId || '';
+let searchChannelMenuOpen = false;
+let searchChannelQuery = '';
+let searchTimeRange = initialSearchState.timeRange || 'any';
 let searchTimeMenuOpen = false;
-let searchVisibleCount = 20;
+let searchVisibleCount = initialSearchState.visibleCount || 20;
+let searchRemoteResults = [];
+let searchRemoteParents = [];
+let searchRemoteLoading = false;
+let searchRemoteError = '';
+let searchRequestSeq = 0;
+let searchRequestTimer = null;
+let searchLastRequestKey = '';
+let searchReturnState = null;
+let channelCreateMenuOpen = false;
+let spaceOrderDrag = null;
 let addMemberSearchQuery = '';
 let createChannelMemberSearchQuery = '';
 let taskFilter = 'all';
@@ -246,6 +260,7 @@ function routeStateFromLocation(path = window.location.pathname || '') {
   if (/^\/s\/[^/]+\/members/.test(value)) return { activeView: 'members', railTab: 'members' };
   if (/^\/s\/[^/]+\/computers/.test(value)) return { activeView: 'computers', railTab: 'computers' };
   if (/^\/s\/[^/]+\/tasks/.test(value)) return { activeView: 'tasks', railTab: 'spaces' };
+  if (/^\/s\/[^/]+\/search/.test(value)) return { activeView: 'search', railTab: 'spaces' };
   const spaceMatch = value.match(/^\/s\/[^/]+\/(channels|dms)\/([^/]+)/);
   if (spaceMatch) {
     return {
@@ -357,6 +372,7 @@ function routePathForActiveView() {
     return `/s/${serverSlug}/members`;
   }
   if (activeView === 'tasks') return `/s/${serverSlug}/tasks`;
+  if (activeView === 'search') return `/s/${serverSlug}/search`;
   if (activeView === 'cloud') {
     const safeSettingsTab = settingsTab === 'system' ? 'server' : (settingsTab || 'account');
     if (safeSettingsTab === 'root') return `/s/${serverSlug}/settings`;

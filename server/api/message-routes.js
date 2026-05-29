@@ -89,6 +89,7 @@ export async function handleMessageApi(req, res, url, deps) {
     recordConversationGrant,
     scheduleAgentMemoryWriteback,
     searchAgentMemory,
+    searchConversationRecords,
     sendError,
     sendJson,
     stopTaskFromThread,
@@ -630,6 +631,141 @@ export async function handleMessageApi(req, res, url, deps) {
     return false;
   }
 
+  function channelIsPrivate(channel) {
+    if (!channel) return true;
+    const raw = String(channel.visibility || channel.privacy || channel.metadata?.visibility || '').trim().toLowerCase();
+    return ['private', 'secret', 'locked'].includes(raw) || channel.private === true || channel.secret === true || channel.isPrivate === true;
+  }
+
+  function canSearchChannel(req, spaceId) {
+    const channel = findChannel(spaceId);
+    if (!channel || channel.archived || channel.archivedAt) return false;
+    if (isWorkspaceAllChannel(channel)) return true;
+    if (!channelIsPrivate(channel)) return true;
+    return channelHasHuman(channel, currentHumanId(req));
+  }
+
+  function canSearchRecord(req, record) {
+    const { spaceType, spaceId } = recordSourceSpace(record);
+    if (spaceType === 'dm') return canUseDm(req, spaceId);
+    if (spaceType === 'channel') return canSearchChannel(req, spaceId);
+    return false;
+  }
+
+  function searchRangeAfter(range, referenceNow = now()) {
+    const key = String(range || 'any').trim().toLowerCase();
+    const base = Number.isFinite(Date.parse(referenceNow)) ? new Date(referenceNow) : new Date();
+    if (key === 'today') {
+      return new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate())).getTime();
+    }
+    if (key === '7d') return base.getTime() - 7 * 24 * 60 * 60 * 1000;
+    if (key === '30d') return base.getTime() - 30 * 24 * 60 * 60 * 1000;
+    return 0;
+  }
+
+  function normalizeSearchQuery(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  }
+
+  function searchTextForRecord(record) {
+    const parent = record?.parentMessageId ? findMessage(record.parentMessageId) : null;
+    return [
+      record?.body || '',
+      record?.authorId || '',
+      displayActor ? displayActor(record?.authorId) : '',
+      parent?.body || '',
+      parent ? spaceNameForSearch(parent.spaceType, parent.spaceId) : spaceNameForSearch(record?.spaceType, record?.spaceId),
+    ].join(' ');
+  }
+
+  function spaceNameForSearch(spaceType, spaceId) {
+    if (spaceType === 'channel') return findChannel(spaceId)?.name || spaceId || '';
+    if (spaceType === 'dm') return state.dms.find((dm) => dm.id === spaceId)?.name || spaceId || '';
+    return '';
+  }
+
+  function recordMatchesSearchQuery(record, query) {
+    const normalized = normalizeSearchQuery(query);
+    if (!normalized) return true;
+    const haystack = normalizeSearchQuery(searchTextForRecord(record));
+    if (!haystack) return false;
+    return normalized.split(' ').filter(Boolean).every((term) => haystack.includes(term));
+  }
+
+  function searchCriteriaFromUrl(url) {
+    const query = String(url.searchParams.get('q') || url.searchParams.get('query') || '').trim();
+    const senderId = String(url.searchParams.get('senderId') || '').trim();
+    const channelId = String(url.searchParams.get('channelId') || '').trim();
+    const range = String(url.searchParams.get('range') || 'any').trim() || 'any';
+    const afterParam = String(url.searchParams.get('after') || '').trim();
+    const parsedAfter = Date.parse(afterParam);
+    const after = Number.isFinite(parsedAfter) ? parsedAfter : searchRangeAfter(range);
+    return {
+      query,
+      senderId,
+      channelId,
+      range,
+      after,
+      hasCriteria: Boolean(query || senderId || channelId || range !== 'any' || after),
+    };
+  }
+
+  function recordMatchesSearchCriteria(req, record, criteria) {
+    if (!record || !canSearchRecord(req, record)) return false;
+    const workspaceId = workspaceIdForConversation(record, record.spaceType, record.spaceId, req);
+    if (workspaceId && workspaceId !== workspaceIdForRequest(req)) return false;
+    const source = recordSourceSpace(record);
+    if (criteria.channelId && !(source.spaceType === 'channel' && source.spaceId === criteria.channelId)) return false;
+    if (criteria.senderId && record.authorId !== criteria.senderId) return false;
+    if (criteria.after) {
+      const created = recordTime(record);
+      if (!created || created < criteria.after) return false;
+    }
+    if (!recordMatchesSearchQuery(record, criteria.query)) return false;
+    return true;
+  }
+
+  function localSearchResultPage(req, criteria, { limit, before, beforeId }) {
+    if (!criteria.hasCriteria) {
+      return {
+        results: [],
+        messages: [],
+        replies: [],
+        parents: [],
+        pagination: { limit, hasMore: false, nextBefore: '', nextBeforeId: '' },
+      };
+    }
+    const matching = [
+      ...(state.messages || []),
+      ...(state.replies || []),
+    ]
+      .filter((record) => recordMatchesSearchCriteria(req, record, criteria))
+      .filter((record) => cursorMatchesBefore(record, before, beforeId))
+      .sort(sortNewestFirst);
+    const page = matching.slice(0, limit);
+    const parentById = new Map();
+    for (const record of page) {
+      if (record?.parentMessageId) {
+        const parent = findMessage(record.parentMessageId);
+        if (parent && canSearchRecord(req, parent)) parentById.set(parent.id, parent);
+      }
+    }
+    const nextBefore = page.length ? page[page.length - 1].createdAt : '';
+    const nextBeforeId = page.length ? page[page.length - 1].id : '';
+    return {
+      results: page,
+      messages: page.filter((record) => !record.parentMessageId),
+      replies: page.filter((record) => record.parentMessageId),
+      parents: [...parentById.values()].sort(sortOldestFirst),
+      pagination: {
+        limit,
+        hasMore: matching.length > page.length,
+        nextBefore,
+        nextBeforeId,
+      },
+    };
+  }
+
   function recordMatchesSpace(record, spaceType, spaceId) {
     const source = recordSourceSpace(record);
     return source.spaceType === spaceType && source.spaceId === spaceId;
@@ -648,6 +784,51 @@ export async function handleMessageApi(req, res, url, deps) {
       parent,
       ...(state.replies || []).filter((reply) => reply.parentMessageId === parentMessageId),
     ].filter(Boolean);
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/search/messages') {
+    const criteria = searchCriteriaFromUrl(url);
+    const limit = paginationLimit(url.searchParams.get('limit'), 80, 200);
+    const before = beforeCursorTime(url);
+    const beforeId = beforeCursorId(url);
+    let page = null;
+    if (typeof searchConversationRecords === 'function' && criteria.hasCriteria) {
+      const workspaceId = workspaceIdForRequest(req);
+      const remotePage = await searchConversationRecords({
+        workspaceId,
+        query: criteria.query,
+        senderId: criteria.senderId,
+        channelId: criteria.channelId,
+        range: criteria.range,
+        after: criteria.after ? new Date(criteria.after).toISOString() : '',
+        limit: Math.min(limit * 4, 400),
+        before: Number.isFinite(before) && before !== Number.POSITIVE_INFINITY ? new Date(before).toISOString() : '',
+        beforeId,
+      });
+      if (remotePage) {
+        for (const message of remotePage.messages || []) {
+          if (!state.messages.some((item) => item.id === message.id)) state.messages.push(message);
+        }
+        for (const parent of remotePage.parents || []) {
+          if (!state.messages.some((item) => item.id === parent.id)) state.messages.push(parent);
+        }
+        for (const reply of remotePage.replies || []) {
+          if (!state.replies.some((item) => item.id === reply.id)) state.replies.push(reply);
+        }
+        page = localSearchResultPage(req, criteria, { limit, before, beforeId });
+      }
+    }
+    page = page || localSearchResultPage(req, criteria, { limit, before, beforeId });
+    console.info('[message] search messages', {
+      workspaceId: workspaceIdForRequest(req),
+      query: criteria.query ? '[query]' : '',
+      senderId: criteria.senderId,
+      channelId: criteria.channelId,
+      range: criteria.range,
+      resultCount: page.results.length,
+    });
+    sendJson(res, 200, page);
+    return true;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/inbox/read') {

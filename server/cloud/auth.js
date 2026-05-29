@@ -2266,6 +2266,29 @@ export function createCloudAuth(deps) {
 	      return { user: publicUser(user), member: memberForUser(user.id, workspace.id), workspace };
 	    }
 
+	    function normalizeUiPreferenceIdList(value) {
+	      const seen = new Set();
+	      const ids = [];
+	      for (const item of safeArray(value)) {
+	        const id = String(item || '').trim();
+	        if (!id || id.length > 120 || !/^[A-Za-z0-9_.:-]+$/.test(id) || seen.has(id)) continue;
+	        seen.add(id);
+	        ids.push(id);
+	      }
+	      return ids.slice(0, 500);
+	    }
+
+	    function normalizeSpaceOrderPreference(value, req) {
+	      const raw = jsonObject(value);
+	      const auth = currentActor(req);
+	      const workspaceId = String(raw.workspaceId || auth?.member?.workspaceId || primaryWorkspace()?.id || 'local').trim() || 'local';
+	      return {
+	        workspaceId: workspaceId.slice(0, 120),
+	        channels: normalizeUiPreferenceIdList(raw.channels),
+	        dms: normalizeUiPreferenceIdList(raw.dms),
+	      };
+	    }
+
 	    async function updateUserPreferences(body, req) {
 	      const user = requireAuthenticatedUser(req);
 	      let changed = false;
@@ -2273,6 +2296,33 @@ export function createCloudAuth(deps) {
 	        const nextLanguage = normalizeLanguagePreference(body.language);
 	        if (user.language !== nextLanguage) {
 	          user.language = nextLanguage;
+	          changed = true;
+	        }
+	      }
+	      const spaceOrderInput = jsonObject(body?.ui).spaceOrder || body?.spaceOrder;
+	      if (spaceOrderInput && typeof spaceOrderInput === 'object') {
+	        const nextOrder = normalizeSpaceOrderPreference(spaceOrderInput, req);
+	        user.metadata = jsonObject(user.metadata);
+	        const ui = jsonObject(user.metadata.ui);
+	        const byWorkspace = jsonObject(ui.spaceOrderByWorkspace);
+	        const previous = jsonObject(byWorkspace[nextOrder.workspaceId]);
+	        const nextValue = {
+	          channels: nextOrder.channels,
+	          dms: nextOrder.dms,
+	          updatedAt: now(),
+	        };
+	        if (
+	          JSON.stringify(previous.channels || []) !== JSON.stringify(nextValue.channels)
+	          || JSON.stringify(previous.dms || []) !== JSON.stringify(nextValue.dms)
+	        ) {
+	          byWorkspace[nextOrder.workspaceId] = nextValue;
+	          user.metadata = {
+	            ...user.metadata,
+	            ui: {
+	              ...ui,
+	              spaceOrderByWorkspace: byWorkspace,
+	            },
+	          };
 	          changed = true;
 	        }
 	      }
