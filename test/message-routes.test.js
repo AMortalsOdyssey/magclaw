@@ -447,6 +447,83 @@ test('inbox read endpoint marks a full DM scope including loaded thread replies'
   assert.deepEqual(new Set(res.data.readRecordIds), new Set(['msg_dm_agent', 'msg_dm_parent', 'rep_dm_agent']));
 });
 
+test('inbox read endpoint clears browse counts for unjoined public channels', async () => {
+  let durableOptions = null;
+  let unreadOptions = null;
+  const deps = routeDeps({
+    markConversationRecordsRead: async (options) => {
+      durableOptions = options;
+      return { messageIds: [], replyIds: [], count: 0 };
+    },
+    getUnreadCounts: async (options) => {
+      unreadOptions = options;
+      return {
+        globalUnread: 0,
+        spaces: [{ spaceType: 'channel', spaceId: 'chan_public', unreadCount: 0, joined: false, muted: true }],
+      };
+    },
+    readJson: async () => ({ spaceType: 'channel', spaceId: 'chan_public' }),
+  });
+  deps.state.channels.push({
+    id: 'chan_public',
+    workspaceId: 'local',
+    visibility: 'public',
+    memberIds: [],
+    humanIds: [],
+    agentIds: [],
+  });
+
+  const res = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/inbox/read'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(durableOptions.workspaceId, 'local');
+  assert.equal(durableOptions.humanId, 'hum_local');
+  assert.equal(durableOptions.spaceType, 'channel');
+  assert.equal(durableOptions.spaceId, 'chan_public');
+  assert.equal(durableOptions.threadMessageId, '');
+  assert.equal(unreadOptions.humanId, 'hum_local');
+  assert.deepEqual(res.data.unreadCounts.spaces, [
+    { spaceType: 'channel', spaceId: 'chan_public', unreadCount: 0, joined: false, muted: true },
+  ]);
+});
+
+test('inbox read endpoint still rejects unjoined private channel scopes', async () => {
+  let durableOptions = null;
+  const deps = routeDeps({
+    markConversationRecordsRead: async (options) => {
+      durableOptions = options;
+      return { messageIds: [], replyIds: [], count: 0 };
+    },
+    readJson: async () => ({ spaceType: 'channel', spaceId: 'chan_private' }),
+  });
+  deps.state.channels.push({
+    id: 'chan_private',
+    workspaceId: 'local',
+    visibility: 'private',
+    memberIds: [],
+    humanIds: [],
+    agentIds: [],
+  });
+
+  const res = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/inbox/read'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.error, 'Conversation is not available.');
+  assert.equal(durableOptions, null);
+});
+
 test('inbox read endpoint sends durable thread scope for replies that are not loaded yet', async () => {
   let durableOptions = null;
   const realtimeEvents = [];

@@ -651,7 +651,8 @@ function renderChannelItem(channel, messageCount = 0) {
   const active = activeView === 'space' && selectedSpaceType === 'channel' && selectedSpaceId === channel.id ? ' active' : '';
   const unreadEntry = typeof serverUnreadEntryForSpace === 'function' ? serverUnreadEntryForSpace('channel', channel.id) : null;
   const readable = typeof currentUserCanReadChannel === 'function' ? currentUserCanReadChannel(channel) : true;
-  const unjoined = unreadEntry ? (unreadEntry.joined === false || unreadEntry.muted === true) : !readable;
+  const joined = typeof currentUserIsChannelMember === 'function' ? currentUserIsChannelMember(channel) : readable;
+  const unjoined = unreadEntry ? (unreadEntry.joined === false || unreadEntry.muted === true) : (readable && !joined);
   const weak = unjoined ? ' unjoined-channel' : '';
   const pinned = isPinnedAllChannelForRail(channel);
   const draggable = !pinned;

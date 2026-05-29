@@ -83,9 +83,14 @@ test('unjoined channels render read-only chat controls with a join action', asyn
   const styles = await readStylesSource();
   const railSource = app.slice(app.indexOf('function renderChannelItem('), app.indexOf('function renderDmItem('));
   const readSource = app.slice(app.indexOf('function markSpaceRead('), app.indexOf('function taskThreadMessage('));
+  const channelAccessSource = app.slice(app.indexOf('function currentUserCanReadChannel('), app.indexOf('function currentChannelIsReadOnly()'));
+  const readOnlySource = app.slice(app.indexOf('function currentChannelIsReadOnly()'), app.indexOf('function renderChannelJoinPanel('));
 
   assert.match(app, /function currentUserIsChannelMember\(channelOrId\)/);
+  assert.match(app, /function channelIsPrivateForClient\(channel\)/);
   assert.match(app, /function currentUserCanReadChannel\(channelOrId\)/);
+  assert.match(channelAccessSource, /!channelIsPrivateForClient\(channel\)[\s\S]*return true/);
+  assert.match(readOnlySource, /!currentUserIsChannelMember\(currentSpace\(\)\)/);
   assert.match(app, /function renderChannelJoinPanel\(channelOrId/);
   assert.match(app, /data-action="join-channel"/);
   assert.match(app, /\/api\/channels\/\$\{encodeURIComponent\(channelId\)\}\/join/);

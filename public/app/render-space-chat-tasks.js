@@ -74,15 +74,25 @@ function currentUserIsChannelMember(channelOrId) {
   return false;
 }
 
+function channelIsPrivateForClient(channel) {
+  if (!channel) return true;
+  const raw = String(channel.visibility || channel.privacy || channel.metadata?.visibility || '').trim().toLowerCase();
+  return ['private', 'secret', 'locked'].includes(raw)
+    || channel.private === true
+    || channel.secret === true
+    || channel.isPrivate === true;
+}
+
 function currentUserCanReadChannel(channelOrId) {
   const channel = typeof channelOrId === 'string' ? byId(appState?.channels, channelOrId) : channelOrId;
   if (!channel) return false;
   if (isAllChannel(channel)) return true;
+  if (!channelIsPrivateForClient(channel)) return true;
   return currentUserIsChannelMember(channel);
 }
 
 function currentChannelIsReadOnly() {
-  return selectedSpaceType === 'channel' && !currentUserCanReadChannel(currentSpace());
+  return selectedSpaceType === 'channel' && !currentUserIsChannelMember(currentSpace());
 }
 
 function renderChannelJoinPanel(channelOrId, options = {}) {

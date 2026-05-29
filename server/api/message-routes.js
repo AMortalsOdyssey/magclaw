@@ -629,7 +629,7 @@ export async function handleMessageApi(req, res, url, deps) {
 
   function canReadSpace(req, spaceType, spaceId) {
     if (spaceType === 'dm') return canUseDm(req, spaceId);
-    if (spaceType === 'channel') return channelHasHuman(findChannel(spaceId), currentHumanId(req));
+    if (spaceType === 'channel') return canSearchChannel(req, spaceId);
     return false;
   }
 
