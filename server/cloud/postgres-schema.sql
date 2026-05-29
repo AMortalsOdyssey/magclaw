@@ -418,6 +418,50 @@ CREATE UNIQUE INDEX IF NOT EXISTS cloud_channels_workspace_name_uidx
   ON cloud_channels(workspace_id, name)
   WHERE archived_at IS NULL;
 
+CREATE TABLE IF NOT EXISTS cloud_channel_members (
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  channel_id TEXT NOT NULL,
+  human_id TEXT NOT NULL,
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  left_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, channel_id, human_id)
+);
+
+CREATE INDEX IF NOT EXISTS cloud_channel_members_human_active_idx
+  ON cloud_channel_members(workspace_id, human_id, channel_id)
+  WHERE left_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS cloud_channel_members_channel_active_idx
+  ON cloud_channel_members(workspace_id, channel_id, joined_at)
+  WHERE left_at IS NULL;
+
+INSERT INTO cloud_channel_members (workspace_id, channel_id, human_id, joined_at, updated_at)
+SELECT DISTINCT
+  channel.workspace_id,
+  channel.id,
+  member_id,
+  GREATEST(
+    COALESCE(channel.created_at, now()),
+    COALESCE(workspace_member.joined_at, workspace_member.created_at, channel.created_at, now())
+  ),
+  now()
+FROM cloud_channels AS channel
+CROSS JOIN LATERAL (
+  SELECT jsonb_array_elements_text(
+    (
+      COALESCE(channel.metadata #> '{state,humanIds}', '[]'::jsonb)
+      || COALESCE(channel.metadata #> '{state,memberIds}', '[]'::jsonb)
+    )
+  ) AS member_id
+) AS members
+LEFT JOIN cloud_workspace_members AS workspace_member
+  ON workspace_member.workspace_id = channel.workspace_id
+ AND workspace_member.human_id = members.member_id
+ AND workspace_member.removed_at IS NULL
+WHERE members.member_id LIKE 'hum\_%' ESCAPE '\'
+ON CONFLICT (workspace_id, channel_id, human_id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS cloud_dms (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
@@ -429,6 +473,21 @@ CREATE TABLE IF NOT EXISTS cloud_dms (
 
 CREATE INDEX IF NOT EXISTS cloud_dms_workspace_idx
   ON cloud_dms(workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS cloud_conversation_read_states (
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  human_id TEXT NOT NULL,
+  space_type TEXT NOT NULL CHECK (space_type IN ('channel', 'dm')),
+  space_id TEXT NOT NULL,
+  thread_root_id TEXT NOT NULL DEFAULT '',
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_read_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, human_id, space_type, space_id, thread_root_id)
+);
+
+CREATE INDEX IF NOT EXISTS cloud_conversation_read_states_space_idx
+  ON cloud_conversation_read_states(workspace_id, human_id, space_type, space_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS cloud_messages (
   id TEXT PRIMARY KEY,

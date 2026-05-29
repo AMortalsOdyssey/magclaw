@@ -327,6 +327,66 @@ test('state core broadcasts agent realtime events without forcing state patches'
   }
 });
 
+test('state core broadcasts unread realtime events for lightweight count refresh', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-unread-'));
+  const sseClients = new Set();
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    STATE_BROADCAST_DEBOUNCE_MS: 0,
+    sseClients,
+  });
+  const channelClient = fakeSseClient({ url: '/api/events?spaceType=channel&spaceId=chan_all' });
+  const unrelatedClient = fakeSseClient({ url: '/api/events?spaceType=channel&spaceId=chan_other' });
+  sseClients.add(channelClient);
+  sseClients.add(unrelatedClient);
+
+  try {
+    await core.ensureStorage();
+    core.recordRealtimeEvent('unread_counts_invalidated', {
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      messageId: 'msg_1',
+    }, {
+      workspaceId: 'local',
+      scopeType: 'workspace',
+      scopeId: 'local',
+    });
+    core.recordRealtimeEvent('unread_counts_updated', {
+      workspaceId: 'local',
+      targetHumanId: 'hum_reader',
+      updatedAt: '2026-05-12T00:00:00.000Z',
+    }, {
+      workspaceId: 'local',
+      scopeType: 'workspace',
+      scopeId: 'local',
+    });
+
+    const channelEvents = sseEnvelopes(channelClient, 'realtime-event');
+    const unrelatedEvents = sseEnvelopes(unrelatedClient, 'realtime-event');
+    assert.deepEqual(channelEvents.map((event) => event.eventType), [
+      'unread_counts_invalidated',
+      'unread_counts_updated',
+    ]);
+    assert.deepEqual(unrelatedEvents.map((event) => event.eventType), [
+      'unread_counts_invalidated',
+      'unread_counts_updated',
+    ]);
+    assert.equal(ssePackets(channelClient, 'state-delta').length, 0);
+
+    const replay = core.realtimeEventsForRequest({
+      url: '/api/events?spaceType=channel&spaceId=chan_all',
+    }, 0);
+    assert.equal(replay.gap, false);
+    assert.deepEqual(replay.events.map((event) => event.eventType), [
+      'unread_counts_invalidated',
+      'unread_counts_updated',
+    ]);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('state core coalesces pending state patches for backpressured SSE clients', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-slow-sse-'));
   const sseClients = new Set();

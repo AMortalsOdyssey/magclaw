@@ -575,6 +575,18 @@ function resilientCloudRepository(repository) {
       if (disabled || typeof repository.markConversationRecordsRead !== 'function') return null;
       return repository.markConversationRecordsRead(options);
     },
+    async getUnreadCounts(options = {}) {
+      if (disabled || typeof repository.getUnreadCounts !== 'function') return null;
+      return repository.getUnreadCounts(options);
+    },
+    async upsertChannelMember(options = {}) {
+      if (disabled || typeof repository.upsertChannelMember !== 'function') return null;
+      return repository.upsertChannelMember(options);
+    },
+    async leaveChannelMember(options = {}) {
+      if (disabled || typeof repository.leaveChannelMember !== 'function') return null;
+      return repository.leaveChannelMember(options);
+    },
     async publishRealtimeEvent(payload) {
       if (disabled || typeof repository.publishRealtimeEvent !== 'function') return;
       try {
@@ -1288,6 +1300,7 @@ const agentRuntime = createAgentRuntimeManager({
   prepareAgentRuntimeHooks,
   prepareAgentResponseBody,
   projectsForSpace,
+  recordRealtimeEvent,
   renderMentionsForAgent,
   resolveCodexRuntime,
   resolveConversationSpace,
@@ -1736,6 +1749,12 @@ function collabApiDeps() {
     now,
     persistState,
     readJson,
+    upsertChannelMember: typeof cloudRepository?.upsertChannelMember === 'function'
+      ? (...args) => cloudRepository.upsertChannelMember(...args)
+      : null,
+    leaveChannelMember: typeof cloudRepository?.leaveChannelMember === 'function'
+      ? (...args) => cloudRepository.leaveChannelMember(...args)
+      : null,
     scheduleAgentMemoryWriteback,
     sendError,
     sendJson,
@@ -1937,6 +1956,9 @@ function messageApiDeps() {
     markConversationRecordsRead: typeof cloudRepository?.markConversationRecordsRead === 'function'
       ? (...args) => cloudRepository.markConversationRecordsRead(...args)
       : null,
+    getUnreadCounts: typeof cloudRepository?.getUnreadCounts === 'function'
+      ? (...args) => cloudRepository.getUnreadCounts(...args)
+      : null,
     makeId,
     normalizeIds,
     normalizeConversationRecord,
@@ -1947,6 +1969,7 @@ function messageApiDeps() {
     routeMessageForChannel,
     routeTaskAssignees,
     routeThreadReplyForChannel,
+    recordRealtimeEvent,
     recordAgentPermissionGrant,
     recordConversationGrant,
     scheduleAgentMemoryWriteback,

@@ -241,7 +241,6 @@ function renderRail() {
   const dms = orderedDmsForRail(appState.dms || []);
   const inbox = buildInboxModel();
   const spaceUnreadCounts = buildSpaceUnreadCounts(inbox.humanId);
-  const spaceMessageCounts = buildSpaceMessageCounts();
   const chatUnreadCount = chatUnreadCountFromSpaces(spaceUnreadCounts);
   const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0 || message.taskId).length;
   const openTasks = (appState.tasks || []).filter((task) => task && !taskIsClosedStatus(task.status)).length;
@@ -284,7 +283,7 @@ function renderRail() {
       : railMode === 'desktop'
         ? renderComputersRail()
       : railTab === 'spaces'
-        ? renderChatRail({ channels, dms, inboxUnread: inbox.unreadCount, unreadThreads, openTasks, saved, spaceUnreadCounts, spaceMessageCounts })
+        ? renderChatRail({ channels, dms, inboxUnread: inbox.unreadCount, unreadThreads, openTasks, saved, spaceUnreadCounts })
         : renderMembersRail({ normalAgents });
   const railClass = `rail collab-rail magclaw-rail${railMode === 'settings' ? ' settings-rail' : ''}${railMode === 'console' ? ' console-rail' : ''}`;
   const leftRailHtml = `
@@ -296,7 +295,7 @@ function renderRail() {
         ${renderServerSwitcherMenu()}
       </div>
       ${renderLeftRailButton('search', railMode, 'Search', '<circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/>')}
-      ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', chatUnreadCount || inbox.unreadCount || '')}
+      ${renderLeftRailButton('chat', railMode, 'Chat', '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', chatUnreadCount || '')}
       ${renderLeftRailButton('tasks', railMode, 'Tasks', '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>')}
       ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>')}
       ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>', packageUpdateCount ? '!' : '')}
@@ -427,7 +426,7 @@ function renderServerSwitcherMenu() {
   `;
 }
 
-function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, saved, spaceUnreadCounts, spaceMessageCounts }) {
+function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, saved, spaceUnreadCounts }) {
   const dmPeers = dms
     .map((dm) => dmPeerInfo(dm))
     .filter((item) => item?.dm?.id && item?.peer);
@@ -441,7 +440,7 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
 
     <div class="rail-section" data-rail-scroll-section="channels" data-scroll-key="rail:spaces:channels">
       ${renderRailSectionTitle('channels', 'Channels', channels.length, { createMenu: true })}
-      ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel, messageCountForSpace(spaceMessageCounts, 'channel', channel.id))).join('')}
+      ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel, unreadCountForSpace(spaceUnreadCounts, 'channel', channel.id))).join('')}
     </div>
 
       <div class="rail-section" data-rail-scroll-section="dms" data-scroll-key="rail:spaces:dms">
@@ -561,6 +560,13 @@ function renderRailMessageCount(count, label = 'messages') {
   return `<span class="rail-unread-badge rail-message-count" aria-label="${escapeHtml(`${text} ${label}`)}">${escapeHtml(text)}</span>`;
 }
 
+function renderRailMutedCount(count, label = 'unread discovery hints') {
+  const value = Math.max(0, Number(count) || 0);
+  if (!value) return '';
+  const text = value > 99 ? '99+' : String(value);
+  return `<span class="rail-muted-count" aria-label="${escapeHtml(`${text} ${label}`)}">${escapeHtml(text)}</span>`;
+}
+
 function renderRailSectionTitle(section, label, count, { modal = '', badge = '', createMenu = false } = {}) {
   const collapsed = Boolean(collapsedSidebarSections[section]);
   const countLabel = count === undefined || count === null ? '' : `<em>${escapeHtml(count)}</em>`;
@@ -644,15 +650,17 @@ function renderNavItem(view, label, icon, badge, { badgeKind = 'meta' } = {}) {
 
 function renderChannelItem(channel, messageCount = 0) {
   const active = activeView === 'space' && selectedSpaceType === 'channel' && selectedSpaceId === channel.id ? ' active' : '';
+  const unreadEntry = typeof serverUnreadEntryForSpace === 'function' ? serverUnreadEntryForSpace('channel', channel.id) : null;
   const readable = typeof currentUserCanReadChannel === 'function' ? currentUserCanReadChannel(channel) : true;
-  const unjoined = readable ? '' : ' unjoined-channel';
+  const unjoined = unreadEntry ? (unreadEntry.joined === false || unreadEntry.muted === true) : !readable;
+  const weak = unjoined ? ' unjoined-channel' : '';
   const pinned = isPinnedAllChannelForRail(channel);
   const draggable = !pinned;
   return `
-    <button class="space-btn${active}${unjoined}${pinned ? ' pinned-space' : ''}" type="button" data-action="select-space" data-type="channel" data-id="${channel.id}" draggable="${draggable ? 'true' : 'false'}" data-space-drag-kind="channel" data-space-drag-id="${escapeHtml(channel.id)}">
+    <button class="space-btn${active}${weak}${pinned ? ' pinned-space' : ''}" type="button" data-action="select-space" data-type="channel" data-id="${channel.id}" draggable="${draggable ? 'true' : 'false'}" data-space-drag-kind="channel" data-space-drag-id="${escapeHtml(channel.id)}">
       <span class="channel-icon">#</span>
       <span class="channel-name">${escapeHtml(channel.name)}</span>
-      ${renderRailMessageCount(messageCount, `messages in #${channel.name}`)}
+      ${unjoined ? renderRailMutedCount(messageCount, `new public messages in #${channel.name}`) : renderRailUnreadBadge(messageCount, `unread messages in #${channel.name}`)}
     </button>
   `;
 }

@@ -1397,6 +1397,16 @@ function applyRealtimeJournalEvent(envelope) {
     applyRunEventUpdate(payload.event);
     return;
   }
+  if (eventType === 'unread_counts_invalidated') {
+    scheduleUnreadCountsRefresh();
+    return;
+  }
+  if (eventType === 'unread_counts_updated') {
+    if (!payload.targetHumanId || payload.targetHumanId === currentHumanId()) {
+      scheduleUnreadCountsRefresh({ delay: 80 });
+    }
+    return;
+  }
   const stateSnapshot = pendingStateUpdateBase();
   if (eventType === 'agent_status_changed' && payload.agent?.id && stateSnapshot) {
     const incoming = payload.agent;
@@ -1510,6 +1520,7 @@ async function refreshAfterSseGap(envelope = {}) {
     console.warn('Failed to compensate SSE gap:', error);
   } finally {
     sseGapRefreshInFlight = false;
+    scheduleUnreadCountsRefresh({ delay: 0 });
   }
 }
 
@@ -1569,6 +1580,7 @@ function connectEvents() {
     if (!eventAppliesToCurrentStream()) return;
     applyPresenceHeartbeat(JSON.parse(event.data));
   });
+  scheduleUnreadCountsRefresh({ delay: 0 });
 }
 
 function disconnectEvents() {

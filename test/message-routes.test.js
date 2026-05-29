@@ -63,6 +63,7 @@ function routeDeps(overrides = {}) {
     findMessage: (id) => state.messages.find((message) => message.id === id),
     findTaskForThreadMessage: () => null,
     finishTaskFromThread: () => null,
+    getUnreadCounts: null,
     getState: () => state,
     inferAgentMemoryWriteback: () => null,
     inferAgentPermissionGrant: () => null,
@@ -76,6 +77,7 @@ function routeDeps(overrides = {}) {
     readJson: async () => ({}),
     routeMessageForChannel: async () => ({ targetAgentIds: [] }),
     routeThreadReplyForChannel: async () => ({ targetAgentIds: [] }),
+    recordRealtimeEvent: () => null,
     recordAgentPermissionGrant: () => false,
     recordConversationGrant: () => null,
     scheduleAgentMemoryWriteback: () => {},
@@ -447,10 +449,19 @@ test('inbox read endpoint marks a full DM scope including loaded thread replies'
 
 test('inbox read endpoint sends durable thread scope for replies that are not loaded yet', async () => {
   let durableOptions = null;
+  const realtimeEvents = [];
   const deps = routeDeps({
     markConversationRecordsRead: async (options) => {
       durableOptions = options;
       return { messageIds: ['msg_3'], replyIds: ['rep_remote'], count: 1 };
+    },
+    getUnreadCounts: async (options) => ({
+      globalUnread: options.humanId === 'hum_local' ? 2 : 0,
+      spaces: [{ spaceType: 'channel', spaceId: 'chan_all', unreadCount: 2, joined: true, muted: false }],
+    }),
+    recordRealtimeEvent: (...args) => {
+      realtimeEvents.push(args);
+      return { id: 'rte_read' };
     },
     readJson: async () => ({ threadMessageId: 'msg_3' }),
   });
@@ -487,6 +498,39 @@ test('inbox read endpoint sends durable thread scope for replies that are not lo
   assert.ok(deps.state.messages[2].readBy.includes('hum_local'));
   assert.ok(deps.state.replies[0].readBy.includes('hum_local'));
   assert.ok(res.data.readRecordIds.includes('rep_remote'));
+  assert.equal(res.data.unreadCounts.globalUnread, 2);
+  assert.equal(realtimeEvents[0]?.[0], 'unread_counts_updated');
+  assert.equal(realtimeEvents[0]?.[1]?.targetHumanId, 'hum_local');
+});
+
+test('unread counts endpoint returns repository counts scoped to the current human', async () => {
+  let calledWith = null;
+  const deps = routeDeps({
+    currentActor: () => ({ member: { humanId: 'hum_b', workspaceId: 'wsp_1' } }),
+    getUnreadCounts: async (options) => {
+      calledWith = options;
+      return {
+        globalUnread: 3,
+        spaces: [
+          { spaceType: 'channel', spaceId: 'chan_all', unreadCount: 3, joined: true, muted: false },
+          { spaceType: 'channel', spaceId: 'chan_public', unreadCount: 5, joined: false, muted: true },
+        ],
+      };
+    },
+  });
+
+  const res = makeResponse();
+  await handleMessageApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/api/inbox/unread-counts'),
+    deps,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(calledWith, { workspaceId: 'wsp_1', humanId: 'hum_b' });
+  assert.equal(res.data.globalUnread, 3);
+  assert.equal(res.data.spaces.find((item) => item.spaceId === 'chan_public')?.muted, true);
 });
 
 test('message route group can walk large channel, DM, and thread histories without duplicate pages', async () => {

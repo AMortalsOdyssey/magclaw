@@ -102,6 +102,7 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(app, /function applyStateDeltaEnvelope\(envelope\)/);
   assert.match(app, /function applyRealtimeJournalEvent\(envelope\)/);
   assert.match(app, /function refreshAfterSseGap\(envelope = \{\}\)/);
+  assert.match(app, /function scheduleUnreadCountsRefresh\(\{ delay = 160, patch = true \} = \{\}\)/);
   assert.match(app, /function applyRunEventUpdate\(incoming\)/);
   assert.match(app, /function applyPresenceHeartbeat\(heartbeat\)/);
   assert.match(app, /function patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector = false \} = \{\}\)/);
@@ -116,6 +117,10 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(connectEventsSource, /applyRunEventUpdate\(incoming\)/);
   assert.match(connectEventsSource, /eventSource\.addEventListener\('heartbeat'/);
   assert.match(connectEventsSource, /applyPresenceHeartbeat\(JSON\.parse\(event\.data\)\)/);
+  assert.match(app, /eventType === 'unread_counts_invalidated'[\s\S]*scheduleUnreadCountsRefresh\(\)/);
+  assert.match(app, /eventType === 'unread_counts_updated'[\s\S]*scheduleUnreadCountsRefresh\(\{ delay: 80 \}\)/);
+  assert.match(app, /refreshRealtimeBusinessObject\(realtimeBusinessObjectTarget\(envelope\)\)[\s\S]*scheduleUnreadCountsRefresh\(\{ delay: 0 \}\)/);
+  assert.match(connectEventsSource, /scheduleUnreadCountsRefresh\(\{ delay: 0 \}\)/);
   assert.match(app, /if \(patchActiveThreadSurface\(scrollSnapshot, \{ visibleChanged: activeConversationChanged \}\)\) return;\n  if \(patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector: activeConversationChanged \|\| unreadChanged \}\)\) return;/);
   assert.match(app, /syncRecordList\(list, spaceMessages\(\), renderMessage, 'messageId', emptyHtml\)/);
   assert.match(app, /syncRecordList\(list, replies, renderReply, 'replyId', ''\)/);

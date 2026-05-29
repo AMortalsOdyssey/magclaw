@@ -72,6 +72,7 @@ export async function handleMessageApi(req, res, url, deps) {
     inferAgentPermissionGrant,
     inferConversationDisclosureGrant,
     getMessageById,
+    getUnreadCounts,
     listSpaceMessagesPage,
     listThreadRepliesPage,
     markConversationRecordsRead,
@@ -85,6 +86,7 @@ export async function handleMessageApi(req, res, url, deps) {
     routeMessageForChannel,
     routeTaskAssignees,
     routeThreadReplyForChannel,
+    recordRealtimeEvent,
     recordAgentPermissionGrant,
     recordConversationGrant,
     scheduleAgentMemoryWriteback,
@@ -786,6 +788,78 @@ export async function handleMessageApi(req, res, url, deps) {
     ].filter(Boolean);
   }
 
+  function recordCountsAsUnread(record, humanId) {
+    if (!record?.id) return false;
+    if (!['user', 'human', 'agent'].includes(record.authorType)) return false;
+    if (['user', 'human'].includes(record.authorType) && record.authorId === humanId) return false;
+    if (record.hiddenFromChannel || record.internal || record.metadata?.hiddenFromChannel || record.metadata?.internal) return false;
+    return !(Array.isArray(record.readBy) ? record.readBy : []).map(String).includes(String(humanId));
+  }
+
+  function localUnreadCountsForRequest(req) {
+    const humanId = currentHumanId(req);
+    const spaces = [];
+    for (const channel of state.channels || []) {
+      if (!channel?.id || channel.archived || channel.archivedAt) continue;
+      const joined = channelHasHuman(channel, humanId);
+      if (!joined && channelIsPrivate(channel)) continue;
+      const unreadCount = localRecordsForSpace('channel', channel.id)
+        .filter((record) => recordCountsAsUnread(record, humanId))
+        .length;
+      spaces.push({
+        spaceType: 'channel',
+        spaceId: channel.id,
+        unreadCount,
+        joined,
+        muted: !joined,
+      });
+    }
+    for (const dm of state.dms || []) {
+      if (!dm?.id || !Array.isArray(dm.participantIds) || !dm.participantIds.includes(humanId)) continue;
+      const unreadCount = localRecordsForSpace('dm', dm.id)
+        .filter((record) => recordCountsAsUnread(record, humanId))
+        .length;
+      spaces.push({
+        spaceType: 'dm',
+        spaceId: dm.id,
+        unreadCount,
+        joined: true,
+        muted: false,
+      });
+    }
+    const globalUnread = spaces.reduce((sum, item) => (
+      item.joined && !item.muted ? sum + Number(item.unreadCount || 0) : sum
+    ), 0);
+    return { globalUnread, spaces };
+  }
+
+  async function unreadCountsForRequest(req, workspaceId = workspaceIdForRequest(req), humanId = currentHumanId(req)) {
+    if (typeof getUnreadCounts === 'function') {
+      const counts = await getUnreadCounts({ workspaceId, humanId });
+      if (counts) return counts;
+    }
+    return localUnreadCountsForRequest(req);
+  }
+
+  function recordUnreadInvalidation(record, { parentMessageId = '' } = {}) {
+    if (typeof recordRealtimeEvent !== 'function' || !record?.workspaceId) return null;
+    return recordRealtimeEvent('unread_counts_invalidated', {
+      workspaceId: record.workspaceId,
+      spaceType: record.spaceType,
+      spaceId: record.spaceId,
+      recordId: record.id,
+      parentMessageId,
+      recordKind: parentMessageId ? 'reply' : 'message',
+      authorType: record.authorType,
+      authorId: record.authorId,
+      createdAt: record.createdAt || now(),
+    }, {
+      workspaceId: record.workspaceId,
+      scopeType: 'workspace',
+      scopeId: record.workspaceId,
+    });
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/search/messages') {
     const criteria = searchCriteriaFromUrl(url);
     const limit = paginationLimit(url.searchParams.get('limit'), 80, 200);
@@ -828,6 +902,13 @@ export async function handleMessageApi(req, res, url, deps) {
       resultCount: page.results.length,
     });
     sendJson(res, 200, page);
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/inbox/unread-counts') {
+    const workspaceId = workspaceIdForRequest(req);
+    const humanId = currentHumanId(req);
+    sendJson(res, 200, await unreadCountsForRequest(req, workspaceId, humanId));
     return true;
   }
 
@@ -882,6 +963,7 @@ export async function handleMessageApi(req, res, url, deps) {
         ok: true,
         readRecordIds: [],
         inboxReads: state.inboxReads?.[humanId] || {},
+        unreadCounts: await unreadCountsForRequest(req, readWorkspaceId, humanId),
       });
       return true;
     }
@@ -912,7 +994,7 @@ export async function handleMessageApi(req, res, url, deps) {
         threadMessageId: scopedThreadMessageId,
       });
       for (const id of [...(durableRead?.messageIds || []), ...(durableRead?.replyIds || [])]) markedRecordIds.add(id);
-      if (durableRead?.count) changed = true;
+      if (durableRead && (durableRead.count || scopedSpaceId || scopedThreadMessageId)) changed = true;
     }
     readState.updatedAt = now();
     console.info('[inbox] mark read', {
@@ -923,6 +1005,13 @@ export async function handleMessageApi(req, res, url, deps) {
         : (scopedSpaceId ? `${scopedSpaceType}:${scopedSpaceId}` : 'records'),
     });
     if (changed) {
+      if (typeof recordRealtimeEvent === 'function') {
+        recordRealtimeEvent('unread_counts_updated', {
+          workspaceId: readWorkspaceId,
+          targetHumanId: humanId,
+          updatedAt: now(),
+        }, { workspaceId: readWorkspaceId, scopeType: 'workspace', scopeId: readWorkspaceId });
+      }
       await persistState({ workspaceId: readWorkspaceId, reason: 'conversation_read_state_changed' });
       broadcastState();
     }
@@ -930,6 +1019,7 @@ export async function handleMessageApi(req, res, url, deps) {
       ok: true,
       readRecordIds: [...markedRecordIds],
       inboxReads: readState,
+      unreadCounts: await unreadCountsForRequest(req, readWorkspaceId, humanId),
     });
     return true;
   }
@@ -1296,6 +1386,7 @@ export async function handleMessageApi(req, res, url, deps) {
 
     addCollabEvent('message_sent', 'Message sent.', { messageId: message.id, spaceType, spaceId });
     await persistConversationState(message, spaceType, spaceId, req);
+    recordUnreadInvalidation(message);
     broadcastState();
 
     await scheduleMessageMemoryWritebacks({
@@ -1538,6 +1629,7 @@ export async function handleMessageApi(req, res, url, deps) {
       }
     }
     await persistConversationState(reply, message.spaceType, message.spaceId, req);
+    recordUnreadInvalidation(reply, { parentMessageId: message.id });
     broadcastState();
 
     if (createdThreadTask && createdThreadTaskMessage && !createdThreadTask.metadata?.startupCollaboration) {

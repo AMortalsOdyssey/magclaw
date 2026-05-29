@@ -302,7 +302,12 @@
   margin-left: auto;
 }
 
-.collab-frame .space-btn.unjoined-channel .rail-message-count {
+.collab-frame .space-btn .rail-muted-count {
+  margin-left: auto;
+}
+
+.collab-frame .space-btn.unjoined-channel .rail-message-count,
+.collab-frame .space-btn.unjoined-channel .rail-muted-count {
   min-width: auto;
   height: auto;
   padding: 0;
@@ -315,7 +320,9 @@
 }
 
 .collab-frame .space-btn.unjoined-channel:hover .rail-message-count,
-.collab-frame .space-btn.unjoined-channel.active .rail-message-count {
+.collab-frame .space-btn.unjoined-channel.active .rail-message-count,
+.collab-frame .space-btn.unjoined-channel:hover .rail-muted-count,
+.collab-frame .space-btn.unjoined-channel.active .rail-muted-count {
   background: transparent;
   color: #756d74;
 }

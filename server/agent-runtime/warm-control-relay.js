@@ -51,6 +51,25 @@ function codexProcessIsWarm(agent, proc) {
   );
 }
 
+function recordUnreadInvalidationForAgentResponse(record, parentMessageId = '') {
+  if (typeof recordRealtimeEvent !== 'function' || !record?.workspaceId) return;
+  recordRealtimeEvent('unread_counts_invalidated', {
+    workspaceId: record.workspaceId,
+    spaceType: record.spaceType,
+    spaceId: record.spaceId,
+    recordId: record.id,
+    parentMessageId,
+    recordKind: parentMessageId ? 'reply' : 'message',
+    authorType: record.authorType,
+    authorId: record.authorId,
+    createdAt: record.createdAt || now(),
+  }, {
+    workspaceId: record.workspaceId,
+    scopeType: 'workspace',
+    scopeId: record.workspaceId,
+  });
+}
+
 async function runCodexWarmup(agent, proc) {
   const stillCurrent = () => agentProcesses.get(proc.processKey) === proc && !proc.stopRequested && !proc.child?.killed;
   const startedAt = Date.now();
@@ -888,6 +907,7 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
     parent.updatedAt = now();
     addCollabEvent('agent_thread_response', `${agent.name} responded in thread`, { replyId: reply.id, messageId: parentMessageId, agentId: agent.id });
     await persistState();
+    recordUnreadInvalidationForAgentResponse(reply, parentMessageId);
     broadcastState();
     await relayAgentMentions(reply, { parentMessageId, sourceMessage: options.sourceMessage });
     return reply;
@@ -913,6 +933,7 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
   state.messages.push(message);
   addCollabEvent('agent_response', `${agent.name} responded`, { messageId: message.id, agentId: agent.id });
   await persistState();
+  recordUnreadInvalidationForAgentResponse(message);
   broadcastState();
   await relayAgentMentions(message, { sourceMessage: options.sourceMessage });
   await fanOutAgentChannelAwareness(message, { sourceMessage: options.sourceMessage });

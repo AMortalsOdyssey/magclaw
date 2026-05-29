@@ -231,6 +231,34 @@ function spaceType(value) {
   return ['channel', 'dm'].includes(type) ? type : 'channel';
 }
 
+function channelHumanMembershipIds(channel = {}) {
+  const ids = new Set();
+  for (const id of safeArray(channel.humanIds)) {
+    const value = String(id || '').trim();
+    if (value.startsWith('hum_')) ids.add(value);
+  }
+  for (const id of safeArray(channel.memberIds)) {
+    const value = String(id || '').trim();
+    if (value.startsWith('hum_')) ids.add(value);
+  }
+  return [...ids];
+}
+
+function unreadBooleanSql(recordAlias, key) {
+  const cleanKey = String(key || '').replace(/[^a-zA-Z0-9_]/g, '');
+  return `LOWER(COALESCE(${recordAlias}.metadata #>> '{state,${cleanKey}}', ${recordAlias}.metadata ->> '${cleanKey}', 'false')) IN ('true', '1', 'yes')`;
+}
+
+function unreadChannelPrivateSql(channelAlias = 'channel') {
+  return `(
+    LOWER(COALESCE(${channelAlias}.metadata #>> '{state,visibility}', ${channelAlias}.metadata ->> 'visibility', 'public')) IN ('private', 'secret')
+    OR LOWER(COALESCE(${channelAlias}.metadata #>> '{state,privacy}', ${channelAlias}.metadata ->> 'privacy', '')) IN ('private', 'secret')
+    OR LOWER(COALESCE(${channelAlias}.metadata #>> '{state,isPrivate}', ${channelAlias}.metadata ->> 'isPrivate', 'false')) IN ('true', '1', 'yes')
+    OR LOWER(COALESCE(${channelAlias}.metadata #>> '{state,private}', ${channelAlias}.metadata ->> 'private', 'false')) IN ('true', '1', 'yes')
+    OR LOWER(COALESCE(${channelAlias}.metadata #>> '{state,secret}', ${channelAlias}.metadata ->> 'secret', 'false')) IN ('true', '1', 'yes')
+  )`;
+}
+
 function isDefaultLocalWorkspacePlaceholder(workspace, cloud) {
   const id = String(workspace?.id || '').trim();
   if (id !== 'local') return false;
@@ -972,6 +1000,19 @@ export function createCloudPostgresStore(optionsInput = {}) {
     `;
   }
 
+  function channelMemberRuntimeConflictSuffix() {
+    const existing = table('cloud_channel_members');
+    return `
+      ON CONFLICT (workspace_id, channel_id, human_id) DO UPDATE SET
+        joined_at = CASE
+          WHEN ${existing}.left_at IS NOT NULL THEN EXCLUDED.joined_at
+          ELSE ${existing}.joined_at
+        END,
+        left_at = NULL,
+        updated_at = GREATEST(COALESCE(${existing}.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at)
+    `;
+  }
+
   function greatestTimestamp(tableKey, column) {
     return `CASE
       WHEN ${table(tableKey)}.${column} IS NULL THEN EXCLUDED.${column}
@@ -1455,6 +1496,53 @@ export function createCloudPostgresStore(optionsInput = {}) {
     return [...withoutKey, ...deduped.values()];
   }
 
+  async function syncChannelMembershipRows(client, workspaceIdsToSync, channelMembershipRows) {
+    const rows = dedupeRowsByColumn(channelMembershipRows, 5);
+    await batchInsertRows(client, 'cloud_channel_members', [
+      'workspace_id',
+      'channel_id',
+      'human_id',
+      'joined_at',
+      'updated_at',
+    ], rows.map((row) => row.slice(0, 5)), {}, channelMemberRuntimeConflictSuffix());
+
+    const scopedWorkspaceIds = safeArray(workspaceIdsToSync).map(String).filter(Boolean);
+    if (!scopedWorkspaceIds.length) return;
+    if (!rows.length) {
+      await client.query(`
+        UPDATE ${table('cloud_channel_members')}
+        SET left_at = COALESCE(left_at, now()),
+            updated_at = now()
+        WHERE workspace_id = ANY($1::text[])
+          AND left_at IS NULL
+      `, [scopedWorkspaceIds]);
+      return;
+    }
+    const params = [...scopedWorkspaceIds];
+    const valuesSql = rows.map((row) => {
+      params.push(row[0], row[1], row[2]);
+      const index = params.length - 2;
+      return `($${index}::text, $${index + 1}::text, $${index + 2}::text)`;
+    }).join(', ');
+    await client.query(`
+      WITH active_members(workspace_id, channel_id, human_id) AS (
+        VALUES ${valuesSql}
+      )
+      UPDATE ${table('cloud_channel_members')} AS member
+      SET left_at = COALESCE(member.left_at, now()),
+          updated_at = now()
+      WHERE member.workspace_id = ANY($1::text[])
+        AND member.left_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM active_members AS active
+          WHERE active.workspace_id = member.workspace_id
+            AND active.channel_id = member.channel_id
+            AND active.human_id = member.human_id
+        )
+    `, params);
+  }
+
   async function batchUpsertStateRecords(client, rows) {
     const deduped = new Map();
     for (const row of rows) {
@@ -1702,6 +1790,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const cleanSpaceType = options.spaceType ? spaceType(options.spaceType) : '';
     const spaceId = String(options.spaceId || '').trim();
     const threadMessageId = String(options.threadMessageId || '').trim();
+    const readAt = requiredIso(options.readAt || new Date());
     if (!workspaceId || !humanId || (!recordIds.length && !(cleanSpaceType && spaceId) && !threadMessageId)) {
       return { messageIds: [], replyIds: [], count: 0 };
     }
@@ -1709,6 +1798,21 @@ export function createCloudPostgresStore(optionsInput = {}) {
     return withClient(async (client) => {
       const messageIds = new Set();
       const replyIds = new Set();
+      let cursorSpaceType = cleanSpaceType;
+      let cursorSpaceId = spaceId;
+
+      async function upsertReadState({ stateSpaceType, stateSpaceId, threadRootId = '' }) {
+        if (!stateSpaceType || !stateSpaceId) return;
+        await client.query(`
+          INSERT INTO ${table('cloud_conversation_read_states')}
+            (workspace_id, human_id, space_type, space_id, thread_root_id, joined_at, last_read_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $6, $6)
+          ON CONFLICT (workspace_id, human_id, space_type, space_id, thread_root_id) DO UPDATE SET
+            joined_at = LEAST(${table('cloud_conversation_read_states')}.joined_at, EXCLUDED.joined_at),
+            last_read_at = GREATEST(${table('cloud_conversation_read_states')}.last_read_at, EXCLUDED.last_read_at),
+            updated_at = EXCLUDED.updated_at
+        `, [workspaceId, humanId, stateSpaceType, stateSpaceId, threadRootId || '', readAt]);
+      }
 
       async function updateMessages(whereSql, params) {
         const humanParam = params.push(humanId);
@@ -1756,15 +1860,255 @@ export function createCloudPostgresStore(optionsInput = {}) {
         for (const row of result.rows || []) replyIds.add(row.id);
       }
       if (threadMessageId) {
+        if (!cursorSpaceType || !cursorSpaceId) {
+          const threadRoot = firstRow(await client.query(`
+            SELECT space_type, space_id
+            FROM ${table('cloud_messages')}
+            WHERE workspace_id = $1
+              AND id = $2
+            LIMIT 1
+          `, [workspaceId, threadMessageId]));
+          cursorSpaceType = threadRoot?.space_type || cursorSpaceType;
+          cursorSpaceId = threadRoot?.space_id || cursorSpaceId;
+        }
         await updateMessages('message.workspace_id = $1 AND message.id = $2', [workspaceId, threadMessageId]);
         await updateReplies('reply.workspace_id = $1 AND reply.parent_message_id = $2', [workspaceId, threadMessageId]);
+      }
+      if (cursorSpaceType && cursorSpaceId && !threadMessageId) {
+        await upsertReadState({ stateSpaceType: cursorSpaceType, stateSpaceId: cursorSpaceId });
+      }
+      if (cursorSpaceType && cursorSpaceId && threadMessageId) {
+        await upsertReadState({ stateSpaceType: cursorSpaceType, stateSpaceId: cursorSpaceId, threadRootId: threadMessageId });
       }
 
       return {
         messageIds: [...messageIds],
         replyIds: [...replyIds],
         count: messageIds.size + replyIds.size,
+        readAt,
       };
+    });
+  }
+
+  async function upsertChannelMember(options = {}) {
+    const workspaceId = String(options.workspaceId || '').trim();
+    const channelId = String(options.channelId || '').trim();
+    const humanId = String(options.humanId || '').trim();
+    const joinedAt = requiredIso(options.joinedAt || new Date());
+    if (!workspaceId || !channelId || !humanId) return null;
+    return withClient(async (client) => {
+      await client.query(`
+        INSERT INTO ${table('cloud_channel_members')}
+          (workspace_id, channel_id, human_id, joined_at, left_at, updated_at)
+        VALUES ($1, $2, $3, $4, NULL, $4)
+        ON CONFLICT (workspace_id, channel_id, human_id) DO UPDATE SET
+          joined_at = CASE
+            WHEN ${table('cloud_channel_members')}.left_at IS NOT NULL THEN EXCLUDED.joined_at
+            ELSE ${table('cloud_channel_members')}.joined_at
+          END,
+          left_at = NULL,
+          updated_at = EXCLUDED.updated_at
+      `, [workspaceId, channelId, humanId, joinedAt]);
+      await client.query(`
+        INSERT INTO ${table('cloud_conversation_read_states')}
+          (workspace_id, human_id, space_type, space_id, thread_root_id, joined_at, last_read_at, updated_at)
+        VALUES ($1, $2, 'channel', $3, '', $4, $4, $4)
+        ON CONFLICT (workspace_id, human_id, space_type, space_id, thread_root_id) DO UPDATE SET
+          joined_at = CASE
+            WHEN ${table('cloud_conversation_read_states')}.last_read_at < EXCLUDED.last_read_at
+              THEN EXCLUDED.joined_at
+            ELSE ${table('cloud_conversation_read_states')}.joined_at
+          END,
+          last_read_at = GREATEST(${table('cloud_conversation_read_states')}.last_read_at, EXCLUDED.last_read_at),
+          updated_at = EXCLUDED.updated_at
+      `, [workspaceId, humanId, channelId, joinedAt]);
+      return { workspaceId, channelId, humanId, joinedAt };
+    });
+  }
+
+  async function leaveChannelMember(options = {}) {
+    const workspaceId = String(options.workspaceId || '').trim();
+    const channelId = String(options.channelId || '').trim();
+    const humanId = String(options.humanId || '').trim();
+    const leftAt = requiredIso(options.leftAt || new Date());
+    if (!workspaceId || !channelId || !humanId) return null;
+    return withClient(async (client) => {
+      await client.query(`
+        UPDATE ${table('cloud_channel_members')}
+        SET left_at = $4,
+            updated_at = $4
+        WHERE workspace_id = $1
+          AND channel_id = $2
+          AND human_id = $3
+      `, [workspaceId, channelId, humanId, leftAt]);
+      return { workspaceId, channelId, humanId, leftAt };
+    });
+  }
+
+  async function getUnreadCounts(options = {}) {
+    const workspaceId = String(options.workspaceId || '').trim();
+    const humanId = String(options.humanId || '').trim();
+    if (!workspaceId || !humanId) return { globalUnread: 0, spaces: [] };
+    const hiddenMessageSql = `(${unreadBooleanSql('message', 'hiddenFromChannel')} OR ${unreadBooleanSql('message', 'internal')})`;
+    const hiddenReplySql = `(${unreadBooleanSql('reply', 'hiddenFromChannel')} OR ${unreadBooleanSql('reply', 'internal')})`;
+    const channelPrivateSql = unreadChannelPrivateSql('channel');
+    return withClient(async (client) => {
+      const result = await client.query(`
+        WITH workspace_member AS (
+          SELECT
+            member.workspace_id,
+            member.human_id,
+            COALESCE(MAX(member.joined_at), MIN(member.created_at), now()) AS joined_at,
+            COALESCE(MIN(member.created_at), now()) AS created_at
+          FROM ${table('cloud_workspace_members')} AS member
+          WHERE member.workspace_id = $1
+            AND member.human_id = $2
+            AND member.removed_at IS NULL
+          GROUP BY member.workspace_id, member.human_id
+        ),
+        accessible_spaces AS (
+          SELECT
+            'channel'::text AS space_type,
+            channel.id AS space_id,
+            COALESCE(channel.created_at, now()) AS created_at,
+            (member.human_id IS NOT NULL AND member.left_at IS NULL) AS joined,
+            NOT (member.human_id IS NOT NULL AND member.left_at IS NULL) AS muted,
+            GREATEST(
+              COALESCE(channel.created_at, now()),
+              CASE
+                WHEN member.human_id IS NOT NULL AND member.left_at IS NULL
+                  THEN COALESCE(member.joined_at, channel.created_at, now())
+                ELSE COALESCE(workspace_member.joined_at, workspace_member.created_at, channel.created_at, now())
+              END
+            ) AS joined_at
+          FROM ${table('cloud_channels')} AS channel
+          CROSS JOIN workspace_member
+          LEFT JOIN ${table('cloud_channel_members')} AS member
+            ON member.workspace_id = channel.workspace_id
+           AND member.channel_id = channel.id
+           AND member.human_id = $2
+          WHERE channel.workspace_id = $1
+            AND channel.archived_at IS NULL
+            AND (
+              (member.human_id IS NOT NULL AND member.left_at IS NULL)
+              OR NOT ${channelPrivateSql}
+            )
+          UNION ALL
+          SELECT
+            'dm'::text AS space_type,
+            dm.id AS space_id,
+            COALESCE(dm.created_at, now()) AS created_at,
+            TRUE AS joined,
+            FALSE AS muted,
+            GREATEST(
+              COALESCE(dm.created_at, now()),
+              COALESCE(workspace_member.joined_at, workspace_member.created_at, dm.created_at, now())
+            ) AS joined_at
+          FROM ${table('cloud_dms')} AS dm
+          CROSS JOIN workspace_member
+          WHERE dm.workspace_id = $1
+            AND COALESCE(dm.participant_ids, '[]'::jsonb) @> to_jsonb(ARRAY[$2::text])
+        ),
+        message_unreads AS (
+          SELECT
+            space.space_type,
+            space.space_id,
+            space.joined,
+            space.muted,
+            COUNT(DISTINCT message.id)::int AS unread_count
+          FROM accessible_spaces AS space
+          JOIN ${table('cloud_messages')} AS message
+            ON message.workspace_id = $1
+           AND message.space_type = space.space_type
+           AND message.space_id = space.space_id
+          LEFT JOIN ${table('cloud_conversation_read_states')} AS space_read
+            ON space_read.workspace_id = $1
+           AND space_read.human_id = $2
+           AND space_read.space_type = space.space_type
+           AND space_read.space_id = space.space_id
+           AND space_read.thread_root_id = ''
+          LEFT JOIN ${table('cloud_conversation_read_states')} AS thread_read
+            ON thread_read.workspace_id = $1
+           AND thread_read.human_id = $2
+           AND thread_read.space_type = space.space_type
+           AND thread_read.space_id = space.space_id
+           AND thread_read.thread_root_id = message.id
+          WHERE message.author_type IN ('user', 'human', 'agent')
+            AND NOT (message.author_type IN ('user', 'human') AND message.author_id = $2)
+            AND NOT ${hiddenMessageSql}
+            AND message.created_at > GREATEST(
+              space.joined_at,
+              COALESCE(space_read.last_read_at, space.joined_at),
+              COALESCE(thread_read.last_read_at, space.joined_at)
+            )
+          GROUP BY space.space_type, space.space_id, space.joined, space.muted
+        ),
+        reply_unreads AS (
+          SELECT
+            space.space_type,
+            space.space_id,
+            space.joined,
+            space.muted,
+            COUNT(DISTINCT reply.id)::int AS unread_count
+          FROM accessible_spaces AS space
+          JOIN ${table('cloud_messages')} AS parent
+            ON parent.workspace_id = $1
+           AND parent.space_type = space.space_type
+           AND parent.space_id = space.space_id
+          JOIN ${table('cloud_replies')} AS reply
+            ON reply.workspace_id = $1
+           AND reply.parent_message_id = parent.id
+          LEFT JOIN ${table('cloud_conversation_read_states')} AS space_read
+            ON space_read.workspace_id = $1
+           AND space_read.human_id = $2
+           AND space_read.space_type = space.space_type
+           AND space_read.space_id = space.space_id
+           AND space_read.thread_root_id = ''
+          LEFT JOIN ${table('cloud_conversation_read_states')} AS thread_read
+            ON thread_read.workspace_id = $1
+           AND thread_read.human_id = $2
+           AND thread_read.space_type = space.space_type
+           AND thread_read.space_id = space.space_id
+           AND thread_read.thread_root_id = parent.id
+          WHERE reply.author_type IN ('user', 'human', 'agent')
+            AND NOT (reply.author_type IN ('user', 'human') AND reply.author_id = $2)
+            AND NOT ${hiddenReplySql}
+            AND reply.created_at > GREATEST(
+              space.joined_at,
+              COALESCE(space_read.last_read_at, space.joined_at),
+              COALESCE(thread_read.last_read_at, space.joined_at)
+            )
+          GROUP BY space.space_type, space.space_id, space.joined, space.muted
+        ),
+        merged AS (
+          SELECT * FROM message_unreads
+          UNION ALL
+          SELECT * FROM reply_unreads
+        )
+        SELECT
+          space.space_type,
+          space.space_id,
+          space.joined,
+          space.muted,
+          COALESCE(SUM(merged.unread_count), 0)::int AS unread_count
+        FROM accessible_spaces AS space
+        LEFT JOIN merged
+          ON merged.space_type = space.space_type
+         AND merged.space_id = space.space_id
+        GROUP BY space.space_type, space.space_id, space.joined, space.muted
+        ORDER BY space.space_type ASC, space.space_id ASC
+      `, [workspaceId, humanId]);
+      const spaces = (result.rows || []).map((row) => ({
+        spaceType: row.space_type,
+        spaceId: row.space_id,
+        unreadCount: Number(row.unread_count || 0),
+        joined: row.joined !== false,
+        muted: row.muted === true,
+      }));
+      const globalUnread = spaces.reduce((sum, item) => (
+        item.joined && !item.muted ? sum + Number(item.unreadCount || 0) : sum
+      ), 0);
+      return { globalUnread, spaces };
     });
   }
 
@@ -1859,6 +2203,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const computerRows = [];
     const agentRows = [];
     const channelRows = [];
+    const channelMembershipRows = [];
     const dmRows = [];
     const messageRows = [];
     const replyRows = [];
@@ -1949,16 +2294,27 @@ export function createCloudPostgresStore(optionsInput = {}) {
     for (const channel of safeArray(state.channels)) {
       const workspaceId = workspaceIdForRuntimeRecord(channel, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
+      const channelCreatedAt = requiredIso(channel.createdAt);
       channelRows.push([
         channel.id,
         workspaceId,
         channel.name || channel.id,
         channel.description || '',
         iso(channel.archivedAt || (channel.archived ? channel.updatedAt : null)),
-        requiredIso(channel.createdAt),
+        channelCreatedAt,
         requiredIso(channel.updatedAt || channel.createdAt),
         JSON.stringify(metadataWithState(channel)),
       ]);
+      for (const humanId of channelHumanMembershipIds(channel)) {
+        channelMembershipRows.push([
+          workspaceId,
+          channel.id,
+          humanId,
+          channelCreatedAt,
+          requiredIso(channel.updatedAt || channel.createdAt),
+          `${workspaceId}:${channel.id}:${humanId}`,
+        ]);
+      }
     }
 
     for (const dm of safeArray(state.dms)) {
@@ -2209,6 +2565,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'updated_at',
       'metadata',
     ], dedupeRowsByColumn(channelRows), { metadata: '::jsonb' });
+    await syncChannelMembershipRows(client, ids, channelMembershipRows);
     await batchInsertRows(client, 'cloud_dms', [
       'id',
       'workspace_id',
@@ -3560,6 +3917,9 @@ export function createCloudPostgresStore(optionsInput = {}) {
     listThreadRepliesPage,
     getMessageById,
     markConversationRecordsRead,
+    getUnreadCounts,
+    upsertChannelMember,
+    leaveChannelMember,
     publishRealtimeEvent,
     persistAuthOperation,
     persistAuthFromState,

@@ -24,6 +24,8 @@ export async function handleCollabApi(req, res, url, deps) {
     now,
     persistState,
     readJson,
+    upsertChannelMember,
+    leaveChannelMember,
     scheduleAgentMemoryWriteback,
     sendError,
     sendJson,
@@ -53,6 +55,33 @@ export async function handleCollabApi(req, res, url, deps) {
 
   function persistRecordState(record, req, reason) {
     return persistWorkspaceState(workspaceIdForRecord(record, req), reason);
+  }
+
+  function channelHumanMembershipIds(channel = {}) {
+    return normalizeIds([
+      ...(Array.isArray(channel.humanIds) ? channel.humanIds : []),
+      ...(Array.isArray(channel.memberIds) ? channel.memberIds : []),
+    ]).filter((id) => id.startsWith('hum_'));
+  }
+
+  async function syncDurableChannelJoin(channel, memberId, req) {
+    if (!memberId?.startsWith?.('hum_') || typeof upsertChannelMember !== 'function') return;
+    await upsertChannelMember({
+      workspaceId: workspaceIdForRecord(channel, req),
+      channelId: channel.id,
+      humanId: memberId,
+      joinedAt: now(),
+    });
+  }
+
+  async function syncDurableChannelLeave(channel, memberId, req) {
+    if (!memberId?.startsWith?.('hum_') || typeof leaveChannelMember !== 'function') return;
+    await leaveChannelMember({
+      workspaceId: workspaceIdForRecord(channel, req),
+      channelId: channel.id,
+      humanId: memberId,
+      leftAt: now(),
+    });
   }
 
   function scheduleChannelMemoryWriteback(channel) {
@@ -181,6 +210,7 @@ export async function handleCollabApi(req, res, url, deps) {
       const agent = findAgent(agentId);
       if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
     }
+    for (const humanId of humanIds) await syncDurableChannelJoin(channel, humanId, req);
     await persistWorkspaceState(workspaceId, 'channel_created');
     broadcastState();
     sendJson(res, 201, { channel });
@@ -199,6 +229,7 @@ export async function handleCollabApi(req, res, url, deps) {
     if (body.description !== undefined) channel.description = String(body.description || '').trim();
     if (body.ownerId !== undefined) channel.ownerId = String(body.ownerId || channel.ownerId || 'hum_local');
     const previousAgentIds = normalizeIds(channel.agentIds);
+    const previousHumanIds = new Set(channelHumanMembershipIds(channel));
     if (Array.isArray(body.agentIds)) {
       channel.agentIds = body.agentIds.map(String).filter((id) => agentParticipatesInChannels(findAgent(id)));
     }
@@ -210,6 +241,13 @@ export async function handleCollabApi(req, res, url, deps) {
     if (body.archived !== undefined) channel.archived = Boolean(body.archived);
     channel.updatedAt = now();
     addCollabEvent('channel_updated', `Channel #${channel.name} updated.`, { channelId: channel.id });
+    const nextHumanIds = new Set(channelHumanMembershipIds(channel));
+    for (const humanId of nextHumanIds) {
+      if (!previousHumanIds.has(humanId)) await syncDurableChannelJoin(channel, humanId, req);
+    }
+    for (const humanId of previousHumanIds) {
+      if (!nextHumanIds.has(humanId)) await syncDurableChannelLeave(channel, humanId, req);
+    }
     for (const agentId of changedAgentIds) {
       const agent = findAgent(agentId);
       if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
@@ -235,6 +273,7 @@ export async function handleCollabApi(req, res, url, deps) {
     }
     try {
       if (addMemberToChannel(channel, memberId)) {
+        await syncDurableChannelJoin(channel, memberId, req);
         await persistRecordState(channel, req, 'channel_member_added');
         broadcastState();
       }
@@ -264,6 +303,7 @@ export async function handleCollabApi(req, res, url, deps) {
     }
     try {
       if (addMemberToChannel(channel, humanId)) {
+        await syncDurableChannelJoin(channel, humanId, req);
         await persistRecordState(channel, req, 'channel_joined');
         broadcastState();
       }
@@ -297,7 +337,9 @@ export async function handleCollabApi(req, res, url, deps) {
     const memberIds = normalizeIds(proposal.memberIds);
     if (proposalReviewMatch[2] === 'accept') {
       try {
-        for (const memberId of memberIds) addMemberToChannel(channel, memberId);
+        for (const memberId of memberIds) {
+          if (addMemberToChannel(channel, memberId)) await syncDurableChannelJoin(channel, memberId, req);
+        }
       } catch (error) {
         sendError(res, error.status || 400, error.message);
         return true;
@@ -365,6 +407,7 @@ export async function handleCollabApi(req, res, url, deps) {
       addCollabEvent('channel_member_removed', `Member removed from #${channel.name}`, { channelId: channel.id, memberId });
       const agent = memberId.startsWith('agt_') ? findAgent(memberId) : null;
       if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
+      await syncDurableChannelLeave(channel, memberId, req);
       await persistRecordState(channel, req, 'channel_member_removed');
       broadcastState();
     }
@@ -387,6 +430,7 @@ export async function handleCollabApi(req, res, url, deps) {
     if (removeMemberFromChannel(channel, memberId)) {
       channel.updatedAt = now();
       addCollabEvent('channel_left', `Left #${channel.name}`, { channelId: channel.id, memberId });
+      await syncDurableChannelLeave(channel, memberId, req);
       await persistRecordState(channel, req, 'channel_left');
       broadcastState();
     }

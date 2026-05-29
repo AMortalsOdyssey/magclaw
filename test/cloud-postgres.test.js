@@ -161,6 +161,8 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     'cloud_markdown_documents',
     'cloud_markdown_operations',
     'cloud_markdown_maintenance_runs',
+    'cloud_channel_members',
+    'cloud_conversation_read_states',
     'cloud_audit_logs',
   ]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
@@ -181,6 +183,9 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
   assert.match(sql, /third_party_provider = 'feishu'/);
   assert.match(sql, /cloud_users_active_normalized_email_uidx/);
   assert.match(sql, /cloud_messages_space_cursor_idx/);
+  assert.match(sql, /cloud_channel_members_human_active_idx/);
+  assert.match(sql, /cloud_conversation_read_states_space_idx/);
+  assert.match(sql, /INSERT INTO cloud_channel_members[\s\S]*jsonb_array_elements_text/);
   assert.match(sql, /cloud_messages[\s\S]*reactions JSONB NOT NULL DEFAULT '\[\]'::jsonb/);
   assert.match(sql, /cloud_messages[\s\S]*followed_by JSONB NOT NULL DEFAULT '\[\]'::jsonb/);
   assert.match(sql, /cloud_markdown_operations[\s\S]*idempotency_key TEXT NOT NULL DEFAULT ''/);
@@ -251,6 +256,8 @@ test('postgres store persists relay core state without durable activity logs', a
       id: 'chan_all',
       workspaceId: 'wsp_main',
       name: 'all',
+      humanIds: ['hum_owner'],
+      memberIds: ['hum_owner'],
       createdAt,
       updatedAt: createdAt,
     }],
@@ -405,6 +412,7 @@ test('postgres store persists relay core state without durable activity logs', a
     'cloud_humans',
     'cloud_agents',
     'cloud_channels',
+    'cloud_channel_members',
     'cloud_dms',
     'cloud_messages',
     'cloud_replies',
@@ -426,6 +434,7 @@ test('postgres store persists relay core state without durable activity logs', a
   const computerInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_computers"') && query.params[0] === 'cmp_remote');
   const humanInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_humans"') && query.params[0] === 'hum_owner');
   const agentInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_agents"') && query.params[0] === 'agt_remote');
+  const channelMemberInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_channel_members"') && query.params[0] === 'wsp_main');
   const messageInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_messages"') && query.params[0] === 'msg_remote');
   const replyInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_replies"') && query.params[0] === 'rep_remote');
   const taskInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_tasks"') && query.params[0] === 'task_remote');
@@ -434,6 +443,8 @@ test('postgres store persists relay core state without durable activity logs', a
   assert.equal(humanInsert.params[6], 'offline');
   assert.equal(agentInsert.params[9], 'idle');
   assert.equal(JSON.parse(agentInsert.params[15]).state.status, 'idle');
+  assert.equal(channelMemberInsert.params[1], 'chan_all');
+  assert.equal(channelMemberInsert.params[2], 'hum_owner');
   assert.match(messageInsert.sql, /\breactions\b/);
   assert.match(messageInsert.sql, /\bfollowed_by\b/);
   assert.match(replyInsert.sql, /\breactions\b/);
@@ -442,6 +453,52 @@ test('postgres store persists relay core state without durable activity logs', a
   assert.match(JSON.stringify(replyInsert.params), /heart/);
   assert.equal(taskInsert.params[7], 'closed');
   assert.equal(attachmentInsert.params[6], 42);
+});
+
+test('postgres unread count query is user-scoped and read-fanout based', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return {
+            rows: [
+              { space_type: 'channel', space_id: 'chan_all', unread_count: 2, joined: true, muted: false },
+              { space_type: 'channel', space_id: 'chan_public', unread_count: 5, joined: false, muted: true },
+              { space_type: 'dm', space_id: 'dm_one', unread_count: 1, joined: true, muted: false },
+            ],
+          };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+
+  const result = await store.getUnreadCounts({ workspaceId: 'wsp_main', humanId: 'hum_reader' });
+  const query = queries.find((item) => item.sql.includes('accessible_spaces'));
+
+  assert.deepEqual(query.params, ['wsp_main', 'hum_reader']);
+  assert.equal(result.globalUnread, 3);
+  assert.equal(result.spaces.find((space) => space.spaceId === 'chan_public')?.unreadCount, 5);
+  assert.equal(result.spaces.find((space) => space.spaceId === 'chan_public')?.muted, true);
+  assert.match(query.sql, /cloud_channel_members/);
+  assert.match(query.sql, /cloud_conversation_read_states/);
+  assert.match(query.sql, /GROUP BY member\.workspace_id, member\.human_id/);
+  assert.match(query.sql, /COUNT\(DISTINCT message\.id\)::int AS unread_count/);
+  assert.match(query.sql, /COUNT\(DISTINCT reply\.id\)::int AS unread_count/);
+  assert.match(query.sql, /message\.author_type IN \('user', 'human', 'agent'\)/);
+  assert.match(query.sql, /reply\.author_type IN \('user', 'human', 'agent'\)/);
+  assert.match(query.sql, /NOT \(message\.author_type IN \('user', 'human'\) AND message\.author_id = \$2\)/);
+  assert.match(query.sql, /thread_read\.thread_root_id = message\.id/);
+  assert.match(query.sql, /thread_read\.thread_root_id = parent\.id/);
+  assert.match(query.sql, /OR NOT/);
 });
 
 test('postgres store indexes markdown document operations and maintenance runs', async () => {

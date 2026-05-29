@@ -55,12 +55,70 @@ function recordUpdatedAt(record) {
 }
 
 function recordUnreadForHuman(record, humanId = currentHumanId()) {
-  if (!record?.id || record.authorType !== 'agent') return false;
+  if (!record?.id || !['user', 'human', 'agent'].includes(record.authorType)) return false;
+  if (['user', 'human'].includes(record.authorType) && String(record.authorId || '') === String(humanId)) return false;
+  if (record.hiddenFromChannel || record.internal || record.metadata?.hiddenFromChannel || record.metadata?.internal) return false;
   return !(Array.isArray(record.readBy) ? record.readBy : []).map(String).includes(String(humanId));
 }
 
 function spaceUnreadKey(spaceType, spaceId) {
   return `${spaceType || 'channel'}:${spaceId || ''}`;
+}
+
+let unreadCountsRefreshTimer = 0;
+let unreadCountsRefreshPromise = null;
+
+function serverUnreadCountsPayload(stateSnapshot = appState) {
+  const payload = stateSnapshot?.cloud?.unreadCounts;
+  return payload && typeof payload === 'object' ? payload : null;
+}
+
+function serverUnreadEntryForSpace(spaceType, spaceId, stateSnapshot = appState) {
+  const key = spaceUnreadKey(spaceType, spaceId);
+  return (serverUnreadCountsPayload(stateSnapshot)?.spaces || [])
+    .find((item) => spaceUnreadKey(item.spaceType, item.spaceId) === key) || null;
+}
+
+function applyUnreadCountsPayload(payload, { patch = true } = {}) {
+  if (!payload || typeof payload !== 'object' || !appState?.cloud) return false;
+  appState.cloud.unreadCounts = {
+    globalUnread: Math.max(0, Number(payload.globalUnread || 0)),
+    spaces: Array.isArray(payload.spaces) ? payload.spaces.map((item) => ({
+      spaceType: item.spaceType,
+      spaceId: item.spaceId,
+      unreadCount: Math.max(0, Number(item.unreadCount || 0)),
+      joined: item.joined !== false,
+      muted: item.muted === true,
+    })) : [],
+    updatedAt: payload.updatedAt || new Date().toISOString(),
+  };
+  if (patch && typeof patchRailSurface === 'function' && !modal) patchRailSurface();
+  return true;
+}
+
+async function refreshUnreadCounts({ patch = true } = {}) {
+  if (unreadCountsRefreshPromise) return unreadCountsRefreshPromise;
+  unreadCountsRefreshPromise = api('/api/inbox/unread-counts')
+    .then((payload) => {
+      applyUnreadCountsPayload(payload, { patch });
+      return payload;
+    })
+    .catch((error) => {
+      console.warn('Failed to refresh unread counts:', error);
+      return null;
+    })
+    .finally(() => {
+      unreadCountsRefreshPromise = null;
+    });
+  return unreadCountsRefreshPromise;
+}
+
+function scheduleUnreadCountsRefresh({ delay = 160, patch = true } = {}) {
+  if (unreadCountsRefreshTimer) window.clearTimeout(unreadCountsRefreshTimer);
+  unreadCountsRefreshTimer = window.setTimeout(() => {
+    unreadCountsRefreshTimer = 0;
+    refreshUnreadCounts({ patch });
+  }, Math.max(0, Number(delay) || 0));
 }
 
 function recordSpaceKey(record, stateSnapshot = appState) {
@@ -72,6 +130,15 @@ function recordSpaceKey(record, stateSnapshot = appState) {
 }
 
 function buildSpaceUnreadCounts(humanId = currentHumanId(), stateSnapshot = appState) {
+  const serverPayload = serverUnreadCountsPayload(stateSnapshot);
+  if (Array.isArray(serverPayload?.spaces)) {
+    const counts = new Map();
+    for (const item of serverPayload.spaces) {
+      counts.set(spaceUnreadKey(item.spaceType, item.spaceId), Math.max(0, Number(item.unreadCount || 0)));
+    }
+    counts.globalUnread = Math.max(0, Number(serverPayload.globalUnread || 0));
+    return counts;
+  }
   const counts = new Map();
   const addUnread = (record) => {
     if (!recordUnreadForHuman(record, humanId)) return;
@@ -85,16 +152,7 @@ function buildSpaceUnreadCounts(humanId = currentHumanId(), stateSnapshot = appS
 }
 
 function buildSpaceMessageCounts(stateSnapshot = appState) {
-  const counts = new Map();
-  const addRecord = (record) => {
-    if (!record?.id) return;
-    const key = recordSpaceKey(record, stateSnapshot);
-    if (!key) return;
-    counts.set(key, (counts.get(key) || 0) + 1);
-  };
-  (stateSnapshot?.messages || []).forEach(addRecord);
-  (stateSnapshot?.replies || []).forEach(addRecord);
-  return counts;
+  return buildSpaceUnreadCounts(currentHumanId(stateSnapshot), stateSnapshot);
 }
 
 function unreadCountForSpace(counts, spaceType, spaceId) {
@@ -106,6 +164,7 @@ function messageCountForSpace(counts, spaceType, spaceId) {
 }
 
 function chatUnreadCountFromSpaces(spaceUnreadCounts) {
+  if (Number.isFinite(spaceUnreadCounts?.globalUnread)) return Math.max(0, Number(spaceUnreadCounts.globalUnread || 0));
   let total = 0;
   for (const [key, count] of spaceUnreadCounts?.entries?.() || []) {
     if (key.startsWith('channel:') || key.startsWith('dm:')) total += Number(count || 0);
@@ -199,10 +258,12 @@ async function markInboxRead({
   if (threadMessageId) body.threadMessageId = threadMessageId;
   if (activityReadAt) body.workspaceActivityReadAt = activityReadAt;
   if (!ids.length && !body.spaceId && !body.threadMessageId && !activityReadAt) return null;
-  return api('/api/inbox/read', {
+  const result = await api('/api/inbox/read', {
     method: 'POST',
     body: JSON.stringify(body),
   });
+  if (result?.unreadCounts) applyUnreadCountsPayload(result.unreadCounts);
+  return result;
 }
 
 function isConversationUnavailableError(error) {
@@ -237,7 +298,8 @@ function markSpaceRead(spaceType, spaceId, { forceScope = true } = {}) {
     && !currentUserCanReadChannel(spaceId)
   ) return;
   const recordIds = spaceUnreadRecordIds(spaceType, spaceId);
-  if (!recordIds.length && !forceScope) return;
+  const serverUnreadCount = unreadCountForSpace(buildSpaceUnreadCounts(), spaceType, spaceId);
+  if (!recordIds.length && !forceScope && !serverUnreadCount) return;
   markInboxRead({ recordIds, spaceType, spaceId }).catch((error) => toast(error.message));
 }
 

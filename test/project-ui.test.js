@@ -1313,18 +1313,19 @@ test('chat rail keeps Threads and adds Activities without a System notification 
 
   assert.match(chatRailSource, /renderNavItem\('inbox', 'Activities', 'inbox', inboxUnread \|\| '', \{ badgeKind: 'unread' \}\)/);
   assert.match(chatRailSource, /renderNavItem\('threads', 'Threads', 'message'/);
-  assert.match(chatRailSource, /renderChannelItem\(channel, messageCountForSpace\(spaceMessageCounts, 'channel', channel\.id\)\)/);
+  assert.match(chatRailSource, /renderChannelItem\(channel, unreadCountForSpace\(spaceUnreadCounts, 'channel', channel\.id\)\)/);
   assert.match(chatRailSource, /const dmPeers = dms/);
   assert.match(chatRailSource, /\.map\(\(dm\) => dmPeerInfo\(dm\)\)/);
   assert.match(chatRailSource, /\.filter\(\(item\) => item\?\.dm\?\.id && item\?\.peer\)/);
   assert.match(chatRailSource, /renderDmItem\(dm\.id, peer\.name \|\| displayName\(peer\.id\), peer\.status \|\| 'offline', peer\.avatar \|\| '', unreadCountForSpace\(spaceUnreadCounts, 'dm', dm\.id\)\)/);
   assert.match(app, /function renderRailUnreadBadge\(count, label = 'unread messages'\)/);
   assert.match(app, /function renderRailMessageCount\(count, label = 'messages'\)/);
+  assert.match(app, /function renderRailMutedCount\(count, label = 'unread discovery hints'\)/);
   assert.match(app, /function buildSpaceUnreadCounts\(humanId = currentHumanId\(\), stateSnapshot = appState\)/);
   assert.match(app, /function buildSpaceMessageCounts\(stateSnapshot = appState\)/);
   assert.match(app, /function messageCountForSpace\(counts, spaceType, spaceId\)/);
   assert.match(app, /function chatUnreadCountFromSpaces\(spaceUnreadCounts\)/);
-  assert.match(app, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| inbox\.unreadCount \|\| ''/);
+  assert.match(app, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| ''/);
   assert.match(app, /function markSpaceRead\(spaceType, spaceId, \{ forceScope = true \} = \{\}\)/);
   assert.match(app, /markInboxRead\(\{ recordIds, spaceType, spaceId \}\)/);
   assert.doesNotMatch(chatRailSource, /system-notifications|System Notification List/);
@@ -1334,13 +1335,50 @@ test('chat rail keeps Threads and adds Activities without a System notification 
   assert.match(styles, /\.space-btn \.rail-unread-badge/);
   assert.match(styles, /\.rail-message-count/);
   assert.match(styles, /\.space-btn\.unjoined-channel \.rail-message-count/);
+  assert.match(styles, /\.rail-muted-count/);
 });
 
-test('channel rail message counts include humans agents and thread replies', async () => {
+test('channel rail unread counts prefer server user-scoped counts and keep local fallback', async () => {
   const source = await readFile(new URL('../public/app/conversation-scroll-notifications.js', import.meta.url), 'utf8');
   const helperStart = source.indexOf('function currentHumanId');
   const helperEnd = source.indexOf('function threadRecordIds');
-  const helpers = vm.runInNewContext(`${source.slice(helperStart, helperEnd)}; ({
+  const helperSource = source.slice(helperStart, helperEnd);
+  const serverHelpers = vm.runInNewContext(`${helperSource}; ({
+    buildSpaceMessageCounts,
+    messageCountForSpace,
+    buildSpaceUnreadCounts,
+    unreadCountForSpace,
+    chatUnreadCountFromSpaces,
+  });`, {
+    appState: {
+      cloud: {
+        auth: { currentMember: { humanId: 'hum_local' } },
+        unreadCounts: {
+          globalUnread: 2,
+          spaces: [
+            { spaceType: 'channel', spaceId: 'chan_all', unreadCount: 2, joined: true, muted: false },
+            { spaceType: 'channel', spaceId: 'chan_public', unreadCount: 5, joined: false, muted: true },
+          ],
+        },
+      },
+      messages: [
+        { id: 'msg_local', spaceType: 'channel', spaceId: 'chan_all', authorType: 'human', authorId: 'hum_local', readBy: [] },
+        { id: 'msg_other', spaceType: 'channel', spaceId: 'chan_all', authorType: 'agent', authorId: 'agt_one', readBy: [] },
+      ],
+      replies: [],
+    },
+    byId: (items, id) => (items || []).find((item) => item.id === id) || null,
+  });
+
+  const serverUnreadCounts = serverHelpers.buildSpaceUnreadCounts();
+  const serverMessageCounts = serverHelpers.buildSpaceMessageCounts();
+
+  assert.equal(serverHelpers.unreadCountForSpace(serverUnreadCounts, 'channel', 'chan_all'), 2);
+  assert.equal(serverHelpers.unreadCountForSpace(serverUnreadCounts, 'channel', 'chan_public'), 5);
+  assert.equal(serverHelpers.messageCountForSpace(serverMessageCounts, 'channel', 'chan_all'), 2);
+  assert.equal(serverHelpers.chatUnreadCountFromSpaces(serverUnreadCounts), 2);
+
+  const fallbackHelpers = vm.runInNewContext(`${helperSource}; ({
     buildSpaceMessageCounts,
     messageCountForSpace,
     buildSpaceUnreadCounts,
@@ -1362,12 +1400,12 @@ test('channel rail message counts include humans agents and thread replies', asy
     byId: (items, id) => (items || []).find((item) => item.id === id) || null,
   });
 
-  const messageCounts = helpers.buildSpaceMessageCounts();
-  const unreadCounts = helpers.buildSpaceUnreadCounts();
+  const messageCounts = fallbackHelpers.buildSpaceMessageCounts();
+  const unreadCounts = fallbackHelpers.buildSpaceUnreadCounts();
 
-  assert.equal(helpers.messageCountForSpace(messageCounts, 'channel', 'chan_all'), 5);
-  assert.equal(helpers.messageCountForSpace(messageCounts, 'channel', 'chan_other'), 1);
-  assert.equal(helpers.unreadCountForSpace(unreadCounts, 'channel', 'chan_all'), 2);
+  assert.equal(fallbackHelpers.messageCountForSpace(messageCounts, 'channel', 'chan_all'), 2);
+  assert.equal(fallbackHelpers.messageCountForSpace(messageCounts, 'channel', 'chan_other'), 1);
+  assert.equal(fallbackHelpers.unreadCountForSpace(unreadCounts, 'channel', 'chan_all'), 2);
 });
 
 test('inbox reuses thread rows and renders workspace activity drawer', async () => {
@@ -2802,7 +2840,7 @@ test('left rail and active shell controls use the MagClaw pink accent', async ()
   assert.match(styles, /\.left-rail-btn em \{[\s\S]*?background:\s*var\(--magclaw-rail-badge\)[\s\S]*?color:\s*var\(--magclaw-rail-badge-text\)/);
   assert.match(styles, /\.agent-detail-tabs button\.active \{[\s\S]*?background:\s*var\(--accent\)/);
   assert.equal(/background:\s*var\(--magclaw-sun\)/.test(styles), false);
-  assert.match(railSource, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| inbox\.unreadCount \|\| ''/);
+  assert.match(railSource, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| ''/);
   assert.match(railSource, /renderLeftRailButton\('tasks', railMode, 'Tasks', [\s\S]*?\)\}/);
   assert.doesNotMatch(railSource, /renderLeftRailButton\('tasks'[\s\S]*openTasks \|\| ''/);
   assert.doesNotMatch(railSource, /renderLeftRailButton\('members'[\s\S]*normalAgents\.length \|\| ''/);

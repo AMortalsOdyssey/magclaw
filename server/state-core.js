@@ -1049,7 +1049,13 @@ export function createStateCore(deps) {
     state.cloud.realtimeEvents = all.filter((event) => !drop.has(event.id));
   }
 
-  const REALTIME_BROADCAST_EVENT_TYPES = new Set(['agent_status_changed', 'system_event', 'run_event']);
+  const REALTIME_BROADCAST_EVENT_TYPES = new Set([
+    'agent_status_changed',
+    'system_event',
+    'run_event',
+    'unread_counts_invalidated',
+    'unread_counts_updated',
+  ]);
 
   function recordRealtimeEvent(eventType, payload = {}, scope = {}) {
     if (!state?.cloud) return null;
