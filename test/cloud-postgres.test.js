@@ -163,6 +163,7 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
     'cloud_markdown_maintenance_runs',
     'cloud_channel_members',
     'cloud_conversation_read_states',
+    'cloud_conversation_sequences',
     'cloud_audit_logs',
   ]) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
@@ -183,11 +184,17 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
   assert.match(sql, /third_party_provider = 'feishu'/);
   assert.match(sql, /cloud_users_active_normalized_email_uidx/);
   assert.match(sql, /cloud_messages_space_cursor_idx/);
+  assert.match(sql, /cloud_conversation_sequences[\s\S]*next_seq BIGINT NOT NULL DEFAULT 1/);
+  assert.match(sql, /cloud_conversation_sequences_updated_idx/);
   assert.match(sql, /cloud_channel_members_human_active_idx/);
   assert.match(sql, /cloud_conversation_read_states_space_idx/);
   assert.match(sql, /INSERT INTO cloud_channel_members[\s\S]*jsonb_array_elements_text/);
+  assert.match(sql, /cloud_messages[\s\S]*space_seq BIGINT NOT NULL DEFAULT 0/);
   assert.match(sql, /cloud_messages[\s\S]*reactions JSONB NOT NULL DEFAULT '\[\]'::jsonb/);
   assert.match(sql, /cloud_messages[\s\S]*followed_by JSONB NOT NULL DEFAULT '\[\]'::jsonb/);
+  assert.match(sql, /cloud_replies[\s\S]*space_type TEXT NOT NULL DEFAULT 'channel'/);
+  assert.match(sql, /cloud_replies[\s\S]*space_seq BIGINT NOT NULL DEFAULT 0/);
+  assert.match(sql, /INSERT INTO cloud_conversation_sequences[\s\S]*MAX\(space_seq\) \+ 1/);
   assert.match(sql, /cloud_markdown_operations[\s\S]*idempotency_key TEXT NOT NULL DEFAULT ''/);
   assert.match(sql, /cloud_markdown_operations_doc_sequence_uidx/);
   assert.match(sql, /cloud_markdown_operations_idempotency_uidx/);
@@ -414,6 +421,7 @@ test('postgres store persists relay core state without durable activity logs', a
     'cloud_channels',
     'cloud_channel_members',
     'cloud_dms',
+    'cloud_conversation_sequences',
     'cloud_messages',
     'cloud_replies',
     'cloud_tasks',
@@ -435,6 +443,7 @@ test('postgres store persists relay core state without durable activity logs', a
   const humanInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_humans"') && query.params[0] === 'hum_owner');
   const agentInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_agents"') && query.params[0] === 'agt_remote');
   const channelMemberInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_channel_members"') && query.params[0] === 'wsp_main');
+  const sequenceInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_conversation_sequences"') && query.params[0] === 'wsp_main');
   const messageInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_messages"') && query.params[0] === 'msg_remote');
   const replyInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_replies"') && query.params[0] === 'rep_remote');
   const taskInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_tasks"') && query.params[0] === 'task_remote');
@@ -445,9 +454,17 @@ test('postgres store persists relay core state without durable activity logs', a
   assert.equal(JSON.parse(agentInsert.params[15]).state.status, 'idle');
   assert.equal(channelMemberInsert.params[1], 'chan_all');
   assert.equal(channelMemberInsert.params[2], 'hum_owner');
+  assert.equal(sequenceInsert.params[1], 'dm');
+  assert.equal(sequenceInsert.params[2], 'dm_remote');
+  assert.equal(sequenceInsert.params[3], 2);
   assert.match(messageInsert.sql, /\breactions\b/);
   assert.match(messageInsert.sql, /\bfollowed_by\b/);
+  assert.match(messageInsert.sql, /\bspace_seq\b/);
   assert.match(replyInsert.sql, /\breactions\b/);
+  assert.match(replyInsert.sql, /\bspace_type\b/);
+  assert.match(replyInsert.sql, /\bspace_seq\b/);
+  assert.equal(messageInsert.params[4], 1);
+  assert.equal(replyInsert.params[5], 2);
   assert.match(JSON.stringify(messageInsert.params), /rocket/);
   assert.match(JSON.stringify(messageInsert.params), /hum_owner/);
   assert.match(JSON.stringify(replyInsert.params), /heart/);

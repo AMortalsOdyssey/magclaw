@@ -231,6 +231,11 @@ function spaceType(value) {
   return ['channel', 'dm'].includes(type) ? type : 'channel';
 }
 
+function sequenceNumber(value) {
+  const number = Number(value || 0);
+  return Number.isSafeInteger(number) && number > 0 ? number : 0;
+}
+
 function channelHumanMembershipIds(channel = {}) {
   const ids = new Set();
   for (const id of safeArray(channel.humanIds)) {
@@ -534,8 +539,9 @@ function messageFromRow(row) {
   return recordFromMetadata(row, {
     id: row.id,
     workspaceId: row.workspace_id,
-    spaceType: row.space_type,
-    spaceId: row.space_id,
+    spaceType: spaceType(row.space_type),
+    spaceId: row.space_id || '',
+    spaceSeq: sequenceNumber(row.space_seq),
     authorType: row.author_type,
     authorId: row.author_id || '',
     body: row.body || '',
@@ -553,10 +559,14 @@ function messageFromRow(row) {
 }
 
 function replyFromRow(row) {
+  const source = jsonObject(jsonObject(row.metadata).state);
   return recordFromMetadata(row, {
     id: row.id,
     workspaceId: row.workspace_id,
     parentMessageId: row.parent_message_id,
+    spaceType: spaceType(row.space_type || source.spaceType),
+    spaceId: row.space_id || source.spaceId || '',
+    spaceSeq: sequenceNumber(row.space_seq),
     authorType: row.author_type,
     authorId: row.author_id || '',
     body: row.body || '',
@@ -962,6 +972,10 @@ export function createCloudPostgresStore(optionsInput = {}) {
         workspace_id = EXCLUDED.workspace_id,
         space_type = EXCLUDED.space_type,
         space_id = EXCLUDED.space_id,
+        space_seq = CASE
+          WHEN ${existing}.space_seq > 0 THEN ${existing}.space_seq
+          ELSE EXCLUDED.space_seq
+        END,
         author_type = EXCLUDED.author_type,
         author_id = EXCLUDED.author_id,
         body = EXCLUDED.body,
@@ -985,6 +999,12 @@ export function createCloudPostgresStore(optionsInput = {}) {
       ON CONFLICT (id) DO UPDATE SET
         workspace_id = EXCLUDED.workspace_id,
         parent_message_id = EXCLUDED.parent_message_id,
+        space_type = EXCLUDED.space_type,
+        space_id = EXCLUDED.space_id,
+        space_seq = CASE
+          WHEN ${existing}.space_seq > 0 THEN ${existing}.space_seq
+          ELSE EXCLUDED.space_seq
+        END,
         author_type = EXCLUDED.author_type,
         author_id = EXCLUDED.author_id,
         body = EXCLUDED.body,
@@ -1494,6 +1514,101 @@ export function createCloudPostgresStore(optionsInput = {}) {
       deduped.set(normalizedKey, row);
     }
     return [...withoutKey, ...deduped.values()];
+  }
+
+  function applyConversationSequenceEntry(entry, seq) {
+    const value = sequenceNumber(seq);
+    if (!value) return;
+    entry.row[entry.spaceSeqIndex] = value;
+    if (entry.record && typeof entry.record === 'object') entry.record.spaceSeq = value;
+  }
+
+  function conversationSequenceLaneKey(entry) {
+    const workspaceId = String(entry.row[entry.workspaceIdIndex] || '').trim();
+    const type = spaceType(entry.row[entry.spaceTypeIndex]);
+    const spaceId = String(entry.row[entry.spaceIdIndex] || '').trim();
+    if (!workspaceId || !spaceId) return '';
+    return `${workspaceId}\u0000${type}\u0000${spaceId}`;
+  }
+
+  async function hydrateExistingConversationSequences(client, entries) {
+    const messageEntries = new Map();
+    const replyEntries = new Map();
+    for (const entry of entries) {
+      const id = String(entry.row?.[0] || '').trim();
+      if (!id || sequenceNumber(entry.row[entry.spaceSeqIndex])) continue;
+      if (entry.kind === 'reply') replyEntries.set(id, entry);
+      else messageEntries.set(id, entry);
+    }
+    if (messageEntries.size) {
+      const result = await client.query(`
+        SELECT id, space_seq
+        FROM ${table('cloud_messages')}
+        WHERE id = ANY($1::text[]) AND space_seq > 0
+      `, [[...messageEntries.keys()]]);
+      for (const row of result?.rows || []) {
+        const entry = messageEntries.get(row.id);
+        if (entry) applyConversationSequenceEntry(entry, row.space_seq);
+      }
+    }
+    if (replyEntries.size) {
+      const result = await client.query(`
+        SELECT id, space_type, space_id, space_seq
+        FROM ${table('cloud_replies')}
+        WHERE id = ANY($1::text[]) AND space_seq > 0
+      `, [[...replyEntries.keys()]]);
+      for (const row of result?.rows || []) {
+        const entry = replyEntries.get(row.id);
+        if (!entry) continue;
+        entry.row[entry.spaceTypeIndex] = row.space_type || entry.row[entry.spaceTypeIndex];
+        entry.row[entry.spaceIdIndex] = row.space_id || entry.row[entry.spaceIdIndex];
+        applyConversationSequenceEntry(entry, row.space_seq);
+      }
+    }
+  }
+
+  async function reserveConversationSequenceRange(client, workspaceId, type, spaceId, count) {
+    const cleanCount = Number(count || 0);
+    if (!workspaceId || !spaceId || cleanCount <= 0) return 1;
+    const result = await client.query(`
+      INSERT INTO ${table('cloud_conversation_sequences')}
+        (workspace_id, space_type, space_id, next_seq, updated_at)
+      VALUES ($1, $2, $3, $4::bigint + 1, now())
+      ON CONFLICT (workspace_id, space_type, space_id) DO UPDATE SET
+        next_seq = ${table('cloud_conversation_sequences')}.next_seq + $4::bigint,
+        updated_at = now()
+      RETURNING next_seq - $4::bigint AS first_seq
+    `, [workspaceId, type, spaceId, cleanCount]);
+    return sequenceNumber(result?.rows?.[0]?.first_seq) || 1;
+  }
+
+  async function assignMissingConversationSequences(client, entries) {
+    const activeEntries = entries.filter((entry) => entry?.row && !sequenceNumber(entry.row[entry.spaceSeqIndex]));
+    if (!activeEntries.length) return;
+    await hydrateExistingConversationSequences(client, activeEntries);
+    const groups = new Map();
+    for (const entry of activeEntries) {
+      if (sequenceNumber(entry.row[entry.spaceSeqIndex])) continue;
+      const key = conversationSequenceLaneKey(entry);
+      if (!key) continue;
+      const group = groups.get(key) || [];
+      group.push(entry);
+      groups.set(key, group);
+    }
+    for (const [key, group] of groups.entries()) {
+      const [workspaceId, type, spaceId] = key.split('\u0000');
+      group.sort((left, right) => {
+        const leftCreated = String(left.row[left.createdAtIndex] || '');
+        const rightCreated = String(right.row[right.createdAtIndex] || '');
+        if (leftCreated !== rightCreated) return leftCreated.localeCompare(rightCreated);
+        const leftKind = left.kind === 'reply' ? 1 : 0;
+        const rightKind = right.kind === 'reply' ? 1 : 0;
+        if (leftKind !== rightKind) return leftKind - rightKind;
+        return String(left.row[0] || '').localeCompare(String(right.row[0] || ''));
+      });
+      const firstSeq = await reserveConversationSequenceRange(client, workspaceId, type, spaceId, group.length);
+      group.forEach((entry, index) => applyConversationSequenceEntry(entry, firstSeq + index));
+    }
   }
 
   async function syncChannelMembershipRows(client, workspaceIdsToSync, channelMembershipRows) {
@@ -2181,6 +2296,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const agentIds = new Set(safeArray(state.agents).map((agent) => agent.id).filter(Boolean));
     const taskIds = new Set(safeArray(state.tasks).map((task) => task.id).filter(Boolean));
     const messageIds = new Set(safeArray(state.messages).map((message) => message.id).filter(Boolean));
+    const messageById = new Map(safeArray(state.messages).map((message) => [message.id, message]).filter(([id]) => Boolean(id)));
     const runtimeTables = [
       'cloud_state_records',
       'cloud_work_items',
@@ -2207,6 +2323,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const dmRows = [];
     const messageRows = [];
     const replyRows = [];
+    const conversationSequenceEntries = [];
     const taskRows = [];
     const workItemRows = [];
     const attachmentRows = [];
@@ -2333,11 +2450,12 @@ export function createCloudPostgresStore(optionsInput = {}) {
     for (const message of safeArray(state.messages)) {
       const workspaceId = workspaceIdForRuntimeRecord(message, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
-      messageRows.push([
+      const row = [
         message.id,
         workspaceId,
         spaceType(message.spaceType),
         message.spaceId || '',
+        sequenceNumber(message.spaceSeq),
         authorType(message.authorType),
         message.authorId || '',
         message.body || '',
@@ -2352,16 +2470,31 @@ export function createCloudPostgresStore(optionsInput = {}) {
         requiredIso(message.createdAt),
         requiredIso(message.updatedAt || message.createdAt),
         JSON.stringify(metadataWithState(message)),
-      ]);
+      ];
+      messageRows.push(row);
+      conversationSequenceEntries.push({
+        kind: 'message',
+        row,
+        record: message,
+        workspaceIdIndex: 1,
+        spaceTypeIndex: 2,
+        spaceIdIndex: 3,
+        spaceSeqIndex: 4,
+        createdAtIndex: 16,
+      });
     }
 
     for (const reply of safeArray(state.replies)) {
       const workspaceId = workspaceIdForRuntimeRecord(reply, cloud);
       if (!workspaceId || !inScope(workspaceId) || !reply.parentMessageId || !messageIds.has(reply.parentMessageId)) continue;
-      replyRows.push([
+      const parentMessage = messageById.get(reply.parentMessageId) || null;
+      const row = [
         reply.id,
         workspaceId,
         reply.parentMessageId,
+        spaceType(reply.spaceType || parentMessage?.spaceType),
+        reply.spaceId || parentMessage?.spaceId || '',
+        sequenceNumber(reply.spaceSeq),
         authorType(reply.authorType),
         reply.authorId || '',
         reply.body || '',
@@ -2374,7 +2507,18 @@ export function createCloudPostgresStore(optionsInput = {}) {
         requiredIso(reply.createdAt),
         requiredIso(reply.updatedAt || reply.createdAt),
         JSON.stringify(metadataWithState(reply)),
-      ]);
+      ];
+      replyRows.push(row);
+      conversationSequenceEntries.push({
+        kind: 'reply',
+        row,
+        record: reply,
+        workspaceIdIndex: 1,
+        spaceTypeIndex: 3,
+        spaceIdIndex: 4,
+        spaceSeqIndex: 5,
+        createdAtIndex: 15,
+      });
     }
 
     for (const task of safeArray(state.tasks)) {
@@ -2574,11 +2718,19 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'updated_at',
       'metadata',
     ], dedupeRowsByColumn(dmRows), { participant_ids: '::jsonb', metadata: '::jsonb' });
+    const dedupedMessageRows = dedupeRowsByColumn(messageRows);
+    const dedupedReplyRows = dedupeRowsByColumn(replyRows);
+    const dedupedConversationRows = new Set([...dedupedMessageRows, ...dedupedReplyRows]);
+    await assignMissingConversationSequences(
+      client,
+      conversationSequenceEntries.filter((entry) => dedupedConversationRows.has(entry.row)),
+    );
     await batchInsertRows(client, 'cloud_messages', [
       'id',
       'workspace_id',
       'space_type',
       'space_id',
+      'space_seq',
       'author_type',
       'author_id',
       'body',
@@ -2593,7 +2745,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'created_at',
       'updated_at',
       'metadata',
-    ], dedupeRowsByColumn(messageRows), {
+    ], dedupedMessageRows, {
       attachment_ids: '::jsonb',
       mentioned_agent_ids: '::jsonb',
       mentioned_human_ids: '::jsonb',
@@ -2607,6 +2759,9 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'id',
       'workspace_id',
       'parent_message_id',
+      'space_type',
+      'space_id',
+      'space_seq',
       'author_type',
       'author_id',
       'body',
@@ -2619,7 +2774,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'created_at',
       'updated_at',
       'metadata',
-    ], dedupeRowsByColumn(replyRows), {
+    ], dedupedReplyRows, {
       attachment_ids: '::jsonb',
       mentioned_agent_ids: '::jsonb',
       mentioned_human_ids: '::jsonb',

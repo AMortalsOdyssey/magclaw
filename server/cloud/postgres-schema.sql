@@ -489,11 +489,24 @@ CREATE TABLE IF NOT EXISTS cloud_conversation_read_states (
 CREATE INDEX IF NOT EXISTS cloud_conversation_read_states_space_idx
   ON cloud_conversation_read_states(workspace_id, human_id, space_type, space_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS cloud_conversation_sequences (
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  space_type TEXT NOT NULL CHECK (space_type IN ('channel', 'dm')),
+  space_id TEXT NOT NULL,
+  next_seq BIGINT NOT NULL DEFAULT 1,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, space_type, space_id)
+);
+
+CREATE INDEX IF NOT EXISTS cloud_conversation_sequences_updated_idx
+  ON cloud_conversation_sequences(workspace_id, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS cloud_messages (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
   space_type TEXT NOT NULL CHECK (space_type IN ('channel', 'dm')),
   space_id TEXT NOT NULL,
+  space_seq BIGINT NOT NULL DEFAULT 0,
   author_type TEXT NOT NULL CHECK (author_type IN ('user', 'human', 'agent', 'system')),
   author_id TEXT NOT NULL DEFAULT '',
   body TEXT NOT NULL DEFAULT '',
@@ -511,6 +524,7 @@ CREATE TABLE IF NOT EXISTS cloud_messages (
 );
 
 ALTER TABLE cloud_messages
+  ADD COLUMN IF NOT EXISTS space_seq BIGINT NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS reactions JSONB NOT NULL DEFAULT '[]'::jsonb,
   ADD COLUMN IF NOT EXISTS followed_by JSONB NOT NULL DEFAULT '[]'::jsonb;
 
@@ -520,6 +534,10 @@ CREATE INDEX IF NOT EXISTS cloud_messages_space_created_idx
 CREATE INDEX IF NOT EXISTS cloud_messages_space_cursor_idx
   ON cloud_messages(workspace_id, space_type, space_id, created_at DESC, id DESC);
 
+CREATE INDEX IF NOT EXISTS cloud_messages_space_seq_idx
+  ON cloud_messages(workspace_id, space_type, space_id, space_seq)
+  WHERE space_seq > 0;
+
 CREATE INDEX IF NOT EXISTS cloud_messages_author_created_idx
   ON cloud_messages(workspace_id, author_type, author_id, created_at DESC);
 
@@ -527,6 +545,9 @@ CREATE TABLE IF NOT EXISTS cloud_replies (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
   parent_message_id TEXT NOT NULL REFERENCES cloud_messages(id) ON DELETE CASCADE,
+  space_type TEXT NOT NULL DEFAULT 'channel' CHECK (space_type IN ('channel', 'dm')),
+  space_id TEXT NOT NULL DEFAULT '',
+  space_seq BIGINT NOT NULL DEFAULT 0,
   author_type TEXT NOT NULL CHECK (author_type IN ('user', 'human', 'agent', 'system')),
   author_id TEXT NOT NULL DEFAULT '',
   body TEXT NOT NULL DEFAULT '',
@@ -542,13 +563,106 @@ CREATE TABLE IF NOT EXISTS cloud_replies (
 );
 
 ALTER TABLE cloud_replies
+  ADD COLUMN IF NOT EXISTS space_type TEXT NOT NULL DEFAULT 'channel',
+  ADD COLUMN IF NOT EXISTS space_id TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS space_seq BIGINT NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS reactions JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE cloud_replies DROP CONSTRAINT IF EXISTS cloud_replies_space_type_check;
+ALTER TABLE cloud_replies
+  ADD CONSTRAINT cloud_replies_space_type_check CHECK (space_type IN ('channel', 'dm'));
+
+UPDATE cloud_replies AS reply
+SET
+  space_type = message.space_type,
+  space_id = message.space_id
+FROM cloud_messages AS message
+WHERE reply.parent_message_id = message.id
+  AND (reply.space_type <> message.space_type OR reply.space_id <> message.space_id OR reply.space_id = '');
+
+WITH existing_max AS (
+  SELECT workspace_id, space_type, space_id, MAX(space_seq) AS max_seq
+  FROM (
+    SELECT workspace_id, space_type, space_id, space_seq
+    FROM cloud_messages
+    WHERE space_seq > 0
+    UNION ALL
+    SELECT workspace_id, space_type, space_id, space_seq
+    FROM cloud_replies
+    WHERE space_seq > 0
+  ) existing_events
+  GROUP BY workspace_id, space_type, space_id
+),
+ranked_missing AS (
+  SELECT
+    events.kind,
+    events.id,
+    events.workspace_id,
+    events.space_type,
+    events.space_id,
+    COALESCE(existing_max.max_seq, 0)
+      + ROW_NUMBER() OVER (
+        PARTITION BY events.workspace_id, events.space_type, events.space_id
+        ORDER BY events.created_at ASC, events.kind_order ASC, events.id ASC
+      ) AS assigned_seq
+  FROM (
+    SELECT 'message' AS kind, id, workspace_id, space_type, space_id, created_at, 0 AS kind_order
+    FROM cloud_messages
+    WHERE space_seq <= 0
+    UNION ALL
+    SELECT 'reply' AS kind, id, workspace_id, space_type, space_id, created_at, 1 AS kind_order
+    FROM cloud_replies
+    WHERE space_seq <= 0 AND space_id <> ''
+  ) events
+  LEFT JOIN existing_max
+    ON existing_max.workspace_id = events.workspace_id
+   AND existing_max.space_type = events.space_type
+   AND existing_max.space_id = events.space_id
+),
+updated_messages AS (
+  UPDATE cloud_messages AS message
+  SET space_seq = ranked_missing.assigned_seq
+  FROM ranked_missing
+  WHERE ranked_missing.kind = 'message'
+    AND ranked_missing.id = message.id
+  RETURNING 1
+)
+UPDATE cloud_replies AS reply
+SET space_seq = ranked_missing.assigned_seq
+FROM ranked_missing
+WHERE ranked_missing.kind = 'reply'
+  AND ranked_missing.id = reply.id;
+
+INSERT INTO cloud_conversation_sequences (workspace_id, space_type, space_id, next_seq, updated_at)
+SELECT
+  workspace_id,
+  space_type,
+  space_id,
+  MAX(space_seq) + 1,
+  now()
+FROM (
+  SELECT workspace_id, space_type, space_id, space_seq
+  FROM cloud_messages
+  WHERE space_seq > 0
+  UNION ALL
+  SELECT workspace_id, space_type, space_id, space_seq
+  FROM cloud_replies
+  WHERE space_seq > 0
+) sequenced_events
+GROUP BY workspace_id, space_type, space_id
+ON CONFLICT (workspace_id, space_type, space_id) DO UPDATE SET
+  next_seq = GREATEST(cloud_conversation_sequences.next_seq, EXCLUDED.next_seq),
+  updated_at = now();
 
 CREATE INDEX IF NOT EXISTS cloud_replies_parent_created_idx
   ON cloud_replies(parent_message_id, created_at ASC);
 
 CREATE INDEX IF NOT EXISTS cloud_replies_workspace_parent_cursor_idx
   ON cloud_replies(workspace_id, parent_message_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS cloud_replies_space_seq_idx
+  ON cloud_replies(workspace_id, space_type, space_id, space_seq)
+  WHERE space_seq > 0;
 
 CREATE TABLE IF NOT EXISTS cloud_tasks (
   id TEXT PRIMARY KEY,

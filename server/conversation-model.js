@@ -322,6 +322,8 @@ export function createConversationModel(deps) {
     record.readBy = normalizeIds(record.readBy?.length ? record.readBy : defaultReadBy(record));
     record.savedBy = normalizeIds(record.savedBy);
     record.reactions = normalizeReactions(record.reactions);
+    const spaceSeq = Number(record.spaceSeq || record.space_seq || 0);
+    record.spaceSeq = Number.isSafeInteger(spaceSeq) && spaceSeq > 0 ? spaceSeq : 0;
     if (references.length) {
       record.references = references;
       record.metadata = { ...metadata, references };
