@@ -503,8 +503,10 @@ function renderNavItem(view, label, icon, badge, { badgeKind = 'meta' } = {}) {
 
 function renderChannelItem(channel, unreadCount = 0) {
   const active = activeView === 'space' && selectedSpaceType === 'channel' && selectedSpaceId === channel.id ? ' active' : '';
+  const readable = typeof currentUserCanReadChannel === 'function' ? currentUserCanReadChannel(channel) : true;
+  const unjoined = readable ? '' : ' unjoined-channel';
   return `
-    <button class="space-btn${active}" type="button" data-action="select-space" data-type="channel" data-id="${channel.id}">
+    <button class="space-btn${active}${unjoined}" type="button" data-action="select-space" data-type="channel" data-id="${channel.id}">
       <span class="channel-icon">#</span>
       <span class="channel-name">${escapeHtml(channel.name)}</span>
       ${renderRailUnreadBadge(unreadCount, `unread messages in #${channel.name}`)}

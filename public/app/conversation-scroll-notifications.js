@@ -205,6 +205,11 @@ function markConversationRecordRead(record) {
 }
 
 function markSpaceRead(spaceType, spaceId, { forceScope = true } = {}) {
+  if (
+    spaceType === 'channel'
+    && typeof currentUserCanReadChannel === 'function'
+    && !currentUserCanReadChannel(spaceId)
+  ) return;
   const recordIds = spaceUnreadRecordIds(spaceType, spaceId);
   if (!recordIds.length && !forceScope) return;
   markInboxRead({ recordIds, spaceType, spaceId }).catch((error) => toast(error.message));
@@ -212,6 +217,11 @@ function markSpaceRead(spaceType, spaceId, { forceScope = true } = {}) {
 
 function markVisibleConversationRead() {
   if (modal || activeView !== 'space' || activeTab !== 'chat') return;
+  if (
+    selectedSpaceType === 'channel'
+    && typeof currentUserCanReadChannel === 'function'
+    && !currentUserCanReadChannel(currentSpace())
+  ) return;
   if (threadMessageId) {
     markThreadRead(threadMessageId, { forceScope: false });
     return;

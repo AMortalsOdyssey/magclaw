@@ -74,8 +74,15 @@ function currentUserIsChannelMember(channelOrId) {
   return false;
 }
 
+function currentUserCanReadChannel(channelOrId) {
+  const channel = typeof channelOrId === 'string' ? byId(appState?.channels, channelOrId) : channelOrId;
+  if (!channel) return false;
+  if (isAllChannel(channel)) return true;
+  return currentUserIsChannelMember(channel);
+}
+
 function currentChannelIsReadOnly() {
-  return selectedSpaceType === 'channel' && !currentUserIsChannelMember(currentSpace());
+  return selectedSpaceType === 'channel' && !currentUserCanReadChannel(currentSpace());
 }
 
 function renderChannelJoinPanel(channelOrId, options = {}) {

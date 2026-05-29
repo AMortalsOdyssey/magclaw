@@ -239,6 +239,19 @@
   font-weight: 700;
 }
 
+.collab-frame .space-btn.unjoined-channel .channel-icon,
+.collab-frame .space-btn.unjoined-channel .channel-name {
+  color: #8f858d;
+  font-weight: 500;
+}
+
+.collab-frame .space-btn.unjoined-channel:hover .channel-icon,
+.collab-frame .space-btn.unjoined-channel:hover .channel-name,
+.collab-frame .space-btn.unjoined-channel.active .channel-icon,
+.collab-frame .space-btn.unjoined-channel.active .channel-name {
+  color: #6f666d;
+}
+
 .collab-frame .rail-section {
   gap: 2px;
   padding: 0 8px 8px;

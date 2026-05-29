@@ -81,15 +81,23 @@ test('create task modal uses a title-only form and multi-agent picker rows', asy
 test('unjoined channels render read-only chat controls with a join action', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();
+  const railSource = app.slice(app.indexOf('function renderChannelItem('), app.indexOf('function renderDmItem('));
+  const readSource = app.slice(app.indexOf('function markSpaceRead('), app.indexOf('function taskThreadMessage('));
 
   assert.match(app, /function currentUserIsChannelMember\(channelOrId\)/);
+  assert.match(app, /function currentUserCanReadChannel\(channelOrId\)/);
   assert.match(app, /function renderChannelJoinPanel\(channelOrId/);
   assert.match(app, /data-action="join-channel"/);
   assert.match(app, /\/api\/channels\/\$\{encodeURIComponent\(channelId\)\}\/join/);
   assert.match(app, /Join this channel before sending messages/);
   assert.match(app, /Join this channel before replying in the thread/);
+  assert.match(railSource, /currentUserCanReadChannel\(channel\)/);
+  assert.match(railSource, /unjoined-channel/);
+  assert.match(readSource, /spaceType === 'channel'[\s\S]*!currentUserCanReadChannel\(spaceId\)[\s\S]*return/);
+  assert.match(readSource, /selectedSpaceType === 'channel'[\s\S]*!currentUserCanReadChannel\(currentSpace\(\)\)[\s\S]*return/);
   assert.match(styles, /\.channel-join-panel/);
   assert.match(styles, /\.channel-join-btn/);
+  assert.match(styles, /\.space-btn\.unjoined-channel[\s\S]*\.channel-name/);
 });
 
 test('members settings expose role-aware invitation controls', async () => {
