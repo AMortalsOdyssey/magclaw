@@ -2039,6 +2039,66 @@
   border: 1px solid var(--border);
 }
 
+.markdown-file-icon {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) 9px;
+  align-items: center;
+  justify-items: center;
+  gap: 1px;
+  box-sizing: border-box;
+  padding: 0 2px;
+  border: 2px solid #111;
+  background: #fff;
+  color: #111;
+  font-family: var(--font-mono);
+  font-weight: 900;
+  line-height: 1;
+}
+
+.file-glyph.markdown-file-icon {
+  width: 26px;
+  height: 20px;
+  font-size: 13px;
+}
+
+.composer-file-icon.markdown-file-icon {
+  width: 34px;
+  height: 34px;
+  font-size: 17px;
+}
+
+.markdown-file-icon-letter {
+  transform: translateY(-1px);
+}
+
+.markdown-file-icon-arrow {
+  position: relative;
+  width: 9px;
+  height: 15px;
+}
+
+.markdown-file-icon-arrow::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 2px;
+  height: 8px;
+  background: currentColor;
+}
+
+.markdown-file-icon-arrow::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: 8px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid currentColor;
+}
+
 .chat-composer {
   display: grid;
   flex-shrink: 0;
@@ -2245,6 +2305,35 @@
   object-fit: cover;
 }
 
+.composer-attachment-preview-btn {
+  appearance: none;
+  grid-column: 1 / 3;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  width: 100%;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-attachment-preview-btn:hover,
+.composer-attachment-preview-btn:focus-visible {
+  outline: none;
+  background: transparent;
+}
+
+.composer-attachment-preview-btn:focus-visible .composer-file-icon,
+.composer-attachment-preview-btn:focus-visible img {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
 .composer-file-icon {
   display: grid;
   place-items: center;
@@ -2275,7 +2364,7 @@
   font-size: 10px;
 }
 
-.composer-attachment-chip button {
+.composer-attachment-chip > button:not(.composer-attachment-preview-btn) {
   width: 20px;
   height: 20px;
   padding: 0;
@@ -2287,7 +2376,7 @@
   line-height: 1;
 }
 
-.composer-attachment-chip button:hover {
+.composer-attachment-chip > button:not(.composer-attachment-preview-btn):hover {
   background: var(--accent-soft);
 }
 

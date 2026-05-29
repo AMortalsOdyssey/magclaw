@@ -310,6 +310,36 @@ function humanStatusDot(authorId, authorType) {
   return avatarStatusDot(human?.status || 'offline', 'Human status');
 }
 
+function fallbackAttachmentPreviewKind(attachment = {}) {
+  const type = String(attachment.type || '').toLowerCase();
+  const name = String(attachment.name || '').toLowerCase();
+  if (type.startsWith('image/')) return 'image';
+  if (type === 'video/mp4' || name.endsWith('.mp4')) return 'video';
+  if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+  if (type === 'text/markdown' || type === 'text/x-markdown' || name.endsWith('.md') || name.endsWith('.markdown')) return 'markdown';
+  if (type === 'text/html' || name.endsWith('.html') || name.endsWith('.htm')) return 'html';
+  return 'file';
+}
+
+function attachmentPreviewIcon(item = {}, variant = 'message') {
+  const kind = typeof attachmentPreviewKind === 'function'
+    ? attachmentPreviewKind(item)
+    : fallbackAttachmentPreviewKind(item);
+  const baseClass = variant === 'composer' ? 'composer-file-icon' : 'file-glyph';
+  if (kind === 'markdown') {
+    return `
+      <span class="${baseClass} markdown-file-icon" role="img" aria-label="${escapeHtml(t('Markdown file'))}">
+        <span class="markdown-file-icon-letter">M</span>
+        <span class="markdown-file-icon-arrow" aria-hidden="true"></span>
+      </span>
+    `;
+  }
+  if (kind === 'pdf') return `<span class="${baseClass}">PDF</span>`;
+  if (kind === 'video') return `<span class="${baseClass}">MP4</span>`;
+  if (kind === 'html') return `<span class="${baseClass}">HTML</span>`;
+  return `<span class="${baseClass}">FILE</span>`;
+}
+
 function attachmentLinks(ids = []) {
   const items = ids
     .map((id) => byId(appState?.attachments, id))
@@ -321,7 +351,7 @@ function attachmentLinks(ids = []) {
         <button class="message-attachment-preview ${isImage ? 'image-attachment' : 'file-attachment'}" type="button" data-action="open-attachment-preview" data-id="${escapeHtml(item.id)}">
           ${isImage
             ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(item.name)}" loading="lazy" />`
-            : '<span class="file-glyph">□</span>'}
+            : attachmentPreviewIcon(item)}
           <span class="message-attachment-meta">
             <strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong>
             <small>${escapeHtml(item.type || 'file')} · ${bytes(item.bytes)}</small>
@@ -408,16 +438,19 @@ function renderAttachmentStrip(composerId) {
   `);
   return [...uploading, ...staged.map((item) => {
     const isImage = String(item.type || '').startsWith('image/');
+    const isMarkdown = typeof attachmentPreviewKind === 'function' && attachmentPreviewKind(item) === 'markdown';
     return `
-      <span class="composer-attachment-chip ${isImage ? 'is-image' : ''}" data-attachment-id="${escapeHtml(item.id)}">
-        ${isImage
-          ? `<img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}" />`
-          : '<span class="composer-file-icon">FILE</span>'}
-        <span class="composer-attachment-meta">
-          <strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong>
-          <small>${escapeHtml(item.type || 'file')} · ${bytes(item.bytes)}</small>
-        </span>
-        <button type="button" data-action="remove-staged-attachment" data-composer-id="${escapeHtml(composerId)}" data-id="${escapeHtml(item.id)}" title="Remove attachment" aria-label="Remove ${escapeHtml(item.name)}">&times;</button>
+      <span class="composer-attachment-chip ${isImage ? 'is-image' : ''} ${isMarkdown ? 'is-markdown' : ''}" data-attachment-id="${escapeHtml(item.id)}">
+        <button class="composer-attachment-preview-btn" type="button" data-action="open-attachment-preview" data-id="${escapeHtml(item.id)}" title="Preview ${escapeHtml(item.name)}" aria-label="Preview ${escapeHtml(item.name)}">
+          ${isImage
+            ? `<img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}" />`
+            : attachmentPreviewIcon(item, 'composer')}
+          <span class="composer-attachment-meta">
+            <strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong>
+            <small>${escapeHtml(item.type || 'file')} · ${bytes(item.bytes)}</small>
+          </span>
+        </button>
+        <button class="composer-attachment-remove" type="button" data-action="remove-staged-attachment" data-composer-id="${escapeHtml(composerId)}" data-id="${escapeHtml(item.id)}" title="Remove attachment" aria-label="Remove ${escapeHtml(item.name)}">&times;</button>
       </span>
     `;
   })].join('');

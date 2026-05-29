@@ -40,3 +40,15 @@ test('attachment preview modal supports markdown outline and media viewers', asy
   assert.match(styles, /\.attachment-preview-safe-note/);
 });
 
+test('staged composer attachments can open previews and show markdown identity', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+
+  assert.match(app, /function attachmentPreviewIcon\(/);
+  assert.match(app, /markdown-file-icon/);
+  assert.match(app, /composer-attachment-preview-btn[\s\S]*data-action="open-attachment-preview"/);
+  assert.match(app, /attachmentPreviewKind\(item\) === 'markdown'/);
+  assert.match(styles, /\.composer-attachment-preview-btn/);
+  assert.match(styles, /\.markdown-file-icon/);
+  assert.match(styles, /\.markdown-file-icon-arrow/);
+});
