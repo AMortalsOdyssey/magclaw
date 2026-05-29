@@ -1325,7 +1325,8 @@ test('chat rail keeps Threads and adds Activities without a System notification 
   assert.match(app, /function buildSpaceMessageCounts\(stateSnapshot = appState\)/);
   assert.match(app, /function messageCountForSpace\(counts, spaceType, spaceId\)/);
   assert.match(app, /function chatUnreadCountFromSpaces\(spaceUnreadCounts\)/);
-  assert.match(app, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| ''/);
+  assert.match(app, /renderLeftRailButton\('chat', railMode, 'Chat', [\s\S]*?\)\}/);
+  assert.doesNotMatch(app, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| ''/);
   assert.match(app, /function markSpaceRead\(spaceType, spaceId, \{ forceScope = true \} = \{\}\)/);
   assert.match(app, /markInboxRead\(\{ recordIds, spaceType, spaceId \}\)/);
   assert.doesNotMatch(chatRailSource, /system-notifications|System Notification List/);
@@ -2840,7 +2841,8 @@ test('left rail and active shell controls use the MagClaw pink accent', async ()
   assert.match(styles, /\.left-rail-btn em \{[\s\S]*?background:\s*var\(--magclaw-rail-badge\)[\s\S]*?color:\s*var\(--magclaw-rail-badge-text\)/);
   assert.match(styles, /\.agent-detail-tabs button\.active \{[\s\S]*?background:\s*var\(--accent\)/);
   assert.equal(/background:\s*var\(--magclaw-sun\)/.test(styles), false);
-  assert.match(railSource, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| ''/);
+  assert.match(railSource, /renderLeftRailButton\('chat', railMode, 'Chat', [\s\S]*?\)\}/);
+  assert.doesNotMatch(railSource, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| ''/);
   assert.match(railSource, /renderLeftRailButton\('tasks', railMode, 'Tasks', [\s\S]*?\)\}/);
   assert.doesNotMatch(railSource, /renderLeftRailButton\('tasks'[\s\S]*openTasks \|\| ''/);
   assert.doesNotMatch(railSource, /renderLeftRailButton\('members'[\s\S]*normalAgents\.length \|\| ''/);
