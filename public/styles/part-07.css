@@ -252,6 +252,28 @@
   color: #6f666d;
 }
 
+.collab-frame .space-btn .rail-message-count {
+  margin-left: auto;
+}
+
+.collab-frame .space-btn.unjoined-channel .rail-message-count {
+  min-width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #9f959c;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.collab-frame .space-btn.unjoined-channel:hover .rail-message-count,
+.collab-frame .space-btn.unjoined-channel.active .rail-message-count {
+  background: transparent;
+  color: #756d74;
+}
+
 .collab-frame .rail-section {
   gap: 2px;
   padding: 0 8px 8px;

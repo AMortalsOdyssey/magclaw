@@ -84,7 +84,24 @@ function buildSpaceUnreadCounts(humanId = currentHumanId(), stateSnapshot = appS
   return counts;
 }
 
+function buildSpaceMessageCounts(stateSnapshot = appState) {
+  const counts = new Map();
+  const addRecord = (record) => {
+    if (!record?.id) return;
+    const key = recordSpaceKey(record, stateSnapshot);
+    if (!key) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  };
+  (stateSnapshot?.messages || []).forEach(addRecord);
+  (stateSnapshot?.replies || []).forEach(addRecord);
+  return counts;
+}
+
 function unreadCountForSpace(counts, spaceType, spaceId) {
+  return counts?.get(spaceUnreadKey(spaceType, spaceId)) || 0;
+}
+
+function messageCountForSpace(counts, spaceType, spaceId) {
   return counts?.get(spaceUnreadKey(spaceType, spaceId)) || 0;
 }
 

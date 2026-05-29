@@ -124,6 +124,7 @@ function renderRail() {
   const dms = appState.dms || [];
   const inbox = buildInboxModel();
   const spaceUnreadCounts = buildSpaceUnreadCounts(inbox.humanId);
+  const spaceMessageCounts = buildSpaceMessageCounts();
   const chatUnreadCount = chatUnreadCountFromSpaces(spaceUnreadCounts);
   const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0 || message.taskId).length;
   const openTasks = (appState.tasks || []).filter((task) => task && !taskIsClosedStatus(task.status)).length;
@@ -162,7 +163,7 @@ function renderRail() {
       : railMode === 'desktop'
         ? renderComputersRail()
       : railTab === 'spaces'
-        ? renderChatRail({ channels, dms, inboxUnread: inbox.unreadCount, unreadThreads, openTasks, saved, spaceUnreadCounts })
+        ? renderChatRail({ channels, dms, inboxUnread: inbox.unreadCount, unreadThreads, openTasks, saved, spaceUnreadCounts, spaceMessageCounts })
         : renderMembersRail({ normalAgents });
   const railClass = `rail collab-rail magclaw-rail${railMode === 'settings' ? ' settings-rail' : ''}${railMode === 'console' ? ' console-rail' : ''}`;
   const leftRailHtml = `
@@ -304,7 +305,7 @@ function renderServerSwitcherMenu() {
   `;
 }
 
-function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, saved, spaceUnreadCounts }) {
+function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, saved, spaceUnreadCounts, spaceMessageCounts }) {
   const dmPeers = dms
     .map((dm) => dmPeerInfo(dm))
     .filter((item) => item?.dm?.id && item?.peer);
@@ -319,7 +320,7 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
 
     <div class="rail-section" data-rail-scroll-section="channels" data-scroll-key="rail:spaces:channels">
       ${renderRailSectionTitle('channels', 'Channels', channels.length, { modal: 'join-channel-discovery' })}
-      ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel, unreadCountForSpace(spaceUnreadCounts, 'channel', channel.id))).join('')}
+      ${collapsedSidebarSections.channels ? '' : channels.map((channel) => renderChannelItem(channel, messageCountForSpace(spaceMessageCounts, 'channel', channel.id))).join('')}
     </div>
 
       <div class="rail-section" data-rail-scroll-section="dms" data-scroll-key="rail:spaces:dms">
@@ -432,6 +433,13 @@ function renderRailUnreadBadge(count, label = 'unread messages') {
   return `<span class="rail-unread-badge" aria-label="${escapeHtml(`${text} ${label}`)}">${escapeHtml(text)}</span>`;
 }
 
+function renderRailMessageCount(count, label = 'messages') {
+  const value = Math.max(0, Number(count) || 0);
+  if (!value) return '';
+  const text = value > 99 ? '99+' : String(value);
+  return `<span class="rail-unread-badge rail-message-count" aria-label="${escapeHtml(`${text} ${label}`)}">${escapeHtml(text)}</span>`;
+}
+
 function renderRailSectionTitle(section, label, count, { modal = '', badge = '' } = {}) {
   const collapsed = Boolean(collapsedSidebarSections[section]);
   const countLabel = count === undefined || count === null ? '' : `<em>${escapeHtml(count)}</em>`;
@@ -501,7 +509,7 @@ function renderNavItem(view, label, icon, badge, { badgeKind = 'meta' } = {}) {
   `;
 }
 
-function renderChannelItem(channel, unreadCount = 0) {
+function renderChannelItem(channel, messageCount = 0) {
   const active = activeView === 'space' && selectedSpaceType === 'channel' && selectedSpaceId === channel.id ? ' active' : '';
   const readable = typeof currentUserCanReadChannel === 'function' ? currentUserCanReadChannel(channel) : true;
   const unjoined = readable ? '' : ' unjoined-channel';
@@ -509,7 +517,7 @@ function renderChannelItem(channel, unreadCount = 0) {
     <button class="space-btn${active}${unjoined}" type="button" data-action="select-space" data-type="channel" data-id="${channel.id}">
       <span class="channel-icon">#</span>
       <span class="channel-name">${escapeHtml(channel.name)}</span>
-      ${renderRailUnreadBadge(unreadCount, `unread messages in #${channel.name}`)}
+      ${renderRailMessageCount(messageCount, `messages in #${channel.name}`)}
     </button>
   `;
 }

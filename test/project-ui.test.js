@@ -1313,13 +1313,16 @@ test('chat rail keeps Threads and adds Activities without a System notification 
 
   assert.match(chatRailSource, /renderNavItem\('inbox', 'Activities', 'inbox', inboxUnread \|\| '', \{ badgeKind: 'unread' \}\)/);
   assert.match(chatRailSource, /renderNavItem\('threads', 'Threads', 'message'/);
-  assert.match(chatRailSource, /renderChannelItem\(channel, unreadCountForSpace\(spaceUnreadCounts, 'channel', channel\.id\)\)/);
+  assert.match(chatRailSource, /renderChannelItem\(channel, messageCountForSpace\(spaceMessageCounts, 'channel', channel\.id\)\)/);
   assert.match(chatRailSource, /const dmPeers = dms/);
   assert.match(chatRailSource, /\.map\(\(dm\) => dmPeerInfo\(dm\)\)/);
   assert.match(chatRailSource, /\.filter\(\(item\) => item\?\.dm\?\.id && item\?\.peer\)/);
   assert.match(chatRailSource, /renderDmItem\(dm\.id, peer\.name \|\| displayName\(peer\.id\), peer\.status \|\| 'offline', peer\.avatar \|\| '', unreadCountForSpace\(spaceUnreadCounts, 'dm', dm\.id\)\)/);
   assert.match(app, /function renderRailUnreadBadge\(count, label = 'unread messages'\)/);
+  assert.match(app, /function renderRailMessageCount\(count, label = 'messages'\)/);
   assert.match(app, /function buildSpaceUnreadCounts\(humanId = currentHumanId\(\), stateSnapshot = appState\)/);
+  assert.match(app, /function buildSpaceMessageCounts\(stateSnapshot = appState\)/);
+  assert.match(app, /function messageCountForSpace\(counts, spaceType, spaceId\)/);
   assert.match(app, /function chatUnreadCountFromSpaces\(spaceUnreadCounts\)/);
   assert.match(app, /renderLeftRailButton\('chat'[\s\S]*chatUnreadCount \|\| inbox\.unreadCount \|\| ''/);
   assert.match(app, /function markSpaceRead\(spaceType, spaceId, \{ forceScope = true \} = \{\}\)/);
@@ -1329,6 +1332,42 @@ test('chat rail keeps Threads and adds Activities without a System notification 
   assert.doesNotMatch(app, /function renderSystemNotifications\(\)/);
   assert.match(styles, /\.rail-unread-badge/);
   assert.match(styles, /\.space-btn \.rail-unread-badge/);
+  assert.match(styles, /\.rail-message-count/);
+  assert.match(styles, /\.space-btn\.unjoined-channel \.rail-message-count/);
+});
+
+test('channel rail message counts include humans agents and thread replies', async () => {
+  const source = await readFile(new URL('../public/app/conversation-scroll-notifications.js', import.meta.url), 'utf8');
+  const helperStart = source.indexOf('function currentHumanId');
+  const helperEnd = source.indexOf('function threadRecordIds');
+  const helpers = vm.runInNewContext(`${source.slice(helperStart, helperEnd)}; ({
+    buildSpaceMessageCounts,
+    messageCountForSpace,
+    buildSpaceUnreadCounts,
+    unreadCountForSpace,
+  });`, {
+    appState: {
+      cloud: { auth: { currentMember: { humanId: 'hum_local' } } },
+      messages: [
+        { id: 'msg_human', spaceType: 'channel', spaceId: 'chan_all', authorType: 'human', authorId: 'hum_local', readBy: [] },
+        { id: 'msg_agent', spaceType: 'channel', spaceId: 'chan_all', authorType: 'agent', authorId: 'agt_one', readBy: [] },
+        { id: 'msg_parent', spaceType: 'channel', spaceId: 'chan_all', authorType: 'human', authorId: 'hum_other', readBy: ['hum_local'] },
+        { id: 'msg_other', spaceType: 'channel', spaceId: 'chan_other', authorType: 'human', authorId: 'hum_other', readBy: [] },
+      ],
+      replies: [
+        { id: 'reply_human', parentMessageId: 'msg_parent', authorType: 'human', authorId: 'hum_local', readBy: [] },
+        { id: 'reply_agent', parentMessageId: 'msg_parent', authorType: 'agent', authorId: 'agt_one', readBy: [] },
+      ],
+    },
+    byId: (items, id) => (items || []).find((item) => item.id === id) || null,
+  });
+
+  const messageCounts = helpers.buildSpaceMessageCounts();
+  const unreadCounts = helpers.buildSpaceUnreadCounts();
+
+  assert.equal(helpers.messageCountForSpace(messageCounts, 'channel', 'chan_all'), 5);
+  assert.equal(helpers.messageCountForSpace(messageCounts, 'channel', 'chan_other'), 1);
+  assert.equal(helpers.unreadCountForSpace(unreadCounts, 'channel', 'chan_all'), 2);
 });
 
 test('inbox reuses thread rows and renders workspace activity drawer', async () => {
