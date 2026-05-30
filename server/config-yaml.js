@@ -164,6 +164,8 @@ export function applyServerYamlConfig(options = {}) {
   const llm = config.llm || {};
   const markdownMaintenance = config.markdown_maintenance || config.markdownMaintenance || {};
   const auth = config.auth || {};
+  const feishu = objectValue(config.feishu || config.lark);
+  const feishuConnect = objectValue(pick(feishu.connect, feishu.bot, feishu.gateway));
   const runtime = config.runtime || {};
   const daemon = config.daemon || {};
   const rawDaemonConnectCommand = pick(daemon.connect_command, daemon.connectCommand);
@@ -245,6 +247,13 @@ export function applyServerYamlConfig(options = {}) {
   if (Array.isArray(authProviders)) {
     setEnv(env, 'MAGCLAW_AUTH_PROVIDERS', JSON.stringify(authProviders));
   }
+
+  setEnv(env, 'MAGCLAW_FEISHU_CONNECT_ENABLED', pick(feishuConnect.enabled, feishuConnect.enable));
+  setEnv(env, 'MAGCLAW_FEISHU_CONNECT_TENANT', pick(feishuConnect.tenant, feishuConnect.domain));
+  setEnv(env, 'MAGCLAW_FEISHU_CONNECT_APP_ID', pick(feishuConnect.app_id, feishuConnect.appId));
+  setEnv(env, 'MAGCLAW_FEISHU_CONNECT_APP_SECRET', pick(feishuConnect.app_secret, feishuConnect.appSecret));
+  setEnv(env, 'MAGCLAW_FEISHU_CONNECT_MESSAGE_MODE', pick(feishuConnect.message_mode, feishuConnect.messageMode));
+  setEnv(env, 'MAGCLAW_FEISHU_CONNECT_REPLY_MODE', pick(feishuConnect.reply_mode, feishuConnect.replyMode));
 
   setEnv(env, 'CODEX_MODEL', pick(runtime.codex_model, runtime.codexModel));
   setEnv(env, 'CODEX_PATH', pick(runtime.codex_path, runtime.codexPath));

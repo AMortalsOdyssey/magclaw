@@ -1,5 +1,9 @@
 import os from 'node:os';
 import { ensureWorkspaceAllChannel, isWorkspaceAllChannel } from '../workspace-defaults.js';
+import {
+  buildChannelImportPath,
+  ensureChannelFeishuRouteKey,
+} from '../integrations/feishu-connect/route-token.js';
 
 // Collaboration object API routes.
 // Channels, DMs, computers, and humans are the durable workspace directory
@@ -89,6 +93,10 @@ export async function handleCollabApi(req, res, url, deps) {
       const agent = findAgent(agentId);
       if (agent) scheduleAgentMemoryWriteback(agent, 'channel_membership_changed', { channel });
     }
+  }
+
+  function serverDisplayName() {
+    return String(state.connection?.name || state.cloud?.workspace?.name || state.cloud?.workspaces?.[0]?.name || 'Server').trim();
   }
 
   function computerPackageName(computer = {}) {
@@ -214,6 +222,45 @@ export async function handleCollabApi(req, res, url, deps) {
     await persistWorkspaceState(workspaceId, 'channel_created');
     broadcastState();
     sendJson(res, 201, { channel });
+    return true;
+  }
+
+  const feishuImportPathMatch = url.pathname.match(/^\/api\/channels\/([^/]+)\/feishu-import-path$/);
+  if (req.method === 'POST' && feishuImportPathMatch) {
+    const channel = findChannel(feishuImportPathMatch[1]);
+    if (!channel) {
+      sendError(res, 404, 'Channel not found.');
+      return true;
+    }
+    const { workspaceId, humanId } = actorContext(req);
+    const humanIds = channelHumanMembershipIds(channel);
+    if (humanIds.length && !humanIds.includes(humanId) && !isWorkspaceAllChannel(channel)) {
+      sendError(res, 403, 'Join this channel before copying its MagClaw path.');
+      return true;
+    }
+    const previousKey = channel.metadata?.integrations?.feishuImport?.routeKey || '';
+    const routeKey = ensureChannelFeishuRouteKey(channel);
+    const importPath = buildChannelImportPath({
+      serverId: workspaceId,
+      channelId: channel.id,
+      routeKey,
+    });
+    if (!previousKey) {
+      channel.updatedAt = now();
+      addCollabEvent('feishu_channel_path_created', `Feishu import path created for #${channel.name}.`, { channelId: channel.id });
+      await persistRecordState(channel, req, 'feishu_channel_path_created');
+      broadcastState();
+    }
+    const serverName = serverDisplayName();
+    const channelName = channel.name || channel.id;
+    sendJson(res, 200, {
+      serverId: workspaceId,
+      serverName,
+      channelId: channel.id,
+      channelName,
+      path: importPath,
+      copyText: importPath,
+    });
     return true;
   }
 

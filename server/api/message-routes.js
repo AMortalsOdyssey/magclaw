@@ -95,6 +95,7 @@ export async function handleMessageApi(req, res, url, deps) {
     sendError,
     sendJson,
     stopTaskFromThread,
+    syncExternalThreadReply,
     taskAssignmentDeliveryMessage,
     taskCreationIntent,
     taskEndIntent,
@@ -1708,6 +1709,13 @@ export async function handleMessageApi(req, res, url, deps) {
     if (routeDecision) {
       await persistConversationState(reply, message.spaceType, message.spaceId, req);
       broadcastState();
+    }
+
+    if (typeof syncExternalThreadReply === 'function') {
+      await syncExternalThreadReply(reply, {
+        parentMessage: message,
+        source: 'human_reply',
+      });
     }
 
     sendJson(res, 201, {

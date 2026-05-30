@@ -910,6 +910,12 @@ async function postAgentResponse(agent, spaceType, spaceId, body, parentMessageI
     recordUnreadInvalidationForAgentResponse(reply, parentMessageId);
     broadcastState();
     await relayAgentMentions(reply, { parentMessageId, sourceMessage: options.sourceMessage });
+    if (typeof syncExternalThreadReply === 'function') {
+      await syncExternalThreadReply(reply, {
+        parentMessage: parent,
+        source: 'agent_reply',
+      });
+    }
     return reply;
   }
 

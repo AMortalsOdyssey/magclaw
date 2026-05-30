@@ -233,6 +233,7 @@ function createTaskFromMessage(message, title, options = {}) {
     runIds: [],
     attachmentIds: Array.isArray(message.attachmentIds) ? message.attachmentIds : [],
     localReferences: Array.isArray(options.localReferences) ? options.localReferences : (Array.isArray(message.localReferences) ? message.localReferences : []),
+    metadata: options.metadata && typeof options.metadata === 'object' ? { ...options.metadata } : {},
     createdBy,
     createdAt: now(),
     updatedAt: now(),

@@ -124,3 +124,40 @@ auth:
   assert.equal(result.config.auth.providers[1].app_secret, 'super-secret');
   assert.equal(result.redacted.auth.providers[1].app_secret, '[redacted]');
 });
+
+test('server yaml maps Feishu Connect Bot config separately from OAuth providers', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-config-yaml-feishu-connect-'));
+  const configPath = path.join(tmp, 'server.yaml');
+  const env = {};
+  await writeFile(configPath, `
+auth:
+  providers:
+    - type: feishu
+      app_id: "cli_oauth"
+      app_secret: "oauth-secret"
+      redirect_uri: "https://magclaw.example.com/api/cloud/auth/feishu/callback"
+feishu:
+  connect:
+    enabled: true
+    tenant: "feishu"
+    app_id: "cli_connect"
+    app_secret: "connect-secret"
+    message_mode: "long_connection"
+    reply_mode: "card"
+`);
+
+  const result = applyServerYamlConfig({ paths: [configPath], env });
+
+  assert.equal(result.loaded, true);
+  assert.equal(env.MAGCLAW_FEISHU_CONNECT_ENABLED, '1');
+  assert.equal(env.MAGCLAW_FEISHU_CONNECT_TENANT, 'feishu');
+  assert.equal(env.MAGCLAW_FEISHU_CONNECT_APP_ID, 'cli_connect');
+  assert.equal(env.MAGCLAW_FEISHU_CONNECT_APP_SECRET, 'connect-secret');
+  assert.equal(env.MAGCLAW_FEISHU_CONNECT_MESSAGE_MODE, 'long_connection');
+  assert.equal(env.MAGCLAW_FEISHU_CONNECT_REPLY_MODE, 'card');
+  const providers = JSON.parse(env.MAGCLAW_AUTH_PROVIDERS);
+  assert.equal(providers[0].app_id, 'cli_oauth');
+  assert.equal(providers[0].app_secret, 'oauth-secret');
+  assert.equal(result.redacted.feishu.connect.app_secret, '[redacted]');
+  assert.equal(result.redacted.auth.providers[0].app_secret, '[redacted]');
+});

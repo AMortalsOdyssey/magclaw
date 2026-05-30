@@ -34,6 +34,10 @@
     "playwright": "^1.59.1"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.66.0",
     "pg": "^8.20.0"
+  },
+  "overrides": {
+    "axios": "^1.16.1"
   }
 }

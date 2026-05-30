@@ -121,6 +121,7 @@ import { createTaskOrchestrator } from './task-orchestrator.js';
 import { createServerIo } from './server-io.js';
 import { createReminderScheduler } from './reminder-scheduler.js';
 import { createMailService } from './mail-service.js';
+import { createFeishuConnectGateway } from './integrations/feishu-connect/index.js';
 import { handleAgentApi } from './api/agent-routes.js';
 import { handleAgentToolApi } from './api/agent-tool-routes.js';
 import { handleCloudApi } from './api/cloud-routes.js';
@@ -955,6 +956,12 @@ const daemonRelay = createDaemonRelay({
   setAgentStatus,
 });
 
+let feishuConnectGateway = null;
+async function syncExternalThreadReply(reply, options = {}) {
+  if (!feishuConnectGateway?.syncReply) return { skipped: true, reason: 'feishu_gateway_unavailable' };
+  return feishuConnectGateway.syncReply(reply, options);
+}
+
 function beginDrain(reason = 'manual') {
   if (serverDraining) return { ok: true, draining: true, drainingSince: serverDrainingSince };
   serverDraining = true;
@@ -1313,6 +1320,7 @@ const agentRuntime = createAgentRuntimeManager({
   setAgentStatus,
   shouldStartThreadForAgentDelivery,
   spaceDisplayName,
+  syncExternalThreadReply,
   spaceMatchesScope,
   taskIsClosed,
   taskLabel,
@@ -1977,6 +1985,7 @@ function messageApiDeps() {
     sendError,
     sendJson,
     stopTaskFromThread,
+    syncExternalThreadReply,
     taskAssignmentDeliveryMessage,
     taskCreationIntent,
     taskEndIntent,
@@ -1986,6 +1995,46 @@ function messageApiDeps() {
     textAddressesAgent,
     userPreferenceIntent,
   };
+}
+
+function feishuConnectDeps() {
+  return {
+    addCollabEvent,
+    addSystemEvent,
+    addSystemReply,
+    addTaskHistory,
+    addTaskTimelineMessage,
+    broadcastState,
+    channelAgentIds,
+    claimTask,
+    createTaskFromMessage,
+    deliverMessageToAgent,
+    displayActor,
+    findAgent,
+    findChannel,
+    findHuman,
+    findMessage,
+    getState: () => state,
+    makeId,
+    normalizeConversationRecord,
+    normalizeIds,
+    now,
+    persistState,
+    routeTaskAssignees,
+    saveAttachmentBuffer,
+    scheduleAgentMemoryWriteback,
+    taskAssignmentDeliveryMessage,
+    taskLabel,
+  };
+}
+
+function startFeishuConnectGateway() {
+  createFeishuConnectGateway(feishuConnectDeps()).then((gateway) => {
+    feishuConnectGateway = gateway;
+  }).catch((error) => {
+    addSystemEvent('feishu_connect_start_failed', `Feishu Connect Gateway failed to start: ${error?.message || error}`);
+    persistState().then(broadcastState).catch(() => {});
+  });
 }
 
 async function handleApi(req, res, url) {
@@ -2242,6 +2291,7 @@ server.listen(PORT, HOST, () => {
   startPackageVersionPolling?.();
   startReminderScheduler();
   startMarkdownMaintenanceScheduler();
+  startFeishuConnectGateway();
   fireDueReminders().catch((error) => {
     addSystemEvent('reminder_startup_fire_error', `Startup reminder check failed: ${error.message}`);
     persistState().then(broadcastState).catch(() => {});
@@ -2261,6 +2311,7 @@ function shutdown(signal = 'SIGTERM') {
   forceExit.unref?.();
   setTimeout(() => {
     clearInterval(heartbeatTimer);
+    feishuConnectGateway?.stop?.();
     stopPackageVersionPolling?.();
     stopReminderScheduler();
     stopMarkdownMaintenanceScheduler();

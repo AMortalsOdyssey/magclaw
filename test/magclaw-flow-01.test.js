@@ -66,6 +66,28 @@ test('save endpoint toggles both channel messages and thread replies', async () 
   }
 });
 
+test('channel Feishu import path endpoint returns a stable signed MagClaw path', async () => {
+  const server = await startIsolatedServer();
+  try {
+    const first = await request(server.baseUrl, '/api/channels/chan_all/feishu-import-path', {
+      method: 'POST',
+      body: '{}',
+    });
+    const second = await request(server.baseUrl, '/api/channels/chan_all/feishu-import-path', {
+      method: 'POST',
+      body: '{}',
+    });
+
+    assert.equal(first.serverId, second.serverId);
+    assert.equal(first.channelId, 'chan_all');
+    assert.equal(first.path, second.path);
+    assert.match(first.path, /^mc:\/\/magclaw\/server\/[^/]+\/channel\/chan_all\?key=mcch_/);
+    assert.equal(first.copyText, first.path);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('inbox read endpoint marks agent messages and replies while leaving workspace activity local', async () => {
   const server = await startIsolatedServer();
   try {

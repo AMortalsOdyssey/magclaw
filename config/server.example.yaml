@@ -19,6 +19,15 @@ auth:
       app_secret: "replace-with-feishu-app-secret"
       redirect_uri: "https://magclaw.multiego.me/api/cloud/auth/feishu/callback"
 
+feishu:
+  connect:
+    enabled: false
+    tenant: "feishu"
+    app_id: "cli_replace_with_connect_bot_app_id"
+    app_secret: "replace-with-connect-bot-app-secret"
+    message_mode: "long_connection"
+    reply_mode: "card"
+
 database:
   postgres_url: "postgres://magclaw:change-me@postgres:5432/magclaw"
   name: "magclaw_server"
