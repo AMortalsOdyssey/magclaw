@@ -1,6 +1,8 @@
 // Collaboration events and Agent memory writeback.
 // Keep this module focused on durable notes, task history, and system replies;
 // routing/runtime modules call it when work ownership or useful context changes.
+import { buildFeishuExternalMemoryOperations } from './external-memory.js';
+
 export function createCollabMemoryManager(deps) {
   const {
     addSystemEvent,
@@ -122,6 +124,26 @@ export function createCollabMemoryManager(deps) {
     await updateAgentMemorySection(agent, 'Key Knowledge', '- `notes/user-preferences.md` - 长期用户偏好和明确要求的默认做法。', 12);
     await appendAgentMemoryNote(agent, 'notes/user-preferences.md', 'User Preferences', detail);
   }
+
+  async function writeFeishuExternalMemory(agent, trigger, payload = {}) {
+    const operations = buildFeishuExternalMemoryOperations({ trigger, payload, now });
+    if (!operations.length) return false;
+    for (const operation of operations) {
+      await submitAgentMarkdownOperation(agent, operation, {
+        sourceTrigger: 'feishu_external_memory',
+        metadata: {
+          trigger,
+          traceId: payload.message?.metadata?.origin?.traceId
+            || payload.message?.metadata?.externalImport?.traceId
+            || payload.externalImport?.traceId
+            || null,
+          messageId: payload.message?.id || null,
+          taskId: payload.task?.id || null,
+        },
+      });
+    }
+    return true;
+  }
   
   function memoryWritebackBullet(trigger, payload = {}) {
     const stamp = now();
@@ -174,6 +196,19 @@ export function createCollabMemoryManager(deps) {
   
   async function writeAgentMemoryUpdate(agent, trigger, payload = {}) {
     if (!agent) return false;
+    if (payload.externalImport || payload.message?.metadata?.origin?.provider === 'feishu') {
+      const changed = await writeFeishuExternalMemory(agent, trigger, payload);
+      if (!changed) return false;
+      addSystemEvent('agent_memory_writeback', `${agent.name} workspace memory updated for ${trigger}.`, {
+        agentId: agent.id,
+        trigger,
+        taskId: payload.task?.id || null,
+        messageId: payload.message?.id || null,
+        channelId: payload.channel?.id || payload.spaceId || null,
+      });
+      agentCardCache.delete(agent.id);
+      return true;
+    }
     const bullet = memoryWritebackBullet(trigger, payload);
     await appendAgentMemoryNote(agent, 'notes/work-log.md', 'Memory Writebacks', bullet);
     if (payload.memory) {

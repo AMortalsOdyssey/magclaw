@@ -320,6 +320,7 @@ export function createFeishuInboundImporter(deps = {}) {
     persistState = async () => {},
     routeThreadReplyForChannel,
     saveAttachmentBuffer,
+    scheduleAgentMemoryWriteback = () => Promise.resolve(false),
     startTaskStartupCollaboration: injectedStartTaskStartupCollaboration,
     traceIdFactory,
   } = deps;
@@ -355,6 +356,27 @@ export function createFeishuInboundImporter(deps = {}) {
       saved.push(item);
     }
     return saved;
+  }
+
+  async function writeExternalImportMemory(agentIds = [], trigger, payload = {}) {
+    const ids = [...new Set(safeArray(agentIds).map(clean).filter(Boolean))];
+    if (!ids.length) return [];
+    const writes = ids.map(async (id) => {
+      const agent = findAgent(id);
+      if (!agent) return { agentId: id, ok: false, reason: 'agent_not_found' };
+      try {
+        const ok = await scheduleAgentMemoryWriteback(agent, trigger, payload);
+        return { agentId: id, ok: Boolean(ok) };
+      } catch (error) {
+        addSystemEvent('feishu_external_memory_error', `Feishu memory write failed for ${agent.name || id}: ${clean(error?.message || error)}`, {
+          agentId: id,
+          trigger,
+          traceId: payload.externalImport?.traceId || payload.message?.metadata?.origin?.traceId || null,
+        });
+        return { agentId: id, ok: false, error: clean(error?.message || error) };
+      }
+    });
+    return Promise.all(writes);
   }
 
   async function replyInvalid(event, rawPath) {
@@ -535,7 +557,24 @@ export function createFeishuInboundImporter(deps = {}) {
       taskId: task?.id || null,
       channelId: parentMessage.spaceId,
     });
-    await routeContinuationReply(parentMessage, reply, text);
+    const routeDecision = await routeContinuationReply(parentMessage, reply, text);
+    const memoryAgentIds = safeArray(routeDecision?.targetAgentIds).length
+      ? routeDecision.targetAgentIds
+      : [
+        ...safeArray(task?.assigneeIds),
+        task?.claimedBy,
+        task?.assigneeId,
+      ];
+    await writeExternalImportMemory(memoryAgentIds, 'external_import_reply', {
+      message: reply,
+      parentMessage,
+      task,
+      channel: findChannel(parentMessage.spaceId),
+      externalImport: {
+        provider: 'feishu',
+        traceId,
+      },
+    });
     await acknowledgeImport(event, reply, () => continuationAckPayload({
       traceId,
       task,
@@ -660,6 +699,15 @@ export function createFeishuInboundImporter(deps = {}) {
     metadataObject(task).origin = message.metadata.origin;
     metadataObject(task).externalImport = message.metadata.externalImport;
     message.taskId = task?.id || message.taskId;
+    await writeExternalImportMemory(selectedAgentIds, 'external_import', {
+      message,
+      task,
+      channel: target.channel,
+      externalImport: {
+        provider: 'feishu',
+        traceId,
+      },
+    });
 
     addCollabEvent('feishu_import_created', 'Feishu message imported into MagClaw.', {
       traceId,

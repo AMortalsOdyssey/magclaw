@@ -40,6 +40,7 @@ function baseDeps(overrides = {}) {
   };
   const events = [];
   const deliveredTasks = [];
+  const memoryWrites = [];
   const deps = {
     addCollabEvent: (type, message, metadata) => events.push({ type, message, metadata }),
     addSystemEvent: (type, message, metadata) => events.push({ type, message, metadata }),
@@ -107,6 +108,10 @@ function baseDeps(overrides = {}) {
       participantAgentIds: selectedAgentIds,
       strategy: 'test',
     }),
+    scheduleAgentMemoryWriteback: async (agent, trigger, payload) => {
+      memoryWrites.push({ agent, trigger, payload });
+      return true;
+    },
     startTaskStartupCollaboration: async (task, message, selectedAgentIds) => {
       task.metadata = task.metadata || {};
       task.metadata.startupCollaboration = {
@@ -127,7 +132,7 @@ function baseDeps(overrides = {}) {
       ...extra,
     }),
   };
-  return { ...deps, ...overrides, state, events, deliveredTasks };
+  return { ...deps, ...overrides, state, events, deliveredTasks, memoryWrites };
 }
 
 test('channel import path is signed with a stable route key and rejects tampering', () => {
@@ -227,6 +232,13 @@ test('Feishu inbound import creates an external system message, task, trace id, 
   assert.deepEqual(deps.state.tasks[0].metadata.startupCollaboration.selectedAgentIds, ['agt_a', 'agt_b']);
   assert.ok(deps.deliveredTasks.length >= 1);
   assert.equal(deps.deliveredTasks[0].message.id, message.id);
+  assert.deepEqual(deps.memoryWrites.map((item) => [item.agent.id, item.trigger]), [
+    ['agt_a', 'external_import'],
+    ['agt_b', 'external_import'],
+  ]);
+  assert.equal(deps.memoryWrites[0].payload.message.id, message.id);
+  assert.equal(deps.memoryWrites[0].payload.task.id, deps.state.tasks[0].id);
+  assert.equal(deps.memoryWrites[0].payload.externalImport.traceId, 'fsc_test_trace');
   assert.match(sentMessages[0].payload.content, /fsc_test_trace/);
 });
 
