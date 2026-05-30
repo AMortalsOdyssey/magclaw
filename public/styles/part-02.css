@@ -34,6 +34,121 @@
   color: var(--warning);
 }
 
+.external-import-message {
+  border-color: #b7e4d5;
+  background: linear-gradient(180deg, #f6fffb 0%, var(--bg-card) 100%);
+}
+
+.external-import-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+.external-import-summary span,
+.external-trace-id {
+  border: 1px solid var(--border-faint);
+  background: #eef8f3;
+  color: #145844;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 2px 6px;
+}
+
+.external-import-group-tag {
+  display: inline-flex;
+  align-items: center;
+  color: #145844;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.external-import-context {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #b7e4d5;
+  background: #fbfffd;
+}
+
+.external-import-context-label {
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.external-import-context .message-markdown {
+  margin: 0;
+}
+
+.external-import-context-row {
+  display: grid;
+  gap: 4px;
+  padding: 5px 0;
+  border-top: 1px solid rgba(20, 88, 68, 0.14);
+}
+
+.external-import-context-row:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.external-import-context-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.external-import-context-row-head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #145844;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.external-import-context-row-head time {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.external-import-context-more {
+  width: 100%;
+  margin-top: 4px;
+  border: 1px dashed #8fcdb9;
+  background: #eef8f3;
+  color: #145844;
+  cursor: pointer;
+  font-weight: 900;
+  line-height: 1.4;
+}
+
+.external-import-context-full-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(65vh, 560px);
+  overflow: auto;
+  padding: 4px 2px;
+}
+
+.external-import-context-full-list .external-import-context-row {
+  border: 1px solid #b7e4d5;
+  background: #fbfffd;
+  padding: 10px;
+}
+
+.external-import-context-attachments .message-attachment-list {
+  margin-top: 4px;
+}
+
 .message-meta time {
   color: var(--text-muted);
   font-size: 11px;

@@ -14,6 +14,7 @@ function renderModal() {
     'join-link-revoke-confirm': renderJoinLinkRevokeConfirmModal,
     'server-create': renderServerCreateModal,
     'attachment-preview': renderAttachmentPreviewModal,
+    'external-import-context': renderExternalImportContextModal,
     'join-channel-discovery': renderJoinChannelDiscoveryModal,
     project: renderProjectModal,
     dm: renderDmModal,

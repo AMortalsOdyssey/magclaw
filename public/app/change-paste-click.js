@@ -464,6 +464,22 @@ document.addEventListener('click', async (event) => {
   const clickLoadingToken = beginClickLoading(action, target, localOnlyActions);
   let skipFinalRefresh = false;
   try {
+    if (action === 'copy-feishu-import-path') {
+      const channelId = target.dataset.id || selectedSpaceId;
+      const result = await api(`/api/channels/${encodeURIComponent(channelId)}/feishu-import-path`, {
+        method: 'POST',
+        body: '{}',
+      });
+      const copied = await tryCopyTextToClipboard(result.path || result.copyText || '');
+      toast(copied ? 'MagClaw Channel path copied' : 'Copy failed');
+      return;
+    }
+    if (action === 'open-external-import-context') {
+      externalImportContextState = { recordId: target.dataset.id || '' };
+      modal = 'external-import-context';
+      renderShellOrModal();
+      return;
+    }
     if (action === 'open-message-context-menu') {
       openMessageContextMenu(target.dataset.id, event, target.dataset.contextScope || 'message');
       return;
@@ -1626,6 +1642,9 @@ document.addEventListener('click', async (event) => {
         }
         if (modal === 'attachment-preview') {
           attachmentPreviewState = { attachmentId: null, loading: false, content: '', error: '' };
+        }
+        if (modal === 'external-import-context') {
+          externalImportContextState = { recordId: null };
         }
         if (modal === 'agent-start') {
           agentStartState = { agentId: null };

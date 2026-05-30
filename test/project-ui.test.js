@@ -105,6 +105,39 @@ test('unjoined channels render read-only chat controls with a join action', asyn
   assert.match(styles, /\.space-btn\.unjoined-channel[\s\S]*\.channel-name/);
 });
 
+test('channel header exposes copy MagClaw Channel path without a full render', async () => {
+  const app = await readAppSource();
+  const source = app.slice(app.indexOf('function renderSpace()'), app.indexOf('function renderDmHeader()'));
+  const externalImportSource = app.slice(app.indexOf('function renderExternalImportMessage'), app.indexOf('function replyThreadIcon'));
+  const clickSource = app.slice(app.indexOf("if (action === 'copy-feishu-import-path')"), app.indexOf("if (action === 'open-message-context-menu')"));
+
+  assert.match(source, /data-action="copy-feishu-import-path"/);
+  assert.match(source, /一键复制 MagClaw Channel 路径/);
+  assert.match(source, />飞书路径<\/span>/);
+  assert.match(source, /channelActionIcon\('copy'\)/);
+  assert.match(externalImportSource, /Imported from Feishu/);
+  assert.match(externalImportSource, /renderExternalImportBody\(message\)/);
+  assert.match(externalImportSource, /renderExternalImportIdentity\(message\)/);
+  assert.match(externalImportSource, /reply-count-chip/);
+  assert.match(externalImportSource, /renderMessageFooter\(\{ replyCountChip, receiptTray \}\)/);
+  assert.doesNotMatch(externalImportSource, /renderActorAvatar/);
+  assert.doesNotMatch(externalImportSource, /data-action="select-(?:human|agent)"/);
+  assert.match(app, /function externalImportBodySections/);
+  assert.match(app, /const EXTERNAL_IMPORT_CONTEXT_PREVIEW_LIMIT = 5/);
+  assert.match(app, /function renderExternalImportContextPreview/);
+  assert.match(app, /data-action="open-external-import-context"/);
+  assert.match(app, /'external-import-context': renderExternalImportContextModal/);
+  assert.match(app, /function renderExternalImportContextModal/);
+  assert.match(app, /external-import-context-full-list/);
+  assert.match(app, /external-import-context/);
+  assert.match(app, /function externalImportDisplayName/);
+  assert.match(app, /metadata\.feishu\.contextRecords/);
+  assert.match(clickSource, /\/api\/channels\/\$\{encodeURIComponent\(channelId\)\}\/feishu-import-path/);
+  assert.match(clickSource, /tryCopyTextToClipboard\(result\.path \|\| result\.copyText/);
+  assert.match(clickSource, /toast\(copied \? 'MagClaw Channel path copied' : 'Copy failed'\)/);
+  assert.doesNotMatch(clickSource, /render\(\)/);
+});
+
 test('members settings expose role-aware invitation controls', async () => {
   const app = await readAppSource();
   const accountSettingsSource = app.slice(app.indexOf('function renderAccountSettingsTab()'), app.indexOf('function normalizeInviteEmailValue(value)'));

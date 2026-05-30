@@ -970,6 +970,7 @@ function renderHumanDetail(human) {
 }
 
 function renderReply(reply) {
+  if (reply.metadata?.systemKind === 'external_import_reply') return renderExternalImportMessage(reply, { compact: true, threadContext: true });
 	  const authorClass = ['agent', 'human', 'system'].includes(reply.authorType) ? reply.authorType : 'unknown';
 	  const agentAuthorAttr = reply.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(reply.authorId)}"` : '';
 	  const highlighted = selectedSavedRecordId === reply.id ? ' highlighted' : '';

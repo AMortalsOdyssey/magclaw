@@ -130,6 +130,7 @@ function renderSpace() {
   const actions = selectedSpaceType === 'channel' ? `
     ${canWriteChannel ? `
       ${showProjectFolders ? `<button class="channel-action channel-action-icon-only channel-action-project" type="button" data-action="open-modal" data-modal="project" data-tooltip="Project folders" aria-label="Open project folders">${channelActionIcon('folder')}</button>` : ''}
+      <button class="channel-action channel-action-feishu-path channel-action-context" type="button" data-action="copy-feishu-import-path" data-id="${escapeHtml(space.id)}" data-tooltip="一键复制 MagClaw Channel 路径" aria-label="一键复制 MagClaw Channel 路径">${channelActionIcon('copy')}<span>飞书路径</span></button>
       <button class="channel-action channel-action-task" type="button" data-action="open-modal" data-modal="task" data-tooltip="Create task" aria-label="Create task">${channelActionIcon('task')}<span>Task</span></button>
       <button class="channel-action channel-action-icon-only channel-action-edit" type="button" data-action="open-modal" data-modal="edit-channel" data-tooltip="Edit channel" aria-label="Edit channel">${channelActionIcon('settings')}</button>
       ${allChannelSelected ? '' : `<button class="channel-action channel-action-leave" type="button" data-action="leave-channel" data-tooltip="Leave channel" aria-label="Leave channel">${channelActionIcon('leave')}<span>Leave</span></button>`}
@@ -1860,6 +1861,16 @@ function renderRecordKey(record) {
     reactions: record?.reactions || [],
     followedBy: record?.followedBy || [],
     receipts: deliveryReceiptSignature(record),
+    systemKind: record?.metadata?.systemKind || '',
+    originProvider: record?.metadata?.origin?.provider || '',
+    originTraceId: record?.metadata?.origin?.traceId || '',
+    originSenderName: record?.metadata?.origin?.senderName || '',
+    originSenderAvatar: record?.metadata?.origin?.senderAvatar || '',
+    originChatName: record?.metadata?.origin?.chatName || '',
+    originChatType: record?.metadata?.origin?.chatType || '',
+    originChatAvatar: record?.metadata?.origin?.chatAvatar || '',
+    feishuContextRecords: record?.metadata?.feishu?.contextRecords || [],
+    externalDelivery: record?.metadata?.externalDelivery || {},
     highlighted: threadMessageId === record?.id || selectedSavedRecordId === record?.id,
     streamStatus: messageIsStreaming(record) ? 'streaming' : '',
   });
@@ -1881,6 +1892,264 @@ function renderSystemEvent(message) {
     <div class="system-event-row" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-render-key="${escapeHtml(renderRecordKey(message))}">
       <span>${parseMentions(plainActorText(message.body || ''))}</span>
       <time>${fmtTime(message.createdAt)}</time>
+    </div>
+  `;
+}
+
+function cleanExternalImportText(value) {
+  return String(value || '')
+    .replace(/<at[^>]*>(.*?)<\/at>/gi, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .trim();
+}
+
+function stripExternalImportRoutePath(value) {
+  return String(value || '')
+    .replace(/mc:\/\/magclaw\/server\/\S+\/channel\/\S+/g, '')
+    .replace(/\s+([,，。:：])/g, '$1')
+    .trim();
+}
+
+function externalImportDisplayName(value) {
+  const text = cleanExternalImportText(value);
+  if (/^(oc|ou|on|union|user)_/i.test(text)) return '';
+  return text;
+}
+
+function externalImportDisplayBody(message) {
+  const body = String(message?.body || '');
+  const lines = body.split(/\r?\n/);
+  const cleaned = [];
+  let skipNextEmptyInstruction = false;
+  for (const rawLine of lines) {
+    const line = stripExternalImportRoutePath(cleanExternalImportText(rawLine));
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (skipNextEmptyInstruction) continue;
+      cleaned.push('');
+      continue;
+    }
+    if (/^Imported from Feishu$/i.test(trimmed)) continue;
+    if (/^来自飞书的导入任务$/.test(trimmed)) continue;
+    if (/^(来源|触发人|目标)：/.test(trimmed)) continue;
+    if (/^\s*[-*]\s*[^:：]+[:：]\s*\[无法读取飞书/.test(trimmed)) continue;
+    if (/^\s*[-*]\s*\[无法读取飞书/.test(trimmed)) continue;
+    if (/^\s*[-*]\s*[^:：]+[:：]\s*$/.test(trimmed)) continue;
+    if (/^指令[:：]\s*$/.test(trimmed)) {
+      skipNextEmptyInstruction = true;
+      continue;
+    }
+    if (/^指令[:：]\s*$/.test(cleanExternalImportText(trimmed.replace(/<p>\s*<\/p>/gi, '')))) continue;
+    skipNextEmptyInstruction = false;
+    cleaned.push(line);
+  }
+  return cleaned.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function externalImportBodySections(message) {
+  const body = externalImportDisplayBody(message);
+  const match = body.match(/(?:^|\n)Context:\n?/);
+  if (!match) return { lead: body, context: '' };
+  return {
+    lead: body.slice(0, match.index).trim(),
+    context: body.slice(match.index + match[0].length).trim(),
+  };
+}
+
+const EXTERNAL_IMPORT_CONTEXT_PREVIEW_LIMIT = 5;
+
+function externalImportIsGroup(origin = {}) {
+  const chatType = String(origin.chatType || origin.chatMode || '').toLowerCase();
+  if (chatType === 'p2p' || chatType === 'direct' || chatType === 'private') return false;
+  return Boolean(
+    chatType.includes('group')
+      || chatType.includes('topic')
+      || externalImportDisplayName(origin.chatName || '')
+      || String(origin.chatId || '').startsWith('oc_')
+  );
+}
+
+function externalImportContextRecordFromLine(line = '', index = 0) {
+  const match = String(line || '').match(/^\s*[-*]\s*([^:：]+)[:：]\s*(.+)$/);
+  if (!match) return null;
+  return {
+    id: `line_${index}`,
+    author: cleanExternalImportText(match[1]),
+    text: cleanExternalImportText(match[2]),
+    createdAt: '',
+    attachmentIds: [],
+  };
+}
+
+function externalImportRecordAttachmentIds(message = {}, record = {}) {
+  const explicit = Array.isArray(record.attachmentIds) ? record.attachmentIds.map(String).filter(Boolean) : [];
+  if (explicit.length) return explicit;
+  const sourceId = String(record.id || record.messageId || '').trim();
+  if (!sourceId) return [];
+  return (message.attachmentIds || []).filter((id) => {
+    const attachment = byId(appState?.attachments, id);
+    const origin = attachment?.metadata?.origin || {};
+    return String(origin.sourceMessageId || origin.messageId || '').trim() === sourceId;
+  });
+}
+
+function normalizeExternalImportContextRecord(message = {}, record = {}, index = 0) {
+  const text = cleanExternalImportText(record.text || record.body || record.content || '');
+  if (!text) return null;
+  return {
+    id: String(record.id || record.messageId || `context_${index}`).trim(),
+    author: externalImportDisplayName(record.author || record.senderName || record.sender?.name || `Message ${index + 1}`) || `Message ${index + 1}`,
+    text,
+    createdAt: String(record.createdAt || record.time || record.timestamp || '').trim(),
+    attachmentIds: externalImportRecordAttachmentIds(message, record),
+    _index: index,
+  };
+}
+
+function externalImportContextRecords(message = {}) {
+  const metadata = message?.metadata || {};
+  const storedRecords = Array.isArray(metadata.feishu?.contextRecords) ? metadata.feishu.contextRecords : [];
+  if (storedRecords.length) {
+    return storedRecords
+      .map((record, index) => normalizeExternalImportContextRecord(message, record, index))
+      .filter(Boolean);
+  }
+  const { context } = externalImportBodySections(message);
+  return String(context || '')
+    .split(/\r?\n/)
+    .map(externalImportContextRecordFromLine)
+    .filter(Boolean)
+    .map((record, index) => normalizeExternalImportContextRecord(message, record, index))
+    .filter(Boolean);
+}
+
+function externalImportSortedContextRecords(message = {}) {
+  return externalImportContextRecords(message).sort((left, right) => {
+    const leftTime = Date.parse(left.createdAt || '');
+    const rightTime = Date.parse(right.createdAt || '');
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return rightTime - leftTime;
+    if (Number.isFinite(rightTime) !== Number.isFinite(leftTime)) return Number.isFinite(rightTime) ? 1 : -1;
+    return right._index - left._index;
+  });
+}
+
+function renderExternalImportContextRecord(message = {}, record = {}, options = {}) {
+  const attachmentHtml = record.attachmentIds?.length ? attachmentLinks(record.attachmentIds) : '';
+  return `
+    <div class="external-import-context-row${options.full ? ' is-full' : ''}">
+      <div class="external-import-context-row-head">
+        <strong>${escapeHtml(record.author)}</strong>
+        ${record.createdAt ? `<time>${fmtTime(record.createdAt)}</time>` : ''}
+      </div>
+      <div class="message-markdown">${renderMarkdownWithMentions(record.text)}</div>
+      ${attachmentHtml ? `<div class="external-import-context-attachments">${attachmentHtml}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderExternalImportContextPreview(message = {}, fallbackContext = '') {
+  const records = externalImportSortedContextRecords(message);
+  if (!records.length && !fallbackContext) return '';
+  const visible = records.slice(0, EXTERNAL_IMPORT_CONTEXT_PREVIEW_LIMIT);
+  const hiddenCount = Math.max(0, records.length - visible.length);
+  return `
+    <div class="external-import-context">
+      <div class="external-import-context-label">Context</div>
+      ${records.length
+        ? visible.map((record) => renderExternalImportContextRecord(message, record)).join('')
+        : `<div class="message-markdown">${renderMarkdownWithMentions(fallbackContext)}</div>`}
+      ${hiddenCount ? `<button class="external-import-context-more" type="button" data-action="open-external-import-context" data-id="${escapeHtml(message.id)}" aria-label="Show all Feishu context">...</button>` : ''}
+    </div>
+  `;
+}
+
+function renderExternalImportBody(message) {
+  const { lead, context } = externalImportBodySections(message);
+  return `
+    ${lead ? `<div class="message-markdown">${renderMarkdownWithMentions(lead)}</div>` : ''}
+    ${renderExternalImportContextPreview(message, context)}
+  `;
+}
+
+function externalImportSourceLabel(origin = {}) {
+  const sender = externalImportDisplayName(origin.senderName || '');
+  const chat = externalImportDisplayName(origin.chatName || '');
+  return sender || chat || (externalImportIsGroup(origin) ? 'Feishu group' : 'Feishu direct message');
+}
+
+function renderExternalImportAvatar(message = {}) {
+  const origin = message?.metadata?.origin || {};
+  const isGroup = externalImportIsGroup(origin);
+  const chat = externalImportDisplayName(origin.chatName || '');
+  const avatar = isGroup ? (origin.chatAvatar || '') : (origin.senderAvatar || origin.chatAvatar || '');
+  const label = externalImportSourceLabel(origin);
+  if (avatar) {
+    return `<div class="avatar external-import-avatar"><img src="${escapeHtml(avatar)}" class="avatar-inner avatar-img" alt="${escapeHtml(isGroup && chat ? chat : label)}"></div>`;
+  }
+  const initials = (isGroup && chat ? chat : label).split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase() || 'FS';
+  return `<div class="avatar external-import-avatar"><span class="avatar-inner">${escapeHtml(initials)}</span></div>`;
+}
+
+function renderExternalImportIdentity(message, importedLabel = 'Imported from Feishu') {
+  const origin = message?.metadata?.origin || {};
+  const source = externalImportSourceLabel(origin);
+  const chat = externalImportDisplayName(origin.chatName || '');
+  const groupTag = externalImportIsGroup(origin) && chat ? `<span class="external-import-group-tag">#${escapeHtml(chat)}</span>` : '';
+  return `
+    <strong>${escapeHtml(source)}</strong>
+    ${groupTag}
+    <span class="sender-role">${escapeHtml(importedLabel)}</span>
+  `;
+}
+
+function renderExternalImportMessage(message, options = {}) {
+  const feishu = message?.metadata?.feishu || {};
+  const attachmentCount = Number(feishu.attachmentCount || message.attachmentIds?.length || 0);
+  const isReply = Boolean(message.parentMessageId);
+  const replyCount = Number(message.replyCount || 0);
+  const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
+  const replyCountChip = !isReply && !options.compact && replyCount ? `<button class="reply-count-chip" type="button" data-action="open-thread" data-id="${escapeHtml(message.id)}">${replyActionLabel}</button>` : '';
+  const receiptTray = renderAgentReceiptTray(message);
+  const importedLabel = 'Imported from Feishu';
+  const tagName = isReply ? 'article' : 'section';
+  const idAttr = isReply ? `reply-${escapeHtml(message.id)}` : `message-${escapeHtml(message.id)}`;
+  const recordAttr = isReply ? `data-reply-id="${escapeHtml(message.id)}"` : `data-message-id="${escapeHtml(message.id)}"`;
+  const compact = options.compact ? ' compact' : '';
+  return `
+    <${tagName} class="message-card magclaw-message author-system external-import-message${isReply ? ' reply-card' : ''}${compact}${receiptTray ? ' has-agent-receipts' : ''}" id="${idAttr}" ${recordAttr} data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}">
+      ${renderExternalImportAvatar(message)}
+      <div class="message-body">
+        <div class="message-meta">
+          ${renderExternalImportIdentity(message)}
+          <time>${fmtTime(message.createdAt)}</time>
+        </div>
+        ${attachmentCount ? `<div class="external-import-summary"><span>${escapeHtml(attachmentCount)} attachment${attachmentCount === 1 ? '' : 's'}</span></div>` : ''}
+        ${renderExternalImportBody(message)}
+        <div class="message-attachments">${attachmentLinks(message.attachmentIds)}</div>
+        ${renderMessageActions(message, { threadContext: isReply || options.threadContext || options.compact, compact: options.compact })}
+        ${renderMessageFooter({ replyCountChip, receiptTray })}
+      </div>
+    </${tagName}>
+  `;
+}
+
+function renderExternalImportContextModal() {
+  const record = conversationRecord(externalImportContextState.recordId || '');
+  if (!record) return modalHeader('Feishu context', 'Message not found');
+  const origin = record?.metadata?.origin || {};
+  const source = externalImportSourceLabel(origin);
+  const chat = externalImportDisplayName(origin.chatName || '');
+  const records = externalImportSortedContextRecords(record);
+  return `
+    ${modalHeader('Feishu context', chat && externalImportIsGroup(origin) ? `${source} #${chat}` : source)}
+    <div class="external-import-context-full-list">
+      ${records.length
+        ? records.map((item) => renderExternalImportContextRecord(record, item, { full: true })).join('')
+        : '<div class="empty-box small">No context records.</div>'}
     </div>
   `;
 }
@@ -1930,6 +2199,7 @@ function renderMessageFooter({ replyCountChip = '', receiptTray = '' } = {}) {
 
 function renderMessage(message, options = {}) {
   if (message.authorType === 'system' && message.eventType) return renderSystemEvent(message);
+  if (message.metadata?.systemKind === 'external_import') return renderExternalImportMessage(message);
   const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
   const replyCount = Number(message.replyCount || 0);
   const highlighted = threadMessageId === message.id || selectedSavedRecordId === message.id ? ' highlighted' : '';

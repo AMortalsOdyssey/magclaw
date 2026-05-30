@@ -196,6 +196,7 @@ async function prepareDocumentClick(event) {
     'computer-display-name',
     'open-thread',
     'open-attachment-preview',
+    'open-external-import-context',
     'open-search-result',
     'open-search-entity',
     'open-saved-message',

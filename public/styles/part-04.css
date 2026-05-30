@@ -1252,6 +1252,10 @@
   --channel-action-hover-bg: #c4e897;
 }
 
+.channel-action-feishu-path {
+  min-width: 86px;
+}
+
 .channel-action-edit {
   --channel-action-bg: var(--identity-soft);
   --channel-action-fg: var(--identity-text);
