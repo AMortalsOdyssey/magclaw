@@ -231,6 +231,112 @@ test('agent context pack exposes current image attachments and the target agent 
   assert.match(rendered, /source=clipboard/);
 });
 
+test('agent context pack renders Feishu external identities for imported thread work', () => {
+  const state = {
+    humans: [{ id: 'hum_local', name: 'You', role: 'admin' }],
+    agents: [{ id: 'agt_codex', name: 'Codex Local', runtime: 'codex', status: 'idle' }],
+    channels: [{
+      id: 'chan_all',
+      name: 'all',
+      humanIds: ['hum_local'],
+      agentIds: ['agt_codex'],
+      memberIds: ['hum_local', 'agt_codex'],
+    }],
+    dms: [],
+    messages: [{
+      id: 'msg_feishu_import',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'system',
+      authorId: 'system',
+      body: 'Trace ID：fsc_test_001\nInstruction: 帮我总结这个讨论',
+      attachmentIds: ['att_image'],
+      taskId: 'task_feishu',
+      createdAt: '2026-05-31T09:00:00.000Z',
+      metadata: {
+        systemKind: 'external_import',
+        origin: {
+          provider: 'feishu',
+          traceId: 'fsc_test_001',
+          chatId: 'oc_growth',
+          chatName: '增长项目群',
+          chatType: 'group',
+          senderName: 'JHB',
+          senderType: 'user',
+          senderId: 'ou_jhb',
+          triggerMessageId: 'om_import',
+          rootId: 'om_root',
+          threadId: 'omt_topic',
+        },
+        externalImport: {
+          provider: 'feishu',
+          replyPolicy: 'thread_all',
+          syncEnabled: true,
+        },
+        feishu: {
+          contextRecords: [
+            {
+              id: 'om_a',
+              author: 'JHB',
+              openId: 'ou_jhb',
+              senderType: 'user',
+              text: '我们今天先把飞书上下文导入做好。',
+              attachmentIds: ['att_image'],
+            },
+            {
+              id: 'om_bot',
+              author: 'Project Bot',
+              appId: 'cli_project',
+              senderType: 'app',
+              isBot: true,
+              text: '提醒：下午评审。',
+            },
+          ],
+          mentions: [
+            { name: 'Alice', openId: 'ou_alice', type: 'user' },
+          ],
+        },
+      },
+    }],
+    replies: [],
+    tasks: [{
+      id: 'task_feishu',
+      number: 31,
+      title: '帮我总结这个讨论',
+      status: 'in_progress',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      claimedBy: 'agt_codex',
+      assigneeIds: ['agt_codex'],
+      sourceMessageId: 'msg_feishu_import',
+      threadMessageId: 'msg_feishu_import',
+    }],
+    attachments: [{
+      id: 'att_image',
+      name: 'feishu-image.png',
+      type: 'image/png',
+      bytes: 2048,
+      source: 'feishu',
+    }],
+    events: [],
+  };
+
+  const pack = buildAgentContextPack({
+    state,
+    agentId: 'agt_codex',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    currentMessage: state.messages[0],
+    limits: { recentMessages: 5, tasks: 5, attachments: 5 },
+  });
+
+  const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_codex' });
+  assert.match(rendered, /external Feishu: trace=fsc_test_001 chat="增长项目群" type=group sender=JHB/);
+  assert.match(rendered, /speakers=@JHB \[user open_id=ou_jhb attachments=1\], @Project Bot \[bot app_id=cli_project\]/);
+  assert.match(rendered, /mentions=@Alice \[user open_id=ou_alice\]/);
+  assert.match(rendered, /If addressing a Feishu participant, use their display name/);
+});
+
 test('agent context pack prioritizes current-message attachments over older thread images', () => {
   const state = {
     humans: [{ id: 'hum_local', name: 'You', role: 'owner' }],

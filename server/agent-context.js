@@ -301,6 +301,78 @@ function spaceVisibility(spaceType, space) {
   return 'public';
 }
 
+function firstText(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function feishuKindForIdentity(identity = {}) {
+  const type = String(identity.senderType || identity.type || '').trim().toLowerCase();
+  if (identity.isBot || identity.appId || ['app', 'bot'].includes(type)) return 'bot';
+  if (identity.openId || identity.unionId || identity.userId || ['user', 'human'].includes(type)) return 'user';
+  return type || 'external';
+}
+
+function sanitizeFeishuIdentity(identity = {}) {
+  const senderId = firstText(identity.senderId, identity.authorId, identity.id);
+  const appId = firstText(identity.appId, identity.senderAppId, senderId.startsWith('cli_') ? senderId : '');
+  const openId = firstText(identity.openId, identity.open_id, identity.senderOpenId, senderId.startsWith('ou_') ? senderId : '');
+  const result = {
+    name: firstText(identity.name, identity.author, identity.senderName, identity.displayName, senderId),
+    kind: feishuKindForIdentity({ ...identity, appId, openId }),
+    openId,
+    unionId: firstText(identity.unionId, identity.union_id),
+    userId: firstText(identity.userId, identity.user_id),
+    appId,
+    id: senderId,
+    text: compactText(identity.text || identity.body || identity.content || '', 180),
+    attachmentIds: asArray(identity.attachmentIds).map(String).filter(Boolean),
+  };
+  if (!result.name && !result.openId && !result.userId && !result.appId && !result.id) return null;
+  return result;
+}
+
+function sanitizeExternalImportMetadata(metadata = {}) {
+  const origin = metadata.origin || {};
+  const externalImport = metadata.externalImport || {};
+  const provider = firstText(externalImport.provider, origin.provider, metadata.provider).toLowerCase();
+  const systemKind = firstText(metadata.systemKind);
+  if (provider !== 'feishu' && !['external_import', 'external_import_reply'].includes(systemKind)) return null;
+  const feishu = metadata.feishu || {};
+  return {
+    provider: provider || 'feishu',
+    systemKind,
+    traceId: firstText(origin.traceId, externalImport.traceId, metadata.traceId),
+    chatId: firstText(origin.chatId, feishu.chatId),
+    chatName: firstText(origin.chatName, feishu.chatName),
+    chatType: firstText(origin.chatType, feishu.chatType),
+    triggerMessageId: firstText(origin.triggerMessageId, feishu.triggerMessageId),
+    rootId: firstText(origin.rootId, feishu.rootId),
+    threadId: firstText(origin.threadId, feishu.threadId),
+    sender: sanitizeFeishuIdentity({
+      name: origin.senderName,
+      senderName: origin.senderName,
+      senderId: origin.senderId,
+      senderType: origin.senderType,
+      openId: origin.senderOpenId,
+      userId: origin.senderUserId,
+      unionId: origin.senderUnionId,
+      appId: origin.senderAppId,
+    }),
+    contextRecords: asArray(feishu.contextRecords || externalImport.contextRecords)
+      .map(sanitizeFeishuIdentity)
+      .filter(Boolean)
+      .slice(0, 12),
+    mentions: asArray(feishu.mentions || externalImport.mentions)
+      .map(sanitizeFeishuIdentity)
+      .filter(Boolean)
+      .slice(0, 12),
+  };
+}
+
 function sanitizeRecord(record) {
   if (!record) return null;
   const references = normalizeStoredConversationReferences(record.references || record.metadata?.references);
@@ -324,6 +396,7 @@ function sanitizeRecord(record) {
     mentionedAgentIds: asArray(record.mentionedAgentIds).map(String),
     mentionedHumanIds: asArray(record.mentionedHumanIds).map(String),
     references,
+    externalImport: sanitizeExternalImportMetadata(record.metadata || {}),
   };
 }
 
@@ -545,6 +618,65 @@ function renderTime(value) {
   return date.toISOString().replace('T', ' ').slice(0, 16);
 }
 
+function renderFeishuIdentity(identity) {
+  if (!identity) return '';
+  const details = [
+    identity.kind || 'external',
+    identity.openId ? `open_id=${identity.openId}` : '',
+    identity.userId ? `user_id=${identity.userId}` : '',
+    identity.unionId ? `union_id=${identity.unionId}` : '',
+    identity.appId ? `app_id=${identity.appId}` : '',
+    identity.attachmentIds?.length ? `attachments=${identity.attachmentIds.length}` : '',
+  ].filter(Boolean).join(' ');
+  return `@${identity.name || identity.openId || identity.userId || identity.appId || identity.id}${details ? ` [${details}]` : ''}`;
+}
+
+function uniqueFeishuIdentities(identities) {
+  const byKey = new Map();
+  const result = [];
+  for (const identity of asArray(identities)) {
+    if (!identity) continue;
+    const key = identity.openId || identity.userId || identity.unionId || identity.appId || identity.id || identity.name;
+    if (!key) continue;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.attachmentIds = [...new Set([...asArray(existing.attachmentIds), ...asArray(identity.attachmentIds)])];
+      if (!existing.text && identity.text) existing.text = identity.text;
+      continue;
+    }
+    byKey.set(key, identity);
+    result.push(identity);
+  }
+  return result;
+}
+
+function renderExternalImportDetails(record) {
+  const external = record?.externalImport;
+  if (!external || external.provider !== 'feishu') return '';
+  const sender = renderFeishuIdentity(external.sender);
+  const header = [
+    `trace=${external.traceId || '-'}`,
+    external.chatName ? `chat="${external.chatName}"` : external.chatId ? `chat=${external.chatId}` : '',
+    external.chatType ? `type=${external.chatType}` : '',
+    sender ? `sender=${external.sender?.name || sender}` : '',
+    external.rootId ? `root=${external.rootId}` : '',
+    external.threadId ? `thread=${external.threadId}` : '',
+  ].filter(Boolean).join(' ');
+  const speakers = uniqueFeishuIdentities([
+    external.sender,
+    ...asArray(external.contextRecords),
+  ]);
+  const lines = [`  external Feishu: ${header}`];
+  if (speakers.length) {
+    lines.push(`  speakers=${speakers.map(renderFeishuIdentity).join(', ')}`);
+  }
+  if (external.mentions?.length) {
+    lines.push(`  mentions=${external.mentions.map(renderFeishuIdentity).join(', ')}`);
+  }
+  lines.push('  Feishu reply guidance: If addressing a Feishu participant, use their display name (for example @JHB) when it prevents ambiguity. Keep route keys and internal routing hidden.');
+  return `\n${lines.join('\n')}`;
+}
+
 function messageLine(state, record, targetAgentId) {
   const addressed = asArray(record?.mentionedAgentIds).includes(targetAgentId) ? ' mentioned you' : '';
   const refs = asArray(record?.localReferences);
@@ -564,7 +696,7 @@ function messageLine(state, record, targetAgentId) {
     `time=${renderTime(record.createdAt)}`,
     `type=${record.authorType}`,
   ].filter(Boolean).join(' ');
-  return `[${header}] ${renderActor(state, record.authorId)}${addressed}: ${renderMentions(state, compactText(record.body, 420))}${refText}${conversationRefText}`;
+  return `[${header}] ${renderActor(state, record.authorId)}${addressed}: ${renderMentions(state, compactText(record.body, 420))}${refText}${conversationRefText}${renderExternalImportDetails(record)}`;
 }
 
 function conversationRecordById(state, id) {
