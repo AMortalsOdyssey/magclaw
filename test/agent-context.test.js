@@ -332,8 +332,9 @@ test('agent context pack renders Feishu external identities for imported thread 
 
   const rendered = renderAgentContextPack(pack, { targetAgentId: 'agt_codex' });
   assert.match(rendered, /external Feishu: trace=fsc_test_001 chat="增长项目群" type=group sender=JHB/);
-  assert.match(rendered, /speakers=@JHB \[user open_id=ou_jhb attachments=1\], @Project Bot \[bot app_id=cli_project\]/);
-  assert.match(rendered, /mentions=@Alice \[user open_id=ou_alice\]/);
+  assert.match(rendered, /speakers=@JHB \[user open_id=ou_jh\*\*\*\*b attachments=1\], @Project Bot \[bot app_id=cli_proj\*\*\*\*ect\]/);
+  assert.match(rendered, /mentions=@Alice \[user open_id=ou_ali\*\*\*\*ce\]/);
+  assert.doesNotMatch(rendered, /open_id=ou_jhb|open_id=ou_alice|app_id=cli_project/);
   assert.match(rendered, /If addressing a Feishu participant, use their display name/);
 });
 

@@ -101,9 +101,12 @@ test('Feishu external memory writes daily task people and entrypoint documents t
   assert.ok(relPaths.includes('MEMORY.md'));
   assert.ok(relPaths.includes('notes/feishu/daily/2026-05-29.md'));
   assert.ok(relPaths.includes('notes/feishu/tasks/fsc_20260529_memory.md'));
-  assert.ok(relPaths.includes('notes/feishu/people/feishu_ou_jhb.md'));
-  assert.ok(relPaths.includes('notes/feishu/people/feishu_ou_alice.md'));
-  assert.ok(relPaths.includes('notes/feishu/people/feishu_cli_reminder.md'));
+  assert.ok(relPaths.some((relPath) => /^notes\/feishu\/people\/feishu_ou_jh_b_[a-z0-9]+\.md$/.test(relPath)));
+  const alicePath = relPaths.find((relPath) => /^notes\/feishu\/people\/feishu_ou_ali_ce_[a-z0-9]+\.md$/.test(relPath));
+  const reminderPath = relPaths.find((relPath) => /^notes\/feishu\/people\/feishu_cli_remi_nder_[a-z0-9]+\.md$/.test(relPath));
+  assert.ok(alicePath);
+  assert.ok(reminderPath);
+  assert.ok(!relPaths.some((relPath) => /feishu_ou_alice\.md|feishu_cli_reminder\.md/.test(relPath)));
 
   const docs = applyOperations(operations);
   assert.match(docs['MEMORY.md'], /notes\/feishu\/tasks\/fsc_20260529_memory\.md/);
@@ -111,11 +114,15 @@ test('Feishu external memory writes daily task people and entrypoint documents t
   assert.match(docs['notes/feishu/tasks/fsc_20260529_memory.md'], /Trace ID: fsc_20260529_memory/);
   assert.match(docs['notes/feishu/tasks/fsc_20260529_memory.md'], /JHB.*请总结增长方案/);
   assert.match(docs['notes/feishu/tasks/fsc_20260529_memory.md'], /Alice.*负责增长数据看板/);
-  assert.match(docs['notes/feishu/people/feishu_ou_alice.md'], /负责增长数据看板/);
-  assert.match(docs['notes/feishu/people/feishu_cli_reminder.md'], /bot/);
+  assert.match(docs[alicePath], /负责增长数据看板/);
+  assert.match(docs[alicePath], /open_id=ou_ali\*\*\*\*ce/);
+  assert.doesNotMatch(docs[alicePath], /open_id=ou_alice/);
+  assert.match(docs[reminderPath], /bot/);
+  assert.match(docs[reminderPath], /app_id=cli_remi\*\*\*\*nder/);
+  assert.doesNotMatch(docs[reminderPath], /app_id=cli_reminder/);
 
   const recall = searchFeishuExternalMemoryDocuments(docs, 'Alice 负责增长数据看板', { limit: 3 });
-  assert.equal(recall[0].relPath, 'notes/feishu/people/feishu_ou_alice.md');
+  assert.equal(recall[0].relPath, alicePath);
   assert.match(recall[0].preview, /负责增长数据看板/);
 });
 
@@ -147,8 +154,29 @@ test('collab memory manager applies Feishu external memory operations through ma
 
   assert.ok(operations.some((item) => item.operation.target.relPath === 'MEMORY.md'));
   assert.ok(operations.some((item) => item.operation.target.relPath === 'notes/feishu/tasks/fsc_20260529_memory.md'));
-  assert.ok(operations.some((item) => item.operation.target.relPath === 'notes/feishu/people/feishu_ou_alice.md'));
+  assert.ok(operations.some((item) => /^notes\/feishu\/people\/feishu_ou_ali_ce_[a-z0-9]+\.md$/.test(item.operation.target.relPath)));
   assert.ok(operations.every((item) => item.options.sourceTrigger === 'feishu_external_memory'));
   assert.equal(events.at(-1).type, 'agent_memory_writeback');
   assert.equal(events.at(-1).metadata.trigger, 'external_import');
+});
+
+test('Feishu external memory unresolved identities use one masked display label', () => {
+  const payload = sampleFeishuPayload();
+  payload.message.metadata.origin.senderName = 'u_hidden_sender_1234567890';
+  payload.message.metadata.origin.senderOpenId = 'ou_hidden_sender_1234567890';
+  payload.message.metadata.origin.senderUserId = 'u_hidden_sender_1234567890';
+  payload.message.metadata.feishu.contextRecords = [];
+  payload.message.metadata.feishu.mentions = [];
+
+  const operations = buildFeishuExternalMemoryOperations({
+    trigger: 'external_import',
+    payload,
+    now: () => '2026-05-29T08:01:00.000Z',
+  });
+  const docs = applyOperations(operations);
+  const personPath = Object.keys(docs).find((relPath) => /^notes\/feishu\/people\/feishu_ou_hidd_7890_[a-z0-9]+\.md$/.test(relPath));
+  assert.ok(personPath);
+  assert.match(docs[personPath], /Feishu user u_hidd\*\*\*\*7890 \(open_id=ou_hidd\*\*\*\*7890\)/);
+  assert.doesNotMatch(docs[personPath], /Feishu user Feishu user/);
+  assert.doesNotMatch(docs[personPath], /ou_hidden_sender_1234567890|u_hidden_sender_1234567890/);
 });

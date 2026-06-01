@@ -1,4 +1,8 @@
 import { importAckPayload, textPayload, threadReplyPayload } from './cards.js';
+import {
+  isLikelyFeishuId,
+  safeFeishuDisplayName,
+} from './identity-display.js';
 
 function parseJson(value) {
   if (!value) return {};
@@ -105,7 +109,7 @@ function textFromPostItems(items = []) {
 
 function mentionNameLooksUnreadable(value = '') {
   const text = cleanText(value).replace(/^@+/, '');
-  return !text || /^_?user_\d+$/i.test(text) || /^(ou|oc|on|union|user)_/i.test(text);
+  return !text || /^_?user_\d+$/i.test(text) || isLikelyFeishuId(text);
 }
 
 function readableMentionName(value = '') {
@@ -113,8 +117,12 @@ function readableMentionName(value = '') {
   return mentionNameLooksUnreadable(text) ? '' : text;
 }
 
-function unresolvedMentionLabel() {
-  return '无法读取飞书用户或 Bot 名称，请申请飞书通讯录权限';
+function unresolvedMentionLabel(id = '') {
+  return safeFeishuDisplayName('', {
+    fallbackId: id,
+    kind: 'user',
+    fallback: '无法读取飞书用户或 Bot 名称，请申请飞书通讯录权限',
+  });
 }
 
 function mentionToken(value = '') {
@@ -254,6 +262,29 @@ function threadMessageId(message = {}) {
 }
 
 function senderName(message = {}) {
+  const sender = message.sender || {};
+  const senderId = sender.sender_id || sender.senderId || {};
+  const explicit = cleanText(sender.name || sender.sender_name || sender.senderName || '');
+  const fallbackId = cleanText(
+    senderId.user_id
+      || sender.user_id
+      || sender.userId
+      || sender.id
+      || senderId.open_id
+      || sender.open_id
+      || sender.openId
+      || senderId.app_id
+      || sender.app_id
+      || sender.appId
+      || '',
+  );
+  if (explicit || fallbackId) {
+    return safeFeishuDisplayName(explicit, {
+      fallbackId,
+      kind: rawSenderType(sender).includes('bot') || rawSenderType(sender).includes('app') ? 'bot' : 'user',
+      fallback: 'Feishu',
+    });
+  }
   return message.sender?.name
     || message.sender?.sender_name
     || message.sender?.senderName
@@ -319,7 +350,13 @@ function messageSenderIds(message = {}) {
 }
 
 function rawSenderName(sender = {}) {
-  return cleanText(sender.name || sender.sender_name || sender.senderName || sender.sender_id?.user_id || '');
+  const ids = senderIds(sender);
+  const explicit = cleanText(sender.name || sender.sender_name || sender.senderName || '');
+  return safeFeishuDisplayName(explicit, {
+    fallbackId: ids.userId || ids.openId || ids.appId || ids.unionId || sender.id || '',
+    kind: normalizedSenderType(sender, ids),
+    fallback: '',
+  });
 }
 
 function rawSenderType(sender = {}) {
@@ -458,6 +495,13 @@ export async function createFeishuConnectClient(config, options = {}) {
     } catch {
       // Avatar lookup may need broader contact permissions; do not fail import.
     }
+    profile = {
+      ...profile,
+      name: safeFeishuDisplayName(profile.name, {
+        fallbackId: profile.userId || cleanOpenId,
+        kind: 'user',
+      }),
+    };
     userCache.set(cleanOpenId, profile);
     return profile;
   }
@@ -473,7 +517,11 @@ export async function createFeishuConnectClient(config, options = {}) {
         unionId: ids.unionId || '',
         userId: ids.userId || '',
         appId: ids.appId || '',
-        name: fallbackName || ids.appId || 'Feishu Bot',
+        name: safeFeishuDisplayName(fallbackName, {
+          fallbackId: ids.appId || ids.openId || ids.userId || ids.unionId,
+          kind: 'bot',
+          fallback: 'Feishu Bot',
+        }),
         avatar: '',
         senderType,
         isBot: true,
@@ -492,7 +540,11 @@ export async function createFeishuConnectClient(config, options = {}) {
       openId: profile.openId || ids.openId || '',
       unionId: profile.unionId || ids.unionId || '',
       userId: profile.userId || ids.userId || '',
-      name: cleanText(profile.name) || fallbackName || 'Feishu user',
+      name: safeFeishuDisplayName(profile.name || fallbackName, {
+        fallbackId: ids.userId || ids.openId || ids.unionId,
+        kind: 'user',
+        fallback: 'Feishu user',
+      }),
       avatar: cleanText(profile.avatar || ''),
       senderType,
       isBot: false,
@@ -509,7 +561,11 @@ export async function createFeishuConnectClient(config, options = {}) {
         unionId: ids.unionId || '',
         userId: ids.userId || '',
         appId: ids.appId || '',
-        name: senderName(message) || ids.appId || 'Feishu Bot',
+        name: safeFeishuDisplayName(senderName(message), {
+          fallbackId: ids.appId || ids.openId || ids.userId || ids.unionId,
+          kind: 'bot',
+          fallback: 'Feishu Bot',
+        }),
         avatar: '',
         senderType,
         isBot: true,
@@ -522,7 +578,11 @@ export async function createFeishuConnectClient(config, options = {}) {
         unionId: ids.unionId || '',
         userId: ids.userId || '',
         appId: '',
-        name: senderName(message),
+        name: safeFeishuDisplayName(senderName(message), {
+          fallbackId: ids.userId || ids.unionId,
+          kind: 'user',
+          fallback: 'Feishu user',
+        }),
         avatar: '',
         senderType,
         isBot: false,
@@ -533,7 +593,11 @@ export async function createFeishuConnectClient(config, options = {}) {
       openId: ids.openId,
       unionId: ids.unionId,
       userId: ids.userId,
-      name: senderName(message),
+      name: safeFeishuDisplayName(senderName(message), {
+        fallbackId: ids.userId || ids.openId || ids.unionId,
+        kind: 'user',
+        fallback: 'Feishu user',
+      }),
       avatar: '',
     });
     return {
@@ -565,7 +629,7 @@ export async function createFeishuConnectClient(config, options = {}) {
         });
         name = readableMentionName(profile?.name || '');
       }
-      const display = name || unresolvedMentionLabel();
+      const display = name || unresolvedMentionLabel(openId);
       if (openId) displayMap.set(openId, display);
       if (key) displayMap.set(key, display);
       const rawName = cleanText(mentionName(mention));
@@ -606,7 +670,11 @@ export async function createFeishuConnectClient(config, options = {}) {
     if (resolved.type === 'p2p' || !resolved.name) {
       resolved = {
         ...resolved,
-        name: sender.name || resolved.name || 'Feishu chat',
+        name: safeFeishuDisplayName(resolved.name || sender.name, {
+          fallbackId: chatId,
+          kind: resolved.type === 'p2p' ? 'user' : 'chat',
+          fallback: sender.name || 'Feishu chat',
+        }),
         avatar: resolved.avatar || sender.avatar || '',
       };
     }
@@ -891,7 +959,7 @@ export async function createFeishuConnectClient(config, options = {}) {
         const key = cleanText(mention.key || mention.text || '');
         return {
           id,
-          name: mentionDisplayMap.get(id) || mentionDisplayMap.get(key) || readableMentionName(mentionName(mention)) || unresolvedMentionLabel(),
+          name: mentionDisplayMap.get(id) || mentionDisplayMap.get(key) || readableMentionName(mentionName(mention)) || unresolvedMentionLabel(id),
         };
       }).filter((mention, index, all) => mention.id || all.findIndex((item) => item.name === mention.name) === index),
       raw: normalized.raw,

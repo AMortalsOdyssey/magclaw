@@ -1,6 +1,11 @@
 import { createTaskStartupCollaboration } from '../../task-startup-collaboration.js';
 import { importAckPayload, invalidPathPayload, textPayload } from './cards.js';
 import {
+  feishuIdTypeForValue,
+  maskedFeishuIdDetail,
+  safeFeishuDisplayName,
+} from './identity-display.js';
+import {
   extractChannelImportPath,
   invalidChannelPathReply,
   validateChannelImportPath,
@@ -70,9 +75,16 @@ function feishuContextRecords(records = [], attachments = [], options = {}) {
     const userId = clean(record.userId || record.sender?.userId || '');
     const appId = clean(record.appId || record.sender?.appId || '');
     const senderType = clean(record.senderType || record.sender?.type || (appId ? 'bot' : 'user')) || 'user';
+    const fallbackId = senderType === 'bot'
+      ? appId || authorId || openId || userId || unionId
+      : openId || userId || unionId || authorId || appId;
     return {
       id,
-      author: cleanFeishuText(record.author || record.senderName || record.sender?.name || `Message ${index + 1}`),
+      author: safeFeishuDisplayName(record.author || record.senderName || record.sender?.name, {
+        fallbackId,
+        kind: senderType,
+        fallback: `Message ${index + 1}`,
+      }),
       authorId,
       openId,
       unionId,
@@ -133,17 +145,29 @@ function contextLine(record = {}, index, routePath = '', sourceMessageId = '') {
   if (!text) return '';
   if (sourceMessageId && id === sourceMessageId) return '';
   if (/无法读取飞书引用消息/.test(text)) return '';
-  const author = cleanFeishuText(record.author || record.senderName || record.sender?.name || `Message ${index + 1}`);
+  const appId = clean(record.appId || record.sender?.appId || '');
+  const openId = clean(record.openId || record.sender?.openId || '');
+  const userId = clean(record.userId || record.sender?.userId || '');
+  const unionId = clean(record.unionId || record.sender?.unionId || '');
+  const authorId = clean(record.authorId || record.sender?.id || '');
+  const senderType = clean(record.senderType || record.sender?.type || (appId ? 'bot' : 'user')) || 'user';
+  const fallbackId = senderType === 'bot'
+    ? appId || authorId || openId || userId || unionId
+    : openId || userId || unionId || authorId || appId;
+  const author = safeFeishuDisplayName(record.author || record.senderName || record.sender?.name, {
+    fallbackId,
+    kind: senderType,
+    fallback: `Message ${index + 1}`,
+  });
   return `- ${author}: ${text}`;
 }
 
 function identityId(record = {}) {
   const senderType = clean(record.senderType || record.sender?.type || '').toLowerCase();
+  const directId = clean(record.authorId || record.id || record.sender?.id);
+  const directType = feishuIdTypeForValue(directId, '');
   return clean(
-    record.authorId
-      || record.id
-      || record.sender?.id
-      || (senderType === 'bot' ? record.appId || record.sender?.appId : record.openId || record.sender?.openId)
+    (senderType === 'bot' ? record.appId || record.sender?.appId || record.authorId || record.sender?.id : record.openId || record.sender?.openId)
       || record.openId
       || record.sender?.openId
       || record.unionId
@@ -151,7 +175,8 @@ function identityId(record = {}) {
       || record.userId
       || record.sender?.userId
       || record.appId
-      || record.sender?.appId,
+      || record.sender?.appId
+      || (directType && !['message_id', 'chat_id'].includes(directType) ? directId : ''),
   );
 }
 
@@ -164,21 +189,26 @@ function senderTypeLabel(record = {}) {
 function feishuIdType(record = {}) {
   const type = senderTypeLabel(record);
   if (type === 'bot' && clean(record.appId || record.sender?.appId || record.authorId || record.sender?.id)) return 'app_id';
-  if (clean(record.openId || record.sender?.openId || record.authorId || record.id || record.sender?.id).startsWith('ou_')) return 'open_id';
-  if (clean(record.unionId || record.sender?.unionId || record.authorId || record.id || record.sender?.id).startsWith('on_')) return 'union_id';
+  const id = identityId(record);
+  if (id) return feishuIdTypeForValue(id, type === 'bot' ? 'app_id' : 'open_id');
   if (clean(record.userId || record.sender?.userId)) return 'user_id';
   return type === 'bot' ? 'app_id' : 'open_id';
 }
 
 function identityName(record = {}, fallback = 'Feishu user') {
-  return cleanFeishuText(record.name || record.author || record.senderName || record.sender?.name || fallback);
+  return safeFeishuDisplayName(record.name || record.author || record.senderName || record.sender?.name, {
+    fallbackId: identityId(record),
+    kind: senderTypeLabel(record),
+    fallback,
+  });
 }
 
 function identityLine(record = {}, role = '') {
   const name = identityName(record, role === 'trigger' ? 'Feishu trigger' : 'Feishu participant');
   const id = identityId(record);
-  if (!name || !id) return '';
-  return `- ${name} (${[role, senderTypeLabel(record), `${feishuIdType(record)}=${id}`].filter(Boolean).join(', ')})`;
+  if (!name && !id) return '';
+  const idDetail = id ? maskedFeishuIdDetail(feishuIdType(record), id) : '';
+  return `- ${name} (${[role, senderTypeLabel(record), idDetail].filter(Boolean).join(', ')})`;
 }
 
 function feishuIdentityLines(hydrated = {}) {

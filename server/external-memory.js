@@ -1,3 +1,9 @@
+import {
+  maskedFeishuIdDetail,
+  maskedFeishuIdPathSegment,
+  safeFeishuDisplayName,
+} from './integrations/feishu-connect/identity-display.js';
+
 function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -43,6 +49,13 @@ function safeSegment(value, fallback = 'item') {
   return text || `${fallback}-${stableHash(value).slice(0, 8)}`;
 }
 
+function identityKey({ id = '', name = '', kind = 'item' } = {}) {
+  const maskedSegment = maskedFeishuIdPathSegment(id);
+  const base = maskedSegment || safeSegment(name, kind);
+  const hashSource = id || name || kind;
+  return `feishu_${safeSegment(base, kind)}_${stableHash(hashSource).slice(0, 8)}`;
+}
+
 function senderKind(record = {}) {
   const type = clean(record.senderType || record.type || record.sender?.type).toLowerCase();
   if (record.isBot || record.appId || record.sender?.appId || type === 'app' || type === 'bot') return 'bot';
@@ -66,11 +79,16 @@ function idTypeFor(identity = {}) {
 function normalizeIdentity(record = {}, defaults = {}) {
   const kind = senderKind(record);
   const id = identityId(record);
-  const name = clean(record.name || record.author || record.senderName || record.displayName || record.sender?.name || defaults.name || id);
+  const rawName = clean(record.name || record.author || record.senderName || record.displayName || record.sender?.name || defaults.name);
+  const name = safeFeishuDisplayName(rawName, {
+    fallbackId: id,
+    kind,
+    fallback: kind === 'bot' ? 'Feishu Bot' : 'Feishu user',
+  });
   if (!name && !id) return null;
   return {
     id,
-    key: `feishu_${safeSegment(id || name, kind)}`,
+    key: identityKey({ id, name, kind }),
     idType: id ? idTypeFor({
       kind,
       id,
@@ -162,7 +180,11 @@ export function normalizeFeishuExternalMemoryPayload({ trigger = 'external_impor
     day,
     traceId: origin.traceId,
     chatId: origin.chatId,
-    chatName: origin.chatName || origin.chatId || 'Feishu chat',
+    chatName: safeFeishuDisplayName(origin.chatName, {
+      fallbackId: origin.chatId,
+      kind: 'chat',
+      fallback: 'Feishu chat',
+    }),
     chatType: origin.chatType || 'unknown',
     channelName: channel.name ? `#${channel.name}` : clean(channel.id || message.spaceId || 'channel'),
     messageId: clean(message.id),
@@ -193,14 +215,21 @@ function op(relPath, heading, text, maxItems = 12) {
 
 function identityLabel(identity = {}) {
   if (!identity) return '';
-  const id = identity.id ? ` ${identity.idType}=${identity.id}` : '';
+  const id = identity.id ? ` ${maskedFeishuIdDetail(identity.idType, identity.id)}` : '';
   const attachments = identity.attachmentIds?.length ? ` attachments=${identity.attachmentIds.length}` : '';
   return `${identity.name} (${identity.kind}${id}${attachments})`;
 }
 
+function identityDisplayTitle(identity = {}) {
+  const name = clean(identity.name);
+  if (!name) return `Feishu ${identity.kind || 'identity'}`;
+  const prefix = `Feishu ${identity.kind || 'identity'}`;
+  return name.toLowerCase().startsWith(prefix.toLowerCase()) ? name : `${prefix} ${name}`;
+}
+
 function personSummary(identity, memory) {
   const sample = identity.text || memory.instruction || memory.taskTitle;
-  return `- \`${personRelPath(identity)}\` - Feishu ${identity.kind} ${identity.name} in ${memory.chatName}: ${compact(sample, 90)}`;
+  return `- \`${personRelPath(identity)}\` - ${identityDisplayTitle(identity)} in ${memory.chatName}: ${compact(sample, 90)}`;
 }
 
 function personRelPath(identity) {
@@ -246,7 +275,7 @@ export function buildFeishuExternalMemoryOperations(params = {}) {
     operations.push(op(
       personRel,
       'Profile',
-      `- Feishu ${identity.kind} ${identity.name}${identity.id ? ` (${identity.idType}=${identity.id})` : ''}; seen in ${memory.chatName}; latest trace=${memory.traceId}; related task=${memory.taskNumber || memory.taskId || '-'}`,
+      `- ${identityDisplayTitle(identity)}${identity.id ? ` (${maskedFeishuIdDetail(identity.idType, identity.id)})` : ''}; seen in ${memory.chatName}; latest trace=${memory.traceId}; related task=${memory.taskNumber || memory.taskId || '-'}`,
       8,
     ));
     if (identity.text || identity === memory.sender) {

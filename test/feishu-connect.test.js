@@ -200,6 +200,7 @@ test('Feishu inbound import creates an external system message, task, trace id, 
   assert.equal(message.metadata.systemKind, 'external_import');
   assert.equal(message.metadata.origin.provider, 'feishu');
   assert.equal(message.metadata.origin.senderName, '张三');
+  assert.equal(message.metadata.origin.senderId, 'ou_user_1');
   assert.equal(message.metadata.origin.chatName, '产品群');
   assert.equal(message.metadata.origin.traceId, 'fsc_test_trace');
   assert.equal(message.metadata.externalImport.replyPolicy, 'thread_all');
@@ -208,7 +209,8 @@ test('Feishu inbound import creates an external system message, task, trace id, 
   assert.doesNotMatch(message.body, /^Imported from Feishu$/m);
   assert.match(message.body, /Trace ID：fsc_test_trace/);
   assert.match(message.body, /Instruction:\n请导入/);
-  assert.match(message.body, /Feishu identities:\n- 张三 \(trigger, user, open_id=ou_user_1\)/);
+  assert.match(message.body, /Feishu identities:\n- 张三 \(trigger, user, open_id=ou_use\*\*\*\*r_1\)/);
+  assert.doesNotMatch(message.body, /open_id=ou_user_1/);
   assert.match(message.body, /Context:\n- 李四: 第一条上下文/);
   assert.doesNotMatch(message.body, /来源：|触发人：|目标：/);
   assert.equal(message.attachmentIds.length, 1);
@@ -427,6 +429,69 @@ test('Feishu client keeps user and bot identity records for imported context', a
   assert.equal(bot.appId, 'cli_weather_bot');
   assert.equal(bot.senderType, 'bot');
   assert.equal(bot.isBot, true);
+});
+
+test('Feishu client masks unresolved sender ids for display while preserving raw ids', async () => {
+  const fakeClient = {
+    contact: {
+      v3: {
+        user: {
+          async basicBatch() {
+            throw new Error('missing contact scope');
+          },
+          async batch() {
+            throw new Error('missing contact scope');
+          },
+        },
+      },
+    },
+    im: {
+      v1: {
+        chat: {
+          async get() {
+            throw new Error('missing chat scope');
+          },
+        },
+      },
+    },
+  };
+  const client = await createFeishuConnectClient(
+    { appId: 'cli_test', appSecret: 'secret', tenant: 'feishu' },
+    {
+      client: fakeClient,
+      larkSdk: {
+        Client: function Client() { return fakeClient; },
+        WSClient: function WSClient() {},
+        EventDispatcher: function EventDispatcher() { return { register: () => ({}) }; },
+        Domain: { Feishu: 'feishu' },
+      },
+    },
+  );
+
+  const hydrated = await client.hydrateEvent({
+    message: {
+      message_id: 'om_raw_sender',
+      msg_type: 'text',
+      chat_id: 'oc_private_room_1234567890',
+      chat_type: 'p2p',
+      content: JSON.stringify({ text: '权限不足时也不要裸露完整 open id' }),
+    },
+    sender: {
+      sender_type: 'user',
+      sender_id: {
+        open_id: 'ou_hidden_sender_1234567890',
+        user_id: 'u_hidden_sender_1234567890',
+      },
+    },
+  });
+
+  assert.equal(hydrated.sender.openId, 'ou_hidden_sender_1234567890');
+  assert.equal(hydrated.sender.userId, 'u_hidden_sender_1234567890');
+  assert.equal(hydrated.sender.name, 'Feishu user u_hidd****7890');
+  assert.equal(hydrated.records[0].openId, 'ou_hidden_sender_1234567890');
+  assert.equal(hydrated.records[0].author, 'Feishu user u_hidd****7890');
+  assert.doesNotMatch(hydrated.sender.name, /ou_hidden_sender_1234567890|u_hidden_sender_1234567890/);
+  assert.doesNotMatch(hydrated.records[0].author, /ou_hidden_sender_1234567890|u_hidden_sender_1234567890/);
 });
 
 test('Feishu quoted replies without a path continue the existing MagClaw thread', async () => {

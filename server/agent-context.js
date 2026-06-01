@@ -8,6 +8,11 @@ import {
   conversationReferenceText,
   normalizeStoredConversationReferences,
 } from './conversation-references.js';
+import {
+  maskedFeishuIdDetail,
+  maskFeishuId,
+  safeFeishuDisplayName,
+} from './integrations/feishu-connect/identity-display.js';
 
 const DEFAULT_LIMITS = {
   recentMessages: 12,
@@ -320,12 +325,19 @@ function sanitizeFeishuIdentity(identity = {}) {
   const senderId = firstText(identity.senderId, identity.authorId, identity.id);
   const appId = firstText(identity.appId, identity.senderAppId, senderId.startsWith('cli_') ? senderId : '');
   const openId = firstText(identity.openId, identity.open_id, identity.senderOpenId, senderId.startsWith('ou_') ? senderId : '');
+  const userId = firstText(identity.userId, identity.user_id);
+  const unionId = firstText(identity.unionId, identity.union_id);
+  const kind = feishuKindForIdentity({ ...identity, appId, openId });
   const result = {
-    name: firstText(identity.name, identity.author, identity.senderName, identity.displayName, senderId),
-    kind: feishuKindForIdentity({ ...identity, appId, openId }),
+    name: safeFeishuDisplayName(firstText(identity.name, identity.author, identity.senderName, identity.displayName), {
+      fallbackId: openId || userId || unionId || appId || senderId,
+      kind,
+      fallback: kind === 'bot' ? 'Feishu Bot' : 'Feishu user',
+    }),
+    kind,
     openId,
-    unionId: firstText(identity.unionId, identity.union_id),
-    userId: firstText(identity.userId, identity.user_id),
+    unionId,
+    userId,
     appId,
     id: senderId,
     text: compactText(identity.text || identity.body || identity.content || '', 180),
@@ -622,10 +634,10 @@ function renderFeishuIdentity(identity) {
   if (!identity) return '';
   const details = [
     identity.kind || 'external',
-    identity.openId ? `open_id=${identity.openId}` : '',
-    identity.userId ? `user_id=${identity.userId}` : '',
-    identity.unionId ? `union_id=${identity.unionId}` : '',
-    identity.appId ? `app_id=${identity.appId}` : '',
+    identity.openId ? maskedFeishuIdDetail('open_id', identity.openId) : '',
+    identity.userId ? maskedFeishuIdDetail('user_id', identity.userId) : '',
+    identity.unionId ? maskedFeishuIdDetail('union_id', identity.unionId) : '',
+    identity.appId ? maskedFeishuIdDetail('app_id', identity.appId) : '',
     identity.attachmentIds?.length ? `attachments=${identity.attachmentIds.length}` : '',
   ].filter(Boolean).join(' ');
   return `@${identity.name || identity.openId || identity.userId || identity.appId || identity.id}${details ? ` [${details}]` : ''}`;
@@ -654,9 +666,14 @@ function renderExternalImportDetails(record) {
   const external = record?.externalImport;
   if (!external || external.provider !== 'feishu') return '';
   const sender = renderFeishuIdentity(external.sender);
+  const chatName = safeFeishuDisplayName(external.chatName, {
+    fallbackId: external.chatId,
+    kind: 'chat',
+    fallback: 'Feishu chat',
+  });
   const header = [
     `trace=${external.traceId || '-'}`,
-    external.chatName ? `chat="${external.chatName}"` : external.chatId ? `chat=${external.chatId}` : '',
+    external.chatName ? `chat="${chatName}"` : external.chatId ? `chat=${maskFeishuId(external.chatId) || external.chatId}` : '',
     external.chatType ? `type=${external.chatType}` : '',
     sender ? `sender=${external.sender?.name || sender}` : '',
     external.rootId ? `root=${external.rootId}` : '',
