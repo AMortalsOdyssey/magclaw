@@ -1856,18 +1856,36 @@ function mentionPopupHandlesEnter(textarea) {
   return Boolean(document.getElementById('mention-popup'));
 }
 
-function shouldSubmitComposerOnEnter(event, textarea) {
-  if (!textarea || event?.key !== 'Enter') return false;
-  if (event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) return false;
-  if (!composerFormForEnterSubmit(textarea)) return false;
-  if (isImeComposing(event, textarea)) return false;
-  if (mentionPopupHandlesEnter(textarea)) return false;
-  return true;
+function composerEnterShouldInsertNewline() {
+  return Boolean(window.matchMedia?.('(pointer: coarse) and (orientation: portrait)')?.matches);
 }
 
-function submitComposerFromEnter(textarea) {
+function composerEnterMode(event, textarea) {
+  if (!textarea || event?.key !== 'Enter') return 'none';
+  if (!composerFormForEnterSubmit(textarea)) return 'none';
+  if (isImeComposing(event, textarea)) return 'ime';
+  if (mentionPopupHandlesEnter(textarea)) return 'mention';
+  if (event.altKey) return 'newline';
+  if (event.shiftKey && (event.metaKey || event.ctrlKey)) return 'force-task';
+  if (event.shiftKey || event.metaKey || event.ctrlKey) return 'newline';
+  if (composerEnterShouldInsertNewline(event, textarea)) return 'newline';
+  return 'send';
+}
+
+function shouldSubmitComposerOnEnter(event, textarea) {
+  const mode = composerEnterMode(event, textarea);
+  return mode === 'send' || mode === 'force-task';
+}
+
+function submitComposerFromEnter(textarea, { forceAsTask = false } = {}) {
   const form = composerFormForEnterSubmit(textarea);
   if (!form) return false;
+  if (forceAsTask) {
+    const composerId = textarea.dataset?.composerId || form.dataset?.composerId || '';
+    if (composerId) composerTaskFlags[composerId] = true;
+    const taskInput = form.querySelector?.('input[name="asTask"]');
+    if (taskInput) taskInput.checked = true;
+  }
   if (typeof form.requestSubmit === 'function') {
     form.requestSubmit();
   } else {
@@ -1939,7 +1957,7 @@ document.addEventListener('keydown', async (event) => {
 
   if (textarea && shouldSubmitComposerOnEnter(event, textarea)) {
     event.preventDefault();
-    submitComposerFromEnter(textarea);
+    submitComposerFromEnter(textarea, { forceAsTask: composerEnterMode(event, textarea) === 'force-task' });
     return;
   }
 

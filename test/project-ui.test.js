@@ -1877,11 +1877,16 @@ test('message composers submit channel and thread textareas on plain Enter', asy
     document: {
       getElementById: () => null,
     },
-    isImeComposing: () => false,
+    window: {
+      matchMedia: () => ({ matches: false }),
+    },
+    isImeComposing: (event) => Boolean(event?.keyCode === 229 || event?.which === 229 || event?.isComposing),
     mentionPopup: { active: false, composerId: null, items: [] },
+    composerTaskFlags: {},
   };
   const helpers = vm.runInNewContext(`${source.slice(helperStart, helperEnd)}; ({
     composerFormForEnterSubmit,
+    composerEnterMode,
     shouldSubmitComposerOnEnter,
     submitComposerFromEnter,
   });`, context);
@@ -1897,13 +1902,24 @@ test('message composers submit channel and thread textareas on plain Enter', asy
     assert.equal(helpers.composerFormForEnterSubmit(textarea), form);
     assert.equal(helpers.shouldSubmitComposerOnEnter({ key: 'Enter' }, textarea), true);
     assert.equal(helpers.shouldSubmitComposerOnEnter({ key: 'Enter', shiftKey: true }, textarea), false);
+    assert.equal(helpers.shouldSubmitComposerOnEnter({ key: 'Enter', keyCode: 229 }, textarea), false);
     assert.equal(helpers.submitComposerFromEnter(textarea), true);
     assert.equal(submitted, 1);
   }
 
+  context.document.getElementById = () => ({ id: 'mention-popup' });
+  context.mentionPopup = { active: true, composerId: 'message', items: [{ id: 'agt_1' }] };
+  assert.equal(helpers.composerEnterMode({ key: 'Enter' }, createTextarea({ id: 'message-form' })), 'mention');
+  context.document.getElementById = () => null;
+  context.mentionPopup = { active: false, composerId: null, items: [] };
+  context.window.matchMedia = () => ({ matches: true });
+  assert.equal(helpers.composerEnterMode({ key: 'Enter' }, createTextarea({ id: 'message-form' })), 'newline');
+  context.window.matchMedia = () => ({ matches: false });
+
   let fallbackSubmitted = 0;
   const fallbackForm = {
     id: 'message-form',
+    querySelector: () => ({ checked: false }),
     dispatchEvent: (event) => {
       fallbackSubmitted += event.type === 'submit' ? 1 : 0;
       return true;
@@ -1911,6 +1927,8 @@ test('message composers submit channel and thread textareas on plain Enter', asy
   };
   assert.equal(helpers.submitComposerFromEnter(createTextarea(fallbackForm)), true);
   assert.equal(fallbackSubmitted, 1);
+  assert.equal(helpers.submitComposerFromEnter(createTextarea(fallbackForm), { forceAsTask: true }), true);
+  assert.equal(context.composerTaskFlags.message, true);
   assert.equal(helpers.composerFormForEnterSubmit({ closest: () => ({ id: 'profile-form' }) }), null);
 });
 
@@ -2218,6 +2236,12 @@ test('search page matches Slock shortcuts filters persistence and master detail 
   assert.match(app, /function restoreSearchReturnState\(\)/);
   assert.match(app, /function captureSearchReturnState\(\)/);
   assert.match(app, /function persistSearchState\(\)/);
+  assert.match(app, /function searchRouteQueryString\(\)/);
+  assert.match(app, /params\.set\('open', 'thread'\)/);
+  assert.match(app, /params\.set\('thread', threadMessageId\)/);
+  assert.match(app, /params\.set\('msg', selectedSavedRecordId\)/);
+  assert.match(app, /openThreadId/);
+  assert.match(searchResultSource, /syncBrowserRouteForActiveView\(\)/);
   assert.match(styles, /\.collab-frame\.search-layout-frame\.no-inspector \{[\s\S]*grid-template-columns: 60px minmax\(0, 1fr\)/);
   assert.match(styles, /\.collab-frame\.search-layout-frame\.thread-open \{[\s\S]*grid-template-columns: 60px minmax\(0, 1fr\) 4px minmax\(260px, min\(var\(--inspector-width, 340px\), 60vw\)\)/);
   assert.match(styles, /@media \(min-width: 768px\) and \(max-width: 1099px\)[\s\S]*\.app-frame\.search-layout-frame \.workspace \{[\s\S]*grid-column: 2/);

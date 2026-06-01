@@ -62,7 +62,9 @@ let mobileHomeOpen = Boolean(initialRouteState.mobileHome || initialUiState.mobi
 let activeView = initialRouteState.activeView || initialActiveViewFromLocation(initialUiState.activeView || 'space');
 let activeTab = initialUiState.activeTab || 'chat';
 let railTab = initialRouteState.railTab || initialUiState.railTab || localStorage.getItem('railTab') || 'spaces'; // 'spaces', 'members', 'computers', or 'settings'
-let threadMessageId = initialUiState.threadMessageId || null;
+let threadMessageId = initialRouteState.activeView === 'search' && initialSearchState.openThreadId
+  ? initialSearchState.openThreadId
+  : initialUiState.threadMessageId || null;
 let inspectorReturnThreadId = null;
 let inboxCategory = 'all';
 let inboxFilter = 'all';
@@ -99,7 +101,7 @@ let searchIsComposing = false;
 let searchInputFocusRequested = false;
 let composerIsComposing = false;
 let composingComposerId = null;
-let searchMineOnly = false;
+let searchMineOnly = Boolean(initialSearchState.mineOnly);
 let searchSenderId = initialSearchState.senderId || '';
 let searchSenderMenuOpen = false;
 let searchSenderQuery = '';
@@ -374,7 +376,7 @@ function routePathForActiveView() {
     return `/s/${serverSlug}/members`;
   }
   if (activeView === 'tasks') return `/s/${serverSlug}/tasks`;
-  if (activeView === 'search') return `/s/${serverSlug}/search`;
+  if (activeView === 'search') return `/s/${serverSlug}/search${searchRouteQueryString()}`;
   if (activeView === 'cloud') {
     const safeSettingsTab = settingsTab === 'system' ? 'server' : (settingsTab || 'account');
     if (safeSettingsTab === 'root') return `/s/${serverSlug}/settings`;
@@ -386,10 +388,13 @@ function routePathForActiveView() {
 function syncBrowserRouteForActiveView({ replace = false } = {}) {
   if (!window.history?.pushState) return;
   const nextPath = routePathForActiveView();
-  if (nextPath && window.location.pathname !== nextPath) {
+  const currentTarget = `${window.location.pathname || ''}${window.location.search || ''}`;
+  if (nextPath && currentTarget !== nextPath) {
+    const previousPathname = window.location.pathname || '';
+    const nextPathname = nextPath.split(/[?#]/)[0] || nextPath;
     window.history[replace ? 'replaceState' : 'pushState']({}, '', nextPath);
+    if (eventSource && typeof connectEvents === 'function' && previousPathname !== nextPathname) connectEvents();
   }
-  if (eventSource && typeof connectEvents === 'function') connectEvents();
 }
 
 function isImeComposing(event, textarea = null) {

@@ -295,6 +295,7 @@ function openSearchResult(record) {
   activeTab = 'chat';
   threadMessageId = root.id;
   mobileHomeOpen = false;
+  syncBrowserRouteForActiveView();
   render();
   refreshThreadSelection(root.id);
   pulseSearchResultDetail(record);
@@ -325,6 +326,7 @@ function openSearchEntity(targetType, targetId) {
     activeTab = 'chat';
     threadMessageId = null;
     selectedSavedRecordId = null;
+    syncBrowserRouteForActiveView();
     render();
     scrollPaneToBottom('#message-list', 'auto');
     return;
@@ -334,6 +336,7 @@ function openSearchEntity(targetType, targetId) {
     selectedTaskId = null;
     selectedProjectFile = null;
     threadMessageId = null;
+    syncBrowserRouteForActiveView();
     render();
   }
 }

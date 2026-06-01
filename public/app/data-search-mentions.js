@@ -626,15 +626,33 @@ function searchRequestParams() {
   return params;
 }
 
+function searchRouteQueryString() {
+  const params = new URLSearchParams();
+  if (searchQuery.trim()) params.set('q', searchQuery.trim());
+  if (searchMineOnly) params.set('filter', 'mine');
+  if (searchSenderId) params.set('sender', searchSenderId);
+  if (searchChannelId) params.set('channel', searchChannelId);
+  if (searchTimeRange !== 'any') params.set('range', searchTimeRange);
+  if (threadMessageId) {
+    params.set('open', 'thread');
+    params.set('thread', threadMessageId);
+  }
+  if (selectedSavedRecordId) params.set('msg', selectedSavedRecordId);
+  const value = params.toString();
+  return value ? `?${value}` : '';
+}
+
 function persistSearchState() {
   writeJsonStorage('magclawSearchState', {
     query: searchQuery,
     senderId: searchSenderId,
     channelId: searchChannelId,
+    mineOnly: searchMineOnly,
     timeRange: searchTimeRange,
     visibleCount: searchVisibleCount,
     selectedResultId: selectedSavedRecordId,
   });
+  if (activeView === 'search') syncBrowserRouteForActiveView({ replace: true });
 }
 
 async function fetchSearchResults() {

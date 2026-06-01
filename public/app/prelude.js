@@ -179,14 +179,24 @@ function readStoredUiState() {
 
 function readStoredSearchState() {
   const parsed = readJsonStorage('magclawSearchState', {});
+  const routeIsSearch = /^\/s\/[^/]+\/search/.test(window.location.pathname || '');
+  const params = routeIsSearch ? new URLSearchParams(window.location.search || '') : null;
+  const routeRange = params?.get('range') || '';
   const range = ['any', 'today', '7d', '30d'].includes(parsed.timeRange) ? parsed.timeRange : 'any';
+  const nextRange = ['any', 'today', '7d', '30d'].includes(routeRange) ? routeRange : range;
+  const routeFilter = String(params?.get('filter') || '').trim().toLowerCase();
+  const routeOpen = String(params?.get('open') || '').trim();
+  const routeThread = String(params?.get('thread') || '').trim()
+    || (routeOpen.startsWith('thread:') ? routeOpen.slice('thread:'.length) : '');
   return {
-    query: String(parsed.query || '').slice(0, 500),
-    senderId: String(parsed.senderId || ''),
-    channelId: String(parsed.channelId || ''),
-    timeRange: range,
+    query: String(params?.get('q') ?? parsed.query ?? '').slice(0, 500),
+    senderId: String(params?.get('sender') || params?.get('senderId') || parsed.senderId || ''),
+    channelId: String(params?.get('channel') || params?.get('channelId') || parsed.channelId || ''),
+    mineOnly: routeFilter === 'mine' || params?.get('mine') === '1' || parsed.mineOnly === true,
+    timeRange: nextRange,
     visibleCount: Number.isFinite(Number(parsed.visibleCount)) ? Math.max(20, Math.min(200, Number(parsed.visibleCount))) : 20,
-    selectedResultId: parsed.selectedResultId ? String(parsed.selectedResultId) : null,
+    selectedResultId: params?.get('msg') || (parsed.selectedResultId ? String(parsed.selectedResultId) : null),
+    openThreadId: (routeOpen === 'thread' || routeOpen.startsWith('thread:')) && routeThread ? routeThread : null,
   };
 }
 
