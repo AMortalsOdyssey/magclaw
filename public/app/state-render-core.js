@@ -158,6 +158,7 @@ let selectedAgentWorkspaceFile = null;
 let agentWorkspacePreviewMode = 'preview';
 let agentSkillsCache = {};
 let agentActivityCache = {};
+let agentActivitySeqById = {};
 let agentWarmRequests = new Set();
 let agentDetailTab = 'profile';
 let agentDetailTabLoading = { agentId: null, tab: null, token: 0 };

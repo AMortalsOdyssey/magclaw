@@ -1388,6 +1388,121 @@ function applySseSeq(seqInput) {
   return hasGap;
 }
 
+function activitySeqFromPayload(payload = {}) {
+  const value = Number(payload.activitySeq || payload.agent?.activitySeq || 0);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function agentActivityDetailFromPayload(payload = {}) {
+  const activity = payload.runtimeActivity || payload.agent?.runtimeActivity || {};
+  if (!activity || typeof activity !== 'object') return String(payload.detail || '').trim();
+  return String(
+    payload.detail
+    || activity.error
+    || activity.detail
+    || activity.note
+    || activity.text
+    || activity.message
+    || activity.tool
+    || ''
+  ).trim();
+}
+
+function realtimeAgentActivityEvent(payload = {}, entry = {}, index = 0) {
+  const agentId = String(entry.agentId || payload.agentId || payload.agent?.id || '').trim();
+  if (!agentId) return null;
+  const activity = entry.activity || payload.runtimeActivity || payload.agent?.runtimeActivity || null;
+  const detail = String(
+    entry.detail
+    || entry.message
+    || agentActivityDetailFromPayload({ ...payload, runtimeActivity: activity })
+    || ''
+  ).trim();
+  const activitySeq = activitySeqFromPayload(payload);
+  const createdAt = entry.createdAt || entry.at || payload.activityAt || payload.agent?.activityAt || new Date().toISOString();
+  return {
+    id: entry.id || `rte_${agentId}_${activitySeq || 'na'}_${index}`,
+    type: entry.type || entry.eventType || entry.kind || payload.type || 'agent_activity_changed',
+    message: entry.message || detail,
+    agentId,
+    activity,
+    createdAt,
+    raw: {
+      ...(entry.raw && typeof entry.raw === 'object' ? entry.raw : {}),
+      activity,
+      activitySeq,
+    },
+  };
+}
+
+function appendRealtimeAgentActivityEvents(agentId, payload = {}, stateSnapshot = appState) {
+  const entries = Array.isArray(payload.entries) && payload.entries.length ? payload.entries : [payload];
+  const incomingEvents = entries
+    .map((entry, index) => realtimeAgentActivityEvent(payload, entry, index))
+    .filter(Boolean);
+  if (!incomingEvents.length) return stateSnapshot?.events || [];
+  const existingEvents = Array.isArray(stateSnapshot?.events) ? stateSnapshot.events : [];
+  const seen = new Set(existingEvents.map((event) => event?.id).filter(Boolean));
+  const nextEvents = existingEvents.slice();
+  for (const event of incomingEvents) {
+    if (event.id && seen.has(event.id)) continue;
+    nextEvents.push(event);
+    if (event.id) seen.add(event.id);
+  }
+  const cached = agentActivityCache[agentId];
+  if (cached) {
+    const cacheSeen = new Set((cached.events || []).map((event) => event?.id).filter(Boolean));
+    const merged = incomingEvents
+      .filter((event) => !(event.id && cacheSeen.has(event.id)))
+      .concat(cached.events || [])
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, AGENT_ACTIVITY_EVENT_LIMIT);
+    agentActivityCache[agentId] = {
+      ...cached,
+      loading: false,
+      error: '',
+      events: merged,
+    };
+  }
+  return nextEvents;
+}
+
+function applyAgentActivityChangedEvent(payload = {}, stateSnapshot = pendingStateUpdateBase()) {
+  const agentId = String(payload.agentId || payload.agent?.id || '').trim();
+  if (!agentId || !stateSnapshot) return false;
+  const incomingSeq = activitySeqFromPayload(payload);
+  const existingAgent = byId(stateSnapshot.agents, agentId);
+  const lastSeq = Math.max(
+    Number(agentActivitySeqById[agentId] || 0),
+    Number(existingAgent?.activitySeq || 0),
+  );
+  if (incomingSeq && lastSeq && incomingSeq <= lastSeq) return false;
+  if (incomingSeq) agentActivitySeqById[agentId] = incomingSeq;
+  const incomingAgent = payload.agent || {};
+  const hasRuntimeActivity = Object.prototype.hasOwnProperty.call(payload, 'runtimeActivity')
+    || Object.prototype.hasOwnProperty.call(incomingAgent, 'runtimeActivity');
+  const agents = (stateSnapshot.agents || []).map((agent) => (
+    agent.id === agentId
+      ? {
+          ...agent,
+          status: payload.status || incomingAgent.status || agent.status,
+          previousStatus: incomingAgent.previousStatus || agent.previousStatus,
+          statusUpdatedAt: incomingAgent.statusUpdatedAt || agent.statusUpdatedAt || null,
+          heartbeatAt: incomingAgent.heartbeatAt || payload.activityAt || agent.heartbeatAt || null,
+          runtimeActivity: hasRuntimeActivity
+            ? (payload.runtimeActivity ?? incomingAgent.runtimeActivity ?? null)
+            : (agent.runtimeActivity || null),
+          activeWorkItemIds: incomingAgent.activeWorkItemIds || agent.activeWorkItemIds || [],
+          activitySeq: incomingSeq || incomingAgent.activitySeq || agent.activitySeq || 0,
+          activityAt: payload.activityAt || incomingAgent.activityAt || agent.activityAt || null,
+        }
+      : agent
+  ));
+  const events = appendRealtimeAgentActivityEvents(agentId, payload, stateSnapshot);
+  queueStateUpdate({ ...stateSnapshot, agents, events });
+  return true;
+}
+
 function applyRealtimeJournalEvent(envelope) {
   if (applySseSeq(envelope?.seq)) {
     refreshAfterSseGap(envelope);
@@ -1410,6 +1525,10 @@ function applyRealtimeJournalEvent(envelope) {
     return;
   }
   const stateSnapshot = pendingStateUpdateBase();
+  if (eventType === 'agent_activity_changed') {
+    applyAgentActivityChangedEvent(payload, stateSnapshot);
+    return;
+  }
   if (eventType === 'agent_status_changed' && payload.agent?.id && stateSnapshot) {
     const incoming = payload.agent;
     const agents = (stateSnapshot.agents || []).map((agent) => (
@@ -1422,6 +1541,8 @@ function applyRealtimeJournalEvent(envelope) {
             heartbeatAt: incoming.heartbeatAt || agent.heartbeatAt || null,
             runtimeActivity: incoming.runtimeActivity || null,
             activeWorkItemIds: incoming.activeWorkItemIds || agent.activeWorkItemIds || [],
+            activitySeq: incoming.activitySeq || agent.activitySeq || 0,
+            activityAt: incoming.activityAt || agent.activityAt || null,
           }
         : agent
     ));
@@ -1445,11 +1566,25 @@ function applyPresenceHeartbeat(heartbeat) {
       runtimeLastTurnAt: incoming.runtimeLastTurnAt || agent.runtimeLastTurnAt || null,
       runtimeWarmAt: incoming.runtimeWarmAt || agent.runtimeWarmAt || null,
     };
+    const incomingSeq = activitySeqFromPayload(incoming);
+    const lastActivitySeq = Math.max(
+      Number(agentActivitySeqById[agent.id] || 0),
+      Number(agent.activitySeq || 0),
+    );
+    if (!incomingSeq || !lastActivitySeq || incomingSeq > lastActivitySeq) {
+      if (incomingSeq) agentActivitySeqById[agent.id] = incomingSeq;
+      next.runtimeActivity = incoming.runtimeActivity || agent.runtimeActivity || null;
+      next.activitySeq = incomingSeq || agent.activitySeq || 0;
+      next.activityAt = incoming.activityAt || agent.activityAt || null;
+    }
     if (
       next.status !== agent.status
       || next.runtimeLastStartedAt !== agent.runtimeLastStartedAt
       || next.runtimeLastTurnAt !== agent.runtimeLastTurnAt
       || next.runtimeWarmAt !== agent.runtimeWarmAt
+      || next.runtimeActivity !== agent.runtimeActivity
+      || next.activitySeq !== agent.activitySeq
+      || next.activityAt !== agent.activityAt
     ) {
       changed = true;
     }

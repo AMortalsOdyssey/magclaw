@@ -160,6 +160,26 @@ function maybeAddAgentActivityHeartbeat(agent, proc, staleMs, activeTurnIds, pen
     activeTurnIds,
     pendingToolCalls,
   });
+  if (typeof recordAgentActivityChanged === 'function') {
+    recordAgentActivityChanged(agent, {
+      type: 'agent_activity_heartbeat',
+      detail,
+      entries: [{
+        type: 'agent_activity_heartbeat',
+        agentId: agent.id,
+        activity: agent.runtimeActivity || null,
+        detail,
+        raw: {
+          activity,
+          staleMs,
+          lastProgressAt: isoFromMs(proc.lastTurnProgressAt),
+          lastProgressReason: proc.lastTurnProgressReason || null,
+          activeTurnIds,
+          pendingToolCalls,
+        },
+      }],
+    });
+  }
   return true;
 }
 

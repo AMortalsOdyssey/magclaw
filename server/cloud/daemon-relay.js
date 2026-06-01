@@ -314,6 +314,7 @@ export function createDaemonRelay(deps) {
     persistCloudState = null,
     persistState,
     port,
+    recordAgentActivityChanged = null,
     recordRealtimeEvent = null,
     DAEMON_RECONNECT_GRACE_MS = DEFAULT_DAEMON_RECONNECT_GRACE_MS,
     setAgentStatus,
@@ -785,19 +786,33 @@ export function createDaemonRelay(deps) {
     return event;
   }
 
-  function recordAgentRealtimeSnapshot(agent) {
-    if (typeof recordRealtimeEvent !== 'function' || !agent?.id) return;
-    recordRealtimeEvent('agent_status_changed', {
-      agent: {
-        id: agent.id,
-        status: agent.status || 'offline',
-        previousStatus: agent.previousStatus || null,
-        statusUpdatedAt: agent.statusUpdatedAt || null,
-        heartbeatAt: agent.heartbeatAt || null,
-        runtimeActivity: agent.runtimeActivity || null,
-        activeWorkItemIds: agent.activeWorkItemIds || [],
-      },
-    }, { scopeType: 'agent', scopeId: agent.id });
+  function recordAgentRealtimeSnapshot(agent, options = {}) {
+    if (!agent?.id) return;
+    if (typeof recordRealtimeEvent === 'function') {
+      recordRealtimeEvent('agent_status_changed', {
+        agent: {
+          id: agent.id,
+          status: agent.status || 'offline',
+          previousStatus: agent.previousStatus || null,
+          statusUpdatedAt: agent.statusUpdatedAt || null,
+          heartbeatAt: agent.heartbeatAt || null,
+          runtimeActivity: agent.runtimeActivity || null,
+          activeWorkItemIds: agent.activeWorkItemIds || [],
+        },
+      }, { scopeType: 'agent', scopeId: agent.id });
+    }
+    if (typeof recordAgentActivityChanged === 'function') {
+      recordAgentActivityChanged(agent, {
+        workspaceId: workspaceIdForAgent(agent),
+        detail: options.detail || activityText(agent.runtimeActivity || {}) || '',
+        entries: options.entries || [{
+          type: options.type || 'daemon_agent_activity',
+          agentId: agent.id,
+          activity: agent.runtimeActivity || null,
+          detail: options.detail || activityText(agent.runtimeActivity || {}) || '',
+        }],
+      });
+    }
   }
 
   function publicUrlFromRequest(req) {
@@ -2844,9 +2859,7 @@ export function createDaemonRelay(deps) {
           }
           clearAgentCommandIntent(commandId);
           if (agent && !readOnlyError) {
-            setAgentStatus(agent, 'error', 'daemon_error', { forceEvent: true });
-            markDeliveryFinished(message.commandId || message.deliveryId || null, 'failed', String(message.error || 'Agent error'));
-            agent.runtimeActivity = runtimeActivityWithStructuredError({
+            const runtimeActivity = runtimeActivityWithStructuredError({
               source: '@magclaw/daemon',
               at: now(),
             }, String(message.error || 'Agent error'), {
@@ -2854,6 +2867,12 @@ export function createDaemonRelay(deps) {
               phase: 'daemon_agent_error',
               source: '@magclaw/daemon',
             });
+            setAgentStatus(agent, 'error', 'daemon_error', {
+              forceEvent: true,
+              runtimeActivity,
+            });
+            markDeliveryFinished(message.commandId || message.deliveryId || null, 'failed', String(message.error || 'Agent error'));
+            agent.runtimeActivity = runtimeActivity;
             agent.heartbeatAt = now();
           }
           recordDaemonEvent('agent_error', String(message.error || 'Agent error'), {

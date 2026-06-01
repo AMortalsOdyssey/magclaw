@@ -708,6 +708,27 @@ test('agent status realtime events patch state without a direct full render call
   assert.doesNotMatch(agentStatusSource, /render\(\)/);
 });
 
+test('agent activity realtime events use per-agent seq guards and patch state locally', async () => {
+  const app = await readAppSource();
+  const helperSource = app.slice(
+    app.indexOf('function applyAgentActivityChangedEvent'),
+    app.indexOf('function applyRealtimeJournalEvent(envelope)'),
+  );
+  const realtimeSource = app.slice(
+    app.indexOf('function applyRealtimeJournalEvent(envelope)'),
+    app.indexOf('function applyPresenceHeartbeat(heartbeat)'),
+  );
+
+  assert.match(app, /let agentActivitySeqById = \{\}/);
+  assert.match(realtimeSource, /eventType === 'agent_activity_changed'/);
+  assert.match(realtimeSource, /applyAgentActivityChangedEvent\(payload, stateSnapshot\)/);
+  assert.match(helperSource, /agentActivitySeqById\[agentId\]/);
+  assert.match(helperSource, /incomingSeq <= lastSeq/);
+  assert.match(helperSource, /appendRealtimeAgentActivityEvents\(agentId, payload, stateSnapshot\)/);
+  assert.match(helperSource, /queueStateUpdate\(\{ \.\.\.stateSnapshot, agents, events \}\)/);
+  assert.doesNotMatch(helperSource, /render\(\)/);
+});
+
 test('active DM status updates patch the DM header during scoped chat refreshes', async () => {
   const app = await readAppSource();
   const patchConversationSource = app.slice(

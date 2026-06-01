@@ -441,6 +441,22 @@ function addAgentRuntimeActivityEvent(agent, proc, type, activity, detail, extra
         },
       }, { scopeType: 'agent', scopeId: agent.id });
     }
+    if (typeof recordAgentActivityChanged === 'function' && agent?.id) {
+      recordAgentActivityChanged(agent, {
+        type,
+        detail: detail || '',
+        entries: [{
+          type,
+          agentId: agent.id,
+          activity: agent.runtimeActivity || null,
+          detail: detail || '',
+          raw: {
+            activity,
+            ...extra,
+          },
+        }],
+      });
+    }
     persistState().then(() => broadcastState({ realtimeOnly: true })).catch(() => {});
   }
   return payload;

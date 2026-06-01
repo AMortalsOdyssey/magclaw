@@ -791,6 +791,8 @@ export function createStateCore(deps) {
       agent.runtimeLastStartedAt = agent.runtimeLastStartedAt || null;
       agent.runtimeLastTurnAt = legacyRuntimeSessionId ? null : agent.runtimeLastTurnAt || null;
       agent.runtimeActivity = agent.runtimeActivity && typeof agent.runtimeActivity === 'object' ? agent.runtimeActivity : null;
+      agent.activitySeq = Math.max(0, Math.floor(Number(agent.activitySeq || 0)) || 0);
+      agent.activityAt = agent.activityAt || agent.runtimeActivity?.updatedAt || agent.heartbeatAt || null;
       agent.workspacePath = agent.workspacePath || path.join(AGENTS_DIR, agent.id);
       agent.computerId = agent.computerId || 'cmp_local';
       agent.statusUpdatedAt = agent.statusUpdatedAt || agent.updatedAt || agent.createdAt || now();
@@ -1050,6 +1052,7 @@ export function createStateCore(deps) {
   }
 
   const REALTIME_BROADCAST_EVENT_TYPES = new Set([
+    'agent_activity_changed',
     'agent_status_changed',
     'system_event',
     'run_event',
@@ -1359,6 +1362,8 @@ export function createStateCore(deps) {
         runtimeLastStartedAt: agent.runtimeLastStartedAt || null,
         runtimeLastTurnAt: agent.runtimeLastTurnAt || null,
         runtimeActivity: agent.runtimeActivity || null,
+        activitySeq: Number(agent.activitySeq || 0),
+        activityAt: agent.activityAt || null,
       })),
       humans: (state?.humans || []).map((human) => ({
         id: human.id,
@@ -1376,6 +1381,97 @@ export function createStateCore(deps) {
   
   function agentStatusIsBusy(status) {
     return ['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming'].includes(String(status || '').toLowerCase());
+  }
+
+  function agentActivityDetail(activity = null) {
+    if (!activity || typeof activity !== 'object') return '';
+    return String(
+      activity.error
+      || activity.detail
+      || activity.note
+      || activity.text
+      || activity.message
+      || activity.tool
+      || ''
+    ).trim();
+  }
+
+  function nextAgentActivitySeq(agent) {
+    const current = Math.max(0, Math.floor(Number(agent?.activitySeq || 0)) || 0);
+    agent.activitySeq = current + 1;
+    return agent.activitySeq;
+  }
+
+  function normalizeAgentActivityRealtimeEntry(entry = {}, fallback = {}) {
+    const source = entry && typeof entry === 'object' ? entry : {};
+    const activity = source.activity && typeof source.activity === 'object'
+      ? source.activity
+      : fallback.runtimeActivity || null;
+    const detail = String(
+      source.detail
+      || source.message
+      || source.text
+      || agentActivityDetail(activity)
+      || fallback.detail
+      || ''
+    ).trim();
+    return {
+      id: source.id || '',
+      type: source.type || source.eventType || source.kind || fallback.type || 'agent_activity_changed',
+      agentId: source.agentId || fallback.agentId || '',
+      activity,
+      detail,
+      message: source.message || detail,
+      createdAt: source.createdAt || source.at || fallback.activityAt || now(),
+      raw: source.raw || null,
+    };
+  }
+
+  function recordAgentActivityChanged(agent, options = {}) {
+    if (!agent?.id) return null;
+    const activity = agent.runtimeActivity && typeof agent.runtimeActivity === 'object' ? agent.runtimeActivity : null;
+    const activityAt = options.activityAt || activity?.updatedAt || activity?.at || agent.heartbeatAt || agent.statusUpdatedAt || now();
+    const activitySeq = Number(options.activitySeq || 0) > 0
+      ? Math.floor(Number(options.activitySeq))
+      : nextAgentActivitySeq(agent);
+    agent.activitySeq = activitySeq;
+    agent.activityAt = activityAt;
+    const detail = String(options.detail || agentActivityDetail(activity) || '').trim();
+    const fallback = {
+      agentId: agent.id,
+      type: options.type || 'agent_activity_changed',
+      runtimeActivity: activity,
+      detail,
+      activityAt,
+    };
+    const entries = (Array.isArray(options.entries) ? options.entries : [])
+      .map((entry) => normalizeAgentActivityRealtimeEntry(entry, fallback))
+      .filter((entry) => entry.agentId);
+    return recordRealtimeEvent('agent_activity_changed', {
+      agentId: agent.id,
+      status: agent.status || 'offline',
+      runtimeActivity: activity,
+      detail,
+      activitySeq,
+      activityAt,
+      entries,
+      agent: {
+        id: agent.id,
+        name: agent.name || '',
+        status: agent.status || 'offline',
+        previousStatus: agent.previousStatus || null,
+        statusUpdatedAt: agent.statusUpdatedAt || null,
+        heartbeatAt: agent.heartbeatAt || null,
+        runtimeActivity: activity,
+        activeWorkItemIds: agent.activeWorkItemIds || [],
+        activitySeq,
+        activityAt,
+      },
+    }, {
+      workspaceId: options.workspaceId || agent.workspaceId || '',
+      scopeType: 'agent',
+      scopeId: agent.id,
+    });
   }
 
   function runtimeProcessHasActiveWork(proc) {
@@ -1405,7 +1501,9 @@ export function createStateCore(deps) {
     if (extra.activeWorkItemIds !== undefined) {
       agent.activeWorkItemIds = normalizeIds(extra.activeWorkItemIds);
     }
-    if (previousStatus !== nextStatus || extra.forceEvent) {
+    const shouldRecordStatus = previousStatus !== nextStatus || extra.forceEvent;
+    const shouldRecordActivity = shouldRecordStatus || extra.runtimeActivity !== undefined;
+    if (shouldRecordStatus) {
       addSystemEvent('agent_status_changed', `${agent.name} is ${nextStatus}.`, {
         agentId: agent.id,
         previousStatus,
@@ -1424,6 +1522,24 @@ export function createStateCore(deps) {
           activeWorkItemIds: agent.activeWorkItemIds || [],
         },
       }, { scopeType: 'agent', scopeId: agent.id });
+    }
+    if (shouldRecordActivity) {
+      recordAgentActivityChanged(agent, {
+        type: 'agent_status_changed',
+        detail: agentActivityDetail(agent.runtimeActivity) || `${agent.name} is ${nextStatus}.`,
+        entries: [{
+          type: 'agent_status_changed',
+          agentId: agent.id,
+          activity: agent.runtimeActivity || null,
+          detail: agentActivityDetail(agent.runtimeActivity) || `${agent.name} is ${nextStatus}.`,
+          raw: {
+            previousStatus,
+            status: nextStatus,
+            reason,
+            ...(extra.event || {}),
+          },
+        }],
+      });
     }
     return agent;
   }
@@ -1479,6 +1595,7 @@ export function createStateCore(deps) {
     presenceHeartbeat,
     reconcileAgentStatusHeartbeats,
     realtimeEventsForRequest,
+    recordAgentActivityChanged,
     recordRealtimeEvent,
     resolveCodexRuntime,
     flushActivityLog: () => activityLog.flush(),

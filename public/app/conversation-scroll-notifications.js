@@ -1039,7 +1039,8 @@ function restoreComposerFocus(snapshot) {
   const value = String(snapshot.value ?? composerDrafts[snapshot.composerId] ?? textarea.value ?? '');
   if (textarea.value !== value) textarea.value = value;
   if (typeof maybeAutosizeComposerTextarea === 'function') maybeAutosizeComposerTextarea(textarea);
-  setComposerDraftBody(snapshot.composerId, value);
+  if (typeof setComposerDraftBody === 'function') setComposerDraftBody(snapshot.composerId, value);
+  else composerDrafts[snapshot.composerId] = value;
   try {
     textarea.focus({ preventScroll: true });
   } catch {
