@@ -131,6 +131,9 @@ test('channel header exposes copy MagClaw Channel path without a full render', a
   assert.match(app, /external-import-context-full-list/);
   assert.match(app, /external-import-context/);
   assert.match(app, /function externalImportDisplayName/);
+  assert.match(app, /function externalImportMaskedId/);
+  assert.match(app, /maskExternalImportIdsInText/);
+  assert.match(app, /Feishu user/);
   assert.match(app, /metadata\.feishu\.contextRecords/);
   assert.match(clickSource, /\/api\/channels\/\$\{encodeURIComponent\(channelId\)\}\/feishu-import-path/);
   assert.match(clickSource, /tryCopyTextToClipboard\(result\.path \|\| result\.copyText/);

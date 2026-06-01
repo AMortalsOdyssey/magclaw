@@ -1897,6 +1897,17 @@ function renderSystemEvent(message) {
 }
 
 function cleanExternalImportText(value) {
+  return maskExternalImportIdsInText(String(value || '')
+    .replace(/<at[^>]*>(.*?)<\/at>/gi, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .trim());
+}
+
+function rawExternalImportText(value) {
   return String(value || '')
     .replace(/<at[^>]*>(.*?)<\/at>/gi, '$1')
     .replace(/<[^>]+>/g, '')
@@ -1914,10 +1925,52 @@ function stripExternalImportRoutePath(value) {
     .trim();
 }
 
-function externalImportDisplayName(value) {
-  const text = cleanExternalImportText(value);
-  if (/^(oc|ou|on|union|user)_/i.test(text)) return '';
-  return text;
+function externalImportLooksLikeFeishuId(value) {
+  return /^(ou|oc|on|om|omt|cli|user|union|u)_[A-Za-z0-9_-]+$/i.test(String(value || '').trim());
+}
+
+function externalImportMaskedId(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const match = text.match(/^([A-Za-z]+)_(.+)$/);
+  const prefix = match ? match[1] : '';
+  const body = match ? match[2] : text;
+  if (!body) return '';
+  const headLength = body.length > 8 ? 4 : Math.max(1, Math.ceil(body.length / 2));
+  const tailLength = body.length > 8 ? 4 : Math.max(1, Math.floor(body.length / 2));
+  const head = body.slice(0, headLength);
+  const tail = body.slice(Math.max(headLength, body.length - tailLength));
+  return prefix ? `${prefix}_${head}****${tail}` : `${head}****${tail}`;
+}
+
+function maskExternalImportIdsInText(value) {
+  return String(value || '').replace(/\b((?:ou|oc|on|om|omt|cli|user|union|u)_[A-Za-z0-9_-]{3,})\b/g, (id) => externalImportMaskedId(id) || id);
+}
+
+function externalImportKindForId(value, fallback = '') {
+  const text = String(value || '').trim();
+  if (/^cli_/i.test(text)) return 'bot';
+  if (/^oc_/i.test(text)) return 'chat';
+  if (/^(om|omt)_/i.test(text)) return 'message';
+  if (/^(ou|on|union|user|u)_/i.test(text)) return 'user';
+  return String(fallback || 'user').trim().toLowerCase();
+}
+
+function externalImportKindLabel(kind = '') {
+  const normalized = String(kind || '').trim().toLowerCase();
+  if (normalized === 'bot' || normalized === 'app') return 'Feishu Bot';
+  if (normalized === 'chat' || normalized === 'group' || normalized === 'topic') return 'Feishu chat';
+  if (normalized === 'message') return 'Feishu message';
+  return 'Feishu user';
+}
+
+function externalImportDisplayName(value, kind = '', fallbackId = '') {
+  const raw = rawExternalImportText(value);
+  if (raw && !externalImportLooksLikeFeishuId(raw)) return maskExternalImportIdsInText(raw);
+  const id = raw || String(fallbackId || '').trim();
+  const masked = externalImportMaskedId(id);
+  if (masked) return `${externalImportKindLabel(kind || externalImportKindForId(id))} ${masked}`;
+  return '';
 }
 
 function externalImportDisplayBody(message) {
@@ -2002,7 +2055,11 @@ function normalizeExternalImportContextRecord(message = {}, record = {}, index =
   if (!text) return null;
   return {
     id: String(record.id || record.messageId || `context_${index}`).trim(),
-    author: externalImportDisplayName(record.author || record.senderName || record.sender?.name || `Message ${index + 1}`) || `Message ${index + 1}`,
+    author: externalImportDisplayName(
+      record.author || record.senderName || record.sender?.name,
+      record.senderType || record.sender?.type || (record.appId || record.sender?.appId ? 'bot' : 'user'),
+      record.openId || record.userId || record.unionId || record.appId || record.authorId || record.sender?.id || '',
+    ) || `Message ${index + 1}`,
     text,
     createdAt: String(record.createdAt || record.time || record.timestamp || '').trim(),
     attachmentIds: externalImportRecordAttachmentIds(message, record),
@@ -2076,15 +2133,15 @@ function renderExternalImportBody(message) {
 }
 
 function externalImportSourceLabel(origin = {}) {
-  const sender = externalImportDisplayName(origin.senderName || '');
-  const chat = externalImportDisplayName(origin.chatName || '');
+  const sender = externalImportDisplayName(origin.senderName || '', origin.senderType || 'user', origin.senderOpenId || origin.senderUserId || origin.senderUnionId || origin.senderAppId || origin.senderId || '');
+  const chat = externalImportDisplayName(origin.chatName || '', 'chat', origin.chatId || '');
   return sender || chat || (externalImportIsGroup(origin) ? 'Feishu group' : 'Feishu direct message');
 }
 
 function renderExternalImportAvatar(message = {}) {
   const origin = message?.metadata?.origin || {};
   const isGroup = externalImportIsGroup(origin);
-  const chat = externalImportDisplayName(origin.chatName || '');
+  const chat = externalImportDisplayName(origin.chatName || '', 'chat', origin.chatId || '');
   const avatar = isGroup ? (origin.chatAvatar || '') : (origin.senderAvatar || origin.chatAvatar || '');
   const label = externalImportSourceLabel(origin);
   if (avatar) {
@@ -2097,7 +2154,7 @@ function renderExternalImportAvatar(message = {}) {
 function renderExternalImportIdentity(message, importedLabel = 'Imported from Feishu') {
   const origin = message?.metadata?.origin || {};
   const source = externalImportSourceLabel(origin);
-  const chat = externalImportDisplayName(origin.chatName || '');
+  const chat = externalImportDisplayName(origin.chatName || '', 'chat', origin.chatId || '');
   const groupTag = externalImportIsGroup(origin) && chat ? `<span class="external-import-group-tag">#${escapeHtml(chat)}</span>` : '';
   return `
     <strong>${escapeHtml(source)}</strong>
