@@ -1846,6 +1846,32 @@ test('message composers refocus after enter-submit sends', async () => {
   assert.match(submitSource, /if \(focusComposerId\) requestComposerFocus\(focusComposerId\)/);
 });
 
+test('composer drafts persist text and render draft badges without persisted attachments', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const draftSource = app.slice(app.indexOf('function composerDraftStorageScope'), app.indexOf('function stagedFor'));
+  const railSource = app.slice(app.indexOf('function renderChannelItem('), app.indexOf('function renderQuick('));
+  const threadSource = app.slice(app.indexOf('function renderThreads()'), app.indexOf('function renderSaved()'));
+  const inboxSource = app.slice(app.indexOf('function renderInboxItem('), app.indexOf('function renderWorkspaceActivityInboxItem('));
+  const inputSource = app.slice(app.indexOf('// Handle @ mention autocomplete in message textarea'), app.indexOf("if (event.target.id === 'search-input')"));
+
+  assert.match(draftSource, /magclawComposerDrafts:/);
+  assert.match(draftSource, /function loadStoredComposerDrafts/);
+  assert.match(draftSource, /function setComposerDraftBody/);
+  assert.match(draftSource, /function clearComposerDraft/);
+  assert.match(draftSource, /function renderDraftSlotForComposer/);
+  assert.match(draftSource, /mentionMap/);
+  assert.match(draftSource, /stagedFor\(composerId\)\.attachments\.length \+ pendingAttachmentUploadCount\(composerId\)/);
+  assert.match(inputSource, /setComposerDraftBody\(messageTextarea\.dataset\.composerId, value\)/);
+  assert.match(app, /clearComposerDraft\(composerId\)/);
+  assert.match(app, /loadStoredComposerDrafts\(\)/);
+  assert.match(railSource, /renderDraftSlotForComposer\(composerId\)/);
+  assert.match(threadSource, /renderDraftSlotForComposer\(composerId\)/);
+  assert.match(inboxSource, /renderDraftSlotForComposer\(composerId\)/);
+  assert.match(styles, /\.composer-draft-badge/);
+  assert.match(styles, /\.composer-draft-slot/);
+});
+
 test('message composers do not submit while IME composition is active', async () => {
   const app = await readAppSource();
   const compositionStartSource = app.slice(app.indexOf("document.addEventListener('compositionstart'"), app.indexOf("document.addEventListener('compositionend'"));

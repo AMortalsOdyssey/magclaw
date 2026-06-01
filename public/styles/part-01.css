@@ -494,6 +494,41 @@ button {
   margin-left: auto;
 }
 
+.composer-draft-slot {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.space-btn .composer-draft-slot {
+  margin-left: auto;
+}
+
+.space-btn .composer-draft-slot:not(:empty) + .rail-unread-badge,
+.space-btn .composer-draft-slot:not(:empty) + .rail-message-count,
+.space-btn .composer-draft-slot:not(:empty) + .rail-muted-count {
+  margin-left: 4px;
+}
+
+.composer-draft-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 17px;
+  max-width: 68px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #fff4cc;
+  color: #111827;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .nav-item.active .rail-unread-badge,
 .space-btn.active .rail-unread-badge {
   background: var(--bg-card);

@@ -34,6 +34,8 @@ test('attachment preview modal supports markdown outline and media viewers', asy
   assert.match(app, /function requestAttachmentPreviewOutlineSync\(/);
   assert.match(app, /data-action="open-attachment-preview"/);
   assert.match(app, /video controls preload="metadata"/);
+  assert.match(app, /type === 'video\/webm'/);
+  assert.match(app, /name\.endsWith\('\.webm'\)/);
   assert.match(app, /iframe[\s\S]*sandbox=""/);
   assert.match(app, /No active HTML preview/);
   assert.match(styles, /\.attachment-preview-modal/);

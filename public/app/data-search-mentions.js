@@ -1017,6 +1017,7 @@ function rememberComposerMention(composerId, item) {
   if (!composerId || !item) return;
   composerMentionMaps[composerId] = composerMentionMaps[composerId] || {};
   composerMentionMaps[composerId][mentionDisplay(item)] = contextTokenForItem(item);
+  persistComposerDraft(composerId);
 }
 
 function escapeRegExp(value) {
@@ -1208,7 +1209,7 @@ async function insertMention(textarea, item) {
   const newPosition = beforeTrigger.length + mentionToken.length + 1;
   textarea.setSelectionRange(newPosition, newPosition);
   if (textarea.dataset.composerId) {
-    composerDrafts[textarea.dataset.composerId] = textarea.value;
+    setComposerDraftBody(textarea.dataset.composerId, textarea.value);
     rememberComposerMention(textarea.dataset.composerId, item);
     if (item.type === 'file' || item.type === 'folder') {
       toast(`${item.type === 'file' ? 'File' : 'Folder'} referenced from project`);

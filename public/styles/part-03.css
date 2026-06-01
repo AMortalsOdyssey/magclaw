@@ -1608,6 +1608,10 @@
   font-size: 12px;
 }
 
+.thread-row-side .composer-draft-slot {
+  max-width: 74px;
+}
+
 .thread-row-check {
   display: grid;
   place-items: center;

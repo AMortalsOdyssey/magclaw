@@ -1001,7 +1001,7 @@ function attachmentPreviewKind(attachment = {}) {
   const type = String(attachment.type || '').toLowerCase();
   const name = String(attachment.name || '').toLowerCase();
   if (type.startsWith('image/')) return 'image';
-  if (type === 'video/mp4' || name.endsWith('.mp4')) return 'video';
+  if (type === 'video/mp4' || type === 'video/webm' || name.endsWith('.mp4') || name.endsWith('.webm')) return 'video';
   if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
   if (type === 'text/markdown' || type === 'text/x-markdown' || name.endsWith('.md') || name.endsWith('.markdown')) return 'markdown';
   if (type === 'text/html' || name.endsWith('.html') || name.endsWith('.htm')) return 'html';
@@ -2513,6 +2513,7 @@ function renderThreads() {
         const author = displayName(message.authorId);
         const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
         const active = threadMessageId === message.id ? ' active' : '';
+        const composerId = `thread:${message.id}`;
         return `
         <button class="thread-row magclaw-thread-row${active}" type="button" data-action="open-thread" data-id="${message.id}">
           <span class="thread-row-avatar">
@@ -2529,6 +2530,7 @@ function renderThreads() {
             <small>${escapeHtml(threadPreviewText(message))}</small>
           </span>
           <span class="thread-row-side">
+            ${renderDraftSlotForComposer(composerId)}
             <span>${message.replyCount || 0}</span>
             <span class="thread-row-check" title="Open thread">✓</span>
           </span>

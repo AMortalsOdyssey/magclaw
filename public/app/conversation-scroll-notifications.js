@@ -433,7 +433,10 @@ function attachmentPreviewIcon(item = {}, variant = 'message') {
     `;
   }
   if (kind === 'pdf') return `<span class="${baseClass}">PDF</span>`;
-  if (kind === 'video') return `<span class="${baseClass}">MP4</span>`;
+  if (kind === 'video') {
+    const name = String(item.name || item.filename || '').toLowerCase();
+    return `<span class="${baseClass}">${name.endsWith('.webm') || String(item.type || '').toLowerCase() === 'video/webm' ? 'WEBM' : 'VID'}</span>`;
+  }
   if (kind === 'html') return `<span class="${baseClass}">HTML</span>`;
   return `<span class="${baseClass}">FILE</span>`;
 }
@@ -465,6 +468,143 @@ function composerIdFor(kind, id = '') {
   return `message:${selectedSpaceType}:${selectedSpaceId}`;
 }
 
+function composerDraftStorageScope() {
+  const pathSlug = String(window.location.pathname || '').match(/^\/s\/([^/]+)/)?.[1] || '';
+  const workspaceId = String(
+    appState?.connection?.workspaceId
+    || appState?.cloud?.workspace?.id
+    || appState?.cloud?.workspaces?.[0]?.id
+    || pathSlug
+    || 'local',
+  );
+  const humanId = typeof currentHumanId === 'function' ? currentHumanId() : 'local';
+  return [window.location.host || 'local', workspaceId || 'local', humanId || 'local']
+    .map((item) => encodeURIComponent(String(item || 'local')))
+    .join(':');
+}
+
+function composerDraftStorageKey() {
+  return `magclawComposerDrafts:${composerDraftStorageScope()}`;
+}
+
+function normalizeComposerDraftEntry(entry = {}) {
+  const body = String(entry?.body || '').slice(0, 20_000);
+  const rawMentionMap = entry?.mentionMap && typeof entry.mentionMap === 'object' ? entry.mentionMap : {};
+  const mentionMap = Object.fromEntries(Object.entries(rawMentionMap)
+    .map(([label, token]) => [String(label || '').slice(0, 200), String(token || '').slice(0, 500)])
+    .filter(([label, token]) => label && token));
+  if (!body.trim() && !Object.keys(mentionMap).length) return null;
+  return {
+    body,
+    mentionMap,
+    updatedAt: Number.isFinite(Date.parse(entry?.updatedAt || '')) ? entry.updatedAt : new Date().toISOString(),
+  };
+}
+
+function loadStoredComposerDrafts({ force = false } = {}) {
+  const key = composerDraftStorageKey();
+  if (!force && composerDraftStorageKeyActive === key) return false;
+  composerDraftStorageKeyActive = key;
+  const parsed = readJsonStorage(key, {});
+  const drafts = parsed?.drafts && typeof parsed.drafts === 'object' ? parsed.drafts : {};
+  composerDrafts = {};
+  composerMentionMaps = {};
+  composerDraftUpdatedAt = {};
+  for (const [composerId, entry] of Object.entries(drafts)) {
+    const normalized = normalizeComposerDraftEntry(entry);
+    if (!normalized) continue;
+    composerDrafts[composerId] = normalized.body;
+    if (Object.keys(normalized.mentionMap).length) composerMentionMaps[composerId] = normalized.mentionMap;
+    composerDraftUpdatedAt[composerId] = normalized.updatedAt;
+  }
+  return true;
+}
+
+function writeStoredComposerDrafts() {
+  const key = composerDraftStorageKeyActive || composerDraftStorageKey();
+  composerDraftStorageKeyActive = key;
+  const ids = new Set([...Object.keys(composerDrafts), ...Object.keys(composerMentionMaps)]);
+  const drafts = {};
+  const now = new Date().toISOString();
+  for (const composerId of ids) {
+    const normalized = normalizeComposerDraftEntry({
+      body: composerDrafts[composerId] || '',
+      mentionMap: composerMentionMaps[composerId] || {},
+      updatedAt: composerDraftUpdatedAt[composerId] || now,
+    });
+    if (normalized) drafts[composerId] = normalized;
+  }
+  writeJsonStorage(key, {
+    version: 1,
+    updatedAt: now,
+    drafts: Object.fromEntries(Object.entries(drafts)
+      .sort((a, b) => Date.parse(b[1].updatedAt) - Date.parse(a[1].updatedAt))
+      .slice(0, 100)),
+  });
+}
+
+function updateDraftBadgesForComposer(composerId) {
+  if (!composerId || !window.CSS?.escape) return;
+  document.querySelectorAll(`[data-draft-slot="${CSS.escape(composerId)}"]`).forEach((slot) => {
+    slot.innerHTML = renderDraftBadgeForComposer(composerId);
+  });
+}
+
+function setComposerDraftState(composerId, { body = '', mentionMap = null } = {}) {
+  if (!composerId) return;
+  const value = String(body || '');
+  const nextMentionMap = mentionMap && typeof mentionMap === 'object' ? mentionMap : (composerMentionMaps[composerId] || {});
+  if (value.trim()) {
+    composerDrafts[composerId] = value;
+    composerDraftUpdatedAt[composerId] = new Date().toISOString();
+    if (Object.keys(nextMentionMap).length) composerMentionMaps[composerId] = { ...nextMentionMap };
+    else delete composerMentionMaps[composerId];
+  } else {
+    delete composerDrafts[composerId];
+    delete composerMentionMaps[composerId];
+    delete composerDraftUpdatedAt[composerId];
+  }
+  writeStoredComposerDrafts();
+  updateDraftBadgesForComposer(composerId);
+}
+
+function setComposerDraftBody(composerId, body = '') {
+  setComposerDraftState(composerId, { body, mentionMap: composerMentionMaps[composerId] || {} });
+}
+
+function persistComposerDraft(composerId) {
+  if (!composerId) return;
+  setComposerDraftState(composerId, {
+    body: composerDrafts[composerId] || '',
+    mentionMap: composerMentionMaps[composerId] || {},
+  });
+}
+
+function clearComposerDraft(composerId) {
+  setComposerDraftState(composerId, { body: '', mentionMap: {} });
+}
+
+function composerDraftStatus(composerId) {
+  const body = String(composerDrafts[composerId] || '');
+  const attachmentCount = stagedFor(composerId).attachments.length + pendingAttachmentUploadCount(composerId);
+  return {
+    hasText: Boolean(body.trim()),
+    attachmentCount,
+    active: Boolean(body.trim() || attachmentCount),
+  };
+}
+
+function renderDraftBadgeForComposer(composerId) {
+  const status = composerDraftStatus(composerId);
+  if (!status.active) return '';
+  const suffix = status.attachmentCount ? ` +${status.attachmentCount}` : '';
+  return `<span class="composer-draft-badge" title="${escapeHtml(t('Draft'))}">${escapeHtml(t('Draft'))}${escapeHtml(suffix)}</span>`;
+}
+
+function renderDraftSlotForComposer(composerId) {
+  return `<span class="composer-draft-slot" data-draft-slot="${escapeHtml(composerId)}">${renderDraftBadgeForComposer(composerId)}</span>`;
+}
+
 function stagedFor(composerId) {
   return stagedByComposer[composerId] || { attachments: [], ids: [] };
 }
@@ -477,6 +617,7 @@ function updateComposerUploadState(composerId) {
   const form = document.querySelector(`form[data-composer-id="${CSS.escape(composerId || '')}"]`);
   if (form) form.classList.toggle('is-uploading-attachments', pendingAttachmentUploadCount(composerId) > 0);
   updateComposerAttachmentStrip(composerId);
+  updateDraftBadgesForComposer(composerId);
 }
 
 function trackComposerAttachmentUpload(composerId, promise) {
@@ -516,10 +657,12 @@ function setStagedFor(composerId, attachments) {
     attachments: unique,
     ids: unique.map((item) => item.id),
   };
+  updateDraftBadgesForComposer(composerId);
 }
 
 function clearStagedFor(composerId) {
   delete stagedByComposer[composerId];
+  updateDraftBadgesForComposer(composerId);
 }
 
 function renderAttachmentStrip(composerId) {
@@ -594,13 +737,13 @@ function removeStagedAttachment(composerId, attachmentId) {
 function snapshotComposerState(form, composerId, { includeTask = false } = {}) {
   const textarea = form?.querySelector('textarea[name="body"]');
   const taskInput = form?.querySelector('input[name="asTask"]');
-	  return {
-	    body: textarea?.value ?? composerDrafts[composerId] ?? '',
-	    attachments: [...stagedFor(composerId).attachments],
-	    references: typeof outgoingComposerReferences === 'function' ? outgoingComposerReferences(composerId) : [],
-	    mentionMap: { ...(composerMentionMaps[composerId] || {}) },
-	    task: includeTask ? Boolean(taskInput?.checked || composerTaskFlags[composerId]) : false,
-	  };
+  return {
+    body: textarea?.value ?? composerDrafts[composerId] ?? '',
+    attachments: [...stagedFor(composerId).attachments],
+    references: typeof outgoingComposerReferences === 'function' ? outgoingComposerReferences(composerId) : [],
+    mentionMap: { ...(composerMentionMaps[composerId] || {}) },
+    task: includeTask ? Boolean(taskInput?.checked || composerTaskFlags[composerId]) : false,
+  };
 }
 
 function clearComposerForSubmit(form, composerId, { clearTask = false } = {}) {
@@ -612,26 +755,22 @@ function clearComposerForSubmit(form, composerId, { clearTask = false } = {}) {
   }
   const taskInput = form?.querySelector('input[name="asTask"]');
   if (clearTask && taskInput) taskInput.checked = false;
-	  clearStagedFor(composerId);
-	  updateComposerAttachmentStrip(composerId);
-	  if (typeof clearComposerReferences === 'function') clearComposerReferences(composerId);
-	  if (typeof updateComposerReferenceStrip === 'function') updateComposerReferenceStrip(composerId);
-	  delete composerDrafts[composerId];
-	  delete composerMentionMaps[composerId];
+  clearStagedFor(composerId);
+  updateComposerAttachmentStrip(composerId);
+  if (typeof clearComposerReferences === 'function') clearComposerReferences(composerId);
+  if (typeof updateComposerReferenceStrip === 'function') updateComposerReferenceStrip(composerId);
+  clearComposerDraft(composerId);
   if (clearTask) delete composerTaskFlags[composerId];
 }
 
 function restoreComposerAfterFailedSubmit(form, composerId, snapshot, { restoreTask = false } = {}) {
   const body = snapshot?.body || '';
-  if (body) composerDrafts[composerId] = body;
-  else delete composerDrafts[composerId];
-	  if (snapshot?.attachments?.length) setStagedFor(composerId, snapshot.attachments);
-	  else clearStagedFor(composerId);
-	  updateComposerAttachmentStrip(composerId);
-	  if (typeof setComposerReferences === 'function') setComposerReferences(composerId, snapshot?.references || []);
-	  if (typeof updateComposerReferenceStrip === 'function') updateComposerReferenceStrip(composerId);
-	  if (snapshot?.mentionMap && Object.keys(snapshot.mentionMap).length) composerMentionMaps[composerId] = snapshot.mentionMap;
-  else delete composerMentionMaps[composerId];
+  setComposerDraftState(composerId, { body, mentionMap: snapshot?.mentionMap || {} });
+  if (snapshot?.attachments?.length) setStagedFor(composerId, snapshot.attachments);
+  else clearStagedFor(composerId);
+  updateComposerAttachmentStrip(composerId);
+  if (typeof setComposerReferences === 'function') setComposerReferences(composerId, snapshot?.references || []);
+  if (typeof updateComposerReferenceStrip === 'function') updateComposerReferenceStrip(composerId);
   if (restoreTask) composerTaskFlags[composerId] = Boolean(snapshot?.task);
   const textarea = form?.querySelector('textarea[name="body"]');
   if (textarea) {
@@ -900,7 +1039,7 @@ function restoreComposerFocus(snapshot) {
   const value = String(snapshot.value ?? composerDrafts[snapshot.composerId] ?? textarea.value ?? '');
   if (textarea.value !== value) textarea.value = value;
   if (typeof maybeAutosizeComposerTextarea === 'function') maybeAutosizeComposerTextarea(textarea);
-  composerDrafts[snapshot.composerId] = value;
+  setComposerDraftBody(snapshot.composerId, value);
   try {
     textarea.focus({ preventScroll: true });
   } catch {

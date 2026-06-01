@@ -321,7 +321,7 @@ function rememberReferenceAuthorMention(composerId, record) {
   const hasMention = current.includes(label) || current.includes(`<@${record.authorId}>`);
   if (hasMention) return true;
   const next = current.trim() ? `${label} ${current}` : `${label} `;
-  composerDrafts[composerId] = next;
+  setComposerDraftBody(composerId, next);
   if (textarea) {
     textarea.value = next;
     textarea.defaultValue = next;

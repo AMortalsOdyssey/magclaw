@@ -652,6 +652,7 @@ function renderNavItem(view, label, icon, badge, { badgeKind = 'meta' } = {}) {
 
 function renderChannelItem(channel, messageCount = 0) {
   const active = activeView === 'space' && selectedSpaceType === 'channel' && selectedSpaceId === channel.id ? ' active' : '';
+  const composerId = `message:channel:${channel.id}`;
   const unreadEntry = typeof serverUnreadEntryForSpace === 'function' ? serverUnreadEntryForSpace('channel', channel.id) : null;
   const readable = typeof currentUserCanReadChannel === 'function' ? currentUserCanReadChannel(channel) : true;
   const joined = typeof currentUserIsChannelMember === 'function' ? currentUserIsChannelMember(channel) : readable;
@@ -663,6 +664,7 @@ function renderChannelItem(channel, messageCount = 0) {
     <button class="space-btn${active}${weak}${pinned ? ' pinned-space' : ''}" type="button" data-action="select-space" data-type="channel" data-id="${channel.id}" draggable="${draggable ? 'true' : 'false'}" data-space-drag-kind="channel" data-space-drag-id="${escapeHtml(channel.id)}">
       <span class="channel-icon">#</span>
       <span class="channel-name">${escapeHtml(channel.name)}</span>
+      ${renderDraftSlotForComposer(composerId)}
       ${unjoined ? renderRailMutedCount(messageCount, `new public messages in #${channel.name}`) : renderRailUnreadBadge(messageCount, `unread messages in #${channel.name}`)}
     </button>
   `;
@@ -671,6 +673,7 @@ function renderChannelItem(channel, messageCount = 0) {
 function renderDmItem(id, name, status, avatar, unreadCount = 0) {
   const active = activeView === 'space' && selectedSpaceType === 'dm' && selectedSpaceId === id ? ' active' : '';
   const label = String(name || 'Unknown').trim() || 'Unknown';
+  const composerId = `message:dm:${id}`;
   const initials = label.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
   return `
     <button class="space-btn dm-btn${active}" type="button" data-action="select-space" data-type="dm" data-id="${id}" draggable="true" data-space-drag-kind="dm" data-space-drag-id="${escapeHtml(id)}">
@@ -679,6 +682,7 @@ function renderDmItem(id, name, status, avatar, unreadCount = 0) {
         ${avatarStatusDot(status, 'DM status')}
       </span>
       <span class="dm-name">${escapeHtml(label)}</span>
+      ${renderDraftSlotForComposer(composerId)}
       ${renderRailUnreadBadge(unreadCount, `unread direct messages from ${label}`)}
     </button>
   `;
@@ -942,6 +946,7 @@ function renderInboxCategoryButton(id, label, count) {
 function renderInboxItem(item) {
   if (item.type === 'workspace') return renderWorkspaceActivityInboxItem(item);
   const message = item.message;
+  const composerId = `thread:${item.recordId}`;
   const active = threadMessageId === item.recordId ? ' active' : '';
   const unread = item.unreadCount ? ' unread' : '';
   const task = item.task || (message.taskId ? byId(appState.tasks, message.taskId) : null);
@@ -962,6 +967,7 @@ function renderInboxItem(item) {
         <small>${escapeHtml(item.preview)}</small>
       </span>
       <span class="thread-row-side">
+        ${renderDraftSlotForComposer(composerId)}
         ${item.unreadCount ? `<span class="inbox-unread-count">${escapeHtml(item.unreadCount)}</span>` : '<span>0</span>'}
         <span class="thread-row-check" title="Open">✓</span>
       </span>

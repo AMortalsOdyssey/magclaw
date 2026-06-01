@@ -102,6 +102,7 @@ async function refreshState() {
   trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
   appState = nextState;
   syncBootstrapPagination(appState);
+  if (typeof loadStoredComposerDrafts === 'function') loadStoredComposerDrafts();
   if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   const routeSlug = serverSlugFromPath();
   if (
@@ -115,6 +116,7 @@ async function refreshState() {
     await api(`/api/console/servers/${encodeURIComponent(routeSlug)}/switch`, { method: 'POST', body: '{}' });
     appState = await api(bootstrapStatePath());
     syncBootstrapPagination(appState);
+    if (typeof loadStoredComposerDrafts === 'function') loadStoredComposerDrafts({ force: true });
     if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   }
   if (appState.cloud?.workspaceAccess?.denied) {
@@ -2199,7 +2201,7 @@ document.addEventListener('input', async (event) => {
       composerIsComposing = false;
       composingComposerId = null;
     }
-    if (messageTextarea.dataset.composerId) composerDrafts[messageTextarea.dataset.composerId] = value;
+    if (messageTextarea.dataset.composerId) setComposerDraftBody(messageTextarea.dataset.composerId, value);
     const atMatch = findMentionTrigger(value, selectionStart);
     if (atMatch) {
       const lookupSeq = ++mentionLookupSeq;
