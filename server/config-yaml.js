@@ -166,6 +166,11 @@ export function applyServerYamlConfig(options = {}) {
   const auth = config.auth || {};
   const feishu = objectValue(config.feishu || config.lark);
   const feishuConnect = objectValue(pick(feishu.connect, feishu.bot, feishu.gateway));
+  const teamMemory = objectValue(config.team_memory || config.teamMemory);
+  const teamMemoryDefaultChannel = objectValue(pick(teamMemory.default_channel, teamMemory.defaultChannel));
+  const teamMemoryEmbedding = objectValue(teamMemory.embedding);
+  const teamMemoryZilliz = objectValue(teamMemory.zilliz || teamMemory.milvus);
+  const teamMemoryRerank = objectValue(teamMemory.rerank);
   const runtime = config.runtime || {};
   const daemon = config.daemon || {};
   const rawDaemonConnectCommand = pick(daemon.connect_command, daemon.connectCommand);
@@ -255,6 +260,28 @@ export function applyServerYamlConfig(options = {}) {
   setEnv(env, 'MAGCLAW_FEISHU_CONNECT_MESSAGE_MODE', pick(feishuConnect.message_mode, feishuConnect.messageMode));
   setEnv(env, 'MAGCLAW_FEISHU_CONNECT_REPLY_MODE', pick(feishuConnect.reply_mode, feishuConnect.replyMode));
 
+  setEnv(env, 'MAGCLAW_TEAM_MEMORY_ENABLED', pick(teamMemory.enabled, teamMemory.enable));
+  setEnv(env, 'MAGCLAW_TEAM_MEMORY_DEFAULT_CHANNEL_ID', pick(teamMemoryDefaultChannel.channel_id, teamMemoryDefaultChannel.channelId));
+  setEnv(env, 'MAGCLAW_TEAM_MEMORY_DEFAULT_CHANNEL_PATH', pick(teamMemoryDefaultChannel.channel_path, teamMemoryDefaultChannel.channelPath));
+  setEnv(env, 'MAGCLAW_TEAM_MEMORY_ROUTING_MODE', pick(teamMemoryDefaultChannel.routing_mode, teamMemoryDefaultChannel.routingMode));
+  setEnv(env, 'MAGCLAW_EMBEDDING_BASE_URL', pick(teamMemoryEmbedding.base_url, teamMemoryEmbedding.baseUrl, teamMemoryEmbedding.url));
+  setEnv(env, 'MAGCLAW_EMBEDDING_API_KEY', pick(teamMemoryEmbedding.api_key, teamMemoryEmbedding.apiKey));
+  setEnv(env, 'MAGCLAW_EMBEDDING_MODEL', pick(teamMemoryEmbedding.model, teamMemoryEmbedding.model_name, teamMemoryEmbedding.modelName));
+  setEnv(env, 'MAGCLAW_EMBEDDING_PREFERRED_DIMENSION', pick(
+    teamMemoryEmbedding.preferred_dimension,
+    teamMemoryEmbedding.preferredDimension,
+    teamMemoryEmbedding.dimension,
+  ));
+  setEnv(env, 'MAGCLAW_ZILLIZ_ENDPOINT', pick(teamMemoryZilliz.endpoint, teamMemoryZilliz.url, teamMemoryZilliz.base_url, teamMemoryZilliz.baseUrl));
+  setEnv(env, 'MAGCLAW_ZILLIZ_TOKEN', pick(teamMemoryZilliz.token, teamMemoryZilliz.api_key, teamMemoryZilliz.apiKey));
+  setEnv(env, 'MAGCLAW_ZILLIZ_DATABASE', pick(teamMemoryZilliz.database, teamMemoryZilliz.db));
+  setEnv(env, 'MAGCLAW_ZILLIZ_COLLECTION', pick(teamMemoryZilliz.collection, teamMemoryZilliz.collection_name, teamMemoryZilliz.collectionName));
+  setEnv(env, 'MAGCLAW_RERANK_URL', pick(teamMemoryRerank.url, teamMemoryRerank.base_url, teamMemoryRerank.baseUrl));
+  setEnv(env, 'MAGCLAW_RERANK_API_KEY', pick(teamMemoryRerank.api_key, teamMemoryRerank.apiKey));
+  setEnv(env, 'MAGCLAW_RERANK_MODEL', pick(teamMemoryRerank.model, teamMemoryRerank.model_name, teamMemoryRerank.modelName));
+  setEnv(env, 'MAGCLAW_RERANK_CANDIDATE_K', pick(teamMemoryRerank.candidate_k, teamMemoryRerank.candidateK));
+  setEnv(env, 'MAGCLAW_RERANK_TOP_N', pick(teamMemoryRerank.top_n, teamMemoryRerank.topN));
+
   setEnv(env, 'CODEX_MODEL', pick(runtime.codex_model, runtime.codexModel));
   setEnv(env, 'CODEX_PATH', pick(runtime.codex_path, runtime.codexPath));
   setEnv(env, 'MAGCLAW_CHAT_MODEL', pick(runtime.chat_model, runtime.chatModel));
@@ -292,7 +319,7 @@ export function redactConfig(config = {}) {
   function redactValue(value, key = '') {
     if (Array.isArray(value)) return value.map((item) => redactValue(item));
     if (!value || typeof value !== 'object') {
-      return /password|secret|api_?key|token|url/i.test(key) && value ? '[redacted]' : value;
+      return /password|secret|api_?key|token|url|endpoint|uri/i.test(key) && value ? '[redacted]' : value;
     }
     const clone = {};
     for (const [childKey, childValue] of Object.entries(value)) {

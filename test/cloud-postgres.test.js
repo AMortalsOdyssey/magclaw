@@ -1069,6 +1069,55 @@ test('postgres store upserts duplicate durable state records without crashing', 
   assert.equal(orphanInsert, undefined);
 });
 
+test('postgres store persists team memory object as durable state', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-06-01T00:00:00.000Z';
+  await store.persistFromState({
+    connection: { workspaceId: 'wsp_main' },
+    teamMemory: {
+      sessions: { sess_1: { sessionId: 'sess_1', channelId: 'chan_team' } },
+      vectorDocuments: [{ vectorDocumentId: 'sess_1:L0', layer: 'L0' }],
+    },
+    cloud: {
+      workspaces: [{ id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt }],
+      users: [],
+      workspaceMembers: [],
+      sessions: [],
+      invitations: [],
+      passwordResetTokens: [],
+    },
+  });
+
+  const stateRecordInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_state_records"'));
+  assert.ok(stateRecordInsert);
+  const rows = [];
+  for (let index = 0; index < stateRecordInsert.params.length; index += 7) {
+    rows.push(stateRecordInsert.params.slice(index, index + 7));
+  }
+  const teamMemoryRow = rows.find((row) => row[1] === 'teamMemory');
+  assert.ok(teamMemoryRow);
+  assert.equal(teamMemoryRow[0], 'wsp_main');
+  assert.equal(teamMemoryRow[2], 'value');
+  assert.equal(JSON.parse(teamMemoryRow[6]).sessions.sess_1.channelId, 'chan_team');
+});
+
 test('postgres store skips default local placeholder workspace runtime persistence', async () => {
   const queries = [];
   const pool = {

@@ -1,0 +1,112 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+  buildTeamMemorySummaryPrompt,
+  createTeamMemorySummaryClient,
+} from '../server/team-memory-summary.js';
+import {
+  createInitialTeamMemoryState,
+  syncTeamMemoryBatch,
+} from '../server/team-memory.js';
+
+test('team memory summary prompt asks for L0/L1/activity/source anchors without hidden reasoning', () => {
+  const prompt = buildTeamMemorySummaryPrompt({
+    session: { sessionId: 'sess_1', title: 'Rerank design' },
+    events: [
+      { eventId: 'evt_1', role: 'user', cleanText: '我们要讨论 rerank。' },
+      { eventId: 'evt_2', role: 'assistant', cleanText: '结论：top5 + hotness。' },
+    ],
+  });
+
+  assert.match(prompt, /L0/);
+  assert.match(prompt, /L1/);
+  assert.match(prompt, /activitySummary/);
+  assert.match(prompt, /sourceEventIds/);
+  assert.match(prompt, /不要编造隐藏思考/);
+});
+
+test('team memory summary client parses JSON response from OpenAI-compatible API', async () => {
+  const calls = [];
+  const client = createTeamMemorySummaryClient({
+    baseUrl: 'https://model.example/v1',
+    apiKey: 'summary-secret',
+    model: 'gpt-summary',
+    fetch: async (url, init) => {
+      calls.push({ url, init, body: JSON.parse(init.body) });
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: '```json\n{"l0":"一句话摘要","topics":[{"topicId":"rerank-feedback","title":"Rerank","overview":"top5 with feedback","sourceEventIds":["evt_1","evt_2"]}],"activitySummary":"更新 rerank topic。"}\n```',
+              },
+            },
+          ],
+        }),
+      };
+    },
+  });
+
+  const result = await client.summarizeSession({
+    session: { sessionId: 'sess_1', title: 'Rerank design' },
+    events: [{ eventId: 'evt_1', role: 'user', cleanText: 'rerank' }],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.l0, '一句话摘要');
+  assert.equal(result.topics[0].topicId, 'rerank-feedback');
+  assert.equal(result.activitySummary, '更新 rerank topic。');
+  assert.equal(calls[0].url, 'https://model.example/v1/chat/completions');
+  assert.equal(calls[0].body.model, 'gpt-summary');
+  assert.equal(calls[0].init.headers.authorization, 'Bearer summary-secret');
+  assert.doesNotMatch(JSON.stringify(result), /summary-secret/);
+});
+
+test('team memory sync uses injected authoritative summary and falls back safely', async () => {
+  const state = {
+    connection: { workspaceId: 'ws_test' },
+    channels: [{ id: 'chan_team', name: 'team-memory' }],
+    messages: [],
+    replies: [],
+    teamMemory: createInitialTeamMemoryState(),
+  };
+  const result = await syncTeamMemoryBatch({
+    runtime: 'codex',
+    projectKey: 'magclaw',
+    sessionId: 'sess_summary',
+    title: 'Rerank summary session',
+    channelId: 'chan_team',
+    events: [
+      { eventId: 'evt_1', ordinal: 1, role: 'user', text: '讨论 rerank。' },
+      { eventId: 'evt_2', ordinal: 2, role: 'assistant', text: '结论：top5。' },
+    ],
+  }, {
+    state,
+    makeId: (() => {
+      let id = 0;
+      return (prefix) => `${prefix}_${++id}`;
+    })(),
+    now: () => '2026-06-01T12:00:00.000Z',
+    summarizeSession: async () => ({
+      ok: true,
+      l0: '本 session 明确了 rerank top5 与反馈热度。',
+      topics: [
+        {
+          topicId: 'rerank-feedback',
+          title: 'Rerank feedback',
+          overview: '先向量召回，再 rerank，最后用反馈热度微调。',
+          sourceEventIds: ['evt_1', 'evt_2'],
+        },
+      ],
+      activitySummary: '合并 rerank-feedback 主题摘要。',
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  const abstract = state.teamMemory.abstracts.sess_summary;
+  assert.match(abstract.abstractMarkdown, /本 session 明确了 rerank top5/);
+  assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /反馈热度微调/);
+  assert.ok(state.teamMemory.activities.some((item) => item.summary === '合并 rerank-feedback 主题摘要。'));
+});

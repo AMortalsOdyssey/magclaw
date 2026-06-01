@@ -8,6 +8,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderListProfiles, shouldUseColor } from './list-renderer.js';
+import {
+  buildTeamMemorySyncPackageFromTranscript,
+  installTeamMemoryHookConfig,
+  parseTeamMemoryTranscript,
+} from './team-memory-hooks.js';
 
 export const DEFAULT_PROFILE = 'default';
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
@@ -694,6 +699,7 @@ function renderHelp() {
     '  list         List local daemon profiles and connected Computers',
     '  logs         Print recent daemon logs for one profile',
     '  install-cli  Install or repair durable magclaw command shims',
+    '  memory       Configure and use MagClaw team-memory sync',
     '  upgrade      Upgrade the background daemon package',
     '  doctor       Show runtime and environment diagnostics',
     '  uninstall    Stop and remove the background daemon service',
@@ -881,6 +887,85 @@ async function readJsonFile(file, fallback = {}) {
 async function writeJsonFile(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+export function teamMemoryPaths({ profile = DEFAULT_PROFILE, cwd = process.cwd(), env = process.env } = {}) {
+  const home = homeDirForEnv(env) || os.homedir();
+  const memoryHome = path.resolve(env.MAGCLAW_MEMORY_HOME || path.join(home, '.magclaw', 'memory'));
+  const cleanProfile = safeProfileName(profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE);
+  const projectDir = path.resolve(cwd || process.cwd());
+  return {
+    profile: cleanProfile,
+    memoryHome,
+    profilesDir: path.join(memoryHome, 'profiles'),
+    profileConfig: path.join(memoryHome, 'profiles', cleanProfile, 'config.json'),
+    projectConfig: path.join(projectDir, '.magclaw', 'team-memory.json'),
+    projectCursor: path.join(projectDir, '.magclaw', 'team-memory-cursor.json'),
+  };
+}
+
+function normalizeMemoryServerUrl(value = '') {
+  return String(value || DEFAULT_SERVER_URL).replace(/\/+$/, '');
+}
+
+export async function loginTeamMemoryProfile(flags = {}, env = process.env) {
+  const paths = teamMemoryPaths({ profile: flags.profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE, env });
+  const existing = await readJsonFile(paths.profileConfig, {});
+  const token = String(flags.token || flags.apiKey || flags.memoryToken || env.MAGCLAW_MEMORY_TOKEN || existing.token || '').trim();
+  const serverUrl = normalizeMemoryServerUrl(flags.serverUrl || existing.serverUrl || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL);
+  const profile = {
+    version: 1,
+    profile: paths.profile,
+    serverUrl,
+    workspaceId: String(flags.workspaceId || flags.workspace || existing.workspaceId || env.MAGCLAW_WORKSPACE_ID || 'local').trim(),
+    token,
+    tokenScope: ['team_memory:sync', 'team_memory:search', 'team_memory:context', 'team_memory:feedback'],
+    updatedAt: now(),
+    createdAt: existing.createdAt || now(),
+  };
+  await writeJsonFile(paths.profileConfig, profile);
+  return {
+    ok: true,
+    profile: paths.profile,
+    serverUrl,
+    workspaceId: profile.workspaceId,
+    hasToken: Boolean(token),
+    profileConfig: paths.profileConfig,
+  };
+}
+
+export async function initTeamMemoryProject(flags = {}, env = process.env) {
+  const cwd = path.resolve(flags.cwd || process.cwd());
+  const paths = teamMemoryPaths({ profile: flags.profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE, cwd, env });
+  const channel = String(flags.channel || flags.channelId || flags.channelPath || flags._?.[1] || '').trim();
+  if (!channel) throw new Error('Usage: magclaw memory init --channel <channelPathOrId>');
+  const existing = await readJsonFile(paths.projectConfig, {});
+  const projectKey = String(flags.projectKey || existing.projectKey || path.basename(cwd)).trim();
+  const config = {
+    version: 1,
+    enabled: flags.enabled === undefined ? true : !['0', 'false', 'no'].includes(String(flags.enabled).toLowerCase()),
+    profile: paths.profile,
+    serverUrl: normalizeMemoryServerUrl(flags.serverUrl || existing.serverUrl || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL),
+    workspaceId: String(flags.workspaceId || flags.workspace || existing.workspaceId || env.MAGCLAW_WORKSPACE_ID || 'local').trim(),
+    channelId: String(flags.channelId || (!/^(https?|feishu|lark|mc):/i.test(channel) ? channel : existing.channelId || '')).trim(),
+    channelPath: String(flags.channelPath || (/^(https?|feishu|lark|mc):/i.test(channel) ? channel : existing.channelPath || '')).trim(),
+    routingMode: 'fixed_single_channel',
+    projectKey,
+    enabledRuntimes: ['codex', 'claude_code'],
+    updatedAt: now(),
+    createdAt: existing.createdAt || now(),
+  };
+  await writeJsonFile(paths.projectConfig, config);
+  return {
+    ok: true,
+    projectConfig: paths.projectConfig,
+    profile: paths.profile,
+    serverUrl: config.serverUrl,
+    workspaceId: config.workspaceId,
+    channelId: config.channelId,
+    channelPath: config.channelPath,
+    projectKey,
+  };
 }
 
 async function readProfile(profile, env = process.env) {
@@ -6567,6 +6652,310 @@ async function postSetupJson(serverUrl, pathname, body = {}) {
   return data;
 }
 
+async function teamMemoryRequestJson({ serverUrl, token = '', method = 'GET', pathname = '/api/team-memory/doctor', body = null } = {}) {
+  const response = await fetch(`${normalizeMemoryServerUrl(serverUrl)}${pathname}`, {
+    method,
+    headers: {
+      ...(body ? { 'content-type': 'application/json' } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `${response.status} ${response.statusText}`);
+  }
+  return data;
+}
+
+async function readTeamMemoryProjectConfig(flags = {}, env = process.env) {
+  const paths = teamMemoryPaths({ profile: flags.profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE, cwd: flags.cwd || process.cwd(), env });
+  return {
+    paths,
+    config: await readJsonFile(paths.projectConfig, null),
+  };
+}
+
+async function readTeamMemoryProfile(profile, env = process.env) {
+  const paths = teamMemoryPaths({ profile, env });
+  return {
+    paths,
+    config: await readJsonFile(paths.profileConfig, {}),
+  };
+}
+
+async function resolveTeamMemoryClient(flags = {}, env = process.env) {
+  const project = await readTeamMemoryProjectConfig(flags, env);
+  if (!project.config) throw new Error('Run `magclaw memory init --channel <channel>` in this project first.');
+  const profile = await readTeamMemoryProfile(flags.profile || project.config.profile || DEFAULT_PROFILE, env);
+  return {
+    project,
+    profile,
+    serverUrl: flags.serverUrl || project.config.serverUrl || profile.config.serverUrl || DEFAULT_SERVER_URL,
+    token: String(profile.config.token || env.MAGCLAW_MEMORY_TOKEN || '').trim(),
+  };
+}
+
+async function doctorTeamMemory(flags = {}, env = process.env) {
+  const project = await readTeamMemoryProjectConfig(flags, env);
+  const profileName = flags.profile || project.config?.profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE;
+  const profile = await readTeamMemoryProfile(profileName, env);
+  const serverUrl = normalizeMemoryServerUrl(flags.serverUrl || project.config?.serverUrl || profile.config.serverUrl || DEFAULT_SERVER_URL);
+  const token = String(profile.config.token || env.MAGCLAW_MEMORY_TOKEN || '').trim();
+  const local = {
+    projectConfig: { exists: Boolean(project.config), path: project.paths.projectConfig },
+    profileConfig: { exists: Boolean(profile.config?.profile), path: profile.paths.profileConfig },
+    hasToken: Boolean(token),
+    channelConfigured: Boolean(project.config?.channelId || project.config?.channelPath),
+  };
+  if (flags.offline) {
+    return { ok: Object.values(local).every((item) => typeof item === 'boolean' ? item : item.exists !== false), local, remote: null };
+  }
+  try {
+    const remote = await teamMemoryRequestJson({ serverUrl, token, pathname: '/api/team-memory/doctor' });
+    return {
+      ok: Boolean(local.projectConfig.exists && local.profileConfig.exists && local.channelConfigured && remote.ok),
+      serverUrl,
+      local,
+      remote,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      serverUrl,
+      local,
+      remote: { ok: false, error: error?.message || String(error) },
+    };
+  }
+}
+
+function cursorLastOrdinal(cursor = {}, runtime = 'codex', sessionId = '') {
+  return Number(cursor?.sessions?.[runtime]?.[sessionId]?.lastOrdinal || 0);
+}
+
+async function writeTeamMemoryCursor(file, runtime, cursor) {
+  const existing = await readJsonFile(file, {});
+  const sessions = existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {};
+  sessions[runtime] = sessions[runtime] && typeof sessions[runtime] === 'object' ? sessions[runtime] : {};
+  sessions[runtime][cursor.sessionId] = {
+    ...(sessions[runtime][cursor.sessionId] || {}),
+    ...cursor,
+  };
+  await writeJsonFile(file, {
+    version: 1,
+    sessions,
+    updatedAt: now(),
+  });
+}
+
+export async function syncTeamMemoryTranscript(flags = {}, env = process.env) {
+  const transcriptPath = String(flags.transcript || flags.file || flags._?.[1] || '').trim();
+  if (!transcriptPath) {
+    if (flags.hookEvent) return { ok: true, empty: true, reason: 'missing_transcript_path' };
+    throw new Error('Usage: magclaw memory sync --transcript <path>');
+  }
+  const project = await readTeamMemoryProjectConfig(flags, env);
+  if (!project.config) throw new Error('Run `magclaw memory init --channel <channel>` in this project first.');
+  const profile = await readTeamMemoryProfile(flags.profile || project.config.profile || DEFAULT_PROFILE, env);
+  const token = String(profile.config.token || env.MAGCLAW_MEMORY_TOKEN || '').trim();
+  const content = await readFile(path.resolve(transcriptPath), 'utf8');
+  const parsed = parseTeamMemoryTranscript(content, {
+    runtime: flags.runtime || 'codex',
+    sessionId: flags.sessionId || '',
+    title: flags.title || '',
+    projectDir: flags.cwd || process.cwd(),
+  });
+  const cursor = await readJsonFile(project.paths.projectCursor, {});
+  const lastOrdinal = Number(flags.full ? 0 : cursorLastOrdinal(cursor, parsed.runtime, parsed.sessionId));
+  const syncPackage = buildTeamMemorySyncPackageFromTranscript(content, {
+    runtime: parsed.runtime,
+    sessionId: parsed.sessionId,
+    title: flags.title || parsed.title || path.basename(transcriptPath),
+    projectKey: project.config.projectKey,
+    workspaceId: project.config.workspaceId,
+    channelId: project.config.channelId,
+    channelPath: project.config.channelPath,
+    projectDir: flags.cwd || process.cwd(),
+    lastOrdinal,
+  });
+  if (syncPackage.empty || !syncPackage.body) return { ok: true, empty: true, cursor: syncPackage.cursor };
+  const result = await teamMemoryRequestJson({
+    serverUrl: flags.serverUrl || project.config.serverUrl || profile.config.serverUrl || DEFAULT_SERVER_URL,
+    token,
+    method: 'POST',
+    pathname: '/api/team-memory/sync',
+    body: syncPackage.body,
+  });
+  if (result?.ok !== false) {
+    await writeTeamMemoryCursor(project.paths.projectCursor, parsed.runtime, syncPackage.cursor);
+  }
+  return {
+    ...result,
+    cursor: syncPackage.cursor,
+  };
+}
+
+export async function installTeamMemoryHooks(flags = {}, env = process.env) {
+  const home = homeDirForEnv(env) || os.homedir();
+  const cwd = path.resolve(flags.cwd || process.cwd());
+  const runtime = String(flags.runtime || 'all').trim().toLowerCase();
+  const output = { ok: true };
+  if (runtime === 'all' || runtime === 'codex') {
+    output.codex = await installTeamMemoryHookConfig({
+      runtime: 'codex',
+      configPath: flags.codexConfig || path.join(home, '.codex', 'hooks.json'),
+      projectDir: cwd,
+    });
+  }
+  if (runtime === 'all' || runtime === 'claude' || runtime === 'claude_code' || runtime === 'claude-code') {
+    output.claude = await installTeamMemoryHookConfig({
+      runtime: 'claude_code',
+      configPath: flags.claudeConfig || path.join(home, '.claude', 'settings.json'),
+      projectDir: cwd,
+    });
+  }
+  output.ok = Boolean((!output.codex || output.codex.ok) && (!output.claude || output.claude.ok));
+  return output;
+}
+
+export async function searchTeamMemory(flags = {}, env = process.env) {
+  const query = String(flags.query || flags._?.slice(1).join(' ') || '').trim();
+  if (!query) throw new Error('Usage: magclaw memory search --query <text>');
+  const { project, serverUrl, token } = await resolveTeamMemoryClient(flags, env);
+  return teamMemoryRequestJson({
+    serverUrl,
+    token,
+    method: 'POST',
+    pathname: '/api/team-memory/search',
+    body: {
+      query,
+      channelId: flags.channelId || project.config.channelId || '',
+      projectKey: flags.projectKey || project.config.projectKey || '',
+      dateRange: flags.dateRange || null,
+      candidateK: flags.candidateK || undefined,
+      limit: flags.limit || 5,
+    },
+  });
+}
+
+export async function readTeamMemoryContext(flags = {}, env = process.env) {
+  const sessionId = String(flags.sessionId || flags.session || flags._?.[1] || '').trim();
+  if (!sessionId) throw new Error('Usage: magclaw memory context --session-id <sessionId>');
+  const { serverUrl, token } = await resolveTeamMemoryClient(flags, env);
+  const params = new URLSearchParams();
+  if (flags.anchorEventId || flags.anchor) params.set('anchorEventId', String(flags.anchorEventId || flags.anchor));
+  if (flags.direction) params.set('direction', String(flags.direction));
+  if (flags.limit) params.set('limit', String(flags.limit));
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return teamMemoryRequestJson({
+    serverUrl,
+    token,
+    pathname: `/api/team-memory/context/${encodeURIComponent(sessionId)}${suffix}`,
+  });
+}
+
+function teamMemorySkillMarkdown() {
+  return [
+    '---',
+    'name: magclaw-team-memory',
+    'description: Search and read MagClaw team memory shared from Codex and Claude Code sessions.',
+    '---',
+    '',
+    '# MagClaw Team Memory',
+    '',
+    'Use this skill when the user asks what the team discussed, wants to align with another session, or needs original AI conversation context.',
+    '',
+    '## Workflow',
+    '',
+    '1. Run `magclaw memory search --query "<question>" --limit 5` from the project directory.',
+    '2. Answer from the returned L0/L1 evidence when the user only needs a rough understanding.',
+    '3. For deep follow-up, run `magclaw memory context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 20`.',
+    '4. Cite session titles, source refs, and context URLs from the command output.',
+    '',
+    '## Rules',
+    '',
+    '- Do not upload local secrets or raw tool output.',
+    '- Prefer concise synthesis first, then pull original context only when needed.',
+    '- If search returns low confidence or too few results, ask a narrower question or date range.',
+    '',
+  ].join('\n');
+}
+
+async function writeTeamMemorySkill(rootDir) {
+  const skillDir = path.join(rootDir, 'skills', 'magclaw-team-memory');
+  await mkdir(skillDir, { recursive: true });
+  const skillPath = path.join(skillDir, 'SKILL.md');
+  await writeFile(skillPath, teamMemorySkillMarkdown());
+  return skillPath;
+}
+
+export async function installTeamMemorySkill(flags = {}, env = process.env) {
+  const home = homeDirForEnv(env) || os.homedir();
+  const target = String(flags.target || 'codex').trim().toLowerCase();
+  const output = { ok: true, installed: [] };
+  if (target === 'codex' || target === 'all') {
+    const codexHome = path.resolve(env.CODEX_HOME || path.join(home, '.codex'));
+    output.installed.push({ target: 'codex', path: await writeTeamMemorySkill(codexHome) });
+  }
+  if (target === 'claude' || target === 'claude_code' || target === 'claude-code' || target === 'all') {
+    const claudeHome = path.resolve(env.CLAUDE_HOME || path.join(home, '.claude'));
+    output.installed.push({ target: 'claude_code', path: await writeTeamMemorySkill(claudeHome) });
+  }
+  output.ok = output.installed.length > 0;
+  return output;
+}
+
+async function runTeamMemoryCommand(flags = {}, env = process.env) {
+  const subcommand = String(flags._?.[0] || 'help').trim();
+  if (subcommand === 'help' || flags.help) {
+    process.stdout.write([
+      'Usage: magclaw memory <command> [options]',
+      '',
+      'Commands:',
+      '  login   Save a scoped team-memory token in the user profile',
+      '  init    Write .magclaw/team-memory.json for the current project',
+      '  doctor  Check local and server-side team-memory configuration',
+      '  install-hooks  Install Codex/Claude hook commands for this project',
+      '  install-skill  Install the MagClaw team-memory skill locally',
+      '  search  Query shared team memory through /api/team-memory/search',
+      '  context Read original context around a session anchor',
+      '  sync    Upload one transcript file through /api/team-memory/sync',
+      '',
+    ].join('\n'));
+    return;
+  }
+  switch (subcommand) {
+    case 'login':
+      printJson(await loginTeamMemoryProfile(flags, env));
+      break;
+    case 'init':
+      printJson(await initTeamMemoryProject(flags, env));
+      break;
+    case 'doctor':
+      printJson(await doctorTeamMemory(flags, env));
+      break;
+    case 'install-hooks':
+    case 'install':
+      printJson(await installTeamMemoryHooks(flags, env));
+      break;
+    case 'install-skill':
+    case 'skill':
+      printJson(await installTeamMemorySkill(flags, env));
+      break;
+    case 'search':
+      printJson(await searchTeamMemory(flags, env));
+      break;
+    case 'context':
+      printJson(await readTeamMemoryContext(flags, env));
+      break;
+    case 'sync':
+      printJson(await syncTeamMemoryTranscript(flags, env));
+      break;
+    default:
+      throw new Error(`Unknown memory command: ${subcommand}`);
+  }
+}
+
 function hasComputerTarget(flags = {}) {
   return Boolean(flags.profileExplicit || flags.server || flags.serverSlug || flags.slug || flags._?.[1]);
 }
@@ -7156,6 +7545,9 @@ export async function main(argv = process.argv, env = process.env) {
       break;
     case 'computer':
       await runComputerCommand(flags, env);
+      break;
+    case 'memory':
+      await runTeamMemoryCommand(flags, env);
       break;
     case 'start': {
       printJson(await startSavedBackground(flags, env));

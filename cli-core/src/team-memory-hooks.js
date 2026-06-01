@@ -1,0 +1,315 @@
+import crypto from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
+const CODEX_HOOK_EVENTS = Object.freeze(['Stop', 'PreCompact', 'SessionStart']);
+const CLAUDE_HOOK_EVENTS = Object.freeze(['Stop', 'SessionEnd', 'PreCompact', 'SessionStart']);
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function stableHash(value = '') {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
+}
+
+function compactWhitespace(value = '') {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function redactTeamMemoryText(value = '') {
+  return compactWhitespace(value)
+    .replace(/(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[^\s"',;)]+/gi, '[redacted-secret]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, 'Bearer [redacted-secret]')
+    .replace(/(App Secret|app_secret|client_secret)(\s*[：:=]\s*)[^\s"',;)]+/gi, '$1$2[redacted-secret]');
+}
+
+function iso(value, fallback = new Date().toISOString()) {
+  const date = new Date(value || fallback);
+  return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
+}
+
+function parseJsonOrJsonl(text = '') {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      // Fall through to JSONL parsing. Codex transcripts are newline-delimited
+      // JSON objects and usually start with "{".
+    }
+  }
+  return trimmed.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+function isInjectedCodexContext(text = '') {
+  const clean = String(text || '').trim();
+  return clean.startsWith('# AGENTS.md instructions for ')
+    || clean.startsWith('<environment_context>')
+    || clean.startsWith('<permissions instructions>')
+    || clean.startsWith('<skills_instructions>')
+    || clean.startsWith('<plugins_instructions>');
+}
+
+function textFromContentBlocks(content) {
+  const blocks = asArray(content);
+  if (!blocks.length && typeof content === 'string') return content;
+  return blocks
+    .map((block) => {
+      if (!block || typeof block !== 'object') return '';
+      return block.text || block.content || '';
+    })
+    .filter((text) => text && !isInjectedCodexContext(text))
+    .join('\n\n');
+}
+
+function pushUnique(target, value) {
+  const clean = String(value || '').trim();
+  if (clean && !target.includes(clean)) target.push(clean);
+}
+
+function normalizeRuntime(value = '') {
+  const runtime = String(value || '').trim().toLowerCase();
+  if (runtime === 'claude' || runtime === 'claude-code') return 'claude_code';
+  if (runtime === 'codex') return 'codex';
+  return runtime || 'codex';
+}
+
+function codexTextEvent(item, context) {
+  if (item?.type === 'session_meta' && item.payload) {
+    context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
+    context.projectPath = context.projectPath || item.payload.cwd || '';
+    context.title = context.title || item.payload.title || '';
+    return null;
+  }
+  if (item?.type !== 'response_item') return null;
+  const payload = item.payload || {};
+  if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
+    pushUnique(context.toolNames, payload.name);
+    return null;
+  }
+  if (payload.type !== 'message') return null;
+  const role = String(payload.role || '').toLowerCase();
+  if (!['user', 'assistant'].includes(role)) return null;
+  const text = redactTeamMemoryText(textFromContentBlocks(payload.content));
+  if (!text) return null;
+  return {
+    role,
+    text,
+    createdAt: iso(item.timestamp),
+    toolCalls: role === 'assistant' && context.toolNames.length
+      ? context.toolNames.map((name) => ({ name }))
+      : [],
+  };
+}
+
+function claudeTextEvent(item, context) {
+  const raw = item?.payload && typeof item.payload === 'object' ? item.payload : item;
+  if (raw?.type === 'system' && raw.subtype === 'init') {
+    context.sessionId = context.sessionId || raw.session_id || raw.sessionId || '';
+    context.projectPath = context.projectPath || raw.cwd || '';
+    return null;
+  }
+  if (raw?.type === 'assistant' || raw?.type === 'user') {
+    const textBlocks = asArray(raw.message?.content)
+      .map((block) => (block?.type === 'text' ? block.text : ''))
+      .filter(Boolean);
+    const text = redactTeamMemoryText(textBlocks.join('\n\n'));
+    if (!text) return null;
+    return {
+      role: raw.type === 'assistant' ? 'assistant' : 'user',
+      text,
+      createdAt: iso(item.timestamp || raw.timestamp),
+      toolCalls: raw.type === 'assistant' && context.toolNames.length
+        ? context.toolNames.map((name) => ({ name }))
+        : [],
+    };
+  }
+  for (const block of asArray(raw?.message?.content)) {
+    if (block?.type === 'tool_use') pushUnique(context.toolNames, block.name);
+  }
+  return null;
+}
+
+export function parseTeamMemoryTranscript(text = '', options = {}) {
+  const runtime = normalizeRuntime(options.runtime);
+  const parsed = parseJsonOrJsonl(text);
+  const context = {
+    runtime,
+    sessionId: String(options.sessionId || '').trim(),
+    projectPath: String(options.projectPath || options.projectDir || '').trim(),
+    title: String(options.title || '').trim(),
+    toolNames: [],
+  };
+  const events = [];
+  for (const item of parsed) {
+    const extracted = runtime === 'claude_code'
+      ? claudeTextEvent(item, context)
+      : codexTextEvent(item, context);
+    if (!extracted) continue;
+    const ordinal = events.length + 1;
+    events.push({
+      eventId: `${context.sessionId || options.sessionId || 'session'}:${ordinal}:${stableHash(`${extracted.role}:${extracted.text}`)}`,
+      ordinal,
+      role: extracted.role,
+      text: extracted.text,
+      createdAt: extracted.createdAt,
+      sourceHash: stableHash(extracted.text),
+      sourceAnchor: `${context.sessionId || options.sessionId || 'session'}#${ordinal}`,
+      toolCalls: extracted.toolCalls,
+    });
+  }
+  if (!context.title) {
+    context.title = events.find((event) => event.role === 'user')?.text?.slice(0, 80)
+      || events.find((event) => event.role === 'assistant')?.text?.slice(0, 80)
+      || `${runtime} session ${context.sessionId || stableHash(text)}`;
+  }
+  if (!context.sessionId) context.sessionId = stableHash(`${runtime}:${context.projectPath}:${text}`);
+  return {
+    runtime,
+    sessionId: context.sessionId,
+    projectPath: context.projectPath,
+    title: context.title,
+    toolNames: context.toolNames,
+    events,
+  };
+}
+
+export function buildTeamMemorySyncPackageFromTranscript(text = '', options = {}) {
+  const runtime = normalizeRuntime(options.runtime);
+  const parsed = parseTeamMemoryTranscript(text, options);
+  const lastOrdinal = Math.max(0, Number(options.lastOrdinal || 0));
+  const incrementalEvents = parsed.events.filter((event) => Number(event.ordinal || 0) > lastOrdinal);
+  if (!incrementalEvents.length) {
+    return {
+      ok: true,
+      empty: true,
+      body: null,
+      cursor: {
+        runtime,
+        sessionId: parsed.sessionId,
+        lastOrdinal,
+      },
+    };
+  }
+  const fromOrdinal = incrementalEvents[0].ordinal;
+  const toOrdinal = incrementalEvents[incrementalEvents.length - 1].ordinal;
+  const projectKey = String(options.projectKey || path.basename(parsed.projectPath || process.cwd()) || 'default').trim();
+  const batchHash = stableHash(JSON.stringify(incrementalEvents.map((event) => ({
+    eventId: event.eventId,
+    sourceHash: event.sourceHash,
+  }))));
+  const body = {
+    runtime,
+    projectKey,
+    projectPathHash: stableHash(parsed.projectPath || projectKey),
+    sessionId: parsed.sessionId,
+    title: options.title || parsed.title,
+    workspaceId: options.workspaceId || '',
+    channelId: options.channelId || '',
+    channelPath: options.channelPath || '',
+    fromOrdinal,
+    toOrdinal,
+    idempotencyKey: `${runtime}:${projectKey}:${parsed.sessionId}:${fromOrdinal}:${toOrdinal}:${batchHash}`,
+    optionalLocalDigest: [
+      options.localDigest || '',
+      parsed.toolNames.length ? `Tool summary: ${parsed.toolNames.join(', ')}` : '',
+    ].filter(Boolean).join('\n'),
+    events: incrementalEvents,
+    createdAt: options.now?.() || new Date().toISOString(),
+  };
+  return {
+    ok: true,
+    empty: false,
+    body,
+    cursor: {
+      runtime,
+      sessionId: parsed.sessionId,
+      lastOrdinal: toOrdinal,
+      lastEventId: incrementalEvents[incrementalEvents.length - 1].eventId,
+      updatedAt: body.createdAt,
+    },
+  };
+}
+
+export function shouldRunTeamMemoryHook({ runtime = 'codex', hookEventName = '' } = {}) {
+  const normalized = normalizeRuntime(runtime);
+  const event = String(hookEventName || '').trim();
+  const allowed = normalized === 'claude_code' ? CLAUDE_HOOK_EVENTS : CODEX_HOOK_EVENTS;
+  return allowed.includes(event);
+}
+
+function shellQuote(value = '') {
+  return `'${String(value || '').replace(/'/g, "'\\''")}'`;
+}
+
+export function buildTeamMemoryHookCommand(options = {}) {
+  const runtime = normalizeRuntime(options.runtime);
+  const hookEventName = String(options.hookEventName || (runtime === 'claude_code' ? 'SessionEnd' : 'Stop')).trim();
+  const transcriptPath = options.transcriptPath || (runtime === 'claude_code' ? '${CLAUDE_TRANSCRIPT_PATH:-}' : '${CODEX_SESSION_FILE:-}');
+  const parts = [
+    'magclaw',
+    'memory',
+    'sync',
+    '--runtime',
+    runtime,
+    '--hook-event',
+    hookEventName,
+    '--transcript',
+    transcriptPath.includes('${') ? `"${transcriptPath}"` : shellQuote(transcriptPath),
+  ];
+  if (options.projectDir) parts.push('--cwd', shellQuote(options.projectDir));
+  return parts.join(' ');
+}
+
+function hookEventsForRuntime(runtime) {
+  return normalizeRuntime(runtime) === 'claude_code' ? CLAUDE_HOOK_EVENTS : CODEX_HOOK_EVENTS;
+}
+
+async function readJson(file, fallback = {}) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+export async function installTeamMemoryHookConfig(options = {}) {
+  const runtime = normalizeRuntime(options.runtime);
+  const configPath = String(options.configPath || '').trim();
+  if (!configPath) throw new Error('configPath is required.');
+  const config = await readJson(configPath, {});
+  config.hooks = config.hooks && typeof config.hooks === 'object' ? config.hooks : {};
+  const installed = [];
+  for (const hookEventName of hookEventsForRuntime(runtime)) {
+    const command = buildTeamMemoryHookCommand({ ...options, runtime, hookEventName });
+    const entries = asArray(config.hooks[hookEventName]);
+    const entry = entries[0] || { hooks: [] };
+    entry.hooks = asArray(entry.hooks);
+    const exists = entry.hooks.some((hook) => String(hook?.command || '').includes('magclaw memory sync')
+      && String(hook?.command || '').includes(`--runtime ${runtime}`)
+      && String(hook?.command || '').includes(`--hook-event ${hookEventName}`));
+    if (!exists) {
+      entry.hooks.push({
+        type: 'command',
+        command,
+        timeout: hookEventName === 'SessionStart' ? 3 : 15,
+      });
+      installed.push(hookEventName);
+    }
+    config.hooks[hookEventName] = entries.length ? entries : [entry];
+  }
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  return {
+    ok: true,
+    runtime,
+    configPath,
+    installed,
+  };
+}

@@ -131,7 +131,15 @@ import { handleMissionApi } from './api/mission-routes.js';
 import { handleProjectApi } from './api/project-routes.js';
 import { handleSystemApi } from './api/system-routes.js';
 import { handleTaskApi } from './api/task-routes.js';
+import { handleTeamMemoryApi } from './api/team-memory-routes.js';
 import { applyServerYamlConfig } from './config-yaml.js';
+import {
+  createEmbeddingClient,
+  createRerankClient,
+  createTeamMemoryIndexingPipeline,
+  createZillizTeamMemoryClient,
+} from './team-memory-clients.js';
+import { createTeamMemorySummaryClient } from './team-memory-summary.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1775,6 +1783,81 @@ function collabApiDeps() {
   };
 }
 
+function teamMemoryApiDeps() {
+  const embeddingClient = createEmbeddingClient();
+  const zillizClient = createZillizTeamMemoryClient();
+  const rerankClient = createRerankClient();
+  const summaryClient = createTeamMemorySummaryClient();
+  const workspaceIdFromActor = (actor) => String(
+    actor?.member?.workspaceId
+      || state.connection?.workspaceId
+      || state.cloud?.workspace?.id
+      || 'local',
+  ).trim();
+  const bearerToken = (req) => String(req?.headers?.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
+  const safeTokenEqual = (left, right) => {
+    const cleanLeft = String(left || '');
+    const cleanRight = String(right || '');
+    if (!cleanLeft || !cleanRight) return false;
+    const leftBuffer = Buffer.from(cleanLeft);
+    const rightBuffer = Buffer.from(cleanRight);
+    return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+  };
+  return {
+    addSystemEvent,
+    broadcastState,
+    currentActor: (req) => cloudAuth.currentActor(req),
+    embeddingProbe: () => embeddingClient.probeDimension(),
+    embeddingReady: () => Boolean(
+      process.env.MAGCLAW_EMBEDDING_BASE_URL
+        && process.env.MAGCLAW_EMBEDDING_API_KEY
+        && process.env.MAGCLAW_EMBEDDING_MODEL,
+    ),
+    getState: () => state,
+    indexTeamMemoryDocuments: ({ documents }) => createTeamMemoryIndexingPipeline({
+      embeddingClient,
+      zillizClient,
+    }).indexDocuments({ documents }),
+    makeId,
+    now,
+    persistState,
+    readJson,
+    rerank: ({ query, candidates, limit }) => rerankClient.rerank({ query, candidates, limit }),
+    sendError,
+    sendJson,
+    summarizeSession: (input) => summaryClient.summarizeSession(input),
+    teamMemoryAuthRequired: () => (
+      /^(1|true|yes)$/i.test(String(process.env.MAGCLAW_TEAM_MEMORY_REQUIRE_AUTH || ''))
+      || process.env.MAGCLAW_DEPLOYMENT === 'cloud'
+    ),
+    validTeamMemoryToken: (req) => {
+      const expected = process.env.MAGCLAW_TEAM_MEMORY_SYNC_TOKEN || process.env.MAGCLAW_MEMORY_SYNC_TOKEN || '';
+      return safeTokenEqual(bearerToken(req), expected);
+    },
+    vectorSearch: async ({ query, channelId, projectKey, dateRange, limit, actor }) => {
+      try {
+        const embedded = await embeddingClient.embed(query || '');
+        return zillizClient.search({
+          queryVector: embedded.embedding,
+          workspaceId: workspaceIdFromActor(actor),
+          channelId,
+          projectKey,
+          dateRange,
+          limit,
+        });
+      } catch (error) {
+        return { ok: false, error: error?.message || 'Team memory vector search failed.' };
+      }
+    },
+    zillizReady: () => Boolean(
+      process.env.MAGCLAW_ZILLIZ_ENDPOINT
+        && process.env.MAGCLAW_ZILLIZ_TOKEN
+        && process.env.MAGCLAW_ZILLIZ_COLLECTION,
+    ),
+    rerankReady: () => Boolean(process.env.MAGCLAW_RERANK_URL && process.env.MAGCLAW_RERANK_API_KEY),
+  };
+}
+
 function agentToolApiDeps() {
   return {
     addSystemEvent,
@@ -2069,6 +2152,8 @@ async function handleApi(req, res, url) {
   if (await handleProjectApi(req, res, url, projectApiDeps())) return true;
 
   if (await handleCollabApi(req, res, url, collabApiDeps())) return true;
+
+  if (await handleTeamMemoryApi(req, res, url, teamMemoryApiDeps())) return true;
 
   if (await handleMessageApi(req, res, url, messageApiDeps())) return true;
 
