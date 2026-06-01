@@ -99,6 +99,18 @@
   grid-template-columns: 60px minmax(0, 1fr);
 }
 
+.collab-frame.search-layout-frame {
+  grid-template-columns: 60px minmax(0, 1fr) 4px minmax(260px, min(var(--inspector-width, 340px), 40vw));
+}
+
+.collab-frame.search-layout-frame.thread-open {
+  grid-template-columns: 60px minmax(0, 1fr) 4px minmax(260px, min(var(--inspector-width, 340px), 60vw));
+}
+
+.collab-frame.search-layout-frame.no-inspector {
+  grid-template-columns: 60px minmax(0, 1fr);
+}
+
 .task-thread-modal-backdrop {
   z-index: 260;
   padding: 20px;
@@ -570,6 +582,20 @@
 .collab-frame select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
+}
+
+.collab-frame .search-input-shell input {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.collab-frame .search-input-shell input:focus {
+  outline: none;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .collab-frame .chat-composer {

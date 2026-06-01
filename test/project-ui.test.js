@@ -2179,6 +2179,7 @@ test('search page matches Slock shortcuts filters persistence and master detail 
   const app = await readAppSource();
   const styles = await readStylesSource();
   const keydownSource = app.slice(app.indexOf("document.addEventListener('keydown'"), app.indexOf("document.addEventListener('pointerdown'"));
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
   const setViewSource = app.slice(app.indexOf("if (action === 'set-view')"), app.indexOf("if (action === 'set-rail-tab')"));
   const searchResultSource = app.slice(app.indexOf('function openSearchResult'), app.indexOf('function openSearchEntity'));
   const renderSearchSource = app.slice(app.indexOf('function renderSearch()'), app.indexOf('function renderMissions()'));
@@ -2187,6 +2188,12 @@ test('search page matches Slock shortcuts filters persistence and master detail 
   assert.match(keydownSource, /openSearchView\(\)/);
   assert.match(keydownSource, /event\.key === 'Escape'[\s\S]*restoreSearchReturnState\(\)/);
   assert.match(app, /function focusSearchInputEnd\(\)/);
+  assert.match(app, /function requestSearchInputFocus\(\)/);
+  assert.match(app, /let searchInputFocusRequested = false/);
+  assert.match(renderSource, /const searchLayout = activeView === 'search'/);
+  assert.match(renderSource, /\$\{searchLayout \? ' search-layout-frame' : ''\}/);
+  assert.match(renderSource, /\$\{taskFocusLayout \|\| searchLayout \? '' : '<div class="rail-resizer"/);
+  assert.match(renderSource, /if \(searchInputFocusRequested && activeView === 'search'\) focusSearchInputEnd\(\)/);
   assert.match(setViewSource, /if \(activeView === 'search'\) focusSearchInputEnd\(\)/);
   assert.match(app, /data-action="toggle-search-sender-menu"/);
   assert.match(app, /data-action="set-search-sender"/);
@@ -2211,11 +2218,16 @@ test('search page matches Slock shortcuts filters persistence and master detail 
   assert.match(app, /function restoreSearchReturnState\(\)/);
   assert.match(app, /function captureSearchReturnState\(\)/);
   assert.match(app, /function persistSearchState\(\)/);
+  assert.match(styles, /\.collab-frame\.search-layout-frame\.no-inspector \{[\s\S]*grid-template-columns: 60px minmax\(0, 1fr\)/);
+  assert.match(styles, /\.collab-frame\.search-layout-frame\.thread-open \{[\s\S]*grid-template-columns: 60px minmax\(0, 1fr\) 4px minmax\(260px, min\(var\(--inspector-width, 340px\), 60vw\)\)/);
+  assert.match(styles, /@media \(min-width: 768px\) and \(max-width: 1099px\)[\s\S]*\.app-frame\.search-layout-frame \.workspace \{[\s\S]*grid-column: 2/);
   assert.match(styles, /\.search-topbar/);
   assert.match(styles, /\.search-filter-row/);
   assert.match(styles, /\.search-center-state/);
   assert.match(styles, /\.search-time-menu/);
   assert.match(styles, /\.search-sender-menu/);
+  assert.match(styles, /\.collab-frame \.search-input-shell input \{[\s\S]*border: 0/);
+  assert.match(styles, /\.collab-frame \.search-input-shell input:focus \{[\s\S]*box-shadow: none/);
   assert.match(styles, /\.search-result-card:hover[\s\S]*background:\s*#ffe4ec/);
   assert.match(styles, /\.search-time-menu button:hover[\s\S]*background:\s*#ffe4ec/);
   assert.doesNotMatch(styles, /#22d3ee|#12c7e8/);

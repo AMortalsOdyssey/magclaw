@@ -179,6 +179,7 @@ function render() {
       restoreComputerNameFieldFocus(computerNameFocus);
       restoreComposerFocus(composerFocus);
       restorePendingComposerFocus();
+      if (searchInputFocusRequested && activeView === 'search') focusSearchInputEnd();
       if (typeof maybeAutosizeAllComposerTextareas === 'function') maybeAutosizeAllComposerTextareas();
       if (typeof requestAttachmentPreviewOutlineSync === 'function') requestAttachmentPreviewOutlineSync();
       if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
@@ -189,14 +190,15 @@ function render() {
     return;
   }
   const taskFocusLayout = activeView === 'tasks';
+  const searchLayout = activeView === 'search';
   const settingsLayout = activeView === 'cloud' || activeView === 'console';
   const consoleLayout = activeView === 'console';
   root.innerHTML = `
     ${notificationBanner}
     ${appFlashBanner}
-    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${threadMessageId ? `${inspectorHtml ? ' tablet-inspector-main' : ''} thread-open` : ''}${taskFocusLayout ? ' task-focus' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${consoleLayout ? ' console-layout-frame' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
+    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${threadMessageId ? `${inspectorHtml ? ' tablet-inspector-main' : ''} thread-open` : ''}${taskFocusLayout ? ' task-focus' : ''}${searchLayout ? ' search-layout-frame' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${consoleLayout ? ' console-layout-frame' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
       ${renderRail()}
-      ${taskFocusLayout ? '' : '<div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>'}
+      ${taskFocusLayout || searchLayout ? '' : '<div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>'}
       <main class="workspace collab-main">
         ${renderMain()}
         ${renderClickLoadingSurface('main')}
@@ -227,6 +229,7 @@ function render() {
     restoreComputerNameFieldFocus(computerNameFocus);
     restoreComposerFocus(composerFocus);
     restorePendingComposerFocus();
+    if (searchInputFocusRequested && activeView === 'search') focusSearchInputEnd();
     if (typeof maybeAutosizeAllComposerTextareas === 'function') maybeAutosizeAllComposerTextareas();
     if (typeof requestAttachmentPreviewOutlineSync === 'function') requestAttachmentPreviewOutlineSync();
     if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {

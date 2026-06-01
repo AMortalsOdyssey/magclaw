@@ -96,6 +96,7 @@ let computerCloseConfirmState = { computerId: null };
 let joinLinkRevokeConfirmState = { joinLinkId: null };
 let searchQuery = initialSearchState.query || '';
 let searchIsComposing = false;
+let searchInputFocusRequested = false;
 let composerIsComposing = false;
 let composingComposerId = null;
 let searchMineOnly = false;

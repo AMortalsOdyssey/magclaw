@@ -243,6 +243,22 @@ function restoreSearchFocus(snapshot) {
   });
 }
 
+function searchInputShouldReceiveRequestedFocus() {
+  return activeView === 'search'
+    && !modal
+    && !searchSenderMenuOpen
+    && !searchChannelMenuOpen
+    && !searchTimeMenuOpen;
+}
+
+function requestSearchInputFocus() {
+  searchInputFocusRequested = true;
+  focusSearchInputEnd();
+  window.setTimeout(() => {
+    searchInputFocusRequested = false;
+  }, 700);
+}
+
 function updateSearchResults({ skipFetch = false } = {}) {
   const focusSnapshot = searchFocusSnapshot();
   const input = document.getElementById('search-input');
@@ -253,7 +269,9 @@ function updateSearchResults({ skipFetch = false } = {}) {
   if (filters) filters.outerHTML = renderSearchFilters();
   const clearButton = document.querySelector('[data-search-clear]');
   if (clearButton) clearButton.hidden = !searchQuery.trim();
-  restoreSearchFocus(focusSnapshot);
+  restoreSearchFocus(focusSnapshot || (searchInputFocusRequested && searchInputShouldReceiveRequestedFocus()
+    ? { id: 'search-input', start: searchQuery.length, end: searchQuery.length }
+    : null));
   if (typeof translatePage === 'function') translatePage(document.querySelector('.search-page') || document.body);
   if (!skipFetch) queueSearchResultsRefresh();
 }
@@ -322,6 +340,7 @@ function openSearchEntity(targetType, targetId) {
 
 function focusSearchInputEnd() {
   const focusInput = () => {
+    if (!searchInputShouldReceiveRequestedFocus()) return false;
     const input = document.getElementById('search-input');
     if (!input) return false;
     input.focus({ preventScroll: true });
@@ -334,6 +353,7 @@ function focusSearchInputEnd() {
   window.requestAnimationFrame(focusInput);
   window.setTimeout(focusInput, 40);
   window.setTimeout(focusInput, 120);
+  window.setTimeout(focusInput, 260);
 }
 
 function captureSearchReturnState() {
@@ -401,7 +421,7 @@ function openSearchView() {
   selectedTaskId = null;
   render();
   syncBrowserRouteForActiveView();
-  focusSearchInputEnd();
+  requestSearchInputFocus();
   queueSearchResultsRefresh();
 }
 

@@ -1252,6 +1252,10 @@
     grid-template-columns: 68px minmax(0, 1fr);
   }
 
+  .app-frame.search-layout-frame {
+    grid-template-columns: 60px minmax(0, 1fr);
+  }
+
   .app-frame.tablet-inspector-main .workspace {
     display: none;
   }
@@ -1274,6 +1278,10 @@
 
   .app-frame:not(.task-focus) .workspace {
     grid-column: 3;
+  }
+
+  .app-frame.search-layout-frame .workspace {
+    grid-column: 2;
   }
 
   .workspace,
