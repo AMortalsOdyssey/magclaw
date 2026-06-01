@@ -2021,6 +2021,9 @@ function feishuConnectDeps() {
     findHuman,
     findMessage,
     getState: () => state,
+    loadWorkspaceIntoState: typeof cloudRepository?.loadWorkspaceIntoState === 'function'
+      ? (...args) => cloudRepository.loadWorkspaceIntoState(...args)
+      : null,
     makeId,
     normalizeConversationRecord,
     normalizeIds,

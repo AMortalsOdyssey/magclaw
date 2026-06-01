@@ -244,6 +244,58 @@ test('Feishu inbound import creates an external system message, task, trace id, 
   assert.match(sentMessages[0].payload.content, /fsc_test_trace/);
 });
 
+test('Feishu inbound import loads the copied path workspace before validation', async () => {
+  const deps = baseDeps();
+  const channel = {
+    ...deps.state.channels[0],
+    metadata: {},
+  };
+  ensureChannelFeishuRouteKey(channel, { randomId: () => 'fixed-route-key' });
+  deps.state.connection.workspaceId = 'srv_other';
+  deps.state.cloud.workspace = { id: 'srv_other', name: 'Other Server' };
+  deps.state.channels = [];
+  const loadedWorkspaceIds = [];
+  const sentMessages = [];
+  const importer = createFeishuInboundImporter({
+    ...deps,
+    async loadWorkspaceIntoState(state, workspaceId) {
+      loadedWorkspaceIds.push(workspaceId);
+      state.connection.workspaceId = workspaceId;
+      state.cloud.workspace = { id: workspaceId, name: 'Ops Server' };
+      state.channels = [channel];
+    },
+    feishuClient: {
+      async hydrateEvent(event) {
+        return {
+          text: event.text,
+          sender: { id: 'ou_user_1', name: '张三' },
+          chat: { id: 'oc_topic_1', name: '话题群', type: 'topic' },
+          mentionedBot: true,
+          sourceMessageId: 'om_topic_message',
+          records: [{ id: 'om_topic_message', author: '张三', text: event.text }],
+          attachments: [],
+        };
+      },
+      async replyToEvent(event, payload) {
+        sentMessages.push(payload);
+        return { messageId: 'om_ack' };
+      },
+    },
+    traceIdFactory: () => 'fsc_workspace_trace',
+  });
+
+  const result = await importer.handleMessageEvent({
+    text: 'mc://magclaw/server/srv_1/channel/chan_1?key=fixed-route-key 话题群里发来的请求',
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(loadedWorkspaceIds, ['srv_1']);
+  assert.equal(result.message.workspaceId, 'srv_1');
+  assert.equal(result.message.spaceId, 'chan_1');
+  assert.equal(deps.state.messages.length, 1);
+  assert.match(sentMessages[0].content, /已导入 MagClaw/);
+});
+
 test('Feishu client hydrates group avatar objects, mention names, and context timestamps', async () => {
   const fakeClient = {
     im: {

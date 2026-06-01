@@ -8,6 +8,7 @@ import {
 import {
   extractChannelImportPath,
   invalidChannelPathReply,
+  parseChannelImportPath,
   validateChannelImportPath,
 } from './route-token.js';
 
@@ -344,6 +345,7 @@ export function createFeishuInboundImporter(deps = {}) {
     findChannel = () => null,
     findTaskForThreadMessage,
     getState = () => ({}),
+    loadWorkspaceIntoState,
     makeId = (prefix) => `${prefix}_${Date.now()}`,
     normalizeConversationRecord = (record) => record,
     now = () => new Date().toISOString(),
@@ -356,6 +358,33 @@ export function createFeishuInboundImporter(deps = {}) {
   } = deps;
   const startup = createTaskStartupCollaboration(deps);
   const startTaskStartupCollaboration = injectedStartTaskStartupCollaboration || startup.startTaskStartupCollaboration;
+
+  function stateCanValidateParsedRoute(parsed = {}) {
+    if (!parsed.ok) return true;
+    const state = getState();
+    const currentServerIds = [
+      state.connection?.workspaceId,
+      state.connection?.serverId,
+      state.cloud?.workspace?.id,
+      state.cloud?.workspaces?.[0]?.id,
+      state.workspaceId,
+      'local',
+    ].map(clean).filter(Boolean);
+    return currentServerIds.includes(clean(parsed.serverId)) && Boolean(findChannel(parsed.channelId));
+  }
+
+  async function ensureWorkspaceForRoutePath(routePath = '') {
+    const parsed = parseChannelImportPath(routePath);
+    if (!parsed.ok || stateCanValidateParsedRoute(parsed) || typeof loadWorkspaceIntoState !== 'function') return;
+    try {
+      await loadWorkspaceIntoState(getState(), parsed.serverId);
+    } catch (error) {
+      addSystemEvent('feishu_import_workspace_load_failed', `Feishu workspace load failed before import: ${clean(error?.message || error)}`, {
+        serverId: parsed.serverId,
+        channelId: parsed.channelId,
+      });
+    }
+  }
 
   async function saveFeishuAttachments(attachments = [], { workspaceId, traceId } = {}) {
     if (!Array.isArray(attachments) || !attachments.length || typeof saveAttachmentBuffer !== 'function') return [];
@@ -631,6 +660,7 @@ export function createFeishuInboundImporter(deps = {}) {
       if (continuationRoot) return handleContinuationEvent(event, hydrated, continuationRoot);
       return replyInvalid(event, text || '(empty)');
     }
+    await ensureWorkspaceForRoutePath(routePath);
     const target = validateChannelImportPath(routePath, { getState, findChannel });
     if (!target.ok) return replyInvalid(event, routePath);
 
