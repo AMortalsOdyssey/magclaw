@@ -691,6 +691,7 @@ async function fetchSearchResults() {
 
 function queueSearchResultsRefresh() {
   persistSearchState();
+  queueSearchChannelPathResolve();
   if (searchRequestTimer) window.clearTimeout(searchRequestTimer);
   if (!searchHasActiveCriteria()) {
     searchRemoteResults = [];
@@ -705,6 +706,104 @@ function queueSearchResultsRefresh() {
   searchRequestTimer = window.setTimeout(() => {
     fetchSearchResults();
   }, 120);
+}
+
+function searchChannelPathCandidate(value = searchQuery) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const signed = text.match(/mc:\/\/magclaw\/server\/[^\s<>"'`]+\/channel\/[^\s<>"'`?]+(?:\?[^\s<>"'`]+)?/)?.[0] || '';
+  if (signed) return { key: signed, raw: signed, kind: 'signed' };
+  let parsed = null;
+  try {
+    parsed = text.startsWith('/s/')
+      ? new URL(text, window.location.origin || 'http://magclaw.local')
+      : new URL(text);
+  } catch {
+    return null;
+  }
+  const match = String(parsed.pathname || '').match(/^\/s\/([^/]+)\/channels\/([^/]+)/);
+  if (!match) return null;
+  const raw = `${parsed.pathname}${parsed.search || ''}`;
+  return {
+    key: raw,
+    raw,
+    kind: 'route',
+  };
+}
+
+function searchChannelPathRenderState() {
+  const candidate = searchChannelPathCandidate();
+  if (!candidate) return null;
+  if (searchChannelPathResolveState.key !== candidate.key) {
+    return { status: 'loading', raw: candidate.raw, kind: candidate.kind };
+  }
+  if (searchChannelPathResolveState.result) {
+    return {
+      ...searchChannelPathResolveState.result,
+      status: 'ready',
+      raw: candidate.raw,
+      kind: candidate.kind,
+    };
+  }
+  if (searchChannelPathResolveState.error) {
+    return {
+      status: 'invalid',
+      raw: candidate.raw,
+      kind: candidate.kind,
+      error: searchChannelPathResolveState.error,
+    };
+  }
+  return { status: 'loading', raw: candidate.raw, kind: candidate.kind };
+}
+
+function clearSearchChannelPathResolve() {
+  if (searchChannelPathTimer) {
+    window.clearTimeout(searchChannelPathTimer);
+    searchChannelPathTimer = null;
+  }
+  if (!searchChannelPathResolveState.key && !searchChannelPathResolveState.raw) return;
+  searchChannelPathResolveState = { key: '', raw: '', loading: false, error: '', result: null };
+  updateSearchResults({ skipFetch: true });
+}
+
+function queueSearchChannelPathResolve() {
+  const candidate = searchChannelPathCandidate();
+  if (!candidate) {
+    clearSearchChannelPathResolve();
+    return;
+  }
+  if (
+    searchChannelPathResolveState.key === candidate.key
+    && (searchChannelPathResolveState.loading || searchChannelPathResolveState.result || searchChannelPathResolveState.error)
+  ) return;
+  if (searchChannelPathTimer) window.clearTimeout(searchChannelPathTimer);
+  searchChannelPathResolveState = { key: candidate.key, raw: candidate.raw, loading: true, error: '', result: null };
+  updateSearchResults({ skipFetch: true });
+  searchChannelPathTimer = window.setTimeout(() => {
+    resolveSearchChannelPath();
+  }, 80);
+}
+
+async function resolveSearchChannelPath() {
+  const candidate = searchChannelPathCandidate();
+  if (!candidate) {
+    clearSearchChannelPathResolve();
+    return;
+  }
+  const seq = searchChannelPathRequestSeq + 1;
+  searchChannelPathRequestSeq = seq;
+  searchChannelPathResolveState = { key: candidate.key, raw: candidate.raw, loading: true, error: '', result: null };
+  updateSearchResults({ skipFetch: true });
+  try {
+    const params = new URLSearchParams({ path: candidate.raw });
+    const result = await api(`/api/channel-path/resolve?${params.toString()}`);
+    if (seq !== searchChannelPathRequestSeq) return;
+    searchChannelPathResolveState = { key: candidate.key, raw: candidate.raw, loading: false, error: '', result };
+  } catch {
+    if (seq !== searchChannelPathRequestSeq) return;
+    searchChannelPathResolveState = { key: candidate.key, raw: candidate.raw, loading: false, error: 'Not Found', result: null };
+  }
+  updateSearchResults({ skipFetch: true });
 }
 
 function searchEntityScore(text, query) {
@@ -1498,6 +1597,7 @@ function clickLoadingMeta(action, target) {
     'set-ui-language': ['Saving language...', 'main'],
     'mark-inbox-read': ['Marking activities read...', 'main'],
     'close-workspace-activity': ['Closing activity log...', 'inspector'],
+    'open-search-channel-path': ['Opening channel...', 'main'],
     'save-agent-field': ['Saving agent profile...', detailSurface],
     'save-agent-env': ['Saving environment...', detailSurface],
     'save-human-description': ['Saving profile...', detailSurface],

@@ -148,6 +148,7 @@ async function openAttachmentPreview(attachmentId) {
 async function switchConsoleServerAndLoadState(slug) {
   const nextSlug = String(slug || '').trim();
   if (!nextSlug) throw new Error('Server slug is missing.');
+  if (typeof persistActiveComposerDraftBeforeNavigation === 'function') persistActiveComposerDraftBeforeNavigation();
   const nextServerHeaders = { 'x-magclaw-server-slug': nextSlug };
   const result = await api(`/api/console/servers/${encodeURIComponent(nextSlug)}/switch`, {
     method: 'POST',
@@ -156,6 +157,7 @@ async function switchConsoleServerAndLoadState(slug) {
   });
   try {
     appState = await api('/api/state', { headers: nextServerHeaders });
+    if (typeof loadStoredComposerDrafts === 'function') loadStoredComposerDrafts({ force: true });
     if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   } catch (error) {
     if (result?.cloud && appState) appState = { ...appState, cloud: result.cloud };
@@ -1718,6 +1720,12 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'open-search-entity') {
       openSearchEntity(target.dataset.targetType, target.dataset.targetId);
+    }
+    if (action === 'open-search-channel-path') {
+      await openSearchChannelPath({
+        serverSlug: target.dataset.serverSlug,
+        channelId: target.dataset.channelId,
+      });
     }
     if (action === 'close-thread') {
       threadMessageId = null;

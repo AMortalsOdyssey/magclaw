@@ -51,6 +51,37 @@ function renderSearchEntityResult(item, activeKey) {
   `;
 }
 
+function renderSearchChannelPathResult(item) {
+  const status = item.status || 'loading';
+  const ready = status === 'ready';
+  const invalid = status === 'invalid';
+  const channelName = item.channelName || item.channelId || 'Channel';
+  const serverName = item.serverName || item.serverSlug || 'Server';
+  const title = ready ? `#${channelName}` : invalid ? 'Not Found' : 'Resolving path';
+  const meta = ready ? serverName : 'MagClaw Channel path';
+  const body = ready
+    ? `Open ${serverName} / #${channelName}`
+    : invalid
+      ? '路径不存在'
+      : 'Checking Server and Channel access...';
+  const actionAttrs = ready
+    ? `data-action="open-search-channel-path" data-server-slug="${escapeHtml(item.serverSlug || item.serverId || '')}" data-channel-id="${escapeHtml(item.channelId || '')}"`
+    : 'disabled aria-disabled="true"';
+  return `
+    <button class="search-result-card search-channel-path-card ${escapeHtml(status)}" type="button" ${actionAttrs}>
+      <span class="search-path-icon" aria-hidden="true">${ready ? '#' : invalid ? '!' : '...'}</span>
+      <span class="search-entity-copy">
+        <span class="search-result-meta">
+          <strong>${escapeHtml(title)}</strong>
+          <em>${escapeHtml(meta)}</em>
+        </span>
+        <span class="search-result-snippet">${escapeHtml(body)}</span>
+      </span>
+      <span class="search-path-jump">${ready ? 'Open' : invalid ? 'Invalid' : 'Wait'}</span>
+    </button>
+  `;
+}
+
 function renderSearchResult(record) {
   const parent = record.parentMessageId ? byId(appState?.messages, record.parentMessageId) : null;
   const task = byId(appState?.tasks, record.taskId || parent?.taskId);
@@ -173,10 +204,11 @@ function renderSearchResults() {
   const query = searchQuery.trim();
   if (!searchHasActiveCriteria()) return renderSearchEmptyState('empty');
 
-  const entities = query && !searchSenderId && !searchChannelId && searchTimeRange === 'any' ? searchEntityResults(query) : [];
+  const pathResult = searchChannelPathRenderState();
+  const entities = query && !searchChannelPathCandidate(query) && !searchSenderId && !searchChannelId && searchTimeRange === 'any' ? searchEntityResults(query) : [];
   const messageResults = currentSearchMessageResults();
   const visibleMessages = messageResults.slice(0, searchVisibleCount);
-  const total = entities.length + messageResults.length;
+  const total = (pathResult ? 1 : 0) + entities.length + messageResults.length;
   if (searchRemoteLoading && !total) {
     return `
       <div class="search-summary">Searching</div>
@@ -205,6 +237,10 @@ function renderSearchResults() {
   }
   return `
     <div class="search-summary">${total} ${total === 1 ? 'result' : 'results'}</div>
+    ${pathResult ? `
+      <div class="search-section-label">Path</div>
+      ${renderSearchChannelPathResult(pathResult)}
+    ` : ''}
     ${entities.length ? `
       <div class="search-section-label">People & Places</div>
       ${entities.map(renderSearchEntityResult).join('')}
@@ -278,6 +314,43 @@ function updateSearchResults({ skipFetch = false } = {}) {
 
 function patchSearchSurface() {
   updateSearchResults({ skipFetch: true });
+}
+
+async function openSearchChannelPath(item = {}) {
+  const serverSlug = String(item.serverSlug || item.serverId || '').trim();
+  const channelId = String(item.channelId || '').trim();
+  if (!serverSlug || !channelId) {
+    toast('Not Found');
+    return;
+  }
+  if (typeof persistActiveComposerDraftBeforeNavigation === 'function') persistActiveComposerDraftBeforeNavigation();
+  persistVisiblePaneScrolls();
+  if (serverSlug !== currentServerSlug()) {
+    await switchConsoleServerAndLoadState(serverSlug);
+  }
+  const channel = byId(appState?.channels, channelId);
+  if (!channel) {
+    toast('Not Found');
+    return;
+  }
+  selectedSpaceType = 'channel';
+  selectedSpaceId = channelId;
+  activeView = 'space';
+  mobileHomeOpen = false;
+  activeTab = 'chat';
+  threadMessageId = null;
+  workspaceActivityDrawerOpen = false;
+  selectedSavedRecordId = null;
+  selectedAgentId = null;
+  selectedHumanId = null;
+  selectedComputerId = null;
+  selectedTaskId = null;
+  selectedProjectFile = null;
+  selectedAgentWorkspaceFile = null;
+  markSpaceRead('channel', channelId);
+  render();
+  syncBrowserRouteForActiveView();
+  scrollPaneToBottom('#message-list', 'auto');
 }
 
 function openSearchResult(record) {

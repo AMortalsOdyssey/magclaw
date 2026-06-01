@@ -580,6 +580,19 @@ function persistComposerDraft(composerId) {
   });
 }
 
+function persistActiveComposerDraftBeforeNavigation() {
+  if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+  document.querySelectorAll('textarea[data-composer-id]').forEach((textarea) => {
+    const composerId = textarea.dataset?.composerId || '';
+    if (!composerId) return;
+    const value = textarea.value ?? composerDrafts[composerId] ?? '';
+    setComposerDraftState(composerId, {
+      body: value,
+      mentionMap: composerMentionMaps[composerId] || {},
+    });
+  });
+}
+
 function clearComposerDraft(composerId) {
   setComposerDraftState(composerId, { body: '', mentionMap: {} });
 }

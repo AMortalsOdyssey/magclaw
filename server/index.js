@@ -1750,9 +1750,12 @@ function collabApiDeps() {
     daemonRelay,
     findAgent,
     findChannel,
-	    findComputer,
-	    currentActor: (req) => cloudAuth.currentActor(req),
-	    getState: () => state,
+    findComputer,
+    currentActor: (req) => cloudAuth.currentActor(req),
+    getState: () => state,
+    loadWorkspaceIntoState: typeof cloudRepository?.loadWorkspaceIntoState === 'function'
+      ? (...args) => cloudRepository.loadWorkspaceIntoState(...args)
+      : null,
     makeId,
     normalizeConversationRecord,
     normalizeIds,

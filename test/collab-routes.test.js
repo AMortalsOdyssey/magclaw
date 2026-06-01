@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleCollabApi } from '../server/api/collab-routes.js';
+import {
+  buildChannelImportPath,
+  ensureChannelFeishuRouteKey,
+} from '../server/integrations/feishu-connect/route-token.js';
 
 function makeResponse() {
   return {
@@ -84,6 +88,124 @@ test('collab route group creates channels with synced membership fields and an a
   assert.deepEqual(res.data.channel.memberIds, ['hum_local', 'agt_one', 'agt_two']);
   assert.equal(deps.state.messages[0].body, 'Channel #product-room created.');
   assert.equal(deps.memoryUpdates[0].trigger, 'channel_membership_changed');
+});
+
+test('collab route resolves signed channel paths only for member servers', async () => {
+  const createdAt = '2026-05-02T00:00:00.000Z';
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_path', email: 'path@example.test' },
+      member: { id: 'wmem_alpha', workspaceId: 'wsp_alpha', userId: 'usr_path', humanId: 'hum_alpha', role: 'member', status: 'active' },
+    }),
+  });
+  deps.state.connection = { workspaceId: 'wsp_alpha' };
+  deps.state.cloud = {
+    workspaces: [
+      { id: 'wsp_alpha', slug: 'alpha-team', name: 'Alpha Team', createdAt },
+      { id: 'wsp_beta', slug: 'beta-team', name: 'Beta Team', createdAt },
+    ],
+    workspaceMembers: [
+      { id: 'wmem_alpha', workspaceId: 'wsp_alpha', userId: 'usr_path', humanId: 'hum_alpha', role: 'member', status: 'active', joinedAt: createdAt },
+      { id: 'wmem_beta', workspaceId: 'wsp_beta', userId: 'usr_path', humanId: 'hum_beta', role: 'admin', status: 'active', joinedAt: createdAt },
+    ],
+  };
+  const channel = {
+    id: 'chan_beta',
+    workspaceId: 'wsp_beta',
+    name: 'beta-ops',
+    humanIds: [],
+    agentIds: [],
+    memberIds: [],
+    archived: false,
+    metadata: {},
+  };
+  const routeKey = ensureChannelFeishuRouteKey(channel, { randomId: () => 'mcch_beta_fixed' });
+  deps.state.channels.push(channel);
+  const path = buildChannelImportPath({ serverId: 'wsp_beta', channelId: 'chan_beta', routeKey });
+
+  const res = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'GET' },
+    res,
+    new URL(`http://local/api/channel-path/resolve?path=${encodeURIComponent(path)}`),
+    deps,
+  ), true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.serverSlug, 'beta-team');
+  assert.equal(res.data.serverId, 'wsp_beta');
+  assert.equal(res.data.channelId, 'chan_beta');
+  assert.equal(res.data.channelName, 'beta-ops');
+  assert.equal(res.data.targetType, 'channel');
+
+  const tampered = makeResponse();
+  await handleCollabApi(
+    { method: 'GET' },
+    tampered,
+    new URL(`http://local/api/channel-path/resolve?path=${encodeURIComponent(path.replace('mcch_beta_fixed', 'mcch_wrong'))}`),
+    deps,
+  );
+  assert.equal(tampered.statusCode, 404);
+  assert.equal(tampered.error, 'Not Found');
+
+  deps.state.cloud.workspaceMembers = deps.state.cloud.workspaceMembers.filter((member) => member.workspaceId !== 'wsp_beta');
+  const denied = makeResponse();
+  await handleCollabApi(
+    { method: 'GET' },
+    denied,
+    new URL(`http://local/api/channel-path/resolve?path=${encodeURIComponent(path)}`),
+    deps,
+  );
+  assert.equal(denied.statusCode, 404);
+  assert.equal(denied.error, 'Not Found');
+});
+
+test('collab route hydrates the target workspace before resolving a member channel path', async () => {
+  const createdAt = '2026-05-02T00:00:00.000Z';
+  const channel = {
+    id: 'chan_hydrated',
+    workspaceId: 'wsp_beta',
+    name: 'hydrated',
+    humanIds: [],
+    agentIds: [],
+    memberIds: [],
+    archived: false,
+    metadata: {},
+  };
+  const routeKey = ensureChannelFeishuRouteKey(channel, { randomId: () => 'mcch_hydrated_fixed' });
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_path', email: 'path@example.test' },
+      member: { id: 'wmem_alpha', workspaceId: 'wsp_alpha', userId: 'usr_path', humanId: 'hum_alpha', role: 'member', status: 'active' },
+    }),
+    loadWorkspaceIntoState: async (state, workspaceId) => {
+      assert.equal(workspaceId, 'wsp_beta');
+      state.channels.push(channel);
+    },
+  });
+  deps.state.connection = { workspaceId: 'wsp_alpha' };
+  deps.state.cloud = {
+    workspaces: [
+      { id: 'wsp_alpha', slug: 'alpha-team', name: 'Alpha Team', createdAt },
+      { id: 'wsp_beta', slug: 'beta-team', name: 'Beta Team', createdAt },
+    ],
+    workspaceMembers: [
+      { id: 'wmem_alpha', workspaceId: 'wsp_alpha', userId: 'usr_path', humanId: 'hum_alpha', role: 'member', status: 'active', joinedAt: createdAt },
+      { id: 'wmem_beta', workspaceId: 'wsp_beta', userId: 'usr_path', humanId: 'hum_beta', role: 'member', status: 'active', joinedAt: createdAt },
+    ],
+  };
+  const path = buildChannelImportPath({ serverId: 'wsp_beta', channelId: 'chan_hydrated', routeKey });
+
+  const res = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'GET' },
+    res,
+    new URL(`http://local/api/channel-path/resolve?path=${encodeURIComponent(path)}`),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.serverSlug, 'beta-team');
+  assert.equal(res.data.channelId, 'chan_hydrated');
 });
 
 test('collab route group restricts daemon upgrades to admins and owners', async () => {

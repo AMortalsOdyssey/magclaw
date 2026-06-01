@@ -2,7 +2,9 @@ import os from 'node:os';
 import { ensureWorkspaceAllChannel, isWorkspaceAllChannel } from '../workspace-defaults.js';
 import {
   buildChannelImportPath,
+  channelFeishuRouteKey,
   ensureChannelFeishuRouteKey,
+  parseChannelImportPath,
 } from '../integrations/feishu-connect/route-token.js';
 
 // Collaboration object API routes.
@@ -14,13 +16,14 @@ export async function handleCollabApi(req, res, url, deps) {
   const {
     addCollabEvent,
     agentParticipatesInChannels,
-      broadcastState,
-      currentActor,
-      daemonRelay,
-      findAgent,
+    broadcastState,
+    currentActor,
+    daemonRelay,
+    findAgent,
     findChannel,
     findComputer,
     getState,
+    loadWorkspaceIntoState,
     makeId,
     normalizeConversationRecord,
     normalizeIds,
@@ -99,6 +102,116 @@ export async function handleCollabApi(req, res, url, deps) {
     return String(state.connection?.name || state.cloud?.workspace?.name || state.cloud?.workspaces?.[0]?.name || 'Server').trim();
   }
 
+  function invalidChannelPath(res) {
+    sendError(res, 404, 'Not Found');
+  }
+
+  function parseChannelPathInput(value = '') {
+    const raw = String(value || '').trim();
+    if (!raw) return { ok: false, raw };
+    const signedPath = raw.match(/mc:\/\/magclaw\/server\/[^\s<>"'`]+\/channel\/[^\s<>"'`?]+(?:\?[^\s<>"'`]+)?/)?.[0] || '';
+    if (signedPath) {
+      const parsed = parseChannelImportPath(signedPath);
+      if (!parsed.ok) return { ok: false, raw: signedPath };
+      return {
+        ok: true,
+        kind: 'signed',
+        raw: signedPath,
+        serverRef: parsed.serverId,
+        channelId: parsed.channelId,
+        routeKey: parsed.routeKey,
+      };
+    }
+    let parsed = null;
+    try {
+      parsed = raw.startsWith('/s/')
+        ? new URL(raw, 'http://magclaw.local')
+        : new URL(raw);
+    } catch {
+      return { ok: false, raw };
+    }
+    const match = String(parsed.pathname || '').match(/^\/s\/([^/]+)\/channels\/([^/]+)/);
+    if (!match) return { ok: false, raw };
+    return {
+      ok: true,
+      kind: 'route',
+      raw,
+      serverRef: decodeURIComponent(match[1] || ''),
+      channelId: decodeURIComponent(match[2] || ''),
+      routeKey: '',
+    };
+  }
+
+  function workspaceForPathRef(serverRef = '') {
+    const ref = String(serverRef || '').trim().toLowerCase();
+    if (!ref) return null;
+    const cloud = state.cloud || {};
+    const candidates = [
+      ...(Array.isArray(cloud.workspaces) ? cloud.workspaces : []),
+      cloud.workspace,
+    ].filter(Boolean);
+    const workspace = candidates.find((item) => (
+      !item.deletedAt
+      && (
+        String(item.id || '').toLowerCase() === ref
+        || String(item.slug || '').toLowerCase() === ref
+      )
+    ));
+    if (workspace) return workspace;
+    const currentWorkspaceId = String(state.connection?.workspaceId || cloud.workspace?.id || '').trim();
+    const currentSlug = String(cloud.workspace?.slug || '').trim();
+    if ([currentWorkspaceId, currentSlug, 'local'].map((item) => item.toLowerCase()).includes(ref)) {
+      return {
+        id: currentWorkspaceId || ref || 'local',
+        slug: currentSlug || ref || 'local',
+        name: state.connection?.name || cloud.workspace?.name || 'Server',
+      };
+    }
+    return null;
+  }
+
+  function userCanAccessWorkspace(req, workspaceId) {
+    const cleanWorkspaceId = String(workspaceId || '').trim();
+    if (!cleanWorkspaceId) return false;
+    const auth = typeof currentActor === 'function' ? currentActor(req) : null;
+    if (auth?.member?.workspaceId === cleanWorkspaceId && (!auth.member.status || auth.member.status === 'active')) return true;
+    const userId = String(auth?.user?.id || '').trim();
+    if (userId) {
+      return (state.cloud?.workspaceMembers || []).some((member) => (
+        member?.workspaceId === cleanWorkspaceId
+        && member.userId === userId
+        && (!member.status || member.status === 'active')
+      ));
+    }
+    const cloudUsers = Array.isArray(state.cloud?.users) ? state.cloud.users : [];
+    if (cloudUsers.length) return false;
+    const localWorkspaceId = String(state.connection?.workspaceId || state.cloud?.workspace?.id || 'local').trim();
+    return cleanWorkspaceId === localWorkspaceId || cleanWorkspaceId === 'local';
+  }
+
+  function channelBelongsToWorkspace(channel, workspaceId) {
+    if (!channel) return false;
+    const channelWorkspaceId = String(channel.workspaceId || '').trim();
+    if (!channelWorkspaceId) return !workspaceId || workspaceId === String(state.connection?.workspaceId || state.cloud?.workspace?.id || 'local').trim();
+    return channelWorkspaceId === workspaceId;
+  }
+
+  function findChannelForWorkspace(channelId, workspaceId) {
+    const cleanChannelId = String(channelId || '').trim();
+    if (!cleanChannelId) return null;
+    return (state.channels || []).find((channel) => (
+      String(channel?.id || '') === cleanChannelId
+      && channelBelongsToWorkspace(channel, workspaceId)
+    )) || null;
+  }
+
+  async function ensureWorkspaceChannelsLoaded(workspaceId, channelId) {
+    if (findChannelForWorkspace(channelId, workspaceId)) return;
+    if (typeof loadWorkspaceIntoState === 'function') {
+      await loadWorkspaceIntoState(state, workspaceId);
+    }
+  }
+
   function computerPackageName(computer = {}) {
     const metadataPackage = computer.metadata && typeof computer.metadata === 'object' && computer.metadata.package && typeof computer.metadata.package === 'object'
       ? computer.metadata.package
@@ -108,6 +221,45 @@ export async function handleCollabApi(req, res, url, deps) {
     if (name === '@magclaw/daemon') return '@magclaw/daemon';
     if (String(computer.packageKind || metadataPackage.kind || computer.connectedVia || '').toLowerCase() === 'computer') return '@magclaw/computer';
     return '@magclaw/daemon';
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/channel-path/resolve') {
+    const parsed = parseChannelPathInput(url.searchParams.get('path') || url.searchParams.get('q') || '');
+    if (!parsed.ok) {
+      invalidChannelPath(res);
+      return true;
+    }
+    const workspace = workspaceForPathRef(parsed.serverRef);
+    const workspaceId = String(workspace?.id || '').trim();
+    if (!workspaceId || !userCanAccessWorkspace(req, workspaceId)) {
+      invalidChannelPath(res);
+      return true;
+    }
+    await ensureWorkspaceChannelsLoaded(workspaceId, parsed.channelId);
+    const channel = findChannelForWorkspace(parsed.channelId, workspaceId);
+    if (!channel || channel.archived || channel.archivedAt) {
+      invalidChannelPath(res);
+      return true;
+    }
+    if (parsed.kind === 'signed' && channelFeishuRouteKey(channel) !== parsed.routeKey) {
+      invalidChannelPath(res);
+      return true;
+    }
+    console.info('[collab] channel path resolved', {
+      workspaceId,
+      channelId: channel.id,
+      inputKind: parsed.kind,
+    });
+    sendJson(res, 200, {
+      targetType: 'channel',
+      serverId: workspaceId,
+      serverSlug: workspace.slug || workspace.id,
+      serverName: workspace.name || workspace.slug || workspace.id,
+      channelId: channel.id,
+      channelName: channel.name || channel.id,
+      path: parsed.raw,
+    });
+    return true;
   }
 
   function targetVersionForComputerPackage(computer = {}, body = {}) {

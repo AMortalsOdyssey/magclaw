@@ -2206,10 +2206,17 @@ test('streaming agent replies render as a single updating message with visible t
 
 test('search uses server-backed history and supports filter-only result fetching', async () => {
   const app = await readAppSource();
+  const styles = await readStylesSource();
+  const renderResultsSource = app.slice(app.indexOf('function renderSearchResults()'), app.indexOf('function searchFocusSnapshot()'));
+  const openPathSource = app.slice(app.indexOf('async function openSearchChannelPath'), app.indexOf('function openSearchResult'));
 
   assert.match(app, /function searchRecords\(query\)/);
   assert.match(app, /function searchScore\(record, query\)/);
   assert.match(app, /let searchRemoteResults = \[\]/);
+  assert.match(app, /let searchChannelPathResolveState =/);
+  assert.match(app, /function searchChannelPathCandidate\(value = searchQuery\)/);
+  assert.match(app, /async function resolveSearchChannelPath\(\)/);
+  assert.match(app, /\/api\/channel-path\/resolve\?/);
   assert.match(app, /async function fetchSearchResults\(\)/);
   assert.match(app, /\/api\/search\/messages\?/);
   assert.match(app, /function searchHasActiveCriteria\(\)/);
@@ -2219,6 +2226,21 @@ test('search uses server-backed history and supports filter-only result fetching
   assert.match(app, /function highlightSearchText\(text, query\)/);
   assert.match(app, /data-action="open-search-result"/);
   assert.match(app, /function openSearchResult\(record\)/);
+  assert.match(app, /data-action="open-search-channel-path"/);
+  assert.match(app, /function renderSearchChannelPathResult\(item\)/);
+  assert.match(renderResultsSource, /const pathResult = searchChannelPathRenderState\(\)/);
+  assert.match(renderResultsSource, /const total = \(pathResult \? 1 : 0\) \+ entities\.length \+ messageResults\.length/);
+  assert.match(renderResultsSource, /renderSearchChannelPathResult\(pathResult\)/);
+  assert.match(renderResultsSource, /const entities = query && !searchChannelPathCandidate\(query\) && !searchSenderId && !searchChannelId && searchTimeRange === 'any'/);
+  assert.match(openPathSource, /persistActiveComposerDraftBeforeNavigation\(\)/);
+  assert.match(openPathSource, /await switchConsoleServerAndLoadState\(serverSlug\)/);
+  assert.match(openPathSource, /selectedSpaceType = 'channel'/);
+  assert.match(openPathSource, /selectedSpaceId = channelId/);
+  assert.match(openPathSource, /markSpaceRead\('channel', channelId\)/);
+  assert.match(openPathSource, /scrollPaneToBottom\('#message-list', 'auto'\)/);
+  assert.match(styles, /\.search-channel-path-card/);
+  assert.match(styles, /\.search-channel-path-card\.invalid/);
+  assert.match(styles, /\.search-path-jump/);
   assert.match(app, /function scrollToReply\(replyId\)/);
 });
 
