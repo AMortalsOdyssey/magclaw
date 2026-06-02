@@ -415,12 +415,37 @@ test('team memory route creates a public share and serves it without authenticat
   assert.match(publicRes.body, /Created by Ada PM/);
   assert.match(publicRes.body, /2026-06-01T10:00:00.000Z/);
 
+  deps.state.teamMemory.shares.push({
+    ...deps.state.teamMemory.shares[0],
+    id: 'share_other_server',
+    workspaceId: 'ws_other',
+    title: 'Other server share',
+  });
+
+  const rejectedIndex = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'GET', headers: {} },
+    rejectedIndex,
+    new URL('https://magclaw.example/share'),
+    { ...deps, currentActor: () => null, teamMemoryAuthRequired: () => true },
+  ), true);
+  assert.equal(rejectedIndex.statusCode, 401);
+
+  const wrongServerIndex = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'GET', headers: {} },
+    wrongServerIndex,
+    new URL('https://magclaw.example/share'),
+    { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_other', humanId: 'hum_other' } }) },
+  ), true);
+  assert.equal(wrongServerIndex.statusCode, 403);
+
   const indexRes = makeResponse();
   assert.equal(await handleTeamMemoryApi(
     { method: 'GET', headers: {} },
     indexRes,
     new URL('https://magclaw.example/share'),
-    { ...deps, currentActor: () => null, teamMemoryAuthRequired: () => true },
+    deps,
   ), true);
   assert.equal(indexRes.statusCode, 200);
   assert.match(indexRes.body, /Share Root/);
@@ -430,6 +455,7 @@ test('team memory route creates a public share and serves it without authenticat
   assert.match(indexRes.body, /magclaw/);
   assert.match(indexRes.body, /Rerank 方案摘要/);
   assert.match(indexRes.body, new RegExp(`/s/${shareId}`));
+  assert.doesNotMatch(indexRes.body, /Other server share/);
 });
 
 test('team memory route serves a dynamic context html page without creating static files', async () => {

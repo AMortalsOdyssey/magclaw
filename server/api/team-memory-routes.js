@@ -290,6 +290,50 @@ function renderShareIndexHtml(shares = []) {
   );
 }
 
+function shareRootWorkspaceId(state = {}) {
+  return String(
+    state.connection?.workspaceId
+    || state.cloud?.workspace?.id
+    || state.cloud?.workspaces?.[0]?.id
+    || 'local',
+  ).trim();
+}
+
+function shareRootAccess(req, { actor, memory, state } = {}) {
+  const workspaceId = shareRootWorkspaceId(state);
+  const actorWorkspaceId = String(actor?.member?.workspaceId || '').trim();
+  if (actorWorkspaceId) {
+    if (!workspaceId || workspaceId === 'local' || actorWorkspaceId === workspaceId) {
+      return { ok: true, workspaceId, actorId: actorHumanId(actor), via: 'actor' };
+    }
+    return { ok: false, status: 403, workspaceId, actorId: actorHumanId(actor), error: 'This share root is only available to members of this server.' };
+  }
+  const tokenRecord = tokenRecordForRequest(memory, req);
+  if (tokenRecord) {
+    const tokenWorkspaceId = String(tokenRecord.workspaceId || '').trim();
+    if (!workspaceId || workspaceId === 'local' || tokenWorkspaceId === workspaceId) {
+      return { ok: true, workspaceId, actorId: tokenRecord.user?.id || '', via: 'token' };
+    }
+    return { ok: false, status: 403, workspaceId, actorId: tokenRecord.user?.id || '', error: 'This share root is only available to members of this server.' };
+  }
+  return { ok: false, status: 401, workspaceId, actorId: '', error: 'Sign in to MagClaw and join this server to open the share root.' };
+}
+
+function sharesForShareRoot(memory = {}, workspaceId = '') {
+  const shares = ensureTeamMemoryShares(memory);
+  const scope = String(workspaceId || '').trim();
+  if (!scope || scope === 'local') return shares;
+  return shares.filter((share) => String(share.workspaceId || '').trim() === scope);
+}
+
+function shareRootDeniedHtml(status = 401, message = '') {
+  const title = status === 403 ? 'Server access required' : 'Sign in required';
+  return shareChromeHtml(
+    { title: 'MagClaw Share Root', creator: { name: 'MagClaw' }, createdAt: '' },
+    `<h1>${htmlEscape(title)}</h1><p>${htmlEscape(message || 'Join this server before opening the MagClaw share root.')}</p>`,
+  );
+}
+
 function sendContextHtml(res, {
   sessionId = '',
   anchorEventId = '',
@@ -691,7 +735,17 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
   }
 
   if (req.method === 'GET' && (url.pathname === '/share' || url.pathname === '/share/')) {
-    sendShareHtml(res, renderShareIndexHtml(ensureTeamMemoryShares(memory)));
+    const access = shareRootAccess(req, { actor, memory, state });
+    if (!access.ok) {
+      addSystemEvent('team_memory_share_root_denied', 'Team memory share root access denied.', {
+        workspaceId: access.workspaceId || workspaceId,
+        actorId: access.actorId || '',
+        status: access.status,
+      });
+      sendShareHtml(res, shareRootDeniedHtml(access.status, access.error), { status: access.status });
+      return true;
+    }
+    sendShareHtml(res, renderShareIndexHtml(sharesForShareRoot(memory, access.workspaceId)));
     return true;
   }
 
