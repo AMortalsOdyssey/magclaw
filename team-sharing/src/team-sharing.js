@@ -586,6 +586,19 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     minCreatedAt: project.config.enabledSince || '',
   });
   if (syncPackage.empty || !syncPackage.body) return { ok: true, empty: true, cursor: syncPackage.cursor };
+  if (flags.dryRun || flags.dry_run) {
+    return {
+      ok: true,
+      dryRun: true,
+      duplicate: false,
+      sessionId: syncPackage.body.sessionId,
+      title: syncPackage.body.title,
+      fromOrdinal: syncPackage.body.fromOrdinal,
+      toOrdinal: syncPackage.body.toOrdinal,
+      eventCount: syncPackage.body.events.length,
+      cursor: syncPackage.cursor,
+    };
+  }
   const result = await teamSharingRequestJson({
     serverUrl: flags.serverUrl || serverUrl || profile.config?.server_url || DEFAULT_SERVER_URL,
     token,
