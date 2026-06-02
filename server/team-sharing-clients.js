@@ -217,7 +217,7 @@ export function createZillizTeamSharingClient(options = {}) {
   const token = options.token || process.env.MAGCLAW_ZILLIZ_TOKEN || '';
   const database = options.database || process.env.MAGCLAW_ZILLIZ_DATABASE || 'default';
   const collection = options.collection || process.env.MAGCLAW_ZILLIZ_COLLECTION || 'magclaw_team_sharing_v1';
-  const dimension = Number(options.dimension || process.env.MAGCLAW_EMBEDDING_DIMENSION || process.env.MAGCLAW_EMBEDDING_PREFERRED_DIMENSION || 1536);
+  const configuredDimension = Number(options.dimension || process.env.MAGCLAW_EMBEDDING_DIMENSION || 0);
   const headers = authorizationHeaders(token);
   function endpointUrl(pathname) {
     if (!endpoint) throw new Error('Zilliz endpoint is not configured.');
@@ -277,14 +277,15 @@ export function createZillizTeamSharingClient(options = {}) {
         count: Number(result?.data?.upsertCount || result?.data?.insertCount || data.length),
       };
     },
-    async ensureCollection() {
+    async ensureCollection({ dimension = 0 } = {}) {
+      const collectionDimension = Number(dimension || configuredDimension || 1536);
       const describe = await fetchImpl(endpointUrl('/v2/vectordb/collections/describe'), {
         method: 'POST',
         headers,
         body: JSON.stringify({ dbName: database, collectionName: collection }),
       });
       const described = await describe.json().catch(() => ({}));
-      if (describe.ok && Number(described?.code || 0) === 0) return { ok: true, existed: true, dimension };
+      if (describe.ok && Number(described?.code || 0) === 0) return { ok: true, existed: true, dimension: collectionDimension };
       const create = await fetchImpl(endpointUrl('/v2/vectordb/collections/create'), {
         method: 'POST',
         headers,
@@ -296,7 +297,7 @@ export function createZillizTeamSharingClient(options = {}) {
             enableDynamicField: true,
             fields: [
               { fieldName: '_id', dataType: 'VarChar', isPrimary: true, elementTypeParams: { max_length: 512 } },
-              { fieldName: 'vector', dataType: 'FloatVector', elementTypeParams: { dim: dimension } },
+              { fieldName: 'vector', dataType: 'FloatVector', elementTypeParams: { dim: collectionDimension } },
               { fieldName: 'vector_document_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
               { fieldName: 'workspace_id', dataType: 'VarChar', elementTypeParams: { max_length: 256 } },
               { fieldName: 'channel_id', dataType: 'VarChar', elementTypeParams: { max_length: 256 } },
@@ -314,7 +315,7 @@ export function createZillizTeamSharingClient(options = {}) {
         }),
       });
       await readJsonResponse(create);
-      return { ok: true, existed: false, dimension };
+      return { ok: true, existed: false, dimension: collectionDimension };
     },
   };
 }
@@ -337,6 +338,10 @@ export function createTeamSharingIndexingPipeline(options = {}) {
       for (const document of activeDocuments) {
         const result = await embeddingClient.embed(textForEmbedding(document));
         embeddings.push(result.embedding || result.embeddings || []);
+      }
+      const detectedDimension = embeddings.find((embedding) => Array.isArray(embedding) && embedding.length)?.length || 0;
+      if (typeof zillizClient.ensureCollection === 'function') {
+        await zillizClient.ensureCollection({ dimension: detectedDimension });
       }
       const upsert = await zillizClient.upsertDocuments({ documents: activeDocuments, embeddings });
       return {

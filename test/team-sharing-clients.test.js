@@ -191,9 +191,36 @@ test('zilliz client searches and upserts team-sharing vector documents with scop
   assert.equal(calls[1].init.headers.authorization, 'Bearer zilliz-secret');
 });
 
+test('zilliz client creates collection with detected native embedding dimension', async () => {
+  const calls = [];
+  const client = createZillizTeamSharingClient({
+    endpoint: 'https://zilliz.example',
+    token: 'zilliz-secret',
+    database: 'ai_social_memory',
+    collection: 'magclaw_team_sharing_v1',
+    fetch: async (url, init) => {
+      calls.push({ url, init, body: JSON.parse(init.body) });
+      if (String(url).endsWith('/collections/describe')) {
+        return jsonResponse({ code: 100, message: 'collection not found' }, false, 404);
+      }
+      return jsonResponse({ code: 0, data: {} });
+    },
+  });
+
+  const result = await client.ensureCollection({ dimension: 4 });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.existed, false);
+  assert.equal(result.dimension, 4);
+  assert.match(calls[1].url, /\/v2\/vectordb\/collections\/create$/);
+  const vectorField = calls[1].body.schema.fields.find((field) => field.fieldName === 'vector');
+  assert.equal(vectorField.elementTypeParams.dim, 4);
+});
+
 test('team sharing indexing pipeline embeds abstract text before zilliz upsert', async () => {
   const embedded = [];
   const upserts = [];
+  const ensured = [];
   const pipeline = createTeamSharingIndexingPipeline({
     embeddingClient: {
       embed: async (text) => {
@@ -202,6 +229,10 @@ test('team sharing indexing pipeline embeds abstract text before zilliz upsert',
       },
     },
     zillizClient: {
+      ensureCollection: async (payload) => {
+        ensured.push(payload);
+        return { ok: true, existed: true, dimension: payload.dimension };
+      },
       upsertDocuments: async (payload) => {
         upserts.push(payload);
         return { ok: true, count: payload.documents.length };
@@ -223,5 +254,6 @@ test('team sharing indexing pipeline embeds abstract text before zilliz upsert',
   assert.equal(result.ok, true);
   assert.equal(result.count, 1);
   assert.deepEqual(embedded, ['Team sharing\nL0 abstract for retrieval']);
+  assert.deepEqual(ensured, [{ dimension: 3 }]);
   assert.equal(upserts[0].embeddings[0].length, 3);
 });
