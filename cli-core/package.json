@@ -1,6 +1,6 @@
 {
   "name": "@magclaw/cli-core",
-  "version": "0.1.39",
+  "version": "0.1.40",
   "description": "Shared local MagClaw CLI implementation used by daemon and computer packages.",
   "type": "module",
   "bin": {
