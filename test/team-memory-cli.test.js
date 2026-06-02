@@ -493,5 +493,11 @@ test('team memory cli installs a local skill without writing token into skill fi
   assert.match(skill, /magclaw memory search/);
   assert.match(skill, /magclaw memory context/);
   assert.match(skill, /magclaw team-sharing share-artifact/);
+  assert.match(skill, /Default Share HTML Style/);
+  assert.match(skill, /deep blue-black technical hero/);
+  assert.match(skill, /sticky table of contents/);
+  assert.match(skill, /white report cards/);
+  assert.match(skill, /cyan.*emerald.*amber.*rose/i);
+  assert.match(skill, /mobile viewports must not overflow/i);
   assert.doesNotMatch(skill, /memory-token-secret|api_key|Bearer/i);
 });
