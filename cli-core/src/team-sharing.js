@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { installTeamMemoryHookConfig } from './team-memory-hooks.js';
 
-export const TEAM_SHARING_PACKAGE_NAME = 'team-sharing';
+export const TEAM_SHARING_PACKAGE_NAME = '@magclaw/team-sharing';
 export const TEAM_SHARING_INTEGRATION = 'team-sharing';
 const DEFAULT_PROFILE = 'default';
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
@@ -646,7 +646,8 @@ export async function checkTeamSharingUpgrade(options = {}, env = process.env) {
       checkedAtMs: cached.checkedAtMs,
     };
   }
-  const response = await fetch(`https://registry.npmjs.org/${TEAM_SHARING_PACKAGE_NAME}`);
+  const encodedPackageName = encodeURIComponent(TEAM_SHARING_PACKAGE_NAME);
+  const response = await fetch(`https://registry.npmjs.org/${encodedPackageName}`);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `npm registry returned ${response.status}`);
   const latestVersion = String(data?.['dist-tags']?.latest || currentVersion);

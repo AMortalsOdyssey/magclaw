@@ -348,7 +348,7 @@ test('team sharing upgrade check uses npm cache ttl and reports newer versions',
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
     fetchCount += 1;
-    assert.match(String(url), /registry\.npmjs\.org\/team-sharing/);
+    assert.match(String(url), /registry\.npmjs\.org\/%40magclaw%2Fteam-sharing/i);
     return { ok: true, json: async () => ({ 'dist-tags': { latest: '0.1.38' } }) };
   };
   try {

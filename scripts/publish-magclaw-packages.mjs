@@ -10,11 +10,11 @@ const DEFAULT_PACKAGE_DIRS = Object.freeze([
   ['@magclaw/cli-core', 'cli-core'],
   ['@magclaw/daemon', 'daemon'],
   ['@magclaw/computer', 'computer'],
-  ['team-sharing', 'team-sharing'],
+  ['@magclaw/team-sharing', 'team-sharing'],
 ]);
 const MAGCLAW_RELEASE_PACKAGE_NAMES = Object.freeze(DEFAULT_PACKAGE_DIRS.map(([name]) => name));
 const CLI_CORE_PACKAGE_NAME = '@magclaw/cli-core';
-const CLI_CORE_DEPENDENT_PACKAGE_NAMES = Object.freeze(['@magclaw/daemon', '@magclaw/computer', 'team-sharing']);
+const CLI_CORE_DEPENDENT_PACKAGE_NAMES = Object.freeze(['@magclaw/daemon', '@magclaw/computer', '@magclaw/team-sharing']);
 const CLI_CORE_VERSION_LOCKED_PACKAGE_NAMES = Object.freeze(['@magclaw/daemon', '@magclaw/computer']);
 
 function cleanText(value) {
@@ -237,7 +237,7 @@ function usage() {
     'Usage: node scripts/publish-magclaw-packages.mjs [--dry-run|--verify-only|--sync-only] [--package <name>] [--registry <url>]',
     '',
     'Publishes selected MagClaw npm packages, then verifies npm latest dist-tags.',
-    'If @magclaw/cli-core is selected, @magclaw/daemon, @magclaw/computer, and team-sharing are included so shared CLI changes ship with every entry package.',
+    'If @magclaw/cli-core is selected, @magclaw/daemon, @magclaw/computer, and @magclaw/team-sharing are included so shared CLI changes ship with every entry package.',
     '--verify-only verifies already-published npm versions without publishing; --sync-only is kept as a deprecated alias.',
     'No production database access is required.',
   ].join('\n');

@@ -3,8 +3,11 @@
 One-command installer for MagClaw Team Sharing.
 
 ```bash
-npx team-sharing@latest setup --channel <channel-path>
+npx @magclaw/team-sharing@latest setup --channel <channel-path>
 ```
+
+The npm package is `@magclaw/team-sharing`; it exposes the `team-sharing`
+command for day-to-day use.
 
 The installer configures MagClaw Team Memory sync for Codex and Claude Code:
 
@@ -12,7 +15,7 @@ The installer configures MagClaw Team Memory sync for Codex and Claude Code:
 - project-level `.magclaw/team-sharing.yaml`
 - Codex and Claude Code hooks
 - local `magclaw-team-memory` skill
-- upgrade checks for `team-sharing`
+- upgrade checks for `@magclaw/team-sharing`
 
 Tokens are cached under the user profile in `~/.magclaw/team-sharing/` and are
 not written into project repositories.

@@ -10,7 +10,7 @@ if (process.argv.includes('--version') || process.argv.includes('-V')) {
 
 main([process.argv[0], process.argv[1], 'team-sharing', ...process.argv.slice(2)], {
   ...process.env,
-  MAGCLAW_ENTRY_PACKAGE_NAME: 'team-sharing',
+  MAGCLAW_ENTRY_PACKAGE_NAME: '@magclaw/team-sharing',
   MAGCLAW_TEAM_SHARING_VERSION: process.env.MAGCLAW_TEAM_SHARING_VERSION || TEAM_SHARING_VERSION,
 }).catch((error) => {
   process.stderr.write(`${error?.message || String(error)}\n`);

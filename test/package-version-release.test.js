@@ -9,7 +9,7 @@ const releasePackages = [
   { name: '@magclaw/cli-core', version: '0.1.40', dir: '/repo/cli-core' },
   { name: '@magclaw/daemon', version: '0.1.40', dir: '/repo/daemon' },
   { name: '@magclaw/computer', version: '0.1.40', dir: '/repo/computer' },
-  { name: 'team-sharing', version: '0.1.40', dir: '/repo/team-sharing' },
+  { name: '@magclaw/team-sharing', version: '0.1.40', dir: '/repo/team-sharing' },
 ];
 
 async function writePackage(root, dir, pkg) {
@@ -23,7 +23,7 @@ test('collect release packages expands cli-core to daemon and computer and enfor
   await writePackage(root, 'cli-core', { name: '@magclaw/cli-core', version: '0.1.80' });
   await writePackage(root, 'daemon', { name: '@magclaw/daemon', version: '0.1.80', dependencies: { '@magclaw/cli-core': '0.1.80' } });
   await writePackage(root, 'computer', { name: '@magclaw/computer', version: '0.1.80', dependencies: { '@magclaw/cli-core': '0.1.80' } });
-  await writePackage(root, 'team-sharing', { name: 'team-sharing', version: '0.1.80', dependencies: { '@magclaw/cli-core': '0.1.80' } });
+  await writePackage(root, 'team-sharing', { name: '@magclaw/team-sharing', version: '0.1.80', dependencies: { '@magclaw/cli-core': '0.1.80' } });
 
   const packages = await collectReleasePackages({ root, packageNames: ['@magclaw/cli-core'] });
 
@@ -31,7 +31,7 @@ test('collect release packages expands cli-core to daemon and computer and enfor
     '@magclaw/cli-core',
     '@magclaw/daemon',
     '@magclaw/computer',
-    'team-sharing',
+    '@magclaw/team-sharing',
   ]);
 });
 
@@ -40,7 +40,7 @@ test('collect release packages rejects cli-core releases when dependents were no
   await writePackage(root, 'cli-core', { name: '@magclaw/cli-core', version: '0.1.81' });
   await writePackage(root, 'daemon', { name: '@magclaw/daemon', version: '0.1.80', dependencies: { '@magclaw/cli-core': '0.1.81' } });
   await writePackage(root, 'computer', { name: '@magclaw/computer', version: '0.1.81', dependencies: { '@magclaw/cli-core': '0.1.81' } });
-  await writePackage(root, 'team-sharing', { name: 'team-sharing', version: '0.1.81', dependencies: { '@magclaw/cli-core': '0.1.81' } });
+  await writePackage(root, 'team-sharing', { name: '@magclaw/team-sharing', version: '0.1.81', dependencies: { '@magclaw/cli-core': '0.1.81' } });
 
   await assert.rejects(
     () => collectReleasePackages({ root, packageNames: ['@magclaw/cli-core'] }),
@@ -53,15 +53,15 @@ test('collect release packages lets daemon and computer publish independently wh
   await writePackage(root, 'cli-core', { name: '@magclaw/cli-core', version: '0.1.81' });
   await writePackage(root, 'daemon', { name: '@magclaw/daemon', version: '0.1.82', dependencies: { '@magclaw/cli-core': '0.1.81' } });
   await writePackage(root, 'computer', { name: '@magclaw/computer', version: '0.1.83', dependencies: { '@magclaw/cli-core': '0.1.81' } });
-  await writePackage(root, 'team-sharing', { name: 'team-sharing', version: '0.1.84', dependencies: { '@magclaw/cli-core': '0.1.81' } });
+  await writePackage(root, 'team-sharing', { name: '@magclaw/team-sharing', version: '0.1.84', dependencies: { '@magclaw/cli-core': '0.1.81' } });
 
   const daemonOnly = await collectReleasePackages({ root, packageNames: ['@magclaw/daemon'] });
   const computerOnly = await collectReleasePackages({ root, packageNames: ['@magclaw/computer'] });
-  const teamSharingOnly = await collectReleasePackages({ root, packageNames: ['team-sharing'] });
+  const teamSharingOnly = await collectReleasePackages({ root, packageNames: ['@magclaw/team-sharing'] });
 
   assert.deepEqual(daemonOnly.map((pkg) => `${pkg.name}@${pkg.version}`), ['@magclaw/daemon@0.1.82']);
   assert.deepEqual(computerOnly.map((pkg) => `${pkg.name}@${pkg.version}`), ['@magclaw/computer@0.1.83']);
-  assert.deepEqual(teamSharingOnly.map((pkg) => `${pkg.name}@${pkg.version}`), ['team-sharing@0.1.84']);
+  assert.deepEqual(teamSharingOnly.map((pkg) => `${pkg.name}@${pkg.version}`), ['@magclaw/team-sharing@0.1.84']);
 });
 
 test('collect release packages rejects team-sharing when its cli-core dependency is stale', async () => {
@@ -69,11 +69,11 @@ test('collect release packages rejects team-sharing when its cli-core dependency
   await writePackage(root, 'cli-core', { name: '@magclaw/cli-core', version: '0.1.90' });
   await writePackage(root, 'daemon', { name: '@magclaw/daemon', version: '0.1.90', dependencies: { '@magclaw/cli-core': '0.1.90' } });
   await writePackage(root, 'computer', { name: '@magclaw/computer', version: '0.1.90', dependencies: { '@magclaw/cli-core': '0.1.90' } });
-  await writePackage(root, 'team-sharing', { name: 'team-sharing', version: '0.1.90', dependencies: { '@magclaw/cli-core': '0.1.89' } });
+  await writePackage(root, 'team-sharing', { name: '@magclaw/team-sharing', version: '0.1.90', dependencies: { '@magclaw/cli-core': '0.1.89' } });
 
   await assert.rejects(
     () => collectReleasePackages({ root, packageNames: ['@magclaw/cli-core'] }),
-    /team-sharing depends on @magclaw\/cli-core@0\.1\.89, expected 0\.1\.90/,
+    /@magclaw\/team-sharing depends on @magclaw\/cli-core@0\.1\.89, expected 0\.1\.90/,
   );
 });
 
@@ -82,7 +82,7 @@ test('collect release packages allows team-sharing installer patch releases when
   await writePackage(root, 'cli-core', { name: '@magclaw/cli-core', version: '0.1.90' });
   await writePackage(root, 'daemon', { name: '@magclaw/daemon', version: '0.1.90', dependencies: { '@magclaw/cli-core': '0.1.90' } });
   await writePackage(root, 'computer', { name: '@magclaw/computer', version: '0.1.90', dependencies: { '@magclaw/cli-core': '0.1.90' } });
-  await writePackage(root, 'team-sharing', { name: 'team-sharing', version: '0.1.91', dependencies: { '@magclaw/cli-core': '0.1.90' } });
+  await writePackage(root, 'team-sharing', { name: '@magclaw/team-sharing', version: '0.1.91', dependencies: { '@magclaw/cli-core': '0.1.90' } });
 
   const packages = await collectReleasePackages({ root, packageNames: ['@magclaw/cli-core'] });
 
@@ -90,7 +90,7 @@ test('collect release packages allows team-sharing installer patch releases when
     '@magclaw/cli-core@0.1.90',
     '@magclaw/daemon@0.1.90',
     '@magclaw/computer@0.1.90',
-    'team-sharing@0.1.91',
+    '@magclaw/team-sharing@0.1.91',
   ]);
 });
 
