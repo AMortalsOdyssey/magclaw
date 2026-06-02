@@ -56,6 +56,51 @@ async function ensureOfflineComputerConnectCommand() {
   }
 }
 
+async function openTeamSharingWorkspace(messageId = '') {
+  const message = byId(appState?.messages, messageId);
+  const sessionId = typeof teamSharingSessionIdForMessage === 'function' ? teamSharingSessionIdForMessage(message) : '';
+  if (!message || !sessionId) {
+    toast('Team Sharing workspace is unavailable');
+    return;
+  }
+  teamSharingWorkspaceState = {
+    ...teamSharingWorkspaceState,
+    messageId: message.id,
+    sessionId,
+    loading: true,
+    error: '',
+    selectedPath: teamSharingWorkspaceState?.sessionId === sessionId ? (teamSharingWorkspaceState.selectedPath || 'abstract.md') : 'abstract.md',
+    mode: teamSharingWorkspaceState?.mode || 'preview',
+  };
+  render();
+  try {
+    const data = await api(`/api/team-sharing/workspace/${encodeURIComponent(sessionId)}`);
+    if (teamSharingWorkspaceState.sessionId !== sessionId) return;
+    const selectedExists = (data.files || []).some((file) => file.path === teamSharingWorkspaceState.selectedPath);
+    teamSharingWorkspaceState = {
+      ...teamSharingWorkspaceState,
+      loading: false,
+      error: '',
+      data,
+      selectedPath: selectedExists ? teamSharingWorkspaceState.selectedPath : ((data.files || [])[0]?.path || 'abstract.md'),
+    };
+  } catch (error) {
+    teamSharingWorkspaceState = {
+      ...teamSharingWorkspaceState,
+      loading: false,
+      error: error.message || 'Failed to load Team Sharing workspace.',
+      data: null,
+    };
+    console.warn('Failed to load Team Sharing workspace:', error);
+  }
+  render();
+}
+
+function closeTeamSharingWorkspace() {
+  teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: teamSharingWorkspaceState?.mode || 'preview' };
+  render();
+}
+
 async function discardProvisionalPairingComputer(pairingCommand = latestPairingCommand) {
   const pendingComputer = pairingCommand?.computer || null;
   if (!pairingCommand?.provisional || !pendingComputer?.id) return false;
@@ -1710,6 +1755,9 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'open-thread') {
       threadMessageId = target.dataset.id;
+      if (teamSharingWorkspaceState?.messageId !== threadMessageId) {
+        teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: teamSharingWorkspaceState?.mode || 'preview' };
+      }
       mobileHomeOpen = false;
       workspaceActivityDrawerOpen = false;
       inspectorReturnThreadId = null;
@@ -1739,6 +1787,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'close-thread') {
       threadMessageId = null;
       selectedSavedRecordId = null;
+      teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: teamSharingWorkspaceState?.mode || 'preview' };
       render();
       refreshThreadSelection(null, { loadReplies: false });
     }
@@ -1752,6 +1801,9 @@ document.addEventListener('click', async (event) => {
         mobileHomeOpen = false;
         activeTab = 'chat';
         threadMessageId = message.id;
+        if (teamSharingWorkspaceState?.messageId !== threadMessageId) {
+          teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: teamSharingWorkspaceState?.mode || 'preview' };
+        }
         workspaceActivityDrawerOpen = false;
         selectedTaskId = null;
         markThreadRead(message.id);
@@ -1759,6 +1811,29 @@ document.addEventListener('click', async (event) => {
         refreshThreadSelection(message.id);
         scrollToMessage(message.id);
       }
+    }
+    if (action === 'open-team-sharing-workspace') {
+      await openTeamSharingWorkspace(target.dataset.id || threadMessageId);
+    }
+    if (action === 'close-team-sharing-workspace') {
+      closeTeamSharingWorkspace();
+    }
+    if (action === 'open-team-sharing-workspace-file') {
+      const path = target.dataset.path || '';
+      if (path) {
+        teamSharingWorkspaceState = {
+          ...teamSharingWorkspaceState,
+          selectedPath: path,
+        };
+        render();
+      }
+    }
+    if (action === 'set-team-sharing-workspace-preview-mode') {
+      teamSharingWorkspaceState = {
+        ...teamSharingWorkspaceState,
+        mode: target.dataset.mode === 'raw' ? 'raw' : 'preview',
+      };
+      render();
     }
 	    if (action === 'back-to-bottom') {
 	      const targetPane = target.dataset.target === 'thread' ? '#thread-context' : '#message-list';

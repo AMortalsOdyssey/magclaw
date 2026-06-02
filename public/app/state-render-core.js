@@ -90,6 +90,7 @@ let messageShareState = { active: false, selectedIds: [], scope: 'all', threadRo
 let sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
 let attachmentPreviewState = { attachmentId: null, loading: false, content: '', error: '' };
 let externalImportContextState = { recordId: null };
+let teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: 'preview' };
 let modal = null;
 let agentStartState = { agentId: null };
 let agentRestartState = { agentId: null, mode: 'restart' };

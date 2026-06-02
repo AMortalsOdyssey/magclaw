@@ -160,6 +160,10 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     '## Topics Index',
     ...topics.map((topic) => `- [${topic.title || topic.topicId}](topics/${topic.topicId}/overview.md) - ${topic.overview}`),
     '',
+    '## Workspace Files',
+    '- [Activities](activities.md) - 每次同步与摘要更新的审计记录。',
+    '- [Original Context](details/original-context.md) - L2 原文锚点与动态上下文页入口。',
+    '',
     '## Source Anchors',
     ...sourceEventIds.map((eventId) => `- ${session.sessionId}#${eventId}`),
   ].join('\n');
@@ -221,7 +225,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     });
   }
   if (acceptedEvents.length) {
-    const changedPaths = ['abstract.md', ...topics.map((topic) => `topics/${topic.topicId}/overview.md`)];
+    const changedPaths = ['abstract.md', 'activities.md', 'details/original-context.md', ...topics.map((topic) => `topics/${topic.topicId}/overview.md`)];
     teamSharingState.activities.push({
       activityId: `act_${stableHash(`${session.sessionId}:${updatedAt}:${acceptedEvents.length}`)}`,
       sessionId: session.sessionId,

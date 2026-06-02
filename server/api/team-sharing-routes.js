@@ -368,6 +368,122 @@ function shareRootDeniedHtml(status = 401, message = '') {
   );
 }
 
+function teamSharingWorkspaceFile(path = '', content = '', extra = {}) {
+  const cleanPath = String(path || '').trim();
+  const name = cleanPath.split('/').filter(Boolean).at(-1) || cleanPath;
+  return {
+    path: cleanPath,
+    name,
+    kind: 'file',
+    previewKind: 'markdown',
+    bytes: Buffer.byteLength(String(content || ''), 'utf8'),
+    content,
+    ...extra,
+  };
+}
+
+function teamSharingWorkspaceFolder(path = '', name = '') {
+  const cleanPath = String(path || '').trim();
+  return {
+    path: cleanPath,
+    name: name || cleanPath.split('/').filter(Boolean).at(-1) || cleanPath,
+    kind: 'folder',
+  };
+}
+
+function sourceContextUrlForEvent(sessionId = '', eventId = '') {
+  const params = new URLSearchParams();
+  if (eventId) params.set('anchorEventId', eventId);
+  return `/team-sharing/context/${encodeURIComponent(sessionId)}${params.toString() ? `?${params.toString()}` : ''}`;
+}
+
+function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
+  const session = teamSharingState.sessions?.[sessionId];
+  const abstract = teamSharingState.abstracts?.[sessionId];
+  if (!session || !abstract) return null;
+  const events = asArray(teamSharingState.events?.[sessionId])
+    .slice()
+    .sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0) || String(left.createdAt || '').localeCompare(String(right.createdAt || '')));
+  const activities = asArray(teamSharingState.activities)
+    .filter((activity) => activity.sessionId === sessionId)
+    .slice()
+    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')));
+  const topics = Object.values(abstract.topics || {})
+    .sort((left, right) => String(left.title || left.topicId || '').localeCompare(String(right.title || right.topicId || '')));
+  const files = [
+    teamSharingWorkspaceFile('abstract.md', abstract.abstractMarkdown || ''),
+    teamSharingWorkspaceFile('activities.md', [
+      '# Activities',
+      '',
+      activities.length
+        ? activities.map((activity) => `- ${activity.createdAt || ''} - ${activity.summary || ''}${activity.changedPaths?.length ? ` (${activity.changedPaths.join(', ')})` : ''}`).join('\n')
+        : 'No activity recorded yet.',
+    ].join('\n')),
+    ...topics.map((topic) => teamSharingWorkspaceFile(`topics/${topic.topicId}/overview.md`, topic.overviewMarkdown || `# ${topic.title || topic.topicId}\n\n${topic.overview || ''}`, {
+      topicId: topic.topicId,
+      sourceEventIds: asArray(topic.sourceEventIds),
+    })),
+    teamSharingWorkspaceFile('details/original-context.md', [
+      '# Original Context',
+      '',
+      'L2 原文通过动态上下文页按锚点分段读取，避免一次性加载长会话。',
+      '',
+      '## Anchors',
+      ...(events.length
+        ? events.map((event) => `- [${event.ordinal || ''} · ${event.role || ''} · ${event.createdAt || ''}](${sourceContextUrlForEvent(sessionId, event.eventId)}) - ${compactText(event.cleanText || event.text || '', 140)}`)
+        : ['- No source events recorded yet.']),
+    ].join('\n')),
+  ];
+  const folders = [
+    teamSharingWorkspaceFolder('topics', 'topics'),
+    teamSharingWorkspaceFolder('details', 'details'),
+  ];
+  return {
+    ok: true,
+    session: {
+      sessionId,
+      messageId: session.messageId || '',
+      title: session.title || '',
+      runtime: session.runtime || '',
+      projectKey: session.projectKey || '',
+      workspaceId: session.workspaceId || '',
+      channelId: session.channelId || '',
+      abstractRevision: session.abstractRevision || abstract.revision || 0,
+      indexStatus: session.indexStatus || '',
+      updatedAt: abstract.updatedAt || session.updatedAt || '',
+      eventCount: events.length,
+      activityCount: activities.length,
+      topicCount: topics.length,
+    },
+    tree: [
+      teamSharingWorkspaceFile('abstract.md', '', { bytes: files.find((file) => file.path === 'abstract.md')?.bytes || 0, content: undefined }),
+      teamSharingWorkspaceFile('activities.md', '', { bytes: files.find((file) => file.path === 'activities.md')?.bytes || 0, content: undefined }),
+      folders[0],
+      ...topics.map((topic) => teamSharingWorkspaceFile(`topics/${topic.topicId}/overview.md`, '', {
+        bytes: files.find((file) => file.path === `topics/${topic.topicId}/overview.md`)?.bytes || 0,
+        content: undefined,
+      })),
+      folders[1],
+      teamSharingWorkspaceFile('details/original-context.md', '', { bytes: files.find((file) => file.path === 'details/original-context.md')?.bytes || 0, content: undefined }),
+    ],
+    files,
+    activities,
+  };
+}
+
+function teamSharingWorkspaceAccess({ actor, tokenRecord, session } = {}) {
+  const sessionWorkspaceId = String(session?.workspaceId || '').trim();
+  const actorWorkspaceId = String(actor?.member?.workspaceId || '').trim();
+  if (actorWorkspaceId) {
+    return !sessionWorkspaceId || sessionWorkspaceId === 'local' || actorWorkspaceId === sessionWorkspaceId;
+  }
+  const tokenWorkspaceId = String(tokenRecord?.workspaceId || '').trim();
+  if (tokenWorkspaceId) {
+    return !sessionWorkspaceId || sessionWorkspaceId === 'local' || tokenWorkspaceId === sessionWorkspaceId;
+  }
+  return !sessionWorkspaceId || sessionWorkspaceId === 'local';
+}
+
 function sendContextHtml(res, {
   sessionId = '',
   anchorEventId = '',
@@ -868,6 +984,29 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       queryId: url.searchParams.get('queryId') || '',
       sourceRef: url.searchParams.get('sourceRef') || '',
     });
+    return true;
+  }
+
+  const workspaceMatch = url.pathname.match(/^\/api\/team-sharing\/workspace\/([^/]+)$/);
+  if (req.method === 'GET' && workspaceMatch) {
+    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
+    const tokenRecord = tokenRecordForRequest(teamSharingState, req);
+    const sessionId = decodeURIComponent(workspaceMatch[1]);
+    const workspace = buildTeamSharingWorkspace(teamSharingState, sessionId);
+    if (!workspace) {
+      sendError(res, 404, 'Team sharing workspace not found.');
+      return true;
+    }
+    if (!teamSharingWorkspaceAccess({ actor, tokenRecord, session: workspace.session })) {
+      sendError(res, 403, 'This Team Sharing workspace belongs to another server.');
+      return true;
+    }
+    addSystemEvent('team_sharing_workspace_read', `Team sharing workspace read: ${compactText(workspace.session.title || sessionId, 90)}`, {
+      workspaceId,
+      sessionId,
+      messageId: workspace.session.messageId,
+    });
+    sendJson(res, 200, workspace);
     return true;
   }
 

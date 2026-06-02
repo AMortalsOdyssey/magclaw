@@ -1053,6 +1053,124 @@ function renderWorkspaceActivityDrawer() {
   `;
 }
 
+function teamSharingSessionIdForMessage(message = {}) {
+  if (message?.metadata?.systemKind !== 'team_sharing_session') return '';
+  return String(message.metadata?.teamSharing?.sessionId || '').trim();
+}
+
+function teamSharingWorkspaceOpenFor(message = {}) {
+  const sessionId = teamSharingSessionIdForMessage(message);
+  return Boolean(sessionId && teamSharingWorkspaceState?.messageId === message.id && teamSharingWorkspaceState?.sessionId === sessionId);
+}
+
+function teamSharingWorkspaceFile(path = '') {
+  const files = teamSharingWorkspaceState?.data?.files || [];
+  return files.find((file) => file.path === path) || null;
+}
+
+function renderTeamSharingWorkspaceTree(message) {
+  const data = teamSharingWorkspaceState?.data;
+  if (teamSharingWorkspaceState?.loading && !data) return '<div class="project-tree-note">Loading workspace...</div>';
+  if (teamSharingWorkspaceState?.error) return `<div class="project-tree-note error">${escapeHtml(teamSharingWorkspaceState.error)}</div>`;
+  const entries = data?.tree || [];
+  if (!entries.length) return '<div class="project-tree-note">No workspace files yet.</div>';
+  return `
+    <div class="project-tree-list agent-workspace-tree team-sharing-workspace-tree">
+      ${entries.map((entry) => {
+        const isFolder = entry.kind === 'folder';
+        const active = !isFolder && teamSharingWorkspaceState.selectedPath === entry.path;
+        const depth = String(entry.path || '').split('/').length - 1;
+        return `
+          <div class="project-tree-node">
+            <button
+              type="button"
+              class="project-tree-row ${isFolder ? 'is-folder' : 'is-file'} ${active ? 'active' : ''}"
+              style="--depth: ${Math.max(0, depth)}"
+              ${isFolder ? 'disabled' : `data-action="open-team-sharing-workspace-file" data-id="${escapeHtml(message.id)}" data-path="${escapeHtml(entry.path)}"`}
+              title="${escapeHtml(entry.path)}"
+            >
+              <span class="project-tree-caret">${isFolder ? '▾' : '·'}</span>
+              <span class="project-tree-icon">${isFolder ? 'DIR' : 'FILE'}</span>
+              <span class="project-tree-name">${escapeHtml(entry.name || entry.path)}</span>
+              ${!isFolder ? `<small>${bytes(entry.bytes || 0)}</small>` : ''}
+            </button>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderTeamSharingWorkspacePreview() {
+  const data = teamSharingWorkspaceState?.data;
+  if (teamSharingWorkspaceState?.loading && !data) {
+    return '<div class="agent-workspace-preview empty"><div class="empty-box small">Loading workspace...</div></div>';
+  }
+  if (teamSharingWorkspaceState?.error) {
+    return `<div class="agent-workspace-preview empty"><div class="empty-box small error">${escapeHtml(teamSharingWorkspaceState.error)}</div></div>`;
+  }
+  const selectedPath = teamSharingWorkspaceState?.selectedPath || 'abstract.md';
+  const file = teamSharingWorkspaceFile(selectedPath) || data?.files?.[0] || null;
+  const mode = teamSharingWorkspaceState?.mode === 'raw' ? 'raw' : 'preview';
+  if (!file) {
+    return '<div class="agent-workspace-preview empty"><div class="empty-box small">Select a file to preview.</div></div>';
+  }
+  return `
+    <div class="agent-workspace-preview team-sharing-workspace-preview">
+      <div class="agent-workspace-filebar">
+        <span>${escapeHtml(file.path)}</span>
+        <div class="agent-workspace-file-actions">
+          <button type="button" class="${mode === 'raw' ? 'active' : ''}" data-action="set-team-sharing-workspace-preview-mode" data-mode="raw">Raw</button>
+          <button type="button" class="${mode === 'preview' ? 'active' : ''}" data-action="set-team-sharing-workspace-preview-mode" data-mode="preview">Preview</button>
+          <button type="button" data-action="close-team-sharing-workspace">×</button>
+        </div>
+      </div>
+      ${teamSharingWorkspaceState?.loading ? '<div class="empty-box small">Refreshing workspace...</div>' : ''}
+      <div class="file-preview-meta">
+        <strong title="${escapeHtml(file.path)}">${escapeHtml(file.name || file.path)}</strong>
+        <small>${escapeHtml(teamSharingWorkspaceState?.data?.session?.title || 'Team Sharing Session')} / ${bytes(file.bytes || 0)}</small>
+      </div>
+      ${mode === 'preview'
+        ? `<div class="markdown-preview">${renderMarkdown(file.content || '')}</div>`
+        : `<pre class="text-file-preview"><code>${escapeHtml(file.content || '')}</code></pre>`}
+    </div>
+  `;
+}
+
+function renderTeamSharingWorkspacePanel(message) {
+  const session = teamSharingWorkspaceState?.data?.session || {};
+  const meta = [
+    session.runtime,
+    session.projectKey,
+    session.abstractRevision ? `rev ${session.abstractRevision}` : '',
+    session.indexStatus,
+  ].filter(Boolean).join(' · ');
+  return `
+    <div class="agent-workspace-tab team-sharing-workspace-tab">
+      <div class="agent-workspace-path">
+        <div class="agent-workspace-path-main">
+          <code title="${escapeHtml(teamSharingSessionIdForMessage(message))}">${escapeHtml(session.title || message.body || 'Team Sharing Workspace')}</code>
+          <span class="agent-workspace-source-badge mirror" title="Cloud Team Sharing workspace">Team Sharing</span>
+        </div>
+        <button type="button" data-action="open-team-sharing-workspace" data-id="${escapeHtml(message.id)}">Refresh</button>
+      </div>
+      ${meta ? `<div class="file-preview-meta team-sharing-workspace-meta"><small>${escapeHtml(meta)} · ${Number(session.eventCount || 0)} events · ${Number(session.topicCount || 0)} topics</small></div>` : ''}
+      <div class="agent-workspace-layout">
+        <aside class="agent-workspace-sidebar">
+          <div class="agent-workspace-sidebar-title">
+            <span>Workspace</span>
+            <button type="button" data-action="open-team-sharing-workspace" data-id="${escapeHtml(message.id)}">↻</button>
+          </div>
+          ${renderTeamSharingWorkspaceTree(message)}
+        </aside>
+        <section class="agent-workspace-viewer">
+          ${renderTeamSharingWorkspacePreview()}
+        </section>
+      </div>
+    </div>
+  `;
+}
+
 function renderThreadDrawer(message) {
   const replies = threadReplies(message.id);
   const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
@@ -1065,6 +1183,8 @@ function renderThreadDrawer(message) {
     : `${totalReplies} ${replyWord}`;
   const replyDividerLabel = pageInfo?.hasMore ? 'Scroll up for earlier replies' : 'Beginning of replies';
   const canReply = message.spaceType !== 'channel' || currentUserIsChannelMember(message.spaceId);
+  const teamSharingSessionId = teamSharingSessionIdForMessage(message);
+  const teamSharingWorkspaceOpen = teamSharingWorkspaceOpenFor(message);
   return `
     <section class="pixel-panel inspector-panel thread-drawer">
       <div class="thread-head">
@@ -1073,6 +1193,7 @@ function renderThreadDrawer(message) {
           <span>${escapeHtml(spaceName(message.spaceType, message.spaceId))}</span>
         </div>
         <div class="thread-head-actions">
+          ${teamSharingSessionId ? `<button type="button" data-action="open-team-sharing-workspace" data-id="${escapeHtml(message.id)}">${teamSharingWorkspaceOpen ? 'Refresh workspace' : 'Workspace'}</button>` : ''}
           <button type="button" data-action="view-in-channel" data-id="${message.id}">View in channel</button>
           <button class="icon-btn small" type="button" data-action="close-thread" aria-label="Close thread">×</button>
         </div>
@@ -1083,6 +1204,7 @@ function renderThreadDrawer(message) {
             ${renderMessage(message, { compact: true })}
           </div>
           ${task ? renderTaskLifecycle(task) : ''}
+          ${teamSharingWorkspaceOpen ? renderTeamSharingWorkspacePanel(message) : ''}
           <div class="thread-reply-divider">
             <span>${replyDividerLabel}</span>
             <strong>${replyCountText}</strong>

@@ -23,3 +23,18 @@ test('left rail exposes a bottom Team Shares entry that jumps to the share root'
   assert.match(clickSource, /currentServerSlug/);
   assert.match(clickSource, /window\.location\.assign\(`\/s\/\$\{serverSlug\}\/share`\)/);
 });
+
+test('thread drawer exposes Team Sharing workspace files for session messages', async () => {
+  const app = await readAppSource();
+  const drawerSource = app.slice(app.indexOf('function renderThreadDrawer('), app.indexOf('function renderTaskLifecycle('));
+  const clickSource = app.slice(app.indexOf('async function openTeamSharingWorkspace('), app.indexOf('async function discardProvisionalPairingComputer('));
+
+  assert.match(app, /function teamSharingSessionIdForMessage/);
+  assert.match(drawerSource, /teamSharingSessionIdForMessage\(message\)/);
+  assert.match(drawerSource, /data-action="open-team-sharing-workspace"/);
+  assert.match(drawerSource, /renderTeamSharingWorkspacePanel\(message\)/);
+  assert.match(app, /data-action="open-team-sharing-workspace-file"/);
+  assert.match(app, /data-action="set-team-sharing-workspace-preview-mode"/);
+  assert.match(clickSource, /\/api\/team-sharing\/workspace\/\$\{encodeURIComponent\(sessionId\)\}/);
+  assert.match(app, /team-sharing-workspace-preview/);
+});

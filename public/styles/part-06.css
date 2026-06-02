@@ -283,6 +283,58 @@
   background: var(--magclaw-cream);
 }
 
+.thread-drawer .team-sharing-workspace-tab {
+  margin: 10px 0 12px;
+  border: 1px solid var(--workspace-line-strong);
+  background: #fff;
+}
+
+.thread-drawer .team-sharing-workspace-tab .agent-workspace-layout {
+  grid-template-columns: minmax(150px, 0.36fr) minmax(0, 1fr);
+  max-height: 460px;
+  border-top: 1px solid var(--workspace-line-strong);
+}
+
+.thread-drawer .team-sharing-workspace-tab .agent-workspace-sidebar,
+.thread-drawer .team-sharing-workspace-tab .agent-workspace-viewer,
+.thread-drawer .team-sharing-workspace-tab .agent-workspace-preview {
+  min-height: 0;
+}
+
+.thread-drawer .team-sharing-workspace-tab .project-tree-row {
+  min-height: 32px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.thread-drawer .team-sharing-workspace-tab .project-tree-name {
+  overflow-wrap: anywhere;
+}
+
+.thread-drawer .team-sharing-workspace-tab .markdown-preview,
+.thread-drawer .team-sharing-workspace-tab .text-file-preview {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.thread-drawer .team-sharing-workspace-meta {
+  padding: 6px 10px;
+  border-top: 1px solid var(--workspace-line-strong);
+}
+
+@media (max-width: 720px) {
+  .thread-drawer .team-sharing-workspace-tab .agent-workspace-layout {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
+
+  .thread-drawer .team-sharing-workspace-tab .agent-workspace-sidebar {
+    max-height: 190px;
+    border-right: 0;
+    border-bottom: 1px solid var(--workspace-line-strong);
+  }
+}
+
 .agent-dm-row {
   display: grid;
   gap: 4px;
