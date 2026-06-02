@@ -410,17 +410,23 @@ test('team sharing route creates a public share and serves it without authentica
   assert.equal(publicRes.statusCode, 200);
   assert.match(publicRes.headers['content-type'], /text\/html/);
   assert.match(publicRes.headers['content-security-policy'], /sandbox/);
-  assert.match(publicRes.body, /MagClaw QuickShare/);
+  assert.match(publicRes.body, /Team Shares/);
   assert.match(publicRes.body, /<h1>Rerank 方案摘要<\/h1>/);
   assert.match(publicRes.body, /团队结论/);
   assert.match(publicRes.body, /Created by Ada PM/);
-  assert.match(publicRes.body, /2026-06-01T10:00:00.000Z/);
+  assert.match(publicRes.body, /2026年06月01日 18:00:00/);
 
   deps.state.teamSharing.shares.push({
     ...deps.state.teamSharing.shares[0],
     id: 'share_other_server',
     workspaceId: 'ws_other',
     title: 'Other server share',
+  });
+  deps.state.teamSharing.shares.push({
+    ...deps.state.teamSharing.shares[0],
+    id: 'share_manual_channel',
+    channelPath: 'testing/manual-upload',
+    title: 'Manual channel share',
   });
 
   const rejectedIndex = makeResponse();
@@ -449,14 +455,21 @@ test('team sharing route creates a public share and serves it without authentica
     deps,
   ), true);
   assert.equal(indexRes.statusCode, 200);
-  assert.match(indexRes.body, /Share Root/);
-  assert.match(indexRes.body, /Channel/);
-  assert.match(indexRes.body, /feishu:\/\/docs\/team\/channel\/product-sharing/);
-  assert.match(indexRes.body, /Project/);
-  assert.match(indexRes.body, /magclaw/);
+  assert.match(indexRes.body, /Team Shares/);
+  assert.match(indexRes.body, /<details class="share-channel" open>/);
+  assert.match(indexRes.body, /share-channel-caret/);
+  assert.match(indexRes.body, /# product-sharing/);
+  assert.match(indexRes.body, /# testing/);
+  assert.doesNotMatch(indexRes.body, /Share Root/);
+  assert.doesNotMatch(indexRes.body, /Server-level share root/);
+  assert.doesNotMatch(indexRes.body, /feishu:\/\/docs\/team\/channel\/product-sharing/);
+  assert.doesNotMatch(indexRes.body, /Project/);
+  assert.doesNotMatch(indexRes.body, /manual-upload/);
   assert.match(indexRes.body, /Rerank 方案摘要/);
+  assert.match(indexRes.body, /Manual channel share/);
   assert.match(indexRes.body, new RegExp(`/s/${shareId}`));
   assert.doesNotMatch(indexRes.body, /Other server share/);
+  assert.match(indexRes.body, /2026年06月01日 18:00:00/);
 });
 
 test('team sharing route serves a dynamic context html page without creating static files', async () => {

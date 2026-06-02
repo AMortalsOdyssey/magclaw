@@ -79,9 +79,9 @@ function shareUrl(req, shareId = '') {
   return `${publicUrlFromRequest(req)}/s/${encodeURIComponent(shareId)}`;
 }
 
-function creatorFromActor(actor = {}) {
+function creatorFromActor(actor = {}, tokenRecord = null) {
   const member = actor?.member || {};
-  const user = actor?.user || actor?.human || {};
+  const user = actor?.user || actor?.human || tokenRecord?.user || {};
   const id = String(member.humanId || user.id || 'hum_local').trim();
   const displayName = String(member.name || user.name || member.email || user.email || id || 'Unknown creator').trim();
   return {
@@ -91,9 +91,28 @@ function creatorFromActor(actor = {}) {
   };
 }
 
+function formatChinaDateTime(value = '') {
+  const date = new Date(value || '');
+  if (!Number.isFinite(date.getTime())) return String(value || '').trim();
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date).reduce((memo, part) => {
+    if (part.type !== 'literal') memo[part.type] = part.value;
+    return memo;
+  }, {});
+  return `${parts.year}年${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
 function shareFooterHtml(share = {}) {
   const creator = share.creator?.name || share.createdByName || share.createdBy || 'Unknown creator';
-  const createdAt = share.createdAt || '';
+  const createdAt = formatChinaDateTime(share.createdAt || '');
   return `<footer class="magclaw-share-footer">Created by ${htmlEscape(creator)}${createdAt ? ` · ${htmlEscape(createdAt)}` : ''}</footer>`;
 }
 
@@ -170,7 +189,7 @@ function shareChromeHtml(share = {}, innerHtml = '') {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${htmlEscape(share.title || 'MagClaw QuickShare')}</title>
+  <title>${htmlEscape(share.title || 'Team Shares')}</title>
   <style>
     :root { color-scheme: light; --ink:#14212b; --muted:#64748b; --line:#d9e2e5; --bg:#f8fafc; --panel:#fff; --accent:#0891b2; }
     * { box-sizing:border-box; }
@@ -185,24 +204,28 @@ function shareChromeHtml(share = {}, innerHtml = '') {
     code { font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; }
     a { color:var(--accent); }
     svg { max-width:100%; height:auto; }
-    .share-root-intro { color:var(--muted); margin:0 0 22px; }
-    .share-folder { border-top:1px solid var(--line); padding-top:18px; margin-top:22px; }
-    .share-folder h2 { display:flex; gap:8px; align-items:baseline; margin:0 0 10px; font-size:20px; }
-    .share-folder h2 small, .share-project h3 small { color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; }
-    .share-project { margin:14px 0 0; padding-left:14px; border-left:3px solid #b7e4ea; }
-    .share-project h3 { display:flex; gap:8px; align-items:baseline; margin:0 0 8px; font-size:16px; }
-    .share-entry { padding:10px 0; border-top:1px dashed var(--line); }
-    .share-entry:first-of-type { border-top:0; }
-    .share-entry h4 { margin:0 0 4px; font-size:15px; }
-    .share-entry p { color:var(--muted); font-size:14px; }
-    .share-entry small { color:var(--muted); }
+    .share-channel { border-top:1px solid var(--line); padding-top:14px; margin-top:16px; }
+    .share-channel:first-of-type { border-top:0; padding-top:0; margin-top:0; }
+    .share-channel summary { list-style:none; display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; font-size:20px; font-weight:800; line-height:1.2; }
+    .share-channel summary::-webkit-details-marker { display:none; }
+    .share-channel-caret { display:inline-grid; place-items:center; width:16px; height:16px; color:var(--accent); transform:rotate(0deg); transition:transform .18s ease; }
+    .share-channel[open] .share-channel-caret { transform:rotate(90deg); }
+    .share-channel-count { color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; }
+    .share-channel-content { display:grid; gap:10px; padding:12px 0 2px 24px; }
+    .share-channel[open] .share-channel-content { animation:share-channel-open .18s ease; }
+    .share-entry { display:block; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#fff; text-decoration:none; color:inherit; transition:border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
+    .share-entry:hover, .share-entry:focus-visible { border-color:var(--accent); box-shadow:0 8px 22px rgba(8,145,178,.11); transform:translateY(-1px); outline:0; }
+    .share-entry h2 { margin:0 0 5px; font-size:15px; color:var(--accent); }
+    .share-entry p { color:var(--muted); font-size:14px; margin:0 0 8px; }
+    .share-entry small { color:var(--muted); display:block; }
     .magclaw-share-footer { max-width:900px; margin:24px auto 0; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+    @keyframes share-channel-open { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
   </style>
 </head>
 <body>
   <main>
     <section class="shell">
-      <div class="brand">MagClaw QuickShare</div>
+      <div class="brand">Team Shares</div>
       ${innerHtml}
     </section>
     ${shareFooterHtml(share)}
@@ -251,42 +274,41 @@ function shareChannelFolderLabel(share = {}) {
   return String(share.channelPath || share.channelId || 'Unconfigured Channel').trim();
 }
 
-function shareProjectFolderLabel(share = {}) {
-  return String(share.projectKey || 'Unconfigured Project').trim();
+function displayShareChannelName(value = '') {
+  const raw = String(value || 'Unconfigured Channel').trim();
+  const parts = raw
+    .replace(/^[a-z][a-z0-9-]*:\/\//i, '')
+    .split(/[/>]+/g)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !/^(manual[-_\s]?upload|manual|upload)$/i.test(part));
+  return parts.at(-1) || raw;
 }
 
 function renderShareIndexHtml(shares = []) {
   const grouped = new Map();
   for (const share of shares.slice().reverse()) {
-    const channel = shareChannelFolderLabel(share);
-    const project = shareProjectFolderLabel(share);
-    if (!grouped.has(channel)) grouped.set(channel, new Map());
-    const projects = grouped.get(channel);
-    if (!projects.has(project)) projects.set(project, []);
-    projects.get(project).push(share);
+    const channel = displayShareChannelName(shareChannelFolderLabel(share));
+    if (!grouped.has(channel)) grouped.set(channel, []);
+    grouped.get(channel).push(share);
   }
-  const folders = [...grouped.entries()].map(([channel, projects]) => `
-    <section class="share-folder">
-      <h2><small>Channel</small> ${htmlEscape(channel)}</h2>
-      ${[...projects.entries()].map(([project, items]) => `
-        <div class="share-project">
-          <h3><small>Project</small> ${htmlEscape(project)}</h3>
-          ${items.map((share) => `
-            <article class="share-entry">
-              <h4><a href="/s/${encodeURIComponent(share.id)}">${htmlEscape(share.title || share.id)}</a></h4>
-              <p>${htmlEscape(compactText(share.description || share.content || '', 180))}</p>
-              <small>${htmlEscape(share.contentType || 'artifact')} · Created by ${htmlEscape(share.creator?.name || 'Unknown creator')} · ${htmlEscape(share.createdAt || '')}</small>
-            </article>
-          `).join('')}
-        </div>
-      `).join('')}
-    </section>
+  const folders = [...grouped.entries()].map(([channel, items]) => `
+    <details class="share-channel" open>
+      <summary><span class="share-channel-caret">▸</span><span># ${htmlEscape(channel)}</span><span class="share-channel-count">${items.length}</span></summary>
+      <div class="share-channel-content">
+        ${items.map((share) => `
+          <a class="share-entry" href="/s/${encodeURIComponent(share.id)}">
+            <h2>${htmlEscape(share.title || share.id)}</h2>
+            <p>${htmlEscape(compactText(share.description || share.content || '', 180))}</p>
+            <small>${htmlEscape(share.contentType || 'artifact')} · 创建者 ${htmlEscape(share.creator?.name || 'Unknown creator')} · ${htmlEscape(formatChinaDateTime(share.createdAt || ''))}</small>
+          </a>
+        `).join('')}
+      </div>
+    </details>
   `).join('\n') || '<p>No shared pages yet.</p>';
   return shareChromeHtml(
-    { title: 'MagClaw Share Root', creator: { name: 'MagClaw' }, createdAt: '' },
-    `<h1>MagClaw Share Root</h1>
-    <p class="share-root-intro">Server-level share root. Shares are grouped by the configured Channel path and project key.</p>
-    ${folders}`,
+    { title: 'Team Shares', creator: { name: 'MagClaw' }, createdAt: '' },
+    folders,
   );
 }
 
@@ -329,7 +351,7 @@ function sharesForShareRoot(teamSharingState = {}, workspaceId = '') {
 function shareRootDeniedHtml(status = 401, message = '') {
   const title = status === 403 ? 'Server access required' : 'Sign in required';
   return shareChromeHtml(
-    { title: 'MagClaw Share Root', creator: { name: 'MagClaw' }, createdAt: '' },
+    { title: 'Team Shares', creator: { name: 'MagClaw' }, createdAt: '' },
     `<h1>${htmlEscape(title)}</h1><p>${htmlEscape(message || 'Join this server before opening the MagClaw share root.')}</p>`,
   );
 }
@@ -727,7 +749,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const shareId = decodeURIComponent(publicShareMatch[1] || '');
     const share = ensureTeamSharingShares(teamSharingState).find((item) => item.id === shareId && item.revokedAt == null);
     if (!share) {
-      sendShareHtml(res, shareChromeHtml({ title: 'MagClaw QuickShare' }, '<h1>Shared page not found</h1><p>This MagClaw share link may have been removed.</p>'), { status: 404 });
+      sendShareHtml(res, shareChromeHtml({ title: 'Team Shares' }, '<h1>Shared page not found</h1><p>This MagClaw share link may have been removed.</p>'), { status: 404 });
       return true;
     }
     sendShareHtml(res, renderShareHtml(share));
@@ -751,6 +773,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/team-sharing/shares') {
     if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
+    const tokenRecord = tokenRecordForRequest(teamSharingState, req);
     const body = await readJson(req);
     const content = String(body.content || body.markdown || body.html || body.svg || body.mermaid || '');
     if (!content.trim()) {
@@ -773,7 +796,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       description: compactText(body.description || content, 260),
       contentType: normalizeShareContentType(body.contentType || body.type, content),
       content,
-      creator: creatorFromActor(actor),
+      creator: creatorFromActor(actor, tokenRecord),
       source: body.source && typeof body.source === 'object' ? body.source : {},
       public: true,
       createdAt,

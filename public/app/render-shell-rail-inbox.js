@@ -302,7 +302,7 @@ function renderRail() {
       ${renderLeftRailButton('members', railMode, 'Members', '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>')}
       ${renderLeftRailButton('desktop', railMode, 'Computers', '<rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8"/><path d="M12 17v4"/>', packageUpdateCount ? '!' : '')}
       <span class="left-rail-spacer"></span>
-      ${renderLeftRailButton('share-root', railMode, 'Knowledge Hub', '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v18H6.5A2.5 2.5 0 0 0 4 18.5z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v18h4.5A2.5 2.5 0 0 1 20 18.5z"/><path d="M8 8h1.5"/><path d="M15.5 8H17"/><path d="M18 12h2"/><path d="M19 11v2"/><path d="M15.5 15.5h1.5"/><circle cx="8.5" cy="15.5" r="1.5"/>')}
+      ${renderLeftRailButton('share-root', railMode, 'Team Shares', '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v18H6.5A2.5 2.5 0 0 0 4 18.5z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v18h4.5A2.5 2.5 0 0 1 20 18.5z"/><path d="M8 8h1.5"/><path d="M15.5 8H17"/><path d="M18 12h2"/><path d="M19 11v2"/><path d="M15.5 15.5h1.5"/><circle cx="8.5" cy="15.5" r="1.5"/>')}
       ${renderLeftRailButton('console', railMode, 'Console', '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 8h8"/><path d="M8 12h4"/><path d="M14 12h2"/><path d="M8 16h8"/>')}
       ${renderAccountRailButton(railMode)}
     </div>

@@ -11,13 +11,13 @@ async function readAppSource() {
   return [app, ...chunkSources].join('\n');
 }
 
-test('left rail exposes a bottom Knowledge Hub entry that jumps to the share root', async () => {
+test('left rail exposes a bottom Team Shares entry that jumps to the share root', async () => {
   const app = await readAppSource();
   const railSource = app.slice(app.indexOf('function renderRail('), app.indexOf('function accountRailInitial('));
   const clickSource = app.slice(app.indexOf("if (action === 'set-left-nav')"), app.indexOf("if (action === 'select-agent')"));
 
   assert.match(railSource, /left-rail-spacer/);
-  assert.match(railSource, /renderLeftRailButton\('share-root', railMode, 'Knowledge Hub'/);
+  assert.match(railSource, /renderLeftRailButton\('share-root', railMode, 'Team Shares'/);
   assert.match(app, /data-nav="\$\{escapeHtml\(nav\)\}"/);
   assert.match(clickSource, /nav === 'share-root'/);
   assert.match(clickSource, /window\.location\.assign\('\/share'\)/);
