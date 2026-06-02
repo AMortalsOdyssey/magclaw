@@ -114,6 +114,15 @@ test('team sharing route syncs a batch and search returns reranked top results',
   const deps = routeDeps({
     readJson: async () => syncBody(),
     indexTeamSharingDocuments: async ({ documents }) => indexed.push(...documents),
+    summarizeSession: async () => ({
+      l0: '云端权威摘要：Team Sharing 先做 Zilliz 召回，再进行 rerank，并把原文打开行为写入 feedback。',
+      topics: [{
+        topicId: 'rerank-feedback',
+        title: 'rerank-feedback',
+        overview: '基于云端 LLM 摘要生成的 rerank 与反馈闭环说明。',
+        sourceEventIds: ['evt_1', 'evt_2'],
+      }],
+    }),
   });
   const syncRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -126,6 +135,7 @@ test('team sharing route syncs a batch and search returns reranked top results',
   assert.equal(syncRes.data.appendedEventCount, 2);
   assert.equal(deps.persistCalls[0].workspaceId, 'ws_route');
   assert.ok(indexed.some((doc) => doc.layer === 'L0' && doc.sessionId === 'sess_route'));
+  assert.ok(indexed.some((doc) => doc.layer === 'L0' && /云端权威摘要/.test(doc.text || '')));
   assert.ok(indexed.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback'));
 
   const searchRes = makeResponse();

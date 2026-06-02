@@ -1835,12 +1835,12 @@ function teamSharingApiDeps() {
       const expected = process.env.MAGCLAW_TEAM_SHARING_SYNC_TOKEN || '';
       return safeTokenEqual(bearerToken(req), expected);
     },
-    vectorSearch: async ({ query, channelId, projectKey, dateRange, limit, actor }) => {
+    vectorSearch: async ({ query, channelId, projectKey, dateRange, limit, actor, workspaceId }) => {
       try {
         const embedded = await embeddingClient.embed(query || '');
         return zillizClient.search({
           queryVector: embedded.embedding,
-          workspaceId: workspaceIdFromActor(actor),
+          workspaceId: workspaceId || workspaceIdFromActor(actor),
           channelId,
           projectKey,
           dateRange,

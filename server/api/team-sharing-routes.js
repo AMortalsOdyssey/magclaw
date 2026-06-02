@@ -669,6 +669,17 @@ function actorWorkspaceId(actor, state) {
   return String(actor?.member?.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local').trim();
 }
 
+function requestWorkspaceId({ actor = null, tokenRecord = null, state = {}, fallback = '' } = {}) {
+  return String(
+    actor?.member?.workspaceId
+      || tokenRecord?.workspaceId
+      || fallback
+      || state.connection?.workspaceId
+      || state.cloud?.workspace?.id
+      || 'local',
+  ).trim();
+}
+
 function actorHumanId(actor) {
   return String(actor?.member?.humanId || actor?.human?.id || 'hum_local').trim();
 }
@@ -739,6 +750,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     rerankReady = null,
     sendError,
     sendJson,
+    summarizeSession = null,
     teamSharingAuthRequired = null,
     validTeamSharingToken = null,
     vectorSearch = null,
@@ -919,6 +931,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
     const tokenRecord = tokenRecordForRequest(teamSharingState, req);
     const body = await readJson(req);
+    const effectiveWorkspaceId = requestWorkspaceId({ actor, tokenRecord, state, fallback: body.workspaceId || workspaceId });
     const content = String(body.content || body.markdown || body.html || body.svg || body.mermaid || '');
     if (!content.trim()) {
       sendError(res, 400, 'Share content is required.');
@@ -932,7 +945,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const shareId = typeof makeId === 'function' ? makeId('share') : randomToken('share');
     const share = {
       id: shareId,
-      workspaceId: String(body.workspaceId || workspaceId || '').trim(),
+      workspaceId: effectiveWorkspaceId,
       channelId: String(body.channelId || '').trim(),
       channelPath: String(body.channelPath || '').trim(),
       projectKey: String(body.projectKey || '').trim(),
@@ -1012,15 +1025,18 @@ export async function handleTeamSharingApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/team-sharing/sync') {
     if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
+    const tokenRecord = tokenRecordForRequest(teamSharingState, req);
     const body = await readJson(req);
+    const effectiveWorkspaceId = requestWorkspaceId({ actor, tokenRecord, state, fallback: body.workspaceId || workspaceId });
     const result = await syncTeamSharingBatch({
       ...body,
-      workspaceId: body.workspaceId || workspaceId,
-      humanId: body.humanId || actorHumanId(actor),
+      workspaceId: effectiveWorkspaceId,
+      humanId: body.humanId || actorHumanId(actor) || tokenRecord?.user?.id || '',
     }, {
       state,
       makeId,
       now,
+      summarizeSession,
     });
     if (!result.ok) {
       sendError(res, result.code === 'channel_not_found' ? 404 : 400, result.error || 'Team sharing sync failed.');
@@ -1031,7 +1047,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         .filter((doc) => doc.sessionId === result.sessionId && doc.active !== false);
       try {
         const indexed = await indexTeamSharingDocuments({
-          workspaceId,
+          workspaceId: effectiveWorkspaceId,
           sessionId: result.sessionId,
           documents,
           teamSharingState: state.teamSharing || {},
@@ -1041,19 +1057,19 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         result.indexedDocumentCount = 0;
         result.indexError = 'Team sharing vector indexing failed.';
         addSystemEvent('team_sharing_index_error', 'Team sharing vector indexing failed.', {
-          workspaceId,
+          workspaceId: effectiveWorkspaceId,
           sessionId: result.sessionId,
           message: String(error?.message || error).slice(0, 300),
         });
       }
     }
     addSystemEvent('team_sharing_sync', `Team sharing synced ${result.appendedEventCount} event(s).`, {
-      workspaceId,
+      workspaceId: effectiveWorkspaceId,
       sessionId: result.sessionId,
       messageId: result.messageId,
       duplicate: result.duplicate,
     });
-    await persistState({ workspaceId, reason: 'team_sharing_sync' });
+    await persistState({ workspaceId: effectiveWorkspaceId, reason: 'team_sharing_sync' });
     broadcastState();
     sendJson(res, result.duplicate ? 200 : 202, result);
     return true;
@@ -1061,7 +1077,9 @@ export async function handleTeamSharingApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/team-sharing/search') {
     if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
+    const tokenRecord = tokenRecordForRequest(teamSharingState, req);
     const body = await readJson(req);
+    const effectiveWorkspaceId = requestWorkspaceId({ actor, tokenRecord, state, fallback: body.workspaceId || workspaceId });
     const limit = Math.max(1, Math.min(20, Number(body.limit || 5)));
     const candidateK = Math.max(limit, Math.min(200, Number(body.candidateK || 40)));
     if (typeof zillizReady === 'function' && !zillizReady()) {
@@ -1077,6 +1095,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         dateRange: body.dateRange || null,
         limit: candidateK,
         actor,
+        workspaceId: effectiveWorkspaceId,
       })
       : localVectorSearch({
         teamSharingState,
@@ -1103,8 +1122,8 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     });
     for (const item of ranked.results) {
       applyTeamSharingFeedback(teamSharingState, {
-        workspaceId,
-        actorId: actorHumanId(actor),
+        workspaceId: effectiveWorkspaceId,
+        actorId: actorHumanId(actor) || tokenRecord?.user?.id || '',
         queryId: ranked.queryId,
         vectorDocumentId: item.vectorDocumentId,
         sessionId: item.sessionId,
@@ -1114,12 +1133,12 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       });
     }
     addSystemEvent('team_sharing_search', `Team sharing searched: ${compactText(body.query || '', 90)}`, {
-      workspaceId,
+      workspaceId: effectiveWorkspaceId,
       queryId: ranked.queryId,
       resultCount: ranked.results.length,
       candidateCount: vector.candidates?.length || 0,
     });
-    await persistState({ workspaceId, reason: 'team_sharing_search' });
+    await persistState({ workspaceId: effectiveWorkspaceId, reason: 'team_sharing_search' });
     sendJson(res, 200, {
       ok: true,
       queryId: ranked.queryId,

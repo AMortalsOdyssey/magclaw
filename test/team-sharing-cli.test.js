@@ -75,11 +75,18 @@ test('team sharing cli init treats signed MagClaw channel paths as channelPath, 
   }, env);
   const yaml = await readFile(path.join(cwd, '.magclaw', 'team-sharing.yaml'), 'utf8');
   const parsed = normalizeTeamSharingProjectConfig(parseTeamSharingYaml(yaml));
+  const legacyBlankId = normalizeTeamSharingProjectConfig(parseTeamSharingYaml([
+    'version: 1',
+    'channel:',
+    '  id:',
+    '  path: mc://magclaw/server/ws_team/channel/chan_team?key=route-key',
+  ].join('\n')));
 
   assert.match(yaml, /id: ""/);
   assert.match(yaml, /path: mc:\/\/magclaw\/server\/ws_team\/channel\/chan_team\?key=route-key/);
   assert.equal(parsed.channelId, '');
   assert.equal(parsed.channelPath, 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key');
+  assert.equal(legacyBlankId.channelId, '');
 });
 
 test('team sharing cli login stores scoped token in user profile only', async () => {
@@ -487,6 +494,46 @@ test('team sharing cli uploads an artifact share and returns a public link', asy
     assert.match(calls[0].body.content, /先召回/);
     assert.equal(calls[0].body.projectKey, 'magclaw');
     assert.equal(calls[0].body.channelId, 'chan_team');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing cli infers artifact title and type from local documents', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-infer-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-infer-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+  const artifact = path.join(cwd, 'discussion.md');
+  await writeFile(artifact, '# 团队分享总结\n\n这是一份 Markdown 文档。');
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init, body: JSON.parse(init.body || '{}') });
+    return {
+      ok: true,
+      json: async () => ({ ok: true, shareId: 'share_infer', url: 'https://magclaw.example/s/share_infer' }),
+    };
+  };
+  try {
+    const result = await shareTeamSharingArtifact({ file: artifact, cwd }, env);
+    assert.equal(result.ok, true);
+    assert.equal(calls[0].body.title, '团队分享总结');
+    assert.equal(calls[0].body.contentType, 'markdown');
+    assert.equal(calls[0].body.channelPath, 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key');
+    assert.equal(calls[0].body.channelId, '');
   } finally {
     globalThis.fetch = originalFetch;
   }

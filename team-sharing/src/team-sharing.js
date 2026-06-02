@@ -102,7 +102,9 @@ function parseScalar(value = '') {
 export function parseTeamSharingYaml(text = '') {
   const root = {};
   const stack = [{ indent: -1, value: root }];
-  for (const rawLine of String(text || '').split(/\r?\n/)) {
+  const lines = String(text || '').split(/\r?\n/);
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const rawLine = lines[lineIndex];
     if (!rawLine.trim() || rawLine.trimStart().startsWith('#')) continue;
     const match = rawLine.match(/^(\s*)([^:]+):(.*)$/);
     if (!match) continue;
@@ -112,9 +114,21 @@ export function parseTeamSharingYaml(text = '') {
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
     const parent = stack[stack.length - 1].value;
     if (!rest) {
-      const child = {};
-      parent[key] = child;
-      stack.push({ indent, value: child });
+      let hasChild = false;
+      for (let nextIndex = lineIndex + 1; nextIndex < lines.length; nextIndex += 1) {
+        const nextLine = lines[nextIndex];
+        if (!nextLine.trim() || nextLine.trimStart().startsWith('#')) continue;
+        const nextMatch = nextLine.match(/^(\s*)([^:]+):(.*)$/);
+        hasChild = Boolean(nextMatch && nextMatch[1].length > indent);
+        break;
+      }
+      if (hasChild) {
+        const child = {};
+        parent[key] = child;
+        stack.push({ indent, value: child });
+      } else {
+        parent[key] = '';
+      }
     } else {
       parent[key] = parseScalar(rest);
     }
@@ -636,6 +650,29 @@ function inferShareArtifactType(explicit = '', filePath = '') {
   return 'markdown';
 }
 
+function stripHtmlForTitle(value = '') {
+  return String(value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function pickShareArtifactTitle(content = '', sourceType = 'markdown', filePath = '') {
+  const text = String(content || '');
+  if (sourceType === 'html') {
+    const title = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+      || text.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+    if (title) return stripHtmlForTitle(title);
+  }
+  if (sourceType === 'svg') {
+    const title = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+    if (title) return stripHtmlForTitle(title);
+  }
+  if (sourceType === 'markdown' || sourceType === 'mermaid') {
+    const heading = text.match(/^#\s+(.+)$/m)?.[1];
+    if (heading) return heading.replace(/\s+/g, ' ').trim();
+  }
+  const fallback = filePath ? path.basename(filePath, path.extname(filePath)) : '';
+  return fallback || 'MagClaw shared page';
+}
+
 export async function shareTeamSharingArtifact(flags = {}, env = process.env) {
   const fileArg = String(flags.file || flags.path || flags.artifact || flags._?.[1] || '').trim();
   const inlineContent = flags.content ?? flags.markdown ?? flags.html ?? '';
@@ -646,7 +683,8 @@ export async function shareTeamSharingArtifact(flags = {}, env = process.env) {
   const filePath = fileArg ? path.resolve(cwd, fileArg) : '';
   const content = filePath ? await readFile(filePath, 'utf8') : String(inlineContent);
   const { project, serverUrl, token } = await resolveTeamSharingClient(flags, env);
-  const title = String(flags.title || flags.name || (filePath ? path.basename(filePath) : 'MagClaw shared page')).trim() || 'MagClaw shared page';
+  const contentType = inferShareArtifactType(flags.type || flags.contentType, filePath);
+  const title = String(flags.title || flags.name || pickShareArtifactTitle(content, contentType, filePath)).trim() || 'MagClaw shared page';
   return teamSharingRequestJson({
     serverUrl,
     token,
@@ -655,7 +693,7 @@ export async function shareTeamSharingArtifact(flags = {}, env = process.env) {
     body: {
       title,
       description: flags.description || '',
-      contentType: inferShareArtifactType(flags.type || flags.contentType, filePath),
+      contentType,
       content,
       workspaceId: flags.workspaceId || project.config.workspaceId || '',
       channelId: flags.channelId || project.config.channelId || '',
