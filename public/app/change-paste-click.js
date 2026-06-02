@@ -1006,6 +1006,10 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'set-left-nav') {
       const nav = target.dataset.nav || 'chat';
+      if (nav === 'share-root') {
+        window.location.assign('/share');
+        return;
+      }
       if (nav !== 'members' && railTab === 'members') rememberMembersLayoutFromCurrent();
       if (nav === 'chat') {
         railTab = 'spaces';

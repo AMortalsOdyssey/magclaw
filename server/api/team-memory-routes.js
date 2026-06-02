@@ -185,6 +185,17 @@ function shareChromeHtml(share = {}, innerHtml = '') {
     code { font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; }
     a { color:var(--accent); }
     svg { max-width:100%; height:auto; }
+    .share-root-intro { color:var(--muted); margin:0 0 22px; }
+    .share-folder { border-top:1px solid var(--line); padding-top:18px; margin-top:22px; }
+    .share-folder h2 { display:flex; gap:8px; align-items:baseline; margin:0 0 10px; font-size:20px; }
+    .share-folder h2 small, .share-project h3 small { color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; }
+    .share-project { margin:14px 0 0; padding-left:14px; border-left:3px solid #b7e4ea; }
+    .share-project h3 { display:flex; gap:8px; align-items:baseline; margin:0 0 8px; font-size:16px; }
+    .share-entry { padding:10px 0; border-top:1px dashed var(--line); }
+    .share-entry:first-of-type { border-top:0; }
+    .share-entry h4 { margin:0 0 4px; font-size:15px; }
+    .share-entry p { color:var(--muted); font-size:14px; }
+    .share-entry small { color:var(--muted); }
     .magclaw-share-footer { max-width:900px; margin:24px auto 0; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
   </style>
 </head>
@@ -236,13 +247,47 @@ function sendShareHtml(res, body, { status = 200 } = {}) {
   res.end?.(body);
 }
 
+function shareChannelFolderLabel(share = {}) {
+  return String(share.channelPath || share.channelId || 'Unconfigured Channel').trim();
+}
+
+function shareProjectFolderLabel(share = {}) {
+  return String(share.projectKey || 'Unconfigured Project').trim();
+}
+
 function renderShareIndexHtml(shares = []) {
-  const rows = shares.slice().reverse().map((share) => `<article>
-    <h2><a href="/s/${encodeURIComponent(share.id)}">${htmlEscape(share.title || share.id)}</a></h2>
-    <p>${htmlEscape(compactText(share.description || share.content || '', 180))}</p>
-    <small>${htmlEscape(share.contentType || 'artifact')} · Created by ${htmlEscape(share.creator?.name || 'Unknown creator')} · ${htmlEscape(share.createdAt || '')}</small>
-  </article>`).join('\n') || '<p>No shared pages yet.</p>';
-  return shareChromeHtml({ title: 'MagClaw QuickShare Index', creator: { name: 'MagClaw' }, createdAt: '' }, `<h1>MagClaw QuickShare</h1>\n${rows}`);
+  const grouped = new Map();
+  for (const share of shares.slice().reverse()) {
+    const channel = shareChannelFolderLabel(share);
+    const project = shareProjectFolderLabel(share);
+    if (!grouped.has(channel)) grouped.set(channel, new Map());
+    const projects = grouped.get(channel);
+    if (!projects.has(project)) projects.set(project, []);
+    projects.get(project).push(share);
+  }
+  const folders = [...grouped.entries()].map(([channel, projects]) => `
+    <section class="share-folder">
+      <h2><small>Channel</small> ${htmlEscape(channel)}</h2>
+      ${[...projects.entries()].map(([project, items]) => `
+        <div class="share-project">
+          <h3><small>Project</small> ${htmlEscape(project)}</h3>
+          ${items.map((share) => `
+            <article class="share-entry">
+              <h4><a href="/s/${encodeURIComponent(share.id)}">${htmlEscape(share.title || share.id)}</a></h4>
+              <p>${htmlEscape(compactText(share.description || share.content || '', 180))}</p>
+              <small>${htmlEscape(share.contentType || 'artifact')} · Created by ${htmlEscape(share.creator?.name || 'Unknown creator')} · ${htmlEscape(share.createdAt || '')}</small>
+            </article>
+          `).join('')}
+        </div>
+      `).join('')}
+    </section>
+  `).join('\n') || '<p>No shared pages yet.</p>';
+  return shareChromeHtml(
+    { title: 'MagClaw Share Root', creator: { name: 'MagClaw' }, createdAt: '' },
+    `<h1>MagClaw Share Root</h1>
+    <p class="share-root-intro">Server-level share root. Shares are grouped by the configured Channel path and project key.</p>
+    ${folders}`,
+  );
 }
 
 function sendContextHtml(res, {

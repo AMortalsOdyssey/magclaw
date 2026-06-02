@@ -380,6 +380,8 @@ test('team memory route creates a public share and serves it without authenticat
       title: 'Rerank 方案摘要',
       contentType: 'markdown',
       content: '# Rerank 方案摘要\n\n团队结论：先召回，再重排，最后记录反馈。',
+      channelPath: 'feishu://docs/team/channel/product-memory',
+      projectKey: 'magclaw',
     }),
   });
   const createRes = makeResponse();
@@ -421,6 +423,11 @@ test('team memory route creates a public share and serves it without authenticat
     { ...deps, currentActor: () => null, teamMemoryAuthRequired: () => true },
   ), true);
   assert.equal(indexRes.statusCode, 200);
+  assert.match(indexRes.body, /Share Root/);
+  assert.match(indexRes.body, /Channel/);
+  assert.match(indexRes.body, /feishu:\/\/docs\/team\/channel\/product-memory/);
+  assert.match(indexRes.body, /Project/);
+  assert.match(indexRes.body, /magclaw/);
   assert.match(indexRes.body, /Rerank 方案摘要/);
   assert.match(indexRes.body, new RegExp(`/s/${shareId}`));
 });
