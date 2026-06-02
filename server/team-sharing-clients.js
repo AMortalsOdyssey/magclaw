@@ -17,10 +17,13 @@ async function readJsonResponse(response) {
     const text = await response.text().catch(() => '');
     return text ? { error: text } : {};
   });
-  if (!response.ok) {
+  const apiCode = data?.code;
+  const apiFailed = apiCode !== undefined && apiCode !== null && Number(apiCode) !== 0;
+  if (!response.ok || apiFailed) {
     const message = data?.error?.message || data?.error || data?.message || `${response.status} ${response.statusText}`;
     const error = new Error(String(message));
     error.status = response.status;
+    if (apiFailed) error.code = apiCode;
     throw error;
   }
   return data;
@@ -223,37 +226,85 @@ export function createZillizTeamSharingClient(options = {}) {
     if (!endpoint) throw new Error('Zilliz endpoint is not configured.');
     return `${endpoint}${pathname}`;
   }
+  async function zillizRequest(pathname, body = {}) {
+    const response = await fetchImpl(endpointUrl(pathname), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    return readJsonResponse(response);
+  }
+  function commonBody() {
+    return {
+      dbName: database,
+      collectionName: collection,
+    };
+  }
+  function ignorableZillizError(error, pattern) {
+    const message = String(error?.message || error || '').toLowerCase();
+    return pattern.test(message);
+  }
+  async function ensureVectorIndex() {
+    try {
+      await zillizRequest('/v2/vectordb/indexes/create', {
+        ...commonBody(),
+        indexParams: [
+          {
+            metricType: 'COSINE',
+            fieldName: 'vector',
+            indexName: 'vector',
+            indexConfig: {
+              index_type: 'AUTOINDEX',
+            },
+          },
+        ],
+      });
+    } catch (error) {
+      if (!ignorableZillizError(error, /already|exist|duplicate/)) throw error;
+    }
+  }
+  async function collectionLoadState() {
+    try {
+      const data = await zillizRequest('/v2/vectordb/collections/get_load_state', commonBody());
+      return String(data?.data?.loadState || data?.data?.state || data?.loadState || data?.state || '');
+    } catch {
+      return '';
+    }
+  }
+  async function ensureCollectionLoaded() {
+    const state = await collectionLoadState();
+    if (/^(LoadStateLoaded|Loaded)$/i.test(state)) return;
+    try {
+      await zillizRequest('/v2/vectordb/collections/load', commonBody());
+    } catch (error) {
+      if (!ignorableZillizError(error, /already|loaded/)) throw error;
+    }
+  }
   return {
     async search({ queryVector = [], workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', dateRange = null, limit = 40 } = {}) {
       const filter = buildZillizFilter({ workspaceId, channelId, projectKey, sessionId, layer, dateRange });
-      const response = await fetchImpl(endpointUrl('/v2/vectordb/entities/search'), {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          dbName: database,
-          collectionName: collection,
-          data: [queryVector],
-          annsField: 'vector',
-          limit,
-          outputFields: [
-            'vector_document_id',
-            'workspace_id',
-            'channel_id',
-            'project_key',
-            'runtime',
-            'session_id',
-            'topic_id',
-            'layer',
-            'title',
-            'text',
-            'source_ref',
-            'updated_at',
-            'hotness',
-          ],
-          ...(filter ? { filter } : {}),
-        }),
+      const data = await zillizRequest('/v2/vectordb/entities/search', {
+        ...commonBody(),
+        data: [queryVector],
+        annsField: 'vector',
+        limit,
+        outputFields: [
+          'vector_document_id',
+          'workspace_id',
+          'channel_id',
+          'project_key',
+          'runtime',
+          'session_id',
+          'topic_id',
+          'layer',
+          'title',
+          'text',
+          'source_ref',
+          'updated_at',
+          'hotness',
+        ],
+        ...(filter ? { filter } : {}),
       });
-      const data = await readJsonResponse(response);
       return {
         ok: true,
         candidates: flattenZillizRows(data).map(zillizCandidate).filter((item) => item.vectorDocumentId),
@@ -262,16 +313,10 @@ export function createZillizTeamSharingClient(options = {}) {
     async upsertDocuments({ documents = [], embeddings = [] } = {}) {
       const data = asArray(documents).map((document, index) => documentEntity(document, embeddings[index] || document.vector || []));
       if (!data.length) return { ok: true, count: 0 };
-      const response = await fetchImpl(endpointUrl('/v2/vectordb/entities/upsert'), {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          dbName: database,
-          collectionName: collection,
-          data,
-        }),
+      const result = await zillizRequest('/v2/vectordb/entities/upsert', {
+        ...commonBody(),
+        data,
       });
-      const result = await readJsonResponse(response);
       return {
         ok: true,
         count: Number(result?.data?.upsertCount || result?.data?.insertCount || data.length),
@@ -279,19 +324,14 @@ export function createZillizTeamSharingClient(options = {}) {
     },
     async ensureCollection({ dimension = 0 } = {}) {
       const collectionDimension = Number(dimension || configuredDimension || 1536);
-      const describe = await fetchImpl(endpointUrl('/v2/vectordb/collections/describe'), {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ dbName: database, collectionName: collection }),
-      });
-      const described = await describe.json().catch(() => ({}));
-      if (describe.ok && Number(described?.code || 0) === 0) return { ok: true, existed: true, dimension: collectionDimension };
-      const create = await fetchImpl(endpointUrl('/v2/vectordb/collections/create'), {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          dbName: database,
-          collectionName: collection,
+      let existed = true;
+      try {
+        await zillizRequest('/v2/vectordb/collections/describe', commonBody());
+      } catch (error) {
+        if (!ignorableZillizError(error, /not found|not exist|collection.*not/)) throw error;
+        existed = false;
+        await zillizRequest('/v2/vectordb/collections/create', {
+          ...commonBody(),
           schema: {
             autoID: false,
             enableDynamicField: true,
@@ -312,10 +352,11 @@ export function createZillizTeamSharingClient(options = {}) {
               { fieldName: 'hotness', dataType: 'Double' },
             ],
           },
-        }),
-      });
-      await readJsonResponse(create);
-      return { ok: true, existed: false, dimension: collectionDimension };
+        });
+      }
+      await ensureVectorIndex();
+      await ensureCollectionLoaded();
+      return { ok: true, existed, dimension: collectionDimension };
     },
   };
 }

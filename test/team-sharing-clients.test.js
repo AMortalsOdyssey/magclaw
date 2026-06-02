@@ -215,6 +215,56 @@ test('zilliz client creates collection with detected native embedding dimension'
   assert.match(calls[1].url, /\/v2\/vectordb\/collections\/create$/);
   const vectorField = calls[1].body.schema.fields.find((field) => field.fieldName === 'vector');
   assert.equal(vectorField.elementTypeParams.dim, 4);
+  assert.match(calls[2].url, /\/v2\/vectordb\/indexes\/create$/);
+  assert.equal(calls[2].body.indexParams[0].fieldName, 'vector');
+  assert.equal(calls[2].body.indexParams[0].metricType, 'COSINE');
+  assert.equal(calls[2].body.indexParams[0].indexConfig.index_type, 'AUTOINDEX');
+  assert.match(calls[3].url, /\/v2\/vectordb\/collections\/get_load_state$/);
+  assert.match(calls[4].url, /\/v2\/vectordb\/collections\/load$/);
+});
+
+test('zilliz client ensures existing collection has a vector index and is loaded', async () => {
+  const calls = [];
+  const client = createZillizTeamSharingClient({
+    endpoint: 'https://zilliz.example',
+    token: 'zilliz-secret',
+    database: 'ai_social_memory',
+    collection: 'magclaw_team_sharing_v1',
+    fetch: async (url, init) => {
+      calls.push({ url, init, body: JSON.parse(init.body) });
+      if (String(url).endsWith('/collections/get_load_state')) {
+        return jsonResponse({ code: 0, data: { loadState: 'LoadStateNotLoaded' } });
+      }
+      return jsonResponse({ code: 0, data: {} });
+    },
+  });
+
+  const result = await client.ensureCollection({ dimension: 4096 });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.existed, true);
+  assert.equal(result.dimension, 4096);
+  assert.deepEqual(calls.map((call) => call.url.replace('https://zilliz.example', '')), [
+    '/v2/vectordb/collections/describe',
+    '/v2/vectordb/indexes/create',
+    '/v2/vectordb/collections/get_load_state',
+    '/v2/vectordb/collections/load',
+  ]);
+});
+
+test('zilliz client treats REST code errors as failures even when HTTP succeeds', async () => {
+  const client = createZillizTeamSharingClient({
+    endpoint: 'https://zilliz.example',
+    token: 'zilliz-secret',
+    database: 'ai_social_memory',
+    collection: 'magclaw_team_sharing_v1',
+    fetch: async () => jsonResponse({ code: 101, message: 'collection not loaded' }),
+  });
+
+  await assert.rejects(
+    () => client.search({ queryVector: [0.1, 0.2, 0.3], limit: 5 }),
+    /collection not loaded/,
+  );
 });
 
 test('team sharing indexing pipeline embeds abstract text before zilliz upsert', async () => {
