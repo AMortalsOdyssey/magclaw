@@ -32,6 +32,16 @@ function normalizeServerUrl(value = '') {
   return String(value || DEFAULT_SERVER_URL).trim().replace(/\/+$/, '') || DEFAULT_SERVER_URL;
 }
 
+function shellQuote(value = '') {
+  return `'${String(value || '').replace(/'/g, "'\\''")}'`;
+}
+
+function teamSharingShimBinDir(flags = {}, env = process.env) {
+  const explicit = String(flags.teamSharingBinDir || flags.binDir || env.MAGCLAW_TEAM_SHARING_BIN_DIR || '').trim();
+  if (explicit) return path.resolve(explicit);
+  return path.join(homeDirForEnv(env), '.local', 'bin');
+}
+
 function normalizeRuntime(value = '') {
   const runtime = String(value || '').trim().toLowerCase();
   if (runtime === 'claude' || runtime === 'claude-code') return 'claude_code';
@@ -139,6 +149,68 @@ async function writeJsonFile(file, value) {
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function teamSharingShimFiles({ npmPath = 'npm', packageSpec = `${TEAM_SHARING_PACKAGE_NAME}@latest` } = {}) {
+  const cleanNpmPath = String(npmPath || 'npm').trim() || 'npm';
+  const cleanPackageSpec = String(packageSpec || `${TEAM_SHARING_PACKAGE_NAME}@latest`).trim() || `${TEAM_SHARING_PACKAGE_NAME}@latest`;
+  return [
+    {
+      name: 'team-sharing',
+      content: [
+        '#!/bin/sh',
+        `exec ${shellQuote(cleanNpmPath)} exec --yes --package ${shellQuote(cleanPackageSpec)} -- team-sharing "$@"`,
+        '',
+      ].join('\n'),
+    },
+    {
+      name: 'team-sharing.cmd',
+      content: [
+        '@echo off',
+        `"${cleanNpmPath}" exec --yes --package "${cleanPackageSpec}" -- team-sharing %*`,
+        '',
+      ].join('\r\n'),
+    },
+  ];
+}
+
+async function writeTeamSharingShimFile(file, content) {
+  let previous = '';
+  try {
+    previous = await readFile(file, 'utf8');
+  } catch {}
+  if (previous === content) {
+    await chmod(file, 0o755).catch(() => {});
+    return { file, changed: false };
+  }
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, content);
+  await chmod(file, 0o755).catch(() => {});
+  return { file, changed: true };
+}
+
+export async function installTeamSharingShim(flags = {}, env = process.env) {
+  if (env.MAGCLAW_TEAM_SHARING_INSTALL_SHIM === '0' || flags.installShim === false || flags.noInstallShim) {
+    return { ok: true, installed: false, skipped: true, reason: 'disabled' };
+  }
+  const binDir = teamSharingShimBinDir(flags, env);
+  const npmPath = String(flags.npmPath || env.MAGCLAW_TEAM_SHARING_NPM_PATH || 'npm').trim() || 'npm';
+  const packageSpec = String(flags.packageSpec || flags.teamSharingPackageSpec || env.MAGCLAW_TEAM_SHARING_PACKAGE_SPEC || `${TEAM_SHARING_PACKAGE_NAME}@latest`).trim() || `${TEAM_SHARING_PACKAGE_NAME}@latest`;
+  const files = [];
+  for (const shim of teamSharingShimFiles({ npmPath, packageSpec })) {
+    files.push(await writeTeamSharingShimFile(path.join(binDir, shim.name), shim.content));
+  }
+  const changed = files.some((file) => file.changed);
+  return {
+    ok: true,
+    command: 'team-sharing',
+    installed: changed,
+    updated: changed,
+    binDir,
+    path: path.join(binDir, process.platform === 'win32' ? 'team-sharing.cmd' : 'team-sharing'),
+    files: files.map((file) => file.file),
+    reason: changed ? 'installed_or_updated' : 'already_current',
+  };
+}
+
 export function teamSharingPaths({ profile = DEFAULT_PROFILE, cwd = process.cwd(), env = process.env } = {}) {
   const home = homeDirForEnv(env);
   const sharingHome = path.resolve(env.MAGCLAW_TEAM_SHARING_HOME || path.join(home, '.magclaw', 'team-sharing'));
@@ -225,7 +297,7 @@ export async function initTeamSharingProject(flags = {}, env = process.env) {
   const paths = teamSharingPaths({ profile, cwd, env });
   const existing = await readYamlFile(paths.projectConfig, {});
   const channel = String(flags.channel || flags.channelPath || flags.channelId || flags._?.[1] || existing.channel?.path || existing.channel?.id || '').trim();
-  if (!channel) throw new Error('Usage: magclaw team-sharing init --channel <channelPathOrId>');
+  if (!channel) throw new Error('Usage: team-sharing init --channel <channelPathOrId>');
   const channelIsPath = /^(https?|feishu|lark|mc):/i.test(channel);
   const projectKey = String(flags.projectKey || flags.project || existing.project_key || path.basename(cwd)).trim();
   const config = {
@@ -295,7 +367,7 @@ export async function statusTeamSharingProject(flags = {}, env = process.env) {
 export async function setTeamSharingProjectEnabled(flags = {}, env = process.env, enabled = true) {
   const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   const project = await readTeamSharingProjectConfig({ profile, cwd: flags.cwd || process.cwd(), env });
-  if (!project.config) throw new Error('Run `magclaw team-sharing init --channel <channel>` first.');
+  if (!project.config) throw new Error('Run `team-sharing init --channel <channel>` first.');
   project.config.enabled = Boolean(enabled);
   project.config.updated_at = now();
   if (enabled && !project.config.enabled_since) project.config.enabled_since = now();
@@ -407,7 +479,7 @@ export async function whoamiTeamSharingProfile(flags = {}, env = process.env) {
   const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   const { config } = await readTeamSharingProfileConfig(profile, env);
   const token = String(config?.token || env.MAGCLAW_TEAM_SHARING_TOKEN || '').trim();
-  if (!token) throw new Error('Run `magclaw team-sharing login` first.');
+  if (!token) throw new Error('Run `team-sharing login` first.');
   return teamSharingRequestJson({
     serverUrl: flags.serverUrl || config.server_url || DEFAULT_SERVER_URL,
     token,
@@ -423,7 +495,7 @@ async function resolveTeamSharingClient(flags = {}, env = process.env) {
   const profileName = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   const project = await readTeamSharingProjectConfig({ profile: profileName, cwd: flags.cwd || process.cwd(), env });
   const config = normalizeTeamSharingProjectConfig(project.config);
-  if (!config) throw new Error('Run `magclaw team-sharing init --channel <channel>` in this project first.');
+  if (!config) throw new Error('Run `team-sharing init --channel <channel>` in this project first.');
   const profile = await readTeamSharingProfile(flags.profile || config.profile || DEFAULT_PROFILE, env);
   const token = String(profile.config?.token || env.MAGCLAW_TEAM_SHARING_TOKEN || '').trim();
   return {
@@ -460,7 +532,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
   const transcriptPath = String(flags.transcript || flags.file || flags._?.[1] || '').trim();
   if (!transcriptPath) {
     if (flags.hookEvent) return { ok: true, empty: true, reason: 'missing_transcript_path' };
-    throw new Error('Usage: magclaw team-sharing sync --transcript <path>');
+    throw new Error('Usage: team-sharing sync --transcript <path>');
   }
   const runtime = normalizeRuntime(flags.runtime || 'codex');
   const { project, profile, serverUrl, token } = await resolveTeamSharingClient(flags, env);
@@ -512,7 +584,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
 
 export async function searchTeamSharing(flags = {}, env = process.env) {
   const query = String(flags.query || flags._?.slice(1).join(' ') || '').trim();
-  if (!query) throw new Error('Usage: magclaw team-sharing search --query <text>');
+  if (!query) throw new Error('Usage: team-sharing search --query <text>');
   const { project, serverUrl, token } = await resolveTeamSharingClient(flags, env);
   return teamSharingRequestJson({
     serverUrl,
@@ -532,7 +604,7 @@ export async function searchTeamSharing(flags = {}, env = process.env) {
 
 export async function readTeamSharingContext(flags = {}, env = process.env) {
   const sessionId = String(flags.sessionId || flags.session || flags._?.[1] || '').trim();
-  if (!sessionId) throw new Error('Usage: magclaw team-sharing context --session-id <sessionId>');
+  if (!sessionId) throw new Error('Usage: team-sharing context --session-id <sessionId>');
   const { serverUrl, token } = await resolveTeamSharingClient(flags, env);
   const params = new URLSearchParams();
   if (flags.anchorEventId || flags.anchor) params.set('anchorEventId', String(flags.anchorEventId || flags.anchor));
@@ -562,7 +634,7 @@ export async function shareTeamSharingArtifact(flags = {}, env = process.env) {
   const fileArg = String(flags.file || flags.path || flags.artifact || flags._?.[1] || '').trim();
   const inlineContent = flags.content ?? flags.markdown ?? flags.html ?? '';
   if (!fileArg && !inlineContent) {
-    throw new Error('Usage: magclaw team-sharing share-artifact --file <path> [--title <title>] [--type markdown|html|svg|mermaid]');
+    throw new Error('Usage: team-sharing share-artifact --file <path> [--title <title>] [--type markdown|html|svg|mermaid]');
   }
   const cwd = path.resolve(flags.cwd || process.cwd());
   const filePath = fileArg ? path.resolve(cwd, fileArg) : '';
@@ -645,6 +717,7 @@ export async function installTeamSharingHooks(flags = {}, env = process.env) {
       configPath: targetConfigPath(runtime, flags, env),
       projectDir: cwd,
       integration: TEAM_SHARING_INTEGRATION,
+      teamSharingCommand: flags.teamSharingCommand,
     });
   }
   output.ok = Object.values(output).every((item) => item === true || item?.ok !== false);
@@ -707,11 +780,11 @@ function teamSharingSkillMarkdown() {
     '',
     '## Workflow',
     '',
-    '1. Run `magclaw team-sharing search --query "<question>" --limit 5` from the configured project directory.',
+    '1. Run `team-sharing search --query "<question>" --limit 5` from the configured project directory.',
     '2. Answer from the returned L0/L1 evidence when the user only needs a rough understanding.',
-    '3. For deep follow-up, run `magclaw team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 20`.',
+    '3. For deep follow-up, run `team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 20`.',
     '4. Cite session titles, source refs, and context URLs from the command output.',
-    '5. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `magclaw team-sharing share-artifact --file <path> --title "<title>" --type html`.',
+    '5. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `team-sharing share-artifact --file <path> --title "<title>" --type html`.',
     '6. Return the public URL from the command output. The shared page is public by design and includes the creator and creation time in the footer.',
     '',
     '## Default Share HTML Style',
@@ -807,11 +880,14 @@ export async function setupTeamSharing(flags = {}, env = process.env) {
     await loginTeamSharingProfile(flags, env);
   }
   const project = await initTeamSharingProject(flags, env);
-  const hooks = await installTeamSharingHooks(flags, env);
+  const shim = await installTeamSharingShim(flags, env);
+  const hookFlags = shim.path ? { ...flags, teamSharingCommand: shim.path } : flags;
+  const hooks = await installTeamSharingHooks(hookFlags, env);
   const skill = await installTeamSharingSkill(flags, env);
   return {
-    ok: Boolean(project.ok && hooks.ok && skill.ok),
+    ok: Boolean(project.ok && shim.ok && hooks.ok && skill.ok),
     project,
+    shim,
     hooks,
     skill,
   };

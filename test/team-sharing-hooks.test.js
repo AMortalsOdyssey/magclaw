@@ -10,7 +10,7 @@ import {
   installTeamSharingHookConfig,
   parseTeamSharingTranscript,
   shouldRunTeamSharingHook,
-} from '../cli-core/src/team-sharing-hooks.js';
+} from '../team-sharing/src/team-sharing-hooks.js';
 
 test('team sharing hook parser extracts Codex user and assistant messages while dropping tool output', () => {
   const transcript = [
@@ -119,7 +119,7 @@ test('team sharing hook command and config installer preserve existing hooks', a
     projectDir: '/repo/magclaw',
     transcriptPath: '/tmp/session.jsonl',
   });
-  assert.match(command, /magclaw team-sharing sync/);
+  assert.match(command, /team-sharing sync/);
   assert.match(command, /--runtime codex/);
   assert.match(command, /--transcript/);
   assert.doesNotMatch(command, /\n|secret/);
@@ -134,7 +134,7 @@ test('team sharing hook command and config installer preserve existing hooks', a
 
   assert.equal(result.ok, true);
   assert.equal(installed.hooks.Stop[0].hooks[0].command, 'echo existing');
-  assert.ok(installed.hooks.Stop[0].hooks.some((item) => item.command.includes('magclaw team-sharing sync')));
+  assert.ok(installed.hooks.Stop[0].hooks.some((item) => item.command.includes('team-sharing sync')));
   assert.ok(installed.hooks.PreCompact[0].hooks.some((item) => item.command.includes('--hook-event PreCompact')));
   assert.ok(installed.hooks.SessionStart[0].hooks.some((item) => item.command.includes('--hook-event SessionStart')));
 });

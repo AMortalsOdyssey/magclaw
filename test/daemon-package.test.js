@@ -716,12 +716,26 @@ test('top-level CLI core npm package carries the shared command implementation',
   assert.ok(files.includes('bin/magclaw.js'));
   assert.ok(files.includes('bin/magclaw-daemon.js'));
   assert.ok(files.includes('src/cli.js'));
+  assert.ok(files.includes('src/cli-core/args.js'));
+  assert.ok(files.includes('src/cli-core/team-sharing-delegate.js'));
   assert.ok(files.includes('src/list-renderer.js'));
   assert.ok(files.includes('src/mcp-bridge.js'));
+  assert.equal(files.includes('src/team-sharing.js'), false);
+  assert.equal(files.includes('src/team-sharing-hooks.js'), false);
   assert.equal(files.some((file) => file.startsWith('server/')), false);
   assert.equal(files.some((file) => file.startsWith('public/')), false);
   assert.equal(files.some((file) => file.startsWith('web/')), false);
   assert.equal(files.includes('Dockerfile'), false);
+});
+
+test('CLI core delegates Team Sharing without importing the Team Sharing implementation', async () => {
+  const source = await readFile(new URL('../cli-core/src/cli.js', import.meta.url), 'utf8');
+  const delegate = await readFile(new URL('../cli-core/src/cli-core/team-sharing-delegate.js', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(source, /from ['"]\.\/team-sharing(?:-hooks)?\.js['"]/);
+  assert.match(source, /runExternalTeamSharingCommand\(argv\.slice\(3\), env\)/);
+  assert.match(delegate, /MAGCLAW_TEAM_SHARING_BIN/);
+  assert.match(delegate, /Team Sharing is packaged separately/);
 });
 
 test('top-level computer npm package dry-run excludes cloud server and deployment files', () => {

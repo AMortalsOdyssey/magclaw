@@ -5,13 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  parseCli,
+} from '../team-sharing/src/cli.js';
+import {
   checkTeamSharingUpgrade,
   installTeamSharingHooks,
   installTeamSharingSkill,
   initTeamSharingProject,
   loginTeamSharingProfile,
   logoutTeamSharingProfile,
-  parseCli,
   removeTeamSharingHooks,
   removeTeamSharingSkill,
   readTeamSharingContext,
@@ -23,7 +25,7 @@ import {
   syncTeamSharingTranscript,
   teamSharingPaths,
   whoamiTeamSharingProfile,
-} from '../cli-core/src/cli.js';
+} from '../team-sharing/src/team-sharing.js';
 
 test('team sharing cli init writes project config without storing token in repository', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-project-'));
@@ -301,6 +303,7 @@ test('team sharing cli installs Codex and Claude hook configs without overwritin
 test('team sharing setup installs selected runtimes and hook removal only removes team-sharing entries', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-setup-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-setup-home-'));
+  const binDir = path.join(home, 'bin');
   const env = {
     HOME: home,
     CODEX_HOME: path.join(home, '.codex'),
@@ -317,15 +320,21 @@ test('team sharing setup installs selected runtimes and hook removal only remove
     workspaceId: 'ws_team',
     projectKey: 'magclaw',
     noLogin: true,
+    binDir,
   }, env);
   const hooks = await statusTeamSharingHooks({ cwd, target: 'all' }, env);
   const skill = await statusTeamSharingSkill({ target: 'all' }, env);
   const codexConfig = JSON.parse(await readFile(path.join(home, '.codex', 'hooks.json'), 'utf8'));
+  const shim = await readFile(path.join(binDir, 'team-sharing'), 'utf8');
 
   assert.equal(result.ok, true);
+  assert.equal(result.shim.installed, true);
+  assert.match(shim, /@magclaw\/team-sharing@latest/);
   assert.equal(hooks.codex.installed.length, 3);
   assert.equal(hooks.claude.installed.length, 4);
   assert.equal(skill.installed.length, 2);
+  assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes(path.join(binDir, 'team-sharing'))));
+  assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('team-sharing sync')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--integration team-sharing')));
 
   const removedHooks = await removeTeamSharingHooks({ target: 'codex' }, env);
@@ -485,9 +494,9 @@ test('team sharing cli installs a local skill without writing token into skill f
     const skill = await readFile(path.join(home, '.codex', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8');
 
   assert.equal(result.ok, true);
-  assert.match(skill, /magclaw team-sharing search/);
-  assert.match(skill, /magclaw team-sharing context/);
-  assert.match(skill, /magclaw team-sharing share-artifact/);
+  assert.match(skill, /team-sharing search/);
+  assert.match(skill, /team-sharing context/);
+  assert.match(skill, /team-sharing share-artifact/);
   assert.match(skill, /Default Share HTML Style/);
   assert.match(skill, /deep blue-black technical hero/);
   assert.match(skill, /sticky table of contents/);

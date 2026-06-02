@@ -6,14 +6,12 @@
   "bin": {
     "team-sharing": "bin/team-sharing.js"
   },
-  "dependencies": {
-    "@magclaw/cli-core": "0.1.39"
-  },
   "publishConfig": {
     "access": "public"
   },
   "files": [
     "bin/",
+    "src/",
     "README.md"
   ],
   "engines": {

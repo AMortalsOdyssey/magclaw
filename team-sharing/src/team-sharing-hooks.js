@@ -255,9 +255,9 @@ export function buildTeamSharingHookCommand(options = {}) {
   const runtime = normalizeRuntime(options.runtime);
   const hookEventName = String(options.hookEventName || (runtime === 'claude_code' ? 'SessionEnd' : 'Stop')).trim();
   const transcriptPath = options.transcriptPath || (runtime === 'claude_code' ? '${CLAUDE_TRANSCRIPT_PATH:-}' : '${CODEX_SESSION_FILE:-}');
+  const commandPath = String(options.teamSharingCommand || options.commandPath || 'team-sharing').trim() || 'team-sharing';
   const parts = [
-    'magclaw',
-    'team-sharing',
+    commandPath.includes(' ') ? shellQuote(commandPath) : commandPath,
     'sync',
     '--runtime',
     runtime,
@@ -269,6 +269,15 @@ export function buildTeamSharingHookCommand(options = {}) {
   if (options.integration) parts.push('--integration', String(options.integration).replace(/[^a-zA-Z0-9._-]+/g, '-'));
   if (options.projectDir) parts.push('--cwd', shellQuote(options.projectDir));
   return parts.join(' ');
+}
+
+function isTeamSharingHookCommand(command, runtime, hookEventName) {
+  const text = String(command || '');
+  const hasTeamSharingSync = (text.includes('team-sharing') && text.includes(' sync '))
+    || text.includes('magclaw team-sharing sync');
+  return hasTeamSharingSync
+    && text.includes(`--runtime ${runtime}`)
+    && text.includes(`--hook-event ${hookEventName}`);
 }
 
 function hookEventsForRuntime(runtime) {
@@ -295,10 +304,14 @@ export async function installTeamSharingHookConfig(options = {}) {
     const entries = asArray(config.hooks[hookEventName]);
     const entry = entries[0] || { hooks: [] };
     entry.hooks = asArray(entry.hooks);
-    const exists = entry.hooks.some((hook) => String(hook?.command || '').includes('magclaw team-sharing sync')
-      && String(hook?.command || '').includes(`--runtime ${runtime}`)
-      && String(hook?.command || '').includes(`--hook-event ${hookEventName}`));
-    if (!exists) {
+    const existingHookIndex = entry.hooks.findIndex((hook) => isTeamSharingHookCommand(hook?.command, runtime, hookEventName));
+    if (existingHookIndex >= 0) {
+      entry.hooks[existingHookIndex] = {
+        ...entry.hooks[existingHookIndex],
+        type: entry.hooks[existingHookIndex].type || 'command',
+        command,
+      };
+    } else {
       entry.hooks.push({
         type: 'command',
         command,

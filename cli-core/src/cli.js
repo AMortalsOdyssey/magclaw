@@ -7,56 +7,11 @@ import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, r
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseCli } from './cli-core/args.js';
+import { runExternalTeamSharingCommand } from './cli-core/team-sharing-delegate.js';
 import { renderListProfiles, shouldUseColor } from './list-renderer.js';
-import {
-  checkTeamSharingUpgrade,
-  disableTeamSharingSkill,
-  initTeamSharingProject,
-  installTeamSharingHooks,
-  installTeamSharingSkill,
-  listTeamSharingProjects,
-  loginTeamSharingProfile,
-  logoutTeamSharingProfile,
-  readTeamSharingContext,
-  removeTeamSharingHooks,
-  removeTeamSharingSkill,
-  searchTeamSharing,
-  setTeamSharingProjectEnabled,
-  shareTeamSharingArtifact,
-  setupTeamSharing,
-  statusTeamSharingProject,
-  statusTeamSharingHooks,
-  statusTeamSharingSkill,
-  syncTeamSharingTranscript,
-  teamSharingPaths,
-  unsetTeamSharingProject,
-  whoamiTeamSharingProfile,
-} from './team-sharing.js';
 
-export {
-  checkTeamSharingUpgrade,
-  disableTeamSharingSkill,
-  initTeamSharingProject,
-  installTeamSharingHooks,
-  installTeamSharingSkill,
-  listTeamSharingProjects,
-  loginTeamSharingProfile,
-  logoutTeamSharingProfile,
-  readTeamSharingContext,
-  removeTeamSharingHooks,
-  removeTeamSharingSkill,
-  searchTeamSharing,
-  setTeamSharingProjectEnabled,
-  shareTeamSharingArtifact,
-  setupTeamSharing,
-  statusTeamSharingProject,
-  statusTeamSharingHooks,
-  statusTeamSharingSkill,
-  syncTeamSharingTranscript,
-  teamSharingPaths,
-  unsetTeamSharingProject,
-  whoamiTeamSharingProfile,
-} from './team-sharing.js';
+export { parseCli } from './cli-core/args.js';
 
 export const DEFAULT_PROFILE = 'default';
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
@@ -682,51 +637,6 @@ async function acquireDaemonLock(profile = DEFAULT_PROFILE, config = {}, env = p
   throw new Error(`MagClaw daemon profile "${paths.profile}" is already starting.`);
 }
 
-function parseFlagKey(item) {
-  return item
-    .replace(/^--/, '')
-    .replace(/-([a-z])/g, (_match, char) => char.toUpperCase());
-}
-
-export function parseCli(argv = process.argv) {
-  const args = argv.slice(2);
-  const command = args[0] && !args[0].startsWith('-') ? args.shift() : 'connect';
-  const flags = {};
-  const positionals = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const item = args[index];
-    if (item === '-h') {
-      flags.help = true;
-      continue;
-    }
-    if (item === '-V') {
-      flags.version = true;
-      continue;
-    }
-    if (!item.startsWith('--')) {
-      positionals.push(item);
-      continue;
-    }
-    const equalsIndex = item.indexOf('=');
-    if (equalsIndex > 2) {
-      flags[parseFlagKey(item.slice(0, equalsIndex))] = item.slice(equalsIndex + 1);
-      continue;
-    }
-    const key = parseFlagKey(item);
-    const next = args[index + 1];
-    if (!next || next.startsWith('--')) {
-      flags[key] = true;
-    } else {
-      flags[key] = next;
-      index += 1;
-    }
-  }
-  flags._ = positionals;
-  flags.profileExplicit = Boolean(flags.profile);
-  flags.profile = safeProfileName(flags.profile || process.env.MAGCLAW_DAEMON_PROFILE || DEFAULT_PROFILE);
-  return { command, flags };
-}
-
 function renderHelp() {
   return [
     `MagClaw daemon CLI ${DAEMON_VERSION}`,
@@ -743,9 +653,9 @@ function renderHelp() {
     '  list         List local daemon profiles and connected Computers',
     '  logs         Print recent daemon logs for one profile',
     '  install-cli  Install or repair durable magclaw command shims',
-    '  team-sharing Configure MagClaw Team Sharing setup, login, hooks, and skill',
-    '  skills       Install or manage MagClaw feature skills',
-    '  hooks        Install or manage MagClaw feature hooks',
+    '  team-sharing Delegate to the standalone @magclaw/team-sharing CLI',
+    '  skills       Delegate Team Sharing skill management to @magclaw/team-sharing',
+    '  hooks        Delegate Team Sharing hook management to @magclaw/team-sharing',
     '  upgrade      Upgrade the background daemon package',
     '  doctor       Show runtime and environment diagnostics',
     '  uninstall    Stop and remove the background daemon service',
@@ -6619,133 +6529,6 @@ async function postSetupJson(serverUrl, pathname, body = {}) {
   return data;
 }
 
-async function runTeamSharingCommand(flags = {}, env = process.env) {
-  const subcommand = String(flags._?.[0] || 'help').trim();
-  if (subcommand === 'help' || flags.help) {
-    process.stdout.write([
-      'Usage: magclaw team-sharing <command> [options]',
-      '',
-      'Commands:',
-      '  setup    Configure login, project channel, hooks, and skill',
-      '  login    Browser/device login for scoped team-sharing sync token',
-      '  logout   Revoke and remove the cached Team Sharing token',
-      '  relogin  Force a fresh browser/device login',
-      '  whoami   Show the current Team Sharing identity',
-      '  projects List configured project paths',
-      '  init     Write .magclaw/team-sharing.yaml for this project',
-      '  unset    Remove this project Team Sharing config',
-      '  enable   Enable this project sync',
-      '  disable  Disable this project sync',
-      '  status   Show project/login/hook/skill status',
-      '  doctor   Check local config, server auth, hooks, skill, and upgrade state',
-      '  upgrade  Check npm latest version for team-sharing',
-      '  search   Query shared team sharing',
-      '  context  Read original context around an anchor',
-      '  share-artifact Create a public MagClaw share link from a local file',
-      '  sync     Upload one transcript file',
-      '',
-    ].join('\n'));
-    return;
-  }
-  switch (subcommand) {
-    case 'setup':
-    case 'install':
-      printJson({
-        ...(await setupTeamSharing(flags, env)),
-        cli: flags.noInstallCli ? { ok: true, skipped: true } : await installCliShim(flags, env),
-      });
-      break;
-    case 'login':
-      printJson(await loginTeamSharingProfile(flags, env));
-      break;
-    case 'relogin':
-      await logoutTeamSharingProfile(flags, env);
-      printJson(await loginTeamSharingProfile(flags, env));
-      break;
-    case 'logout':
-      printJson(await logoutTeamSharingProfile(flags, env));
-      break;
-    case 'whoami':
-      printJson(await whoamiTeamSharingProfile(flags, env));
-      break;
-    case 'projects':
-      printJson(await listTeamSharingProjects(flags, env));
-      break;
-    case 'init':
-      printJson(await initTeamSharingProject(flags, env));
-      break;
-    case 'unset':
-      printJson(await unsetTeamSharingProject(flags, env));
-      break;
-    case 'enable':
-      printJson(await setTeamSharingProjectEnabled(flags, env, true));
-      break;
-    case 'disable':
-      printJson(await setTeamSharingProjectEnabled(flags, env, false));
-      break;
-    case 'status':
-      printJson({
-        ok: true,
-        project: await statusTeamSharingProject(flags, env),
-        hooks: await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env),
-        skill: await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env),
-      });
-      break;
-    case 'doctor':
-      printJson({
-        ok: true,
-        project: await statusTeamSharingProject(flags, env),
-        hooks: await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env),
-        skill: await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env),
-        upgrade: await checkTeamSharingUpgrade({ force: Boolean(flags.force) }, env).catch((error) => ({ ok: false, error: error.message })),
-      });
-      break;
-    case 'upgrade':
-      printJson(await checkTeamSharingUpgrade({ force: true }, env));
-      break;
-    case 'search':
-      printJson(await searchTeamSharing(flags, env));
-      break;
-    case 'context':
-      printJson(await readTeamSharingContext(flags, env));
-      break;
-    case 'share':
-    case 'share-artifact':
-    case 'quickshare':
-      printJson(await shareTeamSharingArtifact(flags, env));
-      break;
-    case 'sync':
-      printJson(await syncTeamSharingTranscript({ ...flags, integration: flags.integration || 'team-sharing' }, env));
-      break;
-    default:
-      throw new Error(`Unknown team-sharing command: ${subcommand}`);
-  }
-}
-
-async function runFeatureInstallCommand(kind, flags = {}, env = process.env) {
-  const subcommand = String(flags._?.[0] || 'help').trim();
-  const feature = String(flags.feature || flags.name || flags._?.[1] || 'team-sharing').trim();
-  if (feature !== 'team-sharing' && feature !== 'team-sharing') {
-    throw new Error(`${kind} currently supports --feature team-sharing.`);
-  }
-  if (subcommand === 'help' || flags.help) {
-    process.stdout.write(`Usage: magclaw ${kind} <install|remove|enable|disable|status> --feature team-sharing\n`);
-    return;
-  }
-  if (kind === 'skills') {
-    if (subcommand === 'install' || subcommand === 'enable') printJson(await installTeamSharingSkill(flags, env));
-    else if (subcommand === 'remove') printJson(await removeTeamSharingSkill(flags, env));
-    else if (subcommand === 'disable') printJson(await disableTeamSharingSkill(flags, env));
-    else if (subcommand === 'status') printJson(await statusTeamSharingSkill(flags, env));
-    else throw new Error(`Unknown skills command: ${subcommand}`);
-    return;
-  }
-  if (subcommand === 'install' || subcommand === 'enable') printJson(await installTeamSharingHooks(flags, env));
-  else if (subcommand === 'remove' || subcommand === 'disable') printJson(await removeTeamSharingHooks(flags, env));
-  else if (subcommand === 'status') printJson(await statusTeamSharingHooks(flags, env));
-  else throw new Error(`Unknown hooks command: ${subcommand}`);
-}
-
 function hasComputerTarget(flags = {}) {
   return Boolean(flags.profileExplicit || flags.server || flags.serverSlug || flags.slug || flags._?.[1]);
 }
@@ -7337,13 +7120,13 @@ export async function main(argv = process.argv, env = process.env) {
       await runComputerCommand(flags, env);
       break;
     case 'team-sharing':
-      await runTeamSharingCommand(flags, env);
+      await runExternalTeamSharingCommand(argv.slice(3), env);
       break;
     case 'skills':
-      await runFeatureInstallCommand('skills', flags, env);
+      await runExternalTeamSharingCommand(argv.slice(2), env);
       break;
     case 'hooks':
-      await runFeatureInstallCommand('hooks', flags, env);
+      await runExternalTeamSharingCommand(argv.slice(2), env);
       break;
     case 'start': {
       printJson(await startSavedBackground(flags, env));
