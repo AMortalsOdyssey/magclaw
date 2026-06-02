@@ -42,6 +42,37 @@ test('embedding client probes the real returned vector dimension without leaking
   assert.doesNotMatch(JSON.stringify(probe), /embedding-secret/);
 });
 
+test('embedding client falls back to native dimension when provider rejects dimension override', async () => {
+  const calls = [];
+  const warnings = [];
+  const client = createEmbeddingClient({
+    baseUrl: 'https://embedding.example/v1',
+    apiKey: 'embedding-secret',
+    model: 'qwen-embedding',
+    preferredDimension: 1536,
+    warn: (...args) => warnings.push(args),
+    fetch: async (url, init) => {
+      calls.push({ url, init, body: JSON.parse(init.body) });
+      if (calls.length === 1) {
+        return jsonResponse({
+          error: 'Model does not support matryoshka representation, changing output dimensions will lead to poor results.',
+        }, false, 400);
+      }
+      return jsonResponse({ data: [{ embedding: [0.1, 0.2, 0.3, 0.4] }] });
+    },
+  });
+
+  const probe = await client.probeDimension();
+
+  assert.equal(probe.ok, true);
+  assert.equal(probe.dimension, 4);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].body.dimensions, 1536);
+  assert.equal('dimensions' in calls[1].body, false);
+  assert.equal(warnings.length, 1);
+  assert.doesNotMatch(JSON.stringify(probe), /embedding-secret/);
+});
+
 test('rerank client normalizes provider scores by original candidate index', async () => {
   const calls = [];
   const client = createRerankClient({

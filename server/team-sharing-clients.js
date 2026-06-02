@@ -40,18 +40,29 @@ function normalizeEmbedding(data) {
   return asArray(embedding).map(Number).filter((value) => Number.isFinite(value));
 }
 
+function providerRejectsEmbeddingDimension(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return Boolean(message && (
+    message.includes('matryoshka')
+    || message.includes('output dimensions')
+    || message.includes('dimensions')
+    || message.includes('dimension')
+  ));
+}
+
 export function createEmbeddingClient(options = {}) {
   const fetchImpl = options.fetch || globalThis.fetch;
   const baseUrl = trimSlash(options.baseUrl || process.env.MAGCLAW_EMBEDDING_BASE_URL || '');
   const apiKey = options.apiKey || process.env.MAGCLAW_EMBEDDING_API_KEY || '';
   const model = options.model || process.env.MAGCLAW_EMBEDDING_MODEL || '';
   const preferredDimension = Number(options.preferredDimension || process.env.MAGCLAW_EMBEDDING_PREFERRED_DIMENSION || 0);
-  async function embed(input) {
+  const warn = typeof options.warn === 'function' ? options.warn : console.warn;
+  async function requestEmbedding(input, dimension = preferredDimension) {
     if (!baseUrl) throw new Error('Embedding base URL is not configured.');
     const body = {
       model,
       input,
-      ...(preferredDimension ? { dimensions: preferredDimension } : {}),
+      ...(dimension ? { dimensions: dimension } : {}),
     };
     const response = await fetchImpl(`${baseUrl}/embeddings`, {
       method: 'POST',
@@ -59,6 +70,19 @@ export function createEmbeddingClient(options = {}) {
       body: JSON.stringify(body),
     });
     return normalizeEmbedding(await readJsonResponse(response));
+  }
+  async function embed(input) {
+    try {
+      return await requestEmbedding(input);
+    } catch (error) {
+      if (!preferredDimension || !providerRejectsEmbeddingDimension(error)) throw error;
+      warn('[team-sharing] embedding preferred dimension unsupported; retrying with provider native dimension', {
+        model,
+        preferredDimension,
+        error: String(error?.message || error).slice(0, 160),
+      });
+      return requestEmbedding(input, 0);
+    }
   }
   return {
     async embed(input) {
