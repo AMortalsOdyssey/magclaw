@@ -490,9 +490,12 @@ function sendContextHtml(res, {
   vectorDocumentId = '',
   queryId = '',
   sourceRef = '',
+  order = 'desc',
 } = {}) {
   const safeSession = encodeURIComponent(sessionId);
   const initialAnchor = String(anchorEventId || '');
+  const contextOrder = String(order || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
+  const isDesc = contextOrder === 'desc';
   const body = `<!doctype html>
 <html lang="en">
 <head>
@@ -521,16 +524,17 @@ function sendContextHtml(res, {
 <body>
   <header>
     <h1>MagClaw Team Sharing Context</h1>
-    <div class="meta">session: ${htmlEscape(sessionId)} · anchor: ${htmlEscape(initialAnchor || 'latest')}</div>
+    <div class="meta">session: ${htmlEscape(sessionId)} · anchor: ${htmlEscape(initialAnchor || 'latest')} · order: ${htmlEscape(contextOrder === 'desc' ? 'newest first' : 'oldest first')}</div>
   </header>
   <main>
-    <div class="controls"><button id="load-more-prev" type="button">Load previous</button></div>
+    <div class="controls"><button id="${isDesc ? 'load-more-next' : 'load-more-prev'}" type="button">${isDesc ? 'Load newer' : 'Load previous'}</button></div>
     <section id="events" aria-live="polite"><div class="empty">Loading context...</div></section>
-    <div class="controls"><button id="load-more-next" type="button">Load next</button></div>
+    <div class="controls"><button id="${isDesc ? 'load-more-prev' : 'load-more-next'}" type="button">${isDesc ? 'Load older' : 'Load next'}</button></div>
   </main>
   <script>
     const sessionId = ${JSON.stringify(sessionId)};
     let anchorEventId = ${JSON.stringify(initialAnchor)};
+    const order = ${JSON.stringify(contextOrder)};
     const vectorDocumentId = ${JSON.stringify(String(vectorDocumentId || ''))};
     const queryId = ${JSON.stringify(String(queryId || ''))};
     const sourceRef = ${JSON.stringify(String(sourceRef || ''))};
@@ -560,7 +564,7 @@ function sendContextHtml(res, {
     }
     async function load(direction) {
       const anchor = direction === 'next' ? nextAnchor : prevAnchor;
-      const url = '/api/team-sharing/context/${safeSession}?anchorEventId=' + encodeURIComponent(anchor || '') + '&direction=' + encodeURIComponent(direction) + '&limit=20';
+      const url = '/api/team-sharing/context/${safeSession}?anchorEventId=' + encodeURIComponent(anchor || '') + '&direction=' + encodeURIComponent(direction) + '&limit=20&order=' + encodeURIComponent(order);
       const response = await fetch(url);
       const data = await response.json();
       if (!data.ok) throw new Error(data.error || 'Failed to load context');
@@ -574,7 +578,9 @@ function sendContextHtml(res, {
         eventsEl.innerHTML = '<div class="empty">No context found.</div>';
       } else if (fresh.length) {
         const html = fresh.map(eventHtml).join('');
-        if (direction === 'prev') eventsEl.insertAdjacentHTML('afterbegin', html);
+        if (order === 'desc' && direction === 'prev') eventsEl.insertAdjacentHTML('beforeend', html);
+        else if (order === 'desc' && direction === 'next') eventsEl.insertAdjacentHTML('afterbegin', html);
+        else if (direction === 'prev') eventsEl.insertAdjacentHTML('afterbegin', html);
         else if (eventsEl.querySelector('.empty')) eventsEl.innerHTML = html;
         else eventsEl.insertAdjacentHTML('beforeend', html);
       }
@@ -996,6 +1002,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       vectorDocumentId: url.searchParams.get('vectorDocumentId') || '',
       queryId: url.searchParams.get('queryId') || '',
       sourceRef: url.searchParams.get('sourceRef') || '',
+      order: url.searchParams.get('order') || 'desc',
     });
     return true;
   }
@@ -1174,6 +1181,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       anchorEventId: sourceAnchorFromSearchParams(url.searchParams),
       direction: url.searchParams.get('direction') || 'around',
       limit: url.searchParams.get('limit') || 20,
+      order: url.searchParams.get('order') || 'asc',
     });
     if (!result.ok) {
       sendError(res, 404, 'Team sharing session not found.');

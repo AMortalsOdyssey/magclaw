@@ -619,6 +619,10 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /\/api\/team-sharing\/feedback/);
   assert.match(res.body, /load_more/);
   assert.match(res.body, /vec_1/);
+  assert.match(res.body, /newest first/);
+  assert.match(res.body, /Load newer/);
+  assert.match(res.body, /Load older/);
+  assert.match(res.body, /order=' \+ encodeURIComponent\(order\)/);
   assert.match(res.body, /load-more-prev/);
   assert.match(res.body, /load-more-next/);
 });

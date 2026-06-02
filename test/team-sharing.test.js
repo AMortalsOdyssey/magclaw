@@ -184,6 +184,33 @@ test('team sharing context next page without anchor starts from the first event'
   assert.equal(next.pagination.hasNext, true);
 });
 
+test('team sharing context supports newest-first windows for context pages', () => {
+  const teamSharingState = createInitialTeamSharingState();
+  teamSharingState.events.sess_context = [
+    { eventId: 'evt_1', ordinal: 1, role: 'user', cleanText: '第一条' },
+    { eventId: 'evt_2', ordinal: 2, role: 'assistant', cleanText: '第二条' },
+    { eventId: 'evt_3', ordinal: 3, role: 'user', cleanText: '第三条' },
+  ];
+
+  const latest = contextWindowForTeamSharingSession(teamSharingState, 'sess_context', {
+    direction: 'around',
+    order: 'desc',
+    limit: 2,
+  });
+  assert.equal(latest.ok, true);
+  assert.deepEqual(latest.events.map((event) => event.eventId), ['evt_3', 'evt_2']);
+  assert.equal(latest.pagination.hasPrev, true);
+  assert.equal(latest.pagination.hasNext, false);
+
+  const older = contextWindowForTeamSharingSession(teamSharingState, 'sess_context', {
+    anchorEventId: latest.pagination.prevAnchorEventId,
+    direction: 'prev',
+    order: 'desc',
+    limit: 1,
+  });
+  assert.deepEqual(older.events.map((event) => event.eventId), ['evt_1']);
+});
+
 test('team sharing rerank returns diverse top5 and feedback changes later ordering within cap', () => {
   const teamSharingState = createInitialTeamSharingState();
   const candidates = [

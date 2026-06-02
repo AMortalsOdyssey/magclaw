@@ -425,6 +425,7 @@ export function contextWindowForTeamSharingSession(teamSharingStateInput, sessio
   if (!events.length) return { ok: false, code: 'session_not_found', events: [], pagination: { hasPrev: false, hasNext: false } };
   const anchorEventId = String(options.anchorEventId || '').trim();
   const direction = String(options.direction || 'around').trim().toLowerCase();
+  const order = String(options.order || 'asc').trim().toLowerCase() === 'desc' ? 'desc' : 'asc';
   const limit = Math.max(1, Math.min(100, Number(options.limit || 20)));
   const foundAnchorIndex = anchorEventId ? events.findIndex((event) => event.eventId === anchorEventId) : -1;
   let start = 0;
@@ -436,20 +437,24 @@ export function contextWindowForTeamSharingSession(teamSharingStateInput, sessio
     start = foundAnchorIndex < 0 ? 0 : Math.min(events.length, foundAnchorIndex + 1);
     end = Math.min(events.length, start + limit);
   } else {
-    const center = foundAnchorIndex < 0 ? 0 : foundAnchorIndex;
+    const center = foundAnchorIndex < 0
+      ? (order === 'desc' ? events.length - 1 : 0)
+      : foundAnchorIndex;
     const before = Math.floor((limit - 1) / 2);
     start = Math.max(0, center - before);
     end = Math.min(events.length, start + limit);
+    if (end - start < limit) start = Math.max(0, end - limit);
   }
+  const selected = events.slice(start, end);
   return {
     ok: true,
     sessionId,
-    events: events.slice(start, end),
+    events: order === 'desc' ? selected.reverse() : selected,
     pagination: {
       hasPrev: start > 0,
       hasNext: end < events.length,
-      prevAnchorEventId: events[Math.max(0, start - 1)]?.eventId || '',
-      nextAnchorEventId: events[end]?.eventId || '',
+      prevAnchorEventId: start > 0 ? (events[start]?.eventId || '') : '',
+      nextAnchorEventId: end < events.length ? (events[end - 1]?.eventId || '') : '',
     },
   };
 }
