@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+
+export const SERVER_CONFIG_PATH = '/etc/magclaw/server.yaml';
 
 function stripInlineComment(value) {
   let quote = '';
@@ -137,26 +137,9 @@ function objectValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
-export function candidateConfigPaths({ env = process.env, homeDir = os.homedir() } = {}) {
-  const explicit = [
-    env.MAGCLAW_CONFIG,
-    env.MAGCLAW_CONFIG_FILE,
-  ].filter(Boolean);
-  if (explicit.length) return explicit;
-  return [
-    path.join(homeDir, '.magclaw-server', 'server.yaml'),
-    path.join(homeDir, '.magclaw', 'server.yaml'),
-    '/etc/magclaw/server.yaml',
-  ].filter(Boolean);
-}
-
-export function applyServerYamlConfig(options = {}) {
+export function applyParsedServerYamlConfig(config = {}, options = {}) {
   const env = options.env || process.env;
-  const paths = options.paths || candidateConfigPaths(options);
-  const configPath = paths.find((item) => existsSync(item));
-  if (!configPath) return { loaded: false, config: {}, path: '' };
-
-  const config = parseSimpleYaml(readFileSync(configPath, 'utf8'));
+  const configPath = options.path || SERVER_CONFIG_PATH;
   const server = config.server || {};
   const database = config.database || config.postgres || {};
   const storage = config.storage || {};
@@ -313,6 +296,15 @@ export function applyServerYamlConfig(options = {}) {
   ));
 
   return { loaded: true, config, redacted: redactConfig(config), path: configPath };
+}
+
+export function applyServerYamlConfig(options = {}) {
+  const env = options.env || process.env;
+  const configPath = SERVER_CONFIG_PATH;
+  if (!existsSync(configPath)) return { loaded: false, config: {}, path: configPath };
+
+  const config = parseSimpleYaml(readFileSync(configPath, 'utf8'));
+  return applyParsedServerYamlConfig(config, { env, path: configPath });
 }
 
 export function redactConfig(config = {}) {

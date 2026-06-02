@@ -147,7 +147,7 @@ const ROOT = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const WEB_ASSET_DIR = path.join(PUBLIC_DIR, '.magclaw-assets');
 const WEB_ASSET_MANIFEST_FILE = path.join(WEB_ASSET_DIR, 'manifest.json');
-const serverConfigLoad = applyServerYamlConfig({ root: ROOT, homeDir: os.homedir(), env: process.env });
+const serverConfigLoad = applyServerYamlConfig({ env: process.env });
 const LOCAL_FILE_STORAGE_FALLBACK = process.env.MAGCLAW_LOCAL_FILE_STORAGE_FALLBACK !== '0';
 const DEFAULT_DATA_DIR = process.env.MAGCLAW_DEPLOYMENT === 'cloud' && LOCAL_FILE_STORAGE_FALLBACK
   ? path.join(ROOT, '.magclaw-local')

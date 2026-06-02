@@ -1,6 +1,5 @@
 # MagClaw Web Service configuration.
-# Copy to ~/.magclaw-server/server.yaml for local cloud-mode runs, or mount as
-# /etc/magclaw/server.yaml in containers.
+# Copy or mount this file as /etc/magclaw/server.yaml.
 
 server:
   host: "0.0.0.0"

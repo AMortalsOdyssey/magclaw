@@ -222,21 +222,20 @@ is available.
 
 ## Cloud Web Service
 
-For a single-machine local cloud-style run, copy the example config:
+For any cloud-style run, install the server config at the single supported path:
 
 ```bash
-cp config/server.example.yaml ~/.magclaw-server/server.yaml
+sudo mkdir -p /etc/magclaw
+sudo cp config/server.example.yaml /etc/magclaw/server.yaml
 ```
 
-For containers, mount the same YAML shape at:
+For containers, mount the same YAML shape at the same path:
 
 ```text
 /etc/magclaw/server.yaml
 ```
 
-The config loader checks `MAGCLAW_CONFIG`, `MAGCLAW_CONFIG_FILE`,
-`~/.magclaw-server/server.yaml`, `~/.magclaw/server.yaml`, and
-`/etc/magclaw/server.yaml`.
+The config loader only reads `/etc/magclaw/server.yaml`.
 
 Minimal cloud runtime contract:
 

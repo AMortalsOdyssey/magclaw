@@ -199,21 +199,20 @@ codex app-server --listen stdio://
 
 ## Cloud Web Service
 
-本地单机的 cloud-style 运行可以复制配置模板：
+所有 cloud-style 运行都把服务端配置放到唯一支持路径：
 
 ```bash
-cp config/server.example.yaml ~/.magclaw-server/server.yaml
+sudo mkdir -p /etc/magclaw
+sudo cp config/server.example.yaml /etc/magclaw/server.yaml
 ```
 
-容器部署时把同样的 YAML 形状挂载到：
+容器部署时也把同样的 YAML 形状挂载到同一个路径：
 
 ```text
 /etc/magclaw/server.yaml
 ```
 
-配置加载器会依次检查 `MAGCLAW_CONFIG`、`MAGCLAW_CONFIG_FILE`、
-`~/.magclaw-server/server.yaml`、`~/.magclaw/server.yaml` 和
-`/etc/magclaw/server.yaml`。
+配置加载器只读取 `/etc/magclaw/server.yaml`。
 
 最小 Cloud runtime contract：
 

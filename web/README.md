@@ -9,10 +9,9 @@ here so production configuration is separated from the local daemon package.
 - `MAGCLAW_DEPLOYMENT=cloud` uses PostgreSQL when `database.postgres_url` is
   set in `server.yaml`; local single-node runs fall back to SQLite only when
   PostgreSQL is not required.
-- The preferred config source is `server.yaml` mounted at `/etc/magclaw/server.yaml`
-  or stored locally at `~/.magclaw-server/server.yaml`. The server checks those
-  paths by default, so container deployments do not need a config-path
-  environment variable.
+- The only supported config source is `server.yaml` mounted at
+  `/etc/magclaw/server.yaml`, so cloud deployments do not need a config-path
+  environment variable and operators have one place to inspect.
 - Runtime YAML, including the current PostgreSQL URL, belongs in the ConfigMap.
 - `daemon.connect_command_mode` controls the Connect Computer command shape:
   use `npm` for domain/cloud deployments and `local-repo` for source-checkout

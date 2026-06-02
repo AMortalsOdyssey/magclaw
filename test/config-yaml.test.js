@@ -1,15 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { applyServerYamlConfig } from '../server/config-yaml.js';
+import { applyParsedServerYamlConfig, parseSimpleYaml, SERVER_CONFIG_PATH } from '../server/config-yaml.js';
+
+function applyConfig(yaml, env = {}) {
+  return applyParsedServerYamlConfig(parseSimpleYaml(yaml), { env, path: SERVER_CONFIG_PATH });
+}
 
 test('server yaml ignores runtime-scoped login data dir and fan-out settings', async () => {
-  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-config-yaml-'));
-  const configPath = path.join(tmp, 'server.yaml');
   const env = {};
-  await writeFile(configPath, `
+  const result = applyConfig(`
 server:
   host: "0.0.0.0"
   port: 6543
@@ -53,9 +52,7 @@ fanout_api:
   fallback_model: "deepseek-test"
   timeout_ms: 9000
   api_key: "secret"
-`);
-
-  const result = applyServerYamlConfig({ paths: [configPath], env });
+`, env);
 
   assert.equal(result.loaded, true);
   assert.equal(env.MAGCLAW_DATABASE_URL, 'postgresql://user:pass@db:5432/magclaw');
@@ -92,10 +89,8 @@ fanout_api:
 });
 
 test('server yaml maps modular auth providers without exposing nested secrets in redaction', async () => {
-  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-config-yaml-auth-'));
-  const configPath = path.join(tmp, 'server.yaml');
   const env = {};
-  await writeFile(configPath, `
+  const result = applyConfig(`
 auth:
   providers:
     - type: email_password
@@ -105,9 +100,7 @@ auth:
       app_id: "cli_test"
       app_secret: "super-secret"
       redirect_uri: "https://magclaw.example.com/api/cloud/auth/feishu/callback"
-`);
-
-  const result = applyServerYamlConfig({ paths: [configPath], env });
+`, env);
 
   assert.equal(result.loaded, true);
   const providers = JSON.parse(env.MAGCLAW_AUTH_PROVIDERS);
@@ -126,10 +119,8 @@ auth:
 });
 
 test('server yaml maps Feishu Connect Bot config separately from OAuth providers', async () => {
-  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-config-yaml-feishu-connect-'));
-  const configPath = path.join(tmp, 'server.yaml');
   const env = {};
-  await writeFile(configPath, `
+  const result = applyConfig(`
 auth:
   providers:
     - type: feishu
@@ -144,9 +135,7 @@ feishu:
     app_secret: "connect-secret"
     message_mode: "long_connection"
     reply_mode: "card"
-`);
-
-  const result = applyServerYamlConfig({ paths: [configPath], env });
+`, env);
 
   assert.equal(result.loaded, true);
   assert.equal(env.MAGCLAW_FEISHU_CONNECT_ENABLED, '1');
@@ -163,10 +152,8 @@ feishu:
 });
 
 test('server yaml maps team sharing services without exposing secrets in redaction', async () => {
-  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-config-yaml-team-sharing-'));
-  const configPath = path.join(tmp, 'server.yaml');
   const env = {};
-  await writeFile(configPath, `
+  const result = applyConfig(`
 team_sharing:
   enabled: true
   default_channel:
@@ -189,9 +176,7 @@ team_sharing:
     model: "rerank-model"
     candidate_k: 40
     top_n: 5
-`);
-
-  const result = applyServerYamlConfig({ paths: [configPath], env });
+`, env);
 
   assert.equal(result.loaded, true);
   assert.equal(env.MAGCLAW_TEAM_SHARING_ENABLED, '1');
