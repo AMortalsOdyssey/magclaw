@@ -321,8 +321,20 @@ function shareRootWorkspaceId(state = {}) {
   ).trim();
 }
 
-function shareRootAccess(req, { actor, teamSharingState, state } = {}) {
-  const workspaceId = shareRootWorkspaceId(state);
+function shareRootPathWorkspaceId(url, state = {}) {
+  const match = String(url?.pathname || '').match(/^\/s\/([^/]+)\/share\/?$/);
+  if (!match) return '';
+  const slug = decodeURIComponent(match[1] || '').trim();
+  if (!slug) return '';
+  const workspace = asArray(state.cloud?.workspaces).find((item) => (
+    String(item.slug || '').trim() === slug
+    || String(item.id || '').trim() === slug
+  ));
+  return String(workspace?.id || slug).trim();
+}
+
+function shareRootAccess(req, { actor, teamSharingState, state, targetWorkspaceId = '' } = {}) {
+  const workspaceId = String(targetWorkspaceId || shareRootWorkspaceId(state)).trim();
   const actorWorkspaceId = String(actor?.member?.workspaceId || '').trim();
   if (actorWorkspaceId) {
     if (!workspaceId || workspaceId === 'local' || actorWorkspaceId === workspaceId) {
@@ -628,10 +640,11 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const deviceCode = randomToken('tmdev');
     const userCode = crypto.randomBytes(4).toString('hex').toUpperCase();
     const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+    const requestWorkspaceId = String(body.workspaceId || workspaceId || '').trim();
     const request = {
       deviceCodeHash: hashSecret(deviceCode),
       userCode,
-      workspaceId: body.workspaceId || workspaceId,
+      workspaceId: requestWorkspaceId,
       profile: body.profile || 'default',
       packageName: body.packageName || 'team-sharing',
       status: actor ? 'approved' : 'pending',
@@ -640,12 +653,12 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       expiresAt,
     };
     auth.deviceRequests[request.deviceCodeHash] = request;
-    await persistState({ workspaceId, reason: 'team_sharing_auth_start' });
+    await persistState({ workspaceId: requestWorkspaceId || workspaceId, reason: 'team_sharing_auth_start' });
     sendJson(res, 201, {
       ok: true,
       deviceCode,
       userCode,
-      verificationUri: `/team-sharing/auth/approve?user_code=${encodeURIComponent(userCode)}`,
+      verificationUri: `/team-sharing/auth/approve?user_code=${encodeURIComponent(userCode)}${requestWorkspaceId ? `&workspaceId=${encodeURIComponent(requestWorkspaceId)}` : ''}`,
       expiresAt,
       intervalMs: 2000,
       status: request.status,
@@ -731,12 +744,19 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendError(res, 404, 'Team Sharing login request not found.');
       return true;
     }
-    if (!actor) {
+    const approvalActor = actor || currentActor({
+      ...req,
+      headers: {
+        ...(req.headers || {}),
+        'x-magclaw-workspace-id': request.workspaceId || workspaceId,
+      },
+    });
+    if (!approvalActor) {
       sendError(res, 401, 'Sign in to MagClaw before approving Team Sharing login.');
       return true;
     }
     request.status = 'approved';
-    request.approvedUser = requestUser(actor);
+    request.approvedUser = requestUser(approvalActor);
     request.approvedAt = now();
     await persistState({ workspaceId: request.workspaceId || workspaceId, reason: 'team_sharing_auth_approve' });
     res.writeHead?.(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
@@ -756,8 +776,16 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     return true;
   }
 
-  if (req.method === 'GET' && (url.pathname === '/share' || url.pathname === '/share/')) {
-    const access = shareRootAccess(req, { actor, teamSharingState, state });
+  const shareRootPath = url.pathname === '/share'
+    || url.pathname === '/share/'
+    || /^\/s\/[^/]+\/share\/?$/.test(url.pathname);
+  if (req.method === 'GET' && shareRootPath) {
+    const access = shareRootAccess(req, {
+      actor,
+      teamSharingState,
+      state,
+      targetWorkspaceId: shareRootPathWorkspaceId(url, state),
+    });
     if (!access.ok) {
       addSystemEvent('team_sharing_share_root_denied', 'Team sharing share root access denied.', {
         workspaceId: access.workspaceId || workspaceId,

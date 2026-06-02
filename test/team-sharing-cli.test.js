@@ -14,6 +14,8 @@ import {
   initTeamSharingProject,
   loginTeamSharingProfile,
   logoutTeamSharingProfile,
+  normalizeTeamSharingProjectConfig,
+  parseTeamSharingYaml,
   removeTeamSharingHooks,
   removeTeamSharingSkill,
   readTeamSharingContext,
@@ -72,9 +74,12 @@ test('team sharing cli init treats signed MagClaw channel paths as channelPath, 
     workspaceId: 'ws_team',
   }, env);
   const yaml = await readFile(path.join(cwd, '.magclaw', 'team-sharing.yaml'), 'utf8');
+  const parsed = normalizeTeamSharingProjectConfig(parseTeamSharingYaml(yaml));
 
-  assert.match(yaml, /id:\s*$/m);
+  assert.match(yaml, /id: ""/);
   assert.match(yaml, /path: mc:\/\/magclaw\/server\/ws_team\/channel\/chan_team\?key=route-key/);
+  assert.equal(parsed.channelId, '');
+  assert.equal(parsed.channelPath, 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key');
 });
 
 test('team sharing cli login stores scoped token in user profile only', async () => {

@@ -20,5 +20,6 @@ test('left rail exposes a bottom Team Shares entry that jumps to the share root'
   assert.match(railSource, /renderLeftRailButton\('share-root', railMode, 'Team Shares'/);
   assert.match(app, /data-nav="\$\{escapeHtml\(nav\)\}"/);
   assert.match(clickSource, /nav === 'share-root'/);
-  assert.match(clickSource, /window\.location\.assign\('\/share'\)/);
+  assert.match(clickSource, /currentServerSlug/);
+  assert.match(clickSource, /window\.location\.assign\(`\/s\/\$\{serverSlug\}\/share`\)/);
 });

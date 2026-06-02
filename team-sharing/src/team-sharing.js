@@ -60,7 +60,7 @@ function yamlScalar(value) {
   if (value === false) return 'false';
   if (value === null || value === undefined) return '';
   const text = String(value);
-  if (!text) return '';
+  if (!text) return '""';
   if (/^[A-Za-z0-9_./:@?=&%+\-]+$/.test(text)) return text;
   return JSON.stringify(text);
 }
@@ -120,6 +120,12 @@ export function parseTeamSharingYaml(text = '') {
     }
   }
   return root;
+}
+
+function stringConfigValue(value, fallback = '') {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'object') return fallback;
+  return String(value);
 }
 
 async function readYamlFile(file, fallback = null) {
@@ -256,12 +262,12 @@ export function normalizeTeamSharingProjectConfig(config = {}) {
     enabled: config.enabled !== false,
     profile: safeProfileName(config.profile || DEFAULT_PROFILE),
     serverUrl: normalizeServerUrl(config.server_url || config.serverUrl),
-    workspaceId: String(config.workspace_id || config.workspaceId || 'local'),
-    channelId: String(config.channel?.id || ''),
-    channelPath: String(config.channel?.path || ''),
+    workspaceId: stringConfigValue(config.workspace_id || config.workspaceId, 'local'),
+    channelId: stringConfigValue(config.channel?.id, ''),
+    channelPath: stringConfigValue(config.channel?.path, ''),
     routingMode: String(config.routing_mode || config.routingMode || 'fixed_single_channel'),
-    projectKey: String(config.project_key || config.projectKey || 'default'),
-    enabledSince: String(config.enabled_since || config.enabledSince || ''),
+    projectKey: stringConfigValue(config.project_key || config.projectKey, 'default'),
+    enabledSince: stringConfigValue(config.enabled_since || config.enabledSince, ''),
     runtimes: {
       codex: {
         hooksEnabled: config.runtimes?.codex?.hooks_enabled !== false,
