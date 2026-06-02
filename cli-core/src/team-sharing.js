@@ -360,7 +360,7 @@ export async function loginTeamSharingProfile(flags = {}, env = process.env) {
     server_url: serverUrl,
     workspace_id: workspaceId,
     token,
-    token_scope: 'team_memory:sync,team_memory:search,team_memory:context,team_memory:feedback',
+    token_scope: 'team_memory:sync,team_memory:search,team_memory:context,team_memory:feedback,team_memory:share',
     user_id: user.id || existing.user_id || '',
     user_email: user.email || existing.user_email || '',
     created_at: existing.created_at || now(),

@@ -1714,6 +1714,7 @@ function systemApiDeps() {
 function appApiAuthIsBypassed(url) {
   return url.pathname.startsWith('/api/cloud/')
     || url.pathname.startsWith('/api/auth/')
+    || url.pathname.startsWith('/api/team-memory/')
     || url.pathname.startsWith('/api/console/')
     || url.pathname === '/api/healthz'
     || url.pathname === '/api/readyz';
@@ -2283,6 +2284,14 @@ async function handleRequest(req, res) {
       const handled = await handleApi(req, res, url);
       if (!handled) sendError(res, 404, 'API route not found.');
       return;
+    }
+    if (
+      url.pathname.startsWith('/team-memory/')
+      || url.pathname.startsWith('/s/')
+      || url.pathname === '/share'
+      || url.pathname.startsWith('/share/')
+    ) {
+      if (await handleTeamMemoryApi(req, res, url, teamMemoryApiDeps())) return;
     }
     await serveStatic(req, res, url);
   } catch (error) {

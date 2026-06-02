@@ -966,7 +966,7 @@ export async function loginTeamMemoryProfile(flags = {}, env = process.env) {
     serverUrl,
     workspaceId: String(flags.workspaceId || flags.workspace || existing.workspaceId || env.MAGCLAW_WORKSPACE_ID || 'local').trim(),
     token,
-    tokenScope: ['team_memory:sync', 'team_memory:search', 'team_memory:context', 'team_memory:feedback'],
+    tokenScope: ['team_memory:sync', 'team_memory:search', 'team_memory:context', 'team_memory:feedback', 'team_memory:share'],
     updatedAt: now(),
     createdAt: existing.createdAt || now(),
   };
@@ -6939,16 +6939,62 @@ export async function readTeamMemoryContext(flags = {}, env = process.env) {
   });
 }
 
+function inferShareArtifactType(explicit = '', filePath = '') {
+  const clean = String(explicit || '').trim().toLowerCase();
+  if (['html', 'markdown', 'md', 'svg', 'mermaid', 'mmd'].includes(clean)) {
+    return clean === 'md' ? 'markdown' : clean === 'mmd' ? 'mermaid' : clean;
+  }
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  if (ext === '.html' || ext === '.htm') return 'html';
+  if (ext === '.svg') return 'svg';
+  if (ext === '.mmd' || ext === '.mermaid') return 'mermaid';
+  return 'markdown';
+}
+
+export async function shareTeamMemoryArtifact(flags = {}, env = process.env) {
+  const fileArg = String(flags.file || flags.path || flags.artifact || flags._?.[1] || '').trim();
+  const inlineContent = flags.content ?? flags.markdown ?? flags.html ?? '';
+  if (!fileArg && !inlineContent) {
+    throw new Error('Usage: magclaw team-sharing share-artifact --file <path> [--title <title>] [--type markdown|html|svg|mermaid]');
+  }
+  const cwd = path.resolve(flags.cwd || process.cwd());
+  const filePath = fileArg ? path.resolve(cwd, fileArg) : '';
+  const content = filePath ? await readFile(filePath, 'utf8') : String(inlineContent);
+  const { project, serverUrl, token } = await resolveTeamMemoryClient(flags, env);
+  const title = String(flags.title || flags.name || (filePath ? path.basename(filePath) : 'MagClaw shared page')).trim() || 'MagClaw shared page';
+  return teamMemoryRequestJson({
+    serverUrl,
+    token,
+    method: 'POST',
+    pathname: '/api/team-memory/shares',
+    body: {
+      title,
+      description: flags.description || '',
+      contentType: inferShareArtifactType(flags.type || flags.contentType, filePath),
+      content,
+      workspaceId: flags.workspaceId || project.config.workspaceId || '',
+      channelId: flags.channelId || project.config.channelId || '',
+      channelPath: flags.channelPath || project.config.channelPath || '',
+      projectKey: flags.projectKey || project.config.projectKey || '',
+      source: {
+        kind: 'cli_artifact',
+        runtime: flags.runtime || '',
+        file: filePath ? path.basename(filePath) : '',
+      },
+    },
+  });
+}
+
 function teamMemorySkillMarkdown() {
   return [
     '---',
     'name: magclaw-team-memory',
-    'description: Search and read MagClaw team memory shared from Codex and Claude Code sessions.',
+    'description: Search, read, and publicly share MagClaw team memory artifacts from Codex and Claude Code sessions.',
     '---',
     '',
     '# MagClaw Team Memory',
     '',
-    'Use this skill when the user asks what the team discussed, wants to align with another session, or needs original AI conversation context.',
+    'Use this skill when the user asks what the team discussed, wants to align with another session, needs original AI conversation context, or asks to publish a generated summary as a share link.',
     '',
     '## Workflow',
     '',
@@ -6956,10 +7002,13 @@ function teamMemorySkillMarkdown() {
     '2. Answer from the returned L0/L1 evidence when the user only needs a rough understanding.',
     '3. For deep follow-up, run `magclaw memory context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 20`.',
     '4. Cite session titles, source refs, and context URLs from the command output.',
+    '5. When the user wants to share the synthesis, write a Markdown/HTML/SVG/Mermaid artifact locally, then run `magclaw team-sharing share-artifact --file <path> --title "<title>" --type markdown`.',
+    '6. Return the public URL from the command output. The shared page is public by design and includes the creator and creation time in the footer.',
     '',
     '## Rules',
     '',
     '- Do not upload local secrets or raw tool output.',
+    '- Before sharing, remove tokens, private URLs, personal paths, hidden reasoning, and sensitive customer data from the artifact.',
     '- Prefer concise synthesis first, then pull original context only when needed.',
     '- If search returns low confidence or too few results, ask a narrower question or date range.',
     '',
@@ -7004,6 +7053,7 @@ async function runTeamMemoryCommand(flags = {}, env = process.env) {
       '  install-skill  Install the MagClaw team-memory skill locally',
       '  search  Query shared team memory through /api/team-memory/search',
       '  context Read original context around a session anchor',
+      '  share-artifact Create a public MagClaw share link from a local file',
       '  sync    Upload one transcript file through /api/team-memory/sync',
       '',
     ].join('\n'));
@@ -7032,6 +7082,11 @@ async function runTeamMemoryCommand(flags = {}, env = process.env) {
       break;
     case 'context':
       printJson(await readTeamMemoryContext(flags, env));
+      break;
+    case 'share':
+    case 'share-artifact':
+    case 'quickshare':
+      printJson(await shareTeamMemoryArtifact(flags, env));
       break;
     case 'sync':
       printJson(await syncTeamMemoryTranscript(flags, env));
@@ -7063,6 +7118,7 @@ async function runTeamSharingCommand(flags = {}, env = process.env) {
       '  upgrade  Check npm latest version for team-sharing',
       '  search   Query shared team memory',
       '  context  Read original context around an anchor',
+      '  share-artifact Create a public MagClaw share link from a local file',
       '  sync     Upload one transcript file',
       '',
     ].join('\n'));
@@ -7129,6 +7185,11 @@ async function runTeamSharingCommand(flags = {}, env = process.env) {
       break;
     case 'context':
       printJson(await readTeamMemoryContext(flags, env));
+      break;
+    case 'share':
+    case 'share-artifact':
+    case 'quickshare':
+      printJson(await shareTeamMemoryArtifact(flags, env));
       break;
     case 'sync':
       printJson(await syncTeamMemoryTranscript({ ...flags, integration: flags.integration || 'team-sharing' }, env));

@@ -47,6 +47,204 @@ function resultContextUrl(item, queryId = '') {
   return `/team-memory/context/${encodeURIComponent(item.sessionId)}${suffix ? `?${suffix}` : ''}`;
 }
 
+const SHARE_CONTENT_TYPES = new Set(['html', 'markdown', 'svg', 'mermaid']);
+const MAX_SHARE_CONTENT_LENGTH = 10 * 1024 * 1024;
+
+function normalizeShareContentType(value = '', content = '') {
+  const explicit = String(value || '').trim().toLowerCase();
+  if (SHARE_CONTENT_TYPES.has(explicit)) return explicit;
+  const text = String(content || '').trim();
+  if (/^```mermaid/i.test(text) || /^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram)\b/i.test(text)) return 'mermaid';
+  if (text.startsWith('<svg') && text.includes('</svg>')) return 'svg';
+  if (/^<!doctype html/i.test(text) || /^<html[\s>]/i.test(text) || /<(body|head|style|script|div|section|article)\b/i.test(text)) return 'html';
+  return 'markdown';
+}
+
+function ensureTeamMemoryShares(memory = {}) {
+  memory.shares = Array.isArray(memory.shares) ? memory.shares : [];
+  return memory.shares;
+}
+
+function publicUrlFromRequest(req) {
+  const configured = String(process.env.MAGCLAW_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  if (configured) return configured;
+  const proto = String(req?.headers?.['x-forwarded-proto'] || '').split(',')[0].trim()
+    || (req?.socket?.encrypted ? 'https' : 'http');
+  const forwardedHost = String(req?.headers?.['x-forwarded-host'] || '').split(',')[0].trim();
+  const host = forwardedHost || req?.headers?.host || '127.0.0.1:6543';
+  return `${proto}://${host}`.replace(/\/+$/, '');
+}
+
+function shareUrl(req, shareId = '') {
+  return `${publicUrlFromRequest(req)}/s/${encodeURIComponent(shareId)}`;
+}
+
+function creatorFromActor(actor = {}) {
+  const member = actor?.member || {};
+  const user = actor?.user || actor?.human || {};
+  const id = String(member.humanId || user.id || 'hum_local').trim();
+  const displayName = String(member.name || user.name || member.email || user.email || id || 'Unknown creator').trim();
+  return {
+    id,
+    name: displayName,
+    email: String(member.email || user.email || '').trim(),
+  };
+}
+
+function shareFooterHtml(share = {}) {
+  const creator = share.creator?.name || share.createdByName || share.createdBy || 'Unknown creator';
+  const createdAt = share.createdAt || '';
+  return `<footer class="magclaw-share-footer">Created by ${htmlEscape(creator)}${createdAt ? ` · ${htmlEscape(createdAt)}` : ''}</footer>`;
+}
+
+function renderMarkdownInline(value = '') {
+  return htmlEscape(value)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>');
+}
+
+function renderMarkdownToHtml(markdown = '') {
+  const lines = String(markdown || '').split(/\r?\n/);
+  const out = [];
+  let inCode = false;
+  let code = [];
+  let listOpen = false;
+  const closeList = () => {
+    if (listOpen) {
+      out.push('</ul>');
+      listOpen = false;
+    }
+  };
+  const flushCode = () => {
+    out.push(`<pre><code>${htmlEscape(code.join('\n'))}</code></pre>`);
+    code = [];
+  };
+  for (const line of lines) {
+    if (/^```/.test(line.trim())) {
+      if (inCode) {
+        flushCode();
+        inCode = false;
+      } else {
+        closeList();
+        inCode = true;
+        code = [];
+      }
+      continue;
+    }
+    if (inCode) {
+      code.push(line);
+      continue;
+    }
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      continue;
+    }
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = Math.min(4, heading[1].length);
+      out.push(`<h${level}>${renderMarkdownInline(heading[2])}</h${level}>`);
+      continue;
+    }
+    const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      if (!listOpen) {
+        out.push('<ul>');
+        listOpen = true;
+      }
+      out.push(`<li>${renderMarkdownInline(bullet[1])}</li>`);
+      continue;
+    }
+    closeList();
+    out.push(`<p>${renderMarkdownInline(trimmed)}</p>`);
+  }
+  if (inCode) flushCode();
+  closeList();
+  return out.join('\n');
+}
+
+function shareChromeHtml(share = {}, innerHtml = '') {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${htmlEscape(share.title || 'MagClaw QuickShare')}</title>
+  <style>
+    :root { color-scheme: light; --ink:#14212b; --muted:#64748b; --line:#d9e2e5; --bg:#f8fafc; --panel:#fff; --accent:#0891b2; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.62; }
+    main { max-width:900px; margin:0 auto; padding:28px 18px 80px; }
+    .shell { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:28px; box-shadow:0 8px 30px rgba(15,23,42,.05); }
+    .brand { color:var(--accent); font-size:13px; font-weight:800; text-transform:uppercase; letter-spacing:0; margin-bottom:10px; }
+    h1,h2,h3,h4 { line-height:1.25; letter-spacing:0; }
+    h1 { margin:0 0 14px; font-size:32px; }
+    p { margin:10px 0; }
+    pre { overflow-x:auto; background:#0f1720; color:#d9f4f6; padding:14px; border-radius:8px; }
+    code { font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; }
+    a { color:var(--accent); }
+    svg { max-width:100%; height:auto; }
+    .magclaw-share-footer { max-width:900px; margin:24px auto 0; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="shell">
+      <div class="brand">MagClaw QuickShare</div>
+      ${innerHtml}
+    </section>
+    ${shareFooterHtml(share)}
+  </main>
+</body>
+</html>`;
+}
+
+function renderShareHtml(share = {}) {
+  const title = htmlEscape(share.title || 'Shared page');
+  const content = String(share.content || '');
+  if (share.contentType === 'html') {
+    const footer = shareFooterHtml(share);
+    if (/^<!doctype html/i.test(content.trim()) || /^<html[\s>]/i.test(content.trim())) {
+      return /<\/body>/i.test(content)
+        ? content.replace(/<\/body>/i, `${footer}\n</body>`)
+        : `${content}\n${footer}`;
+    }
+    return shareChromeHtml(share, `<h1>${title}</h1>\n${content}`);
+  }
+  if (share.contentType === 'svg') {
+    const svg = content.trim().startsWith('<svg') ? content : `<pre><code>${htmlEscape(content)}</code></pre>`;
+    return shareChromeHtml(share, `<h1>${title}</h1>\n${svg}`);
+  }
+  if (share.contentType === 'mermaid') {
+    return shareChromeHtml(share, `<h1>${title}</h1>
+<pre class="mermaid">${htmlEscape(content.replace(/^```mermaid\s*/i, '').replace(/```$/i, '').trim())}</pre>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, securityLevel: 'strict' });
+</script>`);
+  }
+  return shareChromeHtml(share, renderMarkdownToHtml(content));
+}
+
+function sendShareHtml(res, body, { status = 200 } = {}) {
+  res.writeHead?.(status, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'public, max-age=60',
+    'content-security-policy': "sandbox allow-scripts allow-forms allow-popups; default-src 'self' https: data: blob:; script-src 'self' https: 'unsafe-inline'; style-src 'self' https: 'unsafe-inline'; img-src 'self' https: data: blob:; font-src 'self' https: data:;",
+  });
+  res.end?.(body);
+}
+
+function renderShareIndexHtml(shares = []) {
+  const rows = shares.slice().reverse().map((share) => `<article>
+    <h2><a href="/s/${encodeURIComponent(share.id)}">${htmlEscape(share.title || share.id)}</a></h2>
+    <p>${htmlEscape(compactText(share.description || share.content || '', 180))}</p>
+    <small>${htmlEscape(share.contentType || 'artifact')} · Created by ${htmlEscape(share.creator?.name || 'Unknown creator')} · ${htmlEscape(share.createdAt || '')}</small>
+  </article>`).join('\n') || '<p>No shared pages yet.</p>';
+  return shareChromeHtml({ title: 'MagClaw QuickShare Index', creator: { name: 'MagClaw' }, createdAt: '' }, `<h1>MagClaw QuickShare</h1>\n${rows}`);
+}
+
 function sendContextHtml(res, {
   sessionId = '',
   anchorEventId = '',
@@ -311,6 +509,7 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
   const actor = currentActor(req);
   const workspaceId = actorWorkspaceId(actor, state);
   const memory = state.teamMemory || {};
+  if (!state.teamMemory) state.teamMemory = memory;
 
   if (req.method === 'POST' && url.pathname === '/api/team-memory/auth/start') {
     const body = await readJson(req);
@@ -368,7 +567,7 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
       profile: request.profile || 'default',
       packageName: request.packageName || 'team-sharing',
       user: request.approvedUser || { id: 'hum_local', email: '', name: '' },
-      scopes: ['team_memory:sync', 'team_memory:search', 'team_memory:context', 'team_memory:feedback'],
+      scopes: ['team_memory:sync', 'team_memory:search', 'team_memory:context', 'team_memory:feedback', 'team_memory:share'],
       revoked: false,
       createdAt: now(),
       lastUsedAt: now(),
@@ -431,6 +630,81 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
     await persistState({ workspaceId: request.workspaceId || workspaceId, reason: 'team_memory_auth_approve' });
     res.writeHead?.(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end?.('<!doctype html><meta charset="utf-8"><title>MagClaw Team Sharing</title><p>Team Sharing login approved. You can return to the CLI.</p>');
+    return true;
+  }
+
+  const publicShareMatch = url.pathname.match(/^\/s\/([^/]+)$/) || url.pathname.match(/^\/share\/([^/]+)$/);
+  if (req.method === 'GET' && publicShareMatch) {
+    const shareId = decodeURIComponent(publicShareMatch[1] || '');
+    const share = ensureTeamMemoryShares(memory).find((item) => item.id === shareId && item.revokedAt == null);
+    if (!share) {
+      sendShareHtml(res, shareChromeHtml({ title: 'MagClaw QuickShare' }, '<h1>Shared page not found</h1><p>This MagClaw share link may have been removed.</p>'), { status: 404 });
+      return true;
+    }
+    sendShareHtml(res, renderShareHtml(share));
+    return true;
+  }
+
+  if (req.method === 'GET' && (url.pathname === '/share' || url.pathname === '/share/')) {
+    sendShareHtml(res, renderShareIndexHtml(ensureTeamMemoryShares(memory)));
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/team-memory/shares') {
+    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+    const body = await readJson(req);
+    const content = String(body.content || body.markdown || body.html || body.svg || body.mermaid || '');
+    if (!content.trim()) {
+      sendError(res, 400, 'Share content is required.');
+      return true;
+    }
+    if (content.length > MAX_SHARE_CONTENT_LENGTH) {
+      sendError(res, 413, 'Share content is too large.');
+      return true;
+    }
+    const createdAt = now();
+    const shareId = typeof makeId === 'function' ? makeId('share') : randomToken('share');
+    const share = {
+      id: shareId,
+      workspaceId: String(body.workspaceId || workspaceId || '').trim(),
+      channelId: String(body.channelId || '').trim(),
+      channelPath: String(body.channelPath || '').trim(),
+      projectKey: String(body.projectKey || '').trim(),
+      title: compactText(body.title || body.name || 'MagClaw shared page', 140),
+      description: compactText(body.description || content, 260),
+      contentType: normalizeShareContentType(body.contentType || body.type, content),
+      content,
+      creator: creatorFromActor(actor),
+      source: body.source && typeof body.source === 'object' ? body.source : {},
+      public: true,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    ensureTeamMemoryShares(memory).push(share);
+    addSystemEvent('team_memory_share_created', `Team memory share created: ${share.title}`, {
+      workspaceId: share.workspaceId,
+      shareId,
+      channelId: share.channelId,
+      projectKey: share.projectKey,
+      contentType: share.contentType,
+    });
+    await persistState({ workspaceId: share.workspaceId || workspaceId, reason: 'team_memory_share_created' });
+    broadcastState();
+    sendJson(res, 201, {
+      ok: true,
+      shareId,
+      url: shareUrl(req, shareId),
+      share: {
+        id: share.id,
+        title: share.title,
+        contentType: share.contentType,
+        creator: share.creator,
+        createdAt: share.createdAt,
+        channelId: share.channelId,
+        channelPath: share.channelPath,
+        projectKey: share.projectKey,
+      },
+    });
     return true;
   }
 

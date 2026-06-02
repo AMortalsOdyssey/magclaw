@@ -373,6 +373,58 @@ test('team memory route doctor can probe embedding dimension on demand', async (
   assert.equal(res.data.checks.embedding.dimension, 1536);
 });
 
+test('team memory route creates a public share and serves it without authentication', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_route', name: 'Ada PM', email: 'ada@example.com' } }),
+    readJson: async () => ({
+      title: 'Rerank 方案摘要',
+      contentType: 'markdown',
+      content: '# Rerank 方案摘要\n\n团队结论：先召回，再重排，最后记录反馈。',
+    }),
+  });
+  const createRes = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    createRes,
+    new URL('https://magclaw.example/api/team-memory/shares'),
+    deps,
+  ), true);
+
+  assert.equal(createRes.statusCode, 201);
+  assert.equal(createRes.data.ok, true);
+  assert.match(createRes.data.url, /^https:\/\/magclaw\.example\/s\/share_/);
+  assert.equal(deps.state.teamMemory.shares.length, 1);
+
+  const shareId = createRes.data.shareId;
+  const publicRes = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'GET', headers: {} },
+    publicRes,
+    new URL(`https://magclaw.example/s/${shareId}`),
+    { ...deps, currentActor: () => null, teamMemoryAuthRequired: () => true },
+  ), true);
+
+  assert.equal(publicRes.statusCode, 200);
+  assert.match(publicRes.headers['content-type'], /text\/html/);
+  assert.match(publicRes.headers['content-security-policy'], /sandbox/);
+  assert.match(publicRes.body, /MagClaw QuickShare/);
+  assert.match(publicRes.body, /<h1>Rerank 方案摘要<\/h1>/);
+  assert.match(publicRes.body, /团队结论/);
+  assert.match(publicRes.body, /Created by Ada PM/);
+  assert.match(publicRes.body, /2026-06-01T10:00:00.000Z/);
+
+  const indexRes = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'GET', headers: {} },
+    indexRes,
+    new URL('https://magclaw.example/share'),
+    { ...deps, currentActor: () => null, teamMemoryAuthRequired: () => true },
+  ), true);
+  assert.equal(indexRes.statusCode, 200);
+  assert.match(indexRes.body, /Rerank 方案摘要/);
+  assert.match(indexRes.body, new RegExp(`/s/${shareId}`));
+});
+
 test('team memory route serves a dynamic context html page without creating static files', async () => {
   const deps = routeDeps();
   const res = makeResponse();

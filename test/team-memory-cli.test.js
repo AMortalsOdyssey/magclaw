@@ -19,6 +19,7 @@ import {
   removeTeamSharingHooks,
   removeTeamSharingSkill,
   readTeamMemoryContext,
+  shareTeamMemoryArtifact,
   searchTeamMemory,
   setupTeamSharing,
   statusTeamSharingHooks,
@@ -157,12 +158,14 @@ test('team sharing browser login caches scoped token, whoami reads it, and logou
       noOpen: true,
       pollTimeoutMs: 50,
     }, env);
+    const paths = teamSharingPaths({ env });
+    const cachedProfile = await readFile(paths.profileConfig, 'utf8');
     const whoami = await whoamiTeamSharingProfile({}, env);
     const logout = await logoutTeamSharingProfile({}, env);
-    const paths = teamSharingPaths({ env });
 
     assert.equal(login.ok, true);
     assert.equal(login.hasToken, true);
+    assert.match(cachedProfile, /team_memory:sync,team_memory:search,team_memory:context,team_memory:feedback,team_memory:share/);
     assert.equal(whoami.user.email, 'team@example.com');
     assert.equal(logout.ok, true);
     await assert.rejects(() => readFile(paths.profileConfig, 'utf8'), /ENOENT/);
@@ -418,6 +421,68 @@ test('team memory cli search and context use configured profile token', async ()
   }
 });
 
+test('team sharing cli uploads an artifact share and returns a public link', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+  const artifact = path.join(cwd, 'rerank-summary.md');
+  await writeFile(artifact, '# Rerank 总结\n\n先召回，再重排。');
+  const parsed = parseCli([
+    'node',
+    'magclaw',
+    'team-sharing',
+    'share-artifact',
+    '--file',
+    artifact,
+    '--title',
+    'Rerank 总结',
+    '--type',
+    'markdown',
+  ]);
+  assert.equal(parsed.command, 'team-sharing');
+  assert.deepEqual(parsed.flags._, ['share-artifact']);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init, body: JSON.parse(init.body || '{}') });
+    return {
+      ok: true,
+      json: async () => ({ ok: true, shareId: 'share_cli', url: 'https://magclaw.example/s/share_cli' }),
+    };
+  };
+  try {
+    const result = await shareTeamMemoryArtifact({
+      ...parsed.flags,
+      cwd,
+    }, env);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.url, 'https://magclaw.example/s/share_cli');
+    assert.equal(calls[0].url, 'https://magclaw.example/api/team-memory/shares');
+    assert.equal(calls[0].init.headers.authorization, 'Bearer team-sharing-token-secret');
+    assert.equal(calls[0].body.title, 'Rerank 总结');
+    assert.equal(calls[0].body.contentType, 'markdown');
+    assert.match(calls[0].body.content, /先召回/);
+    assert.equal(calls[0].body.projectKey, 'magclaw');
+    assert.equal(calls[0].body.channelId, 'chan_team');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('team memory cli installs a local skill without writing token into skill files', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-skill-home-'));
   const env = { HOME: home, CODEX_HOME: path.join(home, '.codex') };
@@ -427,5 +492,6 @@ test('team memory cli installs a local skill without writing token into skill fi
   assert.equal(result.ok, true);
   assert.match(skill, /magclaw memory search/);
   assert.match(skill, /magclaw memory context/);
+  assert.match(skill, /magclaw team-sharing share-artifact/);
   assert.doesNotMatch(skill, /memory-token-secret|api_key|Bearer/i);
 });
