@@ -150,10 +150,9 @@ export function applyParsedServerYamlConfig(config = {}, options = {}) {
   const feishu = objectValue(config.feishu || config.lark);
   const feishuConnect = objectValue(pick(feishu.connect, feishu.bot, feishu.gateway));
   const teamSharing = objectValue(config.team_sharing || config.teamSharing);
-  const teamSharingDefaultChannel = objectValue(pick(teamSharing.default_channel, teamSharing.defaultChannel));
-  const teamSharingEmbedding = objectValue(teamSharing.embedding);
-  const teamSharingZilliz = objectValue(teamSharing.zilliz || teamSharing.milvus);
-  const teamSharingRerank = objectValue(teamSharing.rerank);
+  const embedding = objectValue(config.embedding);
+  const zilliz = objectValue(config.zilliz || config.milvus);
+  const rerank = objectValue(config.rerank);
   const runtime = config.runtime || {};
   const daemon = config.daemon || {};
   const rawDaemonConnectCommand = pick(daemon.connect_command, daemon.connectCommand);
@@ -244,26 +243,23 @@ export function applyParsedServerYamlConfig(config = {}, options = {}) {
   setEnv(env, 'MAGCLAW_FEISHU_CONNECT_REPLY_MODE', pick(feishuConnect.reply_mode, feishuConnect.replyMode));
 
   setEnv(env, 'MAGCLAW_TEAM_SHARING_ENABLED', pick(teamSharing.enabled, teamSharing.enable));
-  setEnv(env, 'MAGCLAW_TEAM_SHARING_DEFAULT_CHANNEL_ID', pick(teamSharingDefaultChannel.channel_id, teamSharingDefaultChannel.channelId));
-  setEnv(env, 'MAGCLAW_TEAM_SHARING_DEFAULT_CHANNEL_PATH', pick(teamSharingDefaultChannel.channel_path, teamSharingDefaultChannel.channelPath));
-  setEnv(env, 'MAGCLAW_TEAM_SHARING_ROUTING_MODE', pick(teamSharingDefaultChannel.routing_mode, teamSharingDefaultChannel.routingMode));
-  setEnv(env, 'MAGCLAW_EMBEDDING_BASE_URL', pick(teamSharingEmbedding.base_url, teamSharingEmbedding.baseUrl, teamSharingEmbedding.url));
-  setEnv(env, 'MAGCLAW_EMBEDDING_API_KEY', pick(teamSharingEmbedding.api_key, teamSharingEmbedding.apiKey));
-  setEnv(env, 'MAGCLAW_EMBEDDING_MODEL', pick(teamSharingEmbedding.model, teamSharingEmbedding.model_name, teamSharingEmbedding.modelName));
+  setEnv(env, 'MAGCLAW_EMBEDDING_BASE_URL', pick(embedding.base_url, embedding.baseUrl, embedding.url));
+  setEnv(env, 'MAGCLAW_EMBEDDING_API_KEY', pick(embedding.api_key, embedding.apiKey));
+  setEnv(env, 'MAGCLAW_EMBEDDING_MODEL', pick(embedding.model, embedding.model_name, embedding.modelName));
   setEnv(env, 'MAGCLAW_EMBEDDING_PREFERRED_DIMENSION', pick(
-    teamSharingEmbedding.preferred_dimension,
-    teamSharingEmbedding.preferredDimension,
-    teamSharingEmbedding.dimension,
+    embedding.preferred_dimension,
+    embedding.preferredDimension,
+    embedding.dimension,
   ));
-  setEnv(env, 'MAGCLAW_ZILLIZ_ENDPOINT', pick(teamSharingZilliz.endpoint, teamSharingZilliz.url, teamSharingZilliz.base_url, teamSharingZilliz.baseUrl));
-  setEnv(env, 'MAGCLAW_ZILLIZ_TOKEN', pick(teamSharingZilliz.token, teamSharingZilliz.api_key, teamSharingZilliz.apiKey));
-  setEnv(env, 'MAGCLAW_ZILLIZ_DATABASE', pick(teamSharingZilliz.database, teamSharingZilliz.db));
-  setEnv(env, 'MAGCLAW_ZILLIZ_COLLECTION', pick(teamSharingZilliz.collection, teamSharingZilliz.collection_name, teamSharingZilliz.collectionName));
-  setEnv(env, 'MAGCLAW_RERANK_URL', pick(teamSharingRerank.url, teamSharingRerank.base_url, teamSharingRerank.baseUrl));
-  setEnv(env, 'MAGCLAW_RERANK_API_KEY', pick(teamSharingRerank.api_key, teamSharingRerank.apiKey));
-  setEnv(env, 'MAGCLAW_RERANK_MODEL', pick(teamSharingRerank.model, teamSharingRerank.model_name, teamSharingRerank.modelName));
-  setEnv(env, 'MAGCLAW_RERANK_CANDIDATE_K', pick(teamSharingRerank.candidate_k, teamSharingRerank.candidateK));
-  setEnv(env, 'MAGCLAW_RERANK_TOP_N', pick(teamSharingRerank.top_n, teamSharingRerank.topN));
+  setEnv(env, 'MAGCLAW_ZILLIZ_ENDPOINT', pick(zilliz.endpoint, zilliz.url, zilliz.base_url, zilliz.baseUrl));
+  setEnv(env, 'MAGCLAW_ZILLIZ_TOKEN', pick(zilliz.token, zilliz.api_key, zilliz.apiKey));
+  setEnv(env, 'MAGCLAW_ZILLIZ_DATABASE', pick(zilliz.database, zilliz.db));
+  setEnv(env, 'MAGCLAW_ZILLIZ_COLLECTION', pick(zilliz.collection, zilliz.collection_name, zilliz.collectionName));
+  setEnv(env, 'MAGCLAW_RERANK_URL', pick(rerank.url, rerank.base_url, rerank.baseUrl));
+  setEnv(env, 'MAGCLAW_RERANK_API_KEY', pick(rerank.api_key, rerank.apiKey));
+  setEnv(env, 'MAGCLAW_RERANK_MODEL', pick(rerank.model, rerank.model_name, rerank.modelName));
+  setEnv(env, 'MAGCLAW_RERANK_CANDIDATE_K', pick(rerank.candidate_k, rerank.candidateK));
+  setEnv(env, 'MAGCLAW_RERANK_TOP_N', pick(rerank.top_n, rerank.topN));
 
   setEnv(env, 'CODEX_MODEL', pick(runtime.codex_model, runtime.codexModel));
   setEnv(env, 'CODEX_PATH', pick(runtime.codex_path, runtime.codexPath));

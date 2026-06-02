@@ -67,6 +67,28 @@ llm:
   api_key: "replace-with-llm-api-key"
   model: "qwen3.5-flash"
 
+embedding:
+  base_url: "https://embedding.example.com/v1"
+  api_key: "replace-with-embedding-api-key"
+  model: "embedding-model"
+  preferred_dimension: 1536
+
+zilliz:
+  endpoint: "https://zilliz.example.com"
+  token: "replace-with-zilliz-token"
+  database: "ai_social_memory"
+  collection: "magclaw_team_sharing_v1"
+
+rerank:
+  url: "https://rerank.example.com/v1/rerank"
+  api_key: "replace-with-rerank-api-key"
+  model: "rerank-model"
+  candidate_k: 40
+  top_n: 5
+
+team_sharing:
+  enabled: false
+
 markdown_maintenance:
   enabled: true
   interval_ms: 21600000
