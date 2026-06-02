@@ -48,8 +48,8 @@ function clamp01(value) {
   return Math.max(0, Math.min(1, number));
 }
 
-function ensureTeamMemoryState(memory = null) {
-  const target = memory && typeof memory === 'object' ? memory : {};
+function ensureTeamSharingState(teamSharingState = null) {
+  const target = teamSharingState && typeof teamSharingState === 'object' ? teamSharingState : {};
   target.sessions = target.sessions && typeof target.sessions === 'object' ? target.sessions : {};
   target.events = target.events && typeof target.events === 'object' ? target.events : {};
   target.syncLedger = target.syncLedger && typeof target.syncLedger === 'object' ? target.syncLedger : {};
@@ -61,8 +61,8 @@ function ensureTeamMemoryState(memory = null) {
   return target;
 }
 
-export function createInitialTeamMemoryState() {
-  return ensureTeamMemoryState({});
+export function createInitialTeamSharingState() {
+  return ensureTeamSharingState({});
 }
 
 function normalizeRuntime(value) {
@@ -80,7 +80,7 @@ function toolNamesForEvent(event = {}) {
     .slice(0, 12);
 }
 
-function normalizeTeamMemoryEvent(event = {}, sessionId = '') {
+function normalizeTeamSharingEvent(event = {}, sessionId = '') {
   const role = String(event.role || event.type || '').trim().toLowerCase();
   if (!['user', 'assistant', 'agent'].includes(role)) return null;
   const cleanRole = role === 'agent' ? 'assistant' : role;
@@ -110,21 +110,21 @@ function inferTopicId({ title = '', events = [], optionalLocalDigest = '' } = {}
   if (haystack.includes('claude')) return 'claude-adapter';
   if (haystack.includes('hook')) return 'session-sync-hooks';
   if (haystack.includes('channel')) return 'channel-routing';
-  return safeSegment(title || events[0]?.cleanText || 'team-memory-topic', 'topic');
+  return safeSegment(title || events[0]?.cleanText || 'team-sharing-topic', 'topic');
 }
 
-function upsertVectorDocument(memory, document) {
-  const index = memory.vectorDocuments.findIndex((item) => item.vectorDocumentId === document.vectorDocumentId);
+function upsertVectorDocument(teamSharingState, document) {
+  const index = teamSharingState.vectorDocuments.findIndex((item) => item.vectorDocumentId === document.vectorDocumentId);
   if (index >= 0) {
-    memory.vectorDocuments[index] = { ...memory.vectorDocuments[index], ...document };
+    teamSharingState.vectorDocuments[index] = { ...teamSharingState.vectorDocuments[index], ...document };
   } else {
-    memory.vectorDocuments.push(document);
+    teamSharingState.vectorDocuments.push(document);
   }
 }
 
-function updateSessionAbstract(memory, session, acceptedEvents, options = {}) {
+function updateSessionAbstract(teamSharingState, session, acceptedEvents, options = {}) {
   const title = session.title || 'Untitled AI session';
-  const allEvents = asArray(memory.events[session.sessionId]);
+  const allEvents = asArray(teamSharingState.events[session.sessionId]);
   const fallbackTopicId = inferTopicId({
     title,
     events: allEvents,
@@ -164,9 +164,9 @@ function updateSessionAbstract(memory, session, acceptedEvents, options = {}) {
     ...sourceEventIds.map((eventId) => `- ${session.sessionId}#${eventId}`),
   ].join('\n');
   const updatedAt = options.now?.() || new Date().toISOString();
-  memory.abstracts[session.sessionId] = {
+  teamSharingState.abstracts[session.sessionId] = {
     sessionId: session.sessionId,
-    revision: Number(memory.abstracts[session.sessionId]?.revision || 0) + 1,
+    revision: Number(teamSharingState.abstracts[session.sessionId]?.revision || 0) + 1,
     abstractMarkdown,
     topics: topics.reduce((acc, topic) => {
       acc[topic.topicId] = {
@@ -183,7 +183,7 @@ function updateSessionAbstract(memory, session, acceptedEvents, options = {}) {
         updatedAt,
       };
       return acc;
-    }, { ...(memory.abstracts[session.sessionId]?.topics || {}) }),
+    }, { ...(teamSharingState.abstracts[session.sessionId]?.topics || {}) }),
     updatedAt,
   };
   const common = {
@@ -196,7 +196,7 @@ function updateSessionAbstract(memory, session, acceptedEvents, options = {}) {
     updatedAt,
     active: true,
   };
-  upsertVectorDocument(memory, {
+  upsertVectorDocument(teamSharingState, {
     ...common,
     vectorDocumentId: `${session.sessionId}:L0`,
     layer: 'L0',
@@ -208,7 +208,7 @@ function updateSessionAbstract(memory, session, acceptedEvents, options = {}) {
     freshnessScore: 1,
   });
   for (const topic of topics) {
-    upsertVectorDocument(memory, {
+    upsertVectorDocument(teamSharingState, {
       ...common,
       vectorDocumentId: `${session.sessionId}:L1:${topic.topicId}`,
       layer: 'L1',
@@ -222,7 +222,7 @@ function updateSessionAbstract(memory, session, acceptedEvents, options = {}) {
   }
   if (acceptedEvents.length) {
     const changedPaths = ['abstract.md', ...topics.map((topic) => `topics/${topic.topicId}/overview.md`)];
-    memory.activities.push({
+    teamSharingState.activities.push({
       activityId: `act_${stableHash(`${session.sessionId}:${updatedAt}:${acceptedEvents.length}`)}`,
       sessionId: session.sessionId,
       summary: cleanText(summary?.activitySummary || `同步 ${acceptedEvents.length} 条清洗事件，并更新 ${topics.map((topic) => topic.topicId).join(', ')} topic。`),
@@ -230,7 +230,7 @@ function updateSessionAbstract(memory, session, acceptedEvents, options = {}) {
       createdAt: updatedAt,
     });
   }
-  session.abstractRevision = memory.abstracts[session.sessionId].revision;
+  session.abstractRevision = teamSharingState.abstracts[session.sessionId].revision;
   session.indexStatus = 'ready';
   session.topicIds = [...new Set([...(session.topicIds || []), ...topics.map((topic) => topic.topicId)])];
 }
@@ -240,10 +240,10 @@ function ensureChannelExists(state, channelId) {
   return asArray(state.channels).some((channel) => channel.id === channelId);
 }
 
-export async function syncTeamMemoryBatch(packageBody = {}, deps = {}) {
+export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
   const state = deps.state || {};
-  const memory = ensureTeamMemoryState(state.teamMemory);
-  state.teamMemory = memory;
+  const teamSharingState = ensureTeamSharingState(state.teamSharing);
+  state.teamSharing = teamSharingState;
   const now = deps.now || (() => new Date().toISOString());
   const makeId = deps.makeId || ((prefix) => `${prefix}_${stableHash(`${prefix}:${Date.now()}:${Math.random()}`)}`);
   const sessionId = String(packageBody.sessionId || '').trim();
@@ -259,18 +259,18 @@ export async function syncTeamMemoryBatch(packageBody = {}, deps = {}) {
 
   const idempotencyKey = String(packageBody.idempotencyKey || '').trim()
     || `${normalizeRuntime(packageBody.runtime)}:${packageBody.projectKey || ''}:${sessionId}:${packageBody.fromOrdinal || 0}:${packageBody.toOrdinal || 0}:${stableHash(JSON.stringify(packageBody.events || []))}`;
-  if (memory.syncLedger[idempotencyKey]?.status === 'accepted') {
+  if (teamSharingState.syncLedger[idempotencyKey]?.status === 'accepted') {
     return {
       ok: true,
       duplicate: true,
       sessionId,
-      messageId: memory.sessions[sessionId]?.messageId || '',
+      messageId: teamSharingState.sessions[sessionId]?.messageId || '',
       appendedEventCount: 0,
     };
   }
 
   const createdAt = now();
-  const session = memory.sessions[sessionId] || {
+  const session = teamSharingState.sessions[sessionId] || {
     sessionId,
     workspaceId: String(packageBody.workspaceId || state.connection?.workspaceId || 'local'),
     channelId,
@@ -288,7 +288,7 @@ export async function syncTeamMemoryBatch(packageBody = {}, deps = {}) {
   };
   session.channelId = channelId;
   session.optionalLocalDigest = cleanText(packageBody.optionalLocalDigest || session.optionalLocalDigest || '');
-  memory.sessions[sessionId] = session;
+  teamSharingState.sessions[sessionId] = session;
 
   if (!session.messageId) {
     const message = {
@@ -297,7 +297,7 @@ export async function syncTeamMemoryBatch(packageBody = {}, deps = {}) {
       spaceType: 'channel',
       spaceId: channelId,
       authorType: 'system',
-      authorId: 'team_memory',
+      authorId: 'team_sharing',
       body: session.title,
       attachmentIds: [],
       mentionedAgentIds: [],
@@ -310,8 +310,8 @@ export async function syncTeamMemoryBatch(packageBody = {}, deps = {}) {
       createdAt,
       updatedAt: createdAt,
       metadata: {
-        systemKind: 'team_memory_session',
-        teamMemory: {
+        systemKind: 'team_sharing_session',
+        teamSharing: {
           runtime: session.runtime,
           projectKey: session.projectKey,
           sessionId,
@@ -323,17 +323,17 @@ export async function syncTeamMemoryBatch(packageBody = {}, deps = {}) {
     session.messageId = message.id;
   }
 
-  const existingEvents = new Map(asArray(memory.events[sessionId]).map((event) => [event.eventId, event]));
+  const existingEvents = new Map(asArray(teamSharingState.events[sessionId]).map((event) => [event.eventId, event]));
   const acceptedEvents = [];
   for (const rawEvent of asArray(packageBody.events)) {
-    const event = normalizeTeamMemoryEvent(rawEvent, sessionId);
+    const event = normalizeTeamSharingEvent(rawEvent, sessionId);
     if (!event) continue;
     const duplicate = existingEvents.get(event.eventId);
     if (duplicate && duplicate.sourceHash === event.sourceHash) continue;
     existingEvents.set(event.eventId, event);
     acceptedEvents.push(event);
   }
-  memory.events[sessionId] = [...existingEvents.values()]
+  teamSharingState.events[sessionId] = [...existingEvents.values()]
     .sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0) || left.createdAt.localeCompare(right.createdAt));
 
   state.replies = asArray(state.replies);
@@ -345,7 +345,7 @@ export async function syncTeamMemoryBatch(packageBody = {}, deps = {}) {
       spaceType: 'channel',
       spaceId: channelId,
       authorType: event.role === 'user' ? 'human' : 'agent',
-      authorId: event.role === 'user' ? String(packageBody.humanId || 'hum_local') : String(packageBody.agentId || 'team_memory_agent'),
+      authorId: event.role === 'user' ? String(packageBody.humanId || 'hum_local') : String(packageBody.agentId || 'team_sharing_agent'),
       body: event.cleanText,
       attachmentIds: [],
       mentionedAgentIds: [],
@@ -356,8 +356,8 @@ export async function syncTeamMemoryBatch(packageBody = {}, deps = {}) {
       createdAt: event.createdAt || createdAt,
       updatedAt: event.createdAt || createdAt,
       metadata: {
-        systemKind: 'team_memory_event',
-        teamMemory: {
+        systemKind: 'team_sharing_event',
+        teamSharing: {
           runtime: session.runtime,
           projectKey: session.projectKey,
           sessionId,
@@ -383,17 +383,17 @@ export async function syncTeamMemoryBatch(packageBody = {}, deps = {}) {
       try {
         summary = await deps.summarizeSession({
           session,
-          events: memory.events[sessionId],
+          events: teamSharingState.events[sessionId],
           acceptedEvents,
-          previousAbstract: memory.abstracts[sessionId]?.abstractMarkdown || '',
+          previousAbstract: teamSharingState.abstracts[sessionId]?.abstractMarkdown || '',
         });
       } catch {
         summary = null;
       }
     }
-    updateSessionAbstract(memory, session, acceptedEvents, { now, summary });
+    updateSessionAbstract(teamSharingState, session, acceptedEvents, { now, summary });
   }
-  memory.syncLedger[idempotencyKey] = {
+  teamSharingState.syncLedger[idempotencyKey] = {
     idempotencyKey,
     runtime: session.runtime,
     projectKey: session.projectKey,
@@ -415,9 +415,9 @@ export async function syncTeamMemoryBatch(packageBody = {}, deps = {}) {
   };
 }
 
-export function contextWindowForTeamMemorySession(memoryInput, sessionId, options = {}) {
-  const memory = ensureTeamMemoryState(memoryInput);
-  const events = asArray(memory.events[String(sessionId || '')]).sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0));
+export function contextWindowForTeamSharingSession(teamSharingStateInput, sessionId, options = {}) {
+  const teamSharingState = ensureTeamSharingState(teamSharingStateInput);
+  const events = asArray(teamSharingState.events[String(sessionId || '')]).sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0));
   if (!events.length) return { ok: false, code: 'session_not_found', events: [], pagination: { hasPrev: false, hasNext: false } };
   const anchorEventId = String(options.anchorEventId || '').trim();
   const direction = String(options.direction || 'around').trim().toLowerCase();
@@ -450,12 +450,12 @@ export function contextWindowForTeamMemorySession(memoryInput, sessionId, option
   };
 }
 
-function hotnessFor(memory, vectorDocumentId, now = () => new Date().toISOString(), options = {}) {
+function hotnessFor(teamSharingState, vectorDocumentId, now = () => new Date().toISOString(), options = {}) {
   const maxBoost = Number.isFinite(Number(options.maxHotnessBoost)) ? Number(options.maxHotnessBoost) : DEFAULT_MAX_HOTNESS_BOOST;
   const halfLifeDays = Number.isFinite(Number(options.halfLifeDays)) ? Number(options.halfLifeDays) : 30;
   const nowMs = Date.parse(now());
   const deduped = new Map();
-  for (const item of asArray(memory.feedback)) {
+  for (const item of asArray(teamSharingState.feedback)) {
     if (item.vectorDocumentId !== vectorDocumentId) continue;
     const rawWeight = FEEDBACK_WEIGHTS[item.eventType] ?? 0;
     const eventMs = Date.parse(item.createdAt || '');
@@ -479,8 +479,8 @@ function hotnessFor(memory, vectorDocumentId, now = () => new Date().toISOString
   return Math.max(-maxBoost, Math.min(maxBoost, score));
 }
 
-export function applyTeamMemoryFeedback(memoryInput, event = {}) {
-  const memory = ensureTeamMemoryState(memoryInput);
+export function applyTeamSharingFeedback(teamSharingStateInput, event = {}) {
+  const teamSharingState = ensureTeamSharingState(teamSharingStateInput);
   const vectorDocumentId = String(event.vectorDocumentId || '').trim();
   const eventType = String(event.eventType || '').trim();
   if (!vectorDocumentId || !(eventType in FEEDBACK_WEIGHTS)) {
@@ -499,12 +499,12 @@ export function applyTeamMemoryFeedback(memoryInput, event = {}) {
     weight: FEEDBACK_WEIGHTS[eventType],
     createdAt,
   };
-  memory.feedback.push(record);
-  return { ok: true, feedback: record, hotnessScore: hotnessFor(memory, vectorDocumentId, () => createdAt) };
+  teamSharingState.feedback.push(record);
+  return { ok: true, feedback: record, hotnessScore: hotnessFor(teamSharingState, vectorDocumentId, () => createdAt) };
 }
 
-export function rankTeamMemoryCandidates(params = {}) {
-  const memory = ensureTeamMemoryState(params.memory);
+export function rankTeamSharingCandidates(params = {}) {
+  const teamSharingState = ensureTeamSharingState(params.teamSharingState);
   const queryId = params.queryId || `tmq_${stableHash(`${params.query || ''}:${Date.now()}:${Math.random()}`)}`;
   const rerankByIndex = new Map(asArray(params.rerankResults).map((item) => [Number(item.index), clamp01(item.score)]));
   const trace = {
@@ -523,7 +523,7 @@ export function rankTeamMemoryCandidates(params = {}) {
     const keywordScore = clamp01(candidate.keywordScore);
     const freshnessScore = clamp01(candidate.freshnessScore);
     const semanticScore = 0.75 * rerankScore + 0.25 * vectorScore;
-    const hotnessScore = hotnessFor(memory, candidate.vectorDocumentId, params.now, params.hotness);
+    const hotnessScore = hotnessFor(teamSharingState, candidate.vectorDocumentId, params.now, params.hotness);
     const finalScore = (0.75 * semanticScore) + (0.10 * keywordScore) + (0.05 * freshnessScore) + hotnessScore;
     trace.vectorCandidates.push(candidate.vectorDocumentId);
     trace.rerankScores[candidate.vectorDocumentId] = rerankScore;
@@ -563,7 +563,7 @@ export function rankTeamMemoryCandidates(params = {}) {
     if (selected.length >= limit) break;
   }
   trace.selectedTop5 = selected.map((item) => item.vectorDocumentId);
-  memory.searchTraces.push({
+  teamSharingState.searchTraces.push({
     ...trace,
     createdAt: params.now?.() || new Date().toISOString(),
   });

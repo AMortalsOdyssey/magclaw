@@ -2,16 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  buildTeamMemorySummaryPrompt,
-  createTeamMemorySummaryClient,
-} from '../server/team-memory-summary.js';
+  buildTeamSharingSummaryPrompt,
+  createTeamSharingSummaryClient,
+} from '../server/team-sharing-summary.js';
 import {
-  createInitialTeamMemoryState,
-  syncTeamMemoryBatch,
-} from '../server/team-memory.js';
+  createInitialTeamSharingState,
+  syncTeamSharingBatch,
+} from '../server/team-sharing.js';
 
-test('team memory summary prompt asks for L0/L1/activity/source anchors without hidden reasoning', () => {
-  const prompt = buildTeamMemorySummaryPrompt({
+test('team sharing summary prompt asks for L0/L1/activity/source anchors without hidden reasoning', () => {
+  const prompt = buildTeamSharingSummaryPrompt({
     session: { sessionId: 'sess_1', title: 'Rerank design' },
     events: [
       { eventId: 'evt_1', role: 'user', cleanText: '我们要讨论 rerank。' },
@@ -26,9 +26,9 @@ test('team memory summary prompt asks for L0/L1/activity/source anchors without 
   assert.match(prompt, /不要编造隐藏思考/);
 });
 
-test('team memory summary client parses JSON response from OpenAI-compatible API', async () => {
+test('team sharing summary client parses JSON response from OpenAI-compatible API', async () => {
   const calls = [];
-  const client = createTeamMemorySummaryClient({
+  const client = createTeamSharingSummaryClient({
     baseUrl: 'https://model.example/v1',
     apiKey: 'summary-secret',
     model: 'gpt-summary',
@@ -64,15 +64,15 @@ test('team memory summary client parses JSON response from OpenAI-compatible API
   assert.doesNotMatch(JSON.stringify(result), /summary-secret/);
 });
 
-test('team memory sync uses injected authoritative summary and falls back safely', async () => {
+test('team sharing sync uses injected authoritative summary and falls back safely', async () => {
   const state = {
     connection: { workspaceId: 'ws_test' },
-    channels: [{ id: 'chan_team', name: 'team-memory' }],
+    channels: [{ id: 'chan_team', name: 'team-sharing' }],
     messages: [],
     replies: [],
-    teamMemory: createInitialTeamMemoryState(),
+    teamSharing: createInitialTeamSharingState(),
   };
-  const result = await syncTeamMemoryBatch({
+  const result = await syncTeamSharingBatch({
     runtime: 'codex',
     projectKey: 'magclaw',
     sessionId: 'sess_summary',
@@ -105,8 +105,8 @@ test('team memory sync uses injected authoritative summary and falls back safely
   });
 
   assert.equal(result.ok, true);
-  const abstract = state.teamMemory.abstracts.sess_summary;
+  const abstract = state.teamSharing.abstracts.sess_summary;
   assert.match(abstract.abstractMarkdown, /本 session 明确了 rerank top5/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /反馈热度微调/);
-  assert.ok(state.teamMemory.activities.some((item) => item.summary === '合并 rerank-feedback 主题摘要。'));
+  assert.ok(state.teamSharing.activities.some((item) => item.summary === '合并 rerank-feedback 主题摘要。'));
 });

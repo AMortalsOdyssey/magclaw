@@ -17,7 +17,7 @@ function compactWhitespace(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-function redactTeamMemoryText(value = '') {
+function redactTeamSharingText(value = '') {
   return compactWhitespace(value)
     .replace(/(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[^\s"',;)]+/gi, '[redacted-secret]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, 'Bearer [redacted-secret]')
@@ -96,7 +96,7 @@ function codexTextEvent(item, context) {
   if (payload.type !== 'message') return null;
   const role = String(payload.role || '').toLowerCase();
   if (!['user', 'assistant'].includes(role)) return null;
-  const text = redactTeamMemoryText(textFromContentBlocks(payload.content));
+  const text = redactTeamSharingText(textFromContentBlocks(payload.content));
   if (!text) return null;
   return {
     role,
@@ -119,7 +119,7 @@ function claudeTextEvent(item, context) {
     const textBlocks = asArray(raw.message?.content)
       .map((block) => (block?.type === 'text' ? block.text : ''))
       .filter(Boolean);
-    const text = redactTeamMemoryText(textBlocks.join('\n\n'));
+    const text = redactTeamSharingText(textBlocks.join('\n\n'));
     if (!text) return null;
     return {
       role: raw.type === 'assistant' ? 'assistant' : 'user',
@@ -136,7 +136,7 @@ function claudeTextEvent(item, context) {
   return null;
 }
 
-export function parseTeamMemoryTranscript(text = '', options = {}) {
+export function parseTeamSharingTranscript(text = '', options = {}) {
   const runtime = normalizeRuntime(options.runtime);
   const parsed = parseJsonOrJsonl(text);
   const context = {
@@ -180,9 +180,9 @@ export function parseTeamMemoryTranscript(text = '', options = {}) {
   };
 }
 
-export function buildTeamMemorySyncPackageFromTranscript(text = '', options = {}) {
+export function buildTeamSharingSyncPackageFromTranscript(text = '', options = {}) {
   const runtime = normalizeRuntime(options.runtime);
-  const parsed = parseTeamMemoryTranscript(text, options);
+  const parsed = parseTeamSharingTranscript(text, options);
   const lastOrdinal = Math.max(0, Number(options.lastOrdinal || 0));
   const minCreatedAt = String(options.minCreatedAt || '').trim();
   const incrementalEvents = parsed.events
@@ -240,7 +240,7 @@ export function buildTeamMemorySyncPackageFromTranscript(text = '', options = {}
   };
 }
 
-export function shouldRunTeamMemoryHook({ runtime = 'codex', hookEventName = '' } = {}) {
+export function shouldRunTeamSharingHook({ runtime = 'codex', hookEventName = '' } = {}) {
   const normalized = normalizeRuntime(runtime);
   const event = String(hookEventName || '').trim();
   const allowed = normalized === 'claude_code' ? CLAUDE_HOOK_EVENTS : CODEX_HOOK_EVENTS;
@@ -251,13 +251,13 @@ function shellQuote(value = '') {
   return `'${String(value || '').replace(/'/g, "'\\''")}'`;
 }
 
-export function buildTeamMemoryHookCommand(options = {}) {
+export function buildTeamSharingHookCommand(options = {}) {
   const runtime = normalizeRuntime(options.runtime);
   const hookEventName = String(options.hookEventName || (runtime === 'claude_code' ? 'SessionEnd' : 'Stop')).trim();
   const transcriptPath = options.transcriptPath || (runtime === 'claude_code' ? '${CLAUDE_TRANSCRIPT_PATH:-}' : '${CODEX_SESSION_FILE:-}');
   const parts = [
     'magclaw',
-    'memory',
+    'team-sharing',
     'sync',
     '--runtime',
     runtime,
@@ -283,7 +283,7 @@ async function readJson(file, fallback = {}) {
   }
 }
 
-export async function installTeamMemoryHookConfig(options = {}) {
+export async function installTeamSharingHookConfig(options = {}) {
   const runtime = normalizeRuntime(options.runtime);
   const configPath = String(options.configPath || '').trim();
   if (!configPath) throw new Error('configPath is required.');
@@ -291,11 +291,11 @@ export async function installTeamMemoryHookConfig(options = {}) {
   config.hooks = config.hooks && typeof config.hooks === 'object' ? config.hooks : {};
   const installed = [];
   for (const hookEventName of hookEventsForRuntime(runtime)) {
-    const command = buildTeamMemoryHookCommand({ ...options, runtime, hookEventName });
+    const command = buildTeamSharingHookCommand({ ...options, runtime, hookEventName });
     const entries = asArray(config.hooks[hookEventName]);
     const entry = entries[0] || { hooks: [] };
     entry.hooks = asArray(entry.hooks);
-    const exists = entry.hooks.some((hook) => String(hook?.command || '').includes('magclaw memory sync')
+    const exists = entry.hooks.some((hook) => String(hook?.command || '').includes('magclaw team-sharing sync')
       && String(hook?.command || '').includes(`--runtime ${runtime}`)
       && String(hook?.command || '').includes(`--hook-event ${hookEventName}`));
     if (!exists) {

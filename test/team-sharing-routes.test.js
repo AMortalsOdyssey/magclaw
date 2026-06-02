@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { handleTeamMemoryApi } from '../server/api/team-memory-routes.js';
-import { createInitialTeamMemoryState } from '../server/team-memory.js';
+import { handleTeamSharingApi } from '../server/api/team-sharing-routes.js';
+import { createInitialTeamSharingState } from '../server/team-sharing.js';
 
 function makeResponse() {
   return {
@@ -27,10 +27,10 @@ function makeResponse() {
 function routeDeps(overrides = {}) {
   const state = {
     connection: { workspaceId: 'ws_route' },
-    channels: [{ id: 'chan_team', name: 'team-memory' }],
+    channels: [{ id: 'chan_team', name: 'team-sharing' }],
     messages: [],
     replies: [],
-    teamMemory: createInitialTeamMemoryState(),
+    teamSharing: createInitialTeamSharingState(),
   };
   const persistCalls = [];
   const events = [];
@@ -54,9 +54,9 @@ function routeDeps(overrides = {}) {
       res.statusCode = statusCode;
       res.data = data;
     },
-    vectorSearch: async ({ memory }) => ({
+    vectorSearch: async ({ teamSharingState }) => ({
       ok: true,
-      candidates: memory.vectorDocuments.map((doc) => ({
+      candidates: teamSharingState.vectorDocuments.map((doc) => ({
         ...doc,
         vectorScore: doc.topicId === 'rerank-feedback' ? 0.8 : 0.2,
         keywordScore: doc.topicId === 'rerank-feedback' ? 0.9 : 0.1,
@@ -103,17 +103,17 @@ function syncBody() {
   };
 }
 
-test('team memory route syncs a batch and search returns reranked top results', async () => {
+test('team sharing route syncs a batch and search returns reranked top results', async () => {
   const indexed = [];
   const deps = routeDeps({
     readJson: async () => syncBody(),
-    indexTeamMemoryDocuments: async ({ documents }) => indexed.push(...documents),
+    indexTeamSharingDocuments: async ({ documents }) => indexed.push(...documents),
   });
   const syncRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST' },
     syncRes,
-    new URL('http://local/api/team-memory/sync'),
+    new URL('http://local/api/team-sharing/sync'),
     deps,
   ), true);
   assert.equal(syncRes.statusCode, 202);
@@ -127,10 +127,10 @@ test('team memory route syncs a batch and search returns reranked top results', 
     ...deps,
     readJson: async () => ({ query: 'rerank 反馈', channelId: 'chan_team', limit: 5 }),
   };
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST' },
     searchRes,
-    new URL('http://local/api/team-memory/search'),
+    new URL('http://local/api/team-sharing/search'),
     searchDeps,
   ), true);
   assert.equal(searchRes.statusCode, 200);
@@ -140,24 +140,25 @@ test('team memory route syncs a batch and search returns reranked top results', 
   assert.equal(searchRes.data.rerankUsed, true);
   assert.ok(searchRes.data.traceId);
   assert.equal(searchRes.data.results[0].anchorEventId, 'evt_1');
+  assert.match(searchRes.data.results[0].contextUrl, /\/team-sharing\/context\/sess_route/);
   assert.match(searchRes.data.results[0].contextUrl, /anchorEventId=evt_1/);
   assert.match(searchRes.data.results[0].contextUrl, /vectorDocumentId=sess_route%3AL1%3Arerank-feedback/);
   assert.doesNotMatch(searchRes.data.results[0].contextUrl, /anchor=sess_route%2Ftopics/);
-  assert.ok(deps.state.teamMemory.feedback.some((item) => item.eventType === 'served' && item.queryId === searchRes.data.queryId));
+  assert.ok(deps.state.teamSharing.feedback.some((item) => item.eventType === 'served' && item.queryId === searchRes.data.queryId));
 });
 
-test('team memory route rejects unauthenticated cloud sync unless scoped token is valid', async () => {
+test('team sharing route rejects unauthenticated cloud sync unless scoped token is valid', async () => {
   const unauthorized = routeDeps({
     currentActor: () => null,
     readJson: async () => syncBody(),
-    teamMemoryAuthRequired: () => true,
-    validTeamMemoryToken: () => false,
+    teamSharingAuthRequired: () => true,
+    validTeamSharingToken: () => false,
   });
   const rejected = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST', headers: {} },
     rejected,
-    new URL('http://local/api/team-memory/sync'),
+    new URL('http://local/api/team-sharing/sync'),
     unauthorized,
   ), true);
   assert.equal(rejected.statusCode, 401);
@@ -165,28 +166,28 @@ test('team memory route rejects unauthenticated cloud sync unless scoped token i
   const authorized = routeDeps({
     currentActor: () => null,
     readJson: async () => syncBody(),
-    teamMemoryAuthRequired: () => true,
-    validTeamMemoryToken: () => true,
+    teamSharingAuthRequired: () => true,
+    validTeamSharingToken: () => true,
   });
   const accepted = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST', headers: { authorization: 'Bearer scoped-token' } },
     accepted,
-    new URL('http://local/api/team-memory/sync'),
+    new URL('http://local/api/team-sharing/sync'),
     authorized,
   ), true);
   assert.equal(accepted.statusCode, 202);
 });
 
-test('team memory auth issues scoped token, supports whoami, and revokes token', async () => {
+test('team sharing auth issues scoped token, supports whoami, and revokes token', async () => {
   const deps = routeDeps({
     currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_route', email: 'team@example.com' } }),
   });
   const startRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST' },
     startRes,
-    new URL('http://local/api/team-memory/auth/start'),
+    new URL('http://local/api/team-sharing/auth/start'),
     deps,
   ), true);
   assert.equal(startRes.statusCode, 201);
@@ -200,77 +201,77 @@ test('team memory auth issues scoped token, supports whoami, and revokes token',
     readJson: async () => ({ deviceCode: startRes.data.deviceCode }),
   };
   const tokenRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST' },
     tokenRes,
-    new URL('http://local/api/team-memory/auth/token'),
+    new URL('http://local/api/team-sharing/auth/token'),
     tokenDeps,
   ), true);
   assert.equal(tokenRes.statusCode, 200);
   assert.equal(tokenRes.data.status, 'approved');
   assert.match(tokenRes.data.token, /^tm_/);
-  assert.equal(JSON.stringify(deps.state.teamMemory).includes(tokenRes.data.token), false);
+  assert.equal(JSON.stringify(deps.state.teamSharing).includes(tokenRes.data.token), false);
 
   const whoamiRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
     whoamiRes,
-    new URL('http://local/api/team-memory/auth/whoami'),
+    new URL('http://local/api/team-sharing/auth/whoami'),
     { ...deps, currentActor: () => null },
   ), true);
   assert.equal(whoamiRes.statusCode, 200);
   assert.equal(whoamiRes.data.user.email, 'team@example.com');
 
   const syncRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
     syncRes,
-    new URL('http://local/api/team-memory/sync'),
+    new URL('http://local/api/team-sharing/sync'),
     {
       ...deps,
       currentActor: () => null,
-      teamMemoryAuthRequired: () => true,
-      validTeamMemoryToken: null,
+      teamSharingAuthRequired: () => true,
+      validTeamSharingToken: null,
       readJson: async () => syncBody(),
     },
   ), true);
   assert.equal(syncRes.statusCode, 202);
 
   const revokeRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
     revokeRes,
-    new URL('http://local/api/team-memory/auth/revoke'),
+    new URL('http://local/api/team-sharing/auth/revoke'),
     { ...deps, currentActor: () => null },
   ), true);
   assert.equal(revokeRes.statusCode, 200);
   assert.equal(revokeRes.data.revoked, true);
 
   const rejectedAfterRevoke = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
     rejectedAfterRevoke,
-    new URL('http://local/api/team-memory/sync'),
+    new URL('http://local/api/team-sharing/sync'),
     {
       ...deps,
       currentActor: () => null,
-      teamMemoryAuthRequired: () => true,
-      validTeamMemoryToken: null,
+      teamSharingAuthRequired: () => true,
+      validTeamSharingToken: null,
       readJson: async () => syncBody(),
     },
   ), true);
   assert.equal(rejectedAfterRevoke.statusCode, 401);
 });
 
-test('team memory local search fallback filters by vector document updatedAt date range', async () => {
+test('team sharing local search fallback filters by vector document updatedAt date range', async () => {
   const deps = routeDeps({ readJson: async () => syncBody(), vectorSearch: null, rerank: null });
-  await handleTeamMemoryApi(
+  await handleTeamSharingApi(
     { method: 'POST' },
     makeResponse(),
-    new URL('http://local/api/team-memory/sync'),
+    new URL('http://local/api/team-sharing/sync'),
     deps,
   );
-  for (const doc of deps.state.teamMemory.vectorDocuments) {
+  for (const doc of deps.state.teamSharing.vectorDocuments) {
     doc.updatedAt = doc.layer === 'L1' ? '2026-06-01T09:59:00.000Z' : '2026-05-31T23:59:00.000Z';
   }
 
@@ -284,10 +285,10 @@ test('team memory local search fallback filters by vector document updatedAt dat
       limit: 5,
     }),
   };
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST' },
     searchRes,
-    new URL('http://local/api/team-memory/search'),
+    new URL('http://local/api/team-sharing/search'),
     searchDeps,
   ), true);
 
@@ -295,15 +296,15 @@ test('team memory local search fallback filters by vector document updatedAt dat
   assert.deepEqual(searchRes.data.results.map((item) => item.layer), ['L1']);
 });
 
-test('team memory route records feedback and serves context windows', async () => {
+test('team sharing route records feedback and serves context windows', async () => {
   const deps = routeDeps({ readJson: async () => syncBody() });
-  await handleTeamMemoryApi(
+  await handleTeamSharingApi(
     { method: 'POST' },
     makeResponse(),
-    new URL('http://local/api/team-memory/sync'),
+    new URL('http://local/api/team-sharing/sync'),
     deps,
   );
-  const vectorDocumentId = deps.state.teamMemory.vectorDocuments.find((doc) => doc.layer === 'L1').vectorDocumentId;
+  const vectorDocumentId = deps.state.teamSharing.vectorDocuments.find((doc) => doc.layer === 'L1').vectorDocumentId;
   const feedbackDeps = {
     ...deps,
     readJson: async () => ({
@@ -314,37 +315,37 @@ test('team memory route records feedback and serves context windows', async () =
     }),
   };
   const feedbackRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST' },
     feedbackRes,
-    new URL('http://local/api/team-memory/feedback'),
+    new URL('http://local/api/team-sharing/feedback'),
     feedbackDeps,
   ), true);
   assert.equal(feedbackRes.statusCode, 200);
   assert.equal(feedbackRes.data.ok, true);
-  assert.equal(deps.state.teamMemory.feedback.length, 1);
+  assert.equal(deps.state.teamSharing.feedback.length, 1);
 
   const contextRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'GET' },
     contextRes,
-    new URL('http://local/api/team-memory/context/sess_route?anchorEventId=evt_1&direction=next&limit=1'),
+    new URL('http://local/api/team-sharing/context/sess_route?anchorEventId=evt_1&direction=next&limit=1'),
     deps,
   ), true);
   assert.equal(contextRes.statusCode, 200);
   assert.deepEqual(contextRes.data.events.map((event) => event.eventId), ['evt_2']);
 });
 
-test('team memory route doctor exposes missing recall dependencies without secrets', async () => {
+test('team sharing route doctor exposes missing recall dependencies without secrets', async () => {
   const deps = routeDeps({
     zillizReady: () => false,
     rerankReady: () => false,
   });
   const res = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'GET' },
     res,
-    new URL('http://local/api/team-memory/doctor'),
+    new URL('http://local/api/team-sharing/doctor'),
     deps,
   ), true);
   assert.equal(res.statusCode, 200);
@@ -355,16 +356,16 @@ test('team memory route doctor exposes missing recall dependencies without secre
   assert.doesNotMatch(JSON.stringify(res.data), /secret|token|api_key/i);
 });
 
-test('team memory route doctor can probe embedding dimension on demand', async () => {
+test('team sharing route doctor can probe embedding dimension on demand', async () => {
   const deps = routeDeps({
     embeddingReady: () => true,
     embeddingProbe: async () => ({ ok: true, dimension: 1536 }),
   });
   const res = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'GET' },
     res,
-    new URL('http://local/api/team-memory/doctor?probe=1'),
+    new URL('http://local/api/team-sharing/doctor?probe=1'),
     deps,
   ), true);
 
@@ -373,37 +374,37 @@ test('team memory route doctor can probe embedding dimension on demand', async (
   assert.equal(res.data.checks.embedding.dimension, 1536);
 });
 
-test('team memory route creates a public share and serves it without authentication', async () => {
+test('team sharing route creates a public share and serves it without authentication', async () => {
   const deps = routeDeps({
     currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_route', name: 'Ada PM', email: 'ada@example.com' } }),
     readJson: async () => ({
       title: 'Rerank 方案摘要',
       contentType: 'markdown',
       content: '# Rerank 方案摘要\n\n团队结论：先召回，再重排，最后记录反馈。',
-      channelPath: 'feishu://docs/team/channel/product-memory',
+      channelPath: 'feishu://docs/team/channel/product-sharing',
       projectKey: 'magclaw',
     }),
   });
   const createRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
     createRes,
-    new URL('https://magclaw.example/api/team-memory/shares'),
+    new URL('https://magclaw.example/api/team-sharing/shares'),
     deps,
   ), true);
 
   assert.equal(createRes.statusCode, 201);
   assert.equal(createRes.data.ok, true);
   assert.match(createRes.data.url, /^https:\/\/magclaw\.example\/s\/share_/);
-  assert.equal(deps.state.teamMemory.shares.length, 1);
+  assert.equal(deps.state.teamSharing.shares.length, 1);
 
   const shareId = createRes.data.shareId;
   const publicRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: {} },
     publicRes,
     new URL(`https://magclaw.example/s/${shareId}`),
-    { ...deps, currentActor: () => null, teamMemoryAuthRequired: () => true },
+    { ...deps, currentActor: () => null, teamSharingAuthRequired: () => true },
   ), true);
 
   assert.equal(publicRes.statusCode, 200);
@@ -415,24 +416,24 @@ test('team memory route creates a public share and serves it without authenticat
   assert.match(publicRes.body, /Created by Ada PM/);
   assert.match(publicRes.body, /2026-06-01T10:00:00.000Z/);
 
-  deps.state.teamMemory.shares.push({
-    ...deps.state.teamMemory.shares[0],
+  deps.state.teamSharing.shares.push({
+    ...deps.state.teamSharing.shares[0],
     id: 'share_other_server',
     workspaceId: 'ws_other',
     title: 'Other server share',
   });
 
   const rejectedIndex = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: {} },
     rejectedIndex,
     new URL('https://magclaw.example/share'),
-    { ...deps, currentActor: () => null, teamMemoryAuthRequired: () => true },
+    { ...deps, currentActor: () => null, teamSharingAuthRequired: () => true },
   ), true);
   assert.equal(rejectedIndex.statusCode, 401);
 
   const wrongServerIndex = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: {} },
     wrongServerIndex,
     new URL('https://magclaw.example/share'),
@@ -441,7 +442,7 @@ test('team memory route creates a public share and serves it without authenticat
   assert.equal(wrongServerIndex.statusCode, 403);
 
   const indexRes = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: {} },
     indexRes,
     new URL('https://magclaw.example/share'),
@@ -450,7 +451,7 @@ test('team memory route creates a public share and serves it without authenticat
   assert.equal(indexRes.statusCode, 200);
   assert.match(indexRes.body, /Share Root/);
   assert.match(indexRes.body, /Channel/);
-  assert.match(indexRes.body, /feishu:\/\/docs\/team\/channel\/product-memory/);
+  assert.match(indexRes.body, /feishu:\/\/docs\/team\/channel\/product-sharing/);
   assert.match(indexRes.body, /Project/);
   assert.match(indexRes.body, /magclaw/);
   assert.match(indexRes.body, /Rerank 方案摘要/);
@@ -458,21 +459,21 @@ test('team memory route creates a public share and serves it without authenticat
   assert.doesNotMatch(indexRes.body, /Other server share/);
 });
 
-test('team memory route serves a dynamic context html page without creating static files', async () => {
+test('team sharing route serves a dynamic context html page without creating static files', async () => {
   const deps = routeDeps();
   const res = makeResponse();
-  assert.equal(await handleTeamMemoryApi(
+  assert.equal(await handleTeamSharingApi(
     { method: 'GET' },
     res,
-    new URL('http://local/team-memory/context/sess_route?anchorEventId=evt_2&vectorDocumentId=vec_1&queryId=tmq_1'),
+    new URL('http://local/team-sharing/context/sess_route?anchorEventId=evt_2&vectorDocumentId=vec_1&queryId=tmq_1'),
     deps,
   ), true);
 
   assert.equal(res.statusCode, 200);
   assert.match(res.headers['content-type'], /text\/html/);
-  assert.match(res.body, /MagClaw Team Memory Context/);
-  assert.match(res.body, /\/api\/team-memory\/context\/sess_route/);
-  assert.match(res.body, /\/api\/team-memory\/feedback/);
+  assert.match(res.body, /MagClaw Team Sharing Context/);
+  assert.match(res.body, /\/api\/team-sharing\/context\/sess_route/);
+  assert.match(res.body, /\/api\/team-sharing\/feedback/);
   assert.match(res.body, /load_more/);
   assert.match(res.body, /vec_1/);
   assert.match(res.body, /load-more-prev/);

@@ -4,9 +4,9 @@ import test from 'node:test';
 import {
   createEmbeddingClient,
   createRerankClient,
-  createTeamMemoryIndexingPipeline,
-  createZillizTeamMemoryClient,
-} from '../server/team-memory-clients.js';
+  createTeamSharingIndexingPipeline,
+  createZillizTeamSharingClient,
+} from '../server/team-sharing-clients.js';
 
 function jsonResponse(data, ok = true, status = ok ? 200 : 500) {
   return {
@@ -79,13 +79,13 @@ test('rerank client normalizes provider scores by original candidate index', asy
   assert.equal(calls[0].init.headers.authorization, 'Bearer rerank-secret');
 });
 
-test('zilliz client searches and upserts team-memory vector documents with scoped filters', async () => {
+test('zilliz client searches and upserts team-sharing vector documents with scoped filters', async () => {
   const calls = [];
-  const client = createZillizTeamMemoryClient({
+  const client = createZillizTeamSharingClient({
     endpoint: 'https://zilliz.example',
     token: 'zilliz-secret',
     database: 'ai_social_memory',
-    collection: 'magclaw_team_memory_v1',
+    collection: 'magclaw_team_sharing_v1',
     dimension: 3,
     fetch: async (url, init) => {
       calls.push({ url, init, body: JSON.parse(init.body) });
@@ -149,7 +149,7 @@ test('zilliz client searches and upserts team-memory vector documents with scope
   assert.equal(search.candidates[0].vectorScore, 0.82);
   assert.match(calls[0].url, /\/v2\/vectordb\/entities\/search$/);
   assert.equal(calls[0].body.dbName, 'ai_social_memory');
-  assert.equal(calls[0].body.collectionName, 'magclaw_team_memory_v1');
+  assert.equal(calls[0].body.collectionName, 'magclaw_team_sharing_v1');
   assert.match(calls[0].body.filter, /channel_id == "chan_team"/);
   assert.match(calls[0].body.filter, /project_key == "magclaw"/);
   assert.match(calls[0].body.filter, /updated_at >= "2026-06-01T00:00:00.000Z"/);
@@ -160,10 +160,10 @@ test('zilliz client searches and upserts team-memory vector documents with scope
   assert.equal(calls[1].init.headers.authorization, 'Bearer zilliz-secret');
 });
 
-test('team memory indexing pipeline embeds abstract text before zilliz upsert', async () => {
+test('team sharing indexing pipeline embeds abstract text before zilliz upsert', async () => {
   const embedded = [];
   const upserts = [];
-  const pipeline = createTeamMemoryIndexingPipeline({
+  const pipeline = createTeamSharingIndexingPipeline({
     embeddingClient: {
       embed: async (text) => {
         embedded.push(text);
@@ -183,7 +183,7 @@ test('team memory indexing pipeline embeds abstract text before zilliz upsert', 
       {
         vectorDocumentId: 'sess_1:L0',
         layer: 'L0',
-        title: 'Team memory',
+        title: 'Team sharing',
         text: 'L0 abstract for retrieval',
       },
     ],
@@ -191,6 +191,6 @@ test('team memory indexing pipeline embeds abstract text before zilliz upsert', 
 
   assert.equal(result.ok, true);
   assert.equal(result.count, 1);
-  assert.deepEqual(embedded, ['Team memory\nL0 abstract for retrieval']);
+  assert.deepEqual(embedded, ['Team sharing\nL0 abstract for retrieval']);
   assert.equal(upserts[0].embeddings[0].length, 3);
 });

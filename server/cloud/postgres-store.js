@@ -21,7 +21,7 @@ import { safePathWithin } from '../path-utils.js';
 
 const TRANSIENT_POSTGRES_PERSIST_ERROR_CODES = new Set(['55P03', '40001', '40P01']);
 const DURABLE_STATE_RECORD_ARRAY_KEYS = Object.freeze(['reminders', 'missions', 'runs', 'projects', 'agentRuntimeSessions', 'conversationGrants']);
-const DURABLE_STATE_RECORD_OBJECT_KEYS = Object.freeze(['settings', 'connection', 'router', 'teamMemory']);
+const DURABLE_STATE_RECORD_OBJECT_KEYS = Object.freeze(['settings', 'connection', 'router', 'teamSharing']);
 const EPHEMERAL_STATE_RECORD_KEYS = new Set(['events', 'routeEvents', 'systemNotifications', 'inboxReads']);
 const EPHEMERAL_STATE_RECORD_KEY_LIST = Object.freeze([...EPHEMERAL_STATE_RECORD_KEYS]);
 const MESSAGE_PAGE_DEFAULT_LIMIT = 80;

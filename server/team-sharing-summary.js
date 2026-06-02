@@ -35,7 +35,7 @@ function normalizeSummary(value = {}) {
   };
 }
 
-export function buildTeamMemorySummaryPrompt({ session = {}, events = [], previousAbstract = '' } = {}) {
+export function buildTeamSharingSummaryPrompt({ session = {}, events = [], previousAbstract = '' } = {}) {
   const eventLines = asArray(events).map((event) => [
     `eventId: ${event.eventId}`,
     `role: ${event.role}`,
@@ -43,7 +43,7 @@ export function buildTeamMemorySummaryPrompt({ session = {}, events = [], previo
   ].join('\n')).join('\n\n---\n\n');
   return [
     '# Role',
-    'You are MagClaw team-memory abstract writer. Build a retrieval-grade workspace abstract from AI collaboration transcripts.',
+    'You are MagClaw team-sharing abstract writer. Build a retrieval-grade workspace abstract from AI collaboration transcripts.',
     '',
     '# Goal',
     'Update the authoritative abstract for this session. Keep it useful for future team recall, not just as a chat summary.',
@@ -70,14 +70,14 @@ export function buildTeamMemorySummaryPrompt({ session = {}, events = [], previo
   ].join('\n');
 }
 
-export function createTeamMemorySummaryClient(options = {}) {
+export function createTeamSharingSummaryClient(options = {}) {
   const fetchImpl = options.fetch || globalThis.fetch;
   const baseUrl = trimSlash(options.baseUrl || process.env.MAGCLAW_LLM_BASE_URL || process.env.BASE_URL || '');
   const apiKey = options.apiKey || process.env.MAGCLAW_LLM_API_KEY || process.env.API_KEY || '';
   const model = options.model || process.env.MAGCLAW_LLM_MODEL || process.env.MODEL || 'gpt-5.5';
   return {
     async summarizeSession(input = {}) {
-      if (!baseUrl) throw new Error('Team memory summary base URL is not configured.');
+      if (!baseUrl) throw new Error('Team sharing summary base URL is not configured.');
       const response = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -88,8 +88,8 @@ export function createTeamMemorySummaryClient(options = {}) {
         body: JSON.stringify({
           model,
           messages: [
-            { role: 'system', content: 'You write precise, source-grounded team memory abstracts.' },
-            { role: 'user', content: buildTeamMemorySummaryPrompt(input) },
+            { role: 'system', content: 'You write precise, source-grounded team sharing abstracts.' },
+            { role: 'user', content: buildTeamSharingSummaryPrompt(input) },
           ],
           response_format: { type: 'json_object' },
         }),

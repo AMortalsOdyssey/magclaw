@@ -187,12 +187,12 @@ function documentEntity(document = {}, embedding = []) {
   };
 }
 
-export function createZillizTeamMemoryClient(options = {}) {
+export function createZillizTeamSharingClient(options = {}) {
   const fetchImpl = options.fetch || globalThis.fetch;
   const endpoint = trimSlash(options.endpoint || process.env.MAGCLAW_ZILLIZ_ENDPOINT || '');
   const token = options.token || process.env.MAGCLAW_ZILLIZ_TOKEN || '';
   const database = options.database || process.env.MAGCLAW_ZILLIZ_DATABASE || 'default';
-  const collection = options.collection || process.env.MAGCLAW_ZILLIZ_COLLECTION || 'magclaw_team_memory_v1';
+  const collection = options.collection || process.env.MAGCLAW_ZILLIZ_COLLECTION || 'magclaw_team_sharing_v1';
   const dimension = Number(options.dimension || process.env.MAGCLAW_EMBEDDING_DIMENSION || process.env.MAGCLAW_EMBEDDING_PREFERRED_DIMENSION || 1536);
   const headers = authorizationHeaders(token);
   function endpointUrl(pathname) {
@@ -302,9 +302,9 @@ function textForEmbedding(document = {}) {
     .slice(0, 8000);
 }
 
-export function createTeamMemoryIndexingPipeline(options = {}) {
+export function createTeamSharingIndexingPipeline(options = {}) {
   const embeddingClient = options.embeddingClient || createEmbeddingClient(options.embedding || {});
-  const zillizClient = options.zillizClient || createZillizTeamMemoryClient(options.zilliz || {});
+  const zillizClient = options.zillizClient || createZillizTeamSharingClient(options.zilliz || {});
   return {
     async indexDocuments({ documents = [] } = {}) {
       const activeDocuments = asArray(documents).filter((doc) => doc?.active !== false && doc?.vectorDocumentId);

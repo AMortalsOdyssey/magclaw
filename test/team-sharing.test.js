@@ -2,22 +2,22 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  applyTeamMemoryFeedback,
-  contextWindowForTeamMemorySession,
-  createInitialTeamMemoryState,
-  rankTeamMemoryCandidates,
-  syncTeamMemoryBatch,
-} from '../server/team-memory.js';
+  applyTeamSharingFeedback,
+  contextWindowForTeamSharingSession,
+  createInitialTeamSharingState,
+  rankTeamSharingCandidates,
+  syncTeamSharingBatch,
+} from '../server/team-sharing.js';
 
 function baseState() {
   return {
     connection: { workspaceId: 'ws_test' },
     channels: [
-      { id: 'chan_team', name: 'team-memory', memberIds: ['hum_jhb', 'agt_codex'] },
+      { id: 'chan_team', name: 'team-sharing', memberIds: ['hum_jhb', 'agt_codex'] },
     ],
     messages: [],
     replies: [],
-    teamMemory: createInitialTeamMemoryState(),
+    teamSharing: createInitialTeamSharingState(),
   };
 }
 
@@ -43,7 +43,7 @@ function sampleSyncPackage(overrides = {}) {
         eventId: 'evt_1',
         ordinal: 1,
         role: 'user',
-        text: '我们要给团队记忆加入 rerank，并且不要泄漏 API_KEY=secret-123。',
+        text: '我们要给团队共享加入 rerank，并且不要泄漏 API_KEY=secret-123。',
         createdAt: '2026-06-01T08:00:00.000Z',
       },
       {
@@ -69,15 +69,15 @@ function sampleSyncPackage(overrides = {}) {
   };
 }
 
-test('team memory sync creates one channel message, clean thread replies, abstract docs, and is idempotent', async () => {
+test('team sharing sync creates one channel message, clean thread replies, abstract docs, and is idempotent', async () => {
   const state = baseState();
   const makeId = makeIdFactory();
-  const first = await syncTeamMemoryBatch(sampleSyncPackage(), {
+  const first = await syncTeamSharingBatch(sampleSyncPackage(), {
     state,
     makeId,
     now: () => '2026-06-01T08:02:00.000Z',
   });
-  const duplicate = await syncTeamMemoryBatch(sampleSyncPackage(), {
+  const duplicate = await syncTeamSharingBatch(sampleSyncPackage(), {
     state,
     makeId,
     now: () => '2026-06-01T08:03:00.000Z',
@@ -95,25 +95,25 @@ test('team memory sync creates one channel message, clean thread replies, abstra
   assert.equal(state.messages[0].spaceId, 'chan_team');
   assert.equal(state.messages[0].replyCount, 2);
   assert.equal(state.replies.length, 2);
-  assert.match(state.replies[0].body, /我们要给团队记忆加入 rerank/);
+  assert.match(state.replies[0].body, /我们要给团队共享加入 rerank/);
   assert.doesNotMatch(state.replies[0].body, /secret-123|API_KEY/);
   assert.match(state.replies[1].body, /used_tools=rg/);
   assert.doesNotMatch(state.replies[1].body, /private output|arguments/);
 
-  const session = state.teamMemory.sessions.sess_rerank_design;
+  const session = state.teamSharing.sessions.sess_rerank_design;
   assert.equal(session.messageId, state.messages[0].id);
   assert.equal(session.lastEventOrdinal, 2);
   assert.equal(session.indexStatus, 'ready');
-  assert.ok(state.teamMemory.abstracts.sess_rerank_design.abstractMarkdown.includes('MagClaw rerank feedback design'));
-  assert.ok(state.teamMemory.activities.some((item) => item.summary.includes('同步 2 条清洗事件')));
-  assert.ok(state.teamMemory.vectorDocuments.some((doc) => doc.layer === 'L0' && doc.sessionId === 'sess_rerank_design'));
-  assert.ok(state.teamMemory.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback'));
+  assert.ok(state.teamSharing.abstracts.sess_rerank_design.abstractMarkdown.includes('MagClaw rerank feedback design'));
+  assert.ok(state.teamSharing.activities.some((item) => item.summary.includes('同步 2 条清洗事件')));
+  assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L0' && doc.sessionId === 'sess_rerank_design'));
+  assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback'));
 });
 
-test('team memory sync resolves signed MagClaw channel path when channelId is omitted', async () => {
+test('team sharing sync resolves signed MagClaw channel path when channelId is omitted', async () => {
   const state = baseState();
   state.channels[0].metadata = { integrations: { feishuImport: { routeKey: 'fixed-route-key' } } };
-  const result = await syncTeamMemoryBatch(sampleSyncPackage({
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
     channelId: '',
     channelPath: 'mc://magclaw/server/ws_test/channel/chan_team?key=fixed-route-key',
     idempotencyKey: 'codex:magclaw:sess_path:1:2:path',
@@ -125,12 +125,12 @@ test('team memory sync resolves signed MagClaw channel path when channelId is om
   });
 
   assert.equal(result.ok, true);
-  assert.equal(state.teamMemory.sessions.sess_path.channelId, 'chan_team');
+  assert.equal(state.teamSharing.sessions.sess_path.channelId, 'chan_team');
 });
 
-test('team memory context window anchors on an event and paginates both directions', async () => {
+test('team sharing context window anchors on an event and paginates both directions', async () => {
   const state = baseState();
-  await syncTeamMemoryBatch(sampleSyncPackage({
+  await syncTeamSharingBatch(sampleSyncPackage({
     idempotencyKey: 'codex:magclaw:sess_rerank_design:1:4:def',
     toOrdinal: 4,
     events: [
@@ -149,7 +149,7 @@ test('team memory context window anchors on an event and paginates both directio
     now: () => '2026-06-01T08:05:00.000Z',
   });
 
-  const around = contextWindowForTeamMemorySession(state.teamMemory, 'sess_rerank_design', {
+  const around = contextWindowForTeamSharingSession(state.teamSharing, 'sess_rerank_design', {
     anchorEventId: 'evt_2',
     direction: 'around',
     limit: 1,
@@ -159,7 +159,7 @@ test('team memory context window anchors on an event and paginates both directio
   assert.equal(around.pagination.hasPrev, true);
   assert.equal(around.pagination.hasNext, true);
 
-  const next = contextWindowForTeamMemorySession(state.teamMemory, 'sess_rerank_design', {
+  const next = contextWindowForTeamSharingSession(state.teamSharing, 'sess_rerank_design', {
     anchorEventId: 'evt_2',
     direction: 'next',
     limit: 1,
@@ -167,14 +167,14 @@ test('team memory context window anchors on an event and paginates both directio
   assert.deepEqual(next.events.map((event) => event.eventId), ['evt_4']);
 });
 
-test('team memory context next page without anchor starts from the first event', () => {
-  const memory = createInitialTeamMemoryState();
-  memory.events.sess_context = [
+test('team sharing context next page without anchor starts from the first event', () => {
+  const teamSharingState = createInitialTeamSharingState();
+  teamSharingState.events.sess_context = [
     { eventId: 'evt_1', ordinal: 1, role: 'user', cleanText: '第一条' },
     { eventId: 'evt_2', ordinal: 2, role: 'assistant', cleanText: '第二条' },
   ];
 
-  const next = contextWindowForTeamMemorySession(memory, 'sess_context', {
+  const next = contextWindowForTeamSharingSession(teamSharingState, 'sess_context', {
     direction: 'next',
     limit: 1,
   });
@@ -184,8 +184,8 @@ test('team memory context next page without anchor starts from the first event',
   assert.equal(next.pagination.hasNext, true);
 });
 
-test('team memory rerank returns diverse top5 and feedback changes later ordering within cap', () => {
-  const memory = createInitialTeamMemoryState();
+test('team sharing rerank returns diverse top5 and feedback changes later ordering within cap', () => {
+  const teamSharingState = createInitialTeamSharingState();
   const candidates = [
     {
       vectorDocumentId: 'doc_a',
@@ -230,10 +230,10 @@ test('team memory rerank returns diverse top5 and feedback changes later orderin
     ['doc_b', 0.95],
     ['doc_c', 0.72],
   ]);
-  const first = rankTeamMemoryCandidates({
+  const first = rankTeamSharingCandidates({
     query: 'rerank 反馈怎么做',
     candidates,
-    memory,
+    teamSharingState,
     rerankResults: candidates.map((candidate, index) => ({ index, score: rerankScores.get(candidate.vectorDocumentId) })),
     now: () => '2026-06-01T09:00:00.000Z',
     limit: 5,
@@ -244,7 +244,7 @@ test('team memory rerank returns diverse top5 and feedback changes later orderin
   assert.equal(first.trace.selectedTop5.length, 2);
   assert.ok(first.trace.rerankScores.doc_a > 0);
 
-  applyTeamMemoryFeedback(memory, {
+  applyTeamSharingFeedback(teamSharingState, {
     actorId: 'hum_jhb',
     queryId: first.queryId,
     vectorDocumentId: 'doc_a',
@@ -252,7 +252,7 @@ test('team memory rerank returns diverse top5 and feedback changes later orderin
     eventType: 'opened',
     createdAt: '2026-06-01T09:01:00.000Z',
   });
-  applyTeamMemoryFeedback(memory, {
+  applyTeamSharingFeedback(teamSharingState, {
     actorId: 'hum_jhb',
     queryId: first.queryId,
     vectorDocumentId: 'doc_a',
@@ -261,10 +261,10 @@ test('team memory rerank returns diverse top5 and feedback changes later orderin
     createdAt: '2026-06-01T09:02:00.000Z',
   });
 
-  const second = rankTeamMemoryCandidates({
+  const second = rankTeamSharingCandidates({
     query: 'rerank 反馈怎么做',
     candidates,
-    memory,
+    teamSharingState,
     rerankResults: candidates.map((candidate, index) => ({ index, score: rerankScores.get(candidate.vectorDocumentId) })),
     now: () => '2026-06-01T09:03:00.000Z',
     limit: 5,
@@ -273,7 +273,7 @@ test('team memory rerank returns diverse top5 and feedback changes later orderin
   assert.equal(second.results[0].vectorDocumentId, 'doc_a');
   assert.ok(boosted.hotnessScore <= 0.18);
 
-  applyTeamMemoryFeedback(memory, {
+  applyTeamSharingFeedback(teamSharingState, {
     actorId: 'hum_jhb',
     queryId: second.queryId,
     vectorDocumentId: 'doc_a',
@@ -281,10 +281,10 @@ test('team memory rerank returns diverse top5 and feedback changes later orderin
     eventType: 'unhelpful',
     createdAt: '2026-06-01T09:04:00.000Z',
   });
-  const third = rankTeamMemoryCandidates({
+  const third = rankTeamSharingCandidates({
     query: 'rerank 反馈怎么做',
     candidates,
-    memory,
+    teamSharingState,
     rerankResults: candidates.map((candidate, index) => ({ index, score: rerankScores.get(candidate.vectorDocumentId) })),
     now: () => '2026-06-01T09:05:00.000Z',
     limit: 5,
@@ -292,8 +292,8 @@ test('team memory rerank returns diverse top5 and feedback changes later orderin
   assert.ok(third.results.find((item) => item.vectorDocumentId === 'doc_a').hotnessScore < boosted.hotnessScore);
 });
 
-test('team memory hotness dedupes repeated feedback from the same actor before capping', () => {
-  const memory = createInitialTeamMemoryState();
+test('team sharing hotness dedupes repeated feedback from the same actor before capping', () => {
+  const teamSharingState = createInitialTeamSharingState();
   const base = {
     vectorDocumentId: 'doc_repeat',
     sessionId: 'sess_repeat',
@@ -302,14 +302,14 @@ test('team memory hotness dedupes repeated feedback from the same actor before c
     createdAt: '2026-06-01T10:00:00.000Z',
   };
 
-  applyTeamMemoryFeedback(memory, { ...base, feedbackId: 'fb_1' });
-  applyTeamMemoryFeedback(memory, { ...base, feedbackId: 'fb_2', createdAt: '2026-06-01T10:01:00.000Z' });
-  const repeated = applyTeamMemoryFeedback(memory, { ...base, feedbackId: 'fb_3', createdAt: '2026-06-01T10:02:00.000Z' });
+  applyTeamSharingFeedback(teamSharingState, { ...base, feedbackId: 'fb_1' });
+  applyTeamSharingFeedback(teamSharingState, { ...base, feedbackId: 'fb_2', createdAt: '2026-06-01T10:01:00.000Z' });
+  const repeated = applyTeamSharingFeedback(teamSharingState, { ...base, feedbackId: 'fb_3', createdAt: '2026-06-01T10:02:00.000Z' });
 
   assert.equal(repeated.ok, true);
   assert.equal(repeated.hotnessScore, 0.12);
 
-  const secondActor = applyTeamMemoryFeedback(memory, {
+  const secondActor = applyTeamSharingFeedback(teamSharingState, {
     ...base,
     feedbackId: 'fb_4',
     actorId: 'hum_other',

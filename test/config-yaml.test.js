@@ -162,12 +162,12 @@ feishu:
   assert.equal(result.redacted.auth.providers[0].app_secret, '[redacted]');
 });
 
-test('server yaml maps team memory services without exposing secrets in redaction', async () => {
-  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-config-yaml-team-memory-'));
+test('server yaml maps team sharing services without exposing secrets in redaction', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-config-yaml-team-sharing-'));
   const configPath = path.join(tmp, 'server.yaml');
   const env = {};
   await writeFile(configPath, `
-team_memory:
+team_sharing:
   enabled: true
   default_channel:
     channel_id: "chan_team"
@@ -182,7 +182,7 @@ team_memory:
     endpoint: "https://zilliz.example"
     token: "zilliz-secret"
     database: "ai_social_memory"
-    collection: "magclaw_team_memory_v1"
+    collection: "magclaw_team_sharing_v1"
   rerank:
     url: "https://rerank.example/v1/rerank"
     api_key: "rerank-secret"
@@ -194,10 +194,10 @@ team_memory:
   const result = applyServerYamlConfig({ paths: [configPath], env });
 
   assert.equal(result.loaded, true);
-  assert.equal(env.MAGCLAW_TEAM_MEMORY_ENABLED, '1');
-  assert.equal(env.MAGCLAW_TEAM_MEMORY_DEFAULT_CHANNEL_ID, 'chan_team');
-  assert.equal(env.MAGCLAW_TEAM_MEMORY_DEFAULT_CHANNEL_PATH, 'feishu://chat/team');
-  assert.equal(env.MAGCLAW_TEAM_MEMORY_ROUTING_MODE, 'fixed_single_channel');
+  assert.equal(env.MAGCLAW_TEAM_SHARING_ENABLED, '1');
+  assert.equal(env.MAGCLAW_TEAM_SHARING_DEFAULT_CHANNEL_ID, 'chan_team');
+  assert.equal(env.MAGCLAW_TEAM_SHARING_DEFAULT_CHANNEL_PATH, 'feishu://chat/team');
+  assert.equal(env.MAGCLAW_TEAM_SHARING_ROUTING_MODE, 'fixed_single_channel');
   assert.equal(env.MAGCLAW_EMBEDDING_BASE_URL, 'https://embedding.example/v1');
   assert.equal(env.MAGCLAW_EMBEDDING_API_KEY, 'embedding-secret');
   assert.equal(env.MAGCLAW_EMBEDDING_MODEL, 'embedding-model');
@@ -205,14 +205,14 @@ team_memory:
   assert.equal(env.MAGCLAW_ZILLIZ_ENDPOINT, 'https://zilliz.example');
   assert.equal(env.MAGCLAW_ZILLIZ_TOKEN, 'zilliz-secret');
   assert.equal(env.MAGCLAW_ZILLIZ_DATABASE, 'ai_social_memory');
-  assert.equal(env.MAGCLAW_ZILLIZ_COLLECTION, 'magclaw_team_memory_v1');
+  assert.equal(env.MAGCLAW_ZILLIZ_COLLECTION, 'magclaw_team_sharing_v1');
   assert.equal(env.MAGCLAW_RERANK_URL, 'https://rerank.example/v1/rerank');
   assert.equal(env.MAGCLAW_RERANK_API_KEY, 'rerank-secret');
   assert.equal(env.MAGCLAW_RERANK_MODEL, 'rerank-model');
   assert.equal(env.MAGCLAW_RERANK_CANDIDATE_K, '40');
   assert.equal(env.MAGCLAW_RERANK_TOP_N, '5');
-  assert.equal(result.redacted.team_memory.embedding.api_key, '[redacted]');
-  assert.equal(result.redacted.team_memory.zilliz.endpoint, '[redacted]');
-  assert.equal(result.redacted.team_memory.zilliz.token, '[redacted]');
-  assert.equal(result.redacted.team_memory.rerank.api_key, '[redacted]');
+  assert.equal(result.redacted.team_sharing.embedding.api_key, '[redacted]');
+  assert.equal(result.redacted.team_sharing.zilliz.endpoint, '[redacted]');
+  assert.equal(result.redacted.team_sharing.zilliz.token, '[redacted]');
+  assert.equal(result.redacted.team_sharing.rerank.api_key, '[redacted]');
 });

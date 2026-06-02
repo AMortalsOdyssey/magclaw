@@ -6,38 +6,33 @@ import path from 'node:path';
 
 import {
   checkTeamSharingUpgrade,
-  installTeamMemoryHooks,
-  installTeamMemorySkill,
   installTeamSharingHooks,
   installTeamSharingSkill,
-  initTeamMemoryProject,
   initTeamSharingProject,
   loginTeamSharingProfile,
-  loginTeamMemoryProfile,
   logoutTeamSharingProfile,
   parseCli,
   removeTeamSharingHooks,
   removeTeamSharingSkill,
-  readTeamMemoryContext,
-  shareTeamMemoryArtifact,
-  searchTeamMemory,
+  readTeamSharingContext,
+  shareTeamSharingArtifact,
+  searchTeamSharing,
   setupTeamSharing,
   statusTeamSharingHooks,
   statusTeamSharingSkill,
-  syncTeamMemoryTranscript,
+  syncTeamSharingTranscript,
   teamSharingPaths,
-  teamMemoryPaths,
   whoamiTeamSharingProfile,
 } from '../cli-core/src/cli.js';
 
-test('team memory cli init writes project config without storing token in repository', async () => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-project-'));
-  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-home-'));
+test('team sharing cli init writes project config without storing token in repository', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-home-'));
   const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
   const parsed = parseCli([
     'node',
     'magclaw',
-    'memory',
+    'team-sharing',
     'init',
     '--channel',
     'chan_team',
@@ -50,54 +45,53 @@ test('team memory cli init writes project config without storing token in reposi
     '--token',
     'must-not-enter-project',
   ]);
-  assert.equal(parsed.command, 'memory');
+  assert.equal(parsed.command, 'team-sharing');
   assert.deepEqual(parsed.flags._, ['init']);
 
-  const result = await initTeamMemoryProject({ ...parsed.flags, cwd }, env);
-  const projectConfig = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-memory.json'), 'utf8'));
+  const result = await initTeamSharingProject({ ...parsed.flags, cwd }, env);
+  const yaml = await readFile(path.join(cwd, '.magclaw', 'team-sharing.yaml'), 'utf8');
 
   assert.equal(result.ok, true);
-  assert.equal(projectConfig.serverUrl, 'https://magclaw.example');
-  assert.equal(projectConfig.workspaceId, 'ws_team');
-  assert.equal(projectConfig.channelId, 'chan_team');
-  assert.equal(projectConfig.projectKey, 'magclaw');
-  assert.equal(projectConfig.token, undefined);
-  assert.doesNotMatch(JSON.stringify(projectConfig), /must-not-enter-project/);
+  assert.match(yaml, /server_url: https:\/\/magclaw\.example/);
+  assert.match(yaml, /workspace_id: ws_team/);
+  assert.match(yaml, /id: chan_team/);
+  assert.match(yaml, /project_key: magclaw/);
+  assert.doesNotMatch(yaml, /token|must-not-enter-project/i);
 });
 
-test('team memory cli init treats signed MagClaw channel paths as channelPath, not channelId', async () => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-path-project-'));
-  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-path-home-'));
+test('team sharing cli init treats signed MagClaw channel paths as channelPath, not channelId', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-path-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-path-home-'));
   const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
-  await initTeamMemoryProject({
+  await initTeamSharingProject({
     cwd,
     channel: 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key',
     serverUrl: 'https://magclaw.example',
     workspaceId: 'ws_team',
   }, env);
-  const projectConfig = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-memory.json'), 'utf8'));
+  const yaml = await readFile(path.join(cwd, '.magclaw', 'team-sharing.yaml'), 'utf8');
 
-  assert.equal(projectConfig.channelId, '');
-  assert.equal(projectConfig.channelPath, 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key');
+  assert.match(yaml, /id:\s*$/m);
+  assert.match(yaml, /path: mc:\/\/magclaw\/server\/ws_team\/channel\/chan_team\?key=route-key/);
 });
 
-test('team memory cli login stores scoped token in user profile only', async () => {
-  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-login-'));
+test('team sharing cli login stores scoped token in user profile only', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-login-'));
   const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
-  const result = await loginTeamMemoryProfile({
+  const result = await loginTeamSharingProfile({
     profile: 'team-alpha',
     serverUrl: 'https://magclaw.example',
     workspaceId: 'ws_team',
-    token: 'memory-token-secret',
+    token: 'team-sharing-token-secret',
   }, env);
-  const paths = teamMemoryPaths({ profile: 'team-alpha', env });
-  const profile = JSON.parse(await readFile(paths.profileConfig, 'utf8'));
+  const paths = teamSharingPaths({ profile: 'team-alpha', env });
+  const profileYaml = await readFile(paths.profileConfig, 'utf8');
 
   assert.equal(result.ok, true);
-  assert.equal(profile.serverUrl, 'https://magclaw.example');
-  assert.equal(profile.workspaceId, 'ws_team');
-  assert.equal(profile.token, 'memory-token-secret');
-  assert.equal(paths.projectConfig.includes('.magclaw/team-memory.json'), true);
+  assert.match(profileYaml, /server_url: https:\/\/magclaw\.example/);
+  assert.match(profileYaml, /workspace_id: ws_team/);
+  assert.match(profileYaml, /token: team-sharing-token-secret/);
+  assert.equal(paths.projectConfig.includes('.magclaw/team-sharing.yaml'), true);
 });
 
 test('team sharing init writes editable yaml config and user project registry', async () => {
@@ -135,17 +129,17 @@ test('team sharing browser login caches scoped token, whoami reads it, and logou
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), init, body: init.body ? JSON.parse(init.body) : null });
-    if (String(url).endsWith('/api/team-memory/auth/start')) {
+    if (String(url).endsWith('/api/team-sharing/auth/start')) {
       return { ok: true, json: async () => ({ ok: true, deviceCode: 'dev_1', userCode: 'ABCD-1234', verificationUri: 'https://magclaw.example/login/device', expiresAt: '2026-06-02T00:10:00.000Z', intervalMs: 1 }) };
     }
-    if (String(url).endsWith('/api/team-memory/auth/token')) {
+    if (String(url).endsWith('/api/team-sharing/auth/token')) {
       return { ok: true, json: async () => ({ ok: true, status: 'approved', token: 'tm_scoped_secret', workspaceId: 'ws_team', profile: 'default', user: { id: 'hum_1', email: 'team@example.com' } }) };
     }
-    if (String(url).endsWith('/api/team-memory/auth/whoami')) {
+    if (String(url).endsWith('/api/team-sharing/auth/whoami')) {
       assert.equal(init.headers.authorization, 'Bearer tm_scoped_secret');
       return { ok: true, json: async () => ({ ok: true, user: { id: 'hum_1', email: 'team@example.com' }, workspaceId: 'ws_team' }) };
     }
-    if (String(url).endsWith('/api/team-memory/auth/revoke')) {
+    if (String(url).endsWith('/api/team-sharing/auth/revoke')) {
       assert.equal(init.headers.authorization, 'Bearer tm_scoped_secret');
       return { ok: true, json: async () => ({ ok: true, revoked: true }) };
     }
@@ -165,36 +159,37 @@ test('team sharing browser login caches scoped token, whoami reads it, and logou
 
     assert.equal(login.ok, true);
     assert.equal(login.hasToken, true);
-    assert.match(cachedProfile, /team_memory:sync,team_memory:search,team_memory:context,team_memory:feedback,team_memory:share/);
+    assert.match(cachedProfile, /team_sharing:sync,team_sharing:search,team_sharing:context,team_sharing:feedback,team_sharing:share/);
     assert.equal(whoami.user.email, 'team@example.com');
     assert.equal(logout.ok, true);
     await assert.rejects(() => readFile(paths.profileConfig, 'utf8'), /ENOENT/);
     assert.deepEqual(calls.map((call) => call.url.replace('https://magclaw.example', '')), [
-      '/api/team-memory/auth/start',
-      '/api/team-memory/auth/token',
-      '/api/team-memory/auth/whoami',
-      '/api/team-memory/auth/revoke',
+      '/api/team-sharing/auth/start',
+      '/api/team-sharing/auth/token',
+      '/api/team-sharing/auth/whoami',
+      '/api/team-sharing/auth/revoke',
     ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('team memory cli sync uploads only new transcript events and saves cursor', async () => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-sync-project-'));
-  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-sync-home-'));
+test('team sharing cli sync uploads only new transcript events and saves cursor', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-sync-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-sync-home-'));
   const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
-  await loginTeamMemoryProfile({
+  await loginTeamSharingProfile({
     serverUrl: 'https://magclaw.example',
     workspaceId: 'ws_team',
-    token: 'memory-token-secret',
+    token: 'team-sharing-token-secret',
   }, env);
-  await initTeamMemoryProject({
+  await initTeamSharingProject({
     cwd,
     channel: 'chan_team',
     serverUrl: 'https://magclaw.example',
     workspaceId: 'ws_team',
     projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
   }, env);
   const transcript = path.join(cwd, 'session.jsonl');
   await writeFile(transcript, [
@@ -213,9 +208,9 @@ test('team memory cli sync uploads only new transcript events and saves cursor',
     };
   };
   try {
-    const first = await syncTeamMemoryTranscript({ cwd, transcript, runtime: 'codex' }, env);
-    const second = await syncTeamMemoryTranscript({ cwd, transcript, runtime: 'codex' }, env);
-    const cursor = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-memory-cursor.json'), 'utf8'));
+    const first = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex' }, env);
+    const second = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex' }, env);
+    const cursor = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-sharing-cursor.json'), 'utf8'));
 
     assert.equal(first.ok, true);
     assert.equal(first.appendedEventCount, 2);
@@ -226,7 +221,7 @@ test('team memory cli sync uploads only new transcript events and saves cursor',
     assert.equal(calls[0].body.fromOrdinal, 1);
     assert.equal(calls[0].body.toOrdinal, 2);
     assert.equal(cursor.sessions.codex.sess_cli.lastOrdinal, 2);
-    assert.equal(calls[0].init.headers.authorization, 'Bearer memory-token-secret');
+    assert.equal(calls[0].init.headers.authorization, 'Bearer team-sharing-token-secret');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -265,9 +260,9 @@ test('team sharing sync skips pre-enable history and uploads only new events fro
     return { ok: true, json: async () => ({ ok: true, appendedEventCount: calls[calls.length - 1].body.events.length }) };
   };
   try {
-    const result = await syncTeamMemoryTranscript({ cwd, transcript, runtime: 'codex', hookEvent: 'Stop', integration: 'team-sharing' }, env);
-    const second = await syncTeamMemoryTranscript({ cwd, transcript, runtime: 'codex', hookEvent: 'Stop', integration: 'team-sharing' }, env);
-    const cursor = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-memory-cursor.json'), 'utf8'));
+    const result = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', hookEvent: 'Stop', integration: 'team-sharing' }, env);
+    const second = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', hookEvent: 'Stop', integration: 'team-sharing' }, env);
+    const cursor = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-sharing-cursor.json'), 'utf8'));
 
     assert.equal(result.ok, true);
     assert.equal(calls.length, 1);
@@ -281,14 +276,14 @@ test('team sharing sync skips pre-enable history and uploads only new events fro
   }
 });
 
-test('team memory cli installs Codex and Claude hook configs without overwriting existing entries', async () => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-hooks-project-'));
-  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-hooks-home-'));
+test('team sharing cli installs Codex and Claude hook configs without overwriting existing entries', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-home-'));
   const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
   const codexHooks = path.join(home, '.codex', 'hooks.json');
   const claudeSettings = path.join(home, '.claude', 'settings.json');
 
-  const result = await installTeamMemoryHooks({
+  const result = await installTeamSharingHooks({
     cwd,
     codexConfig: codexHooks,
     claudeConfig: claudeSettings,
@@ -340,7 +335,7 @@ test('team sharing setup installs selected runtimes and hook removal only remove
 
   const removedSkill = await removeTeamSharingSkill({ target: 'codex' }, env);
   assert.equal(removedSkill.removed.length, 1);
-  await assert.rejects(() => readFile(path.join(home, '.codex', 'skills', 'magclaw-team-memory', 'SKILL.md'), 'utf8'), /ENOENT/);
+  await assert.rejects(() => readFile(path.join(home, '.codex', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8'), /ENOENT/);
 });
 
 test('team sharing upgrade check uses npm cache ttl and reports newer versions', async () => {
@@ -368,16 +363,16 @@ test('team sharing upgrade check uses npm cache ttl and reports newer versions',
   }
 });
 
-test('team memory cli search and context use configured profile token', async () => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-search-project-'));
-  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-cli-search-home-'));
+test('team sharing cli search and context use configured profile token', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-search-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-search-home-'));
   const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
-  await loginTeamMemoryProfile({
+  await loginTeamSharingProfile({
     serverUrl: 'https://magclaw.example',
     workspaceId: 'ws_team',
-    token: 'memory-token-secret',
+    token: 'team-sharing-token-secret',
   }, env);
-  await initTeamMemoryProject({
+  await initTeamSharingProject({
     cwd,
     channel: 'chan_team',
     serverUrl: 'https://magclaw.example',
@@ -399,8 +394,8 @@ test('team memory cli search and context use configured profile token', async ()
     };
   };
   try {
-    const search = await searchTeamMemory({ cwd, query: 'rerank 结论', limit: 5 }, env);
-    const context = await readTeamMemoryContext({
+    const search = await searchTeamSharing({ cwd, query: 'rerank 结论', limit: 5 }, env);
+    const context = await readTeamSharingContext({
       cwd,
       sessionId: 'sess_1',
       anchorEventId: 'evt_1',
@@ -411,11 +406,11 @@ test('team memory cli search and context use configured profile token', async ()
     assert.equal(search.ok, true);
     assert.equal(search.results[0].evidence, 'top5 结论');
     assert.equal(context.events[0].cleanText, '原文片段');
-    assert.equal(calls[0].url, 'https://magclaw.example/api/team-memory/search');
+    assert.equal(calls[0].url, 'https://magclaw.example/api/team-sharing/search');
     assert.equal(calls[0].body.channelId, 'chan_team');
     assert.equal(calls[0].body.projectKey, 'magclaw');
-    assert.equal(calls[0].init.headers.authorization, 'Bearer memory-token-secret');
-    assert.match(calls[1].url, /\/api\/team-memory\/context\/sess_1\?/);
+    assert.equal(calls[0].init.headers.authorization, 'Bearer team-sharing-token-secret');
+    assert.match(calls[1].url, /\/api\/team-sharing\/context\/sess_1\?/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -464,14 +459,14 @@ test('team sharing cli uploads an artifact share and returns a public link', asy
     };
   };
   try {
-    const result = await shareTeamMemoryArtifact({
+    const result = await shareTeamSharingArtifact({
       ...parsed.flags,
       cwd,
     }, env);
 
     assert.equal(result.ok, true);
     assert.equal(result.url, 'https://magclaw.example/s/share_cli');
-    assert.equal(calls[0].url, 'https://magclaw.example/api/team-memory/shares');
+    assert.equal(calls[0].url, 'https://magclaw.example/api/team-sharing/shares');
     assert.equal(calls[0].init.headers.authorization, 'Bearer team-sharing-token-secret');
     assert.equal(calls[0].body.title, 'Rerank 总结');
     assert.equal(calls[0].body.contentType, 'markdown');
@@ -483,15 +478,15 @@ test('team sharing cli uploads an artifact share and returns a public link', asy
   }
 });
 
-test('team memory cli installs a local skill without writing token into skill files', async () => {
-  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-skill-home-'));
+test('team sharing cli installs a local skill without writing token into skill files', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-skill-home-'));
   const env = { HOME: home, CODEX_HOME: path.join(home, '.codex') };
-  const result = await installTeamMemorySkill({ target: 'codex' }, env);
-  const skill = await readFile(path.join(home, '.codex', 'skills', 'magclaw-team-memory', 'SKILL.md'), 'utf8');
+  const result = await installTeamSharingSkill({ target: 'codex' }, env);
+    const skill = await readFile(path.join(home, '.codex', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8');
 
   assert.equal(result.ok, true);
-  assert.match(skill, /magclaw memory search/);
-  assert.match(skill, /magclaw memory context/);
+  assert.match(skill, /magclaw team-sharing search/);
+  assert.match(skill, /magclaw team-sharing context/);
   assert.match(skill, /magclaw team-sharing share-artifact/);
   assert.match(skill, /Default Share HTML Style/);
   assert.match(skill, /deep blue-black technical hero/);
@@ -499,5 +494,5 @@ test('team memory cli installs a local skill without writing token into skill fi
   assert.match(skill, /white report cards/);
   assert.match(skill, /cyan.*emerald.*amber.*rose/i);
   assert.match(skill, /mobile viewports must not overflow/i);
-  assert.doesNotMatch(skill, /memory-token-secret|api_key|Bearer/i);
+  assert.doesNotMatch(skill, /team-sharing-token-secret|api_key|Bearer/i);
 });

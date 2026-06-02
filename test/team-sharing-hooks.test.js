@@ -5,14 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  buildTeamMemoryHookCommand,
-  buildTeamMemorySyncPackageFromTranscript,
-  installTeamMemoryHookConfig,
-  parseTeamMemoryTranscript,
-  shouldRunTeamMemoryHook,
-} from '../cli-core/src/team-memory-hooks.js';
+  buildTeamSharingHookCommand,
+  buildTeamSharingSyncPackageFromTranscript,
+  installTeamSharingHookConfig,
+  parseTeamSharingTranscript,
+  shouldRunTeamSharingHook,
+} from '../cli-core/src/team-sharing-hooks.js';
 
-test('team memory hook parser extracts Codex user and assistant messages while dropping tool output', () => {
+test('team sharing hook parser extracts Codex user and assistant messages while dropping tool output', () => {
   const transcript = [
     {
       timestamp: '2026-06-01T12:00:00.000Z',
@@ -53,7 +53,7 @@ test('team memory hook parser extracts Codex user and assistant messages while d
     },
   ].map((item) => JSON.stringify(item)).join('\n');
 
-  const parsed = parseTeamMemoryTranscript(transcript, { runtime: 'codex' });
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
 
   assert.equal(parsed.sessionId, 'codex-session-1');
   assert.equal(parsed.projectPath, '/repo/magclaw');
@@ -66,7 +66,7 @@ test('team memory hook parser extracts Codex user and assistant messages while d
   assert.doesNotMatch(JSON.stringify(parsed), /secret command output|cat secret/);
 });
 
-test('team memory sync package is incremental and idempotent from local cursor', () => {
+test('team sharing sync package is incremental and idempotent from local cursor', () => {
   const transcript = [
     JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-inc', cwd: '/repo/magclaw' } }),
     JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '第一轮' }] } }),
@@ -74,7 +74,7 @@ test('team memory sync package is incremental and idempotent from local cursor',
     JSON.stringify({ timestamp: '2026-06-01T12:00:03.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '第二轮' }] } }),
   ].join('\n');
 
-  const pkg = buildTeamMemorySyncPackageFromTranscript(transcript, {
+  const pkg = buildTeamSharingSyncPackageFromTranscript(transcript, {
     runtime: 'codex',
     projectKey: 'magclaw',
     channelId: 'chan_team',
@@ -94,12 +94,12 @@ test('team memory sync package is incremental and idempotent from local cursor',
   assert.equal(pkg.cursor.lastEventId, pkg.body.events[0].eventId);
 });
 
-test('team memory hook command and config installer preserve existing hooks', async () => {
-  assert.equal(shouldRunTeamMemoryHook({ runtime: 'codex', hookEventName: 'Stop' }), true);
-  assert.equal(shouldRunTeamMemoryHook({ runtime: 'codex', hookEventName: 'PostToolUse' }), false);
-  assert.equal(shouldRunTeamMemoryHook({ runtime: 'claude_code', hookEventName: 'SessionEnd' }), true);
+test('team sharing hook command and config installer preserve existing hooks', async () => {
+  assert.equal(shouldRunTeamSharingHook({ runtime: 'codex', hookEventName: 'Stop' }), true);
+  assert.equal(shouldRunTeamSharingHook({ runtime: 'codex', hookEventName: 'PostToolUse' }), false);
+  assert.equal(shouldRunTeamSharingHook({ runtime: 'claude_code', hookEventName: 'SessionEnd' }), true);
 
-  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-memory-hooks-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-hooks-'));
   const hookConfig = path.join(home, '.codex', 'hooks.json');
   await mkdir(path.dirname(hookConfig), { recursive: true });
   await writeFile(hookConfig, JSON.stringify({
@@ -114,17 +114,17 @@ test('team memory hook command and config installer preserve existing hooks', as
     },
   }, null, 2));
 
-  const command = buildTeamMemoryHookCommand({
+  const command = buildTeamSharingHookCommand({
     runtime: 'codex',
     projectDir: '/repo/magclaw',
     transcriptPath: '/tmp/session.jsonl',
   });
-  assert.match(command, /magclaw memory sync/);
+  assert.match(command, /magclaw team-sharing sync/);
   assert.match(command, /--runtime codex/);
   assert.match(command, /--transcript/);
   assert.doesNotMatch(command, /\n|secret/);
 
-  const result = await installTeamMemoryHookConfig({
+  const result = await installTeamSharingHookConfig({
     runtime: 'codex',
     configPath: hookConfig,
     projectDir: '/repo/magclaw',
@@ -134,7 +134,7 @@ test('team memory hook command and config installer preserve existing hooks', as
 
   assert.equal(result.ok, true);
   assert.equal(installed.hooks.Stop[0].hooks[0].command, 'echo existing');
-  assert.ok(installed.hooks.Stop[0].hooks.some((item) => item.command.includes('magclaw memory sync')));
+  assert.ok(installed.hooks.Stop[0].hooks.some((item) => item.command.includes('magclaw team-sharing sync')));
   assert.ok(installed.hooks.PreCompact[0].hooks.some((item) => item.command.includes('--hook-event PreCompact')));
   assert.ok(installed.hooks.SessionStart[0].hooks.some((item) => item.command.includes('--hook-event SessionStart')));
 });

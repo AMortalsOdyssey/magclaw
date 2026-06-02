@@ -1069,7 +1069,7 @@ test('postgres store upserts duplicate durable state records without crashing', 
   assert.equal(orphanInsert, undefined);
 });
 
-test('postgres store persists team memory object as durable state', async () => {
+test('postgres store persists team sharing object as durable state', async () => {
   const queries = [];
   const pool = {
     async connect() {
@@ -1091,7 +1091,7 @@ test('postgres store persists team memory object as durable state', async () => 
   const createdAt = '2026-06-01T00:00:00.000Z';
   await store.persistFromState({
     connection: { workspaceId: 'wsp_main' },
-    teamMemory: {
+    teamSharing: {
       sessions: { sess_1: { sessionId: 'sess_1', channelId: 'chan_team' } },
       vectorDocuments: [{ vectorDocumentId: 'sess_1:L0', layer: 'L0' }],
     },
@@ -1111,11 +1111,11 @@ test('postgres store persists team memory object as durable state', async () => 
   for (let index = 0; index < stateRecordInsert.params.length; index += 7) {
     rows.push(stateRecordInsert.params.slice(index, index + 7));
   }
-  const teamMemoryRow = rows.find((row) => row[1] === 'teamMemory');
-  assert.ok(teamMemoryRow);
-  assert.equal(teamMemoryRow[0], 'wsp_main');
-  assert.equal(teamMemoryRow[2], 'value');
-  assert.equal(JSON.parse(teamMemoryRow[6]).sessions.sess_1.channelId, 'chan_team');
+  const teamSharingRow = rows.find((row) => row[1] === 'teamSharing');
+  assert.ok(teamSharingRow);
+  assert.equal(teamSharingRow[0], 'wsp_main');
+  assert.equal(teamSharingRow[2], 'value');
+  assert.equal(JSON.parse(teamSharingRow[6]).sessions.sess_1.channelId, 'chan_team');
 });
 
 test('postgres store skips default local placeholder workspace runtime persistence', async () => {

@@ -1,9 +1,9 @@
 import {
-  applyTeamMemoryFeedback,
-  contextWindowForTeamMemorySession,
-  rankTeamMemoryCandidates,
-  syncTeamMemoryBatch,
-} from '../team-memory.js';
+  applyTeamSharingFeedback,
+  contextWindowForTeamSharingSession,
+  rankTeamSharingCandidates,
+  syncTeamSharingBatch,
+} from '../team-sharing.js';
 import crypto from 'node:crypto';
 
 function asArray(value) {
@@ -44,7 +44,7 @@ function resultContextUrl(item, queryId = '') {
   if (queryId) params.set('queryId', queryId);
   if (item.sourceRef) params.set('sourceRef', item.sourceRef);
   const suffix = params.toString();
-  return `/team-memory/context/${encodeURIComponent(item.sessionId)}${suffix ? `?${suffix}` : ''}`;
+  return `/team-sharing/context/${encodeURIComponent(item.sessionId)}${suffix ? `?${suffix}` : ''}`;
 }
 
 const SHARE_CONTENT_TYPES = new Set(['html', 'markdown', 'svg', 'mermaid']);
@@ -60,9 +60,9 @@ function normalizeShareContentType(value = '', content = '') {
   return 'markdown';
 }
 
-function ensureTeamMemoryShares(memory = {}) {
-  memory.shares = Array.isArray(memory.shares) ? memory.shares : [];
-  return memory.shares;
+function ensureTeamSharingShares(teamSharingState = {}) {
+  teamSharingState.shares = Array.isArray(teamSharingState.shares) ? teamSharingState.shares : [];
+  return teamSharingState.shares;
 }
 
 function publicUrlFromRequest(req) {
@@ -299,7 +299,7 @@ function shareRootWorkspaceId(state = {}) {
   ).trim();
 }
 
-function shareRootAccess(req, { actor, memory, state } = {}) {
+function shareRootAccess(req, { actor, teamSharingState, state } = {}) {
   const workspaceId = shareRootWorkspaceId(state);
   const actorWorkspaceId = String(actor?.member?.workspaceId || '').trim();
   if (actorWorkspaceId) {
@@ -308,7 +308,7 @@ function shareRootAccess(req, { actor, memory, state } = {}) {
     }
     return { ok: false, status: 403, workspaceId, actorId: actorHumanId(actor), error: 'This share root is only available to members of this server.' };
   }
-  const tokenRecord = tokenRecordForRequest(memory, req);
+  const tokenRecord = tokenRecordForRequest(teamSharingState, req);
   if (tokenRecord) {
     const tokenWorkspaceId = String(tokenRecord.workspaceId || '').trim();
     if (!workspaceId || workspaceId === 'local' || tokenWorkspaceId === workspaceId) {
@@ -319,8 +319,8 @@ function shareRootAccess(req, { actor, memory, state } = {}) {
   return { ok: false, status: 401, workspaceId, actorId: '', error: 'Sign in to MagClaw and join this server to open the share root.' };
 }
 
-function sharesForShareRoot(memory = {}, workspaceId = '') {
-  const shares = ensureTeamMemoryShares(memory);
+function sharesForShareRoot(teamSharingState = {}, workspaceId = '') {
+  const shares = ensureTeamSharingShares(teamSharingState);
   const scope = String(workspaceId || '').trim();
   if (!scope || scope === 'local') return shares;
   return shares.filter((share) => String(share.workspaceId || '').trim() === scope);
@@ -348,7 +348,7 @@ function sendContextHtml(res, {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MagClaw Team Memory Context</title>
+  <title>MagClaw Team Sharing Context</title>
   <style>
     :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; }
     * { box-sizing:border-box; }
@@ -370,7 +370,7 @@ function sendContextHtml(res, {
 </head>
 <body>
   <header>
-    <h1>MagClaw Team Memory Context</h1>
+    <h1>MagClaw Team Sharing Context</h1>
     <div class="meta">session: ${htmlEscape(sessionId)} · anchor: ${htmlEscape(initialAnchor || 'latest')}</div>
   </header>
   <main>
@@ -396,7 +396,7 @@ function sendContextHtml(res, {
     }
     function recordFeedback(eventType) {
       if (!vectorDocumentId) return;
-      fetch('/api/team-memory/feedback', {
+      fetch('/api/team-sharing/feedback', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ queryId, vectorDocumentId, sessionId, eventType, sourceRef })
@@ -410,7 +410,7 @@ function sendContextHtml(res, {
     }
     async function load(direction) {
       const anchor = direction === 'next' ? nextAnchor : prevAnchor;
-      const url = '/api/team-memory/context/${safeSession}?anchorEventId=' + encodeURIComponent(anchor || '') + '&direction=' + encodeURIComponent(direction) + '&limit=20';
+      const url = '/api/team-sharing/context/${safeSession}?anchorEventId=' + encodeURIComponent(anchor || '') + '&direction=' + encodeURIComponent(direction) + '&limit=20';
       const response = await fetch(url);
       const data = await response.json();
       if (!data.ok) throw new Error(data.error || 'Failed to load context');
@@ -479,9 +479,9 @@ function isWithinDateRange(value = '', dateRange = null) {
   return true;
 }
 
-function localVectorSearch({ memory, query = '', channelId = '', projectKey = '', dateRange = null, limit = 40 } = {}) {
+function localVectorSearch({ teamSharingState, query = '', channelId = '', projectKey = '', dateRange = null, limit = 40 } = {}) {
   const terms = queryTerms(query);
-  const candidates = asArray(memory?.vectorDocuments)
+  const candidates = asArray(teamSharingState?.vectorDocuments)
     .filter((doc) => doc.active !== false)
     .filter((doc) => !channelId || doc.channelId === channelId)
     .filter((doc) => !projectKey || doc.projectKey === projectKey)
@@ -540,17 +540,17 @@ function bearerToken(req) {
   return String(req?.headers?.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
 }
 
-function ensureTeamMemoryAuthState(memory = {}) {
-  memory.auth = memory.auth && typeof memory.auth === 'object' ? memory.auth : {};
-  memory.auth.deviceRequests = memory.auth.deviceRequests && typeof memory.auth.deviceRequests === 'object' ? memory.auth.deviceRequests : {};
-  memory.auth.tokens = memory.auth.tokens && typeof memory.auth.tokens === 'object' ? memory.auth.tokens : {};
-  return memory.auth;
+function ensureTeamSharingAuthState(teamSharingState = {}) {
+  teamSharingState.auth = teamSharingState.auth && typeof teamSharingState.auth === 'object' ? teamSharingState.auth : {};
+  teamSharingState.auth.deviceRequests = teamSharingState.auth.deviceRequests && typeof teamSharingState.auth.deviceRequests === 'object' ? teamSharingState.auth.deviceRequests : {};
+  teamSharingState.auth.tokens = teamSharingState.auth.tokens && typeof teamSharingState.auth.tokens === 'object' ? teamSharingState.auth.tokens : {};
+  return teamSharingState.auth;
 }
 
-function tokenRecordForRequest(memory = {}, req) {
+function tokenRecordForRequest(teamSharingState = {}, req) {
   const token = bearerToken(req);
   if (!token) return null;
-  const record = ensureTeamMemoryAuthState(memory).tokens[hashSecret(token)];
+  const record = ensureTeamSharingAuthState(teamSharingState).tokens[hashSecret(token)];
   if (!record || record.revoked) return null;
   return record;
 }
@@ -563,16 +563,16 @@ function requestUser(actor = {}) {
   };
 }
 
-function requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken } = {}) {
-  const required = typeof teamMemoryAuthRequired === 'function' ? teamMemoryAuthRequired(req) : Boolean(teamMemoryAuthRequired);
+function requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken } = {}) {
+  const required = typeof teamSharingAuthRequired === 'function' ? teamSharingAuthRequired(req) : Boolean(teamSharingAuthRequired);
   if (!required || actor) return true;
-  if (typeof validTeamMemoryToken === 'function' && validTeamMemoryToken(req)) return true;
-  if (tokenRecordForRequest(memory, req)) return true;
-  sendError(res, 401, 'Team memory login or scoped token is required.');
+  if (typeof validTeamSharingToken === 'function' && validTeamSharingToken(req)) return true;
+  if (tokenRecordForRequest(teamSharingState, req)) return true;
+  sendError(res, 401, 'Team sharing login or scoped token is required.');
   return false;
 }
 
-export async function handleTeamMemoryApi(req, res, url, deps) {
+export async function handleTeamSharingApi(req, res, url, deps) {
   const {
     addSystemEvent = () => {},
     broadcastState = () => {},
@@ -580,7 +580,7 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
     embeddingProbe = null,
     embeddingReady = null,
     getState,
-    indexTeamMemoryDocuments = null,
+    indexTeamSharingDocuments = null,
     makeId,
     now,
     persistState = async () => {},
@@ -589,20 +589,20 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
     rerankReady = null,
     sendError,
     sendJson,
-    teamMemoryAuthRequired = null,
-    validTeamMemoryToken = null,
+    teamSharingAuthRequired = null,
+    validTeamSharingToken = null,
     vectorSearch = null,
     zillizReady = null,
   } = deps;
   const state = getState();
   const actor = currentActor(req);
   const workspaceId = actorWorkspaceId(actor, state);
-  const memory = state.teamMemory || {};
-  if (!state.teamMemory) state.teamMemory = memory;
+  const teamSharingState = state.teamSharing || {};
+  if (!state.teamSharing) state.teamSharing = teamSharingState;
 
-  if (req.method === 'POST' && url.pathname === '/api/team-memory/auth/start') {
+  if (req.method === 'POST' && url.pathname === '/api/team-sharing/auth/start') {
     const body = await readJson(req);
-    const auth = ensureTeamMemoryAuthState(memory);
+    const auth = ensureTeamSharingAuthState(teamSharingState);
     const deviceCode = randomToken('tmdev');
     const userCode = crypto.randomBytes(4).toString('hex').toUpperCase();
     const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
@@ -618,12 +618,12 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
       expiresAt,
     };
     auth.deviceRequests[request.deviceCodeHash] = request;
-    await persistState({ workspaceId, reason: 'team_memory_auth_start' });
+    await persistState({ workspaceId, reason: 'team_sharing_auth_start' });
     sendJson(res, 201, {
       ok: true,
       deviceCode,
       userCode,
-      verificationUri: `/team-memory/auth/approve?user_code=${encodeURIComponent(userCode)}`,
+      verificationUri: `/team-sharing/auth/approve?user_code=${encodeURIComponent(userCode)}`,
       expiresAt,
       intervalMs: 2000,
       status: request.status,
@@ -631,9 +631,9 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
     return true;
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/team-memory/auth/token') {
+  if (req.method === 'POST' && url.pathname === '/api/team-sharing/auth/token') {
     const body = await readJson(req);
-    const auth = ensureTeamMemoryAuthState(memory);
+    const auth = ensureTeamSharingAuthState(teamSharingState);
     const request = auth.deviceRequests[hashSecret(body.deviceCode || body.device_code || '')];
     if (!request) {
       sendJson(res, 200, { ok: true, status: 'pending' });
@@ -656,13 +656,13 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
       profile: request.profile || 'default',
       packageName: request.packageName || 'team-sharing',
       user: request.approvedUser || { id: 'hum_local', email: '', name: '' },
-      scopes: ['team_memory:sync', 'team_memory:search', 'team_memory:context', 'team_memory:feedback', 'team_memory:share'],
+      scopes: ['team_sharing:sync', 'team_sharing:search', 'team_sharing:context', 'team_sharing:feedback', 'team_sharing:share'],
       revoked: false,
       createdAt: now(),
       lastUsedAt: now(),
     };
     delete auth.deviceRequests[request.deviceCodeHash];
-    await persistState({ workspaceId: request.workspaceId || workspaceId, reason: 'team_memory_auth_token' });
+    await persistState({ workspaceId: request.workspaceId || workspaceId, reason: 'team_sharing_auth_token' });
     sendJson(res, 200, {
       ok: true,
       status: 'approved',
@@ -675,12 +675,12 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
     return true;
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/team-memory/auth/whoami') {
+  if (req.method === 'GET' && url.pathname === '/api/team-sharing/auth/whoami') {
     const record = actor
       ? { workspaceId, profile: 'browser', user: requestUser(actor), scopes: ['browser_session'] }
-      : tokenRecordForRequest(memory, req);
+      : tokenRecordForRequest(teamSharingState, req);
     if (!record) {
-      sendError(res, 401, 'Team memory login is required.');
+      sendError(res, 401, 'Team sharing login is required.');
       return true;
     }
     record.lastUsedAt = now();
@@ -688,22 +688,22 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
     return true;
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/team-memory/auth/revoke') {
-    const record = tokenRecordForRequest(memory, req);
+  if (req.method === 'POST' && url.pathname === '/api/team-sharing/auth/revoke') {
+    const record = tokenRecordForRequest(teamSharingState, req);
     if (!record) {
-      sendError(res, 401, 'Team memory login is required.');
+      sendError(res, 401, 'Team sharing login is required.');
       return true;
     }
     record.revoked = true;
     record.revokedAt = now();
-    await persistState({ workspaceId: record.workspaceId || workspaceId, reason: 'team_memory_auth_revoke' });
+    await persistState({ workspaceId: record.workspaceId || workspaceId, reason: 'team_sharing_auth_revoke' });
     sendJson(res, 200, { ok: true, revoked: true });
     return true;
   }
 
-  if (req.method === 'GET' && url.pathname === '/team-memory/auth/approve') {
+  if (req.method === 'GET' && url.pathname === '/team-sharing/auth/approve') {
     const userCode = String(url.searchParams.get('user_code') || '').trim().toUpperCase();
-    const auth = ensureTeamMemoryAuthState(memory);
+    const auth = ensureTeamSharingAuthState(teamSharingState);
     const request = Object.values(auth.deviceRequests).find((item) => item.userCode === userCode);
     if (!request) {
       sendError(res, 404, 'Team Sharing login request not found.');
@@ -716,7 +716,7 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
     request.status = 'approved';
     request.approvedUser = requestUser(actor);
     request.approvedAt = now();
-    await persistState({ workspaceId: request.workspaceId || workspaceId, reason: 'team_memory_auth_approve' });
+    await persistState({ workspaceId: request.workspaceId || workspaceId, reason: 'team_sharing_auth_approve' });
     res.writeHead?.(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end?.('<!doctype html><meta charset="utf-8"><title>MagClaw Team Sharing</title><p>Team Sharing login approved. You can return to the CLI.</p>');
     return true;
@@ -725,7 +725,7 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
   const publicShareMatch = url.pathname.match(/^\/s\/([^/]+)$/) || url.pathname.match(/^\/share\/([^/]+)$/);
   if (req.method === 'GET' && publicShareMatch) {
     const shareId = decodeURIComponent(publicShareMatch[1] || '');
-    const share = ensureTeamMemoryShares(memory).find((item) => item.id === shareId && item.revokedAt == null);
+    const share = ensureTeamSharingShares(teamSharingState).find((item) => item.id === shareId && item.revokedAt == null);
     if (!share) {
       sendShareHtml(res, shareChromeHtml({ title: 'MagClaw QuickShare' }, '<h1>Shared page not found</h1><p>This MagClaw share link may have been removed.</p>'), { status: 404 });
       return true;
@@ -735,9 +735,9 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
   }
 
   if (req.method === 'GET' && (url.pathname === '/share' || url.pathname === '/share/')) {
-    const access = shareRootAccess(req, { actor, memory, state });
+    const access = shareRootAccess(req, { actor, teamSharingState, state });
     if (!access.ok) {
-      addSystemEvent('team_memory_share_root_denied', 'Team memory share root access denied.', {
+      addSystemEvent('team_sharing_share_root_denied', 'Team sharing share root access denied.', {
         workspaceId: access.workspaceId || workspaceId,
         actorId: access.actorId || '',
         status: access.status,
@@ -745,12 +745,12 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
       sendShareHtml(res, shareRootDeniedHtml(access.status, access.error), { status: access.status });
       return true;
     }
-    sendShareHtml(res, renderShareIndexHtml(sharesForShareRoot(memory, access.workspaceId)));
+    sendShareHtml(res, renderShareIndexHtml(sharesForShareRoot(teamSharingState, access.workspaceId)));
     return true;
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/team-memory/shares') {
-    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+  if (req.method === 'POST' && url.pathname === '/api/team-sharing/shares') {
+    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
     const body = await readJson(req);
     const content = String(body.content || body.markdown || body.html || body.svg || body.mermaid || '');
     if (!content.trim()) {
@@ -779,15 +779,15 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
       createdAt,
       updatedAt: createdAt,
     };
-    ensureTeamMemoryShares(memory).push(share);
-    addSystemEvent('team_memory_share_created', `Team memory share created: ${share.title}`, {
+    ensureTeamSharingShares(teamSharingState).push(share);
+    addSystemEvent('team_sharing_share_created', `Team sharing share created: ${share.title}`, {
       workspaceId: share.workspaceId,
       shareId,
       channelId: share.channelId,
       projectKey: share.projectKey,
       contentType: share.contentType,
     });
-    await persistState({ workspaceId: share.workspaceId || workspaceId, reason: 'team_memory_share_created' });
+    await persistState({ workspaceId: share.workspaceId || workspaceId, reason: 'team_sharing_share_created' });
     broadcastState();
     sendJson(res, 201, {
       ok: true,
@@ -807,9 +807,9 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
     return true;
   }
 
-  const contextPageMatch = url.pathname.match(/^\/team-memory\/context\/([^/]+)$/);
+  const contextPageMatch = url.pathname.match(/^\/team-sharing\/context\/([^/]+)$/);
   if (req.method === 'GET' && contextPageMatch) {
-    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
     sendContextHtml(res, {
       sessionId: decodeURIComponent(contextPageMatch[1]),
       anchorEventId: sourceAnchorFromSearchParams(url.searchParams),
@@ -820,10 +820,10 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
     return true;
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/team-memory/sync') {
-    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+  if (req.method === 'POST' && url.pathname === '/api/team-sharing/sync') {
+    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
     const body = await readJson(req);
-    const result = await syncTeamMemoryBatch({
+    const result = await syncTeamSharingBatch({
       ...body,
       workspaceId: body.workspaceId || workspaceId,
       humanId: body.humanId || actorHumanId(actor),
@@ -833,54 +833,54 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
       now,
     });
     if (!result.ok) {
-      sendError(res, result.code === 'channel_not_found' ? 404 : 400, result.error || 'Team memory sync failed.');
+      sendError(res, result.code === 'channel_not_found' ? 404 : 400, result.error || 'Team sharing sync failed.');
       return true;
     }
-    if (!result.duplicate && result.appendedEventCount > 0 && typeof indexTeamMemoryDocuments === 'function') {
-      const documents = asArray(state.teamMemory?.vectorDocuments)
+    if (!result.duplicate && result.appendedEventCount > 0 && typeof indexTeamSharingDocuments === 'function') {
+      const documents = asArray(state.teamSharing?.vectorDocuments)
         .filter((doc) => doc.sessionId === result.sessionId && doc.active !== false);
       try {
-        const indexed = await indexTeamMemoryDocuments({
+        const indexed = await indexTeamSharingDocuments({
           workspaceId,
           sessionId: result.sessionId,
           documents,
-          memory: state.teamMemory || {},
+          teamSharingState: state.teamSharing || {},
         });
         result.indexedDocumentCount = Number(indexed?.count || documents.length || 0);
       } catch (error) {
         result.indexedDocumentCount = 0;
-        result.indexError = 'Team memory vector indexing failed.';
-        addSystemEvent('team_memory_index_error', 'Team memory vector indexing failed.', {
+        result.indexError = 'Team sharing vector indexing failed.';
+        addSystemEvent('team_sharing_index_error', 'Team sharing vector indexing failed.', {
           workspaceId,
           sessionId: result.sessionId,
           message: String(error?.message || error).slice(0, 300),
         });
       }
     }
-    addSystemEvent('team_memory_sync', `Team memory synced ${result.appendedEventCount} event(s).`, {
+    addSystemEvent('team_sharing_sync', `Team sharing synced ${result.appendedEventCount} event(s).`, {
       workspaceId,
       sessionId: result.sessionId,
       messageId: result.messageId,
       duplicate: result.duplicate,
     });
-    await persistState({ workspaceId, reason: 'team_memory_sync' });
+    await persistState({ workspaceId, reason: 'team_sharing_sync' });
     broadcastState();
     sendJson(res, result.duplicate ? 200 : 202, result);
     return true;
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/team-memory/search') {
-    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+  if (req.method === 'POST' && url.pathname === '/api/team-sharing/search') {
+    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
     const body = await readJson(req);
     const limit = Math.max(1, Math.min(20, Number(body.limit || 5)));
     const candidateK = Math.max(limit, Math.min(200, Number(body.candidateK || 40)));
     if (typeof zillizReady === 'function' && !zillizReady()) {
-      sendError(res, 503, 'Team memory vector index is not ready.');
+      sendError(res, 503, 'Team sharing vector index is not ready.');
       return true;
     }
     const vector = vectorSearch
       ? await vectorSearch({
-        memory,
+        teamSharingState,
         query: body.query || '',
         channelId: body.channelId || '',
         projectKey: body.projectKey || '',
@@ -889,7 +889,7 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
         actor,
       })
       : localVectorSearch({
-        memory,
+        teamSharingState,
         query: body.query || '',
         channelId: body.channelId || '',
         projectKey: body.projectKey || '',
@@ -897,22 +897,22 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
         limit: candidateK,
       });
     if (!vector?.ok) {
-      sendError(res, 503, vector?.error || 'Team memory vector search failed.');
+      sendError(res, 503, vector?.error || 'Team sharing vector search failed.');
       return true;
     }
     const rerankResults = rerank
       ? await rerank({ query: body.query || '', candidates: vector.candidates || [], limit: candidateK })
       : localRerank({ query: body.query || '', candidates: vector.candidates || [] });
-    const ranked = rankTeamMemoryCandidates({
+    const ranked = rankTeamSharingCandidates({
       query: body.query || '',
       candidates: vector.candidates || [],
-      memory,
+      teamSharingState,
       rerankResults,
       now,
       limit,
     });
     for (const item of ranked.results) {
-      applyTeamMemoryFeedback(memory, {
+      applyTeamSharingFeedback(teamSharingState, {
         workspaceId,
         actorId: actorHumanId(actor),
         queryId: ranked.queryId,
@@ -923,13 +923,13 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
         createdAt: now(),
       });
     }
-    addSystemEvent('team_memory_search', `Team memory searched: ${compactText(body.query || '', 90)}`, {
+    addSystemEvent('team_sharing_search', `Team sharing searched: ${compactText(body.query || '', 90)}`, {
       workspaceId,
       queryId: ranked.queryId,
       resultCount: ranked.results.length,
       candidateCount: vector.candidates?.length || 0,
     });
-    await persistState({ workspaceId, reason: 'team_memory_search' });
+    await persistState({ workspaceId, reason: 'team_sharing_search' });
     sendJson(res, 200, {
       ok: true,
       queryId: ranked.queryId,
@@ -957,48 +957,48 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
     return true;
   }
 
-  const contextMatch = url.pathname.match(/^\/api\/team-memory\/context\/([^/]+)$/);
+  const contextMatch = url.pathname.match(/^\/api\/team-sharing\/context\/([^/]+)$/);
   if (req.method === 'GET' && contextMatch) {
-    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
     const sessionId = decodeURIComponent(contextMatch[1]);
-    const result = contextWindowForTeamMemorySession(state.teamMemory || {}, sessionId, {
+    const result = contextWindowForTeamSharingSession(state.teamSharing || {}, sessionId, {
       anchorEventId: sourceAnchorFromSearchParams(url.searchParams),
       direction: url.searchParams.get('direction') || 'around',
       limit: url.searchParams.get('limit') || 20,
     });
     if (!result.ok) {
-      sendError(res, 404, 'Team memory session not found.');
+      sendError(res, 404, 'Team sharing session not found.');
       return true;
     }
     sendJson(res, 200, result);
     return true;
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/team-memory/feedback') {
-    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+  if (req.method === 'POST' && url.pathname === '/api/team-sharing/feedback') {
+    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
     const body = await readJson(req);
-    const result = applyTeamMemoryFeedback(state.teamMemory || {}, {
+    const result = applyTeamSharingFeedback(state.teamSharing || {}, {
       ...body,
       workspaceId,
       actorId: body.actorId || actorHumanId(actor),
       createdAt: body.createdAt || now(),
     });
     if (!result.ok) {
-      sendError(res, 400, 'Invalid team memory feedback.');
+      sendError(res, 400, 'Invalid team sharing feedback.');
       return true;
     }
-    addSystemEvent('team_memory_feedback', `Team memory feedback recorded: ${body.eventType || ''}`, {
+    addSystemEvent('team_sharing_feedback', `Team sharing feedback recorded: ${body.eventType || ''}`, {
       workspaceId,
       vectorDocumentId: body.vectorDocumentId || '',
       eventType: body.eventType || '',
     });
-    await persistState({ workspaceId, reason: 'team_memory_feedback' });
+    await persistState({ workspaceId, reason: 'team_sharing_feedback' });
     broadcastState();
     sendJson(res, 200, result);
     return true;
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/team-memory/doctor') {
+  if (req.method === 'GET' && url.pathname === '/api/team-sharing/doctor') {
     const embeddingCheck = {
       ready: dependencyReady(embeddingReady, ['MAGCLAW_EMBEDDING_BASE_URL', 'MAGCLAW_EMBEDDING_API_KEY', 'MAGCLAW_EMBEDDING_MODEL']),
     };

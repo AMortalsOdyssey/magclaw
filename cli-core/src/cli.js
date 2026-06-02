@@ -9,13 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderListProfiles, shouldUseColor } from './list-renderer.js';
 import {
-  buildTeamMemorySyncPackageFromTranscript,
-  installTeamMemoryHookConfig,
-  parseTeamMemoryTranscript,
-} from './team-memory-hooks.js';
-import {
   checkTeamSharingUpgrade,
-  convertTeamSharingProjectToMemoryConfig,
   disableTeamSharingSkill,
   initTeamSharingProject,
   installTeamSharingHooks,
@@ -23,15 +17,17 @@ import {
   listTeamSharingProjects,
   loginTeamSharingProfile,
   logoutTeamSharingProfile,
-  readTeamSharingProfileConfig,
-  readTeamSharingProjectConfig,
+  readTeamSharingContext,
   removeTeamSharingHooks,
   removeTeamSharingSkill,
+  searchTeamSharing,
   setTeamSharingProjectEnabled,
+  shareTeamSharingArtifact,
   setupTeamSharing,
   statusTeamSharingProject,
   statusTeamSharingHooks,
   statusTeamSharingSkill,
+  syncTeamSharingTranscript,
   teamSharingPaths,
   unsetTeamSharingProject,
   whoamiTeamSharingProfile,
@@ -46,13 +42,17 @@ export {
   listTeamSharingProjects,
   loginTeamSharingProfile,
   logoutTeamSharingProfile,
+  readTeamSharingContext,
   removeTeamSharingHooks,
   removeTeamSharingSkill,
+  searchTeamSharing,
   setTeamSharingProjectEnabled,
+  shareTeamSharingArtifact,
   setupTeamSharing,
   statusTeamSharingProject,
   statusTeamSharingHooks,
   statusTeamSharingSkill,
+  syncTeamSharingTranscript,
   teamSharingPaths,
   unsetTeamSharingProject,
   whoamiTeamSharingProfile,
@@ -743,7 +743,6 @@ function renderHelp() {
     '  list         List local daemon profiles and connected Computers',
     '  logs         Print recent daemon logs for one profile',
     '  install-cli  Install or repair durable magclaw command shims',
-    '  memory       Configure and use MagClaw team-memory sync',
     '  team-sharing Configure MagClaw Team Sharing setup, login, hooks, and skill',
     '  skills       Install or manage MagClaw feature skills',
     '  hooks        Install or manage MagClaw feature hooks',
@@ -934,85 +933,6 @@ async function readJsonFile(file, fallback = {}) {
 async function writeJsonFile(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
-}
-
-export function teamMemoryPaths({ profile = DEFAULT_PROFILE, cwd = process.cwd(), env = process.env } = {}) {
-  const home = homeDirForEnv(env) || os.homedir();
-  const memoryHome = path.resolve(env.MAGCLAW_MEMORY_HOME || path.join(home, '.magclaw', 'memory'));
-  const cleanProfile = safeProfileName(profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE);
-  const projectDir = path.resolve(cwd || process.cwd());
-  return {
-    profile: cleanProfile,
-    memoryHome,
-    profilesDir: path.join(memoryHome, 'profiles'),
-    profileConfig: path.join(memoryHome, 'profiles', cleanProfile, 'config.json'),
-    projectConfig: path.join(projectDir, '.magclaw', 'team-memory.json'),
-    projectCursor: path.join(projectDir, '.magclaw', 'team-memory-cursor.json'),
-  };
-}
-
-function normalizeMemoryServerUrl(value = '') {
-  return String(value || DEFAULT_SERVER_URL).replace(/\/+$/, '');
-}
-
-export async function loginTeamMemoryProfile(flags = {}, env = process.env) {
-  const paths = teamMemoryPaths({ profile: flags.profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE, env });
-  const existing = await readJsonFile(paths.profileConfig, {});
-  const token = String(flags.token || flags.apiKey || flags.memoryToken || env.MAGCLAW_MEMORY_TOKEN || existing.token || '').trim();
-  const serverUrl = normalizeMemoryServerUrl(flags.serverUrl || existing.serverUrl || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL);
-  const profile = {
-    version: 1,
-    profile: paths.profile,
-    serverUrl,
-    workspaceId: String(flags.workspaceId || flags.workspace || existing.workspaceId || env.MAGCLAW_WORKSPACE_ID || 'local').trim(),
-    token,
-    tokenScope: ['team_memory:sync', 'team_memory:search', 'team_memory:context', 'team_memory:feedback', 'team_memory:share'],
-    updatedAt: now(),
-    createdAt: existing.createdAt || now(),
-  };
-  await writeJsonFile(paths.profileConfig, profile);
-  return {
-    ok: true,
-    profile: paths.profile,
-    serverUrl,
-    workspaceId: profile.workspaceId,
-    hasToken: Boolean(token),
-    profileConfig: paths.profileConfig,
-  };
-}
-
-export async function initTeamMemoryProject(flags = {}, env = process.env) {
-  const cwd = path.resolve(flags.cwd || process.cwd());
-  const paths = teamMemoryPaths({ profile: flags.profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE, cwd, env });
-  const channel = String(flags.channel || flags.channelId || flags.channelPath || flags._?.[1] || '').trim();
-  if (!channel) throw new Error('Usage: magclaw memory init --channel <channelPathOrId>');
-  const existing = await readJsonFile(paths.projectConfig, {});
-  const projectKey = String(flags.projectKey || existing.projectKey || path.basename(cwd)).trim();
-  const config = {
-    version: 1,
-    enabled: flags.enabled === undefined ? true : !['0', 'false', 'no'].includes(String(flags.enabled).toLowerCase()),
-    profile: paths.profile,
-    serverUrl: normalizeMemoryServerUrl(flags.serverUrl || existing.serverUrl || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL),
-    workspaceId: String(flags.workspaceId || flags.workspace || existing.workspaceId || env.MAGCLAW_WORKSPACE_ID || 'local').trim(),
-    channelId: String(flags.channelId || (!/^(https?|feishu|lark|mc):/i.test(channel) ? channel : existing.channelId || '')).trim(),
-    channelPath: String(flags.channelPath || (/^(https?|feishu|lark|mc):/i.test(channel) ? channel : existing.channelPath || '')).trim(),
-    routingMode: 'fixed_single_channel',
-    projectKey,
-    enabledRuntimes: ['codex', 'claude_code'],
-    updatedAt: now(),
-    createdAt: existing.createdAt || now(),
-  };
-  await writeJsonFile(paths.projectConfig, config);
-  return {
-    ok: true,
-    projectConfig: paths.projectConfig,
-    profile: paths.profile,
-    serverUrl: config.serverUrl,
-    workspaceId: config.workspaceId,
-    channelId: config.channelId,
-    channelPath: config.channelPath,
-    projectKey,
-  };
 }
 
 async function readProfile(profile, env = process.env) {
@@ -6699,421 +6619,6 @@ async function postSetupJson(serverUrl, pathname, body = {}) {
   return data;
 }
 
-async function teamMemoryRequestJson({ serverUrl, token = '', method = 'GET', pathname = '/api/team-memory/doctor', body = null } = {}) {
-  const response = await fetch(`${normalizeMemoryServerUrl(serverUrl)}${pathname}`, {
-    method,
-    headers: {
-      ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || data.message || `${response.status} ${response.statusText}`);
-  }
-  return data;
-}
-
-async function readTeamMemoryProjectConfig(flags = {}, env = process.env) {
-  const paths = teamMemoryPaths({ profile: flags.profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE, cwd: flags.cwd || process.cwd(), env });
-  const teamSharing = await readTeamSharingProjectConfig({ profile: flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE, cwd: flags.cwd || process.cwd(), env });
-  if (teamSharing.config) {
-    return {
-      paths: {
-        ...paths,
-        teamSharingProjectConfig: teamSharing.paths.projectConfig,
-      },
-      config: convertTeamSharingProjectToMemoryConfig(teamSharing.config),
-    };
-  }
-  return {
-    paths,
-    config: await readJsonFile(paths.projectConfig, null),
-  };
-}
-
-async function readTeamMemoryProfile(profile, env = process.env) {
-  const paths = teamMemoryPaths({ profile, env });
-  const sharing = await readTeamSharingProfileConfig(profile, env);
-  if (sharing.config?.token || sharing.config?.server_url) {
-    return {
-      paths: {
-        ...paths,
-        teamSharingProfileConfig: sharing.paths.profileConfig,
-      },
-      config: {
-        version: sharing.config.version || 1,
-        profile: sharing.config.profile || profile,
-        serverUrl: sharing.config.server_url || sharing.config.serverUrl,
-        workspaceId: sharing.config.workspace_id || sharing.config.workspaceId,
-        token: sharing.config.token,
-      },
-    };
-  }
-  return {
-    paths,
-    config: await readJsonFile(paths.profileConfig, {}),
-  };
-}
-
-async function resolveTeamMemoryClient(flags = {}, env = process.env) {
-  const project = await readTeamMemoryProjectConfig(flags, env);
-  if (!project.config) throw new Error('Run `magclaw memory init --channel <channel>` in this project first.');
-  const profile = await readTeamMemoryProfile(flags.profile || project.config.profile || DEFAULT_PROFILE, env);
-  return {
-    project,
-    profile,
-    serverUrl: flags.serverUrl || project.config.serverUrl || profile.config.serverUrl || DEFAULT_SERVER_URL,
-    token: String(profile.config.token || env.MAGCLAW_MEMORY_TOKEN || '').trim(),
-  };
-}
-
-async function doctorTeamMemory(flags = {}, env = process.env) {
-  const project = await readTeamMemoryProjectConfig(flags, env);
-  const profileName = flags.profile || project.config?.profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE;
-  const profile = await readTeamMemoryProfile(profileName, env);
-  const serverUrl = normalizeMemoryServerUrl(flags.serverUrl || project.config?.serverUrl || profile.config.serverUrl || DEFAULT_SERVER_URL);
-  const token = String(profile.config.token || env.MAGCLAW_MEMORY_TOKEN || '').trim();
-  const local = {
-    projectConfig: { exists: Boolean(project.config), path: project.paths.projectConfig },
-    profileConfig: { exists: Boolean(profile.config?.profile), path: profile.paths.profileConfig },
-    hasToken: Boolean(token),
-    channelConfigured: Boolean(project.config?.channelId || project.config?.channelPath),
-  };
-  if (flags.offline) {
-    return { ok: Object.values(local).every((item) => typeof item === 'boolean' ? item : item.exists !== false), local, remote: null };
-  }
-  try {
-    const remote = await teamMemoryRequestJson({ serverUrl, token, pathname: '/api/team-memory/doctor' });
-    return {
-      ok: Boolean(local.projectConfig.exists && local.profileConfig.exists && local.channelConfigured && remote.ok),
-      serverUrl,
-      local,
-      remote,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      serverUrl,
-      local,
-      remote: { ok: false, error: error?.message || String(error) },
-    };
-  }
-}
-
-function cursorLastOrdinal(cursor = {}, runtime = 'codex', sessionId = '') {
-  return Number(cursor?.sessions?.[runtime]?.[sessionId]?.lastOrdinal || 0);
-}
-
-async function writeTeamMemoryCursor(file, runtime, cursor) {
-  const existing = await readJsonFile(file, {});
-  const sessions = existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {};
-  sessions[runtime] = sessions[runtime] && typeof sessions[runtime] === 'object' ? sessions[runtime] : {};
-  sessions[runtime][cursor.sessionId] = {
-    ...(sessions[runtime][cursor.sessionId] || {}),
-    ...cursor,
-  };
-  await writeJsonFile(file, {
-    version: 1,
-    sessions,
-    updatedAt: now(),
-  });
-}
-
-export async function syncTeamMemoryTranscript(flags = {}, env = process.env) {
-  const transcriptPath = String(flags.transcript || flags.file || flags._?.[1] || '').trim();
-  if (!transcriptPath) {
-    if (flags.hookEvent) return { ok: true, empty: true, reason: 'missing_transcript_path' };
-    throw new Error('Usage: magclaw memory sync --transcript <path>');
-  }
-  const project = await readTeamMemoryProjectConfig(flags, env);
-  if (!project.config) throw new Error('Run `magclaw memory init --channel <channel>` in this project first.');
-  const runtime = String(flags.runtime || 'codex').trim().toLowerCase() === 'claude' || String(flags.runtime || '').trim().toLowerCase() === 'claude-code'
-    ? 'claude_code'
-    : String(flags.runtime || 'codex').trim().toLowerCase();
-  if (project.config.enabled === false) {
-    if (flags.hookEvent) return { ok: true, empty: true, reason: 'project_disabled' };
-    throw new Error('Team Sharing is disabled for this project.');
-  }
-  const runtimeConfig = project.config.runtimes?.[runtime];
-  if (flags.hookEvent && runtimeConfig && runtimeConfig.hooksEnabled === false) {
-    return { ok: true, empty: true, reason: 'runtime_hooks_disabled' };
-  }
-  const profile = await readTeamMemoryProfile(flags.profile || project.config.profile || DEFAULT_PROFILE, env);
-  const token = String(profile.config.token || env.MAGCLAW_MEMORY_TOKEN || '').trim();
-  const content = await readFile(path.resolve(transcriptPath), 'utf8');
-  const parsed = parseTeamMemoryTranscript(content, {
-    runtime,
-    sessionId: flags.sessionId || '',
-    title: flags.title || '',
-    projectDir: flags.cwd || process.cwd(),
-  });
-  const cursor = await readJsonFile(project.paths.projectCursor, {});
-  const lastOrdinal = Number(flags.full ? 0 : cursorLastOrdinal(cursor, parsed.runtime, parsed.sessionId));
-  const syncPackage = buildTeamMemorySyncPackageFromTranscript(content, {
-    runtime: parsed.runtime,
-    sessionId: parsed.sessionId,
-    title: flags.title || parsed.title || path.basename(transcriptPath),
-    projectKey: project.config.projectKey,
-    workspaceId: project.config.workspaceId,
-    channelId: project.config.channelId,
-    channelPath: project.config.channelPath,
-    projectDir: flags.cwd || process.cwd(),
-    lastOrdinal,
-    minCreatedAt: project.config.enabledSince || '',
-  });
-  if (syncPackage.empty || !syncPackage.body) return { ok: true, empty: true, cursor: syncPackage.cursor };
-  const result = await teamMemoryRequestJson({
-    serverUrl: flags.serverUrl || project.config.serverUrl || profile.config.serverUrl || DEFAULT_SERVER_URL,
-    token,
-    method: 'POST',
-    pathname: '/api/team-memory/sync',
-    body: syncPackage.body,
-  });
-  if (result?.ok !== false) {
-    await writeTeamMemoryCursor(project.paths.projectCursor, parsed.runtime, syncPackage.cursor);
-  }
-  return {
-    ...result,
-    cursor: syncPackage.cursor,
-  };
-}
-
-export async function installTeamMemoryHooks(flags = {}, env = process.env) {
-  const home = homeDirForEnv(env) || os.homedir();
-  const cwd = path.resolve(flags.cwd || process.cwd());
-  const runtime = String(flags.runtime || 'all').trim().toLowerCase();
-  const output = { ok: true };
-  if (runtime === 'all' || runtime === 'codex') {
-    output.codex = await installTeamMemoryHookConfig({
-      runtime: 'codex',
-      configPath: flags.codexConfig || path.join(home, '.codex', 'hooks.json'),
-      projectDir: cwd,
-    });
-  }
-  if (runtime === 'all' || runtime === 'claude' || runtime === 'claude_code' || runtime === 'claude-code') {
-    output.claude = await installTeamMemoryHookConfig({
-      runtime: 'claude_code',
-      configPath: flags.claudeConfig || path.join(home, '.claude', 'settings.json'),
-      projectDir: cwd,
-    });
-  }
-  output.ok = Boolean((!output.codex || output.codex.ok) && (!output.claude || output.claude.ok));
-  return output;
-}
-
-export async function searchTeamMemory(flags = {}, env = process.env) {
-  const query = String(flags.query || flags._?.slice(1).join(' ') || '').trim();
-  if (!query) throw new Error('Usage: magclaw memory search --query <text>');
-  const { project, serverUrl, token } = await resolveTeamMemoryClient(flags, env);
-  return teamMemoryRequestJson({
-    serverUrl,
-    token,
-    method: 'POST',
-    pathname: '/api/team-memory/search',
-    body: {
-      query,
-      channelId: flags.channelId || project.config.channelId || '',
-      projectKey: flags.projectKey || project.config.projectKey || '',
-      dateRange: flags.dateRange || null,
-      candidateK: flags.candidateK || undefined,
-      limit: flags.limit || 5,
-    },
-  });
-}
-
-export async function readTeamMemoryContext(flags = {}, env = process.env) {
-  const sessionId = String(flags.sessionId || flags.session || flags._?.[1] || '').trim();
-  if (!sessionId) throw new Error('Usage: magclaw memory context --session-id <sessionId>');
-  const { serverUrl, token } = await resolveTeamMemoryClient(flags, env);
-  const params = new URLSearchParams();
-  if (flags.anchorEventId || flags.anchor) params.set('anchorEventId', String(flags.anchorEventId || flags.anchor));
-  if (flags.direction) params.set('direction', String(flags.direction));
-  if (flags.limit) params.set('limit', String(flags.limit));
-  const suffix = params.toString() ? `?${params.toString()}` : '';
-  return teamMemoryRequestJson({
-    serverUrl,
-    token,
-    pathname: `/api/team-memory/context/${encodeURIComponent(sessionId)}${suffix}`,
-  });
-}
-
-function inferShareArtifactType(explicit = '', filePath = '') {
-  const clean = String(explicit || '').trim().toLowerCase();
-  if (['html', 'markdown', 'md', 'svg', 'mermaid', 'mmd'].includes(clean)) {
-    return clean === 'md' ? 'markdown' : clean === 'mmd' ? 'mermaid' : clean;
-  }
-  const ext = path.extname(String(filePath || '')).toLowerCase();
-  if (ext === '.html' || ext === '.htm') return 'html';
-  if (ext === '.svg') return 'svg';
-  if (ext === '.mmd' || ext === '.mermaid') return 'mermaid';
-  return 'markdown';
-}
-
-export async function shareTeamMemoryArtifact(flags = {}, env = process.env) {
-  const fileArg = String(flags.file || flags.path || flags.artifact || flags._?.[1] || '').trim();
-  const inlineContent = flags.content ?? flags.markdown ?? flags.html ?? '';
-  if (!fileArg && !inlineContent) {
-    throw new Error('Usage: magclaw team-sharing share-artifact --file <path> [--title <title>] [--type markdown|html|svg|mermaid]');
-  }
-  const cwd = path.resolve(flags.cwd || process.cwd());
-  const filePath = fileArg ? path.resolve(cwd, fileArg) : '';
-  const content = filePath ? await readFile(filePath, 'utf8') : String(inlineContent);
-  const { project, serverUrl, token } = await resolveTeamMemoryClient(flags, env);
-  const title = String(flags.title || flags.name || (filePath ? path.basename(filePath) : 'MagClaw shared page')).trim() || 'MagClaw shared page';
-  return teamMemoryRequestJson({
-    serverUrl,
-    token,
-    method: 'POST',
-    pathname: '/api/team-memory/shares',
-    body: {
-      title,
-      description: flags.description || '',
-      contentType: inferShareArtifactType(flags.type || flags.contentType, filePath),
-      content,
-      workspaceId: flags.workspaceId || project.config.workspaceId || '',
-      channelId: flags.channelId || project.config.channelId || '',
-      channelPath: flags.channelPath || project.config.channelPath || '',
-      projectKey: flags.projectKey || project.config.projectKey || '',
-      source: {
-        kind: 'cli_artifact',
-        runtime: flags.runtime || '',
-        file: filePath ? path.basename(filePath) : '',
-      },
-    },
-  });
-}
-
-function teamMemorySkillMarkdown() {
-  return [
-    '---',
-    'name: magclaw-team-memory',
-    'description: Search, read, and publicly share MagClaw team memory artifacts from Codex and Claude Code sessions.',
-    '---',
-    '',
-    '# MagClaw Team Memory',
-    '',
-    'Use this skill when the user asks what the team discussed, wants to align with another session, needs original AI conversation context, or asks to publish a generated summary as a share link.',
-    '',
-    '## Workflow',
-    '',
-    '1. Run `magclaw memory search --query "<question>" --limit 5` from the project directory.',
-    '2. Answer from the returned L0/L1 evidence when the user only needs a rough understanding.',
-    '3. For deep follow-up, run `magclaw memory context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 20`.',
-    '4. Cite session titles, source refs, and context URLs from the command output.',
-    '5. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `magclaw team-sharing share-artifact --file <path> --title "<title>" --type html`.',
-    '6. Return the public URL from the command output. The shared page is public by design and includes the creator and creation time in the footer.',
-    '',
-    '## Default Share HTML Style',
-    '',
-    'Use this style whenever the user asks to share something with the team, use MagClaw sharing, or create a public share link, unless the user explicitly asks for another visual direction.',
-    '',
-    '- Format: produce one self-contained `<!doctype html>` file with inline CSS, `lang="zh-CN"` by default, `meta viewport`, smooth anchor scrolling, and no external assets unless they are already public and intentional.',
-    '- Hero: start with a deep blue-black technical hero using a subtle cyan dot-grid or radial pattern over a dark linear background. Include a compact eyebrow label, an emerald pulse/status mark, a clear H1, a short subtitle, and 3-4 metric tiles for the most important facts.',
-    '- Layout: use a max-width content shell around 1160px. On desktop, use a two-column layout with a 240-260px sticky table of contents on the left and report content on the right. On small screens, collapse to a single column and make the nav static.',
-    '- Body surface: use a pale wash page background and white report cards for major sections. Cards should use 8px radius, 1px neutral borders, subtle slate shadows, and generous but compact padding. Do not nest cards inside cards.',
-    '- Palette: use neutral ink/muted/line/paper/wash colors, with cyan as the primary technical accent, emerald for success/confirmed states, amber for warnings/tradeoffs, and rose for danger/risk. Avoid one-note blue, purple, beige, or heavy gradient pages.',
-    '- Typography: use system sans-serif fonts, `letter-spacing: 0`, strong line-height for Chinese text, hero-scale type only in the hero, and compact headings inside report sections.',
-    '- Components: use lead paragraphs for conclusion sentences, callouts with a 4px colored left border, small rounded tags for states, metric tiles in the hero, 3-column cards for runtime/option summaries, and simple step blocks for flows.',
-    '- Tables: use full-width comparison or checklist tables with clear headers, 1px borders, readable 14px text, and horizontal overflow handling when needed.',
-    '- Code and commands: render inline code with a light chip style. Render command blocks in a dark terminal panel with cyan-tinted text, rounded 8px corners, overflow-x auto, and copy-friendly plain commands.',
-    '- Diagrams: prefer CSS grid flow diagrams, compact architecture maps, or Mermaid blocks when they communicate the logic faster than prose. Every diagram should have labels that make sense without the surrounding chat transcript.',
-    '- Responsive rules: mobile viewports must not overflow. Collapse hero metrics, cards, and flow grids to one column below tablet width; keep tables scrollable; ensure long commands and URLs wrap or scroll without breaking layout.',
-    '- Content structure: write for reporting, not chat replay. Start each section with a conclusion sentence, then provide technical detail, commands, tradeoffs, and verification steps. Use numbered sections, clear anchors, and a table of contents for anything longer than a short note.',
-    '- Share footer: rely on MagClaw to add creator and creation time. Do not duplicate credentials, local machine paths, hidden reasoning, raw tool output, or private configuration in the shared artifact.',
-    '',
-    '## Rules',
-    '',
-    '- Do not upload local secrets or raw tool output.',
-    '- Before sharing, remove tokens, private URLs, personal paths, hidden reasoning, and sensitive customer data from the artifact.',
-    '- Prefer concise synthesis first, then pull original context only when needed.',
-    '- If search returns low confidence or too few results, ask a narrower question or date range.',
-    '',
-  ].join('\n');
-}
-
-async function writeTeamMemorySkill(rootDir) {
-  const skillDir = path.join(rootDir, 'skills', 'magclaw-team-memory');
-  await mkdir(skillDir, { recursive: true });
-  const skillPath = path.join(skillDir, 'SKILL.md');
-  await writeFile(skillPath, teamMemorySkillMarkdown());
-  return skillPath;
-}
-
-export async function installTeamMemorySkill(flags = {}, env = process.env) {
-  const home = homeDirForEnv(env) || os.homedir();
-  const target = String(flags.target || 'codex').trim().toLowerCase();
-  const output = { ok: true, installed: [] };
-  if (target === 'codex' || target === 'all') {
-    const codexHome = path.resolve(env.CODEX_HOME || path.join(home, '.codex'));
-    output.installed.push({ target: 'codex', path: await writeTeamMemorySkill(codexHome) });
-  }
-  if (target === 'claude' || target === 'claude_code' || target === 'claude-code' || target === 'all') {
-    const claudeHome = path.resolve(env.CLAUDE_HOME || path.join(home, '.claude'));
-    output.installed.push({ target: 'claude_code', path: await writeTeamMemorySkill(claudeHome) });
-  }
-  output.ok = output.installed.length > 0;
-  return output;
-}
-
-async function runTeamMemoryCommand(flags = {}, env = process.env) {
-  const subcommand = String(flags._?.[0] || 'help').trim();
-  if (subcommand === 'help' || flags.help) {
-    process.stdout.write([
-      'Usage: magclaw memory <command> [options]',
-      '',
-      'Commands:',
-      '  login   Save a scoped team-memory token in the user profile',
-      '  init    Write .magclaw/team-memory.json for the current project',
-      '  doctor  Check local and server-side team-memory configuration',
-      '  install-hooks  Install Codex/Claude hook commands for this project',
-      '  install-skill  Install the MagClaw team-memory skill locally',
-      '  search  Query shared team memory through /api/team-memory/search',
-      '  context Read original context around a session anchor',
-      '  share-artifact Create a public MagClaw share link from a local file',
-      '  sync    Upload one transcript file through /api/team-memory/sync',
-      '',
-    ].join('\n'));
-    return;
-  }
-  switch (subcommand) {
-    case 'login':
-      printJson(await loginTeamMemoryProfile(flags, env));
-      break;
-    case 'init':
-      printJson(await initTeamMemoryProject(flags, env));
-      break;
-    case 'doctor':
-      printJson(await doctorTeamMemory(flags, env));
-      break;
-    case 'install-hooks':
-    case 'install':
-      printJson(await installTeamMemoryHooks(flags, env));
-      break;
-    case 'install-skill':
-    case 'skill':
-      printJson(await installTeamMemorySkill(flags, env));
-      break;
-    case 'search':
-      printJson(await searchTeamMemory(flags, env));
-      break;
-    case 'context':
-      printJson(await readTeamMemoryContext(flags, env));
-      break;
-    case 'share':
-    case 'share-artifact':
-    case 'quickshare':
-      printJson(await shareTeamMemoryArtifact(flags, env));
-      break;
-    case 'sync':
-      printJson(await syncTeamMemoryTranscript(flags, env));
-      break;
-    default:
-      throw new Error(`Unknown memory command: ${subcommand}`);
-  }
-}
-
 async function runTeamSharingCommand(flags = {}, env = process.env) {
   const subcommand = String(flags._?.[0] || 'help').trim();
   if (subcommand === 'help' || flags.help) {
@@ -7122,7 +6627,7 @@ async function runTeamSharingCommand(flags = {}, env = process.env) {
       '',
       'Commands:',
       '  setup    Configure login, project channel, hooks, and skill',
-      '  login    Browser/device login for scoped team-memory sync token',
+      '  login    Browser/device login for scoped team-sharing sync token',
       '  logout   Revoke and remove the cached Team Sharing token',
       '  relogin  Force a fresh browser/device login',
       '  whoami   Show the current Team Sharing identity',
@@ -7134,7 +6639,7 @@ async function runTeamSharingCommand(flags = {}, env = process.env) {
       '  status   Show project/login/hook/skill status',
       '  doctor   Check local config, server auth, hooks, skill, and upgrade state',
       '  upgrade  Check npm latest version for team-sharing',
-      '  search   Query shared team memory',
+      '  search   Query shared team sharing',
       '  context  Read original context around an anchor',
       '  share-artifact Create a public MagClaw share link from a local file',
       '  sync     Upload one transcript file',
@@ -7199,18 +6704,18 @@ async function runTeamSharingCommand(flags = {}, env = process.env) {
       printJson(await checkTeamSharingUpgrade({ force: true }, env));
       break;
     case 'search':
-      printJson(await searchTeamMemory(flags, env));
+      printJson(await searchTeamSharing(flags, env));
       break;
     case 'context':
-      printJson(await readTeamMemoryContext(flags, env));
+      printJson(await readTeamSharingContext(flags, env));
       break;
     case 'share':
     case 'share-artifact':
     case 'quickshare':
-      printJson(await shareTeamMemoryArtifact(flags, env));
+      printJson(await shareTeamSharingArtifact(flags, env));
       break;
     case 'sync':
-      printJson(await syncTeamMemoryTranscript({ ...flags, integration: flags.integration || 'team-sharing' }, env));
+      printJson(await syncTeamSharingTranscript({ ...flags, integration: flags.integration || 'team-sharing' }, env));
       break;
     default:
       throw new Error(`Unknown team-sharing command: ${subcommand}`);
@@ -7220,7 +6725,7 @@ async function runTeamSharingCommand(flags = {}, env = process.env) {
 async function runFeatureInstallCommand(kind, flags = {}, env = process.env) {
   const subcommand = String(flags._?.[0] || 'help').trim();
   const feature = String(flags.feature || flags.name || flags._?.[1] || 'team-sharing').trim();
-  if (feature !== 'team-sharing' && feature !== 'team-memory') {
+  if (feature !== 'team-sharing' && feature !== 'team-sharing') {
     throw new Error(`${kind} currently supports --feature team-sharing.`);
   }
   if (subcommand === 'help' || flags.help) {
@@ -7830,9 +7335,6 @@ export async function main(argv = process.argv, env = process.env) {
       break;
     case 'computer':
       await runComputerCommand(flags, env);
-      break;
-    case 'memory':
-      await runTeamMemoryCommand(flags, env);
       break;
     case 'team-sharing':
       await runTeamSharingCommand(flags, env);

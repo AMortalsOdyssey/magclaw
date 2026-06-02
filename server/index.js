@@ -131,15 +131,15 @@ import { handleMissionApi } from './api/mission-routes.js';
 import { handleProjectApi } from './api/project-routes.js';
 import { handleSystemApi } from './api/system-routes.js';
 import { handleTaskApi } from './api/task-routes.js';
-import { handleTeamMemoryApi } from './api/team-memory-routes.js';
+import { handleTeamSharingApi } from './api/team-sharing-routes.js';
 import { applyServerYamlConfig } from './config-yaml.js';
 import {
   createEmbeddingClient,
   createRerankClient,
-  createTeamMemoryIndexingPipeline,
-  createZillizTeamMemoryClient,
-} from './team-memory-clients.js';
-import { createTeamMemorySummaryClient } from './team-memory-summary.js';
+  createTeamSharingIndexingPipeline,
+  createZillizTeamSharingClient,
+} from './team-sharing-clients.js';
+import { createTeamSharingSummaryClient } from './team-sharing-summary.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1714,7 +1714,7 @@ function systemApiDeps() {
 function appApiAuthIsBypassed(url) {
   return url.pathname.startsWith('/api/cloud/')
     || url.pathname.startsWith('/api/auth/')
-    || url.pathname.startsWith('/api/team-memory/')
+    || url.pathname.startsWith('/api/team-sharing/')
     || url.pathname.startsWith('/api/console/')
     || url.pathname === '/api/healthz'
     || url.pathname === '/api/readyz';
@@ -1784,11 +1784,11 @@ function collabApiDeps() {
   };
 }
 
-function teamMemoryApiDeps() {
+function teamSharingApiDeps() {
   const embeddingClient = createEmbeddingClient();
-  const zillizClient = createZillizTeamMemoryClient();
+  const zillizClient = createZillizTeamSharingClient();
   const rerankClient = createRerankClient();
-  const summaryClient = createTeamMemorySummaryClient();
+  const summaryClient = createTeamSharingSummaryClient();
   const workspaceIdFromActor = (actor) => String(
     actor?.member?.workspaceId
       || state.connection?.workspaceId
@@ -1815,7 +1815,7 @@ function teamMemoryApiDeps() {
         && process.env.MAGCLAW_EMBEDDING_MODEL,
     ),
     getState: () => state,
-    indexTeamMemoryDocuments: ({ documents }) => createTeamMemoryIndexingPipeline({
+    indexTeamSharingDocuments: ({ documents }) => createTeamSharingIndexingPipeline({
       embeddingClient,
       zillizClient,
     }).indexDocuments({ documents }),
@@ -1827,12 +1827,12 @@ function teamMemoryApiDeps() {
     sendError,
     sendJson,
     summarizeSession: (input) => summaryClient.summarizeSession(input),
-    teamMemoryAuthRequired: () => (
-      /^(1|true|yes)$/i.test(String(process.env.MAGCLAW_TEAM_MEMORY_REQUIRE_AUTH || ''))
+    teamSharingAuthRequired: () => (
+      /^(1|true|yes)$/i.test(String(process.env.MAGCLAW_TEAM_SHARING_REQUIRE_AUTH || ''))
       || process.env.MAGCLAW_DEPLOYMENT === 'cloud'
     ),
-    validTeamMemoryToken: (req) => {
-      const expected = process.env.MAGCLAW_TEAM_MEMORY_SYNC_TOKEN || process.env.MAGCLAW_MEMORY_SYNC_TOKEN || '';
+    validTeamSharingToken: (req) => {
+      const expected = process.env.MAGCLAW_TEAM_SHARING_SYNC_TOKEN || '';
       return safeTokenEqual(bearerToken(req), expected);
     },
     vectorSearch: async ({ query, channelId, projectKey, dateRange, limit, actor }) => {
@@ -1847,7 +1847,7 @@ function teamMemoryApiDeps() {
           limit,
         });
       } catch (error) {
-        return { ok: false, error: error?.message || 'Team memory vector search failed.' };
+        return { ok: false, error: error?.message || 'Team sharing vector search failed.' };
       }
     },
     zillizReady: () => Boolean(
@@ -2154,7 +2154,7 @@ async function handleApi(req, res, url) {
 
   if (await handleCollabApi(req, res, url, collabApiDeps())) return true;
 
-  if (await handleTeamMemoryApi(req, res, url, teamMemoryApiDeps())) return true;
+  if (await handleTeamSharingApi(req, res, url, teamSharingApiDeps())) return true;
 
   if (await handleMessageApi(req, res, url, messageApiDeps())) return true;
 
@@ -2286,12 +2286,12 @@ async function handleRequest(req, res) {
       return;
     }
     if (
-      url.pathname.startsWith('/team-memory/')
+      url.pathname.startsWith('/team-sharing/')
       || url.pathname.startsWith('/s/')
       || url.pathname === '/share'
       || url.pathname.startsWith('/share/')
     ) {
-      if (await handleTeamMemoryApi(req, res, url, teamMemoryApiDeps())) return;
+      if (await handleTeamSharingApi(req, res, url, teamSharingApiDeps())) return;
     }
     await serveStatic(req, res, url);
   } catch (error) {
