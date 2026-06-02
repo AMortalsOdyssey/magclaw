@@ -25,7 +25,8 @@
     "packages:publish:dry-run": "node scripts/publish-magclaw-packages.mjs --dry-run",
     "cli-core:pack": "npm pack --dry-run --json ./cli-core",
     "daemon:pack": "npm pack --dry-run --json ./daemon",
-    "computer:pack": "npm pack --dry-run --json ./computer"
+    "computer:pack": "npm pack --dry-run --json ./computer",
+    "team-sharing:pack": "npm pack --dry-run --json ./team-sharing"
   },
   "engines": {
     "node": ">=20"

@@ -13,6 +13,50 @@ import {
   installTeamMemoryHookConfig,
   parseTeamMemoryTranscript,
 } from './team-memory-hooks.js';
+import {
+  checkTeamSharingUpgrade,
+  convertTeamSharingProjectToMemoryConfig,
+  disableTeamSharingSkill,
+  initTeamSharingProject,
+  installTeamSharingHooks,
+  installTeamSharingSkill,
+  listTeamSharingProjects,
+  loginTeamSharingProfile,
+  logoutTeamSharingProfile,
+  readTeamSharingProfileConfig,
+  readTeamSharingProjectConfig,
+  removeTeamSharingHooks,
+  removeTeamSharingSkill,
+  setTeamSharingProjectEnabled,
+  setupTeamSharing,
+  statusTeamSharingProject,
+  statusTeamSharingHooks,
+  statusTeamSharingSkill,
+  teamSharingPaths,
+  unsetTeamSharingProject,
+  whoamiTeamSharingProfile,
+} from './team-sharing.js';
+
+export {
+  checkTeamSharingUpgrade,
+  disableTeamSharingSkill,
+  initTeamSharingProject,
+  installTeamSharingHooks,
+  installTeamSharingSkill,
+  listTeamSharingProjects,
+  loginTeamSharingProfile,
+  logoutTeamSharingProfile,
+  removeTeamSharingHooks,
+  removeTeamSharingSkill,
+  setTeamSharingProjectEnabled,
+  setupTeamSharing,
+  statusTeamSharingProject,
+  statusTeamSharingHooks,
+  statusTeamSharingSkill,
+  teamSharingPaths,
+  unsetTeamSharingProject,
+  whoamiTeamSharingProfile,
+} from './team-sharing.js';
 
 export const DEFAULT_PROFILE = 'default';
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
@@ -700,6 +744,9 @@ function renderHelp() {
     '  logs         Print recent daemon logs for one profile',
     '  install-cli  Install or repair durable magclaw command shims',
     '  memory       Configure and use MagClaw team-memory sync',
+    '  team-sharing Configure MagClaw Team Sharing setup, login, hooks, and skill',
+    '  skills       Install or manage MagClaw feature skills',
+    '  hooks        Install or manage MagClaw feature hooks',
     '  upgrade      Upgrade the background daemon package',
     '  doctor       Show runtime and environment diagnostics',
     '  uninstall    Stop and remove the background daemon service',
@@ -6670,6 +6717,16 @@ async function teamMemoryRequestJson({ serverUrl, token = '', method = 'GET', pa
 
 async function readTeamMemoryProjectConfig(flags = {}, env = process.env) {
   const paths = teamMemoryPaths({ profile: flags.profile || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE, cwd: flags.cwd || process.cwd(), env });
+  const teamSharing = await readTeamSharingProjectConfig({ profile: flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || env.MAGCLAW_MEMORY_PROFILE || DEFAULT_PROFILE, cwd: flags.cwd || process.cwd(), env });
+  if (teamSharing.config) {
+    return {
+      paths: {
+        ...paths,
+        teamSharingProjectConfig: teamSharing.paths.projectConfig,
+      },
+      config: convertTeamSharingProjectToMemoryConfig(teamSharing.config),
+    };
+  }
   return {
     paths,
     config: await readJsonFile(paths.projectConfig, null),
@@ -6678,6 +6735,22 @@ async function readTeamMemoryProjectConfig(flags = {}, env = process.env) {
 
 async function readTeamMemoryProfile(profile, env = process.env) {
   const paths = teamMemoryPaths({ profile, env });
+  const sharing = await readTeamSharingProfileConfig(profile, env);
+  if (sharing.config?.token || sharing.config?.server_url) {
+    return {
+      paths: {
+        ...paths,
+        teamSharingProfileConfig: sharing.paths.profileConfig,
+      },
+      config: {
+        version: sharing.config.version || 1,
+        profile: sharing.config.profile || profile,
+        serverUrl: sharing.config.server_url || sharing.config.serverUrl,
+        workspaceId: sharing.config.workspace_id || sharing.config.workspaceId,
+        token: sharing.config.token,
+      },
+    };
+  }
   return {
     paths,
     config: await readJsonFile(paths.profileConfig, {}),
@@ -6756,11 +6829,22 @@ export async function syncTeamMemoryTranscript(flags = {}, env = process.env) {
   }
   const project = await readTeamMemoryProjectConfig(flags, env);
   if (!project.config) throw new Error('Run `magclaw memory init --channel <channel>` in this project first.');
+  const runtime = String(flags.runtime || 'codex').trim().toLowerCase() === 'claude' || String(flags.runtime || '').trim().toLowerCase() === 'claude-code'
+    ? 'claude_code'
+    : String(flags.runtime || 'codex').trim().toLowerCase();
+  if (project.config.enabled === false) {
+    if (flags.hookEvent) return { ok: true, empty: true, reason: 'project_disabled' };
+    throw new Error('Team Sharing is disabled for this project.');
+  }
+  const runtimeConfig = project.config.runtimes?.[runtime];
+  if (flags.hookEvent && runtimeConfig && runtimeConfig.hooksEnabled === false) {
+    return { ok: true, empty: true, reason: 'runtime_hooks_disabled' };
+  }
   const profile = await readTeamMemoryProfile(flags.profile || project.config.profile || DEFAULT_PROFILE, env);
   const token = String(profile.config.token || env.MAGCLAW_MEMORY_TOKEN || '').trim();
   const content = await readFile(path.resolve(transcriptPath), 'utf8');
   const parsed = parseTeamMemoryTranscript(content, {
-    runtime: flags.runtime || 'codex',
+    runtime,
     sessionId: flags.sessionId || '',
     title: flags.title || '',
     projectDir: flags.cwd || process.cwd(),
@@ -6777,6 +6861,7 @@ export async function syncTeamMemoryTranscript(flags = {}, env = process.env) {
     channelPath: project.config.channelPath,
     projectDir: flags.cwd || process.cwd(),
     lastOrdinal,
+    minCreatedAt: project.config.enabledSince || '',
   });
   if (syncPackage.empty || !syncPackage.body) return { ok: true, empty: true, cursor: syncPackage.cursor };
   const result = await teamMemoryRequestJson({
@@ -6954,6 +7039,127 @@ async function runTeamMemoryCommand(flags = {}, env = process.env) {
     default:
       throw new Error(`Unknown memory command: ${subcommand}`);
   }
+}
+
+async function runTeamSharingCommand(flags = {}, env = process.env) {
+  const subcommand = String(flags._?.[0] || 'help').trim();
+  if (subcommand === 'help' || flags.help) {
+    process.stdout.write([
+      'Usage: magclaw team-sharing <command> [options]',
+      '',
+      'Commands:',
+      '  setup    Configure login, project channel, hooks, and skill',
+      '  login    Browser/device login for scoped team-memory sync token',
+      '  logout   Revoke and remove the cached Team Sharing token',
+      '  relogin  Force a fresh browser/device login',
+      '  whoami   Show the current Team Sharing identity',
+      '  projects List configured project paths',
+      '  init     Write .magclaw/team-sharing.yaml for this project',
+      '  unset    Remove this project Team Sharing config',
+      '  enable   Enable this project sync',
+      '  disable  Disable this project sync',
+      '  status   Show project/login/hook/skill status',
+      '  doctor   Check local config, server auth, hooks, skill, and upgrade state',
+      '  upgrade  Check npm latest version for team-sharing',
+      '  search   Query shared team memory',
+      '  context  Read original context around an anchor',
+      '  sync     Upload one transcript file',
+      '',
+    ].join('\n'));
+    return;
+  }
+  switch (subcommand) {
+    case 'setup':
+    case 'install':
+      printJson({
+        ...(await setupTeamSharing(flags, env)),
+        cli: flags.noInstallCli ? { ok: true, skipped: true } : await installCliShim(flags, env),
+      });
+      break;
+    case 'login':
+      printJson(await loginTeamSharingProfile(flags, env));
+      break;
+    case 'relogin':
+      await logoutTeamSharingProfile(flags, env);
+      printJson(await loginTeamSharingProfile(flags, env));
+      break;
+    case 'logout':
+      printJson(await logoutTeamSharingProfile(flags, env));
+      break;
+    case 'whoami':
+      printJson(await whoamiTeamSharingProfile(flags, env));
+      break;
+    case 'projects':
+      printJson(await listTeamSharingProjects(flags, env));
+      break;
+    case 'init':
+      printJson(await initTeamSharingProject(flags, env));
+      break;
+    case 'unset':
+      printJson(await unsetTeamSharingProject(flags, env));
+      break;
+    case 'enable':
+      printJson(await setTeamSharingProjectEnabled(flags, env, true));
+      break;
+    case 'disable':
+      printJson(await setTeamSharingProjectEnabled(flags, env, false));
+      break;
+    case 'status':
+      printJson({
+        ok: true,
+        project: await statusTeamSharingProject(flags, env),
+        hooks: await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env),
+        skill: await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env),
+      });
+      break;
+    case 'doctor':
+      printJson({
+        ok: true,
+        project: await statusTeamSharingProject(flags, env),
+        hooks: await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env),
+        skill: await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env),
+        upgrade: await checkTeamSharingUpgrade({ force: Boolean(flags.force) }, env).catch((error) => ({ ok: false, error: error.message })),
+      });
+      break;
+    case 'upgrade':
+      printJson(await checkTeamSharingUpgrade({ force: true }, env));
+      break;
+    case 'search':
+      printJson(await searchTeamMemory(flags, env));
+      break;
+    case 'context':
+      printJson(await readTeamMemoryContext(flags, env));
+      break;
+    case 'sync':
+      printJson(await syncTeamMemoryTranscript({ ...flags, integration: flags.integration || 'team-sharing' }, env));
+      break;
+    default:
+      throw new Error(`Unknown team-sharing command: ${subcommand}`);
+  }
+}
+
+async function runFeatureInstallCommand(kind, flags = {}, env = process.env) {
+  const subcommand = String(flags._?.[0] || 'help').trim();
+  const feature = String(flags.feature || flags.name || flags._?.[1] || 'team-sharing').trim();
+  if (feature !== 'team-sharing' && feature !== 'team-memory') {
+    throw new Error(`${kind} currently supports --feature team-sharing.`);
+  }
+  if (subcommand === 'help' || flags.help) {
+    process.stdout.write(`Usage: magclaw ${kind} <install|remove|enable|disable|status> --feature team-sharing\n`);
+    return;
+  }
+  if (kind === 'skills') {
+    if (subcommand === 'install' || subcommand === 'enable') printJson(await installTeamSharingSkill(flags, env));
+    else if (subcommand === 'remove') printJson(await removeTeamSharingSkill(flags, env));
+    else if (subcommand === 'disable') printJson(await disableTeamSharingSkill(flags, env));
+    else if (subcommand === 'status') printJson(await statusTeamSharingSkill(flags, env));
+    else throw new Error(`Unknown skills command: ${subcommand}`);
+    return;
+  }
+  if (subcommand === 'install' || subcommand === 'enable') printJson(await installTeamSharingHooks(flags, env));
+  else if (subcommand === 'remove' || subcommand === 'disable') printJson(await removeTeamSharingHooks(flags, env));
+  else if (subcommand === 'status') printJson(await statusTeamSharingHooks(flags, env));
+  else throw new Error(`Unknown hooks command: ${subcommand}`);
 }
 
 function hasComputerTarget(flags = {}) {
@@ -7548,6 +7754,15 @@ export async function main(argv = process.argv, env = process.env) {
       break;
     case 'memory':
       await runTeamMemoryCommand(flags, env);
+      break;
+    case 'team-sharing':
+      await runTeamSharingCommand(flags, env);
+      break;
+    case 'skills':
+      await runFeatureInstallCommand('skills', flags, env);
+      break;
+    case 'hooks':
+      await runFeatureInstallCommand('hooks', flags, env);
       break;
     case 'start': {
       printJson(await startSavedBackground(flags, env));

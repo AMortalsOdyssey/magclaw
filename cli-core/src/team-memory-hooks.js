@@ -184,7 +184,10 @@ export function buildTeamMemorySyncPackageFromTranscript(text = '', options = {}
   const runtime = normalizeRuntime(options.runtime);
   const parsed = parseTeamMemoryTranscript(text, options);
   const lastOrdinal = Math.max(0, Number(options.lastOrdinal || 0));
-  const incrementalEvents = parsed.events.filter((event) => Number(event.ordinal || 0) > lastOrdinal);
+  const minCreatedAt = String(options.minCreatedAt || '').trim();
+  const incrementalEvents = parsed.events
+    .filter((event) => Number(event.ordinal || 0) > lastOrdinal)
+    .filter((event) => !minCreatedAt || String(event.createdAt || '') >= minCreatedAt);
   if (!incrementalEvents.length) {
     return {
       ok: true,
@@ -263,6 +266,7 @@ export function buildTeamMemoryHookCommand(options = {}) {
     '--transcript',
     transcriptPath.includes('${') ? `"${transcriptPath}"` : shellQuote(transcriptPath),
   ];
+  if (options.integration) parts.push('--integration', String(options.integration).replace(/[^a-zA-Z0-9._-]+/g, '-'));
   if (options.projectDir) parts.push('--cwd', shellQuote(options.projectDir));
   return parts.join(' ');
 }

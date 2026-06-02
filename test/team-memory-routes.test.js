@@ -178,6 +178,90 @@ test('team memory route rejects unauthenticated cloud sync unless scoped token i
   assert.equal(accepted.statusCode, 202);
 });
 
+test('team memory auth issues scoped token, supports whoami, and revokes token', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_route', email: 'team@example.com' } }),
+  });
+  const startRes = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'POST' },
+    startRes,
+    new URL('http://local/api/team-memory/auth/start'),
+    deps,
+  ), true);
+  assert.equal(startRes.statusCode, 201);
+  assert.equal(startRes.data.ok, true);
+  assert.ok(startRes.data.deviceCode);
+  assert.match(startRes.data.verificationUri, /user_code=/);
+
+  const tokenDeps = {
+    ...deps,
+    currentActor: () => null,
+    readJson: async () => ({ deviceCode: startRes.data.deviceCode }),
+  };
+  const tokenRes = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'POST' },
+    tokenRes,
+    new URL('http://local/api/team-memory/auth/token'),
+    tokenDeps,
+  ), true);
+  assert.equal(tokenRes.statusCode, 200);
+  assert.equal(tokenRes.data.status, 'approved');
+  assert.match(tokenRes.data.token, /^tm_/);
+  assert.equal(JSON.stringify(deps.state.teamMemory).includes(tokenRes.data.token), false);
+
+  const whoamiRes = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'GET', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
+    whoamiRes,
+    new URL('http://local/api/team-memory/auth/whoami'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(whoamiRes.statusCode, 200);
+  assert.equal(whoamiRes.data.user.email, 'team@example.com');
+
+  const syncRes = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
+    syncRes,
+    new URL('http://local/api/team-memory/sync'),
+    {
+      ...deps,
+      currentActor: () => null,
+      teamMemoryAuthRequired: () => true,
+      validTeamMemoryToken: null,
+      readJson: async () => syncBody(),
+    },
+  ), true);
+  assert.equal(syncRes.statusCode, 202);
+
+  const revokeRes = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
+    revokeRes,
+    new URL('http://local/api/team-memory/auth/revoke'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(revokeRes.statusCode, 200);
+  assert.equal(revokeRes.data.revoked, true);
+
+  const rejectedAfterRevoke = makeResponse();
+  assert.equal(await handleTeamMemoryApi(
+    { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
+    rejectedAfterRevoke,
+    new URL('http://local/api/team-memory/sync'),
+    {
+      ...deps,
+      currentActor: () => null,
+      teamMemoryAuthRequired: () => true,
+      validTeamMemoryToken: null,
+      readJson: async () => syncBody(),
+    },
+  ), true);
+  assert.equal(rejectedAfterRevoke.statusCode, 401);
+});
+
 test('team memory local search fallback filters by vector document updatedAt date range', async () => {
   const deps = routeDeps({ readJson: async () => syncBody(), vectorSearch: null, rerank: null });
   await handleTeamMemoryApi(

@@ -4,6 +4,7 @@ import {
   rankTeamMemoryCandidates,
   syncTeamMemoryBatch,
 } from '../team-memory.js';
+import crypto from 'node:crypto';
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -240,10 +241,46 @@ function dependencyReady(fn, envKeys = []) {
   return envKeys.every((key) => String(process.env[key] || '').trim());
 }
 
-function requireTeamMemoryAuth(req, res, { actor, sendError, teamMemoryAuthRequired, validTeamMemoryToken } = {}) {
+function hashSecret(value = '') {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function randomToken(prefix = 'tm') {
+  return `${prefix}_${crypto.randomBytes(24).toString('base64url')}`;
+}
+
+function bearerToken(req) {
+  return String(req?.headers?.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
+}
+
+function ensureTeamMemoryAuthState(memory = {}) {
+  memory.auth = memory.auth && typeof memory.auth === 'object' ? memory.auth : {};
+  memory.auth.deviceRequests = memory.auth.deviceRequests && typeof memory.auth.deviceRequests === 'object' ? memory.auth.deviceRequests : {};
+  memory.auth.tokens = memory.auth.tokens && typeof memory.auth.tokens === 'object' ? memory.auth.tokens : {};
+  return memory.auth;
+}
+
+function tokenRecordForRequest(memory = {}, req) {
+  const token = bearerToken(req);
+  if (!token) return null;
+  const record = ensureTeamMemoryAuthState(memory).tokens[hashSecret(token)];
+  if (!record || record.revoked) return null;
+  return record;
+}
+
+function requestUser(actor = {}) {
+  return {
+    id: actorHumanId(actor),
+    email: actor?.member?.email || actor?.user?.email || '',
+    name: actor?.member?.name || actor?.user?.name || '',
+  };
+}
+
+function requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken } = {}) {
   const required = typeof teamMemoryAuthRequired === 'function' ? teamMemoryAuthRequired(req) : Boolean(teamMemoryAuthRequired);
   if (!required || actor) return true;
   if (typeof validTeamMemoryToken === 'function' && validTeamMemoryToken(req)) return true;
+  if (tokenRecordForRequest(memory, req)) return true;
   sendError(res, 401, 'Team memory login or scoped token is required.');
   return false;
 }
@@ -273,10 +310,133 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
   const state = getState();
   const actor = currentActor(req);
   const workspaceId = actorWorkspaceId(actor, state);
+  const memory = state.teamMemory || {};
+
+  if (req.method === 'POST' && url.pathname === '/api/team-memory/auth/start') {
+    const body = await readJson(req);
+    const auth = ensureTeamMemoryAuthState(memory);
+    const deviceCode = randomToken('tmdev');
+    const userCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+    const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+    const request = {
+      deviceCodeHash: hashSecret(deviceCode),
+      userCode,
+      workspaceId: body.workspaceId || workspaceId,
+      profile: body.profile || 'default',
+      packageName: body.packageName || 'team-sharing',
+      status: actor ? 'approved' : 'pending',
+      approvedUser: actor ? requestUser(actor) : null,
+      createdAt: now(),
+      expiresAt,
+    };
+    auth.deviceRequests[request.deviceCodeHash] = request;
+    await persistState({ workspaceId, reason: 'team_memory_auth_start' });
+    sendJson(res, 201, {
+      ok: true,
+      deviceCode,
+      userCode,
+      verificationUri: `/team-memory/auth/approve?user_code=${encodeURIComponent(userCode)}`,
+      expiresAt,
+      intervalMs: 2000,
+      status: request.status,
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/team-memory/auth/token') {
+    const body = await readJson(req);
+    const auth = ensureTeamMemoryAuthState(memory);
+    const request = auth.deviceRequests[hashSecret(body.deviceCode || body.device_code || '')];
+    if (!request) {
+      sendJson(res, 200, { ok: true, status: 'pending' });
+      return true;
+    }
+    if (String(request.expiresAt || '') < now()) {
+      request.status = 'expired';
+      sendJson(res, 200, { ok: true, status: 'expired', error: 'Team Sharing login expired.' });
+      return true;
+    }
+    if (request.status !== 'approved') {
+      sendJson(res, 200, { ok: true, status: request.status || 'pending' });
+      return true;
+    }
+    const token = randomToken('tm');
+    const tokenHash = hashSecret(token);
+    auth.tokens[tokenHash] = {
+      tokenHash,
+      workspaceId: request.workspaceId || workspaceId,
+      profile: request.profile || 'default',
+      packageName: request.packageName || 'team-sharing',
+      user: request.approvedUser || { id: 'hum_local', email: '', name: '' },
+      scopes: ['team_memory:sync', 'team_memory:search', 'team_memory:context', 'team_memory:feedback'],
+      revoked: false,
+      createdAt: now(),
+      lastUsedAt: now(),
+    };
+    delete auth.deviceRequests[request.deviceCodeHash];
+    await persistState({ workspaceId: request.workspaceId || workspaceId, reason: 'team_memory_auth_token' });
+    sendJson(res, 200, {
+      ok: true,
+      status: 'approved',
+      token,
+      workspaceId: request.workspaceId || workspaceId,
+      profile: request.profile || 'default',
+      user: auth.tokens[tokenHash].user,
+      scopes: auth.tokens[tokenHash].scopes,
+    });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/team-memory/auth/whoami') {
+    const record = actor
+      ? { workspaceId, profile: 'browser', user: requestUser(actor), scopes: ['browser_session'] }
+      : tokenRecordForRequest(memory, req);
+    if (!record) {
+      sendError(res, 401, 'Team memory login is required.');
+      return true;
+    }
+    record.lastUsedAt = now();
+    sendJson(res, 200, { ok: true, workspaceId: record.workspaceId, profile: record.profile, user: record.user, scopes: record.scopes });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/team-memory/auth/revoke') {
+    const record = tokenRecordForRequest(memory, req);
+    if (!record) {
+      sendError(res, 401, 'Team memory login is required.');
+      return true;
+    }
+    record.revoked = true;
+    record.revokedAt = now();
+    await persistState({ workspaceId: record.workspaceId || workspaceId, reason: 'team_memory_auth_revoke' });
+    sendJson(res, 200, { ok: true, revoked: true });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/team-memory/auth/approve') {
+    const userCode = String(url.searchParams.get('user_code') || '').trim().toUpperCase();
+    const auth = ensureTeamMemoryAuthState(memory);
+    const request = Object.values(auth.deviceRequests).find((item) => item.userCode === userCode);
+    if (!request) {
+      sendError(res, 404, 'Team Sharing login request not found.');
+      return true;
+    }
+    if (!actor) {
+      sendError(res, 401, 'Sign in to MagClaw before approving Team Sharing login.');
+      return true;
+    }
+    request.status = 'approved';
+    request.approvedUser = requestUser(actor);
+    request.approvedAt = now();
+    await persistState({ workspaceId: request.workspaceId || workspaceId, reason: 'team_memory_auth_approve' });
+    res.writeHead?.(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end?.('<!doctype html><meta charset="utf-8"><title>MagClaw Team Sharing</title><p>Team Sharing login approved. You can return to the CLI.</p>');
+    return true;
+  }
 
   const contextPageMatch = url.pathname.match(/^\/team-memory\/context\/([^/]+)$/);
   if (req.method === 'GET' && contextPageMatch) {
-    if (!requireTeamMemoryAuth(req, res, { actor, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
     sendContextHtml(res, {
       sessionId: decodeURIComponent(contextPageMatch[1]),
       anchorEventId: sourceAnchorFromSearchParams(url.searchParams),
@@ -288,7 +448,7 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/team-memory/sync') {
-    if (!requireTeamMemoryAuth(req, res, { actor, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
     const body = await readJson(req);
     const result = await syncTeamMemoryBatch({
       ...body,
@@ -337,11 +497,10 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/team-memory/search') {
-    if (!requireTeamMemoryAuth(req, res, { actor, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
     const body = await readJson(req);
     const limit = Math.max(1, Math.min(20, Number(body.limit || 5)));
     const candidateK = Math.max(limit, Math.min(200, Number(body.candidateK || 40)));
-    const memory = state.teamMemory || {};
     if (typeof zillizReady === 'function' && !zillizReady()) {
       sendError(res, 503, 'Team memory vector index is not ready.');
       return true;
@@ -427,7 +586,7 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
 
   const contextMatch = url.pathname.match(/^\/api\/team-memory\/context\/([^/]+)$/);
   if (req.method === 'GET' && contextMatch) {
-    if (!requireTeamMemoryAuth(req, res, { actor, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
     const sessionId = decodeURIComponent(contextMatch[1]);
     const result = contextWindowForTeamMemorySession(state.teamMemory || {}, sessionId, {
       anchorEventId: sourceAnchorFromSearchParams(url.searchParams),
@@ -443,7 +602,7 @@ export async function handleTeamMemoryApi(req, res, url, deps) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/team-memory/feedback') {
-    if (!requireTeamMemoryAuth(req, res, { actor, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
+    if (!requireTeamMemoryAuth(req, res, { actor, memory, sendError, teamMemoryAuthRequired, validTeamMemoryToken })) return true;
     const body = await readJson(req);
     const result = applyTeamMemoryFeedback(state.teamMemory || {}, {
       ...body,

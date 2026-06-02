@@ -1,10 +1,10 @@
 {
-  "name": "@magclaw/computer",
-  "version": "0.1.38",
-  "description": "Browser-approved MagClaw Computer setup command.",
+  "name": "team-sharing",
+  "version": "0.1.40",
+  "description": "One-command MagClaw Team Sharing installer for Codex and Claude Code skills and hooks.",
   "type": "module",
   "bin": {
-    "magclaw-computer": "bin/magclaw-computer.js"
+    "team-sharing": "bin/team-sharing.js"
   },
   "dependencies": {
     "@magclaw/cli-core": "0.1.38"
