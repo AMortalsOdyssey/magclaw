@@ -82,7 +82,6 @@ zilliz:
 rerank:
   url: "https://rerank.example.com/v1/rerank"
   api_key: "replace-with-rerank-api-key"
-  model: "rerank-model"
   candidate_k: 40
   top_n: 5
 

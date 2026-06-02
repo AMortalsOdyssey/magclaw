@@ -172,7 +172,6 @@ zilliz:
 rerank:
   url: "https://rerank.example/v1/rerank"
   api_key: "rerank-secret"
-  model: "rerank-model"
   candidate_k: 40
   top_n: 5
 `, env);
@@ -189,7 +188,7 @@ rerank:
   assert.equal(env.MAGCLAW_ZILLIZ_COLLECTION, 'magclaw_team_sharing_v1');
   assert.equal(env.MAGCLAW_RERANK_URL, 'https://rerank.example/v1/rerank');
   assert.equal(env.MAGCLAW_RERANK_API_KEY, 'rerank-secret');
-  assert.equal(env.MAGCLAW_RERANK_MODEL, 'rerank-model');
+  assert.equal(env.MAGCLAW_RERANK_MODEL, undefined);
   assert.equal(env.MAGCLAW_RERANK_CANDIDATE_K, '40');
   assert.equal(env.MAGCLAW_RERANK_TOP_N, '5');
   assert.equal(result.redacted.embedding.api_key, '[redacted]');
