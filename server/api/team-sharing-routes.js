@@ -418,11 +418,12 @@ function shareRootDeniedHtml(status = 401, message = '') {
 function teamSharingWorkspaceFile(path = '', content = '', extra = {}) {
   const cleanPath = String(path || '').trim();
   const name = cleanPath.split('/').filter(Boolean).at(-1) || cleanPath;
+  const previewKind = cleanPath.endsWith('.json') ? 'json' : 'markdown';
   return {
     path: cleanPath,
     name,
     kind: 'file',
-    previewKind: 'markdown',
+    previewKind,
     bytes: Buffer.byteLength(String(content || ''), 'utf8'),
     content,
     ...extra,
@@ -457,33 +458,26 @@ function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')));
   const topics = Object.values(abstract.topics || {})
     .sort((left, right) => String(left.title || left.topicId || '').localeCompare(String(right.title || right.topicId || '')));
+  const activitiesJson = JSON.stringify(activities.map((activity) => ({
+    activityId: activity.activityId || '',
+    sessionId: activity.sessionId || sessionId,
+    revision: activity.revision || 0,
+    action: activity.action || 'merge_summary',
+    summary: activity.summary || '',
+    changedPaths: asArray(activity.changedPaths),
+    sourceEventIds: asArray(activity.sourceEventIds),
+    createdAt: activity.createdAt || '',
+  })), null, 2);
   const files = [
     teamSharingWorkspaceFile('abstract.md', abstract.abstractMarkdown || ''),
-    teamSharingWorkspaceFile('activities.md', [
-      '# Activities',
-      '',
-      activities.length
-        ? activities.map((activity) => `- ${activity.createdAt || ''} - ${activity.summary || ''}${activity.changedPaths?.length ? ` (${activity.changedPaths.join(', ')})` : ''}`).join('\n')
-        : 'No activity recorded yet.',
-    ].join('\n')),
-    ...topics.map((topic) => teamSharingWorkspaceFile(`topics/${topic.topicId}/overview.md`, topic.overviewMarkdown || `# ${topic.title || topic.topicId}\n\n${topic.overview || ''}`, {
+    teamSharingWorkspaceFile('activities.json', activitiesJson, { previewKind: 'json' }),
+    ...topics.map((topic) => teamSharingWorkspaceFile(`topics/${topic.topicId}.md`, topic.overviewMarkdown || `# ${topic.title || topic.topicId}\n\n${topic.overview || ''}`, {
       topicId: topic.topicId,
       sourceEventIds: asArray(topic.sourceEventIds),
     })),
-    teamSharingWorkspaceFile('details/original-context.md', [
-      '# Original Context',
-      '',
-      'L2 原文通过动态上下文页按锚点分段读取，避免一次性加载长会话。',
-      '',
-      '## Anchors',
-      ...(events.length
-        ? events.map((event) => `- [${event.ordinal || ''} · ${event.role || ''} · ${event.createdAt || ''}](${sourceContextUrlForEvent(sessionId, event.eventId)}) - ${compactText(event.cleanText || event.text || '', 140)}`)
-        : ['- No source events recorded yet.']),
-    ].join('\n')),
   ];
   const folders = [
     teamSharingWorkspaceFolder('topics', 'topics'),
-    teamSharingWorkspaceFolder('details', 'details'),
   ];
   return {
     ok: true,
@@ -504,14 +498,12 @@ function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
     },
     tree: [
       teamSharingWorkspaceFile('abstract.md', '', { bytes: files.find((file) => file.path === 'abstract.md')?.bytes || 0, content: undefined }),
-      teamSharingWorkspaceFile('activities.md', '', { bytes: files.find((file) => file.path === 'activities.md')?.bytes || 0, content: undefined }),
+      teamSharingWorkspaceFile('activities.json', '', { bytes: files.find((file) => file.path === 'activities.json')?.bytes || 0, content: undefined, previewKind: 'json' }),
       folders[0],
-      ...topics.map((topic) => teamSharingWorkspaceFile(`topics/${topic.topicId}/overview.md`, '', {
-        bytes: files.find((file) => file.path === `topics/${topic.topicId}/overview.md`)?.bytes || 0,
+      ...topics.map((topic) => teamSharingWorkspaceFile(`topics/${topic.topicId}.md`, '', {
+        bytes: files.find((file) => file.path === `topics/${topic.topicId}.md`)?.bytes || 0,
         content: undefined,
       })),
-      folders[1],
-      teamSharingWorkspaceFile('details/original-context.md', '', { bytes: files.find((file) => file.path === 'details/original-context.md')?.bytes || 0, content: undefined }),
     ],
     files,
     activities,

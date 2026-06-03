@@ -167,7 +167,7 @@ test('team sharing route syncs a batch and search returns reranked top results',
   assert.ok(deps.state.teamSharing.feedback.some((item) => item.eventType === 'served' && item.queryId === searchRes.data.queryId));
 });
 
-test('team sharing route exposes a session workspace with abstract, topics, activities, and L2 context links', async () => {
+test('team sharing route exposes a session workspace with abstract, topics, and activities JSON', async () => {
   const deps = routeDeps({ readJson: async () => syncBody() });
   await handleTeamSharingApi(
     { method: 'POST' },
@@ -188,15 +188,20 @@ test('team sharing route exposes a session workspace with abstract, topics, acti
   assert.equal(workspaceRes.data.session.sessionId, 'sess_route');
   assert.equal(workspaceRes.data.session.messageId, deps.state.teamSharing.sessions.sess_route.messageId);
   assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'abstract.md'));
-  assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'activities.md'));
-  assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'topics/rerank-feedback/overview.md'));
-  assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'details/original-context.md'));
+  assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'activities.json'));
+  assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'topics/rerank-feedback.md'));
+  assert.equal(workspaceRes.data.tree.some((entry) => entry.path === 'details/original-context.md'), false);
   const abstractFile = workspaceRes.data.files.find((file) => file.path === 'abstract.md');
   assert.match(abstractFile.content, /L0 Abstract/);
-  assert.match(abstractFile.content, /topics\/rerank-feedback\/overview\.md/);
-  const detailsFile = workspaceRes.data.files.find((file) => file.path === 'details/original-context.md');
-  assert.match(detailsFile.content, /\/team-sharing\/context\/sess_route\?anchorEventId=evt_1/);
-  assert.match(detailsFile.content, /查一下团队记忆/);
+  assert.match(abstractFile.content, /topics\/rerank-feedback\.md/);
+  const activityFile = workspaceRes.data.files.find((file) => file.path === 'activities.json');
+  const activities = JSON.parse(activityFile.content);
+  assert.equal(activityFile.previewKind, 'json');
+  assert.equal(activities[0].action, 'merge_summary');
+  assert.ok(activities[0].changedPaths.includes('abstract.md'));
+  const topicFile = workspaceRes.data.files.find((file) => file.path === 'topics/rerank-feedback.md');
+  assert.match(topicFile.content, /主题概览/);
+  assert.match(topicFile.content, /Source Anchors/);
 
   const deniedRes = makeResponse();
   assert.equal(await handleTeamSharingApi(

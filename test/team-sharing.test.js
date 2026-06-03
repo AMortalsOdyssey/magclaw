@@ -45,7 +45,7 @@ function sampleSyncPackage(overrides = {}) {
         eventId: 'evt_1',
         ordinal: 1,
         role: 'user',
-        text: '我们要给团队共享加入 rerank，并且不要泄漏 API_KEY=secret-123。',
+        text: '我们要给团队共享加入 rerank，并且不要泄漏 API_KEY=secret-123，秘钥：zh-secret-456，也不要显示 mc://magclaw/server/ws/channel/chan?key=route-secret。',
         createdAt: '2026-06-01T08:00:00.000Z',
       },
       {
@@ -106,7 +106,7 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
   assert.equal(state.replies[1].authorType, 'agent');
   assert.equal(state.replies[1].authorId, 'team_sharing_codex');
   assert.match(state.replies[0].body, /我们要给团队共享加入 rerank/);
-  assert.doesNotMatch(state.replies[0].body, /secret-123|API_KEY/);
+  assert.doesNotMatch(state.replies[0].body, /secret-123|zh-secret-456|route-secret|API_KEY|秘钥/);
   assert.match(state.replies[1].body, /used_tools=rg/);
   assert.doesNotMatch(state.replies[1].body, /private output|arguments/);
 
@@ -117,7 +117,7 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
   assert.ok(state.teamSharing.abstracts.sess_rerank_design.abstractMarkdown.includes('MagClaw rerank feedback design'));
   assert.ok(state.teamSharing.activities.some((item) => item.summary.includes('同步 2 条清洗事件')));
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L0' && doc.sessionId === 'sess_rerank_design'));
-  assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback'));
+  assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback' && /topics\/rerank-feedback\.md/.test(doc.sourceRef)));
 });
 
 test('team sharing sync cleans session markdown titles and Codex selected text wrappers', async () => {

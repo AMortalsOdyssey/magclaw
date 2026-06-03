@@ -134,7 +134,7 @@ test('zilliz client searches and upserts team-sharing vector documents with scop
                 layer: 'L1',
                 title: 'Rerank feedback',
                 text: 'Zilliz -> rerank -> top5',
-                source_ref: 'sess_1/topics/rerank-feedback/overview.md#evt_1',
+                source_ref: 'sess_1/topics/rerank-feedback.md#evt_1',
                 updated_at: '2026-06-01T12:00:00.000Z',
                 distance: 0.82,
               },

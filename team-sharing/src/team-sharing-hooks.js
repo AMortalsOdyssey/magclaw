@@ -19,9 +19,10 @@ function compactWhitespace(value = '') {
 
 function redactTeamSharingText(value = '') {
   return compactWhitespace(value)
-    .replace(/(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[^\s"',;)]+/gi, '[redacted-secret]')
+    .replace(/(?:api[_-]?key|token|secret|password|密钥|秘钥|口令|令牌)\s*[：:=]\s*["']?[^\s"',;，。)）]+/gi, '[redacted-secret]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, 'Bearer [redacted-secret]')
-    .replace(/(App Secret|app_secret|client_secret)(\s*[：:=]\s*)[^\s"',;)]+/gi, '$1$2[redacted-secret]');
+    .replace(/([?&](?:key|api[_-]?key|token|access_token|secret)=)[^\s"'&)）]+/gi, '$1[redacted-secret]')
+    .replace(/(App Secret|app_secret|client_secret)(\s*[：:=]\s*)[^\s"',;，。)）]+/gi, '$1$2[redacted-secret]');
 }
 
 function iso(value, fallback = new Date().toISOString()) {

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildCodexLocalDigestPrompt,
   buildTeamSharingSummaryPrompt,
+  buildTeamSharingTopicsPromptSection,
   createTeamSharingSummaryClient,
 } from '../server/team-sharing-summary.js';
 import {
@@ -21,9 +23,24 @@ test('team sharing summary prompt asks for L0/L1/activity/source anchors without
 
   assert.match(prompt, /L0/);
   assert.match(prompt, /L1/);
-  assert.match(prompt, /activitySummary/);
+  assert.match(prompt, /activity/);
+  assert.match(prompt, /Topics Contract/);
   assert.match(prompt, /sourceEventIds/);
   assert.match(prompt, /不要编造隐藏思考/);
+  assert.match(prompt, /不是写“本 session 围绕某标题”/);
+});
+
+test('team sharing local Codex digest prompt asks for useful context without hidden reasoning', () => {
+  const prompt = buildCodexLocalDigestPrompt({
+    session: { sessionId: 'sess_1', title: 'Rerank design' },
+    events: [{ eventId: 'evt_1', role: 'assistant', cleanText: '用了 rg 和 apply_patch，结论是 top5。' }],
+  });
+
+  assert.match(prompt, /local Codex session digest writer/);
+  assert.match(prompt, /Important Context/);
+  assert.match(prompt, /Source Event IDs/);
+  assert.match(prompt, /Do not include hidden reasoning/);
+  assert.match(buildTeamSharingTopicsPromptSection(), /Do not create a topic for generic session bookkeeping/);
 });
 
 test('team sharing summary client parses JSON response from OpenAI-compatible API', async () => {
@@ -40,7 +57,7 @@ test('team sharing summary client parses JSON response from OpenAI-compatible AP
           choices: [
             {
               message: {
-                content: '```json\n{"l0":"一句话摘要","topics":[{"topicId":"rerank-feedback","title":"Rerank","overview":"top5 with feedback","sourceEventIds":["evt_1","evt_2"]}],"activitySummary":"更新 rerank topic。"}\n```',
+                content: '```json\n{"l0":"一句话摘要","topics":[{"topicId":"rerank-feedback","title":"Rerank","overview":"top5 with feedback","decisions":["返回 top5"],"openQuestions":["是否接入 provider rerank"],"nextActions":["写 feedback"],"sourceEventIds":["evt_1","evt_2"]}],"activity":{"action":"merge_summary","summary":"更新 rerank topic。","changedPaths":["abstract.md","topics/rerank-feedback.md","activities.json"]}}\n```',
               },
             },
           ],
@@ -57,6 +74,8 @@ test('team sharing summary client parses JSON response from OpenAI-compatible AP
   assert.equal(result.ok, true);
   assert.equal(result.l0, '一句话摘要');
   assert.equal(result.topics[0].topicId, 'rerank-feedback');
+  assert.deepEqual(result.topics[0].decisions, ['返回 top5']);
+  assert.deepEqual(result.activity.changedPaths, ['abstract.md', 'topics/rerank-feedback.md', 'activities.json']);
   assert.equal(result.activitySummary, '更新 rerank topic。');
   assert.equal(calls[0].url, 'https://model.example/v1/chat/completions');
   assert.equal(calls[0].body.model, 'gpt-summary');
@@ -91,22 +110,30 @@ test('team sharing sync uses injected authoritative summary and falls back safel
     now: () => '2026-06-01T12:00:00.000Z',
     summarizeSession: async () => ({
       ok: true,
-      l0: '本 session 明确了 rerank top5 与反馈热度。',
+      l0: '讨论明确了 rerank top5 与反馈热度：先向量召回，再重排，并通过打开、引用和有用反馈调整排序。',
       topics: [
         {
           topicId: 'rerank-feedback',
           title: 'Rerank feedback',
           overview: '先向量召回，再 rerank，最后用反馈热度微调。',
+          decisions: ['返回 top5'],
+          openQuestions: ['确认 rerank provider'],
+          nextActions: ['记录 feedback'],
           sourceEventIds: ['evt_1', 'evt_2'],
         },
       ],
-      activitySummary: '合并 rerank-feedback 主题摘要。',
+      activity: {
+        action: 'merge_summary',
+        summary: '合并 rerank-feedback 主题摘要。',
+        changedPaths: ['abstract.md', 'topics/rerank-feedback.md', 'activities.json'],
+      },
     }),
   });
 
   assert.equal(result.ok, true);
   const abstract = state.teamSharing.abstracts.sess_summary;
-  assert.match(abstract.abstractMarkdown, /本 session 明确了 rerank top5/);
+  assert.match(abstract.abstractMarkdown, /讨论明确了 rerank top5/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /反馈热度微调/);
+  assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /返回 top5/);
   assert.ok(state.teamSharing.activities.some((item) => item.summary === '合并 rerank-feedback 主题摘要。'));
 });

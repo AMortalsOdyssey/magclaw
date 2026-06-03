@@ -13,7 +13,9 @@ const FEEDBACK_WEIGHTS = Object.freeze({
 
 function redactSecrets(value = '') {
   return String(value || '')
-    .replace(/(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[^\s"',;)]+/gi, '[redacted-secret]')
+    .replace(/(?:api[_-]?key|token|secret|password|密钥|秘钥|口令|令牌)\s*[：:=]\s*["']?[^\s"',;，。)）]+/gi, '[redacted-secret]')
+    .replace(/(?:App Secret|app_secret|client_secret)(\s*[：:=]\s*)[^\s"',;，。)）]+/gi, '$1[redacted-secret]')
+    .replace(/([?&](?:key|api[_-]?key|token|access_token|secret)=)[^\s"'&)）]+/gi, '$1[redacted-secret]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, 'Bearer [redacted-secret]');
 }
 
@@ -178,6 +180,94 @@ function inferTopicId({ title = '', events = [], optionalLocalDigest = '' } = {}
   return safeSegment(title || events[0]?.cleanText || 'team-sharing-topic', 'topic');
 }
 
+function compactEventText(event = {}, limit = 260) {
+  return cleanText(event.cleanText || event.text || '').slice(0, limit);
+}
+
+function cleanList(value) {
+  return asArray(value).map((item) => cleanText(item)).filter(Boolean).slice(0, 12);
+}
+
+function eventDigestByRole(events = [], role = '') {
+  return asArray(events)
+    .filter((event) => !role || event.role === role)
+    .map((event) => compactEventText(event, 220))
+    .filter(Boolean);
+}
+
+function fallbackConversationAbstract({ title = '', events = [], optionalLocalDigest = '' } = {}) {
+  const userItems = eventDigestByRole(events, 'user').slice(-4);
+  const assistantItems = eventDigestByRole(events, 'assistant').slice(-4);
+  const pieces = [];
+  if (userItems.length) pieces.push(`用户主要提出：${userItems.join('；')}`);
+  if (assistantItems.length) pieces.push(`Agent 给出的结论和推进：${assistantItems.join('；')}`);
+  if (optionalLocalDigest) pieces.push(`本地摘要补充：${cleanText(optionalLocalDigest).slice(0, 360)}`);
+  const text = cleanText(pieces.join('。'));
+  if (text) return text.slice(0, 1200);
+  return cleanText(title || '这段对话暂无可总结内容。');
+}
+
+function normalizeSummaryTopic(topic = {}, fallback = {}) {
+  const topicId = safeSegment(topic.topicId || topic.id || topic.title || fallback.topicId || fallback.title || 'topic', 'topic');
+  const title = cleanText(topic.title || topic.topicId || fallback.title || topicId);
+  const overview = cleanText(topic.overview || topic.summary || fallback.overview || '');
+  const sourceEventIds = asArray(topic.sourceEventIds || topic.source_event_ids).map((item) => String(item || '').trim()).filter(Boolean);
+  return {
+    topicId,
+    title,
+    overview,
+    decisions: cleanList(topic.decisions),
+    openQuestions: cleanList(topic.openQuestions || topic.open_questions),
+    nextActions: cleanList(topic.nextActions || topic.next_actions),
+    sourceEventIds: sourceEventIds.length ? sourceEventIds : asArray(fallback.sourceEventIds),
+  };
+}
+
+function renderBulletList(items = [], fallback = '') {
+  const cleanItems = cleanList(items);
+  if (!cleanItems.length) return fallback ? [`- ${fallback}`] : ['- 暂无明确记录'];
+  return cleanItems.map((item) => `- ${item}`);
+}
+
+function renderTopicMarkdown(topic = {}) {
+  return [
+    `# ${topic.title || topic.topicId}`,
+    '',
+    '## 主题概览',
+    topic.overview || '暂无概览。',
+    '',
+    '## 已确认结论',
+    ...renderBulletList(topic.decisions, topic.overview),
+    '',
+    '## 待确认问题',
+    ...renderBulletList(topic.openQuestions),
+    '',
+    '## 下一步',
+    ...renderBulletList(topic.nextActions),
+    '',
+    '## Source Anchors',
+    ...(asArray(topic.sourceEventIds).length
+      ? asArray(topic.sourceEventIds).map((eventId) => `- ${eventId}`)
+      : ['- none']),
+  ].join('\n');
+}
+
+function activityRecordFromSummary({ session, summary, acceptedEvents, topics, updatedAt, revision } = {}) {
+  const activity = summary?.activity && typeof summary.activity === 'object' ? summary.activity : {};
+  const changedPaths = cleanList(activity.changedPaths || activity.changed_paths);
+  const defaultChangedPaths = ['abstract.md', 'activities.json', ...asArray(topics).map((topic) => `topics/${topic.topicId}.md`)];
+  return {
+    activityId: `act_${stableHash(`${session.sessionId}:${updatedAt}:${acceptedEvents.length}:${revision}`)}`,
+    sessionId: session.sessionId,
+    revision,
+    action: cleanText(activity.action || 'merge_summary') || 'merge_summary',
+    summary: cleanText(activity.summary || summary?.activitySummary || `同步 ${acceptedEvents.length} 条清洗事件，并更新 ${topics.map((topic) => topic.topicId).join(', ')} topic。`),
+    changedPaths: changedPaths.length ? changedPaths : defaultChangedPaths,
+    sourceEventIds: asArray(acceptedEvents).map((event) => event.eventId),
+    createdAt: updatedAt,
+  };
+}
+
 function upsertVectorDocument(teamSharingState, document) {
   const index = teamSharingState.vectorDocuments.findIndex((item) => item.vectorDocumentId === document.vectorDocumentId);
   if (index >= 0) {
@@ -190,64 +280,64 @@ function upsertVectorDocument(teamSharingState, document) {
 function updateSessionAbstract(teamSharingState, session, acceptedEvents, options = {}) {
   const title = session.title || 'Untitled AI session';
   const allEvents = asArray(teamSharingState.events[session.sessionId]);
+  const sourceEventIds = allEvents.map((event) => event.eventId);
   const fallbackTopicId = inferTopicId({
     title,
     events: allEvents,
     optionalLocalDigest: session.optionalLocalDigest,
   });
-  const sourceEventIds = allEvents.map((event) => event.eventId);
-  const firstLine = allEvents.find((event) => event.role === 'assistant')?.cleanText
-    || allEvents.find((event) => event.role === 'user')?.cleanText
-    || session.optionalLocalDigest
-    || title;
-  const fallbackOverview = cleanText(firstLine).slice(0, 700);
+  const fallbackOverview = fallbackConversationAbstract({
+    title,
+    events: allEvents,
+    optionalLocalDigest: session.optionalLocalDigest,
+  });
   const summary = options.summary && options.summary.ok !== false ? options.summary : null;
-  const l0 = cleanText(summary?.l0 || `本 session 围绕「${title}」沉淀团队可召回上下文。${fallbackOverview}`);
+  const l0 = cleanText(summary?.l0 || fallbackOverview).slice(0, 1800);
   const topics = asArray(summary?.topics).length
-    ? asArray(summary.topics).map((topic) => ({
-      topicId: safeSegment(topic.topicId || topic.title || fallbackTopicId, 'topic'),
-      title: cleanText(topic.title || topic.topicId || fallbackTopicId),
-      overview: cleanText(topic.overview || fallbackOverview).slice(0, 1600),
-      sourceEventIds: asArray(topic.sourceEventIds).length ? asArray(topic.sourceEventIds) : sourceEventIds,
-    }))
-    : [{
+    ? asArray(summary.topics).map((topic) => normalizeSummaryTopic(topic, {
       topicId: fallbackTopicId,
       title: fallbackTopicId,
       overview: fallbackOverview,
       sourceEventIds,
-    }];
+    }))
+    : [normalizeSummaryTopic({
+      topicId: fallbackTopicId,
+      title: fallbackTopicId,
+      overview: fallbackOverview,
+      sourceEventIds,
+      decisions: [],
+      openQuestions: [],
+      nextActions: [],
+    })];
   const abstractMarkdown = [
-    `# ${title}`,
+    '# abstract.md',
+    '',
+    `Session: ${title}`,
     '',
     '## L0 Abstract',
     l0,
     '',
-    '## Topics Index',
-    ...topics.map((topic) => `- [${topic.title || topic.topicId}](topics/${topic.topicId}/overview.md) - ${topic.overview}`),
-    '',
-    '## Workspace Files',
-    '- [Activities](activities.md) - 每次同步与摘要更新的审计记录。',
-    '- [Original Context](details/original-context.md) - L2 原文锚点与动态上下文页入口。',
+    '## Topics',
+    ...topics.map((topic) => `- [${topic.title || topic.topicId}](topics/${topic.topicId}.md) - ${topic.overview}`),
     '',
     '## Source Anchors',
     ...sourceEventIds.map((eventId) => `- ${session.sessionId}#${eventId}`),
   ].join('\n');
   const updatedAt = options.now?.() || new Date().toISOString();
+  const revision = Number(teamSharingState.abstracts[session.sessionId]?.revision || 0) + 1;
   teamSharingState.abstracts[session.sessionId] = {
     sessionId: session.sessionId,
-    revision: Number(teamSharingState.abstracts[session.sessionId]?.revision || 0) + 1,
+    revision,
     abstractMarkdown,
     topics: topics.reduce((acc, topic) => {
       acc[topic.topicId] = {
         topicId: topic.topicId,
         title: topic.title,
-        overviewMarkdown: [
-          `# ${topic.title || topic.topicId}`,
-          '',
-          topic.overview,
-          '',
-          `Source events: ${topic.sourceEventIds.join(', ') || 'none'}`,
-        ].join('\n'),
+        overview: topic.overview,
+        decisions: topic.decisions,
+        openQuestions: topic.openQuestions,
+        nextActions: topic.nextActions,
+        overviewMarkdown: renderTopicMarkdown(topic),
         sourceEventIds: topic.sourceEventIds,
         updatedAt,
       };
@@ -282,7 +372,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
       vectorDocumentId: `${session.sessionId}:L1:${topic.topicId}`,
       layer: 'L1',
       topicId: topic.topicId,
-      sourceRef: `${session.sessionId}/topics/${topic.topicId}/overview.md#${topic.sourceEventIds[0] || ''}`,
+      sourceRef: `${session.sessionId}/topics/${topic.topicId}.md#${topic.sourceEventIds[0] || ''}`,
       text: `${title}\n${topic.title}\n${topic.overview}`,
       vectorScore: 0,
       keywordScore: 0,
@@ -290,14 +380,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     });
   }
   if (acceptedEvents.length) {
-    const changedPaths = ['abstract.md', 'activities.md', 'details/original-context.md', ...topics.map((topic) => `topics/${topic.topicId}/overview.md`)];
-    teamSharingState.activities.push({
-      activityId: `act_${stableHash(`${session.sessionId}:${updatedAt}:${acceptedEvents.length}`)}`,
-      sessionId: session.sessionId,
-      summary: cleanText(summary?.activitySummary || `同步 ${acceptedEvents.length} 条清洗事件，并更新 ${topics.map((topic) => topic.topicId).join(', ')} topic。`),
-      changedPaths,
-      createdAt: updatedAt,
-    });
+    teamSharingState.activities.push(activityRecordFromSummary({ session, summary, acceptedEvents, topics, updatedAt, revision }));
   }
   session.abstractRevision = teamSharingState.abstracts[session.sessionId].revision;
   session.indexStatus = 'ready';
