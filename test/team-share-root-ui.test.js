@@ -42,6 +42,9 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   assert.match(drawerSource, /team-sharing-workspace-drawer/);
   assert.match(drawerSource, /data-action="back-to-team-sharing-thread"/);
   assert.match(drawerSource, /data-action="open-team-sharing-workspace"/);
+  assert.match(drawerSource, /team-sharing-workspace-head-action tone-refresh" type="button" data-action="open-team-sharing-workspace"/);
+  assert.match(drawerSource, /team-sharing-workspace-head-action tone-channel" type="button" data-action="view-in-channel"/);
+  assert.match(drawerSource, /icon-btn small team-sharing-workspace-head-action tone-close/);
   assert.match(drawerSource, /renderTeamSharingWorkspacePanel\(message\)/);
   assert.match(app, /team-sharing-workspace-action/);
   assert.match(app, /data-action="open-team-sharing-workspace-file"/);

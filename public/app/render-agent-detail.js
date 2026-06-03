@@ -1277,9 +1277,9 @@ function renderThreadDrawer(message) {
           <span>${escapeHtml(spaceName(message.spaceType, message.spaceId))}</span>
         </div>
         <div class="thread-head-actions">
-          ${teamSharingSessionId ? `<button type="button" data-action="open-team-sharing-workspace" data-id="${escapeHtml(message.id)}">${teamSharingWorkspaceOpen ? 'Refresh workspace' : 'Workspace'}</button>` : ''}
-          <button type="button" data-action="view-in-channel" data-id="${message.id}">View in channel</button>
-          <button class="icon-btn small" type="button" data-action="close-thread" aria-label="Close thread">×</button>
+          ${teamSharingSessionId ? `<button class="team-sharing-workspace-head-action tone-refresh" type="button" data-action="open-team-sharing-workspace" data-id="${escapeHtml(message.id)}" title="${teamSharingWorkspaceOpen ? 'Refresh workspace' : 'Open workspace'}">${teamSharingWorkspaceOpen ? 'Refresh workspace' : 'Workspace'}</button>` : ''}
+          <button class="team-sharing-workspace-head-action tone-channel" type="button" data-action="view-in-channel" data-id="${escapeHtml(message.id)}" title="View in channel">View in channel</button>
+          <button class="icon-btn small team-sharing-workspace-head-action tone-close" type="button" data-action="close-thread" aria-label="Close thread" title="Close thread">×</button>
         </div>
       </div>
       <div class="thread-context-wrap">

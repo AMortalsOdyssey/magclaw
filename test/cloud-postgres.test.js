@@ -1959,6 +1959,75 @@ test('postgres store reloads a single workspace without replacing other workspac
   assert.ok(queries.some((query) => query.sql.includes('cloud_humans') && query.params[0] === 'wsp_one'));
 });
 
+test('postgres workspace reload preserves recovered Team Sharing state when no scoped row exists', async () => {
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const pool = {
+    async connect() {
+      return {
+        async query(sql) {
+          if (sql.includes('cloud_humans')) {
+            return { rows: [{ id: 'hum_one_new', workspace_id: 'wsp_one', user_id: 'usr_one', name: 'One New', email: 'one@example.test', role: 'member', status: 'offline', avatar: '', description: '', created_at: createdAt, updated_at: createdAt }] };
+          }
+          if (sql.includes('cloud_channels')) {
+            return { rows: [{ id: 'chan_one_new', workspace_id: 'wsp_one', name: 'one-new', description: '', archived_at: null, created_at: createdAt, updated_at: createdAt, metadata: { state: { humanIds: ['hum_one_new'], memberIds: ['hum_one_new'] } } }] };
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const state = {
+    humans: [],
+    computers: [],
+    agents: [],
+    channels: [],
+    dms: [],
+    messages: [],
+    replies: [],
+    tasks: [],
+    workItems: [],
+    attachments: [],
+    reminders: [],
+    missions: [],
+    runs: [],
+    projects: [],
+    teamSharing: {
+      sessions: {
+        sess_one_legacy: { sessionId: 'sess_one_legacy', workspaceId: 'wsp_one', channelId: 'chan_one', abstractRevision: 1 },
+        sess_two: { sessionId: 'sess_two', workspaceId: 'wsp_two', channelId: 'chan_two', abstractRevision: 1 },
+      },
+      abstracts: {
+        sess_one_legacy: { revision: 1, abstractMarkdown: '# One Legacy' },
+        sess_two: { revision: 1, abstractMarkdown: '# Two' },
+      },
+      vectorDocuments: [
+        { vectorDocumentId: 'sess_one_legacy:L0', sessionId: 'sess_one_legacy', workspaceId: 'wsp_one', layer: 'L0' },
+        { vectorDocumentId: 'sess_two:L0', sessionId: 'sess_two', workspaceId: 'wsp_two', layer: 'L0' },
+      ],
+      auth: {
+        tokens: {
+          tok_one: { token: 'tok_one', workspaceId: 'wsp_one' },
+        },
+      },
+    },
+  };
+  await store.loadWorkspaceIntoState(state, 'wsp_one');
+  assert.equal(state.humans.some((human) => human.id === 'hum_one_new'), true);
+  assert.equal(state.channels.some((channel) => channel.id === 'chan_one_new'), true);
+  assert.equal(state.teamSharing.sessions.sess_one_legacy.channelId, 'chan_one');
+  assert.equal(state.teamSharing.sessions.sess_two.channelId, 'chan_two');
+  assert.equal(state.teamSharing.abstracts.sess_one_legacy.abstractMarkdown, '# One Legacy');
+  assert.equal(state.teamSharing.vectorDocuments.some((doc) => doc.sessionId === 'sess_one_legacy'), true);
+  assert.equal(state.teamSharing.auth.tokens.tok_one.workspaceId, 'wsp_one');
+});
+
 test('postgres store pages message history with keyset SQL', async () => {
   const queries = [];
   const createdAt = '2026-05-13T00:00:00.000Z';

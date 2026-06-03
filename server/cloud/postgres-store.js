@@ -4318,12 +4318,11 @@ export function createCloudPostgresStore(optionsInput = {}) {
       for (const kind of DURABLE_STATE_RECORD_OBJECT_KEYS) {
         const row = stateRecords.rows.find((item) => item.kind === kind && item.id === 'value');
         if (kind === 'teamSharing') {
+          if (!row) continue;
           const withoutWorkspace = filterTeamSharingStateForWorkspace(state.teamSharing, scopedWorkspaceId, {
             includeMatches: false,
           });
-          state.teamSharing = row
-            ? mergeTeamSharingState(withoutWorkspace, jsonObject(row.payload))
-            : withoutWorkspace;
+          state.teamSharing = mergeTeamSharingState(withoutWorkspace, jsonObject(row.payload));
           continue;
         }
         if (row) state[kind] = jsonObject(row.payload);
