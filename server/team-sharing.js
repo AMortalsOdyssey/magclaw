@@ -20,17 +20,24 @@ function redactSecrets(value = '') {
 }
 
 function cleanText(value = '') {
-  return redactSecrets(value)
+  return stripOperationalText(redactSecrets(value))
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function cleanMultilineText(value = '') {
-  return redactSecrets(value)
+  return stripOperationalText(redactSecrets(value))
     .replace(/\r\n/g, '\n')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function stripOperationalText(value = '') {
+  return String(value || '')
+    .replace(/\bused_tools\s*=\s*[A-Za-z0-9_.,\-\s]+(?=$|[。；;，,\n])/gi, '')
+    .replace(/\s*(?:本地摘要补充[:：]\s*)?Tool summary\s*:\s*[A-Za-z0-9_.,\-\s]+(?=$|[。；;，,\n])/gi, '')
+    .replace(/(?:^|\n)\s*已运行\s+\d+\s+条命令\s*/g, '\n');
 }
 
 function markdownLinkText(value = '') {
@@ -173,7 +180,7 @@ function normalizeContentSegments(value = '', role = 'user', provided = []) {
 }
 
 function cleanMarkdownBody(value = '') {
-  return redactSecrets(String(value || '').replace(/\r\n/g, '\n'))
+  return stripOperationalText(redactSecrets(String(value || '').replace(/\r\n/g, '\n')))
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
     .join('\n')
@@ -311,7 +318,8 @@ function fallbackConversationAbstract({ title = '', events = [], optionalLocalDi
   const pieces = [];
   if (userItems.length) pieces.push(`用户主要提出：${userItems.join('；')}`);
   if (assistantItems.length) pieces.push(`Agent 给出的结论和推进：${assistantItems.join('；')}`);
-  if (optionalLocalDigest) pieces.push(`本地摘要补充：${cleanText(optionalLocalDigest).slice(0, 360)}`);
+  const localDigest = cleanText(optionalLocalDigest);
+  if (localDigest && !/^Tool summary\b/i.test(localDigest)) pieces.push(`本地摘要补充：${localDigest.slice(0, 360)}`);
   const text = cleanText(pieces.join('。'));
   if (text) return text.slice(0, 1200);
   return cleanText(title || '这段对话暂无可总结内容。');
@@ -362,20 +370,16 @@ function splitSummaryPoints(value = '', limit = 6) {
   const source = String(value || '')
     .replace(/\r\n/g, '\n')
     .replace(/\s*页面位置[:：]\s*https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/g, '')
-    .replace(/\s*Current URL[:：]\s*https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/gi, '');
+    .replace(/\s*Current URL[:：]\s*https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/gi, '')
+    .replace(/(^|[：:。！？!?；;])\s*-\s*/g, '$1\n- ');
   const points = source
     .replace(/([。！？!?])\s*/g, '$1\n')
     .replace(/[；;]\s*/g, '；\n')
     .split('\n')
-    .map((item) => cleanText(item).replace(/[；;]$/, '。'))
+    .map((item) => cleanText(item).replace(/^[-*+]\s*/, '').replace(/[；;]$/, '。'))
     .filter((item) => item.length >= 6);
   if (points.length <= limit) return points;
-  const grouped = [];
-  const chunkSize = Math.ceil(points.length / limit);
-  for (let index = 0; index < points.length; index += chunkSize) {
-    grouped.push(cleanText(points.slice(index, index + chunkSize).join(' ')));
-  }
-  return grouped.slice(0, limit);
+  return points.slice(0, limit);
 }
 
 function isolateMarkdownLinks(value = '') {
@@ -403,17 +407,51 @@ function isolateMarkdownLinks(value = '') {
 function renderSummaryMarkdown(value = '') {
   const body = isolateMarkdownLinks(cleanMarkdownBody(value || ''));
   if (!body) return '这段会话暂无可总结内容。';
-  if (markdownHasStructure(body)) return body;
+  if (markdownHasStructure(body)) return normalizeStructuredMarkdown(body);
   const standaloneLinks = body.split('\n').map((line) => line.trim()).filter((line) => /^https?:\/\//i.test(line));
   const textBody = body.split('\n').filter((line) => !/^https?:\/\//i.test(line.trim())).join('\n');
   const points = splitSummaryPoints(textBody);
   if (!points.length) return body;
+  return renderNumberedSummaryPoints(points, standaloneLinks);
+}
+
+function renderNumberedSummaryPoints(points = [], standaloneLinks = []) {
   const rows = [];
-  points.forEach((point, index) => {
-    rows.push(`${index + 1}. ${summaryLead(point)}`);
-    if (index === 0 && standaloneLinks.length) rows.push(...standaloneLinks);
-  });
+  let displayIndex = 1;
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    rows.push(`${displayIndex}. ${summaryLead(point)}`);
+    if (displayIndex === 1 && standaloneLinks.length) rows.push(...standaloneLinks);
+    if (/[：:]$/.test(point.trim())) {
+      let subCount = 0;
+      while (index + 1 < points.length && subCount < 4) {
+        const next = points[index + 1];
+        if (/^[^：:]{2,18}[：:]/.test(next.trim())) break;
+        rows.push(`   - ${summaryLead(next)}`);
+        index += 1;
+        subCount += 1;
+      }
+    }
+    displayIndex += 1;
+  }
   return rows.join('\n');
+}
+
+function normalizeStructuredMarkdown(value = '') {
+  const lines = String(value || '').split('\n');
+  return lines.flatMap((line) => {
+    const match = line.match(/^(\s*)((?:[-*+])|(?:\d+\.))\s+(.+)$/);
+    if (!match) return [line];
+    const [, indent, marker, body] = match;
+    if (/^(Raw ID|原文)[:：]/i.test(body.trim()) || /^\[打开原文\]/.test(body.trim())) return [line];
+    const pieces = splitSummaryPoints(body, 6);
+    if (pieces.length <= 1 && cleanText(body).length <= 180) return [line];
+    const [head, ...rest] = pieces.length ? pieces : [body];
+    return [
+      `${indent}${marker} ${summaryLead(head)}`,
+      ...rest.map((item) => `${indent}  - ${summaryLead(item)}`),
+    ];
+  }).join('\n');
 }
 
 function renderSourceReferenceLines(sessionId = '', sourceEventId = '', indent = '') {
@@ -430,10 +468,18 @@ function renderSourcedBulletList(items = [], { fallback = '', sessionId = '', so
   const cleanItems = cleanList(items);
   const values = cleanItems.length ? cleanItems : (fallback ? splitSummaryPoints(fallback, 3) : []);
   if (!values.length) return ['- 暂无明确记录'];
-  return values.flatMap((item) => [
-    `- ${cleanItems.length ? `**${item}**` : summaryLead(item)}`,
-    ...renderSourceReferenceLines(sessionId, sourceEventId, '  '),
-  ]);
+  return values.flatMap((item) => {
+    const pieces = splitSummaryPoints(item, 6);
+    const [head, ...rest] = pieces.length ? pieces : [item];
+    const renderedHead = cleanItems.length && rest.length === 0
+      ? `**${head}**`
+      : summaryLead(head);
+    return [
+      `- ${renderedHead}`,
+      ...rest.map((part) => `  - ${summaryLead(part)}`),
+      ...renderSourceReferenceLines(sessionId, sourceEventId, '  '),
+    ];
+  });
 }
 
 function renderTopicMarkdown(topic = {}, session = {}) {

@@ -7,11 +7,11 @@ function trimSlash(value = '') {
 }
 
 function cleanText(value = '') {
-  return String(value || '').replace(/\s+/g, ' ').trim();
+  return stripOperationalText(value).replace(/\s+/g, ' ').trim();
 }
 
 function cleanMarkdownText(value = '') {
-  return String(value || '')
+  return stripOperationalText(value)
     .replace(/\r\n/g, '\n')
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
@@ -19,6 +19,13 @@ function cleanMarkdownText(value = '') {
     .replace(/\n([，。；：！？,.!?;:])/g, '$1\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function stripOperationalText(value = '') {
+  return String(value || '')
+    .replace(/\bused_tools\s*=\s*[A-Za-z0-9_.,\-\s]+(?=$|[。；;，,\n])/gi, '')
+    .replace(/\s*(?:本地摘要补充[:：]\s*)?Tool summary\s*:\s*[A-Za-z0-9_.,\-\s]+(?=$|[。；;，,\n])/gi, '')
+    .replace(/(?:^|\n)\s*已运行\s+\d+\s+条命令\s*/g, '\n');
 }
 
 function cleanList(value) {
@@ -112,7 +119,9 @@ export function buildTeamSharingTopicsPromptSection() {
     '- `sourceEventIds` must contain exactly one primary event id that can locate the surrounding original context. Do not dump every supporting event id.',
     '- 每个 topic 的内容必须能作为 Markdown 阅读：先总述，再分点展开，最后给出可回溯的结论或下一步。',
     '- `overview` 必须按子模块组织，优先使用小标题、编号列表或无序列表；不要写成一整段。',
+    '- 如果某个 overview / decision 太长，必须拆成多个短 bullet 或小标题；不要把多件事写进一个 bullet。',
     '- Raw ID 必须和对应总结点放在一起，让读者知道这一条结论来自哪段上下文；不要在文档顶部或底部集中堆 Raw ID。',
+    '- 不要输出 `Tool summary`、`used_tools`、中间状态播报或 hook 内部执行痕迹；只保留用户正文和最终回复里的结论。',
     '- 不要把单个专有名词、英文词或 API 名称拆成孤立一行；需要强调时放在正文里用 **加粗**。',
     '- 不要让逗号、句号、顿号、冒号、分号等标点出现在行首。',
     '- 链接必须单独成行或单独成一个 Markdown 链接，不要把链接和后续中文说明粘在同一行里。',
@@ -145,7 +154,9 @@ export function buildTeamSharingSummaryPrompt({ session = {}, events = [], previ
     '- l0 必须是可读 Markdown：使用小标题、编号列表或无序列表，不能输出一整段长文本。',
     '- topics 必须覆盖 l0 中提到的每个重要分支；不要生成 abstract 未提到的孤立 topic。',
     '- Markdown 阅读体验必须清晰：结构化标题、短段落、重点加粗、必要时使用表格语义；不要输出 Source Anchors 大列表。',
+    '- 不要把多个结论合并到一个超长 bullet；每个 bullet 只表达一个结论，必要时使用缩进子 bullet。',
     '- 链接必须独立成行；不要写成 `https://example.com后续说明`，也不要让链接把后面的中文文字吞进去。',
+    '- 不要输出 `Tool summary`、`used_tools` 或“已运行 N 条命令”等内部执行信息。',
     '- Raw ID 要贴近对应结论或列表项，而不是集中输出 Raw IDs 列表。',
     '- Output pure JSON only. Do not wrap it in Markdown.',
     '',

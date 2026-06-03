@@ -152,22 +152,23 @@ test('team sharing abstracts format long summary links and keep raw ids beside c
         eventId: 'evt_url_4',
         ordinal: 4,
         role: 'assistant',
-        text: '已改成分层 Markdown，并让 Raw ID 跟关键点绑定。',
+        text: '已改成分层 Markdown，并让 Raw ID 跟关键点绑定。 used_tools=exec_command,apply_patch',
       },
     ],
+    optionalLocalDigest: 'Tool summary: exec_command, apply_patch',
   }), {
     state,
     makeId: makeIdFactory(),
     now: () => '2026-06-01T08:04:00.000Z',
     summarizeSession: async () => ({
       ok: true,
-      l0: '部署页面已确认：https://magclaw-testing.multiego.me/s/share_6929a2251b后续需要修复摘要结构；Workspace Markdown 必须分层展示；Raw ID 要和具体总结点绑定。',
+      l0: '部署页面已确认：https://magclaw-testing.multiego.me/s/share_6929a2251b后续需要修复摘要结构；Workspace Markdown 必须分层展示；线上验收结果：- readyz 返回 200。- 未登录访问 dynamic context 会跳转登录并带 returnTo。Raw ID 要和具体总结点绑定。Tool summary: exec_command,apply_patch',
       topics: [
         {
           topicId: 'rerank-feedback',
           title: 'Rerank Feedback',
-          overview: '搜索结果标题已经规范化；Raw ID 只需要定位一条代表性上下文。',
-          decisions: ['Summary 改为编号结构', 'Raw ID 跟关键点绑定'],
+          overview: '搜索结果标题已经规范化；Key Changes 不能混成一个长段落；链接必须单独成行；Raw ID 只需要定位一条代表性上下文。Tool summary: exec_command,apply_patch',
+          decisions: ['当前 Key Changes 层级全部混在一起，链接也连在一起；必须分层级、分子模块、分列表来展示。', 'Raw ID 跟关键点绑定'],
           sourceEventIds: ['evt_url_1', 'evt_url_2', 'evt_url_3'],
         },
       ],
@@ -178,14 +179,17 @@ test('team sharing abstracts format long summary links and keep raw ids beside c
   const abstract = state.teamSharing.abstracts.sess_md_format;
   assert.match(abstract.abstractMarkdown, /^# 验收会话总结共享/m);
   assert.match(abstract.abstractMarkdown, /1\. \*\*部署页面已确认\*\*/);
-  assert.match(abstract.abstractMarkdown, /https:\/\/magclaw-testing\.multiego\.me\/s\/share_6929a2251b\n2\. 后续需要修复摘要结构/);
+  assert.match(abstract.abstractMarkdown, /https:\/\/magclaw-testing\.multiego\.me\/s\/share_6929a2251b\n\s+- 后续需要修复摘要结构/);
+  assert.match(abstract.abstractMarkdown, /2\. \*\*线上验收结果\*\*：\n\s+- readyz 返回 200/);
   assert.match(abstract.abstractMarkdown, /例如：\n\[围绕首条来源打开\]\(\/team-sharing\/context\/sess_md_format\?anchorEventId=evt_url_1&limit=21&order=asc\)\n页面会以该消息为中心/);
-  assert.doesNotMatch(abstract.abstractMarkdown, /Source Anchors|Raw IDs/);
+  assert.doesNotMatch(abstract.abstractMarkdown, /Source Anchors|Raw IDs|Tool summary|used_tools/);
   const topicMarkdown = abstract.topics['rerank-feedback'].overviewMarkdown;
   assert.match(topicMarkdown, /Raw ID: `evt_url_1`/);
   assert.doesNotMatch(topicMarkdown, /evt_url_2|evt_url_3/);
-  assert.match(topicMarkdown, /- \*\*Summary 改为编号结构\*\*/);
+  assert.match(topicMarkdown, /- 当前 Key Changes 层级全部混在一起/);
+  assert.match(topicMarkdown, /\n\s+- 必须分层级、分子模块、分列表来展示。/);
   assert.match(topicMarkdown, /\[打开原文\]\(\/team-sharing\/context\/sess_md_format\?anchorEventId=evt_url_1&limit=21&order=asc\)/);
+  assert.doesNotMatch(topicMarkdown, /Raw IDs|Tool summary|used_tools/);
 });
 
 test('team sharing duplicate sync still updates mutable session title everywhere', async () => {
