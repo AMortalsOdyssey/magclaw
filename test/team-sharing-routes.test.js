@@ -212,7 +212,8 @@ test('team sharing route exposes a session workspace with abstract, topics, and 
   const topicFile = workspaceRes.data.files.find((file) => file.path === 'topics/rerank-feedback.md');
   assert.doesNotMatch(topicFile.content, /Raw IDs/);
   assert.match(topicFile.content, /Raw ID: `evt_1`/);
-  assert.match(topicFile.content, /\[打开原文\]\(\/team-sharing\/context\/sess_route\?anchorEventId=evt_1&limit=21&order=asc\)/);
+  assert.match(topicFile.content, /\[原文\]\(\/team-sharing\/context\/sess_route\?anchorEventId=evt_1&limit=21&order=asc\)/);
+  assert.doesNotMatch(topicFile.content, /\n\s*\[打开原文\]/);
   assert.match(topicFile.content, /Original Context/);
   assert.doesNotMatch(topicFile.content, /Source Anchors/);
 
@@ -663,6 +664,11 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /contentSegments/);
   assert.match(res.body, /load-more-prev/);
   assert.match(res.body, /load-more-next/);
+  assert.match(res.body, /top-sentinel/);
+  assert.match(res.body, /bottom-sentinel/);
+  assert.match(res.body, /IntersectionObserver/);
+  assert.match(res.body, /preserveScrollForPrepend/);
+  assert.match(res.body, /scrollToInitialAnchor/);
   assert.match(res.body, /trailingUrlChars/);
   assert.match(res.body, /String\.fromCharCode\(96\)/);
 });

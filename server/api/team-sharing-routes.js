@@ -563,6 +563,7 @@ function sendContextHtml(res, {
     .controls { display:flex; gap:10px; justify-content:center; margin:12px 0; }
     button { border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:6px; padding:8px 12px; cursor:pointer; }
     button:disabled { opacity:.45; cursor:not-allowed; }
+    .scroll-sentinel { height:1px; }
     article { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:10px 0; box-shadow:0 1px 2px rgba(15,23,42,.04); }
     article.anchor { border-color:var(--accent); box-shadow:0 0 0 2px rgba(8,145,178,.12); }
     .role { display:inline-flex; align-items:center; min-height:20px; border-radius:999px; background:var(--chip); padding:2px 8px; font-size:12px; font-weight:800; color:#0f5f76; }
@@ -585,9 +586,11 @@ function sendContextHtml(res, {
     <div class="meta" id="session-meta">session: ${htmlEscape(sessionId)} · anchor: ${htmlEscape(initialAnchor || 'latest')} · order: ${htmlEscape(contextOrder === 'desc' ? 'newest first' : 'oldest first')}</div>
   </header>
   <main>
+    <div id="top-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
     <div class="controls"><button id="${isDesc ? 'load-more-next' : 'load-more-prev'}" type="button">${isDesc ? 'Load newer' : 'Load previous'}</button></div>
     <section id="events" aria-live="polite"><div class="empty">Loading context...</div></section>
     <div class="controls"><button id="${isDesc ? 'load-more-prev' : 'load-more-next'}" type="button">${isDesc ? 'Load older' : 'Load next'}</button></div>
+    <div id="bottom-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
   </main>
   <script>
     const sessionId = ${JSON.stringify(sessionId)};
@@ -599,9 +602,18 @@ function sendContextHtml(res, {
     const eventsEl = document.getElementById('events');
     const prevBtn = document.getElementById('load-more-prev');
     const nextBtn = document.getElementById('load-more-next');
+    const topSentinel = document.getElementById('top-sentinel');
+    const bottomSentinel = document.getElementById('bottom-sentinel');
+    const topDirection = order === 'desc' ? 'next' : 'prev';
+    const bottomDirection = order === 'desc' ? 'prev' : 'next';
     const seen = new Set();
     let prevAnchor = anchorEventId;
     let nextAnchor = anchorEventId;
+    let hasPrev = false;
+    let hasNext = false;
+    let initialLoaded = false;
+    let initialAnchorScrolled = false;
+    const loading = { around: false, prev: false, next: false };
     let openedRecorded = false;
     function escapeHtml(text) {
       return String(text || '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
@@ -659,6 +671,27 @@ function sendContextHtml(res, {
         body: JSON.stringify({ queryId, vectorDocumentId, sessionId, eventType, sourceRef })
       }).catch(() => {});
     }
+    function updateButtons() {
+      prevBtn.disabled = loading.prev || !hasPrev;
+      nextBtn.disabled = loading.next || !hasNext;
+    }
+    function canLoad(direction) {
+      if (direction === 'prev') return hasPrev && !loading.prev;
+      if (direction === 'next') return hasNext && !loading.next;
+      return !loading.around;
+    }
+    function preserveScrollForPrepend(beforeHeight, beforeScrollY) {
+      const afterHeight = document.documentElement.scrollHeight;
+      const delta = afterHeight - beforeHeight;
+      if (delta > 0) window.scrollTo({ top: beforeScrollY + delta, behavior: 'auto' });
+    }
+    function scrollToInitialAnchor() {
+      if (initialAnchorScrolled || !anchorEventId) return;
+      const anchorEl = document.getElementById(encodeURIComponent(anchorEventId));
+      if (!anchorEl) return;
+      initialAnchorScrolled = true;
+      anchorEl.scrollIntoView({ block: 'center' });
+    }
     function eventSegments(event) {
       const segments = Array.isArray(event.contentSegments) && event.contentSegments.length
         ? event.contentSegments
@@ -683,44 +716,66 @@ function sendContextHtml(res, {
         body + '</article>';
     }
     async function load(direction) {
+      if (loading[direction]) return;
+      if (direction !== 'around' && !canLoad(direction)) return;
+      loading[direction] = true;
+      updateButtons();
+      const beforeHeight = document.documentElement.scrollHeight;
+      const beforeScrollY = window.scrollY;
       const anchor = direction === 'next' ? nextAnchor : prevAnchor;
-      const url = '/api/team-sharing/context/${safeSession}?anchorEventId=' + encodeURIComponent(anchor || '') + '&direction=' + encodeURIComponent(direction) + '&limit=21&order=' + encodeURIComponent(order);
-      const response = await fetch(url);
-      const data = await response.json();
-      if (!data.ok) throw new Error(data.error || 'Failed to load context');
-      window.__teamSharingSession = data.session || window.__teamSharingSession || {};
-      if (data.session?.title) document.getElementById('session-title').textContent = data.session.title;
-      document.getElementById('session-meta').textContent = 'session: ' + sessionId + ' · anchor: ' + (anchorEventId || 'latest') + ' · order: ' + (order === 'desc' ? 'newest first' : 'oldest first');
-      const fresh = (data.events || []).filter(event => {
-        const key = event.eventId || JSON.stringify(event);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      if (!fresh.length && !seen.size) {
-        eventsEl.innerHTML = '<div class="empty">No context found.</div>';
-      } else if (fresh.length) {
-        const html = fresh.map(eventHtml).join('');
-        if (order === 'desc' && direction === 'prev') eventsEl.insertAdjacentHTML('beforeend', html);
-        else if (order === 'desc' && direction === 'next') eventsEl.insertAdjacentHTML('afterbegin', html);
-        else if (direction === 'prev') eventsEl.insertAdjacentHTML('afterbegin', html);
-        else if (eventsEl.querySelector('.empty')) eventsEl.innerHTML = html;
-        else eventsEl.insertAdjacentHTML('beforeend', html);
+      try {
+        const url = '/api/team-sharing/context/${safeSession}?anchorEventId=' + encodeURIComponent(anchor || '') + '&direction=' + encodeURIComponent(direction) + '&limit=21&order=' + encodeURIComponent(order);
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || 'Failed to load context');
+        window.__teamSharingSession = data.session || window.__teamSharingSession || {};
+        if (data.session?.title) document.getElementById('session-title').textContent = data.session.title;
+        document.getElementById('session-meta').textContent = 'session: ' + sessionId + ' · anchor: ' + (anchorEventId || 'latest') + ' · order: ' + (order === 'desc' ? 'newest first' : 'oldest first');
+        const fresh = (data.events || []).filter(event => {
+          const key = event.eventId || JSON.stringify(event);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        const insertsAtTop = (order === 'desc' && direction === 'next') || (order !== 'desc' && direction === 'prev');
+        if (!fresh.length && !seen.size) {
+          eventsEl.innerHTML = '<div class="empty">No context found.</div>';
+        } else if (fresh.length) {
+          const html = fresh.map(eventHtml).join('');
+          if (insertsAtTop) eventsEl.insertAdjacentHTML('afterbegin', html);
+          else if (eventsEl.querySelector('.empty')) eventsEl.innerHTML = html;
+          else eventsEl.insertAdjacentHTML('beforeend', html);
+          if (direction !== 'around' && insertsAtTop) preserveScrollForPrepend(beforeHeight, beforeScrollY);
+        }
+        prevAnchor = data.pagination?.prevAnchorEventId || prevAnchor;
+        nextAnchor = data.pagination?.nextAnchorEventId || nextAnchor;
+        hasPrev = Boolean(data.pagination?.hasPrev);
+        hasNext = Boolean(data.pagination?.hasNext);
+        if (!openedRecorded && direction === 'around') {
+          openedRecorded = true;
+          recordFeedback('opened');
+        } else if (fresh.length && (direction === 'prev' || direction === 'next')) {
+          recordFeedback('load_more');
+        }
+        initialLoaded = true;
+        if (direction === 'around') scrollToInitialAnchor();
+      } finally {
+        loading[direction] = false;
+        updateButtons();
       }
-      prevAnchor = data.pagination?.prevAnchorEventId || prevAnchor;
-      nextAnchor = data.pagination?.nextAnchorEventId || nextAnchor;
-      prevBtn.disabled = !data.pagination?.hasPrev;
-      nextBtn.disabled = !data.pagination?.hasNext;
-      if (!openedRecorded && direction === 'around') {
-        openedRecorded = true;
-        recordFeedback('opened');
-      } else if (fresh.length && (direction === 'prev' || direction === 'next')) {
-        recordFeedback('load_more');
-      }
-      if (anchorEventId) document.getElementById(encodeURIComponent(anchorEventId))?.scrollIntoView({ block: 'center' });
     }
     prevBtn.addEventListener('click', () => load('prev').catch(console.error));
     nextBtn.addEventListener('click', () => load('next').catch(console.error));
+    const observer = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
+      if (!initialLoaded) return;
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        if (entry.target === topSentinel) load(topDirection).catch(console.error);
+        if (entry.target === bottomSentinel) load(bottomDirection).catch(console.error);
+      }
+    }, { root: null, rootMargin: '640px 0px', threshold: 0 }) : null;
+    observer?.observe(topSentinel);
+    observer?.observe(bottomSentinel);
     load('around').catch(error => { eventsEl.innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>'; });
   </script>
 </body>

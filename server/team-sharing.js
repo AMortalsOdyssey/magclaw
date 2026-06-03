@@ -404,17 +404,60 @@ function isolateMarkdownLinks(value = '') {
   }).join('\n');
 }
 
-function renderSummaryMarkdown(value = '') {
-  const body = isolateMarkdownLinks(cleanMarkdownBody(value || ''));
+function stripStandaloneSourceReferences(value = '') {
+  return String(value || '').split('\n').filter((line) => {
+    const text = line.trim();
+    if (!text) return true;
+    if (/^(?:[-*+]\s+)?Raw ID[:：]/i.test(text)) return false;
+    if (/^(?:[-*+]\s+)?原文[:：]\s*$/.test(text)) return false;
+    if (/^(?:[-*+]\s+)?原文[:：]\s*暂无可定位原文/.test(text)) return false;
+    if (/^(?:[-*+]\s+)?\[打开原文\]\(/.test(text)) return false;
+    if (/^(?:[-*+]\s+)?\[围绕首条来源打开\]\(/.test(text)) return false;
+    return true;
+  }).join('\n');
+}
+
+function sourceReferenceLink(sessionId = '', sourceEventId = '', label = '原文') {
+  const eventId = String(sourceEventId || '').trim();
+  if (!eventId) return '';
+  return `[${label}](${sourceContextUrl(sessionId, eventId)})`;
+}
+
+function sourceReferenceSuffix(sessionId = '', sourceEventId = '') {
+  const link = sourceReferenceLink(sessionId, sourceEventId);
+  return link ? `（${link}）` : '';
+}
+
+function appendInlineSourceReference(markdown = '', { sessionId = '', sourceEventId = '' } = {}) {
+  const suffix = sourceReferenceSuffix(sessionId, sourceEventId);
+  const lines = String(markdown || '').split('\n');
+  if (!suffix || lines.some((line) => /\[原文\]\(\/team-sharing\/context\//.test(line))) return lines.join('\n');
+  const index = lines.findIndex((line) => {
+    const text = line.trim();
+    return text
+      && !/^#+\s+/.test(text)
+      && !/^https?:\/\//i.test(text)
+      && !/^```/.test(text)
+      && !/^\[.+\]\(/.test(text);
+  });
+  if (index < 0) return lines.join('\n');
+  lines[index] = `${lines[index]}${suffix}`;
+  return lines.join('\n');
+}
+
+function renderSummaryMarkdown(value = '', options = {}) {
+  const body = isolateMarkdownLinks(stripStandaloneSourceReferences(cleanMarkdownBody(value || '')));
   if (!body) return '这段会话暂无可总结内容。';
   const standaloneLinks = body.split('\n').map((line) => line.trim()).filter((line) => /^https?:\/\//i.test(line));
   const textBody = body.split('\n').filter((line) => !/^https?:\/\//i.test(line.trim())).join('\n');
+  let rendered = '';
   if (markdownHasStructure(body)) {
-    return ensureNestedSummaryMarkdown(normalizeStructuredMarkdown(body), textBody, standaloneLinks);
+    rendered = ensureNestedSummaryMarkdown(normalizeStructuredMarkdown(body), textBody, standaloneLinks);
+  } else {
+    const points = splitSummaryPoints(textBody);
+    rendered = points.length ? ensureNestedSummaryMarkdown(renderNumberedSummaryPoints(points, standaloneLinks), textBody, standaloneLinks) : body;
   }
-  const points = splitSummaryPoints(textBody);
-  if (!points.length) return body;
-  return ensureNestedSummaryMarkdown(renderNumberedSummaryPoints(points, standaloneLinks), textBody, standaloneLinks);
+  return appendInlineSourceReference(rendered, options);
 }
 
 function renderNumberedSummaryPoints(points = [], standaloneLinks = []) {
@@ -516,8 +559,7 @@ function renderSourceReferenceLines(sessionId = '', sourceEventId = '', indent =
   if (!eventId) return [`${indent}- Raw ID: \`none\``, `${indent}- 原文：暂无可定位原文`];
   return [
     `${indent}- Raw ID: \`${eventId}\``,
-    `${indent}- 原文：`,
-    `${indent}  [打开原文](${sourceContextUrl(sessionId, eventId)})`,
+    `${indent}- 原文：${sourceReferenceLink(sessionId, eventId)}`,
   ];
 }
 
@@ -531,10 +573,10 @@ function renderSourcedBulletList(items = [], { fallback = '', sessionId = '', so
     const renderedHead = cleanItems.length && rest.length === 0
       ? `**${head}**`
       : summaryLead(head);
+    const inlineSource = index === 0 ? sourceReferenceSuffix(sessionId, sourceEventId) : '';
     return [
-      `- ${renderedHead}`,
+      `- ${renderedHead}${inlineSource}`,
       ...rest.map((part) => `  - ${summaryLead(part)}`),
-      ...(index === 0 ? renderSourceReferenceLines(sessionId, sourceEventId, '  ') : []),
     ];
   });
 }
@@ -576,7 +618,6 @@ function renderTopicOverviewBlocks(topics = [], session = {}) {
   if (!cleanTopics.length) return ['- 暂无 topic'];
   return cleanTopics.flatMap((topic, index) => {
     const rawId = asArray(topic.sourceEventIds)[0] || '';
-    const contextLink = rawId ? `[打开原文](${sourceContextUrl(session.sessionId, rawId)})` : '暂无可定位原文';
     const summaryPoints = splitSummaryPoints(cleanText(topic.overview), 4);
     const topicTitle = topic.title || topic.topicId;
     return [
@@ -584,10 +625,9 @@ function renderTopicOverviewBlocks(topics = [], session = {}) {
       `### [${topicTitle}](topics/${topic.topicId}.md)`,
       '',
       '- 摘要：',
-      ...(summaryPoints.length ? summaryPoints.map((item) => `  - ${summaryLead(item)}`) : ['  - 暂无摘要']),
-      `- Raw ID: \`${rawId || 'none'}\``,
-      '- 原文：',
-      `  ${contextLink}`,
+      ...(summaryPoints.length
+        ? summaryPoints.map((item, itemIndex) => `  - ${summaryLead(item)}${itemIndex === 0 ? sourceReferenceSuffix(session.sessionId, rawId) : ''}`)
+        : [`  - 暂无摘要${sourceReferenceSuffix(session.sessionId, rawId)}`]),
     ];
   });
 }
@@ -851,7 +891,10 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
   });
   const summary = options.summary && options.summary.ok !== false ? options.summary : null;
   const l0 = cleanMarkdownBody(summary?.l0 || fallbackOverview).slice(0, 1800);
-  const l0Markdown = renderSummaryMarkdown(l0);
+  const l0Markdown = renderSummaryMarkdown(l0, {
+    sessionId: session.sessionId,
+    sourceEventId: sourceEventIds[0] || '',
+  });
   const topics = asArray(summary?.topics).length
     ? asArray(summary.topics).map((topic) => normalizeSummaryTopic(topic, {
       topicId: fallbackTopicId,
@@ -880,14 +923,13 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     '## Original Context',
     sourceEventIds[0]
       ? [
-        '使用上方 **Raw ID** 可以打开动态原始上下文，例如：',
-        `[围绕首条来源打开](${sourceContextUrl(session.sessionId, sourceEventIds[0])})`,
+        `点击正文里的 ${sourceReferenceLink(session.sessionId, sourceEventIds[0])} 可以打开动态原始上下文。`,
         '页面会以该消息为中心，按时间正序展示前后消息，并支持继续向上或向下加载。',
       ].join('\n')
       : '暂无可定位的原始上下文。',
     '',
     '## Closing Notes',
-    '这份 workspace 用于检索后的快速复盘：先看 **Summary** 和 **Key Topics**，再通过 **Raw ID** 回到对应原文。具体公开分享仍使用独立的 `/s/<shareId>` 文档链接。',
+    '这份 workspace 用于检索后的快速复盘：先看 **Summary** 和 **Key Topics**，再通过正文里的 **原文** 链接回到对应对话。具体公开分享仍使用独立的 `/s/<shareId>` 文档链接。',
   ].join('\n');
   const updatedAt = options.now?.() || new Date().toISOString();
   const revision = Number(teamSharingState.abstracts[session.sessionId]?.revision || 0) + 1;
