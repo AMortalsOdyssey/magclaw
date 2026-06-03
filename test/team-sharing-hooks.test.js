@@ -66,6 +66,32 @@ test('team sharing hook parser extracts Codex user and assistant messages while 
   assert.doesNotMatch(JSON.stringify(parsed), /secret command output|cat secret/);
 });
 
+test('team sharing hook parser uses explicit session title and keeps only final assistant reply per turn', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-title', cwd: '/repo/magclaw' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '首条用户消息不应该当标题' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '中间进展，不进 Team Sharing' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:03.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '最终回复，进入 Team Sharing' }] } }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex', title: '验收会话总结共享' });
+
+  assert.equal(parsed.title, '验收会话总结共享');
+  assert.deepEqual(parsed.events.map((event) => event.text), ['首条用户消息不应该当标题', '最终回复，进入 Team Sharing']);
+  assert.equal(parsed.events[1].rawEventId, parsed.events[1].eventId);
+});
+
+test('team sharing hook parser falls back to runtime session title instead of first user message', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-no-title', cwd: '/repo/magclaw' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '这不是标题' }] } }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
+
+  assert.equal(parsed.title, 'codex session sess-no-title');
+});
+
 test('team sharing sync package is incremental and idempotent from local cursor', () => {
   const transcript = [
     JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-inc', cwd: '/repo/magclaw' } }),
@@ -122,6 +148,7 @@ test('team sharing hook command and config installer preserve existing hooks', a
   assert.match(command, /team-sharing sync/);
   assert.match(command, /--runtime codex/);
   assert.match(command, /--transcript/);
+  assert.match(command, /--session-title/);
   assert.doesNotMatch(command, /\n|secret/);
 
   const result = await installTeamSharingHookConfig({

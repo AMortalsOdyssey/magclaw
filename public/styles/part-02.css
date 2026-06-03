@@ -452,6 +452,49 @@
   font-weight: 700;
 }
 
+.message-context-quotes {
+  display: grid;
+  gap: 7px;
+  margin: 6px 0 2px;
+}
+
+.message-context-quote {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 7px 10px;
+  border-left: 3px solid #a5cfdf;
+  border-radius: 0 7px 7px 0;
+  background: #f2f8fb;
+  color: #436574;
+}
+
+.message-context-quote-label {
+  color: #0f6f89;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.message-context-quote-text {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.48;
+  overflow-wrap: anywhere;
+}
+
+.message-context-quote-text p,
+.message-context-quote-text ul,
+.message-context-quote-text blockquote,
+.message-context-quote-text pre {
+  margin: 0;
+}
+
+.message-context-quote-text ul {
+  padding-left: 16px;
+}
+
 .share-selection-bar {
   position: fixed;
   left: 0;

@@ -222,7 +222,7 @@ test('team sharing cli sync uploads only new transcript events and saves cursor'
     };
   };
   try {
-    const first = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex' }, env);
+    const first = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex' }, { ...env, MAGCLAW_SESSION_TITLE: '验收会话总结共享' });
     const second = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex' }, env);
     const cursor = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-sharing-cursor.json'), 'utf8'));
 
@@ -232,6 +232,7 @@ test('team sharing cli sync uploads only new transcript events and saves cursor'
     assert.equal(second.empty, true);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].body.sessionId, 'sess_cli');
+    assert.equal(calls[0].body.title, '验收会话总结共享');
     assert.equal(calls[0].body.fromOrdinal, 1);
     assert.equal(calls[0].body.toOrdinal, 2);
     assert.equal(cursor.sessions.codex.sess_cli.lastOrdinal, 2);
@@ -480,6 +481,8 @@ test('team sharing cli search and context use configured profile token', async (
     assert.equal(calls[0].body.projectKey, 'magclaw');
     assert.equal(calls[0].init.headers.authorization, 'Bearer team-sharing-token-secret');
     assert.match(calls[1].url, /\/api\/team-sharing\/context\/sess_1\?/);
+    assert.match(calls[1].url, /limit=3/);
+    assert.match(calls[1].url, /order=asc/);
   } finally {
     globalThis.fetch = originalFetch;
   }

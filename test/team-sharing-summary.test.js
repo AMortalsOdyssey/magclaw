@@ -12,7 +12,7 @@ import {
   syncTeamSharingBatch,
 } from '../server/team-sharing.js';
 
-test('team sharing summary prompt asks for L0/L1/activity/source anchors without hidden reasoning', () => {
+test('team sharing summary prompt asks for structured L0/L1/raw ids without hidden reasoning', () => {
   const prompt = buildTeamSharingSummaryPrompt({
     session: { sessionId: 'sess_1', title: 'Rerank design' },
     events: [
@@ -26,6 +26,8 @@ test('team sharing summary prompt asks for L0/L1/activity/source anchors without
   assert.match(prompt, /activity/);
   assert.match(prompt, /Topics Contract/);
   assert.match(prompt, /sourceEventIds/);
+  assert.match(prompt, /总-分-总/);
+  assert.match(prompt, /不要输出 Source Anchors 大列表/);
   assert.match(prompt, /不要编造隐藏思考/);
   assert.match(prompt, /不是写“本 session 围绕某标题”/);
 });
@@ -132,7 +134,12 @@ test('team sharing sync uses injected authoritative summary and falls back safel
 
   assert.equal(result.ok, true);
   const abstract = state.teamSharing.abstracts.sess_summary;
+  assert.match(abstract.abstractMarkdown, /^# Rerank summary session/m);
   assert.match(abstract.abstractMarkdown, /讨论明确了 rerank top5/);
+  assert.match(abstract.abstractMarkdown, /Key Topics/);
+  assert.doesNotMatch(abstract.abstractMarkdown, /Source Anchors/);
+  assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /Raw IDs/);
+  assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /Original Context/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /反馈热度微调/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /返回 top5/);
   assert.ok(state.teamSharing.activities.some((item) => item.summary === '合并 rerank-feedback 主题摘要。'));

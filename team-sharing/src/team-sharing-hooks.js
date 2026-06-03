@@ -85,7 +85,7 @@ function codexTextEvent(item, context) {
   if (item?.type === 'session_meta' && item.payload) {
     context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
     context.projectPath = context.projectPath || item.payload.cwd || '';
-    context.title = context.title || item.payload.title || '';
+    context.title = context.title || item.payload.title || item.payload.thread_title || '';
     return null;
   }
   if (item?.type !== 'response_item') return null;
@@ -147,28 +147,48 @@ export function parseTeamSharingTranscript(text = '', options = {}) {
     title: String(options.title || '').trim(),
     toolNames: [],
   };
-  const events = [];
+  const extractedEvents = [];
   for (const item of parsed) {
     const extracted = runtime === 'claude_code'
       ? claudeTextEvent(item, context)
       : codexTextEvent(item, context);
     if (!extracted) continue;
-    const ordinal = events.length + 1;
-    events.push({
-      eventId: `${context.sessionId || options.sessionId || 'session'}:${ordinal}:${stableHash(`${extracted.role}:${extracted.text}`)}`,
-      ordinal,
-      role: extracted.role,
-      text: extracted.text,
-      createdAt: extracted.createdAt,
-      sourceHash: stableHash(extracted.text),
-      sourceAnchor: `${context.sessionId || options.sessionId || 'session'}#${ordinal}`,
-      toolCalls: extracted.toolCalls,
-    });
+    extractedEvents.push(extracted);
   }
+  const visibleEvents = [];
+  let pendingAssistant = null;
+  const flushAssistant = () => {
+    if (!pendingAssistant) return;
+    visibleEvents.push(pendingAssistant);
+    pendingAssistant = null;
+  };
+  for (const event of extractedEvents) {
+    if (event.role === 'assistant') {
+      pendingAssistant = event;
+      continue;
+    }
+    flushAssistant();
+    visibleEvents.push(event);
+  }
+  flushAssistant();
+  const sessionSeed = context.sessionId || options.sessionId || 'session';
+  const events = visibleEvents.map((event, index) => {
+    const ordinal = index + 1;
+    const eventId = `${sessionSeed}:${ordinal}:${stableHash(`${event.role}:${event.text}`)}`;
+    return {
+      eventId,
+      rawEventId: eventId,
+      ordinal,
+      role: event.role,
+      text: event.text,
+      createdAt: event.createdAt,
+      sourceHash: stableHash(event.text),
+      sourceAnchor: `${sessionSeed}#${eventId}`,
+      toolCalls: event.toolCalls,
+    };
+  });
   if (!context.title) {
-    context.title = events.find((event) => event.role === 'user')?.text?.slice(0, 80)
-      || events.find((event) => event.role === 'assistant')?.text?.slice(0, 80)
-      || `${runtime} session ${context.sessionId || stableHash(text)}`;
+    context.title = `${runtime} session ${context.sessionId || stableHash(text)}`;
   }
   if (!context.sessionId) context.sessionId = stableHash(`${runtime}:${context.projectPath}:${text}`);
   return {
@@ -256,6 +276,10 @@ export function buildTeamSharingHookCommand(options = {}) {
   const runtime = normalizeRuntime(options.runtime);
   const hookEventName = String(options.hookEventName || (runtime === 'claude_code' ? 'SessionEnd' : 'Stop')).trim();
   const transcriptPath = options.transcriptPath || (runtime === 'claude_code' ? '${CLAUDE_TRANSCRIPT_PATH:-}' : '${CODEX_SESSION_FILE:-}');
+  const titlePath = runtime === 'claude_code'
+    ? '${MAGCLAW_SESSION_TITLE:-${CLAUDE_SESSION_TITLE:-}}'
+    : '${MAGCLAW_SESSION_TITLE:-${CODEX_SESSION_TITLE:-}}';
+  const sessionTitle = String(options.sessionTitle ?? '').trim();
   const commandPath = String(options.teamSharingCommand || options.commandPath || 'team-sharing').trim() || 'team-sharing';
   const parts = [
     commandPath.includes(' ') ? shellQuote(commandPath) : commandPath,
@@ -266,6 +290,8 @@ export function buildTeamSharingHookCommand(options = {}) {
     hookEventName,
     '--transcript',
     transcriptPath.includes('${') ? `"${transcriptPath}"` : shellQuote(transcriptPath),
+    '--session-title',
+    sessionTitle ? shellQuote(sessionTitle) : `"${titlePath}"`,
   ];
   if (options.integration) parts.push('--integration', String(options.integration).replace(/[^a-zA-Z0-9._-]+/g, '-'));
   if (options.projectDir) parts.push('--cwd', shellQuote(options.projectDir));

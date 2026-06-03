@@ -38,8 +38,10 @@ function sourceAnchorFromSearchParams(searchParams) {
 
 function resultContextUrl(item, queryId = '') {
   const params = new URLSearchParams();
-  const anchorEventId = sourceAnchorEventId(item.sourceRef);
+  const anchorEventId = String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef);
   if (anchorEventId) params.set('anchorEventId', anchorEventId);
+  params.set('limit', '21');
+  params.set('order', 'asc');
   if (item.vectorDocumentId) params.set('vectorDocumentId', item.vectorDocumentId);
   if (queryId) params.set('queryId', queryId);
   if (item.sourceRef) params.set('sourceRef', item.sourceRef);
@@ -202,6 +204,7 @@ function shareChromeHtml(share = {}, innerHtml = '') {
     p { margin:10px 0; }
     pre { overflow-x:auto; background:#0f1720; color:#d9f4f6; padding:14px; border-radius:8px; }
     code { font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; }
+    blockquote { margin:12px 0; padding:8px 12px; border-left:3px solid #9ecfe1; border-radius:0 7px 7px 0; background:#f2f8fb; color:#3f6474; }
     a { color:var(--accent); }
     svg { max-width:100%; height:auto; }
     .share-root-head { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:16px; }
@@ -442,6 +445,8 @@ function teamSharingWorkspaceFolder(path = '', name = '') {
 function sourceContextUrlForEvent(sessionId = '', eventId = '') {
   const params = new URLSearchParams();
   if (eventId) params.set('anchorEventId', eventId);
+  params.set('limit', '21');
+  params.set('order', 'asc');
   return `/team-sharing/context/${encodeURIComponent(sessionId)}${params.toString() ? `?${params.toString()}` : ''}`;
 }
 
@@ -529,11 +534,11 @@ function sendContextHtml(res, {
   vectorDocumentId = '',
   queryId = '',
   sourceRef = '',
-  order = 'desc',
+  order = 'asc',
 } = {}) {
   const safeSession = encodeURIComponent(sessionId);
   const initialAnchor = String(anchorEventId || '');
-  const contextOrder = String(order || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
+  const contextOrder = String(order || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc';
   const isDesc = contextOrder === 'desc';
   const body = `<!doctype html>
 <html lang="en">
@@ -542,11 +547,11 @@ function sendContextHtml(res, {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MagClaw Team Sharing Context</title>
   <style>
-    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; }
+    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; }
     * { box-sizing:border-box; }
     body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
     header { position:sticky; top:0; z-index:2; padding:16px 20px; border-bottom:1px solid var(--line); background:rgba(248,250,252,.94); backdrop-filter: blur(14px); }
-    h1 { margin:0; font-size:18px; letter-spacing:0; }
+    h1 { margin:0; font-size:20px; letter-spacing:0; line-height:1.28; }
     .meta { margin-top:4px; color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
     main { max-width:920px; margin:0 auto; padding:18px; }
     .controls { display:flex; gap:10px; justify-content:center; margin:12px 0; }
@@ -554,16 +559,24 @@ function sendContextHtml(res, {
     button:disabled { opacity:.45; cursor:not-allowed; }
     article { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:10px 0; box-shadow:0 1px 2px rgba(15,23,42,.04); }
     article.anchor { border-color:var(--accent); box-shadow:0 0 0 2px rgba(8,145,178,.12); }
-    .role { font-size:12px; font-weight:700; color:var(--accent); text-transform:uppercase; }
+    .role { display:inline-flex; align-items:center; min-height:20px; border-radius:999px; background:var(--chip); padding:2px 8px; font-size:12px; font-weight:800; color:#0f5f76; }
     .time { margin-left:8px; color:var(--muted); font-size:12px; }
-    .text { margin-top:8px; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.55; }
+    .text { margin-top:10px; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.65; font-size:14px; }
+    .text a { color:#0369a1; font-weight:700; }
+    .context-segments { display:grid; gap:9px; margin-top:10px; }
+    .context-main { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.65; font-size:14px; }
+    .context-quote { border-left:3px solid #9ecfe1; background:#f2f8fb; color:#3f6474; padding:8px 11px; border-radius:0 7px 7px 0; display:grid; gap:4px; }
+    .context-quote-label { color:#0f6f89; font-size:11px; font-weight:900; line-height:1.2; }
+    .context-quote-text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.56; font-size:13px; }
+    .context-main a,
+    .context-quote a { color:#0369a1; font-weight:700; }
     .empty { color:var(--muted); text-align:center; padding:48px 0; }
   </style>
 </head>
 <body>
   <header>
-    <h1>MagClaw Team Sharing Context</h1>
-    <div class="meta">session: ${htmlEscape(sessionId)} · anchor: ${htmlEscape(initialAnchor || 'latest')} · order: ${htmlEscape(contextOrder === 'desc' ? 'newest first' : 'oldest first')}</div>
+    <h1 id="session-title">MagClaw Team Sharing Context</h1>
+    <div class="meta" id="session-meta">session: ${htmlEscape(sessionId)} · anchor: ${htmlEscape(initialAnchor || 'latest')} · order: ${htmlEscape(contextOrder === 'desc' ? 'newest first' : 'oldest first')}</div>
   </header>
   <main>
     <div class="controls"><button id="${isDesc ? 'load-more-next' : 'load-more-prev'}" type="button">${isDesc ? 'Load newer' : 'Load previous'}</button></div>
@@ -587,6 +600,50 @@ function sendContextHtml(res, {
     function escapeHtml(text) {
       return String(text || '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
     }
+    function splitAutolinkUrl(raw) {
+      let href = String(raw || '');
+      let trailing = '';
+      while (/[),.;:!?，。；：！？]$/.test(href)) {
+        trailing = href.slice(-1) + trailing;
+        href = href.slice(0, -1);
+      }
+      return { href, trailing };
+    }
+    function linkifyText(text) {
+      return escapeHtml(text).replace(/https?:\\/\\/[^\\s<]+/g, raw => {
+        const parts = splitAutolinkUrl(raw);
+        if (!parts.href) return raw;
+        return '<a href="' + parts.href + '" target="_blank" rel="noreferrer">' + escapeHtml(parts.href) + '</a>' + escapeHtml(parts.trailing);
+      });
+    }
+    function chinaTime(value) {
+      const date = new Date(value || '');
+      if (!Number.isFinite(date.getTime())) return value || '';
+      return new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }).format(date);
+    }
+    function runtimeName(runtime) {
+      const clean = String(runtime || '').toLowerCase();
+      if (clean === 'claude_code' || clean === 'claude-code' || clean === 'claude') return 'ClaudeCode';
+      if (clean === 'codex') return 'Codex';
+      return clean || 'Assistant';
+    }
+    function roleLabel(event, session) {
+      if (event.role === 'user') {
+        return event.metadata?.uploader?.name || session?.uploader?.name || 'User';
+      }
+      if (event.role === 'assistant') return runtimeName(session?.runtime);
+      if (event.role === 'system') return runtimeName(session?.runtime);
+      return event.role || 'Unknown';
+    }
     function recordFeedback(eventType) {
       if (!vectorDocumentId) return;
       fetch('/api/team-sharing/feedback', {
@@ -595,18 +652,38 @@ function sendContextHtml(res, {
         body: JSON.stringify({ queryId, vectorDocumentId, sessionId, eventType, sourceRef })
       }).catch(() => {});
     }
+    function eventSegments(event) {
+      const segments = Array.isArray(event.contentSegments) && event.contentSegments.length
+        ? event.contentSegments
+        : (Array.isArray(event.metadata?.contentSegments) ? event.metadata.contentSegments : []);
+      if (!segments.length) return '';
+      return '<div class="context-segments">' + segments.map(segment => {
+        const type = String(segment.type || '').toLowerCase();
+        const text = segment.text || segment.content || '';
+        if (!text) return '';
+        if (type === 'body') return '<div class="context-main">' + linkifyText(text) + '</div>';
+        return '<blockquote class="context-quote">' +
+          (segment.label ? '<div class="context-quote-label">' + escapeHtml(segment.label) + '</div>' : '') +
+          '<div class="context-quote-text">' + linkifyText(text) + '</div></blockquote>';
+      }).join('') + '</div>';
+    }
     function eventHtml(event) {
       const anchorClass = anchorEventId && event.eventId === anchorEventId ? ' anchor' : '';
+      const session = window.__teamSharingSession || {};
+      const body = eventSegments(event) || '<div class="text">' + linkifyText(event.displayText || event.cleanText || event.text || '') + '</div>';
       return '<article id="' + encodeURIComponent(event.eventId || '') + '" class="' + anchorClass.trim() + '">' +
-        '<div><span class="role">' + escapeHtml(event.role || '') + '</span><span class="time">' + escapeHtml(event.createdAt || '') + '</span></div>' +
-        '<div class="text">' + escapeHtml(event.cleanText || event.text || '') + '</div></article>';
+        '<div><span class="role">' + escapeHtml(roleLabel(event, session)) + '</span><span class="time">' + escapeHtml(chinaTime(event.createdAt || '')) + '</span></div>' +
+        body + '</article>';
     }
     async function load(direction) {
       const anchor = direction === 'next' ? nextAnchor : prevAnchor;
-      const url = '/api/team-sharing/context/${safeSession}?anchorEventId=' + encodeURIComponent(anchor || '') + '&direction=' + encodeURIComponent(direction) + '&limit=20&order=' + encodeURIComponent(order);
+      const url = '/api/team-sharing/context/${safeSession}?anchorEventId=' + encodeURIComponent(anchor || '') + '&direction=' + encodeURIComponent(direction) + '&limit=21&order=' + encodeURIComponent(order);
       const response = await fetch(url);
       const data = await response.json();
       if (!data.ok) throw new Error(data.error || 'Failed to load context');
+      window.__teamSharingSession = data.session || window.__teamSharingSession || {};
+      if (data.session?.title) document.getElementById('session-title').textContent = data.session.title;
+      document.getElementById('session-meta').textContent = 'session: ' + sessionId + ' · anchor: ' + (anchorEventId || 'latest') + ' · order: ' + (order === 'desc' ? 'newest first' : 'oldest first');
       const fresh = (data.events || []).filter(event => {
         const key = event.eventId || JSON.stringify(event);
         if (seen.has(key)) return false;
@@ -777,6 +854,25 @@ function requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, 
   if (tokenRecordForRequest(teamSharingState, req)) return true;
   sendError(res, 401, 'Team sharing login or scoped token is required.');
   return false;
+}
+
+function requestHasTeamSharingAuth(req, { actor, teamSharingState, teamSharingAuthRequired, validTeamSharingToken } = {}) {
+  const required = typeof teamSharingAuthRequired === 'function' ? teamSharingAuthRequired(req) : Boolean(teamSharingAuthRequired);
+  if (!required || actor) return true;
+  if (typeof validTeamSharingToken === 'function' && validTeamSharingToken(req)) return true;
+  return Boolean(tokenRecordForRequest(teamSharingState, req));
+}
+
+function safeRelativePathFromUrl(url) {
+  const path = `${url?.pathname || '/'}${url?.search || ''}`;
+  return path.startsWith('/') && !path.startsWith('//') ? path : '/console';
+}
+
+function redirectToLoginWithReturnTo(res, url) {
+  const returnTo = safeRelativePathFromUrl(url);
+  const location = `/?returnTo=${encodeURIComponent(returnTo)}`;
+  res.writeHead?.(302, { location, 'cache-control': 'no-store' });
+  res.end?.('');
 }
 
 export async function handleTeamSharingApi(req, res, url, deps) {
@@ -966,6 +1062,10 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         actorId: access.actorId || '',
         status: access.status,
       });
+      if (access.status === 401) {
+        redirectToLoginWithReturnTo(res, url);
+        return true;
+      }
       sendShareHtml(res, shareRootDeniedHtml(access.status, access.error), { status: access.status });
       return true;
     }
@@ -1035,14 +1135,28 @@ export async function handleTeamSharingApi(req, res, url, deps) {
 
   const contextPageMatch = url.pathname.match(/^\/team-sharing\/context\/([^/]+)$/);
   if (req.method === 'GET' && contextPageMatch) {
-    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
+    if (!requestHasTeamSharingAuth(req, { actor, teamSharingState, teamSharingAuthRequired, validTeamSharingToken })) {
+      redirectToLoginWithReturnTo(res, url);
+      return true;
+    }
+    const tokenRecord = tokenRecordForRequest(teamSharingState, req);
+    const sessionId = decodeURIComponent(contextPageMatch[1]);
+    const session = teamSharingState.sessions?.[sessionId] || null;
+    if (!session) {
+      sendError(res, 404, 'Team sharing session not found.');
+      return true;
+    }
+    if (!teamSharingWorkspaceAccess({ actor, tokenRecord, session })) {
+      sendError(res, 403, 'This Team Sharing context belongs to another server.');
+      return true;
+    }
     sendContextHtml(res, {
-      sessionId: decodeURIComponent(contextPageMatch[1]),
+      sessionId,
       anchorEventId: sourceAnchorFromSearchParams(url.searchParams),
       vectorDocumentId: url.searchParams.get('vectorDocumentId') || '',
       queryId: url.searchParams.get('queryId') || '',
       sourceRef: url.searchParams.get('sourceRef') || '',
-      order: url.searchParams.get('order') || 'desc',
+      order: url.searchParams.get('order') || 'asc',
     });
     return true;
   }
@@ -1202,7 +1316,8 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         conclusion: compactText(item.text || item.title, 320),
         evidence: compactText(item.text || '', 320),
         sourceRef: item.sourceRef,
-        anchorEventId: sourceAnchorEventId(item.sourceRef),
+        rawEventId: String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef),
+        anchorEventId: String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef),
         contextUrl: resultContextUrl(item, ranked.queryId),
         finalScore: item.finalScore,
         vectorScore: item.vectorScore,
@@ -1219,11 +1334,21 @@ export async function handleTeamSharingApi(req, res, url, deps) {
   const contextMatch = url.pathname.match(/^\/api\/team-sharing\/context\/([^/]+)$/);
   if (req.method === 'GET' && contextMatch) {
     if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
+    const tokenRecord = tokenRecordForRequest(teamSharingState, req);
     const sessionId = decodeURIComponent(contextMatch[1]);
+    const session = teamSharingState.sessions?.[sessionId] || null;
+    if (!session) {
+      sendError(res, 404, 'Team sharing session not found.');
+      return true;
+    }
+    if (!teamSharingWorkspaceAccess({ actor, tokenRecord, session })) {
+      sendError(res, 403, 'This Team Sharing context belongs to another server.');
+      return true;
+    }
     const result = contextWindowForTeamSharingSession(state.teamSharing || {}, sessionId, {
       anchorEventId: sourceAnchorFromSearchParams(url.searchParams),
       direction: url.searchParams.get('direction') || 'around',
-      limit: url.searchParams.get('limit') || 20,
+      limit: url.searchParams.get('limit') || 21,
       order: url.searchParams.get('order') || 'asc',
     });
     if (!result.ok) {

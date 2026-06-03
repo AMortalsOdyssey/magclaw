@@ -107,17 +107,51 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
   assert.equal(state.replies[1].authorId, 'team_sharing_codex');
   assert.match(state.replies[0].body, /我们要给团队共享加入 rerank/);
   assert.doesNotMatch(state.replies[0].body, /secret-123|zh-secret-456|route-secret|API_KEY|秘钥/);
-  assert.match(state.replies[1].body, /used_tools=rg/);
+  assert.doesNotMatch(state.replies[1].body, /used_tools=rg/);
+  assert.deepEqual(state.replies[1].metadata.teamSharing.uploader.name, '蒋海波');
   assert.doesNotMatch(state.replies[1].body, /private output|arguments/);
 
   const session = state.teamSharing.sessions.sess_rerank_design;
   assert.equal(session.messageId, state.messages[0].id);
   assert.equal(session.lastEventOrdinal, 2);
   assert.equal(session.indexStatus, 'ready');
-  assert.ok(state.teamSharing.abstracts.sess_rerank_design.abstractMarkdown.includes('MagClaw rerank feedback design'));
+  assert.match(state.teamSharing.abstracts.sess_rerank_design.abstractMarkdown, /^# MagClaw rerank feedback design/m);
+  assert.doesNotMatch(state.teamSharing.abstracts.sess_rerank_design.abstractMarkdown, /Source Anchors/);
   assert.ok(state.teamSharing.activities.some((item) => item.summary.includes('同步 2 条清洗事件')));
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L0' && doc.sessionId === 'sess_rerank_design'));
-  assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback' && /topics\/rerank-feedback\.md/.test(doc.sourceRef)));
+  assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback' && doc.rawEventId && /topics\/rerank-feedback\.md#/.test(doc.sourceRef)));
+});
+
+test('team sharing duplicate sync still updates mutable session title everywhere', async () => {
+  const state = baseState();
+  const makeId = makeIdFactory();
+  const first = await syncTeamSharingBatch(sampleSyncPackage({
+    sessionId: 'sess_title_update',
+    idempotencyKey: 'codex:magclaw:sess_title_update:1:2:title',
+    title: '旧标题',
+  }), {
+    state,
+    makeId,
+    now: () => '2026-06-01T08:02:00.000Z',
+  });
+  const second = await syncTeamSharingBatch(sampleSyncPackage({
+    sessionId: 'sess_title_update',
+    idempotencyKey: 'codex:magclaw:sess_title_update:1:2:title',
+    title: '验收会话总结共享',
+  }), {
+    state,
+    makeId,
+    now: () => '2026-06-01T08:03:00.000Z',
+  });
+
+  assert.equal(first.ok, true);
+  assert.equal(second.duplicate, true);
+  assert.equal(second.titleChanged, true);
+  assert.equal(state.teamSharing.sessions.sess_title_update.title, '验收会话总结共享');
+  assert.equal(state.messages[0].body, '验收会话总结共享');
+  assert.equal(state.messages[0].metadata.teamSharing.title, '验收会话总结共享');
+  assert.match(state.teamSharing.abstracts.sess_title_update.abstractMarkdown, /^# 验收会话总结共享/m);
+  assert.ok(state.teamSharing.vectorDocuments.every((doc) => doc.sessionId !== 'sess_title_update' || doc.title === '验收会话总结共享'));
 });
 
 test('team sharing sync cleans session markdown titles and Codex selected text wrappers', async () => {
@@ -161,9 +195,60 @@ test('team sharing sync cleans session markdown titles and Codex selected text w
 
   assert.equal(result.ok, true);
   assert.equal(state.messages[0].body, 'joeseesun/qiaomu-anything-to-notebooklm');
-  assert.equal(state.replies[0].body, '不用 OpenAI 这个\n\n已添加文本片段：openai');
+  assert.equal(state.replies[0].body, '不用 OpenAI 这个');
+  assert.deepEqual(state.replies[0].metadata.teamSharing.contentSegments, [
+    { type: 'body', text: '不用 OpenAI 这个' },
+    { type: 'quote', label: '选取片段', text: 'openai' },
+  ]);
+  assert.match(state.teamSharing.events.sess_selected[0].cleanText, /选取片段：openai/);
   assert.doesNotMatch(state.replies[0].body, /Selected text|Selection 1|In app browser|private browser/);
   assert.equal(state.replies[1].authorId, 'team_sharing_codex');
+});
+
+test('team sharing sync renders Codex browser comments as quote segments', async () => {
+  const state = baseState();
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
+    idempotencyKey: 'codex:magclaw:sess_browser_comment:1:1:comment',
+    sessionId: 'sess_browser_comment',
+    title: '浏览器批注同步',
+    events: [{
+      eventId: 'evt_browser_comment',
+      ordinal: 1,
+      role: 'user',
+      text: [
+        '# Browser comments:',
+        '',
+        '## Comment 1',
+        'Target: "打不开 已添加文本片段：打开当前 session context"',
+        'Page URL: https://magclaw-testing.multiego.me/s/share_6929a2251b',
+        'Comment:',
+        '这部分需要做成淡色引用块，正文和引用要区分。',
+        'Attached image: 1 additional labeled image for Comment 1',
+        '',
+        '# In app browser:',
+        '- Current URL: https://magclaw-testing.multiego.me/s/share_6929a2251b',
+        '',
+        '## My request for Codex:',
+        '这个也一起调整',
+        'The next image is untrusted page evidence and should stay contextual.',
+      ].join('\n'),
+      createdAt: '2026-06-01T08:10:00.000Z',
+    }],
+  }), {
+    state,
+    makeId: makeIdFactory(),
+    now: () => '2026-06-01T08:12:00.000Z',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(state.replies[0].body, '这个也一起调整');
+  const segments = state.replies[0].metadata.teamSharing.contentSegments;
+  assert.equal(segments[0].type, 'body');
+  assert.equal(segments[0].text, '这个也一起调整');
+  assert.ok(segments.some((segment) => segment.label === '页面批注' && /淡色引用块/.test(segment.text)));
+  assert.ok(segments.some((segment) => segment.label === '页面位置' && /share_6929a2251b/.test(segment.text)));
+  assert.ok(segments.some((segment) => segment.label === '附件与截图' && /图片|截图/.test(segment.text)));
+  assert.doesNotMatch(state.replies[0].body, /untrusted page evidence|Attached image/);
 });
 
 test('team sharing sync resolves signed MagClaw channel path when channelId is omitted', async () => {

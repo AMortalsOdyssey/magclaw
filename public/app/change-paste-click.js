@@ -56,6 +56,21 @@ async function ensureOfflineComputerConnectCommand() {
   }
 }
 
+function resetTeamSharingWorkspaceState(overrides = {}) {
+  const prev = teamSharingWorkspaceState || {};
+  return {
+    messageId: null,
+    sessionId: '',
+    loading: false,
+    error: '',
+    data: null,
+    selectedPath: 'abstract.md',
+    mode: prev.mode || 'preview',
+    expandedFolders: prev.expandedFolders || { topics: true },
+    ...overrides,
+  };
+}
+
 async function openTeamSharingWorkspace(messageId = '') {
   const message = byId(appState?.messages, messageId);
   const sessionId = typeof teamSharingSessionIdForMessage === 'function' ? teamSharingSessionIdForMessage(message) : '';
@@ -71,6 +86,7 @@ async function openTeamSharingWorkspace(messageId = '') {
     error: '',
     selectedPath: teamSharingWorkspaceState?.sessionId === sessionId ? (teamSharingWorkspaceState.selectedPath || 'abstract.md') : 'abstract.md',
     mode: teamSharingWorkspaceState?.mode || 'preview',
+    expandedFolders: teamSharingWorkspaceState?.sessionId === sessionId ? (teamSharingWorkspaceState.expandedFolders || { topics: true }) : { topics: true },
   };
   render();
   try {
@@ -97,7 +113,7 @@ async function openTeamSharingWorkspace(messageId = '') {
 }
 
 function closeTeamSharingWorkspace() {
-  teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: teamSharingWorkspaceState?.mode || 'preview' };
+  teamSharingWorkspaceState = resetTeamSharingWorkspaceState();
   render();
 }
 
@@ -1756,7 +1772,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'open-thread') {
       threadMessageId = target.dataset.id;
       if (teamSharingWorkspaceState?.messageId !== threadMessageId) {
-        teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: teamSharingWorkspaceState?.mode || 'preview' };
+        teamSharingWorkspaceState = resetTeamSharingWorkspaceState();
       }
       mobileHomeOpen = false;
       workspaceActivityDrawerOpen = false;
@@ -1787,7 +1803,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'close-thread') {
       threadMessageId = null;
       selectedSavedRecordId = null;
-      teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: teamSharingWorkspaceState?.mode || 'preview' };
+      teamSharingWorkspaceState = resetTeamSharingWorkspaceState();
       render();
       refreshThreadSelection(null, { loadReplies: false });
     }
@@ -1806,7 +1822,7 @@ document.addEventListener('click', async (event) => {
         selectedSavedRecordId = null;
         selectedAgentId = null;
         selectedProjectFile = null;
-        teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: teamSharingWorkspaceState?.mode || 'preview' };
+        teamSharingWorkspaceState = resetTeamSharingWorkspaceState();
         workspaceActivityDrawerOpen = false;
         selectedTaskId = null;
         markThreadRead(targetMessageId);
@@ -1833,6 +1849,24 @@ document.addEventListener('click', async (event) => {
         };
         render();
       }
+    }
+    if (action === 'toggle-team-sharing-workspace-folder') {
+      const path = target.dataset.path || '';
+      if (path) {
+        const expandedFolders = { ...(teamSharingWorkspaceState?.expandedFolders || { topics: true }) };
+        expandedFolders[path] = expandedFolders[path] === false;
+        teamSharingWorkspaceState = {
+          ...teamSharingWorkspaceState,
+          expandedFolders,
+        };
+        render();
+      }
+    }
+    if (action === 'jump-team-sharing-workspace-heading') {
+      const headingId = target.dataset.headingId || '';
+      const safeHeadingId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(headingId) : headingId.replace(/["\\]/g, '');
+      const heading = headingId ? document.querySelector(`[data-preview-heading-id="${safeHeadingId}"]`) : null;
+      if (heading) heading.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
     if (action === 'set-team-sharing-workspace-preview-mode') {
       teamSharingWorkspaceState = {

@@ -565,10 +565,11 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     return { ok: true, empty: true, reason: 'runtime_hooks_disabled' };
   }
   const content = await readFile(path.resolve(transcriptPath), 'utf8');
+  const explicitSessionTitle = String(flags.sessionTitle || flags.title || env.MAGCLAW_SESSION_TITLE || '').trim();
   const parsed = parseTeamSharingTranscript(content, {
     runtime,
     sessionId: flags.sessionId || '',
-    title: flags.title || '',
+    title: explicitSessionTitle,
     projectDir: flags.cwd || process.cwd(),
   });
   const cursor = await readJsonFile(project.paths.projectCursor, {});
@@ -576,7 +577,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
   const syncPackage = buildTeamSharingSyncPackageFromTranscript(content, {
     runtime: parsed.runtime,
     sessionId: parsed.sessionId,
-    title: flags.title || parsed.title || path.basename(transcriptPath),
+    title: explicitSessionTitle || parsed.title || path.basename(transcriptPath),
     projectKey: project.config.projectKey,
     workspaceId: project.config.workspaceId,
     channelId: project.config.channelId,
@@ -642,7 +643,8 @@ export async function readTeamSharingContext(flags = {}, env = process.env) {
   const params = new URLSearchParams();
   if (flags.anchorEventId || flags.anchor) params.set('anchorEventId', String(flags.anchorEventId || flags.anchor));
   if (flags.direction) params.set('direction', String(flags.direction));
-  if (flags.limit) params.set('limit', String(flags.limit));
+  params.set('limit', String(flags.limit || 21));
+  params.set('order', String(flags.order || 'asc'));
   const suffix = params.toString() ? `?${params.toString()}` : '';
   return teamSharingRequestJson({
     serverUrl,
@@ -839,7 +841,7 @@ function teamSharingSkillMarkdown() {
     '',
     '1. Run `team-sharing search --query "<question>" --limit 5` from the configured project directory.',
     '2. Answer from the returned L0/L1 evidence when the user only needs a rough understanding.',
-    '3. For deep follow-up, run `team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 20`.',
+    '3. For deep follow-up, run `team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 21 --order asc`.',
     '4. Cite session titles, source refs, and context URLs from the command output.',
     '5. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `team-sharing share-artifact --file <path> --title "<title>" --type html`.',
     '6. Return the public URL from the command output. The shared page is public by design and includes the creator and creation time in the footer.',

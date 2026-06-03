@@ -139,18 +139,19 @@ function cloudAuthErrorMessage(error, { interactive = false } = {}) {
 function cloudAuthTokenFromLocation() {
   const params = new URLSearchParams(window.location.search);
   const token = params.get('token') || '';
+  const returnTo = String(params.get('returnTo') || '').trim();
   const path = window.location.pathname || '';
-  if (params.get('authLink') === 'feishu') return { mode: 'oauth-link', token: '' };
-  if (path.startsWith('/create-account')) return { mode: 'create', token: '' };
+  if (params.get('authLink') === 'feishu') return { mode: 'oauth-link', token: '', returnTo };
+  if (path.startsWith('/create-account')) return { mode: 'create', token: '', returnTo };
   if (path.startsWith('/forgot-password/check-email')) {
-    return { mode: 'forgot-sent', token: '', email: params.get('email') || '' };
+    return { mode: 'forgot-sent', token: '', email: params.get('email') || '', returnTo };
   }
-  if (path.startsWith('/forgot-password')) return { mode: 'forgot', token: '' };
+  if (path.startsWith('/forgot-password')) return { mode: 'forgot', token: '', returnTo };
   const joinMatch = path.match(/^\/join\/([^/]+)/);
-  if (joinMatch) return { mode: 'join', token: decodeURIComponent(joinMatch[1] || '') };
-  if (!token) return { mode: '', token: '' };
-  if (path.includes('reset-password') || token.startsWith('mc_reset_')) return { mode: 'reset', token };
-  return { mode: 'invite', token };
+  if (joinMatch) return { mode: 'join', token: decodeURIComponent(joinMatch[1] || ''), returnTo };
+  if (!token) return { mode: '', token: '', returnTo };
+  if (path.includes('reset-password') || token.startsWith('mc_reset_')) return { mode: 'reset', token, returnTo };
+  return { mode: 'invite', token, returnTo };
 }
 
 function cloudAuthCallbackFromLocation() {

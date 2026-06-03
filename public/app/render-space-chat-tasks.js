@@ -1869,6 +1869,7 @@ function renderRecordKey(record) {
     teamSharingRuntime: record?.metadata?.teamSharing?.runtime || '',
     teamSharingUploaderName: record?.metadata?.teamSharing?.uploader?.name || '',
     teamSharingUploaderAvatar: record?.metadata?.teamSharing?.uploader?.avatar || '',
+    teamSharingContentSegments: record?.metadata?.teamSharing?.contentSegments || [],
     originProvider: record?.metadata?.origin?.provider || '',
     originTraceId: record?.metadata?.origin?.traceId || '',
     originSenderName: record?.metadata?.origin?.senderName || '',
@@ -1892,6 +1893,20 @@ function renderStreamingMessageMarkdown(message) {
   const rendered = renderMarkdownWithMentions(message.body || fallback);
   if (!messageIsStreaming(message)) return rendered;
   return `${rendered}<span class="agent-stream-cursor" aria-label="Agent is still writing"></span>`;
+}
+
+function renderMessageContentSegments(message) {
+  const segments = Array.isArray(message?.metadata?.teamSharing?.contentSegments)
+    ? message.metadata.teamSharing.contentSegments
+    : [];
+  const quotes = segments.filter((segment) => segment && String(segment.type || '').toLowerCase() !== 'body' && (segment.text || segment.content));
+  if (!quotes.length) return '';
+  return `<div class="message-context-quotes">${quotes.map((segment) => `
+    <blockquote class="message-context-quote">
+      ${segment.label ? `<div class="message-context-quote-label">${escapeHtml(segment.label)}</div>` : ''}
+      <div class="message-context-quote-text">${renderMarkdownWithMentions(segment.text || segment.content || '')}</div>
+    </blockquote>
+  `).join('')}</div>`;
 }
 
 function renderSystemEvent(message) {
@@ -2299,6 +2314,7 @@ function renderMessage(message, options = {}) {
         </div>
 	        ${renderMessageReferences(message)}
 	        <div class="message-markdown">${renderStreamingMessageMarkdown(message)}</div>
+        ${renderMessageContentSegments(message)}
         <div class="message-attachments">${attachmentLinks(message.attachmentIds)}</div>
         ${renderMessageReactionTray(message)}
         ${renderMessageActions(message, options)}

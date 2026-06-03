@@ -475,6 +475,8 @@ document.addEventListener('submit', async (event) => {
         if (form.id === 'cloud-login-form') {
           cloudLoginDraftEmail = String(data.get('email') || '').trim();
           const credentials = validateCloudLoginForm(form, data);
+          const loginParams = new URLSearchParams(window.location.search || '');
+          const loginReturnTo = String(loginParams.get('returnTo') || '').trim();
           await api('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({
@@ -483,6 +485,9 @@ document.addEventListener('submit', async (event) => {
         }),
           });
           cloudLoginDraftEmail = '';
+          if (loginReturnTo.startsWith('/') && !loginReturnTo.startsWith('//') && window.history?.replaceState) {
+            window.history.replaceState({}, '', loginReturnTo);
+          }
           toast('Signed in');
         }
         if (form.id === 'feishu-link-form') {

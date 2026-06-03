@@ -160,8 +160,11 @@ test('team sharing route syncs a batch and search returns reranked top results',
   assert.equal(searchRes.data.rerankUsed, true);
   assert.ok(searchRes.data.traceId);
   assert.equal(searchRes.data.results[0].anchorEventId, 'evt_1');
+  assert.equal(searchRes.data.results[0].rawEventId, 'evt_1');
   assert.match(searchRes.data.results[0].contextUrl, /\/team-sharing\/context\/sess_route/);
   assert.match(searchRes.data.results[0].contextUrl, /anchorEventId=evt_1/);
+  assert.match(searchRes.data.results[0].contextUrl, /limit=21/);
+  assert.match(searchRes.data.results[0].contextUrl, /order=asc/);
   assert.match(searchRes.data.results[0].contextUrl, /vectorDocumentId=sess_route%3AL1%3Arerank-feedback/);
   assert.doesNotMatch(searchRes.data.results[0].contextUrl, /anchor=sess_route%2Ftopics/);
   assert.ok(deps.state.teamSharing.feedback.some((item) => item.eventType === 'served' && item.queryId === searchRes.data.queryId));
@@ -192,16 +195,19 @@ test('team sharing route exposes a session workspace with abstract, topics, and 
   assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'topics/rerank-feedback.md'));
   assert.equal(workspaceRes.data.tree.some((entry) => entry.path === 'details/original-context.md'), false);
   const abstractFile = workspaceRes.data.files.find((file) => file.path === 'abstract.md');
-  assert.match(abstractFile.content, /L0 Abstract/);
+  assert.match(abstractFile.content, /^# MagClaw rerank route session/m);
+  assert.match(abstractFile.content, /Key Topics/);
   assert.match(abstractFile.content, /topics\/rerank-feedback\.md/);
+  assert.doesNotMatch(abstractFile.content, /Source Anchors/);
   const activityFile = workspaceRes.data.files.find((file) => file.path === 'activities.json');
   const activities = JSON.parse(activityFile.content);
   assert.equal(activityFile.previewKind, 'json');
   assert.equal(activities[0].action, 'merge_summary');
   assert.ok(activities[0].changedPaths.includes('abstract.md'));
   const topicFile = workspaceRes.data.files.find((file) => file.path === 'topics/rerank-feedback.md');
-  assert.match(topicFile.content, /主题概览/);
-  assert.match(topicFile.content, /Source Anchors/);
+  assert.match(topicFile.content, /Raw IDs/);
+  assert.match(topicFile.content, /Original Context/);
+  assert.doesNotMatch(topicFile.content, /Source Anchors/);
 
   const deniedRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -555,7 +561,8 @@ test('team sharing route creates a public share and serves it without authentica
     new URL('https://magclaw.example/share'),
     { ...deps, currentActor: () => null, teamSharingAuthRequired: () => true },
   ), true);
-  assert.equal(rejectedIndex.statusCode, 401);
+  assert.equal(rejectedIndex.statusCode, 302);
+  assert.match(rejectedIndex.headers.location, /^\/\?returnTo=/);
 
   const wrongServerIndex = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -615,7 +622,13 @@ test('team sharing route creates a public share and serves it without authentica
 });
 
 test('team sharing route serves a dynamic context html page without creating static files', async () => {
-  const deps = routeDeps();
+  const deps = routeDeps({ readJson: async () => syncBody() });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
   const res = makeResponse();
   assert.equal(await handleTeamSharingApi(
     { method: 'GET' },
@@ -631,10 +644,40 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /\/api\/team-sharing\/feedback/);
   assert.match(res.body, /load_more/);
   assert.match(res.body, /vec_1/);
-  assert.match(res.body, /newest first/);
-  assert.match(res.body, /Load newer/);
-  assert.match(res.body, /Load older/);
+  assert.match(res.body, /oldest first/);
+  assert.match(res.body, /Load previous/);
+  assert.match(res.body, /Load next/);
   assert.match(res.body, /order=' \+ encodeURIComponent\(order\)/);
+  assert.match(res.body, /limit=21/);
+  assert.match(res.body, /chinaTime/);
+  assert.match(res.body, /runtimeName/);
+  assert.match(res.body, /context-quote/);
+  assert.match(res.body, /eventSegments/);
+  assert.match(res.body, /contentSegments/);
   assert.match(res.body, /load-more-prev/);
   assert.match(res.body, /load-more-next/);
+});
+
+test('team sharing context page redirects unauthenticated browsers to login with returnTo', async () => {
+  const deps = routeDeps({
+    currentActor: () => null,
+    teamSharingAuthRequired: () => true,
+    validTeamSharingToken: () => false,
+  });
+  deps.state.teamSharing.sessions.sess_route = {
+    sessionId: 'sess_route',
+    workspaceId: 'ws_route',
+    title: '验收会话总结共享',
+  };
+  const res = makeResponse();
+
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    res,
+    new URL('https://magclaw.example/team-sharing/context/sess_route?anchorEventId=evt_1&limit=21&order=asc'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 302);
+  assert.match(decodeURIComponent(res.headers.location), /returnTo=\/team-sharing\/context\/sess_route\?anchorEventId=evt_1&limit=21&order=asc/);
 });

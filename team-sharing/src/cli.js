@@ -113,7 +113,7 @@ function renderTeamSharingHelp() {
     '  search   Query shared team sharing',
     '  context  Read original context around an anchor',
     '  share-artifact Create a public MagClaw share link from a local file',
-    '  sync     Upload one transcript file',
+    '  sync     Upload one transcript file (--session-title or MAGCLAW_SESSION_TITLE controls the displayed title)',
     '  skills   Install/remove/status the local Team Sharing skill',
     '  hooks    Install/remove/status Team Sharing hooks',
     '',

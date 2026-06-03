@@ -2033,7 +2033,9 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
   const oauthLink = tokenContext.oauthLink || {};
   const loginReturnTo = tokenContext.mode === 'join' && tokenContext.token
     ? `/join/${encodeURIComponent(tokenContext.token || '')}`
-    : '';
+    : (String(tokenContext.returnTo || '').startsWith('/') && !String(tokenContext.returnTo || '').startsWith('//')
+      ? String(tokenContext.returnTo || '')
+      : '');
   const brandHtml = `<div class="cloud-login-brand"><span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span></div>`;
   const registerPanel = tokenContext.mode === 'invite' ? `
       <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">

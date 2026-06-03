@@ -79,6 +79,109 @@ function cleanEventText(value = '') {
   return cleanMultilineText(normalizeSelectedTextPrompt(markdownLinkText(value)));
 }
 
+function extractCodexPromptRequest(value = '') {
+  const raw = String(value || '').replace(/\r\n/g, '\n').trim();
+  const match = raw.match(/(?:^|\n)\s*#+\s*My request for Codex:\s*\n?([\s\S]*)/i)
+    || raw.match(/My request for Codex:\s*([\s\S]*)/i);
+  const request = match?.[1] || raw;
+  return cleanMultilineText(markdownLinkText(request
+    .replace(/(?:^|\n)\s*#+\s*In app browser:[\s\S]*$/i, '')
+    .replace(/(?:^|\n)\s*The next image[\s\S]*$/i, '')
+    .replace(/(?:^|\n)\s*Attached image:[\s\S]*$/i, '')
+    .trim()));
+}
+
+function extractSelectedTextSnippet(value = '') {
+  const raw = String(value || '').replace(/\r\n/g, '\n');
+  let selected = raw.match(/(?:^|\n)\s*#+\s*Selection\s+\d+\s*\n+([\s\S]*?)(?=(?:^|\n)\s*#+\s*My request for Codex:)/i)?.[1] || '';
+  if (!selected) {
+    selected = raw.match(/Selected text:\s*(?:#+\s*)?(?:Selection\s+\d+\s*)?(?:[→:：-]\s*)?([\s\S]*?)(?:\s*[→\n]\s*#+?\s*My request for Codex:|#+\s*My request for Codex:)/i)?.[1] || '';
+  }
+  return cleanMultilineText(markdownLinkText(selected)).slice(0, 800);
+}
+
+function extractBrowserCommentSnippets(value = '') {
+  const raw = String(value || '').replace(/\r\n/g, '\n');
+  const comments = [];
+  const commentPattern = /(?:^|\n)Comment:\s*\n([\s\S]*?)(?=(?:^|\n)(?:#\s+In app browser:|#+\s*My request for Codex:|The next image|Attached image:|Target selector:|Target path:)|$)/gi;
+  for (const match of raw.matchAll(commentPattern)) {
+    const comment = cleanMultilineText(markdownLinkText(match[1] || '')).slice(0, 1200);
+    if (comment) comments.push(comment);
+  }
+  return comments.slice(0, 4);
+}
+
+function extractContextLocationSnippet(value = '') {
+  const raw = String(value || '');
+  const currentUrl = raw.match(/Current URL:\s*(https?:\/\/[^\s]+)/i)?.[1]
+    || raw.match(/Page URL:\s*(https?:\/\/[^\s]+)/i)?.[1]
+    || '';
+  return cleanMultilineText(currentUrl).slice(0, 300);
+}
+
+function extractAttachmentContextSnippet(value = '') {
+  const raw = String(value || '');
+  const imageCount = (raw.match(/Attached image:/gi) || []).length;
+  const appshotCount = (raw.match(/<appshot\b/gi) || []).length;
+  const screenshotCount = (raw.match(/screenshot|截图|image evidence/gi) || []).length;
+  const pieces = [];
+  if (imageCount) pieces.push(`${imageCount} 张图片/截图`);
+  if (appshotCount) pieces.push(`${appshotCount} 个页面快照`);
+  if (!pieces.length && screenshotCount) pieces.push('包含截图或页面证据');
+  return pieces.join('，');
+}
+
+function normalizeContentSegments(value = '', role = 'user', provided = []) {
+  const providedSegments = asArray(provided)
+    .map((segment) => ({
+      type: String(segment?.type || '').trim() || 'quote',
+      label: cleanText(segment?.label || '').slice(0, 40),
+      text: cleanMultilineText(segment?.text || segment?.content || '').slice(0, 2000),
+    }))
+    .filter((segment) => segment.text);
+  const raw = String(value || '');
+  const body = role === 'user' && /my request for codex/i.test(raw)
+    ? extractCodexPromptRequest(raw)
+    : cleanEventText(raw);
+  const segments = [];
+  if (body) segments.push({ type: 'body', text: body });
+  if (providedSegments.length) {
+    for (const segment of providedSegments) {
+      if (segment.type !== 'body') segments.push(segment);
+    }
+  } else if (role === 'user') {
+    const selected = extractSelectedTextSnippet(raw);
+    if (selected) segments.push({ type: 'quote', label: '选取片段', text: selected });
+    for (const comment of extractBrowserCommentSnippets(raw)) {
+      segments.push({ type: 'quote', label: '页面批注', text: comment });
+    }
+    const location = extractContextLocationSnippet(raw);
+    if (location) segments.push({ type: 'quote', label: '页面位置', text: location });
+    const attachment = extractAttachmentContextSnippet(raw);
+    if (attachment) segments.push({ type: 'quote', label: '附件与截图', text: attachment });
+  }
+  const displayText = body || cleanEventText(raw);
+  const quoteText = segments
+    .filter((segment) => segment.type !== 'body')
+    .map((segment) => `${segment.label ? `${segment.label}：` : ''}${segment.text}`)
+    .join('\n');
+  return {
+    displayText,
+    cleanText: cleanMultilineText([displayText, quoteText].filter(Boolean).join('\n\n')),
+    contentSegments: segments,
+  };
+}
+
+function cleanMarkdownBody(value = '') {
+  return redactSecrets(String(value || '').replace(/\r\n/g, '\n'))
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
+    .join('\n')
+    .replace(/\n([，。；：！？,.!?;:])/g, '$1\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function stableHash(value = '') {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
 }
@@ -151,22 +254,29 @@ function normalizeTeamSharingEvent(event = {}, sessionId = '') {
   const role = String(event.role || event.type || '').trim().toLowerCase();
   if (!['user', 'assistant', 'agent'].includes(role)) return null;
   const cleanRole = role === 'agent' ? 'assistant' : role;
-  const text = cleanEventText(event.cleanText || event.text || event.content || event.body || '');
+  const rawText = event.cleanText || event.text || event.content || event.body || '';
+  const content = normalizeContentSegments(rawText, cleanRole, event.contentSegments || event.segments || event.metadata?.contentSegments || []);
+  const text = content.cleanText;
   const tools = cleanRole === 'assistant' ? toolNamesForEvent(event) : [];
-  const body = [text, tools.length ? `used_tools=${tools.join(',')}` : ''].filter(Boolean).join('\n');
-  if (!body) return null;
+  if (!text) return null;
   const ordinal = Number(event.ordinal);
-  const eventId = String(event.eventId || event.id || `${sessionId}:${Number.isFinite(ordinal) ? ordinal : stableHash(body)}`).trim();
+  const eventId = String(event.eventId || event.id || `${sessionId}:${Number.isFinite(ordinal) ? ordinal : stableHash(text)}`).trim();
+  const rawEventId = String(event.rawEventId || event.raw_event_id || eventId).trim();
   return {
     eventId,
+    rawEventId,
     ordinal: Number.isFinite(ordinal) ? ordinal : 0,
     role: cleanRole,
-    cleanText: body,
-    sourceHash: String(event.sourceHash || stableHash(body)),
+    cleanText: text,
+    displayText: content.displayText,
+    contentSegments: content.contentSegments,
+    sourceHash: String(event.sourceHash || stableHash(text)),
     sourceAnchor: String(event.sourceAnchor || `${sessionId}#${eventId}`),
     createdAt: iso(event.createdAt),
     metadata: {
       usedTools: tools,
+      rawEventId,
+      contentSegments: content.contentSegments,
     },
   };
 }
@@ -229,26 +339,50 @@ function renderBulletList(items = [], fallback = '') {
   return cleanItems.map((item) => `- ${item}`);
 }
 
-function renderTopicMarkdown(topic = {}) {
+function sourceContextUrl(sessionId = '', eventId = '') {
+  const params = new URLSearchParams();
+  if (eventId) params.set('anchorEventId', eventId);
+  params.set('limit', '21');
+  params.set('order', 'asc');
+  return `/team-sharing/context/${encodeURIComponent(sessionId)}?${params.toString()}`;
+}
+
+function renderSourceIdChips(sourceEventIds = []) {
+  const ids = asArray(sourceEventIds).map((eventId) => String(eventId || '').trim()).filter(Boolean).slice(0, 8);
+  return ids.length ? ids.map((eventId) => `\`${eventId}\``).join(' ') : '`none`';
+}
+
+function renderTopicMarkdown(topic = {}, session = {}) {
+  const sourceEventIds = asArray(topic.sourceEventIds).map((eventId) => String(eventId || '').trim()).filter(Boolean);
+  const primarySource = sourceEventIds[0] || '';
+  const sourceRows = sourceEventIds.length
+    ? sourceEventIds.slice(0, 8).map((eventId) => `| \`${eventId}\` | [打开原文](${sourceContextUrl(session.sessionId, eventId)}) |`)
+    : ['| `none` | 暂无可定位原文 |'];
   return [
     `# ${topic.title || topic.topicId}`,
     '',
-    '## 主题概览',
-    topic.overview || '暂无概览。',
+    `> Raw IDs: ${renderSourceIdChips(sourceEventIds)}`,
     '',
-    '## 已确认结论',
+    '## Summary',
+    cleanMarkdownBody(topic.overview || '暂无概览。'),
+    '',
+    '## Key Changes',
     ...renderBulletList(topic.decisions, topic.overview),
     '',
-    '## 待确认问题',
+    '## Open Questions',
     ...renderBulletList(topic.openQuestions),
     '',
-    '## 下一步',
+    '## Next Actions',
     ...renderBulletList(topic.nextActions),
     '',
-    '## Source Anchors',
-    ...(asArray(topic.sourceEventIds).length
-      ? asArray(topic.sourceEventIds).map((eventId) => `- ${eventId}`)
-      : ['- none']),
+    '## Original Context',
+    primarySource
+      ? `围绕 \`${primarySource}\` 打开动态原始上下文，默认显示前后各 10 条消息。`
+      : '暂无可定位原始上下文。',
+    '',
+    '| Raw ID | Link |',
+    '| --- | --- |',
+    ...sourceRows,
   ].join('\n');
 }
 
@@ -268,6 +402,56 @@ function activityRecordFromSummary({ session, summary, acceptedEvents, topics, u
   };
 }
 
+function applyTeamSharingSessionTitle({ state = {}, teamSharingState = {}, session = {}, title = '', updatedAt = '' } = {}) {
+  const cleanTitle = cleanSessionTitle(title || session.title || 'Untitled AI session');
+  let changed = false;
+  if (session.title !== cleanTitle) {
+    session.title = cleanTitle;
+    session.updatedAt = updatedAt || session.updatedAt;
+    changed = true;
+  }
+  const message = session.messageId ? asArray(state.messages).find((item) => item.id === session.messageId) : null;
+  if (message) {
+    if (message.body !== cleanTitle) {
+      message.body = cleanTitle;
+      message.updatedAt = updatedAt || message.updatedAt;
+      changed = true;
+    }
+    message.metadata = {
+      ...(message.metadata || {}),
+      teamSharing: {
+        ...(message.metadata?.teamSharing || {}),
+        title: cleanTitle,
+      },
+    };
+  }
+  const abstract = teamSharingState.abstracts?.[session.sessionId];
+  if (abstract?.abstractMarkdown) {
+    const nextMarkdown = String(abstract.abstractMarkdown).replace(/^#\s+.*$/m, `# ${cleanTitle}`);
+    if (nextMarkdown !== abstract.abstractMarkdown) {
+      abstract.abstractMarkdown = nextMarkdown;
+      abstract.updatedAt = updatedAt || abstract.updatedAt;
+      changed = true;
+    }
+  }
+  for (const doc of asArray(teamSharingState.vectorDocuments)) {
+    if (doc.sessionId !== session.sessionId) continue;
+    if (doc.title !== cleanTitle) {
+      doc.title = cleanTitle;
+      changed = true;
+    }
+    if (typeof doc.text === 'string') {
+      const parts = doc.text.split('\n');
+      if (parts[0] !== cleanTitle) {
+        parts[0] = cleanTitle;
+        doc.text = parts.join('\n');
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
 function upsertVectorDocument(teamSharingState, document) {
   const index = teamSharingState.vectorDocuments.findIndex((item) => item.vectorDocumentId === document.vectorDocumentId);
   if (index >= 0) {
@@ -280,7 +464,7 @@ function upsertVectorDocument(teamSharingState, document) {
 function updateSessionAbstract(teamSharingState, session, acceptedEvents, options = {}) {
   const title = session.title || 'Untitled AI session';
   const allEvents = asArray(teamSharingState.events[session.sessionId]);
-  const sourceEventIds = allEvents.map((event) => event.eventId);
+  const sourceEventIds = allEvents.map((event) => event.rawEventId || event.eventId);
   const fallbackTopicId = inferTopicId({
     title,
     events: allEvents,
@@ -292,7 +476,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     optionalLocalDigest: session.optionalLocalDigest,
   });
   const summary = options.summary && options.summary.ok !== false ? options.summary : null;
-  const l0 = cleanText(summary?.l0 || fallbackOverview).slice(0, 1800);
+  const l0 = cleanMarkdownBody(summary?.l0 || fallbackOverview).slice(0, 1800);
   const topics = asArray(summary?.topics).length
     ? asArray(summary.topics).map((topic) => normalizeSummaryTopic(topic, {
       topicId: fallbackTopicId,
@@ -309,19 +493,29 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
       openQuestions: [],
       nextActions: [],
     })];
+  const topicRows = topics.map((topic) => {
+    const rawId = asArray(topic.sourceEventIds)[0] || '';
+    const contextLink = rawId ? `[打开原文](${sourceContextUrl(session.sessionId, rawId)})` : '暂无';
+    return `| [${topic.title || topic.topicId}](topics/${topic.topicId}.md) | ${cleanText(topic.overview).slice(0, 180)} | \`${rawId || 'none'}\` | ${contextLink} |`;
+  });
   const abstractMarkdown = [
-    '# abstract.md',
+    `# ${title}`,
     '',
-    `Session: ${title}`,
+    '## Summary',
+    l0 || '这段会话暂无可总结内容。',
     '',
-    '## L0 Abstract',
-    l0,
+    '## Key Topics',
+    '| Topic | Summary | Raw ID | Original Context |',
+    '| --- | --- | --- | --- |',
+    ...(topicRows.length ? topicRows : ['| 暂无 topic | 暂无摘要 | `none` | 暂无 |']),
     '',
-    '## Topics',
-    ...topics.map((topic) => `- [${topic.title || topic.topicId}](topics/${topic.topicId}.md) - ${topic.overview}`),
+    '## Original Context',
+    sourceEventIds[0]
+      ? `使用上方 **Raw ID** 可以打开动态原始上下文，例如 [围绕首条来源打开](${sourceContextUrl(session.sessionId, sourceEventIds[0])})。页面会以该消息为中心，按时间正序展示前后消息，并支持继续向上或向下加载。`
+      : '暂无可定位的原始上下文。',
     '',
-    '## Source Anchors',
-    ...sourceEventIds.map((eventId) => `- ${session.sessionId}#${eventId}`),
+    '## Closing Notes',
+    '这份 workspace 用于检索后的快速复盘：先看 **Summary** 和 **Key Topics**，再通过 **Raw ID** 回到对应原文。具体公开分享仍使用独立的 `/s/<shareId>` 文档链接。',
   ].join('\n');
   const updatedAt = options.now?.() || new Date().toISOString();
   const revision = Number(teamSharingState.abstracts[session.sessionId]?.revision || 0) + 1;
@@ -337,7 +531,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
         decisions: topic.decisions,
         openQuestions: topic.openQuestions,
         nextActions: topic.nextActions,
-        overviewMarkdown: renderTopicMarkdown(topic),
+        overviewMarkdown: renderTopicMarkdown(topic, session),
         sourceEventIds: topic.sourceEventIds,
         updatedAt,
       };
@@ -360,7 +554,9 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     vectorDocumentId: `${session.sessionId}:L0`,
     layer: 'L0',
     topicId: '',
-    sourceRef: `${session.sessionId}/abstract.md`,
+    rawEventId: sourceEventIds[0] || '',
+    sourceEventIds,
+    sourceRef: `${session.sessionId}/abstract.md#${sourceEventIds[0] || ''}`,
     text: `${title}\n${l0}`,
     vectorScore: 0,
     keywordScore: 0,
@@ -372,6 +568,8 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
       vectorDocumentId: `${session.sessionId}:L1:${topic.topicId}`,
       layer: 'L1',
       topicId: topic.topicId,
+      rawEventId: topic.sourceEventIds[0] || '',
+      sourceEventIds: topic.sourceEventIds,
       sourceRef: `${session.sessionId}/topics/${topic.topicId}.md#${topic.sourceEventIds[0] || ''}`,
       text: `${title}\n${topic.title}\n${topic.overview}`,
       vectorScore: 0,
@@ -411,15 +609,6 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
 
   const idempotencyKey = String(packageBody.idempotencyKey || '').trim()
     || `${normalizeRuntime(packageBody.runtime)}:${packageBody.projectKey || ''}:${sessionId}:${packageBody.fromOrdinal || 0}:${packageBody.toOrdinal || 0}:${stableHash(JSON.stringify(packageBody.events || []))}`;
-  if (teamSharingState.syncLedger[idempotencyKey]?.status === 'accepted') {
-    return {
-      ok: true,
-      duplicate: true,
-      sessionId,
-      messageId: teamSharingState.sessions[sessionId]?.messageId || '',
-      appendedEventCount: 0,
-    };
-  }
 
   const createdAt = now();
   const uploader = {
@@ -494,9 +683,28 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
       runtime: session.runtime,
       projectKey: session.projectKey,
       sessionId,
+      title: session.title,
       uploader: session.uploader || uploader,
     },
   };
+  const titleChanged = applyTeamSharingSessionTitle({
+    state,
+    teamSharingState,
+    session,
+    title: packageBody.title || session.title,
+    updatedAt: createdAt,
+  });
+  if (teamSharingState.syncLedger[idempotencyKey]?.status === 'accepted') {
+    return {
+      ok: true,
+      duplicate: true,
+      sessionId,
+      messageId: teamSharingState.sessions[sessionId]?.messageId || '',
+      appendedEventCount: 0,
+      titleChanged,
+      abstractRevision: session.abstractRevision,
+    };
+  }
 
   const existingEvents = new Map(asArray(teamSharingState.events[sessionId]).map((event) => [event.eventId, event]));
   const acceptedEvents = [];
@@ -506,6 +714,10 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     const duplicate = existingEvents.get(event.eventId);
     if (duplicate && duplicate.sourceHash === event.sourceHash) continue;
     existingEvents.set(event.eventId, event);
+    event.metadata = {
+      ...(event.metadata || {}),
+      uploader: session.uploader || uploader,
+    };
     acceptedEvents.push(event);
   }
   teamSharingState.events[sessionId] = [...existingEvents.values()]
@@ -521,7 +733,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
       spaceId: channelId,
       authorType: event.role === 'user' ? 'human' : 'agent',
       authorId: event.role === 'user' ? uploader.id : runtimeAgentId(session.runtime),
-      body: event.cleanText,
+      body: event.displayText || event.cleanText,
       attachmentIds: [],
       mentionedAgentIds: [],
       mentionedHumanIds: [],
@@ -540,6 +752,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
           ordinal: event.ordinal,
           sourceAnchor: event.sourceAnchor,
           uploader: session.uploader || uploader,
+          contentSegments: event.contentSegments || event.metadata?.contentSegments || [],
         },
       },
     };
@@ -593,6 +806,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
 
 export function contextWindowForTeamSharingSession(teamSharingStateInput, sessionId, options = {}) {
   const teamSharingState = ensureTeamSharingState(teamSharingStateInput);
+  const session = teamSharingState.sessions[String(sessionId || '')] || null;
   const events = asArray(teamSharingState.events[String(sessionId || '')]).sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0));
   if (!events.length) return { ok: false, code: 'session_not_found', events: [], pagination: { hasPrev: false, hasNext: false } };
   const anchorEventId = String(options.anchorEventId || '').trim();
@@ -621,6 +835,14 @@ export function contextWindowForTeamSharingSession(teamSharingStateInput, sessio
   return {
     ok: true,
     sessionId,
+    session: session ? {
+      sessionId: session.sessionId,
+      title: session.title || '',
+      runtime: session.runtime || '',
+      uploader: session.uploader || {},
+      workspaceId: session.workspaceId || '',
+      channelId: session.channelId || '',
+    } : { sessionId, title: '', runtime: '', uploader: {} },
     events: order === 'desc' ? selected.reverse() : selected,
     pagination: {
       hasPrev: start > 0,

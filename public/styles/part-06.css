@@ -317,6 +317,175 @@
   overflow: auto;
 }
 
+.team-sharing-workspace-document {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 0.24fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.team-sharing-workspace-markdown {
+  padding: 22px 28px;
+  background: #f8fafc;
+  color: #202124;
+  font-size: 14px;
+  line-height: 1.72;
+  letter-spacing: 0;
+}
+
+.team-sharing-workspace-markdown h1,
+.team-sharing-workspace-markdown h2,
+.team-sharing-workspace-markdown h3 {
+  color: #202124;
+  letter-spacing: 0;
+}
+
+.team-sharing-workspace-markdown h1 {
+  margin: 0 0 18px;
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.team-sharing-workspace-markdown h2 {
+  margin: 26px 0 12px;
+  font-size: 20px;
+}
+
+.team-sharing-workspace-markdown h3 {
+  margin: 18px 0 10px;
+  font-size: 16px;
+}
+
+.team-sharing-workspace-markdown p {
+  margin: 0 0 14px;
+}
+
+.team-sharing-workspace-markdown ul,
+.team-sharing-workspace-markdown ol {
+  margin: 0 0 16px;
+  padding-left: 22px;
+}
+
+.team-sharing-workspace-markdown li {
+  margin: 6px 0;
+  padding-left: 2px;
+}
+
+.team-sharing-workspace-markdown li > ul,
+.team-sharing-workspace-markdown li > ol {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.team-sharing-workspace-markdown code {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: #e8eaed;
+  color: #3f3f46;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.team-sharing-workspace-markdown .message-table-wrap {
+  margin: 14px 0 18px;
+}
+
+.team-sharing-workspace-markdown .message-table {
+  background: #fff;
+}
+
+.team-sharing-workspace-inline-link {
+  display: inline;
+  border: 0;
+  background: transparent;
+  color: #0369a1;
+  font: inherit;
+  font-weight: 700;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.team-sharing-workspace-missing-link {
+  color: var(--text-secondary);
+}
+
+.team-sharing-workspace-outline {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  max-height: 100%;
+  overflow: auto;
+  padding: 12px 10px;
+  border-left: 1px solid var(--workspace-line-strong);
+  background: #fff;
+}
+
+.team-sharing-workspace-outline-title {
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.team-sharing-workspace-outline-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 5px 4px;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.team-sharing-workspace-outline-item:hover {
+  color: var(--text-primary);
+  background: var(--accent-soft);
+}
+
+.team-sharing-workspace-outline-item.level-2 {
+  padding-left: 12px;
+}
+
+.team-sharing-workspace-outline-item.level-3 {
+  padding-left: 20px;
+}
+
+.team-sharing-workspace-head-action {
+  border-color: var(--border);
+  box-shadow: var(--shadow-pixel-sm);
+  transform: translateY(0);
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+
+.team-sharing-workspace-head-action:hover {
+  transform: translateY(-1px);
+  filter: saturate(1.08);
+  box-shadow: var(--shadow-pixel);
+}
+
+.team-sharing-workspace-head-action.tone-back {
+  background: #e3f2c8;
+}
+
+.team-sharing-workspace-head-action.tone-refresh {
+  background: #cfeef6;
+}
+
+.team-sharing-workspace-head-action.tone-channel {
+  background: #f7d96c;
+}
+
+.team-sharing-workspace-head-action.tone-close {
+  background: #f08ca8;
+  color: #111;
+}
+
 .thread-drawer .team-sharing-workspace-meta {
   padding: 6px 10px;
   border-top: 1px solid var(--workspace-line-strong);
@@ -350,6 +519,10 @@
   max-height: none;
 }
 
+.team-sharing-workspace-drawer .team-sharing-workspace-document {
+  height: 100%;
+}
+
 @media (max-width: 720px) {
   .thread-drawer .team-sharing-workspace-tab .agent-workspace-layout {
     grid-template-columns: 1fr;
@@ -360,6 +533,17 @@
     max-height: 190px;
     border-right: 0;
     border-bottom: 1px solid var(--workspace-line-strong);
+  }
+
+  .team-sharing-workspace-document {
+    grid-template-columns: 1fr;
+  }
+
+  .team-sharing-workspace-outline {
+    position: static;
+    max-height: 160px;
+    border-left: 0;
+    border-top: 1px solid var(--workspace-line-strong);
   }
 }
 

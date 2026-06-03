@@ -1068,16 +1068,66 @@ function teamSharingWorkspaceFile(path = '') {
   return files.find((file) => file.path === path) || null;
 }
 
+function teamSharingWorkspaceFolderExpanded(path = '') {
+  return teamSharingWorkspaceState?.expandedFolders?.[path] !== false;
+}
+
+function teamSharingWorkspaceVisibleEntries(entries = []) {
+  return entries.filter((entry) => {
+    const path = String(entry.path || '');
+    if (!path.includes('/')) return true;
+    const parent = path.split('/').slice(0, -1).join('/');
+    return teamSharingWorkspaceFolderExpanded(parent);
+  });
+}
+
+function encodeTeamSharingWorkspaceLinks(content = '') {
+  return String(content || '').replace(/\[([^\]\n]+)\]\((?!https?:|mailto:|#)([^)\n]+\.md)(#[^)]+)?\)/gi, (_match, label, path, hash) => {
+    const target = `${String(path || '').replace(/^\.\//, '')}${hash || ''}`;
+    return `[${label}](#team-sharing-workspace-file:${encodeURIComponent(target)})`;
+  });
+}
+
+function renderTeamSharingWorkspaceMarkdown(file = {}) {
+  const content = encodeTeamSharingWorkspaceLinks(file.content || '');
+  const html = typeof renderMarkdownWithPreviewAnchors === 'function'
+    ? renderMarkdownWithPreviewAnchors(content)
+    : renderMarkdown(content);
+  return html.replace(/<a href="#team-sharing-workspace-file:([^"]+)" target="_blank" rel="noreferrer">([\s\S]*?)<\/a>/g, (_match, encodedPath, label) => {
+    const target = decodeURIComponent(encodedPath || '').split('#')[0];
+    const exists = Boolean(teamSharingWorkspaceFile(target));
+    if (!exists) return `<span class="team-sharing-workspace-missing-link">${label}</span>`;
+    return `<button type="button" class="team-sharing-workspace-inline-link" data-action="open-team-sharing-workspace-file" data-path="${escapeHtml(target)}">${label}</button>`;
+  });
+}
+
+function renderTeamSharingWorkspaceOutline(file = {}) {
+  if (!file || (file.previewKind || 'markdown') !== 'markdown' || typeof markdownPreviewOutline !== 'function') return '';
+  const items = markdownPreviewOutline(file.content || '').slice(0, 16);
+  if (!items.length) return '';
+  return `
+    <aside class="team-sharing-workspace-outline" aria-label="Document outline">
+      <div class="team-sharing-workspace-outline-title">Outline</div>
+      ${items.map((item) => `
+        <button type="button" class="team-sharing-workspace-outline-item level-${escapeHtml(item.level)}" data-action="jump-team-sharing-workspace-heading" data-heading-id="${escapeHtml(item.id)}">
+          ${escapeHtml(item.text)}
+        </button>
+      `).join('')}
+    </aside>
+  `;
+}
+
 function renderTeamSharingWorkspaceTree(message) {
   const data = teamSharingWorkspaceState?.data;
   if (teamSharingWorkspaceState?.loading && !data) return '<div class="project-tree-note">Loading workspace...</div>';
   if (teamSharingWorkspaceState?.error) return `<div class="project-tree-note error">${escapeHtml(teamSharingWorkspaceState.error)}</div>`;
-  const entries = data?.tree || [];
+  const entries = teamSharingWorkspaceVisibleEntries(data?.tree || []);
   if (!entries.length) return '<div class="project-tree-note">No workspace files yet.</div>';
   return `
     <div class="project-tree-list agent-workspace-tree team-sharing-workspace-tree">
       ${entries.map((entry) => {
         const isFolder = entry.kind === 'folder';
+        const expanded = isFolder && teamSharingWorkspaceFolderExpanded(entry.path);
         const active = !isFolder && teamSharingWorkspaceState.selectedPath === entry.path;
         const depth = String(entry.path || '').split('/').length - 1;
         return `
@@ -1086,10 +1136,12 @@ function renderTeamSharingWorkspaceTree(message) {
               type="button"
               class="project-tree-row ${isFolder ? 'is-folder' : 'is-file'} ${active ? 'active' : ''}"
               style="--depth: ${Math.max(0, depth)}"
-              ${isFolder ? 'disabled' : `data-action="open-team-sharing-workspace-file" data-id="${escapeHtml(message.id)}" data-path="${escapeHtml(entry.path)}"`}
+              data-action="${isFolder ? 'toggle-team-sharing-workspace-folder' : 'open-team-sharing-workspace-file'}"
+              data-id="${escapeHtml(message.id)}"
+              data-path="${escapeHtml(entry.path)}"
               title="${escapeHtml(entry.path)}"
             >
-              <span class="project-tree-caret">${isFolder ? '▾' : '·'}</span>
+              <span class="project-tree-caret">${isFolder ? (expanded ? '▾' : '▸') : '·'}</span>
               <span class="project-tree-icon">${isFolder ? 'DIR' : 'FILE'}</span>
               <span class="project-tree-name">${escapeHtml(entry.name || entry.path)}</span>
               ${!isFolder ? `<small>${bytes(entry.bytes || 0)}</small>` : ''}
@@ -1116,6 +1168,7 @@ function renderTeamSharingWorkspacePreview() {
     return '<div class="agent-workspace-preview empty"><div class="empty-box small">Select a file to preview.</div></div>';
   }
   const showMarkdownPreview = mode === 'preview' && (file.previewKind || 'markdown') === 'markdown';
+  const markdownBody = showMarkdownPreview ? renderTeamSharingWorkspaceMarkdown(file) : '';
   return `
     <div class="agent-workspace-preview team-sharing-workspace-preview">
       <div class="agent-workspace-filebar">
@@ -1131,7 +1184,10 @@ function renderTeamSharingWorkspacePreview() {
         <small>${escapeHtml(teamSharingWorkspaceState?.data?.session?.title || 'Team Sharing Session')} / ${bytes(file.bytes || 0)}</small>
       </div>
       ${showMarkdownPreview
-        ? `<div class="markdown-preview">${renderMarkdown(file.content || '')}</div>`
+        ? `<div class="team-sharing-workspace-document">
+            <div class="markdown-preview team-sharing-workspace-markdown">${markdownBody}</div>
+            ${renderTeamSharingWorkspaceOutline(file)}
+          </div>`
         : `<pre class="text-file-preview"><code>${escapeHtml(file.content || '')}</code></pre>`}
     </div>
   `;
@@ -1194,10 +1250,10 @@ function renderThreadDrawer(message) {
             <span>${escapeHtml(spaceName(message.spaceType, message.spaceId))}</span>
           </div>
           <div class="thread-head-actions">
-            <button type="button" data-action="back-to-team-sharing-thread" data-id="${escapeHtml(message.id)}">Back to thread</button>
-            <button type="button" data-action="open-team-sharing-workspace" data-id="${escapeHtml(message.id)}">Refresh workspace</button>
-            <button type="button" data-action="view-in-channel" data-id="${escapeHtml(message.id)}">View in channel</button>
-            <button class="icon-btn small" type="button" data-action="close-thread" aria-label="Close thread">×</button>
+            <button class="team-sharing-workspace-head-action tone-back" type="button" data-action="back-to-team-sharing-thread" data-id="${escapeHtml(message.id)}" title="Back to thread">Back to thread</button>
+            <button class="team-sharing-workspace-head-action tone-refresh" type="button" data-action="open-team-sharing-workspace" data-id="${escapeHtml(message.id)}" title="Refresh workspace">Refresh workspace</button>
+            <button class="team-sharing-workspace-head-action tone-channel" type="button" data-action="view-in-channel" data-id="${escapeHtml(message.id)}" title="View in channel">View in channel</button>
+            <button class="icon-btn small team-sharing-workspace-head-action tone-close" type="button" data-action="close-thread" aria-label="Close thread" title="Close workspace">×</button>
           </div>
         </div>
         <div class="thread-context-wrap">

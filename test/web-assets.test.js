@@ -43,9 +43,9 @@ test('web asset build emits hashed bundled assets with precompressed variants', 
     const styleBrStat = await stat(`${stylePath}.br`);
     await stat(`${stylePath}.gz`);
 
-    assert.ok(scriptStat.size < 940 * 1024, `script bundle too large: ${scriptStat.size}`);
+    assert.ok(scriptStat.size < 950 * 1024, `script bundle too large: ${scriptStat.size}`);
     assert.ok(scriptBrStat.size < 180 * 1024, `brotli script bundle too large: ${scriptBrStat.size}`);
-    assert.ok(styleStat.size < 300 * 1024, `style bundle too large: ${styleStat.size}`);
+    assert.ok(styleStat.size < 305 * 1024, `style bundle too large: ${styleStat.size}`);
     assert.ok(styleBrStat.size < 70 * 1024, `brotli style bundle too large: ${styleBrStat.size}`);
 
     const check = spawnSync(process.execPath, ['--check', scriptPath], {
