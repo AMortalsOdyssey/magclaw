@@ -162,7 +162,7 @@ test('team sharing abstracts format long summary links and keep raw ids beside c
     now: () => '2026-06-01T08:04:00.000Z',
     summarizeSession: async () => ({
       ok: true,
-      l0: '部署页面已确认：https://magclaw-testing.multiego.me/s/share_6929a2251b后续需要修复摘要结构；Workspace Markdown 必须分层展示；线上验收结果：- readyz 返回 200。- 未登录访问 dynamic context 会跳转登录并带 returnTo。Raw ID 要和具体总结点绑定。Tool summary: exec_command,apply_patch',
+      l0: '部署页面已确认：https://magclaw-testing.multiego.me/s/share_6929a2251b后续需要修复摘要结构；Workspace Markdown 必须分层展示；线上验收结果：- readyz 返回 200。- 未登录访问 dynamic context 会跳转登录并带 returnTo。Raw ID 要和具体总结点绑定。本地摘要补充：Tool summary: exec_command,apply_patch',
       topics: [
         {
           topicId: 'rerank-feedback',
@@ -186,6 +186,7 @@ test('team sharing abstracts format long summary links and keep raw ids beside c
   const topicMarkdown = abstract.topics['rerank-feedback'].overviewMarkdown;
   assert.match(topicMarkdown, /Raw ID: `evt_url_1`/);
   assert.doesNotMatch(topicMarkdown, /evt_url_2|evt_url_3/);
+  assert.ok((topicMarkdown.match(/Raw ID:/g) || []).length <= 3);
   assert.match(topicMarkdown, /- 当前 Key Changes 层级全部混在一起/);
   assert.match(topicMarkdown, /\n\s+- 必须分层级、分子模块、分列表来展示。/);
   assert.match(topicMarkdown, /\[打开原文\]\(\/team-sharing\/context\/sess_md_format\?anchorEventId=evt_url_1&limit=21&order=asc\)/);

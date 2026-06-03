@@ -23,9 +23,9 @@ function cleanMarkdownText(value = '') {
 
 function stripOperationalText(value = '') {
   return String(value || '')
-    .replace(/\bused_tools\s*=\s*[A-Za-z0-9_.,\-\s]+(?=$|[。；;，,\n])/gi, '')
-    .replace(/\s*(?:本地摘要补充[:：]\s*)?Tool summary\s*:\s*[A-Za-z0-9_.,\-\s]+(?=$|[。；;，,\n])/gi, '')
-    .replace(/(?:^|\n)\s*已运行\s+\d+\s+条命令\s*/g, '\n');
+    .replace(/\s*\bused_tools\s*=\s*[^。\n；;]*/gi, '')
+    .replace(/\s*(?:本地摘要补充[:：]\s*)?Tool summary\s*:\s*[^。\n；;]*/gi, '')
+    .replace(/\s*已运行\s+\d+\s+条命令\s*/g, ' ');
 }
 
 function cleanList(value) {

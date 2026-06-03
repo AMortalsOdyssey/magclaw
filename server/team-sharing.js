@@ -35,9 +35,9 @@ function cleanMultilineText(value = '') {
 
 function stripOperationalText(value = '') {
   return String(value || '')
-    .replace(/\bused_tools\s*=\s*[A-Za-z0-9_.,\-\s]+(?=$|[。；;，,\n])/gi, '')
-    .replace(/\s*(?:本地摘要补充[:：]\s*)?Tool summary\s*:\s*[A-Za-z0-9_.,\-\s]+(?=$|[。；;，,\n])/gi, '')
-    .replace(/(?:^|\n)\s*已运行\s+\d+\s+条命令\s*/g, '\n');
+    .replace(/\s*\bused_tools\s*=\s*[^。\n；;]*/gi, '')
+    .replace(/\s*(?:本地摘要补充[:：]\s*)?Tool summary\s*:\s*[^。\n；;]*/gi, '')
+    .replace(/\s*已运行\s+\d+\s+条命令\s*/g, ' ');
 }
 
 function markdownLinkText(value = '') {
@@ -420,9 +420,12 @@ function renderNumberedSummaryPoints(points = [], standaloneLinks = []) {
   let displayIndex = 1;
   for (let index = 0; index < points.length; index += 1) {
     const point = points[index];
-    rows.push(`${displayIndex}. ${summaryLead(point)}`);
+    const nested = splitSummaryPoints(point, 5);
+    const [head, ...rest] = nested.length > 1 ? nested : [point];
+    rows.push(`${displayIndex}. ${summaryLead(head)}`);
     if (displayIndex === 1 && standaloneLinks.length) rows.push(...standaloneLinks);
-    if (/[：:]$/.test(point.trim())) {
+    for (const part of rest) rows.push(`   - ${summaryLead(part)}`);
+    if (!rest.length && /[：:]$/.test(point.trim())) {
       let subCount = 0;
       while (index + 1 < points.length && subCount < 4) {
         const next = points[index + 1];
@@ -468,7 +471,7 @@ function renderSourcedBulletList(items = [], { fallback = '', sessionId = '', so
   const cleanItems = cleanList(items);
   const values = cleanItems.length ? cleanItems : (fallback ? splitSummaryPoints(fallback, 3) : []);
   if (!values.length) return ['- 暂无明确记录'];
-  return values.flatMap((item) => {
+  return values.flatMap((item, index) => {
     const pieces = splitSummaryPoints(item, 6);
     const [head, ...rest] = pieces.length ? pieces : [item];
     const renderedHead = cleanItems.length && rest.length === 0
@@ -477,7 +480,7 @@ function renderSourcedBulletList(items = [], { fallback = '', sessionId = '', so
     return [
       `- ${renderedHead}`,
       ...rest.map((part) => `  - ${summaryLead(part)}`),
-      ...renderSourceReferenceLines(sessionId, sourceEventId, '  '),
+      ...(index === 0 ? renderSourceReferenceLines(sessionId, sourceEventId, '  ') : []),
     ];
   });
 }
