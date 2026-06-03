@@ -614,6 +614,7 @@ function sendContextHtml(res, {
     let initialLoaded = false;
     let initialAnchorScrolled = false;
     const loading = { around: false, prev: false, next: false };
+    let scrollCheckTimer = null;
     let openedRecorded = false;
     function escapeHtml(text) {
       return String(text || '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
@@ -692,6 +693,21 @@ function sendContextHtml(res, {
       initialAnchorScrolled = true;
       anchorEl.scrollIntoView({ block: 'center' });
     }
+    function checkScrollEdges() {
+      if (!initialLoaded) return;
+      const topThreshold = 520;
+      const bottomThreshold = 520;
+      if (window.scrollY <= topThreshold) load(topDirection).catch(console.error);
+      const bottomDistance = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
+      if (bottomDistance <= bottomThreshold) load(bottomDirection).catch(console.error);
+    }
+    function scheduleScrollCheck() {
+      if (scrollCheckTimer) return;
+      scrollCheckTimer = window.setTimeout(() => {
+        scrollCheckTimer = null;
+        checkScrollEdges();
+      }, 120);
+    }
     function eventSegments(event) {
       const segments = Array.isArray(event.contentSegments) && event.contentSegments.length
         ? event.contentSegments
@@ -766,7 +782,7 @@ function sendContextHtml(res, {
     }
     prevBtn.addEventListener('click', () => load('prev').catch(console.error));
     nextBtn.addEventListener('click', () => load('next').catch(console.error));
-    const observer = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
+    const observer = typeof window.IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
       if (!initialLoaded) return;
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
@@ -776,6 +792,7 @@ function sendContextHtml(res, {
     }, { root: null, rootMargin: '640px 0px', threshold: 0 }) : null;
     observer?.observe(topSentinel);
     observer?.observe(bottomSentinel);
+    window.addEventListener('scroll', scheduleScrollCheck, { passive: true });
     load('around').catch(error => { eventsEl.innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>'; });
   </script>
 </body>

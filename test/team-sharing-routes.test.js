@@ -669,6 +669,8 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /IntersectionObserver/);
   assert.match(res.body, /preserveScrollForPrepend/);
   assert.match(res.body, /scrollToInitialAnchor/);
+  assert.match(res.body, /checkScrollEdges/);
+  assert.match(res.body, /addEventListener\('scroll', scheduleScrollCheck/);
   assert.match(res.body, /trailingUrlChars/);
   assert.match(res.body, /String\.fromCharCode\(96\)/);
 });
