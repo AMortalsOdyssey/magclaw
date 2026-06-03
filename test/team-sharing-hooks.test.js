@@ -81,6 +81,35 @@ test('team sharing hook parser uses explicit session title and keeps only final 
   assert.equal(parsed.events[1].rawEventId, parsed.events[1].eventId);
 });
 
+test('team sharing hook parser preserves Codex final markdown layout', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-markdown', cwd: '/repo/magclaw' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '验收一下' }] } }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:02.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{
+          type: 'output_text',
+          text: [
+            '搞定并验收通过了。',
+            '',
+            '验证结果：',
+            '- `node --check` 通过。',
+            '- `git diff --check` 通过。',
+          ].join('\n'),
+        }],
+      },
+    }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
+
+  assert.match(parsed.events[1].text, /搞定并验收通过了。\n\n验证结果：\n- `node --check` 通过。/);
+});
+
 test('team sharing hook parser falls back to runtime session title instead of first user message', () => {
   const transcript = [
     JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-no-title', cwd: '/repo/magclaw' } }),
@@ -90,6 +119,31 @@ test('team sharing hook parser falls back to runtime session title instead of fi
   const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
 
   assert.equal(parsed.title, 'codex session sess-no-title');
+});
+
+test('team sharing sync package creates an empty SessionStart upload for channel visibility', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-start', cwd: '/repo/magclaw' } }),
+  ].join('\n');
+
+  const pkg = buildTeamSharingSyncPackageFromTranscript(transcript, {
+    runtime: 'codex',
+    projectKey: 'magclaw',
+    channelId: 'chan_team',
+    hookEvent: 'SessionStart',
+    title: '启动可见 session',
+    now: () => '2026-06-01T12:00:05.000Z',
+  });
+
+  assert.equal(pkg.ok, true);
+  assert.equal(pkg.empty, false);
+  assert.equal(pkg.sessionStart, true);
+  assert.equal(pkg.body.sessionId, 'sess-start');
+  assert.equal(pkg.body.events.length, 0);
+  assert.equal(pkg.body.fromOrdinal, 0);
+  assert.equal(pkg.body.toOrdinal, 0);
+  assert.match(pkg.body.idempotencyKey, /^codex:magclaw:sess-start:session-start:/);
+  assert.equal(pkg.cursor.lastOrdinal, 0);
 });
 
 test('team sharing sync package is incremental and idempotent from local cursor', () => {

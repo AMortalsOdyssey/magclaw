@@ -1152,7 +1152,7 @@ function markdownPreviewOutline(content) {
     .map((line) => line.match(/^(#{1,3})\s+(.+?)\s*#*\s*$/))
     .filter(Boolean)
     .map((match) => {
-      const text = match[2].trim();
+      const text = match[2].trim().replace(/\[([^\]\n]+)\]\([^)]+\)/g, '$1');
       return {
         level: match[1].length,
         text,

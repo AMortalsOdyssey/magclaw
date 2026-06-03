@@ -475,6 +475,11 @@ function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
   })), null, 2);
   const files = [
     teamSharingWorkspaceFile('abstract.md', abstract.abstractMarkdown || ''),
+    teamSharingWorkspaceFile('debug-log.md', abstract.debugLogMarkdown || [
+      `# ${session.title || 'Team Sharing Session'} Debug Log`,
+      '',
+      'No sync log entries yet.',
+    ].join('\n')),
     teamSharingWorkspaceFile('activities.json', activitiesJson, { previewKind: 'json' }),
     ...topics.map((topic) => teamSharingWorkspaceFile(`topics/${topic.topicId}.md`, topic.overviewMarkdown || `# ${topic.title || topic.topicId}\n\n${topic.overview || ''}`, {
       topicId: topic.topicId,
@@ -503,6 +508,7 @@ function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
     },
     tree: [
       teamSharingWorkspaceFile('abstract.md', '', { bytes: files.find((file) => file.path === 'abstract.md')?.bytes || 0, content: undefined }),
+      teamSharingWorkspaceFile('debug-log.md', '', { bytes: files.find((file) => file.path === 'debug-log.md')?.bytes || 0, content: undefined }),
       teamSharingWorkspaceFile('activities.json', '', { bytes: files.find((file) => file.path === 'activities.json')?.bytes || 0, content: undefined, previewKind: 'json' }),
       folders[0],
       ...topics.map((topic) => teamSharingWorkspaceFile(`topics/${topic.topicId}.md`, '', {

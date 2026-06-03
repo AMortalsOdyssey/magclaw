@@ -32,6 +32,8 @@ test('team sharing summary prompt asks for structured L0/L1/raw ids without hidd
   assert.match(prompt, /不要输出 Source Anchors 大列表/);
   assert.match(prompt, /链接必须独立成行/);
   assert.match(prompt, /Raw ID 要贴近对应结论/);
+  assert.match(prompt, /browser comments/);
+  assert.match(prompt, /页面批注/);
   assert.match(prompt, /不要编造隐藏思考/);
   assert.match(prompt, /不是写“本 session 围绕某标题”/);
 });
@@ -143,8 +145,8 @@ test('team sharing sync uses injected authoritative summary and falls back safel
   assert.match(abstract.abstractMarkdown, /1\. \*\*本轮诉求\*\*/);
   assert.match(abstract.abstractMarkdown, /\n\s+- 讨论明确了 rerank top5/);
   assert.match(abstract.abstractMarkdown, /Key Topics/);
-  assert.match(abstract.abstractMarkdown, /### Rerank feedback/);
-  assert.match(abstract.abstractMarkdown, /\n\s+\[打开 Topic 文档\]\(topics\/rerank-feedback\.md\)\n/);
+  assert.match(abstract.abstractMarkdown, /### \[Rerank feedback\]\(topics\/rerank-feedback\.md\)/);
+  assert.doesNotMatch(abstract.abstractMarkdown, /打开 Topic 文档/);
   assert.doesNotMatch(abstract.abstractMarkdown, /\| Topic \| Summary \|/);
   assert.doesNotMatch(abstract.abstractMarkdown, /Source Anchors/);
   assert.doesNotMatch(abstract.topics['rerank-feedback'].overviewMarkdown, /Raw IDs/);
@@ -154,4 +156,6 @@ test('team sharing sync uses injected authoritative summary and falls back safel
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /反馈热度微调/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /返回 top5/);
   assert.ok(state.teamSharing.activities.some((item) => item.summary === '合并 rerank-feedback 主题摘要。'));
+  assert.ok(state.teamSharing.activities.some((item) => item.changedPaths.includes('debug-log.md')));
+  assert.match(abstract.debugLogMarkdown, /Abstract Diff/);
 });

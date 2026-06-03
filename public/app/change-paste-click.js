@@ -1841,6 +1841,7 @@ document.addEventListener('click', async (event) => {
       closeTeamSharingWorkspace();
     }
     if (action === 'open-team-sharing-workspace-file') {
+      event.preventDefault();
       const path = target.dataset.path || '';
       if (path) {
         teamSharingWorkspaceState = {

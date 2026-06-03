@@ -110,12 +110,12 @@ function extractSelectedTextSnippet(value = '') {
 function extractBrowserCommentSnippets(value = '') {
   const raw = String(value || '').replace(/\r\n/g, '\n');
   const comments = [];
-  const commentPattern = /(?:^|\n)Comment:\s*\n([\s\S]*?)(?=(?:^|\n)(?:#\s+In app browser:|#+\s*My request for Codex:|The next image|Attached image:|Target selector:|Target path:)|$)/gi;
+  const commentPattern = /(?:^|\n)Comment:\s*\n([\s\S]*?)(?=(?:^|\n)(?:#+\s*Comment\s+\d+|#\s+In app browser:|#+\s*My request for Codex:|The next image|Attached image:|Target selector:|Target path:)|$)/gi;
   for (const match of raw.matchAll(commentPattern)) {
     const comment = cleanMultilineText(markdownLinkText(match[1] || '')).slice(0, 1200);
     if (comment) comments.push(comment);
   }
-  return comments.slice(0, 4);
+  return comments.slice(0, 12);
 }
 
 function extractContextLocationSnippet(value = '') {
@@ -578,32 +578,165 @@ function renderTopicOverviewBlocks(topics = [], session = {}) {
     const rawId = asArray(topic.sourceEventIds)[0] || '';
     const contextLink = rawId ? `[打开原文](${sourceContextUrl(session.sessionId, rawId)})` : '暂无可定位原文';
     const summaryPoints = splitSummaryPoints(cleanText(topic.overview), 4);
+    const topicTitle = topic.title || topic.topicId;
     return [
       ...(index > 0 ? [''] : []),
-      `### ${topic.title || topic.topicId}`,
+      `### [${topicTitle}](topics/${topic.topicId}.md)`,
       '',
       '- 摘要：',
       ...(summaryPoints.length ? summaryPoints.map((item) => `  - ${summaryLead(item)}`) : ['  - 暂无摘要']),
       `- Raw ID: \`${rawId || 'none'}\``,
-      '- Topic 文档：',
-      `  [打开 Topic 文档](topics/${topic.topicId}.md)`,
       '- 原文：',
       `  ${contextLink}`,
     ];
   });
 }
 
+function debugExcerpt(value = '', limit = 900) {
+  const text = cleanMarkdownBody(value || '');
+  if (!text) return '(empty)';
+  return text.length > limit ? `${text.slice(0, limit).trim()}...` : text;
+}
+
+function debugFence(value = '', limit = 900) {
+  return [
+    '```markdown',
+    debugExcerpt(value, limit).replace(/```/g, '~~~'),
+    '```',
+  ].join('\n');
+}
+
+function debugEventLines(events = [], role = '') {
+  const selected = asArray(events)
+    .filter((event) => !role || event.role === role)
+    .map((event) => {
+      const rawId = event.rawEventId || event.eventId || '';
+      const text = debugExcerpt(event.displayText || event.cleanText || event.text || '', 520);
+      return `- \`${rawId || 'unknown'}\`: ${text}`;
+    });
+  return selected.length ? selected : ['- 暂无本轮记录'];
+}
+
+function summaryMarkdownFromAbstract(abstractMarkdown = '') {
+  return String(abstractMarkdown || '').match(/## Summary\n([\s\S]*?)(?=\n## |$)/)?.[1]?.trim() || '';
+}
+
+function topicDebugBody(topic = {}) {
+  return cleanMarkdownBody([
+    topic.title || topic.topicId || '',
+    topic.overview || topic.overviewMarkdown || '',
+    ...cleanList(topic.decisions || []).map((item) => `Decision: ${item}`),
+    ...cleanList(topic.openQuestions || []).map((item) => `Open: ${item}`),
+    ...cleanList(topic.nextActions || []).map((item) => `Next: ${item}`),
+  ].filter(Boolean).join('\n'));
+}
+
+function changeTypeForText(before = '', after = '') {
+  if (!before && after) return 'created';
+  if (before && !after) return 'deleted';
+  if (before !== after) return 'updated';
+  return 'unchanged';
+}
+
+function renderTopicDebugChanges(previousTopics = {}, nextTopics = {}) {
+  const ids = [...new Set([
+    ...Object.keys(previousTopics || {}),
+    ...Object.keys(nextTopics || {}),
+  ])].sort();
+  if (!ids.length) return ['- 暂无 topic 文档变更'];
+  return ids.flatMap((topicId) => {
+    const beforeTopic = previousTopics?.[topicId] || null;
+    const afterTopic = nextTopics?.[topicId] || null;
+    const beforeBody = topicDebugBody(beforeTopic || {});
+    const afterBody = topicDebugBody(afterTopic || {});
+    const type = changeTypeForText(beforeBody, afterBody);
+    return [
+      `- \`topics/${topicId}.md\`: \`${type}\``,
+      `  - Before: ${debugExcerpt(beforeBody, 220)}`,
+      `  - After: ${debugExcerpt(afterBody, 220)}`,
+    ];
+  });
+}
+
+function renderTeamSharingDebugLogEntry({
+  session = {},
+  acceptedEvents = [],
+  summary = null,
+  l0Markdown = '',
+  previousAbstract = '',
+  nextAbstract = '',
+  previousTopics = {},
+  nextTopics = {},
+  updatedAt = '',
+  revision = 0,
+} = {}) {
+  const type = !previousAbstract ? 'create_abstract' : (previousAbstract === nextAbstract ? 'append_round_summary' : 'patch_abstract');
+  const curatedSummary = l0Markdown || summary?.l0 || summaryMarkdownFromAbstract(nextAbstract);
+  const changedPaths = ['abstract.md', 'debug-log.md', ...renderTopicDebugChanges(previousTopics, nextTopics)
+    .map((line) => line.match(/`(topics\/[^`]+\.md)`/)?.[1])
+    .filter(Boolean)];
+  return [
+    `## ${updatedAt || new Date().toISOString()} · rev ${revision}`,
+    '',
+    `- Type: \`${type}\``,
+    `- Accepted events: ${acceptedEvents.length}`,
+    `- Session: \`${session.sessionId || ''}\``,
+    `- Changed paths: ${[...new Set(changedPaths)].map((item) => `\`${item}\``).join(', ')}`,
+    '',
+    '### Round Summary',
+    '',
+    '#### Hook Prompt Summary',
+    ...debugEventLines(acceptedEvents, 'user'),
+    '',
+    '#### Agent Reply Summary',
+    ...debugEventLines(acceptedEvents, 'assistant'),
+    '',
+    '#### Curated Summary Output',
+    debugFence(curatedSummary, 1200),
+    '',
+    '### Cloud Merge',
+    '',
+    `- Merge source: latest hook events + optional local digest + ${previousAbstract ? 'existing Abstract.md' : 'empty Abstract.md'}.`,
+    `- Operation: \`${type}\`, producing Abstract.md revision ${revision}.`,
+    `- Summary model result: ${summary?.ok === false ? 'fallback summary' : (summary ? 'authoritative summary' : 'fallback summary')}.`,
+    '',
+    '### Abstract Diff',
+    '',
+    '#### Before',
+    debugFence(previousAbstract, 900),
+    '',
+    '#### After',
+    debugFence(nextAbstract, 1200),
+    '',
+    '### Topics Folder Changes',
+    ...renderTopicDebugChanges(previousTopics, nextTopics),
+  ].join('\n');
+}
+
+function appendTeamSharingDebugLog(existing = '', title = '', entry = '') {
+  const header = [
+    `# ${title || 'Team Sharing Session'} Debug Log`,
+    '',
+    'Append-only sync log for inspecting hook prompts, agent summaries, cloud merge output, and workspace file changes.',
+  ].join('\n');
+  const base = String(existing || '').trim() || header;
+  return `${base}\n\n${String(entry || '').trim()}\n`;
+}
+
 function activityRecordFromSummary({ session, summary, acceptedEvents, topics, updatedAt, revision } = {}) {
   const activity = summary?.activity && typeof summary.activity === 'object' ? summary.activity : {};
   const changedPaths = cleanList(activity.changedPaths || activity.changed_paths);
-  const defaultChangedPaths = ['abstract.md', 'activities.json', ...asArray(topics).map((topic) => `topics/${topic.topicId}.md`)];
+  const defaultChangedPaths = ['abstract.md', 'debug-log.md', 'activities.json', ...asArray(topics).map((topic) => `topics/${topic.topicId}.md`)];
+  const effectiveChangedPaths = changedPaths.length
+    ? [...new Set([...changedPaths, 'debug-log.md'])]
+    : defaultChangedPaths;
   return {
     activityId: `act_${stableHash(`${session.sessionId}:${updatedAt}:${acceptedEvents.length}:${revision}`)}`,
     sessionId: session.sessionId,
     revision,
     action: cleanText(activity.action || 'merge_summary') || 'merge_summary',
     summary: cleanText(activity.summary || summary?.activitySummary || `同步 ${acceptedEvents.length} 条清洗事件，并更新 ${topics.map((topic) => topic.topicId).join(', ')} topic。`),
-    changedPaths: changedPaths.length ? changedPaths : defaultChangedPaths,
+    changedPaths: effectiveChangedPaths,
     sourceEventIds: asArray(acceptedEvents).map((event) => event.eventId),
     createdAt: updatedAt,
   };
@@ -702,6 +835,9 @@ function authoritativeSearchDocument(teamSharingState, candidate = {}, currentDo
 function updateSessionAbstract(teamSharingState, session, acceptedEvents, options = {}) {
   const title = session.title || 'Untitled AI session';
   const allEvents = asArray(teamSharingState.events[session.sessionId]);
+  const previousRecord = teamSharingState.abstracts[session.sessionId] || {};
+  const previousAbstract = previousRecord.abstractMarkdown || '';
+  const previousTopics = previousRecord.topics || {};
   const sourceEventIds = allEvents.map((event) => event.rawEventId || event.eventId);
   const fallbackTopicId = inferTopicId({
     title,
@@ -755,24 +891,38 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
   ].join('\n');
   const updatedAt = options.now?.() || new Date().toISOString();
   const revision = Number(teamSharingState.abstracts[session.sessionId]?.revision || 0) + 1;
+  const nextTopics = topics.reduce((acc, topic) => {
+    acc[topic.topicId] = {
+      topicId: topic.topicId,
+      title: topic.title,
+      overview: topic.overview,
+      decisions: topic.decisions,
+      openQuestions: topic.openQuestions,
+      nextActions: topic.nextActions,
+      overviewMarkdown: renderTopicMarkdown(topic, session),
+      sourceEventIds: topic.sourceEventIds,
+      updatedAt,
+    };
+    return acc;
+  }, { ...(teamSharingState.abstracts[session.sessionId]?.topics || {}) });
+  const debugEntry = renderTeamSharingDebugLogEntry({
+    session,
+    acceptedEvents,
+    summary,
+    l0Markdown,
+    previousAbstract,
+    nextAbstract: abstractMarkdown,
+    previousTopics,
+    nextTopics,
+    updatedAt,
+    revision,
+  });
   teamSharingState.abstracts[session.sessionId] = {
     sessionId: session.sessionId,
     revision,
     abstractMarkdown,
-    topics: topics.reduce((acc, topic) => {
-      acc[topic.topicId] = {
-        topicId: topic.topicId,
-        title: topic.title,
-        overview: topic.overview,
-        decisions: topic.decisions,
-        openQuestions: topic.openQuestions,
-        nextActions: topic.nextActions,
-        overviewMarkdown: renderTopicMarkdown(topic, session),
-        sourceEventIds: topic.sourceEventIds,
-        updatedAt,
-      };
-      return acc;
-    }, { ...(teamSharingState.abstracts[session.sessionId]?.topics || {}) }),
+    topics: nextTopics,
+    debugLogMarkdown: appendTeamSharingDebugLog(previousRecord.debugLogMarkdown || '', title, debugEntry),
     updatedAt,
   };
   const common = {

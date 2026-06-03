@@ -13,16 +13,15 @@ function stableHash(value = '') {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
 }
 
-function compactWhitespace(value = '') {
-  return String(value || '').replace(/\s+/g, ' ').trim();
-}
-
 function redactTeamSharingText(value = '') {
-  return compactWhitespace(value)
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
     .replace(/(?:api[_-]?key|token|secret|password|密钥|秘钥|口令|令牌)\s*[：:=]\s*["']?[^\s"',;，。)）]+/gi, '[redacted-secret]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, 'Bearer [redacted-secret]')
     .replace(/([?&](?:key|api[_-]?key|token|access_token|secret)=)[^\s"'&)）]+/gi, '$1[redacted-secret]')
-    .replace(/(App Secret|app_secret|client_secret)(\s*[：:=]\s*)[^\s"',;，。)）]+/gi, '$1$2[redacted-secret]');
+    .replace(/(App Secret|app_secret|client_secret)(\s*[：:=]\s*)[^\s"',;，。)）]+/gi, '$1$2[redacted-secret]')
+    .trim();
 }
 
 function iso(value, fallback = new Date().toISOString()) {
@@ -206,10 +205,48 @@ export function buildTeamSharingSyncPackageFromTranscript(text = '', options = {
   const parsed = parseTeamSharingTranscript(text, options);
   const lastOrdinal = Math.max(0, Number(options.lastOrdinal || 0));
   const minCreatedAt = String(options.minCreatedAt || '').trim();
+  const projectKey = String(options.projectKey || path.basename(parsed.projectPath || process.cwd()) || 'default').trim();
   const incrementalEvents = parsed.events
     .filter((event) => Number(event.ordinal || 0) > lastOrdinal)
     .filter((event) => !minCreatedAt || String(event.createdAt || '') >= minCreatedAt);
+  const hookEvent = String(options.hookEvent || options.hookEventName || '').trim();
+  const shouldCreateSessionStart = hookEvent === 'SessionStart' && lastOrdinal === 0;
   if (!incrementalEvents.length) {
+    if (shouldCreateSessionStart) {
+      const createdAt = options.now?.() || new Date().toISOString();
+      const body = {
+        runtime,
+        projectKey,
+        projectPathHash: stableHash(parsed.projectPath || projectKey),
+        sessionId: parsed.sessionId,
+        title: options.title || parsed.title,
+        workspaceId: options.workspaceId || '',
+        channelId: options.channelId || '',
+        channelPath: options.channelPath || '',
+        fromOrdinal: 0,
+        toOrdinal: 0,
+        idempotencyKey: `${runtime}:${projectKey}:${parsed.sessionId}:session-start:${stableHash(options.title || parsed.title || '')}`,
+        optionalLocalDigest: '',
+        events: [],
+        createdAt,
+        metadata: {
+          hookEvent,
+          emptySessionStart: true,
+        },
+      };
+      return {
+        ok: true,
+        empty: false,
+        sessionStart: true,
+        body,
+        cursor: {
+          runtime,
+          sessionId: parsed.sessionId,
+          lastOrdinal,
+          updatedAt: createdAt,
+        },
+      };
+    }
     return {
       ok: true,
       empty: true,
@@ -223,7 +260,6 @@ export function buildTeamSharingSyncPackageFromTranscript(text = '', options = {
   }
   const fromOrdinal = incrementalEvents[0].ordinal;
   const toOrdinal = incrementalEvents[incrementalEvents.length - 1].ordinal;
-  const projectKey = String(options.projectKey || path.basename(parsed.projectPath || process.cwd()) || 'default').trim();
   const batchHash = stableHash(JSON.stringify(incrementalEvents.map((event) => ({
     eventId: event.eventId,
     sourceHash: event.sourceHash,

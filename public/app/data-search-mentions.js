@@ -1713,7 +1713,6 @@ function clickLoadingMeta(action, target) {
     'open-agent-workspace-file': ['Loading workspace file...', detailSurface],
     'refresh-agent-workspace': ['Loading workspace...', detailSurface],
     'open-team-sharing-workspace': ['Loading workspace...', detailSurface],
-    'open-team-sharing-workspace-file': ['Loading workspace file...', detailSurface],
     'confirm-avatar-crop': ['Saving avatar...', 'modal'],
     'remove-project': ['Removing folder...', 'main'],
     'save-message': ['Saving message...', 'main'],
@@ -1771,7 +1770,6 @@ function shouldShowClickLoading(action, target, localOnlyActions = new Set()) {
     'toggle-agent-workspace',
     'open-agent-workspace-file',
     'open-team-sharing-workspace',
-    'open-team-sharing-workspace-file',
     'open-modal',
     'close-modal',
   ]);

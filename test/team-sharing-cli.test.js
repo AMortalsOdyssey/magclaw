@@ -242,6 +242,60 @@ test('team sharing cli sync uploads only new transcript events and saves cursor'
   }
 });
 
+test('team sharing cli sync uploads SessionStart even before transcript messages exist', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-session-start-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-session-start-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session-start.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_session_start', cwd } }),
+  ].join('\n'));
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, init, body: JSON.parse(init.body || '{}') });
+    return {
+      ok: true,
+      json: async () => ({ ok: true, appendedEventCount: 0, messageId: 'msg_start' }),
+    };
+  };
+  try {
+    const result = await syncTeamSharingTranscript({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      hookEvent: 'SessionStart',
+      sessionTitle: '启动可见 session',
+    }, env);
+    const cursor = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-sharing-cursor.json'), 'utf8'));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.empty, undefined);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.sessionId, 'sess_session_start');
+    assert.equal(calls[0].body.title, '启动可见 session');
+    assert.equal(calls[0].body.events.length, 0);
+    assert.equal(calls[0].body.metadata.hookEvent, 'SessionStart');
+    assert.equal(cursor.sessions.codex.sess_session_start.lastOrdinal, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('team sharing cli sync dry-run does not upload or save cursor', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-dry-run-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-dry-run-home-'));

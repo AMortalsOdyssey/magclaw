@@ -585,6 +585,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     projectDir: flags.cwd || process.cwd(),
     lastOrdinal,
     minCreatedAt: project.config.enabledSince || '',
+    hookEvent: flags.hookEvent || flags.hookEventName || '',
   });
   if (syncPackage.empty || !syncPackage.body) return { ok: true, empty: true, cursor: syncPackage.cursor };
   if (flags.dryRun || flags.dry_run) {

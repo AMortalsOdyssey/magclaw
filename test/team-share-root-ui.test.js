@@ -51,11 +51,14 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   assert.match(app, /renderTeamSharingWorkspaceOutline\(file\)/);
   assert.match(app, /renderTeamSharingWorkspaceMarkdown\(file\)/);
   assert.match(app, /team-sharing-workspace-inline-link/);
+  assert.match(app, /team-sharing-workspace-context-link/);
   assert.match(app, /team-sharing-workspace-head-action tone-refresh/);
   assert.match(clickActionSource, /if \(action === 'back-to-team-sharing-thread'\)/);
   assert.match(clickActionSource, /if \(action === 'toggle-team-sharing-workspace-folder'\)/);
   assert.match(clickActionSource, /if \(action === 'jump-team-sharing-workspace-heading'\)/);
   assert.match(clickSource, /\/api\/team-sharing\/workspace\/\$\{encodeURIComponent\(sessionId\)\}/);
+  assert.doesNotMatch(app, /'open-team-sharing-workspace-file': \['Loading workspace file\.\.\.'/);
+  assert.match(app, /'jump-team-sharing-workspace-heading'/);
   assert.match(app, /team-sharing-workspace-preview/);
   assert.match(app, /renderMessageContentSegments\(message\)/);
   assert.match(app, /message-context-quote/);

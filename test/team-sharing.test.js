@@ -181,8 +181,8 @@ test('team sharing abstracts format long summary links and keep raw ids beside c
   assert.match(abstract.abstractMarkdown, /1\. \*\*部署页面已确认\*\*：\nhttps:\/\/magclaw-testing\.multiego\.me\/s\/share_6929a2251b/);
   assert.match(abstract.abstractMarkdown, /2\. \*\*线上验收结果\*\*：\n\s+- readyz 返回 200/);
   assert.match(abstract.abstractMarkdown, /\n\s+- Workspace Markdown 必须分层展示。/);
-  assert.match(abstract.abstractMarkdown, /### Rerank Feedback/);
-  assert.match(abstract.abstractMarkdown, /\n\s+\[打开 Topic 文档\]\(topics\/rerank-feedback\.md\)\n/);
+  assert.match(abstract.abstractMarkdown, /### \[Rerank Feedback\]\(topics\/rerank-feedback\.md\)/);
+  assert.doesNotMatch(abstract.abstractMarkdown, /打开 Topic 文档/);
   assert.doesNotMatch(abstract.abstractMarkdown, /\| Topic \| Summary \|/);
   assert.match(abstract.abstractMarkdown, /例如：\n\[围绕首条来源打开\]\(\/team-sharing\/context\/sess_md_format\?anchorEventId=evt_url_1&limit=21&order=asc\)\n页面会以该消息为中心/);
   assert.doesNotMatch(abstract.abstractMarkdown, /Source Anchors|Raw IDs|Tool summary|used_tools/);
@@ -194,6 +194,10 @@ test('team sharing abstracts format long summary links and keep raw ids beside c
   assert.match(topicMarkdown, /\n\s+- 必须分层级、分子模块、分列表来展示。/);
   assert.match(topicMarkdown, /\[打开原文\]\(\/team-sharing\/context\/sess_md_format\?anchorEventId=evt_url_1&limit=21&order=asc\)/);
   assert.doesNotMatch(topicMarkdown, /Raw IDs|Tool summary|used_tools/);
+  assert.match(abstract.debugLogMarkdown, /Hook Prompt Summary/);
+  assert.match(abstract.debugLogMarkdown, /Agent Reply Summary/);
+  assert.match(abstract.debugLogMarkdown, /Cloud Merge/);
+  assert.match(abstract.debugLogMarkdown, /Topics Folder Changes/);
 });
 
 test('team sharing duplicate sync still updates mutable session title everywhere', async () => {
@@ -299,6 +303,31 @@ test('team sharing sync renders Codex browser comments as quote segments', async
         '这部分需要做成淡色引用块，正文和引用要区分。',
         'Attached image: 1 additional labeled image for Comment 1',
         '',
+        '## Comment 2',
+        'Target: "文件切换"',
+        'Comment:',
+        '点击 workspace 文件时不要刷新 channel 消息。',
+        '',
+        '## Comment 3',
+        'Target: "大纲跳转"',
+        'Comment:',
+        '点击大纲定位 Markdown 预览时不要出现转圈。',
+        '',
+        '## Comment 4',
+        'Target: "原文链接"',
+        'Comment:',
+        '打开原文不要新开浏览器标签页。',
+        '',
+        '## Comment 5',
+        'Target: "Topic 标题"',
+        'Comment:',
+        'Rerank Feedback 标题本身要变成 Topic 文档链接。',
+        '',
+        '## Comment 6',
+        'Target: "debug-log.md"',
+        'Comment:',
+        '把每轮 hooks 触发、Summary 和融合结果都追加记录下来。',
+        '',
         '# In app browser:',
         '- Current URL: https://magclaw-testing.multiego.me/s/share_6929a2251b',
         '',
@@ -320,6 +349,8 @@ test('team sharing sync renders Codex browser comments as quote segments', async
   assert.equal(segments[0].type, 'body');
   assert.equal(segments[0].text, '这个也一起调整');
   assert.ok(segments.some((segment) => segment.label === '页面批注' && /淡色引用块/.test(segment.text)));
+  assert.ok(segments.some((segment) => segment.label === '页面批注' && /不要刷新 channel 消息/.test(segment.text)));
+  assert.ok(segments.some((segment) => segment.label === '页面批注' && /融合结果/.test(segment.text)));
   assert.ok(segments.some((segment) => segment.label === '页面位置' && /share_6929a2251b/.test(segment.text)));
   assert.ok(segments.some((segment) => segment.label === '附件与截图' && /图片|截图/.test(segment.text)));
   assert.doesNotMatch(state.replies[0].body, /untrusted page evidence|Attached image/);

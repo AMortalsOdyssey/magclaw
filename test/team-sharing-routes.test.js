@@ -191,6 +191,7 @@ test('team sharing route exposes a session workspace with abstract, topics, and 
   assert.equal(workspaceRes.data.session.sessionId, 'sess_route');
   assert.equal(workspaceRes.data.session.messageId, deps.state.teamSharing.sessions.sess_route.messageId);
   assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'abstract.md'));
+  assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'debug-log.md'));
   assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'activities.json'));
   assert.ok(workspaceRes.data.tree.some((entry) => entry.path === 'topics/rerank-feedback.md'));
   assert.equal(workspaceRes.data.tree.some((entry) => entry.path === 'details/original-context.md'), false);
@@ -204,6 +205,10 @@ test('team sharing route exposes a session workspace with abstract, topics, and 
   assert.equal(activityFile.previewKind, 'json');
   assert.equal(activities[0].action, 'merge_summary');
   assert.ok(activities[0].changedPaths.includes('abstract.md'));
+  assert.ok(activities[0].changedPaths.includes('debug-log.md'));
+  const debugFile = workspaceRes.data.files.find((file) => file.path === 'debug-log.md');
+  assert.match(debugFile.content, /Hook Prompt Summary/);
+  assert.match(debugFile.content, /Cloud Merge/);
   const topicFile = workspaceRes.data.files.find((file) => file.path === 'topics/rerank-feedback.md');
   assert.doesNotMatch(topicFile.content, /Raw IDs/);
   assert.match(topicFile.content, /Raw ID: `evt_1`/);
