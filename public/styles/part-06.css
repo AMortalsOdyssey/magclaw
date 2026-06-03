@@ -322,6 +322,34 @@
   border-top: 1px solid var(--workspace-line-strong);
 }
 
+.team-sharing-workspace-drawer .thread-context-wrap,
+.team-sharing-workspace-drawer .thread-context {
+  min-height: 0;
+}
+
+.team-sharing-workspace-drawer .thread-context {
+  padding: 0;
+  overflow: hidden;
+}
+
+.team-sharing-workspace-drawer .team-sharing-workspace-tab {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: 100%;
+  margin: 0;
+  border: 0;
+}
+
+.team-sharing-workspace-drawer .team-sharing-workspace-tab .agent-workspace-layout {
+  height: 100%;
+  max-height: none;
+}
+
+.team-sharing-workspace-drawer .team-sharing-workspace-tab .markdown-preview,
+.team-sharing-workspace-drawer .team-sharing-workspace-tab .text-file-preview {
+  max-height: none;
+}
+
 @media (max-width: 720px) {
   .thread-drawer .team-sharing-workspace-tab .agent-workspace-layout {
     grid-template-columns: 1fr;

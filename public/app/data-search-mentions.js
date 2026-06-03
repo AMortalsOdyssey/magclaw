@@ -100,12 +100,35 @@ function teamSharingUploaderAvatarForRecord(record = {}) {
 
 function teamSharingRuntimeAvatarHtml(info, cssClass = '') {
   const runtimeInfo = info || teamSharingRuntimeActorInfo('runtime');
+  if (runtimeInfo.id === 'codex') {
+    return `<span class="${cssClass} team-sharing-runtime-avatar team-sharing-runtime-avatar-codex" aria-label="${escapeHtml(runtimeInfo.label)}"><svg viewBox="0 0 64 64" role="img" aria-hidden="true"><rect width="64" height="64" rx="15" fill="#eef2ff"/><path d="M18 37c-5.2-.8-8.3-4.3-8.3-8.7 0-4.9 4-8.9 9-8.9 1.4-5.3 6.3-9.1 12-9.1 5.1 0 9.5 3 11.4 7.4 6.7.4 12.1 5.9 12.1 12.7 0 7.1-5.7 12.8-12.8 12.8H21.5" fill="url(#codex-cloud-grad)"/><path d="M22.5 25.8 28.8 32l-6.3 6.2" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M33 39h10" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><defs><linearGradient id="codex-cloud-grad" x1="13" y1="12" x2="53" y2="44" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset=".48" stop-color="#6366f1"/><stop offset="1" stop-color="#38bdf8"/></linearGradient></defs></svg></span>`;
+  }
+  if (runtimeInfo.id === 'claude-code') {
+    return `<span class="${cssClass} team-sharing-runtime-avatar team-sharing-runtime-avatar-claude" aria-label="${escapeHtml(runtimeInfo.label)}"><svg viewBox="0 0 64 64" role="img" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#fffaf5"/><path d="M32 6l4.9 20.4L51.7 11.6 40.8 29.4 60 24.1 41.2 35.1l18.4 6.6-20.6.1 12.6 16.5-16.8-12.1L32 58l-2.8-11.8-16.8 12.1 12.6-16.5-20.6-.1 18.4-6.6L4 24.1l19.2 5.3-10.9-17.8 14.8 14.8L32 6z" fill="#d97757"/></svg></span>`;
+  }
   return `<span class="${cssClass} team-sharing-runtime-avatar team-sharing-runtime-avatar-${escapeHtml(runtimeInfo.id)}" aria-label="${escapeHtml(runtimeInfo.label)}"><span>${escapeHtml(runtimeInfo.short)}</span></span>`;
 }
 
+function currentTeamSharingUploaderFallback(record = {}) {
+  if (!record?.metadata?.teamSharing) return null;
+  const authorId = String(record.authorId || '').trim();
+  if (authorId && !['hum_local', 'team_sharing', 'team-sharing'].includes(authorId)) return null;
+  const humanId = typeof currentHumanId === 'function' ? currentHumanId() : '';
+  const human = humanId && (typeof humanByIdAny === 'function' ? humanByIdAny(humanId) : byId(appState?.humans, humanId));
+  const user = appState?.cloud?.auth?.currentUser || {};
+  const name = human?.name || user.name || user.email || '';
+  if (!name) return null;
+  return {
+    id: human?.id || humanId || user.id || '',
+    name,
+    avatar: human?.avatar || user.avatar || '',
+  };
+}
+
 function teamSharingUploaderAvatarHtml(record = {}, cssClass = '') {
-  const avatar = teamSharingUploaderAvatarForRecord(record);
-  const name = teamSharingUploaderNameForRecord(record) || displayName(record.authorId);
+  const fallback = currentTeamSharingUploaderFallback(record);
+  const avatar = teamSharingUploaderAvatarForRecord(record) || fallback?.avatar || '';
+  const name = teamSharingUploaderNameForRecord(record) || fallback?.name || displayName(record.authorId);
   if (avatar) return `<img src="${escapeHtml(avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(name || 'Human')}" />`;
   const initials = String(name || 'HU').split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
   return `<span class="${cssClass}">${escapeHtml(initials || 'HU')}</span>`;
@@ -336,7 +359,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
 
 function renderActorAvatar(authorId, authorType, record = {}) {
   if (authorType === 'agent') {
-    const runtimeActor = teamSharingRuntimeActorInfo(authorId);
+    const runtimeActor = teamSharingRuntimeInfoForRecord(record) || teamSharingRuntimeActorInfo(authorId);
     if (runtimeActor) {
       return `<div class="avatar agent-avatar-cell team-sharing-runtime-avatar-cell">${teamSharingRuntimeAvatarHtml(runtimeActor, 'avatar-inner')}</div>`;
     }
@@ -344,7 +367,7 @@ function renderActorAvatar(authorId, authorType, record = {}) {
   }
   if (authorType === 'human') {
     const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
-    if (!human && teamSharingUploaderNameForRecord(record)) {
+    if (!human && (teamSharingUploaderNameForRecord(record) || currentTeamSharingUploaderFallback(record))) {
       return `<div class="avatar human-avatar-cell">${teamSharingUploaderAvatarHtml(record, 'avatar-inner')}${humanStatusDot(authorId, authorType)}</div>`;
     }
     return `<div class="avatar human-avatar-cell">${renderHumanIdentityButton(authorId, 'human-avatar-button')}${humanStatusDot(authorId, authorType)}</div>`;
@@ -361,8 +384,9 @@ function renderActorName(authorId, authorType, record = {}) {
   if (authorType === 'human') {
     const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
     const youLabel = renderHumanYouLabel(human);
-    const fallbackName = teamSharingUploaderNameForRecord(record) || displayName(authorId);
-    if (!human && teamSharingUploaderNameForRecord(record)) {
+    const fallbackUploader = currentTeamSharingUploaderFallback(record);
+    const fallbackName = teamSharingUploaderNameForRecord(record) || fallbackUploader?.name || displayName(authorId);
+    if (!human && (teamSharingUploaderNameForRecord(record) || fallbackUploader)) {
       return `<strong>${escapeHtml(fallbackName)}</strong>`;
     }
     return `
@@ -373,7 +397,7 @@ function renderActorName(authorId, authorType, record = {}) {
     `;
   }
   if (authorType !== 'agent') return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
-  const runtimeActor = teamSharingRuntimeActorInfo(authorId);
+  const runtimeActor = teamSharingRuntimeInfoForRecord(record) || teamSharingRuntimeActorInfo(authorId);
   if (runtimeActor) return `<strong class="team-sharing-runtime-name">${escapeHtml(runtimeActor.label)}</strong>`;
   const agent = byId(appState?.agents, authorId);
   if (!agent) return `<strong>${escapeHtml(displayName(authorId))}</strong>`;

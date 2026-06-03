@@ -1795,27 +1795,33 @@ document.addEventListener('click', async (event) => {
       const message = byId(appState.messages, target.dataset.id);
       if (message) {
         persistVisiblePaneScrolls();
+        const targetMessageId = message.id;
         selectedSpaceType = message.spaceType;
         selectedSpaceId = message.spaceId;
         activeView = 'space';
         mobileHomeOpen = false;
         activeTab = 'chat';
-        threadMessageId = message.id;
-        if (teamSharingWorkspaceState?.messageId !== threadMessageId) {
-          teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: teamSharingWorkspaceState?.mode || 'preview' };
-        }
+        threadMessageId = null;
+        inspectorReturnThreadId = null;
+        selectedSavedRecordId = null;
+        selectedAgentId = null;
+        selectedProjectFile = null;
+        teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: teamSharingWorkspaceState?.mode || 'preview' };
         workspaceActivityDrawerOpen = false;
         selectedTaskId = null;
-        markThreadRead(message.id);
+        markThreadRead(targetMessageId);
         render();
-        refreshThreadSelection(message.id);
-        scrollToMessage(message.id);
+        refreshThreadSelection(null, { loadReplies: false });
+        scrollToMessage(targetMessageId);
       }
     }
     if (action === 'open-team-sharing-workspace') {
       await openTeamSharingWorkspace(target.dataset.id || threadMessageId);
     }
     if (action === 'close-team-sharing-workspace') {
+      closeTeamSharingWorkspace();
+    }
+    if (action === 'back-to-team-sharing-thread') {
       closeTeamSharingWorkspace();
     }
     if (action === 'open-team-sharing-workspace-file') {

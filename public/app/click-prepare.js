@@ -204,6 +204,7 @@ async function prepareDocumentClick(event) {
     'view-in-channel',
     'open-team-sharing-workspace',
     'close-team-sharing-workspace',
+    'back-to-team-sharing-thread',
     'open-team-sharing-workspace-file',
     'set-team-sharing-workspace-preview-mode',
     'back-to-bottom',

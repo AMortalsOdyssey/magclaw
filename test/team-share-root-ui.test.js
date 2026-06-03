@@ -28,19 +28,25 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   const app = await readAppSource();
   const drawerSource = app.slice(app.indexOf('function renderThreadDrawer('), app.indexOf('function renderTaskLifecycle('));
   const clickSource = app.slice(app.indexOf('async function openTeamSharingWorkspace('), app.indexOf('async function discardProvisionalPairingComputer('));
+  const clickActionSource = app.slice(app.indexOf("if (action === 'open-team-sharing-workspace')"), app.indexOf("if (action === 'back-to-bottom')"));
 
   assert.match(app, /function teamSharingSessionIdForMessage/);
   assert.match(app, /teamSharingRuntimeActorInfo/);
   assert.match(app, /team_sharing_codex/);
   assert.match(app, /from Codex/);
+  assert.match(app, /team-sharing-runtime-avatar-codex/);
+  assert.match(app, /team-sharing-runtime-avatar-claude/);
   assert.match(app, /teamSharingSourceLabelForRecord\(message\)/);
   assert.match(app, /teamSharingUploaderNameForRecord\(record\)/);
   assert.match(drawerSource, /teamSharingSessionIdForMessage\(message\)/);
+  assert.match(drawerSource, /team-sharing-workspace-drawer/);
+  assert.match(drawerSource, /data-action="back-to-team-sharing-thread"/);
   assert.match(drawerSource, /data-action="open-team-sharing-workspace"/);
   assert.match(drawerSource, /renderTeamSharingWorkspacePanel\(message\)/);
   assert.match(app, /team-sharing-workspace-action/);
   assert.match(app, /data-action="open-team-sharing-workspace-file"/);
   assert.match(app, /data-action="set-team-sharing-workspace-preview-mode"/);
+  assert.match(clickActionSource, /if \(action === 'back-to-team-sharing-thread'\)/);
   assert.match(clickSource, /\/api\/team-sharing\/workspace\/\$\{encodeURIComponent\(sessionId\)\}/);
   assert.match(app, /team-sharing-workspace-preview/);
 });

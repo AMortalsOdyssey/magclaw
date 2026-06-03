@@ -933,7 +933,8 @@ test('current human authors are marked and human inspector can return to the act
 
   assert.match(actorNameSource, /function renderHumanYouLabel\(human\)/);
   assert.match(actorNameSource, /humanMatchesCurrentAccount\(human\) \? '<em class="human-you-label">\(you\)<\/em>'/);
-  assert.match(actorNameSource, /const fallbackName = teamSharingUploaderNameForRecord\(record\) \|\| displayName\(authorId\)/);
+  assert.match(actorNameSource, /const fallbackUploader = currentTeamSharingUploaderFallback\(record\)/);
+  assert.match(actorNameSource, /const fallbackName = teamSharingUploaderNameForRecord\(record\) \|\| fallbackUploader\?\.name \|\| displayName\(authorId\)/);
   assert.match(actorNameSource, /<strong>\$\{escapeHtml\(fallbackName\)\}<\/strong>\$\{youLabel\}\$\{humanBadgeHtml\(\)\}/);
   assert.doesNotMatch(actorNameSource, /<strong>@\$\{escapeHtml\(displayName\(authorId\)\)\}<\/strong>/);
   assert.match(humanInspectorSource, /if \(threadMessageId\) inspectorReturnThreadId = threadMessageId;/);

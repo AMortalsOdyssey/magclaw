@@ -1115,6 +1115,7 @@ function renderTeamSharingWorkspacePreview() {
   if (!file) {
     return '<div class="agent-workspace-preview empty"><div class="empty-box small">Select a file to preview.</div></div>';
   }
+  const showMarkdownPreview = mode === 'preview' && (file.previewKind || 'markdown') === 'markdown';
   return `
     <div class="agent-workspace-preview team-sharing-workspace-preview">
       <div class="agent-workspace-filebar">
@@ -1122,7 +1123,6 @@ function renderTeamSharingWorkspacePreview() {
         <div class="agent-workspace-file-actions">
           <button type="button" class="${mode === 'raw' ? 'active' : ''}" data-action="set-team-sharing-workspace-preview-mode" data-mode="raw">Raw</button>
           <button type="button" class="${mode === 'preview' ? 'active' : ''}" data-action="set-team-sharing-workspace-preview-mode" data-mode="preview">Preview</button>
-          <button type="button" data-action="close-team-sharing-workspace">×</button>
         </div>
       </div>
       ${teamSharingWorkspaceState?.loading ? '<div class="empty-box small">Refreshing workspace...</div>' : ''}
@@ -1130,7 +1130,7 @@ function renderTeamSharingWorkspacePreview() {
         <strong title="${escapeHtml(file.path)}">${escapeHtml(file.name || file.path)}</strong>
         <small>${escapeHtml(teamSharingWorkspaceState?.data?.session?.title || 'Team Sharing Session')} / ${bytes(file.bytes || 0)}</small>
       </div>
-      ${mode === 'preview'
+      ${showMarkdownPreview
         ? `<div class="markdown-preview">${renderMarkdown(file.content || '')}</div>`
         : `<pre class="text-file-preview"><code>${escapeHtml(file.content || '')}</code></pre>`}
     </div>
@@ -1185,6 +1185,29 @@ function renderThreadDrawer(message) {
   const canReply = message.spaceType !== 'channel' || currentUserIsChannelMember(message.spaceId);
   const teamSharingSessionId = teamSharingSessionIdForMessage(message);
   const teamSharingWorkspaceOpen = teamSharingWorkspaceOpenFor(message);
+  if (teamSharingWorkspaceOpen) {
+    return `
+      <section class="pixel-panel inspector-panel thread-drawer team-sharing-workspace-drawer">
+        <div class="thread-head">
+          <div>
+            <strong>Workspace</strong>
+            <span>${escapeHtml(spaceName(message.spaceType, message.spaceId))}</span>
+          </div>
+          <div class="thread-head-actions">
+            <button type="button" data-action="back-to-team-sharing-thread" data-id="${escapeHtml(message.id)}">Back to thread</button>
+            <button type="button" data-action="open-team-sharing-workspace" data-id="${escapeHtml(message.id)}">Refresh workspace</button>
+            <button type="button" data-action="view-in-channel" data-id="${escapeHtml(message.id)}">View in channel</button>
+            <button class="icon-btn small" type="button" data-action="close-thread" aria-label="Close thread">×</button>
+          </div>
+        </div>
+        <div class="thread-context-wrap">
+          <div class="thread-context" id="thread-context">
+            ${renderTeamSharingWorkspacePanel(message)}
+          </div>
+        </div>
+      </section>
+    `;
+  }
   return `
     <section class="pixel-panel inspector-panel thread-drawer">
       <div class="thread-head">
