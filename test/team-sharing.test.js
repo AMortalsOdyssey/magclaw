@@ -117,9 +117,75 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
   assert.equal(session.indexStatus, 'ready');
   assert.match(state.teamSharing.abstracts.sess_rerank_design.abstractMarkdown, /^# MagClaw rerank feedback design/m);
   assert.doesNotMatch(state.teamSharing.abstracts.sess_rerank_design.abstractMarkdown, /Source Anchors/);
+  assert.doesNotMatch(state.teamSharing.abstracts.sess_rerank_design.abstractMarkdown, /Raw IDs/);
   assert.ok(state.teamSharing.activities.some((item) => item.summary.includes('同步 2 条清洗事件')));
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L0' && doc.sessionId === 'sess_rerank_design'));
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback' && doc.rawEventId && /topics\/rerank-feedback\.md#/.test(doc.sourceRef)));
+});
+
+test('team sharing abstracts format long summary links and keep raw ids beside content', async () => {
+  const state = baseState();
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
+    idempotencyKey: 'codex:magclaw:sess_md_format:1:4:format',
+    sessionId: 'sess_md_format',
+    title: '验收会话总结共享',
+    events: [
+      {
+        eventId: 'evt_url_1',
+        ordinal: 1,
+        role: 'user',
+        text: '部署好了 页面位置：https://magclaw-testing.multiego.me/s/share_6929a2251b',
+      },
+      {
+        eventId: 'evt_url_2',
+        ordinal: 2,
+        role: 'assistant',
+        text: '确认 R150 已部署，搜索结果标题已经规范化。',
+      },
+      {
+        eventId: 'evt_url_3',
+        ordinal: 3,
+        role: 'user',
+        text: 'workspace 下 abstract.md 的 Summary 不要写成一大段。',
+      },
+      {
+        eventId: 'evt_url_4',
+        ordinal: 4,
+        role: 'assistant',
+        text: '已改成分层 Markdown，并让 Raw ID 跟关键点绑定。',
+      },
+    ],
+  }), {
+    state,
+    makeId: makeIdFactory(),
+    now: () => '2026-06-01T08:04:00.000Z',
+    summarizeSession: async () => ({
+      ok: true,
+      l0: '部署页面已确认：https://magclaw-testing.multiego.me/s/share_6929a2251b后续需要修复摘要结构；Workspace Markdown 必须分层展示；Raw ID 要和具体总结点绑定。',
+      topics: [
+        {
+          topicId: 'rerank-feedback',
+          title: 'Rerank Feedback',
+          overview: '搜索结果标题已经规范化；Raw ID 只需要定位一条代表性上下文。',
+          decisions: ['Summary 改为编号结构', 'Raw ID 跟关键点绑定'],
+          sourceEventIds: ['evt_url_1', 'evt_url_2', 'evt_url_3'],
+        },
+      ],
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  const abstract = state.teamSharing.abstracts.sess_md_format;
+  assert.match(abstract.abstractMarkdown, /^# 验收会话总结共享/m);
+  assert.match(abstract.abstractMarkdown, /1\. \*\*部署页面已确认\*\*/);
+  assert.match(abstract.abstractMarkdown, /https:\/\/magclaw-testing\.multiego\.me\/s\/share_6929a2251b\n2\. 后续需要修复摘要结构/);
+  assert.match(abstract.abstractMarkdown, /例如：\n\[围绕首条来源打开\]\(\/team-sharing\/context\/sess_md_format\?anchorEventId=evt_url_1&limit=21&order=asc\)\n页面会以该消息为中心/);
+  assert.doesNotMatch(abstract.abstractMarkdown, /Source Anchors|Raw IDs/);
+  const topicMarkdown = abstract.topics['rerank-feedback'].overviewMarkdown;
+  assert.match(topicMarkdown, /Raw ID: `evt_url_1`/);
+  assert.doesNotMatch(topicMarkdown, /evt_url_2|evt_url_3/);
+  assert.match(topicMarkdown, /- \*\*Summary 改为编号结构\*\*/);
+  assert.match(topicMarkdown, /\[打开原文\]\(\/team-sharing\/context\/sess_md_format\?anchorEventId=evt_url_1&limit=21&order=asc\)/);
 });
 
 test('team sharing duplicate sync still updates mutable session title everywhere', async () => {

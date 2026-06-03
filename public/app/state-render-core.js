@@ -1039,7 +1039,7 @@ function splitAutolinkUrl(value) {
 }
 
 function renderAutolinkedUrls(html) {
-  return String(html || '').replace(/https?:\/\/[^\s<]+/g, (raw) => {
+  return String(html || '').replace(/https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/g, (raw) => {
     const { href, trailing } = splitAutolinkUrl(raw);
     if (!href) return raw;
     return `<a href="${escapeHtml(safeMarkdownHref(href))}" target="_blank" rel="noreferrer">${href}</a>${trailing}`;

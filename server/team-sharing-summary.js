@@ -10,8 +10,26 @@ function cleanText(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function cleanMarkdownText(value = '') {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
+    .join('\n')
+    .replace(/\n([，。；：！？,.!?;:])/g, '$1\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function cleanList(value) {
   return asArray(value).map(cleanText).filter(Boolean).slice(0, 12);
+}
+
+function cleanSourceEventIds(value) {
+  return asArray(value)
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, 1);
 }
 
 function extractJsonObject(text = '') {
@@ -28,16 +46,16 @@ function normalizeSummary(value = {}) {
   const topics = asArray(value.topics).map((topic) => ({
     topicId: cleanText(topic.topicId || topic.id || topic.title || 'topic').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-').replace(/^-+|-+$/g, '') || 'topic',
     title: cleanText(topic.title || topic.topicId || 'Topic'),
-    overview: cleanText(topic.overview || topic.summary || ''),
+    overview: cleanMarkdownText(topic.overview || topic.summary || ''),
     decisions: cleanList(topic.decisions),
     openQuestions: cleanList(topic.openQuestions || topic.open_questions),
     nextActions: cleanList(topic.nextActions || topic.next_actions),
-    sourceEventIds: asArray(topic.sourceEventIds || topic.source_event_ids).map((item) => String(item || '').trim()).filter(Boolean),
+    sourceEventIds: cleanSourceEventIds(topic.sourceEventIds || topic.source_event_ids),
   })).filter((topic) => topic.overview);
   const activity = value.activity && typeof value.activity === 'object' ? value.activity : {};
   return {
     ok: true,
-    l0: cleanText(value.l0 || value.abstract || value.summary || ''),
+    l0: cleanMarkdownText(value.l0 || value.abstract || value.summary || ''),
     topics,
     activity: {
       action: cleanText(activity.action || 'merge_summary') || 'merge_summary',
@@ -91,10 +109,13 @@ export function buildTeamSharingTopicsPromptSection() {
     '- `decisions` lists confirmed conclusions, not vague summaries.',
     '- `openQuestions` lists unresolved uncertainties or risks.',
     '- `nextActions` lists concrete follow-ups when present.',
-    '- `sourceEventIds` must cite the event ids that support the topic.',
+    '- `sourceEventIds` must contain exactly one primary event id that can locate the surrounding original context. Do not dump every supporting event id.',
     '- 每个 topic 的内容必须能作为 Markdown 阅读：先总述，再分点展开，最后给出可回溯的结论或下一步。',
+    '- `overview` 必须按子模块组织，优先使用小标题、编号列表或无序列表；不要写成一整段。',
+    '- Raw ID 必须和对应总结点放在一起，让读者知道这一条结论来自哪段上下文；不要在文档顶部或底部集中堆 Raw ID。',
     '- 不要把单个专有名词、英文词或 API 名称拆成孤立一行；需要强调时放在正文里用 **加粗**。',
     '- 不要让逗号、句号、顿号、冒号、分号等标点出现在行首。',
+    '- 链接必须单独成行或单独成一个 Markdown 链接，不要把链接和后续中文说明粘在同一行里。',
     '',
     'Do not create a topic for generic session bookkeeping, title text, cloned repository names, or incidental setup unless that setup is the actual subject.',
   ].join('\n');
@@ -119,15 +140,18 @@ export function buildTeamSharingSummaryPrompt({ session = {}, events = [], previ
     '- Preserve concrete product, architecture, decision, risk, API, command, and file/path references when they matter.',
     '- If the new events correct or refine earlier conclusions, update the abstract instead of appending contradictory text.',
     '- Split unrelated topics into separate L1 topic documents.',
-    '- sourceEventIds must point to the event ids that support each topic.',
-    '- 输出遵循“总-分-总”：l0 先给整体结论，再概括关键分支，最后点出后续如何使用这些信息。',
+    '- sourceEventIds must point to the primary event id that locates the context for each topic; include one id per topic, not a long list.',
+    '- 输出遵循“总-分-总”：l0 先给整体结论，再分 4-6 个编号要点概括关键分支，最后点出后续如何使用这些信息。',
+    '- l0 必须是可读 Markdown：使用小标题、编号列表或无序列表，不能输出一整段长文本。',
     '- topics 必须覆盖 l0 中提到的每个重要分支；不要生成 abstract 未提到的孤立 topic。',
     '- Markdown 阅读体验必须清晰：结构化标题、短段落、重点加粗、必要时使用表格语义；不要输出 Source Anchors 大列表。',
+    '- 链接必须独立成行；不要写成 `https://example.com后续说明`，也不要让链接把后面的中文文字吞进去。',
+    '- Raw ID 要贴近对应结论或列表项，而不是集中输出 Raw IDs 列表。',
     '- Output pure JSON only. Do not wrap it in Markdown.',
     '',
     '# Output Schema',
     'Use `l0` as the L0 abstract and `topics` as the L1 topic documents.',
-    '{"l0":"200-500 Chinese chars using 总-分-总 to summarize actual conversation content and key conclusions","topics":[{"topicId":"stable-kebab-topic","title":"short title","overview":"structured L1 topic summary for planning and retrieval","decisions":["confirmed decision"],"openQuestions":["unresolved risk"],"nextActions":["concrete follow-up"],"sourceEventIds":["evt_1"]}],"activity":{"action":"merge_summary","summary":"one sentence audit log","changedPaths":["abstract.md","topics/example.md","activities.json"]}}',
+    '{"l0":"Markdown string with 4-6 numbered points, short paragraphs, and standalone links","topics":[{"topicId":"stable-kebab-topic","title":"short title","overview":"structured Markdown L1 topic summary with submodules and no Raw ID dump","decisions":["confirmed decision"],"openQuestions":["unresolved risk"],"nextActions":["concrete follow-up"],"sourceEventIds":["evt_1"]}],"activity":{"action":"merge_summary","summary":"one sentence audit log","changedPaths":["abstract.md","topics/example.md","activities.json"]}}',
     '',
     buildTeamSharingTopicsPromptSection(),
     '',

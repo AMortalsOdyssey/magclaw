@@ -291,7 +291,7 @@ function inferTopicId({ title = '', events = [], optionalLocalDigest = '' } = {}
 }
 
 function compactEventText(event = {}, limit = 260) {
-  return cleanText(event.cleanText || event.text || '').slice(0, limit);
+  return cleanText(event.displayText || event.cleanText || event.text || '').slice(0, limit);
 }
 
 function cleanList(value) {
@@ -320,8 +320,10 @@ function fallbackConversationAbstract({ title = '', events = [], optionalLocalDi
 function normalizeSummaryTopic(topic = {}, fallback = {}) {
   const topicId = safeSegment(topic.topicId || topic.id || topic.title || fallback.topicId || fallback.title || 'topic', 'topic');
   const title = cleanText(topic.title || topic.topicId || fallback.title || topicId);
-  const overview = cleanText(topic.overview || topic.summary || fallback.overview || '');
+  const overview = cleanMarkdownBody(topic.overview || topic.summary || fallback.overview || '');
   const sourceEventIds = asArray(topic.sourceEventIds || topic.source_event_ids).map((item) => String(item || '').trim()).filter(Boolean);
+  const fallbackSourceEventIds = asArray(fallback.sourceEventIds).map((item) => String(item || '').trim()).filter(Boolean);
+  const primarySourceEventId = sourceEventIds[0] || fallbackSourceEventIds[0] || '';
   return {
     topicId,
     title,
@@ -329,7 +331,7 @@ function normalizeSummaryTopic(topic = {}, fallback = {}) {
     decisions: cleanList(topic.decisions),
     openQuestions: cleanList(topic.openQuestions || topic.open_questions),
     nextActions: cleanList(topic.nextActions || topic.next_actions),
-    sourceEventIds: sourceEventIds.length ? sourceEventIds : asArray(fallback.sourceEventIds),
+    sourceEventIds: primarySourceEventId ? [primarySourceEventId] : [],
   };
 }
 
@@ -347,27 +349,112 @@ function sourceContextUrl(sessionId = '', eventId = '') {
   return `/team-sharing/context/${encodeURIComponent(sessionId)}?${params.toString()}`;
 }
 
-function renderSourceIdChips(sourceEventIds = []) {
-  const ids = asArray(sourceEventIds).map((eventId) => String(eventId || '').trim()).filter(Boolean).slice(0, 8);
-  return ids.length ? ids.map((eventId) => `\`${eventId}\``).join(' ') : '`none`';
+function markdownHasStructure(value = '') {
+  return String(value || '').split('\n').some((line) => /^\s*(#{1,6}\s+|[-*+]\s+|\d+\.\s+|\|.+\|)\S*/.test(line));
+}
+
+function summaryLead(value = '') {
+  const text = cleanText(value);
+  return text.replace(/^([^：:]{2,18})[：:]\s*/, (_match, lead) => `**${lead}**：`);
+}
+
+function splitSummaryPoints(value = '', limit = 6) {
+  const source = String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\s*页面位置[:：]\s*https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/g, '')
+    .replace(/\s*Current URL[:：]\s*https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/gi, '');
+  const points = source
+    .replace(/([。！？!?])\s*/g, '$1\n')
+    .replace(/[；;]\s*/g, '；\n')
+    .split('\n')
+    .map((item) => cleanText(item).replace(/[；;]$/, '。'))
+    .filter((item) => item.length >= 6);
+  if (points.length <= limit) return points;
+  const grouped = [];
+  const chunkSize = Math.ceil(points.length / limit);
+  for (let index = 0; index < points.length; index += chunkSize) {
+    grouped.push(cleanText(points.slice(index, index + chunkSize).join(' ')));
+  }
+  return grouped.slice(0, limit);
+}
+
+function isolateMarkdownLinks(value = '') {
+  const urlPattern = /https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/g;
+  return String(value || '').split('\n').flatMap((line) => {
+    const pieces = [];
+    let lastIndex = 0;
+    for (const match of line.matchAll(urlPattern)) {
+      const before = line.slice(lastIndex, match.index);
+      const cleanBefore = cleanText(before)
+        .replace(/(?:链接|页面位置|Current URL|URL)[:：]\s*$/i, '')
+        .replace(/\s+([，。；：！？,.!?;:])/g, '$1');
+      if (cleanBefore) pieces.push(cleanBefore);
+      pieces.push(String(match[0] || '').replace(/[，。；：！？,.!?;:]+$/, ''));
+      lastIndex = Number(match.index || 0) + String(match[0] || '').length;
+    }
+    if (!pieces.length) return [line];
+    const after = line.slice(lastIndex);
+    const cleanAfter = cleanText(after).replace(/^\s*([，。；：！？,.!?;:])/, '');
+    if (cleanAfter) pieces.push(cleanAfter);
+    return pieces;
+  }).join('\n');
+}
+
+function renderSummaryMarkdown(value = '') {
+  const body = isolateMarkdownLinks(cleanMarkdownBody(value || ''));
+  if (!body) return '这段会话暂无可总结内容。';
+  if (markdownHasStructure(body)) return body;
+  const standaloneLinks = body.split('\n').map((line) => line.trim()).filter((line) => /^https?:\/\//i.test(line));
+  const textBody = body.split('\n').filter((line) => !/^https?:\/\//i.test(line.trim())).join('\n');
+  const points = splitSummaryPoints(textBody);
+  if (!points.length) return body;
+  const rows = [];
+  points.forEach((point, index) => {
+    rows.push(`${index + 1}. ${summaryLead(point)}`);
+    if (index === 0 && standaloneLinks.length) rows.push(...standaloneLinks);
+  });
+  return rows.join('\n');
+}
+
+function renderSourceReferenceLines(sessionId = '', sourceEventId = '', indent = '') {
+  const eventId = String(sourceEventId || '').trim();
+  if (!eventId) return [`${indent}- Raw ID: \`none\``, `${indent}- 原文：暂无可定位原文`];
+  return [
+    `${indent}- Raw ID: \`${eventId}\``,
+    `${indent}- 原文：`,
+    `${indent}  [打开原文](${sourceContextUrl(sessionId, eventId)})`,
+  ];
+}
+
+function renderSourcedBulletList(items = [], { fallback = '', sessionId = '', sourceEventId = '' } = {}) {
+  const cleanItems = cleanList(items);
+  const values = cleanItems.length ? cleanItems : (fallback ? splitSummaryPoints(fallback, 3) : []);
+  if (!values.length) return ['- 暂无明确记录'];
+  return values.flatMap((item) => [
+    `- ${cleanItems.length ? `**${item}**` : summaryLead(item)}`,
+    ...renderSourceReferenceLines(sessionId, sourceEventId, '  '),
+  ]);
 }
 
 function renderTopicMarkdown(topic = {}, session = {}) {
   const sourceEventIds = asArray(topic.sourceEventIds).map((eventId) => String(eventId || '').trim()).filter(Boolean);
   const primarySource = sourceEventIds[0] || '';
-  const sourceRows = sourceEventIds.length
-    ? sourceEventIds.slice(0, 8).map((eventId) => `| \`${eventId}\` | [打开原文](${sourceContextUrl(session.sessionId, eventId)}) |`)
-    : ['| `none` | 暂无可定位原文 |'];
   return [
     `# ${topic.title || topic.topicId}`,
     '',
-    `> Raw IDs: ${renderSourceIdChips(sourceEventIds)}`,
-    '',
     '## Summary',
-    cleanMarkdownBody(topic.overview || '暂无概览。'),
+    ...renderSourcedBulletList([], {
+      fallback: cleanMarkdownBody(topic.overview || '暂无概览。'),
+      sessionId: session.sessionId,
+      sourceEventId: primarySource,
+    }),
     '',
     '## Key Changes',
-    ...renderBulletList(topic.decisions, topic.overview),
+    ...renderSourcedBulletList(topic.decisions, {
+      fallback: topic.overview,
+      sessionId: session.sessionId,
+      sourceEventId: primarySource,
+    }),
     '',
     '## Open Questions',
     ...renderBulletList(topic.openQuestions),
@@ -376,13 +463,8 @@ function renderTopicMarkdown(topic = {}, session = {}) {
     ...renderBulletList(topic.nextActions),
     '',
     '## Original Context',
-    primarySource
-      ? `围绕 \`${primarySource}\` 打开动态原始上下文，默认显示前后各 10 条消息。`
-      : '暂无可定位原始上下文。',
-    '',
-    '| Raw ID | Link |',
-    '| --- | --- |',
-    ...sourceRows,
+    primarySource ? '围绕下面这条 Raw ID 打开动态原始上下文，默认显示前后各 10 条消息。' : '暂无可定位原始上下文。',
+    ...renderSourceReferenceLines(session.sessionId, primarySource),
   ].join('\n');
 }
 
@@ -508,6 +590,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
   });
   const summary = options.summary && options.summary.ok !== false ? options.summary : null;
   const l0 = cleanMarkdownBody(summary?.l0 || fallbackOverview).slice(0, 1800);
+  const l0Markdown = renderSummaryMarkdown(l0);
   const topics = asArray(summary?.topics).length
     ? asArray(summary.topics).map((topic) => normalizeSummaryTopic(topic, {
       topicId: fallbackTopicId,
@@ -533,7 +616,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     `# ${title}`,
     '',
     '## Summary',
-    l0 || '这段会话暂无可总结内容。',
+    l0Markdown || '这段会话暂无可总结内容。',
     '',
     '## Key Topics',
     '| Topic | Summary | Raw ID | Original Context |',
@@ -542,7 +625,11 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     '',
     '## Original Context',
     sourceEventIds[0]
-      ? `使用上方 **Raw ID** 可以打开动态原始上下文，例如 [围绕首条来源打开](${sourceContextUrl(session.sessionId, sourceEventIds[0])})。页面会以该消息为中心，按时间正序展示前后消息，并支持继续向上或向下加载。`
+      ? [
+        '使用上方 **Raw ID** 可以打开动态原始上下文，例如：',
+        `[围绕首条来源打开](${sourceContextUrl(session.sessionId, sourceEventIds[0])})`,
+        '页面会以该消息为中心，按时间正序展示前后消息，并支持继续向上或向下加载。',
+      ].join('\n')
       : '暂无可定位的原始上下文。',
     '',
     '## Closing Notes',
@@ -588,7 +675,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     rawEventId: sourceEventIds[0] || '',
     sourceEventIds,
     sourceRef: `${session.sessionId}/abstract.md#${sourceEventIds[0] || ''}`,
-    text: `${title}\n${l0}`,
+    text: `${title}\n${l0Markdown}`,
     vectorScore: 0,
     keywordScore: 0,
     freshnessScore: 1,

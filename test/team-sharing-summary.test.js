@@ -27,7 +27,11 @@ test('team sharing summary prompt asks for structured L0/L1/raw ids without hidd
   assert.match(prompt, /Topics Contract/);
   assert.match(prompt, /sourceEventIds/);
   assert.match(prompt, /总-分-总/);
+  assert.match(prompt, /4-6 个编号要点/);
+  assert.match(prompt, /不能输出一整段长文本/);
   assert.match(prompt, /不要输出 Source Anchors 大列表/);
+  assert.match(prompt, /链接必须独立成行/);
+  assert.match(prompt, /Raw ID 要贴近对应结论/);
   assert.match(prompt, /不要编造隐藏思考/);
   assert.match(prompt, /不是写“本 session 围绕某标题”/);
 });
@@ -77,6 +81,7 @@ test('team sharing summary client parses JSON response from OpenAI-compatible AP
   assert.equal(result.l0, '一句话摘要');
   assert.equal(result.topics[0].topicId, 'rerank-feedback');
   assert.deepEqual(result.topics[0].decisions, ['返回 top5']);
+  assert.deepEqual(result.topics[0].sourceEventIds, ['evt_1']);
   assert.deepEqual(result.activity.changedPaths, ['abstract.md', 'topics/rerank-feedback.md', 'activities.json']);
   assert.equal(result.activitySummary, '更新 rerank topic。');
   assert.equal(calls[0].url, 'https://model.example/v1/chat/completions');
@@ -135,10 +140,12 @@ test('team sharing sync uses injected authoritative summary and falls back safel
   assert.equal(result.ok, true);
   const abstract = state.teamSharing.abstracts.sess_summary;
   assert.match(abstract.abstractMarkdown, /^# Rerank summary session/m);
-  assert.match(abstract.abstractMarkdown, /讨论明确了 rerank top5/);
+  assert.match(abstract.abstractMarkdown, /1\. 讨论明确了 rerank top5/);
   assert.match(abstract.abstractMarkdown, /Key Topics/);
   assert.doesNotMatch(abstract.abstractMarkdown, /Source Anchors/);
-  assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /Raw IDs/);
+  assert.doesNotMatch(abstract.topics['rerank-feedback'].overviewMarkdown, /Raw IDs/);
+  assert.doesNotMatch(abstract.topics['rerank-feedback'].overviewMarkdown, /evt_2/);
+  assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /Raw ID: `evt_1`/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /Original Context/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /反馈热度微调/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /返回 top5/);

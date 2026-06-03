@@ -205,7 +205,9 @@ test('team sharing route exposes a session workspace with abstract, topics, and 
   assert.equal(activities[0].action, 'merge_summary');
   assert.ok(activities[0].changedPaths.includes('abstract.md'));
   const topicFile = workspaceRes.data.files.find((file) => file.path === 'topics/rerank-feedback.md');
-  assert.match(topicFile.content, /Raw IDs/);
+  assert.doesNotMatch(topicFile.content, /Raw IDs/);
+  assert.match(topicFile.content, /Raw ID: `evt_1`/);
+  assert.match(topicFile.content, /\[打开原文\]\(\/team-sharing\/context\/sess_route\?anchorEventId=evt_1&limit=21&order=asc\)/);
   assert.match(topicFile.content, /Original Context/);
   assert.doesNotMatch(topicFile.content, /Source Anchors/);
 
