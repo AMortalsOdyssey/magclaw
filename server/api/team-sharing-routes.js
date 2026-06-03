@@ -603,7 +603,8 @@ function sendContextHtml(res, {
     function splitAutolinkUrl(raw) {
       let href = String(raw || '');
       let trailing = '';
-      while (/[),.;:!?，。；：！？]$/.test(href)) {
+      const trailingUrlChars = new Set([String.fromCharCode(96), "'", '"', ']', ')', ',', '.', ';', ':', '!', '?', '，', '。', '；', '：', '！', '？']);
+      while (trailingUrlChars.has(href.slice(-1))) {
         trailing = href.slice(-1) + trailing;
         href = href.slice(0, -1);
       }

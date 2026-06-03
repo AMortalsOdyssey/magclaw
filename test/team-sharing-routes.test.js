@@ -102,7 +102,7 @@ function syncBody() {
         eventId: 'evt_2',
         ordinal: 2,
         role: 'assistant',
-        text: '结论：先 Zilliz 召回，再 rerank，打开原文后写 feedback。',
+        text: '结论：先 Zilliz 召回，再 rerank，打开 `https://magclaw.example/team-sharing/context/sess_route` 后写 feedback。',
         createdAt: '2026-06-01T09:59:00.000Z',
       },
     ],
@@ -656,6 +656,8 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /contentSegments/);
   assert.match(res.body, /load-more-prev/);
   assert.match(res.body, /load-more-next/);
+  assert.match(res.body, /trailingUrlChars/);
+  assert.match(res.body, /String\.fromCharCode\(96\)/);
 });
 
 test('team sharing context page redirects unauthenticated browsers to login with returnTo', async () => {
