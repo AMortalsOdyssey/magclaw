@@ -460,6 +460,46 @@ test('team sharing rerank returns diverse top5 and feedback changes later orderi
   assert.ok(third.results.find((item) => item.vectorDocumentId === 'doc_a').hotnessScore < boosted.hotnessScore);
 });
 
+test('team sharing rerank refreshes stale vector payload from local authoritative document', () => {
+  const teamSharingState = createInitialTeamSharingState();
+  teamSharingState.vectorDocuments.push({
+    vectorDocumentId: 'sess_title:L1:session-sync-hooks',
+    sessionId: 'sess_title',
+    topicId: 'session-sync-hooks',
+    layer: 'L1',
+    title: '验收会话总结共享',
+    text: '验收会话总结共享\nSession sync hooks 已更新为标题驱动。',
+    sourceRef: 'sess_title/topics/session-sync-hooks.md#evt_current',
+    rawEventId: 'evt_current',
+  });
+
+  const ranked = rankTeamSharingCandidates({
+    query: 'session sync hooks',
+    candidates: [{
+      vectorDocumentId: 'sess_title:L1:session-sync-hooks',
+      sessionId: 'sess_title',
+      topicId: 'session-sync-hooks',
+      layer: 'L1',
+      title: '旧的首条用户消息标题',
+      text: '旧 payload',
+      sourceRef: 'sess_title/topics/session-sync-hooks.md#evt_old',
+      rawEventId: 'evt_old',
+      vectorScore: 0.8,
+      keywordScore: 0.7,
+      freshnessScore: 0.5,
+    }],
+    teamSharingState,
+    rerankResults: [{ index: 0, score: 0.9 }],
+    now: () => '2026-06-01T09:00:00.000Z',
+    limit: 5,
+  });
+
+  assert.equal(ranked.results[0].title, '验收会话总结共享');
+  assert.equal(ranked.results[0].rawEventId, 'evt_current');
+  assert.match(ranked.results[0].text, /Session sync hooks/);
+  assert.equal(ranked.results[0].vectorScore, 0.8);
+});
+
 test('team sharing hotness dedupes repeated feedback from the same actor before capping', () => {
   const teamSharingState = createInitialTeamSharingState();
   const base = {

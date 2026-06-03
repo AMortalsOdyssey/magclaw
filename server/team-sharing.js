@@ -910,6 +910,7 @@ export function rankTeamSharingCandidates(params = {}) {
   const teamSharingState = ensureTeamSharingState(params.teamSharingState);
   const queryId = params.queryId || `tmq_${stableHash(`${params.query || ''}:${Date.now()}:${Math.random()}`)}`;
   const rerankByIndex = new Map(asArray(params.rerankResults).map((item) => [Number(item.index), clamp01(item.score)]));
+  const currentDocumentsById = new Map(asArray(teamSharingState.vectorDocuments).map((doc) => [doc.vectorDocumentId, doc]));
   const trace = {
     queryId,
     normalizedQuery: cleanText(params.query || ''),
@@ -921,6 +922,16 @@ export function rankTeamSharingCandidates(params = {}) {
     selectedTop5: [],
   };
   const scored = asArray(params.candidates).map((candidate, index) => {
+    const currentDocument = currentDocumentsById.get(candidate.vectorDocumentId);
+    const enrichedCandidate = currentDocument ? {
+      ...candidate,
+      ...currentDocument,
+      vectorScore: candidate.vectorScore ?? candidate.score ?? currentDocument.vectorScore,
+      score: candidate.score,
+      keywordScore: candidate.keywordScore ?? currentDocument.keywordScore,
+      freshnessScore: candidate.freshnessScore ?? currentDocument.freshnessScore,
+    } : candidate;
+    candidate = enrichedCandidate;
     const vectorScore = clamp01(candidate.vectorScore ?? candidate.score);
     const rerankScore = rerankByIndex.has(index) ? rerankByIndex.get(index) : vectorScore;
     const keywordScore = clamp01(candidate.keywordScore);
