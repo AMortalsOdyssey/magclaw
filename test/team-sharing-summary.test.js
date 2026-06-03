@@ -140,8 +140,12 @@ test('team sharing sync uses injected authoritative summary and falls back safel
   assert.equal(result.ok, true);
   const abstract = state.teamSharing.abstracts.sess_summary;
   assert.match(abstract.abstractMarkdown, /^# Rerank summary session/m);
-  assert.match(abstract.abstractMarkdown, /1\. 讨论明确了 rerank top5/);
+  assert.match(abstract.abstractMarkdown, /1\. \*\*本轮诉求\*\*/);
+  assert.match(abstract.abstractMarkdown, /\n\s+- 讨论明确了 rerank top5/);
   assert.match(abstract.abstractMarkdown, /Key Topics/);
+  assert.match(abstract.abstractMarkdown, /### Rerank feedback/);
+  assert.match(abstract.abstractMarkdown, /\n\s+\[打开 Topic 文档\]\(topics\/rerank-feedback\.md\)\n/);
+  assert.doesNotMatch(abstract.abstractMarkdown, /\| Topic \| Summary \|/);
   assert.doesNotMatch(abstract.abstractMarkdown, /Source Anchors/);
   assert.doesNotMatch(abstract.topics['rerank-feedback'].overviewMarkdown, /Raw IDs/);
   assert.doesNotMatch(abstract.topics['rerank-feedback'].overviewMarkdown, /evt_2/);

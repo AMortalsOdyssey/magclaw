@@ -407,12 +407,14 @@ function isolateMarkdownLinks(value = '') {
 function renderSummaryMarkdown(value = '') {
   const body = isolateMarkdownLinks(cleanMarkdownBody(value || ''));
   if (!body) return '这段会话暂无可总结内容。';
-  if (markdownHasStructure(body)) return normalizeStructuredMarkdown(body);
   const standaloneLinks = body.split('\n').map((line) => line.trim()).filter((line) => /^https?:\/\//i.test(line));
   const textBody = body.split('\n').filter((line) => !/^https?:\/\//i.test(line.trim())).join('\n');
+  if (markdownHasStructure(body)) {
+    return ensureNestedSummaryMarkdown(normalizeStructuredMarkdown(body), textBody, standaloneLinks);
+  }
   const points = splitSummaryPoints(textBody);
   if (!points.length) return body;
-  return renderNumberedSummaryPoints(points, standaloneLinks);
+  return ensureNestedSummaryMarkdown(renderNumberedSummaryPoints(points, standaloneLinks), textBody, standaloneLinks);
 }
 
 function renderNumberedSummaryPoints(points = [], standaloneLinks = []) {
@@ -437,6 +439,58 @@ function renderNumberedSummaryPoints(points = [], standaloneLinks = []) {
     }
     displayIndex += 1;
   }
+  if (!rows.some((line) => /^\s+-\s+/.test(line)) && points.length >= 1) {
+    return renderGroupedSummaryPoints(points, standaloneLinks);
+  }
+  return rows.join('\n');
+}
+
+function ensureNestedSummaryMarkdown(markdown = '', rawText = '', standaloneLinks = []) {
+  const rendered = String(markdown || '').trim();
+  if (!rendered || /\n\s+-\s+/.test(rendered)) return rendered;
+  const points = splitSummaryPoints(rawText || rendered);
+  if (!points.length) return rendered;
+  return renderGroupedSummaryPoints(points, standaloneLinks);
+}
+
+function summaryGroupKey(value = '') {
+  const text = String(value || '');
+  if (/部署|上线|发布|验收|测试环境|readyz|Sentinel|CI\/CD/i.test(text)) return 'deploy';
+  if (/workspace|Markdown|abstract|summary|Key Changes|topic|Raw ID|链接|预览|阅读体验/i.test(text)) return 'workspace';
+  if (/context|上下文|检索|索引|hook|sync|session title|Agent|Codex|ClaudeCode/i.test(text)) return 'context';
+  return 'general';
+}
+
+function summaryGroupTitle(key = 'general') {
+  if (key === 'deploy') return '部署与验收';
+  if (key === 'workspace') return 'Workspace Markdown 体验';
+  if (key === 'context') return '上下文与索引';
+  return '本轮诉求';
+}
+
+function renderGroupedSummaryPoints(points = [], standaloneLinks = []) {
+  const groups = [];
+  const byKey = new Map();
+  for (const point of points) {
+    const cleaned = cleanText(point);
+    if (!cleaned) continue;
+    const key = summaryGroupKey(cleaned);
+    if (!byKey.has(key)) {
+      const group = { key, title: summaryGroupTitle(key), items: [] };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    byKey.get(key).items.push(cleaned);
+  }
+  if (!groups.length) return '';
+  const rows = [];
+  groups.forEach((group, index) => {
+    rows.push(`${index + 1}. **${group.title}**`);
+    for (const item of group.items.slice(0, 5)) rows.push(`   - ${summaryLead(item)}`);
+    if (index === 0 && standaloneLinks.length) {
+      for (const link of standaloneLinks.slice(0, 3)) rows.push(`   - ${link}`);
+    }
+  });
   return rows.join('\n');
 }
 
@@ -515,6 +569,28 @@ function renderTopicMarkdown(topic = {}, session = {}) {
     primarySource ? '围绕下面这条 Raw ID 打开动态原始上下文，默认显示前后各 10 条消息。' : '暂无可定位原始上下文。',
     ...renderSourceReferenceLines(session.sessionId, primarySource),
   ].join('\n');
+}
+
+function renderTopicOverviewBlocks(topics = [], session = {}) {
+  const cleanTopics = asArray(topics);
+  if (!cleanTopics.length) return ['- 暂无 topic'];
+  return cleanTopics.flatMap((topic, index) => {
+    const rawId = asArray(topic.sourceEventIds)[0] || '';
+    const contextLink = rawId ? `[打开原文](${sourceContextUrl(session.sessionId, rawId)})` : '暂无可定位原文';
+    const summaryPoints = splitSummaryPoints(cleanText(topic.overview), 4);
+    return [
+      ...(index > 0 ? [''] : []),
+      `### ${topic.title || topic.topicId}`,
+      '',
+      '- 摘要：',
+      ...(summaryPoints.length ? summaryPoints.map((item) => `  - ${summaryLead(item)}`) : ['  - 暂无摘要']),
+      `- Raw ID: \`${rawId || 'none'}\``,
+      '- Topic 文档：',
+      `  [打开 Topic 文档](topics/${topic.topicId}.md)`,
+      '- 原文：',
+      `  ${contextLink}`,
+    ];
+  });
 }
 
 function activityRecordFromSummary({ session, summary, acceptedEvents, topics, updatedAt, revision } = {}) {
@@ -656,11 +732,6 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
       openQuestions: [],
       nextActions: [],
     })];
-  const topicRows = topics.map((topic) => {
-    const rawId = asArray(topic.sourceEventIds)[0] || '';
-    const contextLink = rawId ? `[打开原文](${sourceContextUrl(session.sessionId, rawId)})` : '暂无';
-    return `| [${topic.title || topic.topicId}](topics/${topic.topicId}.md) | ${cleanText(topic.overview).slice(0, 180)} | \`${rawId || 'none'}\` | ${contextLink} |`;
-  });
   const abstractMarkdown = [
     `# ${title}`,
     '',
@@ -668,9 +739,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     l0Markdown || '这段会话暂无可总结内容。',
     '',
     '## Key Topics',
-    '| Topic | Summary | Raw ID | Original Context |',
-    '| --- | --- | --- | --- |',
-    ...(topicRows.length ? topicRows : ['| 暂无 topic | 暂无摘要 | `none` | 暂无 |']),
+    ...renderTopicOverviewBlocks(topics, session),
     '',
     '## Original Context',
     sourceEventIds[0]

@@ -178,9 +178,12 @@ test('team sharing abstracts format long summary links and keep raw ids beside c
   assert.equal(result.ok, true);
   const abstract = state.teamSharing.abstracts.sess_md_format;
   assert.match(abstract.abstractMarkdown, /^# 验收会话总结共享/m);
-  assert.match(abstract.abstractMarkdown, /1\. \*\*部署页面已确认\*\*/);
-  assert.match(abstract.abstractMarkdown, /https:\/\/magclaw-testing\.multiego\.me\/s\/share_6929a2251b\n\s+- 后续需要修复摘要结构/);
+  assert.match(abstract.abstractMarkdown, /1\. \*\*部署页面已确认\*\*：\nhttps:\/\/magclaw-testing\.multiego\.me\/s\/share_6929a2251b/);
   assert.match(abstract.abstractMarkdown, /2\. \*\*线上验收结果\*\*：\n\s+- readyz 返回 200/);
+  assert.match(abstract.abstractMarkdown, /\n\s+- Workspace Markdown 必须分层展示。/);
+  assert.match(abstract.abstractMarkdown, /### Rerank Feedback/);
+  assert.match(abstract.abstractMarkdown, /\n\s+\[打开 Topic 文档\]\(topics\/rerank-feedback\.md\)\n/);
+  assert.doesNotMatch(abstract.abstractMarkdown, /\| Topic \| Summary \|/);
   assert.match(abstract.abstractMarkdown, /例如：\n\[围绕首条来源打开\]\(\/team-sharing\/context\/sess_md_format\?anchorEventId=evt_url_1&limit=21&order=asc\)\n页面会以该消息为中心/);
   assert.doesNotMatch(abstract.abstractMarkdown, /Source Anchors|Raw IDs|Tool summary|used_tools/);
   const topicMarkdown = abstract.topics['rerank-feedback'].overviewMarkdown;
