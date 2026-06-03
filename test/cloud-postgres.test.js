@@ -1022,6 +1022,82 @@ test('postgres store can reset transient online state when loading a fresh serve
   assert.deepEqual(state.replies[0].reactions.map((item) => item.key), ['heart']);
 });
 
+test('postgres store merges team sharing state records across workspaces on load', async () => {
+  const createdAt = '2026-06-01T00:00:00.000Z';
+  const rowsForTable = {
+    cloud_state_records: [
+      {
+        workspace_id: 'wsp_owner',
+        kind: 'teamSharing',
+        id: 'value',
+        position: 0,
+        payload: {
+          sessions: {
+            sess_shared: { sessionId: 'sess_shared', workspaceId: 'wsp_owner', channelId: 'chan_owner', abstractRevision: 3, updatedAt: '2026-06-01T00:03:00.000Z' },
+          },
+          events: {
+            sess_shared: [
+              { eventId: 'evt_1', ordinal: 1, createdAt },
+              { eventId: 'evt_2', ordinal: 2, createdAt: '2026-06-01T00:02:00.000Z' },
+            ],
+          },
+          abstracts: {
+            sess_shared: { revision: 3, abstractMarkdown: '# Owner' },
+          },
+          vectorDocuments: [
+            { vectorDocumentId: 'sess_shared:L0', sessionId: 'sess_shared', workspaceId: 'wsp_owner', layer: 'L0' },
+          ],
+        },
+      },
+      {
+        workspace_id: 'wsp_other',
+        kind: 'teamSharing',
+        id: 'value',
+        position: 0,
+        payload: {
+          sessions: {
+            sess_other: { sessionId: 'sess_other', workspaceId: 'wsp_other', channelId: 'chan_other', abstractRevision: 1, updatedAt: createdAt },
+            sess_shared: { sessionId: 'sess_shared', workspaceId: 'wsp_owner', channelId: 'chan_stale', abstractRevision: 1, updatedAt: createdAt },
+          },
+          events: {
+            sess_other: [{ eventId: 'evt_other', ordinal: 1, createdAt }],
+            sess_shared: [{ eventId: 'evt_1', ordinal: 1, createdAt }],
+          },
+          abstracts: {
+            sess_other: { revision: 1, abstractMarkdown: '# Other' },
+            sess_shared: { revision: 1, abstractMarkdown: '# Stale' },
+          },
+        },
+      },
+    ],
+  };
+  const pool = {
+    async connect() {
+      return {
+        async query(sql) {
+          const match = String(sql).match(/FROM "magclaw"\."([^"]+)"/);
+          return { rows: match ? (rowsForTable[match[1]] || []) : [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const state = {};
+  await store.loadIntoState(state);
+
+  assert.equal(state.teamSharing.sessions.sess_shared.channelId, 'chan_owner');
+  assert.equal(state.teamSharing.sessions.sess_shared.abstractRevision, 3);
+  assert.equal(state.teamSharing.abstracts.sess_shared.revision, 3);
+  assert.deepEqual(state.teamSharing.events.sess_shared.map((event) => event.eventId), ['evt_1', 'evt_2']);
+  assert.equal(state.teamSharing.sessions.sess_other.channelId, 'chan_other');
+});
+
 test('postgres store upserts duplicate durable state records without crashing', async () => {
   const queries = [];
   const pool = {
@@ -1116,6 +1192,75 @@ test('postgres store persists team sharing object as durable state', async () =>
   assert.equal(teamSharingRow[0], 'wsp_main');
   assert.equal(teamSharingRow[2], 'value');
   assert.equal(JSON.parse(teamSharingRow[6]).sessions.sess_1.channelId, 'chan_team');
+});
+
+test('postgres store persists scoped team sharing state to the requested workspace', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const createdAt = '2026-06-01T00:00:00.000Z';
+  await store.persistWorkspaceFromState({
+    connection: { workspaceId: 'wsp_other' },
+    teamSharing: {
+      sessions: {
+        sess_main: { sessionId: 'sess_main', workspaceId: 'wsp_main', channelId: 'chan_main', abstractRevision: 2 },
+        sess_other: { sessionId: 'sess_other', workspaceId: 'wsp_other', channelId: 'chan_other', abstractRevision: 1 },
+      },
+      events: {
+        sess_main: [{ eventId: 'evt_main', ordinal: 1, createdAt }],
+        sess_other: [{ eventId: 'evt_other', ordinal: 1, createdAt }],
+      },
+      abstracts: {
+        sess_main: { revision: 2, abstractMarkdown: '# Main' },
+        sess_other: { revision: 1, abstractMarkdown: '# Other' },
+      },
+      vectorDocuments: [
+        { vectorDocumentId: 'sess_main:L0', sessionId: 'sess_main', workspaceId: 'wsp_main', layer: 'L0' },
+        { vectorDocumentId: 'sess_other:L0', sessionId: 'sess_other', workspaceId: 'wsp_other', layer: 'L0' },
+      ],
+    },
+    cloud: {
+      workspaces: [
+        { id: 'wsp_main', slug: 'main', name: 'Main', createdAt, updatedAt: createdAt },
+        { id: 'wsp_other', slug: 'other', name: 'Other', createdAt, updatedAt: createdAt },
+      ],
+      users: [],
+      workspaceMembers: [],
+      sessions: [],
+      invitations: [],
+      passwordResetTokens: [],
+    },
+  }, 'wsp_main');
+
+  const stateRecordInsert = queries.find((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_state_records"'));
+  assert.ok(stateRecordInsert);
+  const rows = [];
+  for (let index = 0; index < stateRecordInsert.params.length; index += 7) {
+    rows.push(stateRecordInsert.params.slice(index, index + 7));
+  }
+  const teamSharingRow = rows.find((row) => row[1] === 'teamSharing');
+  assert.ok(teamSharingRow);
+  assert.equal(teamSharingRow[0], 'wsp_main');
+  const payload = JSON.parse(teamSharingRow[6]);
+  assert.deepEqual(Object.keys(payload.sessions), ['sess_main']);
+  assert.equal(payload.abstracts.sess_main.revision, 2);
+  assert.equal(payload.sessions.sess_other, undefined);
+  assert.equal(payload.vectorDocuments.some((doc) => doc.sessionId === 'sess_other'), false);
 });
 
 test('postgres store skips default local placeholder workspace runtime persistence', async () => {
@@ -1730,6 +1875,27 @@ test('postgres store reloads a single workspace without replacing other workspac
           if (sql.includes('cloud_channels')) {
             return { rows: [{ id: 'chan_one_new', workspace_id: 'wsp_one', name: 'one-new', description: '', archived_at: null, created_at: createdAt, updated_at: createdAt, metadata: { state: { humanIds: ['hum_one_new'], memberIds: ['hum_one_new'] } } }] };
           }
+          if (sql.includes('cloud_state_records')) {
+            return {
+              rows: [{
+                workspace_id: 'wsp_one',
+                kind: 'teamSharing',
+                id: 'value',
+                position: 0,
+                payload: {
+                  sessions: {
+                    sess_one_new: { sessionId: 'sess_one_new', workspaceId: 'wsp_one', channelId: 'chan_one_new', abstractRevision: 1 },
+                  },
+                  abstracts: {
+                    sess_one_new: { revision: 1, abstractMarkdown: '# One New' },
+                  },
+                  vectorDocuments: [
+                    { vectorDocumentId: 'sess_one_new:L0', sessionId: 'sess_one_new', workspaceId: 'wsp_one', layer: 'L0' },
+                  ],
+                },
+              }],
+            };
+          }
           return { rows: [] };
         },
         release() {},
@@ -1763,6 +1929,20 @@ test('postgres store reloads a single workspace without replacing other workspac
     missions: [],
     runs: [],
     projects: [],
+    teamSharing: {
+      sessions: {
+        sess_one_old: { sessionId: 'sess_one_old', workspaceId: 'wsp_one', channelId: 'chan_one_old', abstractRevision: 1 },
+        sess_two: { sessionId: 'sess_two', workspaceId: 'wsp_two', channelId: 'chan_two', abstractRevision: 1 },
+      },
+      abstracts: {
+        sess_one_old: { revision: 1, abstractMarkdown: '# One Old' },
+        sess_two: { revision: 1, abstractMarkdown: '# Two' },
+      },
+      vectorDocuments: [
+        { vectorDocumentId: 'sess_one_old:L0', sessionId: 'sess_one_old', workspaceId: 'wsp_one', layer: 'L0' },
+        { vectorDocumentId: 'sess_two:L0', sessionId: 'sess_two', workspaceId: 'wsp_two', layer: 'L0' },
+      ],
+    },
   };
   await store.loadWorkspaceIntoState(state, 'wsp_one');
   assert.equal(state.humans.some((human) => human.id === 'hum_one_old'), false);
@@ -1771,6 +1951,11 @@ test('postgres store reloads a single workspace without replacing other workspac
   assert.equal(state.channels.some((channel) => channel.id === 'chan_two'), true);
   assert.equal(state.humans.some((human) => human.id === 'hum_one_new'), true);
   assert.equal(state.channels.some((channel) => channel.id === 'chan_one_new'), true);
+  assert.equal(state.teamSharing.sessions.sess_one_old, undefined);
+  assert.equal(state.teamSharing.sessions.sess_one_new.channelId, 'chan_one_new');
+  assert.equal(state.teamSharing.sessions.sess_two.channelId, 'chan_two');
+  assert.equal(state.teamSharing.abstracts.sess_one_new.revision, 1);
+  assert.equal(state.teamSharing.vectorDocuments.some((doc) => doc.sessionId === 'sess_one_old'), false);
   assert.ok(queries.some((query) => query.sql.includes('cloud_humans') && query.params[0] === 'wsp_one'));
 });
 

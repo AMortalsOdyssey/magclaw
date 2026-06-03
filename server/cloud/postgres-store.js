@@ -66,6 +66,270 @@ function jsonObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function cloneJsonValue(value) {
+  return value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+}
+
+function objectHasKeys(value) {
+  return Object.keys(jsonObject(value)).length > 0;
+}
+
+function cleanIdentifier(value) {
+  return String(value || '').trim();
+}
+
+function teamSharingRecordWorkspaceId(record) {
+  return cleanIdentifier(record?.workspaceId || record?.workspace_id);
+}
+
+function teamSharingRecordSessionId(record) {
+  return cleanIdentifier(record?.sessionId || record?.session_id);
+}
+
+function teamSharingRecordVersion(record = {}) {
+  return Math.max(
+    Number(record.revision || 0),
+    Number(record.abstractRevision || 0),
+    Number(record.lastEventOrdinal || 0),
+    Number(record.ordinal || 0),
+  );
+}
+
+function teamSharingRecordTime(record = {}) {
+  const time = Date.parse(record.updatedAt || record.updated_at || record.createdAt || record.created_at || '');
+  return Number.isFinite(time) ? time : 0;
+}
+
+function preferTeamSharingRecord(existing, next) {
+  if (!existing) return cloneJsonValue(next);
+  if (!next) return cloneJsonValue(existing);
+  const existingVersion = teamSharingRecordVersion(existing);
+  const nextVersion = teamSharingRecordVersion(next);
+  if (nextVersion < existingVersion) return cloneJsonValue(existing);
+  if (nextVersion > existingVersion) return cloneJsonValue(next);
+  const existingTime = teamSharingRecordTime(existing);
+  const nextTime = teamSharingRecordTime(next);
+  if (nextTime < existingTime) return cloneJsonValue(existing);
+  if (nextTime > existingTime) return cloneJsonValue(next);
+  return { ...cloneJsonValue(existing), ...cloneJsonValue(next) };
+}
+
+function teamSharingArrayIdentity(key, item, index) {
+  const record = jsonObject(item);
+  const explicit = record.activityId || record.feedbackId || record.vectorDocumentId || record.queryId || record.id;
+  if (explicit) return `${key}:${explicit}`;
+  const sessionId = teamSharingRecordSessionId(record);
+  if (sessionId && record.revision != null) return `${key}:${sessionId}:revision:${record.revision}`;
+  if (sessionId && record.createdAt) return `${key}:${sessionId}:created:${record.createdAt}`;
+  return `${key}:index:${index}:${JSON.stringify(item)}`;
+}
+
+function mergeTeamSharingArrays(key, ...arrays) {
+  const merged = new Map();
+  let index = 0;
+  for (const array of arrays) {
+    for (const item of safeArray(array)) {
+      const identity = teamSharingArrayIdentity(key, item, index);
+      merged.set(identity, preferTeamSharingRecord(merged.get(identity), item));
+      index += 1;
+    }
+  }
+  return [...merged.values()];
+}
+
+function mergeTeamSharingRecordMap(...maps) {
+  const merged = {};
+  for (const map of maps) {
+    for (const [key, value] of Object.entries(jsonObject(map))) {
+      merged[key] = preferTeamSharingRecord(merged[key], value);
+    }
+  }
+  return merged;
+}
+
+function teamSharingEventIdentity(event, index) {
+  const record = jsonObject(event);
+  return record.eventId || record.id || `${record.ordinal || index}:${record.createdAt || ''}`;
+}
+
+function compareTeamSharingEvents(left, right) {
+  return Number(left?.ordinal || 0) - Number(right?.ordinal || 0)
+    || String(left?.createdAt || '').localeCompare(String(right?.createdAt || ''))
+    || String(left?.eventId || '').localeCompare(String(right?.eventId || ''));
+}
+
+function mergeTeamSharingEventsMap(...maps) {
+  const merged = {};
+  for (const map of maps) {
+    for (const [sessionId, events] of Object.entries(jsonObject(map))) {
+      const byId = new Map();
+      let index = 0;
+      for (const event of safeArray(merged[sessionId])) {
+        byId.set(teamSharingEventIdentity(event, index), event);
+        index += 1;
+      }
+      for (const event of safeArray(events)) {
+        const identity = teamSharingEventIdentity(event, index);
+        byId.set(identity, preferTeamSharingRecord(byId.get(identity), event));
+        index += 1;
+      }
+      merged[sessionId] = [...byId.values()].sort(compareTeamSharingEvents);
+    }
+  }
+  return merged;
+}
+
+function mergeTeamSharingAuth(leftAuth, rightAuth) {
+  const left = jsonObject(leftAuth);
+  const right = jsonObject(rightAuth);
+  if (!objectHasKeys(left) && !objectHasKeys(right)) return undefined;
+  return {
+    ...cloneJsonValue(left),
+    ...cloneJsonValue(right),
+    deviceRequests: mergeTeamSharingRecordMap(left.deviceRequests, right.deviceRequests),
+    tokens: mergeTeamSharingRecordMap(left.tokens, right.tokens),
+  };
+}
+
+function mergeTeamSharingState(leftValue, rightValue) {
+  const left = jsonObject(leftValue);
+  const right = jsonObject(rightValue);
+  const merged = {
+    ...cloneJsonValue(left),
+    ...cloneJsonValue(right),
+    sessions: mergeTeamSharingRecordMap(left.sessions, right.sessions),
+    events: mergeTeamSharingEventsMap(left.events, right.events),
+    syncLedger: mergeTeamSharingRecordMap(left.syncLedger, right.syncLedger),
+    abstracts: mergeTeamSharingRecordMap(left.abstracts, right.abstracts),
+    activities: mergeTeamSharingArrays('activities', left.activities, right.activities),
+    feedback: mergeTeamSharingArrays('feedback', left.feedback, right.feedback),
+    vectorDocuments: mergeTeamSharingArrays('vectorDocuments', left.vectorDocuments, right.vectorDocuments),
+    searchTraces: mergeTeamSharingArrays('searchTraces', left.searchTraces, right.searchTraces),
+  };
+  const shares = mergeTeamSharingArrays('shares', left.shares, right.shares);
+  if (shares.length) merged.shares = shares;
+  const auth = mergeTeamSharingAuth(left.auth, right.auth);
+  if (auth) merged.auth = auth;
+  return merged;
+}
+
+function teamSharingSessionIdsForWorkspace(teamSharingState, workspaceId, options = {}) {
+  const cleanWorkspaceId = cleanIdentifier(workspaceId);
+  const includeUnscoped = Boolean(options.includeUnscoped);
+  const source = jsonObject(teamSharingState);
+  const sessionIds = new Set();
+  for (const [sessionId, session] of Object.entries(jsonObject(source.sessions))) {
+    const recordWorkspaceId = teamSharingRecordWorkspaceId(session);
+    if (recordWorkspaceId === cleanWorkspaceId || (includeUnscoped && !recordWorkspaceId)) {
+      sessionIds.add(cleanIdentifier(session?.sessionId || sessionId));
+    }
+  }
+  for (const collection of [source.activities, source.feedback, source.vectorDocuments, source.shares]) {
+    for (const record of safeArray(collection)) {
+      if (teamSharingRecordWorkspaceId(record) !== cleanWorkspaceId) continue;
+      const sessionId = teamSharingRecordSessionId(record);
+      if (sessionId) sessionIds.add(sessionId);
+    }
+  }
+  for (const [key, ledger] of Object.entries(jsonObject(source.syncLedger))) {
+    if (teamSharingRecordWorkspaceId(ledger) !== cleanWorkspaceId) continue;
+    const sessionId = teamSharingRecordSessionId(ledger) || cleanIdentifier(key);
+    if (sessionId) sessionIds.add(sessionId);
+  }
+  return sessionIds;
+}
+
+function filterTeamSharingAuthForWorkspace(authValue, workspaceId, includeMatches) {
+  const cleanWorkspaceId = cleanIdentifier(workspaceId);
+  const auth = jsonObject(authValue);
+  const filterMap = (map) => {
+    const result = {};
+    for (const [key, record] of Object.entries(jsonObject(map))) {
+      const matches = teamSharingRecordWorkspaceId(record) === cleanWorkspaceId;
+      if (includeMatches ? matches : !matches) result[key] = cloneJsonValue(record);
+    }
+    return result;
+  };
+  const next = {
+    ...cloneJsonValue(auth),
+    deviceRequests: filterMap(auth.deviceRequests),
+    tokens: filterMap(auth.tokens),
+  };
+  return objectHasKeys(next.deviceRequests) || objectHasKeys(next.tokens) ? next : undefined;
+}
+
+function filterTeamSharingStateForWorkspace(teamSharingState, workspaceId, options = {}) {
+  const cleanWorkspaceId = cleanIdentifier(workspaceId);
+  const includeMatches = options.includeMatches !== false;
+  const includeUnscoped = Boolean(options.includeUnscoped);
+  const source = jsonObject(teamSharingState);
+  const sessionIds = teamSharingSessionIdsForWorkspace(source, cleanWorkspaceId, { includeUnscoped });
+  const matchesRecord = (record) => {
+    const recordWorkspaceId = teamSharingRecordWorkspaceId(record);
+    const sessionId = teamSharingRecordSessionId(record);
+    if (recordWorkspaceId === cleanWorkspaceId) return true;
+    if (sessionId && sessionIds.has(sessionId)) return true;
+    return includeUnscoped && !recordWorkspaceId && !sessionId;
+  };
+  const keep = (matches) => (includeMatches ? matches : !matches);
+  const filterMap = (map, matcher) => {
+    const result = {};
+    for (const [key, value] of Object.entries(jsonObject(map))) {
+      if (keep(matcher(value, key))) result[key] = cloneJsonValue(value);
+    }
+    return result;
+  };
+  const sessions = filterMap(source.sessions, (session, key) => {
+    const recordWorkspaceId = teamSharingRecordWorkspaceId(session);
+    return recordWorkspaceId === cleanWorkspaceId
+      || (includeUnscoped && !recordWorkspaceId)
+      || sessionIds.has(cleanIdentifier(session?.sessionId || key));
+  });
+  const matchingVectorDocumentIds = new Set(safeArray(source.vectorDocuments)
+    .filter(matchesRecord)
+    .map((record) => cleanIdentifier(record?.vectorDocumentId))
+    .filter(Boolean));
+  const vectorDocuments = safeArray(source.vectorDocuments).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue);
+  const result = {
+    sessions,
+    events: filterMap(source.events, (_events, key) => sessionIds.has(cleanIdentifier(key))),
+    syncLedger: filterMap(source.syncLedger, (ledger, key) => {
+      const sessionId = teamSharingRecordSessionId(ledger);
+      return matchesRecord(ledger) || (sessionId && sessionIds.has(sessionId)) || sessionIds.has(cleanIdentifier(key));
+    }),
+    abstracts: filterMap(source.abstracts, (_abstract, key) => sessionIds.has(cleanIdentifier(key))),
+    activities: safeArray(source.activities).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue),
+    feedback: safeArray(source.feedback).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue),
+    vectorDocuments,
+    searchTraces: safeArray(source.searchTraces).filter((trace) => {
+      const matches = matchesRecord(trace)
+        || safeArray(trace?.selectedTop5).some((id) => matchingVectorDocumentIds.has(cleanIdentifier(id)))
+        || safeArray(trace?.vectorCandidates).some((id) => matchingVectorDocumentIds.has(cleanIdentifier(id)));
+      return keep(matches);
+    }).map(cloneJsonValue),
+  };
+  const shares = safeArray(source.shares).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue);
+  if (shares.length) result.shares = shares;
+  const auth = filterTeamSharingAuthForWorkspace(source.auth, cleanWorkspaceId, includeMatches);
+  if (auth) result.auth = auth;
+  return result;
+}
+
+function hasTeamSharingContent(teamSharingState) {
+  const source = jsonObject(teamSharingState);
+  return objectHasKeys(source.sessions)
+    || objectHasKeys(source.events)
+    || objectHasKeys(source.syncLedger)
+    || objectHasKeys(source.abstracts)
+    || safeArray(source.activities).length > 0
+    || safeArray(source.feedback).length > 0
+    || safeArray(source.vectorDocuments).length > 0
+    || safeArray(source.searchTraces).length > 0
+    || safeArray(source.shares).length > 0
+    || objectHasKeys(source.auth?.deviceRequests)
+    || objectHasKeys(source.auth?.tokens);
+}
+
 function parsePositiveInteger(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback;
   const parsed = Number(value);
@@ -2612,6 +2876,25 @@ export function createCloudPostgresStore(optionsInput = {}) {
     for (const key of DURABLE_STATE_RECORD_OBJECT_KEYS) {
       const value = state[key];
       if (!value || typeof value !== 'object') continue;
+      if (key === 'teamSharing') {
+        const defaultTeamSharingWorkspaceId = workspaceIdFor(value, state, cloud);
+        for (const workspaceId of ids) {
+          const scoped = filterTeamSharingStateForWorkspace(value, workspaceId, {
+            includeUnscoped: ids.length === 1 || defaultTeamSharingWorkspaceId === workspaceId,
+          });
+          if (!hasTeamSharingContent(scoped)) continue;
+          stateRecordRows.push([
+            workspaceId,
+            key,
+            'value',
+            0,
+            null,
+            null,
+            JSON.stringify(scoped),
+          ]);
+        }
+        continue;
+      }
       const workspaceId = workspaceIdFor(value, state, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       stateRecordRows.push([
@@ -3885,7 +4168,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       const tasks = await client.query(`SELECT * FROM ${table('cloud_tasks')} ORDER BY created_at ASC, id ASC`);
       const workItems = await client.query(`SELECT * FROM ${table('cloud_work_items')} ORDER BY created_at ASC, id ASC`);
       const attachments = await client.query(`SELECT * FROM ${table('cloud_attachments')} ORDER BY created_at ASC, id ASC`);
-      const stateRecords = await client.query(`SELECT * FROM ${table('cloud_state_records')} ORDER BY kind ASC, position ASC, id ASC`);
+      const stateRecords = await client.query(`SELECT * FROM ${table('cloud_state_records')} ORDER BY kind ASC, workspace_id ASC, position ASC, id ASC`);
       const computerTokens = await client.query(`SELECT * FROM ${table('cloud_computer_tokens')} ORDER BY created_at ASC, id ASC`);
       const pairingTokens = await client.query(`SELECT * FROM ${table('cloud_pairing_tokens')} ORDER BY created_at ASC, id ASC`);
       const agentDeliveries = await client.query(`SELECT * FROM ${table('cloud_agent_deliveries')} ORDER BY created_at ASC, id ASC`);
@@ -3918,12 +4201,17 @@ export function createCloudPostgresStore(optionsInput = {}) {
       state.routeEvents = [];
       state.systemNotifications = [];
       state.inboxReads = {};
+      state.teamSharing = {};
       const objectKeys = new Set(DURABLE_STATE_RECORD_OBJECT_KEYS);
       for (const row of stateRecords.rows) {
         const kind = row.kind;
         if (!kind) continue;
         if (EPHEMERAL_STATE_RECORD_KEYS.has(kind)) continue;
         if (objectKeys.has(kind) && row.id === 'value') {
+          if (kind === 'teamSharing') {
+            state.teamSharing = mergeTeamSharingState(state.teamSharing, jsonObject(row.payload));
+            continue;
+          }
           state[kind] = jsonObject(row.payload);
           continue;
         }
@@ -4026,6 +4314,19 @@ export function createCloudPostgresStore(optionsInput = {}) {
           .filter((row) => row.kind === kind)
           .map((row) => ({ ...jsonObject(row.payload), workspaceId: row.workspace_id }));
         replaceWorkspaceRows(kind, rows);
+      }
+      for (const kind of DURABLE_STATE_RECORD_OBJECT_KEYS) {
+        const row = stateRecords.rows.find((item) => item.kind === kind && item.id === 'value');
+        if (kind === 'teamSharing') {
+          const withoutWorkspace = filterTeamSharingStateForWorkspace(state.teamSharing, scopedWorkspaceId, {
+            includeMatches: false,
+          });
+          state.teamSharing = row
+            ? mergeTeamSharingState(withoutWorkspace, jsonObject(row.payload))
+            : withoutWorkspace;
+          continue;
+        }
+        if (row) state[kind] = jsonObject(row.payload);
       }
       state.updatedAt = requiredIso();
     });
