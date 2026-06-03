@@ -11,12 +11,70 @@ const FEEDBACK_WEIGHTS = Object.freeze({
   unhelpful: -0.12,
 });
 
-function cleanText(value = '') {
+function redactSecrets(value = '') {
   return String(value || '')
     .replace(/(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[^\s"',;)]+/gi, '[redacted-secret]')
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, 'Bearer [redacted-secret]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, 'Bearer [redacted-secret]');
+}
+
+function cleanText(value = '') {
+  return redactSecrets(value)
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function cleanMultilineText(value = '') {
+  return redactSecrets(value)
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function markdownLinkText(value = '') {
+  return String(value || '')
+    .replace(/\[([^\]\n]+)\]\((?:https?:\/\/|\/|\.\/|\.\.\/|#)[^)]+\)/g, '$1');
+}
+
+function cleanSessionTitle(value = '') {
+  const stripped = markdownLinkText(value)
+    .replace(/^#+\s+/, '')
+    .replace(/^\s*title\s*[:：]\s*/i, '');
+  return cleanText(stripped).slice(0, 180) || 'Untitled AI session';
+}
+
+function compactSelectedTextSnippet(value = '') {
+  return cleanText(markdownLinkText(value))
+    .replace(/^#+\s+/, '')
+    .slice(0, 80);
+}
+
+function normalizeSelectedTextPrompt(value = '') {
+  const raw = String(value || '').replace(/\r\n/g, '\n').trim();
+  if (!/selected text/i.test(raw) || !/my request for codex/i.test(raw)) return raw;
+
+  const requestMatch = raw.match(/(?:^|\n)\s*#+\s*My request for Codex:\s*\n?([\s\S]*)/i)
+    || raw.match(/My request for Codex:\s*([\s\S]*)/i);
+  let request = requestMatch?.[1] || '';
+  request = request
+    .replace(/(?:^|\n)\s*#+\s*In app browser:[\s\S]*$/i, '')
+    .replace(/(?:^|\n)\s*The next image[\s\S]*$/i, '')
+    .trim();
+
+  let selected = raw.match(/(?:^|\n)\s*#+\s*Selection\s+\d+\s*\n+([\s\S]*?)(?=(?:^|\n)\s*#+\s*My request for Codex:)/i)?.[1] || '';
+  if (!selected) {
+    selected = raw.match(/Selected text:\s*(?:#+\s*)?(?:Selection\s+\d+\s*)?(?:[→:：-]\s*)?([\s\S]*?)(?:\s*[→\n]\s*#+?\s*My request for Codex:|#+\s*My request for Codex:)/i)?.[1] || '';
+  }
+  const marker = compactSelectedTextSnippet(selected);
+  const parts = [
+    request || raw,
+    marker ? `已添加文本片段：${marker}` : '已添加文本片段',
+  ].filter(Boolean);
+  return parts.join('\n\n');
+}
+
+function cleanEventText(value = '') {
+  return cleanMultilineText(normalizeSelectedTextPrompt(markdownLinkText(value)));
 }
 
 function stableHash(value = '') {
@@ -72,6 +130,13 @@ function normalizeRuntime(value) {
   return runtime || 'unknown';
 }
 
+function runtimeAgentId(runtime) {
+  const cleanRuntime = normalizeRuntime(runtime);
+  if (cleanRuntime === 'claude_code') return 'team_sharing_claude_code';
+  if (cleanRuntime === 'codex') return 'team_sharing_codex';
+  return `team_sharing_${safeSegment(cleanRuntime || 'runtime', 'runtime')}`;
+}
+
 function toolNamesForEvent(event = {}) {
   return asArray(event.toolCalls || event.tools || event.usedTools)
     .map((tool) => String(tool?.name || tool?.function?.name || tool || '').trim())
@@ -84,7 +149,7 @@ function normalizeTeamSharingEvent(event = {}, sessionId = '') {
   const role = String(event.role || event.type || '').trim().toLowerCase();
   if (!['user', 'assistant', 'agent'].includes(role)) return null;
   const cleanRole = role === 'agent' ? 'assistant' : role;
-  const text = cleanText(event.cleanText || event.text || event.content || event.body || '');
+  const text = cleanEventText(event.cleanText || event.text || event.content || event.body || '');
   const tools = cleanRole === 'assistant' ? toolNamesForEvent(event) : [];
   const body = [text, tools.length ? `used_tools=${tools.join(',')}` : ''].filter(Boolean).join('\n');
   if (!body) return null;
@@ -274,6 +339,12 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
   }
 
   const createdAt = now();
+  const uploader = {
+    id: String(packageBody.humanId || 'hum_local').trim() || 'hum_local',
+    name: cleanText(packageBody.humanName || packageBody.uploaderName || packageBody.userName || ''),
+    avatar: String(packageBody.humanAvatar || packageBody.uploaderAvatar || packageBody.userAvatar || '').trim(),
+    email: String(packageBody.humanEmail || packageBody.uploaderEmail || packageBody.userEmail || '').trim(),
+  };
   const session = teamSharingState.sessions[sessionId] || {
     sessionId,
     workspaceId: String(packageBody.workspaceId || state.connection?.workspaceId || 'local'),
@@ -281,7 +352,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     runtime: normalizeRuntime(packageBody.runtime),
     projectKey: String(packageBody.projectKey || ''),
     projectPathHash: String(packageBody.projectPathHash || ''),
-    title: cleanText(packageBody.title || 'Untitled AI session') || 'Untitled AI session',
+    title: cleanSessionTitle(packageBody.title || 'Untitled AI session'),
     messageId: '',
     lastEventOrdinal: 0,
     abstractRevision: 0,
@@ -290,18 +361,26 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     createdAt,
     updatedAt: createdAt,
   };
+  session.title = cleanSessionTitle(packageBody.title || session.title || 'Untitled AI session');
+  session.runtime = normalizeRuntime(packageBody.runtime || session.runtime);
   session.channelId = channelId;
+  session.uploader = {
+    ...(session.uploader || {}),
+    ...Object.fromEntries(Object.entries(uploader).filter(([, value]) => Boolean(value))),
+  };
   session.optionalLocalDigest = cleanText(packageBody.optionalLocalDigest || session.optionalLocalDigest || '');
   teamSharingState.sessions[sessionId] = session;
 
-  if (!session.messageId) {
-    const message = {
+  state.messages = asArray(state.messages);
+  let message = session.messageId ? state.messages.find((item) => item.id === session.messageId) : null;
+  if (!message) {
+    message = {
       id: makeId('msg'),
       workspaceId: session.workspaceId,
       spaceType: 'channel',
       spaceId: channelId,
-      authorType: 'system',
-      authorId: 'team_sharing',
+      authorType: 'human',
+      authorId: uploader.id,
       body: session.title,
       attachmentIds: [],
       mentionedAgentIds: [],
@@ -313,19 +392,28 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
       followedBy: [],
       createdAt,
       updatedAt: createdAt,
-      metadata: {
-        systemKind: 'team_sharing_session',
-        teamSharing: {
-          runtime: session.runtime,
-          projectKey: session.projectKey,
-          sessionId,
-        },
-      },
+      metadata: {},
     };
-    state.messages = asArray(state.messages);
     state.messages.push(message);
     session.messageId = message.id;
   }
+  message.workspaceId = session.workspaceId;
+  message.spaceType = 'channel';
+  message.spaceId = channelId;
+  message.authorType = 'human';
+  message.authorId = uploader.id || message.authorId || 'hum_local';
+  message.body = session.title;
+  message.metadata = {
+    ...(message.metadata || {}),
+    systemKind: 'team_sharing_session',
+    teamSharing: {
+      ...(message.metadata?.teamSharing || {}),
+      runtime: session.runtime,
+      projectKey: session.projectKey,
+      sessionId,
+      uploader: session.uploader || uploader,
+    },
+  };
 
   const existingEvents = new Map(asArray(teamSharingState.events[sessionId]).map((event) => [event.eventId, event]));
   const acceptedEvents = [];
@@ -349,7 +437,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
       spaceType: 'channel',
       spaceId: channelId,
       authorType: event.role === 'user' ? 'human' : 'agent',
-      authorId: event.role === 'user' ? String(packageBody.humanId || 'hum_local') : String(packageBody.agentId || 'team_sharing_agent'),
+      authorId: event.role === 'user' ? uploader.id : runtimeAgentId(session.runtime),
       body: event.cleanText,
       attachmentIds: [],
       mentionedAgentIds: [],
@@ -368,6 +456,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
           eventId: event.eventId,
           ordinal: event.ordinal,
           sourceAnchor: event.sourceAnchor,
+          uploader: session.uploader || uploader,
         },
       },
     };

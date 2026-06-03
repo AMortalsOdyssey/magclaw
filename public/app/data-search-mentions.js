@@ -48,6 +48,8 @@ function shortId(id) {
 
 function displayName(id) {
   if (id === 'agt_codex') return 'Codex';
+  const runtimeActor = teamSharingRuntimeActorInfo(id);
+  if (runtimeActor) return runtimeActor.label;
   const human = typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id);
   if (human) return human.name;
   const agent = byId(appState?.agents, id);
@@ -56,6 +58,58 @@ function displayName(id) {
 }
 
 const SYSTEM_AVATAR_SRC = BRAND_LOGO_SRC;
+
+function teamSharingRuntimeActorInfo(idOrRuntime = '') {
+  const value = String(idOrRuntime || '').trim().toLowerCase();
+  if (!value) return null;
+  if (value === 'team_sharing_codex' || value === 'codex') {
+    return { id: 'codex', actorId: 'team_sharing_codex', label: 'Codex', sourceLabel: 'from Codex', short: '›_' };
+  }
+  if (value === 'team_sharing_claude_code' || value === 'claude_code' || value === 'claude-code' || value === 'claude') {
+    return { id: 'claude-code', actorId: 'team_sharing_claude_code', label: 'Claude Code', sourceLabel: 'from Claude Code', short: 'CC' };
+  }
+  if (value.startsWith('team_sharing_')) {
+    const label = value.replace(/^team_sharing_/, '').replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+    return { id: 'runtime', actorId: value, label, sourceLabel: `from ${label}`, short: 'AI' };
+  }
+  return null;
+}
+
+function teamSharingRuntimeInfoForRecord(record = {}) {
+  return teamSharingRuntimeActorInfo(record?.metadata?.teamSharing?.runtime)
+    || teamSharingRuntimeActorInfo(record?.authorId);
+}
+
+function teamSharingSourceLabelForRecord(record = {}) {
+  if (!record?.metadata?.teamSharing) return '';
+  return teamSharingRuntimeInfoForRecord(record)?.sourceLabel || '';
+}
+
+function teamSharingUploaderForRecord(record = {}) {
+  const uploader = record?.metadata?.teamSharing?.uploader;
+  return uploader && typeof uploader === 'object' ? uploader : null;
+}
+
+function teamSharingUploaderNameForRecord(record = {}) {
+  return String(teamSharingUploaderForRecord(record)?.name || '').trim();
+}
+
+function teamSharingUploaderAvatarForRecord(record = {}) {
+  return String(teamSharingUploaderForRecord(record)?.avatar || '').trim();
+}
+
+function teamSharingRuntimeAvatarHtml(info, cssClass = '') {
+  const runtimeInfo = info || teamSharingRuntimeActorInfo('runtime');
+  return `<span class="${cssClass} team-sharing-runtime-avatar team-sharing-runtime-avatar-${escapeHtml(runtimeInfo.id)}" aria-label="${escapeHtml(runtimeInfo.label)}"><span>${escapeHtml(runtimeInfo.short)}</span></span>`;
+}
+
+function teamSharingUploaderAvatarHtml(record = {}, cssClass = '') {
+  const avatar = teamSharingUploaderAvatarForRecord(record);
+  const name = teamSharingUploaderNameForRecord(record) || displayName(record.authorId);
+  if (avatar) return `<img src="${escapeHtml(avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(name || 'Human')}" />`;
+  const initials = String(name || 'HU').split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
+  return `<span class="${cssClass}">${escapeHtml(initials || 'HU')}</span>`;
+}
 
 function displayAvatar(id, type) {
   const name = displayName(id);
@@ -67,6 +121,8 @@ function getAvatarHtml(id, type, cssClass = '') {
   if (type === 'system') {
     return `<img src="${SYSTEM_AVATAR_SRC}" class="${cssClass} avatar-img system-avatar-img" alt="Magclaw" />`;
   }
+  const runtimeActor = teamSharingRuntimeActorInfo(id);
+  if (runtimeActor) return teamSharingRuntimeAvatarHtml(runtimeActor, cssClass);
     const agent = byId(appState?.agents, id);
     if (agent?.avatar) {
       return `<img src="${escapeHtml(agent.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(agent.name)}" />`;
@@ -278,11 +334,19 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
   window.addEventListener('resize', refreshActiveIdentityHoverCard);
 }
 
-function renderActorAvatar(authorId, authorType) {
+function renderActorAvatar(authorId, authorType, record = {}) {
   if (authorType === 'agent') {
+    const runtimeActor = teamSharingRuntimeActorInfo(authorId);
+    if (runtimeActor) {
+      return `<div class="avatar agent-avatar-cell team-sharing-runtime-avatar-cell">${teamSharingRuntimeAvatarHtml(runtimeActor, 'avatar-inner')}</div>`;
+    }
     return `<div class="avatar agent-avatar-cell">${renderAgentIdentityButton(authorId, 'agent-avatar-button')}${agentStatusDot(authorId, authorType)}</div>`;
   }
   if (authorType === 'human') {
+    const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
+    if (!human && teamSharingUploaderNameForRecord(record)) {
+      return `<div class="avatar human-avatar-cell">${teamSharingUploaderAvatarHtml(record, 'avatar-inner')}${humanStatusDot(authorId, authorType)}</div>`;
+    }
     return `<div class="avatar human-avatar-cell">${renderHumanIdentityButton(authorId, 'human-avatar-button')}${humanStatusDot(authorId, authorType)}</div>`;
   }
   return `<div class="avatar">${getAvatarHtml(authorId, authorType, 'avatar-inner')}${humanStatusDot(authorId, authorType)}</div>`;
@@ -293,18 +357,24 @@ function renderHumanYouLabel(human) {
   return humanMatchesCurrentAccount(human) ? '<em class="human-you-label">(you)</em>' : '';
 }
 
-function renderActorName(authorId, authorType) {
+function renderActorName(authorId, authorType, record = {}) {
   if (authorType === 'human') {
     const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
     const youLabel = renderHumanYouLabel(human);
+    const fallbackName = teamSharingUploaderNameForRecord(record) || displayName(authorId);
+    if (!human && teamSharingUploaderNameForRecord(record)) {
+      return `<strong>${escapeHtml(fallbackName)}</strong>`;
+    }
     return `
       <button class="human-author-name" type="button" data-action="select-human-inspector" data-id="${escapeHtml(authorId)}">
-        <strong>${escapeHtml(displayName(authorId))}</strong>${youLabel}${humanBadgeHtml()}
+        <strong>${escapeHtml(fallbackName)}</strong>${youLabel}${humanBadgeHtml()}
         ${human ? renderHumanHoverCard(human) : ''}
       </button>
     `;
   }
   if (authorType !== 'agent') return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
+  const runtimeActor = teamSharingRuntimeActorInfo(authorId);
+  if (runtimeActor) return `<strong class="team-sharing-runtime-name">${escapeHtml(runtimeActor.label)}</strong>`;
   const agent = byId(appState?.agents, authorId);
   if (!agent) return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
   return `

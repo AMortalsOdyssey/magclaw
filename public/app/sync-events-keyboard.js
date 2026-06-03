@@ -1211,6 +1211,9 @@ function computerDetailRenderSignature(stateSnapshot = appState) {
 function applyStateUpdate(nextState) {
   if (pendingStateUpdate && pendingStateUpdate !== nextState) clearPendingStateUpdate();
   nextState = preserveLoadedConversationHistory(appState, nextState);
+  if (appState?.cloud?.unreadCounts && nextState?.cloud && !nextState.cloud.unreadCounts) {
+    nextState.cloud.unreadCounts = appState.cloud.unreadCounts;
+  }
   syncBootstrapPagination(nextState);
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete });
   trackAgentNotifications(nextState, { silent: !initialLoadComplete });

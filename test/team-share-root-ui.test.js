@@ -30,9 +30,15 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   const clickSource = app.slice(app.indexOf('async function openTeamSharingWorkspace('), app.indexOf('async function discardProvisionalPairingComputer('));
 
   assert.match(app, /function teamSharingSessionIdForMessage/);
+  assert.match(app, /teamSharingRuntimeActorInfo/);
+  assert.match(app, /team_sharing_codex/);
+  assert.match(app, /from Codex/);
+  assert.match(app, /teamSharingSourceLabelForRecord\(message\)/);
+  assert.match(app, /teamSharingUploaderNameForRecord\(record\)/);
   assert.match(drawerSource, /teamSharingSessionIdForMessage\(message\)/);
   assert.match(drawerSource, /data-action="open-team-sharing-workspace"/);
   assert.match(drawerSource, /renderTeamSharingWorkspacePanel\(message\)/);
+  assert.match(app, /team-sharing-workspace-action/);
   assert.match(app, /data-action="open-team-sharing-workspace-file"/);
   assert.match(app, /data-action="set-team-sharing-workspace-preview-mode"/);
   assert.match(clickSource, /\/api\/team-sharing\/workspace\/\$\{encodeURIComponent\(sessionId\)\}/);

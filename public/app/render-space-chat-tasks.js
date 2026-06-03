@@ -333,6 +333,10 @@ function agentSubtitle(agent) {
 }
 
 function actorSubtitle(authorId, authorType, message) {
+  const teamSharingSource = typeof teamSharingSourceLabelForRecord === 'function'
+    ? teamSharingSourceLabelForRecord(message)
+    : '';
+  if (teamSharingSource) return teamSharingSource;
   if (authorType === 'agent') {
     const agent = byId(appState.agents, authorId);
     return agentSubtitle(agent);
@@ -1862,6 +1866,9 @@ function renderRecordKey(record) {
     followedBy: record?.followedBy || [],
     receipts: deliveryReceiptSignature(record),
     systemKind: record?.metadata?.systemKind || '',
+    teamSharingRuntime: record?.metadata?.teamSharing?.runtime || '',
+    teamSharingUploaderName: record?.metadata?.teamSharing?.uploader?.name || '',
+    teamSharingUploaderAvatar: record?.metadata?.teamSharing?.uploader?.avatar || '',
     originProvider: record?.metadata?.origin?.provider || '',
     originTraceId: record?.metadata?.origin?.traceId || '',
     originSenderName: record?.metadata?.origin?.senderName || '',
@@ -2223,6 +2230,9 @@ function renderMessageActions(record, options = {}) {
   const saved = record.savedBy?.includes(currentHumanId());
   const threadContext = Boolean(options.threadContext || options.compact || record.parentMessageId);
   const saveLabel = saved ? 'Remove from saved' : 'Save message';
+  const teamSharingSessionId = !threadContext && typeof teamSharingSessionIdForMessage === 'function'
+    ? teamSharingSessionIdForMessage(record)
+    : '';
   const threadActionLabel = record?.spaceType === 'channel' && !currentUserIsChannelMember(record.spaceId)
     ? 'View thread'
     : 'Reply in thread';
@@ -2233,6 +2243,11 @@ function renderMessageActions(record, options = {}) {
           ${replyThreadIcon()}
         </button>
       `}
+      ${teamSharingSessionId ? `
+        <button class="message-icon-action team-sharing-workspace-action" type="button" data-action="open-team-sharing-workspace" data-id="${escapeHtml(record.id)}" title="Open workspace" aria-label="Open Team Sharing workspace">
+          <span aria-hidden="true">WS</span>
+        </button>
+      ` : ''}
       <button class="message-icon-action${saved ? ' saved' : ''}" type="button" data-action="save-message" data-id="${escapeHtml(record.id)}" title="${escapeHtml(saveLabel)}" aria-label="${escapeHtml(saveLabel)}">
         ${saveMessageIcon(saved)}
       </button>
@@ -2274,10 +2289,10 @@ function renderMessage(message, options = {}) {
   return `
 	    <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${shareSelecting}${shareSelected}${streamingClass}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
       ${renderShareSelector(message, { selectable: shareSelectable })}
-      ${renderActorAvatar(message.authorId, message.authorType)}
+      ${renderActorAvatar(message.authorId, message.authorType, message)}
       <div class="message-body"${shareBodyToggleAttrs(message, { selectable: shareSelectable })}>
         <div class="message-meta">
-          ${renderActorName(message.authorId, message.authorType)}
+          ${renderActorName(message.authorId, message.authorType, message)}
           <span class="sender-role">${escapeHtml(actorSubtitle(message.authorId, message.authorType, message))}</span>
           <time>${fmtTime(message.createdAt)}</time>
           ${task ? renderTaskInlineBadge(task) : ''}

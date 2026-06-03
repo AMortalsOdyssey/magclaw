@@ -33,6 +33,8 @@ function sampleSyncPackage(overrides = {}) {
     projectPathHash: 'proj_hash',
     sessionId: 'sess_rerank_design',
     title: 'MagClaw rerank feedback design',
+    humanId: 'hum_jhb',
+    humanName: '蒋海波',
     workspaceId: 'ws_test',
     channelId: 'chan_team',
     idempotencyKey: 'codex:magclaw:sess_rerank_design:1:3:abc',
@@ -92,9 +94,17 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
 
   assert.equal(state.messages.length, 1);
   assert.equal(state.messages[0].body, 'MagClaw rerank feedback design');
+  assert.equal(state.messages[0].authorType, 'human');
+  assert.equal(state.messages[0].authorId, 'hum_jhb');
+  assert.equal(state.messages[0].metadata.teamSharing.runtime, 'codex');
+  assert.equal(state.messages[0].metadata.teamSharing.uploader.name, '蒋海波');
   assert.equal(state.messages[0].spaceId, 'chan_team');
   assert.equal(state.messages[0].replyCount, 2);
   assert.equal(state.replies.length, 2);
+  assert.equal(state.replies[0].authorType, 'human');
+  assert.equal(state.replies[0].authorId, 'hum_jhb');
+  assert.equal(state.replies[1].authorType, 'agent');
+  assert.equal(state.replies[1].authorId, 'team_sharing_codex');
   assert.match(state.replies[0].body, /我们要给团队共享加入 rerank/);
   assert.doesNotMatch(state.replies[0].body, /secret-123|API_KEY/);
   assert.match(state.replies[1].body, /used_tools=rg/);
@@ -108,6 +118,52 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
   assert.ok(state.teamSharing.activities.some((item) => item.summary.includes('同步 2 条清洗事件')));
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L0' && doc.sessionId === 'sess_rerank_design'));
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback'));
+});
+
+test('team sharing sync cleans session markdown titles and Codex selected text wrappers', async () => {
+  const state = baseState();
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
+    idempotencyKey: 'codex:magclaw:sess_selected:1:2:selected',
+    sessionId: 'sess_selected',
+    title: '[joeseesun/qiaomu-anything-to-notebooklm](https://github.com/joeseesun/qiaomu-anything-to-notebooklm)',
+    events: [
+      {
+        eventId: 'evt_selected',
+        ordinal: 1,
+        role: 'user',
+        text: [
+          '# Selected text:',
+          '',
+          '## Selection 1',
+          'openai',
+          '',
+          '## My request for Codex:',
+          '不用 OpenAI 这个',
+          '',
+          '# In app browser:',
+          'private browser evidence should not be displayed',
+        ].join('\n'),
+        createdAt: '2026-06-01T08:10:00.000Z',
+      },
+      {
+        eventId: 'evt_assistant',
+        ordinal: 2,
+        role: 'assistant',
+        text: '明白，保留 SkyEngine 优先。',
+        createdAt: '2026-06-01T08:11:00.000Z',
+      },
+    ],
+  }), {
+    state,
+    makeId: makeIdFactory(),
+    now: () => '2026-06-01T08:12:00.000Z',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(state.messages[0].body, 'joeseesun/qiaomu-anything-to-notebooklm');
+  assert.equal(state.replies[0].body, '不用 OpenAI 这个\n\n已添加文本片段：openai');
+  assert.doesNotMatch(state.replies[0].body, /Selected text|Selection 1|In app browser|private browser/);
+  assert.equal(state.replies[1].authorId, 'team_sharing_codex');
 });
 
 test('team sharing sync resolves signed MagClaw channel path when channelId is omitted', async () => {

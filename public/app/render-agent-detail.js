@@ -983,10 +983,10 @@ function renderReply(reply) {
   return `
     <article class="message-card magclaw-message reply-card author-${authorClass}${highlighted}${shareSelecting}${shareSelected}${streamingClass}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
       ${renderShareSelector(reply, { selectable: shareSelectable })}
-      ${renderActorAvatar(reply.authorId, reply.authorType)}
+      ${renderActorAvatar(reply.authorId, reply.authorType, reply)}
       <div class="message-body"${shareBodyToggleAttrs(reply, { selectable: shareSelectable })}>
         <div class="message-meta">
-          ${renderActorName(reply.authorId, reply.authorType)}
+          ${renderActorName(reply.authorId, reply.authorType, reply)}
           <span class="sender-role">${escapeHtml(actorSubtitle(reply.authorId, reply.authorType, reply))}</span>
           <time>${fmtTime(reply.createdAt)}</time>
         </div>

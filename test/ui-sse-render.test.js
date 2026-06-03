@@ -559,6 +559,7 @@ test('unread count changes do not force full render before active chat patching'
   assert.match(app, /function railUnreadSignature\(stateSnapshot = appState\)/);
   assert.match(app, /function patchRailSurface\(/);
   assert.match(app, /function patchActiveConversationSurface\(scrollSnapshot, \{ allowInspector = false \} = \{\}\)/);
+  assert.match(applyStateSource, /if \(appState\?\.cloud\?\.unreadCounts && nextState\?\.cloud && !nextState\.cloud\.unreadCounts\) \{[\s\S]*nextState\.cloud\.unreadCounts = appState\.cloud\.unreadCounts/);
   assert.match(app, /const activeConversationBefore = activeConversationSignature\(\)/);
   assert.match(app, /const activeConversationChanged = activeConversationBefore !== activeConversationSignature\(\)/);
   assert.match(applyStateSource, /ensureSelection\(\);\s*const selectionChanged = selectionBefore !== `\$\{selectedSpaceType\}:\$\{selectedSpaceId\}`;\s*markVisibleConversationRead\(\);\s*const unreadChanged = unreadBefore !== railUnreadSignature\(\)/);
@@ -932,7 +933,8 @@ test('current human authors are marked and human inspector can return to the act
 
   assert.match(actorNameSource, /function renderHumanYouLabel\(human\)/);
   assert.match(actorNameSource, /humanMatchesCurrentAccount\(human\) \? '<em class="human-you-label">\(you\)<\/em>'/);
-  assert.match(actorNameSource, /<strong>\$\{escapeHtml\(displayName\(authorId\)\)\}<\/strong>\$\{youLabel\}\$\{humanBadgeHtml\(\)\}/);
+  assert.match(actorNameSource, /const fallbackName = teamSharingUploaderNameForRecord\(record\) \|\| displayName\(authorId\)/);
+  assert.match(actorNameSource, /<strong>\$\{escapeHtml\(fallbackName\)\}<\/strong>\$\{youLabel\}\$\{humanBadgeHtml\(\)\}/);
   assert.doesNotMatch(actorNameSource, /<strong>@\$\{escapeHtml\(displayName\(authorId\)\)\}<\/strong>/);
   assert.match(humanInspectorSource, /if \(threadMessageId\) inspectorReturnThreadId = threadMessageId;/);
   assert.ok(

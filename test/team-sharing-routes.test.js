@@ -134,6 +134,10 @@ test('team sharing route syncs a batch and search returns reranked top results',
   assert.equal(syncRes.statusCode, 202);
   assert.equal(syncRes.data.appendedEventCount, 2);
   assert.equal(deps.persistCalls[0].workspaceId, 'ws_route');
+  assert.equal(deps.state.messages[0].authorType, 'human');
+  assert.equal(deps.state.messages[0].authorId, 'hum_route');
+  assert.equal(deps.state.replies[1].authorType, 'agent');
+  assert.equal(deps.state.replies[1].authorId, 'team_sharing_codex');
   assert.ok(indexed.some((doc) => doc.layer === 'L0' && doc.sessionId === 'sess_route'));
   assert.ok(indexed.some((doc) => doc.layer === 'L0' && /云端权威摘要/.test(doc.text || '')));
   assert.ok(indexed.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback'));
@@ -566,6 +570,9 @@ test('team sharing route creates a public share and serves it without authentica
   ), true);
   assert.equal(indexRes.statusCode, 200);
   assert.match(indexRes.body, /Team Shares/);
+  assert.match(indexRes.body, /data-share-root-action="expand-all"/);
+  assert.match(indexRes.body, /data-share-root-action="collapse-all"/);
+  assert.match(indexRes.body, /animateChannel/);
   assert.match(indexRes.body, /<details class="share-channel" open>/);
   assert.match(indexRes.body, /share-channel-caret/);
   assert.match(indexRes.body, /# product-sharing/);

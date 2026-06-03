@@ -196,7 +196,7 @@ function shareChromeHtml(share = {}, innerHtml = '') {
     body { margin:0; background:var(--bg); color:var(--ink); font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.62; }
     main { max-width:900px; margin:0 auto; padding:28px 18px 80px; }
     .shell { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:28px; box-shadow:0 8px 30px rgba(15,23,42,.05); }
-    .brand { color:var(--accent); font-size:13px; font-weight:800; text-transform:uppercase; letter-spacing:0; margin-bottom:10px; }
+    .brand { color:var(--accent); font-size:13px; font-weight:800; text-transform:uppercase; letter-spacing:0; margin:0; }
     h1,h2,h3,h4 { line-height:1.25; letter-spacing:0; }
     h1 { margin:0 0 14px; font-size:32px; }
     p { margin:10px 0; }
@@ -204,6 +204,10 @@ function shareChromeHtml(share = {}, innerHtml = '') {
     code { font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; }
     a { color:var(--accent); }
     svg { max-width:100%; height:auto; }
+    .share-root-head { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:16px; }
+    .share-root-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .share-root-actions button { border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:6px; padding:7px 10px; font-size:12px; font-weight:800; cursor:pointer; transition:border-color .16s ease, color .16s ease, transform .16s ease; }
+    .share-root-actions button:hover, .share-root-actions button:focus-visible { border-color:var(--accent); color:var(--accent); transform:translateY(-1px); outline:0; }
     .share-channel { border-top:1px solid var(--line); padding-top:14px; margin-top:16px; }
     .share-channel:first-of-type { border-top:0; padding-top:0; margin-top:0; }
     .share-channel summary { list-style:none; display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; font-size:20px; font-weight:800; line-height:1.2; }
@@ -211,7 +215,7 @@ function shareChromeHtml(share = {}, innerHtml = '') {
     .share-channel-caret { display:inline-grid; place-items:center; width:16px; height:16px; color:var(--accent); transform:rotate(0deg); transition:transform .18s ease; }
     .share-channel[open] .share-channel-caret { transform:rotate(90deg); }
     .share-channel-count { color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; }
-    .share-channel-content { display:grid; gap:10px; padding:12px 0 2px 24px; }
+    .share-channel-content { display:grid; gap:10px; overflow:hidden; padding:12px 0 2px 24px; }
     .share-channel[open] .share-channel-content { animation:share-channel-open .18s ease; }
     .share-entry { display:block; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#fff; text-decoration:none; color:inherit; transition:border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
     .share-entry:hover, .share-entry:focus-visible { border-color:var(--accent); box-shadow:0 8px 22px rgba(8,145,178,.11); transform:translateY(-1px); outline:0; }
@@ -220,13 +224,14 @@ function shareChromeHtml(share = {}, innerHtml = '') {
     .share-entry small { color:var(--muted); display:block; }
     .magclaw-share-footer { max-width:900px; margin:24px auto 0; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
     @keyframes share-channel-open { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
+    @media (max-width: 640px) { .share-root-head { align-items:flex-start; flex-direction:column; } .share-root-actions { justify-content:flex-start; } }
   </style>
 </head>
 <body>
   <main>
     <section class="shell">
-      <div class="brand">Team Shares</div>
-      ${innerHtml}
+	      ${share.hideChromeBrand ? '' : '<div class="brand">Team Shares</div>'}
+	      ${innerHtml}
     </section>
     ${shareFooterHtml(share)}
   </main>
@@ -306,9 +311,51 @@ function renderShareIndexHtml(shares = []) {
       </div>
     </details>
   `).join('\n') || '<p>No shared pages yet.</p>';
+  const controls = `
+    <div class="share-root-head">
+      <div class="brand">Team Shares</div>
+      <div class="share-root-actions" aria-label="Team Shares view controls">
+        <button type="button" data-share-root-action="expand-all">全部展开</button>
+        <button type="button" data-share-root-action="collapse-all">全部折叠</button>
+      </div>
+    </div>
+  `;
+  const script = `
+    <script>
+      (() => {
+        const channels = () => [...document.querySelectorAll('.share-channel')];
+        const animateChannel = (details, shouldOpen) => {
+          const content = details.querySelector('.share-channel-content');
+          if (!content) {
+            details.open = shouldOpen;
+            return;
+          }
+          if (shouldOpen) {
+            details.open = true;
+            content.animate([{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 180, easing: 'ease-out' });
+            return;
+          }
+          const height = content.scrollHeight;
+          const animation = content.animate([{ opacity: 1, maxHeight: height + 'px' }, { opacity: 0, maxHeight: '0px' }], { duration: 170, easing: 'ease-in' });
+          animation.onfinish = () => { details.open = false; };
+        };
+        document.addEventListener('click', (event) => {
+          const action = event.target.closest('[data-share-root-action]')?.dataset?.shareRootAction;
+          if (action) {
+            channels().forEach((details) => animateChannel(details, action === 'expand-all'));
+            return;
+          }
+          const summary = event.target.closest('.share-channel > summary');
+          if (!summary) return;
+          event.preventDefault();
+          animateChannel(summary.parentElement, !summary.parentElement.open);
+        });
+      })();
+    </script>
+  `;
   return shareChromeHtml(
-    { title: 'Team Shares', creator: { name: 'MagClaw' }, createdAt: '' },
-    folders,
+    { title: 'Team Shares', creator: { name: 'MagClaw' }, createdAt: '', hideChromeBrand: true },
+    `${controls}${folders}${script}`,
   );
 }
 
@@ -727,6 +774,7 @@ function requestUser(actor = {}) {
     id: actorHumanId(actor),
     email: actor?.member?.email || actor?.user?.email || '',
     name: actor?.member?.name || actor?.user?.name || '',
+    avatar: actor?.member?.avatar || actor?.user?.avatar || '',
   };
 }
 
@@ -1039,6 +1087,9 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       ...body,
       workspaceId: effectiveWorkspaceId,
       humanId: body.humanId || actorHumanId(actor) || tokenRecord?.user?.id || '',
+      humanName: body.humanName || body.uploaderName || actor?.member?.name || actor?.user?.name || tokenRecord?.user?.name || '',
+      humanEmail: body.humanEmail || body.uploaderEmail || actor?.member?.email || actor?.user?.email || tokenRecord?.user?.email || '',
+      humanAvatar: body.humanAvatar || body.uploaderAvatar || actor?.member?.avatar || actor?.user?.avatar || tokenRecord?.user?.avatar || '',
     }, {
       state,
       makeId,
