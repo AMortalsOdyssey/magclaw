@@ -461,6 +461,37 @@ function upsertVectorDocument(teamSharingState, document) {
   }
 }
 
+function authoritativeSearchDocument(teamSharingState, candidate = {}, currentDocument = null) {
+  if (currentDocument) return currentDocument;
+  const sessionId = String(candidate.sessionId || '').trim();
+  const session = teamSharingState.sessions?.[sessionId] || {};
+  const title = cleanSessionTitle(session.title || candidate.title || 'Untitled AI session');
+  const abstract = teamSharingState.abstracts?.[sessionId] || null;
+  if (!abstract) return session.title ? { title } : null;
+  if (candidate.layer === 'L0' || !candidate.topicId) {
+    const sourceEventIds = asArray(candidate.sourceEventIds || abstract.sourceEventIds).filter(Boolean);
+    const rawEventId = String(sourceEventIds[0] || candidate.rawEventId || '').trim();
+    return {
+      title,
+      text: `${title}\n${abstract.abstractMarkdown || candidate.text || ''}`,
+      rawEventId,
+      sourceEventIds,
+      sourceRef: rawEventId ? `${sessionId}/abstract.md#${rawEventId}` : `${sessionId}/abstract.md`,
+    };
+  }
+  const topic = abstract.topics?.[candidate.topicId] || null;
+  if (!topic) return { title };
+  const sourceEventIds = asArray(topic.sourceEventIds || candidate.sourceEventIds).filter(Boolean);
+  const rawEventId = String(topic.rawEventId || sourceEventIds[0] || candidate.rawEventId || '').trim();
+  return {
+    title,
+    text: `${title}\n${topic.title || candidate.topicId}\n${topic.overview || topic.overviewMarkdown || candidate.text || ''}`,
+    rawEventId,
+    sourceEventIds,
+    sourceRef: rawEventId ? `${sessionId}/topics/${topic.topicId || candidate.topicId}.md#${rawEventId}` : `${sessionId}/topics/${topic.topicId || candidate.topicId}.md`,
+  };
+}
+
 function updateSessionAbstract(teamSharingState, session, acceptedEvents, options = {}) {
   const title = session.title || 'Untitled AI session';
   const allEvents = asArray(teamSharingState.events[session.sessionId]);
@@ -922,7 +953,7 @@ export function rankTeamSharingCandidates(params = {}) {
     selectedTop5: [],
   };
   const scored = asArray(params.candidates).map((candidate, index) => {
-    const currentDocument = currentDocumentsById.get(candidate.vectorDocumentId);
+    const currentDocument = authoritativeSearchDocument(teamSharingState, candidate, currentDocumentsById.get(candidate.vectorDocumentId));
     const enrichedCandidate = currentDocument ? {
       ...candidate,
       ...currentDocument,

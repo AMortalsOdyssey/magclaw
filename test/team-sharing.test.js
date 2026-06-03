@@ -500,6 +500,49 @@ test('team sharing rerank refreshes stale vector payload from local authoritativ
   assert.equal(ranked.results[0].vectorScore, 0.8);
 });
 
+test('team sharing rerank refreshes stale payload from session abstract when vector document is absent', () => {
+  const teamSharingState = createInitialTeamSharingState();
+  teamSharingState.sessions.sess_title = { sessionId: 'sess_title', title: '验收会话总结共享' };
+  teamSharingState.abstracts.sess_title = {
+    sessionId: 'sess_title',
+    abstractMarkdown: '# 验收会话总结共享\n\n## Summary\n已修复动态上下文。',
+    topics: {
+      'session-sync-hooks': {
+        topicId: 'session-sync-hooks',
+        title: 'Session sync hooks',
+        overview: 'hook 标题和 Raw ID 均已同步。',
+        sourceEventIds: ['evt_current'],
+      },
+    },
+  };
+
+  const ranked = rankTeamSharingCandidates({
+    query: 'session sync hooks',
+    candidates: [{
+      vectorDocumentId: 'sess_title:L1:session-sync-hooks',
+      sessionId: 'sess_title',
+      topicId: 'session-sync-hooks',
+      layer: 'L1',
+      title: '旧的首条用户消息标题',
+      text: '旧 payload',
+      sourceRef: 'sess_title/topics/session-sync-hooks.md#evt_old',
+      rawEventId: 'evt_old',
+      vectorScore: 0.8,
+      keywordScore: 0.7,
+      freshnessScore: 0.5,
+    }],
+    teamSharingState,
+    rerankResults: [{ index: 0, score: 0.9 }],
+    now: () => '2026-06-01T09:00:00.000Z',
+    limit: 5,
+  });
+
+  assert.equal(ranked.results[0].title, '验收会话总结共享');
+  assert.equal(ranked.results[0].rawEventId, 'evt_current');
+  assert.match(ranked.results[0].sourceRef, /topics\/session-sync-hooks\.md#evt_current/);
+  assert.match(ranked.results[0].text, /hook 标题和 Raw ID/);
+});
+
 test('team sharing hotness dedupes repeated feedback from the same actor before capping', () => {
   const teamSharingState = createInitialTeamSharingState();
   const base = {
