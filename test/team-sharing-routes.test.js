@@ -4,6 +4,7 @@ import vm from 'node:vm';
 
 import { handleTeamSharingApi } from '../server/api/team-sharing-routes.js';
 import { createInitialTeamSharingState } from '../server/team-sharing.js';
+import { TEAM_SHARING_COMMON_LINK_ICONS } from '../server/team-sharing-link-icons.js';
 
 function makeResponse() {
   return {
@@ -885,6 +886,7 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /trailingUrlChars/);
   assert.match(res.body, /String\.fromCharCode\(96\)/);
   assert.match(res.body, /function setContextButtonVisible/);
+  assert.match(res.body, /CONTEXT_LINK_ICON_REGISTRY/);
 
   const scopedRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -899,6 +901,23 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(scopedRes.body, /const workspaceId = "ws_route";/);
   assert.match(scopedRes.body, /const serverSlug = "server-route";/);
   assert.match(scopedRes.body, /params\.set\('serverSlug', serverSlug\)/);
+});
+
+test('team sharing common link icon registry covers at least 100 common sites', () => {
+  assert.ok(TEAM_SHARING_COMMON_LINK_ICONS.length >= 100);
+  const byHost = new Map();
+  for (const entry of TEAM_SHARING_COMMON_LINK_ICONS) {
+    assert.ok(entry.name, 'missing name');
+    assert.ok(entry.slug || entry.iconHost, `missing icon source for ${entry.name}`);
+    assert.ok(entry.label, `missing label for ${entry.name}`);
+    assert.ok(Array.isArray(entry.hosts) && entry.hosts.length, `missing hosts for ${entry.name}`);
+    for (const host of entry.hosts) byHost.set(host, entry);
+  }
+  assert.equal(byHost.get('github.com')?.slug, 'github');
+  assert.equal(byHost.get('cloudflare.com')?.slug, 'cloudflare');
+  assert.equal(byHost.get('openai.com')?.iconHost, 'openai.com');
+  assert.equal(byHost.get('bilibili.com')?.slug, 'bilibili');
+  assert.equal(byHost.get('figma.com')?.slug, 'figma');
 });
 
 test('team sharing context page renders Codex markdown and hides citation metadata', async () => {
@@ -932,6 +951,8 @@ test('team sharing context page renders Codex markdown and hides citation metada
     '| Hooks 是否项目本地 | 应默认项目级。 |',
     '',
     'GitHub 链接是：[multica-ai/multica at a9f0739b5](https://github.com/multica-ai/multica/tree/a9f0739b5)。',
+    'Cloudflare 文档：[Workers](https://developers.cloudflare.com/workers/)。',
+    'Bilibili 视频：[演示](https://www.bilibili.com/video/BV1xx)。',
     '',
     'Sources: [OpenAI Codex manual](https://developers.openai.com/codex/codex-manual.md), [Claude Code hooks](https://code.claude.com/docs/en/hooks).',
     '',
@@ -953,7 +974,9 @@ test('team sharing context page renders Codex markdown and hides citation metada
   assert.match(html, /<th>问题<\/th>/);
   assert.match(html, /<td>NPM 安装后有没有 <code>team-sharing<\/code> 命令<\/td>/);
   assert.match(html, /<td><strong>会有。<\/strong> <a href="https:\/\/www\.npmjs\.com\/package\/@magclaw\/team-sharing"/);
-  assert.match(html, /<a href="https:\/\/github\.com\/multica-ai\/multica\/tree\/a9f0739b5"[^>]*><span class="context-link-icon context-link-icon-github"/);
+  assert.match(html, /<a href="https:\/\/github\.com\/multica-ai\/multica\/tree\/a9f0739b5"[^>]*><span class="context-link-icon" title="GitHub"[^>]*><img class="context-link-icon-img" src="https:\/\/cdn\.simpleicons\.org\/github"/);
+  assert.match(html, /<a href="https:\/\/developers\.cloudflare\.com\/workers\/"[^>]*><span class="context-link-icon" title="Cloudflare"[^>]*><img class="context-link-icon-img" src="https:\/\/cdn\.simpleicons\.org\/cloudflare"/);
+  assert.match(html, /<a href="https:\/\/www\.bilibili\.com\/video\/BV1xx"[^>]*><span class="context-link-icon" title="Bilibili"[^>]*><img class="context-link-icon-img" src="https:\/\/cdn\.simpleicons\.org\/bilibili"/);
   assert.doesNotMatch(html, /\|---\|---\|/);
   assert.match(html, /<p class="context-sources"><span class="context-sources-label">Sources<\/span>/);
   assert.match(html, /class="context-source-link" href="https:\/\/developers\.openai\.com\/codex\/codex-manual\.md"/);

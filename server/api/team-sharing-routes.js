@@ -6,6 +6,7 @@ import {
   rankTeamSharingCandidates,
   syncTeamSharingBatch,
 } from '../team-sharing.js';
+import { TEAM_SHARING_COMMON_LINK_ICONS } from '../team-sharing-link-icons.js';
 import crypto from 'node:crypto';
 
 function asArray(value) {
@@ -24,6 +25,10 @@ function htmlEscape(value = '') {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function scriptJson(value) {
+  return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
 function sourceAnchorEventId(value = '') {
@@ -613,6 +618,7 @@ function sendContextHtml(res, {
   const isDesc = contextOrder === 'desc';
   const contextWorkspaceId = String(workspaceId || '').trim();
   const contextServerSlug = String(serverSlug || '').trim();
+  const iconRegistryJson = scriptJson(TEAM_SHARING_COMMON_LINK_ICONS);
   const body = `<!doctype html>
 <html lang="en">
 <head>
@@ -652,11 +658,9 @@ function sendContextHtml(res, {
     .context-quote a,
     .text a,
     .context-source-link { display:inline-flex; align-items:center; gap:4px; vertical-align:baseline; }
-    .context-link-icon { display:inline-grid; place-items:center; width:16px; height:16px; flex:0 0 16px; border-radius:4px; background:#e2e8f0; color:#334155; font-size:8px; font-weight:900; line-height:1; text-transform:uppercase; }
-    .context-link-icon-github { background:#111827; color:#fff; font-size:7px; }
-    .context-link-icon-npm { background:#cb3837; color:#fff; font-size:6px; }
-    .context-link-icon-openai { background:#111827; color:#fff; font-size:7px; }
-    .context-link-icon-claude { background:#d97706; color:#fff; font-size:7px; }
+    .context-link-icon { display:inline-grid; place-items:center; width:16px; height:16px; flex:0 0 16px; border:1px solid #dbe5ef; border-radius:4px; background:#fff; color:#334155; overflow:hidden; font-size:7px; font-weight:900; line-height:1; text-transform:uppercase; }
+    .context-link-icon-img { display:block; width:12px; height:12px; object-fit:contain; }
+    .context-link-icon-fallback { display:inline-grid; place-items:center; width:100%; height:100%; padding-top:1px; }
     .context-link-label { min-width:0; }
     .text p,
     .context-main p,
@@ -729,6 +733,7 @@ function sendContextHtml(res, {
     const vectorDocumentId = ${JSON.stringify(String(vectorDocumentId || ''))};
     const queryId = ${JSON.stringify(String(queryId || ''))};
     const sourceRef = ${JSON.stringify(String(sourceRef || ''))};
+    const CONTEXT_LINK_ICON_REGISTRY = ${iconRegistryJson};
     const workspaceId = ${JSON.stringify(contextWorkspaceId)};
     const serverSlug = ${JSON.stringify(contextServerSlug)};
     const eventsEl = document.getElementById('events');
@@ -786,25 +791,34 @@ function sendContextHtml(res, {
       const match = String(href || '').match(/^https?:\\/\\/([^\\/?#]+)/i);
       return match ? match[1].replace(/^www\\./i, '').toLowerCase() : '';
     }
+    function contextLinkIconEntryForHost(host) {
+      const cleanHost = String(host || '').replace(/^www\\./i, '').toLowerCase();
+      if (!cleanHost) return null;
+      return CONTEXT_LINK_ICON_REGISTRY.find(entry => {
+        const hosts = Array.isArray(entry.hosts) ? entry.hosts : [];
+        return hosts.some(item => cleanHost === item || cleanHost.endsWith('.' + item));
+      }) || null;
+    }
+    function contextLinkIconSrc(entry) {
+      if (!entry) return '';
+      const slug = String(entry.slug || '').trim();
+      if (slug) return 'https://cdn.simpleicons.org/' + encodeURIComponent(slug);
+      const iconHost = String(entry.iconHost || (Array.isArray(entry.hosts) ? entry.hosts[0] : '') || '').trim();
+      return iconHost ? 'https://www.google.com/s2/favicons?domain=' + encodeURIComponent(iconHost) + '&sz=32' : '';
+    }
     function contextLinkIconHtml(href) {
       const host = contextHostForHref(href);
       if (!host) return '';
-      const classes = ['context-link-icon'];
-      let label = host.slice(0, 1).toUpperCase();
-      if (/(^|\\.)github\\.com$/.test(host)) {
-        classes.push('context-link-icon-github');
-        label = 'GH';
-      } else if (/(^|\\.)npmjs\\.com$/.test(host)) {
-        classes.push('context-link-icon-npm');
-        label = 'npm';
-      } else if (/(^|\\.)openai\\.com$|(^|\\.)developers\\.openai\\.com$/.test(host)) {
-        classes.push('context-link-icon-openai');
-        label = 'AI';
-      } else if (/(^|\\.)claude\\.com$|(^|\\.)anthropic\\.com$/.test(host)) {
-        classes.push('context-link-icon-claude');
-        label = 'C';
+      const entry = contextLinkIconEntryForHost(host);
+      const label = String(entry?.label || host.slice(0, 1).toUpperCase() || '?').slice(0, 4);
+      const title = entry?.name || host || 'Link';
+      const src = contextLinkIconSrc(entry);
+      if (!src) {
+        return '<span class="context-link-icon" title="' + escapeHtml(title) + '" aria-hidden="true"><span class="context-link-icon-fallback">' + escapeHtml(label) + '</span></span>';
       }
-      return '<span class="' + escapeHtml(classes.join(' ')) + '" aria-hidden="true">' + escapeHtml(label) + '</span>';
+      return '<span class="context-link-icon" title="' + escapeHtml(title) + '" aria-hidden="true">' +
+        '<img class="context-link-icon-img" src="' + escapeHtml(src) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false">' +
+        '<span class="context-link-icon-fallback" hidden>' + escapeHtml(label) + '</span></span>';
     }
     function contextLinkHtml(href, label, className = '') {
       const safeHref = safeContextHref(href);
