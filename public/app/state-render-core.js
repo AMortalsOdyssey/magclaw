@@ -1029,14 +1029,24 @@ function safeMarkdownHref(value) {
   return '#';
 }
 
+function stripMarkdownMetadata(text) {
+  return String(text || '')
+    .replace(/\s*<oai-mem-citation\b[^>]*>[\s\S]*?(?:<\/oai-mem-citation>|$)\s*/gi, '\n')
+    .replace(/\s*<citation_entries\b[^>]*>[\s\S]*?(?:<\/citation_entries>|$)\s*/gi, '\n')
+    .replace(/\s*<rollout_ids\b[^>]*>[\s\S]*?(?:<\/rollout_ids>|$)\s*/gi, '\n')
+    .replace(/\s*::git-[a-z-]+\{[^}\n]*\}\s*/gi, '\n')
+    .trim();
+}
+
 function splitAutolinkUrl(value) {
-  const raw = String(value || '');
-  const trailing = raw.match(/[.,;:!?，。；：！？、]+$/)?.[0] || '';
-  if (!trailing) return { href: raw, trailing: '' };
-  return {
-    href: raw.slice(0, Math.max(0, raw.length - trailing.length)),
-    trailing,
-  };
+  let href = String(value || '');
+  let trailing = '';
+  const trailingUrlChars = new Set([String.fromCharCode(96), "'", '"', ']', ')', ',', '.', ';', ':', '!', '?', '，', '。', '；', '：', '！', '？', '、']);
+  while (href && trailingUrlChars.has(href.slice(-1))) {
+    trailing = href.slice(-1) + trailing;
+    href = href.slice(0, -1);
+  }
+  return { href, trailing };
 }
 
 function renderAutolinkedUrls(html) {
@@ -1118,7 +1128,7 @@ function renderMarkdownList(lines) {
 }
 
 function renderMarkdown(content) {
-  const lines = String(content || '').split(/\r?\n/);
+  const lines = stripMarkdownMetadata(content).split(/\r?\n/);
   const blocks = [];
   let paragraph = [];
   let listLines = [];
@@ -1128,7 +1138,7 @@ function renderMarkdown(content) {
 
   const flushParagraph = () => {
     if (!paragraph.length) return;
-    blocks.push(`<p>${renderMarkdownInline(paragraph.join(' '))}</p>`);
+    blocks.push(`<p>${paragraph.map(renderMarkdownInline).join('<br>')}</p>`);
     paragraph = [];
   };
   const flushList = () => {

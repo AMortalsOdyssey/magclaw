@@ -1523,7 +1523,8 @@ test('messages and replies render markdown while preserving mention chips', asyn
   assert.match(app, /function renderMarkdownWithMentions\(content\)/);
   assert.match(app, /message-table/);
   assert.match(app, /const fallback = message\.references\?\.length \? '' : '\(attachment\)'/);
-  assert.match(app, /const rendered = renderMarkdownWithMentions\(message\.body \|\| fallback\)/);
+  assert.match(app, /function teamSharingBodyTextForRecord\(record = \{\}\)/);
+  assert.match(app, /const rendered = renderMarkdownWithMentions\(teamSharingBodyTextForRecord\(message\) \|\| message\.body \|\| fallback\)/);
   assert.match(app, /renderStreamingMessageMarkdown\(message\)/);
   assert.match(app, /renderStreamingMessageMarkdown\(reply\)/);
   const rendered = context.renderMarkdownInline('广州销售品资费公示 PDF：https://gd.189.cn/gz/support/fee/sale/gzxsp2023731.pdf');

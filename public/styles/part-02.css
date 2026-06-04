@@ -486,12 +486,21 @@
 
 .message-context-quote-text p,
 .message-context-quote-text ul,
+.message-context-quote-text ol,
+.message-context-quote-text h1,
+.message-context-quote-text h2,
+.message-context-quote-text h3,
+.message-context-quote-text h4,
+.message-context-quote-text h5,
+.message-context-quote-text h6,
 .message-context-quote-text blockquote,
-.message-context-quote-text pre {
+.message-context-quote-text pre,
+.message-context-quote-text hr {
   margin: 0;
 }
 
-.message-context-quote-text ul {
+.message-context-quote-text ul,
+.message-context-quote-text ol {
   padding-left: 16px;
 }
 

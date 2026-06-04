@@ -1888,17 +1888,29 @@ function messageIsStreaming(record) {
   return record?.metadata?.agentStream?.status === 'streaming';
 }
 
+function teamSharingContentSegmentsForRecord(record = {}) {
+  return Array.isArray(record?.metadata?.teamSharing?.contentSegments)
+    ? record.metadata.teamSharing.contentSegments
+    : [];
+}
+
+function teamSharingBodyTextForRecord(record = {}) {
+  const body = teamSharingContentSegmentsForRecord(record).find((segment) => (
+    String(segment?.type || '').toLowerCase() === 'body'
+    && (segment.text || segment.content)
+  ));
+  return String(body?.text || body?.content || '').trim();
+}
+
 function renderStreamingMessageMarkdown(message) {
   const fallback = message.references?.length ? '' : '(attachment)';
-  const rendered = renderMarkdownWithMentions(message.body || fallback);
+  const rendered = renderMarkdownWithMentions(teamSharingBodyTextForRecord(message) || message.body || fallback);
   if (!messageIsStreaming(message)) return rendered;
   return `${rendered}<span class="agent-stream-cursor" aria-label="Agent is still writing"></span>`;
 }
 
 function renderMessageContentSegments(message) {
-  const segments = Array.isArray(message?.metadata?.teamSharing?.contentSegments)
-    ? message.metadata.teamSharing.contentSegments
-    : [];
+  const segments = teamSharingContentSegmentsForRecord(message);
   const quotes = segments.filter((segment) => segment && String(segment.type || '').toLowerCase() !== 'body' && (segment.text || segment.content));
   if (!quotes.length) return '';
   return `<div class="message-context-quotes">${quotes.map((segment) => `

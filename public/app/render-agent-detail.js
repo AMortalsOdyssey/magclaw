@@ -992,6 +992,7 @@ function renderReply(reply) {
         </div>
 	        ${renderMessageReferences(reply)}
 	        <div class="message-markdown">${renderStreamingMessageMarkdown(reply)}</div>
+        ${renderMessageContentSegments(reply)}
         <div class="message-attachments">${attachmentLinks(reply.attachmentIds)}</div>
         ${renderMessageReactionTray(reply)}
         ${renderMessageActions(reply, { threadContext: true })}

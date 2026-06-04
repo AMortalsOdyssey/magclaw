@@ -1835,13 +1835,42 @@ button:disabled {
 
 .message-markdown p,
 .message-markdown ul,
+.message-markdown ol,
+.message-markdown h1,
+.message-markdown h2,
+.message-markdown h3,
+.message-markdown h4,
+.message-markdown h5,
+.message-markdown h6,
 .message-markdown blockquote,
-.message-markdown pre {
+.message-markdown pre,
+.message-markdown hr {
   margin: 0;
 }
 
-.message-markdown ul {
+.message-markdown ul,
+.message-markdown ol {
   padding-left: 18px;
+}
+
+.message-markdown h1,
+.message-markdown h2,
+.message-markdown h3,
+.message-markdown h4,
+.message-markdown h5,
+.message-markdown h6 {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.message-markdown h1 {
+  font-size: 15px;
+}
+
+.message-markdown h2 {
+  font-size: 14px;
 }
 
 .message-markdown li {
@@ -1876,6 +1905,13 @@ button:disabled {
   padding-left: 9px;
   border-left: 3px solid var(--accent);
   color: var(--text-secondary);
+}
+
+.message-markdown hr {
+  width: 100%;
+  height: 1px;
+  border: 0;
+  background: var(--border);
 }
 
 .agent-stream-cursor {

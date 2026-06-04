@@ -73,3 +73,43 @@ test('message Markdown renderer preserves protected Team Sharing context links',
   const scopedLink = context.renderMarkdownInline('[原文](/s/tttttt1/team-sharing/context/sess_1?anchorEventId=evt_1)');
   assert.match(scopedLink, /href="\/s\/tttttt1\/team-sharing\/context\/sess_1\?anchorEventId=evt_1"/);
 });
+
+test('message Markdown renderer preserves soft line breaks and bold text', async () => {
+  const context = await createMarkdownHarness();
+
+  const html = context.renderMarkdown([
+    '第一行',
+    '第二行 **重点**',
+    '',
+    '下一段',
+  ].join('\n'));
+
+  assert.match(html, /<p>第一行<br>第二行 <strong>重点<\/strong><\/p>/);
+  assert.match(html, /<p>下一段<\/p>/);
+});
+
+test('message Markdown renderer trims surrounding punctuation from autolinks', async () => {
+  const context = await createMarkdownHarness();
+
+  const html = context.renderMarkdownInline('入口：(https://example.com/docs)。');
+
+  assert.match(html, /<a href="https:\/\/example\.com\/docs" target="_blank" rel="noreferrer">https:\/\/example\.com\/docs<\/a>\)。/);
+  assert.doesNotMatch(html, /href="https:\/\/example\.com\/docs\)"/);
+});
+
+test('message Markdown renderer hides internal transcript metadata directives', async () => {
+  const context = await createMarkdownHarness();
+
+  const html = context.renderMarkdown([
+    '已改好',
+    '::git-stage{cwd="/Users/example/project"} ::git-push{cwd="/Users/example/project" branch="main"}',
+    '<oai-mem-citation><citation_entries>secret</citation_entries></oai-mem-citation>',
+    '请审查改动',
+  ].join('\n'));
+
+  assert.match(html, /已改好/);
+  assert.match(html, /请审查改动/);
+  assert.doesNotMatch(html, /git-stage/);
+  assert.doesNotMatch(html, /oai-mem-citation/);
+  assert.doesNotMatch(html, /secret/);
+});

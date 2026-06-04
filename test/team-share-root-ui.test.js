@@ -67,6 +67,11 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   assert.doesNotMatch(app, /'open-team-sharing-workspace-file': \['Loading workspace file\.\.\.'/);
   assert.match(app, /'jump-team-sharing-workspace-heading'/);
   assert.match(app, /team-sharing-workspace-preview/);
+  assert.match(app, /function teamSharingContentSegmentsForRecord\(record = \{\}\)/);
+  assert.match(app, /function teamSharingBodyTextForRecord\(record = \{\}\)/);
+  assert.match(app, /teamSharingBodyTextForRecord\(message\) \|\| message\.body \|\| fallback/);
+  const replySource = app.slice(app.indexOf('function renderReply(reply)'), app.indexOf('function renderWorkspaceActivityDrawer'));
+  assert.match(replySource, /renderMessageContentSegments\(reply\)/);
   assert.match(app, /renderMessageContentSegments\(message\)/);
   assert.match(app, /message-context-quote/);
 });
