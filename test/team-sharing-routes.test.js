@@ -665,6 +665,7 @@ test('team sharing route records feedback and serves context windows', async () 
   ), true);
   assert.equal(contextRes.statusCode, 200);
   assert.deepEqual(contextRes.data.events.map((event) => event.eventId), ['evt_2']);
+  assert.match(contextRes.data.session.summaryHint, /Zilliz/);
 });
 
 test('team sharing route doctor exposes missing recall dependencies without secrets', async () => {
@@ -873,6 +874,13 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /function stripContextMetadata/);
   assert.match(res.body, /function renderContextMarkdown/);
   assert.match(res.body, /renderContextMarkdown\(text\)/);
+  assert.match(res.body, /CONTEXT_NOTE_MIN_CHARS = 1200/);
+  assert.match(res.body, /context-note/);
+  assert.match(res.body, />Abstract</);
+  assert.doesNotMatch(res.body, /核心便签/);
+  assert.match(res.body, /function contextNoteSummary/);
+  assert.match(res.body, /function observeContextNotes/);
+  assert.match(res.body, /contextNoteUnfold/);
   assert.match(res.body, /oai-mem-citation/);
   assert.match(res.body, /load-more-prev/);
   assert.match(res.body, /load-more-next/);
@@ -918,6 +926,54 @@ test('team sharing common link icon registry covers at least 100 common sites', 
   assert.equal(byHost.get('openai.com')?.iconHost, 'openai.com');
   assert.equal(byHost.get('bilibili.com')?.slug, 'bilibili');
   assert.equal(byHost.get('figma.com')?.slug, 'figma');
+});
+
+test('team sharing context page adds note summaries only for long agent replies', async () => {
+  const deps = routeDeps({ readJson: async () => syncBody() });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
+  const res = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/team-sharing/context/sess_route?anchorEventId=evt_2'),
+    deps,
+  ), true);
+
+  const context = createContextPageHarness(res.body);
+  context.window.__teamSharingSession = {
+    summaryHint: 'hook摘要：已确认长回复便签原型会复用 Team Sharing 摘要，并在正文右侧展示核心结论。',
+    runtime: 'codex',
+  };
+  const longReply = [
+    '核心结论：已经实现长回复便签原型，会提炼回复结论并贴在 Agent 内容右侧。',
+    '',
+    '实现细节：' + '内容展示、滚动触发、摘要截断、三行打字动画。'.repeat(80),
+  ].join('\n');
+  const noteSummary = context.contextNoteSummary({ role: 'assistant', text: longReply });
+  assert.match(noteSummary, /长回复便签原型/);
+  assert.ok(Array.from(noteSummary).length <= 100);
+
+  const html = context.eventHtml({
+    eventId: 'evt_long',
+    role: 'assistant',
+    text: longReply,
+    createdAt: '2026-06-01T10:02:00.000Z',
+  });
+  assert.match(html, /has-context-note/);
+  assert.match(html, /data-context-note/);
+  assert.match(html, /data-full-text="[^"]*长回复便签原型/);
+
+  const shortReply = '结论：短回复直接读正文即可。'.repeat(20);
+  assert.equal(context.contextNoteSummary({ role: 'assistant', text: shortReply }), '');
+  assert.equal(context.contextNoteSummary({ role: 'user', text: longReply }), '');
+
+  const noConclusion = '过程记录：' + '逐项检查页面渲染与交互。'.repeat(120);
+  assert.match(context.contextNoteSummary({ role: 'assistant', text: noConclusion }), /hook摘要/);
 });
 
 test('team sharing context page renders Codex markdown and hides citation metadata', async () => {

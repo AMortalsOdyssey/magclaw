@@ -1318,6 +1318,15 @@ export function contextWindowForTeamSharingSession(teamSharingStateInput, sessio
   const session = teamSharingState.sessions[String(sessionId || '')] || null;
   const events = asArray(teamSharingState.events[String(sessionId || '')]).sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0));
   if (!events.length) return { ok: false, code: 'session_not_found', events: [], pagination: { hasPrev: false, hasNext: false } };
+  const abstract = teamSharingState.abstracts?.[String(sessionId || '')] || null;
+  const latestActivity = asArray(teamSharingState.activities)
+    .filter((activity) => activity.sessionId === String(sessionId || ''))
+    .sort((left, right) => String(left.createdAt || '').localeCompare(String(right.createdAt || '')))
+    .at(-1);
+  const summaryHint = cleanText(markdownLinkText([
+    summaryMarkdownFromAbstract(abstract?.abstractMarkdown || ''),
+    latestActivity?.summary || '',
+  ].filter(Boolean).join('\n'))).slice(0, 600);
   const anchorEventId = String(options.anchorEventId || '').trim();
   const direction = String(options.direction || 'around').trim().toLowerCase();
   const order = String(options.order || 'asc').trim().toLowerCase() === 'desc' ? 'desc' : 'asc';
@@ -1353,6 +1362,7 @@ export function contextWindowForTeamSharingSession(teamSharingStateInput, sessio
       uploader: session.uploader || {},
       workspaceId: session.workspaceId || '',
       channelId: session.channelId || '',
+      summaryHint,
     } : { sessionId, title: '', runtime: '', uploader: {} },
     events: order === 'desc' ? selected.reverse() : selected,
     pagination: {

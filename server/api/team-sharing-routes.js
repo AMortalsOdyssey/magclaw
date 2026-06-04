@@ -240,8 +240,8 @@ function shareChromeHtml(share = {}, innerHtml = '') {
 <body>
   <main>
     <section class="shell">
-	      ${share.hideChromeBrand ? '' : '<div class="brand">Team Shares</div>'}
-	      ${innerHtml}
+          ${share.hideChromeBrand ? '' : '<div class="brand">Team Shares</div>'}
+          ${innerHtml}
     </section>
     ${shareFooterHtml(share)}
   </main>
@@ -638,7 +638,8 @@ function sendContextHtml(res, {
     button { border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:6px; padding:8px 12px; cursor:pointer; }
     button:disabled { opacity:.45; cursor:not-allowed; }
     .scroll-sentinel { height:1px; }
-    article.context-event { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:10px 0; box-shadow:0 1px 2px rgba(15,23,42,.04); }
+    article.context-event { position:relative; background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:10px 0; box-shadow:0 1px 2px rgba(15,23,42,.04); }
+    article.context-event-agent.has-context-note { overflow:visible; }
     article.context-event-user { background:#fff1f5; border-color:var(--user-line); }
     article.context-event-user .role { background:#ffe4ec; color:#9f1239; }
     article.context-event.anchor { border-color:var(--accent); box-shadow:0 0 0 2px rgba(8,145,178,.12); }
@@ -709,8 +710,32 @@ function sendContextHtml(res, {
     .context-source-link { min-height:24px; border:1px solid #bae6fd; background:#f0f9ff; color:#0369a1; border-radius:999px; padding:2px 8px; font-weight:800; text-decoration:none; }
     .context-source-link:hover,
     .context-source-link:focus-visible { border-color:#0891b2; background:#e0f2fe; outline:0; }
+    .context-note { position:absolute; left:calc(100% + 14px); top:88px; z-index:1; width:224px; min-height:118px; padding:14px 15px 13px; border:1px solid #c7dde8; border-radius:4px; background:#f7fbfd; color:#334155; box-shadow:0 14px 28px rgba(15,23,42,.10), 0 1px 0 rgba(255,255,255,.82) inset; opacity:0; transform-origin:left top; transform:translate(-10px,-8px) scale(.74) rotate(-2deg); clip-path:polygon(0 0, 0 0, 0 0, 0 0); pointer-events:none; }
+    .context-note::before { content:""; position:absolute; left:50%; top:-10px; width:58px; height:18px; transform:translateX(-50%) rotate(-2deg); border:1px solid rgba(8,145,178,.18); border-radius:3px; background:rgba(224,242,254,.78); box-shadow:0 2px 5px rgba(71,85,105,.08); }
+    .context-note::after { content:""; position:absolute; right:0; bottom:0; width:28px; height:28px; border-radius:4px 0 3px 0; background:linear-gradient(135deg, rgba(255,255,255,0) 0 49%, rgba(203,226,236,.55) 50%, rgba(240,249,255,.96) 100%); }
+    .context-note.is-open { animation:contextNoteUnfold .34s cubic-bezier(.2,.8,.22,1) forwards; }
+    .context-note-label { margin:0 0 8px; color:#0f6f89; font-size:11px; font-weight:900; line-height:1.2; }
+    .context-note-lines { margin:0; display:grid; gap:2px; font-size:13px; font-weight:650; line-height:1.48; }
+    .context-note-line { display:block; min-height:1.48em; overflow-wrap:anywhere; }
+    .context-note-line::after { content:""; display:inline-block; width:1px; height:1em; margin-left:1px; background:#0f6f89; vertical-align:-.14em; opacity:0; }
+    .context-note.is-typing .context-note-line.is-active::after { opacity:.8; animation:contextNoteCaret .72s steps(1) infinite; }
+    .context-note.is-finished .context-note-line::after { display:none; }
     .context-status { min-height:20px; text-align:center; color:var(--muted); font-size:12px; margin:-4px 0 10px; }
     .empty { color:var(--muted); text-align:center; padding:48px 0; }
+    @keyframes contextNoteUnfold {
+      0% { opacity:0; transform:translate(-10px,-8px) scale(.74) rotate(-2deg); clip-path:polygon(0 0, 0 0, 0 0, 0 0); }
+      62% { opacity:1; transform:translate(-2px,-2px) scale(1.02) rotate(-.4deg); clip-path:polygon(0 0, 100% 0, 82% 100%, 0 76%); }
+      100% { opacity:1; transform:translate(0,0) scale(1) rotate(0); clip-path:polygon(0 0, 100% 0, 100% 100%, 0 100%); }
+    }
+    @keyframes contextNoteCaret { 0%, 48% { opacity:.8; } 49%, 100% { opacity:0; } }
+    @media (max-width:1240px) {
+      .context-note { position:sticky; left:auto; top:104px; width:min(100%, 430px); margin:12px 0 14px 0; transform:translate(-6px,-6px) scale(.84) rotate(-1deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .context-note,
+      .context-note.is-open { opacity:1; transform:none; clip-path:polygon(0 0, 100% 0, 100% 100%, 0 100%); animation:none; }
+      .context-note-line::after { display:none; }
+    }
   </style>
 </head>
 <body>
@@ -906,9 +931,9 @@ function sendContextHtml(res, {
         return '<li>' + renderContextInline(item) + '</li>';
       }).join('') + '</' + tag + '>';
     }
-    function renderContextMarkdown(text) {
-      const lines = stripContextMetadata(text).split(/\\r?\\n/);
-      const fence = String.fromCharCode(96).repeat(3);
+        function renderContextMarkdown(text) {
+          const lines = stripContextMetadata(text).split(/\\r?\\n/);
+          const fence = String.fromCharCode(96).repeat(3);
       const blocks = [];
       let paragraph = [];
       let listLines = [];
@@ -997,11 +1022,149 @@ function sendContextHtml(res, {
       if (inCode) blocks.push('<pre><code>' + escapeHtml(codeLines.join('\\n')) + '</code></pre>');
       flushParagraph();
       flushList();
-      flushTable();
-      return blocks.join('') || '<p>' + renderContextInline(text) + '</p>';
-    }
-    function chinaTime(value) {
-      const date = new Date(value || '');
+          flushTable();
+          return blocks.join('') || '<p>' + renderContextInline(text) + '</p>';
+        }
+        const CONTEXT_NOTE_MIN_CHARS = 1200;
+        const CONTEXT_NOTE_MAX_CHARS = 100;
+        function contextEventBodyText(event) {
+          const segments = Array.isArray(event?.contentSegments) && event.contentSegments.length
+            ? event.contentSegments
+            : (Array.isArray(event?.metadata?.contentSegments) ? event.metadata.contentSegments : []);
+          const body = segments.find(segment => String(segment?.type || '').toLowerCase() === 'body');
+          return body?.text || body?.content || event?.displayText || event?.cleanText || event?.text || '';
+        }
+        function plainContextNoteText(text) {
+          const tick = String.fromCharCode(96);
+          const fencePattern = new RegExp(tick + tick + tick + '[\\\\s\\\\S]*?' + tick + tick + tick, 'g');
+          const inlineCodePattern = new RegExp(tick + '([^' + tick + ']+)' + tick, 'g');
+          return stripContextMetadata(text)
+            .replace(fencePattern, ' ')
+            .replace(inlineCodePattern, '$1')
+            .replace(/\\[([^\\]\\n]+)\\]\\(([^)\\n]+)\\)/g, '$1')
+            .replace(/^#{1,6}\\s+/gm, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/[>*_|~]/g, ' ')
+            .replace(/\\s+/g, ' ')
+            .trim();
+        }
+        function contextVisibleCharCount(text) {
+          return Array.from(plainContextNoteText(text)).length;
+        }
+        function isContextSectionBoundary(line) {
+          const clean = String(line || '').trim();
+          if (!clean) return false;
+          if (/^#{1,6}\\s+/.test(clean)) return true;
+          return /^(?:\\*\\*)?[A-Za-z0-9 _-\\u4e00-\\u9fff]{2,28}(?:\\*\\*)?\\s*[:：]\\s*$/.test(clean);
+        }
+        function extractContextConclusionText(text) {
+          const lines = stripContextMetadata(text).replace(/\\r\\n/g, '\\n').split('\\n');
+          for (let index = 0; index < lines.length; index += 1) {
+            const line = String(lines[index] || '').trim();
+            const match = line.match(/^(?:#{1,6}\\s*)?(?:\\*\\*)?\\s*(核心结论|结论|我的判断|总结|最终结论|处理结果|验证结果|已解决|Outcome|Conclusion|Key Takeaways)\\s*(?:\\*\\*)?\\s*[:：]?\\s*(.*)$/i);
+            if (!match) continue;
+            const parts = [];
+            if (match[2]) parts.push(match[2]);
+            for (let cursor = index + 1; cursor < lines.length && parts.join('\\n').length < 900; cursor += 1) {
+              const next = String(lines[cursor] || '').trim();
+              if (!next && parts.length) break;
+              if (parts.length && isContextSectionBoundary(next)) break;
+              if (next) parts.push(next);
+            }
+            const conclusion = plainContextNoteText(parts.join('\\n'));
+            if (conclusion) return conclusion;
+          }
+          return '';
+        }
+        function contextSessionSummaryHint() {
+          const session = window.__teamSharingSession || {};
+          return plainContextNoteText(session.summaryHint || session.abstractSummary || session.activitySummary || '')
+            .replace(/\\b\\d+\\.\\s*/g, ' ')
+            .replace(/（\\s*原文\\s*）/g, ' ')
+            .replace(/\\bOriginal Context\\b/gi, ' ')
+            .replace(/\\bClosing Notes\\b/gi, ' ')
+            .replace(/\\b原文\\b/g, ' ')
+            .replace(/本轮诉求\\s*[：:]?/g, ' ')
+            .replace(/用户主要提出\\s*[：:]\\s*[^。！？!?；;]+[。！？!?；;]?/g, ' ')
+            .replace(/Agent 给出的结论和推进\\s*[：:]\\s*/g, ' ')
+            .replace(/\\s+/g, ' ')
+            .trim();
+        }
+        function compactContextNoteSummary(text, limit = CONTEXT_NOTE_MAX_CHARS) {
+          const clean = plainContextNoteText(text)
+            .replace(/点击正文里的[^。！？!?]*[。！？!?]?/g, ' ')
+            .replace(/页面会以该消息为中心[^。！？!?]*[。！？!?]?/g, ' ')
+            .replace(/这份 workspace[^。！？!?]*[。！？!?]?/gi, ' ')
+            .replace(/([。！？!?])\\1+/g, '$1')
+            .replace(/。([！？!?])/g, '$1')
+            .replace(/\\s+/g, ' ')
+            .trim();
+          const chars = Array.from(clean);
+          if (chars.length <= limit) return clean;
+          const raw = chars.slice(0, Math.max(1, limit - 1)).join('');
+          const cuts = ['。', '！', '？', ';', '；'].map(mark => raw.lastIndexOf(mark));
+          const cut = Math.max(...cuts);
+          if (cut >= Math.min(58, limit - 8)) return raw.slice(0, cut + 1);
+          return raw.replace(/[，,；;：:\\s]+$/g, '') + '…';
+        }
+        function fallbackContextNoteSummary(text) {
+          return plainContextNoteText(text)
+            .replace(/([。！？!?])\\s*/g, '$1|')
+            .split('|')
+            .map(item => item.trim())
+            .filter(item => item.length >= 8)
+            .slice(0, 2)
+            .join('');
+        }
+        function splitContextNoteLines(summary) {
+          const chars = Array.from(summary || '');
+          const lineCount = chars.length > 58 ? 3 : (chars.length > 34 ? 2 : 1);
+          if (lineCount <= 1) return [summary];
+          const lines = [];
+          let remaining = chars;
+          for (let index = 0; index < lineCount - 1; index += 1) {
+            const target = Math.ceil(remaining.length / (lineCount - index));
+            const cut = contextNoteLineCutIndex(remaining, target);
+            lines.push(remaining.slice(0, cut).join('').trim());
+            remaining = remaining.slice(cut);
+          }
+          if (remaining.length) lines.push(remaining.join('').trim());
+          return lines.filter(Boolean).slice(0, 3);
+        }
+        function contextNoteLineCutIndex(chars, target) {
+          const preferredMarks = new Set(['。', '！', '？', '；', ';', '，', ',', '、', ' ']);
+          const min = Math.max(8, target - 8);
+          const max = Math.min(chars.length - 1, target + 8);
+          for (let index = target; index <= max; index += 1) {
+            if (preferredMarks.has(chars[index])) return index + 1;
+          }
+          for (let index = target - 1; index >= min; index -= 1) {
+            if (preferredMarks.has(chars[index])) return index + 1;
+          }
+          return Math.max(1, Math.min(chars.length, target));
+        }
+        function contextNoteSummary(event) {
+          if (!(event?.role === 'assistant' || event?.role === 'system')) return '';
+          const text = contextEventBodyText(event);
+          if (contextVisibleCharCount(text) <= CONTEXT_NOTE_MIN_CHARS) return '';
+          const conclusion = extractContextConclusionText(text);
+          const hint = contextSessionSummaryHint();
+          const source = conclusion
+            ? (contextVisibleCharCount(conclusion) >= 30 || !hint ? conclusion : [conclusion, hint].filter(Boolean).join('。'))
+            : (hint || fallbackContextNoteSummary(text));
+          return compactContextNoteSummary(source, CONTEXT_NOTE_MAX_CHARS);
+        }
+        function renderContextNote(summary) {
+          if (!summary) return '';
+          const lines = splitContextNoteLines(summary);
+          return '<aside class="context-note" data-context-note aria-label="本次长回复摘要">' +
+        '<div class="context-note-label">Abstract</div>' +
+            '<p class="context-note-lines">' +
+            lines.map((line, index) => '<span class="context-note-line" data-note-line data-line-index="' + index + '" data-full-text="' + escapeHtml(line) + '"></span>').join('') +
+            '</p></aside>';
+        }
+        function chinaTime(value) {
+          const date = new Date(value || '');
       if (!Number.isFinite(date.getTime())) return value || '';
       return new Intl.DateTimeFormat('zh-CN', {
         timeZone: 'Asia/Shanghai',
@@ -1082,16 +1245,95 @@ function sendContextHtml(res, {
       const bottomDistance = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
       if (bottomDistance <= bottomThreshold) load(bottomDirection).catch(console.error);
     }
-    function scheduleScrollCheck() {
-      if (scrollCheckTimer) return;
-      scrollCheckTimer = window.setTimeout(() => {
-        scrollCheckTimer = null;
-        checkScrollEdges();
-      }, 120);
-    }
-    function eventSegments(event) {
-      const segments = Array.isArray(event.contentSegments) && event.contentSegments.length
-        ? event.contentSegments
+        function scheduleScrollCheck() {
+          if (scrollCheckTimer) return;
+          scrollCheckTimer = window.setTimeout(() => {
+            scrollCheckTimer = null;
+            checkScrollEdges();
+          }, 120);
+        }
+        function prefersReducedContextMotion() {
+          return Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+        }
+        function typeContextNoteLines(note, lines) {
+          if (!note || !lines.length) return;
+          if (prefersReducedContextMotion()) {
+            lines.forEach(line => { line.textContent = line.getAttribute('data-full-text') || ''; });
+            note.classList.add('is-finished');
+            return;
+          }
+          const speeds = [18, 32, 48];
+          let completed = 0;
+          note.classList.add('is-typing');
+          lines.forEach((line, index) => {
+            const fullText = line.getAttribute('data-full-text') || '';
+            const chars = Array.from(fullText);
+            let offset = 0;
+            const step = () => {
+              line.classList.add('is-active');
+              offset += 1;
+              line.textContent = chars.slice(0, offset).join('');
+              if (offset < chars.length) {
+                window.setTimeout(step, speeds[index] || 38);
+                return;
+              }
+              line.classList.remove('is-active');
+              completed += 1;
+              if (completed >= lines.length) {
+                note.classList.remove('is-typing');
+                note.classList.add('is-finished');
+              }
+            };
+            window.setTimeout(step, index * 80);
+          });
+        }
+        function revealContextNote(note) {
+          if (!note || note.dataset.notePlayed === '1') return;
+          note.dataset.notePlayed = '1';
+          note.classList.add('is-open');
+          const lines = Array.from(note.querySelectorAll?.('[data-note-line]') || []);
+          window.setTimeout(() => typeContextNoteLines(note, lines), prefersReducedContextMotion() ? 0 : 210);
+        }
+        function contextNoteVisibleRatio(entry) {
+          const total = Number(entry?.boundingClientRect?.height || 0);
+          const visible = Number(entry?.intersectionRect?.height || 0);
+          if (total <= 0) return entry?.isIntersecting ? 1 : 0;
+          return Math.max(0, Math.min(1, visible / total));
+        }
+        function contextNoteTriggerRatio(article) {
+          const height = Number(article?.getBoundingClientRect?.().height || 0);
+          if (height >= Math.min(window.innerHeight * 0.9, 720)) return 0.33;
+          return 0.95;
+        }
+        let contextNoteObserver = null;
+        function ensureContextNoteObserver() {
+          if (contextNoteObserver || typeof window.IntersectionObserver !== 'function') return contextNoteObserver;
+          contextNoteObserver = new IntersectionObserver(entries => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              const article = entry.target;
+              const note = article.querySelector?.('[data-context-note]');
+              if (!note || note.dataset.notePlayed === '1') continue;
+              if (contextNoteVisibleRatio(entry) < contextNoteTriggerRatio(article)) continue;
+              revealContextNote(note);
+              contextNoteObserver?.unobserve(article);
+            }
+          }, { root: null, threshold: [0, .33, .66, .95, 1] });
+          return contextNoteObserver;
+        }
+        function observeContextNotes(root = eventsEl) {
+          const notes = Array.from(root?.querySelectorAll?.('[data-context-note]:not([data-note-observed])') || []);
+          for (const note of notes) {
+            note.dataset.noteObserved = '1';
+            const article = note.closest?.('article.context-event') || note.parentElement;
+            const noteObserver = ensureContextNoteObserver();
+            if (article && noteObserver) noteObserver.observe(article);
+            else revealContextNote(note);
+          }
+        }
+        function eventSegments(event) {
+          const segments = Array.isArray(event.contentSegments) && event.contentSegments.length
+            ? event.contentSegments
         : (Array.isArray(event.metadata?.contentSegments) ? event.metadata.contentSegments : []);
       if (!segments.length) return '';
       return '<div class="context-segments">' + segments.map(segment => {
@@ -1104,15 +1346,17 @@ function sendContextHtml(res, {
           '<div class="context-quote-text">' + renderContextMarkdown(text) + '</div></blockquote>';
       }).join('') + '</div>';
     }
-    function eventHtml(event) {
-      const anchorClass = anchorEventId && event.eventId === anchorEventId ? ' anchor' : '';
-      const roleClass = event.role === 'user' ? ' context-event-user' : (event.role === 'assistant' || event.role === 'system' ? ' context-event-agent' : ' context-event-other');
-      const session = window.__teamSharingSession || {};
-      const body = eventSegments(event) || '<div class="text">' + renderContextMarkdown(event.displayText || event.cleanText || event.text || '') + '</div>';
-      return '<article id="' + encodeURIComponent(event.eventId || '') + '" class="' + ('context-event' + roleClass + anchorClass).trim() + '">' +
-        '<div><span class="role">' + escapeHtml(roleLabel(event, session)) + '</span><span class="time">' + escapeHtml(chinaTime(event.createdAt || '')) + '</span></div>' +
-        body + '</article>';
-    }
+        function eventHtml(event) {
+          const anchorClass = anchorEventId && event.eventId === anchorEventId ? ' anchor' : '';
+          const roleClass = event.role === 'user' ? ' context-event-user' : (event.role === 'assistant' || event.role === 'system' ? ' context-event-agent' : ' context-event-other');
+          const session = window.__teamSharingSession || {};
+          const body = eventSegments(event) || '<div class="text">' + renderContextMarkdown(event.displayText || event.cleanText || event.text || '') + '</div>';
+          const note = renderContextNote(contextNoteSummary(event));
+          const noteClass = note ? ' has-context-note' : '';
+          return '<article id="' + encodeURIComponent(event.eventId || '') + '" class="' + ('context-event' + roleClass + anchorClass + noteClass).trim() + '">' +
+            '<div><span class="role">' + escapeHtml(roleLabel(event, session)) + '</span><span class="time">' + escapeHtml(chinaTime(event.createdAt || '')) + '</span></div>' +
+            note + body + '</article>';
+        }
     async function load(direction, options = {}) {
       const force = Boolean(options.force);
       if (loading[direction]) return;
@@ -1140,13 +1384,14 @@ function sendContextHtml(res, {
         const insertsAtTop = (order === 'desc' && direction === 'next') || (order !== 'desc' && direction === 'prev');
         if (!fresh.length && !seen.size) {
           eventsEl.innerHTML = '<div class="empty">No context found.</div>';
-        } else if (fresh.length) {
-          const html = fresh.map(eventHtml).join('');
-          if (insertsAtTop) eventsEl.insertAdjacentHTML('afterbegin', html);
-          else if (eventsEl.querySelector('.empty')) eventsEl.innerHTML = html;
-          else eventsEl.insertAdjacentHTML('beforeend', html);
-          if (direction !== 'around' && insertsAtTop) preserveScrollForPrepend(beforeHeight, beforeScrollY);
-        }
+            } else if (fresh.length) {
+              const html = fresh.map(eventHtml).join('');
+              if (insertsAtTop) eventsEl.insertAdjacentHTML('afterbegin', html);
+              else if (eventsEl.querySelector('.empty')) eventsEl.innerHTML = html;
+              else eventsEl.insertAdjacentHTML('beforeend', html);
+              observeContextNotes(eventsEl);
+              if (direction !== 'around' && insertsAtTop) preserveScrollForPrepend(beforeHeight, beforeScrollY);
+            }
         if (statusEl) {
           if (fresh.length) statusEl.textContent = '';
           else if (force && direction === 'next') statusEl.textContent = 'No newer context yet. Try again after hooks sync.';

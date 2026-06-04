@@ -136,6 +136,38 @@ function claudeTextEvent(item, context) {
   return null;
 }
 
+function visibleTeamSharingTranscriptEvents(events = []) {
+  const users = [];
+  let finalAssistant = null;
+  let latestUserOrdinal = 0;
+  for (const event of events) {
+    if (event.role === 'user') {
+      users.push(event);
+      latestUserOrdinal = Math.max(latestUserOrdinal, Number(event.sourceOrdinal || 0));
+      continue;
+    }
+    if (event.role === 'assistant') finalAssistant = event;
+  }
+  const visible = [];
+  const keptOrdinals = new Set();
+  const keepEvent = (event) => {
+    visible.push(event);
+    keptOrdinals.add(Number(event.sourceOrdinal || 0));
+  };
+  for (const event of users) keepEvent(event);
+  if (finalAssistant && Number(finalAssistant.sourceOrdinal || 0) > latestUserOrdinal) {
+    keepEvent(finalAssistant);
+  }
+  const hasDroppedAssistantBeforeUser = events.some((event) => {
+    if (event.role !== 'assistant' || keptOrdinals.has(Number(event.sourceOrdinal || 0))) return false;
+    return users.some((userEvent) => Number(userEvent.sourceOrdinal || 0) > Number(event.sourceOrdinal || 0));
+  });
+  return {
+    events: visible.sort((left, right) => Number(left.sourceOrdinal || 0) - Number(right.sourceOrdinal || 0)),
+    useSourceOrdinals: hasDroppedAssistantBeforeUser,
+  };
+}
+
 export function parseTeamSharingTranscript(text = '', options = {}) {
   const runtime = normalizeRuntime(options.runtime);
   const parsed = parseJsonOrJsonl(text);
@@ -147,32 +179,23 @@ export function parseTeamSharingTranscript(text = '', options = {}) {
     toolNames: [],
   };
   const extractedEvents = [];
+  let textEventOrdinal = 0;
   for (const item of parsed) {
     const extracted = runtime === 'claude_code'
       ? claudeTextEvent(item, context)
       : codexTextEvent(item, context);
     if (!extracted) continue;
+    textEventOrdinal += 1;
+    extracted.sourceOrdinal = textEventOrdinal;
     extractedEvents.push(extracted);
   }
-  const visibleEvents = [];
-  let pendingAssistant = null;
-  const flushAssistant = () => {
-    if (!pendingAssistant) return;
-    visibleEvents.push(pendingAssistant);
-    pendingAssistant = null;
-  };
-  for (const event of extractedEvents) {
-    if (event.role === 'assistant') {
-      pendingAssistant = event;
-      continue;
-    }
-    flushAssistant();
-    visibleEvents.push(event);
-  }
-  flushAssistant();
+  const visibleTranscript = visibleTeamSharingTranscriptEvents(extractedEvents);
+  const visibleEvents = visibleTranscript.events;
   const sessionSeed = context.sessionId || options.sessionId || 'session';
   const events = visibleEvents.map((event, index) => {
-    const ordinal = index + 1;
+    const ordinal = visibleTranscript.useSourceOrdinals
+      ? (Number(event.sourceOrdinal || 0) || index + 1)
+      : index + 1;
     const eventId = `${sessionSeed}:${ordinal}:${stableHash(`${event.role}:${event.text}`)}`;
     return {
       eventId,
