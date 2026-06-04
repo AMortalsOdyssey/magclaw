@@ -415,7 +415,6 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
   const sourceOrdinalRef = { value: 0 };
   const pendingCalls = new Map();
   const goalEventRef = { current: null };
-  let goalActive = false;
   for (const item of parsed) {
     if (item?.type === 'session_meta' && item.payload) {
       context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
@@ -466,11 +465,9 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
           status,
           createdAt,
         });
-        if (event) goalActive = true;
       } else if (pending?.name === 'update_goal') {
         const status = goalStatusFromPayload(output) || goalStatusFromPayload(pending.args);
         updateLastGoalStatus(goalEventRef, status);
-        if (['complete', 'completed', 'blocked'].includes(String(status || '').toLowerCase())) goalActive = false;
       }
       if (pending) pendingCalls.delete(callId);
       continue;
@@ -511,7 +508,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
       role,
       text,
       createdAt,
-      keepAssistant: goalActive,
+      keepAssistant: false,
       toolCalls: context.toolNames.length ? context.toolNames.map((name) => ({ name })) : [],
     });
   }
@@ -695,13 +692,8 @@ function visibleTeamSharingTranscriptEvents(events = []) {
   if (finalAssistant && Number(finalAssistant.sourceOrdinal || 0) > latestUserOrdinal) {
     keepEvent(finalAssistant);
   }
-  const hasDroppedAssistantBeforeUser = events.some((event) => {
-    if (event.role !== 'assistant' || keptOrdinals.has(Number(event.sourceOrdinal || 0))) return false;
-    return users.some((userEvent) => Number(userEvent.sourceOrdinal || 0) > Number(event.sourceOrdinal || 0));
-  });
   return {
     events: visible.sort((left, right) => Number(left.sourceOrdinal || 0) - Number(right.sourceOrdinal || 0)),
-    useSourceOrdinals: hasDroppedAssistantBeforeUser,
   };
 }
 
@@ -722,9 +714,7 @@ export function parseTeamSharingTranscript(text = '', options = {}) {
   const visibleEvents = visibleTranscript.events;
   const sessionSeed = context.sessionId || options.sessionId || 'session';
   const events = visibleEvents.map((event, index) => {
-    const ordinal = visibleTranscript.useSourceOrdinals
-      ? (Number(event.sourceOrdinal || 0) || index + 1)
-      : index + 1;
+    const ordinal = Number(event.sourceOrdinal || 0) || index + 1;
     const eventId = `${sessionSeed}:${ordinal}:${stableHash(`${event.role}:${event.text}`)}`;
     return {
       eventId,

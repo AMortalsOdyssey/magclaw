@@ -123,6 +123,71 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback' && doc.rawEventId && /topics\/rerank-feedback\.md#/.test(doc.sourceRef)));
 });
 
+test('team sharing sync deduplicates the same transcript event when parser ordinals change', async () => {
+  const state = baseState();
+  const makeId = makeIdFactory();
+  const first = await syncTeamSharingBatch(sampleSyncPackage({
+    sessionId: 'sess_stable_identity',
+    idempotencyKey: 'codex:magclaw:sess_stable_identity:1:1:old',
+    fromOrdinal: 1,
+    toOrdinal: 1,
+    events: [{
+      eventId: 'sess_stable_identity:1:oldid',
+      ordinal: 1,
+      role: 'assistant',
+      text: 'Agent 提问：链接范围？\n用户回答：内容+工作区',
+      sourceHash: 'same-source-hash',
+      createdAt: '2026-06-01T08:05:00.000Z',
+      presentation: {
+        mode: 'interaction',
+        source: 'codex',
+        interaction: {
+          questions: [{ id: 'scope', header: '链接范围', question: '链接保护到哪一类？' }],
+          answers: [{ id: 'scope', values: ['内容+工作区'] }],
+        },
+      },
+    }],
+  }), {
+    state,
+    makeId,
+    now: () => '2026-06-01T08:06:00.000Z',
+  });
+  const second = await syncTeamSharingBatch(sampleSyncPackage({
+    sessionId: 'sess_stable_identity',
+    idempotencyKey: 'codex:magclaw:sess_stable_identity:2:2:new',
+    fromOrdinal: 2,
+    toOrdinal: 2,
+    events: [{
+      eventId: 'sess_stable_identity:2:newid',
+      ordinal: 2,
+      role: 'assistant',
+      text: 'Agent 提问：链接范围？\n用户回答：内容+工作区',
+      sourceHash: 'same-source-hash',
+      createdAt: '2026-06-01T08:05:00.000Z',
+      presentation: {
+        mode: 'interaction',
+        source: 'codex',
+        interaction: {
+          questions: [{ id: 'scope', header: '链接范围', question: '链接保护到哪一类？' }],
+          answers: [{ id: 'scope', values: ['内容+工作区'] }],
+        },
+      },
+    }],
+  }), {
+    state,
+    makeId,
+    now: () => '2026-06-01T08:07:00.000Z',
+  });
+
+  assert.equal(first.ok, true);
+  assert.equal(first.appendedEventCount, 1);
+  assert.equal(second.ok, true);
+  assert.equal(second.appendedEventCount, 0);
+  assert.equal(state.replies.length, 1);
+  assert.equal(state.messages[0].replyCount, 1);
+  assert.equal(state.teamSharing.events.sess_stable_identity.length, 1);
+});
+
 test('team sharing context summary hint prefers uploaded activity summary', async () => {
   const state = baseState();
   const activitySummary = `hooks summary：这次完成了长回复便签的 Markdown preview，并确认超过 1000 字才截断。${'摘要补充。'.repeat(240)}`;

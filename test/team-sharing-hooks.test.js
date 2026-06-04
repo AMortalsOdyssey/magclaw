@@ -78,8 +78,29 @@ test('team sharing hook parser uses explicit session title and keeps only final 
 
   assert.equal(parsed.title, '验收会话总结共享');
   assert.deepEqual(parsed.events.map((event) => event.text), ['首条用户消息不应该当标题', '最终回复，进入 Team Sharing']);
-  assert.deepEqual(parsed.events.map((event) => event.ordinal), [1, 2]);
+  assert.deepEqual(parsed.events.map((event) => event.ordinal), [1, 3]);
   assert.equal(parsed.events[1].rawEventId, parsed.events[1].eventId);
+});
+
+test('team sharing hook parser does not upload intermediate Codex goal progress as replies', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-goal-progress', cwd: '/repo/magclaw' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '帮我修复 Team Sharing 登录态' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'function_call', name: 'create_goal', call_id: 'call_goal_progress', arguments: JSON.stringify({ objective: '修复 Team Sharing 登录态' }) } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:03.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_goal_progress', output: JSON.stringify({ objective: '修复 Team Sharing 登录态', status: 'active' }) } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:04.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '我会先改三个核心点：SESSION_TTL_MS、fingerprint、链接保护。' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:05.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '已完成并推送：登录态 TTL 和链接鉴权已修复。' }] } }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
+
+  assert.deepEqual(parsed.events.map((event) => event.text), [
+    '帮我修复 Team Sharing 登录态',
+    '已完成并推送：登录态 TTL 和链接鉴权已修复。',
+  ]);
+  assert.deepEqual(parsed.events.map((event) => event.ordinal), [1, 3]);
+  assert.equal(parsed.events[0].presentation.mode, 'goal');
+  assert.doesNotMatch(JSON.stringify(parsed.events), /我会先改三个核心点/);
 });
 
 test('team sharing hook parser preserves user guidance while dropping intermediate Codex replies', () => {

@@ -530,6 +530,14 @@ function normalizeTeamSharingEvent(event = {}, sessionId = '') {
   };
 }
 
+function teamSharingEventIdentityKey(event = {}) {
+  const role = String(event.role || '').trim().toLowerCase();
+  const sourceHash = String(event.sourceHash || stableHash(event.cleanText || event.displayText || event.text || '')).trim();
+  const createdAt = String(event.createdAt || '').trim();
+  if (!role || !sourceHash) return '';
+  return `${role}:${sourceHash}:${createdAt}`;
+}
+
 function inferTopicId({ title = '', events = [], optionalLocalDigest = '' } = {}) {
   const haystack = `${title}\n${optionalLocalDigest}\n${events.map((event) => event.cleanText).join('\n')}`.toLowerCase();
   if (haystack.includes('rerank') || haystack.includes('重排')) return 'rerank-feedback';
@@ -1419,13 +1427,22 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
   }
 
   const existingEvents = new Map(asArray(teamSharingState.events[sessionId]).map((event) => [event.eventId, event]));
+  const existingEventIdentities = new Map();
+  for (const event of existingEvents.values()) {
+    const identity = teamSharingEventIdentityKey(event);
+    if (identity) existingEventIdentities.set(identity, event);
+  }
   const acceptedEvents = [];
   for (const rawEvent of asArray(packageBody.events)) {
     const event = normalizeTeamSharingEvent(rawEvent, sessionId);
     if (!event) continue;
     const duplicate = existingEvents.get(event.eventId);
     if (duplicate && duplicate.sourceHash === event.sourceHash) continue;
+    const identity = teamSharingEventIdentityKey(event);
+    const semanticDuplicate = identity ? existingEventIdentities.get(identity) : null;
+    if (semanticDuplicate && semanticDuplicate.sourceHash === event.sourceHash) continue;
     existingEvents.set(event.eventId, event);
+    if (identity) existingEventIdentities.set(identity, event);
     event.metadata = {
       ...(event.metadata || {}),
       uploader: session.uploader || uploader,
