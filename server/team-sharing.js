@@ -1459,7 +1459,7 @@ export function contextWindowForTeamSharingSession(teamSharingStateInput, sessio
   const abstractSummaryHint = cleanText(markdownLinkText(summaryMarkdownFromAbstract(abstract?.abstractMarkdown || '')));
   const summaryHint = (activitySummaryHint && !isDefaultTeamSharingActivitySummary(activitySummaryHint)
     ? activitySummaryHint
-    : abstractSummaryHint || activitySummaryHint).slice(0, 800);
+    : abstractSummaryHint || activitySummaryHint).slice(0, 1000);
   const anchorEventId = String(options.anchorEventId || '').trim();
   const direction = String(options.direction || 'around').trim().toLowerCase();
   const order = String(options.order || 'asc').trim().toLowerCase() === 'desc' ? 'desc' : 'asc';

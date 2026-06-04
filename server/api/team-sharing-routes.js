@@ -754,13 +754,28 @@ function sendContextHtml(res, {
     .context-note { position:absolute; left:calc(100% + 14px); top:88px; z-index:1; width:264px; min-height:118px; padding:18px 20px 17px; overflow:visible; border:1px solid #c7dde8; border-radius:4px; background:#f7fbfd; color:#334155; box-shadow:0 14px 28px rgba(15,23,42,.10), 0 1px 0 rgba(255,255,255,.82) inset; opacity:0; transform-origin:left top; transform:translate(-10px,-8px) scale(.74) rotate(-2deg); clip-path:polygon(0 0, 0 0, 0 0, 0 0); pointer-events:none; }
     .context-note::before { content:""; position:absolute; left:50%; top:-10px; width:58px; height:18px; transform:translateX(-50%) rotate(-2deg); border:1px solid rgba(8,145,178,.18); border-radius:3px; background:rgba(224,242,254,.78); box-shadow:0 2px 5px rgba(71,85,105,.08); }
     .context-note::after { content:""; position:absolute; right:0; bottom:0; width:28px; height:28px; border-radius:4px 0 3px 0; background:linear-gradient(135deg, rgba(255,255,255,0) 0 49%, rgba(203,226,236,.55) 50%, rgba(240,249,255,.96) 100%); }
-    .context-note.is-open { animation:contextNoteUnfold .34s cubic-bezier(.2,.8,.22,1) forwards; }
+    .context-note.is-open { pointer-events:auto; animation:contextNoteUnfold .34s cubic-bezier(.2,.8,.22,1) forwards; }
     .context-note-label { margin:0 0 8px; color:#0f6f89; font-size:11px; font-weight:900; line-height:1.2; }
-    .context-note-lines { margin:0; display:grid; gap:2px; font-size:13px; font-weight:650; line-height:1.48; }
-    .context-note-line { display:block; min-height:1.48em; overflow-wrap:anywhere; }
-    .context-note-line::after { content:""; display:inline-block; width:1px; height:1em; margin-left:1px; background:#0f6f89; vertical-align:-.14em; opacity:0; }
-    .context-note.is-typing .context-note-line.is-active::after { opacity:.8; animation:contextNoteCaret .72s steps(1) infinite; }
-    .context-note.is-finished .context-note-line::after { display:none; }
+    .context-note-body { max-height:min(520px, calc(100vh - 180px)); overflow:auto; padding-right:4px; font-size:13px; font-weight:600; line-height:1.52; }
+    .context-note-body p,
+    .context-note-body ul,
+    .context-note-body ol,
+    .context-note-body blockquote,
+    .context-note-body pre { margin:0 0 8px; }
+    .context-note-body p:last-child,
+    .context-note-body ul:last-child,
+    .context-note-body ol:last-child,
+    .context-note-body blockquote:last-child,
+    .context-note-body pre:last-child { margin-bottom:0; }
+    .context-note-body ul,
+    .context-note-body ol { padding-left:18px; }
+    .context-note-body li { margin:3px 0; }
+    .context-note-body strong { color:#172033; font-weight:850; }
+    .context-note-body code { background:#eef2f7; border-radius:4px; padding:1px 4px; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.92em; color:#243244; }
+    .context-note-body a { color:#0369a1; font-weight:800; }
+    .context-note-body h1,
+    .context-note-body h2,
+    .context-note-body h3 { margin:0 0 8px; color:#172033; font-size:13px; line-height:1.35; }
     .context-status { min-height:20px; text-align:center; color:var(--muted); font-size:12px; margin:-4px 0 10px; }
     .empty { color:var(--muted); text-align:center; padding:48px 0; }
     @keyframes contextNoteUnfold {
@@ -768,14 +783,12 @@ function sendContextHtml(res, {
       62% { opacity:1; transform:translate(-2px,-2px) scale(1.02) rotate(-.4deg); clip-path:polygon(0 0, 100% 0, 82% 100%, 0 76%); }
       100% { opacity:1; transform:translate(0,0) scale(1) rotate(0); clip-path:polygon(0 0, 100% 0, 100% 100%, 0 100%); }
     }
-    @keyframes contextNoteCaret { 0%, 48% { opacity:.8; } 49%, 100% { opacity:0; } }
     @media (max-width:1240px) {
       .context-note { position:sticky; left:auto; top:104px; width:min(100%, 430px); margin:12px 0 14px 0; transform:translate(-6px,-6px) scale(.84) rotate(-1deg); }
     }
     @media (prefers-reduced-motion: reduce) {
       .context-note,
       .context-note.is-open { opacity:1; transform:none; clip-path:polygon(0 0, 100% 0, 100% 100%, 0 100%); animation:none; }
-      .context-note-line::after { display:none; }
     }
   </style>
 </head>
@@ -1080,7 +1093,7 @@ function sendContextHtml(res, {
           return blocks.join('') || '<p>' + renderContextInline(text) + '</p>';
         }
         const CONTEXT_NOTE_MIN_CHARS = 1200;
-        const CONTEXT_NOTE_MAX_CHARS = 200;
+        const CONTEXT_NOTE_MAX_CHARS = 1000;
         function contextEventBodyText(event) {
           const segments = Array.isArray(event?.contentSegments) && event.contentSegments.length
             ? event.contentSegments
@@ -1133,52 +1146,20 @@ function sendContextHtml(res, {
         function contextSessionSummaryHint() {
           const session = window.__teamSharingSession || {};
           return String(session.summaryHint || session.activitySummary || session.abstractSummary || '')
-            .replace(/\\s+/g, ' ')
+            .replace(/\\r\\n/g, '\\n')
+            .replace(/[ \\t]+\\n/g, '\\n')
+            .replace(/\\n{3,}/g, '\\n\\n')
             .trim();
         }
         function compactContextNoteSummary(text, limit = CONTEXT_NOTE_MAX_CHARS) {
           const clean = String(text || '')
-            .replace(/\\s+/g, ' ')
+            .replace(/\\r\\n/g, '\\n')
+            .replace(/[ \\t]+\\n/g, '\\n')
+            .replace(/\\n{3,}/g, '\\n\\n')
             .trim();
           const chars = Array.from(clean);
           if (chars.length <= limit) return clean;
           return chars.slice(0, Math.max(1, limit - 1)).join('').trimEnd() + '…';
-        }
-        function fallbackContextNoteSummary(text) {
-          return plainContextNoteText(text)
-            .replace(/([。！？!?])\\s*/g, '$1|')
-            .split('|')
-            .map(item => item.trim())
-            .filter(item => item.length >= 8)
-            .slice(0, 2)
-            .join('');
-        }
-        function splitContextNoteLines(summary) {
-          const chars = Array.from(summary || '');
-          const lineCount = chars.length > 58 ? 3 : (chars.length > 34 ? 2 : 1);
-          if (lineCount <= 1) return [summary];
-          const lines = [];
-          let remaining = chars;
-          for (let index = 0; index < lineCount - 1; index += 1) {
-            const target = Math.ceil(remaining.length / (lineCount - index));
-            const cut = contextNoteLineCutIndex(remaining, target);
-            lines.push(remaining.slice(0, cut).join('').trim());
-            remaining = remaining.slice(cut);
-          }
-          if (remaining.length) lines.push(remaining.join('').trim());
-          return lines.filter(Boolean).slice(0, 3);
-        }
-        function contextNoteLineCutIndex(chars, target) {
-          const preferredMarks = new Set(['。', '！', '？', '；', ';', '，', ',', '、', ' ']);
-          const min = Math.max(8, target - 8);
-          const max = Math.min(chars.length - 1, target + 8);
-          for (let index = target; index <= max; index += 1) {
-            if (preferredMarks.has(chars[index])) return index + 1;
-          }
-          for (let index = target - 1; index >= min; index -= 1) {
-            if (preferredMarks.has(chars[index])) return index + 1;
-          }
-          return Math.max(1, Math.min(chars.length, target));
         }
         function contextNoteSummary(event) {
           if (eventPresentation(event)?.mode && eventPresentation(event).mode !== 'normal') return '';
@@ -1191,12 +1172,9 @@ function sendContextHtml(res, {
         }
         function renderContextNote(summary) {
           if (!summary) return '';
-          const lines = splitContextNoteLines(summary);
           return '<aside class="context-note" data-context-note aria-label="本次长回复摘要">' +
         '<div class="context-note-label">Abstract</div>' +
-            '<p class="context-note-lines">' +
-            lines.map((line, index) => '<span class="context-note-line" data-note-line data-line-index="' + index + '" data-full-text="' + escapeHtml(line) + '"></span>').join('') +
-            '</p></aside>';
+            '<div class="context-note-body">' + renderContextMarkdown(summary) + '</div></aside>';
         }
         function chinaTime(value) {
           const date = new Date(value || '');
@@ -1287,47 +1265,11 @@ function sendContextHtml(res, {
             checkScrollEdges();
           }, 120);
         }
-        function prefersReducedContextMotion() {
-          return Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
-        }
-        function typeContextNoteLines(note, lines) {
-          if (!note || !lines.length) return;
-          if (prefersReducedContextMotion()) {
-            lines.forEach(line => { line.textContent = line.getAttribute('data-full-text') || ''; });
-            note.classList.add('is-finished');
-            return;
-          }
-          const speeds = [8, 13, 18];
-          let completed = 0;
-          note.classList.add('is-typing');
-          lines.forEach((line, index) => {
-            const fullText = line.getAttribute('data-full-text') || '';
-            const chars = Array.from(fullText);
-            let offset = 0;
-            const step = () => {
-              line.classList.add('is-active');
-              offset += 1;
-              line.textContent = chars.slice(0, offset).join('');
-              if (offset < chars.length) {
-                window.setTimeout(step, speeds[index] || 38);
-                return;
-              }
-              line.classList.remove('is-active');
-              completed += 1;
-              if (completed >= lines.length) {
-                note.classList.remove('is-typing');
-                note.classList.add('is-finished');
-              }
-            };
-            window.setTimeout(step, index * 80);
-          });
-        }
         function revealContextNote(note) {
           if (!note || note.dataset.notePlayed === '1') return;
           note.dataset.notePlayed = '1';
           note.classList.add('is-open');
-          const lines = Array.from(note.querySelectorAll?.('[data-note-line]') || []);
-          window.setTimeout(() => typeContextNoteLines(note, lines), prefersReducedContextMotion() ? 0 : 210);
+          note.classList.add('is-finished');
         }
         function contextNoteVisibleRatio(entry) {
           const total = Number(entry?.boundingClientRect?.height || 0);

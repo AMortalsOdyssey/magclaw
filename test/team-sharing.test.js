@@ -125,6 +125,7 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
 
 test('team sharing context summary hint prefers uploaded activity summary', async () => {
   const state = baseState();
+  const activitySummary = `hooks summary：这次完成了长回复便签的 Markdown preview，并确认超过 1000 字才截断。${'摘要补充。'.repeat(240)}`;
   await syncTeamSharingBatch(sampleSyncPackage({
     idempotencyKey: 'codex:magclaw:sess_summary_hint:1:2:abc',
     sessionId: 'sess_summary_hint',
@@ -135,7 +136,7 @@ test('team sharing context summary hint prefers uploaded activity summary', asyn
     summarizeSession: async () => ({
       l0: 'abstract 摘要：这段内容不应该优先显示在便签里。',
       activity: {
-        summary: 'hooks summary：这次完成了长回复便签的直接摘要展示，并确认超过 200 字才截断。',
+        summary: activitySummary,
       },
       topics: [{
         topicId: 'summary-hint',
@@ -153,7 +154,8 @@ test('team sharing context summary hint prefers uploaded activity summary', asyn
   });
 
   assert.equal(context.ok, true);
-  assert.equal(context.session.summaryHint, 'hooks summary：这次完成了长回复便签的直接摘要展示，并确认超过 200 字才截断。');
+  assert.equal(Array.from(context.session.summaryHint).length, 1000);
+  assert.equal(context.session.summaryHint, Array.from(activitySummary).slice(0, 1000).join(''));
 });
 
 test('team sharing sync preserves presentation metadata on events, replies, and context windows', async () => {
