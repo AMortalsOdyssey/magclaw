@@ -1541,6 +1541,7 @@ test('message markdown code blocks use dark scrollable code surfaces', async () 
   assert.match(styles, /\.message-markdown pre code \{[\s\S]*display: block;[\s\S]*background: transparent;[\s\S]*white-space: pre;[\s\S]*min-width: max-content/);
   assert.doesNotMatch(styles, /\.collab-frame \.message-markdown pre,[\s\S]*border-width: 1px/);
   assert.match(styles, /\.message-markdown code \{[\s\S]*background: #eef2f7/);
+  assert.match(styles, /\.message-color-swatch \{[\s\S]*width: 10px;[\s\S]*height: 10px;[\s\S]*border: 1px solid/);
 });
 
 test('message mention and reply chips stay compact in narrow chat panes', async () => {

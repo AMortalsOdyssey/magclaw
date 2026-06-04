@@ -681,6 +681,7 @@ function sendContextHtml(res, {
     .context-link-icon-img { display:block; width:12px; height:12px; object-fit:contain; }
     .context-link-icon-fallback { display:inline-grid; place-items:center; width:100%; height:100%; padding-top:1px; }
     .context-link-label { min-width:0; }
+    .context-color-swatch { display:inline-block; width:10px; height:10px; margin-left:4px; border:1px solid rgba(15,23,42,.24); border-radius:3px; box-shadow:inset 0 0 0 1px rgba(255,255,255,.56); vertical-align:-1px; }
     .text p,
     .context-main p,
     .context-quote-text p { margin:0 0 10px; }
@@ -870,6 +871,18 @@ function sendContextHtml(res, {
       return '<a' + classAttr + ' href="' + escapeHtml(safeHref) + '" target="_blank" rel="noreferrer">' +
         icon + '<span class="context-link-label">' + escapeHtml(label || safeHref) + '</span></a>';
     }
+    function isContextHexColorToken(value) {
+      return /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/.test(String(value || '').trim());
+    }
+    function contextColorSwatchHtml(value) {
+      const color = String(value || '').trim();
+      if (!isContextHexColorToken(color)) return '';
+      const safeColor = escapeHtml(color);
+      return '<span class="context-color-swatch" style="background-color: ' + safeColor + '" title="' + safeColor + '" aria-label="Color ' + safeColor + '"></span>';
+    }
+    function renderContextColorSwatches(html) {
+      return String(html || '').replace(/(^|[^\\w/?:#&=.%+-])(#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?)(?![\\w-])/g, (_match, prefix, color) => prefix + color + contextColorSwatchHtml(color));
+    }
     function renderContextInline(text) {
       const protectedTokens = [];
       const protect = (html) => {
@@ -880,10 +893,11 @@ function sendContextHtml(res, {
       const tick = String.fromCharCode(96);
       const codePattern = new RegExp(tick + '([^' + tick + ']+)' + tick, 'g');
       let html = escapeHtml(text)
-        .replace(codePattern, (_match, code) => protect('<code>' + code + '</code>'))
+        .replace(codePattern, (_match, code) => protect('<code>' + code + '</code>' + contextColorSwatchHtml(code)))
         .replace(/\\[([^\\]\\n]+)\\]\\(([^)\\n]+)\\)/g, (_match, label, href) => protect(contextLinkHtml(href, label)))
         .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
         .replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
+      html = renderContextColorSwatches(html);
       html = renderContextAutolinkedUrls(html);
       protectedTokens.forEach((token, index) => {
         html = html.replaceAll('CTXINLINE' + index + 'TOKEN', token);

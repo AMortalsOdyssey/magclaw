@@ -1124,6 +1124,29 @@ test('team sharing context page renders Codex markdown and hides citation metada
   assert.doesNotMatch(html, /oai-mem-citation|citation_entries|MEMORY\.md|::git-stage|::git-commit|::git-push/);
 });
 
+test('team sharing context page adds color swatches for hex colors', async () => {
+  const deps = routeDeps({ readJson: async () => syncBody() });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
+  const res = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/team-sharing/context/sess_route?anchorEventId=evt_2'),
+    deps,
+  ), true);
+  const context = createContextPageHarness(res.body);
+  const html = context.renderContextMarkdown('Plan 用 `#eecfff`，Goal 用 #f0fdf4，Issue #123 不要误判。');
+
+  assert.match(html, /<code>#eecfff<\/code><span class="context-color-swatch" style="background-color: #eecfff"/);
+  assert.match(html, /#f0fdf4<span class="context-color-swatch" style="background-color: #f0fdf4"/);
+  assert.doesNotMatch(html, /#123<span class="context-color-swatch"/);
+});
+
 test('team sharing context page hides pagination controls until more context exists', async () => {
   const deps = routeDeps({ readJson: async () => syncBody() });
   await handleTeamSharingApi(

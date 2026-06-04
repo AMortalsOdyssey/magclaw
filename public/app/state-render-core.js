@@ -1057,6 +1057,21 @@ function renderAutolinkedUrls(html) {
   });
 }
 
+function isMessageHexColorToken(value) {
+  return /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/.test(String(value || '').trim());
+}
+
+function messageColorSwatchHtml(value) {
+  const color = String(value || '').trim();
+  if (!isMessageHexColorToken(color)) return '';
+  const safeColor = escapeHtml(color);
+  return `<span class="message-color-swatch" style="background-color: ${safeColor}" title="${safeColor}" aria-label="Color ${safeColor}"></span>`;
+}
+
+function renderMessageColorSwatches(html) {
+  return String(html || '').replace(/(^|[^\w/?:#&=.%+-])(#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?)(?![\w-])/g, (_match, prefix, color) => `${prefix}${color}${messageColorSwatchHtml(color)}`);
+}
+
 function renderMarkdownInline(value) {
   const protectedTokens = [];
   const protect = (html) => {
@@ -1065,10 +1080,11 @@ function renderMarkdownInline(value) {
     return marker;
   };
   let html = escapeHtml(value)
-    .replace(/`([^`]+)`/g, (_, code) => protect(`<code>${code}</code>`))
+    .replace(/`([^`]+)`/g, (_, code) => protect(`<code>${code}</code>${messageColorSwatchHtml(code)}`))
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => protect(`<a href="${escapeHtml(safeMarkdownHref(href))}" target="_blank" rel="noreferrer">${label}</a>`))
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = renderMessageColorSwatches(html);
   html = renderAutolinkedUrls(html);
   protectedTokens.forEach((token, index) => {
     html = html.replaceAll(`MAGCLAWINLINE${index}TOKEN`, token);

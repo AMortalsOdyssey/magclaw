@@ -97,6 +97,16 @@ test('message Markdown renderer trims surrounding punctuation from autolinks', a
   assert.doesNotMatch(html, /href="https:\/\/example\.com\/docs\)"/);
 });
 
+test('message Markdown renderer adds color swatches for hex colors', async () => {
+  const context = await createMarkdownHarness();
+
+  const html = context.renderMarkdownInline('Plan 用 `#eecfff`，Goal 用 #f0fdf4，Issue #123 不要误判。');
+
+  assert.match(html, /<code>#eecfff<\/code><span class="message-color-swatch" style="background-color: #eecfff"/);
+  assert.match(html, /#f0fdf4<span class="message-color-swatch" style="background-color: #f0fdf4"/);
+  assert.doesNotMatch(html, /#123<span class="message-color-swatch"/);
+});
+
 test('message Markdown renderer hides internal transcript metadata directives', async () => {
   const context = await createMarkdownHarness();
 
