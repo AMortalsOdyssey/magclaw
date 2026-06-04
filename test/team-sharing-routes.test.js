@@ -110,7 +110,7 @@ function syncBody() {
   };
 }
 
-function createContextPageHarness(html = '') {
+function createContextPageHarness(html = '', options = {}) {
   const script = String(html || '').match(/<script>([\s\S]*?)<\/script>/)?.[1] || '';
   assert.ok(script, 'context page should embed a script');
   const elements = new Map();
@@ -119,17 +119,24 @@ function createContextPageHarness(html = '') {
       elements.set(id, {
         id,
         disabled: false,
+        hidden: false,
         innerHTML: '',
         textContent: '',
+        title: '',
+        parentElement: null,
         addEventListener: () => {},
         insertAdjacentHTML(_position, content) {
           this.innerHTML += String(content || '');
         },
         querySelector: () => null,
+        closest: () => null,
       });
     }
     return elements.get(id);
   };
+  const fetch = options.fetch || (async () => ({
+    json: async () => ({ ok: true, session: {}, events: [], pagination: { hasPrev: false, hasNext: false } }),
+  }));
   const context = {
     console,
     Date,
@@ -141,9 +148,7 @@ function createContextPageHarness(html = '') {
     String,
     URLSearchParams,
     encodeURIComponent,
-    fetch: async () => ({
-      json: async () => ({ ok: true, session: {}, events: [], pagination: { hasPrev: false, hasNext: false } }),
-    }),
+    fetch,
     document: {
       documentElement: { scrollHeight: 0 },
       getElementById: element,
@@ -159,6 +164,8 @@ function createContextPageHarness(html = '') {
   };
   vm.createContext(context);
   vm.runInContext(script, context);
+  context.__elements = elements;
+  context.__flush = () => new Promise((resolve) => setImmediate(resolve));
   return context;
 }
 
@@ -859,6 +866,9 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /context-quote/);
   assert.match(res.body, /eventSegments/);
   assert.match(res.body, /contentSegments/);
+  assert.match(res.body, /context-event-user/);
+  assert.match(res.body, /article\.context-event-user/);
+  assert.match(res.body, /background:#fff1f5/);
   assert.match(res.body, /function stripContextMetadata/);
   assert.match(res.body, /function renderContextMarkdown/);
   assert.match(res.body, /renderContextMarkdown\(text\)/);
@@ -874,6 +884,7 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /addEventListener\('scroll', scheduleScrollCheck/);
   assert.match(res.body, /trailingUrlChars/);
   assert.match(res.body, /String\.fromCharCode\(96\)/);
+  assert.match(res.body, /function setContextButtonVisible/);
 
   const scopedRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -920,7 +931,13 @@ test('team sharing context page renders Codex markdown and hides citation metada
     '| NPM 安装后有没有 `team-sharing` 命令 | **会有。** [包](https://www.npmjs.com/package/@magclaw/team-sharing) 已声明 bin。 |',
     '| Hooks 是否项目本地 | 应默认项目级。 |',
     '',
+    'GitHub 链接是：[multica-ai/multica at a9f0739b5](https://github.com/multica-ai/multica/tree/a9f0739b5)。',
+    '',
     'Sources: [OpenAI Codex manual](https://developers.openai.com/codex/codex-manual.md), [Claude Code hooks](https://code.claude.com/docs/en/hooks).',
+    '',
+    '::git-stage{cwd="/Users/tt/code/myproject/magclaw"}',
+    '::git-commit{cwd="/Users/tt/code/myproject/magclaw"}',
+    '::git-push{cwd="/Users/tt/code/myproject/magclaw" branch="main"}',
     '',
     '<oai-mem-citation>',
     '<citation_entries>',
@@ -936,11 +953,57 @@ test('team sharing context page renders Codex markdown and hides citation metada
   assert.match(html, /<th>问题<\/th>/);
   assert.match(html, /<td>NPM 安装后有没有 <code>team-sharing<\/code> 命令<\/td>/);
   assert.match(html, /<td><strong>会有。<\/strong> <a href="https:\/\/www\.npmjs\.com\/package\/@magclaw\/team-sharing"/);
+  assert.match(html, /<a href="https:\/\/github\.com\/multica-ai\/multica\/tree\/a9f0739b5"[^>]*><span class="context-link-icon context-link-icon-github"/);
   assert.doesNotMatch(html, /\|---\|---\|/);
   assert.match(html, /<p class="context-sources"><span class="context-sources-label">Sources<\/span>/);
   assert.match(html, /class="context-source-link" href="https:\/\/developers\.openai\.com\/codex\/codex-manual\.md"/);
   assert.match(html, /class="context-source-link" href="https:\/\/code\.claude\.com\/docs\/en\/hooks"/);
-  assert.doesNotMatch(html, /oai-mem-citation|citation_entries|MEMORY\.md/);
+  assert.doesNotMatch(html, /oai-mem-citation|citation_entries|MEMORY\.md|::git-stage|::git-commit|::git-push/);
+});
+
+test('team sharing context page hides pagination controls until more context exists', async () => {
+  const deps = routeDeps({ readJson: async () => syncBody() });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
+  const res = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/team-sharing/context/sess_route?anchorEventId=evt_2'),
+    deps,
+  ), true);
+
+  const withoutMore = createContextPageHarness(res.body, {
+    fetch: async () => ({
+      json: async () => ({
+        ok: true,
+        session: { title: 'No more context' },
+        events: [{ eventId: 'evt_2', role: 'assistant', displayText: '第二条', createdAt: '2026-06-01T09:59:00.000Z' }],
+        pagination: { hasPrev: false, hasNext: false, prevAnchorEventId: 'evt_2', nextAnchorEventId: 'evt_2' },
+      }),
+    }),
+  });
+  await withoutMore.__flush();
+  assert.equal(withoutMore.__elements.get('load-more-prev').hidden, true);
+  assert.equal(withoutMore.__elements.get('load-more-next').hidden, true);
+
+  const withPreviousOnly = createContextPageHarness(res.body, {
+    fetch: async () => ({
+      json: async () => ({
+        ok: true,
+        session: { title: 'Has previous context' },
+        events: [{ eventId: 'evt_2', role: 'assistant', displayText: '第二条', createdAt: '2026-06-01T09:59:00.000Z' }],
+        pagination: { hasPrev: true, hasNext: false, prevAnchorEventId: 'evt_2', nextAnchorEventId: 'evt_2' },
+      }),
+    }),
+  });
+  await withPreviousOnly.__flush();
+  assert.equal(withPreviousOnly.__elements.get('load-more-prev').hidden, false);
+  assert.equal(withPreviousOnly.__elements.get('load-more-next').hidden, true);
 });
 
 test('team sharing context page redirects unauthenticated browsers to login with returnTo', async () => {

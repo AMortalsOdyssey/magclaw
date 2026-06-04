@@ -38,6 +38,7 @@ function stripOperationalText(value = '') {
     .replace(/\s*<oai-mem-citation\b[^>]*>[\s\S]*?(?:<\/oai-mem-citation>|$)\s*/gi, '\n')
     .replace(/\s*<citation_entries\b[^>]*>[\s\S]*?(?:<\/citation_entries>|$)\s*/gi, '\n')
     .replace(/\s*<rollout_ids\b[^>]*>[\s\S]*?(?:<\/rollout_ids>|$)\s*/gi, '\n')
+    .replace(/\s*::git-[a-z-]+\{[^}\n]*\}\s*/gi, '\n')
     .replace(/\s*\bused_tools\s*=\s*[^。\n；;]*/gi, '')
     .replace(/\s*(?:本地摘要补充[:：]\s*)?Tool summary\s*:\s*[^。\n；;]*/gi, '')
     .replace(/\s*已运行\s+\d+\s+条命令\s*/g, ' ');
@@ -95,8 +96,9 @@ function normalizeSelectedTextPrompt(value = '') {
   return parts.join('\n\n');
 }
 
-function cleanEventText(value = '') {
-  return cleanMultilineText(normalizeSelectedTextPrompt(markdownLinkText(value)));
+function cleanEventText(value = '', options = {}) {
+  const source = options.preserveMarkdownLinks ? value : markdownLinkText(value);
+  return cleanMultilineText(normalizeSelectedTextPrompt(source));
 }
 
 function extractCodexPromptRequest(value = '') {
@@ -160,9 +162,10 @@ function normalizeContentSegments(value = '', role = 'user', provided = []) {
     }))
     .filter((segment) => segment.text);
   const raw = String(value || '');
+  const preserveMarkdownLinks = role !== 'user';
   const body = role === 'user' && /my request for codex/i.test(raw)
     ? extractCodexPromptRequest(raw)
-    : cleanEventText(raw);
+    : cleanEventText(raw, { preserveMarkdownLinks });
   const segments = [];
   if (body) segments.push({ type: 'body', text: body });
   if (providedSegments.length) {
@@ -180,7 +183,7 @@ function normalizeContentSegments(value = '', role = 'user', provided = []) {
     const attachment = extractAttachmentContextSnippet(raw);
     if (attachment) segments.push({ type: 'quote', label: '附件与截图', text: attachment });
   }
-  const displayText = body || cleanEventText(raw);
+  const displayText = body || cleanEventText(raw, { preserveMarkdownLinks });
   const quoteText = segments
     .filter((segment) => segment.type !== 'body')
     .map((segment) => `${segment.label ? `${segment.label}：` : ''}${segment.text}`)

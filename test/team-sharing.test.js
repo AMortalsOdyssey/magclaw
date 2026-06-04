@@ -375,6 +375,42 @@ test('team sharing sync preserves Codex raw markdown body over flattened cleanTe
   assert.match(state.teamSharing.events.sess_codex_markdown[1].displayText, /^\*\*验收通过\*\*\n\nR150/m);
 });
 
+test('team sharing sync keeps assistant markdown links and strips local git directives', async () => {
+  const state = baseState();
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
+    idempotencyKey: 'codex:magclaw:sess_markdown_links:1:1:links',
+    sessionId: 'sess_markdown_links',
+    title: '链接展示验收',
+    events: [{
+      eventId: 'evt_links',
+      ordinal: 1,
+      role: 'assistant',
+      text: [
+        'GitHub 链接是：[multica-ai/multica at a9f0739b5](https://github.com/multica-ai/multica/tree/a9f0739b5)。',
+        '',
+        '源码入口：[入口](https://github.com/multica-ai/multica/blob/a9f0739b5/apps/web/app/layout.tsx#L3-L18)。',
+        '',
+        '::git-stage{cwd="/Users/tt/code/myproject/magclaw"}',
+        '::git-commit{cwd="/Users/tt/code/myproject/magclaw"}',
+        '::git-push{cwd="/Users/tt/code/myproject/magclaw" branch="main"}',
+      ].join('\n'),
+      createdAt: '2026-06-01T08:11:00.000Z',
+    }],
+  }), {
+    state,
+    makeId: makeIdFactory(),
+    now: () => '2026-06-01T08:12:00.000Z',
+  });
+
+  assert.equal(result.ok, true);
+  const reply = state.replies.find((item) => item.authorType === 'agent');
+  assert.match(reply.body, /\[multica-ai\/multica at a9f0739b5\]\(https:\/\/github\.com\/multica-ai\/multica\/tree\/a9f0739b5\)/);
+  assert.match(reply.body, /\[入口\]\(https:\/\/github\.com\/multica-ai\/multica\/blob\/a9f0739b5\/apps\/web\/app\/layout\.tsx#L3-L18\)/);
+  assert.doesNotMatch(reply.body, /::git-stage|::git-commit|::git-push/);
+  assert.match(state.teamSharing.events.sess_markdown_links[0].displayText, /\[入口\]\(https:\/\/github\.com\/multica-ai\/multica\/blob\//);
+  assert.doesNotMatch(state.teamSharing.events.sess_markdown_links[0].displayText, /::git-/);
+});
+
 test('team sharing sync renders Codex browser comments as quote segments', async () => {
   const state = baseState();
   const result = await syncTeamSharingBatch(sampleSyncPackage({

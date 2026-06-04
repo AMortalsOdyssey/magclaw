@@ -620,8 +620,9 @@ function sendContextHtml(res, {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MagClaw Team Sharing Context</title>
   <style>
-    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; }
+    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; --user-bg:#fff1f5; --user-line:#f9cfe0; }
     * { box-sizing:border-box; }
+    [hidden] { display:none !important; }
     body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
     header { position:sticky; top:0; z-index:2; padding:16px 20px; border-bottom:1px solid var(--line); background:rgba(248,250,252,.94); backdrop-filter: blur(14px); }
     h1 { margin:0; font-size:20px; letter-spacing:0; line-height:1.28; }
@@ -631,8 +632,10 @@ function sendContextHtml(res, {
     button { border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:6px; padding:8px 12px; cursor:pointer; }
     button:disabled { opacity:.45; cursor:not-allowed; }
     .scroll-sentinel { height:1px; }
-    article { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:10px 0; box-shadow:0 1px 2px rgba(15,23,42,.04); }
-    article.anchor { border-color:var(--accent); box-shadow:0 0 0 2px rgba(8,145,178,.12); }
+    article.context-event { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:10px 0; box-shadow:0 1px 2px rgba(15,23,42,.04); }
+    article.context-event-user { background:#fff1f5; border-color:var(--user-line); }
+    article.context-event-user .role { background:#ffe4ec; color:#9f1239; }
+    article.context-event.anchor { border-color:var(--accent); box-shadow:0 0 0 2px rgba(8,145,178,.12); }
     .role { display:inline-flex; align-items:center; min-height:20px; border-radius:999px; background:var(--chip); padding:2px 8px; font-size:12px; font-weight:800; color:#0f5f76; }
     .time { margin-left:8px; color:var(--muted); font-size:12px; }
     .text,
@@ -645,6 +648,16 @@ function sendContextHtml(res, {
     .context-main a,
     .context-quote a,
     .text a { color:#0369a1; font-weight:700; }
+    .context-main a,
+    .context-quote a,
+    .text a,
+    .context-source-link { display:inline-flex; align-items:center; gap:4px; vertical-align:baseline; }
+    .context-link-icon { display:inline-grid; place-items:center; width:16px; height:16px; flex:0 0 16px; border-radius:4px; background:#e2e8f0; color:#334155; font-size:8px; font-weight:900; line-height:1; text-transform:uppercase; }
+    .context-link-icon-github { background:#111827; color:#fff; font-size:7px; }
+    .context-link-icon-npm { background:#cb3837; color:#fff; font-size:6px; }
+    .context-link-icon-openai { background:#111827; color:#fff; font-size:7px; }
+    .context-link-icon-claude { background:#d97706; color:#fff; font-size:7px; }
+    .context-link-label { min-width:0; }
     .text p,
     .context-main p,
     .context-quote-text p { margin:0 0 10px; }
@@ -689,7 +702,7 @@ function sendContextHtml(res, {
     .context-table tr:hover td { background:#fbfdff; }
     .context-sources { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin:10px 0 0; color:var(--muted); font-size:13px; }
     .context-sources-label { font-size:11px; font-weight:900; text-transform:uppercase; letter-spacing:0; color:#0f6f89; }
-    .context-source-link { display:inline-flex; align-items:center; min-height:24px; border:1px solid #bae6fd; background:#f0f9ff; color:#0369a1; border-radius:999px; padding:2px 8px; font-weight:800; text-decoration:none; }
+    .context-source-link { min-height:24px; border:1px solid #bae6fd; background:#f0f9ff; color:#0369a1; border-radius:999px; padding:2px 8px; font-weight:800; text-decoration:none; }
     .context-source-link:hover,
     .context-source-link:focus-visible { border-color:#0891b2; background:#e0f2fe; outline:0; }
     .context-status { min-height:20px; text-align:center; color:var(--muted); font-size:12px; margin:-4px 0 10px; }
@@ -703,9 +716,9 @@ function sendContextHtml(res, {
   </header>
   <main>
     <div id="top-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
-    <div class="controls"><button id="${isDesc ? 'load-more-next' : 'load-more-prev'}" type="button">${isDesc ? 'Load newer' : 'Load previous'}</button></div>
+    <div class="controls" hidden><button id="${isDesc ? 'load-more-next' : 'load-more-prev'}" type="button" hidden>${isDesc ? 'Load newer' : 'Load previous'}</button></div>
     <section id="events" aria-live="polite"><div class="empty">Loading context...</div></section>
-    <div class="controls"><button id="${isDesc ? 'load-more-prev' : 'load-more-next'}" type="button">${isDesc ? 'Load older' : 'Load next'}</button></div>
+    <div class="controls" hidden><button id="${isDesc ? 'load-more-prev' : 'load-more-next'}" type="button" hidden>${isDesc ? 'Load older' : 'Load next'}</button></div>
     <div id="context-status" class="context-status" aria-live="polite"></div>
     <div id="bottom-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
   </main>
@@ -754,6 +767,7 @@ function sendContextHtml(res, {
         .replace(/\\s*<oai-mem-citation\\b[^>]*>[\\s\\S]*?(?:<\\/oai-mem-citation>|$)\\s*/gi, '\\n')
         .replace(/\\s*<citation_entries\\b[^>]*>[\\s\\S]*?(?:<\\/citation_entries>|$)\\s*/gi, '\\n')
         .replace(/\\s*<rollout_ids\\b[^>]*>[\\s\\S]*?(?:<\\/rollout_ids>|$)\\s*/gi, '\\n')
+        .replace(/\\s*::git-[a-z-]+\\{[^}\\n]*\\}\\s*/gi, '\\n')
         .trim();
     }
     function safeContextHref(href) {
@@ -765,8 +779,39 @@ function sendContextHtml(res, {
       return String(html || '').replace(/https?:\\/\\/[^\\s<]+/g, raw => {
         const parts = splitAutolinkUrl(raw);
         if (!parts.href) return raw;
-        return '<a href="' + escapeHtml(safeContextHref(parts.href)) + '" target="_blank" rel="noreferrer">' + parts.href + '</a>' + escapeHtml(parts.trailing);
+        return contextLinkHtml(parts.href, parts.href) + escapeHtml(parts.trailing);
       });
+    }
+    function contextHostForHref(href) {
+      const match = String(href || '').match(/^https?:\\/\\/([^\\/?#]+)/i);
+      return match ? match[1].replace(/^www\\./i, '').toLowerCase() : '';
+    }
+    function contextLinkIconHtml(href) {
+      const host = contextHostForHref(href);
+      if (!host) return '';
+      const classes = ['context-link-icon'];
+      let label = host.slice(0, 1).toUpperCase();
+      if (/(^|\\.)github\\.com$/.test(host)) {
+        classes.push('context-link-icon-github');
+        label = 'GH';
+      } else if (/(^|\\.)npmjs\\.com$/.test(host)) {
+        classes.push('context-link-icon-npm');
+        label = 'npm';
+      } else if (/(^|\\.)openai\\.com$|(^|\\.)developers\\.openai\\.com$/.test(host)) {
+        classes.push('context-link-icon-openai');
+        label = 'AI';
+      } else if (/(^|\\.)claude\\.com$|(^|\\.)anthropic\\.com$/.test(host)) {
+        classes.push('context-link-icon-claude');
+        label = 'C';
+      }
+      return '<span class="' + escapeHtml(classes.join(' ')) + '" aria-hidden="true">' + escapeHtml(label) + '</span>';
+    }
+    function contextLinkHtml(href, label, className = '') {
+      const safeHref = safeContextHref(href);
+      const classAttr = className ? ' class="' + escapeHtml(className) + '"' : '';
+      const icon = safeHref && safeHref !== '#' ? contextLinkIconHtml(safeHref) : '';
+      return '<a' + classAttr + ' href="' + escapeHtml(safeHref) + '" target="_blank" rel="noreferrer">' +
+        icon + '<span class="context-link-label">' + escapeHtml(label || safeHref) + '</span></a>';
     }
     function renderContextInline(text) {
       const protectedTokens = [];
@@ -779,7 +824,7 @@ function sendContextHtml(res, {
       const codePattern = new RegExp(tick + '([^' + tick + ']+)' + tick, 'g');
       let html = escapeHtml(text)
         .replace(codePattern, (_match, code) => protect('<code>' + code + '</code>'))
-        .replace(/\\[([^\\]\\n]+)\\]\\(([^)\\n]+)\\)/g, (_match, label, href) => protect('<a href="' + escapeHtml(safeContextHref(href)) + '" target="_blank" rel="noreferrer">' + escapeHtml(label) + '</a>'))
+        .replace(/\\[([^\\]\\n]+)\\]\\(([^)\\n]+)\\)/g, (_match, label, href) => protect(contextLinkHtml(href, label)))
         .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
         .replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
       html = renderContextAutolinkedUrls(html);
@@ -805,7 +850,7 @@ function sendContextHtml(res, {
         return '<p class="context-sources"><span class="context-sources-label">Sources</span><span>' + renderContextInline(match[1]) + '</span></p>';
       }
       return '<p class="context-sources"><span class="context-sources-label">Sources</span>' +
-        links.map(link => '<a class="context-source-link" href="' + escapeHtml(link.href) + '" target="_blank" rel="noreferrer">' + escapeHtml(link.label || link.href) + '</a>').join('') +
+        links.map(link => contextLinkHtml(link.href, link.label || link.href, 'context-source-link')).join('') +
         '</p>';
     }
     function isContextTableCandidate(line) {
@@ -985,10 +1030,18 @@ function sendContextHtml(res, {
       }).catch(() => {});
     }
     function updateButtons() {
-      prevBtn.disabled = loading.prev;
-      nextBtn.disabled = loading.next;
+      setContextButtonVisible(prevBtn, initialLoaded && hasPrev);
+      setContextButtonVisible(nextBtn, initialLoaded && hasNext);
+      prevBtn.disabled = loading.prev || !hasPrev;
+      nextBtn.disabled = loading.next || !hasNext;
       prevBtn.title = hasPrev ? 'Load previous context' : 'Check for earlier context';
       nextBtn.title = hasNext ? 'Load next context' : 'Check for newer context';
+    }
+    function setContextButtonVisible(button, visible) {
+      if (!button) return;
+      button.hidden = !visible;
+      const controls = button.closest?.('.controls') || button.parentElement || null;
+      if (controls) controls.hidden = !visible;
     }
     function canLoad(direction, force = false) {
       if (direction === 'prev') return (force || hasPrev) && !loading.prev;
@@ -1039,9 +1092,10 @@ function sendContextHtml(res, {
     }
     function eventHtml(event) {
       const anchorClass = anchorEventId && event.eventId === anchorEventId ? ' anchor' : '';
+      const roleClass = event.role === 'user' ? ' context-event-user' : (event.role === 'assistant' || event.role === 'system' ? ' context-event-agent' : ' context-event-other');
       const session = window.__teamSharingSession || {};
       const body = eventSegments(event) || '<div class="text">' + renderContextMarkdown(event.displayText || event.cleanText || event.text || '') + '</div>';
-      return '<article id="' + encodeURIComponent(event.eventId || '') + '" class="' + anchorClass.trim() + '">' +
+      return '<article id="' + encodeURIComponent(event.eventId || '') + '" class="' + ('context-event' + roleClass + anchorClass).trim() + '">' +
         '<div><span class="role">' + escapeHtml(roleLabel(event, session)) + '</span><span class="time">' + escapeHtml(chinaTime(event.createdAt || '')) + '</span></div>' +
         body + '</article>';
     }
