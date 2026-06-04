@@ -273,6 +273,51 @@ test('team sharing duplicate sync still updates mutable session title everywhere
   assert.ok(state.teamSharing.vectorDocuments.every((doc) => doc.sessionId !== 'sess_title_update' || doc.title === '验收会话总结共享'));
 });
 
+test('team sharing sync ignores generated session-id titles without downgrading existing titles', async () => {
+  const state = baseState();
+  const makeId = makeIdFactory();
+  await syncTeamSharingBatch(sampleSyncPackage({
+    sessionId: 'sess_title_guard',
+    idempotencyKey: 'codex:magclaw:sess_title_guard:1:2:initial',
+    title: '验收会话总结共享',
+  }), {
+    state,
+    makeId,
+    now: () => '2026-06-01T08:02:00.000Z',
+  });
+  const placeholder = await syncTeamSharingBatch(sampleSyncPackage({
+    sessionId: 'sess_title_guard',
+    idempotencyKey: 'codex:magclaw:sess_title_guard:1:2:placeholder',
+    title: 'codex session sess_title_guard',
+  }), {
+    state,
+    makeId,
+    now: () => '2026-06-01T08:03:00.000Z',
+  });
+  assert.equal(placeholder.ok, true);
+  assert.equal(state.teamSharing.sessions.sess_title_guard.title, '验收会话总结共享');
+  assert.equal(state.messages[0].body, '验收会话总结共享');
+  assert.equal(state.messages[0].metadata.teamSharing.title, '验收会话总结共享');
+
+  const renamed = await syncTeamSharingBatch(sampleSyncPackage({
+    sessionId: 'sess_title_guard',
+    idempotencyKey: 'codex:magclaw:sess_title_guard:1:2:renamed',
+    title: '验收会话总结共享 111',
+  }), {
+    state,
+    makeId,
+    now: () => '2026-06-01T08:04:00.000Z',
+  });
+
+  assert.equal(renamed.ok, true);
+  assert.equal(state.teamSharing.sessions.sess_title_guard.title, '验收会话总结共享 111');
+  assert.equal(state.messages[0].body, '验收会话总结共享 111');
+  assert.equal(state.messages[0].metadata.teamSharing.title, '验收会话总结共享 111');
+  assert.doesNotMatch(state.teamSharing.abstracts.sess_title_guard.abstractMarkdown, /^# codex session sess_title_guard/m);
+  assert.match(state.teamSharing.abstracts.sess_title_guard.abstractMarkdown, /^# 验收会话总结共享 111/m);
+  assert.ok(state.teamSharing.vectorDocuments.every((doc) => doc.sessionId !== 'sess_title_guard' || doc.title === '验收会话总结共享 111'));
+});
+
 test('team sharing sync cleans session markdown titles and Codex selected text wrappers', async () => {
   const state = baseState();
   const result = await syncTeamSharingBatch(sampleSyncPackage({

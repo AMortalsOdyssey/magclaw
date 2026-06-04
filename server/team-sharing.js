@@ -56,6 +56,34 @@ function cleanSessionTitle(value = '') {
   return cleanText(stripped).slice(0, 180) || 'Untitled AI session';
 }
 
+function incomingSessionTitle(value = '') {
+  const raw = String(value ?? '').trim();
+  return raw ? cleanSessionTitle(raw) : '';
+}
+
+function generatedSessionIdTitle(value = '', { runtime = '', sessionId = '' } = {}) {
+  const title = cleanText(value).toLowerCase();
+  const id = cleanText(sessionId).toLowerCase();
+  if (!title || !id) return false;
+  const normalizedRuntime = normalizeRuntime(runtime).toLowerCase();
+  const runtimeVariants = [
+    normalizedRuntime,
+    normalizedRuntime.replace(/[_-]+/g, ' '),
+    normalizedRuntime.replace(/[_-]+/g, ''),
+  ].filter(Boolean);
+  return runtimeVariants.some((item) => title === `${item} session ${id}`);
+}
+
+function effectiveSessionTitle({ currentTitle = '', incomingTitle: rawIncomingTitle = '', runtime = '', sessionId = '' } = {}) {
+  const current = incomingSessionTitle(currentTitle);
+  const incoming = incomingSessionTitle(rawIncomingTitle);
+  if (!incoming) return current || 'Untitled AI session';
+  if (current && !generatedSessionIdTitle(current, { runtime, sessionId }) && generatedSessionIdTitle(incoming, { runtime, sessionId })) {
+    return current;
+  }
+  return incoming;
+}
+
 function cleanSyncMetadata(value = {}) {
   const metadata = value && typeof value === 'object' ? value : {};
   const cleaned = {
@@ -819,7 +847,12 @@ function activityRecordFromSummary({ session, summary, acceptedEvents, topics, u
 }
 
 function applyTeamSharingSessionTitle({ state = {}, teamSharingState = {}, session = {}, title = '', updatedAt = '' } = {}) {
-  const cleanTitle = cleanSessionTitle(title || session.title || 'Untitled AI session');
+  const cleanTitle = effectiveSessionTitle({
+    currentTitle: session.title,
+    incomingTitle: title,
+    runtime: session.runtime,
+    sessionId: session.sessionId,
+  });
   let changed = false;
   if (session.title !== cleanTitle) {
     session.title = cleanTitle;
@@ -1082,14 +1115,21 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     email: String(packageBody.humanEmail || packageBody.uploaderEmail || packageBody.userEmail || '').trim(),
   };
   const syncMetadata = cleanSyncMetadata(packageBody.metadata);
+  const existingSession = teamSharingState.sessions[sessionId] || null;
+  const initialRuntime = normalizeRuntime(packageBody.runtime || existingSession?.runtime || 'codex');
   const session = teamSharingState.sessions[sessionId] || {
     sessionId,
     workspaceId: String(packageBody.workspaceId || state.connection?.workspaceId || 'local'),
     channelId,
-    runtime: normalizeRuntime(packageBody.runtime),
+    runtime: initialRuntime,
     projectKey: String(packageBody.projectKey || ''),
     projectPathHash: String(packageBody.projectPathHash || ''),
-    title: cleanSessionTitle(packageBody.title || 'Untitled AI session'),
+    title: effectiveSessionTitle({
+      currentTitle: '',
+      incomingTitle: packageBody.title || 'Untitled AI session',
+      runtime: initialRuntime,
+      sessionId,
+    }),
     messageId: '',
     lastEventOrdinal: 0,
     abstractRevision: 0,
@@ -1098,7 +1138,6 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     createdAt,
     updatedAt: createdAt,
   };
-  session.title = cleanSessionTitle(packageBody.title || session.title || 'Untitled AI session');
   session.runtime = normalizeRuntime(packageBody.runtime || session.runtime);
   session.channelId = channelId;
   session.uploader = {
