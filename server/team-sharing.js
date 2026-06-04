@@ -317,6 +317,110 @@ function toolNamesForEvent(event = {}) {
     .slice(0, 12);
 }
 
+function normalizePresentationSource(value = '', fallbackRuntime = '') {
+  const source = normalizeRuntime(value || fallbackRuntime);
+  if (source === 'codex' || source === 'claude_code') return source;
+  return normalizeRuntime(fallbackRuntime || 'unknown');
+}
+
+function normalizePresentationMode(value = '') {
+  const mode = String(value || '').trim().toLowerCase();
+  if (['plan', 'goal', 'interaction'].includes(mode)) return mode;
+  return 'normal';
+}
+
+function normalizePresentationOptions(value = []) {
+  return asArray(value)
+    .map((option) => {
+      const raw = option && typeof option === 'object' ? option : { label: option };
+      return {
+        label: cleanText(raw.label || raw.value || raw.text || '').slice(0, 80),
+        description: cleanText(raw.description || raw.help || '').slice(0, 220),
+      };
+    })
+    .filter((option) => option.label || option.description)
+    .slice(0, 12);
+}
+
+function normalizePresentationQuestions(value = []) {
+  return asArray(value)
+    .map((question, index) => {
+      const raw = question && typeof question === 'object' ? question : { question };
+      return {
+        id: cleanText(raw.id || raw.key || `question_${index + 1}`).slice(0, 80),
+        header: cleanText(raw.header || raw.title || raw.label || '').slice(0, 80),
+        question: cleanText(raw.question || raw.prompt || raw.text || raw.body || raw.header || '').slice(0, 1200),
+        options: normalizePresentationOptions(raw.options || raw.choices),
+        multiSelect: Boolean(raw.multiSelect || raw.multiselect || raw.multiple),
+      };
+    })
+    .filter((question) => question.question || question.header)
+    .slice(0, 8);
+}
+
+function normalizePresentationAnswerValues(value) {
+  if (Array.isArray(value)) return value.flatMap(normalizePresentationAnswerValues).filter(Boolean).slice(0, 12);
+  if (value && typeof value === 'object') {
+    if (Array.isArray(value.values)) return normalizePresentationAnswerValues(value.values);
+    if (Array.isArray(value.answers)) return normalizePresentationAnswerValues(value.answers);
+    if (value.answer !== undefined) return normalizePresentationAnswerValues(value.answer);
+    if (value.value !== undefined) return normalizePresentationAnswerValues(value.value);
+    if (value.text !== undefined) return normalizePresentationAnswerValues(value.text);
+    return Object.values(value).flatMap(normalizePresentationAnswerValues).filter(Boolean).slice(0, 12);
+  }
+  const text = cleanText(value).slice(0, 1000);
+  return text ? [text] : [];
+}
+
+function normalizePresentationAnswers(value = []) {
+  const items = Array.isArray(value)
+    ? value
+    : Object.entries(value && typeof value === 'object' ? value : {}).map(([id, answer]) => ({ id, values: answer }));
+  return items
+    .map((answer, index) => ({
+      id: cleanText(answer?.id || answer?.key || `answer_${index + 1}`).slice(0, 80),
+      values: normalizePresentationAnswerValues(answer?.values ?? answer?.answers ?? answer?.answer ?? answer?.value ?? answer?.text ?? answer),
+    }))
+    .filter((answer) => answer.values.length)
+    .slice(0, 8);
+}
+
+function normalizeTeamSharingPresentation(value = null, fallbackRuntime = '') {
+  const raw = value && typeof value === 'object' ? value : null;
+  if (!raw) return null;
+  const mode = normalizePresentationMode(raw.mode);
+  if (mode === 'normal') return null;
+  const source = normalizePresentationSource(raw.source, fallbackRuntime);
+  const presentation = {
+    mode,
+    source,
+  };
+  const title = cleanText(raw.title || '').slice(0, 80);
+  if (title) presentation.title = title;
+  if (mode === 'goal') {
+    const goal = raw.goal && typeof raw.goal === 'object' ? raw.goal : {};
+    const objective = cleanMultilineText(goal.objective || raw.objective || '').slice(0, 8000);
+    if (!objective) return null;
+    const status = cleanText(goal.status || raw.status || '').toLowerCase().slice(0, 40);
+    const goalSource = String(goal.source || raw.goalSource || '').trim().toLowerCase() === 'user' ? 'user' : 'agent';
+    presentation.goal = {
+      objective,
+      ...(status ? { status } : {}),
+      source: goalSource,
+      objectiveMatchesUser: Boolean(goal.objectiveMatchesUser || raw.objectiveMatchesUser),
+    };
+  }
+  if (mode === 'interaction') {
+    const interaction = raw.interaction && typeof raw.interaction === 'object' ? raw.interaction : raw;
+    presentation.interaction = {
+      questions: normalizePresentationQuestions(interaction.questions || raw.questions),
+      answers: normalizePresentationAnswers(interaction.answers || raw.answers),
+    };
+    if (!presentation.interaction.questions.length && !presentation.interaction.answers.length) return null;
+  }
+  return presentation;
+}
+
 function normalizeTeamSharingEvent(event = {}, sessionId = '') {
   const role = String(event.role || event.type || '').trim().toLowerCase();
   if (!['user', 'assistant', 'agent'].includes(role)) return null;
@@ -325,6 +429,10 @@ function normalizeTeamSharingEvent(event = {}, sessionId = '') {
   const content = normalizeContentSegments(rawText, cleanRole, event.contentSegments || event.segments || event.metadata?.contentSegments || []);
   const text = content.cleanText;
   const tools = cleanRole === 'assistant' ? toolNamesForEvent(event) : [];
+  const presentation = normalizeTeamSharingPresentation(
+    event.presentation || event.metadata?.presentation || event.metadata?.teamSharing?.presentation,
+    event.presentation?.source || event.runtime || event.metadata?.runtime || '',
+  );
   if (!text) return null;
   const ordinal = Number(event.ordinal);
   const eventId = String(event.eventId || event.id || `${sessionId}:${Number.isFinite(ordinal) ? ordinal : stableHash(text)}`).trim();
@@ -340,10 +448,12 @@ function normalizeTeamSharingEvent(event = {}, sessionId = '') {
     sourceHash: String(event.sourceHash || stableHash(text)),
     sourceAnchor: String(event.sourceAnchor || `${sessionId}#${eventId}`),
     createdAt: iso(event.createdAt),
+    ...(presentation ? { presentation } : {}),
     metadata: {
       usedTools: tools,
       rawEventId,
       contentSegments: content.contentSegments,
+      ...(presentation ? { presentation } : {}),
     },
   };
 }
@@ -725,6 +835,10 @@ function summaryMarkdownFromAbstract(abstractMarkdown = '') {
   return String(abstractMarkdown || '').match(/## Summary\n([\s\S]*?)(?=\n## |$)/)?.[1]?.trim() || '';
 }
 
+function isDefaultTeamSharingActivitySummary(value = '') {
+  return /^同步\s*\d+\s*条清洗事件/.test(cleanText(value));
+}
+
 function topicDebugBody(topic = {}) {
   return cleanMarkdownBody([
     topic.title || topic.topicId || '',
@@ -948,6 +1062,17 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
   const previousAbstract = previousRecord.abstractMarkdown || '';
   const previousTopics = previousRecord.topics || {};
   const sourceEventIds = allEvents.map((event) => event.rawEventId || event.eventId);
+  const presentationByEventId = new Map();
+  for (const event of allEvents) {
+    if (!event.presentation) continue;
+    presentationByEventId.set(String(event.eventId || ''), event.presentation);
+    presentationByEventId.set(String(event.rawEventId || ''), event.presentation);
+  }
+  const presentationsForEventIds = (eventIds = []) => asArray(eventIds)
+    .map((eventId) => presentationByEventId.get(String(eventId || '')))
+    .filter(Boolean)
+    .slice(0, 12);
+  const presentationModesFor = (presentations = []) => [...new Set(asArray(presentations).map((item) => item.mode).filter(Boolean))];
   const fallbackTopicId = inferTopicId({
     title,
     events: allEvents,
@@ -1046,6 +1171,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     updatedAt,
     active: true,
   };
+  const l0Presentations = presentationsForEventIds(sourceEventIds);
   upsertVectorDocument(teamSharingState, {
     ...common,
     vectorDocumentId: `${session.sessionId}:L0`,
@@ -1058,8 +1184,11 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     vectorScore: 0,
     keywordScore: 0,
     freshnessScore: 1,
+    presentationModes: presentationModesFor(l0Presentations),
+    presentations: l0Presentations,
   });
   for (const topic of topics) {
+    const topicPresentations = presentationsForEventIds(topic.sourceEventIds);
     upsertVectorDocument(teamSharingState, {
       ...common,
       vectorDocumentId: `${session.sessionId}:L1:${topic.topicId}`,
@@ -1072,6 +1201,8 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
       vectorScore: 0,
       keywordScore: 0,
       freshnessScore: 1,
+      presentationModes: presentationModesFor(topicPresentations),
+      presentations: topicPresentations,
     });
   }
   if (acceptedEvents.length) {
@@ -1262,6 +1393,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
           sourceAnchor: event.sourceAnchor,
           uploader: session.uploader || uploader,
           contentSegments: event.contentSegments || event.metadata?.contentSegments || [],
+          ...(event.presentation ? { presentation: event.presentation } : {}),
         },
       },
     };
@@ -1323,10 +1455,11 @@ export function contextWindowForTeamSharingSession(teamSharingStateInput, sessio
     .filter((activity) => activity.sessionId === String(sessionId || ''))
     .sort((left, right) => String(left.createdAt || '').localeCompare(String(right.createdAt || '')))
     .at(-1);
-  const summaryHint = cleanText(markdownLinkText([
-    summaryMarkdownFromAbstract(abstract?.abstractMarkdown || ''),
-    latestActivity?.summary || '',
-  ].filter(Boolean).join('\n'))).slice(0, 600);
+  const activitySummaryHint = cleanText(markdownLinkText(latestActivity?.summary || ''));
+  const abstractSummaryHint = cleanText(markdownLinkText(summaryMarkdownFromAbstract(abstract?.abstractMarkdown || '')));
+  const summaryHint = (activitySummaryHint && !isDefaultTeamSharingActivitySummary(activitySummaryHint)
+    ? activitySummaryHint
+    : abstractSummaryHint || activitySummaryHint).slice(0, 800);
   const anchorEventId = String(options.anchorEventId || '').trim();
   const direction = String(options.direction || 'around').trim().toLowerCase();
   const order = String(options.order || 'asc').trim().toLowerCase() === 'desc' ? 'desc' : 'asc';

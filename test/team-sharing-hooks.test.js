@@ -152,6 +152,202 @@ test('team sharing hook parser preserves user guidance while dropping intermedia
   assert.doesNotMatch(JSON.stringify(parsed.events), /中间同步状态/);
 });
 
+test('team sharing hook parser extracts Codex plan events and hides implementation prompts', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-plan', cwd: '/repo/magclaw' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '帮我为 Team Sharing hooks 写一个计划' }] } }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:02.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{
+          type: 'output_text',
+          text: '<proposed_plan>\n# Hook Plan\n\n1. 解析 Plan 事件。\n2. 上报结构化 metadata。\n</proposed_plan>',
+        }],
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:03.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: [
+            '# In app browser:',
+            '- Current URL: https://magclaw-testing.example/channel',
+            '',
+            '## My request for Codex:',
+            'PLEASE IMPLEMENT THIS PLAN:',
+            '# Hook Plan',
+            '',
+            '1. 解析 Plan 事件。',
+          ].join('\n'),
+        }],
+      },
+    }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:04.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '已完成计划中的 hook 解析。' }] } }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
+
+  assert.deepEqual(parsed.events.map((event) => event.role), ['user', 'assistant', 'assistant']);
+  assert.equal(parsed.events[1].presentation.mode, 'plan');
+  assert.equal(parsed.events[1].presentation.source, 'codex');
+  assert.match(parsed.events[1].text, /^# Hook Plan/);
+  assert.doesNotMatch(JSON.stringify(parsed.events), /PLEASE IMPLEMENT THIS PLAN|<proposed_plan>/);
+});
+
+test('team sharing hook parser pairs Codex request_user_input prompts with answers', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-interaction', cwd: '/repo/magclaw' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '先问我计划选项' }] } }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:02.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'request_user_input',
+        call_id: 'call_input_1',
+        arguments: JSON.stringify({
+          questions: [{
+            id: 'scope',
+            header: '范围',
+            question: '这次先做哪一层？',
+            options: [
+              { label: 'Hook only', description: '只改 hook 上报。' },
+              { label: 'Full stack', description: '连云端展示一起做。' },
+            ],
+          }],
+        }),
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:03.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call_input_1',
+        output: JSON.stringify({ answers: { scope: { answers: ['Full stack'] } } }),
+      },
+    }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:04.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '我会按 Full stack 继续。' }] } }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
+  const interaction = parsed.events.find((event) => event.presentation?.mode === 'interaction');
+
+  assert.ok(interaction);
+  assert.equal(interaction.role, 'assistant');
+  assert.match(interaction.text, /这次先做哪一层/);
+  assert.equal(interaction.presentation.source, 'codex');
+  assert.equal(interaction.presentation.interaction.questions[0].id, 'scope');
+  assert.deepEqual(interaction.presentation.interaction.answers[0].values, ['Full stack']);
+  assert.doesNotMatch(JSON.stringify(parsed.events), /function_call_output|call_input_1/);
+});
+
+test('team sharing hook parser marks matching Codex goal requests and separates generated goals', () => {
+  const matchingTranscript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-goal-match', cwd: '/repo/magclaw' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '/goal 调研 Team Sharing Plan Goal 模式并写实现计划' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'function_call', name: 'create_goal', call_id: 'call_goal_match', arguments: JSON.stringify({ objective: '调研 Team Sharing Plan Goal 模式并写实现计划' }) } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:03.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_goal_match', output: JSON.stringify({ objective: '调研 Team Sharing Plan Goal 模式并写实现计划', status: 'active' }) } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:04.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '第一轮执行结果：已定位 hook parser。' }] } }),
+  ].join('\n');
+
+  const matching = parseTeamSharingTranscript(matchingTranscript, { runtime: 'codex' });
+  assert.equal(matching.events[0].role, 'user');
+  assert.equal(matching.events[0].text, '调研 Team Sharing Plan Goal 模式并写实现计划');
+  assert.equal(matching.events[0].presentation.mode, 'goal');
+  assert.equal(matching.events[0].presentation.goal.source, 'user');
+  assert.equal(matching.events[0].presentation.goal.objectiveMatchesUser, true);
+  assert.equal(matching.events.some((event) => event.role === 'assistant' && event.presentation?.mode === 'goal'), false);
+  assert.match(JSON.stringify(matching.events), /第一轮执行结果/);
+
+  const generatedTranscript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-goal-generated', cwd: '/repo/magclaw' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '帮我看看这个问题' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'function_call', name: 'create_goal', call_id: 'call_goal_generated', arguments: JSON.stringify({ objective: '真正执行目标：验证 Goal metadata 云端展示' }) } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:03.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_goal_generated', output: JSON.stringify({ objective: '真正执行目标：验证 Goal metadata 云端展示', status: 'active' }) } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:04.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Goal 执行结果已完成。' }] } }),
+  ].join('\n');
+
+  const generated = parseTeamSharingTranscript(generatedTranscript, { runtime: 'codex' });
+  const generatedGoal = generated.events.find((event) => event.presentation?.mode === 'goal');
+  assert.equal(generated.events[0].presentation, undefined);
+  assert.equal(generatedGoal.role, 'assistant');
+  assert.equal(generatedGoal.presentation.goal.source, 'agent');
+  assert.equal(generatedGoal.presentation.goal.objective, '真正执行目标：验证 Goal metadata 云端展示');
+  assert.equal(generatedGoal.presentation.goal.objectiveMatchesUser, false);
+});
+
+test('team sharing hook parser extracts Claude Code questions and approved plans', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'system', subtype: 'init', session_id: 'claude-plan', cwd: '/repo/magclaw' }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'user', message: { content: [{ type: 'text', text: '进入 Plan 模式设计 hooks' }] } }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:02.000Z',
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'tool_question_1',
+          name: 'AskUserQuestion',
+          input: {
+            questions: [{
+              id: 'scope',
+              header: '范围',
+              question: '要先做哪一层？',
+              options: [{ label: 'Parser' }, { label: 'Full stack' }],
+            }],
+          },
+        }],
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:03.000Z',
+      type: 'user',
+      toolUseResult: { answers: { scope: { answers: ['Full stack'] } } },
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tool_question_1', content: 'Full stack' }] },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:04.000Z',
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'tool_plan_1',
+          name: 'ExitPlanMode',
+          input: { plan: '# Draft Plan\n\n- 旧草稿' },
+        }],
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:05.000Z',
+      type: 'user',
+      toolUseResult: { plan: '# Approved Plan\n\n- 使用批准后的计划' },
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tool_plan_1', content: 'approved' }] },
+    }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:06.000Z', type: 'assistant', message: { content: [{ type: 'text', text: '按批准计划执行完成。' }] } }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'claude_code' });
+  const interaction = parsed.events.find((event) => event.presentation?.mode === 'interaction');
+  const plan = parsed.events.find((event) => event.presentation?.mode === 'plan');
+
+  assert.ok(interaction);
+  assert.equal(interaction.presentation.source, 'claude_code');
+  assert.match(interaction.text, /要先做哪一层/);
+  assert.deepEqual(interaction.presentation.interaction.answers[0].values, ['Full stack']);
+  assert.ok(plan);
+  assert.equal(plan.presentation.source, 'claude_code');
+  assert.match(plan.text, /^# Approved Plan/);
+  assert.doesNotMatch(JSON.stringify(parsed.events), /旧草稿|tool_question_1|tool_plan_1/);
+});
+
 test('team sharing hook parser preserves Codex final markdown layout', () => {
   const transcript = [
     JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-markdown', cwd: '/repo/magclaw' } }),

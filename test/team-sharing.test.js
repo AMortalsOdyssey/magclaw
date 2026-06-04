@@ -123,6 +123,117 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback' && doc.rawEventId && /topics\/rerank-feedback\.md#/.test(doc.sourceRef)));
 });
 
+test('team sharing context summary hint prefers uploaded activity summary', async () => {
+  const state = baseState();
+  await syncTeamSharingBatch(sampleSyncPackage({
+    idempotencyKey: 'codex:magclaw:sess_summary_hint:1:2:abc',
+    sessionId: 'sess_summary_hint',
+  }), {
+    state,
+    makeId: makeIdFactory(),
+    now: () => '2026-06-01T08:04:00.000Z',
+    summarizeSession: async () => ({
+      l0: 'abstract 摘要：这段内容不应该优先显示在便签里。',
+      activity: {
+        summary: 'hooks summary：这次完成了长回复便签的直接摘要展示，并确认超过 200 字才截断。',
+      },
+      topics: [{
+        topicId: 'summary-hint',
+        title: 'summary-hint',
+        overview: 'summary hint source priority',
+        sourceEventIds: ['evt_1', 'evt_2'],
+      }],
+    }),
+  });
+
+  const context = contextWindowForTeamSharingSession(state.teamSharing, 'sess_summary_hint', {
+    anchorEventId: 'evt_2',
+    direction: 'around',
+    limit: 2,
+  });
+
+  assert.equal(context.ok, true);
+  assert.equal(context.session.summaryHint, 'hooks summary：这次完成了长回复便签的直接摘要展示，并确认超过 200 字才截断。');
+});
+
+test('team sharing sync preserves presentation metadata on events, replies, and context windows', async () => {
+  const state = baseState();
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
+    idempotencyKey: 'codex:magclaw:sess_presentation:1:3:presentation',
+    sessionId: 'sess_presentation',
+    title: 'Plan Goal presentation metadata',
+    events: [
+      {
+        eventId: 'evt_plan',
+        ordinal: 1,
+        role: 'assistant',
+        text: '# 实施计划\n\n1. 解析 hooks。',
+        createdAt: '2026-06-01T08:00:00.000Z',
+        presentation: {
+          mode: 'plan',
+          source: 'codex',
+          title: 'Plan',
+        },
+      },
+      {
+        eventId: 'evt_goal',
+        ordinal: 2,
+        role: 'user',
+        text: '把 Goal 模式接入 Team Sharing',
+        createdAt: '2026-06-01T08:01:00.000Z',
+        presentation: {
+          mode: 'goal',
+          source: 'codex',
+          goal: {
+            objective: '把 Goal 模式接入 Team Sharing',
+            status: 'active',
+            source: 'user',
+            objectiveMatchesUser: true,
+          },
+        },
+      },
+      {
+        eventId: 'evt_interaction',
+        ordinal: 3,
+        role: 'assistant',
+        text: 'Agent 提问：要先做哪一层？\n用户回答：Full stack',
+        createdAt: '2026-06-01T08:02:00.000Z',
+        presentation: {
+          mode: 'interaction',
+          source: 'codex',
+          interaction: {
+            questions: [{ id: 'scope', header: '范围', question: '要先做哪一层？', options: [{ label: 'Parser' }, { label: 'Full stack' }] }],
+            answers: [{ id: 'scope', values: ['Full stack'] }],
+          },
+        },
+      },
+    ],
+  }), {
+    state,
+    makeId: makeIdFactory(),
+    now: () => '2026-06-01T08:03:00.000Z',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(state.teamSharing.events.sess_presentation[0].presentation.mode, 'plan');
+  assert.equal(state.teamSharing.events.sess_presentation[1].presentation.goal.source, 'user');
+  assert.deepEqual(state.teamSharing.events.sess_presentation[2].presentation.interaction.answers[0].values, ['Full stack']);
+  assert.equal(state.replies[0].metadata.teamSharing.presentation.mode, 'plan');
+  assert.equal(state.replies[1].metadata.teamSharing.presentation.goal.objectiveMatchesUser, true);
+  assert.equal(state.replies[2].metadata.teamSharing.presentation.interaction.questions[0].question, '要先做哪一层？');
+  const l0Document = state.teamSharing.vectorDocuments.find((doc) => doc.sessionId === 'sess_presentation' && doc.layer === 'L0');
+  assert.deepEqual(l0Document.presentationModes, ['plan', 'goal', 'interaction']);
+  assert.equal(l0Document.presentations[1].goal.objective, '把 Goal 模式接入 Team Sharing');
+
+  const context = contextWindowForTeamSharingSession(state.teamSharing, 'sess_presentation', {
+    anchorEventId: 'evt_goal',
+    direction: 'around',
+    limit: 3,
+  });
+  assert.equal(context.ok, true);
+  assert.deepEqual(context.events.map((event) => event.presentation?.mode), ['plan', 'goal', 'interaction']);
+});
+
 test('team sharing sync records whitelisted local hook package metadata', async () => {
   const state = baseState();
   const result = await syncTeamSharingBatch(sampleSyncPackage({

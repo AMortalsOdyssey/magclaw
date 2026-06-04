@@ -867,6 +867,15 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /runtimeName/);
   assert.match(res.body, /context-quote/);
   assert.match(res.body, /eventSegments/);
+  assert.match(res.body, /eventPresentation/);
+  assert.match(res.body, /presentationBody/);
+  assert.match(res.body, /context-plan-panel/);
+  assert.match(res.body, /context-goal-panel/);
+  assert.match(res.body, /context-interaction-panel/);
+  assert.match(res.body, /#eefcff/);
+  assert.match(res.body, /#f0fdf4/);
+  assert.match(res.body, /#b9e7f2/);
+  assert.match(res.body, /#bbf7d0/);
   assert.match(res.body, /contentSegments/);
   assert.match(res.body, /context-event-user/);
   assert.match(res.body, /article\.context-event-user/);
@@ -875,6 +884,7 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /function renderContextMarkdown/);
   assert.match(res.body, /renderContextMarkdown\(text\)/);
   assert.match(res.body, /CONTEXT_NOTE_MIN_CHARS = 1200/);
+  assert.match(res.body, /CONTEXT_NOTE_MAX_CHARS = 200/);
   assert.match(res.body, /context-note/);
   assert.match(res.body, />Abstract</);
   assert.doesNotMatch(res.body, /核心便签/);
@@ -945,18 +955,20 @@ test('team sharing context page adds note summaries only for long agent replies'
   ), true);
 
   const context = createContextPageHarness(res.body);
+  const directHookSummary = 'hook摘要：本次长回复说明便签纸会直接复用 Team Sharing hooks 上报的 summary，不再二次提炼正文结论；便签只在超过 1200 字的 Agent 回复旁出现，摘要最多显示 200 字并完整展开。'.repeat(2);
   context.window.__teamSharingSession = {
-    summaryHint: 'hook摘要：已确认长回复便签原型会复用 Team Sharing 摘要，并在正文右侧展示核心结论。',
+    summaryHint: directHookSummary,
     runtime: 'codex',
   };
   const longReply = [
-    '核心结论：已经实现长回复便签原型，会提炼回复结论并贴在 Agent 内容右侧。',
+    '核心结论：正文里的结论模块不应该再成为便签摘要来源。',
     '',
     '实现细节：' + '内容展示、滚动触发、摘要截断、三行打字动画。'.repeat(80),
   ].join('\n');
   const noteSummary = context.contextNoteSummary({ role: 'assistant', text: longReply });
-  assert.match(noteSummary, /长回复便签原型/);
-  assert.ok(Array.from(noteSummary).length <= 100);
+  assert.match(noteSummary, /直接复用 Team Sharing hooks 上报的 summary/);
+  assert.doesNotMatch(noteSummary, /正文里的结论模块/);
+  assert.ok(Array.from(noteSummary).length <= 200);
 
   const html = context.eventHtml({
     eventId: 'evt_long',
@@ -966,7 +978,7 @@ test('team sharing context page adds note summaries only for long agent replies'
   });
   assert.match(html, /has-context-note/);
   assert.match(html, /data-context-note/);
-  assert.match(html, /data-full-text="[^"]*长回复便签原型/);
+  assert.match(html, /data-full-text="[^"]*Team Sharing hooks/);
 
   const shortReply = '结论：短回复直接读正文即可。'.repeat(20);
   assert.equal(context.contextNoteSummary({ role: 'assistant', text: shortReply }), '');
@@ -974,6 +986,78 @@ test('team sharing context page adds note summaries only for long agent replies'
 
   const noConclusion = '过程记录：' + '逐项检查页面渲染与交互。'.repeat(120);
   assert.match(context.contextNoteSummary({ role: 'assistant', text: noConclusion }), /hook摘要/);
+});
+
+test('team sharing context page renders plan goal and interaction presentation panels', async () => {
+  const deps = routeDeps({ readJson: async () => syncBody() });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
+  const res = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/team-sharing/context/sess_route?anchorEventId=evt_2'),
+    deps,
+  ), true);
+
+  const context = createContextPageHarness(res.body);
+  context.window.__teamSharingSession = { runtime: 'codex', uploader: { name: 'JHB' } };
+
+  const planHtml = context.eventHtml({
+    eventId: 'evt_plan',
+    role: 'assistant',
+    text: '# Plan\n\n1. 展示步骤。',
+    createdAt: '2026-06-01T10:02:00.000Z',
+    presentation: { mode: 'plan', source: 'codex', title: 'Plan' },
+  });
+  assert.match(planHtml, /context-plan-panel/);
+  assert.match(planHtml, />Codex</);
+  assert.match(planHtml, /展示步骤/);
+  assert.doesNotMatch(planHtml, /data-context-note/);
+
+  const goalHtml = context.eventHtml({
+    eventId: 'evt_goal',
+    role: 'user',
+    text: '把 Goal 模式接入 Team Sharing',
+    createdAt: '2026-06-01T10:03:00.000Z',
+    presentation: {
+      mode: 'goal',
+      source: 'codex',
+      goal: { objective: '把 Goal 模式接入 Team Sharing', source: 'user', objectiveMatchesUser: true },
+    },
+  });
+  assert.match(goalHtml, /context-goal-panel/);
+  assert.match(goalHtml, />JHB</);
+  assert.match(goalHtml, /把 Goal 模式接入 Team Sharing/);
+
+  const interactionHtml = context.eventHtml({
+    eventId: 'evt_interaction',
+    role: 'assistant',
+    text: 'Agent 提问：要先做哪一层？\n用户回答：Full stack',
+    createdAt: '2026-06-01T10:04:00.000Z',
+    presentation: {
+      mode: 'interaction',
+      source: 'codex',
+      interaction: {
+        questions: [{
+          id: 'scope',
+          header: '范围',
+          question: '要先做哪一层？',
+          options: [{ label: 'Parser' }, { label: 'Full stack', description: '连云端展示一起做。' }],
+        }],
+        answers: [{ id: 'scope', values: ['Full stack'] }],
+      },
+    },
+  });
+  assert.match(interactionHtml, /context-interaction-panel/);
+  assert.match(interactionHtml, /要先做哪一层/);
+  assert.match(interactionHtml, /Full stack/);
+  assert.match(interactionHtml, /context-answer-chip/);
+  assert.doesNotMatch(interactionHtml, /Agent 提问：要先做哪一层？/);
 });
 
 test('team sharing context page renders Codex markdown and hides citation metadata', async () => {

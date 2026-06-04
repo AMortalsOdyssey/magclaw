@@ -80,6 +80,219 @@ function normalizeRuntime(value = '') {
   return runtime || 'codex';
 }
 
+function parseJsonValue(value, fallback = null) {
+  if (value && typeof value === 'object') return value;
+  const text = String(value || '').trim();
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+function compactPresentationText(value = '', limit = 4000) {
+  return redactTeamSharingText(value).slice(0, limit).trim();
+}
+
+function extractProposedPlanText(value = '') {
+  const match = String(value || '').match(/<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i);
+  return match ? compactPresentationText(match[1], 12000) : '';
+}
+
+function codexVisibleUserRequestText(value = '') {
+  const raw = String(value || '').replace(/\r\n/g, '\n').trim();
+  const match = raw.match(/(?:^|\n)\s*#+\s*My request for Codex:\s*\n?([\s\S]*)/i)
+    || raw.match(/My request for Codex:\s*([\s\S]*)/i);
+  const request = match ? match[1] : raw;
+  return request
+    .replace(/(?:^|\n)\s*#+\s*In app browser:[\s\S]*$/i, '')
+    .replace(/(?:^|\n)\s*The next image[\s\S]*$/i, '')
+    .replace(/(?:^|\n)\s*Attached image:[\s\S]*$/i, '')
+    .trim();
+}
+
+function isCodexImplementationPlanPrompt(value = '') {
+  return /^\s*PLEASE IMPLEMENT THIS PLAN\s*:/i.test(codexVisibleUserRequestText(value));
+}
+
+function stripGoalCommandPrefix(value = '') {
+  const text = codexVisibleUserRequestText(value);
+  const match = text.match(/^\/goal\b\s*([\s\S]*)$/i);
+  return {
+    isGoalRequest: Boolean(match),
+    text: match ? compactPresentationText(match[1], 8000) : text,
+  };
+}
+
+function normalizeComparableGoalText(value = '') {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/^\/goal\b/i, '')
+    .replace(/[^\p{L}\p{N}\u4e00-\u9fff]+/gu, '')
+    .trim();
+}
+
+function charBigrams(value = '') {
+  const chars = Array.from(value);
+  if (chars.length <= 1) return chars;
+  const grams = [];
+  for (let index = 0; index < chars.length - 1; index += 1) {
+    grams.push(`${chars[index]}${chars[index + 1]}`);
+  }
+  return grams;
+}
+
+function overlapRatio(left = '', right = '') {
+  const leftGrams = charBigrams(left);
+  const rightGrams = new Set(charBigrams(right));
+  if (!leftGrams.length || !rightGrams.size) return 0;
+  let overlap = 0;
+  for (const gram of leftGrams) {
+    if (rightGrams.has(gram)) overlap += 1;
+  }
+  return overlap / leftGrams.length;
+}
+
+function goalObjectiveMatchesUser(objective = '', userText = '') {
+  const cleanObjective = normalizeComparableGoalText(objective);
+  const cleanUser = normalizeComparableGoalText(userText);
+  if (!cleanObjective || !cleanUser) return false;
+  if (cleanObjective === cleanUser) return true;
+  if (cleanObjective.length >= 8 && cleanUser.includes(cleanObjective)) return true;
+  if (cleanUser.length >= 8 && cleanObjective.includes(cleanUser)) return true;
+  return overlapRatio(cleanObjective, cleanUser) >= 0.68 && overlapRatio(cleanUser, cleanObjective) >= 0.42;
+}
+
+function normalizeInteractionOption(option = {}) {
+  const raw = option && typeof option === 'object' ? option : { label: option };
+  const label = compactPresentationText(raw.label || raw.value || raw.text || '', 80);
+  const description = compactPresentationText(raw.description || raw.help || '', 220);
+  return {
+    label,
+    description,
+  };
+}
+
+function normalizeInteractionQuestion(question = {}, index = 0) {
+  const raw = question && typeof question === 'object' ? question : { question };
+  const id = compactPresentationText(raw.id || raw.key || `question_${index + 1}`, 80);
+  const header = compactPresentationText(raw.header || raw.title || raw.label || '', 80);
+  const prompt = compactPresentationText(raw.question || raw.prompt || raw.text || raw.body || header, 1200);
+  const options = asArray(raw.options || raw.choices)
+    .map(normalizeInteractionOption)
+    .filter((option) => option.label || option.description)
+    .slice(0, 12);
+  return {
+    id,
+    header,
+    question: prompt,
+    options,
+    multiSelect: Boolean(raw.multiSelect || raw.multiselect || raw.multiple),
+  };
+}
+
+function normalizeInteractionQuestions(value) {
+  return asArray(value).map(normalizeInteractionQuestion).filter((question) => question.question || question.header);
+}
+
+function normalizeAnswerValues(value) {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => normalizeAnswerValues(item)).filter(Boolean).slice(0, 12);
+  }
+  if (value && typeof value === 'object') {
+    if (Array.isArray(value.answers)) return normalizeAnswerValues(value.answers);
+    if (Array.isArray(value.values)) return normalizeAnswerValues(value.values);
+    if (value.answer !== undefined) return normalizeAnswerValues(value.answer);
+    if (value.value !== undefined) return normalizeAnswerValues(value.value);
+    if (value.text !== undefined) return normalizeAnswerValues(value.text);
+    if (value.label !== undefined) return normalizeAnswerValues(value.label);
+    return Object.values(value).flatMap((item) => normalizeAnswerValues(item)).filter(Boolean).slice(0, 12);
+  }
+  const text = compactPresentationText(value, 1000);
+  return text ? [text] : [];
+}
+
+function normalizeInteractionAnswers(value, questions = []) {
+  const raw = value && typeof value === 'object' && value.answers !== undefined ? value.answers : value;
+  if (Array.isArray(raw)) {
+    return raw.map((item, index) => {
+      if (item && typeof item === 'object' && !Array.isArray(item)) {
+        const id = compactPresentationText(item.id || item.key || questions[index]?.id || `answer_${index + 1}`, 80);
+        return { id, values: normalizeAnswerValues(item.values ?? item.answers ?? item.answer ?? item.value ?? item.text ?? item) };
+      }
+      return { id: questions[index]?.id || `answer_${index + 1}`, values: normalizeAnswerValues(item) };
+    }).filter((answer) => answer.values.length);
+  }
+  if (raw && typeof raw === 'object') {
+    return Object.entries(raw).map(([id, item]) => ({
+      id: compactPresentationText(id, 80),
+      values: normalizeAnswerValues(item),
+    })).filter((answer) => answer.values.length);
+  }
+  const fallbackValues = normalizeAnswerValues(raw);
+  return fallbackValues.length ? [{ id: questions[0]?.id || 'answer', values: fallbackValues }] : [];
+}
+
+function buildInteractionPresentation({ questions = [], answers = [], source = 'codex' } = {}) {
+  const normalizedQuestions = normalizeInteractionQuestions(questions);
+  const normalizedAnswers = normalizeInteractionAnswers(answers, normalizedQuestions);
+  if (!normalizedQuestions.length && !normalizedAnswers.length) return null;
+  return {
+    mode: 'interaction',
+    source,
+    title: 'Interaction',
+    interaction: {
+      questions: normalizedQuestions,
+      answers: normalizedAnswers,
+    },
+  };
+}
+
+function interactionTextFromPresentation(presentation = {}) {
+  const interaction = presentation.interaction || {};
+  const questions = asArray(interaction.questions);
+  const answers = asArray(interaction.answers);
+  const lines = [];
+  for (const question of questions) {
+    const label = question.header ? `${question.header}：` : '';
+    lines.push(`Agent 提问：${label}${question.question || ''}`.trim());
+  }
+  for (const answer of answers) {
+    const question = questions.find((item) => item.id === answer.id);
+    const prefix = question?.header || question?.question || answer.id || '回答';
+    lines.push(`用户回答：${prefix}：${asArray(answer.values).join('，')}`.trim());
+  }
+  return compactPresentationText(lines.join('\n'), 6000) || 'Agent asked for user input.';
+}
+
+function goalObjectiveFromPayload(value = {}) {
+  const raw = value && typeof value === 'object' ? value : {};
+  return compactPresentationText(raw.objective || raw.goal?.objective || raw.goal || raw.title || '', 8000);
+}
+
+function goalStatusFromPayload(value = {}) {
+  const raw = value && typeof value === 'object' ? value : {};
+  const status = compactPresentationText(raw.status || raw.goal?.status || '', 40).toLowerCase();
+  return status || undefined;
+}
+
+function buildGoalPresentation({ objective = '', status = '', source = 'agent', objectiveMatchesUser = false, runtime = 'codex' } = {}) {
+  const cleanObjective = compactPresentationText(objective, 8000);
+  if (!cleanObjective) return null;
+  return {
+    mode: 'goal',
+    source: runtime,
+    title: 'Goal',
+    goal: {
+      objective: cleanObjective,
+      ...(status ? { status: compactPresentationText(status, 40).toLowerCase() } : {}),
+      source,
+      objectiveMatchesUser: Boolean(objectiveMatchesUser),
+    },
+  };
+}
+
 function codexTextEvent(item, context) {
   if (item?.type === 'session_meta' && item.payload) {
     context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
@@ -136,14 +349,335 @@ function claudeTextEvent(item, context) {
   return null;
 }
 
+function assignTranscriptEvent(events, sourceOrdinalRef, event = {}) {
+  sourceOrdinalRef.value += 1;
+  event.sourceOrdinal = sourceOrdinalRef.value;
+  events.push(event);
+  return event;
+}
+
+function latestUserTranscriptEvent(events = []) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.role === 'user') return events[index];
+  }
+  return null;
+}
+
+function updateLastGoalStatus(goalEventRef, status = '') {
+  const cleanStatus = compactPresentationText(status, 40).toLowerCase();
+  const event = goalEventRef.current;
+  if (!cleanStatus || !event?.presentation?.goal) return;
+  event.presentation.goal.status = cleanStatus;
+}
+
+function emitCodexGoalEvent({
+  events,
+  sourceOrdinalRef,
+  goalEventRef,
+  runtime = 'codex',
+  objective = '',
+  status = '',
+  createdAt = '',
+} = {}) {
+  const previousUser = latestUserTranscriptEvent(events);
+  const matchesUser = previousUser && goalObjectiveMatchesUser(objective, previousUser.text);
+  if (matchesUser) {
+    previousUser.presentation = buildGoalPresentation({
+      objective,
+      status,
+      source: 'user',
+      objectiveMatchesUser: true,
+      runtime,
+    });
+    goalEventRef.current = previousUser;
+    return previousUser;
+  }
+  const presentation = buildGoalPresentation({
+    objective,
+    status,
+    source: 'agent',
+    objectiveMatchesUser: false,
+    runtime,
+  });
+  if (!presentation) return null;
+  const event = assignTranscriptEvent(events, sourceOrdinalRef, {
+    role: 'assistant',
+    text: presentation.goal.objective,
+    createdAt,
+    presentation,
+  });
+  goalEventRef.current = event;
+  return event;
+}
+
+function extractCodexTranscriptEvents(parsed = [], context = {}) {
+  const events = [];
+  const sourceOrdinalRef = { value: 0 };
+  const pendingCalls = new Map();
+  const goalEventRef = { current: null };
+  let goalActive = false;
+  for (const item of parsed) {
+    if (item?.type === 'session_meta' && item.payload) {
+      context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
+      context.projectPath = context.projectPath || item.payload.cwd || '';
+      context.title = context.title || item.payload.title || item.payload.thread_title || '';
+      continue;
+    }
+    if (item?.type !== 'response_item') continue;
+    const payload = item.payload || {};
+    const createdAt = iso(item.timestamp);
+    if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
+      const name = String(payload.name || '').trim();
+      pushUnique(context.toolNames, name);
+      const callId = String(payload.call_id || payload.callId || payload.id || `${name}:${pendingCalls.size}`).trim();
+      const args = parseJsonValue(payload.arguments, {});
+      if (['request_user_input', 'create_goal', 'update_goal'].includes(name)) {
+        pendingCalls.set(callId, { name, args, createdAt });
+      }
+      continue;
+    }
+    if (payload.type === 'function_call_output') {
+      const callId = String(payload.call_id || payload.callId || payload.id || '').trim();
+      const pending = pendingCalls.get(callId);
+      const output = parseJsonValue(payload.output, {});
+      if (pending?.name === 'request_user_input') {
+        const presentation = buildInteractionPresentation({
+          questions: pending.args?.questions || pending.args?.prompts || [],
+          answers: output?.answers !== undefined ? output.answers : output,
+          source: 'codex',
+        });
+        if (presentation) {
+          assignTranscriptEvent(events, sourceOrdinalRef, {
+            role: 'assistant',
+            text: interactionTextFromPresentation(presentation),
+            createdAt,
+            presentation,
+          });
+        }
+      } else if (pending?.name === 'create_goal') {
+        const objective = goalObjectiveFromPayload(output) || goalObjectiveFromPayload(pending.args);
+        const status = goalStatusFromPayload(output) || goalStatusFromPayload(pending.args);
+        const event = emitCodexGoalEvent({
+          events,
+          sourceOrdinalRef,
+          goalEventRef,
+          runtime: 'codex',
+          objective,
+          status,
+          createdAt,
+        });
+        if (event) goalActive = true;
+      } else if (pending?.name === 'update_goal') {
+        const status = goalStatusFromPayload(output) || goalStatusFromPayload(pending.args);
+        updateLastGoalStatus(goalEventRef, status);
+        if (['complete', 'completed', 'blocked'].includes(String(status || '').toLowerCase())) goalActive = false;
+      }
+      if (pending) pendingCalls.delete(callId);
+      continue;
+    }
+    if (payload.type !== 'message') continue;
+    const role = String(payload.role || '').toLowerCase();
+    if (!['user', 'assistant'].includes(role)) continue;
+    const text = redactTeamSharingText(textFromContentBlocks(payload.content));
+    if (!text) continue;
+    if (role === 'user') {
+      if (isCodexImplementationPlanPrompt(text)) continue;
+      const goalCommand = stripGoalCommandPrefix(text);
+      assignTranscriptEvent(events, sourceOrdinalRef, {
+        role,
+        text: goalCommand.text,
+        createdAt,
+        toolCalls: [],
+        isGoalRequest: goalCommand.isGoalRequest,
+      });
+      continue;
+    }
+    const proposedPlan = extractProposedPlanText(text);
+    if (proposedPlan) {
+      assignTranscriptEvent(events, sourceOrdinalRef, {
+        role: 'assistant',
+        text: proposedPlan,
+        createdAt,
+        toolCalls: [],
+        presentation: {
+          mode: 'plan',
+          source: 'codex',
+          title: 'Plan',
+        },
+      });
+      continue;
+    }
+    assignTranscriptEvent(events, sourceOrdinalRef, {
+      role,
+      text,
+      createdAt,
+      keepAssistant: goalActive,
+      toolCalls: context.toolNames.length ? context.toolNames.map((name) => ({ name })) : [],
+    });
+  }
+  return events;
+}
+
+function claudeToolResultPayload(raw = {}, block = {}) {
+  const direct = raw.toolUseResult ?? raw.tool_use_result ?? raw.result ?? null;
+  if (direct !== null && direct !== undefined) return parseJsonValue(direct, direct);
+  const content = block?.content;
+  if (Array.isArray(content)) {
+    const text = content.map((item) => (item?.type === 'text' ? item.text : item?.text || '')).filter(Boolean).join('\n');
+    return parseJsonValue(text, text);
+  }
+  return parseJsonValue(content, content);
+}
+
+function emitClaudeToolResultEvent({
+  pending,
+  raw,
+  block,
+  events,
+  sourceOrdinalRef,
+  runtime = 'claude_code',
+  createdAt = '',
+} = {}) {
+  if (!pending) return null;
+  const result = claudeToolResultPayload(raw, block);
+  if (pending.name === 'AskUserQuestion') {
+    const presentation = buildInteractionPresentation({
+      questions: pending.input?.questions || pending.input?.prompts || [],
+      answers: (result && typeof result === 'object' && result.answers !== undefined) ? result.answers : result,
+      source: runtime,
+    });
+    if (!presentation) return null;
+    return assignTranscriptEvent(events, sourceOrdinalRef, {
+      role: 'assistant',
+      text: interactionTextFromPresentation(presentation),
+      createdAt,
+      presentation,
+    });
+  }
+  if (pending.name === 'ExitPlanMode') {
+    const approvedPlan = compactPresentationText(
+      (result && typeof result === 'object' ? result.plan || result.toolUseResult?.plan : '')
+        || pending.input?.plan
+        || '',
+      12000,
+    );
+    if (!approvedPlan) return null;
+    return assignTranscriptEvent(events, sourceOrdinalRef, {
+      role: 'assistant',
+      text: approvedPlan,
+      createdAt,
+      presentation: {
+        mode: 'plan',
+        source: runtime,
+        title: 'Plan',
+      },
+    });
+  }
+  return null;
+}
+
+function extractClaudeTranscriptEvents(parsed = [], context = {}) {
+  const events = [];
+  const sourceOrdinalRef = { value: 0 };
+  const pendingToolUses = new Map();
+  for (const item of parsed) {
+    const raw = item?.payload && typeof item.payload === 'object' ? item.payload : item;
+    const createdAt = iso(item.timestamp || raw.timestamp);
+    if (raw?.type === 'system' && raw.subtype === 'init') {
+      context.sessionId = context.sessionId || raw.session_id || raw.sessionId || '';
+      context.projectPath = context.projectPath || raw.cwd || '';
+      continue;
+    }
+    if (raw?.type === 'assistant') {
+      const textBlocks = [];
+      for (const block of asArray(raw.message?.content)) {
+        if (block?.type === 'text' && block.text) {
+          textBlocks.push(block.text);
+          continue;
+        }
+        if (block?.type !== 'tool_use') continue;
+        const name = String(block.name || '').trim();
+        pushUnique(context.toolNames, name);
+        if (['AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode'].includes(name)) {
+          pendingToolUses.set(String(block.id || block.tool_use_id || `${name}:${pendingToolUses.size}`), {
+            name,
+            input: block.input || {},
+            createdAt,
+          });
+        }
+      }
+      const text = redactTeamSharingText(textBlocks.join('\n\n'));
+      if (text) {
+        assignTranscriptEvent(events, sourceOrdinalRef, {
+          role: 'assistant',
+          text,
+          createdAt,
+          toolCalls: context.toolNames.length ? context.toolNames.map((name) => ({ name })) : [],
+        });
+      }
+      continue;
+    }
+    if (raw?.type === 'user') {
+      const textBlocks = [];
+      for (const block of asArray(raw.message?.content)) {
+        if (block?.type === 'text' && block.text) {
+          textBlocks.push(block.text);
+          continue;
+        }
+        if (block?.type !== 'tool_result') continue;
+        const toolUseId = String(block.tool_use_id || block.toolUseId || block.id || '').trim();
+        const pending = pendingToolUses.get(toolUseId);
+        emitClaudeToolResultEvent({
+          pending,
+          raw,
+          block,
+          events,
+          sourceOrdinalRef,
+          runtime: 'claude_code',
+          createdAt,
+        });
+        if (pending) pendingToolUses.delete(toolUseId);
+      }
+      const text = redactTeamSharingText(textBlocks.join('\n\n'));
+      if (!text) continue;
+      const goalCommand = stripGoalCommandPrefix(text);
+      const event = assignTranscriptEvent(events, sourceOrdinalRef, {
+        role: 'user',
+        text: goalCommand.text,
+        createdAt,
+        toolCalls: [],
+        isGoalRequest: goalCommand.isGoalRequest,
+      });
+      if (goalCommand.isGoalRequest && goalCommand.text) {
+        event.presentation = buildGoalPresentation({
+          objective: goalCommand.text,
+          source: 'user',
+          objectiveMatchesUser: true,
+          runtime: 'claude_code',
+        });
+      }
+    }
+  }
+  return events;
+}
+
 function visibleTeamSharingTranscriptEvents(events = []) {
   const users = [];
   let finalAssistant = null;
   let latestUserOrdinal = 0;
+  const forced = [];
   for (const event of events) {
     if (event.role === 'user') {
       users.push(event);
       latestUserOrdinal = Math.max(latestUserOrdinal, Number(event.sourceOrdinal || 0));
+      continue;
+    }
+    if (event.presentation?.mode && event.presentation.mode !== 'normal') {
+      forced.push(event);
+      continue;
+    }
+    if (event.keepAssistant) {
+      forced.push(event);
       continue;
     }
     if (event.role === 'assistant') finalAssistant = event;
@@ -151,10 +685,13 @@ function visibleTeamSharingTranscriptEvents(events = []) {
   const visible = [];
   const keptOrdinals = new Set();
   const keepEvent = (event) => {
+    const ordinal = Number(event.sourceOrdinal || 0);
+    if (keptOrdinals.has(ordinal)) return;
     visible.push(event);
-    keptOrdinals.add(Number(event.sourceOrdinal || 0));
+    keptOrdinals.add(ordinal);
   };
   for (const event of users) keepEvent(event);
+  for (const event of forced) keepEvent(event);
   if (finalAssistant && Number(finalAssistant.sourceOrdinal || 0) > latestUserOrdinal) {
     keepEvent(finalAssistant);
   }
@@ -178,17 +715,9 @@ export function parseTeamSharingTranscript(text = '', options = {}) {
     title: String(options.title || '').trim(),
     toolNames: [],
   };
-  const extractedEvents = [];
-  let textEventOrdinal = 0;
-  for (const item of parsed) {
-    const extracted = runtime === 'claude_code'
-      ? claudeTextEvent(item, context)
-      : codexTextEvent(item, context);
-    if (!extracted) continue;
-    textEventOrdinal += 1;
-    extracted.sourceOrdinal = textEventOrdinal;
-    extractedEvents.push(extracted);
-  }
+  const extractedEvents = runtime === 'claude_code'
+    ? extractClaudeTranscriptEvents(parsed, context)
+    : extractCodexTranscriptEvents(parsed, context);
   const visibleTranscript = visibleTeamSharingTranscriptEvents(extractedEvents);
   const visibleEvents = visibleTranscript.events;
   const sessionSeed = context.sessionId || options.sessionId || 'session';
@@ -207,6 +736,7 @@ export function parseTeamSharingTranscript(text = '', options = {}) {
       sourceHash: stableHash(event.text),
       sourceAnchor: `${sessionSeed}#${eventId}`,
       toolCalls: event.toolCalls,
+      ...(event.presentation ? { presentation: event.presentation } : {}),
     };
   });
   if (!context.title) {

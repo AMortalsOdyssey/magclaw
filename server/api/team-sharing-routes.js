@@ -626,7 +626,7 @@ function sendContextHtml(res, {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MagClaw Team Sharing Context</title>
   <style>
-    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; --user-bg:#fff1f5; --user-line:#f9cfe0; }
+    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; --user-bg:#fff1f5; --user-line:#f9cfe0; --plan-bg:#eefcff; --plan-line:#b9e7f2; --plan-accent:#0891b2; --goal-bg:#f0fdf4; --goal-line:#bbf7d0; --goal-accent:#16a34a; }
     * { box-sizing:border-box; }
     [hidden] { display:none !important; }
     body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
@@ -652,6 +652,24 @@ function sendContextHtml(res, {
     .context-quote { border-left:3px solid #9ecfe1; background:#f2f8fb; color:#3f6474; padding:8px 11px; border-radius:0 7px 7px 0; display:grid; gap:4px; }
     .context-quote-label { color:#0f6f89; font-size:11px; font-weight:900; line-height:1.2; }
     .context-quote-text { overflow-wrap:anywhere; line-height:1.56; font-size:13px; }
+    .context-mode-panel { margin-top:10px; border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:8px; padding:12px 13px; display:grid; gap:8px; overflow-wrap:anywhere; }
+    .context-plan-panel { background:#eefcff; border-color:#b9e7f2; border-left-color:#0891b2; }
+    .context-goal-panel { background:#f0fdf4; border-color:#bbf7d0; border-left-color:#16a34a; }
+    .context-interaction-panel { background:#fff; border-color:#dbe5ef; border-left-color:#0891b2; }
+    .context-mode-head { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#334155; font-size:11px; font-weight:900; line-height:1.2; text-transform:uppercase; letter-spacing:0; }
+    .context-plan-panel .context-mode-head { color:#0f6f89; }
+    .context-goal-panel .context-mode-head { color:#166534; }
+    .context-goal-status { color:#16a34a; font-weight:900; }
+    .context-interaction-list { display:grid; gap:10px; }
+    .context-question-card { display:grid; gap:7px; border:1px solid #e2e8f0; border-radius:7px; padding:10px 11px; background:#fbfdff; }
+    .context-question-head { color:#0f6f89; font-size:11px; font-weight:900; line-height:1.2; }
+    .context-question-prompt { margin:0; font-size:14px; font-weight:750; line-height:1.52; color:#1f2937; }
+    .context-option-list,
+    .context-answer-list { display:flex; flex-wrap:wrap; gap:6px; }
+    .context-option-chip,
+    .context-answer-chip { display:inline-flex; align-items:center; max-width:100%; min-height:24px; border-radius:999px; padding:2px 8px; font-size:12px; font-weight:800; line-height:1.35; overflow-wrap:anywhere; }
+    .context-option-chip { border:1px solid #dbeafe; background:#f8fafc; color:#475569; }
+    .context-answer-chip { border:1px solid #bae6fd; background:#e0f2fe; color:#075985; }
     .context-main a,
     .context-quote a,
     .text a { color:#0369a1; font-weight:700; }
@@ -710,7 +728,7 @@ function sendContextHtml(res, {
     .context-source-link { min-height:24px; border:1px solid #bae6fd; background:#f0f9ff; color:#0369a1; border-radius:999px; padding:2px 8px; font-weight:800; text-decoration:none; }
     .context-source-link:hover,
     .context-source-link:focus-visible { border-color:#0891b2; background:#e0f2fe; outline:0; }
-    .context-note { position:absolute; left:calc(100% + 14px); top:88px; z-index:1; width:224px; min-height:118px; padding:14px 15px 13px; border:1px solid #c7dde8; border-radius:4px; background:#f7fbfd; color:#334155; box-shadow:0 14px 28px rgba(15,23,42,.10), 0 1px 0 rgba(255,255,255,.82) inset; opacity:0; transform-origin:left top; transform:translate(-10px,-8px) scale(.74) rotate(-2deg); clip-path:polygon(0 0, 0 0, 0 0, 0 0); pointer-events:none; }
+    .context-note { position:absolute; left:calc(100% + 14px); top:88px; z-index:1; width:264px; min-height:118px; padding:18px 20px 17px; overflow:visible; border:1px solid #c7dde8; border-radius:4px; background:#f7fbfd; color:#334155; box-shadow:0 14px 28px rgba(15,23,42,.10), 0 1px 0 rgba(255,255,255,.82) inset; opacity:0; transform-origin:left top; transform:translate(-10px,-8px) scale(.74) rotate(-2deg); clip-path:polygon(0 0, 0 0, 0 0, 0 0); pointer-events:none; }
     .context-note::before { content:""; position:absolute; left:50%; top:-10px; width:58px; height:18px; transform:translateX(-50%) rotate(-2deg); border:1px solid rgba(8,145,178,.18); border-radius:3px; background:rgba(224,242,254,.78); box-shadow:0 2px 5px rgba(71,85,105,.08); }
     .context-note::after { content:""; position:absolute; right:0; bottom:0; width:28px; height:28px; border-radius:4px 0 3px 0; background:linear-gradient(135deg, rgba(255,255,255,0) 0 49%, rgba(203,226,236,.55) 50%, rgba(240,249,255,.96) 100%); }
     .context-note.is-open { animation:contextNoteUnfold .34s cubic-bezier(.2,.8,.22,1) forwards; }
@@ -1026,7 +1044,7 @@ function sendContextHtml(res, {
           return blocks.join('') || '<p>' + renderContextInline(text) + '</p>';
         }
         const CONTEXT_NOTE_MIN_CHARS = 1200;
-        const CONTEXT_NOTE_MAX_CHARS = 100;
+        const CONTEXT_NOTE_MAX_CHARS = 200;
         function contextEventBodyText(event) {
           const segments = Array.isArray(event?.contentSegments) && event.contentSegments.length
             ? event.contentSegments
@@ -1078,34 +1096,17 @@ function sendContextHtml(res, {
         }
         function contextSessionSummaryHint() {
           const session = window.__teamSharingSession || {};
-          return plainContextNoteText(session.summaryHint || session.abstractSummary || session.activitySummary || '')
-            .replace(/\\b\\d+\\.\\s*/g, ' ')
-            .replace(/（\\s*原文\\s*）/g, ' ')
-            .replace(/\\bOriginal Context\\b/gi, ' ')
-            .replace(/\\bClosing Notes\\b/gi, ' ')
-            .replace(/\\b原文\\b/g, ' ')
-            .replace(/本轮诉求\\s*[：:]?/g, ' ')
-            .replace(/用户主要提出\\s*[：:]\\s*[^。！？!?；;]+[。！？!?；;]?/g, ' ')
-            .replace(/Agent 给出的结论和推进\\s*[：:]\\s*/g, ' ')
+          return String(session.summaryHint || session.activitySummary || session.abstractSummary || '')
             .replace(/\\s+/g, ' ')
             .trim();
         }
         function compactContextNoteSummary(text, limit = CONTEXT_NOTE_MAX_CHARS) {
-          const clean = plainContextNoteText(text)
-            .replace(/点击正文里的[^。！？!?]*[。！？!?]?/g, ' ')
-            .replace(/页面会以该消息为中心[^。！？!?]*[。！？!?]?/g, ' ')
-            .replace(/这份 workspace[^。！？!?]*[。！？!?]?/gi, ' ')
-            .replace(/([。！？!?])\\1+/g, '$1')
-            .replace(/。([！？!?])/g, '$1')
+          const clean = String(text || '')
             .replace(/\\s+/g, ' ')
             .trim();
           const chars = Array.from(clean);
           if (chars.length <= limit) return clean;
-          const raw = chars.slice(0, Math.max(1, limit - 1)).join('');
-          const cuts = ['。', '！', '？', ';', '；'].map(mark => raw.lastIndexOf(mark));
-          const cut = Math.max(...cuts);
-          if (cut >= Math.min(58, limit - 8)) return raw.slice(0, cut + 1);
-          return raw.replace(/[，,；;：:\\s]+$/g, '') + '…';
+          return chars.slice(0, Math.max(1, limit - 1)).join('').trimEnd() + '…';
         }
         function fallbackContextNoteSummary(text) {
           return plainContextNoteText(text)
@@ -1144,15 +1145,13 @@ function sendContextHtml(res, {
           return Math.max(1, Math.min(chars.length, target));
         }
         function contextNoteSummary(event) {
+          if (eventPresentation(event)?.mode && eventPresentation(event).mode !== 'normal') return '';
           if (!(event?.role === 'assistant' || event?.role === 'system')) return '';
           const text = contextEventBodyText(event);
           if (contextVisibleCharCount(text) <= CONTEXT_NOTE_MIN_CHARS) return '';
-          const conclusion = extractContextConclusionText(text);
           const hint = contextSessionSummaryHint();
-          const source = conclusion
-            ? (contextVisibleCharCount(conclusion) >= 30 || !hint ? conclusion : [conclusion, hint].filter(Boolean).join('。'))
-            : (hint || fallbackContextNoteSummary(text));
-          return compactContextNoteSummary(source, CONTEXT_NOTE_MAX_CHARS);
+          if (!hint) return '';
+          return compactContextNoteSummary(hint, CONTEXT_NOTE_MAX_CHARS);
         }
         function renderContextNote(summary) {
           if (!summary) return '';
@@ -1262,7 +1261,7 @@ function sendContextHtml(res, {
             note.classList.add('is-finished');
             return;
           }
-          const speeds = [18, 32, 48];
+          const speeds = [8, 13, 18];
           let completed = 0;
           note.classList.add('is-typing');
           lines.forEach((line, index) => {
@@ -1331,6 +1330,76 @@ function sendContextHtml(res, {
             else revealContextNote(note);
           }
         }
+        function eventPresentation(event) {
+          const value = event?.presentation || event?.metadata?.presentation || event?.metadata?.teamSharing?.presentation || null;
+          if (!value || typeof value !== 'object') return null;
+          const mode = String(value.mode || '').toLowerCase();
+          if (!['plan', 'goal', 'interaction'].includes(mode)) return null;
+          return { ...value, mode };
+        }
+        function presentationLabel(presentation, fallback) {
+          return escapeHtml(presentation?.title || fallback || 'Context');
+        }
+        function renderModePanel(className, label, body, extraHead = '') {
+          return '<section class="context-mode-panel ' + className + '">' +
+            '<div class="context-mode-head"><span>' + label + '</span>' + extraHead + '</div>' +
+            body + '</section>';
+        }
+        function answerValuesForQuestion(presentation, question, index) {
+          const answers = Array.isArray(presentation?.interaction?.answers) ? presentation.interaction.answers : [];
+          const answer = answers.find(item => String(item.id || '') === String(question?.id || '')) || answers[index] || null;
+          return Array.isArray(answer?.values) ? answer.values.filter(Boolean) : [];
+        }
+        function renderInteractionPresentation(presentation) {
+          const questions = Array.isArray(presentation?.interaction?.questions) ? presentation.interaction.questions : [];
+          const answers = Array.isArray(presentation?.interaction?.answers) ? presentation.interaction.answers : [];
+          const cards = questions.length ? questions.map((question, index) => {
+            const options = Array.isArray(question.options) ? question.options : [];
+            const values = answerValuesForQuestion(presentation, question, index);
+            return '<div class="context-question-card">' +
+              (question.header ? '<div class="context-question-head">' + escapeHtml(question.header) + '</div>' : '') +
+              '<p class="context-question-prompt">' + escapeHtml(question.question || question.prompt || question.header || 'Question') + '</p>' +
+              (options.length ? '<div class="context-option-list">' + options.map(option => '<span class="context-option-chip">' + escapeHtml(option.label || option.description || '') + '</span>').join('') + '</div>' : '') +
+              (values.length ? '<div class="context-answer-list">' + values.map(value => '<span class="context-answer-chip">' + escapeHtml(value) + '</span>').join('') + '</div>' : '') +
+              '</div>';
+          }) : answers.map(answer => {
+            const values = Array.isArray(answer.values) ? answer.values : [];
+            return '<div class="context-question-card">' +
+              '<div class="context-question-head">' + escapeHtml(answer.id || 'Answer') + '</div>' +
+              '<div class="context-answer-list">' + values.map(value => '<span class="context-answer-chip">' + escapeHtml(value) + '</span>').join('') + '</div>' +
+              '</div>';
+          });
+          return renderModePanel(
+            'context-interaction-panel',
+            presentationLabel(presentation, 'Interaction'),
+            '<div class="context-interaction-list">' + cards.join('') + '</div>',
+          );
+        }
+        function presentationBody(event) {
+          const presentation = eventPresentation(event);
+          if (!presentation) return '';
+          const text = contextEventBodyText(event);
+          if (presentation.mode === 'plan') {
+            return renderModePanel(
+              'context-plan-panel',
+              presentationLabel(presentation, 'Plan'),
+              '<div class="context-main">' + renderContextMarkdown(text) + '</div>',
+            );
+          }
+          if (presentation.mode === 'goal') {
+            const goal = presentation.goal || {};
+            const objective = goal.objective || text;
+            const status = goal.status ? '<span class="context-goal-status">' + escapeHtml(goal.status) + '</span>' : '';
+            return renderModePanel(
+              'context-goal-panel',
+              presentationLabel(presentation, 'Goal'),
+              '<div class="context-main">' + renderContextMarkdown(objective) + '</div>',
+              status,
+            );
+          }
+          if (presentation.mode === 'interaction') return renderInteractionPresentation(presentation);
+          return '';
+        }
         function eventSegments(event) {
           const segments = Array.isArray(event.contentSegments) && event.contentSegments.length
             ? event.contentSegments
@@ -1350,7 +1419,7 @@ function sendContextHtml(res, {
           const anchorClass = anchorEventId && event.eventId === anchorEventId ? ' anchor' : '';
           const roleClass = event.role === 'user' ? ' context-event-user' : (event.role === 'assistant' || event.role === 'system' ? ' context-event-agent' : ' context-event-other');
           const session = window.__teamSharingSession || {};
-          const body = eventSegments(event) || '<div class="text">' + renderContextMarkdown(event.displayText || event.cleanText || event.text || '') + '</div>';
+          const body = presentationBody(event) || eventSegments(event) || '<div class="text">' + renderContextMarkdown(event.displayText || event.cleanText || event.text || '') + '</div>';
           const note = renderContextNote(contextNoteSummary(event));
           const noteClass = note ? ' has-context-note' : '';
           return '<article id="' + encodeURIComponent(event.eventId || '') + '" class="' + ('context-event' + roleClass + anchorClass + noteClass).trim() + '">' +
