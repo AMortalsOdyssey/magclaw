@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import vm from 'node:vm';
 
 import { handleTeamSharingApi } from '../server/api/team-sharing-routes.js';
 import { createInitialTeamSharingState } from '../server/team-sharing.js';
@@ -107,6 +108,58 @@ function syncBody() {
       },
     ],
   };
+}
+
+function createContextPageHarness(html = '') {
+  const script = String(html || '').match(/<script>([\s\S]*?)<\/script>/)?.[1] || '';
+  assert.ok(script, 'context page should embed a script');
+  const elements = new Map();
+  const element = (id) => {
+    if (!elements.has(id)) {
+      elements.set(id, {
+        id,
+        disabled: false,
+        innerHTML: '',
+        textContent: '',
+        addEventListener: () => {},
+        insertAdjacentHTML(_position, content) {
+          this.innerHTML += String(content || '');
+        },
+        querySelector: () => null,
+      });
+    }
+    return elements.get(id);
+  };
+  const context = {
+    console,
+    Date,
+    Intl,
+    JSON,
+    Math,
+    Number,
+    Set,
+    String,
+    URLSearchParams,
+    encodeURIComponent,
+    fetch: async () => ({
+      json: async () => ({ ok: true, session: {}, events: [], pagination: { hasPrev: false, hasNext: false } }),
+    }),
+    document: {
+      documentElement: { scrollHeight: 0 },
+      getElementById: element,
+    },
+    window: {
+      __teamSharingSession: {},
+      addEventListener: () => {},
+      setTimeout: () => 0,
+      scrollTo: () => {},
+      scrollY: 0,
+      innerHeight: 900,
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(script, context);
+  return context;
 }
 
 test('team sharing route syncs a batch and search returns reranked top results', async () => {
@@ -702,6 +755,10 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /context-quote/);
   assert.match(res.body, /eventSegments/);
   assert.match(res.body, /contentSegments/);
+  assert.match(res.body, /function stripContextMetadata/);
+  assert.match(res.body, /function renderContextMarkdown/);
+  assert.match(res.body, /renderContextMarkdown\(text\)/);
+  assert.match(res.body, /oai-mem-citation/);
   assert.match(res.body, /load-more-prev/);
   assert.match(res.body, /load-more-next/);
   assert.match(res.body, /top-sentinel/);
@@ -727,6 +784,44 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(scopedRes.body, /const workspaceId = "ws_route";/);
   assert.match(scopedRes.body, /const serverSlug = "server-route";/);
   assert.match(scopedRes.body, /params\.set\('serverSlug', serverSlug\)/);
+});
+
+test('team sharing context page renders Codex markdown and hides citation metadata', async () => {
+  const deps = routeDeps({ readJson: async () => syncBody() });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
+  const res = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/team-sharing/context/sess_route?anchorEventId=evt_2'),
+    deps,
+  ), true);
+  const context = createContextPageHarness(res.body);
+  const html = context.renderContextMarkdown([
+    '**验收通过**',
+    '',
+    'R150 已部署到测试环境。',
+    '',
+    '线上验收结果：',
+    '- `/api/readyz` 返回 200。',
+    '- 登录态正常。',
+    '',
+    '<oai-mem-citation>',
+    '<citation_entries>',
+    'MEMORY.md:1-2|note=[internal]',
+    '</citation_entries>',
+    '</oai-mem-citation>',
+  ].join('\n'));
+
+  assert.match(html, /<strong>验收通过<\/strong>/);
+  assert.match(html, /<p>R150 已部署到测试环境。<\/p>/);
+  assert.match(html, /<ul><li><code>\/api\/readyz<\/code> 返回 200。<\/li><li>登录态正常。<\/li><\/ul>/);
+  assert.doesNotMatch(html, /oai-mem-citation|citation_entries|MEMORY\.md/);
 });
 
 test('team sharing context page redirects unauthenticated browsers to login with returnTo', async () => {

@@ -288,6 +288,57 @@ test('team sharing sync cleans session markdown titles and Codex selected text w
   assert.equal(state.replies[1].authorId, 'team_sharing_codex');
 });
 
+test('team sharing sync preserves Codex raw markdown body over flattened cleanText', async () => {
+  const state = baseState();
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
+    idempotencyKey: 'codex:magclaw:sess_codex_markdown:1:2:markdown',
+    sessionId: 'sess_codex_markdown',
+    title: '验收会话总结共享',
+    events: [
+      {
+        eventId: 'evt_user',
+        ordinal: 1,
+        role: 'user',
+        text: '验收一下',
+        createdAt: '2026-06-01T08:10:00.000Z',
+      },
+      {
+        eventId: 'evt_assistant',
+        ordinal: 2,
+        role: 'assistant',
+        cleanText: '**验收通过** R150 已部署到测试环境。线上验收结果： - `/api/readyz` 返回 200。 - 登录态正常。 <oai-mem-citation><citation_entries>MEMORY.md:1-2</citation_entries></oai-mem-citation>',
+        text: [
+          '**验收通过**',
+          '',
+          'R150 已部署到测试环境。',
+          '',
+          '线上验收结果：',
+          '- `/api/readyz` 返回 200。',
+          '- 登录态正常。',
+          '',
+          '<oai-mem-citation>',
+          '<citation_entries>',
+          'MEMORY.md:1-2|note=[internal]',
+          '</citation_entries>',
+          '</oai-mem-citation>',
+        ].join('\n'),
+        createdAt: '2026-06-01T08:11:00.000Z',
+      },
+    ],
+  }), {
+    state,
+    makeId: makeIdFactory(),
+    now: () => '2026-06-01T08:12:00.000Z',
+  });
+
+  assert.equal(result.ok, true);
+  const reply = state.replies.find((item) => item.id === 'rep_3');
+  assert.match(reply.body, /^\*\*验收通过\*\*\n\nR150/m);
+  assert.match(reply.body, /\n- `\/api\/readyz` 返回 200。/);
+  assert.doesNotMatch(reply.body, /oai-mem-citation|citation_entries|MEMORY\.md/);
+  assert.match(state.teamSharing.events.sess_codex_markdown[1].displayText, /^\*\*验收通过\*\*\n\nR150/m);
+});
+
 test('team sharing sync renders Codex browser comments as quote segments', async () => {
   const state = baseState();
   const result = await syncTeamSharingBatch(sampleSyncPackage({

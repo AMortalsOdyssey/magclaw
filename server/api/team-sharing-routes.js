@@ -633,15 +633,49 @@ function sendContextHtml(res, {
     article.anchor { border-color:var(--accent); box-shadow:0 0 0 2px rgba(8,145,178,.12); }
     .role { display:inline-flex; align-items:center; min-height:20px; border-radius:999px; background:var(--chip); padding:2px 8px; font-size:12px; font-weight:800; color:#0f5f76; }
     .time { margin-left:8px; color:var(--muted); font-size:12px; }
-    .text { margin-top:10px; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.65; font-size:14px; }
-    .text a { color:#0369a1; font-weight:700; }
+    .text,
+    .context-main { overflow-wrap:anywhere; line-height:1.65; font-size:14px; }
+    .text { margin-top:10px; }
     .context-segments { display:grid; gap:9px; margin-top:10px; }
-    .context-main { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.65; font-size:14px; }
     .context-quote { border-left:3px solid #9ecfe1; background:#f2f8fb; color:#3f6474; padding:8px 11px; border-radius:0 7px 7px 0; display:grid; gap:4px; }
     .context-quote-label { color:#0f6f89; font-size:11px; font-weight:900; line-height:1.2; }
-    .context-quote-text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.56; font-size:13px; }
+    .context-quote-text { overflow-wrap:anywhere; line-height:1.56; font-size:13px; }
     .context-main a,
-    .context-quote a { color:#0369a1; font-weight:700; }
+    .context-quote a,
+    .text a { color:#0369a1; font-weight:700; }
+    .text p,
+    .context-main p,
+    .context-quote-text p { margin:0 0 10px; }
+    .text p:last-child,
+    .context-main p:last-child,
+    .context-quote-text p:last-child { margin-bottom:0; }
+    .text ul,
+    .text ol,
+    .context-main ul,
+    .context-main ol,
+    .context-quote-text ul,
+    .context-quote-text ol { margin:8px 0 10px; padding-left:24px; }
+    .text li,
+    .context-main li,
+    .context-quote-text li { margin:4px 0; }
+    .text code,
+    .context-main code,
+    .context-quote-text code { background:#eef2f7; border-radius:5px; padding:1px 5px; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.92em; color:#243244; }
+    .text pre,
+    .context-main pre,
+    .context-quote-text pre { margin:10px 0; padding:10px 12px; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:7px; }
+    .text pre code,
+    .context-main pre code,
+    .context-quote-text pre code { background:transparent; color:inherit; padding:0; border-radius:0; }
+    .text h1,
+    .text h2,
+    .text h3,
+    .context-main h1,
+    .context-main h2,
+    .context-main h3 { margin:0 0 10px; font-size:16px; line-height:1.45; }
+    .text blockquote,
+    .context-main blockquote,
+    .context-quote-text blockquote { margin:8px 0; border-left:3px solid #cbd5e1; padding-left:10px; color:#475569; }
     .empty { color:var(--muted); text-align:center; padding:48px 0; }
   </style>
 </head>
@@ -696,12 +730,118 @@ function sendContextHtml(res, {
       }
       return { href, trailing };
     }
-    function linkifyText(text) {
-      return escapeHtml(text).replace(/https?:\\/\\/[^\\s<]+/g, raw => {
+    function stripContextMetadata(text) {
+      return String(text || '')
+        .replace(/\\s*<oai-mem-citation\\b[^>]*>[\\s\\S]*?(?:<\\/oai-mem-citation>|$)\\s*/gi, '\\n')
+        .replace(/\\s*<citation_entries\\b[^>]*>[\\s\\S]*?(?:<\\/citation_entries>|$)\\s*/gi, '\\n')
+        .replace(/\\s*<rollout_ids\\b[^>]*>[\\s\\S]*?(?:<\\/rollout_ids>|$)\\s*/gi, '\\n')
+        .trim();
+    }
+    function safeContextHref(href) {
+      const value = String(href || '').replace(/&amp;/gi, '&').trim();
+      if (/^(https?:|mailto:|\\/)/i.test(value)) return value;
+      return '#';
+    }
+    function renderContextAutolinkedUrls(html) {
+      return String(html || '').replace(/https?:\\/\\/[^\\s<]+/g, raw => {
         const parts = splitAutolinkUrl(raw);
         if (!parts.href) return raw;
-        return '<a href="' + parts.href + '" target="_blank" rel="noreferrer">' + escapeHtml(parts.href) + '</a>' + escapeHtml(parts.trailing);
+        return '<a href="' + escapeHtml(safeContextHref(parts.href)) + '" target="_blank" rel="noreferrer">' + parts.href + '</a>' + escapeHtml(parts.trailing);
       });
+    }
+    function renderContextInline(text) {
+      const protectedTokens = [];
+      const protect = (html) => {
+        const marker = 'CTXINLINE' + protectedTokens.length + 'TOKEN';
+        protectedTokens.push(html);
+        return marker;
+      };
+      const tick = String.fromCharCode(96);
+      const codePattern = new RegExp(tick + '([^' + tick + ']+)' + tick, 'g');
+      let html = escapeHtml(text)
+        .replace(codePattern, (_match, code) => protect('<code>' + code + '</code>'))
+        .replace(/\\[([^\\]\\n]+)\\]\\(([^)\\n]+)\\)/g, (_match, label, href) => protect('<a href="' + escapeHtml(safeContextHref(href)) + '" target="_blank" rel="noreferrer">' + label + '</a>'))
+        .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
+        .replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
+      html = renderContextAutolinkedUrls(html);
+      protectedTokens.forEach((token, index) => {
+        html = html.replaceAll('CTXINLINE' + index + 'TOKEN', token);
+      });
+      return html;
+    }
+    function renderContextList(lines) {
+      const tag = /^\\s*\\d+\\./.test(lines[0] || '') ? 'ol' : 'ul';
+      return '<' + tag + '>' + lines.map(line => {
+        const item = String(line || '').replace(/^\\s*(?:[-*+]|\\d+\\.)\\s+/, '');
+        return '<li>' + renderContextInline(item) + '</li>';
+      }).join('') + '</' + tag + '>';
+    }
+    function renderContextMarkdown(text) {
+      const lines = stripContextMetadata(text).split(/\\r?\\n/);
+      const fence = String.fromCharCode(96).repeat(3);
+      const blocks = [];
+      let paragraph = [];
+      let listLines = [];
+      let inCode = false;
+      let codeLines = [];
+      const flushParagraph = () => {
+        if (!paragraph.length) return;
+        blocks.push('<p>' + renderContextInline(paragraph.join(' ')) + '</p>');
+        paragraph = [];
+      };
+      const flushList = () => {
+        if (!listLines.length) return;
+        blocks.push(renderContextList(listLines));
+        listLines = [];
+      };
+      for (const line of lines) {
+        if (String(line || '').startsWith(fence)) {
+          if (inCode) {
+            blocks.push('<pre><code>' + escapeHtml(codeLines.join('\\n')) + '</code></pre>');
+            codeLines = [];
+            inCode = false;
+          } else {
+            flushParagraph();
+            flushList();
+            inCode = true;
+          }
+          continue;
+        }
+        if (inCode) {
+          codeLines.push(line);
+          continue;
+        }
+        if (!line.trim()) {
+          flushParagraph();
+          flushList();
+          continue;
+        }
+        const heading = line.match(/^(#{1,6})\\s+(.+)$/);
+        if (heading) {
+          flushParagraph();
+          flushList();
+          const level = Math.min(6, heading[1].length);
+          blocks.push('<h' + level + '>' + renderContextInline(heading[2]) + '</h' + level + '>');
+          continue;
+        }
+        if (/^\\s*(?:[-*+]|\\d+\\.)\\s+/.test(line)) {
+          flushParagraph();
+          listLines.push(line);
+          continue;
+        }
+        const quote = line.match(/^>\\s?(.+)$/);
+        if (quote) {
+          flushParagraph();
+          flushList();
+          blocks.push('<blockquote>' + renderContextInline(quote[1]) + '</blockquote>');
+          continue;
+        }
+        paragraph.push(line.trim());
+      }
+      if (inCode) blocks.push('<pre><code>' + escapeHtml(codeLines.join('\\n')) + '</code></pre>');
+      flushParagraph();
+      flushList();
+      return blocks.join('') || '<p>' + renderContextInline(text) + '</p>';
     }
     function chinaTime(value) {
       const date = new Date(value || '');
@@ -791,16 +931,16 @@ function sendContextHtml(res, {
         const type = String(segment.type || '').toLowerCase();
         const text = segment.text || segment.content || '';
         if (!text) return '';
-        if (type === 'body') return '<div class="context-main">' + linkifyText(text) + '</div>';
+        if (type === 'body') return '<div class="context-main">' + renderContextMarkdown(text) + '</div>';
         return '<blockquote class="context-quote">' +
           (segment.label ? '<div class="context-quote-label">' + escapeHtml(segment.label) + '</div>' : '') +
-          '<div class="context-quote-text">' + linkifyText(text) + '</div></blockquote>';
+          '<div class="context-quote-text">' + renderContextMarkdown(text) + '</div></blockquote>';
       }).join('') + '</div>';
     }
     function eventHtml(event) {
       const anchorClass = anchorEventId && event.eventId === anchorEventId ? ' anchor' : '';
       const session = window.__teamSharingSession || {};
-      const body = eventSegments(event) || '<div class="text">' + linkifyText(event.displayText || event.cleanText || event.text || '') + '</div>';
+      const body = eventSegments(event) || '<div class="text">' + renderContextMarkdown(event.displayText || event.cleanText || event.text || '') + '</div>';
       return '<article id="' + encodeURIComponent(event.eventId || '') + '" class="' + anchorClass.trim() + '">' +
         '<div><span class="role">' + escapeHtml(roleLabel(event, session)) + '</span><span class="time">' + escapeHtml(chinaTime(event.createdAt || '')) + '</span></div>' +
         body + '</article>';

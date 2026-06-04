@@ -35,6 +35,9 @@ function cleanMultilineText(value = '') {
 
 function stripOperationalText(value = '') {
   return String(value || '')
+    .replace(/\s*<oai-mem-citation\b[^>]*>[\s\S]*?(?:<\/oai-mem-citation>|$)\s*/gi, '\n')
+    .replace(/\s*<citation_entries\b[^>]*>[\s\S]*?(?:<\/citation_entries>|$)\s*/gi, '\n')
+    .replace(/\s*<rollout_ids\b[^>]*>[\s\S]*?(?:<\/rollout_ids>|$)\s*/gi, '\n')
     .replace(/\s*\bused_tools\s*=\s*[^。\n；;]*/gi, '')
     .replace(/\s*(?:本地摘要补充[:：]\s*)?Tool summary\s*:\s*[^。\n；;]*/gi, '')
     .replace(/\s*已运行\s+\d+\s+条命令\s*/g, ' ');
@@ -261,7 +264,7 @@ function normalizeTeamSharingEvent(event = {}, sessionId = '') {
   const role = String(event.role || event.type || '').trim().toLowerCase();
   if (!['user', 'assistant', 'agent'].includes(role)) return null;
   const cleanRole = role === 'agent' ? 'assistant' : role;
-  const rawText = event.cleanText || event.text || event.content || event.body || '';
+  const rawText = event.text || event.content || event.body || event.displayText || event.cleanText || '';
   const content = normalizeContentSegments(rawText, cleanRole, event.contentSegments || event.segments || event.metadata?.contentSegments || []);
   const text = content.cleanText;
   const tools = cleanRole === 'assistant' ? toolNamesForEvent(event) : [];
