@@ -330,6 +330,8 @@ export function buildTeamSharingHookCommand(options = {}) {
     sessionTitle ? shellQuote(sessionTitle) : `"${titlePath}"`,
   ];
   if (options.integration) parts.push('--integration', String(options.integration).replace(/[^a-zA-Z0-9._-]+/g, '-'));
+  if (options.packageVersion) parts.push('--package-version', shellQuote(String(options.packageVersion).replace(/[^a-zA-Z0-9._+-]+/g, '-')));
+  if (options.sourceCommit) parts.push('--source-commit', shellQuote(String(options.sourceCommit).replace(/[^a-zA-Z0-9._-]+/g, '-')));
   if (options.projectDir) parts.push('--cwd', shellQuote(options.projectDir));
   return parts.join(' ');
 }
@@ -343,8 +345,11 @@ function isTeamSharingHookCommand(command, runtime, hookEventName) {
     && text.includes(`--hook-event ${hookEventName}`);
 }
 
-function hookEventsForRuntime(runtime) {
-  return normalizeRuntime(runtime) === 'claude_code' ? CLAUDE_HOOK_EVENTS : CODEX_HOOK_EVENTS;
+function hookEventsForRuntime(runtime, templateConfig = null) {
+  const templateEvents = templateConfig?.hooks && typeof templateConfig.hooks === 'object'
+    ? Object.keys(templateConfig.hooks).filter(Boolean)
+    : [];
+  return templateEvents.length ? templateEvents : (normalizeRuntime(runtime) === 'claude_code' ? CLAUDE_HOOK_EVENTS : CODEX_HOOK_EVENTS);
 }
 
 async function readJson(file, fallback = {}) {
@@ -355,6 +360,26 @@ async function readJson(file, fallback = {}) {
   }
 }
 
+function desiredTeamSharingHook(options = {}, runtime = 'codex', hookEventName = 'Stop') {
+  const entries = asArray(options.templateConfig?.hooks?.[hookEventName]);
+  for (const entry of entries) {
+    for (const hook of asArray(entry?.hooks)) {
+      const command = String(hook?.command || '').trim();
+      if (!command) continue;
+      return {
+        type: hook.type || 'command',
+        command,
+        timeout: Number(hook.timeout || 0) || (hookEventName === 'SessionStart' ? 3 : 15),
+      };
+    }
+  }
+  return {
+    type: 'command',
+    command: buildTeamSharingHookCommand({ ...options, runtime, hookEventName }),
+    timeout: hookEventName === 'SessionStart' ? 3 : 15,
+  };
+}
+
 export async function installTeamSharingHookConfig(options = {}) {
   const runtime = normalizeRuntime(options.runtime);
   const configPath = String(options.configPath || '').trim();
@@ -362,8 +387,9 @@ export async function installTeamSharingHookConfig(options = {}) {
   const config = await readJson(configPath, {});
   config.hooks = config.hooks && typeof config.hooks === 'object' ? config.hooks : {};
   const installed = [];
-  for (const hookEventName of hookEventsForRuntime(runtime)) {
-    const command = buildTeamSharingHookCommand({ ...options, runtime, hookEventName });
+  for (const hookEventName of hookEventsForRuntime(runtime, options.templateConfig)) {
+    const desiredHook = desiredTeamSharingHook(options, runtime, hookEventName);
+    const command = desiredHook.command;
     const entries = asArray(config.hooks[hookEventName]);
     const entry = entries[0] || { hooks: [] };
     entry.hooks = asArray(entry.hooks);
@@ -371,15 +397,12 @@ export async function installTeamSharingHookConfig(options = {}) {
     if (existingHookIndex >= 0) {
       entry.hooks[existingHookIndex] = {
         ...entry.hooks[existingHookIndex],
-        type: entry.hooks[existingHookIndex].type || 'command',
+        type: entry.hooks[existingHookIndex].type || desiredHook.type || 'command',
         command,
+        timeout: entry.hooks[existingHookIndex].timeout || desiredHook.timeout,
       };
     } else {
-      entry.hooks.push({
-        type: 'command',
-        command,
-        timeout: hookEventName === 'SessionStart' ? 3 : 15,
-      });
+      entry.hooks.push(desiredHook);
       installed.push(hookEventName);
     }
     config.hooks[hookEventName] = entries.length ? entries : [entry];

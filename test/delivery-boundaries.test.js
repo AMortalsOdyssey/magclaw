@@ -65,3 +65,21 @@ test('top-level daemon package is a thin npm artifact over CLI core', () => {
   assert.equal(files.some((file) => file.startsWith('web/')), false);
   assert.equal(files.some((file) => file.startsWith('shared/')), false);
 });
+
+test('team-sharing package includes install-time skill and hook templates', () => {
+  const result = spawnSync('npm', ['pack', '--dry-run', '--json', './team-sharing'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const packed = JSON.parse(result.stdout)[0];
+  const files = packed.files.map((file) => file.path);
+  assert.ok(files.includes('bin/team-sharing.js'));
+  assert.ok(files.includes('src/team-sharing.js'));
+  assert.ok(files.includes('skills/magclaw-team-sharing/SKILL.md'));
+  assert.ok(files.includes('hooks/codex-hooks.json.template'));
+  assert.ok(files.includes('hooks/claude-settings.local.json.template'));
+  assert.equal(files.some((file) => file.startsWith('.agents/')), false);
+  assert.equal(files.some((file) => file.startsWith('.claude/')), false);
+  assert.equal(files.some((file) => file.startsWith('.codex/')), false);
+});

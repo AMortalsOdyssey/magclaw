@@ -1,0 +1,54 @@
+{
+  "_teamSharingTemplate": {
+    "runtime": "claude_code",
+    "packageName": "@magclaw/team-sharing",
+    "version": "{{TEAM_SHARING_VERSION}}",
+    "sourceCommit": "{{TEAM_SHARING_SOURCE_COMMIT}}"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{TEAM_SHARING_HOOK_COMMAND:Stop}}",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{TEAM_SHARING_HOOK_COMMAND:SessionEnd}}",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{TEAM_SHARING_HOOK_COMMAND:PreCompact}}",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{TEAM_SHARING_HOOK_COMMAND:SessionStart}}",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

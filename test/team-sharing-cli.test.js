@@ -454,9 +454,18 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   assert.equal(skill.installed.length, 2);
   assert.ok(skill.installed.some((item) => item.path === path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md')));
   assert.ok(skill.installed.some((item) => item.path === path.join(cwd, '.claude', 'skills', 'magclaw-team-sharing', 'SKILL.md')));
+  const packageJson = JSON.parse(await readFile(path.resolve('team-sharing', 'package.json'), 'utf8'));
+  const skillTemplate = await readFile(path.resolve('team-sharing', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8');
+  const installedSkill = await readFile(path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8');
+  assert.match(skillTemplate, /\{\{TEAM_SHARING_VERSION\}\}/);
+  assert.doesNotMatch(installedSkill, /\{\{TEAM_SHARING_VERSION\}\}|\{\{TEAM_SHARING_SOURCE_COMMIT\}\}/);
+  assert.match(installedSkill, new RegExp(`package: @magclaw/team-sharing@${packageJson.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} sourceCommit=`));
+  assert.match(installedSkill, /## Answer Style For Search Results/);
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes(path.join(binDir, 'team-sharing'))));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('team-sharing sync')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--integration team-sharing')));
+  assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--package-version')));
+  assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--source-commit')));
   assert.ok(claudeConfig.hooks.SessionEnd[0].hooks.some((hook) => hook.command.includes('--runtime claude_code')));
 
   const removedHooks = await removeTeamSharingHooks({ cwd, target: 'codex' }, env);
@@ -467,6 +476,34 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   const removedSkill = await removeTeamSharingSkill({ cwd, target: 'codex' }, env);
   assert.equal(removedSkill.removed.length, 1);
   await assert.rejects(() => readFile(path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8'), /ENOENT/);
+});
+
+test('team sharing setup reports project scope after init creates a project config', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-setup-new-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-setup-new-home-'));
+  const env = {
+    HOME: home,
+    MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'),
+    MAGCLAW_TEAM_SHARING_INSTALL_SHIM: '0',
+  };
+  await loginTeamSharingProfile({ token: 'tm_secret', serverUrl: 'https://magclaw.example', workspaceId: 'ws_team' }, env);
+
+  const result = await setupTeamSharing({
+    cwd,
+    yes: true,
+    target: 'codex',
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'fresh',
+    noLogin: true,
+  }, env);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.scope, 'project');
+  assert.equal(result.projectDir, cwd);
+  assert.equal(result.hooks.scope, 'project');
+  assert.equal(result.skill.scope, 'project');
 });
 
 test('team sharing upgrade check uses npm cache ttl and reports newer versions', async () => {

@@ -55,6 +55,16 @@ function cleanSessionTitle(value = '') {
   return cleanText(stripped).slice(0, 180) || 'Untitled AI session';
 }
 
+function cleanSyncMetadata(value = {}) {
+  const metadata = value && typeof value === 'object' ? value : {};
+  const cleaned = {
+    integration: cleanText(metadata.integration || '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80),
+    packageVersion: cleanText(metadata.packageVersion || metadata.package_version || '').replace(/[^a-zA-Z0-9._+-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80),
+    sourceCommit: cleanText(metadata.sourceCommit || metadata.source_commit || '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80),
+  };
+  return Object.fromEntries(Object.entries(cleaned).filter(([, item]) => Boolean(item)));
+}
+
 function compactSelectedTextSnippet(value = '') {
   return cleanText(markdownLinkText(value))
     .replace(/^#+\s+/, '')
@@ -1068,6 +1078,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     avatar: String(packageBody.humanAvatar || packageBody.uploaderAvatar || packageBody.userAvatar || '').trim(),
     email: String(packageBody.humanEmail || packageBody.uploaderEmail || packageBody.userEmail || '').trim(),
   };
+  const syncMetadata = cleanSyncMetadata(packageBody.metadata);
   const session = teamSharingState.sessions[sessionId] || {
     sessionId,
     workspaceId: String(packageBody.workspaceId || state.connection?.workspaceId || 'local'),
@@ -1126,6 +1137,10 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
   message.authorType = 'human';
   message.authorId = uploader.id || message.authorId || 'hum_local';
   message.body = session.title;
+  const existingSyncMetadata = message.metadata?.teamSharing?.sync && typeof message.metadata.teamSharing.sync === 'object'
+    ? message.metadata.teamSharing.sync
+    : {};
+  const effectiveSyncMetadata = Object.keys(syncMetadata).length ? syncMetadata : existingSyncMetadata;
   message.metadata = {
     ...(message.metadata || {}),
     systemKind: 'team_sharing_session',
@@ -1136,6 +1151,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
       sessionId,
       title: session.title,
       uploader: session.uploader || uploader,
+      sync: effectiveSyncMetadata,
     },
   };
   const titleChanged = applyTeamSharingSessionTitle({

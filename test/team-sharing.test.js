@@ -123,6 +123,42 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback' && doc.rawEventId && /topics\/rerank-feedback\.md#/.test(doc.sourceRef)));
 });
 
+test('team sharing sync records whitelisted local hook package metadata', async () => {
+  const state = baseState();
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
+    idempotencyKey: 'codex:magclaw:sess_metadata:1:2:metadata',
+    sessionId: 'sess_metadata',
+    metadata: {
+      integration: 'team-sharing',
+      packageVersion: '0.1.41',
+      sourceCommit: 'abc123def456',
+      token: 'should-not-be-kept',
+    },
+  }), {
+    state,
+    makeId: makeIdFactory(),
+    now: () => '2026-06-01T08:02:00.000Z',
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(state.messages[0].metadata.teamSharing.sync, {
+    integration: 'team-sharing',
+    packageVersion: '0.1.41',
+    sourceCommit: 'abc123def456',
+  });
+  assert.doesNotMatch(JSON.stringify(state.messages[0].metadata.teamSharing.sync), /should-not-be-kept/);
+
+  await syncTeamSharingBatch(sampleSyncPackage({
+    idempotencyKey: 'codex:magclaw:sess_metadata:1:2:metadata',
+    sessionId: 'sess_metadata',
+  }), {
+    state,
+    makeId: makeIdFactory(),
+    now: () => '2026-06-01T08:03:00.000Z',
+  });
+  assert.equal(state.messages[0].metadata.teamSharing.sync.sourceCommit, 'abc123def456');
+});
+
 test('team sharing abstracts format long summary links and keep raw ids beside content', async () => {
   const state = baseState();
   const result = await syncTeamSharingBatch(sampleSyncPackage({
