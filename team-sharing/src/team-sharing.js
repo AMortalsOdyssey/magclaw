@@ -1405,7 +1405,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
       };
     }
   }
-  const includeAuditContent = boolFlag(flags.auditContent ?? env.MAGCLAW_TEAM_SHARING_AUDIT_CONTENT, true);
+  const includeAuditContent = boolFlag(flags.auditContent ?? env.MAGCLAW_TEAM_SHARING_AUDIT_CONTENT, false);
   if (syncPackage.empty || !syncPackage.body) {
     await writeAudit({
       ok: true,

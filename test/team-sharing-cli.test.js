@@ -295,6 +295,7 @@ test('team sharing cli sync writes local audit records with upload metrics and c
     assert.equal(records[0].summary.cloudAbstractRevision, 1);
     assert.equal(records[0].login.loggedIn, true);
     assert.equal(records[0].login.userEmail, '');
+    assert.equal(records[0].upload.content, undefined);
     assert.doesNotMatch(JSON.stringify(records[0]), /team-sharing-token-secret|route-secret/);
     assert.equal(status.audit.latest.status, 'uploaded');
     assert.equal(status.audit.recordCount, 1);
@@ -540,7 +541,7 @@ test('team sharing cli sync dry-run does not upload or save cursor', async () =>
     throw new Error('dry-run should not upload');
   };
   try {
-    const result = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', dryRun: true, auditContent: 'false' }, env);
+    const result = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', dryRun: true }, env);
     const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
     const auditRecord = JSON.parse(auditText.trim());
 
@@ -560,6 +561,41 @@ test('team sharing cli sync dry-run does not upload or save cursor', async () =>
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('team sharing audit content is opt-in for local debugging', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-audit-content-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-audit-content-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_audit_content', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '需要临时保存审计 payload' }] } }),
+  ].join('\n'));
+
+  const result = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', dryRun: true, auditContent: true }, env);
+  const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
+  const auditRecord = JSON.parse(auditText.trim());
+
+  assert.equal(result.ok, true);
+  assert.equal(auditRecord.status, 'dry_run');
+  assert.equal(auditRecord.upload.eventCount, 1);
+  assert.equal(auditRecord.upload.content.sessionId, 'sess_audit_content');
+  assert.equal(auditRecord.upload.content.events[0].text, '需要临时保存审计 payload');
+  assert.doesNotMatch(JSON.stringify(auditRecord), /team-sharing-token-secret/);
 });
 
 test('team sharing sync skips pre-enable history and uploads only new events from old sessions', async () => {
