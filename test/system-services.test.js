@@ -167,6 +167,69 @@ test('bootstrap state limits selected thread replies to the loaded page', () => 
   assert.equal(snapshot.replies.some((reply) => reply.id === 'rep_001'), false);
 });
 
+test('bootstrap state formats Team Sharing interaction replies as paired questions and answers', () => {
+  const services = makeServices((state) => {
+    state.messages[0].replyCount = 1;
+    state.replies.push({
+      id: 'rep_team_sharing_interaction',
+      workspaceId: 'local',
+      parentMessageId: 'msg_channel',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      body: [
+        'Agent 提问：链接范围：这次“MagClaw 生成的任何链接都要登录”具体保护到哪一类链接？',
+        'Agent 提问：机器绑定：Team Sharing CLI token 的机器绑定做到哪种强度？',
+        '用户回答：机器绑定：软绑定 (Recommended)',
+        '用户回答：链接范围：内容+工作区',
+      ].join('\n'),
+      metadata: {
+        teamSharing: {
+          presentation: {
+            mode: 'interaction',
+            source: 'codex',
+            interaction: {
+              questions: [
+                {
+                  id: 'links',
+                  header: '链接范围',
+                  question: '这次“MagClaw 生成的任何链接都要登录”具体保护到哪一类链接？',
+                  options: [{ label: '内容+工作区', description: '保护会话内容与工作区入口。' }],
+                },
+                {
+                  id: 'binding',
+                  header: '机器绑定',
+                  question: 'Team Sharing CLI token 的机器绑定做到哪种强度？',
+                  options: [{ label: '软绑定 (Recommended)', description: '按设备信息提示风险，不硬拦正常使用。' }],
+                },
+              ],
+              answers: [
+                { id: 'binding', values: ['软绑定 (Recommended)'] },
+                { id: 'links', values: ['内容+工作区'] },
+              ],
+            },
+          },
+        },
+      },
+      createdAt: '2026-05-18T00:01:00.000Z',
+      updatedAt: '2026-05-18T00:01:00.000Z',
+    });
+  });
+  const req = {
+    url: '/api/events?spaceType=channel&spaceId=chan_all&threadMessageId=msg_channel&messageLimit=80',
+    headers: {},
+  };
+
+  const snapshot = services.publicBootstrapState(req);
+  const reply = snapshot.replies.find((item) => item.id === 'rep_team_sharing_interaction');
+
+  assert.ok(reply);
+  assert.match(reply.body, /\*\*Agent 提问：链接范围\*\*：这次“MagClaw 生成的任何链接都要登录”具体保护到哪一类链接？/);
+  assert.match(reply.body, /\*\*用户回答：\*\* 内容\+工作区 `（保护会话内容与工作区入口。）`/);
+  assert.ok(reply.body.indexOf('内容+工作区') < reply.body.indexOf('**Agent 提问：机器绑定**'));
+  assert.ok(reply.body.indexOf('**Agent 提问：机器绑定**') < reply.body.indexOf('软绑定 (Recommended)'));
+  assert.doesNotMatch(reply.body, /^Agent 提问：/m);
+});
+
 test('bootstrap state includes terminal task updates for the current member channels', () => {
   const services = makeServices();
   const req = {

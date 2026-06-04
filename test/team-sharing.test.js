@@ -204,7 +204,7 @@ test('team sharing sync preserves presentation metadata on events, replies, and 
           mode: 'interaction',
           source: 'codex',
           interaction: {
-            questions: [{ id: 'scope', header: '范围', question: '要先做哪一层？', options: [{ label: 'Parser' }, { label: 'Full stack' }] }],
+            questions: [{ id: 'scope', header: '范围', question: '要先做哪一层？', options: [{ label: 'Parser' }, { label: 'Full stack', description: '连云端展示一起做。' }] }],
             answers: [{ id: 'scope', values: ['Full stack'] }],
           },
         },
@@ -223,6 +223,9 @@ test('team sharing sync preserves presentation metadata on events, replies, and 
   assert.equal(state.replies[0].metadata.teamSharing.presentation.mode, 'plan');
   assert.equal(state.replies[1].metadata.teamSharing.presentation.goal.objectiveMatchesUser, true);
   assert.equal(state.replies[2].metadata.teamSharing.presentation.interaction.questions[0].question, '要先做哪一层？');
+  assert.match(state.replies[2].body, /\*\*Agent 提问：范围\*\*：要先做哪一层？/);
+  assert.match(state.replies[2].body, /\*\*用户回答：\*\* Full stack `（连云端展示一起做。）`/);
+  assert.doesNotMatch(state.replies[2].body, /^Agent 提问：/m);
   const l0Document = state.teamSharing.vectorDocuments.find((doc) => doc.sessionId === 'sess_presentation' && doc.layer === 'L0');
   assert.deepEqual(l0Document.presentationModes, ['plan', 'goal', 'interaction']);
   assert.equal(l0Document.presentations[1].goal.objective, '把 Goal 模式接入 Team Sharing');

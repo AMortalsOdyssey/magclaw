@@ -1170,6 +1170,10 @@ test('team sharing context page renders plan goal and interaction presentation p
   assert.match(interactionHtml, /要先做哪一层/);
   assert.match(interactionHtml, /Full stack/);
   assert.match(interactionHtml, /context-answer-chip/);
+  assert.match(interactionHtml, /context-answer-description/);
+  assert.match(interactionHtml, /连云端展示一起做。/);
+  assert.ok(interactionHtml.indexOf('要先做哪一层') < interactionHtml.indexOf('Full stack'));
+  assert.ok(interactionHtml.indexOf('Full stack') < interactionHtml.indexOf('连云端展示一起做。'));
   assert.doesNotMatch(interactionHtml, /Agent 提问：要先做哪一层？/);
 });
 

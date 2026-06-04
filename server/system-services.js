@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createNpmPackageVersionResolver } from './npm-package-versions.js';
 import { defaultReleaseNotes, normalizeReleaseNotes } from './release-notes.js';
 import { normalizeCloudUrl, normalizeFanoutApiConfig, publicApiKeyPreview } from './runtime-config.js';
+import { teamSharingDisplayBodyForRecord } from './team-sharing.js';
 
 // System/runtime and local-project services.
 // HTTP route modules use this for public state shaping, installed-runtime
@@ -145,6 +146,12 @@ export function createSystemServices(deps) {
       .slice(0, limit);
   }
 
+  function publicConversationRecord(record) {
+    const body = teamSharingDisplayBodyForRecord(record);
+    if (!body || body === record?.body) return record;
+    return { ...record, body };
+  }
+
   function bootstrapOptionsFromRequest(req) {
     try {
       const url = new URL(req?.url || '/', 'http://magclaw.local');
@@ -223,8 +230,12 @@ export function createSystemServices(deps) {
       ? scopedDms.filter((dm) => records(dm.participantIds).includes(currentHumanId))
       : scopedDms;
     const visibleDmIds = new Set(visibleDms.map((dm) => dm.id));
-    const visibleMessages = scopedMessages.filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId));
-    const visibleReplies = scopedReplies.filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId));
+    const visibleMessages = scopedMessages
+      .filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId))
+      .map(publicConversationRecord);
+    const visibleReplies = scopedReplies
+      .filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId))
+      .map(publicConversationRecord);
     const visibleHumans = appendReferencedHumans(scopedRecords('humans'), [...visibleMessages, ...visibleReplies], currentState);
     return {
       ...currentState,

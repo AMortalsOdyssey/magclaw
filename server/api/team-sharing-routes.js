@@ -688,10 +688,13 @@ function sendContextHtml(res, {
     .context-question-prompt { margin:0; font-size:14px; font-weight:750; line-height:1.52; color:#1f2937; }
     .context-option-list,
     .context-answer-list { display:flex; flex-wrap:wrap; gap:6px; }
+    .context-answer-list { align-items:center; }
+    .context-answer-item { display:inline-flex; flex-wrap:wrap; align-items:center; gap:4px; max-width:100%; }
     .context-option-chip,
     .context-answer-chip { display:inline-flex; align-items:center; max-width:100%; min-height:24px; border-radius:999px; padding:2px 8px; font-size:12px; font-weight:800; line-height:1.35; overflow-wrap:anywhere; }
     .context-option-chip { border:1px solid #dbeafe; background:#f8fafc; color:#475569; }
     .context-answer-chip { border:1px solid #bae6fd; background:#e0f2fe; color:#075985; }
+    .context-answer-description { display:inline-flex; align-items:center; max-width:100%; border-radius:5px; padding:2px 6px; background:#f1f5f9; color:#475569; font-size:12px; font-weight:700; line-height:1.4; overflow-wrap:anywhere; }
     .context-main a,
     .context-quote a,
     .text a { color:#0369a1; font-weight:700; }
@@ -1328,6 +1331,21 @@ function sendContextHtml(res, {
           const answer = answers.find(item => String(item.id || '') === String(question?.id || '')) || answers[index] || null;
           return Array.isArray(answer?.values) ? answer.values.filter(Boolean) : [];
         }
+        function optionKey(value) {
+          return String(value || '').trim().replace(/\\s*\\((?:recommended|推荐)\\)\\s*$/i, '').toLowerCase();
+        }
+        function optionForAnswerValue(question, value) {
+          const options = Array.isArray(question?.options) ? question.options : [];
+          const key = optionKey(value);
+          return options.find(option => optionKey(option?.label || option?.value || option?.text || '') === key) || null;
+        }
+        function renderAnswerValue(question, value) {
+          const option = optionForAnswerValue(question, value);
+          const description = String(option?.description || '').trim();
+          return '<span class="context-answer-item"><span class="context-answer-chip">' + escapeHtml(value) + '</span>' +
+            (description ? '<span class="context-answer-description">（' + escapeHtml(description) + '）</span>' : '') +
+            '</span>';
+        }
         function renderInteractionPresentation(presentation) {
           const questions = Array.isArray(presentation?.interaction?.questions) ? presentation.interaction.questions : [];
           const answers = Array.isArray(presentation?.interaction?.answers) ? presentation.interaction.answers : [];
@@ -1338,7 +1356,7 @@ function sendContextHtml(res, {
               (question.header ? '<div class="context-question-head">' + escapeHtml(question.header) + '</div>' : '') +
               '<p class="context-question-prompt">' + escapeHtml(question.question || question.prompt || question.header || 'Question') + '</p>' +
               (options.length ? '<div class="context-option-list">' + options.map(option => '<span class="context-option-chip">' + escapeHtml(option.label || option.description || '') + '</span>').join('') + '</div>' : '') +
-              (values.length ? '<div class="context-answer-list">' + values.map(value => '<span class="context-answer-chip">' + escapeHtml(value) + '</span>').join('') + '</div>' : '') +
+              (values.length ? '<div class="context-answer-list">' + values.map(value => renderAnswerValue(question, value)).join('') + '</div>' : '') +
               '</div>';
           }) : answers.map(answer => {
             const values = Array.isArray(answer.values) ? answer.values : [];

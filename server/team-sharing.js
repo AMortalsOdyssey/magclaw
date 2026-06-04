@@ -445,6 +445,54 @@ function normalizeTeamSharingPresentation(value = null, fallbackRuntime = '') {
   return presentation;
 }
 
+function presentationOptionKey(value = '') {
+  return cleanText(value).replace(/\s*\((?:recommended|推荐)\)\s*$/i, '').toLowerCase();
+}
+
+function answerValuesForPresentationQuestion(presentation, question, index) {
+  const answers = Array.isArray(presentation?.interaction?.answers) ? presentation.interaction.answers : [];
+  const answer = answers.find((item) => String(item.id || '') === String(question?.id || '')) || answers[index] || null;
+  return Array.isArray(answer?.values) ? answer.values.filter(Boolean) : [];
+}
+
+function optionForPresentationAnswer(question, value) {
+  const options = Array.isArray(question?.options) ? question.options : [];
+  const key = presentationOptionKey(value);
+  return options.find((option) => presentationOptionKey(option?.label || option?.value || option?.text || '') === key) || null;
+}
+
+function markdownChipText(value = '') {
+  return cleanText(value).replace(/`/g, "'");
+}
+
+function interactionPresentationMarkdown(presentation) {
+  const questions = Array.isArray(presentation?.interaction?.questions) ? presentation.interaction.questions : [];
+  if (!questions.length) return '';
+  return questions.map((question, index) => {
+    const header = cleanText(question.header || question.id || '');
+    const label = header ? `Agent 提问：${header}` : 'Agent 提问';
+    const prompt = cleanText(question.question || question.prompt || question.header || 'Question');
+    const answers = answerValuesForPresentationQuestion(presentation, question, index)
+      .map((value) => {
+        const option = optionForPresentationAnswer(question, value);
+        const description = markdownChipText(option?.description || '');
+        return `${markdownChipText(value)}${description ? ` \`（${description}）\`` : ''}`;
+      })
+      .join('、');
+    return `**${label}**：${prompt}\n**用户回答：** ${answers || '未回答'}`;
+  }).join('\n\n');
+}
+
+export function teamSharingDisplayBodyForRecord(record = {}) {
+  const fallback = String(record.body ?? record.displayText ?? record.cleanText ?? record.text ?? '').trim();
+  const presentation = normalizeTeamSharingPresentation(
+    record.presentation || record.metadata?.teamSharing?.presentation || record.metadata?.presentation,
+    record.runtime || record.metadata?.teamSharing?.runtime || record.metadata?.runtime || '',
+  );
+  if (!presentation || presentation.mode !== 'interaction') return fallback;
+  return interactionPresentationMarkdown(presentation) || fallback;
+}
+
 function normalizeTeamSharingEvent(event = {}, sessionId = '') {
   const role = String(event.role || event.type || '').trim().toLowerCase();
   if (!['user', 'assistant', 'agent'].includes(role)) return null;
@@ -1397,7 +1445,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
       spaceId: channelId,
       authorType: event.role === 'user' ? 'human' : 'agent',
       authorId: event.role === 'user' ? uploader.id : runtimeAgentId(session.runtime),
-      body: event.displayText || event.cleanText,
+      body: teamSharingDisplayBodyForRecord(event),
       attachmentIds: [],
       mentionedAgentIds: [],
       mentionedHumanIds: [],
