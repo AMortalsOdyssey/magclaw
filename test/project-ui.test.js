@@ -1534,6 +1534,15 @@ test('messages and replies render markdown while preserving mention chips', asyn
   assert.match(styles, /\.message-table-wrap/);
 });
 
+test('message markdown code blocks use dark scrollable code surfaces', async () => {
+  const styles = await readStylesSource();
+
+  assert.match(styles, /\.message-markdown pre \{[\s\S]*overflow-x: auto;[\s\S]*border: 0;[\s\S]*background: #111827/);
+  assert.match(styles, /\.message-markdown pre code \{[\s\S]*display: block;[\s\S]*background: transparent;[\s\S]*white-space: pre;[\s\S]*min-width: max-content/);
+  assert.doesNotMatch(styles, /\.collab-frame \.message-markdown pre,[\s\S]*border-width: 1px/);
+  assert.match(styles, /\.message-markdown code \{[\s\S]*background: #eef2f7/);
+});
+
 test('message mention and reply chips stay compact in narrow chat panes', async () => {
   const styles = await readStylesSource();
   const mentionSource = styles.slice(styles.indexOf('/* Mention tags in messages */'), styles.indexOf('.project-strip'));

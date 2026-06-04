@@ -1882,7 +1882,8 @@ button:disabled {
   padding: 1px 4px;
   border: 0;
   border-radius: 3px;
-  background: var(--accent-soft);
+  background: #eef2f7;
+  color: #172033;
 }
 
 .message-markdown a {
@@ -1895,10 +1896,24 @@ button:disabled {
 
 .message-markdown pre {
   max-width: 100%;
-  overflow: auto;
-  padding: 8px;
-  border: 2px solid var(--border);
-  background: var(--bg-card);
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: #111827;
+  color: #f9fafb;
+  scrollbar-gutter: stable;
+}
+
+.message-markdown pre code {
+  display: block;
+  min-width: max-content;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  white-space: pre;
 }
 
 .message-markdown blockquote {

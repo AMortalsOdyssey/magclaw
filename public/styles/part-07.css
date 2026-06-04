@@ -630,7 +630,6 @@
   box-shadow: none;
 }
 
-.collab-frame .message-markdown pre,
 .collab-frame .message-markdown blockquote {
   border-width: 1px;
 }
