@@ -85,6 +85,16 @@ function teamSharingSourceLabelForRecord(record = {}) {
   return teamSharingRuntimeInfoForRecord(record)?.sourceLabel || '';
 }
 
+function teamSharingPresentationModeForRecord(record = {}) {
+  const mode = String(record?.metadata?.teamSharing?.presentation?.mode || '').trim().toLowerCase();
+  return ['plan', 'goal', 'interaction'].includes(mode) ? mode : '';
+}
+
+function teamSharingPresentationClass(record = {}) {
+  const mode = teamSharingPresentationModeForRecord(record);
+  return mode ? ` team-sharing-mode-${mode}` : '';
+}
+
 function teamSharingUploaderForRecord(record = {}) {
   const uploader = record?.metadata?.teamSharing?.uploader;
   return uploader && typeof uploader === 'object' ? uploader : null;
@@ -101,10 +111,10 @@ function teamSharingUploaderAvatarForRecord(record = {}) {
 function teamSharingRuntimeAvatarHtml(info, cssClass = '') {
   const runtimeInfo = info || teamSharingRuntimeActorInfo('runtime');
   if (runtimeInfo.id === 'codex') {
-    return `<span class="${cssClass} team-sharing-runtime-avatar team-sharing-runtime-avatar-codex" aria-label="${escapeHtml(runtimeInfo.label)}"><svg viewBox="0 0 64 64" role="img" aria-hidden="true"><rect width="64" height="64" rx="15" fill="#eef2ff"/><path d="M18 37c-5.2-.8-8.3-4.3-8.3-8.7 0-4.9 4-8.9 9-8.9 1.4-5.3 6.3-9.1 12-9.1 5.1 0 9.5 3 11.4 7.4 6.7.4 12.1 5.9 12.1 12.7 0 7.1-5.7 12.8-12.8 12.8H21.5" fill="url(#codex-cloud-grad)"/><path d="M22.5 25.8 28.8 32l-6.3 6.2" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M33 39h10" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><defs><linearGradient id="codex-cloud-grad" x1="13" y1="12" x2="53" y2="44" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset=".48" stop-color="#6366f1"/><stop offset="1" stop-color="#38bdf8"/></linearGradient></defs></svg></span>`;
+    return `<span class="${cssClass} team-sharing-runtime-avatar team-sharing-runtime-avatar-codex" aria-label="${escapeHtml(runtimeInfo.label)}"><svg viewBox="0 0 64 64" role="img" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#0b0d12"/><g fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"><path d="M32 12.5c7 0 12.5 5.4 12.5 12.1 0 6.8-5.5 12.2-12.5 12.2S19.5 31.4 19.5 24.6C19.5 17.9 25 12.5 32 12.5z"/><path d="M43.4 24.1c5.9 3.5 8 10.8 4.7 16.4-3.4 5.8-11 7.5-17 4.1-5.9-3.5-8-10.8-4.7-16.4 3.4-5.8 11-7.5 17-4.1z"/><path d="M20.6 24.1c5.9-3.4 13.5-1.7 17 4.1 3.3 5.6 1.2 12.9-4.7 16.4-6 3.4-13.6 1.7-17-4.1-3.3-5.6-1.2-12.9 4.7-16.4z"/></g><circle cx="32" cy="32" r="5.2" fill="#fff"/></svg></span>`;
   }
   if (runtimeInfo.id === 'claude-code') {
-    return `<span class="${cssClass} team-sharing-runtime-avatar team-sharing-runtime-avatar-claude" aria-label="${escapeHtml(runtimeInfo.label)}"><svg viewBox="0 0 64 64" role="img" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#fffaf5"/><path d="M32 6l4.9 20.4L51.7 11.6 40.8 29.4 60 24.1 41.2 35.1l18.4 6.6-20.6.1 12.6 16.5-16.8-12.1L32 58l-2.8-11.8-16.8 12.1 12.6-16.5-20.6-.1 18.4-6.6L4 24.1l19.2 5.3-10.9-17.8 14.8 14.8L32 6z" fill="#d97757"/></svg></span>`;
+    return `<span class="${cssClass} team-sharing-runtime-avatar team-sharing-runtime-avatar-claude" aria-label="${escapeHtml(runtimeInfo.label)}"><svg viewBox="0 0 64 64" role="img" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#f8f3ed"/><path d="M32 7l4.3 16.7L48.2 11.8 39.1 26.7 56 22.2 41.1 31.8 56 41.4 39.1 36.9 48.2 51.8 36.3 39.9 32 57 27.7 39.9 15.8 51.8 24.9 36.9 8 41.4 22.9 31.8 8 22.2 24.9 26.7 15.8 11.8 27.7 23.7z" fill="#c15f3c"/></svg></span>`;
   }
   return `<span class="${cssClass} team-sharing-runtime-avatar team-sharing-runtime-avatar-${escapeHtml(runtimeInfo.id)}" aria-label="${escapeHtml(runtimeInfo.label)}"><span>${escapeHtml(runtimeInfo.short)}</span></span>`;
 }

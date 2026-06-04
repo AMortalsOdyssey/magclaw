@@ -978,10 +978,11 @@ function renderReply(reply) {
   const shareSelecting = shareSelectable ? ' share-selecting' : '';
   const shareSelected = shareSelectable && shareSelectedIds().includes(String(reply.id)) ? ' share-selected' : '';
   const streamingClass = messageIsStreaming(reply) ? ' is-agent-streaming' : '';
+  const presentationClass = typeof teamSharingPresentationClass === 'function' ? teamSharingPresentationClass(reply) : '';
   const receiptTray = renderAgentReceiptTray(reply);
   const footer = renderMessageFooter({ receiptTray });
   return `
-    <article class="message-card magclaw-message reply-card author-${authorClass}${highlighted}${shareSelecting}${shareSelected}${streamingClass}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
+    <article class="message-card magclaw-message reply-card author-${authorClass}${highlighted}${shareSelecting}${shareSelected}${streamingClass}${presentationClass}${receiptTray ? ' has-agent-receipts' : ''}" id="reply-${escapeHtml(reply.id)}" data-reply-id="${escapeHtml(reply.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(reply))}"${agentAuthorAttr}>
       ${renderShareSelector(reply, { selectable: shareSelectable })}
       ${renderActorAvatar(reply.authorId, reply.authorType, reply)}
       <div class="message-body"${shareBodyToggleAttrs(reply, { selectable: shareSelectable })}>

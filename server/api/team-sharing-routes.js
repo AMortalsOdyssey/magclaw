@@ -611,6 +611,68 @@ function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
   };
 }
 
+function teamSharingHumanById(state = {}, id = '') {
+  const target = String(id || '').trim();
+  if (!target) return null;
+  return asArray(state.humans).find((human) => (
+    String(human?.id || '') === target
+    || String(human?.authUserId || '') === target
+    || String(human?.cloudMemberId || '') === target
+  )) || null;
+}
+
+function latestTeamSharingHumanActor(state = {}, uploader = {}) {
+  const uploaderId = String(uploader?.id || uploader?.humanId || '').trim();
+  const human = teamSharingHumanById(state, uploaderId);
+  return {
+    id: human?.id || uploaderId,
+    name: human?.name || uploader?.name || 'User',
+    avatar: human?.avatar || human?.avatarUrl || uploader?.avatar || '',
+    email: human?.email || uploader?.email || '',
+    type: 'human',
+  };
+}
+
+function teamSharingRuntimeActor(runtime = '') {
+  const clean = String(runtime || '').trim().toLowerCase();
+  if (clean === 'claude_code' || clean === 'claude-code' || clean === 'claude') {
+    return { type: 'runtime', id: 'claude_code', runtime: 'claude_code', name: 'ClaudeCode' };
+  }
+  if (clean === 'codex') return { type: 'runtime', id: 'codex', runtime: 'codex', name: 'Codex' };
+  return { type: 'runtime', id: clean || 'assistant', runtime: clean || 'assistant', name: clean || 'Assistant' };
+}
+
+function enrichTeamSharingContextResult(result = {}, state = {}) {
+  if (!result?.ok) return result;
+  const sessionUploader = latestTeamSharingHumanActor(state, result.session?.uploader || {});
+  const session = {
+    ...(result.session || {}),
+    uploader: sessionUploader,
+  };
+  const runtimeActor = teamSharingRuntimeActor(session.runtime);
+  return {
+    ...result,
+    session,
+    events: asArray(result.events).map((event) => {
+      if (event?.role === 'user') {
+        const actor = latestTeamSharingHumanActor(state, event.metadata?.uploader || sessionUploader);
+        return {
+          ...event,
+          actor,
+          metadata: {
+            ...(event.metadata || {}),
+            uploader: actor,
+          },
+        };
+      }
+      if (event?.role === 'assistant' || event?.role === 'system') {
+        return { ...event, actor: runtimeActor };
+      }
+      return event;
+    }),
+  };
+}
+
 function teamSharingWorkspaceAccess({ actor, tokenRecord, session } = {}) {
   const sessionWorkspaceId = String(session?.workspaceId || '').trim();
   const actorWorkspaceId = String(actor?.member?.workspaceId || '').trim();
@@ -648,7 +710,7 @@ function sendContextHtml(res, {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MagClaw Team Sharing Context</title>
   <style>
-    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; --user-bg:#fff1f5; --user-line:#f9cfe0; --plan-bg:#eefcff; --plan-line:#b9e7f2; --plan-accent:#0891b2; --goal-bg:#f0fdf4; --goal-line:#bbf7d0; --goal-accent:#16a34a; }
+    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; --user-bg:#fff1f5; --user-line:#f9cfe0; --plan-bg:#111827; --plan-line:#334155; --plan-accent:#94a3b8; --goal-bg:#f0fdf4; --goal-line:#bbf7d0; --goal-accent:#16a34a; }
     * { box-sizing:border-box; }
     [hidden] { display:none !important; }
     body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
@@ -665,6 +727,13 @@ function sendContextHtml(res, {
     article.context-event-user { background:#fff1f5; border-color:var(--user-line); }
     article.context-event-user .role { background:#ffe4ec; color:#9f1239; }
     article.context-event.anchor { border-color:var(--accent); box-shadow:0 0 0 2px rgba(8,145,178,.12); }
+    .context-event-head { display:flex; align-items:center; gap:10px; min-width:0; }
+    .context-event-meta { display:flex; align-items:center; flex-wrap:wrap; gap:0; min-width:0; }
+    .context-avatar { display:grid; place-items:center; width:32px; height:32px; flex:0 0 32px; overflow:hidden; border:1px solid #cbd5e1; border-radius:8px; background:#fff; color:#0f172a; font-size:11px; font-weight:900; line-height:1; }
+    .context-avatar img,
+    .context-avatar svg { display:block; width:100%; height:100%; object-fit:cover; }
+    .context-avatar-codex { background:#0b0d12; border-color:#0b0d12; }
+    .context-avatar-claude { background:#f8f3ed; border-color:#d6b49c; }
     .role { display:inline-flex; align-items:center; min-height:20px; border-radius:999px; background:var(--chip); padding:2px 8px; font-size:12px; font-weight:800; color:#0f5f76; }
     .time { margin-left:8px; color:var(--muted); font-size:12px; }
     .text,
@@ -675,11 +744,11 @@ function sendContextHtml(res, {
     .context-quote-label { color:#0f6f89; font-size:11px; font-weight:900; line-height:1.2; }
     .context-quote-text { overflow-wrap:anywhere; line-height:1.56; font-size:13px; }
     .context-mode-panel { margin-top:10px; border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:8px; padding:12px 13px; display:grid; gap:8px; overflow-wrap:anywhere; }
-    .context-plan-panel { background:#eefcff; border-color:#b9e7f2; border-left-color:#0891b2; }
+    .context-plan-panel { background:#111827; border-color:#334155; border-left-color:#94a3b8; color:#e5e7eb; box-shadow:inset 0 1px 0 rgba(255,255,255,.06); }
     .context-goal-panel { background:#f0fdf4; border-color:#bbf7d0; border-left-color:#16a34a; }
     .context-interaction-panel { background:#fff; border-color:#dbe5ef; border-left-color:#0891b2; }
     .context-mode-head { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#334155; font-size:11px; font-weight:900; line-height:1.2; text-transform:uppercase; letter-spacing:0; }
-    .context-plan-panel .context-mode-head { color:#0f6f89; }
+    .context-plan-panel .context-mode-head { color:#cbd5e1; }
     .context-goal-panel .context-mode-head { color:#166534; }
     .context-goal-status { color:#16a34a; font-weight:900; }
     .context-interaction-list { display:grid; gap:10px; }
@@ -740,6 +809,12 @@ function sendContextHtml(res, {
     .text blockquote,
     .context-main blockquote,
     .context-quote-text blockquote { margin:8px 0; border-left:3px solid #cbd5e1; padding-left:10px; color:#475569; }
+    .context-plan-panel .context-main { color:#e5e7eb; }
+    .context-plan-panel .context-main code { background:#253044; color:#f8fafc; }
+    .context-plan-panel .context-main pre { background:#020617; color:#f8fafc; border:1px solid #334155; }
+    .context-plan-panel .context-main a { color:#93c5fd; }
+    .context-plan-panel .context-main blockquote { border-left-color:#64748b; color:#cbd5e1; }
+    .context-plan-panel .context-color-swatch { border-color:rgba(248,250,252,.5); box-shadow:inset 0 0 0 1px rgba(0,0,0,.35); }
     .context-table-wrap { width:100%; overflow-x:auto; margin:10px 0 12px; border:1px solid var(--line); border-radius:8px; background:#fff; }
     .context-table { width:100%; border-collapse:collapse; min-width:520px; font-size:13px; line-height:1.55; }
     .context-table th { text-align:left; background:#f1f5f9; color:#334155; font-weight:850; border-bottom:1px solid var(--line); }
@@ -1199,13 +1274,51 @@ function sendContextHtml(res, {
       if (clean === 'codex') return 'Codex';
       return clean || 'Assistant';
     }
+    function eventActor(event, session) {
+      const actor = event?.actor && typeof event.actor === 'object' ? event.actor : null;
+      if (actor) return actor;
+      if (event.role === 'user') return event.metadata?.uploader || session?.uploader || { name: 'User', avatar: '' };
+      if (event.role === 'assistant' || event.role === 'system') return { type: 'runtime', runtime: session?.runtime || '', name: runtimeName(session?.runtime) };
+      return { name: event.role || 'Unknown', avatar: '' };
+    }
     function roleLabel(event, session) {
       if (event.role === 'user') {
-        return event.metadata?.uploader?.name || session?.uploader?.name || 'User';
+        return eventActor(event, session)?.name || event.metadata?.uploader?.name || session?.uploader?.name || 'User';
       }
       if (event.role === 'assistant') return runtimeName(session?.runtime);
       if (event.role === 'system') return runtimeName(session?.runtime);
       return event.role || 'Unknown';
+    }
+    function safeAvatarSrc(value) {
+      const src = String(value || '').trim();
+      if (/^data:image\\//i.test(src)) return src;
+      if (/^https?:\\/\\//i.test(src)) return src;
+      if (src.startsWith('/')) return src;
+      return '';
+    }
+    function avatarInitials(name) {
+      const text = String(name || 'User').trim();
+      const parts = text.split(/\\s+/).filter(Boolean);
+      const letters = parts.map(part => part[0]).join('').slice(0, 2).toUpperCase();
+      return letters || text.slice(0, 2).toUpperCase() || 'US';
+    }
+    function runtimeAvatarHtml(runtime) {
+      const clean = String(runtime || '').toLowerCase();
+      if (clean === 'claude_code' || clean === 'claude-code' || clean === 'claude') {
+        return '<span class="context-avatar context-avatar-claude" aria-label="ClaudeCode"><svg viewBox="0 0 64 64" role="img" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#f8f3ed"/><g fill="#c15f3c"><path d="M32 7l4.3 16.7L48.2 11.8 39.1 26.7 56 22.2 41.1 31.8 56 41.4 39.1 36.9 48.2 51.8 36.3 39.9 32 57 27.7 39.9 15.8 51.8 24.9 36.9 8 41.4 22.9 31.8 8 22.2 24.9 26.7 15.8 11.8 27.7 23.7z"/></g></svg></span>';
+      }
+      if (clean === 'codex') {
+        return '<span class="context-avatar context-avatar-codex" aria-label="Codex"><svg viewBox="0 0 64 64" role="img" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#0b0d12"/><g fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"><path d="M32 12.5c7 0 12.5 5.4 12.5 12.1 0 6.8-5.5 12.2-12.5 12.2S19.5 31.4 19.5 24.6C19.5 17.9 25 12.5 32 12.5z"/><path d="M43.4 24.1c5.9 3.5 8 10.8 4.7 16.4-3.4 5.8-11 7.5-17 4.1-5.9-3.5-8-10.8-4.7-16.4 3.4-5.8 11-7.5 17-4.1z"/><path d="M20.6 24.1c5.9-3.4 13.5-1.7 17 4.1 3.3 5.6 1.2 12.9-4.7 16.4-6 3.4-13.6 1.7-17-4.1-3.3-5.6-1.2-12.9 4.7-16.4z"/></g><circle cx="32" cy="32" r="5.2" fill="#fff"/></svg></span>';
+      }
+      return '<span class="context-avatar">' + escapeHtml(runtimeName(runtime).slice(0, 2).toUpperCase()) + '</span>';
+    }
+    function roleAvatarHtml(event, session) {
+      if (event.role === 'assistant' || event.role === 'system') return runtimeAvatarHtml(session?.runtime);
+      const actor = eventActor(event, session);
+      const src = safeAvatarSrc(actor?.avatar || '');
+      const name = actor?.name || 'User';
+      if (src) return '<span class="context-avatar"><img src="' + escapeHtml(src) + '" alt="' + escapeHtml(name) + '" loading="lazy" decoding="async"></span>';
+      return '<span class="context-avatar" aria-label="' + escapeHtml(name) + '">' + escapeHtml(avatarInitials(name)) + '</span>';
     }
     function teamSharingScopeQuery(prefix = '&') {
       const params = new URLSearchParams();
@@ -1419,7 +1532,7 @@ function sendContextHtml(res, {
           const note = renderContextNote(contextNoteSummary(event));
           const noteClass = note ? ' has-context-note' : '';
           return '<article id="' + encodeURIComponent(event.eventId || '') + '" class="' + ('context-event' + roleClass + anchorClass + noteClass).trim() + '">' +
-            '<div><span class="role">' + escapeHtml(roleLabel(event, session)) + '</span><span class="time">' + escapeHtml(chinaTime(event.createdAt || '')) + '</span></div>' +
+            '<div class="context-event-head">' + roleAvatarHtml(event, session) + '<div class="context-event-meta"><span class="role">' + escapeHtml(roleLabel(event, session)) + '</span><span class="time">' + escapeHtml(chinaTime(event.createdAt || '')) + '</span></div></div>' +
             note + body + '</article>';
         }
     async function load(direction, options = {}) {
@@ -2588,7 +2701,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendError(res, 404, 'Team sharing session not found.');
       return true;
     }
-    sendJson(res, 200, result);
+    sendJson(res, 200, enrichTeamSharingContextResult(result, state));
     return true;
   }
 

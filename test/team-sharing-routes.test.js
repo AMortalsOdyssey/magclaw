@@ -970,12 +970,17 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /eventSegments/);
   assert.match(res.body, /eventPresentation/);
   assert.match(res.body, /presentationBody/);
+  assert.match(res.body, /context-event-head/);
+  assert.match(res.body, /roleAvatarHtml/);
+  assert.match(res.body, /context-avatar-codex/);
+  assert.match(res.body, /context-avatar-claude/);
   assert.match(res.body, /context-plan-panel/);
   assert.match(res.body, /context-goal-panel/);
   assert.match(res.body, /context-interaction-panel/);
-  assert.match(res.body, /#eefcff/);
+  assert.match(res.body, /#111827/);
+  assert.match(res.body, /#334155/);
+  assert.match(res.body, /#94a3b8/);
   assert.match(res.body, /#f0fdf4/);
-  assert.match(res.body, /#b9e7f2/);
   assert.match(res.body, /#bbf7d0/);
   assert.match(res.body, /contentSegments/);
   assert.match(res.body, /context-event-user/);
@@ -1037,6 +1042,41 @@ test('team sharing common link icon registry covers at least 100 common sites', 
   assert.equal(byHost.get('openai.com')?.iconHost, 'openai.com');
   assert.equal(byHost.get('bilibili.com')?.slug, 'bilibili');
   assert.equal(byHost.get('figma.com')?.slug, 'figma');
+});
+
+test('team sharing context api enriches user events with the latest profile avatar', async () => {
+  const deps = routeDeps({
+    readJson: async () => ({
+      ...syncBody(),
+      humanId: 'hum_route',
+      humanName: 'Old Name',
+      humanAvatar: 'data:image/png;base64,old-avatar',
+    }),
+  });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
+  deps.state.humans = [{ id: 'hum_route', name: 'Latest Name', avatar: 'data:image/png;base64,latest-avatar' }];
+
+  const res = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET' },
+    res,
+    new URL('http://local/api/team-sharing/context/sess_route?anchorEventId=evt_1'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.session.uploader.name, 'Latest Name');
+  assert.equal(res.data.session.uploader.avatar, 'data:image/png;base64,latest-avatar');
+  assert.equal(res.data.events[0].actor.name, 'Latest Name');
+  assert.equal(res.data.events[0].actor.avatar, 'data:image/png;base64,latest-avatar');
+  assert.equal(res.data.events[0].metadata.uploader.avatar, 'data:image/png;base64,latest-avatar');
+  assert.equal(res.data.events[1].actor.type, 'runtime');
+  assert.equal(res.data.events[1].actor.name, 'Codex');
 });
 
 test('team sharing context page adds note summaries only for long agent replies', async () => {
@@ -1128,6 +1168,8 @@ test('team sharing context page renders plan goal and interaction presentation p
     presentation: { mode: 'plan', source: 'codex', title: 'Plan' },
   });
   assert.match(planHtml, /context-plan-panel/);
+  assert.match(planHtml, /context-event-head/);
+  assert.match(planHtml, /context-avatar-codex/);
   assert.match(planHtml, />Codex</);
   assert.match(planHtml, /展示步骤/);
   assert.doesNotMatch(planHtml, /data-context-note/);
@@ -1144,8 +1186,19 @@ test('team sharing context page renders plan goal and interaction presentation p
     },
   });
   assert.match(goalHtml, /context-goal-panel/);
+  assert.match(goalHtml, /context-avatar/);
   assert.match(goalHtml, />JHB</);
   assert.match(goalHtml, /把 Goal 模式接入 Team Sharing/);
+
+  const customAvatarHtml = context.eventHtml({
+    eventId: 'evt_custom_avatar',
+    role: 'user',
+    text: '使用最新头像',
+    createdAt: '2026-06-01T10:03:30.000Z',
+    actor: { name: 'Latest JHB', avatar: 'data:image/png;base64,latest-avatar' },
+  });
+  assert.match(customAvatarHtml, /data:image\/png;base64,latest-avatar/);
+  assert.match(customAvatarHtml, />Latest JHB</);
 
   const interactionHtml = context.eventHtml({
     eventId: 'evt_interaction',

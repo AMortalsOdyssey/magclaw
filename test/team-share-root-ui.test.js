@@ -11,6 +11,14 @@ async function readAppSource() {
   return [app, ...chunkSources].join('\n');
 }
 
+async function readStylesSource() {
+  const publicRoot = new URL('../public/', import.meta.url);
+  const entry = await readFile(new URL('styles.css', publicRoot), 'utf8');
+  const imports = [...entry.matchAll(/@import url\("\.\/([^"\)]+)"\);/g)].map((match) => match[1]);
+  const imported = await Promise.all(imports.map((name) => readFile(new URL(name, publicRoot), 'utf8')));
+  return [entry, ...imported].join('\n');
+}
+
 test('left rail exposes a bottom Team Shares entry that jumps to the share root', async () => {
   const app = await readAppSource();
   const railSource = app.slice(app.indexOf('function renderRail('), app.indexOf('function accountRailInitial('));
@@ -74,4 +82,18 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   assert.match(replySource, /renderMessageContentSegments\(reply\)/);
   assert.match(app, /renderMessageContentSegments\(message\)/);
   assert.match(app, /message-context-quote/);
+});
+
+test('team sharing plan presentation uses a document panel in channel and thread messages', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+
+  assert.match(app, /function teamSharingPresentationModeForRecord\(record = \{\}\)/);
+  assert.match(app, /function teamSharingPresentationClass\(record = \{\}\)/);
+  assert.match(app, /teamSharingPresentationClass\(message\)/);
+  assert.match(app, /teamSharingPresentationClass\(reply\)/);
+  assert.match(styles, /\.message-card\.team-sharing-mode-plan \.message-markdown/);
+  assert.match(styles, /background:\s*#111827/);
+  assert.match(styles, /\.message-card\.team-sharing-mode-plan \.message-markdown code/);
+  assert.match(styles, /\.message-card\.team-sharing-mode-plan \.message-color-swatch/);
 });

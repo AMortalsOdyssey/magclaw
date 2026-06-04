@@ -2308,13 +2308,14 @@ function renderMessage(message, options = {}) {
   const shareSelected = shareSelectable && shareSelectedIds().includes(String(message.id)) ? ' share-selected' : '';
   const authorClass = ['agent', 'human', 'system'].includes(message.authorType) ? message.authorType : 'unknown';
   const streamingClass = messageIsStreaming(message) ? ' is-agent-streaming' : '';
+  const presentationClass = typeof teamSharingPresentationClass === 'function' ? teamSharingPresentationClass(message) : '';
   const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
   const agentAuthorAttr = message.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(message.authorId)}"` : '';
   const receiptTray = renderAgentReceiptTray(message);
   const replyCountChip = !options.compact && replyCount ? `<button class="reply-count-chip" type="button" data-action="open-thread" data-id="${escapeHtml(message.id)}">${replyActionLabel}</button>` : '';
   const footer = renderMessageFooter({ replyCountChip, receiptTray });
   return `
-	    <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${shareSelecting}${shareSelected}${streamingClass}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
+	    <article class="message-card magclaw-message author-${authorClass}${highlighted}${compact}${shareSelecting}${shareSelected}${streamingClass}${presentationClass}${receiptTray ? ' has-agent-receipts' : ''}" id="message-${escapeHtml(message.id)}" data-message-id="${escapeHtml(message.id)}" data-context-scope="message" data-render-key="${escapeHtml(renderRecordKey(message))}"${agentAuthorAttr}>
       ${renderShareSelector(message, { selectable: shareSelectable })}
       ${renderActorAvatar(message.authorId, message.authorType, message)}
       <div class="message-body"${shareBodyToggleAttrs(message, { selectable: shareSelectable })}>
