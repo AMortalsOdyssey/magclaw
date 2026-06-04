@@ -15,6 +15,7 @@ The installer configures MagClaw Team Sharing sync for Codex and Claude Code:
 
 - browser/device login for a scoped Team Sharing token
 - durable local `team-sharing` shim for hooks and day-to-day commands
+  (`team-sharing`, `team-sharing.cmd`, and `team-sharing.ps1`)
 - project-level `.magclaw/team-sharing.yaml`
 - Codex and Claude Code hooks
 - local `magclaw-team-sharing` skill
@@ -22,3 +23,7 @@ The installer configures MagClaw Team Sharing sync for Codex and Claude Code:
 
 Tokens are cached under the user profile in `~/.magclaw/team-sharing/` and are
 not written into project repositories.
+
+The installer is designed for macOS, Linux, and Windows. Hook commands avoid
+POSIX-only environment expansion and let the CLI resolve transcript paths and
+session titles from the runtime environment or hook payload.

@@ -304,35 +304,55 @@ export function shouldRunTeamSharingHook({ runtime = 'codex', hookEventName = ''
   return allowed.includes(event);
 }
 
-function shellQuote(value = '') {
+function normalizeCommandPlatform(value = process.platform) {
+  return String(value || '').toLowerCase() === 'win32' ? 'win32' : 'posix';
+}
+
+function posixShellQuote(value = '') {
   return `'${String(value || '').replace(/'/g, "'\\''")}'`;
+}
+
+function windowsCmdQuote(value = '') {
+  const text = String(value || '');
+  return `"${text.replace(/(["^&|<>])/g, '^$1')}"`;
+}
+
+function shellQuote(value = '', platform = process.platform) {
+  return normalizeCommandPlatform(platform) === 'win32'
+    ? windowsCmdQuote(value)
+    : posixShellQuote(value);
+}
+
+function shouldQuoteCommandPath(value = '', platform = process.platform) {
+  const text = String(value || '');
+  if (!text) return false;
+  if (normalizeCommandPlatform(platform) === 'win32') {
+    return /[\s"&|<>^]/.test(text) || /[\\/]/.test(text);
+  }
+  return /[\s'"$`\\]/.test(text);
 }
 
 export function buildTeamSharingHookCommand(options = {}) {
   const runtime = normalizeRuntime(options.runtime);
+  const platform = options.platform || process.platform;
   const hookEventName = String(options.hookEventName || (runtime === 'claude_code' ? 'SessionEnd' : 'Stop')).trim();
-  const transcriptPath = options.transcriptPath || (runtime === 'claude_code' ? '${CLAUDE_TRANSCRIPT_PATH:-}' : '${CODEX_SESSION_FILE:-}');
-  const titlePath = runtime === 'claude_code'
-    ? '${MAGCLAW_SESSION_TITLE:-${CLAUDE_SESSION_TITLE:-}}'
-    : '${MAGCLAW_SESSION_TITLE:-${CODEX_SESSION_TITLE:-}}';
+  const transcriptPath = String(options.transcriptPath || '').trim();
   const sessionTitle = String(options.sessionTitle ?? '').trim();
   const commandPath = String(options.teamSharingCommand || options.commandPath || 'team-sharing').trim() || 'team-sharing';
   const parts = [
-    commandPath.includes(' ') ? shellQuote(commandPath) : commandPath,
+    shouldQuoteCommandPath(commandPath, platform) ? shellQuote(commandPath, platform) : commandPath,
     'sync',
     '--runtime',
     runtime,
     '--hook-event',
     hookEventName,
-    '--transcript',
-    transcriptPath.includes('${') ? `"${transcriptPath}"` : shellQuote(transcriptPath),
-    '--session-title',
-    sessionTitle ? shellQuote(sessionTitle) : `"${titlePath}"`,
   ];
+  if (transcriptPath) parts.push('--transcript', shellQuote(transcriptPath, platform));
+  if (sessionTitle) parts.push('--session-title', shellQuote(sessionTitle, platform));
   if (options.integration) parts.push('--integration', String(options.integration).replace(/[^a-zA-Z0-9._-]+/g, '-'));
-  if (options.packageVersion) parts.push('--package-version', shellQuote(String(options.packageVersion).replace(/[^a-zA-Z0-9._+-]+/g, '-')));
-  if (options.sourceCommit) parts.push('--source-commit', shellQuote(String(options.sourceCommit).replace(/[^a-zA-Z0-9._-]+/g, '-')));
-  if (options.projectDir) parts.push('--cwd', shellQuote(options.projectDir));
+  if (options.packageVersion) parts.push('--package-version', shellQuote(String(options.packageVersion).replace(/[^a-zA-Z0-9._+-]+/g, '-'), platform));
+  if (options.sourceCommit) parts.push('--source-commit', shellQuote(String(options.sourceCommit).replace(/[^a-zA-Z0-9._-]+/g, '-'), platform));
+  if (options.projectDir) parts.push('--cwd', shellQuote(options.projectDir, platform));
   return parts.join(' ');
 }
 

@@ -282,9 +282,23 @@ function shellQuote(value = '') {
   return `'${String(value || '').replace(/'/g, "'\\''")}'`;
 }
 
+function cmdQuote(value = '') {
+  return `"${String(value || '').replace(/(["^&|<>])/g, '^$1')}"`;
+}
+
+function powershellQuote(value = '') {
+  return `'${String(value || '').replace(/'/g, "''")}'`;
+}
+
 function teamSharingShimBinDir(flags = {}, env = process.env) {
   const explicit = String(flags.teamSharingBinDir || flags.binDir || env.MAGCLAW_TEAM_SHARING_BIN_DIR || '').trim();
   if (explicit) return path.resolve(explicit);
+  const platform = String(flags.platform || env.MAGCLAW_TEAM_SHARING_PLATFORM || process.platform).toLowerCase();
+  if (platform === 'win32') {
+    const localAppData = String(env.LOCALAPPDATA || '').trim()
+      || path.join(homeDirForEnv(env), 'AppData', 'Local');
+    return path.join(localAppData, 'MagClaw', 'bin');
+  }
   return path.join(homeDirForEnv(env), '.local', 'bin');
 }
 
@@ -619,9 +633,18 @@ function teamSharingShimFiles({ npmPath = 'npm', packageSpec = `${TEAM_SHARING_P
       name: 'team-sharing.cmd',
       content: [
         '@echo off',
-        `"${cleanNpmPath}" exec --yes --package "${cleanPackageSpec}" -- team-sharing %*`,
+        `${cmdQuote(cleanNpmPath)} exec --yes --package ${cmdQuote(cleanPackageSpec)} -- team-sharing %*`,
         '',
       ].join('\r\n'),
+    },
+    {
+      name: 'team-sharing.ps1',
+      content: [
+        '$ErrorActionPreference = "Stop"',
+        `& ${powershellQuote(cleanNpmPath)} exec --yes --package ${powershellQuote(cleanPackageSpec)} -- team-sharing @args`,
+        'exit $LASTEXITCODE',
+        '',
+      ].join('\n'),
     },
   ];
 }
@@ -659,7 +682,7 @@ export async function installTeamSharingShim(flags = {}, env = process.env) {
     installed: changed,
     updated: changed,
     binDir,
-    path: path.join(binDir, process.platform === 'win32' ? 'team-sharing.cmd' : 'team-sharing'),
+    path: path.join(binDir, String(flags.platform || env.MAGCLAW_TEAM_SHARING_PLATFORM || process.platform).toLowerCase() === 'win32' ? 'team-sharing.cmd' : 'team-sharing'),
     files: files.map((file) => file.file),
     reason: changed ? 'installed_or_updated' : 'already_current',
   };
@@ -967,6 +990,88 @@ function cursorLastOrdinal(cursor = {}, runtime = 'codex', sessionId = '') {
   return Number(cursor?.sessions?.[runtime]?.[sessionId]?.lastOrdinal || 0);
 }
 
+function stringFlagValue(value) {
+  if (value === undefined || value === null || value === true || value === false) return '';
+  return String(value).trim();
+}
+
+function parseHookPayload(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  const text = String(value || '').trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function nestedStringValue(object, paths = []) {
+  for (const keys of paths) {
+    let current = object;
+    for (const key of keys) {
+      if (!current || typeof current !== 'object') {
+        current = null;
+        break;
+      }
+      current = current[key];
+    }
+    const value = stringFlagValue(current);
+    if (value) return value;
+  }
+  return '';
+}
+
+export function resolveTeamSharingTranscriptPath(flags = {}, env = process.env) {
+  const runtime = normalizeRuntime(flags.runtime || 'codex');
+  const explicit = stringFlagValue(flags.transcript)
+    || stringFlagValue(flags.file)
+    || stringFlagValue(flags.transcriptPath)
+    || stringFlagValue(flags._?.[1]);
+  if (explicit) return { path: explicit, source: 'flag' };
+
+  const envPath = runtime === 'claude_code'
+    ? stringFlagValue(env.CLAUDE_TRANSCRIPT_PATH || env.CLAUDE_SESSION_FILE)
+    : stringFlagValue(env.CODEX_SESSION_FILE || env.CODEX_TRANSCRIPT_PATH);
+  if (envPath) return { path: envPath, source: 'env' };
+
+  const hookPayload = parseHookPayload(flags.hookPayload || flags.hookInput || env.MAGCLAW_TEAM_SHARING_HOOK_PAYLOAD);
+  const payloadPath = nestedStringValue(hookPayload, [
+    ['transcript_path'],
+    ['transcriptPath'],
+    ['agent_transcript_path'],
+    ['agentTranscriptPath'],
+    ['event_payload', 'transcript_path'],
+    ['event_payload', 'transcriptPath'],
+    ['payload', 'transcript_path'],
+    ['payload', 'transcriptPath'],
+  ]);
+  return { path: payloadPath, source: payloadPath ? 'hook_payload' : '', hookPayload };
+}
+
+export function resolveTeamSharingSessionTitle(flags = {}, env = process.env, hookPayload = null) {
+  const runtime = normalizeRuntime(flags.runtime || 'codex');
+  const explicit = stringFlagValue(flags.sessionTitle)
+    || stringFlagValue(flags.title)
+    || stringFlagValue(env.MAGCLAW_SESSION_TITLE)
+    || (runtime === 'claude_code'
+      ? stringFlagValue(env.CLAUDE_SESSION_TITLE)
+      : stringFlagValue(env.CODEX_SESSION_TITLE));
+  if (explicit) return explicit;
+  return nestedStringValue(hookPayload || {}, [
+    ['session_title'],
+    ['sessionTitle'],
+    ['conversation_title'],
+    ['conversationTitle'],
+    ['event_payload', 'session_title'],
+    ['event_payload', 'sessionTitle'],
+    ['payload', 'session_title'],
+    ['payload', 'sessionTitle'],
+  ]);
+}
+
 async function writeTeamSharingCursor(file, runtime, cursor) {
   const existing = await readJsonFile(file, {});
   const sessions = existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {};
@@ -983,26 +1088,35 @@ async function writeTeamSharingCursor(file, runtime, cursor) {
 }
 
 export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
-  const transcriptPath = String(flags.transcript || flags.file || flags._?.[1] || '').trim();
+  const resolvedTranscript = resolveTeamSharingTranscriptPath(flags, env);
+  const transcriptPath = resolvedTranscript.path;
+  const hookPayload = resolvedTranscript.hookPayload || {};
+  const hookEvent = stringFlagValue(flags.hookEvent || flags.hookEventName)
+    || nestedStringValue(hookPayload, [
+      ['hook_event_name'],
+      ['hookEventName'],
+      ['event_payload', 'hook_event_name'],
+      ['payload', 'hook_event_name'],
+    ]);
   if (!transcriptPath) {
-    if (flags.hookEvent) return { ok: true, empty: true, reason: 'missing_transcript_path' };
+    if (hookEvent) return { ok: true, empty: true, reason: 'missing_transcript_path' };
     throw new Error('Usage: team-sharing sync --transcript <path>');
   }
   const runtime = normalizeRuntime(flags.runtime || 'codex');
   const { project, profile, serverUrl, token } = await resolveTeamSharingClient(flags, env);
   if (project.config.enabled === false) {
-    if (flags.hookEvent) return { ok: true, empty: true, reason: 'project_disabled' };
+    if (hookEvent) return { ok: true, empty: true, reason: 'project_disabled' };
     throw new Error('Team Sharing is disabled for this project.');
   }
   const runtimeConfig = project.config.runtimes?.[runtime];
-  if (flags.hookEvent && runtimeConfig && runtimeConfig.hooksEnabled === false) {
+  if (hookEvent && runtimeConfig && runtimeConfig.hooksEnabled === false) {
     return { ok: true, empty: true, reason: 'runtime_hooks_disabled' };
   }
   const content = await readFile(path.resolve(transcriptPath), 'utf8');
-  const explicitSessionTitle = String(flags.sessionTitle || flags.title || env.MAGCLAW_SESSION_TITLE || '').trim();
+  const explicitSessionTitle = resolveTeamSharingSessionTitle({ ...flags, runtime }, env, hookPayload);
   const parsed = parseTeamSharingTranscript(content, {
     runtime,
-    sessionId: flags.sessionId || '',
+    sessionId: flags.sessionId || nestedStringValue(hookPayload, [['session_id'], ['sessionId']]) || '',
     title: explicitSessionTitle,
     projectDir: flags.cwd || process.cwd(),
   });
@@ -1019,7 +1133,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     projectDir: flags.cwd || process.cwd(),
     lastOrdinal,
     minCreatedAt: project.config.enabledSince || '',
-    hookEvent: flags.hookEvent || flags.hookEventName || '',
+    hookEvent,
   });
   if (syncPackage.body) {
     const metadata = Object.fromEntries(Object.entries({
@@ -1248,6 +1362,7 @@ export async function installTeamSharingHooks(flags = {}, env = process.env) {
       projectDir: cwd,
       integration: TEAM_SHARING_INTEGRATION,
       teamSharingCommand: flags.teamSharingCommand,
+      platform: flags.platform || env.MAGCLAW_TEAM_SHARING_PLATFORM,
     }, env);
     output[key] = await installTeamSharingHookConfig({
       runtime,

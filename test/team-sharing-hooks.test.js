@@ -198,12 +198,33 @@ test('team sharing hook command and config installer preserve existing hooks', a
     runtime: 'codex',
     projectDir: '/repo/magclaw',
     transcriptPath: '/tmp/session.jsonl',
+    sessionTitle: 'explicit title',
   });
   assert.match(command, /team-sharing sync/);
   assert.match(command, /--runtime codex/);
   assert.match(command, /--transcript/);
   assert.match(command, /--session-title/);
   assert.doesNotMatch(command, /\n|secret/);
+
+  const defaultHookCommand = buildTeamSharingHookCommand({
+    runtime: 'codex',
+    projectDir: '/repo/magclaw',
+  });
+  assert.doesNotMatch(defaultHookCommand, /--transcript|--session-title|\$\{/);
+
+  const windowsCommand = buildTeamSharingHookCommand({
+    runtime: 'codex',
+    hookEventName: 'Stop',
+    platform: 'win32',
+    teamSharingCommand: 'C:\\Users\\Agent User\\bin\\team-sharing.cmd',
+    projectDir: 'C:\\Users\\Agent User\\repo\\magclaw',
+    packageVersion: '0.1.41',
+    sourceCommit: 'abc123def456',
+  });
+  assert.match(windowsCommand, /^"C:\\Users\\Agent User\\bin\\team-sharing\.cmd" sync/);
+  assert.match(windowsCommand, /--cwd "C:\\Users\\Agent User\\repo\\magclaw"/);
+  assert.match(windowsCommand, /--package-version "0\.1\.41"/);
+  assert.doesNotMatch(windowsCommand, /\$\{|'/);
 
   const result = await installTeamSharingHookConfig({
     runtime: 'codex',

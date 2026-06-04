@@ -91,6 +91,27 @@ function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+function stringFlagValue(value) {
+  if (value === undefined || value === null || value === true || value === false) return '';
+  return String(value).trim();
+}
+
+function hasSyncTranscriptPath(flags = {}) {
+  return Boolean(
+    stringFlagValue(flags.transcript)
+      || stringFlagValue(flags.file)
+      || stringFlagValue(flags.transcriptPath)
+      || stringFlagValue(flags._?.[1]),
+  );
+}
+
+async function readHookPayloadStdin(stdin = process.stdin) {
+  if (!stdin || stdin.isTTY) return '';
+  let text = '';
+  for await (const chunk of stdin) text += chunk;
+  return text.trim();
+}
+
 function renderTeamSharingHelp() {
   return [
     'Usage: team-sharing <command> [options]',
@@ -212,7 +233,14 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
       printJson(await shareTeamSharingArtifact(flags, env));
       break;
     case 'sync':
-      printJson(await syncTeamSharingTranscript({ ...flags, integration: flags.integration || 'team-sharing' }, env));
+      {
+        const syncFlags = { ...flags, integration: flags.integration || 'team-sharing' };
+        if ((syncFlags.hookEvent || syncFlags.hookEventName) && !hasSyncTranscriptPath(syncFlags) && !syncFlags.hookPayload) {
+          const hookPayload = await readHookPayloadStdin();
+          if (hookPayload) syncFlags.hookPayload = hookPayload;
+        }
+        printJson(await syncTeamSharingTranscript(syncFlags, env));
+      }
       break;
     case 'skills':
     case 'skill':

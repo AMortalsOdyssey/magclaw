@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +20,8 @@ import {
   removeTeamSharingHooks,
   removeTeamSharingSkill,
   readTeamSharingContext,
+  resolveTeamSharingSessionTitle,
+  resolveTeamSharingTranscriptPath,
   shareTeamSharingArtifact,
   searchTeamSharing,
   setupTeamSharing,
@@ -296,6 +299,109 @@ test('team sharing cli sync uploads SessionStart even before transcript messages
   }
 });
 
+test('team sharing sync falls back to legacy Codex transcript environment variable', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-codex-env-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-codex-env-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'codex-env-session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_codex_env', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '旧版 env 同步' }] } }),
+  ].join('\n'));
+
+  const resolved = resolveTeamSharingTranscriptPath({ runtime: 'codex' }, { ...env, CODEX_SESSION_FILE: transcript });
+  const titleEnv = { ...env, CODEX_SESSION_FILE: transcript, CODEX_SESSION_TITLE: 'Codex env title' };
+  const result = await syncTeamSharingTranscript({
+    cwd,
+    runtime: 'codex',
+    hookEvent: 'Stop',
+    dryRun: true,
+  }, titleEnv);
+
+  assert.equal(resolved.path, transcript);
+  assert.equal(resolved.source, 'env');
+  assert.equal(resolveTeamSharingSessionTitle({ runtime: 'codex' }, titleEnv), 'Codex env title');
+  assert.equal(result.ok, true);
+  assert.equal(result.dryRun, true);
+  assert.equal(result.sessionId, 'sess_codex_env');
+  assert.equal(result.title, 'Codex env title');
+  assert.equal(result.eventCount, 1);
+});
+
+test('team sharing cli sync reads Codex hook stdin transcript_path when env transcript is empty', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-codex-stdin-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-codex-stdin-home-'));
+  const env = {
+    ...process.env,
+    HOME: home,
+    MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'),
+  };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'codex-stdin-session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_codex_stdin', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '新版 stdin 同步' }] } }),
+  ].join('\n'));
+
+  const result = spawnSync(process.execPath, [
+    path.resolve('team-sharing', 'bin', 'team-sharing.js'),
+    'sync',
+    '--runtime',
+    'codex',
+    '--hook-event',
+    'Stop',
+    '--transcript',
+    '',
+    '--cwd',
+    cwd,
+    '--dry-run',
+  ], {
+    cwd: path.resolve('.'),
+    env,
+    input: JSON.stringify({
+      hook_event_name: 'Stop',
+      session_id: 'sess_codex_stdin',
+      session_title: 'Hook payload title',
+      transcript_path: transcript,
+      cwd,
+    }),
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout);
+
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.dryRun, true);
+  assert.equal(parsed.sessionId, 'sess_codex_stdin');
+  assert.equal(parsed.title, 'Hook payload title');
+  assert.equal(parsed.eventCount, 1);
+});
+
 test('team sharing cli sync dry-run does not upload or save cursor', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-dry-run-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-dry-run-home-'));
@@ -415,6 +521,30 @@ test('team sharing cli installs Codex and Claude hook configs without overwritin
   assert.ok(claude.hooks.SessionEnd[0].hooks.some((hook) => hook.command.includes('--runtime claude_code')));
 });
 
+test('team sharing hook install renders Windows-safe command strings', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-windows-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-windows-home-'));
+  await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-windows-fixture"}\n');
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const codexHooks = path.join(home, '.codex', 'hooks.json');
+
+  const result = await installTeamSharingHooks({
+    cwd,
+    target: 'codex',
+    codexConfig: codexHooks,
+    platform: 'win32',
+    teamSharingCommand: 'C:\\Users\\Agent User\\bin\\team-sharing.cmd',
+  }, env);
+  const codex = JSON.parse(await readFile(codexHooks, 'utf8'));
+  const command = codex.hooks.Stop[0].hooks.find((hook) => hook.command.includes('--runtime codex')).command;
+
+  assert.equal(result.ok, true);
+  assert.match(command, /^"C:\\Users\\Agent User\\bin\\team-sharing\.cmd" sync/);
+  assert.match(command, /--cwd "/);
+  assert.doesNotMatch(command, /\$\{|'/);
+  assert.doesNotMatch(command, /--transcript|--session-title/);
+});
+
 test('team sharing setup installs selected runtimes and hook removal only removes team-sharing entries', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-setup-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-setup-home-'));
@@ -443,12 +573,16 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   const codexConfig = JSON.parse(await readFile(path.join(cwd, '.codex', 'hooks.json'), 'utf8'));
   const claudeConfig = JSON.parse(await readFile(path.join(cwd, '.claude', 'settings.local.json'), 'utf8'));
   const shim = await readFile(path.join(binDir, 'team-sharing'), 'utf8');
+  const cmdShim = await readFile(path.join(binDir, 'team-sharing.cmd'), 'utf8');
+  const ps1Shim = await readFile(path.join(binDir, 'team-sharing.ps1'), 'utf8');
 
   assert.equal(result.ok, true);
   assert.equal(result.scope, 'project');
   assert.equal(result.projectDir, cwd);
   assert.equal(result.shim.installed, true);
   assert.match(shim, /@magclaw\/team-sharing@latest/);
+  assert.match(cmdShim, /team-sharing %\*/);
+  assert.match(ps1Shim, /team-sharing @args/);
   assert.equal(hooks.codex.installed.length, 3);
   assert.equal(hooks.claude.installed.length, 4);
   assert.equal(skill.installed.length, 2);
@@ -463,6 +597,7 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   assert.match(installedSkill, /## Answer Style For Search Results/);
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes(path.join(binDir, 'team-sharing'))));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('team-sharing sync')));
+  assert.ok(codexConfig.hooks.Stop[0].hooks.every((hook) => !hook.command.includes('${')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--integration team-sharing')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--package-version')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--source-commit')));
