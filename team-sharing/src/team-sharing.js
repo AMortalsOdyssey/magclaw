@@ -624,7 +624,7 @@ function buildUploadAuditContent(body = {}, { includeContent = true } = {}) {
 }
 
 async function appendTeamSharingAuditRecord(file, record = {}, flags = {}, env = process.env) {
-  if (env.MAGCLAW_TEAM_SHARING_AUDIT === '0' || flags.audit === false || flags.noAudit) return { ok: true, skipped: true };
+  if (!boolFlag(flags.audit ?? env.MAGCLAW_TEAM_SHARING_AUDIT, true) || boolFlag(flags.noAudit, false)) return { ok: true, skipped: true };
   const safeRecord = sanitizeAuditValue({
     version: 1,
     recordedAt: now(),
@@ -1405,7 +1405,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
       };
     }
   }
-  const includeAuditContent = env.MAGCLAW_TEAM_SHARING_AUDIT_CONTENT !== '0' && flags.auditContent !== false;
+  const includeAuditContent = boolFlag(flags.auditContent ?? env.MAGCLAW_TEAM_SHARING_AUDIT_CONTENT, true);
   if (syncPackage.empty || !syncPackage.body) {
     await writeAudit({
       ok: true,

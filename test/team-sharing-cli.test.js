@@ -540,13 +540,18 @@ test('team sharing cli sync dry-run does not upload or save cursor', async () =>
     throw new Error('dry-run should not upload');
   };
   try {
-    const result = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', dryRun: true }, env);
+    const result = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', dryRun: true, auditContent: 'false' }, env);
+    const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
+    const auditRecord = JSON.parse(auditText.trim());
 
     assert.equal(result.ok, true);
     assert.equal(result.dryRun, true);
     assert.equal(result.eventCount, 2);
     assert.equal(result.fromOrdinal, 1);
     assert.equal(result.toOrdinal, 2);
+    assert.equal(auditRecord.status, 'dry_run');
+    assert.equal(auditRecord.upload.eventCount, 2);
+    assert.equal(auditRecord.upload.content, undefined);
     assert.equal(calls.length, 0);
     await assert.rejects(
       readFile(path.join(cwd, '.magclaw', 'team-sharing-cursor.json'), 'utf8'),
