@@ -55,6 +55,8 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   assert.match(app, /renderTeamSharingWorkspaceMarkdown\(file\)/);
   assert.match(app, /team-sharing-workspace-inline-link/);
   assert.match(app, /team-sharing-workspace-context-link/);
+  assert.match(app, /contextHref\(href\)/);
+  assert.match(app, /target="_blank" rel="noreferrer">\$\{label\}<\/a>/);
   assert.match(app, /team-sharing-workspace-head-action tone-refresh/);
   assert.match(clickActionSource, /if \(action === 'back-to-team-sharing-thread'\)/);
   assert.match(clickActionSource, /if \(action === 'toggle-team-sharing-workspace-folder'\)/);

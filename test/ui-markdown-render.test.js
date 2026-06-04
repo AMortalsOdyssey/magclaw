@@ -62,3 +62,14 @@ test('message Markdown renderer supports ordered and nested lists', async () => 
   assert.match(html, /<ul>/);
   assert.match(html, /<li>入口<ul><li><code>MEMORY\.md<\/code><\/li><li>\/workspace\/AGENT\.md<\/li><\/ul><\/li>/);
 });
+
+test('message Markdown renderer preserves protected Team Sharing context links', async () => {
+  const context = await createMarkdownHarness();
+
+  const rootLink = context.renderMarkdownInline('[原文](/team-sharing/context/sess_1?anchorEventId=evt_1&limit=21&order=asc)');
+  assert.match(rootLink, /href="\/team-sharing\/context\/sess_1\?anchorEventId=evt_1&amp;limit=21&amp;order=asc"/);
+  assert.match(rootLink, /target="_blank" rel="noreferrer"/);
+
+  const scopedLink = context.renderMarkdownInline('[原文](/s/tttttt1/team-sharing/context/sess_1?anchorEventId=evt_1)');
+  assert.match(scopedLink, /href="\/s\/tttttt1\/team-sharing\/context\/sess_1\?anchorEventId=evt_1"/);
+});

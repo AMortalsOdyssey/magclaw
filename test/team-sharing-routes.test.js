@@ -708,6 +708,17 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /addEventListener\('scroll', scheduleScrollCheck/);
   assert.match(res.body, /trailingUrlChars/);
   assert.match(res.body, /String\.fromCharCode\(96\)/);
+
+  const scopedRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET' },
+    scopedRes,
+    new URL('http://local/s/server-route/team-sharing/context/sess_route?anchorEventId=evt_2&vectorDocumentId=vec_1&queryId=tmq_1'),
+    deps,
+  ), true);
+  assert.equal(scopedRes.statusCode, 200);
+  assert.match(scopedRes.body, /MagClaw Team Sharing Context/);
+  assert.match(scopedRes.body, /\/api\/team-sharing\/context\/sess_route/);
 });
 
 test('team sharing context page redirects unauthenticated browsers to login with returnTo', async () => {

@@ -1023,8 +1023,9 @@ function cloudMemberCanRemove(member = {}) {
 }
 
 function safeMarkdownHref(value) {
-  const href = String(value || '').trim();
+  const href = String(value || '').trim().replace(/&amp;/gi, '&');
   if (/^(https?:|mailto:|#)/i.test(href)) return href;
+  if (/^\/(?:s\/[^/]+\/)?team-sharing\/context\/[^?#]+(?:[?#].*)?$/i.test(href)) return href;
   return '#';
 }
 

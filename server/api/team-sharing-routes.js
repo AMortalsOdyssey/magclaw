@@ -1273,7 +1273,8 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     return true;
   }
 
-  const contextPageMatch = url.pathname.match(/^\/team-sharing\/context\/([^/]+)$/);
+  const scopedContextPageMatch = url.pathname.match(/^\/s\/([^/]+)\/team-sharing\/context\/([^/]+)$/);
+  const contextPageMatch = url.pathname.match(/^\/team-sharing\/context\/([^/]+)$/) || (scopedContextPageMatch ? [scopedContextPageMatch[0], scopedContextPageMatch[2]] : null);
   if (req.method === 'GET' && contextPageMatch) {
     if (!requestHasTeamSharingAuth(req, { actor, teamSharingState, teamSharingAuthRequired, validTeamSharingToken })) {
       redirectToLoginWithReturnTo(res, url);

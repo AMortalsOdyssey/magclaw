@@ -1093,6 +1093,12 @@ function renderTeamSharingWorkspaceMarkdown(file = {}) {
   const html = typeof renderMarkdownWithPreviewAnchors === 'function'
     ? renderMarkdownWithPreviewAnchors(content)
     : renderMarkdown(content);
+  const contextHref = (href = '') => {
+    const value = String(href || '');
+    if (!value.startsWith('/team-sharing/context/')) return value;
+    const slug = encodeURIComponent(currentServerSlug());
+    return `/s/${slug}${value}`;
+  };
   return html
     .replace(/<a href="#team-sharing-workspace-file:([^"]+)"(?: target="_blank" rel="noreferrer")?>([\s\S]*?)<\/a>/g, (_match, encodedPath, label) => {
       const encodedTarget = String(encodedPath || '');
@@ -1101,8 +1107,8 @@ function renderTeamSharingWorkspaceMarkdown(file = {}) {
       if (!exists) return `<span class="team-sharing-workspace-missing-link">${label}</span>`;
       return `<a href="#team-sharing-workspace-file:${escapeHtml(encodedTarget)}" class="team-sharing-workspace-inline-link" data-action="open-team-sharing-workspace-file" data-path="${escapeHtml(target)}">${label}</a>`;
     })
-    .replace(/<a href="(\/team-sharing\/context\/[^"]+)" target="_blank" rel="noreferrer">([\s\S]*?)<\/a>/g, (_match, href, label) => (
-      `<a href="${href}" class="team-sharing-workspace-context-link">${label}</a>`
+    .replace(/<a href="((?:\/s\/[^/]+)?\/team-sharing\/context\/[^"]+)" target="_blank" rel="noreferrer">([\s\S]*?)<\/a>/g, (_match, href, label) => (
+      `<a href="${escapeHtml(contextHref(href))}" class="team-sharing-workspace-context-link" target="_blank" rel="noreferrer">${label}</a>`
     ));
 }
 
