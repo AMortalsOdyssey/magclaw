@@ -74,6 +74,28 @@ test('message Markdown renderer preserves protected Team Sharing context links',
   assert.match(scopedLink, /href="\/s\/tttttt1\/team-sharing\/context\/sess_1\?anchorEventId=evt_1"/);
 });
 
+test('message Markdown renderer renders code reference links as non-clickable code', async () => {
+  const context = await createMarkdownHarness();
+
+  const html = context.renderMarkdownInline([
+    '对应代码在 [auth-primitives.js](#team-sharing-workspace-file:server%2Fauth-primitives.js)、',
+    '[`auth.js`](#team-sharing-workspace-file:server%2Fauth.js)、',
+    '[server/cloud/postgres-schema.sql](#team-sharing-workspace-file:server%2Fcloud%2Fpostgres-schema.sql)。',
+    'Cookie 名 [`magclaw_session`](#team-sharing-workspace-file:server%2Fauth.js) 也只是代码引用。',
+    '[入口](#team-sharing-workspace-file:abstract.md) 和 [原文](/team-sharing/context/sess_1) 仍然可跳转。',
+  ].join(''));
+
+  assert.match(html, /<code>auth-primitives\.js<\/code>/);
+  assert.match(html, /<code>auth\.js<\/code>/);
+  assert.match(html, /<code>server\/cloud\/postgres-schema\.sql<\/code>/);
+  assert.match(html, /<code>magclaw_session<\/code>/);
+  assert.doesNotMatch(html, /href="#team-sharing-workspace-file:server%2Fauth-primitives\.js"/);
+  assert.doesNotMatch(html, /href="#team-sharing-workspace-file:server%2Fauth\.js"/);
+  assert.doesNotMatch(html, /href="#team-sharing-workspace-file:server%2Fcloud%2Fpostgres-schema\.sql"/);
+  assert.match(html, /<a href="#team-sharing-workspace-file:abstract\.md" target="_blank" rel="noreferrer">入口<\/a>/);
+  assert.match(html, /<a href="\/team-sharing\/context\/sess_1" target="_blank" rel="noreferrer">原文<\/a>/);
+});
+
 test('message Markdown renderer preserves soft line breaks and bold text', async () => {
   const context = await createMarkdownHarness();
 

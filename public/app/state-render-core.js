@@ -1029,6 +1029,31 @@ function safeMarkdownHref(value) {
   return '#';
 }
 
+function markdownLinkLabelText(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^`([\s\S]*)`$/, '$1')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;/gi, "'");
+}
+
+function markdownLinkLabelIsCodeReference(value) {
+  if (/^`[\s\S]+`$/.test(String(value || '').trim())) return true;
+  const text = markdownLinkLabelText(value).replace(/:\d+(?::\d+)?$/, '').trim();
+  if (!text || text.length > 160) return false;
+  const leaf = text.split(/[\\/]/).pop() || text;
+  if (/^(?:Dockerfile|Makefile|Rakefile|Gemfile|Procfile|Brewfile|Vagrantfile)$/i.test(leaf)) return true;
+  return /\.(?:[cm]?[jt]sx?|mjs|cjs|json|jsonl|ya?ml|toml|ini|env|sql|css|scss|sass|less|html?|svg|mdx?|markdown|py|go|rs|java|kt|kts|swift|rb|php|sh|bash|zsh|fish|ps1|bat|cmd|lock|txt|csv|tsv|log|xml|proto|graphql|gql|prisma|conf|config)$/i.test(leaf);
+}
+
+function renderMarkdownCodeReferenceLabel(value) {
+  const label = markdownLinkLabelText(value);
+  return `<code>${escapeHtml(label)}</code>${messageColorSwatchHtml(label)}`;
+}
+
 function stripMarkdownMetadata(text) {
   return String(text || '')
     .replace(/\s*<oai-mem-citation\b[^>]*>[\s\S]*?(?:<\/oai-mem-citation>|$)\s*/gi, '\n')
@@ -1080,8 +1105,11 @@ function renderMarkdownInline(value) {
     return marker;
   };
   let html = escapeHtml(value)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
+      if (markdownLinkLabelIsCodeReference(label)) return protect(renderMarkdownCodeReferenceLabel(label));
+      return protect(`<a href="${escapeHtml(safeMarkdownHref(href))}" target="_blank" rel="noreferrer">${label}</a>`);
+    })
     .replace(/`([^`]+)`/g, (_, code) => protect(`<code>${code}</code>${messageColorSwatchHtml(code)}`))
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => protect(`<a href="${escapeHtml(safeMarkdownHref(href))}" target="_blank" rel="noreferrer">${label}</a>`))
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>');
   html = renderMessageColorSwatches(html);
