@@ -202,21 +202,32 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
       printJson(await setTeamSharingProjectEnabled(flags, env, false));
       break;
     case 'status':
-      printJson({
-        ok: true,
-        project: await statusTeamSharingProject(flags, env),
-        hooks: await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env),
-        skill: await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env),
-      });
+      {
+        const project = await statusTeamSharingProject(flags, env);
+        const hooks = await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env);
+        const skill = await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env);
+        printJson({
+          ok: Boolean(project.ok && hooks.ok && skill.ok),
+          project,
+          hooks,
+          skill,
+        });
+      }
       break;
     case 'doctor':
-      printJson({
-        ok: true,
-        project: await statusTeamSharingProject(flags, env),
-        hooks: await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env),
-        skill: await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env),
-        upgrade: await checkTeamSharingUpgrade({ force: Boolean(flags.force) }, env).catch((error) => ({ ok: false, error: error.message })),
-      });
+      {
+        const project = await statusTeamSharingProject(flags, env);
+        const hooks = await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env);
+        const skill = await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env);
+        const upgrade = await checkTeamSharingUpgrade({ force: Boolean(flags.force) }, env).catch((error) => ({ ok: false, error: error.message }));
+        printJson({
+          ok: Boolean(project.ok && hooks.ok && skill.ok && upgrade.ok !== false),
+          project,
+          hooks,
+          skill,
+          upgrade,
+        });
+      }
       break;
     case 'upgrade':
       printJson(await checkTeamSharingUpgrade({ force: true }, env));

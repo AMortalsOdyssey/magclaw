@@ -19,6 +19,7 @@ const DEFAULT_PROFILE = 'default';
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
 const TEAM_SHARING_PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TEAM_SHARING_SKILL_TEMPLATE = path.join(TEAM_SHARING_PACKAGE_ROOT, 'skills', 'magclaw-team-sharing', 'SKILL.md');
+const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
 
 function now() {
   return new Date().toISOString();
@@ -35,6 +36,14 @@ function safeProfileName(value = DEFAULT_PROFILE) {
 function numberFlag(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function byteLength(value = '') {
+  return Buffer.byteLength(String(value || ''), 'utf8');
+}
+
+function stableHash(value = '') {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
 }
 
 function normalizeSearchMode(value = '') {
@@ -545,6 +554,125 @@ async function writeJsonFile(file, value) {
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function auditCharCount(value = '') {
+  return Array.from(String(value || '')).length;
+}
+
+function redactAuditText(value = '') {
+  return String(value || '')
+    .replace(/([?&](?:key|token|api_key|secret)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]')
+    .replace(/\b((?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*)[^\s,;'"<>]+/gi, '$1[redacted]');
+}
+
+function sanitizeAuditValue(value, key = '') {
+  const cleanKey = String(key || '').toLowerCase();
+  if (/token|authorization|secret|password|api[_-]?key/.test(cleanKey)) return '[redacted]';
+  if (typeof value === 'string') return redactAuditText(value);
+  if (Array.isArray(value)) return value.map((item) => sanitizeAuditValue(item, key));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
+      childKey,
+      sanitizeAuditValue(childValue, childKey),
+    ]));
+  }
+  return value;
+}
+
+function compactAuditError(error) {
+  if (!error) return null;
+  return sanitizeAuditValue({
+    name: error.name || 'Error',
+    message: error.message || String(error),
+    code: error.code || '',
+    status: error.status || 0,
+    statusText: error.statusText || '',
+    timeout: Boolean(error.timeout),
+    durationMs: Number(error.durationMs || 0) || 0,
+    response: error.responseData || null,
+  });
+}
+
+function loginAuditInfo({ profileName = DEFAULT_PROFILE, profileConfig = {}, projectConfig = {} } = {}) {
+  return sanitizeAuditValue({
+    profile: safeProfileName(profileName),
+    loggedIn: Boolean(profileConfig?.token),
+    userId: profileConfig?.user_id || '',
+    userEmail: profileConfig?.user_email || '',
+    workspaceId: profileConfig?.workspace_id || projectConfig?.workspaceId || '',
+    serverUrl: profileConfig?.server_url || projectConfig?.serverUrl || '',
+    tokenScope: profileConfig?.token_scope || '',
+  });
+}
+
+function buildUploadAuditContent(body = {}, { includeContent = true } = {}) {
+  const safeBody = sanitizeAuditValue(body || {});
+  const serialized = JSON.stringify(safeBody || {});
+  const events = Array.isArray(body?.events) ? body.events : [];
+  const eventText = events.map((event) => event?.text || event?.displayText || '').join('\n');
+  return {
+    contentHash: stableHash(serialized),
+    charCount: auditCharCount(serialized),
+    byteCount: byteLength(serialized),
+    eventCount: events.length,
+    eventTextCharCount: auditCharCount(eventText),
+    optionalLocalDigestCharCount: auditCharCount(body?.optionalLocalDigest || ''),
+    fromOrdinal: Number(body?.fromOrdinal || 0),
+    toOrdinal: Number(body?.toOrdinal || 0),
+    ...(includeContent ? { content: safeBody } : {}),
+  };
+}
+
+async function appendTeamSharingAuditRecord(file, record = {}, flags = {}, env = process.env) {
+  if (env.MAGCLAW_TEAM_SHARING_AUDIT === '0' || flags.audit === false || flags.noAudit) return { ok: true, skipped: true };
+  const safeRecord = sanitizeAuditValue({
+    version: 1,
+    recordedAt: now(),
+    ...record,
+  });
+  try {
+    await mkdir(path.dirname(file), { recursive: true });
+    await appendFile(file, `${JSON.stringify(safeRecord)}\n`);
+    await chmod(file, 0o600).catch(() => {});
+    return { ok: true, auditLog: file };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+async function readTeamSharingAuditTail(file, limit = 5) {
+  try {
+    const text = await readFile(file, 'utf8');
+    const records = text
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-Math.max(1, Number(limit) || 5))
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    return {
+      ok: true,
+      auditLog: file,
+      recordCount: text.split(/\r?\n/).filter(Boolean).length,
+      latest: records[records.length - 1] || null,
+      records,
+    };
+  } catch {
+    return {
+      ok: false,
+      auditLog: file,
+      recordCount: 0,
+      latest: null,
+      records: [],
+    };
+  }
+}
+
 let cachedTeamSharingPackageJson = null;
 
 async function readTeamSharingPackageJson() {
@@ -701,6 +829,7 @@ export function teamSharingPaths({ profile = DEFAULT_PROFILE, cwd = process.cwd(
     versionCache: path.join(sharingHome, 'version-cache.json'),
     projectConfig: path.join(projectDir, '.magclaw', 'team-sharing.yaml'),
     projectCursor: path.join(projectDir, '.magclaw', 'team-sharing-cursor.json'),
+    projectAuditLog: path.join(projectDir, '.magclaw', 'team-sharing-audit.jsonl'),
   };
 }
 
@@ -831,13 +960,16 @@ export async function statusTeamSharingProject(flags = {}, env = process.env) {
   const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   const project = await readTeamSharingProjectConfig({ profile, cwd: flags.cwd || process.cwd(), env });
   const profileState = await readTeamSharingProfileConfig(profile, env);
+  const audit = await readTeamSharingAuditTail(project.paths.projectAuditLog, Number(flags.auditLimit || 5) || 5);
   return {
     ok: Boolean(project.config),
     projectConfig: project.paths.projectConfig,
     profileConfig: profileState.paths.profileConfig,
+    auditLog: project.paths.projectAuditLog,
     configured: Boolean(project.config),
     loggedIn: Boolean(profileState.config?.token),
     config: project.config || null,
+    audit,
   };
 }
 
@@ -859,20 +991,68 @@ export async function unsetTeamSharingProject(flags = {}, env = process.env) {
   return { ok: true, removed: Boolean(project.config), projectConfig: project.paths.projectConfig };
 }
 
-async function teamSharingRequestJson({ serverUrl, token = '', method = 'GET', pathname = '/', body = null } = {}) {
-  const response = await fetch(`${normalizeServerUrl(serverUrl)}${pathname}`, {
-    method,
-    headers: {
-      ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || data.message || `${response.status} ${response.statusText}`);
-  return data;
+function requestTimeoutMs(flags = {}, env = process.env) {
+  return Math.max(1000, Number(flags.requestTimeoutMs || env.MAGCLAW_TEAM_SHARING_REQUEST_TIMEOUT_MS || DEFAULT_REQUEST_TIMEOUT_MS) || DEFAULT_REQUEST_TIMEOUT_MS);
 }
 
+async function teamSharingRequest({ serverUrl, token = '', method = 'GET', pathname = '/', body = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const startedAtMs = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS) || DEFAULT_REQUEST_TIMEOUT_MS));
+  const bodyText = body ? JSON.stringify(body) : '';
+  try {
+    const response = await fetch(`${normalizeServerUrl(serverUrl)}${pathname}`, {
+      method,
+      headers: {
+        ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      signal: controller.signal,
+      ...(body ? { body: bodyText } : {}),
+    });
+    const data = await response.json().catch(() => ({}));
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      data,
+      durationMs: Date.now() - startedAtMs,
+      timeout: false,
+      requestBodyCharCount: auditCharCount(bodyText),
+      requestBodyByteCount: byteLength(bodyText),
+    };
+  } catch (error) {
+    const timeout = error?.name === 'AbortError';
+    return {
+      ok: false,
+      status: 0,
+      statusText: timeout ? 'timeout' : '',
+      data: {},
+      durationMs: Date.now() - startedAtMs,
+      timeout,
+      error: timeout ? `Team Sharing request timed out after ${timeoutMs}ms.` : String(error?.message || error),
+      requestBodyCharCount: auditCharCount(bodyText),
+      requestBodyByteCount: byteLength(bodyText),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function teamSharingRequestJson({ serverUrl, token = '', method = 'GET', pathname = '/', body = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const request = await teamSharingRequest({ serverUrl, token, method, pathname, body, timeoutMs });
+  const data = request.data || {};
+  if (!request.ok) {
+    const error = new Error(data.error || data.message || request.error || `${request.status} ${request.statusText}`);
+    error.status = request.status;
+    error.statusText = request.statusText;
+    error.responseData = data;
+    error.durationMs = request.durationMs;
+    error.timeout = request.timeout;
+    throw error;
+  }
+  return data;
+}
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1088,6 +1268,32 @@ async function writeTeamSharingCursor(file, runtime, cursor) {
 }
 
 export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
+  const auditStartedAtMs = Date.now();
+  const auditStartedAt = now();
+  const auditPaths = teamSharingPaths({
+    profile: flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE,
+    cwd: flags.cwd || process.cwd(),
+    env,
+  });
+  let auditFile = auditPaths.projectAuditLog;
+  const baseAudit = {
+    operation: 'sync',
+    startedAt: auditStartedAt,
+    cwdHash: stableHash(path.resolve(flags.cwd || process.cwd())),
+    trigger: {
+      runtime: normalizeRuntime(flags.runtime || 'codex'),
+      hookEvent: stringFlagValue(flags.hookEvent || flags.hookEventName),
+      integration: String(flags.integration || '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''),
+      dryRun: Boolean(flags.dryRun || flags.dry_run),
+    },
+  };
+  const writeAudit = async (patch = {}) => appendTeamSharingAuditRecord(auditFile, {
+    ...baseAudit,
+    ...patch,
+    completedAt: now(),
+    durationMs: Date.now() - auditStartedAtMs,
+  }, flags, env);
+
   const resolvedTranscript = resolveTeamSharingTranscriptPath(flags, env);
   const transcriptPath = resolvedTranscript.path;
   const hookPayload = resolvedTranscript.hookPayload || {};
@@ -1098,21 +1304,65 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
       ['event_payload', 'hook_event_name'],
       ['payload', 'hook_event_name'],
     ]);
+  baseAudit.trigger.hookEvent = hookEvent || baseAudit.trigger.hookEvent;
+  baseAudit.transcript = {
+    pathSource: resolvedTranscript.source || '',
+    pathHash: transcriptPath ? stableHash(path.resolve(transcriptPath)) : '',
+  };
   if (!transcriptPath) {
-    if (hookEvent) return { ok: true, empty: true, reason: 'missing_transcript_path' };
+    if (hookEvent) {
+      await writeAudit({
+        ok: true,
+        status: 'skipped',
+        phase: 'resolve_transcript',
+        reason: 'missing_transcript_path',
+      });
+      return { ok: true, empty: true, reason: 'missing_transcript_path' };
+    }
     throw new Error('Usage: team-sharing sync --transcript <path>');
   }
+  try {
   const runtime = normalizeRuntime(flags.runtime || 'codex');
   const { project, profile, serverUrl, token } = await resolveTeamSharingClient(flags, env);
+  auditFile = project.paths.projectAuditLog || auditFile;
+  baseAudit.project = {
+    projectKey: project.config.projectKey,
+    workspaceId: project.config.workspaceId,
+    channelId: project.config.channelId,
+    hasChannelPath: Boolean(project.config.channelPath),
+    serverUrl: flags.serverUrl || serverUrl || profile.config?.server_url || DEFAULT_SERVER_URL,
+  };
+  baseAudit.login = loginAuditInfo({
+    profileName: flags.profile || project.config.profile || DEFAULT_PROFILE,
+    profileConfig: profile.config || {},
+    projectConfig: project.config || {},
+  });
   if (project.config.enabled === false) {
+    await writeAudit({
+      ok: true,
+      status: 'skipped',
+      phase: 'config',
+      reason: 'project_disabled',
+    });
     if (hookEvent) return { ok: true, empty: true, reason: 'project_disabled' };
-    throw new Error('Team Sharing is disabled for this project.');
+    const error = new Error('Team Sharing is disabled for this project.');
+    error.auditRecorded = true;
+    throw error;
   }
   const runtimeConfig = project.config.runtimes?.[runtime];
   if (hookEvent && runtimeConfig && runtimeConfig.hooksEnabled === false) {
+    await writeAudit({
+      ok: true,
+      status: 'skipped',
+      phase: 'config',
+      reason: 'runtime_hooks_disabled',
+    });
     return { ok: true, empty: true, reason: 'runtime_hooks_disabled' };
   }
   const content = await readFile(path.resolve(transcriptPath), 'utf8');
+  baseAudit.transcript.charCount = auditCharCount(content);
+  baseAudit.transcript.byteCount = byteLength(content);
+  baseAudit.transcript.hash = stableHash(content);
   const explicitSessionTitle = resolveTeamSharingSessionTitle({ ...flags, runtime }, env, hookPayload);
   const parsed = parseTeamSharingTranscript(content, {
     runtime,
@@ -1120,6 +1370,13 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     title: explicitSessionTitle,
     projectDir: flags.cwd || process.cwd(),
   });
+  baseAudit.session = {
+    runtime: parsed.runtime,
+    sessionId: parsed.sessionId,
+    titleHash: stableHash(explicitSessionTitle || parsed.title || path.basename(transcriptPath)),
+    parsedEventCount: parsed.events.length,
+    parsedEventTextCharCount: auditCharCount(parsed.events.map((event) => event.text || '').join('\n')),
+  };
   const cursor = await readJsonFile(project.paths.projectCursor, {});
   const lastOrdinal = Number(flags.full ? 0 : cursorLastOrdinal(cursor, parsed.runtime, parsed.sessionId));
   const syncPackage = buildTeamSharingSyncPackageFromTranscript(content, {
@@ -1148,8 +1405,37 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
       };
     }
   }
-  if (syncPackage.empty || !syncPackage.body) return { ok: true, empty: true, cursor: syncPackage.cursor };
+  const includeAuditContent = env.MAGCLAW_TEAM_SHARING_AUDIT_CONTENT !== '0' && flags.auditContent !== false;
+  if (syncPackage.empty || !syncPackage.body) {
+    await writeAudit({
+      ok: true,
+      status: 'skipped',
+      phase: 'build_package',
+      reason: 'no_incremental_events',
+      cursor: syncPackage.cursor,
+      upload: buildUploadAuditContent(syncPackage.body || {}, { includeContent: false }),
+      summary: {
+        localPackageBuilt: false,
+        cloudAbstractRevision: 0,
+        cloudIndexedDocumentCount: 0,
+      },
+    });
+    return { ok: true, empty: true, cursor: syncPackage.cursor };
+  }
+  const uploadAudit = buildUploadAuditContent(syncPackage.body, { includeContent: includeAuditContent });
   if (flags.dryRun || flags.dry_run) {
+    await writeAudit({
+      ok: true,
+      status: 'dry_run',
+      phase: 'upload',
+      cursor: syncPackage.cursor,
+      upload: uploadAudit,
+      summary: {
+        localPackageBuilt: true,
+        cloudAbstractRevision: 0,
+        cloudIndexedDocumentCount: 0,
+      },
+    });
     return {
       ok: true,
       dryRun: true,
@@ -1162,20 +1448,101 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
       cursor: syncPackage.cursor,
     };
   }
-  const result = await teamSharingRequestJson({
+  const request = await teamSharingRequest({
     serverUrl: flags.serverUrl || serverUrl || profile.config?.server_url || DEFAULT_SERVER_URL,
     token,
     method: 'POST',
     pathname: '/api/team-sharing/sync',
     body: syncPackage.body,
+    timeoutMs: requestTimeoutMs(flags, env),
   });
+  const result = request.data || {};
+  if (!request.ok) {
+    const error = new Error(result.error || result.message || request.error || `${request.status} ${request.statusText}`);
+    error.status = request.status;
+    error.statusText = request.statusText;
+    error.responseData = result;
+    error.durationMs = request.durationMs;
+    error.timeout = request.timeout;
+    await writeAudit({
+      ok: false,
+      status: request.timeout ? 'timeout' : 'error',
+      phase: 'upload',
+      cursor: syncPackage.cursor,
+      upload: uploadAudit,
+      request: {
+        method: 'POST',
+        pathname: '/api/team-sharing/sync',
+        statusCode: request.status,
+        statusText: request.statusText,
+        durationMs: request.durationMs,
+        timeout: request.timeout,
+        requestBodyCharCount: request.requestBodyCharCount,
+        requestBodyByteCount: request.requestBodyByteCount,
+      },
+      cloud: {
+        ok: false,
+        statusCode: request.status,
+        response: result,
+      },
+      summary: {
+        localPackageBuilt: true,
+        cloudAbstractRevision: Number(result?.abstractRevision || 0),
+        cloudIndexedDocumentCount: Number(result?.indexedDocumentCount || 0),
+      },
+      error: compactAuditError(error),
+    });
+    error.auditRecorded = true;
+    throw error;
+  }
   if (result?.ok !== false) {
     await writeTeamSharingCursor(project.paths.projectCursor, parsed.runtime, syncPackage.cursor);
   }
+  await writeAudit({
+    ok: result?.ok !== false,
+    status: result?.ok === false ? 'error' : 'uploaded',
+    phase: 'upload',
+    cursor: syncPackage.cursor,
+    upload: uploadAudit,
+    request: {
+      method: 'POST',
+      pathname: '/api/team-sharing/sync',
+      statusCode: request.status,
+      statusText: request.statusText,
+      durationMs: request.durationMs,
+      timeout: request.timeout,
+      requestBodyCharCount: request.requestBodyCharCount,
+      requestBodyByteCount: request.requestBodyByteCount,
+    },
+    cloud: {
+      ok: result?.ok !== false,
+      statusCode: request.status,
+      duplicate: Boolean(result?.duplicate),
+      appendedEventCount: Number(result?.appendedEventCount || 0),
+      response: result,
+    },
+    summary: {
+      localPackageBuilt: true,
+      cloudAbstractRevision: Number(result?.abstractRevision || 0),
+      cloudIndexedDocumentCount: Number(result?.indexedDocumentCount || 0),
+      generated: Number(result?.abstractRevision || 0) > 0,
+    },
+  });
   return {
     ...result,
     cursor: syncPackage.cursor,
   };
+  } catch (error) {
+    if (!error?.auditRecorded) {
+      await writeAudit({
+        ok: false,
+        status: error?.timeout ? 'timeout' : 'error',
+        phase: error?.status || error?.responseData ? 'upload' : 'sync',
+        error: compactAuditError(error),
+      });
+    }
+    throw error;
+  }
 }
 
 export async function searchTeamSharing(flags = {}, env = process.env) {
@@ -1350,6 +1717,53 @@ function hookEventsForRuntime(runtime) {
     : ['Stop', 'PreCompact', 'SessionStart'];
 }
 
+function firstCommandToken(command = '') {
+  const text = String(command || '').trim();
+  if (!text) return '';
+  const quote = text[0];
+  if (quote === '"' || quote === "'") {
+    let token = '';
+    for (let index = 1; index < text.length; index += 1) {
+      const char = text[index];
+      if (char === quote) return token;
+      token += char;
+    }
+    return token;
+  }
+  return text.split(/\s+/)[0] || '';
+}
+
+function commandExistsInPath(commandName = '', env = process.env) {
+  const paths = String(env.PATH || '').split(path.delimiter).filter(Boolean);
+  const platform = String(env.MAGCLAW_TEAM_SHARING_PLATFORM || process.platform).toLowerCase();
+  const extensions = platform === 'win32'
+    ? String(env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+    : [''];
+  for (const dir of paths) {
+    for (const extension of extensions) {
+      const candidate = path.join(dir, platform === 'win32' && path.extname(commandName) ? commandName : `${commandName}${extension}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return '';
+}
+
+function hookCommandStatus(command = '', env = process.env) {
+  const token = firstCommandToken(command);
+  if (!token) return { command: '', executable: false, reason: 'missing_command' };
+  const hasPathSeparator = token.includes('/') || token.includes('\\');
+  const resolved = hasPathSeparator
+    ? path.resolve(token)
+    : commandExistsInPath(token, env);
+  const executable = Boolean(resolved && existsSync(resolved));
+  return {
+    command: sanitizeAuditValue(token),
+    executable,
+    resolvedPath: executable ? sanitizeAuditValue(resolved) : '',
+    reason: executable ? 'ok' : (hasPathSeparator ? 'command_path_missing' : 'command_not_found_in_path'),
+  };
+}
+
 export async function installTeamSharingHooks(flags = {}, env = process.env) {
   const installTarget = await resolveInstallTarget(flags, env, { prompt: true });
   const cwd = path.resolve(installTarget.projectDir || flags.cwd || process.cwd());
@@ -1385,15 +1799,29 @@ export async function statusTeamSharingHooks(flags = {}, env = process.env) {
     const configPath = targetConfigPath(runtime, flags, env, installTarget);
     const config = await readJsonFile(configPath, {});
     const installed = [];
+    const commandChecks = [];
     for (const eventName of hookEventsForRuntime(runtime)) {
       for (const entry of Array.isArray(config.hooks?.[eventName]) ? config.hooks[eventName] : []) {
         for (const hook of Array.isArray(entry.hooks) ? entry.hooks : []) {
-          if (String(hook.command || '').includes('--integration team-sharing')) installed.push(eventName);
+          if (String(hook.command || '').includes('--integration team-sharing')) {
+            installed.push(eventName);
+            commandChecks.push({
+              eventName,
+              ...hookCommandStatus(hook.command, env),
+            });
+          }
         }
       }
     }
-    output[key] = { ok: true, runtime, configPath, installed };
+    output[key] = {
+      ok: installed.length > 0 && commandChecks.every((check) => check.executable),
+      runtime,
+      configPath,
+      installed,
+      commandChecks,
+    };
   }
+  output.ok = Object.values(output).every((item) => item === true || typeof item !== 'object' || item.ok !== false);
   return output;
 }
 
@@ -1456,12 +1884,19 @@ export async function installTeamSharingSkill(flags = {}, env = process.env) {
 
 export async function statusTeamSharingSkill(flags = {}, env = process.env) {
   const installTarget = await resolveInstallTarget(flags, env, { prompt: false });
+  const targets = selectedTargets(flags, env);
   const installed = [];
-  for (const runtime of selectedTargets(flags, env)) {
+  for (const runtime of targets) {
     const skillPath = path.join(skillRootForTarget(runtime, flags, env, installTarget), 'skills', 'magclaw-team-sharing', 'SKILL.md');
     if (existsSync(skillPath)) installed.push({ target: runtime, path: skillPath });
   }
-  return { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', installed };
+  return {
+    ok: installed.length === targets.length,
+    scope: installTarget.scope,
+    projectDir: installTarget.projectDir || '',
+    expectedTargets: targets,
+    installed,
+  };
 }
 
 export async function removeTeamSharingSkill(flags = {}, env = process.env) {

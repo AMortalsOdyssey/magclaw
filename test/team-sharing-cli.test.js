@@ -26,6 +26,7 @@ import {
   searchTeamSharing,
   setupTeamSharing,
   statusTeamSharingHooks,
+  statusTeamSharingProject,
   statusTeamSharingSkill,
   syncTeamSharingTranscript,
   teamSharingPaths,
@@ -240,6 +241,112 @@ test('team sharing cli sync uploads only new transcript events and saves cursor'
     assert.equal(calls[0].body.toOrdinal, 2);
     assert.equal(cursor.sessions.codex.sess_cli.lastOrdinal, 2);
     assert.equal(calls[0].init.headers.authorization, 'Bearer team-sharing-token-secret');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing cli sync writes local audit records with upload metrics and cloud feedback', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-audit-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-audit-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'mc://magclaw/server/ws_team/channel/chan_team?key=route-secret',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_audit', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '审计上报内容' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '审计上报结果' }] } }),
+  ].join('\n'));
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 202,
+    statusText: 'Accepted',
+    json: async () => ({ ok: true, appendedEventCount: 2, abstractRevision: 1, indexedDocumentCount: 2, messageId: 'msg_audit' }),
+  });
+  try {
+    const result = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', hookEvent: 'Stop', integration: 'team-sharing' }, env);
+    const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
+    const records = auditText.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    const status = await statusTeamSharingProject({ cwd, auditLimit: 1 }, env);
+
+    assert.equal(result.ok, true);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].status, 'uploaded');
+    assert.equal(records[0].upload.eventCount, 2);
+    assert.ok(records[0].upload.charCount > 0);
+    assert.equal(records[0].request.statusCode, 202);
+    assert.equal(records[0].request.timeout, false);
+    assert.equal(records[0].cloud.appendedEventCount, 2);
+    assert.equal(records[0].summary.generated, true);
+    assert.equal(records[0].summary.cloudAbstractRevision, 1);
+    assert.equal(records[0].login.loggedIn, true);
+    assert.equal(records[0].login.userEmail, '');
+    assert.doesNotMatch(JSON.stringify(records[0]), /team-sharing-token-secret|route-secret/);
+    assert.equal(status.audit.latest.status, 'uploaded');
+    assert.equal(status.audit.recordCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing cli sync audits cloud upload failures with status and error detail', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-audit-error-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-audit-error-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_audit_error', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '失败也要审计' }] } }),
+  ].join('\n'));
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 504,
+    statusText: 'Gateway Timeout',
+    json: async () => ({ ok: false, error: 'cloud timeout' }),
+  });
+  try {
+    await assert.rejects(
+      () => syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', hookEvent: 'Stop', integration: 'team-sharing' }, env),
+      /cloud timeout/,
+    );
+    const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
+    const records = auditText.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+
+    assert.equal(records.length, 1);
+    assert.equal(records[0].status, 'error');
+    assert.equal(records[0].request.statusCode, 504);
+    assert.equal(records[0].cloud.response.error, 'cloud timeout');
+    assert.equal(records[0].error.status, 504);
+    assert.doesNotMatch(JSON.stringify(records[0]), /team-sharing-token-secret/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -585,6 +692,8 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   assert.match(ps1Shim, /team-sharing @args/);
   assert.equal(hooks.codex.installed.length, 3);
   assert.equal(hooks.claude.installed.length, 4);
+  assert.equal(hooks.codex.commandChecks.every((check) => check.executable), true);
+  assert.equal(hooks.claude.commandChecks.every((check) => check.executable), true);
   assert.equal(skill.installed.length, 2);
   assert.ok(skill.installed.some((item) => item.path === path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md')));
   assert.ok(skill.installed.some((item) => item.path === path.join(cwd, '.claude', 'skills', 'magclaw-team-sharing', 'SKILL.md')));
@@ -611,6 +720,31 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   const removedSkill = await removeTeamSharingSkill({ cwd, target: 'codex' }, env);
   assert.equal(removedSkill.removed.length, 1);
   await assert.rejects(() => readFile(path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8'), /ENOENT/);
+});
+
+test('team sharing hook status reports missing bare team-sharing command', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-status-command-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-status-command-home-'));
+  await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-status-fixture"}\n');
+  const env = {
+    HOME: home,
+    CODEX_HOME: path.join(home, '.codex'),
+    MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'),
+    PATH: '',
+  };
+  await installTeamSharingHooks({
+    cwd,
+    target: 'codex',
+    teamSharingCommand: 'team-sharing',
+  }, env);
+
+  const hooks = await statusTeamSharingHooks({ cwd, target: 'codex' }, env);
+
+  assert.equal(hooks.codex.ok, false);
+  assert.equal(hooks.codex.installed.length, 3);
+  assert.equal(hooks.codex.commandChecks.length, 3);
+  assert.equal(hooks.codex.commandChecks[0].executable, false);
+  assert.equal(hooks.codex.commandChecks[0].reason, 'command_not_found_in_path');
 });
 
 test('team sharing setup reports project scope after init creates a project config', async () => {
