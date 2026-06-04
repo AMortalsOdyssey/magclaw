@@ -211,9 +211,9 @@ test('team sharing route exposes a session workspace with abstract, topics, and 
   assert.match(debugFile.content, /Cloud Merge/);
   const topicFile = workspaceRes.data.files.find((file) => file.path === 'topics/rerank-feedback.md');
   assert.doesNotMatch(topicFile.content, /Raw IDs/);
-  assert.match(topicFile.content, /Raw ID: `evt_1`/);
   assert.match(topicFile.content, /\[原文\]\(\/team-sharing\/context\/sess_route\?anchorEventId=evt_1&limit=21&order=asc\)/);
   assert.doesNotMatch(topicFile.content, /\n\s*\[打开原文\]/);
+  assert.doesNotMatch(topicFile.content, /\n\s*- Raw ID:/);
   assert.match(topicFile.content, /Original Context/);
   assert.doesNotMatch(topicFile.content, /Source Anchors/);
 
@@ -225,6 +225,41 @@ test('team sharing route exposes a session workspace with abstract, topics, and 
     { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_other', humanId: 'hum_other' } }) },
   ), true);
   assert.equal(deniedRes.statusCode, 403);
+});
+
+test('team sharing workspace normalizes legacy standalone original-context links', async () => {
+  const deps = routeDeps({ readJson: async () => syncBody() });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
+  deps.state.teamSharing.abstracts.sess_route.topics['rerank-feedback'].overviewMarkdown = [
+    '# rerank-feedback',
+    '',
+    '## Summary',
+    '- 旧摘要第一条。',
+    '  - Raw ID: `evt_1`',
+    '  - 原文：',
+    '    [打开原文](/team-sharing/context/sess_route?anchorEventId=evt_1&limit=21&order=asc)',
+    '- 旧摘要第二条。',
+  ].join('\n');
+
+  const workspaceRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    workspaceRes,
+    new URL('http://local/api/team-sharing/workspace/sess_route'),
+    deps,
+  ), true);
+
+  const topicFile = workspaceRes.data.files.find((file) => file.path === 'topics/rerank-feedback.md');
+  assert.match(topicFile.content, /- 旧摘要第一条。（\[原文\]\(\/team-sharing\/context\/sess_route\?anchorEventId=evt_1&limit=21&order=asc\)）/);
+  assert.match(topicFile.content, /- 旧摘要第二条。/);
+  assert.doesNotMatch(topicFile.content, /Raw ID: `evt_1`/);
+  assert.doesNotMatch(topicFile.content, /\n\s*\[打开原文\]/);
+  assert.doesNotMatch(topicFile.content, /\n\s*- 原文：/);
 });
 
 test('team sharing route rejects unauthenticated cloud sync unless scoped token is valid', async () => {

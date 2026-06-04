@@ -450,6 +450,56 @@ function sourceContextUrlForEvent(sessionId = '', eventId = '') {
   return `/team-sharing/context/${encodeURIComponent(sessionId)}${params.toString() ? `?${params.toString()}` : ''}`;
 }
 
+function workspaceSourceEventId(markdown = '', fallbackIds = []) {
+  const text = String(markdown || '');
+  const rawIdMatch = text.match(/(?:^|\n)\s*(?:[-*+]\s+)?Raw ID[:：]\s*`?([^\s`]+)`?/i);
+  if (rawIdMatch?.[1]) return rawIdMatch[1];
+  const contextLinkMatch = text.match(/\/team-sharing\/context\/[^)\s?]+[^)\s]*[?&]anchorEventId=([^&)\s]+)/);
+  if (contextLinkMatch?.[1]) {
+    try {
+      return decodeURIComponent(contextLinkMatch[1]);
+    } catch {
+      return contextLinkMatch[1];
+    }
+  }
+  return asArray(fallbackIds).map((item) => String(item || '').trim()).find(Boolean) || '';
+}
+
+function stripWorkspaceSourceBlocks(markdown = '') {
+  return String(markdown || '').split('\n').filter((line) => {
+    const text = line.trim();
+    if (!text) return true;
+    if (/^(?:[-*+]\s+)?Raw ID[:：]/i.test(text)) return false;
+    if (/^(?:[-*+]\s+)?原文[:：]\s*$/.test(text)) return false;
+    if (/^(?:[-*+]\s+)?原文[:：]\s*暂无可定位原文/.test(text)) return false;
+    if (/^(?:[-*+]\s+)?\[打开原文\]\(/.test(text)) return false;
+    if (/^(?:[-*+]\s+)?\[围绕首条来源打开\]\(/.test(text)) return false;
+    return true;
+  }).join('\n');
+}
+
+function appendWorkspaceInlineSource(markdown = '', sessionId = '', sourceEventId = '') {
+  const eventId = String(sourceEventId || '').trim();
+  if (!eventId || /\[原文\]\(\/team-sharing\/context\//.test(markdown)) return markdown;
+  const suffix = `（[原文](${sourceContextUrlForEvent(sessionId, eventId)})）`;
+  const lines = String(markdown || '').split('\n');
+  const index = lines.findIndex((line) => {
+    const text = line.trim();
+    return text
+      && !/^#+\s+/.test(text)
+      && !/^```/.test(text)
+      && !/^\[.+\]\(/.test(text);
+  });
+  if (index >= 0) lines[index] = `${lines[index]}${suffix}`;
+  return lines.join('\n');
+}
+
+function normalizeWorkspaceMarkdownSources(markdown = '', { sessionId = '', sourceEventIds = [] } = {}) {
+  const sourceEventId = workspaceSourceEventId(markdown, sourceEventIds);
+  const stripped = stripWorkspaceSourceBlocks(markdown).replace(/\n{3,}/g, '\n\n').trimEnd();
+  return appendWorkspaceInlineSource(stripped, sessionId, sourceEventId);
+}
+
 function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
   const session = teamSharingState.sessions?.[sessionId];
   const abstract = teamSharingState.abstracts?.[sessionId];
@@ -473,18 +523,29 @@ function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
     sourceEventIds: asArray(activity.sourceEventIds),
     createdAt: activity.createdAt || '',
   })), null, 2);
+  const abstractMarkdown = normalizeWorkspaceMarkdownSources(abstract.abstractMarkdown || '', {
+    sessionId,
+    sourceEventIds: asArray(abstract.sourceEventIds),
+  });
   const files = [
-    teamSharingWorkspaceFile('abstract.md', abstract.abstractMarkdown || ''),
+    teamSharingWorkspaceFile('abstract.md', abstractMarkdown),
     teamSharingWorkspaceFile('debug-log.md', abstract.debugLogMarkdown || [
       `# ${session.title || 'Team Sharing Session'} Debug Log`,
       '',
       'No sync log entries yet.',
     ].join('\n')),
     teamSharingWorkspaceFile('activities.json', activitiesJson, { previewKind: 'json' }),
-    ...topics.map((topic) => teamSharingWorkspaceFile(`topics/${topic.topicId}.md`, topic.overviewMarkdown || `# ${topic.title || topic.topicId}\n\n${topic.overview || ''}`, {
-      topicId: topic.topicId,
-      sourceEventIds: asArray(topic.sourceEventIds),
-    })),
+    ...topics.map((topic) => {
+      const sourceEventIds = asArray(topic.sourceEventIds);
+      const markdown = normalizeWorkspaceMarkdownSources(
+        topic.overviewMarkdown || `# ${topic.title || topic.topicId}\n\n${topic.overview || ''}`,
+        { sessionId, sourceEventIds },
+      );
+      return teamSharingWorkspaceFile(`topics/${topic.topicId}.md`, markdown, {
+        topicId: topic.topicId,
+        sourceEventIds,
+      });
+    }),
   ];
   const folders = [
     teamSharingWorkspaceFolder('topics', 'topics'),

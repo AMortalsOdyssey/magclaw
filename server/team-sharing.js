@@ -608,8 +608,12 @@ function renderTopicMarkdown(topic = {}, session = {}) {
     ...renderBulletList(topic.nextActions),
     '',
     '## Original Context',
-    primarySource ? '围绕下面这条 Raw ID 打开动态原始上下文，默认显示前后各 10 条消息。' : '暂无可定位原始上下文。',
-    ...renderSourceReferenceLines(session.sessionId, primarySource),
+    primarySource
+      ? [
+        `点击正文里的 ${sourceReferenceLink(session.sessionId, primarySource)} 可以打开动态原始上下文。`,
+        '页面会以该消息为中心，按时间正序展示前后消息，并支持继续向上或向下加载。',
+      ].join('\n')
+      : '暂无可定位原始上下文。',
   ].join('\n');
 }
 
