@@ -1,6 +1,8 @@
 import {
   applyTeamSharingFeedback,
   contextWindowForTeamSharingSession,
+  normalizeTeamSharingSearchMode,
+  normalizeTeamSharingSearchSort,
   rankTeamSharingCandidates,
   syncTeamSharingBatch,
 } from '../team-sharing.js';
@@ -676,6 +678,21 @@ function sendContextHtml(res, {
     .text blockquote,
     .context-main blockquote,
     .context-quote-text blockquote { margin:8px 0; border-left:3px solid #cbd5e1; padding-left:10px; color:#475569; }
+    .context-table-wrap { width:100%; overflow-x:auto; margin:10px 0 12px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    .context-table { width:100%; border-collapse:collapse; min-width:520px; font-size:13px; line-height:1.55; }
+    .context-table th { text-align:left; background:#f1f5f9; color:#334155; font-weight:850; border-bottom:1px solid var(--line); }
+    .context-table th,
+    .context-table td { padding:9px 11px; vertical-align:top; border-right:1px solid #e5edf4; }
+    .context-table th:last-child,
+    .context-table td:last-child { border-right:0; }
+    .context-table tr + tr td { border-top:1px solid #edf2f7; }
+    .context-table tr:hover td { background:#fbfdff; }
+    .context-sources { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin:10px 0 0; color:var(--muted); font-size:13px; }
+    .context-sources-label { font-size:11px; font-weight:900; text-transform:uppercase; letter-spacing:0; color:#0f6f89; }
+    .context-source-link { display:inline-flex; align-items:center; min-height:24px; border:1px solid #bae6fd; background:#f0f9ff; color:#0369a1; border-radius:999px; padding:2px 8px; font-weight:800; text-decoration:none; }
+    .context-source-link:hover,
+    .context-source-link:focus-visible { border-color:#0891b2; background:#e0f2fe; outline:0; }
+    .context-status { min-height:20px; text-align:center; color:var(--muted); font-size:12px; margin:-4px 0 10px; }
     .empty { color:var(--muted); text-align:center; padding:48px 0; }
   </style>
 </head>
@@ -689,6 +706,7 @@ function sendContextHtml(res, {
     <div class="controls"><button id="${isDesc ? 'load-more-next' : 'load-more-prev'}" type="button">${isDesc ? 'Load newer' : 'Load previous'}</button></div>
     <section id="events" aria-live="polite"><div class="empty">Loading context...</div></section>
     <div class="controls"><button id="${isDesc ? 'load-more-prev' : 'load-more-next'}" type="button">${isDesc ? 'Load older' : 'Load next'}</button></div>
+    <div id="context-status" class="context-status" aria-live="polite"></div>
     <div id="bottom-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
   </main>
   <script>
@@ -703,6 +721,7 @@ function sendContextHtml(res, {
     const eventsEl = document.getElementById('events');
     const prevBtn = document.getElementById('load-more-prev');
     const nextBtn = document.getElementById('load-more-next');
+    const statusEl = document.getElementById('context-status');
     const topSentinel = document.getElementById('top-sentinel');
     const bottomSentinel = document.getElementById('bottom-sentinel');
     const topDirection = order === 'desc' ? 'next' : 'prev';
@@ -760,7 +779,7 @@ function sendContextHtml(res, {
       const codePattern = new RegExp(tick + '([^' + tick + ']+)' + tick, 'g');
       let html = escapeHtml(text)
         .replace(codePattern, (_match, code) => protect('<code>' + code + '</code>'))
-        .replace(/\\[([^\\]\\n]+)\\]\\(([^)\\n]+)\\)/g, (_match, label, href) => protect('<a href="' + escapeHtml(safeContextHref(href)) + '" target="_blank" rel="noreferrer">' + label + '</a>'))
+        .replace(/\\[([^\\]\\n]+)\\]\\(([^)\\n]+)\\)/g, (_match, label, href) => protect('<a href="' + escapeHtml(safeContextHref(href)) + '" target="_blank" rel="noreferrer">' + escapeHtml(label) + '</a>'))
         .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
         .replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
       html = renderContextAutolinkedUrls(html);
@@ -768,6 +787,58 @@ function sendContextHtml(res, {
         html = html.replaceAll('CTXINLINE' + index + 'TOKEN', token);
       });
       return html;
+    }
+    function markdownLinksFromLine(line) {
+      const links = [];
+      String(line || '').replace(/\\[([^\\]\\n]+)\\]\\(([^)\\n]+)\\)/g, (_match, label, href) => {
+        const safeHref = safeContextHref(href);
+        if (safeHref && safeHref !== '#') links.push({ label: String(label || '').trim(), href: safeHref });
+        return '';
+      });
+      return links;
+    }
+    function renderContextSourcesLine(line) {
+      const match = String(line || '').trim().match(/^Sources?\\s*:\\s*(.+)$/i);
+      if (!match) return '';
+      const links = markdownLinksFromLine(match[1]);
+      if (!links.length) {
+        return '<p class="context-sources"><span class="context-sources-label">Sources</span><span>' + renderContextInline(match[1]) + '</span></p>';
+      }
+      return '<p class="context-sources"><span class="context-sources-label">Sources</span>' +
+        links.map(link => '<a class="context-source-link" href="' + escapeHtml(link.href) + '" target="_blank" rel="noreferrer">' + escapeHtml(link.label || link.href) + '</a>').join('') +
+        '</p>';
+    }
+    function isContextTableCandidate(line) {
+      const trimmed = String(line || '').trim();
+      if (!trimmed || !trimmed.includes('|')) return false;
+      return trimmed.startsWith('|') || trimmed.endsWith('|') || (trimmed.match(/\\|/g) || []).length >= 2;
+    }
+    function isContextTableSeparatorRow(cells) {
+      return cells.length > 1 && cells.every(cell => /^:?-{3,}:?$/.test(String(cell || '').trim()));
+    }
+    function splitContextTableRow(row) {
+      let text = String(row || '').trim();
+      if (text.startsWith('|')) text = text.slice(1);
+      if (text.endsWith('|')) text = text.slice(0, -1);
+      return text.split('|').map(cell => cell.trim());
+    }
+    function renderContextTable(lines) {
+      const rows = lines.map(splitContextTableRow).filter(row => row.length > 1);
+      const separatorIndex = rows.findIndex((row, index) => index > 0 && isContextTableSeparatorRow(row));
+      if (separatorIndex <= 0 || !rows[0]) {
+        return lines.map(line => '<p>' + renderContextInline(line) + '</p>').join('');
+      }
+      const columnCount = Math.max(...rows.map(row => row.length));
+      const normalizeRow = (row) => Array.from({ length: columnCount }, (_item, index) => row[index] || '');
+      const header = normalizeRow(rows[0]);
+      const bodyRows = rows.slice(separatorIndex + 1)
+        .filter(row => !isContextTableSeparatorRow(row))
+        .map(normalizeRow);
+      return '<div class="context-table-wrap"><table class="context-table"><thead><tr>' +
+        header.map(cell => '<th>' + renderContextInline(cell) + '</th>').join('') +
+        '</tr></thead><tbody>' +
+        bodyRows.map(row => '<tr>' + row.map(cell => '<td>' + renderContextInline(cell) + '</td>').join('') + '</tr>').join('') +
+        '</tbody></table></div>';
     }
     function renderContextList(lines) {
       const tag = /^\\s*\\d+\\./.test(lines[0] || '') ? 'ol' : 'ul';
@@ -782,6 +853,7 @@ function sendContextHtml(res, {
       const blocks = [];
       let paragraph = [];
       let listLines = [];
+      let tableLines = [];
       let inCode = false;
       let codeLines = [];
       const flushParagraph = () => {
@@ -794,6 +866,11 @@ function sendContextHtml(res, {
         blocks.push(renderContextList(listLines));
         listLines = [];
       };
+      const flushTable = () => {
+        if (!tableLines.length) return;
+        blocks.push(renderContextTable(tableLines));
+        tableLines = [];
+      };
       for (const line of lines) {
         if (String(line || '').startsWith(fence)) {
           if (inCode) {
@@ -803,6 +880,7 @@ function sendContextHtml(res, {
           } else {
             flushParagraph();
             flushList();
+            flushTable();
             inCode = true;
           }
           continue;
@@ -814,18 +892,35 @@ function sendContextHtml(res, {
         if (!line.trim()) {
           flushParagraph();
           flushList();
+          flushTable();
+          continue;
+        }
+        const sourcesHtml = renderContextSourcesLine(line);
+        if (sourcesHtml) {
+          flushParagraph();
+          flushList();
+          flushTable();
+          blocks.push(sourcesHtml);
+          continue;
+        }
+        if (isContextTableCandidate(line)) {
+          flushParagraph();
+          flushList();
+          tableLines.push(line);
           continue;
         }
         const heading = line.match(/^(#{1,6})\\s+(.+)$/);
         if (heading) {
           flushParagraph();
           flushList();
+          flushTable();
           const level = Math.min(6, heading[1].length);
           blocks.push('<h' + level + '>' + renderContextInline(heading[2]) + '</h' + level + '>');
           continue;
         }
         if (/^\\s*(?:[-*+]|\\d+\\.)\\s+/.test(line)) {
           flushParagraph();
+          flushTable();
           listLines.push(line);
           continue;
         }
@@ -833,14 +928,17 @@ function sendContextHtml(res, {
         if (quote) {
           flushParagraph();
           flushList();
+          flushTable();
           blocks.push('<blockquote>' + renderContextInline(quote[1]) + '</blockquote>');
           continue;
         }
+        flushTable();
         paragraph.push(line.trim());
       }
       if (inCode) blocks.push('<pre><code>' + escapeHtml(codeLines.join('\\n')) + '</code></pre>');
       flushParagraph();
       flushList();
+      flushTable();
       return blocks.join('') || '<p>' + renderContextInline(text) + '</p>';
     }
     function chinaTime(value) {
@@ -887,12 +985,14 @@ function sendContextHtml(res, {
       }).catch(() => {});
     }
     function updateButtons() {
-      prevBtn.disabled = loading.prev || !hasPrev;
-      nextBtn.disabled = loading.next || !hasNext;
+      prevBtn.disabled = loading.prev;
+      nextBtn.disabled = loading.next;
+      prevBtn.title = hasPrev ? 'Load previous context' : 'Check for earlier context';
+      nextBtn.title = hasNext ? 'Load next context' : 'Check for newer context';
     }
-    function canLoad(direction) {
-      if (direction === 'prev') return hasPrev && !loading.prev;
-      if (direction === 'next') return hasNext && !loading.next;
+    function canLoad(direction, force = false) {
+      if (direction === 'prev') return (force || hasPrev) && !loading.prev;
+      if (direction === 'next') return (force || hasNext) && !loading.next;
       return !loading.around;
     }
     function preserveScrollForPrepend(beforeHeight, beforeScrollY) {
@@ -945,11 +1045,13 @@ function sendContextHtml(res, {
         '<div><span class="role">' + escapeHtml(roleLabel(event, session)) + '</span><span class="time">' + escapeHtml(chinaTime(event.createdAt || '')) + '</span></div>' +
         body + '</article>';
     }
-    async function load(direction) {
+    async function load(direction, options = {}) {
+      const force = Boolean(options.force);
       if (loading[direction]) return;
-      if (direction !== 'around' && !canLoad(direction)) return;
+      if (direction !== 'around' && !canLoad(direction, force)) return;
       loading[direction] = true;
       updateButtons();
+      if (statusEl) statusEl.textContent = direction === 'around' ? '' : 'Checking context...';
       const beforeHeight = document.documentElement.scrollHeight;
       const beforeScrollY = window.scrollY;
       const anchor = direction === 'next' ? nextAnchor : prevAnchor;
@@ -977,6 +1079,12 @@ function sendContextHtml(res, {
           else eventsEl.insertAdjacentHTML('beforeend', html);
           if (direction !== 'around' && insertsAtTop) preserveScrollForPrepend(beforeHeight, beforeScrollY);
         }
+        if (statusEl) {
+          if (fresh.length) statusEl.textContent = '';
+          else if (force && direction === 'next') statusEl.textContent = 'No newer context yet. Try again after hooks sync.';
+          else if (force && direction === 'prev') statusEl.textContent = 'No previous context yet.';
+          else statusEl.textContent = '';
+        }
         prevAnchor = data.pagination?.prevAnchorEventId || prevAnchor;
         nextAnchor = data.pagination?.nextAnchorEventId || nextAnchor;
         hasPrev = Boolean(data.pagination?.hasPrev);
@@ -989,13 +1097,16 @@ function sendContextHtml(res, {
         }
         initialLoaded = true;
         if (direction === 'around') scrollToInitialAnchor();
+      } catch (error) {
+        if (statusEl && direction !== 'around') statusEl.textContent = error?.message || 'Failed to load context.';
+        throw error;
       } finally {
         loading[direction] = false;
         updateButtons();
       }
     }
-    prevBtn.addEventListener('click', () => load('prev').catch(console.error));
-    nextBtn.addEventListener('click', () => load('next').catch(console.error));
+    prevBtn.addEventListener('click', () => load('prev', { force: true }).catch(console.error));
+    nextBtn.addEventListener('click', () => load('next', { force: true }).catch(console.error));
     const observer = typeof window.IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
       if (!initialLoaded) return;
       for (const entry of entries) {
@@ -1026,6 +1137,220 @@ function queryTerms(query = '') {
     .filter(Boolean);
 }
 
+function booleanFlag(value) {
+  if (value === true) return true;
+  if (value === false || value === undefined || value === null) return false;
+  return /^(1|true|yes|y|on)$/i.test(String(value).trim());
+}
+
+function normalizeSearchList(value = []) {
+  const values = Array.isArray(value) ? value : [value];
+  const items = [];
+  for (const item of values) {
+    if (item === undefined || item === null || item === false || item === true) continue;
+    const text = String(item || '').trim();
+    if (!text) continue;
+    if (text.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          items.push(...normalizeSearchList(parsed));
+          continue;
+        }
+      } catch {}
+    }
+    items.push(...text.split(/[\n,，、;；|]+/g).map((part) => part.trim()).filter(Boolean));
+  }
+  return items;
+}
+
+function uniqueSearchList(values = [], limit = 24) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length > 120) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function inferTimePreferenceFromQuery(query = '') {
+  const text = String(query || '').toLowerCase();
+  if (/(今天|今日|\btoday\b)/i.test(text)) return 'today';
+  if (/(昨天|昨日|\byesterday\b)/i.test(text)) return 'yesterday';
+  if (/(这周|本周|\bthis\s*week\b)/i.test(text)) return 'this-week';
+  if (/(上周|\blast\s*week\b)/i.test(text)) return 'last-week';
+  return '';
+}
+
+function splitTopicText(value = '') {
+  return String(value || '')
+    .replace(/\b(and|or)\b/gi, '、')
+    .replace(/(?:以及|或者|还有|和|与|及|跟|、|\/)+/g, '、')
+    .split(/[、,，;；]+/g)
+    .map((part) => part.replace(/^(关于|围绕|讲的|聊的|讨论|话题|topic)\s*/i, '').trim())
+    .filter((part) => part && !/^(昨天|今天|本周|这周|上周|what|who|when|where|why|how)$/i.test(part));
+}
+
+function extractQuotedPhrases(query = '') {
+  const phrases = [];
+  const text = String(query || '');
+  const pattern = /["'`“”‘’]([^"'`“”‘’]{2,80})["'`“”‘’]/g;
+  for (const match of text.matchAll(pattern)) phrases.push(match[1]);
+  return phrases;
+}
+
+function extractIntentTopics(query = '') {
+  const text = String(query || '').replace(/\s+/g, ' ').trim();
+  if (!text) return [];
+  const topics = [];
+  topics.push(...extractQuotedPhrases(text));
+  const topicPatterns = [
+    /(?:关于|围绕|讲的|聊的|讨论|提到|看看|看一下)\s*([^。！？!?；;\n]{2,140})/gi,
+    /(?:topic|topics|subject|subjects)\s*(?:of|about|:|：)?\s*([^。！？!?；;\n]{2,140})/gi,
+  ];
+  for (const pattern of topicPatterns) {
+    for (const match of text.matchAll(pattern)) topics.push(...splitTopicText(match[1]));
+  }
+  const enumMatch = text.match(/([A-Z0-9_\-.一-龥]{1,40}(?:[、,，/]\s*[A-Z0-9_\-.一-龥]{1,40}){1,12})/);
+  if (enumMatch) topics.push(...splitTopicText(enumMatch[1]));
+  return uniqueSearchList(topics, 16);
+}
+
+function extractIntentKeywords(query = '') {
+  const text = String(query || '');
+  const quoted = extractQuotedPhrases(text);
+  const technicalTokens = text.match(/[A-Za-z][A-Za-z0-9_.:/-]{2,}|[A-Z][A-Z0-9_-]{1,}/g) || [];
+  const codeTokens = text.match(/`([^`]{2,80})`/g)?.map((item) => item.replace(/^`|`$/g, '')) || [];
+  return uniqueSearchList([...quoted, ...technicalTokens, ...codeTokens], 24);
+}
+
+function normalizeTeamSharingSearchIntentBody(body = {}, nowValue = '') {
+  const query = String(body.query || '').replace(/\s+/g, ' ').trim();
+  const explicitTime = normalizeTimePreference(body.timePreference || body.time || body.when || body.period || '');
+  const inferredTime = inferTimePreferenceFromQuery(query);
+  const timePreference = explicitTime || inferredTime || '';
+  const modeBias = normalizeTeamSharingSearchMode(body.modeBias || body.searchMode || body.mode || (body.exact ? 'keyword' : body.fuzzy ? 'semantic' : 'hybrid'));
+  const keywordOnly = booleanFlag(body.keywordOnly || body.keywordsOnly || body.exactOnly || body.retrievalIntent?.keywordOnly);
+  const semanticOnly = booleanFlag(body.semanticOnly || body.vectorOnly || body.fuzzyOnly || body.retrievalIntent?.semanticOnly);
+  const searchMode = keywordOnly ? 'keyword' : semanticOnly ? 'semantic' : 'hybrid';
+  const topics = uniqueSearchList([
+    ...normalizeSearchList(body.topics),
+    ...normalizeSearchList(body.topic),
+    ...normalizeSearchList(body.retrievalIntent?.topics),
+    ...extractIntentTopics(query),
+  ], 24);
+  const keywords = uniqueSearchList([
+    ...normalizeSearchList(body.keywords),
+    ...normalizeSearchList(body.keyword),
+    ...normalizeSearchList(body.exactKeywords),
+    ...normalizeSearchList(body.exactKeyword),
+    ...normalizeSearchList(body.retrievalIntent?.keywords),
+    ...topics,
+    ...extractIntentKeywords(query),
+  ], 32);
+  const semanticQuery = String(
+    body.semanticQuery
+      || body.semantic_query
+      || body.retrievalIntent?.semanticQuery
+      || body.retrievalIntent?.semantic_query
+      || query,
+  ).replace(/\s+/g, ' ').trim() || query;
+  const dateRange = normalizeSearchDateRange({
+    ...body,
+    ...(timePreference && !body.timePreference && !body.time && !body.when && !body.period ? { timePreference } : {}),
+  }, nowValue);
+  const keywordQuery = uniqueSearchList([
+    ...normalizeSearchList(body.keywordQuery || body.keyword_query),
+    ...keywords,
+    ...topics,
+    query,
+  ], 40).join('\n');
+  return {
+    query,
+    semanticQuery,
+    keywordQuery,
+    keywords,
+    topics,
+    timePreference: timePreference || null,
+    dateRange,
+    searchMode,
+    modeBias,
+    useKeyword: searchMode !== 'semantic',
+    useSemantic: searchMode !== 'keyword',
+  };
+}
+
+function clamp01(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(1, number));
+}
+
+function normalizeTimePreference(value = '') {
+  const clean = String(value || '').trim().toLowerCase();
+  if (['today', '今天'].includes(clean)) return 'today';
+  if (['yesterday', '昨天'].includes(clean)) return 'yesterday';
+  if (['week', 'this-week', 'thisweek', '本周', '这周'].includes(clean)) return 'this-week';
+  if (['last-week', 'lastweek', '上周'].includes(clean)) return 'last-week';
+  return '';
+}
+
+function localDayStartUtcMs(nowMs, offsetMinutes = 480) {
+  const offsetMs = offsetMinutes * 60 * 1000;
+  const shifted = new Date(nowMs + offsetMs);
+  return Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) - offsetMs;
+}
+
+function relativeDateRange(period = '', nowValue = '', offsetMinutes = 480) {
+  const preference = normalizeTimePreference(period);
+  if (!preference) return null;
+  const nowMs = new Date(nowValue || Date.now()).getTime();
+  const safeNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const todayStart = localDayStartUtcMs(safeNowMs, offsetMinutes);
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  if (preference === 'today') return { from: new Date(todayStart).toISOString(), to: new Date(todayStart + oneDayMs).toISOString() };
+  if (preference === 'yesterday') return { from: new Date(todayStart - oneDayMs).toISOString(), to: new Date(todayStart).toISOString() };
+  const shifted = new Date(safeNowMs + offsetMinutes * 60 * 1000);
+  const localDay = shifted.getUTCDay() || 7;
+  const weekStart = todayStart - ((localDay - 1) * oneDayMs);
+  if (preference === 'this-week') return { from: new Date(weekStart).toISOString(), to: new Date(weekStart + 7 * oneDayMs).toISOString() };
+  return { from: new Date(weekStart - 7 * oneDayMs).toISOString(), to: new Date(weekStart).toISOString() };
+}
+
+function normalizeSearchDateRange(body = {}, nowValue = '') {
+  const rawRange = body.dateRange;
+  if (rawRange && typeof rawRange === 'object') return rawRange;
+  if (typeof rawRange === 'string' && rawRange.trim()) {
+    const text = rawRange.trim();
+    const relative = relativeDateRange(text, nowValue, Number(body.timezoneOffsetMinutes || body.timeZoneOffsetMinutes || 480));
+    if (relative) return relative;
+    if (text.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch {}
+    }
+    const separator = text.includes('..') ? '..' : text.includes(',') ? ',' : '';
+    if (separator) {
+      const [from = '', to = ''] = text.split(separator).map((part) => part.trim());
+      return { ...(from ? { from } : {}), ...(to ? { to } : {}) };
+    }
+    return { from: text };
+  }
+  const explicitPreference = body.timePreference || body.time || body.when || body.period || '';
+  const relative = relativeDateRange(explicitPreference, nowValue, Number(body.timezoneOffsetMinutes || body.timeZoneOffsetMinutes || 480));
+  if (relative) return relative;
+  const from = body.from || body.since || body.start || body.updatedAfter || body.updated_after || '';
+  const to = body.to || body.until || body.end || body.updatedBefore || body.updated_before || '';
+  return from || to ? { ...(from ? { from: String(from) } : {}), ...(to ? { to: String(to) } : {}) } : null;
+}
+
 function dateBound(dateRange = {}, keys = []) {
   for (const key of keys) {
     const value = dateRange?.[key];
@@ -1042,6 +1367,19 @@ function isWithinDateRange(value = '', dateRange = null) {
   if (from && text < from) return false;
   if (to && text > to) return false;
   return true;
+}
+
+function keywordSearchInputs({ query = '', keywordQuery = '', keywords = [], topics = [] } = {}) {
+  const phrases = uniqueSearchList([
+    ...normalizeSearchList(keywords),
+    ...normalizeSearchList(topics),
+    ...normalizeSearchList(keywordQuery),
+  ], 40);
+  const terms = uniqueSearchList([
+    ...phrases.flatMap((phrase) => queryTerms(phrase)),
+    ...queryTerms(query),
+  ], 80);
+  return { phrases, terms };
 }
 
 function localVectorSearch({ teamSharingState, query = '', channelId = '', projectKey = '', dateRange = null, limit = 40 } = {}) {
@@ -1066,6 +1404,65 @@ function localVectorSearch({ teamSharingState, query = '', channelId = '', proje
     .sort((left, right) => right.vectorScore - left.vectorScore || String(left.vectorDocumentId).localeCompare(String(right.vectorDocumentId)))
     .slice(0, limit);
   return { ok: true, candidates };
+}
+
+function localKeywordSearch({ teamSharingState, query = '', keywordQuery = '', keywords = [], topics = [], channelId = '', projectKey = '', dateRange = null, limit = 40 } = {}) {
+  const { phrases, terms } = keywordSearchInputs({ query, keywordQuery, keywords, topics });
+  const candidates = asArray(teamSharingState?.vectorDocuments)
+    .filter((doc) => doc.active !== false)
+    .filter((doc) => !channelId || doc.channelId === channelId)
+    .filter((doc) => !projectKey || doc.projectKey === projectKey)
+    .filter((doc) => isWithinDateRange(doc.updatedAt, dateRange))
+    .map((doc) => {
+      const haystack = `${doc.title || ''}\n${doc.topicId || ''}\n${doc.text || ''}`.toLowerCase();
+      const matchedTerms = terms.filter((term) => haystack.includes(term));
+      const termScore = terms.length ? matchedTerms.length / terms.length : 0;
+      const matchedPhrases = phrases.filter((phrase) => haystack.includes(String(phrase || '').toLowerCase()));
+      const phraseScore = phrases.length ? matchedPhrases.length / phrases.length : 0;
+      const topicScore = topics.length
+        ? normalizeSearchList(topics).filter((topic) => haystack.includes(String(topic || '').toLowerCase())).length / normalizeSearchList(topics).length
+        : 0;
+      const keywordScore = clamp01((0.50 * phraseScore) + (0.35 * termScore) + (0.15 * topicScore));
+      return {
+        ...doc,
+        vectorScore: Number(doc.vectorScore || 0.05),
+        keywordScore,
+        freshnessScore: 0.5,
+      };
+    })
+    .filter((doc) => doc.keywordScore > 0)
+    .sort((left, right) => right.keywordScore - left.keywordScore || String(left.vectorDocumentId).localeCompare(String(right.vectorDocumentId)))
+    .slice(0, limit);
+  return { ok: true, candidates };
+}
+
+function fuseTeamSharingCandidates({ semanticCandidates = [], keywordCandidates = [], limit = 40, rrfK = 30 } = {}) {
+  const byId = new Map();
+  const add = (candidate, source, index) => {
+    const id = String(candidate?.vectorDocumentId || '').trim();
+    if (!id) return;
+    const existing = byId.get(id) || {
+      ...candidate,
+      vectorScore: 0,
+      keywordScore: 0,
+      rrfScore: 0,
+      retrievalSources: [],
+    };
+    existing.rrfScore += 1 / (rrfK + index + 1);
+    if (!existing.retrievalSources.includes(source)) existing.retrievalSources.push(source);
+    if (source === 'semantic') {
+      existing.vectorScore = Math.max(clamp01(existing.vectorScore), clamp01(candidate.vectorScore ?? candidate.score));
+    } else {
+      existing.keywordScore = Math.max(clamp01(existing.keywordScore), clamp01(candidate.keywordScore ?? candidate.score));
+      existing.vectorScore = Math.max(clamp01(existing.vectorScore), clamp01(candidate.vectorScore ?? 0.05));
+    }
+    byId.set(id, { ...existing, ...candidate, rrfScore: existing.rrfScore, retrievalSources: existing.retrievalSources, vectorScore: existing.vectorScore, keywordScore: existing.keywordScore });
+  };
+  asArray(semanticCandidates).forEach((candidate, index) => add(candidate, 'semantic', index));
+  asArray(keywordCandidates).forEach((candidate, index) => add(candidate, 'keyword', index));
+  return [...byId.values()]
+    .sort((left, right) => right.rrfScore - left.rrfScore || right.keywordScore - left.keywordScore || right.vectorScore - left.vectorScore)
+    .slice(0, limit);
 }
 
 function localRerank({ query = '', candidates = [] } = {}) {
@@ -1177,6 +1574,8 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     embeddingReady = null,
     getState,
     indexTeamSharingDocuments = null,
+    keywordSearch = null,
+    keywordSearchReady = null,
     makeId,
     now,
     persistState = async () => {},
@@ -1542,41 +1941,125 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const effectiveWorkspaceId = requestWorkspaceId({ actor, tokenRecord, state, fallback: body.workspaceId || workspaceId });
     const limit = Math.max(1, Math.min(20, Number(body.limit || 5)));
     const candidateK = Math.max(limit, Math.min(200, Number(body.candidateK || 40)));
-    if (typeof zillizReady === 'function' && !zillizReady()) {
+    const intent = normalizeTeamSharingSearchIntentBody(body, now?.());
+    const searchMode = intent.searchMode;
+    const sortBy = normalizeTeamSharingSearchSort(body.sortBy || body.sort || body.orderBy);
+    const dateRange = intent.dateRange;
+    const needsSemantic = intent.useSemantic;
+    const needsKeyword = intent.useKeyword;
+    const semanticRemoteReady = needsSemantic && vectorSearch && (typeof zillizReady !== 'function' || zillizReady());
+    if (needsSemantic && searchMode === 'semantic' && !semanticRemoteReady) {
       sendError(res, 503, 'Team sharing vector index is not ready.');
       return true;
     }
-    const vector = vectorSearch
-      ? await vectorSearch({
-        teamSharingState,
-        query: body.query || '',
-        channelId: body.channelId || '',
-        projectKey: body.projectKey || '',
-        dateRange: body.dateRange || null,
-        limit: candidateK,
-        actor,
-        workspaceId: effectiveWorkspaceId,
-      })
-      : localVectorSearch({
-        teamSharingState,
-        query: body.query || '',
-        channelId: body.channelId || '',
-        projectKey: body.projectKey || '',
-        dateRange: body.dateRange || null,
-        limit: candidateK,
-      });
-    if (!vector?.ok) {
-      sendError(res, 503, vector?.error || 'Team sharing vector search failed.');
+    const semanticPromise = needsSemantic
+      ? (semanticRemoteReady
+        ? vectorSearch({
+          teamSharingState,
+          query: intent.semanticQuery,
+          channelId: body.channelId || '',
+          projectKey: body.projectKey || '',
+          dateRange,
+          limit: candidateK,
+          actor,
+          workspaceId: effectiveWorkspaceId,
+          searchMode,
+          modeBias: intent.modeBias,
+          keywords: intent.keywords,
+          topics: intent.topics,
+        }).catch((error) => ({ ok: false, error: error?.message || 'Team sharing vector search failed.' }))
+        : Promise.resolve(localVectorSearch({
+          teamSharingState,
+          query: intent.semanticQuery,
+          channelId: body.channelId || '',
+          projectKey: body.projectKey || '',
+          dateRange,
+          limit: candidateK,
+        })))
+      : Promise.resolve({ ok: true, candidates: [] });
+    const keywordPromise = needsKeyword
+      ? (async () => {
+        const canUseRemoteKeyword = keywordSearch && (typeof keywordSearchReady !== 'function' || keywordSearchReady());
+        if (canUseRemoteKeyword) {
+          const remote = await keywordSearch({
+            teamSharingState,
+            query: intent.keywordQuery || intent.query,
+            keywordQuery: intent.keywordQuery,
+            keywords: intent.keywords,
+            topics: intent.topics,
+            channelId: body.channelId || '',
+            projectKey: body.projectKey || '',
+            dateRange,
+            limit: candidateK,
+            actor,
+            workspaceId: effectiveWorkspaceId,
+            searchMode,
+            modeBias: intent.modeBias,
+          }).catch((error) => ({ ok: false, error: error?.message || 'Team sharing keyword search failed.' }));
+          if (remote?.ok) return remote;
+          const fallback = localKeywordSearch({
+            teamSharingState,
+            query: intent.query,
+            keywordQuery: intent.keywordQuery,
+            keywords: intent.keywords,
+            topics: intent.topics,
+            channelId: body.channelId || '',
+            projectKey: body.projectKey || '',
+            dateRange,
+            limit: candidateK,
+          });
+          return { ...fallback, degraded: true, remoteError: remote?.error || remote?.code || 'keyword_search_failed' };
+        }
+        const fallback = localKeywordSearch({
+          teamSharingState,
+          query: intent.query,
+          keywordQuery: intent.keywordQuery,
+          keywords: intent.keywords,
+          topics: intent.topics,
+          channelId: body.channelId || '',
+          projectKey: body.projectKey || '',
+          dateRange,
+          limit: candidateK,
+        });
+        return { ...fallback, degraded: Boolean(keywordSearch), remoteError: keywordSearch ? 'keyword_search_not_ready' : '' };
+      })()
+      : Promise.resolve({ ok: true, candidates: [] });
+    const [semantic, keyword] = await Promise.all([semanticPromise, keywordPromise]);
+    if (needsSemantic && !semantic?.ok && searchMode === 'semantic') {
+      sendError(res, 503, semantic?.error || 'Team sharing vector search failed.');
       return true;
     }
+    const candidates = searchMode === 'semantic'
+      ? asArray(semantic.candidates)
+      : searchMode === 'keyword'
+        ? asArray(keyword.candidates)
+        : fuseTeamSharingCandidates({
+          semanticCandidates: asArray(semantic?.ok ? semantic.candidates : []),
+          keywordCandidates: asArray(keyword.candidates),
+          limit: candidateK,
+        });
+    const rerankQuery = uniqueSearchList([
+      intent.query,
+      intent.semanticQuery,
+      intent.keywords.join(' '),
+    ], 3).join('\n');
     const rerankResults = rerank
-      ? await rerank({ query: body.query || '', candidates: vector.candidates || [], limit: candidateK })
-      : localRerank({ query: body.query || '', candidates: vector.candidates || [] });
+      ? await rerank({ query: rerankQuery, candidates, limit: candidateK })
+      : localRerank({ query: rerankQuery, candidates });
     const ranked = rankTeamSharingCandidates({
-      query: body.query || '',
-      candidates: vector.candidates || [],
+      query: intent.query,
+      semanticQuery: intent.semanticQuery,
+      keywords: intent.keywords,
+      topics: intent.topics,
+      intent,
+      candidates,
       teamSharingState,
       rerankResults,
+      keywordCandidates: keyword.candidates || [],
+      searchMode,
+      modeBias: intent.modeBias,
+      sortBy,
+      minScore: body.minScore,
       now,
       limit,
     });
@@ -1596,7 +2079,12 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       workspaceId: effectiveWorkspaceId,
       queryId: ranked.queryId,
       resultCount: ranked.results.length,
-      candidateCount: vector.candidates?.length || 0,
+      candidateCount: candidates.length,
+      searchMode,
+      modeBias: intent.modeBias,
+      sortBy,
+      keywordCount: intent.keywords.length,
+      topicCount: intent.topics.length,
     });
     await persistState({ workspaceId: effectiveWorkspaceId, reason: 'team_sharing_search' });
     sendJson(res, 200, {
@@ -1618,10 +2106,30 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         finalScore: item.finalScore,
         vectorScore: item.vectorScore,
         rerankScore: item.rerankScore,
+        keywordScore: item.keywordScore,
         hotnessScore: item.hotnessScore,
       })),
       rerankUsed: Boolean(rerankResults?.length),
-      candidateCount: vector.candidates?.length || 0,
+      candidateCount: candidates.length,
+      semanticCandidateCount: asArray(semantic?.candidates).length,
+      keywordCandidateCount: asArray(keyword?.candidates).length,
+      searchMode,
+      modeBias: intent.modeBias,
+      sortBy,
+      dateRange,
+      timePreference: intent.timePreference,
+      semanticQuery: intent.semanticQuery,
+      keywords: intent.keywords,
+      topics: intent.topics,
+      retrievalIntent: {
+        useKeyword: needsKeyword,
+        useSemantic: needsSemantic,
+        modeBias: intent.modeBias,
+      },
+      degraded: {
+        semantic: needsSemantic && !semantic?.ok ? (semantic?.error || 'semantic_search_failed') : '',
+        keyword: keyword?.degraded ? (keyword.remoteError || 'keyword_search_degraded') : '',
+      },
       trace: ranked.trace,
     });
     return true;

@@ -517,6 +517,108 @@ test('team sharing local search fallback filters by vector document updatedAt da
   assert.deepEqual(searchRes.data.results.map((item) => item.layer), ['L1']);
 });
 
+test('team sharing keyword-only mode bypasses unavailable vector index and uses lexical fallback', async () => {
+  const deps = routeDeps({ readJson: async () => syncBody(), zillizReady: () => false, keywordSearch: null, rerank: null });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
+
+  const searchRes = makeResponse();
+  const searchDeps = {
+    ...deps,
+    readJson: async () => ({
+      query: 'rerank',
+      channelId: 'chan_team',
+      searchMode: 'keyword',
+      keywordOnly: true,
+      sortBy: 'keyword',
+      limit: 5,
+    }),
+  };
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    searchRes,
+    new URL('http://local/api/team-sharing/search'),
+    searchDeps,
+  ), true);
+
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.searchMode, 'keyword');
+  assert.equal(searchRes.data.sortBy, 'keyword');
+  assert.ok(searchRes.data.results[0].keywordScore > 0);
+  assert.ok(searchRes.data.results.some((item) => item.topicId === 'rerank-feedback'));
+  assert.ok(searchRes.data.trace.keywordCandidates.length > 0);
+});
+
+test('team sharing hybrid search fuses semantic and keyword candidates before rerank', async () => {
+  const deps = routeDeps({ readJson: async () => syncBody(), rerank: null });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
+
+  const searchRes = makeResponse();
+  const seen = {};
+  const searchDeps = {
+    ...deps,
+    vectorSearch: async ({ teamSharingState, query, keywords, topics }) => {
+      seen.semanticQuery = query;
+      seen.semanticKeywords = keywords;
+      seen.semanticTopics = topics;
+      return {
+        ok: true,
+        candidates: teamSharingState.vectorDocuments
+          .filter((doc) => doc.layer === 'L0')
+          .map((doc) => ({ ...doc, vectorScore: 0.9, keywordScore: 0, freshnessScore: 0.5 })),
+      };
+    },
+    keywordSearch: async ({ teamSharingState, query, keywordQuery, keywords, topics }) => {
+      seen.keywordQuery = query;
+      seen.keywordQueryRaw = keywordQuery;
+      seen.keywords = keywords;
+      seen.topics = topics;
+      return {
+        ok: true,
+        candidates: teamSharingState.vectorDocuments
+          .filter((doc) => doc.layer === 'L1')
+          .map((doc) => ({ ...doc, vectorScore: 0.05, keywordScore: 0.95, freshnessScore: 0.5 })),
+      };
+    },
+    keywordSearchReady: () => true,
+    readJson: async () => ({
+      query: '昨天关于 rerank 反馈和 BM25 的融合点',
+      channelId: 'chan_team',
+      keywords: ['rerank', 'BM25'],
+      limit: 5,
+    }),
+  };
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    searchRes,
+    new URL('http://local/api/team-sharing/search'),
+    searchDeps,
+  ), true);
+
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.searchMode, 'hybrid');
+  assert.equal(searchRes.data.timePreference, 'yesterday');
+  assert.deepEqual(searchRes.data.retrievalIntent, { useKeyword: true, useSemantic: true, modeBias: 'hybrid' });
+  assert.equal(seen.semanticQuery, '昨天关于 rerank 反馈和 BM25 的融合点');
+  assert.ok(seen.keywordQuery.includes('rerank'));
+  assert.ok(seen.keywordQueryRaw.includes('BM25'));
+  assert.ok(seen.keywords.includes('BM25'));
+  assert.ok(seen.topics.includes('rerank 反馈'));
+  assert.equal(searchRes.data.candidateCount, 2);
+  assert.deepEqual(new Set(searchRes.data.results.map((item) => item.layer)), new Set(['L0', 'L1']));
+  assert.ok(searchRes.data.trace.keywordCandidates.some((id) => id.includes(':L1:')));
+  assert.ok(searchRes.data.trace.keywords.includes('BM25'));
+});
+
 test('team sharing route records feedback and serves context windows', async () => {
   const deps = routeDeps({ readJson: async () => syncBody() });
   await handleTeamSharingApi(
@@ -744,6 +846,8 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /teamSharingScopeQuery\('&'\)/);
   assert.match(res.body, /\/api\/team-sharing\/feedback' \+ teamSharingScopeQuery\('\?'\)/);
   assert.match(res.body, /load_more/);
+  assert.match(res.body, /load\('next', \{ force: true \}\)/);
+  assert.match(res.body, /No newer context yet\. Try again after hooks sync\./);
   assert.match(res.body, /vec_1/);
   assert.match(res.body, /oldest first/);
   assert.match(res.body, /Load previous/);
@@ -811,6 +915,13 @@ test('team sharing context page renders Codex markdown and hides citation metada
     '- `/api/readyz` 返回 200。',
     '- 登录态正常。',
     '',
+    '| 问题 | 当前结论 |',
+    '|---|---|',
+    '| NPM 安装后有没有 `team-sharing` 命令 | **会有。** [包](https://www.npmjs.com/package/@magclaw/team-sharing) 已声明 bin。 |',
+    '| Hooks 是否项目本地 | 应默认项目级。 |',
+    '',
+    'Sources: [OpenAI Codex manual](https://developers.openai.com/codex/codex-manual.md), [Claude Code hooks](https://code.claude.com/docs/en/hooks).',
+    '',
     '<oai-mem-citation>',
     '<citation_entries>',
     'MEMORY.md:1-2|note=[internal]',
@@ -821,6 +932,14 @@ test('team sharing context page renders Codex markdown and hides citation metada
   assert.match(html, /<strong>验收通过<\/strong>/);
   assert.match(html, /<p>R150 已部署到测试环境。<\/p>/);
   assert.match(html, /<ul><li><code>\/api\/readyz<\/code> 返回 200。<\/li><li>登录态正常。<\/li><\/ul>/);
+  assert.match(html, /<div class="context-table-wrap"><table class="context-table">/);
+  assert.match(html, /<th>问题<\/th>/);
+  assert.match(html, /<td>NPM 安装后有没有 <code>team-sharing<\/code> 命令<\/td>/);
+  assert.match(html, /<td><strong>会有。<\/strong> <a href="https:\/\/www\.npmjs\.com\/package\/@magclaw\/team-sharing"/);
+  assert.doesNotMatch(html, /\|---\|---\|/);
+  assert.match(html, /<p class="context-sources"><span class="context-sources-label">Sources<\/span>/);
+  assert.match(html, /class="context-source-link" href="https:\/\/developers\.openai\.com\/codex\/codex-manual\.md"/);
+  assert.match(html, /class="context-source-link" href="https:\/\/code\.claude\.com\/docs\/en\/hooks"/);
   assert.doesNotMatch(html, /oai-mem-citation|citation_entries|MEMORY\.md/);
 });
 

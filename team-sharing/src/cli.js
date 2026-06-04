@@ -110,7 +110,7 @@ function renderTeamSharingHelp() {
     '  status   Show project/login/hook/skill status',
     '  doctor   Check local config, server auth, hooks, skill, and upgrade state',
     '  upgrade  Check npm latest version for team-sharing',
-    '  search   Query shared team sharing',
+    '  search   Query shared team sharing (--time yesterday, --keyword A, --topics A,B, --mode hybrid|keyword|semantic)',
     '  context  Read original context around an anchor',
     '  share-artifact Create a public MagClaw share link from a local file',
     '  sync     Upload one transcript file (--session-title or MAGCLAW_SESSION_TITLE controls the displayed title)',

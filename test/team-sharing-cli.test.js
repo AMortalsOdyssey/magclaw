@@ -419,6 +419,7 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-setup-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-setup-home-'));
   const binDir = path.join(home, 'bin');
+  await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-setup-fixture"}\n');
   const env = {
     HOME: home,
     CODEX_HOME: path.join(home, '.codex'),
@@ -438,28 +439,34 @@ test('team sharing setup installs selected runtimes and hook removal only remove
     binDir,
   }, env);
   const hooks = await statusTeamSharingHooks({ cwd, target: 'all' }, env);
-  const skill = await statusTeamSharingSkill({ target: 'all' }, env);
-  const codexConfig = JSON.parse(await readFile(path.join(home, '.codex', 'hooks.json'), 'utf8'));
+  const skill = await statusTeamSharingSkill({ cwd, target: 'all' }, env);
+  const codexConfig = JSON.parse(await readFile(path.join(cwd, '.codex', 'hooks.json'), 'utf8'));
+  const claudeConfig = JSON.parse(await readFile(path.join(cwd, '.claude', 'settings.local.json'), 'utf8'));
   const shim = await readFile(path.join(binDir, 'team-sharing'), 'utf8');
 
   assert.equal(result.ok, true);
+  assert.equal(result.scope, 'project');
+  assert.equal(result.projectDir, cwd);
   assert.equal(result.shim.installed, true);
   assert.match(shim, /@magclaw\/team-sharing@latest/);
   assert.equal(hooks.codex.installed.length, 3);
   assert.equal(hooks.claude.installed.length, 4);
   assert.equal(skill.installed.length, 2);
+  assert.ok(skill.installed.some((item) => item.path === path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md')));
+  assert.ok(skill.installed.some((item) => item.path === path.join(cwd, '.claude', 'skills', 'magclaw-team-sharing', 'SKILL.md')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes(path.join(binDir, 'team-sharing'))));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('team-sharing sync')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--integration team-sharing')));
+  assert.ok(claudeConfig.hooks.SessionEnd[0].hooks.some((hook) => hook.command.includes('--runtime claude_code')));
 
-  const removedHooks = await removeTeamSharingHooks({ target: 'codex' }, env);
-  const afterRemove = JSON.parse(await readFile(path.join(home, '.codex', 'hooks.json'), 'utf8'));
+  const removedHooks = await removeTeamSharingHooks({ cwd, target: 'codex' }, env);
+  const afterRemove = JSON.parse(await readFile(path.join(cwd, '.codex', 'hooks.json'), 'utf8'));
   assert.equal(removedHooks.codex.removed.length, 3);
   assert.equal(JSON.stringify(afterRemove).includes('--integration team-sharing'), false);
 
-  const removedSkill = await removeTeamSharingSkill({ target: 'codex' }, env);
+  const removedSkill = await removeTeamSharingSkill({ cwd, target: 'codex' }, env);
   assert.equal(removedSkill.removed.length, 1);
-  await assert.rejects(() => readFile(path.join(home, '.codex', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8'), /ENOENT/);
+  await assert.rejects(() => readFile(path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8'), /ENOENT/);
 });
 
 test('team sharing upgrade check uses npm cache ttl and reports newer versions', async () => {
@@ -518,7 +525,17 @@ test('team sharing cli search and context use configured profile token', async (
     };
   };
   try {
-    const search = await searchTeamSharing({ cwd, query: 'rerank 结论', limit: 5 }, env);
+    const search = await searchTeamSharing({
+      cwd,
+      query: '昨天关于 rerank 结论和 BM25 的验收',
+      limit: 5,
+      candidateK: 25,
+      mode: 'exact',
+      keywords: 'rerank、BM25',
+      sort: 'recent',
+      minScore: 0.2,
+      now: '2026-06-04T03:00:00.000Z',
+    }, env);
     const context = await readTeamSharingContext({
       cwd,
       sessionId: 'sess_1',
@@ -533,6 +550,26 @@ test('team sharing cli search and context use configured profile token', async (
     assert.equal(calls[0].url, 'https://magclaw.example/api/team-sharing/search');
     assert.equal(calls[0].body.channelId, 'chan_team');
     assert.equal(calls[0].body.projectKey, 'magclaw');
+    assert.equal(calls[0].body.searchMode, 'hybrid');
+    assert.equal(calls[0].body.modeBias, 'keyword');
+    assert.equal(calls[0].body.semanticQuery, '昨天关于 rerank 结论和 BM25 的验收');
+    assert.deepEqual(calls[0].body.retrievalIntent, {
+      useKeyword: true,
+      useSemantic: true,
+      modeBias: 'keyword',
+      source: 'team-sharing-cli',
+    });
+    assert.ok(calls[0].body.keywords.includes('rerank'));
+    assert.ok(calls[0].body.keywords.includes('BM25'));
+    assert.ok(calls[0].body.topics.includes('rerank 结论'));
+    assert.equal(calls[0].body.timePreference, 'yesterday');
+    assert.equal(calls[0].body.sortBy, 'recent');
+    assert.equal(calls[0].body.candidateK, 25);
+    assert.equal(calls[0].body.minScore, 0.2);
+    assert.deepEqual(calls[0].body.dateRange, {
+      from: '2026-06-02T16:00:00.000Z',
+      to: '2026-06-03T16:00:00.000Z',
+    });
     assert.equal(calls[0].init.headers.authorization, 'Bearer team-sharing-token-secret');
     assert.match(calls[1].url, /\/api\/team-sharing\/context\/sess_1\?/);
     assert.match(calls[1].url, /limit=3/);
@@ -645,15 +682,40 @@ test('team sharing cli infers artifact title and type from local documents', asy
 });
 
 test('team sharing cli installs a local skill without writing token into skill files', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-skill-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-skill-home-'));
+  await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-skill-fixture"}\n');
   const env = { HOME: home, CODEX_HOME: path.join(home, '.codex') };
-  const result = await installTeamSharingSkill({ target: 'codex' }, env);
-    const skill = await readFile(path.join(home, '.codex', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8');
+  const result = await installTeamSharingSkill({ cwd, target: 'codex' }, env);
+  const skill = await readFile(path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8');
 
   assert.equal(result.ok, true);
+  assert.equal(result.scope, 'project');
   assert.match(skill, /team-sharing search/);
   assert.match(skill, /team-sharing context/);
   assert.match(skill, /team-sharing share-artifact/);
+  assert.match(skill, /--time today/);
+  assert.match(skill, /--time yesterday/);
+  assert.match(skill, /--keyword/);
+  assert.match(skill, /--topics/);
+  assert.match(skill, /--semantic-query/);
+  assert.match(skill, /--mode keyword/);
+  assert.match(skill, /--mode semantic/);
+  assert.match(skill, /--keyword-only/);
+  assert.match(skill, /keyword\/BM25 and semantic\/vector recall run together/);
+  assert.match(skill, /--sort recent/);
+  assert.match(skill, /Answer Style For Search Results/);
+  assert.match(skill, /Do not expose L0\/L1 as user-facing labels/);
+  assert.match(skill, /Markdown table/);
+  assert.match(skill, /\*\*验收目标\*\*/);
+  assert.match(skill, /\[Abstract\]/);
+  assert.match(skill, /\[SessionSyncHooks\]/);
+  assert.match(skill, /\[RerankFeedback\]/);
+  assert.match(skill, /\[原始会话\]/);
+  assert.match(skill, /#team-sharing-workspace-file:abstract\.md/);
+  assert.match(skill, /#team-sharing-workspace-file:topics%2Frerank-feedback\.md/);
+  assert.match(skill, /Never reuse the original-session `contextUrl`/);
+  assert.match(skill, /standalone `\/team-sharing\/context\/<sessionId>` page/);
   assert.match(skill, /Default Share HTML Style/);
   assert.match(skill, /deep blue-black technical hero/);
   assert.match(skill, /sticky table of contents/);
@@ -661,4 +723,17 @@ test('team sharing cli installs a local skill without writing token into skill f
   assert.match(skill, /cyan.*emerald.*amber.*rose/i);
   assert.match(skill, /mobile viewports must not overflow/i);
   assert.doesNotMatch(skill, /team-sharing-token-secret|api_key|Bearer/i);
+});
+
+test('team sharing install falls back to user scope when no project can be detected or selected', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-no-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-no-project-home-'));
+  const env = { HOME: home, CODEX_HOME: path.join(home, '.codex'), CI: '1' };
+  const result = await installTeamSharingSkill({ cwd, target: 'codex' }, env);
+  const skill = await readFile(path.join(home, '.codex', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.scope, 'user');
+  assert.equal(result.projectDir, '');
+  assert.match(skill, /team-sharing search/);
 });

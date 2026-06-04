@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -28,6 +28,248 @@ function safeProfileName(value = DEFAULT_PROFILE) {
   return String(value || DEFAULT_PROFILE).trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || DEFAULT_PROFILE;
 }
 
+function numberFlag(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function normalizeSearchMode(value = '') {
+  const clean = String(value || '').trim().toLowerCase();
+  if (['exact', 'keyword', 'keywords', 'bm25', 'lexical'].includes(clean)) return 'keyword';
+  if (['fuzzy', 'semantic', 'vector', 'dense'].includes(clean)) return 'semantic';
+  return 'hybrid';
+}
+
+function normalizeSearchSort(value = '') {
+  const clean = String(value || '').trim().toLowerCase();
+  if (['recent', 'recency', 'latest', 'time', 'updated_at', 'updated-at'].includes(clean)) return 'recent';
+  if (['keyword', 'bm25', 'exact'].includes(clean)) return 'keyword';
+  if (['semantic', 'vector', 'rerank'].includes(clean)) return 'semantic';
+  if (['hot', 'hotness', 'popular', 'feedback'].includes(clean)) return 'hotness';
+  return 'relevance';
+}
+
+function booleanFlag(value) {
+  if (value === true) return true;
+  if (value === false || value === undefined || value === null) return false;
+  return /^(1|true|yes|y|on)$/i.test(String(value).trim());
+}
+
+function normalizeTimePreference(value = '') {
+  const clean = String(value || '').trim().toLowerCase();
+  if (['today', '今天'].includes(clean)) return 'today';
+  if (['yesterday', '昨天'].includes(clean)) return 'yesterday';
+  if (['week', 'this-week', 'thisweek', '本周', '这周'].includes(clean)) return 'this-week';
+  if (['last-week', 'lastweek', '上周'].includes(clean)) return 'last-week';
+  return '';
+}
+
+function normalizeSearchList(value = []) {
+  const values = Array.isArray(value) ? value : [value];
+  const items = [];
+  for (const item of values) {
+    if (item === undefined || item === null || item === false || item === true) continue;
+    const text = String(item || '').trim();
+    if (!text) continue;
+    if (text.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          items.push(...normalizeSearchList(parsed));
+          continue;
+        }
+      } catch {}
+    }
+    items.push(...text.split(/[\n,，、;；|]+/g).map((part) => part.trim()).filter(Boolean));
+  }
+  return items;
+}
+
+function uniqueSearchList(values = [], limit = 24) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length > 120) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function inferTimePreferenceFromQuery(query = '') {
+  const text = String(query || '').toLowerCase();
+  if (/(今天|今日|\btoday\b)/i.test(text)) return 'today';
+  if (/(昨天|昨日|\byesterday\b)/i.test(text)) return 'yesterday';
+  if (/(这周|本周|\bthis\s*week\b)/i.test(text)) return 'this-week';
+  if (/(上周|\blast\s*week\b)/i.test(text)) return 'last-week';
+  return '';
+}
+
+function splitTopicText(value = '') {
+  return String(value || '')
+    .replace(/\b(and|or)\b/gi, '、')
+    .replace(/(?:以及|或者|还有|和|与|及|跟|、|\/)+/g, '、')
+    .split(/[、,，;；]+/g)
+    .map((part) => part.replace(/^(关于|围绕|讲的|聊的|讨论|话题|topic)\s*/i, '').trim())
+    .filter((part) => part && !/^(昨天|今天|本周|这周|上周|what|who|when|where|why|how)$/i.test(part));
+}
+
+function extractQuotedPhrases(query = '') {
+  const phrases = [];
+  const text = String(query || '');
+  const pattern = /["'`“”‘’]([^"'`“”‘’]{2,80})["'`“”‘’]/g;
+  for (const match of text.matchAll(pattern)) phrases.push(match[1]);
+  return phrases;
+}
+
+function extractIntentTopics(query = '') {
+  const text = String(query || '').replace(/\s+/g, ' ').trim();
+  if (!text) return [];
+  const topics = [];
+  topics.push(...extractQuotedPhrases(text));
+  const topicPatterns = [
+    /(?:关于|围绕|讲的|聊的|讨论|提到|看看|看一下)\s*([^。！？!?；;\n]{2,140})/gi,
+    /(?:topic|topics|subject|subjects)\s*(?:of|about|:|：)?\s*([^。！？!?；;\n]{2,140})/gi,
+  ];
+  for (const pattern of topicPatterns) {
+    for (const match of text.matchAll(pattern)) {
+      topics.push(...splitTopicText(match[1]));
+    }
+  }
+  const enumMatch = text.match(/([A-Z0-9_\-.一-龥]{1,40}(?:[、,，/]\s*[A-Z0-9_\-.一-龥]{1,40}){1,12})/);
+  if (enumMatch) topics.push(...splitTopicText(enumMatch[1]));
+  return uniqueSearchList(topics, 16);
+}
+
+function extractIntentKeywords(query = '') {
+  const text = String(query || '');
+  const quoted = extractQuotedPhrases(text);
+  const technicalTokens = text.match(/[A-Za-z][A-Za-z0-9_.:/-]{2,}|[A-Z][A-Z0-9_-]{1,}/g) || [];
+  const codeTokens = text.match(/`([^`]{2,80})`/g)?.map((item) => item.replace(/^`|`$/g, '')) || [];
+  return uniqueSearchList([...quoted, ...technicalTokens, ...codeTokens], 24);
+}
+
+function buildSearchIntent({ query = '', flags = {}, env = process.env } = {}) {
+  const explicitTime = normalizeTimePreference(flags.time || flags.when || flags.period || '');
+  const inferredTime = inferTimePreferenceFromQuery(query);
+  const timePreference = explicitTime || inferredTime || '';
+  const modeBias = normalizeSearchMode(flags.searchMode || flags.mode || flags.retrievalMode || (flags.exact ? 'keyword' : flags.fuzzy ? 'semantic' : 'hybrid'));
+  const keywordOnly = booleanFlag(flags.keywordOnly || flags.keywordsOnly || flags.exactOnly);
+  const semanticOnly = booleanFlag(flags.semanticOnly || flags.vectorOnly || flags.fuzzyOnly);
+  const retrievalMode = keywordOnly ? 'keyword' : semanticOnly ? 'semantic' : 'hybrid';
+  const topics = uniqueSearchList([
+    ...normalizeSearchList(flags.topics),
+    ...normalizeSearchList(flags.topic),
+    ...extractIntentTopics(query),
+  ], 24);
+  const keywords = uniqueSearchList([
+    ...normalizeSearchList(flags.keywords),
+    ...normalizeSearchList(flags.keyword),
+    ...normalizeSearchList(flags.exactKeyword),
+    ...normalizeSearchList(flags.exactKeywords),
+    ...topics,
+    ...extractIntentKeywords(query),
+  ], 32);
+  const semanticQuery = String(flags.semanticQuery || flags.semantic || flags.fuzzyQuery || query || '').replace(/\s+/g, ' ').trim() || query;
+  const dateRange = normalizeSearchDateRange({
+    ...flags,
+    ...(timePreference && !flags.time && !flags.when && !flags.period ? { time: timePreference } : {}),
+  }, env);
+  return {
+    query,
+    semanticQuery,
+    keywords,
+    topics,
+    timePreference: timePreference || null,
+    dateRange,
+    searchMode: retrievalMode,
+    modeBias,
+    useKeyword: retrievalMode !== 'semantic',
+    useSemantic: retrievalMode !== 'keyword',
+    keywordQuery: uniqueSearchList([
+      ...keywords,
+      ...topics,
+      query,
+    ], 40).join('\n'),
+  };
+}
+
+function searchTimeZoneOffsetMinutes(flags = {}, env = process.env) {
+  return numberFlag(
+    flags.timezoneOffsetMinutes
+      || flags.timeZoneOffsetMinutes
+      || env.MAGCLAW_TEAM_SHARING_TIMEZONE_OFFSET_MINUTES,
+    480,
+  );
+}
+
+function isoFromMs(ms) {
+  return new Date(ms).toISOString();
+}
+
+function localDayStartUtcMs(nowMs, offsetMinutes = 480) {
+  const offsetMs = offsetMinutes * 60 * 1000;
+  const shifted = new Date(nowMs + offsetMs);
+  return Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) - offsetMs;
+}
+
+function relativeDateRange(period = '', flags = {}, env = process.env) {
+  const preference = normalizeTimePreference(period);
+  if (!preference) return null;
+  const nowMs = new Date(flags.now || env.MAGCLAW_TEAM_SHARING_NOW || Date.now()).getTime();
+  const safeNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const offsetMinutes = searchTimeZoneOffsetMinutes(flags, env);
+  const todayStart = localDayStartUtcMs(safeNowMs, offsetMinutes);
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  if (preference === 'today') return { from: isoFromMs(todayStart), to: isoFromMs(todayStart + oneDayMs) };
+  if (preference === 'yesterday') return { from: isoFromMs(todayStart - oneDayMs), to: isoFromMs(todayStart) };
+  const shifted = new Date(safeNowMs + offsetMinutes * 60 * 1000);
+  const localDay = shifted.getUTCDay() || 7;
+  const weekStart = todayStart - ((localDay - 1) * oneDayMs);
+  if (preference === 'this-week') return { from: isoFromMs(weekStart), to: isoFromMs(weekStart + 7 * oneDayMs) };
+  return { from: isoFromMs(weekStart - 7 * oneDayMs), to: isoFromMs(weekStart) };
+}
+
+function parseDateRangeValue(value = '', flags = {}, env = process.env) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const relative = relativeDateRange(text, flags, env);
+  if (relative) return relative;
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch {}
+  }
+  const separator = text.includes('..') ? '..' : text.includes(',') ? ',' : '';
+  if (separator) {
+    const [from = '', to = ''] = text.split(separator).map((part) => part.trim());
+    return { ...(from ? { from } : {}), ...(to ? { to } : {}) };
+  }
+  return { from: text };
+}
+
+function normalizeSearchDateRange(flags = {}, env = process.env) {
+  const explicit = parseDateRangeValue(flags.dateRange, flags, env);
+  if (explicit) return explicit;
+  const timePreference = flags.time || flags.when || flags.period
+    || (flags.today ? 'today' : '')
+    || (flags.yesterday ? 'yesterday' : '')
+    || (flags.thisWeek || flags.week ? 'this-week' : '')
+    || (flags.lastWeek ? 'last-week' : '');
+  const relative = relativeDateRange(timePreference, flags, env);
+  if (relative) return relative;
+  const from = flags.from || flags.since || flags.start || flags.updatedAfter || flags.updated_after || '';
+  const to = flags.to || flags.until || flags.end || flags.updatedBefore || flags.updated_before || '';
+  return from || to ? { ...(from ? { from: String(from) } : {}), ...(to ? { to: String(to) } : {}) } : null;
+}
+
 function normalizeServerUrl(value = '') {
   return String(value || DEFAULT_SERVER_URL).trim().replace(/\/+$/, '') || DEFAULT_SERVER_URL;
 }
@@ -40,6 +282,122 @@ function teamSharingShimBinDir(flags = {}, env = process.env) {
   const explicit = String(flags.teamSharingBinDir || flags.binDir || env.MAGCLAW_TEAM_SHARING_BIN_DIR || '').trim();
   if (explicit) return path.resolve(explicit);
   return path.join(homeDirForEnv(env), '.local', 'bin');
+}
+
+function normalizeInstallScope(value = '') {
+  const clean = String(value || '').trim().toLowerCase();
+  if (['global', 'user'].includes(clean)) return 'user';
+  if (['project', 'local'].includes(clean)) return 'project';
+  return 'auto';
+}
+
+function gitCommand(cwd = process.cwd(), args = []) {
+  return spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+}
+
+function gitProjectRoot(cwd = process.cwd()) {
+  const result = gitCommand(cwd, ['rev-parse', '--show-toplevel']);
+  if (result.status !== 0) return '';
+  return String(result.stdout || '').trim();
+}
+
+function currentProjectDir(flags = {}) {
+  const cwd = path.resolve(flags.cwd || process.cwd());
+  const gitRoot = gitProjectRoot(cwd);
+  if (gitRoot) return path.resolve(gitRoot);
+  const markers = [
+    path.join(cwd, '.magclaw', 'team-sharing.yaml'),
+    path.join(cwd, 'package.json'),
+    path.join(cwd, 'AGENTS.md'),
+    path.join(cwd, '.codex'),
+    path.join(cwd, '.agents'),
+    path.join(cwd, '.claude'),
+  ];
+  return markers.some((marker) => existsSync(marker)) ? cwd : '';
+}
+
+async function registeredTeamSharingProjects(env = process.env) {
+  const paths = teamSharingPaths({ env });
+  const registry = await readYamlFile(paths.projectsConfig, {});
+  return Object.entries(registry.projects || {})
+    .map(([key, item]) => {
+      const projectPath = String(item?.path || '').trim();
+      return {
+        key,
+        path: projectPath ? path.resolve(projectPath) : '',
+        channelPath: String(item?.channel_path || '').trim(),
+      };
+    })
+    .filter((item) => item.path && existsSync(item.path));
+}
+
+async function promptProjectInstallTarget(flags = {}, env = process.env) {
+  if (flags.yes || flags.nonInteractive || env.CI) return null;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return null;
+  const projects = await registeredTeamSharingProjects(env);
+  if (!projects.length) return null;
+  const lines = [
+    'No current project was detected. Choose a Team Sharing project:',
+    ...projects.map((project, index) => `  [${index + 1}] ${project.key} ${project.path}`),
+    '  [g] install globally',
+  ];
+  process.stdout.write(`${lines.join('\n')}\n`);
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question('Project number: ');
+    const clean = String(answer || '').trim().toLowerCase();
+    if (clean === 'g' || clean === 'global') return null;
+    const index = Number(clean) - 1;
+    return projects[index]?.path || null;
+  } finally {
+    rl.close();
+  }
+}
+
+async function resolveInstallTarget(flags = {}, env = process.env, { prompt = false } = {}) {
+  const explicitProject = String(flags.projectDir || flags.projectPath || '').trim();
+  const explicitScope = normalizeInstallScope(flags.installScope || flags.scope || env.MAGCLAW_TEAM_SHARING_INSTALL_SCOPE);
+  if (explicitScope === 'user') return { scope: 'user', projectDir: '' };
+  if (explicitProject) return { scope: 'project', projectDir: path.resolve(explicitProject) };
+  const projectDir = currentProjectDir(flags);
+  if (projectDir) return { scope: 'project', projectDir };
+  if (explicitScope === 'project') throw new Error('No current project detected. Pass --project-dir <path> or run from a project directory.');
+  const selectedProject = prompt ? await promptProjectInstallTarget(flags, env) : '';
+  if (selectedProject) return { scope: 'project', projectDir: selectedProject };
+  return { scope: 'user', projectDir: '' };
+}
+
+function gitInfoExcludePath(projectDir = '') {
+  if (!projectDir) return '';
+  const result = gitCommand(projectDir, ['rev-parse', '--git-dir']);
+  if (result.status !== 0) return '';
+  const gitDir = String(result.stdout || '').trim();
+  if (!gitDir) return '';
+  return path.join(path.isAbsolute(gitDir) ? gitDir : path.resolve(projectDir, gitDir), 'info', 'exclude');
+}
+
+async function ensureProjectInstallIgnored(projectDir = '', runtimes = []) {
+  const excludePath = gitInfoExcludePath(projectDir);
+  if (!excludePath) return [];
+  const entries = new Set(['.magclaw/']);
+  for (const runtime of runtimes.map(normalizeRuntime)) {
+    if (runtime === 'claude_code') {
+      entries.add('.claude/settings.local.json');
+      entries.add('.claude/skills/magclaw-team-sharing/');
+    } else {
+      entries.add('.codex/hooks.json');
+      entries.add('.agents/skills/magclaw-team-sharing/');
+    }
+  }
+  let existing = '';
+  try {
+    existing = await readFile(excludePath, 'utf8');
+  } catch {}
+  const missing = [...entries].filter((entry) => !existing.split(/\r?\n/).includes(entry));
+  if (!missing.length) return [];
+  await mkdir(path.dirname(excludePath), { recursive: true });
+  await appendFile(excludePath, `${existing.endsWith('\n') || !existing ? '' : '\n'}${missing.join('\n')}\n`);
+  return missing;
 }
 
 function normalizeRuntime(value = '') {
@@ -621,6 +979,7 @@ export async function searchTeamSharing(flags = {}, env = process.env) {
   const query = String(flags.query || flags._?.slice(1).join(' ') || '').trim();
   if (!query) throw new Error('Usage: team-sharing search --query <text>');
   const { project, serverUrl, token } = await resolveTeamSharingClient(flags, env);
+  const intent = buildSearchIntent({ query, flags, env });
   return teamSharingRequestJson({
     serverUrl,
     token,
@@ -628,11 +987,26 @@ export async function searchTeamSharing(flags = {}, env = process.env) {
     pathname: '/api/team-sharing/search',
     body: {
       query,
+      semanticQuery: intent.semanticQuery,
+      keywordQuery: intent.keywordQuery,
+      keywords: intent.keywords,
+      topics: intent.topics,
       channelId: flags.channelId || project.config.channelId || '',
       projectKey: flags.projectKey || project.config.projectKey || '',
-      dateRange: flags.dateRange || null,
-      candidateK: flags.candidateK || undefined,
-      limit: flags.limit || 5,
+      dateRange: intent.dateRange,
+      timePreference: intent.timePreference,
+      searchMode: intent.searchMode,
+      modeBias: intent.modeBias,
+      retrievalIntent: {
+        useKeyword: intent.useKeyword,
+        useSemantic: intent.useSemantic,
+        modeBias: intent.modeBias,
+        source: 'team-sharing-cli',
+      },
+      sortBy: normalizeSearchSort(flags.sortBy || flags.sort || flags.orderBy),
+      candidateK: flags.candidateK ? numberFlag(flags.candidateK) : undefined,
+      minScore: flags.minScore !== undefined ? numberFlag(flags.minScore) : undefined,
+      limit: numberFlag(flags.limit, 5),
     },
   });
 }
@@ -755,9 +1129,15 @@ async function promptSetupTarget(flags = {}, env = process.env) {
   }
 }
 
-function targetConfigPath(runtime, flags = {}, env = process.env) {
+function targetConfigPath(runtime, flags = {}, env = process.env, installTarget = null) {
   const home = homeDirForEnv(env);
-  if (runtime === 'claude_code') return flags.claudeConfig || path.join(home, '.claude', 'settings.json');
+  if (runtime === 'claude_code') {
+    if (flags.claudeConfig) return path.resolve(flags.claudeConfig);
+    if (installTarget?.scope === 'project') return path.join(installTarget.projectDir, '.claude', 'settings.local.json');
+    return path.join(home, '.claude', 'settings.json');
+  }
+  if (flags.codexConfig) return path.resolve(flags.codexConfig);
+  if (installTarget?.scope === 'project') return path.join(installTarget.projectDir, '.codex', 'hooks.json');
   return flags.codexConfig || path.join(home, '.codex', 'hooks.json');
 }
 
@@ -768,13 +1148,16 @@ function hookEventsForRuntime(runtime) {
 }
 
 export async function installTeamSharingHooks(flags = {}, env = process.env) {
-  const cwd = path.resolve(flags.cwd || process.cwd());
-  const output = { ok: true };
-  for (const runtime of selectedTargets(flags, env)) {
+  const installTarget = await resolveInstallTarget(flags, env, { prompt: true });
+  const cwd = path.resolve(installTarget.projectDir || flags.cwd || process.cwd());
+  const targets = selectedTargets(flags, env);
+  const ignored = installTarget.scope === 'project' ? await ensureProjectInstallIgnored(cwd, targets) : [];
+  const output = { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', ignored };
+  for (const runtime of targets) {
     const key = runtime === 'claude_code' ? 'claude' : 'codex';
     output[key] = await installTeamSharingHookConfig({
       runtime,
-      configPath: targetConfigPath(runtime, flags, env),
+      configPath: targetConfigPath(runtime, flags, env, installTarget),
       projectDir: cwd,
       integration: TEAM_SHARING_INTEGRATION,
       teamSharingCommand: flags.teamSharingCommand,
@@ -785,10 +1168,11 @@ export async function installTeamSharingHooks(flags = {}, env = process.env) {
 }
 
 export async function statusTeamSharingHooks(flags = {}, env = process.env) {
-  const output = { ok: true };
+  const installTarget = await resolveInstallTarget(flags, env, { prompt: false });
+  const output = { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '' };
   for (const runtime of selectedTargets(flags, env)) {
     const key = runtime === 'claude_code' ? 'claude' : 'codex';
-    const configPath = targetConfigPath(runtime, flags, env);
+    const configPath = targetConfigPath(runtime, flags, env, installTarget);
     const config = await readJsonFile(configPath, {});
     const installed = [];
     for (const eventName of hookEventsForRuntime(runtime)) {
@@ -804,10 +1188,11 @@ export async function statusTeamSharingHooks(flags = {}, env = process.env) {
 }
 
 export async function removeTeamSharingHooks(flags = {}, env = process.env) {
-  const output = { ok: true };
+  const installTarget = await resolveInstallTarget(flags, env, { prompt: false });
+  const output = { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '' };
   for (const runtime of selectedTargets(flags, env)) {
     const key = runtime === 'claude_code' ? 'claude' : 'codex';
-    const configPath = targetConfigPath(runtime, flags, env);
+    const configPath = targetConfigPath(runtime, flags, env, installTarget);
     const config = await readJsonFile(configPath, {});
     const removed = [];
     for (const eventName of hookEventsForRuntime(runtime)) {
@@ -841,11 +1226,38 @@ function teamSharingSkillMarkdown() {
     '## Workflow',
     '',
     '1. Run `team-sharing search --query "<question>" --limit 5` from the configured project directory.',
-    '2. Answer from the returned L0/L1 evidence when the user only needs a rough understanding.',
-    '3. For deep follow-up, run `team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 21 --order asc`.',
-    '4. Cite session titles, source refs, and context URLs from the command output.',
-    '5. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `team-sharing share-artifact --file <path> --title "<title>" --type html`.',
-    '6. Return the public URL from the command output. The shared page is public by design and includes the creator and creation time in the footer.',
+    '2. Add retrieval filters when the user gives a time or search preference. Keep the default retrieval combined: keyword/BM25 and semantic/vector recall run together, then rerank.',
+    '   - Time: `--time today`, `--time yesterday`, `--time this-week`, or explicit `--from <iso> --to <iso>`.',
+    '   - Exact keyword/BM25 inputs: add `--keyword "<term>"` or `--keywords "A,B,C"` when the user gives product names, IDs, file names, commands, or literal phrases.',
+    '   - Topic hints: add `--topic "<topic>"` or `--topics "A,B,C"` when the user asks across several topics.',
+    '   - Semantic intent: keep the full natural-language question in `--query`; use `--semantic-query "<meaning>"` only when you need to rewrite a long request into a clean semantic query.',
+    '   - Preference only: `--mode keyword` biases rerank/sorting toward exact matches, and `--mode semantic` biases toward semantic fit. They should not be used to drop the other recall path.',
+    '   - Single-path debug: only use `--keyword-only` or `--semantic-only` when the user explicitly asks to search one path only.',
+    '   - Sorting: use `--sort recent`, `--sort keyword`, `--sort semantic`, or `--sort hotness` only when the user asks for recency, exact match, semantic fit, or feedback popularity.',
+    '3. Answer from the returned evidence when the user only needs a rough understanding. Do not expose L0/L1 as user-facing labels; translate them into semantic labels such as Abstract, SessionSyncHooks, or RerankFeedback.',
+    '4. For deep follow-up, run `team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 21 --order asc`.',
+    '5. Cite session titles, semantic source links, and the original-session context link from the command output.',
+    '6. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `team-sharing share-artifact --file <path> --title "<title>" --type html`.',
+    '7. Return the public URL from the command output. The shared page is public by design and includes the creator and creation time in the footer.',
+    '',
+    '## Answer Style For Search Results',
+    '',
+    '- Start with the matched session title, session ID, runtime, and date/time range when available.',
+    '- Prefer a compact Markdown table for retrieved entries: `入口`, `命中内容`, `说明`. Keep entries short enough to scan.',
+    '- For each core takeaway, lead with a bold keyword such as `**验收目标**` or `**Raw ID**`, then explain the point in one or two sentences.',
+    '- Use headings and bullets to create visible hierarchy. Avoid one long numbered paragraph when the answer has multiple concepts.',
+    '- Use inline code only for IDs, commands, status values, and file names. Do not wrap whole sentences in code style.',
+    '- Treat workspace source links and original context links as different destinations.',
+    '- Workspace source links (`Abstract`, `SessionSyncHooks`, `RerankFeedback`, and other topic labels) should open the Team Sharing workspace file in the MagClaw channel UI. When a MagClaw channel URL is known, build links like `<channelUrl>#team-sharing-workspace-file:abstract.md` or `<channelUrl>#team-sharing-workspace-file:topics%2Frerank-feedback.md`. If no channel URL is known, show the semantic label plus the workspace path instead of linking it to `contextUrl`.',
+    '- Original context links should use only `contextUrl` and open the standalone `/team-sharing/context/<sessionId>` page. Prefix relative context URLs with the current server/share route such as `/s/<serverSlug>` when that route is known.',
+    '- When showing source entry points, map `sourceRef` to user-friendly workspace labels and derive the workspace file path from the part after `<sessionId>/`:',
+    '  - `*/abstract.md#...` -> `[Abstract](<workspace-file-link-to-abstract.md>)`',
+    '  - `*/topics/session-sync-hooks.md#...` -> `[SessionSyncHooks](<workspace-file-link-to-topics%2Fsession-sync-hooks.md>)`',
+    '  - `*/topics/rerank-feedback.md#...` -> `[RerankFeedback](<workspace-file-link-to-topics%2Frerank-feedback.md>)`',
+    '  - Other topic files -> convert the kebab topic ID to PascalCase for the label and link to that workspace file.',
+    '- Never reuse the original-session `contextUrl` for `Abstract` or topic links; those links must not all land in the same thread/context page.',
+    '- Show the dynamic context URL as `[原始会话](<contextUrl>)` instead of printing the long URL string.',
+    '- Preserve privacy: never paste raw hook output, local absolute paths, tokens, channel route keys, hidden reasoning, or sensitive transcript content into the answer.',
     '',
     '## Default Share HTML Style',
     '',
@@ -875,9 +1287,15 @@ function teamSharingSkillMarkdown() {
   ].join('\n');
 }
 
-function skillRootForTarget(runtime, env = process.env) {
+function skillRootForTarget(runtime, flags = {}, env = process.env, installTarget = null) {
   const home = homeDirForEnv(env);
-  if (runtime === 'claude_code') return path.resolve(env.CLAUDE_HOME || path.join(home, '.claude'));
+  if (runtime === 'claude_code') {
+    if (flags.claudeSkillRoot) return path.resolve(flags.claudeSkillRoot);
+    if (installTarget?.scope === 'project') return path.join(installTarget.projectDir, '.claude');
+    return path.resolve(env.CLAUDE_HOME || path.join(home, '.claude'));
+  }
+  if (flags.codexSkillRoot) return path.resolve(flags.codexSkillRoot);
+  if (installTarget?.scope === 'project') return path.join(installTarget.projectDir, '.agents');
   return path.resolve(env.CODEX_HOME || path.join(home, '.codex'));
 }
 
@@ -890,62 +1308,72 @@ async function writeTeamSharingSkill(rootDir) {
 }
 
 export async function installTeamSharingSkill(flags = {}, env = process.env) {
-  const output = { ok: true, installed: [] };
-  for (const runtime of selectedTargets(flags, env)) {
-    output.installed.push({ target: runtime, path: await writeTeamSharingSkill(skillRootForTarget(runtime, env)) });
+  const installTarget = await resolveInstallTarget(flags, env, { prompt: true });
+  const targets = selectedTargets(flags, env);
+  const ignored = installTarget.scope === 'project' ? await ensureProjectInstallIgnored(installTarget.projectDir, targets) : [];
+  const output = { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', ignored, installed: [] };
+  for (const runtime of targets) {
+    output.installed.push({ target: runtime, path: await writeTeamSharingSkill(skillRootForTarget(runtime, flags, env, installTarget)) });
   }
   output.ok = output.installed.length > 0;
   return output;
 }
 
 export async function statusTeamSharingSkill(flags = {}, env = process.env) {
+  const installTarget = await resolveInstallTarget(flags, env, { prompt: false });
   const installed = [];
   for (const runtime of selectedTargets(flags, env)) {
-    const skillPath = path.join(skillRootForTarget(runtime, env), 'skills', 'magclaw-team-sharing', 'SKILL.md');
+    const skillPath = path.join(skillRootForTarget(runtime, flags, env, installTarget), 'skills', 'magclaw-team-sharing', 'SKILL.md');
     if (existsSync(skillPath)) installed.push({ target: runtime, path: skillPath });
   }
-  return { ok: true, installed };
+  return { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', installed };
 }
 
 export async function removeTeamSharingSkill(flags = {}, env = process.env) {
+  const installTarget = await resolveInstallTarget(flags, env, { prompt: false });
   const removed = [];
   for (const runtime of selectedTargets(flags, env)) {
-    const skillDir = path.join(skillRootForTarget(runtime, env), 'skills', 'magclaw-team-sharing');
+    const skillDir = path.join(skillRootForTarget(runtime, flags, env, installTarget), 'skills', 'magclaw-team-sharing');
     if (existsSync(skillDir)) {
       await rm(skillDir, { recursive: true, force: true });
       removed.push({ target: runtime, path: skillDir });
     }
   }
-  return { ok: true, removed };
+  return { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', removed };
 }
 
 export async function disableTeamSharingSkill(flags = {}, env = process.env) {
+  const installTarget = await resolveInstallTarget(flags, env, { prompt: false });
   const disabled = [];
   for (const runtime of selectedTargets(flags, env)) {
-    const skillPath = path.join(skillRootForTarget(runtime, env), 'skills', 'magclaw-team-sharing', 'SKILL.md');
+    const skillPath = path.join(skillRootForTarget(runtime, flags, env, installTarget), 'skills', 'magclaw-team-sharing', 'SKILL.md');
     const disabledPath = `${skillPath}.disabled`;
     if (existsSync(skillPath)) {
       await rename(skillPath, disabledPath);
       disabled.push({ target: runtime, path: disabledPath });
     }
   }
-  return { ok: true, disabled };
+  return { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', disabled };
 }
 
 export async function setupTeamSharing(flags = {}, env = process.env) {
   flags = await promptSetupTarget(flags, env);
+  const installTarget = await resolveInstallTarget(flags, env, { prompt: true });
+  const setupFlags = installTarget.scope === 'project' ? { ...flags, cwd: installTarget.projectDir } : flags;
   const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   const profileConfig = await readTeamSharingProfileConfig(profile, env);
   if (!flags.noLogin && !profileConfig.config?.token) {
     await loginTeamSharingProfile(flags, env);
   }
-  const project = await initTeamSharingProject(flags, env);
-  const shim = await installTeamSharingShim(flags, env);
-  const hookFlags = shim.path ? { ...flags, teamSharingCommand: shim.path } : flags;
+  const project = await initTeamSharingProject(setupFlags, env);
+  const shim = await installTeamSharingShim(setupFlags, env);
+  const hookFlags = shim.path ? { ...setupFlags, teamSharingCommand: shim.path } : setupFlags;
   const hooks = await installTeamSharingHooks(hookFlags, env);
-  const skill = await installTeamSharingSkill(flags, env);
+  const skill = await installTeamSharingSkill(setupFlags, env);
   return {
     ok: Boolean(project.ok && shim.ok && hooks.ok && skill.ok),
+    scope: installTarget.scope,
+    projectDir: installTarget.projectDir || '',
     project,
     shim,
     hooks,

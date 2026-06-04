@@ -78,6 +78,13 @@ zilliz:
   token: "replace-with-zilliz-token"
   database: "ai_social_memory"
   collection: "magclaw_team_sharing_v1"
+  # Optional: enable BM25 keyword recall for collections created with a sparse
+  # vector field generated from the text field.
+  bm25_field: "sparse"
+  bm25_text_field: "text"
+  # Destructive: set true only when this collection can be dropped and recreated
+  # if it was originally created without the BM25 sparse field/function.
+  recreate_for_bm25: false
 
 rerank:
   url: "https://rerank.example.com/v1/rerank"

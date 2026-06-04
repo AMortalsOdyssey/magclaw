@@ -221,6 +221,22 @@ function clamp01(value) {
   return Math.max(0, Math.min(1, number));
 }
 
+export function normalizeTeamSharingSearchMode(value = '') {
+  const clean = String(value || '').trim().toLowerCase();
+  if (['exact', 'keyword', 'keywords', 'bm25', 'lexical'].includes(clean)) return 'keyword';
+  if (['fuzzy', 'semantic', 'vector', 'dense'].includes(clean)) return 'semantic';
+  return 'hybrid';
+}
+
+export function normalizeTeamSharingSearchSort(value = '') {
+  const clean = String(value || '').trim().toLowerCase();
+  if (['recent', 'recency', 'latest', 'time', 'updated_at', 'updated-at'].includes(clean)) return 'recent';
+  if (['keyword', 'bm25', 'exact'].includes(clean)) return 'keyword';
+  if (['semantic', 'vector', 'rerank'].includes(clean)) return 'semantic';
+  if (['hot', 'hotness', 'popular', 'feedback'].includes(clean)) return 'hotness';
+  return 'relevance';
+}
+
 function ensureTeamSharingState(teamSharingState = null) {
   const target = teamSharingState && typeof teamSharingState === 'object' ? teamSharingState : {};
   target.sessions = target.sessions && typeof target.sessions === 'object' ? target.sessions : {};
@@ -1267,6 +1283,8 @@ export function contextWindowForTeamSharingSession(teamSharingStateInput, sessio
     if (end - start < limit) start = Math.max(0, end - limit);
   }
   const selected = events.slice(start, end);
+  const firstSelectedEvent = selected[0] || null;
+  const lastSelectedEvent = selected[selected.length - 1] || null;
   return {
     ok: true,
     sessionId,
@@ -1282,8 +1300,8 @@ export function contextWindowForTeamSharingSession(teamSharingStateInput, sessio
     pagination: {
       hasPrev: start > 0,
       hasNext: end < events.length,
-      prevAnchorEventId: start > 0 ? (events[start]?.eventId || '') : '',
-      nextAnchorEventId: end < events.length ? (events[end - 1]?.eventId || '') : '',
+      prevAnchorEventId: firstSelectedEvent?.eventId || '',
+      nextAnchorEventId: lastSelectedEvent?.eventId || '',
     },
   };
 }
@@ -1341,17 +1359,62 @@ export function applyTeamSharingFeedback(teamSharingStateInput, event = {}) {
   return { ok: true, feedback: record, hotnessScore: hotnessFor(teamSharingState, vectorDocumentId, () => createdAt) };
 }
 
+function updatedAtMs(value = '') {
+  const ms = new Date(value || '').getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function sortTeamSharingCandidates(scored = [], sortBy = 'relevance') {
+  const mode = normalizeTeamSharingSearchSort(sortBy);
+  const idTieBreak = (left, right) => String(left.vectorDocumentId).localeCompare(String(right.vectorDocumentId));
+  return scored.sort((left, right) => {
+    if (mode === 'recent') {
+      return updatedAtMs(right.updatedAt) - updatedAtMs(left.updatedAt)
+        || right.finalScore - left.finalScore
+        || idTieBreak(left, right);
+    }
+    if (mode === 'keyword') {
+      return right.keywordScore - left.keywordScore
+        || right.finalScore - left.finalScore
+        || idTieBreak(left, right);
+    }
+    if (mode === 'semantic') {
+      return right.semanticScore - left.semanticScore
+        || right.finalScore - left.finalScore
+        || idTieBreak(left, right);
+    }
+    if (mode === 'hotness') {
+      return right.hotnessScore - left.hotnessScore
+        || right.finalScore - left.finalScore
+        || idTieBreak(left, right);
+    }
+    return right.finalScore - left.finalScore || idTieBreak(left, right);
+  });
+}
+
 export function rankTeamSharingCandidates(params = {}) {
   const teamSharingState = ensureTeamSharingState(params.teamSharingState);
   const queryId = params.queryId || `tmq_${stableHash(`${params.query || ''}:${Date.now()}:${Math.random()}`)}`;
+  const sortBy = normalizeTeamSharingSearchSort(params.sortBy || params.sort || params.orderBy);
+  const modeBias = normalizeTeamSharingSearchMode(params.modeBias || params.searchMode || params.mode);
+  const minScore = Number(params.minScore);
   const rerankByIndex = new Map(asArray(params.rerankResults).map((item) => [Number(item.index), clamp01(item.score)]));
   const currentDocumentsById = new Map(asArray(teamSharingState.vectorDocuments).map((doc) => [doc.vectorDocumentId, doc]));
   const trace = {
     queryId,
     normalizedQuery: cleanText(params.query || ''),
+    semanticQuery: cleanText(params.semanticQuery || params.intent?.semanticQuery || ''),
+    keywords: asArray(params.keywords || params.intent?.keywords).map((item) => cleanText(item)).filter(Boolean),
+    topics: asArray(params.topics || params.intent?.topics).map((item) => cleanText(item)).filter(Boolean),
+    searchMode: normalizeTeamSharingSearchMode(params.searchMode || params.mode),
+    modeBias,
+    sortBy,
+    minScore: Number.isFinite(minScore) && minScore > 0 ? minScore : 0,
     vectorCandidates: [],
+    keywordCandidates: asArray(params.keywordCandidates).map((item) => item.vectorDocumentId).filter(Boolean),
     filterReasons: {},
     rerankScores: {},
+    keywordScores: {},
     hotnessScores: {},
     finalScores: {},
     selectedTop5: [],
@@ -1372,10 +1435,21 @@ export function rankTeamSharingCandidates(params = {}) {
     const keywordScore = clamp01(candidate.keywordScore);
     const freshnessScore = clamp01(candidate.freshnessScore);
     const semanticScore = 0.75 * rerankScore + 0.25 * vectorScore;
+    const fusionScore = clamp01(Number(candidate.rrfScore || 0) * 20);
     const hotnessScore = hotnessFor(teamSharingState, candidate.vectorDocumentId, params.now, params.hotness);
-    const finalScore = (0.75 * semanticScore) + (0.10 * keywordScore) + (0.05 * freshnessScore) + hotnessScore;
+    const weights = modeBias === 'keyword'
+      ? { semantic: 0.48, keyword: 0.34, freshness: 0.05, fusion: 0.05 }
+      : modeBias === 'semantic'
+        ? { semantic: 0.70, keyword: 0.12, freshness: 0.05, fusion: 0.05 }
+        : { semantic: 0.66, keyword: 0.16, freshness: 0.05, fusion: 0.05 };
+    const finalScore = (weights.semantic * semanticScore)
+      + (weights.keyword * keywordScore)
+      + (weights.freshness * freshnessScore)
+      + (weights.fusion * fusionScore)
+      + hotnessScore;
     trace.vectorCandidates.push(candidate.vectorDocumentId);
     trace.rerankScores[candidate.vectorDocumentId] = rerankScore;
+    trace.keywordScores[candidate.vectorDocumentId] = keywordScore;
     trace.hotnessScores[candidate.vectorDocumentId] = hotnessScore;
     trace.finalScores[candidate.vectorDocumentId] = finalScore;
     return {
@@ -1388,13 +1462,18 @@ export function rankTeamSharingCandidates(params = {}) {
       hotnessScore,
       finalScore,
     };
-  }).sort((left, right) => right.finalScore - left.finalScore || String(left.vectorDocumentId).localeCompare(String(right.vectorDocumentId)));
+  });
+  sortTeamSharingCandidates(scored, sortBy);
 
   const limit = Math.max(1, Math.min(20, Number(params.limit || 5)));
   const selected = [];
   const sessionCounts = new Map();
   const topicCounts = new Map();
   for (const item of scored) {
+    if (Number.isFinite(minScore) && minScore > 0 && item.finalScore < minScore) {
+      trace.filterReasons[item.vectorDocumentId] = 'min_score';
+      continue;
+    }
     const sessionCount = sessionCounts.get(item.sessionId) || 0;
     const topicKey = `${item.sessionId}:${item.topicId || item.vectorDocumentId}`;
     const topicCount = topicCounts.get(topicKey) || 0;

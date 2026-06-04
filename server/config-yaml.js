@@ -255,6 +255,9 @@ export function applyParsedServerYamlConfig(config = {}, options = {}) {
   setEnv(env, 'MAGCLAW_ZILLIZ_TOKEN', pick(zilliz.token, zilliz.api_key, zilliz.apiKey));
   setEnv(env, 'MAGCLAW_ZILLIZ_DATABASE', pick(zilliz.database, zilliz.db));
   setEnv(env, 'MAGCLAW_ZILLIZ_COLLECTION', pick(zilliz.collection, zilliz.collection_name, zilliz.collectionName));
+  setEnv(env, 'MAGCLAW_ZILLIZ_BM25_FIELD', pick(zilliz.bm25_field, zilliz.bm25Field, zilliz.sparse_field, zilliz.sparseField));
+  setEnv(env, 'MAGCLAW_ZILLIZ_BM25_TEXT_FIELD', pick(zilliz.bm25_text_field, zilliz.bm25TextField));
+  setEnv(env, 'MAGCLAW_ZILLIZ_RECREATE_FOR_BM25', pick(zilliz.recreate_for_bm25, zilliz.recreateForBm25));
   setEnv(env, 'MAGCLAW_RERANK_URL', pick(rerank.url, rerank.base_url, rerank.baseUrl));
   setEnv(env, 'MAGCLAW_RERANK_API_KEY', pick(rerank.api_key, rerank.apiKey));
   setEnv(env, 'MAGCLAW_RERANK_MODEL', pick(rerank.model, rerank.model_name, rerank.modelName));

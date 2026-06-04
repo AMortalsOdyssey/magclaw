@@ -12,6 +12,46 @@ function clamp01(value) {
   return Math.max(0, Math.min(1, number));
 }
 
+function booleanEnv(value) {
+  return /^(1|true|yes|y|on)$/i.test(String(value || '').trim());
+}
+
+function normalizeTextList(value = []) {
+  const values = Array.isArray(value) ? value : [value];
+  const items = [];
+  for (const item of values) {
+    if (item === undefined || item === null || item === false || item === true) continue;
+    const text = String(item || '').trim();
+    if (!text) continue;
+    if (text.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          items.push(...normalizeTextList(parsed));
+          continue;
+        }
+      } catch {}
+    }
+    items.push(...text.split(/[\n,，、;；|]+/g).map((part) => part.trim()).filter(Boolean));
+  }
+  return items;
+}
+
+function uniqueTextList(values = [], limit = 12) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 async function readJsonResponse(response) {
   const data = await response.json().catch(async () => {
     const text = await response.text().catch(() => '');
@@ -194,6 +234,58 @@ function zillizCandidate(row = {}) {
   };
 }
 
+function zillizKeywordCandidate(row = {}, index = 0) {
+  const candidate = zillizCandidate(row);
+  const rawScore = Number(row.distance ?? row.score ?? row.entity?.score ?? 0);
+  return {
+    ...candidate,
+    vectorScore: 0.05,
+    keywordScore: Number.isFinite(rawScore) && rawScore > 0 ? clamp01(rawScore) : 1 / (index + 1),
+  };
+}
+
+function zillizKeywordQueries({ query = '', keywordQuery = '', keywords = [], topics = [] } = {}) {
+  return uniqueTextList([
+    ...normalizeTextList(keywords),
+    ...normalizeTextList(topics),
+    ...normalizeTextList(keywordQuery),
+    query,
+  ], 12);
+}
+
+function fuseZillizKeywordCandidates(candidateGroups = [], limit = 40, rrfK = 30) {
+  const byId = new Map();
+  asArray(candidateGroups).forEach((group, groupIndex) => {
+    asArray(group).forEach((candidate, index) => {
+      const id = String(candidate?.vectorDocumentId || '').trim();
+      if (!id) return;
+      const existing = byId.get(id) || {
+        ...candidate,
+        keywordScore: 0,
+        vectorScore: 0.05,
+        keywordRrfScore: 0,
+        keywordQueries: [],
+      };
+      const score = clamp01(candidate.keywordScore ?? candidate.score);
+      existing.keywordScore = Math.max(existing.keywordScore, score);
+      existing.keywordRrfScore += 1 / (rrfK + index + 1);
+      existing.vectorScore = Math.max(clamp01(existing.vectorScore), clamp01(candidate.vectorScore ?? 0.05));
+      existing.keywordQueries.push(groupIndex);
+      byId.set(id, {
+        ...existing,
+        ...candidate,
+        keywordScore: existing.keywordScore,
+        keywordRrfScore: existing.keywordRrfScore,
+        keywordQueries: existing.keywordQueries,
+        vectorScore: existing.vectorScore,
+      });
+    });
+  });
+  return [...byId.values()]
+    .sort((left, right) => right.keywordRrfScore - left.keywordRrfScore || right.keywordScore - left.keywordScore)
+    .slice(0, limit);
+}
+
 function documentEntity(document = {}, embedding = []) {
   return {
     _id: String(document.vectorDocumentId || document.id || ''),
@@ -221,6 +313,12 @@ export function createZillizTeamSharingClient(options = {}) {
   const database = options.database || process.env.MAGCLAW_ZILLIZ_DATABASE || 'default';
   const collection = options.collection || process.env.MAGCLAW_ZILLIZ_COLLECTION || 'magclaw_team_sharing_v1';
   const configuredDimension = Number(options.dimension || process.env.MAGCLAW_EMBEDDING_DIMENSION || 0);
+  const bm25Field = String(options.bm25Field || process.env.MAGCLAW_ZILLIZ_BM25_FIELD || '').trim();
+  const bm25TextField = String(options.bm25TextField || process.env.MAGCLAW_ZILLIZ_BM25_TEXT_FIELD || 'text').trim();
+  const bm25FunctionName = String(options.bm25FunctionName || process.env.MAGCLAW_ZILLIZ_BM25_FUNCTION || 'text_bm25_emb').trim();
+  const recreateForBm25 = options.recreateForBm25 !== undefined
+    ? Boolean(options.recreateForBm25)
+    : booleanEnv(process.env.MAGCLAW_ZILLIZ_RECREATE_FOR_BM25);
   const headers = authorizationHeaders(token);
   function endpointUrl(pathname) {
     if (!endpoint) throw new Error('Zilliz endpoint is not configured.');
@@ -240,9 +338,130 @@ export function createZillizTeamSharingClient(options = {}) {
       collectionName: collection,
     };
   }
+  function outputFields() {
+    return [
+      'vector_document_id',
+      'workspace_id',
+      'channel_id',
+      'project_key',
+      'runtime',
+      'session_id',
+      'topic_id',
+      'layer',
+      'title',
+      'text',
+      'source_ref',
+      'updated_at',
+      'hotness',
+    ];
+  }
   function ignorableZillizError(error, pattern) {
     const message = String(error?.message || error || '').toLowerCase();
     return pattern.test(message);
+  }
+  async function describeCollection() {
+    return zillizRequest('/v2/vectordb/collections/describe', commonBody());
+  }
+  function schemaFields(description = {}) {
+    return asArray(
+      description?.data?.schema?.fields
+        || description?.data?.fields
+        || description?.schema?.fields
+        || description?.fields,
+    );
+  }
+  function schemaFunctions(description = {}) {
+    return asArray(
+      description?.data?.schema?.functions
+        || description?.data?.functions
+        || description?.schema?.functions
+        || description?.functions,
+    );
+  }
+  function fieldName(field = {}) {
+    return String(field.fieldName || field.name || field.field_name || '').trim();
+  }
+  function bm25SupportStatus(description = {}) {
+    if (!bm25Field) return { ok: true, configured: false };
+    const fields = schemaFields(description);
+    const functions = schemaFunctions(description);
+    const bm25FieldLower = bm25Field.toLowerCase();
+    const bm25TextFieldLower = bm25TextField.toLowerCase();
+    const hasSparseField = fields.some((field) => (
+      fieldName(field).toLowerCase() === bm25FieldLower
+      && /sparse/i.test(String(field.dataType || field.type || ''))
+    ));
+    const textField = fields.find((field) => fieldName(field).toLowerCase() === bm25TextFieldLower) || {};
+    const hasAnalyzer = bm25TextField !== 'text'
+      || textField.enable_analyzer === true
+      || textField.enableAnalyzer === true
+      || textField.elementTypeParams?.enable_analyzer === true
+      || textField.elementTypeParams?.enableAnalyzer === true;
+    const hasFunction = functions.some((fn) => {
+      const outputNames = asArray(fn.outputFieldNames || fn.output_field_names || fn.outputs).map((item) => String(item).toLowerCase());
+      const inputNames = asArray(fn.inputFieldNames || fn.input_field_names || fn.inputs).map((item) => String(item).toLowerCase());
+      return String(fn.type || fn.functionType || '').toLowerCase() === 'bm25'
+        && outputNames.includes(bm25FieldLower)
+        && (!inputNames.length || inputNames.includes(bm25TextFieldLower));
+    });
+    const serialized = JSON.stringify(description || {}).toLowerCase();
+    return {
+      ok: hasSparseField && hasFunction && hasAnalyzer,
+      configured: true,
+      hasSparseField: hasSparseField || serialized.includes(bm25FieldLower),
+      hasFunction: hasFunction || (serialized.includes('bm25') && serialized.includes(bm25FieldLower)),
+      hasAnalyzer,
+    };
+  }
+  async function dropCollection() {
+    try {
+      await zillizRequest('/v2/vectordb/collections/drop', commonBody());
+    } catch (error) {
+      if (!ignorableZillizError(error, /not found|not exist|collection.*not/)) throw error;
+    }
+  }
+  async function createCollection(collectionDimension) {
+    const fields = [
+      { fieldName: '_id', dataType: 'VarChar', isPrimary: true, elementTypeParams: { max_length: 512 } },
+      { fieldName: 'vector', dataType: 'FloatVector', elementTypeParams: { dim: collectionDimension } },
+      { fieldName: 'vector_document_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'workspace_id', dataType: 'VarChar', elementTypeParams: { max_length: 256 } },
+      { fieldName: 'channel_id', dataType: 'VarChar', elementTypeParams: { max_length: 256 } },
+      { fieldName: 'project_key', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'session_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'topic_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'layer', dataType: 'VarChar', elementTypeParams: { max_length: 32 } },
+      { fieldName: 'title', dataType: 'VarChar', elementTypeParams: { max_length: 4096 } },
+      {
+        fieldName: 'text',
+        dataType: 'VarChar',
+        elementTypeParams: {
+          max_length: 32766,
+          ...(bm25Field && bm25TextField === 'text' ? { enable_analyzer: true } : {}),
+        },
+      },
+      { fieldName: 'source_ref', dataType: 'VarChar', elementTypeParams: { max_length: 4096 } },
+      { fieldName: 'updated_at', dataType: 'VarChar', elementTypeParams: { max_length: 64 } },
+      { fieldName: 'hotness', dataType: 'Double' },
+    ];
+    if (bm25Field) fields.push({ fieldName: bm25Field, dataType: 'SparseFloatVector' });
+    await zillizRequest('/v2/vectordb/collections/create', {
+      ...commonBody(),
+      schema: {
+        autoID: false,
+        enableDynamicField: true,
+        fields,
+        ...(bm25Field ? {
+          functions: [{
+            name: bm25FunctionName,
+            type: 'BM25',
+            inputFieldNames: [bm25TextField],
+            outputFieldNames: [bm25Field],
+            params: {},
+          }],
+        } : {}),
+      },
+    });
   }
   async function ensureVectorIndex() {
     try {
@@ -261,6 +480,26 @@ export function createZillizTeamSharingClient(options = {}) {
       });
     } catch (error) {
       if (!ignorableZillizError(error, /already|exist|duplicate/)) throw error;
+    }
+  }
+  async function ensureBm25Index() {
+    if (!bm25Field) return;
+    try {
+      await zillizRequest('/v2/vectordb/indexes/create', {
+        ...commonBody(),
+        indexParams: [
+          {
+            metricType: 'BM25',
+            fieldName: bm25Field,
+            indexName: bm25Field,
+            indexConfig: {
+              index_type: 'AUTOINDEX',
+            },
+          },
+        ],
+      });
+    } catch (error) {
+      if (!ignorableZillizError(error, /already|exist|duplicate|field.*not|not found|not exist/)) throw error;
     }
   }
   async function collectionLoadState() {
@@ -288,26 +527,35 @@ export function createZillizTeamSharingClient(options = {}) {
         data: [queryVector],
         annsField: 'vector',
         limit,
-        outputFields: [
-          'vector_document_id',
-          'workspace_id',
-          'channel_id',
-          'project_key',
-          'runtime',
-          'session_id',
-          'topic_id',
-          'layer',
-          'title',
-          'text',
-          'source_ref',
-          'updated_at',
-          'hotness',
-        ],
+        outputFields: outputFields(),
         ...(filter ? { filter } : {}),
       });
       return {
         ok: true,
         candidates: flattenZillizRows(data).map(zillizCandidate).filter((item) => item.vectorDocumentId),
+      };
+    },
+    async keywordSearch({ query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', dateRange = null, limit = 40 } = {}) {
+      if (!bm25Field) return { ok: false, code: 'bm25_not_configured' };
+      const filter = buildZillizFilter({ workspaceId, channelId, projectKey, sessionId, layer, dateRange });
+      const queries = zillizKeywordQueries({ query, keywordQuery, keywords, topics });
+      if (!queries.length) return { ok: true, candidates: [] };
+      const results = await Promise.all(queries.map((keyword) => zillizRequest('/v2/vectordb/entities/search', {
+        ...commonBody(),
+        data: [keyword],
+        annsField: bm25Field,
+        metricType: 'BM25',
+        limit,
+        outputFields: outputFields(),
+        ...(filter ? { filter } : {}),
+      })));
+      return {
+        ok: true,
+        queries,
+        candidates: fuseZillizKeywordCandidates(
+          results.map((data) => flattenZillizRows(data).map(zillizKeywordCandidate).filter((item) => item.vectorDocumentId)),
+          limit,
+        ),
       };
     },
     async upsertDocuments({ documents = [], embeddings = [] } = {}) {
@@ -325,38 +573,39 @@ export function createZillizTeamSharingClient(options = {}) {
     async ensureCollection({ dimension = 0 } = {}) {
       const collectionDimension = Number(dimension || configuredDimension || 1536);
       let existed = true;
+      let recreatedForBm25 = false;
+      let description = null;
+      let bm25Status = bm25Field ? { ok: true, configured: true, createdWithBm25: false } : { ok: true, configured: false };
       try {
-        await zillizRequest('/v2/vectordb/collections/describe', commonBody());
+        description = await describeCollection();
       } catch (error) {
         if (!ignorableZillizError(error, /not found|not exist|collection.*not/)) throw error;
         existed = false;
-        await zillizRequest('/v2/vectordb/collections/create', {
-          ...commonBody(),
-          schema: {
-            autoID: false,
-            enableDynamicField: true,
-            fields: [
-              { fieldName: '_id', dataType: 'VarChar', isPrimary: true, elementTypeParams: { max_length: 512 } },
-              { fieldName: 'vector', dataType: 'FloatVector', elementTypeParams: { dim: collectionDimension } },
-              { fieldName: 'vector_document_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
-              { fieldName: 'workspace_id', dataType: 'VarChar', elementTypeParams: { max_length: 256 } },
-              { fieldName: 'channel_id', dataType: 'VarChar', elementTypeParams: { max_length: 256 } },
-              { fieldName: 'project_key', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
-              { fieldName: 'session_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
-              { fieldName: 'topic_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
-              { fieldName: 'layer', dataType: 'VarChar', elementTypeParams: { max_length: 32 } },
-              { fieldName: 'title', dataType: 'VarChar', elementTypeParams: { max_length: 4096 } },
-              { fieldName: 'text', dataType: 'VarChar', elementTypeParams: { max_length: 32766 } },
-              { fieldName: 'source_ref', dataType: 'VarChar', elementTypeParams: { max_length: 4096 } },
-              { fieldName: 'updated_at', dataType: 'VarChar', elementTypeParams: { max_length: 64 } },
-              { fieldName: 'hotness', dataType: 'Double' },
-            ],
-          },
-        });
+        await createCollection(collectionDimension);
+        bm25Status = bm25Field ? { ok: true, configured: true, createdWithBm25: true } : { ok: true, configured: false };
+      }
+      if (existed && bm25Field) {
+        bm25Status = bm25SupportStatus(description);
+        if (!bm25Status.ok) {
+          if (!recreateForBm25) {
+            const missing = [
+              bm25Status.hasSparseField ? '' : `sparse field "${bm25Field}"`,
+              bm25Status.hasFunction ? '' : `BM25 function "${bm25FunctionName}"`,
+              bm25Status.hasAnalyzer ? '' : `analyzer on "${bm25TextField}"`,
+            ].filter(Boolean).join(', ');
+            throw new Error(`Existing Zilliz collection "${collection}" is missing BM25 support${missing ? `: ${missing}` : ''}. Set MAGCLAW_ZILLIZ_RECREATE_FOR_BM25=1 or use a new collection to recreate it with BM25.`);
+          }
+          await dropCollection();
+          await createCollection(collectionDimension);
+          existed = false;
+          recreatedForBm25 = true;
+          bm25Status = { ok: true, configured: true, recreatedForBm25: true };
+        }
       }
       await ensureVectorIndex();
+      await ensureBm25Index();
       await ensureCollectionLoaded();
-      return { ok: true, existed, dimension: collectionDimension };
+      return { ok: true, existed, recreatedForBm25, bm25: bm25Status, dimension: collectionDimension };
     },
   };
 }

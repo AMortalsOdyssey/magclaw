@@ -1835,6 +1835,25 @@ function teamSharingApiDeps() {
       const expected = process.env.MAGCLAW_TEAM_SHARING_SYNC_TOKEN || '';
       return safeTokenEqual(bearerToken(req), expected);
     },
+    keywordSearch: async ({ query, keywordQuery, keywords, topics, channelId, projectKey, dateRange, limit, actor, workspaceId }) => {
+      try {
+        if (typeof zillizClient.keywordSearch !== 'function') return { ok: false, code: 'keyword_search_unavailable' };
+        return zillizClient.keywordSearch({
+          query,
+          keywordQuery,
+          keywords,
+          topics,
+          workspaceId: workspaceId || workspaceIdFromActor(actor),
+          channelId,
+          projectKey,
+          dateRange,
+          limit,
+        });
+      } catch (error) {
+        return { ok: false, error: error?.message || 'Team sharing keyword search failed.' };
+      }
+    },
+    keywordSearchReady: () => Boolean(process.env.MAGCLAW_ZILLIZ_BM25_FIELD),
     vectorSearch: async ({ query, channelId, projectKey, dateRange, limit, actor, workspaceId }) => {
       try {
         const embedded = await embeddingClient.embed(query || '');

@@ -460,6 +460,8 @@ test('team sharing context window anchors on an event and paginates both directi
   assert.deepEqual(around.events.map((event) => event.eventId), ['evt_2']);
   assert.equal(around.pagination.hasPrev, true);
   assert.equal(around.pagination.hasNext, true);
+  assert.equal(around.pagination.prevAnchorEventId, 'evt_2');
+  assert.equal(around.pagination.nextAnchorEventId, 'evt_2');
 
   const next = contextWindowForTeamSharingSession(state.teamSharing, 'sess_rerank_design', {
     anchorEventId: 'evt_2',
@@ -467,6 +469,7 @@ test('team sharing context window anchors on an event and paginates both directi
     limit: 1,
   });
   assert.deepEqual(next.events.map((event) => event.eventId), ['evt_4']);
+  assert.equal(next.pagination.nextAnchorEventId, 'evt_4');
 });
 
 test('team sharing context next page without anchor starts from the first event', () => {
@@ -619,6 +622,63 @@ test('team sharing rerank returns diverse top5 and feedback changes later orderi
     limit: 5,
   });
   assert.ok(third.results.find((item) => item.vectorDocumentId === 'doc_a').hotnessScore < boosted.hotnessScore);
+});
+
+test('team sharing ranking honors retrieval sort preferences', () => {
+  const teamSharingState = createInitialTeamSharingState();
+  const candidates = [
+    {
+      vectorDocumentId: 'doc_old_keyword',
+      sessionId: 'sess_old',
+      topicId: 'session-sync-hooks',
+      layer: 'L1',
+      title: 'SessionSyncHooks exact keyword',
+      text: 'rawEventId anchorEventId SessionSyncHooks',
+      vectorScore: 0.4,
+      keywordScore: 0.95,
+      freshnessScore: 0.2,
+      updatedAt: '2026-06-01T08:00:00.000Z',
+    },
+    {
+      vectorDocumentId: 'doc_recent_semantic',
+      sessionId: 'sess_recent',
+      topicId: 'retrieval-preferences',
+      layer: 'L1',
+      title: 'Retrieval preference design',
+      text: 'semantic fuzzy recall design',
+      vectorScore: 0.9,
+      keywordScore: 0.1,
+      freshnessScore: 0.9,
+      updatedAt: '2026-06-03T08:00:00.000Z',
+    },
+  ];
+
+  const keywordFirst = rankTeamSharingCandidates({
+    query: 'SessionSyncHooks',
+    candidates,
+    teamSharingState,
+    searchMode: 'keyword',
+    sortBy: 'keyword',
+    rerankResults: candidates.map((candidate, index) => ({ index, score: candidate.vectorScore })),
+    now: () => '2026-06-04T00:00:00.000Z',
+    limit: 2,
+  });
+  const recentFirst = rankTeamSharingCandidates({
+    query: 'SessionSyncHooks',
+    candidates,
+    teamSharingState,
+    searchMode: 'hybrid',
+    sortBy: 'recent',
+    rerankResults: candidates.map((candidate, index) => ({ index, score: candidate.vectorScore })),
+    now: () => '2026-06-04T00:00:00.000Z',
+    limit: 2,
+  });
+
+  assert.equal(keywordFirst.results[0].vectorDocumentId, 'doc_old_keyword');
+  assert.equal(keywordFirst.trace.searchMode, 'keyword');
+  assert.equal(keywordFirst.trace.sortBy, 'keyword');
+  assert.equal(recentFirst.results[0].vectorDocumentId, 'doc_recent_semantic');
+  assert.equal(recentFirst.trace.sortBy, 'recent');
 });
 
 test('team sharing rerank refreshes stale vector payload from local authoritative document', () => {
