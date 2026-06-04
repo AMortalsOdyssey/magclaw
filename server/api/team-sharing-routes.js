@@ -602,11 +602,15 @@ function sendContextHtml(res, {
   queryId = '',
   sourceRef = '',
   order = 'asc',
+  workspaceId = '',
+  serverSlug = '',
 } = {}) {
   const safeSession = encodeURIComponent(sessionId);
   const initialAnchor = String(anchorEventId || '');
   const contextOrder = String(order || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc';
   const isDesc = contextOrder === 'desc';
+  const contextWorkspaceId = String(workspaceId || '').trim();
+  const contextServerSlug = String(serverSlug || '').trim();
   const body = `<!doctype html>
 <html lang="en">
 <head>
@@ -660,6 +664,8 @@ function sendContextHtml(res, {
     const vectorDocumentId = ${JSON.stringify(String(vectorDocumentId || ''))};
     const queryId = ${JSON.stringify(String(queryId || ''))};
     const sourceRef = ${JSON.stringify(String(sourceRef || ''))};
+    const workspaceId = ${JSON.stringify(contextWorkspaceId)};
+    const serverSlug = ${JSON.stringify(contextServerSlug)};
     const eventsEl = document.getElementById('events');
     const prevBtn = document.getElementById('load-more-prev');
     const nextBtn = document.getElementById('load-more-next');
@@ -725,9 +731,16 @@ function sendContextHtml(res, {
       if (event.role === 'system') return runtimeName(session?.runtime);
       return event.role || 'Unknown';
     }
+    function teamSharingScopeQuery(prefix = '&') {
+      const params = new URLSearchParams();
+      if (serverSlug) params.set('serverSlug', serverSlug);
+      else if (workspaceId) params.set('workspaceId', workspaceId);
+      const query = params.toString();
+      return query ? prefix + query : '';
+    }
     function recordFeedback(eventType) {
       if (!vectorDocumentId) return;
-      fetch('/api/team-sharing/feedback', {
+      fetch('/api/team-sharing/feedback' + teamSharingScopeQuery('?'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ queryId, vectorDocumentId, sessionId, eventType, sourceRef })
@@ -801,7 +814,7 @@ function sendContextHtml(res, {
       const beforeScrollY = window.scrollY;
       const anchor = direction === 'next' ? nextAnchor : prevAnchor;
       try {
-        const url = '/api/team-sharing/context/${safeSession}?anchorEventId=' + encodeURIComponent(anchor || '') + '&direction=' + encodeURIComponent(direction) + '&limit=21&order=' + encodeURIComponent(order);
+        const url = '/api/team-sharing/context/${safeSession}?anchorEventId=' + encodeURIComponent(anchor || '') + '&direction=' + encodeURIComponent(direction) + '&limit=21&order=' + encodeURIComponent(order) + teamSharingScopeQuery('&');
         const response = await fetch(url);
         const data = await response.json();
         if (!data.ok) throw new Error(data.error || 'Failed to load context');
@@ -1298,6 +1311,8 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       queryId: url.searchParams.get('queryId') || '',
       sourceRef: url.searchParams.get('sourceRef') || '',
       order: url.searchParams.get('order') || 'asc',
+      workspaceId: session.workspaceId || actor?.member?.workspaceId || tokenRecord?.workspaceId || workspaceId || '',
+      serverSlug: scopedContextPageMatch ? decodeURIComponent(scopedContextPageMatch[1]) : (url.searchParams.get('serverSlug') || ''),
     });
     return true;
   }

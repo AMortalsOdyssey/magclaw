@@ -1094,7 +1094,7 @@ function renderTeamSharingWorkspaceMarkdown(file = {}) {
     ? renderMarkdownWithPreviewAnchors(content)
     : renderMarkdown(content);
   const contextHref = (href = '') => {
-    const value = String(href || '');
+    const value = String(href || '').replace(/&amp;/gi, '&');
     if (!value.startsWith('/team-sharing/context/')) return value;
     const slug = encodeURIComponent(currentServerSlug());
     return `/s/${slug}${value}`;

@@ -29,6 +29,7 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   const drawerSource = app.slice(app.indexOf('function renderThreadDrawer('), app.indexOf('function renderTaskLifecycle('));
   const clickSource = app.slice(app.indexOf('async function openTeamSharingWorkspace('), app.indexOf('async function discardProvisionalPairingComputer('));
   const clickActionSource = app.slice(app.indexOf("if (action === 'open-team-sharing-workspace')"), app.indexOf("if (action === 'back-to-bottom')"));
+  const contextHrefSource = app.slice(app.indexOf('const contextHref = (href = \'\') => {'), app.indexOf('return html', app.indexOf('const contextHref = (href = \'\') => {')));
 
   assert.match(app, /function teamSharingSessionIdForMessage/);
   assert.match(app, /teamSharingRuntimeActorInfo/);
@@ -56,6 +57,7 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   assert.match(app, /team-sharing-workspace-inline-link/);
   assert.match(app, /team-sharing-workspace-context-link/);
   assert.match(app, /contextHref\(href\)/);
+  assert.match(contextHrefSource, /replace\(\/&amp;\/gi, '&'\)/);
   assert.match(app, /target="_blank" rel="noreferrer">\$\{label\}<\/a>/);
   assert.match(app, /team-sharing-workspace-head-action tone-refresh/);
   assert.match(clickActionSource, /if \(action === 'back-to-team-sharing-thread'\)/);

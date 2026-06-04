@@ -685,6 +685,11 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /MagClaw Team Sharing Context/);
   assert.match(res.body, /\/api\/team-sharing\/context\/sess_route/);
   assert.match(res.body, /\/api\/team-sharing\/feedback/);
+  assert.match(res.body, /const workspaceId = "ws_route";/);
+  assert.match(res.body, /const serverSlug = "";/);
+  assert.match(res.body, /params\.set\('workspaceId', workspaceId\)/);
+  assert.match(res.body, /teamSharingScopeQuery\('&'\)/);
+  assert.match(res.body, /\/api\/team-sharing\/feedback' \+ teamSharingScopeQuery\('\?'\)/);
   assert.match(res.body, /load_more/);
   assert.match(res.body, /vec_1/);
   assert.match(res.body, /oldest first/);
@@ -719,6 +724,9 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.equal(scopedRes.statusCode, 200);
   assert.match(scopedRes.body, /MagClaw Team Sharing Context/);
   assert.match(scopedRes.body, /\/api\/team-sharing\/context\/sess_route/);
+  assert.match(scopedRes.body, /const workspaceId = "ws_route";/);
+  assert.match(scopedRes.body, /const serverSlug = "server-route";/);
+  assert.match(scopedRes.body, /params\.set\('serverSlug', serverSlug\)/);
 });
 
 test('team sharing context page redirects unauthenticated browsers to login with returnTo', async () => {
