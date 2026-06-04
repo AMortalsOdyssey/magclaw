@@ -62,6 +62,7 @@ function normalizeSummary(value = {}) {
   const activity = value.activity && typeof value.activity === 'object' ? value.activity : {};
   return {
     ok: true,
+    title: cleanText(value.title || value.sessionTitle || value.session_title || ''),
     l0: cleanMarkdownText(value.l0 || value.abstract || value.summary || ''),
     topics,
     activity: {
@@ -163,8 +164,8 @@ export function buildTeamSharingSummaryPrompt({ session = {}, events = [], previ
     '- Output pure JSON only. Do not wrap it in Markdown.',
     '',
     '# Output Schema',
-    'Use `l0` as the L0 abstract and `topics` as the L1 topic documents.',
-    '{"l0":"Markdown string with 4-6 numbered points, short paragraphs, and standalone links","topics":[{"topicId":"stable-kebab-topic","title":"short title","overview":"structured Markdown L1 topic summary with submodules and no Raw ID dump","decisions":["confirmed decision"],"openQuestions":["unresolved risk"],"nextActions":["concrete follow-up"],"sourceEventIds":["evt_1"]}],"activity":{"action":"merge_summary","summary":"one sentence audit log","changedPaths":["abstract.md","topics/example.md","activities.json"]}}',
+    'Use `title` as a short human-readable session title, `l0` as the L0 abstract, and `topics` as the L1 topic documents.',
+    '{"title":"short specific session title","l0":"Markdown string with 4-6 numbered points, short paragraphs, and standalone links","topics":[{"topicId":"stable-kebab-topic","title":"short title","overview":"structured Markdown L1 topic summary with submodules and no Raw ID dump","decisions":["confirmed decision"],"openQuestions":["unresolved risk"],"nextActions":["concrete follow-up"],"sourceEventIds":["evt_1"]}],"activity":{"action":"merge_summary","summary":"one sentence audit log","changedPaths":["abstract.md","topics/example.md","activities.json"]}}',
     '',
     buildTeamSharingTopicsPromptSection(),
     '',

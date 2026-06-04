@@ -84,6 +84,30 @@ function effectiveSessionTitle({ currentTitle = '', incomingTitle: rawIncomingTi
   return incoming;
 }
 
+function summarySessionTitleCandidate(summary = {}) {
+  const candidates = [
+    summary?.title,
+    summary?.sessionTitle,
+    summary?.session_title,
+    summary?.activity?.title,
+    asArray(summary?.topics)[0]?.title,
+  ];
+  for (const candidate of candidates) {
+    const title = incomingSessionTitle(candidate);
+    if (title) return title;
+  }
+  return '';
+}
+
+function sessionTitleNeedsSummaryPromotion(session = {}) {
+  const title = incomingSessionTitle(session.title);
+  if (!title || title === 'Untitled AI session') return true;
+  return generatedSessionIdTitle(title, {
+    runtime: session.runtime,
+    sessionId: session.sessionId,
+  });
+}
+
 function cleanSyncMetadata(value = {}) {
   const metadata = value && typeof value === 'object' ? value : {};
   const cleaned = {
@@ -1327,7 +1351,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
       sync: effectiveSyncMetadata,
     },
   };
-  const titleChanged = applyTeamSharingSessionTitle({
+  let titleChanged = applyTeamSharingSessionTitle({
     state,
     teamSharingState,
     session,
@@ -1421,6 +1445,16 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
         summary = null;
       }
     }
+    const summaryTitle = summarySessionTitleCandidate(summary);
+    if (summaryTitle && sessionTitleNeedsSummaryPromotion(session)) {
+      titleChanged = applyTeamSharingSessionTitle({
+        state,
+        teamSharingState,
+        session,
+        title: summaryTitle,
+        updatedAt: now(),
+      }) || titleChanged;
+    }
     updateSessionAbstract(teamSharingState, session, acceptedEvents, { now, summary });
   }
   teamSharingState.syncLedger[idempotencyKey] = {
@@ -1441,6 +1475,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     sessionId,
     messageId: session.messageId,
     appendedEventCount: acceptedEvents.length,
+    titleChanged,
     abstractRevision: session.abstractRevision,
   };
 }

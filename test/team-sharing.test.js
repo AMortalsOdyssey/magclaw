@@ -431,6 +431,61 @@ test('team sharing sync ignores generated session-id titles without downgrading 
   assert.ok(state.teamSharing.vectorDocuments.every((doc) => doc.sessionId !== 'sess_title_guard' || doc.title === '验收会话总结共享 111'));
 });
 
+test('team sharing sync promotes cloud summary title over generated session-id root message title', async () => {
+  const state = baseState();
+  const makeId = makeIdFactory();
+  const sessionId = '019e921d-8f61-75a3-ac93-3e595af7c5f6';
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
+    sessionId,
+    idempotencyKey: 'codex:magclaw:019e921d:1:2:summary-title',
+    title: `codex session ${sessionId}`,
+    events: [
+      {
+        eventId: 'evt_cookie_user',
+        ordinal: 1,
+        role: 'user',
+        text: '我看到你刚才提到了浏览器的 cookie，现在我有个疑问：我们这个 cookie 是不是默认使用的？',
+        createdAt: '2026-06-04T10:11:16.000Z',
+      },
+      {
+        eventId: 'evt_cookie_agent',
+        ordinal: 2,
+        role: 'assistant',
+        text: '这个 cookie 属于必要认证 cookie：HttpOnly、SameSite=Lax，当前代码里 TTL 是 14 天。',
+        createdAt: '2026-06-04T10:13:21.000Z',
+      },
+    ],
+  }), {
+    state,
+    makeId,
+    now: () => '2026-06-04T10:14:00.000Z',
+    summarizeSession: async () => ({
+      title: '浏览器登录 Cookie 认证说明',
+      l0: '本次会话确认登录 cookie 是必要认证 cookie，不应展示同意横幅。',
+      topics: [{
+        topicId: 'browser-cookie-auth',
+        title: '浏览器登录 Cookie 认证说明',
+        overview: '确认 `magclaw_session` 是登录认证 cookie，并解释为什么不是隐私偏好类 banner。',
+        decisions: ['登录 cookie 不需要接受全部 / 接受部分 / 拒绝 banner。'],
+        openQuestions: [],
+        nextActions: [],
+        sourceEventIds: ['evt_cookie_agent'],
+      }],
+      activity: {
+        summary: '确认浏览器登录 cookie 的必要认证属性。',
+        changedPaths: ['abstract.md', 'topics/browser-cookie-auth.md', 'activities.json'],
+      },
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.titleChanged, true);
+  assert.equal(state.teamSharing.sessions[sessionId].title, '浏览器登录 Cookie 认证说明');
+  assert.equal(state.messages[0].body, '浏览器登录 Cookie 认证说明');
+  assert.equal(state.messages[0].metadata.teamSharing.title, '浏览器登录 Cookie 认证说明');
+  assert.match(state.teamSharing.abstracts[sessionId].abstractMarkdown, /^# 浏览器登录 Cookie 认证说明/m);
+});
+
 test('team sharing sync cleans session markdown titles and Codex selected text wrappers', async () => {
   const state = baseState();
   const result = await syncTeamSharingBatch(sampleSyncPackage({

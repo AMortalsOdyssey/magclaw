@@ -65,7 +65,7 @@ test('team sharing summary client parses JSON response from OpenAI-compatible AP
           choices: [
             {
               message: {
-                content: '```json\n{"l0":"一句话摘要","topics":[{"topicId":"rerank-feedback","title":"Rerank","overview":"top5 with feedback","decisions":["返回 top5"],"openQuestions":["是否接入 provider rerank"],"nextActions":["写 feedback"],"sourceEventIds":["evt_1","evt_2"]}],"activity":{"action":"merge_summary","summary":"更新 rerank topic。","changedPaths":["abstract.md","topics/rerank-feedback.md","activities.json"]}}\n```',
+                content: '```json\n{"title":"Rerank 反馈机制总结","l0":"一句话摘要","topics":[{"topicId":"rerank-feedback","title":"Rerank","overview":"top5 with feedback","decisions":["返回 top5"],"openQuestions":["是否接入 provider rerank"],"nextActions":["写 feedback"],"sourceEventIds":["evt_1","evt_2"]}],"activity":{"action":"merge_summary","summary":"更新 rerank topic。","changedPaths":["abstract.md","topics/rerank-feedback.md","activities.json"]}}\n```',
               },
             },
           ],
@@ -80,6 +80,7 @@ test('team sharing summary client parses JSON response from OpenAI-compatible AP
   });
 
   assert.equal(result.ok, true);
+  assert.equal(result.title, 'Rerank 反馈机制总结');
   assert.equal(result.l0, '一句话摘要');
   assert.equal(result.topics[0].topicId, 'rerank-feedback');
   assert.deepEqual(result.topics[0].decisions, ['返回 top5']);
@@ -149,10 +150,10 @@ test('team sharing sync uses injected authoritative summary and falls back safel
   assert.doesNotMatch(abstract.abstractMarkdown, /打开 Topic 文档/);
   assert.doesNotMatch(abstract.abstractMarkdown, /\| Topic \| Summary \|/);
   assert.doesNotMatch(abstract.abstractMarkdown, /Source Anchors/);
-  assert.doesNotMatch(abstract.topics['rerank-feedback'].overviewMarkdown, /Raw IDs/);
+  assert.doesNotMatch(abstract.topics['rerank-feedback'].overviewMarkdown, /Raw IDs|Raw ID:/);
   assert.doesNotMatch(abstract.topics['rerank-feedback'].overviewMarkdown, /evt_2/);
-  assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /Raw ID: `evt_1`/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /Original Context/);
+  assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /\[原文\]\(\/team-sharing\/context\/sess_summary\?anchorEventId=evt_1&limit=21&order=asc\)/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /反馈热度微调/);
   assert.match(abstract.topics['rerank-feedback'].overviewMarkdown, /返回 top5/);
   assert.ok(state.teamSharing.activities.some((item) => item.summary === '合并 rerank-feedback 主题摘要。'));
