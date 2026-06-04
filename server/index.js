@@ -2253,7 +2253,30 @@ function sendAppShell(res) {
   res.end(html);
 }
 
+function safeAppReturnTo(url) {
+  const target = `${url?.pathname || '/'}${url?.search || ''}`;
+  return target.startsWith('/') && !target.startsWith('//') ? target : '/console';
+}
+
+function redirectAppShellLogin(res, url) {
+  res.writeHead(302, {
+    location: `/?returnTo=${encodeURIComponent(safeAppReturnTo(url))}`,
+    'cache-control': 'no-store',
+  });
+  res.end('');
+}
+
+function shouldRedirectUnauthenticatedWorkspaceDeepLink(req, url) {
+  if (!cloudAuth.isLoginRequired()) return false;
+  if (cloudAuth.currentUser(req)) return false;
+  return /^\/s\/[^/]+\/.+/.test(url.pathname || '');
+}
+
 async function serveStatic(req, res, url) {
+  if (shouldRedirectUnauthenticatedWorkspaceDeepLink(req, url)) {
+    redirectAppShellLogin(res, url);
+    return;
+  }
   let pathname = decodeURIComponent(url.pathname);
   const appShellRequest = pathname === '/' || pathname === '/index.html';
   if (appShellRequest) {

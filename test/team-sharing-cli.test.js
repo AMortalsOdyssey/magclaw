@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -29,6 +29,7 @@ import {
   statusTeamSharingProject,
   statusTeamSharingSkill,
   syncTeamSharingTranscript,
+  teamSharingMachineFingerprint,
   teamSharingPaths,
   whoamiTeamSharingProfile,
 } from '../team-sharing/src/team-sharing.js';
@@ -109,7 +110,42 @@ test('team sharing cli login stores scoped token in user profile only', async ()
   assert.match(profileYaml, /server_url: https:\/\/magclaw\.example/);
   assert.match(profileYaml, /workspace_id: ws_team/);
   assert.match(profileYaml, /token: team-sharing-token-secret/);
+  assert.match(profileYaml, /token_expires_at: \d{4}-\d{2}-\d{2}T/);
+  assert.match(profileYaml, /machine_fingerprint: mfp_[a-f0-9]{64}/);
   assert.equal(paths.projectConfig.includes('.magclaw/team-sharing.yaml'), true);
+});
+
+test('team sharing machine fingerprint is stable across macOS Linux and Windows inputs', () => {
+  const darwin = teamSharingMachineFingerprint({
+    HOME: '/Users/tester',
+    MAGCLAW_TEAM_SHARING_HOSTNAME: 'shared.local',
+    MAGCLAW_TEAM_SHARING_PLATFORM: 'darwin',
+    MAGCLAW_TEAM_SHARING_ARCH: 'arm64',
+  });
+  const linux = teamSharingMachineFingerprint({
+    HOME: '/home/tester',
+    MAGCLAW_TEAM_SHARING_HOSTNAME: 'shared.local',
+    MAGCLAW_TEAM_SHARING_PLATFORM: 'linux',
+    MAGCLAW_TEAM_SHARING_ARCH: 'x64',
+  });
+  const windows = teamSharingMachineFingerprint({
+    USERPROFILE: 'C:\\Users\\tester',
+    MAGCLAW_TEAM_SHARING_HOSTNAME: 'shared.local',
+    MAGCLAW_TEAM_SHARING_PLATFORM: 'win32',
+    MAGCLAW_TEAM_SHARING_ARCH: 'x64',
+  });
+
+  assert.match(darwin, /^mfp_[a-f0-9]{64}$/);
+  assert.match(linux, /^mfp_[a-f0-9]{64}$/);
+  assert.match(windows, /^mfp_[a-f0-9]{64}$/);
+  assert.equal(teamSharingMachineFingerprint({
+    HOME: '/home/tester',
+    MAGCLAW_TEAM_SHARING_HOSTNAME: 'shared.local',
+    MAGCLAW_TEAM_SHARING_PLATFORM: 'linux',
+    MAGCLAW_TEAM_SHARING_ARCH: 'x64',
+  }), linux);
+  assert.notEqual(darwin, linux);
+  assert.notEqual(linux, windows);
 });
 
 test('team sharing init writes editable yaml config and user project registry', async () => {
@@ -148,17 +184,20 @@ test('team sharing browser login caches scoped token, whoami reads it, and logou
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), init, body: init.body ? JSON.parse(init.body) : null });
     if (String(url).endsWith('/api/team-sharing/auth/start')) {
+      assert.match(calls.at(-1).body.machineFingerprint, /^mfp_[a-f0-9]{64}$/);
       return { ok: true, json: async () => ({ ok: true, deviceCode: 'dev_1', userCode: 'ABCD-1234', verificationUri: 'https://magclaw.example/login/device', expiresAt: '2026-06-02T00:10:00.000Z', intervalMs: 1 }) };
     }
     if (String(url).endsWith('/api/team-sharing/auth/token')) {
-      return { ok: true, json: async () => ({ ok: true, status: 'approved', token: 'tm_scoped_secret', workspaceId: 'ws_team', profile: 'default', user: { id: 'hum_1', email: 'team@example.com' } }) };
+      return { ok: true, json: async () => ({ ok: true, status: 'approved', token: 'tm_scoped_secret', tokenExpiresAt: '2026-07-02T00:00:00.000Z', workspaceId: 'ws_team', profile: 'default', user: { id: 'hum_1', email: 'team@example.com' } }) };
     }
     if (String(url).endsWith('/api/team-sharing/auth/whoami')) {
       assert.equal(init.headers.authorization, 'Bearer tm_scoped_secret');
+      assert.match(init.headers['x-magclaw-machine-fingerprint'], /^mfp_[a-f0-9]{64}$/);
       return { ok: true, json: async () => ({ ok: true, user: { id: 'hum_1', email: 'team@example.com' }, workspaceId: 'ws_team' }) };
     }
     if (String(url).endsWith('/api/team-sharing/auth/revoke')) {
       assert.equal(init.headers.authorization, 'Bearer tm_scoped_secret');
+      assert.match(init.headers['x-magclaw-machine-fingerprint'], /^mfp_[a-f0-9]{64}$/);
       return { ok: true, json: async () => ({ ok: true, revoked: true }) };
     }
     throw new Error(`unexpected url ${url}`);
@@ -177,6 +216,8 @@ test('team sharing browser login caches scoped token, whoami reads it, and logou
 
     assert.equal(login.ok, true);
     assert.equal(login.hasToken, true);
+    assert.match(cachedProfile, /token_expires_at: 2026-07-02T00:00:00.000Z/);
+    assert.match(cachedProfile, /machine_fingerprint: mfp_[a-f0-9]{64}/);
     assert.match(cachedProfile, /team_sharing:sync,team_sharing:search,team_sharing:context,team_sharing:feedback,team_sharing:share/);
     assert.equal(whoami.user.email, 'team@example.com');
     assert.equal(logout.ok, true);
@@ -187,6 +228,125 @@ test('team sharing browser login caches scoped token, whoami reads it, and logou
       '/api/team-sharing/auth/whoami',
       '/api/team-sharing/auth/revoke',
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing interactive commands refresh an expired cached token before requesting data', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-refresh-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-refresh-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const fingerprint = teamSharingMachineFingerprint(env);
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'expired-token',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+  const paths = teamSharingPaths({ cwd, env });
+  await writeFile(paths.profileConfig, [
+    'version: 1',
+    'profile: default',
+    'server_url: https://magclaw.example',
+    'workspace_id: ws_team',
+    'token: expired-token',
+    'token_expires_at: 2000-01-01T00:00:00.000Z',
+    `machine_fingerprint: ${fingerprint}`,
+    '',
+  ].join('\n'));
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init, body: init.body ? JSON.parse(init.body) : null });
+    if (String(url).endsWith('/api/team-sharing/auth/start')) {
+      assert.equal(calls.at(-1).body.machineFingerprint, fingerprint);
+      return { ok: true, json: async () => ({ ok: true, deviceCode: 'dev_refresh', verificationUri: 'https://magclaw.example/team-sharing/auth/approve', expiresAt: '2026-06-02T00:10:00.000Z', intervalMs: 1 }) };
+    }
+    if (String(url).endsWith('/api/team-sharing/auth/token')) {
+      return { ok: true, json: async () => ({ ok: true, status: 'approved', token: 'fresh-token', tokenExpiresAt: '2026-07-02T00:00:00.000Z', workspaceId: 'ws_team', profile: 'default', user: { id: 'hum_1', email: 'team@example.com' } }) };
+    }
+    if (String(url).endsWith('/api/team-sharing/search')) {
+      assert.equal(init.headers.authorization, 'Bearer fresh-token');
+      assert.equal(init.headers['x-magclaw-machine-fingerprint'], fingerprint);
+      return { ok: true, json: async () => ({ ok: true, results: [], queryId: 'tmq_refresh' }) };
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+  try {
+    const result = await searchTeamSharing({ cwd, query: 'rerank', noOpen: true, pollTimeoutMs: 50 }, env);
+    const refreshed = await readFile(paths.profileConfig, 'utf8');
+    assert.equal(result.ok, true);
+    assert.match(refreshed, /token: fresh-token/);
+    assert.match(refreshed, /token_expires_at: 2026-07-02T00:00:00.000Z/);
+    assert.deepEqual(calls.map((call) => call.url.replace('https://magclaw.example', '')), [
+      '/api/team-sharing/auth/start',
+      '/api/team-sharing/auth/token',
+      '/api/team-sharing/search',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing hook sync skips expired login without opening browser or uploading', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-expired-sync-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-expired-sync-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const fingerprint = teamSharingMachineFingerprint(env);
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'expired-token',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+  const paths = teamSharingPaths({ cwd, env });
+  await writeFile(paths.profileConfig, [
+    'version: 1',
+    'profile: default',
+    'server_url: https://magclaw.example',
+    'workspace_id: ws_team',
+    'token: expired-token',
+    'token_expires_at: 2000-01-01T00:00:00.000Z',
+    `machine_fingerprint: ${fingerprint}`,
+    '',
+  ].join('\n'));
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_expired', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '需要同步' }] } }),
+  ].join('\n'));
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error('expired hook sync should not make network requests');
+  };
+  try {
+    const result = await syncTeamSharingTranscript({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      hookEvent: 'SessionEnd',
+    }, env);
+    const auditText = await readFile(paths.projectAuditLog, 'utf8');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.empty, true);
+    assert.equal(result.reason, 'login_expired');
+    assert.match(auditText, /"reason":"login_expired"/);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -58,6 +58,8 @@ function resultContextUrl(item, queryId = '') {
 
 const SHARE_CONTENT_TYPES = new Set(['html', 'markdown', 'svg', 'mermaid']);
 const MAX_SHARE_CONTENT_LENGTH = 10 * 1024 * 1024;
+const TEAM_SHARING_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const MACHINE_FINGERPRINT_PATTERN = /^mfp_[a-f0-9]{64}$/;
 
 function normalizeShareContentType(value = '', content = '') {
   const explicit = String(value || '').trim().toLowerCase();
@@ -408,6 +410,26 @@ function shareRootAccess(req, { actor, teamSharingState, state, targetWorkspaceI
     return { ok: false, status: 403, workspaceId, actorId: tokenRecord.user?.id || '', error: 'This share root is only available to members of this server.' };
   }
   return { ok: false, status: 401, workspaceId, actorId: '', error: 'Sign in to MagClaw and join this server to open the share root.' };
+}
+
+function shareAccess(req, { actor, teamSharingState, share } = {}) {
+  const workspaceId = String(share?.workspaceId || '').trim();
+  const actorWorkspaceId = String(actor?.member?.workspaceId || '').trim();
+  if (actorWorkspaceId) {
+    if (!workspaceId || workspaceId === 'local' || actorWorkspaceId === workspaceId) {
+      return { ok: true, workspaceId, actorId: actorHumanId(actor), via: 'actor' };
+    }
+    return { ok: false, status: 403, workspaceId, actorId: actorHumanId(actor), error: 'This shared page is only available to members of this server.' };
+  }
+  const tokenRecord = tokenRecordForRequest(teamSharingState, req);
+  if (tokenRecord) {
+    const tokenWorkspaceId = String(tokenRecord.workspaceId || '').trim();
+    if (!workspaceId || workspaceId === 'local' || tokenWorkspaceId === workspaceId) {
+      return { ok: true, workspaceId, actorId: tokenRecord.user?.id || '', via: 'token' };
+    }
+    return { ok: false, status: 403, workspaceId, actorId: tokenRecord.user?.id || '', error: 'This shared page is only available to members of this server.' };
+  }
+  return { ok: false, status: 401, workspaceId, actorId: '', error: 'Sign in to MagClaw and join this server to open the shared page.' };
 }
 
 function sharesForShareRoot(teamSharingState = {}, workspaceId = '') {
@@ -1909,6 +1931,16 @@ function bearerToken(req) {
   return String(req?.headers?.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
 }
 
+function normalizeMachineFingerprint(value = '') {
+  const clean = String(value || '').trim().toLowerCase();
+  return MACHINE_FINGERPRINT_PATTERN.test(clean) ? clean : '';
+}
+
+function machineFingerprintForRequest(req) {
+  const header = req?.headers?.['x-magclaw-machine-fingerprint'];
+  return normalizeMachineFingerprint(Array.isArray(header) ? header[0] : header);
+}
+
 function ensureTeamSharingAuthState(teamSharingState = {}) {
   teamSharingState.auth = teamSharingState.auth && typeof teamSharingState.auth === 'object' ? teamSharingState.auth : {};
   teamSharingState.auth.deviceRequests = teamSharingState.auth.deviceRequests && typeof teamSharingState.auth.deviceRequests === 'object' ? teamSharingState.auth.deviceRequests : {};
@@ -1921,6 +1953,10 @@ function tokenRecordForRequest(teamSharingState = {}, req) {
   if (!token) return null;
   const record = ensureTeamSharingAuthState(teamSharingState).tokens[hashSecret(token)];
   if (!record || record.revoked) return null;
+  const expiresAtMs = Date.parse(record.expiresAt || '');
+  if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return null;
+  const expectedFingerprint = normalizeMachineFingerprint(record.machineFingerprint || '');
+  if (expectedFingerprint && machineFingerprintForRequest(req) !== expectedFingerprint) return null;
   return record;
 }
 
@@ -1945,6 +1981,12 @@ function requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, 
 function requestHasTeamSharingAuth(req, { actor, teamSharingState, teamSharingAuthRequired, validTeamSharingToken } = {}) {
   const required = typeof teamSharingAuthRequired === 'function' ? teamSharingAuthRequired(req) : Boolean(teamSharingAuthRequired);
   if (!required || actor) return true;
+  if (typeof validTeamSharingToken === 'function' && validTeamSharingToken(req)) return true;
+  return Boolean(tokenRecordForRequest(teamSharingState, req));
+}
+
+function requestHasTeamSharingIdentity(req, { actor, teamSharingState, validTeamSharingToken } = {}) {
+  if (actor) return true;
   if (typeof validTeamSharingToken === 'function' && validTeamSharingToken(req)) return true;
   return Boolean(tokenRecordForRequest(teamSharingState, req));
 }
@@ -1999,12 +2041,19 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const userCode = crypto.randomBytes(4).toString('hex').toUpperCase();
     const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
     const requestWorkspaceId = String(body.workspaceId || workspaceId || '').trim();
+    const machineFingerprint = normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || '');
     const request = {
       deviceCodeHash: hashSecret(deviceCode),
       userCode,
       workspaceId: requestWorkspaceId,
       profile: body.profile || 'default',
       packageName: body.packageName || 'team-sharing',
+      machineFingerprint,
+      client: body.client && typeof body.client === 'object' ? {
+        hostname: compactText(body.client.hostname || '', 120),
+        platform: compactText(body.client.platform || '', 40),
+        arch: compactText(body.client.arch || '', 40),
+      } : {},
       status: actor ? 'approved' : 'pending',
       approvedUser: actor ? requestUser(actor) : null,
       createdAt: now(),
@@ -2041,8 +2090,14 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendJson(res, 200, { ok: true, status: request.status || 'pending' });
       return true;
     }
+    const requestedFingerprint = normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || '');
+    if (request.machineFingerprint && requestedFingerprint && request.machineFingerprint !== requestedFingerprint) {
+      sendError(res, 401, 'Team Sharing login was requested from another machine.');
+      return true;
+    }
     const token = randomToken('tm');
     const tokenHash = hashSecret(token);
+    const tokenExpiresAt = new Date(Date.now() + TEAM_SHARING_TOKEN_TTL_MS).toISOString();
     auth.tokens[tokenHash] = {
       tokenHash,
       workspaceId: request.workspaceId || workspaceId,
@@ -2051,6 +2106,8 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       user: request.approvedUser || { id: 'hum_local', email: '', name: '' },
       scopes: ['team_sharing:sync', 'team_sharing:search', 'team_sharing:context', 'team_sharing:feedback', 'team_sharing:share'],
       revoked: false,
+      machineFingerprint: request.machineFingerprint || requestedFingerprint || '',
+      expiresAt: tokenExpiresAt,
       createdAt: now(),
       lastUsedAt: now(),
     };
@@ -2060,6 +2117,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       ok: true,
       status: 'approved',
       token,
+      tokenExpiresAt,
       workspaceId: request.workspaceId || workspaceId,
       profile: request.profile || 'default',
       user: auth.tokens[tokenHash].user,
@@ -2110,7 +2168,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       },
     });
     if (!approvalActor) {
-      sendError(res, 401, 'Sign in to MagClaw before approving Team Sharing login.');
+      redirectToLoginWithReturnTo(res, url);
       return true;
     }
     request.status = 'approved';
@@ -2128,6 +2186,21 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const share = ensureTeamSharingShares(teamSharingState).find((item) => item.id === shareId && item.revokedAt == null);
     if (!share) {
       sendShareHtml(res, shareChromeHtml({ title: 'Team Shares' }, '<h1>Shared page not found</h1><p>This MagClaw share link may have been removed.</p>'), { status: 404 });
+      return true;
+    }
+    const access = shareAccess(req, { actor, teamSharingState, share });
+    if (!access.ok) {
+      addSystemEvent('team_sharing_share_denied', 'Team sharing share access denied.', {
+        workspaceId: access.workspaceId || workspaceId,
+        actorId: access.actorId || '',
+        shareId,
+        status: access.status,
+      });
+      if (access.status === 401) {
+        redirectToLoginWithReturnTo(res, url);
+        return true;
+      }
+      sendShareHtml(res, shareRootDeniedHtml(access.status, access.error), { status: access.status });
       return true;
     }
     sendShareHtml(res, renderShareHtml(share));
@@ -2224,7 +2297,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
   const scopedContextPageMatch = url.pathname.match(/^\/s\/([^/]+)\/team-sharing\/context\/([^/]+)$/);
   const contextPageMatch = url.pathname.match(/^\/team-sharing\/context\/([^/]+)$/) || (scopedContextPageMatch ? [scopedContextPageMatch[0], scopedContextPageMatch[2]] : null);
   if (req.method === 'GET' && contextPageMatch) {
-    if (!requestHasTeamSharingAuth(req, { actor, teamSharingState, teamSharingAuthRequired, validTeamSharingToken })) {
+    if (!requestHasTeamSharingIdentity(req, { actor, teamSharingState, validTeamSharingToken })) {
       redirectToLoginWithReturnTo(res, url);
       return true;
     }

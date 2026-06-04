@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { publicLinkOrigin, requestOrigin } from './auth-utils.js';
 
 export const SESSION_COOKIE = 'magclaw_session';
-export const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
+export const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 export const INVITATION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 export const PASSWORD_RESET_TTL_MS = 1000 * 60 * 60 * 24;
 export const HUMAN_PRESENCE_TIMEOUT_MS = Number(process.env.MAGCLAW_HUMAN_PRESENCE_TIMEOUT_MS || 1000 * 60 * 2);

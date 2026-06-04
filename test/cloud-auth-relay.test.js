@@ -202,6 +202,30 @@ test('cloud health and readiness expose K8s-friendly storage checks', async () =
   }
 });
 
+test('cloud workspace deep links redirect unauthenticated browsers and preserve returnTo', async () => {
+  const server = await startIsolatedServer({ MAGCLAW_DEPLOYMENT: 'cloud' });
+  try {
+    const owner = await registerOwnerServer(server, {
+      serverName: 'Route Team',
+      slug: 'route-team',
+    });
+    const link = '/s/route-team/channel/chan_team';
+
+    const anonymous = await fetch(`${server.baseUrl}${link}`, { redirect: 'manual' });
+    assert.equal(anonymous.status, 302);
+    assert.match(decodeURIComponent(anonymous.headers.get('location') || ''), /returnTo=\/s\/route-team\/channel\/chan_team/);
+
+    const signedIn = await fetch(`${server.baseUrl}${link}`, {
+      headers: { cookie: owner.cookie },
+    });
+    assert.equal(signedIn.status, 200);
+    assert.match(signedIn.headers.get('content-type') || '', /text\/html/);
+    assert.match(await signedIn.text(), /MagClaw/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('server profile and join links are managed through cloud APIs', async () => {
   const server = await startIsolatedServer();
   try {
@@ -791,7 +815,7 @@ test('owner registration protects app APIs and supports invites end to end', asy
     assert.equal(adminState.data.cloud.auth.currentUser.email, 'admin@example.com');
     assert.equal(adminState.data.cloud.auth.currentUser.language, 'en');
     assert.equal(adminState.data.cloud.auth.currentMember.role, 'owner');
-    assert.equal(adminState.data.cloud.auth.sessionTtlMs, 1000 * 60 * 60 * 24 * 14);
+    assert.equal(adminState.data.cloud.auth.sessionTtlMs, 1000 * 60 * 60 * 24 * 30);
     assert.match(adminState.data.cloud.auth.sessionExpiresAt, /^\d{4}-\d{2}-\d{2}T/);
     const adminPreferences = await request(server.baseUrl, '/api/cloud/auth/preferences', {
       method: 'PATCH',

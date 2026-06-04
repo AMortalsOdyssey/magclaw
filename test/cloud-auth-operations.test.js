@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createCloudAuth } from '../server/cloud/auth.js';
-import { SESSION_COOKIE, sha256, scryptPassword } from '../server/cloud/auth-primitives.js';
+import { SESSION_COOKIE, SESSION_TTL_MS, sha256, scryptPassword } from '../server/cloud/auth-primitives.js';
 
 const FUTURE_EXPIRES_AT = '2099-05-26T00:00:00.000Z';
 
@@ -197,7 +197,13 @@ test('login persists a narrow auth operation before issuing a session cookie', a
   assert.equal(result.user.id, 'usr_login');
   assert.equal(operations.length, 1);
   assert.equal(operations[0].session.userId, 'usr_login');
+  assert.equal(SESSION_TTL_MS, 1000 * 60 * 60 * 24 * 30);
+  assert.match(res.headers[0][1], /Max-Age=2592000/);
   assert.match(res.headers[0][1], /magclaw_session=/);
+  assert.ok(
+    Math.abs(Date.parse(operations[0].session.expiresAt) - (Date.now() + SESSION_TTL_MS)) < 5000,
+    'session expires_at should match the cookie TTL',
+  );
 });
 
 test('local dev login issues a session for the configured loopback user', async () => {

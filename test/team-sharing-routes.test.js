@@ -356,8 +356,10 @@ test('team sharing route rejects unauthenticated cloud sync unless scoped token 
 });
 
 test('team sharing auth issues scoped token, supports whoami, and revokes token', async () => {
+  const fingerprint = 'mfp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
   const deps = routeDeps({
     currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_route', email: 'team@example.com' } }),
+    readJson: async () => ({ machineFingerprint: fingerprint }),
   });
   const startRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -386,11 +388,15 @@ test('team sharing auth issues scoped token, supports whoami, and revokes token'
   assert.equal(tokenRes.statusCode, 200);
   assert.equal(tokenRes.data.status, 'approved');
   assert.match(tokenRes.data.token, /^tm_/);
+  assert.match(tokenRes.data.tokenExpiresAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(JSON.stringify(deps.state.teamSharing).includes(tokenRes.data.token), false);
+  const tokenRecord = Object.values(deps.state.teamSharing.auth.tokens)[0];
+  assert.equal(tokenRecord.machineFingerprint, fingerprint);
+  assert.ok(Date.parse(tokenRecord.expiresAt) > Date.now() + 29 * 24 * 60 * 60 * 1000);
 
   const whoamiRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
-    { method: 'GET', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
+    { method: 'GET', headers: { authorization: `Bearer ${tokenRes.data.token}`, 'x-magclaw-machine-fingerprint': fingerprint } },
     whoamiRes,
     new URL('http://local/api/team-sharing/auth/whoami'),
     { ...deps, currentActor: () => null },
@@ -400,7 +406,7 @@ test('team sharing auth issues scoped token, supports whoami, and revokes token'
 
   const syncRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
-    { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
+    { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}`, 'x-magclaw-machine-fingerprint': fingerprint } },
     syncRes,
     new URL('http://local/api/team-sharing/sync'),
     {
@@ -415,7 +421,7 @@ test('team sharing auth issues scoped token, supports whoami, and revokes token'
 
   const revokeRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
-    { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
+    { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}`, 'x-magclaw-machine-fingerprint': fingerprint } },
     revokeRes,
     new URL('http://local/api/team-sharing/auth/revoke'),
     { ...deps, currentActor: () => null },
@@ -425,7 +431,7 @@ test('team sharing auth issues scoped token, supports whoami, and revokes token'
 
   const rejectedAfterRevoke = makeResponse();
   assert.equal(await handleTeamSharingApi(
-    { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}` } },
+    { method: 'POST', headers: { authorization: `Bearer ${tokenRes.data.token}`, 'x-magclaw-machine-fingerprint': fingerprint } },
     rejectedAfterRevoke,
     new URL('http://local/api/team-sharing/sync'),
     {
@@ -437,6 +443,51 @@ test('team sharing auth issues scoped token, supports whoami, and revokes token'
     },
   ), true);
   assert.equal(rejectedAfterRevoke.statusCode, 401);
+});
+
+test('team sharing scoped token rejects machine mismatch and expiration', async () => {
+  const fingerprint = 'mfp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_route', email: 'team@example.com' } }),
+    readJson: async () => ({ machineFingerprint: fingerprint }),
+  });
+  const startRes = makeResponse();
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    startRes,
+    new URL('http://local/api/team-sharing/auth/start'),
+    deps,
+  );
+  const tokenRes = makeResponse();
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    tokenRes,
+    new URL('http://local/api/team-sharing/auth/token'),
+    {
+      ...deps,
+      currentActor: () => null,
+      readJson: async () => ({ deviceCode: startRes.data.deviceCode }),
+    },
+  );
+
+  const mismatch = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { authorization: `Bearer ${tokenRes.data.token}`, 'x-magclaw-machine-fingerprint': 'mfp_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' } },
+    mismatch,
+    new URL('http://local/api/team-sharing/auth/whoami'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(mismatch.statusCode, 401);
+
+  Object.values(deps.state.teamSharing.auth.tokens)[0].expiresAt = '2000-01-01T00:00:00.000Z';
+  const expired = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { authorization: `Bearer ${tokenRes.data.token}`, 'x-magclaw-machine-fingerprint': fingerprint } },
+    expired,
+    new URL('http://local/api/team-sharing/auth/whoami'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(expired.statusCode, 401);
 });
 
 test('team sharing auth approval resolves the actor from the pending request workspace', async () => {
@@ -490,6 +541,36 @@ test('team sharing auth approval resolves the actor from the pending request wor
   assert.equal(tokenRes.data.status, 'approved');
   assert.equal(tokenRes.data.user.email, 'route@example.com');
   assert.equal(tokenRes.data.workspaceId, 'ws_route');
+});
+
+test('team sharing auth approval redirects unauthenticated browsers with returnTo', async () => {
+  const deps = routeDeps({
+    currentActor: () => null,
+    readJson: async () => ({
+      workspaceId: 'ws_route',
+      profile: 'default',
+      packageName: '@magclaw/team-sharing',
+      machineFingerprint: 'mfp_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    }),
+  });
+  const startRes = makeResponse();
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    startRes,
+    new URL('http://local/api/team-sharing/auth/start'),
+    deps,
+  );
+
+  const approveRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    approveRes,
+    new URL(`http://local${startRes.data.verificationUri}`),
+    deps,
+  ), true);
+
+  assert.equal(approveRes.statusCode, 302);
+  assert.match(decodeURIComponent(approveRes.headers.location), /returnTo=\/team-sharing\/auth\/approve\?user_code=/);
 });
 
 test('team sharing local search fallback filters by vector document updatedAt date range', async () => {
@@ -706,7 +787,7 @@ test('team sharing route doctor can probe embedding dimension on demand', async 
   assert.equal(res.data.checks.embedding.dimension, 1536);
 });
 
-test('team sharing route creates a public share and serves it without authentication', async () => {
+test('team sharing route creates an authenticated share and protects it by workspace', async () => {
   const deps = routeDeps({
     currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_route', name: 'Ada PM', email: 'ada@example.com' } }),
     readJson: async () => ({
@@ -731,22 +812,42 @@ test('team sharing route creates a public share and serves it without authentica
   assert.equal(deps.state.teamSharing.shares.length, 1);
 
   const shareId = createRes.data.shareId;
-  const publicRes = makeResponse();
+  const rejectedShare = makeResponse();
   assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: {} },
-    publicRes,
+    rejectedShare,
     new URL(`https://magclaw.example/s/${shareId}`),
     { ...deps, currentActor: () => null, teamSharingAuthRequired: () => true },
   ), true);
 
-  assert.equal(publicRes.statusCode, 200);
-  assert.match(publicRes.headers['content-type'], /text\/html/);
-  assert.match(publicRes.headers['content-security-policy'], /sandbox/);
-  assert.match(publicRes.body, /Team Shares/);
-  assert.match(publicRes.body, /<h1>Rerank 方案摘要<\/h1>/);
-  assert.match(publicRes.body, /团队结论/);
-  assert.match(publicRes.body, /Created by Ada PM/);
-  assert.match(publicRes.body, /2026年06月01日 18:00:00/);
+  assert.equal(rejectedShare.statusCode, 302);
+  assert.match(decodeURIComponent(rejectedShare.headers.location), new RegExp(`returnTo=/s/${shareId}`));
+
+  const wrongServerShare = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    wrongServerShare,
+    new URL(`https://magclaw.example/s/${shareId}`),
+    { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_other', humanId: 'hum_other' } }) },
+  ), true);
+  assert.equal(wrongServerShare.statusCode, 403);
+
+  const shareRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    shareRes,
+    new URL(`https://magclaw.example/s/${shareId}`),
+    deps,
+  ), true);
+
+  assert.equal(shareRes.statusCode, 200);
+  assert.match(shareRes.headers['content-type'], /text\/html/);
+  assert.match(shareRes.headers['content-security-policy'], /sandbox/);
+  assert.match(shareRes.body, /Team Shares/);
+  assert.match(shareRes.body, /<h1>Rerank 方案摘要<\/h1>/);
+  assert.match(shareRes.body, /团队结论/);
+  assert.match(shareRes.body, /Created by Ada PM/);
+  assert.match(shareRes.body, /2026年06月01日 18:00:00/);
 
   deps.state.teamSharing.shares.push({
     ...deps.state.teamSharing.shares[0],
