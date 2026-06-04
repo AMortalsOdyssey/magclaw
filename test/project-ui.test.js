@@ -1028,8 +1028,12 @@ test('login legal links have localized built-in terms and privacy pages', async 
   assert.match(terms, /data-legal-copy="en"/);
   assert.match(terms, /<h1>Terms of Use<\/h1>/);
   assert.match(terms, /Workspace Access/);
+  assert.match(terms, /Essential Cookies/);
+  assert.match(terms, /not used for advertising or marketing tracking/);
   assert.match(terms, /MagClaw 使用条款/);
   assert.match(terms, /data-legal-copy="zh-CN" hidden/);
+  assert.match(terms, /必要 Cookie/);
+  assert.match(terms, /不用于广告或营销追踪/);
   assert.match(terms, /© 2026 MagClaw\. 版权所有。/);
 
   assert.match(privacy, /<html lang="en">/);
@@ -1039,9 +1043,12 @@ test('login legal links have localized built-in terms and privacy pages', async 
   assert.match(privacy, /data-legal-copy="en"/);
   assert.match(privacy, /<h1>Privacy Policy<\/h1>/);
   assert.match(privacy, /Passwords are never stored in plaintext/);
+  assert.match(privacy, /Necessary Cookies/);
+  assert.match(privacy, /Built-in MagClaw does not set advertising or marketing cookies/);
   assert.match(privacy, /MagClaw 隐私政策/);
   assert.match(privacy, /data-legal-copy="zh-CN" hidden/);
   assert.match(privacy, /密码绝不会以明文存储/);
+  assert.match(privacy, /内置 MagClaw 不设置广告或营销 Cookie/);
 
   assert.match(terms, /<script src="\/legal-language\.js" defer><\/script>/);
   assert.match(privacy, /<script src="\/legal-language\.js" defer><\/script>/);
