@@ -58,6 +58,11 @@ function displayName(id) {
 }
 
 const SYSTEM_AVATAR_SRC = BRAND_LOGO_SRC;
+const LEGACY_TEAM_SHARING_AUTHOR_IDS = new Set(['hum_local', 'team_sharing', 'team-sharing']);
+
+function isLegacyTeamSharingAuthorId(authorId = '') {
+  return LEGACY_TEAM_SHARING_AUTHOR_IDS.has(String(authorId || '').trim());
+}
 
 function teamSharingRuntimeActorInfo(idOrRuntime = '') {
   const value = String(idOrRuntime || '').trim().toLowerCase();
@@ -108,6 +113,49 @@ function teamSharingUploaderAvatarForRecord(record = {}) {
   return String(teamSharingUploaderForRecord(record)?.avatar || '').trim();
 }
 
+function teamSharingHumanForIdentityId(id = '') {
+  const cleanId = String(id || '').trim();
+  if (!cleanId || isLegacyTeamSharingAuthorId(cleanId)) return null;
+  return typeof humanByIdAny === 'function' ? humanByIdAny(cleanId) : byId(appState?.humans, cleanId);
+}
+
+function teamSharingHumanIdentityForRecord(record = {}) {
+  if (!record?.metadata?.teamSharing) return null;
+  const uploader = teamSharingUploaderForRecord(record) || {};
+  const uploaderId = String(uploader.id || uploader.humanId || '').trim();
+  const authorId = String(record.authorId || '').trim();
+  const human = teamSharingHumanForIdentityId(uploaderId)
+    || (!isLegacyTeamSharingAuthorId(authorId)
+      ? (typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId))
+      : null);
+  const id = uploaderId || human?.id || (!isLegacyTeamSharingAuthorId(authorId) ? authorId : '');
+  const name = String(uploader.name || human?.name || '').trim();
+  const email = String(uploader.email || uploader.userEmail || human?.email || '').trim();
+  const authUserId = String(uploader.authUserId || uploader.userId || human?.authUserId || human?.userId || '').trim();
+  const avatar = String(uploader.avatar || uploader.avatarUrl || human?.avatar || human?.avatarUrl || '').trim();
+  if (!id && !name && !email && !avatar) return null;
+  return {
+    id,
+    name,
+    email,
+    authUserId,
+    userId: authUserId,
+    avatar,
+    human,
+  };
+}
+
+function teamSharingUploaderMatchesCurrentAccount(identity = null) {
+  if (!identity || typeof humanMatchesCurrentAccount !== 'function') return false;
+  const candidate = identity.human || {
+    id: identity.id || '',
+    authUserId: identity.authUserId || identity.userId || '',
+    email: identity.email || '',
+    cloudMember: { userId: identity.userId || identity.authUserId || '' },
+  };
+  return humanMatchesCurrentAccount(candidate);
+}
+
 function teamSharingRuntimeAvatarHtml(info, cssClass = '') {
   const runtimeInfo = info || teamSharingRuntimeActorInfo('runtime');
   if (runtimeInfo.id === 'codex') {
@@ -119,38 +167,17 @@ function teamSharingRuntimeAvatarHtml(info, cssClass = '') {
   return `<span class="${cssClass} team-sharing-runtime-avatar team-sharing-runtime-avatar-${escapeHtml(runtimeInfo.id)}" aria-label="${escapeHtml(runtimeInfo.label)}"><span>${escapeHtml(runtimeInfo.short)}</span></span>`;
 }
 
-function currentTeamSharingUploaderFallback(record = {}) {
-  if (!record?.metadata?.teamSharing) return null;
-  const authorId = String(record.authorId || '').trim();
-  if (authorId && !['hum_local', 'team_sharing', 'team-sharing'].includes(authorId)) return null;
-  const humanId = typeof currentHumanId === 'function' ? currentHumanId() : '';
-  const human = humanId && (typeof humanByIdAny === 'function' ? humanByIdAny(humanId) : byId(appState?.humans, humanId));
-  const user = appState?.cloud?.auth?.currentUser || {};
-  const name = human?.name || user.name || user.email || '';
-  if (!name) return null;
-  return {
-    id: human?.id || humanId || user.id || '',
-    name,
-    avatar: human?.avatar || user.avatar || '',
-  };
-}
-
 function legacyTeamSharingUploaderForRecord(record = {}) {
   if (!record?.metadata?.teamSharing) return null;
   const authorId = String(record.authorId || '').trim();
-  if (!['hum_local', 'team_sharing', 'team-sharing'].includes(authorId)) return null;
-  const uploader = teamSharingUploaderForRecord(record);
-  const name = String(uploader?.name || '').trim();
-  const avatar = String(uploader?.avatar || '').trim();
-  const id = String(uploader?.id || '').trim();
-  if (!name && !avatar && !id) return null;
-  return { id, name, avatar };
+  if (!isLegacyTeamSharingAuthorId(authorId)) return null;
+  return teamSharingHumanIdentityForRecord(record);
 }
 
 function teamSharingUploaderAvatarHtml(record = {}, cssClass = '') {
-  const fallback = currentTeamSharingUploaderFallback(record);
-  const avatar = teamSharingUploaderAvatarForRecord(record) || fallback?.avatar || '';
-  const name = teamSharingUploaderNameForRecord(record) || fallback?.name || displayName(record.authorId);
+  const identity = teamSharingHumanIdentityForRecord(record);
+  const avatar = identity?.avatar || '';
+  const name = identity?.name || teamSharingUploaderNameForRecord(record) || 'Human';
   if (avatar) return `<img src="${escapeHtml(avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(name || 'Human')}" />`;
   const initials = String(name || 'HU').split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
   return `<span class="${cssClass}">${escapeHtml(initials || 'HU')}</span>`;
@@ -388,13 +415,16 @@ function renderActorAvatar(authorId, authorType, record = {}) {
     return `<div class="avatar agent-avatar-cell">${renderAgentIdentityButton(authorId, 'agent-avatar-button')}${agentStatusDot(authorId, authorType)}</div>`;
   }
   if (authorType === 'human') {
-    const legacyUploader = legacyTeamSharingUploaderForRecord(record);
-    if (legacyUploader) {
-      return `<div class="avatar human-avatar-cell">${teamSharingUploaderAvatarHtml(record, 'avatar-inner')}</div>`;
-    }
     const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
-    if (!human && (teamSharingUploaderNameForRecord(record) || currentTeamSharingUploaderFallback(record))) {
-      return `<div class="avatar human-avatar-cell">${teamSharingUploaderAvatarHtml(record, 'avatar-inner')}${humanStatusDot(authorId, authorType)}</div>`;
+    const teamSharingIdentity = teamSharingHumanIdentityForRecord(record);
+    const legacyTeamSharingRecord = Boolean(record?.metadata?.teamSharing && isLegacyTeamSharingAuthorId(authorId));
+    if (legacyTeamSharingRecord || (!human && teamSharingIdentity)) {
+      const identityHuman = teamSharingIdentity?.human || null;
+      const statusId = identityHuman?.id || teamSharingIdentity?.id || authorId;
+      if (identityHuman && typeof renderHumanIdentityButton === 'function') {
+        return `<div class="avatar human-avatar-cell">${renderHumanIdentityButton(identityHuman.id, 'human-avatar-button')}${humanStatusDot(identityHuman.id, authorType)}</div>`;
+      }
+      return `<div class="avatar human-avatar-cell">${teamSharingUploaderAvatarHtml(record, 'avatar-inner')}${statusId ? humanStatusDot(statusId, authorType) : ''}</div>`;
     }
     return `<div class="avatar human-avatar-cell">${renderHumanIdentityButton(authorId, 'human-avatar-button')}${humanStatusDot(authorId, authorType)}</div>`;
   }
@@ -406,19 +436,35 @@ function renderHumanYouLabel(human) {
   return humanMatchesCurrentAccount(human) ? '<em class="human-you-label">(you)</em>' : '';
 }
 
+function renderTeamSharingUploaderYouLabel(identity = null) {
+  return teamSharingUploaderMatchesCurrentAccount(identity) ? '<em class="human-you-label">(you)</em>' : '';
+}
+
 function renderActorName(authorId, authorType, record = {}) {
   if (authorType === 'human') {
     const legacyUploader = legacyTeamSharingUploaderForRecord(record);
     if (legacyUploader) {
       const legacyName = legacyUploader.name || 'Human';
-      return `<strong>${escapeHtml(legacyName)}</strong>`;
+      const youLabel = renderTeamSharingUploaderYouLabel(legacyUploader);
+      const badge = typeof humanBadgeHtml === 'function' ? humanBadgeHtml() : '';
+      if (legacyUploader.human) {
+        return `
+          <button class="human-author-name" type="button" data-action="select-human-inspector" data-id="${escapeHtml(legacyUploader.human.id)}">
+            <strong>${escapeHtml(legacyName)}</strong>${youLabel}${badge}
+            ${renderHumanHoverCard(legacyUploader.human)}
+          </button>
+        `;
+      }
+      return `<span class="human-author-name"><strong>${escapeHtml(legacyName)}</strong>${youLabel}${badge}</span>`;
     }
     const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
     const youLabel = renderHumanYouLabel(human);
-    const fallbackUploader = currentTeamSharingUploaderFallback(record);
-    const fallbackName = teamSharingUploaderNameForRecord(record) || fallbackUploader?.name || displayName(authorId);
-    if (!human && (teamSharingUploaderNameForRecord(record) || fallbackUploader)) {
-      return `<strong>${escapeHtml(fallbackName)}</strong>`;
+    const teamSharingIdentity = teamSharingHumanIdentityForRecord(record);
+    const fallbackName = teamSharingIdentity?.name || displayName(authorId);
+    if (!human && teamSharingIdentity) {
+      const teamSharingYouLabel = renderTeamSharingUploaderYouLabel(teamSharingIdentity);
+      const badge = typeof humanBadgeHtml === 'function' ? humanBadgeHtml() : '';
+      return `<span class="human-author-name"><strong>${escapeHtml(fallbackName)}</strong>${teamSharingYouLabel}${badge}</span>`;
     }
     return `
       <button class="human-author-name" type="button" data-action="select-human-inspector" data-id="${escapeHtml(authorId)}">

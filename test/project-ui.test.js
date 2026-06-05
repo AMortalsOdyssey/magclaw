@@ -1282,15 +1282,19 @@ test('mention popup differentiates humans and agents without the channel heading
   assert.equal(context.getMentionCandidates('codex', 'channel', 'chan_all')[0].id, 'agt_codex');
 });
 
-test('team sharing legacy hum_local records render the stored uploader instead of the current viewer', async () => {
+test('team sharing legacy hum_local records render the stored uploader identity instead of the current viewer', async () => {
   const source = await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8');
+  const appState = {
+    agents: [],
+    humans: [
+      { id: 'hum_sender', name: '蒋海波', email: 'sender@example.test', avatar: 'data:image/png;base64,sender-avatar', status: 'online' },
+      { id: 'hum_viewer', name: 'JJJJ', email: 'jjjj@example.test', avatar: 'data:image/png;base64,viewer-avatar', status: 'online' },
+    ],
+    cloud: { auth: { currentMember: { humanId: 'hum_viewer' } } },
+  };
   const context = {
     BRAND_LOGO_SRC: '',
-    appState: {
-      agents: [],
-      humans: [{ id: 'hum_viewer', name: 'JJJJ', email: 'jjjj@example.test', status: 'online' }],
-      cloud: { auth: { currentMember: { humanId: 'hum_viewer' } } },
-    },
+    appState,
     escapeHtml(value) {
       return String(value || '')
         .replace(/&/g, '&amp;')
@@ -1300,10 +1304,7 @@ test('team sharing legacy hum_local records render the stored uploader instead o
         .replace(/'/g, '&#039;');
     },
     humanByIdAny(id) {
-      if (id === 'hum_local' || id === 'hum_viewer') {
-        return { id: 'hum_viewer', name: 'JJJJ', email: 'jjjj@example.test', status: 'online' };
-      }
-      return null;
+      return appState.humans.find((human) => human.id === id) || null;
     },
     humanMatchesCurrentAccount(human) {
       return human?.id === 'hum_viewer';
@@ -1314,24 +1315,104 @@ test('team sharing legacy hum_local records render the stored uploader instead o
     renderHumanHoverCard() {
       return '';
     },
+    humanStatusDot() {
+      return '';
+    },
+    renderHumanIdentityButton(id, cssClass) {
+      const human = appState.humans.find((item) => item.id === id) || null;
+      return human?.avatar
+        ? `<img src="${human.avatar}" class="${cssClass}" alt="">`
+        : `<span class="${cssClass}">${human?.name || id}</span>`;
+    },
   };
   vm.createContext(context);
   vm.runInContext(source, context);
 
-  const html = context.renderActorName('hum_local', 'human', {
+  const record = {
     authorId: 'hum_local',
     authorType: 'human',
     metadata: {
       teamSharing: {
-        uploader: { id: 'hum_local', name: '蒋海波' },
+        uploader: { id: 'hum_sender', name: '蒋海波' },
       },
     },
-  });
+  };
+  const html = context.renderActorName('hum_local', 'human', record);
+  const avatarHtml = context.renderActorAvatar('hum_local', 'human', record);
 
   assert.match(html, /蒋海波/);
+  assert.match(html, /human-script-badge/);
   assert.doesNotMatch(html, /JJJJ/);
   assert.doesNotMatch(html, /\(you\)/);
-  assert.doesNotMatch(html, /data-action="select-human-inspector"/);
+  assert.match(avatarHtml, /sender-avatar/);
+  assert.doesNotMatch(avatarHtml, /viewer-avatar/);
+});
+
+test('team sharing uploader marks the sender as you when it matches the current account', async () => {
+  const source = await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8');
+  const appState = {
+    agents: [],
+    humans: [{ id: 'hum_sender', name: '蒋海波', email: 'sender@example.test', avatar: 'data:image/png;base64,sender-avatar', status: 'online' }],
+    cloud: {
+      auth: {
+        currentMember: { humanId: 'hum_sender', userId: 'usr_sender' },
+        currentUser: { id: 'usr_sender', email: 'sender@example.test', name: '蒋海波' },
+      },
+    },
+  };
+  const context = {
+    BRAND_LOGO_SRC: '',
+    appState,
+    escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    },
+    currentHumanId() {
+      return 'hum_sender';
+    },
+    humanByIdAny(id) {
+      return appState.humans.find((human) => human.id === id) || null;
+    },
+    humanMatchesCurrentAccount(human) {
+      return human?.id === 'hum_sender' || human?.email === 'sender@example.test';
+    },
+    humanBadgeHtml() {
+      return '<span class="human-script-badge"></span>';
+    },
+    renderHumanHoverCard() {
+      return '';
+    },
+    humanStatusDot() {
+      return '';
+    },
+    renderHumanIdentityButton(id, cssClass) {
+      const human = appState.humans.find((item) => item.id === id) || null;
+      return human?.avatar
+        ? `<img src="${human.avatar}" class="${cssClass}" alt="">`
+        : `<span class="${cssClass}">${human?.name || id}</span>`;
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+
+  const record = {
+    authorId: 'hum_local',
+    authorType: 'human',
+    metadata: {
+      teamSharing: {
+        uploader: { id: 'hum_sender', name: '蒋海波', email: 'sender@example.test' },
+      },
+    },
+  };
+  const html = context.renderActorName('hum_local', 'human', record);
+
+  assert.match(html, /蒋海波/);
+  assert.match(html, /\(you\)/);
+  assert.match(html, /human-script-badge/);
 });
 
 test('thread mentions include active workspace humans outside the current channel', async () => {
