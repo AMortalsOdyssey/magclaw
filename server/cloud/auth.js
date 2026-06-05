@@ -1958,6 +1958,16 @@ export function createCloudAuth(deps) {
       return joinLink;
     }
 
+    function assertJoinLinkAllowedForUser(joinLink, user) {
+      const boundUserId = String(joinLink?.metadata?.boundUserId || '').trim();
+      if (boundUserId && String(user?.id || '').trim() !== boundUserId) {
+        const error = new Error('Join link is only valid for the account that requested it.');
+        error.status = 403;
+        throw error;
+      }
+      return joinLink;
+    }
+
     function publicJoinWorkspace(workspace) {
       if (!workspace) return null;
       return {
@@ -1978,6 +1988,7 @@ export function createCloudAuth(deps) {
         throw error;
       }
       const user = currentUser(req);
+      if (user) assertJoinLinkAllowedForUser(joinLink, user);
       const existingMember = user ? memberForUser(user.id, workspace.id) : null;
       return {
         joinLink: publicJoinLink(joinLink, raw, req),
@@ -1990,6 +2001,7 @@ export function createCloudAuth(deps) {
       const user = requireAuthenticatedUser(req);
       const raw = String(body.token || body.joinToken || '').trim();
       const joinLink = assertJoinLinkCanBeUsed(joinLinkForToken(raw));
+      assertJoinLinkAllowedForUser(joinLink, user);
       const cloud = ensureCloudState();
       const workspace = cloud.workspaces.find((item) => item.id === joinLink.workspaceId) || null;
       if (!workspace) {

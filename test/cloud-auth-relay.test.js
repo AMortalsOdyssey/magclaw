@@ -58,19 +58,23 @@ async function launchIsolatedServer(tmp, extraEnv = {}) {
   throw new Error(`server did not start: ${output}`);
 }
 
-async function startIsolatedServer(extraEnv = {}) {
-  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cloud-relay-'));
+async function copyIsolatedAppSources(tmp) {
   await mkdir(path.join(tmp, 'public'), { recursive: true });
   await cp(path.join(ROOT, 'server'), path.join(tmp, 'server'), { recursive: true });
   await cp(path.join(ROOT, 'public', 'index.html'), path.join(tmp, 'public', 'index.html'));
+  await mkdir(path.join(tmp, 'team-sharing'), { recursive: true });
+  await cp(path.join(ROOT, 'team-sharing', 'src'), path.join(tmp, 'team-sharing', 'src'), { recursive: true });
+}
+
+async function startIsolatedServer(extraEnv = {}) {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cloud-relay-'));
+  await copyIsolatedAppSources(tmp);
   return launchIsolatedServer(tmp, extraEnv);
 }
 
 async function launchExpectingExit(extraEnv = {}) {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-cloud-exit-'));
-  await mkdir(path.join(tmp, 'public'), { recursive: true });
-  await cp(path.join(ROOT, 'server'), path.join(tmp, 'server'), { recursive: true });
-  await cp(path.join(ROOT, 'public', 'index.html'), path.join(tmp, 'public', 'index.html'));
+  await copyIsolatedAppSources(tmp);
   const port = nextTestPort++;
   const child = spawn(process.execPath, ['server/index.js'], {
     cwd: tmp,

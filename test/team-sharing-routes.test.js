@@ -1051,7 +1051,9 @@ test('team sharing route creates an authenticated share and protects it by works
   assert.equal(deps.state.cloud.joinLinks.length, 1);
   assert.equal(deps.state.cloud.joinLinks[0].workspaceId, 'ws_route');
   assert.equal(deps.state.cloud.joinLinks[0].maxUses, 1);
+  assert.equal(deps.state.cloud.joinLinks[0].createdBy, 'usr_guest');
   assert.equal(deps.state.cloud.joinLinks[0].metadata.purpose, 'team_sharing_access');
+  assert.equal(deps.state.cloud.joinLinks[0].metadata.boundUserId, 'usr_guest');
 
   const shareRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -1660,5 +1662,7 @@ test('team sharing context page redirects signed-in nonmembers to server join wi
   assert.match(decodeURIComponent(res.headers.location), /returnTo=\/s\/server-route\/team-sharing\/context\/sess_route\?anchorEventId=evt_1&limit=21&order=asc/);
   assert.equal(deps.state.cloud.joinLinks.length, 1);
   assert.equal(deps.state.cloud.joinLinks[0].workspaceId, 'ws_route');
+  assert.equal(deps.state.cloud.joinLinks[0].createdBy, 'usr_guest');
   assert.equal(deps.state.cloud.joinLinks[0].metadata.purpose, 'team_sharing_access');
+  assert.equal(deps.state.cloud.joinLinks[0].metadata.boundUserId, 'usr_guest');
 });

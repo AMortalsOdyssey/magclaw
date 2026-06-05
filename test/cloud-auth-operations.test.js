@@ -1019,6 +1019,106 @@ test('join link acceptance works for a signed-in Feishu account without email', 
   assert.equal(state.humans.find((human) => human.authUserId === 'usr_no_email')?.email, '');
 });
 
+test('join link bound to a user rejects other signed-in accounts', async () => {
+  const createdAt = '2026-05-12T00:00:00.000Z';
+  const rawBoundSession = 'bound-session';
+  const rawOtherSession = 'other-session';
+  const rawJoin = 'mc_join_bound_user';
+  const { auth, state } = makeAuth(null, {
+    cloud: {
+      users: [
+        {
+          id: 'usr_bound',
+          email: 'bound@example.test',
+          name: 'Bound User',
+          passwordHash: '',
+          language: 'en',
+          createdAt,
+          updatedAt: createdAt,
+        },
+        {
+          id: 'usr_other',
+          email: 'other@example.test',
+          name: 'Other User',
+          passwordHash: '',
+          language: 'en',
+          createdAt,
+          updatedAt: createdAt,
+        },
+      ],
+      sessions: [
+        {
+          id: 'sess_bound',
+          userId: 'usr_bound',
+          tokenHash: sha256(rawBoundSession),
+          createdAt,
+          expiresAt: FUTURE_EXPIRES_AT,
+        },
+        {
+          id: 'sess_other',
+          userId: 'usr_other',
+          tokenHash: sha256(rawOtherSession),
+          createdAt,
+          expiresAt: FUTURE_EXPIRES_AT,
+        },
+      ],
+      workspaces: [
+        { id: 'local', slug: 'local', name: 'Local', createdAt, updatedAt: createdAt },
+        { id: 'wsp_bound', slug: 'bound-team', name: 'Bound Team', createdAt, updatedAt: createdAt },
+      ],
+      joinLinks: [{
+        id: 'jlink_bound',
+        workspaceId: 'wsp_bound',
+        tokenHash: sha256(rawJoin),
+        maxUses: 1,
+        usedCount: 0,
+        expiresAt: FUTURE_EXPIRES_AT,
+        revokedAt: null,
+        createdBy: 'usr_bound',
+        createdAt,
+        updatedAt: createdAt,
+        metadata: {
+          rawToken: rawJoin,
+          purpose: 'team_sharing_access',
+          boundUserId: 'usr_bound',
+        },
+      }],
+    },
+  });
+
+  const otherReq = request(`${SESSION_COOKIE}=${rawOtherSession}`);
+  assert.throws(
+    () => auth.joinLinkStatus(rawJoin, otherReq),
+    (error) => {
+      assert.equal(error.status, 403);
+      assert.match(error.message, /only valid for the account that requested it/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    () => auth.acceptJoinLink({ token: rawJoin }, otherReq),
+    (error) => {
+      assert.equal(error.status, 403);
+      assert.match(error.message, /only valid for the account that requested it/);
+      return true;
+    },
+  );
+
+  assert.equal(state.cloud.joinLinks[0].usedCount, 0);
+  assert.equal(state.cloud.workspaceMembers.some((member) => member.userId === 'usr_other'), false);
+
+  const boundReq = request(`${SESSION_COOKIE}=${rawBoundSession}`);
+  const status = auth.joinLinkStatus(rawJoin, boundReq);
+  assert.equal(status.workspace.id, 'wsp_bound');
+  assert.equal(status.joinLink.metadata.purpose, 'team_sharing_access');
+  assert.equal(status.joinLink.metadata.boundUserId, undefined);
+
+  const accepted = await auth.acceptJoinLink({ token: rawJoin }, boundReq);
+  assert.equal(accepted.workspace.id, 'wsp_bound');
+  assert.equal(accepted.member.userId, 'usr_bound');
+  assert.equal(state.cloud.joinLinks[0].usedCount, 1);
+});
+
 test('console server switch stays local to the handling process', async () => {
   let persistStarted = false;
   const repository = {

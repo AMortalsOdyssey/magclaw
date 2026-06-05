@@ -138,7 +138,10 @@ export function publicJoinLink(link, rawToken = '', req = null) {
   const url = displayToken
     ? `${publicLinkOrigin(req).replace(/\/+$/, '')}/join/${encodeURIComponent(displayToken)}`
     : '';
-  return { ...safe, metadata: { ...metadata, rawToken: undefined }, status, url };
+  const { rawToken: _rawToken, boundUserId: _boundUserId, ...publicMetadata } = metadata;
+  void _rawToken;
+  void _boundUserId;
+  return { ...safe, metadata: publicMetadata, status, url };
 }
 
 export function publicPasswordReset(reset, user = null) {

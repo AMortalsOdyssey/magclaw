@@ -2623,11 +2623,13 @@ function uniqueTeamSharingJoinToken(state = {}) {
   throw new Error('Unable to create Team Sharing join link.');
 }
 
-function createTeamSharingAccessJoinLink({ state, workspaceId = '', makeId, now } = {}) {
+function createTeamSharingAccessJoinLink({ state, workspaceId = '', boundUser = null, makeId, now } = {}) {
   const cloud = ensureCloudCollections(state);
   cloud.joinLinks = Array.isArray(cloud.joinLinks) ? cloud.joinLinks : [];
   const workspace = workspaceForTeamSharingJoin(state, workspaceId);
   if (!workspace) return null;
+  const boundUserId = String(boundUser?.id || '').trim();
+  if (!boundUserId) return null;
   const createdAt = typeof now === 'function' ? now() : new Date().toISOString();
   const { raw, tokenHash } = uniqueTeamSharingJoinToken(state);
   const joinLink = {
@@ -2638,12 +2640,13 @@ function createTeamSharingAccessJoinLink({ state, workspaceId = '', makeId, now 
     usedCount: 0,
     expiresAt: accessJoinLinkExpiresAt(createdAt),
     revokedAt: null,
-    createdBy: 'team_sharing_access',
+    createdBy: boundUserId,
     createdAt,
     updatedAt: createdAt,
     metadata: {
       rawToken: raw,
       purpose: 'team_sharing_access',
+      boundUserId,
     },
   };
   cloud.joinLinks.push(joinLink);
@@ -2653,13 +2656,14 @@ function createTeamSharingAccessJoinLink({ state, workspaceId = '', makeId, now 
 async function redirectToJoinWithReturnTo(res, url, {
   state,
   workspaceId = '',
+  currentUser = null,
   makeId,
   now,
   persistState,
   addSystemEvent,
   reason = 'team_sharing_access_join_redirect',
 } = {}) {
-  const created = createTeamSharingAccessJoinLink({ state, workspaceId, makeId, now });
+  const created = createTeamSharingAccessJoinLink({ state, workspaceId, boundUser: currentUser, makeId, now });
   if (!created?.raw) return false;
   const returnTo = safeRelativePathFromUrl(url);
   const location = `/join/${encodeURIComponent(created.raw)}?returnTo=${encodeURIComponent(returnTo)}`;
@@ -3084,6 +3088,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       if (access.joinable && await redirectToJoinWithReturnTo(res, url, {
         state,
         workspaceId: access.workspaceId,
+        currentUser: browserUser,
         makeId,
         now,
         persistState,
@@ -3122,6 +3127,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       if (access.joinable && await redirectToJoinWithReturnTo(res, url, {
         state,
         workspaceId: access.workspaceId,
+        currentUser: browserUser,
         makeId,
         now,
         persistState,
@@ -3215,6 +3221,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       if (access.joinable && await redirectToJoinWithReturnTo(res, url, {
         state,
         workspaceId: access.workspaceId,
+        currentUser: browserUser,
         makeId,
         now,
         persistState,
