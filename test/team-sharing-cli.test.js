@@ -450,6 +450,65 @@ test('team sharing browser login caches scoped token, whoami reads it, and logou
   }
 });
 
+test('team sharing browser login carries configured project channel path for approval onboarding', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-login-project-path-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-login-project-path-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const channelPath = 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key';
+  await initTeamSharingProject({
+    cwd,
+    channel: channelPath,
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init, body: init.body ? JSON.parse(init.body) : null });
+    if (String(url).endsWith('/api/team-sharing/auth/start')) {
+      assert.equal(String(url).startsWith('https://magclaw.example/'), true);
+      assert.equal(calls.at(-1).body.workspaceId, 'ws_team');
+      assert.equal(calls.at(-1).body.channelPath, channelPath);
+      return { ok: true, json: async () => ({ ok: true, deviceCode: 'dev_project_path', userCode: 'PATH-1234', verificationUri: '/team-sharing/auth/approve?user_code=PATH-1234', expiresAt: '2026-06-02T00:10:00.000Z', intervalMs: 1 }) };
+    }
+    if (String(url).endsWith('/api/team-sharing/auth/token')) {
+      return { ok: true, json: async () => ({
+        ok: true,
+        status: 'approved',
+        token: 'tm_project_path_secret',
+        tokenExpiresAt: '2026-07-02T00:00:00.000Z',
+        workspaceId: 'ws_team',
+        profile: 'default',
+        user: { id: 'hum_1', email: 'team@example.com' },
+        onboardingTarget: {
+          serverId: 'ws_team',
+          serverSlug: 'team-server',
+          channelId: 'chan_team',
+          channelName: 'team-sharing',
+          channelUrl: 'https://magclaw.example/s/team-server/channels/chan_team',
+        },
+      }) };
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+  try {
+    const login = await loginTeamSharingProfile({ cwd, noOpen: true, pollTimeoutMs: 50 }, env);
+
+    assert.equal(login.ok, true);
+    assert.equal(login.serverUrl, 'https://magclaw.example');
+    assert.equal(login.workspaceId, 'ws_team');
+    assert.equal(login.onboardingTarget.channelUrl, 'https://magclaw.example/s/team-server/channels/chan_team');
+    assert.deepEqual(calls.map((call) => call.url.replace('https://magclaw.example', '')), [
+      '/api/team-sharing/auth/start',
+      '/api/team-sharing/auth/token',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('team sharing interactive commands refresh an expired cached token before requesting data', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-refresh-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-refresh-home-'));

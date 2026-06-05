@@ -1223,11 +1223,13 @@ function maybePrintVerificationUrl(url, flags = {}, env = process.env) {
 export async function loginTeamSharingProfile(flags = {}, env = process.env) {
   const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   const existing = (await readTeamSharingProfileConfig(profile, env)).config || {};
-  const serverUrl = normalizeServerUrl(flags.serverUrl || existing.server_url || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL);
-  let workspaceId = String(flags.workspaceId || flags.workspace || existing.workspace_id || env.MAGCLAW_WORKSPACE_ID || 'local').trim();
+  const existingProject = await readTeamSharingProjectConfig({ profile, cwd: flags.cwd || process.cwd(), env });
+  const existingProjectConfig = normalizeTeamSharingProjectConfig(existingProject.config);
+  const serverUrl = normalizeServerUrl(flags.serverUrl || existingProjectConfig?.serverUrl || existing.server_url || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL);
+  let workspaceId = String(flags.workspaceId || flags.workspace || existingProjectConfig?.workspaceId || existing.workspace_id || env.MAGCLAW_WORKSPACE_ID || 'local').trim();
   const machineFingerprint = teamSharingMachineFingerprint(env);
   const manualToken = String(flags.token || flags.apiKey || flags.teamSharingToken || env.MAGCLAW_TEAM_SHARING_TOKEN || '').trim();
-  const requestedChannelPath = channelPathFromFlags(flags, {});
+  const requestedChannelPath = channelPathFromFlags(flags, existingProject.config || {});
   const loginChannelPath = parseMagClawChannelPath(requestedChannelPath) ? requestedChannelPath : '';
   let token = manualToken;
   let tokenExpiresAt = tokenExpiryFromFlags(flags);
