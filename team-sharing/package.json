@@ -1,6 +1,6 @@
 {
   "name": "@magclaw/team-sharing",
-  "version": "0.1.42",
+  "version": "0.1.43",
   "description": "One-command MagClaw Team Sharing installer for Codex and Claude Code skills and hooks.",
   "type": "module",
   "bin": {
