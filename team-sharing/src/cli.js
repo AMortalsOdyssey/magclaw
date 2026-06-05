@@ -139,7 +139,7 @@ function renderTeamSharingHelp() {
     '  hooks    Install/remove/status Team Sharing hooks',
     '',
     'Example:',
-    '  npx @magclaw/team-sharing@latest setup --server-url <magclaw-server-url> --channel <channel-path>',
+    '  npx @magclaw/team-sharing@latest setup --server-url https://magclaw.multiego.me --channel <channel-path>',
     '',
   ].join('\n');
 }

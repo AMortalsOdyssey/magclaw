@@ -16,7 +16,7 @@ import {
 export const TEAM_SHARING_PACKAGE_NAME = '@magclaw/team-sharing';
 export const TEAM_SHARING_INTEGRATION = 'team-sharing';
 const DEFAULT_PROFILE = 'default';
-const DEFAULT_SERVER_URL = 'http://127.0.0.1:6543';
+const DEFAULT_SERVER_URL = 'https://magclaw.multiego.me';
 const TEAM_SHARING_PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TEAM_SHARING_SKILL_TEMPLATE = path.join(TEAM_SHARING_PACKAGE_ROOT, 'skills', 'magclaw-team-sharing', 'SKILL.md');
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;

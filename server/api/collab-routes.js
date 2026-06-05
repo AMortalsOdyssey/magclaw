@@ -12,6 +12,8 @@ import {
 // objects. Message delivery, task flow, and Agent runtime stay in other modules,
 // so this route group only manages membership and directory metadata.
 
+const DEFAULT_TEAM_SHARING_SETUP_SERVER_URL = 'https://magclaw.multiego.me';
+
 function commandArg(value) {
   return `"${String(value || '').replace(/(["\\])/g, '\\$1')}"`;
 }
@@ -52,18 +54,14 @@ export async function handleCollabApi(req, res, url, deps) {
     };
   }
 
-  function publicUrlFromRequest(req) {
-    const proto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim()
-      || (req.socket?.encrypted ? 'https' : 'http');
-    const forwardedHost = String(req.headers?.['x-forwarded-host'] || '').split(',')[0].trim();
-    const requestHost = forwardedHost || req.headers?.host || '127.0.0.1:6543';
-    return String(process.env.MAGCLAW_PUBLIC_URL || `${proto}://${requestHost}`).replace(/\/+$/, '');
+  function teamSharingSetupServerUrl() {
+    return String(process.env.MAGCLAW_TEAM_SHARING_SETUP_SERVER_URL || DEFAULT_TEAM_SHARING_SETUP_SERVER_URL).replace(/\/+$/, '');
   }
 
-  function teamSharingSetupCommand(req, channelPath) {
+  function teamSharingSetupCommand(channelPath) {
     return [
       'npx @magclaw/team-sharing@latest setup',
-      `--server-url ${commandArg(publicUrlFromRequest(req))}`,
+      `--server-url ${commandArg(teamSharingSetupServerUrl())}`,
       `--channel ${commandArg(channelPath)}`,
     ].join(' ');
   }
@@ -428,16 +426,16 @@ export async function handleCollabApi(req, res, url, deps) {
     sendJson(res, 200, {
       serverId: workspaceId,
       serverName,
-      serverUrl: publicUrlFromRequest(req),
+      serverUrl: teamSharingSetupServerUrl(),
       channelId: channel.id,
       channelName,
       path: importPath,
       copyText: importPath,
-      setupCommand: teamSharingSetupCommand(req, importPath),
+      setupCommand: teamSharingSetupCommand(importPath),
       setupCommands: {
-        macosLinux: teamSharingSetupCommand(req, importPath),
-        powershell: teamSharingSetupCommand(req, importPath),
-        cmd: teamSharingSetupCommand(req, importPath),
+        macosLinux: teamSharingSetupCommand(importPath),
+        powershell: teamSharingSetupCommand(importPath),
+        cmd: teamSharingSetupCommand(importPath),
       },
     });
     return true;

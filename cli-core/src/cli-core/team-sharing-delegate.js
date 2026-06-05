@@ -9,7 +9,7 @@ export async function runExternalTeamSharingCommand(args = [], env = process.env
   });
   if (result.error) {
     if (result.error.code === 'ENOENT') {
-      throw new Error('Team Sharing is packaged separately. Run `npx @magclaw/team-sharing@latest setup --server-url <magclaw-server-url> --channel <channel-path>` or install it globally with `npm i -g @magclaw/team-sharing`.');
+      throw new Error('Team Sharing is packaged separately. Run `npx @magclaw/team-sharing@latest setup --server-url https://magclaw.multiego.me --channel <channel-path>` or install it globally with `npm i -g @magclaw/team-sharing`.');
     }
     throw result.error;
   }

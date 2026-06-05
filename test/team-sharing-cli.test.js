@@ -110,6 +110,22 @@ test('team sharing cli init infers workspace id from signed MagClaw channel path
   assert.match(yaml, /server_url: https:\/\/magclaw\.example/);
 });
 
+test('team sharing cli init defaults to MagClaw production server url', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-default-server-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-default-server-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+
+  const result = await initTeamSharingProject({
+    cwd,
+    channel: 'mc://magclaw/server/ws_from_path/channel/chan_team?key=route-key',
+  }, env);
+  const yaml = await readFile(path.join(cwd, '.magclaw', 'team-sharing.yaml'), 'utf8');
+
+  assert.equal(result.serverUrl, 'https://magclaw.multiego.me');
+  assert.match(yaml, /server_url: https:\/\/magclaw\.multiego\.me/);
+  assert.match(yaml, /workspace_id: ws_from_path/);
+});
+
 test('team sharing cli login stores scoped token in user profile only', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-login-'));
   const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
