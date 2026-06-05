@@ -20,6 +20,7 @@ const DEFAULT_PROFILE = 'default';
 const DEFAULT_SERVER_URL = 'https://magclaw.multiego.me';
 const TEAM_SHARING_PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TEAM_SHARING_SKILL_TEMPLATE = path.join(TEAM_SHARING_PACKAGE_ROOT, 'skills', 'magclaw-team-sharing', 'SKILL.md');
+const TEAM_SHARING_SOURCE_COMMAND = path.join(TEAM_SHARING_PACKAGE_ROOT, 'bin', 'team-sharing.js');
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
 const TEAM_SHARING_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
@@ -822,6 +823,18 @@ async function readTeamSharingHookTemplateConfig(runtime, hookOptions = {}, env 
     sourceCommit: vars.TEAM_SHARING_SOURCE_COMMIT,
   })));
   return JSON.parse(renderTeamSharingTemplate(withCommands, vars));
+}
+
+function defaultTeamSharingHookCommand(flags = {}, env = process.env) {
+  const explicit = String(
+    flags.teamSharingCommand
+      || flags.commandPath
+      || env.MAGCLAW_TEAM_SHARING_COMMAND
+      || env.MAGCLAW_TEAM_SHARING_HOOK_COMMAND
+      || '',
+  ).trim();
+  if (explicit) return explicit;
+  return TEAM_SHARING_SOURCE_COMMAND;
 }
 
 function teamSharingShimFiles({ npmPath = 'npm', packageSpec = `${TEAM_SHARING_PACKAGE_NAME}@latest` } = {}) {
@@ -2058,6 +2071,7 @@ export async function installTeamSharingHooks(flags = {}, env = process.env) {
   const installTarget = await resolveInstallTarget(flags, env, { prompt: true });
   const cwd = path.resolve(installTarget.projectDir || flags.cwd || process.cwd());
   const targets = selectedTargets(flags, env);
+  const hookCommand = defaultTeamSharingHookCommand(flags, env);
   const ignored = installTarget.scope === 'project' ? await ensureProjectInstallIgnored(cwd, targets) : [];
   const output = { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', ignored };
   for (const runtime of targets) {
@@ -2065,7 +2079,7 @@ export async function installTeamSharingHooks(flags = {}, env = process.env) {
     const templateConfig = await readTeamSharingHookTemplateConfig(runtime, {
       projectDir: cwd,
       integration: TEAM_SHARING_INTEGRATION,
-      teamSharingCommand: flags.teamSharingCommand,
+      teamSharingCommand: hookCommand,
       platform: flags.platform || env.MAGCLAW_TEAM_SHARING_PLATFORM,
     }, env);
     output[key] = await installTeamSharingHookConfig({
@@ -2073,7 +2087,7 @@ export async function installTeamSharingHooks(flags = {}, env = process.env) {
       configPath: targetConfigPath(runtime, flags, env, installTarget),
       projectDir: cwd,
       integration: TEAM_SHARING_INTEGRATION,
-      teamSharingCommand: flags.teamSharingCommand,
+      teamSharingCommand: hookCommand,
       templateConfig,
     });
   }

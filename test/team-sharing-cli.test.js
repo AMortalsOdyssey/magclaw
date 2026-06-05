@@ -1055,6 +1055,50 @@ test('team sharing cli installs Codex and Claude hook configs without overwritin
   assert.ok(claude.hooks.SessionEnd[0].hooks.some((hook) => hook.command.includes('--runtime claude_code')));
 });
 
+test('team sharing hook install defaults to the current package binary', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-source-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-source-home-'));
+  await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-source-fixture"}\n');
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'), PATH: '' };
+  const codexHooks = path.join(home, '.codex', 'hooks.json');
+  const sourceCommand = path.resolve('team-sharing', 'bin', 'team-sharing.js');
+
+  const result = await installTeamSharingHooks({
+    cwd,
+    target: 'codex',
+    codexConfig: codexHooks,
+  }, env);
+  const codex = JSON.parse(await readFile(codexHooks, 'utf8'));
+  const command = codex.hooks.Stop[0].hooks.find((hook) => hook.command.includes('--runtime codex')).command;
+
+  assert.equal(result.ok, true);
+  assert.match(command, new RegExp(`^${sourceCommand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} sync`));
+  assert.doesNotMatch(command, /^team-sharing sync/);
+
+  const hooks = await statusTeamSharingHooks({ cwd, target: 'codex', codexConfig: codexHooks }, env);
+  assert.equal(hooks.codex.commandChecks.every((check) => check.executable), true);
+});
+
+test('team sharing hook install preserves an explicit command override', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-override-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-override-home-'));
+  await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-override-fixture"}\n');
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const codexHooks = path.join(home, '.codex', 'hooks.json');
+
+  const result = await installTeamSharingHooks({
+    cwd,
+    target: 'codex',
+    codexConfig: codexHooks,
+    teamSharingCommand: 'team-sharing',
+  }, env);
+  const codex = JSON.parse(await readFile(codexHooks, 'utf8'));
+  const command = codex.hooks.Stop[0].hooks.find((hook) => hook.command.includes('--runtime codex')).command;
+
+  assert.equal(result.ok, true);
+  assert.match(command, /^team-sharing sync/);
+});
+
 test('team sharing hook install renders Windows-safe command strings', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-windows-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-windows-home-'));
