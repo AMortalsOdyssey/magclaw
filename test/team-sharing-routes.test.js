@@ -1034,6 +1034,25 @@ test('team sharing route creates an authenticated share and protects it by works
   ), true);
   assert.equal(wrongServerShare.statusCode, 403);
 
+  const joinRedirectShare = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    joinRedirectShare,
+    new URL(`https://magclaw.example/s/${shareId}`),
+    {
+      ...deps,
+      currentActor: () => null,
+      currentUser: () => ({ id: 'usr_guest', email: 'guest@example.com', name: 'Guest' }),
+    },
+  ), true);
+  assert.equal(joinRedirectShare.statusCode, 302);
+  assert.match(joinRedirectShare.headers.location, /^\/join\/mc_join_/);
+  assert.match(decodeURIComponent(joinRedirectShare.headers.location), new RegExp(`returnTo=/s/${shareId}`));
+  assert.equal(deps.state.cloud.joinLinks.length, 1);
+  assert.equal(deps.state.cloud.joinLinks[0].workspaceId, 'ws_route');
+  assert.equal(deps.state.cloud.joinLinks[0].maxUses, 1);
+  assert.equal(deps.state.cloud.joinLinks[0].metadata.purpose, 'team_sharing_access');
+
   const shareRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: {} },
@@ -1614,4 +1633,32 @@ test('team sharing context page redirects unauthenticated browsers to login with
 
   assert.equal(res.statusCode, 302);
   assert.match(decodeURIComponent(res.headers.location), /returnTo=\/team-sharing\/context\/sess_route\?anchorEventId=evt_1&limit=21&order=asc/);
+});
+
+test('team sharing context page redirects signed-in nonmembers to server join with returnTo', async () => {
+  const deps = routeDeps({
+    currentActor: () => null,
+    currentUser: () => ({ id: 'usr_guest', email: 'guest@example.com', name: 'Guest' }),
+    validTeamSharingToken: () => false,
+  });
+  deps.state.teamSharing.sessions.sess_route = {
+    sessionId: 'sess_route',
+    workspaceId: 'ws_route',
+    title: '验收会话总结共享',
+  };
+  const res = makeResponse();
+
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    res,
+    new URL('https://magclaw.example/s/server-route/team-sharing/context/sess_route?anchorEventId=evt_1&limit=21&order=asc'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 302);
+  assert.match(res.headers.location, /^\/join\/mc_join_/);
+  assert.match(decodeURIComponent(res.headers.location), /returnTo=\/s\/server-route\/team-sharing\/context\/sess_route\?anchorEventId=evt_1&limit=21&order=asc/);
+  assert.equal(deps.state.cloud.joinLinks.length, 1);
+  assert.equal(deps.state.cloud.joinLinks[0].workspaceId, 'ws_route');
+  assert.equal(deps.state.cloud.joinLinks[0].metadata.purpose, 'team_sharing_access');
 });

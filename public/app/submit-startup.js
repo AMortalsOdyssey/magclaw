@@ -476,7 +476,11 @@ document.addEventListener('submit', async (event) => {
           cloudLoginDraftEmail = String(data.get('email') || '').trim();
           const credentials = validateCloudLoginForm(form, data);
           const loginParams = new URLSearchParams(window.location.search || '');
-          const loginReturnTo = String(loginParams.get('returnTo') || '').trim();
+          const currentPath = String(window.location.pathname || '');
+          const joinReturnTo = /^\/join\/[^/]+/.test(currentPath)
+            ? `${currentPath}${window.location.search || ''}`
+            : '';
+          const loginReturnTo = joinReturnTo || String(loginParams.get('returnTo') || '').trim();
           await api('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({
@@ -568,6 +572,14 @@ document.addEventListener('submit', async (event) => {
       railTab = 'spaces';
       selectedSpaceType = 'channel';
       selectedSpaceId = defaultChannelIdFromState() || selectedSpaceId || 'chan_all';
+      const joinParams = new URLSearchParams(window.location.search || '');
+      const joinReturnTo = String(joinParams.get('returnTo') || '').trim();
+      if (joinReturnTo.startsWith('/') && !joinReturnTo.startsWith('//')) {
+        toast('Server joined');
+        window.location.assign(joinReturnTo);
+        skipFinalRefresh = true;
+        return;
+      }
       if (slug && window.history?.replaceState) window.history.replaceState({}, '', `/s/${encodeURIComponent(slug)}`);
       toast('Server joined');
     }

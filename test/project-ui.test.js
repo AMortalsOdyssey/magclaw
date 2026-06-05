@@ -1012,8 +1012,12 @@ test('join-link auth keeps Feishu login on the join return path', async () => {
 
   assert.match(authGateSource, /loginReturnTo/);
   assert.match(authGateSource, /\/join\/\$\{encodeURIComponent\(tokenContext\.token/);
+  assert.match(authGateSource, /safeTokenReturnTo/);
+  assert.match(authGateSource, /\?returnTo=\$\{encodeURIComponent\(safeTokenReturnTo\)\}/);
   assert.match(app, /function feishuLoginUrl\(provider, returnTo = ''\)/);
   assert.match(app, /returnTo/);
+  assert.match(app, /const joinReturnTo = \/\^\\\/join\\\/\[\^\/\]\+\/\.test\(currentPath\)/);
+  assert.match(app, /window\.location\.assign\(joinReturnTo\)/);
 });
 
 test('left rail settings entry renders as the signed-in user account avatar with hover details', async () => {

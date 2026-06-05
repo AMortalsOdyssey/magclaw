@@ -108,6 +108,7 @@ const MACHINE_FINGERPRINT_PATTERN = /^mfp_[a-f0-9]{64}$/;
 const TEAM_SHARING_AUTH_THROTTLE_WINDOW_MS = 10 * 60 * 1000;
 const TEAM_SHARING_AUTH_START_LIMIT = 30;
 const TEAM_SHARING_AUTH_APPROVE_LIMIT = 20;
+const TEAM_SHARING_ACCESS_JOIN_LINK_TTL_MS = 24 * 60 * 60 * 1000;
 
 function normalizeShareContentType(value = '', content = '') {
   const explicit = String(value || '').trim().toLowerCase();
@@ -440,15 +441,66 @@ function shareRootPathWorkspaceId(url, state = {}) {
   return String(workspace?.id || slug).trim();
 }
 
-function shareRootAccess(req, { actor, teamSharingState, state, targetWorkspaceId = '' } = {}) {
-  const workspaceId = String(targetWorkspaceId || shareRootWorkspaceId(state)).trim();
-  const actorWorkspaceId = String(actor?.member?.workspaceId || '').trim();
-  if (actorWorkspaceId) {
-    if (!workspaceId || workspaceId === 'local' || actorWorkspaceId === workspaceId) {
-      return { ok: true, workspaceId, actorId: actorHumanId(actor), via: 'actor' };
-    }
-    return { ok: false, status: 403, workspaceId, actorId: actorHumanId(actor), error: 'This share root is only available to members of this server.' };
+function activeWorkspaceMemberForUser(state = {}, userId = '', workspaceId = '') {
+  const cleanUserId = String(userId || '').trim();
+  const cleanWorkspaceId = String(workspaceId || '').trim();
+  if (!cleanUserId || !cleanWorkspaceId) return null;
+  return asArray(state.cloud?.workspaceMembers).find((member) => (
+    member
+    && member.userId === cleanUserId
+    && member.workspaceId === cleanWorkspaceId
+    && (member.status || 'active') === 'active'
+  )) || null;
+}
+
+function browserWorkspaceAccess({ actor, currentUser, state, workspaceId = '', error = '' } = {}) {
+  const cleanWorkspaceId = String(workspaceId || '').trim();
+  const user = currentUser || actor?.user || null;
+  const actorId = actor ? actorHumanId(actor) : '';
+  if (!cleanWorkspaceId || cleanWorkspaceId === 'local') {
+    return actor || user
+      ? { ok: true, workspaceId: cleanWorkspaceId, actorId: actorId || user?.id || '', via: actor ? 'actor' : 'user' }
+      : null;
   }
+  const actorWorkspaceId = String(actor?.member?.workspaceId || '').trim();
+  if (actorWorkspaceId === cleanWorkspaceId) {
+    return { ok: true, workspaceId: cleanWorkspaceId, actorId, via: 'actor' };
+  }
+  if (user?.id) {
+    const member = activeWorkspaceMemberForUser(state, user.id, cleanWorkspaceId);
+    if (member) {
+      return {
+        ok: true,
+        workspaceId: cleanWorkspaceId,
+        actorId: member.humanId || actorId || user.id,
+        via: 'user',
+      };
+    }
+    return {
+      ok: false,
+      status: 403,
+      joinable: true,
+      workspaceId: cleanWorkspaceId,
+      actorId: actorId || user.id,
+      error,
+    };
+  }
+  if (actorWorkspaceId) {
+    return { ok: false, status: 403, workspaceId: cleanWorkspaceId, actorId, error };
+  }
+  return null;
+}
+
+function shareRootAccess(req, { actor, currentUser, teamSharingState, state, targetWorkspaceId = '' } = {}) {
+  const workspaceId = String(targetWorkspaceId || shareRootWorkspaceId(state)).trim();
+  const browserAccess = browserWorkspaceAccess({
+    actor,
+    currentUser,
+    state,
+    workspaceId,
+    error: 'This share root is only available to members of this server.',
+  });
+  if (browserAccess) return browserAccess;
   const tokenRecord = tokenRecordForRequest(teamSharingState, req);
   if (tokenRecord) {
     const tokenWorkspaceId = String(tokenRecord.workspaceId || '').trim();
@@ -460,15 +512,16 @@ function shareRootAccess(req, { actor, teamSharingState, state, targetWorkspaceI
   return { ok: false, status: 401, workspaceId, actorId: '', error: 'Sign in to MagClaw and join this server to open the share root.' };
 }
 
-function shareAccess(req, { actor, teamSharingState, share } = {}) {
+function shareAccess(req, { actor, currentUser, teamSharingState, share, state } = {}) {
   const workspaceId = String(share?.workspaceId || '').trim();
-  const actorWorkspaceId = String(actor?.member?.workspaceId || '').trim();
-  if (actorWorkspaceId) {
-    if (!workspaceId || workspaceId === 'local' || actorWorkspaceId === workspaceId) {
-      return { ok: true, workspaceId, actorId: actorHumanId(actor), via: 'actor' };
-    }
-    return { ok: false, status: 403, workspaceId, actorId: actorHumanId(actor), error: 'This shared page is only available to members of this server.' };
-  }
+  const browserAccess = browserWorkspaceAccess({
+    actor,
+    currentUser,
+    state,
+    workspaceId,
+    error: 'This shared page is only available to members of this server.',
+  });
+  if (browserAccess) return browserAccess;
   const tokenRecord = tokenRecordForRequest(teamSharingState, req);
   if (tokenRecord) {
     const tokenWorkspaceId = String(tokenRecord.workspaceId || '').trim();
@@ -721,17 +774,40 @@ function enrichTeamSharingContextResult(result = {}, state = {}) {
   };
 }
 
-function teamSharingWorkspaceAccess({ actor, tokenRecord, session } = {}) {
+function teamSharingWorkspaceAccessResult({ actor, currentUser, state, tokenRecord, session } = {}) {
   const sessionWorkspaceId = String(session?.workspaceId || '').trim();
-  const actorWorkspaceId = String(actor?.member?.workspaceId || '').trim();
-  if (actorWorkspaceId) {
-    return !sessionWorkspaceId || sessionWorkspaceId === 'local' || actorWorkspaceId === sessionWorkspaceId;
-  }
+  const browserAccess = browserWorkspaceAccess({
+    actor,
+    currentUser,
+    state,
+    workspaceId: sessionWorkspaceId,
+    error: 'This Team Sharing context belongs to another server.',
+  });
+  if (browserAccess) return browserAccess;
   const tokenWorkspaceId = String(tokenRecord?.workspaceId || '').trim();
   if (tokenWorkspaceId) {
-    return !sessionWorkspaceId || sessionWorkspaceId === 'local' || tokenWorkspaceId === sessionWorkspaceId;
+    if (!sessionWorkspaceId || sessionWorkspaceId === 'local' || tokenWorkspaceId === sessionWorkspaceId) {
+      return { ok: true, workspaceId: sessionWorkspaceId, actorId: tokenRecord.user?.id || '', via: 'token' };
+    }
+    return {
+      ok: false,
+      status: 403,
+      workspaceId: sessionWorkspaceId,
+      actorId: tokenRecord.user?.id || '',
+      error: 'This Team Sharing context belongs to another server.',
+    };
   }
-  return !sessionWorkspaceId || sessionWorkspaceId === 'local';
+  return {
+    ok: !sessionWorkspaceId || sessionWorkspaceId === 'local',
+    status: 401,
+    workspaceId: sessionWorkspaceId,
+    actorId: '',
+    error: 'Sign in to MagClaw and join this server to open the Team Sharing context.',
+  };
+}
+
+function teamSharingWorkspaceAccess(args = {}) {
+  return teamSharingWorkspaceAccessResult(args).ok;
 }
 
 function sendContextHtml(res, {
@@ -2519,6 +2595,85 @@ function redirectToLoginWithReturnTo(res, url) {
   res.end?.('');
 }
 
+function workspaceForTeamSharingJoin(state = {}, workspaceId = '') {
+  const cleanWorkspaceId = String(workspaceId || '').trim();
+  if (!cleanWorkspaceId || cleanWorkspaceId === 'local') return null;
+  const cloud = ensureCloudCollections(state);
+  return asArray(cloud.workspaces).find((workspace) => (
+    workspace
+    && !workspace.deletedAt
+    && String(workspace.id || '').trim() === cleanWorkspaceId
+  )) || null;
+}
+
+function accessJoinLinkExpiresAt(createdAt = '') {
+  const createdMs = Date.parse(createdAt || '');
+  const baseMs = Number.isFinite(createdMs) ? createdMs : Date.now();
+  return new Date(baseMs + TEAM_SHARING_ACCESS_JOIN_LINK_TTL_MS).toISOString();
+}
+
+function uniqueTeamSharingJoinToken(state = {}) {
+  const cloud = ensureCloudCollections(state);
+  cloud.joinLinks = Array.isArray(cloud.joinLinks) ? cloud.joinLinks : [];
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const raw = randomToken('mc_join');
+    const tokenHash = hashSecret(raw);
+    if (!cloud.joinLinks.some((link) => link.tokenHash === tokenHash)) return { raw, tokenHash };
+  }
+  throw new Error('Unable to create Team Sharing join link.');
+}
+
+function createTeamSharingAccessJoinLink({ state, workspaceId = '', makeId, now } = {}) {
+  const cloud = ensureCloudCollections(state);
+  cloud.joinLinks = Array.isArray(cloud.joinLinks) ? cloud.joinLinks : [];
+  const workspace = workspaceForTeamSharingJoin(state, workspaceId);
+  if (!workspace) return null;
+  const createdAt = typeof now === 'function' ? now() : new Date().toISOString();
+  const { raw, tokenHash } = uniqueTeamSharingJoinToken(state);
+  const joinLink = {
+    id: typeof makeId === 'function' ? makeId('jlink') : randomToken('jlink'),
+    workspaceId: workspace.id,
+    tokenHash,
+    maxUses: 1,
+    usedCount: 0,
+    expiresAt: accessJoinLinkExpiresAt(createdAt),
+    revokedAt: null,
+    createdBy: 'team_sharing_access',
+    createdAt,
+    updatedAt: createdAt,
+    metadata: {
+      rawToken: raw,
+      purpose: 'team_sharing_access',
+    },
+  };
+  cloud.joinLinks.push(joinLink);
+  return { raw, joinLink, workspace };
+}
+
+async function redirectToJoinWithReturnTo(res, url, {
+  state,
+  workspaceId = '',
+  makeId,
+  now,
+  persistState,
+  addSystemEvent,
+  reason = 'team_sharing_access_join_redirect',
+} = {}) {
+  const created = createTeamSharingAccessJoinLink({ state, workspaceId, makeId, now });
+  if (!created?.raw) return false;
+  const returnTo = safeRelativePathFromUrl(url);
+  const location = `/join/${encodeURIComponent(created.raw)}?returnTo=${encodeURIComponent(returnTo)}`;
+  addSystemEvent?.('team_sharing_join_redirect_created', 'Team Sharing access redirected to server join.', {
+    workspaceId: created.workspace.id,
+    joinLinkId: created.joinLink.id,
+    returnPath: returnTo,
+  });
+  await persistState?.({ workspaceId: created.workspace.id, reason });
+  res.writeHead?.(302, { location, 'cache-control': 'no-store' });
+  res.end?.('');
+  return true;
+}
+
 function teamSharingAuthApprovedHtml(onboardingTarget = {}) {
   const channelUrl = String(onboardingTarget?.channelUrl || '').trim();
   const channelName = String(onboardingTarget?.channelName || '').trim();
@@ -2710,6 +2865,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
   } = deps;
   const state = getState();
   const actor = currentActor(req);
+  const browserUser = currentUser(req) || actor?.user || null;
   const workspaceId = actorWorkspaceId(actor, state);
   const teamSharingState = state.teamSharing || {};
   if (!state.teamSharing) state.teamSharing = teamSharingState;
@@ -2913,7 +3069,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendShareHtml(res, shareChromeHtml({ title: 'Team Shares' }, '<h1>Shared page not found</h1><p>This MagClaw share link may have been removed.</p>'), { status: 404 });
       return true;
     }
-    const access = shareAccess(req, { actor, teamSharingState, share });
+    const access = shareAccess(req, { actor, currentUser: browserUser, teamSharingState, share, state });
     if (!access.ok) {
       addSystemEvent('team_sharing_share_denied', 'Team sharing share access denied.', {
         workspaceId: access.workspaceId || workspaceId,
@@ -2923,6 +3079,16 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       });
       if (access.status === 401) {
         redirectToLoginWithReturnTo(res, url);
+        return true;
+      }
+      if (access.joinable && await redirectToJoinWithReturnTo(res, url, {
+        state,
+        workspaceId: access.workspaceId,
+        makeId,
+        now,
+        persistState,
+        addSystemEvent,
+      })) {
         return true;
       }
       sendShareHtml(res, shareRootDeniedHtml(access.status, access.error), { status: access.status });
@@ -2938,6 +3104,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
   if (req.method === 'GET' && shareRootPath) {
     const access = shareRootAccess(req, {
       actor,
+      currentUser: browserUser,
       teamSharingState,
       state,
       targetWorkspaceId: shareRootPathWorkspaceId(url, state),
@@ -2950,6 +3117,16 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       });
       if (access.status === 401) {
         redirectToLoginWithReturnTo(res, url);
+        return true;
+      }
+      if (access.joinable && await redirectToJoinWithReturnTo(res, url, {
+        state,
+        workspaceId: access.workspaceId,
+        makeId,
+        now,
+        persistState,
+        addSystemEvent,
+      })) {
         return true;
       }
       sendShareHtml(res, shareRootDeniedHtml(access.status, access.error), { status: access.status });
@@ -3022,7 +3199,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
   const scopedContextPageMatch = url.pathname.match(/^\/s\/([^/]+)\/team-sharing\/context\/([^/]+)$/);
   const contextPageMatch = url.pathname.match(/^\/team-sharing\/context\/([^/]+)$/) || (scopedContextPageMatch ? [scopedContextPageMatch[0], scopedContextPageMatch[2]] : null);
   if (req.method === 'GET' && contextPageMatch) {
-    if (!requestHasTeamSharingIdentity(req, { actor, teamSharingState, validTeamSharingToken })) {
+    if (!requestHasTeamSharingIdentity(req, { actor, teamSharingState, validTeamSharingToken }) && !browserUser) {
       redirectToLoginWithReturnTo(res, url);
       return true;
     }
@@ -3033,7 +3210,18 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendError(res, 404, 'Team sharing session not found.');
       return true;
     }
-    if (!teamSharingWorkspaceAccess({ actor, tokenRecord, session })) {
+    const access = teamSharingWorkspaceAccessResult({ actor, currentUser: browserUser, state, tokenRecord, session });
+    if (!access.ok) {
+      if (access.joinable && await redirectToJoinWithReturnTo(res, url, {
+        state,
+        workspaceId: access.workspaceId,
+        makeId,
+        now,
+        persistState,
+        addSystemEvent,
+      })) {
+        return true;
+      }
       sendError(res, 403, 'This Team Sharing context belongs to another server.');
       return true;
     }

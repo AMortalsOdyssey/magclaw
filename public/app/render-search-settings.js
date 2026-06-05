@@ -2031,11 +2031,15 @@ function renderCloudAuthGate(cloud = {}, errorMessage = '', tokenContext = {}) {
   const reset = tokenContext.reset || {};
   const joinWorkspace = tokenContext.joinWorkspace || {};
   const oauthLink = tokenContext.oauthLink || {};
+  const safeTokenReturnTo = String(tokenContext.returnTo || '').startsWith('/') && !String(tokenContext.returnTo || '').startsWith('//')
+    ? String(tokenContext.returnTo || '')
+    : '';
+  const joinLoginReturnTo = tokenContext.mode === 'join' && tokenContext.token
+    ? `/join/${encodeURIComponent(tokenContext.token || '')}${safeTokenReturnTo ? `?returnTo=${encodeURIComponent(safeTokenReturnTo)}` : ''}`
+    : '';
   const loginReturnTo = tokenContext.mode === 'join' && tokenContext.token
-    ? `/join/${encodeURIComponent(tokenContext.token || '')}`
-    : (String(tokenContext.returnTo || '').startsWith('/') && !String(tokenContext.returnTo || '').startsWith('//')
-      ? String(tokenContext.returnTo || '')
-      : '');
+    ? joinLoginReturnTo
+    : safeTokenReturnTo;
   const brandHtml = `<div class="cloud-login-brand"><span class="cloud-login-logo" aria-hidden="true"><img src="${BRAND_LOGO_SRC}" alt="" /></span></div>`;
   const registerPanel = tokenContext.mode === 'invite' ? `
       <section class="pixel-panel cloud-login-card cloud-token-card" aria-labelledby="cloud-login-title">
