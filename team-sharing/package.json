@@ -1,7 +1,7 @@
 {
   "name": "@magclaw/team-sharing",
-  "version": "0.1.43",
-  "description": "One-command MagClaw Team Sharing installer for Codex and Claude Code skills and hooks.",
+  "version": "0.1.44",
+  "description": "One-command MagClaw Team Sharing setup for Codex and Claude Code: npx @magclaw/team-sharing@latest setup --server-url https://magclaw.multiego.me --channel <channel-path>.",
   "type": "module",
   "bin": {
     "team-sharing": "bin/team-sharing.js"

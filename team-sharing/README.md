@@ -2,9 +2,15 @@
 
 One-command installer for MagClaw Team Sharing.
 
+## Recommended Setup
+
 ```bash
 npx @magclaw/team-sharing@latest setup --server-url https://magclaw.multiego.me --channel <channel-path>
 ```
+
+The npm sidebar's `npm i @magclaw/team-sharing` command only installs the
+binary. Use the setup command above for the real end-to-end Team Sharing
+configuration.
 
 The npm package is `@magclaw/team-sharing`; it exposes the `team-sharing`
 command for day-to-day use. It is intentionally standalone and does not depend
