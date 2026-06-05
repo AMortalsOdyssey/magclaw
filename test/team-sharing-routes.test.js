@@ -1190,6 +1190,10 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /context-event-user/);
   assert.match(res.body, /article\.context-event-user/);
   assert.match(res.body, /background:#fff1f5/);
+  assert.match(res.body, /article\.context-event-user \.role \{ border:1px solid #bae6fd; background:#e0f2fe; color:#075985; \}/);
+  assert.doesNotMatch(res.body, /color:#9f1239/);
+  assert.match(res.body, /context-file-ref/);
+  assert.match(res.body, /function isContextWebHref/);
   assert.match(res.body, /function stripContextMetadata/);
   assert.match(res.body, /function renderContextMarkdown/);
   assert.match(res.body, /renderContextMarkdown\(text\)/);
@@ -1300,6 +1304,18 @@ test('team sharing context page adds note summaries only for long agent replies'
   ), true);
 
   const context = createContextPageHarness(res.body);
+  assert.match(
+    context.renderContextInline('[server/team-sharing-clients.js](/Users/tt/code/myproject/magclaw/server/team-sharing-clients.js:316)'),
+    /<span class="context-file-ref">server\/team-sharing-clients\.js<\/span>/,
+  );
+  assert.doesNotMatch(
+    context.renderContextInline('[server/team-sharing-clients.js](/Users/tt/code/myproject/magclaw/server/team-sharing-clients.js:316)'),
+    /href="\/Users\/tt/,
+  );
+  assert.match(
+    context.renderContextInline('[原文](/team-sharing/context/sess_route?anchorEventId=evt_1)'),
+    /href="\/team-sharing\/context\/sess_route\?anchorEventId=evt_1"/,
+  );
   const directHookSummary = [
     '**上下文与索引**（原文）',
     '- **用户主要提出**：CODEX_SESSION_FILE 是干嘛的？',
@@ -1313,14 +1329,19 @@ test('team sharing context page adds note summaries only for long agent replies'
     runtime: 'codex',
   };
   const longReply = [
-    '核心结论：正文里的结论模块不应该再成为便签摘要来源。',
+    '已完成：我把上下文页的文件引用改成不可点击文本。',
+    '验收结果：本地 UI 测试通过，说明链接渲染 contract 生效。',
+    '核心结论：只有 Web 链接需要跳转，本地代码文件不再生成 href。',
+    '重要发现：旧记录缺少头像属于历史 hook 数据问题，不是当前刷新逻辑问题。',
     '',
     '实现细节：' + '内容展示、滚动触发、摘要截断、三行打字动画。'.repeat(80),
   ].join('\n');
   const noteSummary = context.contextNoteSummary({ role: 'assistant', text: longReply });
-  assert.match(noteSummary, /上下文与索引/);
-  assert.doesNotMatch(noteSummary, /正文里的结论模块/);
-  assert.match(noteSummary, /\*\*上下文与索引\*\*/);
+  assert.match(noteSummary, /具体做了什么/);
+  assert.match(noteSummary, /验收说明/);
+  assert.match(noteSummary, /当前结论/);
+  assert.match(noteSummary, /重要发现/);
+  assert.doesNotMatch(noteSummary, /上下文与索引/);
   assert.ok(Array.from(noteSummary).length <= 1000);
 
   const html = context.eventHtml({
@@ -1332,9 +1353,9 @@ test('team sharing context page adds note summaries only for long agent replies'
   assert.match(html, /has-context-note/);
   assert.match(html, /data-context-note/);
   assert.match(html, /class="context-note-body"/);
-  assert.match(html, /<strong>上下文与索引<\/strong>/);
-  assert.match(html, /<li><strong>用户主要提出<\/strong>/);
-  assert.match(html, /href="https:\/\/example\.com\/team-sharing\/context\/sess_route"/);
+  assert.match(html, /<strong>具体做了什么<\/strong>/);
+  assert.match(html, /<strong>验收说明<\/strong>/);
+  assert.doesNotMatch(html, /href="https:\/\/example\.com\/team-sharing\/context\/sess_route"/);
   assert.doesNotMatch(html, /data-full-text="[^"]*Team Sharing hooks/);
 
   const shortReply = '结论：短回复直接读正文即可。'.repeat(20);

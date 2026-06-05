@@ -587,8 +587,10 @@ function fallbackConversationAbstract({ title = '', events = [], optionalLocalDi
   const userItems = eventDigestByRole(events, 'user').slice(-4);
   const assistantItems = eventDigestByRole(events, 'assistant').slice(-4);
   const pieces = [];
-  if (userItems.length) pieces.push(`用户主要提出：${userItems.join('；')}`);
-  if (assistantItems.length) pieces.push(`Agent 给出的结论和推进：${assistantItems.join('；')}`);
+  const finalAssistant = assistantItems[assistantItems.length - 1] || '';
+  if (finalAssistant) pieces.push(`最终回复结论：${finalAssistant}`);
+  if (assistantItems.length > 1) pieces.push(`过程推进：${assistantItems.slice(0, -1).join('；')}`);
+  if (userItems.length) pieces.push(`用户诉求与修正：${userItems.join('；')}`);
   const localDigest = cleanText(optionalLocalDigest);
   if (localDigest && !/^Tool summary\b/i.test(localDigest)) pieces.push(`本地摘要补充：${localDigest.slice(0, 360)}`);
   const text = cleanText(pieces.join('。'));

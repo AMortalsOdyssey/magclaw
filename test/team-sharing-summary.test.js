@@ -34,6 +34,11 @@ test('team sharing summary prompt asks for structured L0/L1/raw ids without hidd
   assert.match(prompt, /Raw ID 要贴近对应结论/);
   assert.match(prompt, /browser comments/);
   assert.match(prompt, /页面批注/);
+  assert.match(prompt, /what was changed or investigated/);
+  assert.match(prompt, /what validation showed/);
+  assert.match(prompt, /what conclusion now holds/);
+  assert.match(prompt, /important discovery or risk/);
+  assert.match(prompt, /不要只复述用户诉求/);
   assert.match(prompt, /不要编造隐藏思考/);
   assert.match(prompt, /不是写“本 session 围绕某标题”/);
 });
@@ -46,6 +51,12 @@ test('team sharing local Codex digest prompt asks for useful context without hid
 
   assert.match(prompt, /local Codex session digest writer/);
   assert.match(prompt, /Important Context/);
+  assert.match(prompt, /What Was Done/);
+  assert.match(prompt, /Validation \/ Evidence/);
+  assert.match(prompt, /Current Conclusions/);
+  assert.match(prompt, /Important Discoveries/);
+  assert.match(prompt, /priority on the final assistant reply/);
+  assert.match(prompt, /what the checks imply/);
   assert.match(prompt, /Source Event IDs/);
   assert.match(prompt, /Do not include hidden reasoning/);
   assert.match(buildTeamSharingTopicsPromptSection(), /Do not create a topic for generic session bookkeeping/);

@@ -773,7 +773,7 @@ function sendContextHtml(res, {
     article.context-event { position:relative; background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:10px 0; box-shadow:0 1px 2px rgba(15,23,42,.04); }
     article.context-event-agent.has-context-note { overflow:visible; }
     article.context-event-user { background:#fff1f5; border-color:var(--user-line); }
-    article.context-event-user .role { background:#ffe4ec; color:#9f1239; }
+    article.context-event-user .role { border:1px solid #bae6fd; background:#e0f2fe; color:#075985; }
     article.context-event.anchor { border-color:var(--accent); box-shadow:0 0 0 2px rgba(8,145,178,.12); }
     .context-event-head { display:flex; align-items:center; gap:10px; min-width:0; }
     .context-event-meta { display:flex; align-items:center; flex-wrap:wrap; gap:0; min-width:0; }
@@ -819,6 +819,7 @@ function sendContextHtml(res, {
     .context-quote a,
     .text a,
     .context-source-link { display:inline-flex; align-items:center; gap:4px; vertical-align:baseline; }
+    .context-file-ref { display:inline-flex; align-items:center; max-width:100%; border-radius:5px; padding:1px 5px; background:#eef2f7; color:#334155; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.92em; font-weight:700; line-height:1.35; overflow-wrap:anywhere; }
     .context-link-icon { display:inline-grid; place-items:center; width:16px; height:16px; flex:0 0 16px; border:1px solid #dbe5ef; border-radius:4px; background:#fff; color:#334155; overflow:hidden; font-size:7px; font-weight:900; line-height:1; text-transform:uppercase; }
     .context-link-icon-img { display:block; width:12px; height:12px; object-fit:contain; }
     .context-link-icon-fallback { display:inline-grid; place-items:center; width:100%; height:100%; padding-top:1px; }
@@ -980,10 +981,20 @@ function sendContextHtml(res, {
         .replace(/\\s*::git-[a-z-]+\\{[^}\\n]*\\}\\s*/gi, '\\n')
         .trim();
     }
+    function isContextWebHref(href) {
+      const value = String(href || '').replace(/&amp;/gi, '&').trim();
+      if (/^(https?:|mailto:)/i.test(value)) return true;
+      if (value.startsWith('/team-sharing/') || value.startsWith('/share/')) return true;
+      if (/^\\/s\\/[^/]+\\/(?:team-sharing|share)(?:\\/|$)/.test(value)) return true;
+      return false;
+    }
     function safeContextHref(href) {
       const value = String(href || '').replace(/&amp;/gi, '&').trim();
-      if (/^(https?:|mailto:|\\/)/i.test(value)) return value;
-      return '#';
+      return isContextWebHref(value) ? value : '';
+    }
+    function contextReferenceHtml(label, className = '') {
+      const classes = ['context-file-ref', className].filter(Boolean).join(' ');
+      return '<span class="' + escapeHtml(classes) + '">' + escapeHtml(label || '') + '</span>';
     }
     function renderContextAutolinkedUrls(html) {
       return String(html || '').replace(/https?:\\/\\/[^\\s<]+/g, raw => {
@@ -1027,8 +1038,9 @@ function sendContextHtml(res, {
     }
     function contextLinkHtml(href, label, className = '') {
       const safeHref = safeContextHref(href);
+      if (!safeHref) return contextReferenceHtml(label || href, className);
       const classAttr = className ? ' class="' + escapeHtml(className) + '"' : '';
-      const icon = safeHref && safeHref !== '#' ? contextLinkIconHtml(safeHref) : '';
+      const icon = safeHref ? contextLinkIconHtml(safeHref) : '';
       return '<a' + classAttr + ' href="' + escapeHtml(safeHref) + '" target="_blank" rel="noreferrer">' +
         icon + '<span class="context-link-label">' + escapeHtml(label || safeHref) + '</span></a>';
     }
@@ -1068,8 +1080,7 @@ function sendContextHtml(res, {
     function markdownLinksFromLine(line) {
       const links = [];
       String(line || '').replace(/\\[([^\\]\\n]+)\\]\\(([^)\\n]+)\\)/g, (_match, label, href) => {
-        const safeHref = safeContextHref(href);
-        if (safeHref && safeHref !== '#') links.push({ label: String(label || '').trim(), href: safeHref });
+        links.push({ label: String(label || '').trim(), href: String(href || '').trim() });
         return '';
       });
       return links;
@@ -1292,9 +1303,45 @@ function sendContextHtml(res, {
           if (!(event?.role === 'assistant' || event?.role === 'system')) return '';
           const text = contextEventBodyText(event);
           if (contextVisibleCharCount(text) <= CONTEXT_NOTE_MIN_CHARS) return '';
+          const replySummary = contextReplyOutcomeSummary(text);
+          if (replySummary) return compactContextNoteSummary(replySummary, CONTEXT_NOTE_MAX_CHARS);
           const hint = contextSessionSummaryHint();
           if (!hint) return '';
           return compactContextNoteSummary(hint, CONTEXT_NOTE_MAX_CHARS);
+        }
+        function contextNoteCandidateSentences(text) {
+          const clean = stripContextMetadata(text).replace(/\\r\\n/g, '\\n');
+          const fromLines = clean.split('\\n')
+            .map(line => line.replace(/^\\s*(?:[-*+]|\\d+\\.)\\s+/, '').trim())
+            .filter(line => line && !/^https?:\\/\\//i.test(line));
+          const fromPlain = plainContextNoteText(clean).split(/(?<=[。！？!?])\\s+/).map(item => item.trim()).filter(Boolean);
+          return [...fromLines, ...fromPlain]
+            .map(item => item.replace(/\\s+/g, ' ').trim())
+            .filter(item => item.length >= 8 && item.length <= 260);
+        }
+        function pickContextOutcome(candidates, patterns, used) {
+          for (const candidate of candidates) {
+            if (used.has(candidate)) continue;
+            if (!patterns.some(pattern => pattern.test(candidate))) continue;
+            used.add(candidate);
+            return candidate.replace(/[。；;：:]?$/, '。');
+          }
+          return '';
+        }
+        function contextReplyOutcomeSummary(text) {
+          const candidates = contextNoteCandidateSentences(text);
+          if (!candidates.length) return '';
+          const used = new Set();
+          const rows = [
+            ['具体做了什么', [/\\b(done|implemented|created|updated|fixed|deployed|pushed|configured)\\b/i, /已|已经|完成|处理|修复|实现|创建|重建|配置|更新|补充|推送|部署|回滚/]],
+            ['验收说明', [/\\b(test|verified|passed|ready|probe|smoke)\\b/i, /验收|测试|验证|通过|返回\\s*\\d+|ready|readyz|doctor|成功|不报错|全过/]],
+            ['当前结论', [/\\b(conclusion|decision|current)\\b/i, /结论|准确说|所以|当前|关于|支持|可用|不能|需要/]],
+            ['重要发现', [/\\b(risk|found|discovered|warning|limitation|crash|blocked)\\b/i, /发现|风险|注意|但|不过|异常|CrashLoop|缺|限制|边界|不支持/]],
+          ].map(([label, patterns]) => {
+            const value = pickContextOutcome(candidates, patterns, used);
+            return value ? '- **' + label + '**：' + value : '';
+          }).filter(Boolean);
+          return rows.length >= 2 ? rows.join('\\n') : '';
         }
         function renderContextNote(summary) {
           if (!summary) return '';
