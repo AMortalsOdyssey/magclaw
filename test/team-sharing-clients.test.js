@@ -191,14 +191,13 @@ test('zilliz client searches and upserts team-sharing vector documents with scop
   assert.equal(calls[1].init.headers.authorization, 'Bearer zilliz-secret');
 });
 
-test('zilliz client can run BM25 keyword search when sparse field is configured', async () => {
+test('zilliz client runs BM25 keyword search by default', async () => {
   const calls = [];
   const client = createZillizTeamSharingClient({
     endpoint: 'https://zilliz.example',
     token: 'zilliz-secret',
     database: 'ai_social_memory',
     collection: 'magclaw_team_sharing_v1',
-    bm25Field: 'sparse',
     fetch: async (url, init) => {
       calls.push({ url, init, body: JSON.parse(init.body) });
       return jsonResponse({
@@ -247,7 +246,6 @@ test('zilliz client runs multiple BM25 keyword queries and fuses results', async
     token: 'zilliz-secret',
     database: 'ai_social_memory',
     collection: 'magclaw_team_sharing_v1',
-    bm25Field: 'sparse',
     fetch: async (url, init) => {
       const body = JSON.parse(init.body);
       calls.push({ url, init, body });
@@ -312,23 +310,31 @@ test('zilliz client creates collection with detected native embedding dimension'
   assert.equal(result.dimension, 4);
   assert.match(calls[1].url, /\/v2\/vectordb\/collections\/create$/);
   const vectorField = calls[1].body.schema.fields.find((field) => field.fieldName === 'vector');
+  const sparseField = calls[1].body.schema.fields.find((field) => field.fieldName === 'sparse');
   assert.equal(vectorField.elementTypeParams.dim, 4);
+  assert.equal(sparseField.dataType, 'SparseFloatVector');
+  assert.deepEqual(calls[1].body.schema.fields.find((field) => field.fieldName === 'text').elementTypeParams.analyzer_params, {
+    tokenizer: 'jieba',
+    filter: ['lowercase', 'cnalphanumonly'],
+  });
+  assert.equal(calls[1].body.schema.functions[0].type, 'BM25');
   assert.match(calls[2].url, /\/v2\/vectordb\/indexes\/create$/);
   assert.equal(calls[2].body.indexParams[0].fieldName, 'vector');
   assert.equal(calls[2].body.indexParams[0].metricType, 'COSINE');
   assert.equal(calls[2].body.indexParams[0].indexConfig.index_type, 'AUTOINDEX');
-  assert.match(calls[3].url, /\/v2\/vectordb\/collections\/get_load_state$/);
-  assert.match(calls[4].url, /\/v2\/vectordb\/collections\/load$/);
+  assert.equal(calls[3].body.indexParams[0].fieldName, 'sparse');
+  assert.equal(calls[3].body.indexParams[0].metricType, 'BM25');
+  assert.match(calls[4].url, /\/v2\/vectordb\/collections\/get_load_state$/);
+  assert.match(calls[5].url, /\/v2\/vectordb\/collections\/load$/);
 });
 
-test('zilliz client creates BM25 schema and sparse index for new collections when configured', async () => {
+test('zilliz client creates BM25 schema and sparse index for new collections by default', async () => {
   const calls = [];
   const client = createZillizTeamSharingClient({
     endpoint: 'https://zilliz.example',
     token: 'zilliz-secret',
     database: 'ai_social_memory',
     collection: 'magclaw_team_sharing_v2',
-    bm25Field: 'sparse',
     fetch: async (url, init) => {
       calls.push({ url, init, body: JSON.parse(init.body) });
       if (String(url).endsWith('/collections/describe')) {
@@ -346,6 +352,10 @@ test('zilliz client creates BM25 schema and sparse index for new collections whe
 
   assert.equal(result.ok, true);
   assert.equal(textField.elementTypeParams.enable_analyzer, true);
+  assert.deepEqual(textField.elementTypeParams.analyzer_params, {
+    tokenizer: 'jieba',
+    filter: ['lowercase', 'cnalphanumonly'],
+  });
   assert.equal(sparseField.dataType, 'SparseFloatVector');
   assert.equal(createBody.schema.functions[0].type, 'BM25');
   assert.equal(createBody.schema.functions[0].outputFieldNames[0], 'sparse');
@@ -358,7 +368,6 @@ test('zilliz client rejects existing BM25-incompatible collection unless recreat
     token: 'zilliz-secret',
     database: 'ai_social_memory',
     collection: 'magclaw_team_sharing_v1',
-    bm25Field: 'sparse',
     fetch: async (url) => {
       if (String(url).endsWith('/collections/describe')) {
         return jsonResponse({
@@ -380,7 +389,7 @@ test('zilliz client rejects existing BM25-incompatible collection unless recreat
 
   await assert.rejects(
     () => client.ensureCollection({ dimension: 3 }),
-    /missing BM25 support.*MAGCLAW_ZILLIZ_RECREATE_FOR_BM25=1/,
+    /missing BM25 support.*default BM25 schema/,
   );
 });
 
@@ -391,7 +400,6 @@ test('zilliz client can recreate existing collection to add BM25 support when en
     token: 'zilliz-secret',
     database: 'ai_social_memory',
     collection: 'magclaw_team_sharing_v1',
-    bm25Field: 'sparse',
     recreateForBm25: true,
     fetch: async (url, init) => {
       calls.push({ url, init, body: JSON.parse(init.body) });
@@ -425,6 +433,10 @@ test('zilliz client can recreate existing collection to add BM25 support when en
   assert.equal(result.bm25.ok, true);
   assert.ok(paths.indexOf('/v2/vectordb/collections/drop') < paths.indexOf('/v2/vectordb/collections/create'));
   assert.equal(createBody.schema.fields.find((field) => field.fieldName === 'sparse').dataType, 'SparseFloatVector');
+  assert.deepEqual(createBody.schema.fields.find((field) => field.fieldName === 'text').elementTypeParams.analyzer_params, {
+    tokenizer: 'jieba',
+    filter: ['lowercase', 'cnalphanumonly'],
+  });
   assert.equal(createBody.schema.functions[0].type, 'BM25');
 });
 
@@ -437,6 +449,29 @@ test('zilliz client ensures existing collection has a vector index and is loaded
     collection: 'magclaw_team_sharing_v1',
     fetch: async (url, init) => {
       calls.push({ url, init, body: JSON.parse(init.body) });
+      if (String(url).endsWith('/collections/describe')) {
+        return jsonResponse({
+          code: 0,
+          data: {
+            schema: {
+              fields: [
+                {
+                  fieldName: 'text',
+                  dataType: 'VarChar',
+                  elementTypeParams: {
+                    max_length: 32766,
+                    enable_analyzer: true,
+                    analyzer_params: { tokenizer: 'jieba', filter: ['lowercase', 'cnalphanumonly'] },
+                  },
+                },
+                { fieldName: 'vector', dataType: 'FloatVector', elementTypeParams: { dim: 4096 } },
+                { fieldName: 'sparse', dataType: 'SparseFloatVector' },
+              ],
+              functions: [{ name: 'text_bm25_emb', type: 1, inputFieldNames: ['text'], outputFieldNames: ['sparse'] }],
+            },
+          },
+        });
+      }
       if (String(url).endsWith('/collections/get_load_state')) {
         return jsonResponse({ code: 0, data: { loadState: 'LoadStateNotLoaded' } });
       }
@@ -451,6 +486,7 @@ test('zilliz client ensures existing collection has a vector index and is loaded
   assert.equal(result.dimension, 4096);
   assert.deepEqual(calls.map((call) => call.url.replace('https://zilliz.example', '')), [
     '/v2/vectordb/collections/describe',
+    '/v2/vectordb/indexes/create',
     '/v2/vectordb/indexes/create',
     '/v2/vectordb/collections/get_load_state',
     '/v2/vectordb/collections/load',

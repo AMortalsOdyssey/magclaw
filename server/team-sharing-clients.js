@@ -6,14 +6,22 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+const DEFAULT_BM25_FIELD = 'sparse';
+const DEFAULT_BM25_TEXT_FIELD = 'text';
+const DEFAULT_BM25_FUNCTION_NAME = 'text_bm25_emb';
+const DEFAULT_BM25_ANALYZER_FILTERS = ['lowercase', 'cnalphanumonly'];
+
+function defaultBm25AnalyzerParams() {
+  return {
+    tokenizer: 'jieba',
+    filter: [...DEFAULT_BM25_ANALYZER_FILTERS],
+  };
+}
+
 function clamp01(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 0;
   return Math.max(0, Math.min(1, number));
-}
-
-function booleanEnv(value) {
-  return /^(1|true|yes|y|on)$/i.test(String(value || '').trim());
 }
 
 function normalizeTextList(value = []) {
@@ -76,6 +84,62 @@ function authorizationHeaders(secret = '') {
     accept: 'application/json',
     ...(clean ? { authorization: `Bearer ${clean}` } : {}),
   };
+}
+
+function objectFromJsonish(value) {
+  if (!value || typeof value !== 'string') return value;
+  const text = value.trim();
+  if (!text) return value;
+  if (!text.startsWith('{') && !text.startsWith('[')) return value;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return value;
+  }
+}
+
+function appendFieldParams(params, source) {
+  if (!source) return;
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      const key = String(item?.key || item?.name || '').trim();
+      if (!key) continue;
+      params[key] = objectFromJsonish(item.value);
+    }
+    return;
+  }
+  if (typeof source !== 'object') return;
+  for (const [key, value] of Object.entries(source)) {
+    params[key] = objectFromJsonish(value);
+  }
+}
+
+function fieldParams(field = {}) {
+  const params = {};
+  appendFieldParams(params, field.typeParams);
+  appendFieldParams(params, field.type_params);
+  appendFieldParams(params, field.elementTypeParams);
+  appendFieldParams(params, field.element_type_params);
+  appendFieldParams(params, field.params);
+  return params;
+}
+
+function truthyParam(value) {
+  return value === true || String(value || '').toLowerCase() === 'true';
+}
+
+function analyzerParamsMatch(value) {
+  const params = objectFromJsonish(value);
+  if (params && typeof params === 'object' && !Array.isArray(params)) {
+    const tokenizer = String(params.tokenizer || params.type || '').toLowerCase();
+    const filters = asArray(params.filter || params.filters)
+      .map((item) => String(item).toLowerCase());
+    return tokenizer === 'jieba'
+      && DEFAULT_BM25_ANALYZER_FILTERS.every((filter) => filters.includes(filter));
+  }
+  const serialized = JSON.stringify(params || '').toLowerCase();
+  return serialized.includes('jieba')
+    && DEFAULT_BM25_ANALYZER_FILTERS.every((filter) => serialized.includes(filter));
 }
 
 function normalizeEmbedding(data) {
@@ -313,12 +377,10 @@ export function createZillizTeamSharingClient(options = {}) {
   const database = options.database || process.env.MAGCLAW_ZILLIZ_DATABASE || 'default';
   const collection = options.collection || process.env.MAGCLAW_ZILLIZ_COLLECTION || 'magclaw_team_sharing_v1';
   const configuredDimension = Number(options.dimension || process.env.MAGCLAW_EMBEDDING_DIMENSION || 0);
-  const bm25Field = String(options.bm25Field || process.env.MAGCLAW_ZILLIZ_BM25_FIELD || '').trim();
-  const bm25TextField = String(options.bm25TextField || process.env.MAGCLAW_ZILLIZ_BM25_TEXT_FIELD || 'text').trim();
-  const bm25FunctionName = String(options.bm25FunctionName || process.env.MAGCLAW_ZILLIZ_BM25_FUNCTION || 'text_bm25_emb').trim();
-  const recreateForBm25 = options.recreateForBm25 !== undefined
-    ? Boolean(options.recreateForBm25)
-    : booleanEnv(process.env.MAGCLAW_ZILLIZ_RECREATE_FOR_BM25);
+  const bm25Field = String(options.bm25Field || DEFAULT_BM25_FIELD).trim() || DEFAULT_BM25_FIELD;
+  const bm25TextField = String(options.bm25TextField || DEFAULT_BM25_TEXT_FIELD).trim() || DEFAULT_BM25_TEXT_FIELD;
+  const bm25FunctionName = String(options.bm25FunctionName || DEFAULT_BM25_FUNCTION_NAME).trim() || DEFAULT_BM25_FUNCTION_NAME;
+  const recreateForBm25 = Boolean(options.recreateForBm25);
   const headers = authorizationHeaders(token);
   function endpointUrl(pathname) {
     if (!endpoint) throw new Error('Zilliz endpoint is not configured.');
@@ -382,7 +444,6 @@ export function createZillizTeamSharingClient(options = {}) {
     return String(field.fieldName || field.name || field.field_name || '').trim();
   }
   function bm25SupportStatus(description = {}) {
-    if (!bm25Field) return { ok: true, configured: false };
     const fields = schemaFields(description);
     const functions = schemaFunctions(description);
     const bm25FieldLower = bm25Field.toLowerCase();
@@ -392,25 +453,34 @@ export function createZillizTeamSharingClient(options = {}) {
       && /sparse/i.test(String(field.dataType || field.type || ''))
     ));
     const textField = fields.find((field) => fieldName(field).toLowerCase() === bm25TextFieldLower) || {};
+    const textFieldParams = fieldParams(textField);
+    const analyzerParams = textFieldParams.analyzer_params
+      || textFieldParams.analyzerParams
+      || textField.analyzer_params
+      || textField.analyzerParams;
     const hasAnalyzer = bm25TextField !== 'text'
       || textField.enable_analyzer === true
       || textField.enableAnalyzer === true
-      || textField.elementTypeParams?.enable_analyzer === true
-      || textField.elementTypeParams?.enableAnalyzer === true;
+      || truthyParam(textFieldParams.enable_analyzer)
+      || truthyParam(textFieldParams.enableAnalyzer);
+    const hasAnalyzerParams = bm25TextField !== 'text'
+      || analyzerParamsMatch(analyzerParams);
     const hasFunction = functions.some((fn) => {
       const outputNames = asArray(fn.outputFieldNames || fn.output_field_names || fn.outputs).map((item) => String(item).toLowerCase());
       const inputNames = asArray(fn.inputFieldNames || fn.input_field_names || fn.inputs).map((item) => String(item).toLowerCase());
-      return String(fn.type || fn.functionType || '').toLowerCase() === 'bm25'
+      const functionType = String(fn.type || fn.functionType || '').toLowerCase();
+      return (functionType === 'bm25' || functionType === 'functiontype.bm25' || Number(fn.type || fn.functionType) === 1)
         && outputNames.includes(bm25FieldLower)
         && (!inputNames.length || inputNames.includes(bm25TextFieldLower));
     });
     const serialized = JSON.stringify(description || {}).toLowerCase();
     return {
-      ok: hasSparseField && hasFunction && hasAnalyzer,
+      ok: hasSparseField && hasFunction && hasAnalyzer && hasAnalyzerParams,
       configured: true,
       hasSparseField: hasSparseField || serialized.includes(bm25FieldLower),
       hasFunction: hasFunction || (serialized.includes('bm25') && serialized.includes(bm25FieldLower)),
       hasAnalyzer,
+      hasAnalyzerParams,
     };
   }
   async function dropCollection() {
@@ -437,29 +507,30 @@ export function createZillizTeamSharingClient(options = {}) {
         dataType: 'VarChar',
         elementTypeParams: {
           max_length: 32766,
-          ...(bm25Field && bm25TextField === 'text' ? { enable_analyzer: true } : {}),
+          ...(bm25Field && bm25TextField === 'text' ? {
+            enable_analyzer: true,
+            analyzer_params: defaultBm25AnalyzerParams(),
+          } : {}),
         },
       },
       { fieldName: 'source_ref', dataType: 'VarChar', elementTypeParams: { max_length: 4096 } },
       { fieldName: 'updated_at', dataType: 'VarChar', elementTypeParams: { max_length: 64 } },
       { fieldName: 'hotness', dataType: 'Double' },
     ];
-    if (bm25Field) fields.push({ fieldName: bm25Field, dataType: 'SparseFloatVector' });
+    fields.push({ fieldName: bm25Field, dataType: 'SparseFloatVector' });
     await zillizRequest('/v2/vectordb/collections/create', {
       ...commonBody(),
       schema: {
         autoID: false,
         enableDynamicField: true,
         fields,
-        ...(bm25Field ? {
-          functions: [{
-            name: bm25FunctionName,
-            type: 'BM25',
-            inputFieldNames: [bm25TextField],
-            outputFieldNames: [bm25Field],
-            params: {},
-          }],
-        } : {}),
+        functions: [{
+          name: bm25FunctionName,
+          type: 'BM25',
+          inputFieldNames: [bm25TextField],
+          outputFieldNames: [bm25Field],
+          params: {},
+        }],
       },
     });
   }
@@ -483,7 +554,6 @@ export function createZillizTeamSharingClient(options = {}) {
     }
   }
   async function ensureBm25Index() {
-    if (!bm25Field) return;
     try {
       await zillizRequest('/v2/vectordb/indexes/create', {
         ...commonBody(),
@@ -536,7 +606,6 @@ export function createZillizTeamSharingClient(options = {}) {
       };
     },
     async keywordSearch({ query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', dateRange = null, limit = 40 } = {}) {
-      if (!bm25Field) return { ok: false, code: 'bm25_not_configured' };
       const filter = buildZillizFilter({ workspaceId, channelId, projectKey, sessionId, layer, dateRange });
       const queries = zillizKeywordQueries({ query, keywordQuery, keywords, topics });
       if (!queries.length) return { ok: true, candidates: [] };
@@ -575,16 +644,16 @@ export function createZillizTeamSharingClient(options = {}) {
       let existed = true;
       let recreatedForBm25 = false;
       let description = null;
-      let bm25Status = bm25Field ? { ok: true, configured: true, createdWithBm25: false } : { ok: true, configured: false };
+      let bm25Status = { ok: true, configured: true, createdWithBm25: false };
       try {
         description = await describeCollection();
       } catch (error) {
         if (!ignorableZillizError(error, /not found|not exist|collection.*not/)) throw error;
         existed = false;
         await createCollection(collectionDimension);
-        bm25Status = bm25Field ? { ok: true, configured: true, createdWithBm25: true } : { ok: true, configured: false };
+        bm25Status = { ok: true, configured: true, createdWithBm25: true };
       }
-      if (existed && bm25Field) {
+      if (existed) {
         bm25Status = bm25SupportStatus(description);
         if (!bm25Status.ok) {
           if (!recreateForBm25) {
@@ -592,8 +661,9 @@ export function createZillizTeamSharingClient(options = {}) {
               bm25Status.hasSparseField ? '' : `sparse field "${bm25Field}"`,
               bm25Status.hasFunction ? '' : `BM25 function "${bm25FunctionName}"`,
               bm25Status.hasAnalyzer ? '' : `analyzer on "${bm25TextField}"`,
+              bm25Status.hasAnalyzerParams ? '' : `jieba analyzer params on "${bm25TextField}"`,
             ].filter(Boolean).join(', ');
-            throw new Error(`Existing Zilliz collection "${collection}" is missing BM25 support${missing ? `: ${missing}` : ''}. Set MAGCLAW_ZILLIZ_RECREATE_FOR_BM25=1 or use a new collection to recreate it with BM25.`);
+            throw new Error(`Existing Zilliz collection "${collection}" is missing BM25 support${missing ? `: ${missing}` : ''}. Recreate this test collection or use a new collection so MagClaw can create the default BM25 schema.`);
           }
           await dropCollection();
           await createCollection(collectionDimension);

@@ -1796,6 +1796,10 @@ function teamSharingApiDeps() {
       || 'local',
   ).trim();
   const bearerToken = (req) => String(req?.headers?.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1] || '';
+  const zillizConfigured = () => Boolean(
+    process.env.MAGCLAW_ZILLIZ_ENDPOINT
+      && process.env.MAGCLAW_ZILLIZ_TOKEN,
+  );
   const safeTokenEqual = (left, right) => {
     const cleanLeft = String(left || '');
     const cleanRight = String(right || '');
@@ -1853,7 +1857,7 @@ function teamSharingApiDeps() {
         return { ok: false, error: error?.message || 'Team sharing keyword search failed.' };
       }
     },
-    keywordSearchReady: () => Boolean(process.env.MAGCLAW_ZILLIZ_BM25_FIELD),
+    keywordSearchReady: zillizConfigured,
     vectorSearch: async ({ query, channelId, projectKey, dateRange, limit, actor, workspaceId }) => {
       try {
         const embedded = await embeddingClient.embed(query || '');
@@ -1869,11 +1873,7 @@ function teamSharingApiDeps() {
         return { ok: false, error: error?.message || 'Team sharing vector search failed.' };
       }
     },
-    zillizReady: () => Boolean(
-      process.env.MAGCLAW_ZILLIZ_ENDPOINT
-        && process.env.MAGCLAW_ZILLIZ_TOKEN
-        && process.env.MAGCLAW_ZILLIZ_COLLECTION,
-    ),
+    zillizReady: zillizConfigured,
     rerankReady: () => Boolean(process.env.MAGCLAW_RERANK_URL && process.env.MAGCLAW_RERANK_API_KEY),
   };
 }
