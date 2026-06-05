@@ -65,40 +65,68 @@ function operationTitle(operation = '') {
   if (operation === 'hooks') return 'MagClaw Team Sharing Hooks';
   if (operation === 'skills') return 'MagClaw Team Sharing Skill';
   if (operation === 'channel_setup') return 'MagClaw Team Sharing 接入指南';
-  return 'MagClaw Team Sharing 已配置';
+  return 'MagClaw Team Sharing 已安装';
 }
 
-function commandList(setupCommand = '') {
-  return [
-    setupCommand ? {
-      label: '安装到当前项目',
-      command: 'team-sharing setup',
-      description: '在终端运行页面里的完整 setup 命令，完成登录、项目配置、Hooks 和 Skill 安装。',
-    } : null,
-    {
-      label: '检查状态',
-      command: 'team-sharing doctor',
-      description: '检查项目配置、登录、Hooks、Skill 和版本更新。',
-    },
-    {
-      label: '检索团队上下文',
-      command: 'team-sharing search --query "最近大家怎么处理这个问题？" --limit 5',
-      description: '默认同时使用 keyword/BM25 和 semantic/vector recall，再做排序。',
-    },
-    {
-      label: '分享总结产物',
-      command: 'team-sharing share-artifact --file ./summary.md --title "团队总结" --type markdown',
-      description: '把整理好的 Markdown/HTML/SVG/Mermaid 产物生成 MagClaw 分享链接。',
-    },
-  ].filter(Boolean);
+function parseChannelPathTarget(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'mc:' || parsed.hostname !== 'magclaw') return null;
+    const parts = parsed.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    if (parts[0] !== 'server' || parts[2] !== 'channel') return null;
+    return {
+      serverId: String(parts[1] || '').trim(),
+      channelId: String(parts[3] || '').trim(),
+    };
+  } catch {
+    return null;
+  }
 }
 
-function feedbackSections({ result = {}, setupCommand = '' } = {}) {
+function normalizeServerUrl(value = '') {
+  return String(value || 'https://magclaw.multiego.me').trim().replace(/\/+$/, '') || 'https://magclaw.multiego.me';
+}
+
+function channelTargetForFeedback(project = {}) {
+  const target = project.onboardingTarget || project.target || project.onboarding || {};
+  const parsed = parseChannelPathTarget(project.channelPath || project.config?.channel?.path || '');
+  const serverUrl = normalizeServerUrl(target.serverUrl || project.serverUrl || project.config?.server_url || project.config?.serverUrl || '');
+  const serverId = String(target.serverId || target.workspaceId || project.workspaceId || project.config?.workspace_id || parsed?.serverId || '').trim();
+  const serverSlug = String(target.serverSlug || serverId || '').trim();
+  const channelId = String(target.channelId || project.channelId || project.config?.channel?.id || parsed?.channelId || '').trim();
+  const channelName = String(target.channelName || channelId || '').trim();
+  const channelUrl = String(target.channelUrl || (
+    serverUrl && serverSlug && channelId
+      ? `${serverUrl}/s/${encodeURIComponent(serverSlug)}/channels/${encodeURIComponent(channelId)}`
+      : ''
+  )).trim();
+  return {
+    ...target,
+    serverUrl,
+    serverId,
+    serverSlug,
+    serverName: String(target.serverName || target.workspaceName || target.serverSlug || serverSlug || 'MagClaw Server').trim(),
+    channelId,
+    channelName,
+    channelUrl,
+  };
+}
+
+function channelLink(target = {}) {
+  if (!target.channelUrl) return target.channelName || target.channelId || '目标 Channel';
+  const label = target.channelName || target.channelId || '目标 Channel';
+  return `[${label}](${target.channelUrl})`;
+}
+
+function feedbackSections({ result = {} } = {}) {
   const project = result.project || result;
   const hooks = result.hooks || {};
   const skill = result.skill || result;
   const targets = installedTargets(skill, hooks);
   const events = hookEvents(hooks);
+  const target = channelTargetForFeedback(project);
   const projectOk = projectConfigured(project);
   const skillOk = okStatus(skill);
   const hooksOk = okStatus(hooks);
@@ -115,31 +143,29 @@ function feedbackSections({ result = {}, setupCommand = '' } = {}) {
       ],
     },
     {
-      title: '立即可试',
-      items: commandList(setupCommand).map((item) => `${item.label}: \`${item.command}\` - ${item.description}`),
-    },
-    {
-      title: '检索与召回',
+      title: 'Skill 说明',
       items: [
-        '默认 hybrid 检索会同时运行 keyword/BM25 和 semantic/vector recall，然后合并与重排结果。',
-        '时间范围用 `--time today|yesterday|this-week` 或 `--from/--to`；精确线索用 `--keyword`/`--keywords`；主题线索用 `--topic`/`--topics`。',
-        '需要偏向精确匹配或语义理解时用 `--mode keyword` 或 `--mode semantic`；深挖原文用 `team-sharing context --session-id <id> --anchor-event-id <id>`。',
+        '`magclaw-team-sharing` Skill 已安装到 Codex / Claude Code 可访问的位置。',
+        '它可以检索团队会话、读取共享上下文、整理结论，并把 Markdown/HTML 等产物发布成 MagClaw 分享链接。',
+        '使用示例：在 Codex 里说“帮我用 magclaw-team-sharing 搜索这个 Channel 里关于 NPM 发布的问题”。',
       ],
     },
     {
-      title: '总结与分享',
-      items: [
-        '在 Codex 里可以让 Agent 使用 `magclaw-team-sharing` Skill 总结当前会话、提炼问题和结论。',
-        '整理后的 Markdown/HTML 产物可通过 `team-sharing share-artifact` 生成 MagClaw 分享链接。',
-        '分享链接访问遵循当前 MagClaw 服务的登录和权限策略，并会显示创建者与创建时间。',
-      ],
-    },
-    {
-      title: 'Hooks 机制',
+      title: 'Hooks 功能',
       items: [
         `Codex: ${events.codex.map((item) => `\`${item}\``).join(', ')}；Claude Code: ${events.claude.map((item) => `\`${item}\``).join(', ')}。`,
-        'Hooks 会同步清洗后的用户正文、最终回复、计划和交互选择；raw tool output、secret、长命令输出不会上传。',
-        '每次同步会写入本地 audit，`team-sharing status` 和 `team-sharing doctor` 可查看最近同步状态。',
+        '正常使用终端里的 Agent 即可，Hooks 会在会话开始、结束、压缩前等节点自动上报清洗后的上下文。',
+        '团队成员可以在 MagClaw Channel 中查看、搜索、复用这些上下文，不需要手动复制完整聊天记录。',
+      ],
+    },
+    {
+      title: '数据查看',
+      items: [
+        `MagClaw 服务：${target.serverUrl}`,
+        target.channelUrl
+          ? `打开 ${channelLink(target)} 查看本项目上报的数据，链接会直接定位到对应 Channel。`
+          : `授权后进入 MagClaw，在 Server \`${target.serverName || target.serverId || '当前 Server'}\` 的 Channel \`${target.channelName || target.channelId || '目标 Channel'}\` 查看数据。`,
+        'CLI 授权完成后，服务端会确认你已经加入对应 Server/Channel；后续 Hooks 上报会进入这里。',
       ],
     },
   ];
@@ -152,7 +178,6 @@ export function buildTeamSharingOnboardingFeedback({
   hooks = null,
   skill = null,
   shim = null,
-  setupCommand = '',
 } = {}) {
   const result = {
     ok,
@@ -166,25 +191,22 @@ export function buildTeamSharingOnboardingFeedback({
     title: operationTitle(operation),
     status,
     summary: status === 'ready'
-      ? 'Team Sharing 已可用于检索团队会话、自动沉淀上下文，并生成 MagClaw 分享链接。'
+      ? '安装完成后，你已经获得团队上下文检索、自动同步 Hooks、分享产物发布和 Channel 数据查看能力。'
       : 'Team Sharing 还需要处理配置、登录、Hooks 或 Skill 安装问题。',
-    sections: feedbackSections({ result, setupCommand }),
-    commands: commandList(setupCommand),
+    sections: feedbackSections({ result }),
+    commands: [],
     nextSteps: [
-      '运行 `team-sharing doctor` 确认本机配置。',
-      '在 Codex 里询问“用 magclaw-team-sharing 检索昨天关于某问题的讨论”。',
-      '需要对外同步结论时，让 Codex 生成总结文件，再运行 `team-sharing share-artifact`。',
+      '回到 Codex / Claude Code 正常工作，Hooks 会在会话节点自动同步清洗后的上下文。',
+      '需要查看上报数据时，打开上面的 MagClaw Channel 链接。',
+      '需要复用团队上下文时，在 Agent 对话里直接让 magclaw-team-sharing 检索相关讨论。',
     ],
     expectations: [
       'Hooks 会在会话结束、压缩前或会话开始时自动尝试同步。',
       '同步内容会先做清洗和脱敏，避免上传 raw tool output 或 secrets。',
       'MagClaw 会把会话沉淀成可搜索 workspace，并保留原始上下文跳转。',
     ],
-    troubleshooting: [
-      '登录过期或服务器不匹配时运行 `team-sharing login`。',
-      'Hooks 命令不可执行时运行 `team-sharing hooks install --target all`。',
-      'Skill 缺失时运行 `team-sharing skills install --target all`。',
-    ],
+    troubleshooting: [],
+    welcome: '欢迎使用 MagClaw 的 Team Sharing 功能。',
   };
 }
 
@@ -208,6 +230,7 @@ export function renderTeamSharingFeedbackMarkdown(feedback = {}) {
     for (const item of feedback.nextSteps) lines.push(`- ${item}`);
     lines.push('');
   }
+  if (feedback.welcome) lines.push(feedback.welcome, '');
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
 }
 

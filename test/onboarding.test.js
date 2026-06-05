@@ -194,8 +194,9 @@ test('human onboarding task is delivered internally without entering channel mes
   assert.match(deliveries[0].message.body, /<@hum_new>/);
   assert.match(deliveries[0].message.body, /Recent #all language context: Chinese \(zh-CN\)/);
   assert.match(deliveries[0].message.body, /what MagClaw is/);
-  assert.match(deliveries[0].message.body, /检索与召回/);
-  assert.match(deliveries[0].message.body, /总结与分享/);
+  assert.match(deliveries[0].message.body, /Skill 说明/);
+  assert.match(deliveries[0].message.body, /Hooks 功能/);
+  assert.match(deliveries[0].message.body, /数据查看/);
   assert.match(deliveries[0].message.body, /Hooks/);
   assert.match(deliveries[0].message.body, /Computers, Agents, Channels\/Threads\/Tasks, Workspace\/Memory, and Team Sharing workspace/);
   assert.equal(state.events.some((event) => event.type === 'human_onboarding_task_created'), true);

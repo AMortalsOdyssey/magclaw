@@ -322,9 +322,10 @@ test('settings page exposes Team Sharing setup guide with setup command copy', a
   assert.match(settingsSource, /data-slot="team-sharing-setup-command"/);
   assert.match(settingsSource, /data-slot="team-sharing-feedback-markdown"/);
   assert.match(settingsSource, /team-sharing setup/);
-  assert.match(settingsSource, /检索与召回/);
-  assert.match(settingsSource, /总结与分享/);
-  assert.match(settingsSource, /Hooks 机制/);
+  assert.doesNotMatch(settingsSource, /--format markdown/);
+  assert.match(settingsSource, /Skill 说明/);
+  assert.match(settingsSource, /Hooks 功能/);
+  assert.match(settingsSource, /数据查看/);
   assert.match(settingsSource, /data-action="copy-team-sharing-setup-command"/);
   assert.match(guideSource, /function teamSharingFeedbackToMarkdown\(feedback = \{\}\)/);
   assert.match(guideSource, /function ensureTeamSharingSetupGuide\(\)/);

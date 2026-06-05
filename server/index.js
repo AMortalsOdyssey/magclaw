@@ -1812,6 +1812,7 @@ function teamSharingApiDeps() {
     addSystemEvent,
     broadcastState,
     currentActor: (req) => cloudAuth.currentActor(req),
+    currentUser: (req) => cloudAuth.currentUser(req),
     embeddingProbe: () => embeddingClient.probeDimension(),
     embeddingReady: () => Boolean(
       process.env.MAGCLAW_EMBEDDING_BASE_URL
@@ -1819,6 +1820,9 @@ function teamSharingApiDeps() {
         && process.env.MAGCLAW_EMBEDDING_MODEL,
     ),
     getState: () => state,
+    loadWorkspaceIntoState: typeof cloudRepository?.loadWorkspaceIntoState === 'function'
+      ? (...args) => cloudRepository.loadWorkspaceIntoState(...args)
+      : null,
     indexTeamSharingDocuments: ({ documents }) => createTeamSharingIndexingPipeline({
       embeddingClient,
       zillizClient,
@@ -1835,6 +1839,9 @@ function teamSharingApiDeps() {
       /^(1|true|yes)$/i.test(String(process.env.MAGCLAW_TEAM_SHARING_REQUIRE_AUTH || ''))
       || process.env.MAGCLAW_DEPLOYMENT === 'cloud'
     ),
+    upsertChannelMember: typeof cloudRepository?.upsertChannelMember === 'function'
+      ? (...args) => cloudRepository.upsertChannelMember(...args)
+      : null,
     validTeamSharingToken: (req) => {
       const expected = process.env.MAGCLAW_TEAM_SHARING_SYNC_TOKEN || '';
       return safeTokenEqual(bearerToken(req), expected);

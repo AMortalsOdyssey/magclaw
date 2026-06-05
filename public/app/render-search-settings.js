@@ -2485,16 +2485,16 @@ function renderServerSettingsTab() {
           </div>
           <div class="team-sharing-guide-sections">
             <section>
-              <strong>检索与召回</strong>
-              <p>默认 hybrid 检索同时使用 keyword/BM25 和 semantic/vector recall；用 <code>context</code> 回到原始会话。</p>
+              <strong>Skill 说明</strong>
+              <p><code>magclaw-team-sharing</code> 可以检索团队会话、读取共享上下文并生成 MagClaw 分享链接。</p>
             </section>
             <section>
-              <strong>总结与分享</strong>
-              <p>让 Codex 使用 <code>magclaw-team-sharing</code> 总结会话，再生成 MagClaw 分享链接。</p>
-            </section>
-            <section>
-              <strong>Hooks 机制</strong>
+              <strong>Hooks 功能</strong>
               <p>Codex / Claude Code Hooks 会自动同步清洗后的用户正文、最终回复、计划和交互选择。</p>
+            </section>
+            <section>
+              <strong>数据查看</strong>
+              <p>授权完成后可直接打开目标 Channel，查看 Hooks 上报和团队共享的数据。</p>
             </section>
           </div>
         </div>

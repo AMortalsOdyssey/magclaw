@@ -97,15 +97,17 @@ function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-function outputFormat(flags = {}, stdout = process.stdout) {
+function outputFormat(flags = {}, stdout = process.stdout, options = {}) {
   const format = String(flags.format || 'auto').trim().toLowerCase();
   if (['json', 'text', 'markdown'].includes(format)) return format;
   if (flags.json) return 'json';
+  const defaultFormat = String(options.defaultFormat || '').trim().toLowerCase();
+  if (['json', 'text', 'markdown'].includes(defaultFormat)) return defaultFormat;
   return stdout?.isTTY ? 'text' : 'json';
 }
 
-function printResult(value, flags = {}, env = process.env) {
-  const format = outputFormat(flags);
+function printResult(value, flags = {}, env = process.env, options = {}) {
+  const format = outputFormat(flags, process.stdout, options);
   if (format === 'json' || !value?.feedback) {
     printJson(value);
     return;
@@ -201,7 +203,7 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
   switch (subcommand) {
     case 'setup':
     case 'install':
-      printResult(await setupTeamSharing(flags, env), flags, env);
+      printResult(await setupTeamSharing(flags, env), flags, env, { defaultFormat: 'text' });
       break;
     case 'login':
       printJson(await loginTeamSharingProfile(flags, env));

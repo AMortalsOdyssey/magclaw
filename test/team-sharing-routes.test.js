@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { handleTeamSharingApi } from '../server/api/team-sharing-routes.js';
 import { createInitialTeamSharingState } from '../server/team-sharing.js';
 import { TEAM_SHARING_COMMON_LINK_ICONS } from '../server/team-sharing-link-icons.js';
+import { buildChannelImportPath } from '../server/integrations/feishu-connect/route-token.js';
 
 function makeResponse() {
   return {
@@ -376,7 +377,7 @@ test('team sharing auth issues scoped token, supports whoami, and revokes token'
   const tokenDeps = {
     ...deps,
     currentActor: () => null,
-    readJson: async () => ({ deviceCode: startRes.data.deviceCode }),
+    readJson: async () => ({ deviceCode: startRes.data.deviceCode, machineFingerprint: fingerprint }),
   };
   const tokenRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -472,7 +473,7 @@ test('team sharing scoped token rejects machine mismatch and expiration', async 
     {
       ...deps,
       currentActor: () => null,
-      readJson: async () => ({ deviceCode: startRes.data.deviceCode }),
+      readJson: async () => ({ deviceCode: startRes.data.deviceCode, machineFingerprint: fingerprint }),
     },
   );
 
@@ -553,6 +554,189 @@ test('team sharing auth approval resolves the actor from the pending request wor
   assert.equal(tokenRes.data.status, 'approved');
   assert.equal(tokenRes.data.user.email, 'route@example.com');
   assert.equal(tokenRes.data.workspaceId, 'ws_route');
+});
+
+test('team sharing setup approval auto-joins a logged-in user to the target server and channel', async () => {
+  const fingerprint = 'mfp_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+  const routeKey = 'mcch_auto_join_route_key';
+  const user = { id: 'usr_new', email: 'new@example.com', name: 'New User', avatarUrl: 'https://avatar.example/new.png' };
+  const upserts = [];
+  const deps = routeDeps({
+    currentActor: () => null,
+    currentUser: () => user,
+    upsertChannelMember: async (record) => upserts.push(record),
+  });
+  deps.state.cloud.users = [user];
+  deps.state.cloud.workspaceMembers = [];
+  deps.state.channels = [{
+    id: 'chan_team',
+    workspaceId: 'ws_route',
+    name: 'team-sharing',
+    memberIds: [],
+    humanIds: [],
+    metadata: { integrations: { feishuImport: { routeKey } } },
+  }];
+  deps.currentActor = (req = {}) => {
+    const workspaceId = req.headers?.['x-magclaw-workspace-id'];
+    const member = deps.state.cloud.workspaceMembers.find((item) => (
+      item.workspaceId === workspaceId
+      && item.userId === user.id
+      && item.status === 'active'
+    ));
+    return member ? { user, member } : null;
+  };
+  const channelPath = buildChannelImportPath({ serverId: 'ws_route', channelId: 'chan_team', routeKey });
+  const startRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: {}, socket: { remoteAddress: '127.0.0.1' } },
+    startRes,
+    new URL('http://local/api/team-sharing/auth/start'),
+    {
+      ...deps,
+      readJson: async () => ({
+        workspaceId: 'ws_route',
+        profile: 'default',
+        packageName: '@magclaw/team-sharing',
+        machineFingerprint: fingerprint,
+        channelPath,
+        client: { hostname: 'setup-host.local', platform: 'darwin', arch: 'arm64' },
+      }),
+    },
+  ), true);
+  assert.equal(startRes.statusCode, 201);
+  assert.equal(startRes.data.status, 'pending');
+
+  const approveRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.test', 'x-forwarded-proto': 'https' } },
+    approveRes,
+    new URL(`http://local${startRes.data.verificationUri}`),
+    deps,
+  ), true);
+  assert.equal(approveRes.statusCode, 200);
+  assert.match(approveRes.body, /https:\/\/magclaw\.test\/s\/server-route\/channels\/chan_team/);
+
+  const human = deps.state.humans.find((item) => item.authUserId === user.id);
+  const member = deps.state.cloud.workspaceMembers.find((item) => item.userId === user.id && item.workspaceId === 'ws_route');
+  assert.equal(member?.role, 'member');
+  assert.equal(member?.humanId, human?.id);
+  assert.equal(deps.state.channels.find((item) => item.id === 'chan_team')?.memberIds.includes(human.id), true);
+  assert.equal(deps.state.channels.find((item) => item.name === 'all')?.memberIds.includes(human.id), true);
+  assert.ok(upserts.some((item) => item.channelId === 'chan_team' && item.humanId === human.id));
+  assert.ok(deps.events.some((event) => event.type === 'team_sharing_setup_auto_joined'));
+  assert.doesNotMatch(JSON.stringify(deps.events), new RegExp(routeKey));
+
+  const tokenRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    tokenRes,
+    new URL('http://local/api/team-sharing/auth/token'),
+    {
+      ...deps,
+      currentActor: () => null,
+      readJson: async () => ({ deviceCode: startRes.data.deviceCode, machineFingerprint: fingerprint }),
+    },
+  ), true);
+  assert.equal(tokenRes.statusCode, 200);
+  assert.equal(tokenRes.data.status, 'approved');
+  assert.equal(tokenRes.data.user.email, 'new@example.com');
+  assert.equal(tokenRes.data.onboardingTarget.joinedServer, true);
+  assert.equal(tokenRes.data.onboardingTarget.joinedChannel, true);
+  assert.equal(tokenRes.data.onboardingTarget.channelName, 'team-sharing');
+  assert.equal(tokenRes.data.onboardingTarget.channelUrl, 'https://magclaw.test/s/server-route/channels/chan_team');
+});
+
+test('team sharing setup approval rejects leaked or stale channel paths before joining', async () => {
+  const routeKey = 'mcch_real_route_key';
+  const user = { id: 'usr_leaked', email: 'leaked@example.com', name: 'Leaked User' };
+  const deps = routeDeps({
+    currentActor: () => null,
+    currentUser: () => user,
+  });
+  deps.state.cloud.users = [user];
+  deps.state.cloud.workspaceMembers = [];
+  deps.state.channels = [{
+    id: 'chan_team',
+    workspaceId: 'ws_route',
+    name: 'team-sharing',
+    memberIds: [],
+    humanIds: [],
+    metadata: { integrations: { feishuImport: { routeKey } } },
+  }];
+  const stalePath = buildChannelImportPath({ serverId: 'ws_route', channelId: 'chan_team', routeKey: 'mcch_wrong_route_key' });
+  const startRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: {}, socket: { remoteAddress: '127.0.0.2' } },
+    startRes,
+    new URL('http://local/api/team-sharing/auth/start'),
+    {
+      ...deps,
+      readJson: async () => ({
+        workspaceId: 'ws_route',
+        profile: 'default',
+        packageName: '@magclaw/team-sharing',
+        channelPath: stalePath,
+      }),
+    },
+  ), true);
+
+  const approveRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.test' } },
+    approveRes,
+    new URL(`http://local${startRes.data.verificationUri}`),
+    deps,
+  ), true);
+  assert.equal(approveRes.statusCode, 403);
+  assert.equal(deps.state.cloud.workspaceMembers.length, 0);
+  assert.equal(deps.state.channels[0].memberIds.length, 0);
+});
+
+test('team sharing setup approval rejects archived target channels before joining', async () => {
+  const routeKey = 'mcch_archived_route_key';
+  const user = { id: 'usr_archived', email: 'archived@example.com', name: 'Archived User' };
+  const deps = routeDeps({
+    currentActor: () => null,
+    currentUser: () => user,
+  });
+  deps.state.cloud.users = [user];
+  deps.state.cloud.workspaceMembers = [];
+  deps.state.channels = [{
+    id: 'chan_archived',
+    workspaceId: 'ws_route',
+    name: 'archived',
+    archived: true,
+    memberIds: [],
+    humanIds: [],
+    metadata: { integrations: { feishuImport: { routeKey } } },
+  }];
+  const channelPath = buildChannelImportPath({ serverId: 'ws_route', channelId: 'chan_archived', routeKey });
+  const startRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: {}, socket: { remoteAddress: '127.0.0.3' } },
+    startRes,
+    new URL('http://local/api/team-sharing/auth/start'),
+    {
+      ...deps,
+      readJson: async () => ({
+        workspaceId: 'ws_route',
+        profile: 'default',
+        packageName: '@magclaw/team-sharing',
+        channelPath,
+      }),
+    },
+  ), true);
+
+  const approveRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.test' } },
+    approveRes,
+    new URL(`http://local${startRes.data.verificationUri}`),
+    deps,
+  ), true);
+  assert.equal(approveRes.statusCode, 400);
+  assert.equal(deps.state.cloud.workspaceMembers.length, 0);
+  assert.equal(deps.state.channels[0].memberIds.length, 0);
 });
 
 test('team sharing auth approval redirects unauthenticated browsers with returnTo', async () => {

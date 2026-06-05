@@ -87,6 +87,7 @@ test('channel Feishu import path endpoint returns a stable signed MagClaw path',
     assert.match(first.setupCommand, /^npx @magclaw\/team-sharing@latest setup /);
     assert.match(first.setupCommand, /--server-url "https:\/\/magclaw\.multiego\.me"/);
     assert.match(first.setupCommand, /--channel "mc:\/\/magclaw\/server\/[^"]+\/channel\/chan_all\?key=mcch_[^"]+"/);
+    assert.doesNotMatch(first.setupCommand, /--format markdown/);
     assert.equal(first.setupCommands.macosLinux, first.setupCommand);
     assert.equal(first.setupCommands.powershell, first.setupCommand);
     assert.equal(first.setupCommands.cmd, first.setupCommand);

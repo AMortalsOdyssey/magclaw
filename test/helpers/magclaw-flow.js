@@ -78,6 +78,7 @@ export async function startIsolatedServer(extraEnv = {}) {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-flow-'));
   await mkdir(path.join(tmp, 'public'), { recursive: true });
   await cp(path.join(ROOT, 'server'), path.join(tmp, 'server'), { recursive: true });
+  await cp(path.join(ROOT, 'team-sharing', 'src'), path.join(tmp, 'team-sharing', 'src'), { recursive: true });
   await cp(path.join(ROOT, 'public', 'index.html'), path.join(tmp, 'public', 'index.html'));
   return launchIsolatedServer(tmp, extraEnv);
 }

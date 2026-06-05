@@ -1192,12 +1192,15 @@ export async function loginTeamSharingProfile(flags = {}, env = process.env) {
   const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   const existing = (await readTeamSharingProfileConfig(profile, env)).config || {};
   const serverUrl = normalizeServerUrl(flags.serverUrl || existing.server_url || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL);
-  const workspaceId = String(flags.workspaceId || flags.workspace || existing.workspace_id || env.MAGCLAW_WORKSPACE_ID || 'local').trim();
+  let workspaceId = String(flags.workspaceId || flags.workspace || existing.workspace_id || env.MAGCLAW_WORKSPACE_ID || 'local').trim();
   const machineFingerprint = teamSharingMachineFingerprint(env);
   const manualToken = String(flags.token || flags.apiKey || flags.teamSharingToken || env.MAGCLAW_TEAM_SHARING_TOKEN || '').trim();
+  const requestedChannelPath = channelPathFromFlags(flags, {});
+  const loginChannelPath = parseMagClawChannelPath(requestedChannelPath) ? requestedChannelPath : '';
   let token = manualToken;
   let tokenExpiresAt = tokenExpiryFromFlags(flags);
   let user = {};
+  let onboardingTarget = null;
   let verificationUrl = '';
   if (!token) {
     const started = await teamSharingRequestJson({
@@ -1209,6 +1212,8 @@ export async function loginTeamSharingProfile(flags = {}, env = process.env) {
         profile,
         packageName: TEAM_SHARING_PACKAGE_NAME,
         machineFingerprint,
+        channelPath: loginChannelPath,
+        projectKey: String(flags.projectKey || flags.project || '').trim(),
         client: {
           hostname: String(env.MAGCLAW_TEAM_SHARING_HOSTNAME || os.hostname() || '').trim(),
           platform: runtimePlatform(env),
@@ -1234,6 +1239,8 @@ export async function loginTeamSharingProfile(flags = {}, env = process.env) {
           tokenExpiresAt: status.tokenExpiresAt || status.expiresAt,
         });
         user = status.user || {};
+        workspaceId = String(status.workspaceId || workspaceId || '').trim();
+        onboardingTarget = status.onboardingTarget || status.target || null;
         break;
       }
       if (status.status === 'expired') throw new Error(status.error || 'Team Sharing login expired.');
@@ -1256,7 +1263,7 @@ export async function loginTeamSharingProfile(flags = {}, env = process.env) {
     updated_at: now(),
   };
   const profileConfig = await writeTeamSharingProfileConfig(profile, config, env);
-  return { ok: true, profile, serverUrl, workspaceId, hasToken: Boolean(token), tokenExpiresAt, machineFingerprint, profileConfig, user, verificationUrl };
+  return { ok: true, profile, serverUrl, workspaceId, hasToken: Boolean(token), tokenExpiresAt, machineFingerprint, profileConfig, user, verificationUrl, onboardingTarget };
 }
 
 export async function logoutTeamSharingProfile(flags = {}, env = process.env) {
@@ -2258,15 +2265,23 @@ export async function setupTeamSharing(flags = {}, env = process.env) {
   const profileConfig = await readTeamSharingProfileConfig(profile, env);
   const existingProject = await readTeamSharingProjectConfig({ profile, cwd: setupFlags.cwd || process.cwd(), env });
   const existingProjectConfig = normalizeTeamSharingProjectConfig(existingProject.config);
-  const parsedChannelPath = parseMagClawChannelPath(channelPathFromFlags(setupFlags, existingProject.config || {}));
+  const requestedChannelPath = channelPathFromFlags(setupFlags, existingProject.config || {});
+  const parsedChannelPath = parseMagClawChannelPath(requestedChannelPath);
   const intendedLogin = {
     serverUrl: flags.serverUrl || setupFlags.serverUrl || existingProjectConfig?.serverUrl || profileConfig.config?.server_url || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL,
     workspaceId: flags.workspaceId || flags.workspace || setupFlags.workspaceId || setupFlags.workspace || parsedChannelPath?.workspaceId || existingProjectConfig?.workspaceId || profileConfig.config?.workspace_id || env.MAGCLAW_WORKSPACE_ID || 'local',
   };
+  let login = null;
   if (!flags.noLogin && profileTokenIssue(profileConfig.config || {}, env, intendedLogin)) {
-    await loginTeamSharingProfile({ ...flags, serverUrl: intendedLogin.serverUrl, workspaceId: intendedLogin.workspaceId }, env);
+    login = await loginTeamSharingProfile({
+      ...flags,
+      channelPath: requestedChannelPath,
+      serverUrl: intendedLogin.serverUrl,
+      workspaceId: intendedLogin.workspaceId,
+    }, env);
   }
   const project = await initTeamSharingProject(setupFlags, env);
+  if (login?.onboardingTarget) project.onboardingTarget = login.onboardingTarget;
   const shim = await installTeamSharingShim(setupFlags, env);
   const hookFlags = shim.path ? { ...setupFlags, teamSharingCommand: shim.path } : setupFlags;
   const hooks = await installTeamSharingHooks(hookFlags, env);

@@ -103,10 +103,13 @@ test('collab route returns Team Sharing onboarding feedback with channel setup c
 
   assert.equal(res.statusCode, 200);
   assert.match(res.data.setupCommand, /npx @magclaw\/team-sharing@latest setup/);
+  assert.doesNotMatch(res.data.setupCommand, /--format markdown/);
   assert.equal(res.data.onboardingFeedback.status, 'ready');
-  assert.ok(res.data.onboardingFeedback.sections.some((section) => section.title === '检索与召回'));
-  assert.ok(res.data.onboardingFeedback.sections.some((section) => section.title === '总结与分享'));
-  assert.ok(res.data.onboardingFeedback.sections.some((section) => section.title === 'Hooks 机制'));
+  assert.ok(res.data.onboardingFeedback.sections.some((section) => section.title === 'Skill 说明'));
+  assert.ok(res.data.onboardingFeedback.sections.some((section) => section.title === 'Hooks 功能'));
+  assert.ok(res.data.onboardingFeedback.sections.some((section) => section.title === '数据查看'));
+  assert.ok(!res.data.onboardingFeedback.sections.some((section) => section.title === 'Usage'));
+  assert.deepEqual(res.data.onboardingFeedback.commands, []);
   assert.doesNotMatch(JSON.stringify(res.data.onboardingFeedback), /routeKey|route-key|token|Bearer/i);
 });
 

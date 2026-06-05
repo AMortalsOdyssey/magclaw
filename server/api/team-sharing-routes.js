@@ -7,6 +7,8 @@ import {
   syncTeamSharingBatch,
 } from '../team-sharing.js';
 import { TEAM_SHARING_COMMON_LINK_ICONS } from '../team-sharing-link-icons.js';
+import { ensureWorkspaceAllChannel } from '../workspace-defaults.js';
+import { channelFeishuRouteKey, parseChannelImportPath } from '../integrations/feishu-connect/route-token.js';
 import crypto from 'node:crypto';
 
 function asArray(value) {
@@ -60,6 +62,9 @@ const SHARE_CONTENT_TYPES = new Set(['html', 'markdown', 'svg', 'mermaid']);
 const MAX_SHARE_CONTENT_LENGTH = 10 * 1024 * 1024;
 const TEAM_SHARING_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const MACHINE_FINGERPRINT_PATTERN = /^mfp_[a-f0-9]{64}$/;
+const TEAM_SHARING_AUTH_THROTTLE_WINDOW_MS = 10 * 60 * 1000;
+const TEAM_SHARING_AUTH_START_LIMIT = 30;
+const TEAM_SHARING_AUTH_APPROVE_LIMIT = 20;
 
 function normalizeShareContentType(value = '', content = '') {
   const explicit = String(value || '').trim().toLowerCase();
@@ -2018,7 +2023,341 @@ function ensureTeamSharingAuthState(teamSharingState = {}) {
   teamSharingState.auth = teamSharingState.auth && typeof teamSharingState.auth === 'object' ? teamSharingState.auth : {};
   teamSharingState.auth.deviceRequests = teamSharingState.auth.deviceRequests && typeof teamSharingState.auth.deviceRequests === 'object' ? teamSharingState.auth.deviceRequests : {};
   teamSharingState.auth.tokens = teamSharingState.auth.tokens && typeof teamSharingState.auth.tokens === 'object' ? teamSharingState.auth.tokens : {};
+  teamSharingState.auth.throttle = teamSharingState.auth.throttle && typeof teamSharingState.auth.throttle === 'object' ? teamSharingState.auth.throttle : {};
   return teamSharingState.auth;
+}
+
+function normalizeIds(values = []) {
+  return [...new Set(asArray(values).map((item) => String(item || '').trim()).filter(Boolean))];
+}
+
+function requestIpHash(req) {
+  const forwarded = String(req?.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
+  const remote = String(req?.socket?.remoteAddress || '').trim();
+  return hashSecret(forwarded || remote || 'unknown').slice(0, 16);
+}
+
+function consumeTeamSharingAuthThrottle(auth = {}, key = '', { limit, windowMs = TEAM_SHARING_AUTH_THROTTLE_WINDOW_MS } = {}) {
+  const cleanKey = String(key || '').trim();
+  if (!cleanKey) return true;
+  auth.throttle = auth.throttle && typeof auth.throttle === 'object' ? auth.throttle : {};
+  const nowMs = Date.now();
+  const cutoff = nowMs - windowMs;
+  const previous = Array.isArray(auth.throttle[cleanKey])
+    ? auth.throttle[cleanKey].filter((item) => Number(item) > cutoff)
+    : [];
+  if (previous.length >= limit) {
+    auth.throttle[cleanKey] = previous;
+    return false;
+  }
+  previous.push(nowMs);
+  auth.throttle[cleanKey] = previous;
+  return true;
+}
+
+function teamSharingSetupTargetFromChannelPath(channelPath = '') {
+  const raw = String(channelPath || '').trim();
+  if (!raw) return null;
+  const parsed = parseChannelImportPath(raw);
+  if (!parsed.ok) {
+    const error = new Error('Invalid MagClaw channel path.');
+    error.status = 400;
+    error.code = parsed.error || 'invalid_channel_path';
+    throw error;
+  }
+  return {
+    kind: 'signed_channel_path',
+    serverId: parsed.serverId,
+    channelId: parsed.channelId,
+    routeKeyHash: hashSecret(parsed.routeKey),
+    pathHash: hashSecret(parsed.raw).slice(0, 24),
+  };
+}
+
+function ensureCloudCollections(state = {}) {
+  state.cloud = state.cloud && typeof state.cloud === 'object' ? state.cloud : {};
+  state.cloud.workspaces = Array.isArray(state.cloud.workspaces) ? state.cloud.workspaces : [];
+  state.cloud.workspaceMembers = Array.isArray(state.cloud.workspaceMembers) ? state.cloud.workspaceMembers : [];
+  state.cloud.users = Array.isArray(state.cloud.users) ? state.cloud.users : [];
+  state.humans = Array.isArray(state.humans) ? state.humans : [];
+  state.channels = Array.isArray(state.channels) ? state.channels : [];
+  return state.cloud;
+}
+
+function workspaceForSetupTarget(state = {}, serverId = '') {
+  const cleanServerId = String(serverId || '').trim();
+  const cloud = ensureCloudCollections(state);
+  const candidates = [
+    ...cloud.workspaces,
+    cloud.workspace,
+  ].filter(Boolean);
+  const workspace = candidates.find((item) => (
+    !item.deletedAt
+    && String(item.id || '').trim() === cleanServerId
+  ));
+  if (workspace) return workspace;
+  const currentWorkspaceId = String(state.connection?.workspaceId || cloud.workspace?.id || '').trim();
+  if (cleanServerId && (cleanServerId === currentWorkspaceId || cleanServerId === 'local')) {
+    return {
+      id: currentWorkspaceId || cleanServerId,
+      slug: cloud.workspace?.slug || currentWorkspaceId || cleanServerId,
+      name: state.connection?.name || cloud.workspace?.name || 'Server',
+    };
+  }
+  return null;
+}
+
+function channelWorkspaceId(channel = {}, state = {}) {
+  return String(
+    channel.workspaceId
+      || state.connection?.workspaceId
+      || state.cloud?.workspace?.id
+      || 'local',
+  ).trim();
+}
+
+function findSetupChannel(state = {}, target = {}) {
+  const cleanChannelId = String(target.channelId || '').trim();
+  const cleanWorkspaceId = String(target.serverId || '').trim();
+  if (!cleanChannelId || !cleanWorkspaceId) return null;
+  return asArray(state.channels).find((channel) => (
+    String(channel?.id || '').trim() === cleanChannelId
+    && channelWorkspaceId(channel, state) === cleanWorkspaceId
+  )) || null;
+}
+
+async function loadSetupChannelIfNeeded({ state, target, loadWorkspaceIntoState }) {
+  let channel = findSetupChannel(state, target);
+  if (!channel && typeof loadWorkspaceIntoState === 'function') {
+    await loadWorkspaceIntoState(state, target.serverId);
+    channel = findSetupChannel(state, target);
+  }
+  return channel;
+}
+
+function setupChannelUrl(req, workspace = {}, channel = {}) {
+  const slug = String(workspace.slug || workspace.id || '').trim();
+  const channelId = String(channel.id || '').trim();
+  if (!slug || !channelId) return '';
+  return `${publicUrlFromRequest(req)}/s/${encodeURIComponent(slug)}/channels/${encodeURIComponent(channelId)}`;
+}
+
+function ensureTeamSharingHumanForUser({ state, user, member = null, workspaceId, makeId, now }) {
+  ensureCloudCollections(state);
+  const timestamp = now();
+  const cleanWorkspaceId = String(workspaceId || '').trim();
+  let human = member?.humanId ? state.humans.find((item) => item.id === member.humanId) : null;
+  if (human && human.id === 'hum_local' && user?.id && human.authUserId !== user.id) human = null;
+  if (!human) {
+    human = state.humans.find((item) => (
+      item
+      && item.status !== 'removed'
+      && (item.authUserId === user.id || item.userId === user.id)
+      && String(item.workspaceId || cleanWorkspaceId) === cleanWorkspaceId
+    )) || null;
+  }
+  if (!human) {
+    const email = String(user.email || '').trim();
+    human = email
+      ? state.humans.find((item) => (
+        item
+        && item.status !== 'removed'
+        && !item.authUserId
+        && String(item.email || '').trim().toLowerCase() === email.toLowerCase()
+        && String(item.workspaceId || cleanWorkspaceId) === cleanWorkspaceId
+      )) || null
+      : null;
+  }
+  if (!human) {
+    human = {
+      id: makeId('hum'),
+      workspaceId: cleanWorkspaceId,
+      name: user.name || user.email?.split('@')[0] || 'Human',
+      email: user.email || '',
+      role: 'member',
+      status: 'online',
+      createdAt: timestamp,
+    };
+    state.humans.push(human);
+  }
+  human.workspaceId = human.workspaceId || cleanWorkspaceId;
+  human.authUserId = user.id;
+  human.userId = human.userId || user.id;
+  human.name = user.name || human.name || user.email || human.id;
+  human.email = user.email || human.email || '';
+  human.avatar = user.avatar || user.avatarUrl || human.avatar || '';
+  human.avatarUrl = user.avatarUrl || user.avatar || human.avatarUrl || '';
+  human.role = human.role || 'member';
+  human.status = 'online';
+  human.lastSeenAt = timestamp;
+  human.presenceUpdatedAt = timestamp;
+  human.updatedAt = timestamp;
+  delete human.removedAt;
+  return human;
+}
+
+function addHumanToSetupChannel(channel = {}, humanId = '', now) {
+  const cleanHumanId = String(humanId || '').trim();
+  if (!cleanHumanId) return false;
+  const previousMembers = normalizeIds(channel.memberIds || []);
+  const previousHumans = normalizeIds(channel.humanIds || []);
+  const nextMembers = normalizeIds([...previousMembers, cleanHumanId]);
+  const nextHumans = normalizeIds([...previousHumans, cleanHumanId]);
+  const changed = nextMembers.length !== previousMembers.length || nextHumans.length !== previousHumans.length;
+  channel.memberIds = nextMembers;
+  channel.humanIds = nextHumans;
+  if (changed) channel.updatedAt = now();
+  return changed;
+}
+
+async function upsertSetupChannelMember({ channel, humanId, workspaceId, req, upsertChannelMember, now }) {
+  if (!humanId?.startsWith?.('hum_') || typeof upsertChannelMember !== 'function') return;
+  await upsertChannelMember({
+    workspaceId,
+    channelId: channel.id,
+    humanId,
+    joinedAt: now(),
+  });
+}
+
+// TODO(team-sharing): tighten this MVP with tenant/domain allowlists, path TTL or one-time setup tokens, and an admin-controlled setup-path policy.
+async function ensureTeamSharingSetupMembership({
+  req,
+  request,
+  user,
+  state,
+  auth,
+  addSystemEvent,
+  loadWorkspaceIntoState,
+  makeId,
+  now,
+  upsertChannelMember,
+}) {
+  if (!request?.setupTarget) return null;
+  if (!user?.id) {
+    const error = new Error('Login is required.');
+    error.status = 401;
+    throw error;
+  }
+  const target = request.setupTarget;
+  const approveKey = `approve:${String(user.id)}:${target.serverId}:${target.channelId}`;
+  if (!consumeTeamSharingAuthThrottle(auth, approveKey, { limit: TEAM_SHARING_AUTH_APPROVE_LIMIT })) {
+    const error = new Error('Too many Team Sharing setup approval attempts.');
+    error.status = 429;
+    throw error;
+  }
+  const workspace = workspaceForSetupTarget(state, target.serverId);
+  if (!workspace) {
+    const error = new Error('Team Sharing setup server was not found.');
+    error.status = 404;
+    throw error;
+  }
+  const channel = await loadSetupChannelIfNeeded({ state, target, loadWorkspaceIntoState });
+  if (!channel) {
+    const error = new Error('Team Sharing setup channel was not found.');
+    error.status = 404;
+    throw error;
+  }
+  if (channel.archived || channel.archivedAt) {
+    const error = new Error('Archived channels cannot be joined.');
+    error.status = 400;
+    throw error;
+  }
+  const expectedKeyHash = hashSecret(channelFeishuRouteKey(channel));
+  if (!target.routeKeyHash || expectedKeyHash !== target.routeKeyHash) {
+    const error = new Error('Team Sharing setup path is invalid or has been rotated.');
+    error.status = 403;
+    throw error;
+  }
+
+  const cloud = ensureCloudCollections(state);
+  const timestamp = now();
+  let member = cloud.workspaceMembers.find((item) => (
+    item.userId === user.id
+    && item.workspaceId === workspace.id
+  )) || null;
+  const alreadyMember = Boolean(member && member.status === 'active');
+  const human = ensureTeamSharingHumanForUser({ state, user, member, workspaceId: workspace.id, makeId, now });
+  let joinedServer = false;
+  if (!member) {
+    member = {
+      id: makeId('wmem'),
+      workspaceId: workspace.id,
+      userId: user.id,
+      humanId: human.id,
+      role: 'member',
+      status: 'active',
+      joinedAt: timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    cloud.workspaceMembers.push(member);
+    joinedServer = true;
+  } else {
+    member.humanId = member.humanId || human.id;
+    member.role = member.role || 'member';
+    if (member.status !== 'active') joinedServer = true;
+    member.status = 'active';
+    member.joinedAt ||= timestamp;
+    member.updatedAt = timestamp;
+  }
+
+  const allChannelResult = ensureWorkspaceAllChannel({
+    state,
+    workspaceId: workspace.id,
+    workspace,
+    humanIds: [human.id],
+    makeId,
+    now,
+    normalizeIds,
+  });
+  if (allChannelResult.changed && allChannelResult.channel) {
+    await upsertSetupChannelMember({ channel: allChannelResult.channel, humanId: human.id, workspaceId: workspace.id, req, upsertChannelMember, now });
+  }
+
+  const wasInChannel = normalizeIds([...(channel.memberIds || []), ...(channel.humanIds || [])]).includes(human.id);
+  const joinedChannel = addHumanToSetupChannel(channel, human.id, now);
+  if (joinedChannel) {
+    await upsertSetupChannelMember({ channel, humanId: human.id, workspaceId: workspace.id, req, upsertChannelMember, now });
+  }
+
+  const onboardingTarget = {
+    joinedServer,
+    joinedChannel,
+    alreadyMember,
+    alreadyInChannel: wasInChannel,
+    serverId: workspace.id,
+    workspaceId: workspace.id,
+    serverSlug: workspace.slug || workspace.id,
+    serverName: workspace.name || workspace.slug || workspace.id,
+    channelId: channel.id,
+    channelName: channel.name || channel.id,
+    channelUrl: setupChannelUrl(req, workspace, channel),
+  };
+  addSystemEvent('team_sharing_setup_auto_joined', 'Team Sharing setup target joined.', {
+    workspaceId: workspace.id,
+    channelId: channel.id,
+    userId: user.id,
+    humanId: human.id,
+    joinedServer,
+    joinedChannel,
+    alreadyMember,
+    alreadyInChannel: wasInChannel,
+    profile: request.profile || 'default',
+    platform: request.client?.platform || '',
+    arch: request.client?.arch || '',
+    hostnameHash: request.client?.hostname ? hashSecret(request.client.hostname).slice(0, 16) : '',
+    requestId: request.userCode || '',
+    pathHash: target.pathHash || '',
+  });
+  return {
+    user,
+    member,
+    human,
+    workspace,
+    channel,
+    onboardingTarget,
+  };
 }
 
 function tokenRecordForRequest(teamSharingState = {}, req) {
@@ -2089,7 +2428,12 @@ function redirectToLoginWithReturnTo(res, url) {
   res.end?.('');
 }
 
-function teamSharingAuthApprovedHtml() {
+function teamSharingAuthApprovedHtml(onboardingTarget = {}) {
+  const channelUrl = String(onboardingTarget?.channelUrl || '').trim();
+  const channelName = String(onboardingTarget?.channelName || '').trim();
+  const channelLink = channelUrl
+    ? `<p class="hint"><a href="${htmlEscape(channelUrl)}">Open ${htmlEscape(channelName || 'the Team Sharing channel')}</a></p>`
+    : '<p class="hint">You can return to the CLI.</p>';
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -2238,7 +2582,7 @@ function teamSharingAuthApprovedHtml() {
       <div class="status">Successful</div>
       <h1 id="team-sharing-auth-title">Team Sharing login successful</h1>
       <p>Your Team Sharing login has been approved.</p>
-      <p class="hint">You can return to the CLI.</p>
+      ${channelLink}
     </section>
   </main>
 </body>
@@ -2250,12 +2594,14 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     addSystemEvent = () => {},
     broadcastState = () => {},
     currentActor = () => null,
+    currentUser = () => null,
     embeddingProbe = null,
     embeddingReady = null,
     getState,
     indexTeamSharingDocuments = null,
     keywordSearch = null,
     keywordSearchReady = null,
+    loadWorkspaceIntoState = null,
     makeId,
     now,
     persistState = async () => {},
@@ -2266,6 +2612,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     sendJson,
     summarizeSession = null,
     teamSharingAuthRequired = null,
+    upsertChannelMember = null,
     validTeamSharingToken = null,
     vectorSearch = null,
     zillizReady = null,
@@ -2284,13 +2631,27 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
     const requestWorkspaceId = String(body.workspaceId || workspaceId || '').trim();
     const machineFingerprint = normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || '');
+    let setupTarget = null;
+    try {
+      setupTarget = teamSharingSetupTargetFromChannelPath(body.channelPath || body.channel_path || '');
+    } catch (error) {
+      sendError(res, error.status || 400, error.message || 'Invalid MagClaw channel path.');
+      return true;
+    }
+    const throttleWorkspaceId = requestWorkspaceId || setupTarget?.serverId || workspaceId || '';
+    const startThrottleKey = `start:${requestIpHash(req)}:${throttleWorkspaceId}:${setupTarget?.channelId || ''}`;
+    if (!consumeTeamSharingAuthThrottle(auth, startThrottleKey, { limit: TEAM_SHARING_AUTH_START_LIMIT })) {
+      sendError(res, 429, 'Too many Team Sharing login attempts. Please wait and try again.');
+      return true;
+    }
     const request = {
       deviceCodeHash: hashSecret(deviceCode),
       userCode,
-      workspaceId: requestWorkspaceId,
+      workspaceId: requestWorkspaceId || setupTarget?.serverId || '',
       profile: body.profile || 'default',
       packageName: body.packageName || 'team-sharing',
       machineFingerprint,
+      setupTarget,
       client: body.client && typeof body.client === 'object' ? {
         hostname: compactText(body.client.hostname || '', 120),
         platform: compactText(body.client.platform || '', 40),
@@ -2307,7 +2668,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       ok: true,
       deviceCode,
       userCode,
-      verificationUri: `/team-sharing/auth/approve?user_code=${encodeURIComponent(userCode)}${requestWorkspaceId ? `&workspaceId=${encodeURIComponent(requestWorkspaceId)}` : ''}`,
+      verificationUri: `/team-sharing/auth/approve?user_code=${encodeURIComponent(userCode)}${request.workspaceId ? `&workspaceId=${encodeURIComponent(request.workspaceId)}` : ''}`,
       expiresAt,
       intervalMs: 2000,
       status: request.status,
@@ -2333,7 +2694,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       return true;
     }
     const requestedFingerprint = normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || '');
-    if (request.machineFingerprint && requestedFingerprint && request.machineFingerprint !== requestedFingerprint) {
+    if (request.machineFingerprint && request.machineFingerprint !== requestedFingerprint) {
       sendError(res, 401, 'Team Sharing login was requested from another machine.');
       return true;
     }
@@ -2364,6 +2725,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       profile: request.profile || 'default',
       user: auth.tokens[tokenHash].user,
       scopes: auth.tokens[tokenHash].scopes,
+      onboardingTarget: request.onboardingTarget || null,
     });
     return true;
   }
@@ -2402,14 +2764,44 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendError(res, 404, 'Team Sharing login request not found.');
       return true;
     }
-    const approvalActor = actor || currentActor({
+    const workspaceReq = {
       ...req,
       headers: {
         ...(req.headers || {}),
         'x-magclaw-workspace-id': request.workspaceId || workspaceId,
       },
-    });
+    };
+    let approvalActor = actor || currentActor(workspaceReq);
+    const approvalUser = currentUser(workspaceReq) || approvalActor?.user || null;
+    if (request.setupTarget && approvalUser) {
+      try {
+        const claimed = await ensureTeamSharingSetupMembership({
+          req: workspaceReq,
+          request,
+          user: approvalUser,
+          state,
+          auth,
+          addSystemEvent,
+          loadWorkspaceIntoState,
+          makeId,
+          now,
+          upsertChannelMember,
+        });
+        if (claimed) {
+          approvalActor = { user: claimed.user, member: claimed.member };
+          request.workspaceId = claimed.workspace.id || request.workspaceId;
+          request.onboardingTarget = claimed.onboardingTarget;
+        }
+      } catch (error) {
+        sendError(res, error.status || 400, error.message || 'Team Sharing setup approval failed.');
+        return true;
+      }
+    }
     if (!approvalActor) {
+      if (approvalUser) {
+        sendError(res, 403, 'Join this MagClaw server before approving Team Sharing login.');
+        return true;
+      }
       redirectToLoginWithReturnTo(res, url);
       return true;
     }
@@ -2418,7 +2810,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     request.approvedAt = now();
     await persistState({ workspaceId: request.workspaceId || workspaceId, reason: 'team_sharing_auth_approve' });
     res.writeHead?.(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    res.end?.(teamSharingAuthApprovedHtml());
+    res.end?.(teamSharingAuthApprovedHtml(request.onboardingTarget || null));
     return true;
   }
 
