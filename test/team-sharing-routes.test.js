@@ -524,7 +524,13 @@ test('team sharing auth approval resolves the actor from the pending request wor
     deps,
   ), true);
   assert.equal(approveRes.statusCode, 200);
-  assert.match(approveRes.body, /Team Sharing login approved/);
+  assert.match(approveRes.headers['content-type'], /text\/html/);
+  assert.match(approveRes.body, /<title>Team Sharing login successful<\/title>/);
+  assert.match(approveRes.body, /<div class="status">Successful<\/div>/);
+  assert.match(approveRes.body, /<h1 id="team-sharing-auth-title">Team Sharing login successful<\/h1>/);
+  assert.match(approveRes.body, /place-items: center/);
+  assert.match(approveRes.body, /\/brand\/magclaw-logo\.png/);
+  assert.doesNotMatch(approveRes.body, /<body>\s*<p>/);
 
   const tokenRes = makeResponse();
   assert.equal(await handleTeamSharingApi(

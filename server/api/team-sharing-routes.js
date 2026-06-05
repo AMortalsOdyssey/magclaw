@@ -2076,6 +2076,162 @@ function redirectToLoginWithReturnTo(res, url) {
   res.end?.('');
 }
 
+function teamSharingAuthApprovedHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Team Sharing login successful</title>
+  <style>
+    :root { --accent: #ff66cc; --accent-strong: #ff5fa2; --ink: #1a1a1a; --cream: #fffaf7; --soft: #fff2f8; --muted: #5f4c5a; }
+    * { box-sizing: border-box; }
+    body {
+      position: relative;
+      min-height: 100vh;
+      margin: 0;
+      overflow: hidden auto;
+      font-family: "Courier New", "IBM Plex Mono", Menlo, monospace;
+      background: var(--cream);
+      color: var(--ink);
+      isolation: isolate;
+    }
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      z-index: 0;
+      pointer-events: none;
+      background: url("/brand/magclaw-logo.png") center / contain no-repeat;
+    }
+    body::before {
+      width: clamp(420px, 76vmax, 1040px);
+      height: clamp(420px, 76vmax, 1040px);
+      left: calc(50% - clamp(320px, 40vmax, 630px));
+      top: calc(50% - clamp(330px, 42vmax, 660px));
+      opacity: .16;
+      filter: blur(clamp(10px, 1.8vw, 26px)) saturate(1.35);
+      transform: rotate(-14deg) skew(-10deg, 3deg) scale(1.15);
+    }
+    body::after {
+      width: clamp(260px, 40vmax, 640px);
+      height: clamp(260px, 40vmax, 640px);
+      right: max(-190px, -9vw);
+      top: clamp(80px, 13vh, 160px);
+      opacity: .1;
+      filter: blur(clamp(5px, .95vw, 13px)) saturate(1.18);
+      transform: rotate(23deg) skew(11deg, -7deg) scaleX(1.32);
+    }
+    header {
+      position: relative;
+      z-index: 1;
+      height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 18px;
+      border-bottom: 2px solid var(--ink);
+      background: rgba(255, 255, 255, .8);
+      font-weight: 900;
+      letter-spacing: 0;
+      backdrop-filter: blur(10px);
+    }
+    header img {
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--ink);
+      border-radius: 6px;
+      background: #1a0020;
+      object-fit: cover;
+    }
+    main {
+      position: relative;
+      z-index: 1;
+      min-height: calc(100vh - 58px);
+      display: grid;
+      place-items: center;
+      padding: 36px 16px;
+    }
+    section {
+      width: min(470px, 100%);
+      display: grid;
+      justify-items: center;
+      gap: 14px;
+      padding: 30px;
+      border: 2px solid var(--ink);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .88);
+      text-align: center;
+      box-shadow: 5px 5px 0 var(--ink), 0 26px 70px rgba(44, 8, 52, .14);
+    }
+    .success-mark {
+      position: relative;
+      width: 64px;
+      height: 64px;
+      border: 2px solid var(--ink);
+      border-radius: 8px;
+      background: var(--accent);
+      box-shadow: 3px 3px 0 var(--ink);
+    }
+    .success-mark::after {
+      content: "";
+      position: absolute;
+      left: 22px;
+      top: 15px;
+      width: 15px;
+      height: 28px;
+      border-right: 5px solid var(--ink);
+      border-bottom: 5px solid var(--ink);
+      transform: rotate(42deg);
+    }
+    .status {
+      margin: 2px 0 0;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      max-width: 360px;
+      font-size: 24px;
+      line-height: 1.18;
+      text-align: center;
+      text-wrap: balance;
+    }
+    p {
+      margin: 0;
+      max-width: 360px;
+      color: var(--muted);
+      line-height: 1.5;
+      text-align: center;
+    }
+    .hint {
+      margin-top: 6px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(26, 26, 26, .16);
+      color: #3f303a;
+      font-size: 13px;
+      font-weight: 900;
+    }
+  </style>
+</head>
+<body>
+  <header><img src="/brand/magclaw-logo.png" alt="" />MAGCLAW</header>
+  <main>
+    <section aria-labelledby="team-sharing-auth-title">
+      <div class="success-mark" aria-hidden="true"></div>
+      <div class="status">Successful</div>
+      <h1 id="team-sharing-auth-title">Team Sharing login successful</h1>
+      <p>Your Team Sharing login has been approved.</p>
+      <p class="hint">You can return to the CLI.</p>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
 export async function handleTeamSharingApi(req, res, url, deps) {
   const {
     addSystemEvent = () => {},
@@ -2249,7 +2405,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     request.approvedAt = now();
     await persistState({ workspaceId: request.workspaceId || workspaceId, reason: 'team_sharing_auth_approve' });
     res.writeHead?.(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    res.end?.('<!doctype html><meta charset="utf-8"><title>MagClaw Team Sharing</title><p>Team Sharing login approved. You can return to the CLI.</p>');
+    res.end?.(teamSharingAuthApprovedHtml());
     return true;
   }
 
