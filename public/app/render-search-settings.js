@@ -2375,6 +2375,11 @@ function renderServerSettingsTab() {
   const joinLinks = appState.cloud?.joinLinks || [];
   const agents = appState.agents || [];
   const canManage = cloudCan('manage_cloud_connection');
+  const teamSharingGuideChannel = (appState.channels || []).find((channel) => !channel.archived && (channel.defaultChannel || channel.name === 'all'))
+    || (appState.channels || []).find((channel) => !channel.archived)
+    || null;
+  const teamSharingGuideChannelId = teamSharingGuideChannel?.id || selectedSpaceId || 'chan_all';
+  const teamSharingGuideChannelName = teamSharingGuideChannel?.name ? `#${teamSharingGuideChannel.name}` : '#all';
   return `
     <section class="cloud-layout server-settings-layout">
       <div class="pixel-panel cloud-card wide">
@@ -2470,6 +2475,34 @@ function renderServerSettingsTab() {
         </form>
       </div>
 
+      <div class="pixel-panel cloud-card wide team-sharing-guide-card" data-team-sharing-setup-guide data-channel-id="${escapeHtml(teamSharingGuideChannelId)}">
+        <div class="panel-title"><span>Team Sharing Setup & Guide</span><span>${escapeHtml(teamSharingGuideChannelName)}</span></div>
+        <div class="team-sharing-guide-grid">
+          <div class="team-sharing-guide-command">
+            <strong>team-sharing setup</strong>
+            <code data-slot="team-sharing-setup-command">npx @magclaw/team-sharing@latest setup --server-url ${escapeHtml(window.location.origin || 'https://magclaw.multiego.me')} --channel &lt;MagClaw Channel path&gt;</code>
+            <button class="secondary-btn" type="button" data-action="copy-team-sharing-setup-command" data-id="${escapeHtml(teamSharingGuideChannelId)}">Copy setup command</button>
+          </div>
+          <div class="team-sharing-guide-sections">
+            <section>
+              <strong>检索与召回</strong>
+              <p>默认 hybrid 检索同时使用 keyword/BM25 和 semantic/vector recall；用 <code>context</code> 回到原始会话。</p>
+            </section>
+            <section>
+              <strong>总结与分享</strong>
+              <p>让 Codex 使用 <code>magclaw-team-sharing</code> 总结会话，再生成 MagClaw 分享链接。</p>
+            </section>
+            <section>
+              <strong>Hooks 机制</strong>
+              <p>Codex / Claude Code Hooks 会自动同步清洗后的用户正文、最终回复、计划和交互选择。</p>
+            </section>
+          </div>
+        </div>
+        <div class="team-sharing-feedback-markdown markdown-preview" data-slot="team-sharing-feedback-markdown">
+          <p>Loading Team Sharing guide...</p>
+        </div>
+      </div>
+
       ${renderFanoutApiConfigCard()}
 
       <details class="pixel-panel cloud-card danger-card server-danger-accordion" open>
@@ -2485,6 +2518,83 @@ function renderServerSettingsTab() {
       </details>
     </section>
   `;
+}
+
+const teamSharingSetupGuideCache = new Map();
+const teamSharingSetupGuideInFlight = new Map();
+
+function teamSharingFeedbackToMarkdown(feedback = {}) {
+  const lines = [
+    `# ${feedback.title || 'MagClaw Team Sharing'}`,
+    '',
+    `**状态**: ${feedback.status || 'unknown'}`,
+    '',
+    feedback.summary || '',
+    '',
+  ];
+  for (const section of (Array.isArray(feedback.sections) ? feedback.sections : [])) {
+    lines.push(`## ${section.title || ''}`, '');
+    for (const item of (Array.isArray(section.items) ? section.items : [])) lines.push(`- ${item}`);
+    lines.push('');
+  }
+  if (Array.isArray(feedback.nextSteps) && feedback.nextSteps.length) {
+    lines.push('## 下一步', '');
+    for (const item of feedback.nextSteps) lines.push(`- ${item}`);
+    lines.push('');
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function applyTeamSharingSetupGuide(result = {}, guideNode = document.querySelector('[data-team-sharing-setup-guide]')) {
+  if (!guideNode) return;
+  const commandNode = guideNode.querySelector('[data-slot="team-sharing-setup-command"]');
+  const markdownNode = guideNode.querySelector('[data-slot="team-sharing-feedback-markdown"]');
+  if (commandNode && result.setupCommand) commandNode.textContent = result.setupCommand;
+  if (markdownNode && result.onboardingFeedback) {
+    const markdown = teamSharingFeedbackToMarkdown(result.onboardingFeedback);
+    markdownNode.innerHTML = typeof renderMarkdown === 'function'
+      ? renderMarkdown(markdown)
+      : `<pre>${escapeHtml(markdown)}</pre>`;
+  }
+  guideNode.classList.remove('loading');
+  guideNode.classList.toggle('ready', Boolean(result.setupCommand || result.onboardingFeedback));
+}
+
+function teamSharingSetupGuideRequestKey(channelId = '') {
+  const serverSlug = typeof currentServerSlug === 'function' ? currentServerSlug() : '';
+  return `${serverSlug || 'default'}:${channelId}`;
+}
+
+async function ensureTeamSharingSetupGuide() {
+  const guideNode = document.querySelector('[data-team-sharing-setup-guide]');
+  if (!guideNode) return;
+  const channelId = guideNode.dataset.channelId || selectedSpaceId || '';
+  if (!channelId) return;
+  const requestKey = teamSharingSetupGuideRequestKey(channelId);
+  if (teamSharingSetupGuideCache.has(requestKey)) {
+    applyTeamSharingSetupGuide(teamSharingSetupGuideCache.get(requestKey), guideNode);
+    return;
+  }
+  if (teamSharingSetupGuideInFlight.has(requestKey)) return;
+  guideNode.classList.add('loading');
+  const request = api(`/api/channels/${encodeURIComponent(channelId)}/feishu-import-path`, {
+    method: 'POST',
+    body: '{}',
+  }).then((result) => {
+    teamSharingSetupGuideCache.set(requestKey, result);
+    const currentNode = [...document.querySelectorAll('[data-team-sharing-setup-guide]')]
+      .find((node) => node.dataset.channelId === channelId);
+    applyTeamSharingSetupGuide(result, currentNode || guideNode);
+    return result;
+  }).catch((error) => {
+    const markdownNode = guideNode.querySelector('[data-slot="team-sharing-feedback-markdown"]');
+    if (markdownNode) markdownNode.innerHTML = `<p>${escapeHtml(error.message || 'Failed to load Team Sharing guide.')}</p>`;
+    console.warn('Failed to load Team Sharing setup guide:', error);
+  }).finally(() => {
+    teamSharingSetupGuideInFlight.delete(requestKey);
+    guideNode.classList.remove('loading');
+  });
+  teamSharingSetupGuideInFlight.set(requestKey, request);
 }
 
 function consoleInvitationRows() {

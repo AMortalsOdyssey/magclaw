@@ -188,6 +188,8 @@ export function createOnboardingManager(deps) {
       languageInstruction,
       'Generate the visible greeting yourself from your onboarding role, Agent profile, MEMORY.md/notes, and recent server context. Do not copy this system task text.',
       'Goals (soft guidance, do not force): 1) Help them understand what MagClaw is and what this server is for. 2) Introduce relevant humans/channels/agents for their current work, not a full catalog dump. 3) Suggest where they should start collaborating right away.',
+      'If useful, briefly mention the faster-start capabilities: 检索与召回 via Team Sharing search/context, 总结与分享 via Codex using the magclaw-team-sharing Skill and MagClaw share links, and Hooks automatically syncing cleaned user text, final replies, plans, and interaction choices.',
+      'Keep the MagClaw feature overview near the end and compact: Computers, Agents, Channels/Threads/Tasks, Workspace/Memory, and Team Sharing workspace.',
       'Do NOT ask them to set up the server or create agents/channels. If they are already working on a concrete task, keep onboarding lightweight and adapt to their flow.',
     ].join(' ');
     const message = internalOnboardingTaskMessage('channel', channel.id, body, {

@@ -90,6 +90,26 @@ test('collab route group creates channels with synced membership fields and an a
   assert.equal(deps.memoryUpdates[0].trigger, 'channel_membership_changed');
 });
 
+test('collab route returns Team Sharing onboarding feedback with channel setup command', async () => {
+  const deps = routeDeps();
+  const res = makeResponse();
+
+  assert.equal(await handleCollabApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/channels/chan_all/feishu-import-path'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.match(res.data.setupCommand, /npx @magclaw\/team-sharing@latest setup/);
+  assert.equal(res.data.onboardingFeedback.status, 'ready');
+  assert.ok(res.data.onboardingFeedback.sections.some((section) => section.title === '检索与召回'));
+  assert.ok(res.data.onboardingFeedback.sections.some((section) => section.title === '总结与分享'));
+  assert.ok(res.data.onboardingFeedback.sections.some((section) => section.title === 'Hooks 机制'));
+  assert.doesNotMatch(JSON.stringify(res.data.onboardingFeedback), /routeKey|route-key|token|Bearer/i);
+});
+
 test('collab route resolves signed channel paths only for member servers', async () => {
   const createdAt = '2026-05-02T00:00:00.000Z';
   const deps = routeDeps({

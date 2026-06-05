@@ -12,6 +12,7 @@ import {
   installTeamSharingHookConfig,
   parseTeamSharingTranscript,
 } from './team-sharing-hooks.js';
+import { buildTeamSharingOnboardingFeedback } from './onboarding-feedback.js';
 
 export const TEAM_SHARING_PACKAGE_NAME = '@magclaw/team-sharing';
 export const TEAM_SHARING_INTEGRATION = 'team-sharing';
@@ -1960,6 +1961,11 @@ export async function installTeamSharingHooks(flags = {}, env = process.env) {
     });
   }
   output.ok = Object.values(output).every((item) => item === true || item?.ok !== false);
+  output.feedback = buildTeamSharingOnboardingFeedback({
+    operation: 'hooks',
+    ok: output.ok,
+    hooks: output,
+  });
   return output;
 }
 
@@ -1994,6 +2000,11 @@ export async function statusTeamSharingHooks(flags = {}, env = process.env) {
     };
   }
   output.ok = Object.values(output).every((item) => item === true || typeof item !== 'object' || item.ok !== false);
+  output.feedback = buildTeamSharingOnboardingFeedback({
+    operation: 'hooks',
+    ok: output.ok,
+    hooks: output,
+  });
   return output;
 }
 
@@ -2051,6 +2062,11 @@ export async function installTeamSharingSkill(flags = {}, env = process.env) {
     output.installed.push({ target: runtime, path: await writeTeamSharingSkill(skillRootForTarget(runtime, flags, env, installTarget), env) });
   }
   output.ok = output.installed.length > 0;
+  output.feedback = buildTeamSharingOnboardingFeedback({
+    operation: 'skills',
+    ok: output.ok,
+    skill: output,
+  });
   return output;
 }
 
@@ -2068,6 +2084,11 @@ export async function statusTeamSharingSkill(flags = {}, env = process.env) {
     projectDir: installTarget.projectDir || '',
     expectedTargets: targets,
     installed,
+    feedback: buildTeamSharingOnboardingFeedback({
+      operation: 'skills',
+      ok: installed.length === targets.length,
+      skill: { ok: installed.length === targets.length, installed },
+    }),
   };
 }
 
@@ -2123,7 +2144,7 @@ export async function setupTeamSharing(flags = {}, env = process.env) {
   const finalScope = skill.scope === 'project' || hooks.scope === 'project'
     ? 'project'
     : installTarget.scope;
-  return {
+  const result = {
     ok: Boolean(project.ok && shim.ok && hooks.ok && skill.ok),
     scope: finalScope,
     projectDir: finalScope === 'project' ? finalProjectDir : '',
@@ -2132,6 +2153,15 @@ export async function setupTeamSharing(flags = {}, env = process.env) {
     hooks,
     skill,
   };
+  result.feedback = buildTeamSharingOnboardingFeedback({
+    operation: 'setup',
+    ok: result.ok,
+    project,
+    shim,
+    hooks,
+    skill,
+  });
+  return result;
 }
 
 function semverParts(value = '') {

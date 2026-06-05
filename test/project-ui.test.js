@@ -109,7 +109,8 @@ test('channel header exposes copy MagClaw Channel path without a full render', a
   const app = await readAppSource();
   const source = app.slice(app.indexOf('function renderSpace()'), app.indexOf('function renderDmHeader()'));
   const externalImportSource = app.slice(app.indexOf('function renderExternalImportMessage'), app.indexOf('function replyThreadIcon'));
-  const clickSource = app.slice(app.indexOf("if (action === 'copy-feishu-import-path')"), app.indexOf("if (action === 'open-message-context-menu')"));
+  const clickStart = app.indexOf("if (action === 'copy-feishu-import-path'");
+  const clickSource = app.slice(clickStart, app.indexOf("if (action === 'open-message-context-menu')", clickStart));
 
   assert.match(source, /data-action="copy-feishu-import-path"/);
   assert.match(source, /一键复制 MagClaw Channel 路径/);
@@ -137,7 +138,7 @@ test('channel header exposes copy MagClaw Channel path without a full render', a
   assert.match(app, /metadata\.feishu\.contextRecords/);
   assert.match(clickSource, /\/api\/channels\/\$\{encodeURIComponent\(channelId\)\}\/feishu-import-path/);
   assert.match(clickSource, /tryCopyTextToClipboard\(result\.path \|\| result\.copyText/);
-  assert.match(clickSource, /toast\(copied \? 'MagClaw Channel path copied' : 'Copy failed'\)/);
+  assert.match(clickSource, /MagClaw Channel path copied/);
   assert.doesNotMatch(clickSource, /render\(\)/);
 });
 
@@ -300,6 +301,42 @@ test('computer connect modal creates a fresh command before rendering stale stat
   assert.match(app, /function computerPairingModalRenderSignature/);
   assert.match(stateUpdateSource, /computerModalBefore !== computerPairingModalRenderSignature\(appState\)/);
   assert.doesNotMatch(stateUpdateSource, /if \(modal === 'computer'\) render\(\);/);
+});
+
+test('settings page exposes Team Sharing setup guide with setup command copy', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const settingsStart = app.indexOf('function renderServerSettingsTab()');
+  const settingsEnd = app.indexOf('function renderFanoutApiConfigCard()', settingsStart);
+  const settingsSource = app.slice(settingsStart, settingsEnd);
+  const clickStart = app.indexOf("if (action === 'copy-feishu-import-path'");
+  const clickSource = app.slice(clickStart, app.indexOf("if (action === 'open-external-import-context')", clickStart));
+  const guideStart = app.indexOf('function teamSharingFeedbackToMarkdown');
+  const guideSource = app.slice(guideStart, app.indexOf('function consoleInvitationRows()', guideStart));
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
+
+  assert.match(settingsSource, /Team Sharing Setup & Guide/);
+  assert.match(settingsSource, /Onboarding Behavior/);
+  assert.match(settingsSource, /team-sharing-guide-card/);
+  assert.match(settingsSource, /data-team-sharing-setup-guide/);
+  assert.match(settingsSource, /data-slot="team-sharing-setup-command"/);
+  assert.match(settingsSource, /data-slot="team-sharing-feedback-markdown"/);
+  assert.match(settingsSource, /team-sharing setup/);
+  assert.match(settingsSource, /检索与召回/);
+  assert.match(settingsSource, /总结与分享/);
+  assert.match(settingsSource, /Hooks 机制/);
+  assert.match(settingsSource, /data-action="copy-team-sharing-setup-command"/);
+  assert.match(guideSource, /function teamSharingFeedbackToMarkdown\(feedback = \{\}\)/);
+  assert.match(guideSource, /function ensureTeamSharingSetupGuide\(\)/);
+  assert.match(guideSource, /\/api\/channels\/\$\{encodeURIComponent\(channelId\)\}\/feishu-import-path/);
+  assert.match(guideSource, /renderMarkdown\(markdown\)/);
+  assert.match(renderSource, /ensureTeamSharingSetupGuide\(\)/);
+  assert.match(clickSource, /result\.setupCommand/);
+  assert.match(clickSource, /result\.onboardingFeedback/);
+  assert.match(clickSource, /copyTeamSharingSetupCommand/);
+  assert.match(clickSource, /applyTeamSharingSetupGuide\(result\)/);
+  assert.match(clickSource, /tryCopyTextToClipboard\(result\.path \|\| result\.copyText/);
+  assert.match(styles, /\.team-sharing-feedback-markdown/);
 });
 
 test('computer name editor survives realtime rerenders', async () => {

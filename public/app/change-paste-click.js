@@ -527,14 +527,23 @@ document.addEventListener('click', async (event) => {
   const clickLoadingToken = beginClickLoading(action, target, localOnlyActions);
   let skipFinalRefresh = false;
   try {
-    if (action === 'copy-feishu-import-path') {
+    if (action === 'copy-feishu-import-path' || action === 'copy-team-sharing-setup-command') {
+      const copyTeamSharingSetupCommand = action === 'copy-team-sharing-setup-command';
       const channelId = target.dataset.id || selectedSpaceId;
       const result = await api(`/api/channels/${encodeURIComponent(channelId)}/feishu-import-path`, {
         method: 'POST',
         body: '{}',
       });
-      const copied = await tryCopyTextToClipboard(result.path || result.copyText || '');
-      toast(copied ? 'MagClaw Channel path copied' : 'Copy failed');
+      const copied = copyTeamSharingSetupCommand
+        ? await tryCopyTextToClipboard(result.setupCommand || '')
+        : await tryCopyTextToClipboard(result.path || result.copyText || '');
+      if (copyTeamSharingSetupCommand && typeof applyTeamSharingSetupGuide === 'function') {
+        applyTeamSharingSetupGuide(result);
+      }
+      const guideTitle = result.onboardingFeedback?.title || 'Team Sharing guide';
+      toast(copied
+        ? (copyTeamSharingSetupCommand ? `${guideTitle} command copied` : 'MagClaw Channel path copied')
+        : 'Copy failed');
       return;
     }
     if (action === 'open-external-import-context') {

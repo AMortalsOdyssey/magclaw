@@ -1,6 +1,6 @@
 ---
 name: magclaw-team-sharing
-description: Search, read, and publicly share MagClaw Team Sharing artifacts from Codex and Claude Code sessions.
+description: Search, read, and share MagClaw Team Sharing artifacts from Codex and Claude Code sessions.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} -->
@@ -24,7 +24,13 @@ Use this skill when the user asks what teammates discussed, wants to align with 
 4. For deep follow-up, run `team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 21 --order asc`.
 5. Cite session titles, semantic source links, and the original-session context link from the command output.
 6. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `team-sharing share-artifact --file <path> --title "<title>" --type html`.
-7. Return the public URL from the command output. The shared page is public by design and includes the creator and creation time in the footer.
+7. Return the MagClaw share URL from the command output. 访问遵循当前 MagClaw 服务的登录和权限策略, and the share page includes the creator and creation time in the footer.
+
+## User-Facing Examples
+
+- "检索昨天关于 rerank 的讨论，给我原始会话链接。"
+- "总结这个 Codex 会话里解决了什么问题，并生成一个 MagClaw 分享链接。"
+- "解释 Team Sharing Hooks 会同步什么、不会同步什么。"
 
 ## Answer Style For Search Results
 
@@ -47,7 +53,7 @@ Use this skill when the user asks what teammates discussed, wants to align with 
 
 ## Default Share HTML Style
 
-Use this style whenever the user asks to share something with the team, use MagClaw sharing, or create a public share link, unless the user explicitly asks for another visual direction.
+Use this style whenever the user asks to share something with the team, use MagClaw sharing, or create a MagClaw share link, unless the user explicitly asks for another visual direction.
 
 - Format: produce one self-contained `<!doctype html>` file with inline CSS, `lang="zh-CN"` by default, `meta viewport`, smooth anchor scrolling, and no external assets unless they are already public and intentional.
 - Hero: start with a deep blue-black technical hero using a subtle cyan dot-grid or radial pattern over a dark linear background. Include a compact eyebrow label, an emerald pulse/status mark, a clear H1, a short subtitle, and 3-4 metric tiles for the most important facts.
@@ -69,4 +75,3 @@ Use this style whenever the user asks to share something with the team, use MagC
 - Before sharing, remove tokens, private URLs, personal paths, hidden reasoning, and sensitive customer data from the artifact.
 - Prefer concise synthesis first, then pull original context only when needed.
 - If search returns low confidence or too few results, ask a narrower question or date range.
-

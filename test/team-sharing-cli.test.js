@@ -9,6 +9,11 @@ import {
   parseCli,
 } from '../team-sharing/src/cli.js';
 import {
+  buildTeamSharingOnboardingFeedback,
+  renderTeamSharingFeedbackMarkdown,
+  renderTeamSharingFeedbackText,
+} from '../team-sharing/src/onboarding-feedback.js';
+import {
   checkTeamSharingUpgrade,
   installTeamSharingHooks,
   installTeamSharingSkill,
@@ -33,6 +38,48 @@ import {
   teamSharingPaths,
   whoamiTeamSharingProfile,
 } from '../team-sharing/src/team-sharing.js';
+
+test('team sharing onboarding feedback renders structured guidance without secrets or local paths', () => {
+  const feedback = buildTeamSharingOnboardingFeedback({
+    operation: 'setup',
+    ok: true,
+    project: {
+      ok: true,
+      configPath: '/Users/secret/project/.magclaw/team-sharing.yaml',
+      projectKey: 'magclaw',
+      workspaceId: 'ws_team',
+      channelPath: 'mc://magclaw/server/ws_team/channel/chan_team?key=route-secret',
+      loggedIn: true,
+    },
+    hooks: {
+      codex: { ok: true, installed: ['Stop', 'PreCompact', 'SessionStart'] },
+      claude: { ok: true, installed: ['Stop', 'SessionEnd', 'PreCompact', 'SessionStart'] },
+    },
+    skill: {
+      ok: true,
+      installed: [{ target: 'codex', path: '/Users/secret/project/.agents/skills/magclaw-team-sharing/SKILL.md' }],
+    },
+    shim: { ok: true, installed: true, path: '/Users/secret/bin/team-sharing' },
+  });
+  const markdown = renderTeamSharingFeedbackMarkdown(feedback);
+  const colored = renderTeamSharingFeedbackText(feedback, { color: true });
+
+  assert.equal(feedback.status, 'ready');
+  assert.ok(feedback.sections.some((section) => section.title === '安装结果'));
+  assert.ok(feedback.sections.some((section) => section.title === '立即可试'));
+  assert.ok(feedback.sections.some((section) => section.title === '检索与召回'));
+  assert.ok(feedback.sections.some((section) => section.title === '总结与分享'));
+  assert.ok(feedback.sections.some((section) => section.title === 'Hooks 机制'));
+  assert.match(markdown, /team-sharing doctor/);
+  assert.match(markdown, /keyword\/BM25/);
+  assert.match(markdown, /semantic\/vector recall/);
+  assert.match(markdown, /MagClaw 分享链接/);
+  assert.match(markdown, /访问遵循当前 MagClaw 服务的登录和权限策略/);
+  assert.match(markdown, /Codex: `Stop`, `PreCompact`, `SessionStart`/);
+  assert.match(markdown, /Claude Code: `Stop`, `SessionEnd`, `PreCompact`, `SessionStart`/);
+  assert.match(colored, /\u001b\[[0-9;]+m/);
+  assert.doesNotMatch(markdown, /public by design|route-secret|\/Users\/secret|token|Bearer/i);
+});
 
 test('team sharing cli init writes project config without storing token in repository', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-project-'));
@@ -66,6 +113,26 @@ test('team sharing cli init writes project config without storing token in repos
   assert.match(yaml, /id: chan_team/);
   assert.match(yaml, /project_key: magclaw/);
   assert.doesNotMatch(yaml, /token|must-not-enter-project/i);
+});
+
+test('team sharing cli parses feedback output format flags', () => {
+  const markdown = parseCli([
+    'node',
+    'team-sharing',
+    'setup',
+    '--format',
+    'markdown',
+  ]);
+  const json = parseCli([
+    'node',
+    'team-sharing',
+    'doctor',
+    '--json',
+  ]);
+
+  assert.equal(markdown.flags.format, 'markdown');
+  assert.equal(json.flags.format, 'json');
+  assert.equal(json.flags.json, true);
 });
 
 test('team sharing cli init treats signed MagClaw channel paths as channelPath, not channelId', async () => {
@@ -999,6 +1066,9 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   assert.equal(result.ok, true);
   assert.equal(result.scope, 'project');
   assert.equal(result.projectDir, cwd);
+  assert.equal(result.feedback.status, 'ready');
+  assert.ok(result.feedback.sections.some((section) => section.title === '检索与召回'));
+  assert.ok(result.feedback.commands.some((command) => command.command.includes('team-sharing search')));
   assert.equal(result.shim.installed, true);
   assert.match(shim, /@magclaw\/team-sharing@latest/);
   assert.match(cmdShim, /team-sharing %\*/);
@@ -1365,6 +1435,8 @@ test('team sharing cli installs a local skill without writing token into skill f
 
   assert.equal(result.ok, true);
   assert.equal(result.scope, 'project');
+  assert.equal(result.feedback.status, 'ready');
+  assert.match(result.feedback.sections.map((section) => section.title).join(','), /总结与分享/);
   assert.match(skill, /team-sharing search/);
   assert.match(skill, /team-sharing context/);
   assert.match(skill, /team-sharing share-artifact/);
@@ -1390,6 +1462,8 @@ test('team sharing cli installs a local skill without writing token into skill f
   assert.match(skill, /#team-sharing-workspace-file:topics%2Frerank-feedback\.md/);
   assert.match(skill, /Never reuse the original-session `contextUrl`/);
   assert.match(skill, /standalone `\/team-sharing\/context\/<sessionId>` page/);
+  assert.match(skill, /访问遵循当前 MagClaw 服务的登录和权限策略/);
+  assert.doesNotMatch(skill, /public by design|publicly share/);
   assert.match(skill, /Default Share HTML Style/);
   assert.match(skill, /deep blue-black technical hero/);
   assert.match(skill, /sticky table of contents/);

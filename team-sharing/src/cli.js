@@ -2,6 +2,11 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  buildTeamSharingOnboardingFeedback,
+  renderTeamSharingFeedbackMarkdown,
+  renderTeamSharingFeedbackText,
+} from './onboarding-feedback.js';
+import {
   checkTeamSharingUpgrade,
   disableTeamSharingSkill,
   initTeamSharingProject,
@@ -82,6 +87,7 @@ export function parseCli(argv = process.argv, env = process.env) {
     }
   }
   flags._ = positionals;
+  if (flags.json) flags.format = 'json';
   flags.profileExplicit = Boolean(flags.profile);
   flags.profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   return { command: 'team-sharing', flags };
@@ -89,6 +95,27 @@ export function parseCli(argv = process.argv, env = process.env) {
 
 function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function outputFormat(flags = {}, stdout = process.stdout) {
+  const format = String(flags.format || 'auto').trim().toLowerCase();
+  if (['json', 'text', 'markdown'].includes(format)) return format;
+  if (flags.json) return 'json';
+  return stdout?.isTTY ? 'text' : 'json';
+}
+
+function printResult(value, flags = {}, env = process.env) {
+  const format = outputFormat(flags);
+  if (format === 'json' || !value?.feedback) {
+    printJson(value);
+    return;
+  }
+  if (format === 'markdown') {
+    process.stdout.write(`${renderTeamSharingFeedbackMarkdown(value.feedback)}\n`);
+    return;
+  }
+  const color = env.NO_COLOR ? false : Boolean(process.stdout?.isTTY || env.FORCE_COLOR);
+  process.stdout.write(`${renderTeamSharingFeedbackText(value.feedback, { color })}\n`);
 }
 
 function stringFlagValue(value) {
@@ -151,16 +178,16 @@ async function runFeatureInstallCommand(kind, flags = {}, env = process.env) {
     return;
   }
   if (kind === 'skills') {
-    if (subcommand === 'install' || subcommand === 'enable') printJson(await installTeamSharingSkill(flags, env));
+    if (subcommand === 'install' || subcommand === 'enable') printResult(await installTeamSharingSkill(flags, env), flags, env);
     else if (subcommand === 'remove') printJson(await removeTeamSharingSkill(flags, env));
     else if (subcommand === 'disable') printJson(await disableTeamSharingSkill(flags, env));
-    else if (subcommand === 'status') printJson(await statusTeamSharingSkill(flags, env));
+    else if (subcommand === 'status') printResult(await statusTeamSharingSkill(flags, env), flags, env);
     else throw new Error(`Unknown skills command: ${subcommand}`);
     return;
   }
-  if (subcommand === 'install' || subcommand === 'enable') printJson(await installTeamSharingHooks(flags, env));
+  if (subcommand === 'install' || subcommand === 'enable') printResult(await installTeamSharingHooks(flags, env), flags, env);
   else if (subcommand === 'remove' || subcommand === 'disable') printJson(await removeTeamSharingHooks(flags, env));
-  else if (subcommand === 'status') printJson(await statusTeamSharingHooks(flags, env));
+  else if (subcommand === 'status') printResult(await statusTeamSharingHooks(flags, env), flags, env);
   else throw new Error(`Unknown hooks command: ${subcommand}`);
 }
 
@@ -174,7 +201,7 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
   switch (subcommand) {
     case 'setup':
     case 'install':
-      printJson(await setupTeamSharing(flags, env));
+      printResult(await setupTeamSharing(flags, env), flags, env);
       break;
     case 'login':
       printJson(await loginTeamSharingProfile(flags, env));
@@ -209,12 +236,20 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
         const project = await statusTeamSharingProject(flags, env);
         const hooks = await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env);
         const skill = await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env);
-        printJson({
-          ok: Boolean(project.ok && hooks.ok && skill.ok),
+        const ok = Boolean(project.ok && hooks.ok && skill.ok);
+        printResult({
+          ok,
           project,
           hooks,
           skill,
-        });
+          feedback: buildTeamSharingOnboardingFeedback({
+            operation: 'status',
+            ok,
+            project,
+            hooks,
+            skill,
+          }),
+        }, flags, env);
       }
       break;
     case 'doctor':
@@ -223,13 +258,21 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
         const hooks = await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env);
         const skill = await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env);
         const upgrade = await checkTeamSharingUpgrade({ force: Boolean(flags.force) }, env).catch((error) => ({ ok: false, error: error.message }));
-        printJson({
-          ok: Boolean(project.ok && hooks.ok && skill.ok && upgrade.ok !== false),
+        const ok = Boolean(project.ok && hooks.ok && skill.ok && upgrade.ok !== false);
+        printResult({
+          ok,
           project,
           hooks,
           skill,
           upgrade,
-        });
+          feedback: buildTeamSharingOnboardingFeedback({
+            operation: 'doctor',
+            ok,
+            project,
+            hooks,
+            skill,
+          }),
+        }, flags, env);
       }
       break;
     case 'upgrade':

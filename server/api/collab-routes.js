@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { buildTeamSharingOnboardingFeedback } from '../../team-sharing/src/onboarding-feedback.js';
 import { ensureWorkspaceAllChannel, isWorkspaceAllChannel } from '../workspace-defaults.js';
 import {
   buildChannelImportPath,
@@ -423,6 +424,7 @@ export async function handleCollabApi(req, res, url, deps) {
     }
     const serverName = serverDisplayName();
     const channelName = channel.name || channel.id;
+    const setupCommand = teamSharingSetupCommand(importPath);
     sendJson(res, 200, {
       serverId: workspaceId,
       serverName,
@@ -431,12 +433,24 @@ export async function handleCollabApi(req, res, url, deps) {
       channelName,
       path: importPath,
       copyText: importPath,
-      setupCommand: teamSharingSetupCommand(importPath),
+      setupCommand,
       setupCommands: {
-        macosLinux: teamSharingSetupCommand(importPath),
-        powershell: teamSharingSetupCommand(importPath),
-        cmd: teamSharingSetupCommand(importPath),
+        macosLinux: setupCommand,
+        powershell: setupCommand,
+        cmd: setupCommand,
       },
+      onboardingFeedback: buildTeamSharingOnboardingFeedback({
+        operation: 'channel_setup',
+        ok: true,
+        project: {
+          ok: true,
+          workspaceId,
+          channelId: channel.id,
+          projectKey: 'magclaw',
+          loggedIn: false,
+        },
+        setupCommand,
+      }),
     });
     return true;
   }

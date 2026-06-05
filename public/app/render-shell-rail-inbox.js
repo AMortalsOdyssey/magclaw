@@ -182,6 +182,7 @@ function render() {
       if (searchInputFocusRequested && activeView === 'search') focusSearchInputEnd();
       if (typeof maybeAutosizeAllComposerTextareas === 'function') maybeAutosizeAllComposerTextareas();
       if (typeof requestAttachmentPreviewOutlineSync === 'function') requestAttachmentPreviewOutlineSync();
+      if (typeof ensureTeamSharingSetupGuide === 'function') ensureTeamSharingSetupGuide();
       if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
         workspaceActivityScrollToBottom = false;
         scrollWorkspaceActivityToBottom('auto');
@@ -232,6 +233,7 @@ function render() {
     if (searchInputFocusRequested && activeView === 'search') focusSearchInputEnd();
     if (typeof maybeAutosizeAllComposerTextareas === 'function') maybeAutosizeAllComposerTextareas();
     if (typeof requestAttachmentPreviewOutlineSync === 'function') requestAttachmentPreviewOutlineSync();
+    if (typeof ensureTeamSharingSetupGuide === 'function') ensureTeamSharingSetupGuide();
     if (workspaceActivityDrawerOpen && workspaceActivityScrollToBottom) {
       workspaceActivityScrollToBottom = false;
       scrollWorkspaceActivityToBottom('auto');

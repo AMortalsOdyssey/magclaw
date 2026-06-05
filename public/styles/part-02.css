@@ -1783,6 +1783,106 @@
   text-align: center;
 }
 
+.team-sharing-guide-card {
+  align-self: stretch;
+}
+
+.team-sharing-guide-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.82fr) minmax(0, 1.18fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.team-sharing-guide-command {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 12px;
+  border: 1px solid rgba(2, 125, 145, 0.24);
+  border-radius: 6px;
+  background: #f3fdff;
+}
+
+.team-sharing-guide-command strong,
+.team-sharing-guide-sections strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.team-sharing-guide-command code {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 10px;
+  border-radius: 6px;
+  background: #101820;
+  color: #9ff8ff;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.team-sharing-guide-command .secondary-btn {
+  justify-self: start;
+}
+
+.team-sharing-guide-sections {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.team-sharing-guide-sections section {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.team-sharing-guide-sections p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.team-sharing-guide-sections code {
+  font-size: 11px;
+}
+
+.team-sharing-feedback-markdown {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 6px;
+  background: #fbfcff;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.team-sharing-feedback-markdown h1 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.team-sharing-feedback-markdown h2 {
+  margin: 14px 0 6px;
+  font-size: 13px;
+}
+
+.team-sharing-feedback-markdown ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.team-sharing-feedback-markdown code {
+  white-space: normal;
+  word-break: break-word;
+}
+
 .server-admin-promote-form {
   display: grid;
   gap: 8px;
@@ -2356,6 +2456,8 @@
   .server-admin-promote-controls,
   .server-admin-role-form,
   .server-join-link-row,
+  .team-sharing-guide-grid,
+  .team-sharing-guide-sections,
   .danger-row {
     grid-template-columns: 1fr;
   }
