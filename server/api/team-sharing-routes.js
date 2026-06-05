@@ -732,7 +732,7 @@ function sendContextHtml(res, {
     .context-avatar { display:grid; place-items:center; width:32px; height:32px; flex:0 0 32px; overflow:hidden; border:1px solid #cbd5e1; border-radius:8px; background:#fff; color:#0f172a; font-size:11px; font-weight:900; line-height:1; }
     .context-avatar img,
     .context-avatar svg { display:block; width:100%; height:100%; object-fit:cover; }
-    .context-avatar-codex { background:#0b0d12; border-color:#0b0d12; }
+    .context-avatar-codex { background:#fff; border-color:#d9d9f6; }
     .context-avatar-claude { background:#f8f3ed; border-color:#d6b49c; }
     .role { display:inline-flex; align-items:center; min-height:20px; border-radius:999px; background:var(--chip); padding:2px 8px; font-size:12px; font-weight:800; color:#0f5f76; }
     .time { margin-left:8px; color:var(--muted); font-size:12px; }
@@ -1308,7 +1308,7 @@ function sendContextHtml(res, {
         return '<span class="context-avatar context-avatar-claude" aria-label="ClaudeCode"><svg viewBox="0 0 64 64" role="img" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#f8f3ed"/><g fill="#c15f3c"><path d="M32 7l4.3 16.7L48.2 11.8 39.1 26.7 56 22.2 41.1 31.8 56 41.4 39.1 36.9 48.2 51.8 36.3 39.9 32 57 27.7 39.9 15.8 51.8 24.9 36.9 8 41.4 22.9 31.8 8 22.2 24.9 26.7 15.8 11.8 27.7 23.7z"/></g></svg></span>';
       }
       if (clean === 'codex') {
-        return '<span class="context-avatar context-avatar-codex" aria-label="Codex"><svg viewBox="0 0 64 64" role="img" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#0b0d12"/><g fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"><path d="M32 12.5c7 0 12.5 5.4 12.5 12.1 0 6.8-5.5 12.2-12.5 12.2S19.5 31.4 19.5 24.6C19.5 17.9 25 12.5 32 12.5z"/><path d="M43.4 24.1c5.9 3.5 8 10.8 4.7 16.4-3.4 5.8-11 7.5-17 4.1-5.9-3.5-8-10.8-4.7-16.4 3.4-5.8 11-7.5 17-4.1z"/><path d="M20.6 24.1c5.9-3.4 13.5-1.7 17 4.1 3.3 5.6 1.2 12.9-4.7 16.4-6 3.4-13.6 1.7-17-4.1-3.3-5.6-1.2-12.9 4.7-16.4z"/></g><circle cx="32" cy="32" r="5.2" fill="#fff"/></svg></span>';
+        return '<span class="context-avatar context-avatar-codex" aria-label="Codex"><img src="/brand/codex-logo.png" alt="" loading="lazy" decoding="async"></span>';
       }
       return '<span class="context-avatar">' + escapeHtml(runtimeName(runtime).slice(0, 2).toUpperCase()) + '</span>';
     }

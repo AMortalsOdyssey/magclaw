@@ -979,6 +979,8 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /context-event-head/);
   assert.match(res.body, /roleAvatarHtml/);
   assert.match(res.body, /context-avatar-codex/);
+  assert.match(res.body, /\/brand\/codex-logo\.png/);
+  assert.doesNotMatch(res.body, /fill="#0b0d12"/);
   assert.match(res.body, /context-avatar-claude/);
   assert.match(res.body, /context-plan-panel/);
   assert.match(res.body, /context-goal-panel/);
@@ -1176,6 +1178,7 @@ test('team sharing context page renders plan goal and interaction presentation p
   assert.match(planHtml, /context-plan-panel/);
   assert.match(planHtml, /context-event-head/);
   assert.match(planHtml, /context-avatar-codex/);
+  assert.match(planHtml, /\/brand\/codex-logo\.png/);
   assert.match(planHtml, />Codex</);
   assert.match(planHtml, /展示步骤/);
   assert.doesNotMatch(planHtml, /data-context-note/);
