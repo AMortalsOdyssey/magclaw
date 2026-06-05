@@ -61,24 +61,45 @@ function incomingSessionTitle(value = '') {
   return raw ? cleanSessionTitle(raw) : '';
 }
 
+function maskSessionIdForTitle(value = '') {
+  const clean = cleanText(value);
+  if (!clean) return '****';
+  if (clean.length <= 8) return clean.length <= 4 ? '****' : `${clean.slice(0, 2)}****${clean.slice(-2)}`;
+  const visibleStart = 8;
+  const visibleEnd = 6;
+  if (clean.length <= visibleStart + visibleEnd) return `${clean.slice(0, 3)}****${clean.slice(-3)}`;
+  return `${clean.slice(0, visibleStart)}****${clean.slice(-visibleEnd)}`;
+}
+
+function generatedSessionFallbackTitle({ runtime = '', sessionId = '' } = {}) {
+  return `${normalizeRuntime(runtime)} session ${maskSessionIdForTitle(sessionId)}`;
+}
+
 function generatedSessionIdTitle(value = '', { runtime = '', sessionId = '' } = {}) {
   const title = cleanText(value).toLowerCase();
   const id = cleanText(sessionId).toLowerCase();
   if (!title || !id) return false;
+  const maskedId = maskSessionIdForTitle(id).toLowerCase();
   const normalizedRuntime = normalizeRuntime(runtime).toLowerCase();
   const runtimeVariants = [
     normalizedRuntime,
     normalizedRuntime.replace(/[_-]+/g, ' '),
     normalizedRuntime.replace(/[_-]+/g, ''),
   ].filter(Boolean);
-  return runtimeVariants.some((item) => title === `${item} session ${id}`);
+  return runtimeVariants.some((item) => title === `${item} session ${id}` || title === `${item} session ${maskedId}`);
 }
 
 function effectiveSessionTitle({ currentTitle = '', incomingTitle: rawIncomingTitle = '', runtime = '', sessionId = '' } = {}) {
-  const current = incomingSessionTitle(currentTitle);
-  const incoming = incomingSessionTitle(rawIncomingTitle);
+  const context = { runtime, sessionId };
+  const currentRaw = incomingSessionTitle(currentTitle);
+  const incomingRaw = incomingSessionTitle(rawIncomingTitle);
+  const current = generatedSessionIdTitle(currentRaw, context)
+    ? generatedSessionFallbackTitle(context)
+    : currentRaw;
+  const incomingGenerated = generatedSessionIdTitle(incomingRaw, context);
+  const incoming = incomingGenerated ? generatedSessionFallbackTitle(context) : incomingRaw;
   if (!incoming) return current || 'Untitled AI session';
-  if (current && !generatedSessionIdTitle(current, { runtime, sessionId }) && generatedSessionIdTitle(incoming, { runtime, sessionId })) {
+  if (current && !generatedSessionIdTitle(current, context) && incomingGenerated) {
     return current;
   }
   return incoming;

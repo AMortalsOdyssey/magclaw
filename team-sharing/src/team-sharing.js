@@ -1358,6 +1358,124 @@ function nestedStringValue(object, paths = []) {
   return '';
 }
 
+function sessionTitleFromMetadata(object = {}) {
+  return nestedStringValue(object || {}, [
+    ['session_title'],
+    ['sessionTitle'],
+    ['session_name'],
+    ['sessionName'],
+    ['thread_name'],
+    ['threadName'],
+    ['conversation_title'],
+    ['conversationTitle'],
+    ['thread_title'],
+    ['threadTitle'],
+    ['title'],
+    ['name'],
+    ['event_payload', 'session_title'],
+    ['event_payload', 'sessionTitle'],
+    ['event_payload', 'session_name'],
+    ['event_payload', 'sessionName'],
+    ['event_payload', 'thread_name'],
+    ['event_payload', 'threadName'],
+    ['event_payload', 'conversation_title'],
+    ['event_payload', 'conversationTitle'],
+    ['payload', 'session_title'],
+    ['payload', 'sessionTitle'],
+    ['payload', 'session_name'],
+    ['payload', 'sessionName'],
+    ['payload', 'thread_name'],
+    ['payload', 'threadName'],
+    ['payload', 'conversation_title'],
+    ['payload', 'conversationTitle'],
+    ['payload', 'thread_title'],
+    ['payload', 'threadTitle'],
+    ['payload', 'title'],
+    ['payload', 'name'],
+  ]);
+}
+
+function codexHomeDir(env = process.env) {
+  const explicit = stringFlagValue(env.CODEX_HOME || env.CODEX_CONFIG_HOME);
+  return path.resolve(explicit || path.join(homeDirForEnv(env), '.codex'));
+}
+
+function normalizedPathValue(value = '') {
+  const clean = stringFlagValue(value);
+  if (!clean) return '';
+  try {
+    return path.resolve(clean);
+  } catch {
+    return clean;
+  }
+}
+
+function codexSessionIndexRecordMatches(record = {}, { sessionId = '', transcriptPath = '' } = {}) {
+  if (!record || typeof record !== 'object') return false;
+  const cleanSessionId = stringFlagValue(sessionId);
+  const idCandidates = [
+    record.id,
+    record.session_id,
+    record.sessionId,
+    record.thread_id,
+    record.threadId,
+    record.conversation_id,
+    record.conversationId,
+  ].map(stringFlagValue).filter(Boolean);
+  if (cleanSessionId && idCandidates.includes(cleanSessionId)) return true;
+
+  const cleanTranscriptPath = normalizedPathValue(transcriptPath);
+  if (!cleanTranscriptPath) return false;
+  const pathCandidates = [
+    record.transcript_path,
+    record.transcriptPath,
+    record.session_file,
+    record.sessionFile,
+    record.path,
+    record.file,
+  ].map(normalizedPathValue).filter(Boolean);
+  return pathCandidates.includes(cleanTranscriptPath);
+}
+
+async function resolveCodexSessionTitleFromIndex({ sessionId = '', transcriptPath = '' } = {}, env = process.env) {
+  const indexFile = path.join(codexHomeDir(env), 'session_index.jsonl');
+  let text = '';
+  try {
+    text = await readFile(indexFile, 'utf8');
+  } catch {
+    return '';
+  }
+  let best = null;
+  let ordinal = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    ordinal += 1;
+    let record = null;
+    try {
+      record = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!codexSessionIndexRecordMatches(record, { sessionId, transcriptPath })) continue;
+    const title = sessionTitleFromMetadata(record);
+    if (!title) continue;
+    const updatedAtMs = Date.parse(record.updated_at || record.updatedAt || '');
+    const comparableUpdatedAt = Number.isFinite(updatedAtMs) ? updatedAtMs : 0;
+    if (!best || comparableUpdatedAt > best.updatedAtMs || (comparableUpdatedAt === best.updatedAtMs && ordinal > best.ordinal)) {
+      best = { title, updatedAtMs: comparableUpdatedAt, ordinal };
+    }
+  }
+  return best?.title || '';
+}
+
+async function resolveRuntimeSessionTitle({ runtime = 'codex', sessionId = '', transcriptPath = '' } = {}, env = process.env) {
+  if (normalizeRuntime(runtime) === 'codex') {
+    return resolveCodexSessionTitleFromIndex({ sessionId, transcriptPath }, env);
+  }
+  return '';
+}
+
 export function resolveTeamSharingTranscriptPath(flags = {}, env = process.env) {
   const runtime = normalizeRuntime(flags.runtime || 'codex');
   const explicit = stringFlagValue(flags.transcript)
@@ -1394,16 +1512,7 @@ export function resolveTeamSharingSessionTitle(flags = {}, env = process.env, ho
       ? stringFlagValue(env.CLAUDE_SESSION_TITLE)
       : stringFlagValue(env.CODEX_SESSION_TITLE));
   if (explicit) return explicit;
-  return nestedStringValue(hookPayload || {}, [
-    ['session_title'],
-    ['sessionTitle'],
-    ['conversation_title'],
-    ['conversationTitle'],
-    ['event_payload', 'session_title'],
-    ['event_payload', 'sessionTitle'],
-    ['payload', 'session_title'],
-    ['payload', 'sessionTitle'],
-  ]);
+  return sessionTitleFromMetadata(hookPayload || {});
 }
 
 async function writeTeamSharingCursor(file, runtime, cursor) {
@@ -1539,10 +1648,18 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     title: explicitSessionTitle,
     projectDir: flags.cwd || process.cwd(),
   });
+  const currentSessionTitle = explicitSessionTitle
+    || await resolveRuntimeSessionTitle({
+      runtime: parsed.runtime,
+      sessionId: parsed.sessionId,
+      transcriptPath,
+    }, env)
+    || parsed.title
+    || path.basename(transcriptPath);
   baseAudit.session = {
     runtime: parsed.runtime,
     sessionId: parsed.sessionId,
-    titleHash: stableHash(explicitSessionTitle || parsed.title || path.basename(transcriptPath)),
+    titleHash: stableHash(currentSessionTitle),
     parsedEventCount: parsed.events.length,
     parsedEventTextCharCount: auditCharCount(parsed.events.map((event) => event.text || '').join('\n')),
   };
@@ -1551,7 +1668,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
   const syncPackage = buildTeamSharingSyncPackageFromTranscript(content, {
     runtime: parsed.runtime,
     sessionId: parsed.sessionId,
-    title: explicitSessionTitle || parsed.title || path.basename(transcriptPath),
+    title: currentSessionTitle,
     projectKey: project.config.projectKey,
     workspaceId: project.config.workspaceId,
     channelId: project.config.channelId,

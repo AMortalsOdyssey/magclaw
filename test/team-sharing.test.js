@@ -499,6 +499,28 @@ test('team sharing sync ignores generated session-id titles without downgrading 
   assert.ok(state.teamSharing.vectorDocuments.every((doc) => doc.sessionId !== 'sess_title_guard' || doc.title === '验收会话总结共享 111'));
 });
 
+test('team sharing sync masks generated session-id fallback titles', async () => {
+  const state = baseState();
+  const makeId = makeIdFactory();
+  const sessionId = '019e9678-51fb-78e3-8404-1d564fe0924b';
+
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
+    sessionId,
+    idempotencyKey: 'codex:magclaw:019e9678:1:2:masked-fallback',
+    title: `codex session ${sessionId}`,
+  }), {
+    state,
+    makeId,
+    now: () => '2026-06-05T06:28:00.000Z',
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(state.teamSharing.sessions[sessionId].title, /^codex session 019e9678\*+e0924b$/);
+  assert.equal(state.messages[0].body, state.teamSharing.sessions[sessionId].title);
+  assert.doesNotMatch(state.messages[0].body, new RegExp(sessionId));
+  assert.match(state.teamSharing.abstracts[sessionId].abstractMarkdown, /^# codex session 019e9678\*+e0924b/m);
+});
+
 test('team sharing sync promotes cloud summary title over generated session-id root message title', async () => {
   const state = baseState();
   const makeId = makeIdFactory();

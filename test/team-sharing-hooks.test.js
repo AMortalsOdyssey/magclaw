@@ -399,14 +399,28 @@ test('team sharing hook parser preserves Codex final markdown layout', () => {
 });
 
 test('team sharing hook parser falls back to runtime session title instead of first user message', () => {
+  const sessionId = '019e9678-51fb-78e3-8404-1d564fe0924b';
   const transcript = [
-    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-no-title', cwd: '/repo/magclaw' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: '/repo/magclaw' } }),
     JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '这不是标题' }] } }),
   ].join('\n');
 
   const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
 
-  assert.equal(parsed.title, 'codex session sess-no-title');
+  assert.match(parsed.title, /^codex session 019e9678\*+e0924b$/);
+  assert.doesNotMatch(parsed.title, new RegExp(sessionId));
+  assert.doesNotMatch(parsed.title, /这不是标题/);
+});
+
+test('team sharing hook parser accepts Codex session names from session metadata', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-named', cwd: '/repo/magclaw', thread_name: '确认 Zilliz BM25 支持' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '这仍然不是标题' }] } }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
+
+  assert.equal(parsed.title, '确认 Zilliz BM25 支持');
 });
 
 test('team sharing sync package creates an empty SessionStart upload for channel visibility', () => {
@@ -432,6 +446,34 @@ test('team sharing sync package creates an empty SessionStart upload for channel
   assert.equal(pkg.body.toOrdinal, 0);
   assert.match(pkg.body.idempotencyKey, /^codex:magclaw:sess-start:session-start:/);
   assert.equal(pkg.cursor.lastOrdinal, 0);
+});
+
+test('team sharing sync package uploads hook title-only changes without new transcript events', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-title-only', cwd: '/repo/magclaw' } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '旧消息已经同步过' }] } }),
+  ].join('\n');
+
+  const pkg = buildTeamSharingSyncPackageFromTranscript(transcript, {
+    runtime: 'codex',
+    projectKey: 'magclaw',
+    channelId: 'chan_team',
+    hookEvent: 'Stop',
+    lastOrdinal: 1,
+    title: '确认 Zilliz BM25 支持 renamed',
+    now: () => '2026-06-01T12:00:05.000Z',
+  });
+
+  assert.equal(pkg.ok, true);
+  assert.equal(pkg.empty, false);
+  assert.equal(pkg.body.sessionId, 'sess-title-only');
+  assert.equal(pkg.body.title, '确认 Zilliz BM25 支持 renamed');
+  assert.equal(pkg.body.events.length, 0);
+  assert.equal(pkg.body.fromOrdinal, 1);
+  assert.equal(pkg.body.toOrdinal, 1);
+  assert.equal(pkg.body.metadata.titleOnly, true);
+  assert.match(pkg.body.idempotencyKey, /^codex:magclaw:sess-title-only:title:1:/);
+  assert.equal(pkg.cursor.lastOrdinal, 1);
 });
 
 test('team sharing sync package is incremental and idempotent from local cursor', () => {

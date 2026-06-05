@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -788,6 +788,49 @@ test('team sharing sync falls back to legacy Codex transcript environment variab
   assert.equal(result.eventCount, 1);
 });
 
+test('team sharing cli sync resolves current Codex session title from session index', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-codex-index-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-codex-index-home-'));
+  const codexHome = path.join(home, '.codex');
+  const env = {
+    HOME: home,
+    CODEX_HOME: codexHome,
+    MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'),
+  };
+  await mkdir(codexHome, { recursive: true });
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const sessionId = '019e9678-51fb-78e3-8404-1d564fe0924b';
+  const transcript = path.join(cwd, 'codex-index-session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-05T06:28:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd } }),
+    JSON.stringify({ timestamp: '2026-06-05T06:28:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '不要拿这句当标题' }] } }),
+  ].join('\n'));
+  await writeFile(path.join(codexHome, 'session_index.jsonl'), [
+    JSON.stringify({ id: sessionId, thread_name: '确认 Zilliz BM25 支持', updated_at: '2026-06-05T06:28:55.650242Z' }),
+    JSON.stringify({ id: sessionId, thread_name: '确认 Zilliz BM25 支持 renamed', updated_at: '2026-06-05T06:30:00.000000Z' }),
+  ].join('\n'));
+
+  const result = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', dryRun: true }, env);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dryRun, true);
+  assert.equal(result.sessionId, sessionId);
+  assert.equal(result.title, '确认 Zilliz BM25 支持 renamed');
+  assert.equal(result.eventCount, 1);
+});
+
 test('team sharing cli sync reads Codex hook stdin transcript_path when env transcript is empty', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-codex-stdin-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-codex-stdin-home-'));
@@ -975,11 +1018,15 @@ test('team sharing sync skips pre-enable history and uploads only new events fro
     const cursor = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-sharing-cursor.json'), 'utf8'));
 
     assert.equal(result.ok, true);
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     assert.deepEqual(calls[0].body.events.map((event) => event.text), ['安装后的新问题', '安装后的新回答']);
     assert.equal(calls[0].body.fromOrdinal, 3);
     assert.equal(calls[0].body.toOrdinal, 4);
-    assert.equal(second.empty, true);
+    assert.equal(second.ok, true);
+    assert.equal(calls[1].body.events.length, 0);
+    assert.equal(calls[1].body.fromOrdinal, 4);
+    assert.equal(calls[1].body.toOrdinal, 4);
+    assert.equal(calls[1].body.metadata.titleOnly, true);
     assert.equal(cursor.sessions.codex.sess_old.lastOrdinal, 4);
   } finally {
     globalThis.fetch = originalFetch;

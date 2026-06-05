@@ -95,6 +95,44 @@ function compactPresentationText(value = '', limit = 4000) {
   return redactTeamSharingText(value).slice(0, limit).trim();
 }
 
+function maskSessionIdForTitle(value = '') {
+  const clean = String(value || '').trim();
+  if (!clean) return '****';
+  if (clean.length <= 8) return clean.length <= 4 ? '****' : `${clean.slice(0, 2)}****${clean.slice(-2)}`;
+  const visibleStart = 8;
+  const visibleEnd = 6;
+  if (clean.length <= visibleStart + visibleEnd) return `${clean.slice(0, 3)}****${clean.slice(-3)}`;
+  return `${clean.slice(0, visibleStart)}****${clean.slice(-visibleEnd)}`;
+}
+
+function fallbackSessionTitle(runtime = 'codex', sessionId = '', seed = '') {
+  const identifier = String(sessionId || '').trim() || stableHash(seed);
+  return `${normalizeRuntime(runtime)} session ${maskSessionIdForTitle(identifier)}`;
+}
+
+function codexSessionTitleFromPayload(payload = {}) {
+  if (!payload || typeof payload !== 'object') return '';
+  const candidates = [
+    payload.thread_name,
+    payload.threadName,
+    payload.session_name,
+    payload.sessionName,
+    payload.session_title,
+    payload.sessionTitle,
+    payload.conversation_title,
+    payload.conversationTitle,
+    payload.thread_title,
+    payload.threadTitle,
+    payload.title,
+    payload.name,
+  ];
+  for (const candidate of candidates) {
+    const title = compactPresentationText(candidate, 180);
+    if (title) return title;
+  }
+  return '';
+}
+
 function extractProposedPlanText(value = '') {
   const match = String(value || '').match(/<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i);
   return match ? compactPresentationText(match[1], 12000) : '';
@@ -297,7 +335,7 @@ function codexTextEvent(item, context) {
   if (item?.type === 'session_meta' && item.payload) {
     context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
     context.projectPath = context.projectPath || item.payload.cwd || '';
-    context.title = context.title || item.payload.title || item.payload.thread_title || '';
+    context.title = context.title || codexSessionTitleFromPayload(item.payload);
     return null;
   }
   if (item?.type !== 'response_item') return null;
@@ -419,7 +457,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
     if (item?.type === 'session_meta' && item.payload) {
       context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
       context.projectPath = context.projectPath || item.payload.cwd || '';
-      context.title = context.title || item.payload.title || item.payload.thread_title || '';
+      context.title = context.title || codexSessionTitleFromPayload(item.payload);
       continue;
     }
     if (item?.type !== 'response_item') continue;
@@ -730,7 +768,7 @@ export function parseTeamSharingTranscript(text = '', options = {}) {
     };
   });
   if (!context.title) {
-    context.title = `${runtime} session ${context.sessionId || stableHash(text)}`;
+    context.title = fallbackSessionTitle(runtime, context.sessionId, text);
   }
   if (!context.sessionId) context.sessionId = stableHash(`${runtime}:${context.projectPath}:${text}`);
   return {
@@ -755,6 +793,7 @@ export function buildTeamSharingSyncPackageFromTranscript(text = '', options = {
   const hookEvent = String(options.hookEvent || options.hookEventName || '').trim();
   const shouldCreateSessionStart = hookEvent === 'SessionStart' && lastOrdinal === 0;
   if (!incrementalEvents.length) {
+    const title = options.title || parsed.title;
     if (shouldCreateSessionStart) {
       const createdAt = options.now?.() || new Date().toISOString();
       const body = {
@@ -762,13 +801,13 @@ export function buildTeamSharingSyncPackageFromTranscript(text = '', options = {
         projectKey,
         projectPathHash: stableHash(parsed.projectPath || projectKey),
         sessionId: parsed.sessionId,
-        title: options.title || parsed.title,
+        title,
         workspaceId: options.workspaceId || '',
         channelId: options.channelId || '',
         channelPath: options.channelPath || '',
         fromOrdinal: 0,
         toOrdinal: 0,
-        idempotencyKey: `${runtime}:${projectKey}:${parsed.sessionId}:session-start:${stableHash(options.title || parsed.title || '')}`,
+        idempotencyKey: `${runtime}:${projectKey}:${parsed.sessionId}:session-start:${stableHash(title || '')}`,
         optionalLocalDigest: '',
         events: [],
         createdAt,
@@ -781,6 +820,41 @@ export function buildTeamSharingSyncPackageFromTranscript(text = '', options = {
         ok: true,
         empty: false,
         sessionStart: true,
+        body,
+        cursor: {
+          runtime,
+          sessionId: parsed.sessionId,
+          lastOrdinal,
+          updatedAt: createdAt,
+        },
+      };
+    }
+    if (hookEvent && title) {
+      const createdAt = options.now?.() || new Date().toISOString();
+      const body = {
+        runtime,
+        projectKey,
+        projectPathHash: stableHash(parsed.projectPath || projectKey),
+        sessionId: parsed.sessionId,
+        title,
+        workspaceId: options.workspaceId || '',
+        channelId: options.channelId || '',
+        channelPath: options.channelPath || '',
+        fromOrdinal: lastOrdinal,
+        toOrdinal: lastOrdinal,
+        idempotencyKey: `${runtime}:${projectKey}:${parsed.sessionId}:title:${lastOrdinal}:${stableHash(title || '')}`,
+        optionalLocalDigest: '',
+        events: [],
+        createdAt,
+        metadata: {
+          hookEvent,
+          titleOnly: true,
+        },
+      };
+      return {
+        ok: true,
+        empty: false,
+        titleOnly: true,
         body,
         cursor: {
           runtime,
