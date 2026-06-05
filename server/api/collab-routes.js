@@ -12,6 +12,10 @@ import {
 // objects. Message delivery, task flow, and Agent runtime stay in other modules,
 // so this route group only manages membership and directory metadata.
 
+function commandArg(value) {
+  return `"${String(value || '').replace(/(["\\])/g, '\\$1')}"`;
+}
+
 export async function handleCollabApi(req, res, url, deps) {
   const {
     addCollabEvent,
@@ -46,6 +50,22 @@ export async function handleCollabApi(req, res, url, deps) {
       workspaceId: String(auth?.member?.workspaceId || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local').trim(),
       humanId: auth?.member?.humanId || 'hum_local',
     };
+  }
+
+  function publicUrlFromRequest(req) {
+    const proto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim()
+      || (req.socket?.encrypted ? 'https' : 'http');
+    const forwardedHost = String(req.headers?.['x-forwarded-host'] || '').split(',')[0].trim();
+    const requestHost = forwardedHost || req.headers?.host || '127.0.0.1:6543';
+    return String(process.env.MAGCLAW_PUBLIC_URL || `${proto}://${requestHost}`).replace(/\/+$/, '');
+  }
+
+  function teamSharingSetupCommand(req, channelPath) {
+    return [
+      'npx @magclaw/team-sharing@latest setup',
+      `--server-url ${commandArg(publicUrlFromRequest(req))}`,
+      `--channel ${commandArg(channelPath)}`,
+    ].join(' ');
   }
 
   function workspaceIdForRecord(record, req) {
@@ -408,10 +428,17 @@ export async function handleCollabApi(req, res, url, deps) {
     sendJson(res, 200, {
       serverId: workspaceId,
       serverName,
+      serverUrl: publicUrlFromRequest(req),
       channelId: channel.id,
       channelName,
       path: importPath,
       copyText: importPath,
+      setupCommand: teamSharingSetupCommand(req, importPath),
+      setupCommands: {
+        macosLinux: teamSharingSetupCommand(req, importPath),
+        powershell: teamSharingSetupCommand(req, importPath),
+        cmd: teamSharingSetupCommand(req, importPath),
+      },
     });
     return true;
   }

@@ -138,6 +138,9 @@ function renderTeamSharingHelp() {
     '  skills   Install/remove/status the local Team Sharing skill',
     '  hooks    Install/remove/status Team Sharing hooks',
     '',
+    'Example:',
+    '  npx @magclaw/team-sharing@latest setup --server-url <magclaw-server-url> --channel <channel-path>',
+    '',
   ].join('\n');
 }
 

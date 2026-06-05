@@ -302,6 +302,53 @@ function normalizeServerUrl(value = '') {
   return String(value || DEFAULT_SERVER_URL).trim().replace(/\/+$/, '') || DEFAULT_SERVER_URL;
 }
 
+function normalizeOptionalServerUrl(value = '') {
+  const clean = String(value || '').trim();
+  return clean ? normalizeServerUrl(clean) : '';
+}
+
+function parseMagClawChannelPath(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'mc:' || parsed.hostname !== 'magclaw') return null;
+    const parts = parsed.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    if (parts[0] !== 'server' || parts[2] !== 'channel') return null;
+    const workspaceId = String(parts[1] || '').trim();
+    const channelId = String(parts[3] || '').trim();
+    return workspaceId || channelId ? { workspaceId, channelId } : null;
+  } catch {
+    return null;
+  }
+}
+
+function channelPathFromFlags(flags = {}, existing = {}) {
+  return String(
+    flags.channel
+      || flags.channelPath
+      || flags.channelId
+      || flags._?.[1]
+      || existing.channel?.path
+      || existing.channel?.id
+      || '',
+  ).trim();
+}
+
+function resolveVerificationUrl(value = '', serverUrl = DEFAULT_SERVER_URL) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    return new URL(raw).toString();
+  } catch {
+    try {
+      return new URL(raw, `${normalizeServerUrl(serverUrl)}/`).toString();
+    } catch {
+      return raw;
+    }
+  }
+}
+
 function shellQuote(value = '') {
   return `'${String(value || '').replace(/'/g, "'\\''")}'`;
 }
@@ -608,10 +655,26 @@ function compactAuditError(error) {
   });
 }
 
+function profileProjectMismatch(profileConfig = {}, projectConfig = {}) {
+  const profileServerUrl = normalizeOptionalServerUrl(profileConfig?.server_url || profileConfig?.serverUrl || '');
+  const projectServerUrl = normalizeOptionalServerUrl(projectConfig?.serverUrl || projectConfig?.server_url || '');
+  if (profileServerUrl && projectServerUrl && profileServerUrl !== projectServerUrl) {
+    return { reason: 'server_mismatch', profileServerUrl, projectServerUrl };
+  }
+  const profileWorkspaceId = String(profileConfig?.workspace_id || profileConfig?.workspaceId || '').trim();
+  const projectWorkspaceId = String(projectConfig?.workspaceId || projectConfig?.workspace_id || '').trim();
+  if (profileWorkspaceId && projectWorkspaceId && profileWorkspaceId !== projectWorkspaceId) {
+    return { reason: 'workspace_mismatch', profileWorkspaceId, projectWorkspaceId };
+  }
+  return null;
+}
+
 function loginAuditInfo({ profileName = DEFAULT_PROFILE, profileConfig = {}, projectConfig = {} } = {}) {
+  const mismatch = profileProjectMismatch(profileConfig, projectConfig);
   return sanitizeAuditValue({
     profile: safeProfileName(profileName),
-    loggedIn: Boolean(profileConfig?.token),
+    loggedIn: Boolean(profileConfig?.token) && !mismatch,
+    issue: mismatch?.reason || '',
     userId: profileConfig?.user_id || '',
     userEmail: profileConfig?.user_email || '',
     workspaceId: profileConfig?.workspace_id || projectConfig?.workspaceId || '',
@@ -917,8 +980,9 @@ export async function initTeamSharingProject(flags = {}, env = process.env) {
   const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   const paths = teamSharingPaths({ profile, cwd, env });
   const existing = await readYamlFile(paths.projectConfig, {});
-  const channel = String(flags.channel || flags.channelPath || flags.channelId || flags._?.[1] || existing.channel?.path || existing.channel?.id || '').trim();
+  const channel = channelPathFromFlags(flags, existing);
   if (!channel) throw new Error('Usage: team-sharing init --channel <channelPathOrId>');
+  const parsedChannelPath = parseMagClawChannelPath(channel);
   const channelIsPath = /^(https?|feishu|lark|mc):/i.test(channel);
   const projectKey = String(flags.projectKey || flags.project || existing.project_key || path.basename(cwd)).trim();
   const config = {
@@ -926,7 +990,7 @@ export async function initTeamSharingProject(flags = {}, env = process.env) {
     enabled: boolFlag(flags.enabled, existing.enabled !== false),
     profile,
     server_url: normalizeServerUrl(flags.serverUrl || existing.server_url || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL),
-    workspace_id: String(flags.workspaceId || flags.workspace || existing.workspace_id || env.MAGCLAW_WORKSPACE_ID || 'local').trim(),
+    workspace_id: String(flags.workspaceId || flags.workspace || parsedChannelPath?.workspaceId || existing.workspace_id || env.MAGCLAW_WORKSPACE_ID || 'local').trim(),
     project_key: projectKey,
     routing_mode: 'fixed_single_channel',
     channel: {
@@ -976,13 +1040,17 @@ export async function statusTeamSharingProject(flags = {}, env = process.env) {
   const project = await readTeamSharingProjectConfig({ profile, cwd: flags.cwd || process.cwd(), env });
   const profileState = await readTeamSharingProfileConfig(profile, env);
   const audit = await readTeamSharingAuditTail(project.paths.projectAuditLog, Number(flags.auditLimit || 5) || 5);
+  const config = normalizeTeamSharingProjectConfig(project.config);
+  const authIssue = env.MAGCLAW_TEAM_SHARING_TOKEN ? null : profileTokenIssue(profileState.config || {}, env, config || {});
+  const loggedIn = Boolean(profileState.config?.token || env.MAGCLAW_TEAM_SHARING_TOKEN) && !authIssue;
   return {
-    ok: Boolean(project.config),
+    ok: Boolean(project.config) && !authIssue,
     projectConfig: project.paths.projectConfig,
     profileConfig: profileState.paths.profileConfig,
     auditLog: project.paths.projectAuditLog,
     configured: Boolean(project.config),
-    loggedIn: Boolean(profileState.config?.token),
+    loggedIn,
+    authIssue,
     config: project.config || null,
     audit,
   };
@@ -1016,7 +1084,7 @@ function tokenExpiryFromFlags(flags = {}, fallbackMs = Date.now() + TEAM_SHARING
   return new Date(Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs).toISOString();
 }
 
-function profileTokenIssue(profileConfig = {}, env = process.env) {
+function profileTokenIssue(profileConfig = {}, env = process.env, projectConfig = {}) {
   const token = String(profileConfig?.token || '').trim();
   if (!token) return { reason: 'login_required' };
   const expiresAt = String(profileConfig?.token_expires_at || profileConfig?.tokenExpiresAt || '').trim();
@@ -1026,7 +1094,7 @@ function profileTokenIssue(profileConfig = {}, env = process.env) {
   }
   const storedFingerprint = String(profileConfig?.machine_fingerprint || profileConfig?.machineFingerprint || '').trim();
   if (storedFingerprint && storedFingerprint !== teamSharingMachineFingerprint(env)) return { reason: 'machine_mismatch' };
-  return null;
+  return profileProjectMismatch(profileConfig, projectConfig);
 }
 
 async function teamSharingRequest({ serverUrl, token = '', machineFingerprint = '', method = 'GET', pathname = '/', body = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
@@ -1100,6 +1168,12 @@ function maybeOpenUrl(url, flags = {}, env = process.env) {
   else spawnSync('xdg-open', [url], { stdio: 'ignore' });
 }
 
+function maybePrintVerificationUrl(url, flags = {}, env = process.env) {
+  if (!url || flags.quiet || flags.noPrintLoginUrl || env.MAGCLAW_TEAM_SHARING_PRINT_LOGIN_URL === '0') return;
+  if (env.MAGCLAW_TEAM_SHARING_PRINT_LOGIN_URL !== '1' && !process.stderr?.isTTY) return;
+  process.stderr.write(`Open this URL to approve MagClaw Team Sharing login:\n${url}\n`);
+}
+
 export async function loginTeamSharingProfile(flags = {}, env = process.env) {
   const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   const existing = (await readTeamSharingProfileConfig(profile, env)).config || {};
@@ -1110,6 +1184,7 @@ export async function loginTeamSharingProfile(flags = {}, env = process.env) {
   let token = manualToken;
   let tokenExpiresAt = tokenExpiryFromFlags(flags);
   let user = {};
+  let verificationUrl = '';
   if (!token) {
     const started = await teamSharingRequestJson({
       serverUrl,
@@ -1127,7 +1202,9 @@ export async function loginTeamSharingProfile(flags = {}, env = process.env) {
         },
       },
     });
-    maybeOpenUrl(started.verificationUri, flags, env);
+    verificationUrl = resolveVerificationUrl(started.verificationUri, serverUrl);
+    maybePrintVerificationUrl(verificationUrl, flags, env);
+    maybeOpenUrl(verificationUrl, flags, env);
     const intervalMs = Math.max(1, Math.min(10_000, Number(started.intervalMs || 2000) || 2000));
     const deadline = Date.now() + Math.max(1000, Number(flags.pollTimeoutMs || 10 * 60_000) || 10 * 60_000);
     while (Date.now() < deadline) {
@@ -1165,7 +1242,7 @@ export async function loginTeamSharingProfile(flags = {}, env = process.env) {
     updated_at: now(),
   };
   const profileConfig = await writeTeamSharingProfileConfig(profile, config, env);
-  return { ok: true, profile, serverUrl, workspaceId, hasToken: Boolean(token), tokenExpiresAt, machineFingerprint, profileConfig, user };
+  return { ok: true, profile, serverUrl, workspaceId, hasToken: Boolean(token), tokenExpiresAt, machineFingerprint, profileConfig, user, verificationUrl };
 }
 
 export async function logoutTeamSharingProfile(flags = {}, env = process.env) {
@@ -1212,16 +1289,20 @@ async function resolveTeamSharingClient(flags = {}, env = process.env, options =
   if (!config) throw new Error('Run `team-sharing init --channel <channel>` in this project first.');
   const resolvedProfileName = safeProfileName(flags.profile || config.profile || DEFAULT_PROFILE);
   let profile = await readTeamSharingProfile(resolvedProfileName, env);
-  let authIssue = env.MAGCLAW_TEAM_SHARING_TOKEN ? null : profileTokenIssue(profile.config || {}, env);
+  const intended = {
+    serverUrl: flags.serverUrl || config.serverUrl || profile.config?.server_url || DEFAULT_SERVER_URL,
+    workspaceId: flags.workspaceId || flags.workspace || config.workspaceId || profile.config?.workspace_id || 'local',
+  };
+  let authIssue = env.MAGCLAW_TEAM_SHARING_TOKEN ? null : profileTokenIssue(profile.config || {}, env, intended);
   if (authIssue && options.allowLogin) {
     const login = await loginTeamSharingProfile({
       ...flags,
       profile: resolvedProfileName,
-      serverUrl: flags.serverUrl || config.serverUrl || profile.config?.server_url || DEFAULT_SERVER_URL,
-      workspaceId: flags.workspaceId || flags.workspace || config.workspaceId || profile.config?.workspace_id || 'local',
+      serverUrl: intended.serverUrl,
+      workspaceId: intended.workspaceId,
     }, env);
     profile = await readTeamSharingProfile(login.profile || resolvedProfileName, env);
-    authIssue = profileTokenIssue(profile.config || {}, env);
+    authIssue = profileTokenIssue(profile.config || {}, env, intended);
   }
   const token = String(profile.config?.token || env.MAGCLAW_TEAM_SHARING_TOKEN || '').trim();
   const machineFingerprint = String(profile.config?.machine_fingerprint || '').trim() || teamSharingMachineFingerprint(env);
@@ -1231,7 +1312,7 @@ async function resolveTeamSharingClient(flags = {}, env = process.env, options =
       config,
     },
     profile,
-    serverUrl: flags.serverUrl || config.serverUrl || profile.config?.server_url || DEFAULT_SERVER_URL,
+    serverUrl: intended.serverUrl,
     token,
     machineFingerprint,
     authIssue,
@@ -2023,8 +2104,15 @@ export async function setupTeamSharing(flags = {}, env = process.env) {
   const setupFlags = installTarget.scope === 'project' ? { ...flags, cwd: installTarget.projectDir } : flags;
   const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
   const profileConfig = await readTeamSharingProfileConfig(profile, env);
-  if (!flags.noLogin && profileTokenIssue(profileConfig.config || {}, env)) {
-    await loginTeamSharingProfile(flags, env);
+  const existingProject = await readTeamSharingProjectConfig({ profile, cwd: setupFlags.cwd || process.cwd(), env });
+  const existingProjectConfig = normalizeTeamSharingProjectConfig(existingProject.config);
+  const parsedChannelPath = parseMagClawChannelPath(channelPathFromFlags(setupFlags, existingProject.config || {}));
+  const intendedLogin = {
+    serverUrl: flags.serverUrl || setupFlags.serverUrl || existingProjectConfig?.serverUrl || profileConfig.config?.server_url || env.MAGCLAW_PUBLIC_URL || DEFAULT_SERVER_URL,
+    workspaceId: flags.workspaceId || flags.workspace || setupFlags.workspaceId || setupFlags.workspace || parsedChannelPath?.workspaceId || existingProjectConfig?.workspaceId || profileConfig.config?.workspace_id || env.MAGCLAW_WORKSPACE_ID || 'local',
+  };
+  if (!flags.noLogin && profileTokenIssue(profileConfig.config || {}, env, intendedLogin)) {
+    await loginTeamSharingProfile({ ...flags, serverUrl: intendedLogin.serverUrl, workspaceId: intendedLogin.workspaceId }, env);
   }
   const project = await initTeamSharingProject(setupFlags, env);
   const shim = await installTeamSharingShim(setupFlags, env);

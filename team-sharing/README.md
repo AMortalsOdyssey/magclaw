@@ -3,7 +3,7 @@
 One-command installer for MagClaw Team Sharing.
 
 ```bash
-npx @magclaw/team-sharing@latest setup --channel <channel-path>
+npx @magclaw/team-sharing@latest setup --server-url <magclaw-server-url> --channel <channel-path>
 ```
 
 The npm package is `@magclaw/team-sharing`; it exposes the `team-sharing`
