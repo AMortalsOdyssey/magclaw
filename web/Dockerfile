@@ -1,4 +1,16 @@
-FROM node:20-bookworm-slim
+FROM node:20-bookworm-slim AS assets
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY public ./public
+COPY scripts ./scripts
+
+RUN npm run build:web-assets
+
+FROM node:20-bookworm-slim AS runtime
 
 WORKDIR /app
 
@@ -15,8 +27,9 @@ COPY public ./public
 COPY shared ./shared
 COPY scripts ./scripts
 COPY daemon/package.json ./daemon/package.json
+COPY team-sharing ./team-sharing
+COPY --from=assets /app/public/.magclaw-assets ./public/.magclaw-assets
 
-RUN npm run build:web-assets
 RUN mkdir -p /etc/magclaw /var/lib/magclaw/uploads
 
 EXPOSE 6543

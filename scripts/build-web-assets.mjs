@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { transform } from 'esbuild';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -114,14 +115,43 @@ function stripBundledJsLineComments(source) {
 async function writeAsset(name, content) {
   const fileName = `${name}-${hashContent(content)}.${name === 'app' ? 'js' : 'css'}`;
   const diskPath = path.join(OUT_DIR, fileName);
-  await writeFile(diskPath, content);
-  await writeFile(`${diskPath}.gz`, gzipSync(content, { level: zlibConstants.Z_BEST_COMPRESSION }));
-  await writeFile(`${diskPath}.br`, brotliCompressSync(content, {
+  const gzip = gzipSync(content, { level: zlibConstants.Z_BEST_COMPRESSION });
+  const brotli = brotliCompressSync(content, {
     params: {
       [zlibConstants.BROTLI_PARAM_QUALITY]: zlibConstants.BROTLI_MAX_QUALITY,
     },
-  }));
-  return `/.magclaw-assets/${fileName}`;
+  });
+  await writeFile(diskPath, content);
+  await writeFile(`${diskPath}.gz`, gzip);
+  await writeFile(`${diskPath}.br`, brotli);
+  return {
+    href: `/.magclaw-assets/${fileName}`,
+    sizes: {
+      raw: Buffer.byteLength(content),
+      gzip: gzip.length,
+      brotli: brotli.length,
+    },
+  };
+}
+
+async function minifyScriptBundle(content) {
+  const result = await transform(content, {
+    loader: 'js',
+    minify: true,
+    target: 'es2020',
+    legalComments: 'none',
+  });
+  return result.code;
+}
+
+async function minifyStyleBundle(content) {
+  const result = await transform(content, {
+    loader: 'css',
+    minify: true,
+    target: 'es2020',
+    legalComments: 'none',
+  });
+  return result.code;
 }
 
 async function build() {
@@ -136,7 +166,7 @@ async function build() {
     scriptParts.push(`\n${stripBundledJsLineComments(await readPublicFile(script))}`);
   }
   scriptParts.push(`\n})();\n`);
-  const scriptBundle = scriptParts.join('\n');
+  const scriptBundle = await minifyScriptBundle(scriptParts.join('\n'));
 
   const stylesSource = await readPublicFile('/styles.css');
   const styleImports = extractStyleImports(stylesSource);
@@ -147,7 +177,7 @@ async function build() {
   for (const stylePath of [...styleImports, ...extraStyles]) {
     styleParts.push(`\n/* ${stylePath} */\n${await readPublicFile(stylePath)}`);
   }
-  const styleBundle = styleParts.join('\n');
+  const styleBundle = await minifyStyleBundle(styleParts.join('\n'));
 
   await rm(OUT_DIR, { recursive: true, force: true });
   await mkdir(OUT_DIR, { recursive: true });
@@ -158,8 +188,12 @@ async function build() {
     version: 1,
     generatedAt: new Date().toISOString(),
     assets: {
-      script: scriptAsset,
-      style: styleAsset,
+      script: scriptAsset.href,
+      style: styleAsset.href,
+    },
+    sizes: {
+      script: scriptAsset.sizes,
+      style: styleAsset.sizes,
     },
     source: {
       scripts: ['/fanout-toast.js', ...appScripts],
@@ -168,7 +202,7 @@ async function build() {
     },
   };
   await writeFile(path.join(OUT_DIR, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(`Built MagClaw web assets: ${scriptAsset}, ${styleAsset}`);
+  console.log(`Built MagClaw web assets: ${scriptAsset.href}, ${styleAsset.href}`);
 }
 
 build().catch((error) => {

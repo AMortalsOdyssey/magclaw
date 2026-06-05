@@ -38,15 +38,25 @@ test('web asset build emits hashed bundled assets with precompressed variants', 
     const stylePath = path.join(publicDir, manifest.assets.style.slice(1));
     const scriptStat = await stat(scriptPath);
     const scriptBrStat = await stat(`${scriptPath}.br`);
-    await stat(`${scriptPath}.gz`);
+    const scriptGzStat = await stat(`${scriptPath}.gz`);
     const styleStat = await stat(stylePath);
     const styleBrStat = await stat(`${stylePath}.br`);
-    await stat(`${stylePath}.gz`);
+    const styleGzStat = await stat(`${stylePath}.gz`);
 
     assert.ok(scriptStat.size < 950 * 1024, `script bundle too large: ${scriptStat.size}`);
     assert.ok(scriptBrStat.size < 180 * 1024, `brotli script bundle too large: ${scriptBrStat.size}`);
     assert.ok(styleStat.size < 305 * 1024, `style bundle too large: ${styleStat.size}`);
     assert.ok(styleBrStat.size < 70 * 1024, `brotli style bundle too large: ${styleBrStat.size}`);
+    assert.deepEqual(manifest.sizes.script, {
+      raw: scriptStat.size,
+      gzip: scriptGzStat.size,
+      brotli: scriptBrStat.size,
+    });
+    assert.deepEqual(manifest.sizes.style, {
+      raw: styleStat.size,
+      gzip: styleGzStat.size,
+      brotli: styleBrStat.size,
+    });
 
     const check = spawnSync(process.execPath, ['--check', scriptPath], {
       cwd: ROOT,
@@ -56,7 +66,8 @@ test('web asset build emits hashed bundled assets with precompressed variants', 
 
     const bundle = await readFile(scriptPath, 'utf8');
     assert.doesNotMatch(bundle, /await loadAppScript/);
-    assert.match(bundle, /globalThis\.renderFanoutDecisionToastsHtml = renderFanoutDecisionToasts/);
+    assert.match(bundle, /globalThis\.buildFanoutDecisionCards=/);
+    assert.match(bundle, /globalThis\.renderFanoutDecisionToastsHtml=/);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
