@@ -1282,6 +1282,58 @@ test('mention popup differentiates humans and agents without the channel heading
   assert.equal(context.getMentionCandidates('codex', 'channel', 'chan_all')[0].id, 'agt_codex');
 });
 
+test('team sharing legacy hum_local records render the stored uploader instead of the current viewer', async () => {
+  const source = await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8');
+  const context = {
+    BRAND_LOGO_SRC: '',
+    appState: {
+      agents: [],
+      humans: [{ id: 'hum_viewer', name: 'JJJJ', email: 'jjjj@example.test', status: 'online' }],
+      cloud: { auth: { currentMember: { humanId: 'hum_viewer' } } },
+    },
+    escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    },
+    humanByIdAny(id) {
+      if (id === 'hum_local' || id === 'hum_viewer') {
+        return { id: 'hum_viewer', name: 'JJJJ', email: 'jjjj@example.test', status: 'online' };
+      }
+      return null;
+    },
+    humanMatchesCurrentAccount(human) {
+      return human?.id === 'hum_viewer';
+    },
+    humanBadgeHtml() {
+      return '<span class="human-script-badge"></span>';
+    },
+    renderHumanHoverCard() {
+      return '';
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+
+  const html = context.renderActorName('hum_local', 'human', {
+    authorId: 'hum_local',
+    authorType: 'human',
+    metadata: {
+      teamSharing: {
+        uploader: { id: 'hum_local', name: '蒋海波' },
+      },
+    },
+  });
+
+  assert.match(html, /蒋海波/);
+  assert.doesNotMatch(html, /JJJJ/);
+  assert.doesNotMatch(html, /\(you\)/);
+  assert.doesNotMatch(html, /data-action="select-human-inspector"/);
+});
+
 test('thread mentions include active workspace humans outside the current channel', async () => {
   const source = await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8');
   const appState = {

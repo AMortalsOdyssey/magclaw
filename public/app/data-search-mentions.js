@@ -135,6 +135,18 @@ function currentTeamSharingUploaderFallback(record = {}) {
   };
 }
 
+function legacyTeamSharingUploaderForRecord(record = {}) {
+  if (!record?.metadata?.teamSharing) return null;
+  const authorId = String(record.authorId || '').trim();
+  if (!['hum_local', 'team_sharing', 'team-sharing'].includes(authorId)) return null;
+  const uploader = teamSharingUploaderForRecord(record);
+  const name = String(uploader?.name || '').trim();
+  const avatar = String(uploader?.avatar || '').trim();
+  const id = String(uploader?.id || '').trim();
+  if (!name && !avatar && !id) return null;
+  return { id, name, avatar };
+}
+
 function teamSharingUploaderAvatarHtml(record = {}, cssClass = '') {
   const fallback = currentTeamSharingUploaderFallback(record);
   const avatar = teamSharingUploaderAvatarForRecord(record) || fallback?.avatar || '';
@@ -376,6 +388,10 @@ function renderActorAvatar(authorId, authorType, record = {}) {
     return `<div class="avatar agent-avatar-cell">${renderAgentIdentityButton(authorId, 'agent-avatar-button')}${agentStatusDot(authorId, authorType)}</div>`;
   }
   if (authorType === 'human') {
+    const legacyUploader = legacyTeamSharingUploaderForRecord(record);
+    if (legacyUploader) {
+      return `<div class="avatar human-avatar-cell">${teamSharingUploaderAvatarHtml(record, 'avatar-inner')}</div>`;
+    }
     const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
     if (!human && (teamSharingUploaderNameForRecord(record) || currentTeamSharingUploaderFallback(record))) {
       return `<div class="avatar human-avatar-cell">${teamSharingUploaderAvatarHtml(record, 'avatar-inner')}${humanStatusDot(authorId, authorType)}</div>`;
@@ -392,6 +408,11 @@ function renderHumanYouLabel(human) {
 
 function renderActorName(authorId, authorType, record = {}) {
   if (authorType === 'human') {
+    const legacyUploader = legacyTeamSharingUploaderForRecord(record);
+    if (legacyUploader) {
+      const legacyName = legacyUploader.name || 'Human';
+      return `<strong>${escapeHtml(legacyName)}</strong>`;
+    }
     const human = typeof humanByIdAny === 'function' ? humanByIdAny(authorId) : byId(appState?.humans, authorId);
     const youLabel = renderHumanYouLabel(human);
     const fallbackUploader = currentTeamSharingUploaderFallback(record);

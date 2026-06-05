@@ -2042,6 +2042,19 @@ function requestUser(actor = {}) {
   };
 }
 
+function teamSharingRequestUser({ actor = null, tokenRecord = null, body = {} } = {}) {
+  const authenticatedUser = actor
+    ? requestUser(actor)
+    : (tokenRecord?.user && typeof tokenRecord.user === 'object' ? tokenRecord.user : null);
+  const id = String(authenticatedUser?.id || body.humanId || body.uploaderId || '').trim();
+  return {
+    id: id || 'hum_local',
+    name: String(authenticatedUser?.name || body.humanName || body.uploaderName || body.userName || '').trim(),
+    email: String(authenticatedUser?.email || body.humanEmail || body.uploaderEmail || '').trim(),
+    avatar: String(authenticatedUser?.avatar || body.humanAvatar || body.uploaderAvatar || '').trim(),
+  };
+}
+
 function requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken } = {}) {
   const required = typeof teamSharingAuthRequired === 'function' ? teamSharingAuthRequired(req) : Boolean(teamSharingAuthRequired);
   if (!required || actor) return true;
@@ -2582,13 +2595,14 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const tokenRecord = tokenRecordForRequest(teamSharingState, req);
     const body = await readJson(req);
     const effectiveWorkspaceId = requestWorkspaceId({ actor, tokenRecord, state, fallback: body.workspaceId || workspaceId });
+    const requestUploader = teamSharingRequestUser({ actor, tokenRecord, body });
     const result = await syncTeamSharingBatch({
       ...body,
       workspaceId: effectiveWorkspaceId,
-      humanId: body.humanId || actorHumanId(actor) || tokenRecord?.user?.id || '',
-      humanName: body.humanName || body.uploaderName || actor?.member?.name || actor?.user?.name || tokenRecord?.user?.name || '',
-      humanEmail: body.humanEmail || body.uploaderEmail || actor?.member?.email || actor?.user?.email || tokenRecord?.user?.email || '',
-      humanAvatar: body.humanAvatar || body.uploaderAvatar || actor?.member?.avatar || actor?.user?.avatar || tokenRecord?.user?.avatar || '',
+      humanId: requestUploader.id,
+      humanName: requestUploader.name,
+      humanEmail: requestUploader.email,
+      humanAvatar: requestUploader.avatar,
     }, {
       state,
       makeId,

@@ -418,6 +418,12 @@ test('team sharing auth issues scoped token, supports whoami, and revokes token'
     },
   ), true);
   assert.equal(syncRes.statusCode, 202);
+  const syncedMessage = deps.state.messages.find((message) => message.metadata?.teamSharing?.sessionId === 'sess_route');
+  const syncedHumanReply = deps.state.replies.find((reply) => reply.metadata?.teamSharing?.eventId === 'evt_1');
+  assert.equal(syncedMessage?.authorId, 'hum_route');
+  assert.equal(syncedMessage?.metadata?.teamSharing?.uploader?.id, 'hum_route');
+  assert.equal(syncedHumanReply?.authorId, 'hum_route');
+  assert.equal(syncedHumanReply?.metadata?.teamSharing?.uploader?.id, 'hum_route');
 
   const revokeRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
