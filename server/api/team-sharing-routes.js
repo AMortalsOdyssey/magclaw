@@ -710,7 +710,7 @@ function sendContextHtml(res, {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MagClaw Team Sharing Context</title>
   <style>
-    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; --user-bg:#fff1f5; --user-line:#f9cfe0; --plan-bg:#111827; --plan-line:#334155; --plan-accent:#94a3b8; --goal-bg:#f0fdf4; --goal-line:#bbf7d0; --goal-accent:#16a34a; }
+    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; --user-bg:#fff1f5; --user-line:#f9cfe0; --plan-bg:#f3f4f6; --plan-line:#d1d5db; --plan-accent:#6b7280; --goal-bg:#f0fdf4; --goal-line:#bbf7d0; --goal-accent:#16a34a; }
     * { box-sizing:border-box; }
     [hidden] { display:none !important; }
     body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
@@ -744,11 +744,11 @@ function sendContextHtml(res, {
     .context-quote-label { color:#0f6f89; font-size:11px; font-weight:900; line-height:1.2; }
     .context-quote-text { overflow-wrap:anywhere; line-height:1.56; font-size:13px; }
     .context-mode-panel { margin-top:10px; border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:8px; padding:12px 13px; display:grid; gap:8px; overflow-wrap:anywhere; }
-    .context-plan-panel { background:#111827; border-color:#334155; border-left-color:#94a3b8; color:#e5e7eb; box-shadow:inset 0 1px 0 rgba(255,255,255,.06); }
+    .context-plan-panel { background:var(--plan-bg); border-color:var(--plan-line); border-left-color:var(--plan-accent); color:#1f2937; box-shadow:inset 0 1px 0 rgba(255,255,255,.72); }
     .context-goal-panel { background:#f0fdf4; border-color:#bbf7d0; border-left-color:#16a34a; }
     .context-interaction-panel { background:#fff; border-color:#dbe5ef; border-left-color:#0891b2; }
     .context-mode-head { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#334155; font-size:11px; font-weight:900; line-height:1.2; text-transform:uppercase; letter-spacing:0; }
-    .context-plan-panel .context-mode-head { color:#cbd5e1; }
+    .context-plan-panel .context-mode-head { color:#374151; }
     .context-goal-panel .context-mode-head { color:#166534; }
     .context-goal-status { color:#16a34a; font-weight:900; }
     .context-interaction-list { display:grid; gap:10px; }
@@ -809,12 +809,12 @@ function sendContextHtml(res, {
     .text blockquote,
     .context-main blockquote,
     .context-quote-text blockquote { margin:8px 0; border-left:3px solid #cbd5e1; padding-left:10px; color:#475569; }
-    .context-plan-panel .context-main { color:#e5e7eb; }
-    .context-plan-panel .context-main code { background:#253044; color:#f8fafc; }
-    .context-plan-panel .context-main pre { background:#020617; color:#f8fafc; border:1px solid #334155; }
-    .context-plan-panel .context-main a { color:#93c5fd; }
-    .context-plan-panel .context-main blockquote { border-left-color:#64748b; color:#cbd5e1; }
-    .context-plan-panel .context-color-swatch { border-color:rgba(248,250,252,.5); box-shadow:inset 0 0 0 1px rgba(0,0,0,.35); }
+    .context-plan-panel .context-main { color:#1f2937; }
+    .context-plan-panel .context-main code { background:#e5e7eb; color:#374151; }
+    .context-plan-panel .context-main pre { background:#f9fafb; color:#1f2937; border:1px solid #d1d5db; }
+    .context-plan-panel .context-main a { color:#2563eb; }
+    .context-plan-panel .context-main blockquote { border-left-color:#9ca3af; color:#4b5563; }
+    .context-plan-panel .context-color-swatch { border-color:rgba(31,41,55,.28); box-shadow:inset 0 0 0 1px rgba(255,255,255,.56); }
     .context-table-wrap { width:100%; overflow-x:auto; margin:10px 0 12px; border:1px solid var(--line); border-radius:8px; background:#fff; }
     .context-table { width:100%; border-collapse:collapse; min-width:520px; font-size:13px; line-height:1.55; }
     .context-table th { text-align:left; background:#f1f5f9; color:#334155; font-weight:850; border-bottom:1px solid var(--line); }

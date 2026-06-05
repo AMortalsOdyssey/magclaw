@@ -991,9 +991,9 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /context-plan-panel/);
   assert.match(res.body, /context-goal-panel/);
   assert.match(res.body, /context-interaction-panel/);
-  assert.match(res.body, /#111827/);
-  assert.match(res.body, /#334155/);
-  assert.match(res.body, /#94a3b8/);
+  assert.match(res.body, /--plan-bg:#f3f4f6/);
+  assert.match(res.body, /--plan-line:#d1d5db/);
+  assert.match(res.body, /--plan-accent:#6b7280/);
   assert.match(res.body, /#f0fdf4/);
   assert.match(res.body, /#bbf7d0/);
   assert.match(res.body, /contentSegments/);
