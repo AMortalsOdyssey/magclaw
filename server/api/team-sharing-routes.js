@@ -758,7 +758,7 @@ function sendContextHtml(res, {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MagClaw Team Sharing Context</title>
   <style>
-    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; --user-bg:#fff1f5; --user-line:#f9cfe0; --plan-bg:#f3f4f6; --plan-line:#d1d5db; --plan-accent:#6b7280; --goal-bg:#f0fdf4; --goal-line:#bbf7d0; --goal-accent:#16a34a; }
+    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --accent:#0891b2; --chip:#e0f2fe; --user-bg:#fff7ed; --user-line:#fed7aa; --user-accent:#f97316; --user-ink:#9a3412; --plan-bg:#f3f4f6; --plan-line:#d1d5db; --plan-accent:#6b7280; --goal-bg:#f0fdf4; --goal-line:#bbf7d0; --goal-accent:#16a34a; }
     * { box-sizing:border-box; }
     [hidden] { display:none !important; }
     body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
@@ -772,8 +772,9 @@ function sendContextHtml(res, {
     .scroll-sentinel { height:1px; }
     article.context-event { position:relative; background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:10px 0; box-shadow:0 1px 2px rgba(15,23,42,.04); }
     article.context-event-agent.has-context-note { overflow:visible; }
-    article.context-event-user { background:#fff1f5; border-color:var(--user-line); }
-    article.context-event-user .role { border:1px solid #bae6fd; background:#e0f2fe; color:#075985; }
+    article.context-event-user { background:var(--user-bg); border-color:var(--user-line); }
+    article.context-event-user .role { border:1px solid #fdba74; background:#ffedd5; color:var(--user-ink); }
+    article.context-event-user .context-avatar { border-color:#fdba74; background:#fff7ed; color:var(--user-ink); }
     article.context-event.anchor { border-color:var(--accent); box-shadow:0 0 0 2px rgba(8,145,178,.12); }
     .context-event-head { display:flex; align-items:center; gap:10px; min-width:0; }
     .context-event-meta { display:flex; align-items:center; flex-wrap:wrap; gap:0; min-width:0; }

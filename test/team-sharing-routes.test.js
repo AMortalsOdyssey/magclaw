@@ -1189,8 +1189,12 @@ test('team sharing route serves a dynamic context html page without creating sta
   assert.match(res.body, /contentSegments/);
   assert.match(res.body, /context-event-user/);
   assert.match(res.body, /article\.context-event-user/);
-  assert.match(res.body, /background:#fff1f5/);
-  assert.match(res.body, /article\.context-event-user \.role \{ border:1px solid #bae6fd; background:#e0f2fe; color:#075985; \}/);
+  assert.match(res.body, /--user-bg:#fff7ed/);
+  assert.match(res.body, /--user-line:#fed7aa/);
+  assert.match(res.body, /--user-ink:#9a3412/);
+  assert.match(res.body, /article\.context-event-user \{ background:var\(--user-bg\); border-color:var\(--user-line\); \}/);
+  assert.match(res.body, /article\.context-event-user \.role \{ border:1px solid #fdba74; background:#ffedd5; color:var\(--user-ink\); \}/);
+  assert.match(res.body, /article\.context-event-user \.context-avatar \{ border-color:#fdba74; background:#fff7ed; color:var\(--user-ink\); \}/);
   assert.doesNotMatch(res.body, /color:#9f1239/);
   assert.match(res.body, /context-file-ref/);
   assert.match(res.body, /function isContextWebHref/);
