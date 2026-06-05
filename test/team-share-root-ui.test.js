@@ -45,6 +45,8 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   assert.match(app, /from Codex/);
   assert.match(app, /team-sharing-runtime-avatar-codex/);
   assert.match(app, /team-sharing-runtime-avatar-claude/);
+  assert.match(app, /\/brand\/codex-logo\.png/);
+  assert.doesNotMatch(app, /fill="#0b0d12"/);
   assert.match(app, /teamSharingSourceLabelForRecord\(message\)/);
   assert.match(app, /teamSharingUploaderNameForRecord\(record\)/);
   assert.match(drawerSource, /teamSharingSessionIdForMessage\(message\)/);

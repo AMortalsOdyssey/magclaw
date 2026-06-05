@@ -1520,10 +1520,15 @@ button:disabled {
   text-shadow: 0 1px 2px rgba(15, 23, 42, 0.35);
 }
 
-.team-sharing-runtime-avatar svg {
+.team-sharing-runtime-avatar svg,
+.team-sharing-runtime-avatar img {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.team-sharing-runtime-avatar img {
+  object-fit: cover;
 }
 
 .team-sharing-runtime-avatar-codex,
