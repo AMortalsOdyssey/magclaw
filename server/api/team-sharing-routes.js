@@ -45,17 +45,60 @@ function sourceAnchorFromSearchParams(searchParams) {
   return sourceAnchorEventId(searchParams.get('anchorEventId') || searchParams.get('anchor') || '');
 }
 
-function resultContextUrl(item, queryId = '') {
+function contextPagePath(sessionId = '', options = {}) {
   const params = new URLSearchParams();
-  const anchorEventId = String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef);
+  const anchorEventId = String(options.anchorEventId || '').trim();
   if (anchorEventId) params.set('anchorEventId', anchorEventId);
-  params.set('limit', '21');
-  params.set('order', 'asc');
-  if (item.vectorDocumentId) params.set('vectorDocumentId', item.vectorDocumentId);
-  if (queryId) params.set('queryId', queryId);
-  if (item.sourceRef) params.set('sourceRef', item.sourceRef);
+  params.set('limit', String(options.limit || '21'));
+  params.set('order', String(options.order || 'asc'));
+  if (options.vectorDocumentId) params.set('vectorDocumentId', options.vectorDocumentId);
+  if (options.queryId) params.set('queryId', options.queryId);
+  if (options.sourceRef) params.set('sourceRef', options.sourceRef);
   const suffix = params.toString();
-  return `/team-sharing/context/${encodeURIComponent(item.sessionId)}${suffix ? `?${suffix}` : ''}`;
+  return `/team-sharing/context/${encodeURIComponent(sessionId)}${suffix ? `?${suffix}` : ''}`;
+}
+
+function resultContextUrl(item, queryId = '') {
+  const anchorEventId = String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef);
+  return contextPagePath(item.sessionId, {
+    anchorEventId,
+    vectorDocumentId: item.vectorDocumentId,
+    queryId,
+    sourceRef: item.sourceRef,
+  });
+}
+
+function workspaceSlugForContext(state = {}, workspaceId = '') {
+  const cleanWorkspaceId = String(workspaceId || '').trim();
+  if (!cleanWorkspaceId || cleanWorkspaceId === 'local') return '';
+  const cloud = state.cloud || {};
+  const workspaces = [
+    ...asArray(cloud.workspaces),
+    cloud.workspace,
+  ].filter(Boolean);
+  const workspace = workspaces.find((item) => (
+    String(item?.id || '').trim() === cleanWorkspaceId
+    || String(item?.workspaceId || '').trim() === cleanWorkspaceId
+    || String(item?.slug || '').trim() === cleanWorkspaceId
+  )) || null;
+  return String(workspace?.slug || '').trim();
+}
+
+function absoluteContextPageUrl(req, state = {}, relativePath = '', workspaceId = '') {
+  const cleanPath = String(relativePath || '').trim();
+  if (!cleanPath) return '';
+  if (/^https?:\/\//i.test(cleanPath)) return cleanPath;
+  const slug = workspaceSlugForContext(state, workspaceId);
+  const path = slug && cleanPath.startsWith('/team-sharing/context/')
+    ? cleanPath.replace('/team-sharing/context/', `/s/${encodeURIComponent(slug)}/team-sharing/context/`)
+    : cleanPath;
+  return `${publicUrlFromRequest(req)}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+function resultContextWebUrl(req, state = {}, item = {}, queryId = '') {
+  const session = state.teamSharing?.sessions?.[item.sessionId] || {};
+  const workspaceId = String(item.workspaceId || session.workspaceId || '').trim();
+  return absoluteContextPageUrl(req, state, resultContextUrl(item, queryId), workspaceId);
 }
 
 const SHARE_CONTENT_TYPES = new Set(['html', 'markdown', 'svg', 'mermaid']);
@@ -3195,24 +3238,30 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       ok: true,
       queryId: ranked.queryId,
       traceId: ranked.queryId,
-      results: ranked.results.map((item) => ({
-        vectorDocumentId: item.vectorDocumentId,
-        sessionId: item.sessionId,
-        topicId: item.topicId,
-        layer: item.layer,
-        title: item.title,
-        conclusion: compactText(item.text || item.title, 320),
-        evidence: compactText(item.text || '', 320),
-        sourceRef: item.sourceRef,
-        rawEventId: String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef),
-        anchorEventId: String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef),
-        contextUrl: resultContextUrl(item, ranked.queryId),
-        finalScore: item.finalScore,
-        vectorScore: item.vectorScore,
-        rerankScore: item.rerankScore,
-        keywordScore: item.keywordScore,
-        hotnessScore: item.hotnessScore,
-      })),
+      results: ranked.results.map((item) => {
+        const contextUrl = resultContextUrl(item, ranked.queryId);
+        const contextWebUrl = resultContextWebUrl(req, state, item, ranked.queryId);
+        return {
+          vectorDocumentId: item.vectorDocumentId,
+          sessionId: item.sessionId,
+          topicId: item.topicId,
+          layer: item.layer,
+          title: item.title,
+          conclusion: compactText(item.text || item.title, 320),
+          evidence: compactText(item.text || '', 320),
+          sourceRef: item.sourceRef,
+          rawEventId: String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef),
+          anchorEventId: String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef),
+          contextUrl,
+          contextWebUrl,
+          contextPageUrl: contextWebUrl,
+          finalScore: item.finalScore,
+          vectorScore: item.vectorScore,
+          rerankScore: item.rerankScore,
+          keywordScore: item.keywordScore,
+          hotnessScore: item.hotnessScore,
+        };
+      }),
       rerankUsed: Boolean(rerankResults?.length),
       candidateCount: candidates.length,
       semanticCandidateCount: asArray(semantic?.candidates).length,
@@ -3263,7 +3312,21 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendError(res, 404, 'Team sharing session not found.');
       return true;
     }
-    sendJson(res, 200, enrichTeamSharingContextResult(result, state));
+    const contextUrl = contextPagePath(sessionId, {
+      anchorEventId: sourceAnchorFromSearchParams(url.searchParams),
+      vectorDocumentId: url.searchParams.get('vectorDocumentId') || '',
+      queryId: url.searchParams.get('queryId') || '',
+      sourceRef: url.searchParams.get('sourceRef') || '',
+      limit: url.searchParams.get('limit') || '21',
+      order: url.searchParams.get('order') || 'asc',
+    });
+    const contextWebUrl = absoluteContextPageUrl(req, state, contextUrl, result.session?.workspaceId || session.workspaceId || '');
+    sendJson(res, 200, {
+      ...enrichTeamSharingContextResult(result, state),
+      contextUrl,
+      contextWebUrl,
+      contextPageUrl: contextWebUrl,
+    });
     return true;
   }
 

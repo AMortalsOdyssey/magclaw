@@ -22,7 +22,7 @@ Use this skill when the user asks what teammates discussed, wants to align with 
    - Sorting: use `--sort recent`, `--sort keyword`, `--sort semantic`, or `--sort hotness` only when the user asks for recency, exact match, semantic fit, or feedback popularity.
 3. Answer from the returned evidence when the user only needs a rough understanding. Do not expose L0/L1 as user-facing labels; translate them into semantic labels such as Abstract, SessionSyncHooks, or RerankFeedback.
 4. For deep follow-up, run `team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 21 --order asc`.
-5. Cite session titles, semantic source links, and the original-session context link from the command output.
+5. Cite session titles, semantic source links, and the original-session web context link from the command output.
 6. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `team-sharing share-artifact --file <path> --title "<title>" --type html`.
 7. Return the MagClaw share URL from the command output. 访问遵循当前 MagClaw 服务的登录和权限策略, and the share page includes the creator and creation time in the footer.
 
@@ -41,14 +41,15 @@ Use this skill when the user asks what teammates discussed, wants to align with 
 - Use inline code only for IDs, commands, status values, and file names. Do not wrap whole sentences in code style.
 - Treat workspace source links and original context links as different destinations.
 - Workspace source links (`Abstract`, `SessionSyncHooks`, `RerankFeedback`, and other topic labels) should open the Team Sharing workspace file in the MagClaw channel UI. When a MagClaw channel URL is known, build links like `<channelUrl>#team-sharing-workspace-file:abstract.md` or `<channelUrl>#team-sharing-workspace-file:topics%2Frerank-feedback.md`. If no channel URL is known, show the semantic label plus the workspace path instead of linking it to `contextUrl`.
-- Original context links should use only `contextUrl` and open the standalone `/team-sharing/context/<sessionId>` page. Prefix relative context URLs with the current server/share route such as `/s/<serverSlug>` when that route is known.
+- Original context links should use `contextWebUrl` first, then `contextPageUrl`. These fields are absolute links to the standalone `/team-sharing/context/<sessionId>` page, often scoped under `/s/<serverSlug>`.
+- If only a relative `contextUrl` is available, combine it with the configured MagClaw server URL before showing it. Do not show bare `/team-sharing/context/...` paths in user-facing replies.
 - When showing source entry points, map `sourceRef` to user-friendly workspace labels and derive the workspace file path from the part after `<sessionId>/`:
   - `*/abstract.md#...` -> `[Abstract](<workspace-file-link-to-abstract.md>)`
   - `*/topics/session-sync-hooks.md#...` -> `[SessionSyncHooks](<workspace-file-link-to-topics%2Fsession-sync-hooks.md>)`
   - `*/topics/rerank-feedback.md#...` -> `[RerankFeedback](<workspace-file-link-to-topics%2Frerank-feedback.md>)`
   - Other topic files -> convert the kebab topic ID to PascalCase for the label and link to that workspace file.
-- Never reuse the original-session `contextUrl` for `Abstract` or topic links; those links must not all land in the same thread/context page.
-- Show the dynamic context URL as `[原始会话](<contextUrl>)` instead of printing the long URL string.
+- Never reuse the original-session `contextWebUrl`, `contextPageUrl`, or `contextUrl` for `Abstract` or topic links; those links must not all land in the same thread/context page.
+- Show the dynamic context page as `[原始会话](<contextWebUrl-or-contextPageUrl>)` instead of printing the long URL string.
 - Preserve privacy: never paste raw hook output, local absolute paths, tokens, channel route keys, hidden reasoning, or sensitive transcript content into the answer.
 
 ## Default Share HTML Style

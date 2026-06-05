@@ -210,7 +210,7 @@ test('team sharing route syncs a batch and search returns reranked top results',
     readJson: async () => ({ query: 'rerank 反馈', channelId: 'chan_team', limit: 5 }),
   };
   assert.equal(await handleTeamSharingApi(
-    { method: 'POST' },
+    { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
     searchRes,
     new URL('http://local/api/team-sharing/search'),
     searchDeps,
@@ -229,6 +229,9 @@ test('team sharing route syncs a batch and search returns reranked top results',
   assert.match(searchRes.data.results[0].contextUrl, /order=asc/);
   assert.match(searchRes.data.results[0].contextUrl, /vectorDocumentId=sess_route%3AL1%3Arerank-feedback/);
   assert.doesNotMatch(searchRes.data.results[0].contextUrl, /anchor=sess_route%2Ftopics/);
+  assert.match(searchRes.data.results[0].contextWebUrl, /^https:\/\/magclaw\.example\/s\/server-route\/team-sharing\/context\/sess_route/);
+  assert.match(searchRes.data.results[0].contextWebUrl, /anchorEventId=evt_1/);
+  assert.equal(searchRes.data.results[0].contextPageUrl, searchRes.data.results[0].contextWebUrl);
   assert.ok(deps.state.teamSharing.feedback.some((item) => item.eventType === 'served' && item.queryId === searchRes.data.queryId));
 });
 
@@ -935,7 +938,7 @@ test('team sharing route records feedback and serves context windows', async () 
 
   const contextRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
-    { method: 'GET' },
+    { method: 'GET', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
     contextRes,
     new URL('http://local/api/team-sharing/context/sess_route?anchorEventId=evt_1&direction=next&limit=1'),
     deps,
@@ -943,6 +946,9 @@ test('team sharing route records feedback and serves context windows', async () 
   assert.equal(contextRes.statusCode, 200);
   assert.deepEqual(contextRes.data.events.map((event) => event.eventId), ['evt_2']);
   assert.match(contextRes.data.session.summaryHint, /Zilliz/);
+  assert.equal(contextRes.data.contextUrl, '/team-sharing/context/sess_route?anchorEventId=evt_1&limit=1&order=asc');
+  assert.equal(contextRes.data.contextWebUrl, 'https://magclaw.example/s/server-route/team-sharing/context/sess_route?anchorEventId=evt_1&limit=1&order=asc');
+  assert.equal(contextRes.data.contextPageUrl, contextRes.data.contextWebUrl);
 });
 
 test('team sharing route doctor exposes missing recall dependencies without secrets', async () => {

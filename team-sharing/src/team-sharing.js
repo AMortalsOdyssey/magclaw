@@ -1171,6 +1171,38 @@ async function teamSharingRequestJson({ serverUrl, token = '', machineFingerprin
   }
   return data;
 }
+
+function absoluteTeamSharingWebUrl(serverUrl = '', value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  try {
+    return new URL(raw, `${normalizeServerUrl(serverUrl)}/`).toString();
+  } catch {
+    return raw;
+  }
+}
+
+function enrichTeamSharingContextWebLinks(data = {}, { serverUrl = '', fallbackContextUrl = '' } = {}) {
+  if (!data || typeof data !== 'object') return data;
+  const enrichItem = (item = {}) => {
+    if (!item || typeof item !== 'object') return item;
+    const contextUrl = String(item.contextUrl || fallbackContextUrl || '').trim();
+    const contextWebUrl = String(item.contextWebUrl || item.contextPageUrl || '').trim()
+      || absoluteTeamSharingWebUrl(serverUrl, contextUrl);
+    if (!contextWebUrl) return item;
+    return {
+      ...item,
+      ...(contextUrl && !item.contextUrl ? { contextUrl } : {}),
+      contextWebUrl,
+      contextPageUrl: item.contextPageUrl || contextWebUrl,
+    };
+  };
+  return {
+    ...enrichItem(data),
+    ...(Array.isArray(data.results) ? { results: data.results.map(enrichItem) } : {}),
+  };
+}
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1857,7 +1889,7 @@ export async function searchTeamSharing(flags = {}, env = process.env) {
   if (!query) throw new Error('Usage: team-sharing search --query <text>');
   const { project, serverUrl, token, machineFingerprint } = await resolveTeamSharingClient(flags, env, { allowLogin: true });
   const intent = buildSearchIntent({ query, flags, env });
-  return teamSharingRequestJson({
+  const result = await teamSharingRequestJson({
     serverUrl,
     token,
     machineFingerprint,
@@ -1887,6 +1919,7 @@ export async function searchTeamSharing(flags = {}, env = process.env) {
       limit: numberFlag(flags.limit, 5),
     },
   });
+  return enrichTeamSharingContextWebLinks(result, { serverUrl });
 }
 
 export async function readTeamSharingContext(flags = {}, env = process.env) {
@@ -1899,11 +1932,15 @@ export async function readTeamSharingContext(flags = {}, env = process.env) {
   params.set('limit', String(flags.limit || 21));
   params.set('order', String(flags.order || 'asc'));
   const suffix = params.toString() ? `?${params.toString()}` : '';
-  return teamSharingRequestJson({
+  const result = await teamSharingRequestJson({
     serverUrl,
     token,
     machineFingerprint,
     pathname: `/api/team-sharing/context/${encodeURIComponent(sessionId)}${suffix}`,
+  });
+  return enrichTeamSharingContextWebLinks(result, {
+    serverUrl,
+    fallbackContextUrl: `/team-sharing/context/${encodeURIComponent(sessionId)}${suffix}`,
   });
 }
 

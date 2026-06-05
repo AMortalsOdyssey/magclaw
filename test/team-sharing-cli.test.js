@@ -1447,7 +1447,7 @@ test('team sharing cli search and context use configured profile token', async (
       json: async () => (
         String(url).includes('/context/')
           ? { ok: true, sessionId: 'sess_1', events: [{ eventId: 'evt_1', cleanText: '原文片段' }] }
-          : { ok: true, results: [{ sessionId: 'sess_1', title: 'Rerank', evidence: 'top5 结论' }] }
+          : { ok: true, results: [{ sessionId: 'sess_1', title: 'Rerank', evidence: 'top5 结论', contextUrl: '/team-sharing/context/sess_1?anchorEventId=evt_1' }] }
       ),
     };
   };
@@ -1473,7 +1473,11 @@ test('team sharing cli search and context use configured profile token', async (
 
     assert.equal(search.ok, true);
     assert.equal(search.results[0].evidence, 'top5 结论');
+    assert.equal(search.results[0].contextWebUrl, 'https://magclaw.example/team-sharing/context/sess_1?anchorEventId=evt_1');
+    assert.equal(search.results[0].contextPageUrl, search.results[0].contextWebUrl);
     assert.equal(context.events[0].cleanText, '原文片段');
+    assert.equal(context.contextWebUrl, 'https://magclaw.example/team-sharing/context/sess_1?anchorEventId=evt_1&direction=around&limit=3&order=asc');
+    assert.equal(context.contextPageUrl, context.contextWebUrl);
     assert.equal(calls[0].url, 'https://magclaw.example/api/team-sharing/search');
     assert.equal(calls[0].body.channelId, 'chan_team');
     assert.equal(calls[0].body.projectKey, 'magclaw');
@@ -1643,8 +1647,9 @@ test('team sharing cli installs a local skill without writing token into skill f
   assert.match(skill, /\[原始会话\]/);
   assert.match(skill, /#team-sharing-workspace-file:abstract\.md/);
   assert.match(skill, /#team-sharing-workspace-file:topics%2Frerank-feedback\.md/);
-  assert.match(skill, /Never reuse the original-session `contextUrl`/);
+  assert.match(skill, /`contextWebUrl` first/);
   assert.match(skill, /standalone `\/team-sharing\/context\/<sessionId>` page/);
+  assert.match(skill, /Do not show bare `\/team-sharing\/context\/\.\.\.` paths/);
   assert.match(skill, /访问遵循当前 MagClaw 服务的登录和权限策略/);
   assert.doesNotMatch(skill, /public by design|publicly share/);
   assert.match(skill, /Default Share HTML Style/);
