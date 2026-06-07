@@ -139,6 +139,29 @@ function shareUrl(req, shareId = '') {
   return `${publicUrlFromRequest(req)}/s/${encodeURIComponent(shareId)}`;
 }
 
+function shareReadPayload(req, share = {}) {
+  return {
+    ok: true,
+    kind: 'share',
+    shareId: String(share.id || '').trim(),
+    title: String(share.title || '').trim(),
+    description: String(share.description || '').trim(),
+    contentType: String(share.contentType || '').trim(),
+    content: String(share.content || ''),
+    workspaceId: String(share.workspaceId || '').trim(),
+    channelId: String(share.channelId || '').trim(),
+    channelPath: String(share.channelPath || '').trim(),
+    projectKey: String(share.projectKey || '').trim(),
+    creator: share.creator && typeof share.creator === 'object' ? {
+      id: String(share.creator.id || '').trim(),
+      name: String(share.creator.name || '').trim(),
+      email: String(share.creator.email || '').trim(),
+    } : null,
+    createdAt: String(share.createdAt || '').trim(),
+    url: shareUrl(req, share.id || ''),
+  };
+}
+
 function creatorFromActor(actor = {}, tokenRecord = null) {
   const member = actor?.member || {};
   const user = actor?.user || actor?.human || tokenRecord?.user || {};
@@ -3139,6 +3162,42 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       return true;
     }
     sendShareHtml(res, renderShareIndexHtml(sharesForShareRoot(teamSharingState, access.workspaceId)));
+    return true;
+  }
+
+  const shareApiReadMatch = url.pathname.match(/^\/api\/team-sharing\/shares\/([^/]+)$/);
+  if (req.method === 'GET' && shareApiReadMatch) {
+    const shareId = decodeURIComponent(shareApiReadMatch[1] || '');
+    const share = ensureTeamSharingShares(teamSharingState).find((item) => item.id === shareId && item.revokedAt == null);
+    if (!share) {
+      sendJson(res, 404, { ok: false, reason: 'not_found', error: 'Shared page not found.' });
+      return true;
+    }
+    const access = shareAccess(req, { actor, currentUser: browserUser, teamSharingState, share, state });
+    if (!access.ok) {
+      const reason = access.status === 401 ? 'login_required' : 'server_membership_required';
+      addSystemEvent('team_sharing_share_api_denied', 'Team sharing share API access denied.', {
+        workspaceId: access.workspaceId || workspaceId,
+        actorId: access.actorId || '',
+        shareId,
+        status: access.status,
+        reason,
+      });
+      sendJson(res, access.status || 403, {
+        ok: false,
+        reason,
+        error: access.error || (reason === 'login_required'
+          ? 'Team Sharing login is required.'
+          : 'Join this server before reading the shared page.'),
+      });
+      return true;
+    }
+    addSystemEvent('team_sharing_share_api_read', `Team sharing share read: ${compactText(share.title || shareId, 90)}`, {
+      workspaceId: share.workspaceId || workspaceId,
+      shareId,
+      actorId: access.actorId || '',
+    });
+    sendJson(res, 200, shareReadPayload(req, share));
     return true;
   }
 

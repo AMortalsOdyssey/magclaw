@@ -11,8 +11,14 @@ Use this skill when the user asks what teammates discussed, wants to align with 
 
 ## Workflow
 
-1. Run `team-sharing search --query "<question>" --limit 5` from the configured project directory.
-2. Add retrieval filters when the user gives a time or search preference. Keep the default retrieval combined: keyword/BM25 and semantic/vector recall run together, then rerank.
+1. If the user gives a MagClaw Team Sharing share or original-context URL and asks to read, summarize, explain, or inspect it, run `team-sharing read-link "<url>" --format markdown` from the configured project directory. This uses the Team Sharing CLI login token, not browser cookies.
+   - Supported links include `/s/<shareId>`, `/share/<shareId>`, `/team-sharing/context/<sessionId>`, and `/s/<serverSlug>/team-sharing/context/<sessionId>`.
+   - If `read-link` fails with `login_required` or `login_expired`, tell the user to run `team-sharing login` or `team-sharing setup`.
+   - If it fails with `machine_mismatch`, tell the user to re-login on this machine.
+   - If it fails with `server_membership_required`, tell the user to join that MagClaw server in the browser first; do not auto-join on their behalf.
+   - If it fails with `unsupported_link`, explain that only MagClaw Team Sharing share/context links are supported.
+2. Run `team-sharing search --query "<question>" --limit 5` from the configured project directory.
+3. Add retrieval filters when the user gives a time or search preference. Keep the default retrieval combined: keyword/BM25 and semantic/vector recall run together, then rerank.
    - Time: `--time today`, `--time yesterday`, `--time this-week`, or explicit `--from <iso> --to <iso>`.
    - Exact keyword/BM25 inputs: add `--keyword "<term>"` or `--keywords "A,B,C"` when the user gives product names, IDs, file names, commands, or literal phrases.
    - Topic hints: add `--topic "<topic>"` or `--topics "A,B,C"` when the user asks across several topics.
@@ -20,11 +26,11 @@ Use this skill when the user asks what teammates discussed, wants to align with 
    - Preference only: `--mode keyword` biases rerank/sorting toward exact matches, and `--mode semantic` biases toward semantic fit. They should not be used to drop the other recall path.
    - Single-path debug: only use `--keyword-only` or `--semantic-only` when the user explicitly asks to search one path only.
    - Sorting: use `--sort recent`, `--sort keyword`, `--sort semantic`, or `--sort hotness` only when the user asks for recency, exact match, semantic fit, or feedback popularity.
-3. Answer from the returned evidence when the user only needs a rough understanding. Do not expose L0/L1 as user-facing labels; translate them into semantic labels such as Abstract, SessionSyncHooks, or RerankFeedback.
-4. For deep follow-up, run `team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 21 --order asc`.
-5. Cite session titles, semantic source links, and the original-session web context link from the command output.
-6. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `team-sharing share-artifact --file <path> --title "<title>" --type html`.
-7. Return the MagClaw share URL from the command output. 访问遵循当前 MagClaw 服务的登录和权限策略, and the share page includes the creator and creation time in the footer.
+4. Answer from the returned evidence when the user only needs a rough understanding. Do not expose L0/L1 as user-facing labels; translate them into semantic labels such as Abstract, SessionSyncHooks, or RerankFeedback.
+5. For deep follow-up, run `team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 21 --order asc`.
+6. Cite session titles, semantic source links, and the original-session web context link from the command output.
+7. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `team-sharing share-artifact --file <path> --title "<title>" --type html`.
+8. Return the MagClaw share URL from the command output. 访问遵循当前 MagClaw 服务的登录和权限策略, and the share page includes the creator and creation time in the footer.
 
 ## User-Facing Examples
 

@@ -16,6 +16,7 @@ import {
   loginTeamSharingProfile,
   logoutTeamSharingProfile,
   readTeamSharingContext,
+  readTeamSharingLink,
   removeTeamSharingHooks,
   removeTeamSharingSkill,
   searchTeamSharing,
@@ -27,6 +28,7 @@ import {
   statusTeamSharingSkill,
   syncTeamSharingTranscript,
   unsetTeamSharingProject,
+  formatTeamSharingReadLinkResult,
   whoamiTeamSharingProfile,
 } from './team-sharing.js';
 
@@ -162,6 +164,7 @@ function renderTeamSharingHelp() {
     '  upgrade  Check npm latest version for team-sharing',
     '  search   Query shared team sharing (--time yesterday, --keyword A, --topics A,B, --mode hybrid|keyword|semantic)',
     '  context  Read original context around an anchor',
+    '  read-link Read a protected MagClaw share/context URL with the Team Sharing CLI login',
     '  share-artifact Create a public MagClaw share link from a local file',
     '  sync     Upload one transcript file (--session-title or MAGCLAW_SESSION_TITLE controls the displayed title)',
     '  skills   Install/remove/status the local Team Sharing skill',
@@ -285,6 +288,15 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
       break;
     case 'context':
       printJson(await readTeamSharingContext(flags, env));
+      break;
+    case 'read-link':
+    case 'readlink':
+      {
+        const result = await readTeamSharingLink(flags, env);
+        const format = String(flags.format || 'json').trim().toLowerCase();
+        if (!format || format === 'json') printJson(result);
+        else process.stdout.write(`${formatTeamSharingReadLinkResult(result, format)}\n`);
+      }
       break;
     case 'share':
     case 'share-artifact':

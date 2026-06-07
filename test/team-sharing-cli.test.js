@@ -24,6 +24,7 @@ import {
   parseTeamSharingYaml,
   removeTeamSharingHooks,
   removeTeamSharingSkill,
+  readTeamSharingLink,
   readTeamSharingContext,
   resolveTeamSharingSessionTitle,
   resolveTeamSharingTranscriptPath,
@@ -36,6 +37,7 @@ import {
   syncTeamSharingTranscript,
   teamSharingMachineFingerprint,
   teamSharingPaths,
+  formatTeamSharingReadLinkResult,
   whoamiTeamSharingProfile,
 } from '../team-sharing/src/team-sharing.js';
 
@@ -1569,6 +1571,107 @@ test('team sharing cli search and context use configured profile token', async (
   }
 });
 
+test('team sharing cli read-link reads protected share and context links with profile token', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-read-link-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-read-link-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    assert.equal(init.headers.authorization, 'Bearer team-sharing-token-secret');
+    assert.match(init.headers['x-magclaw-machine-fingerprint'], /^mfp_[a-f0-9]{64}$/);
+    if (String(url).includes('/api/team-sharing/shares/share_cli')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          kind: 'share',
+          shareId: 'share_cli',
+          title: 'Rerank 分享页',
+          description: '团队总结',
+          contentType: 'markdown',
+          content: '# Rerank 分享页\n\n先召回，再重排。',
+          workspaceId: 'ws_team',
+          channelId: 'chan_team',
+          channelPath: 'mc://magclaw/server/ws_team/channel/chan_team',
+          creator: { id: 'hum_1', name: 'Ada' },
+          createdAt: '2026-06-06T10:00:00.000Z',
+          url: 'https://magclaw.example/s/share_cli',
+        }),
+      };
+    }
+    if (String(url).includes('/api/team-sharing/context/sess_1')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          sessionId: 'sess_1',
+          session: { sessionId: 'sess_1', title: '原始上下文', runtime: 'codex' },
+          events: [
+            { eventId: 'evt_1', role: 'user', createdAt: '2026-06-06T10:00:00.000Z', cleanText: '用户问题' },
+            { eventId: 'evt_2', role: 'assistant', createdAt: '2026-06-06T10:01:00.000Z', cleanText: 'Agent 回答' },
+          ],
+          contextUrl: '/team-sharing/context/sess_1?anchorEventId=evt_1&limit=2&order=asc',
+        }),
+      };
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+  try {
+    const parsed = parseCli(['node', 'magclaw', 'team-sharing', 'read-link', 'https://magclaw.example/s/share_cli', '--format', 'markdown']);
+    assert.deepEqual(parsed.flags._, ['read-link', 'https://magclaw.example/s/share_cli']);
+
+    const share = await readTeamSharingLink({ ...parsed.flags, cwd }, env);
+    const shareMarkdown = formatTeamSharingReadLinkResult(share, 'markdown');
+    const shareText = formatTeamSharingReadLinkResult(share, 'text');
+    const shareJson = formatTeamSharingReadLinkResult(share, 'json');
+
+    assert.equal(share.kind, 'share');
+    assert.equal(calls[0].url, 'https://magclaw.example/api/team-sharing/shares/share_cli');
+    assert.match(shareMarkdown, /# Rerank 分享页/);
+    assert.match(shareMarkdown, /先召回，再重排/);
+    assert.match(shareText, /Rerank 分享页/);
+    assert.doesNotMatch(shareText, /^#/m);
+    assert.match(shareJson, /"kind": "share"/);
+    assert.doesNotMatch(shareJson, /team-sharing-token-secret|Bearer/i);
+
+    const context = await readTeamSharingLink({
+      cwd,
+      _: ['read-link', 'https://magclaw.example/s/team-server/team-sharing/context/sess_1?anchorEventId=evt_1&limit=2&order=asc'],
+    }, env);
+    const contextMarkdown = formatTeamSharingReadLinkResult(context, 'markdown');
+    assert.equal(context.kind, 'context');
+    assert.match(calls[1].url, /https:\/\/magclaw\.example\/api\/team-sharing\/context\/sess_1\?/);
+    assert.match(calls[1].url, /anchorEventId=evt_1/);
+    assert.match(calls[1].url, /limit=2/);
+    assert.match(context.contextWebUrl, /https:\/\/magclaw\.example\/team-sharing\/context\/sess_1/);
+    assert.match(contextMarkdown, /# 原始上下文/);
+    assert.match(contextMarkdown, /用户问题/);
+    assert.match(contextMarkdown, /Agent 回答/);
+
+    await assert.rejects(
+      () => readTeamSharingLink({ cwd, _: ['read-link', 'https://magclaw.example/console'] }, env),
+      /Unsupported MagClaw Team Sharing link/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('team sharing cli uploads an artifact share and returns a public link', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-home-'));
@@ -1683,6 +1786,10 @@ test('team sharing cli installs a local skill without writing token into skill f
   assert.equal(result.scope, 'project');
   assert.equal(result.feedback.status, 'ready');
   assert.match(result.feedback.sections.map((section) => section.title).join(','), /Skill 说明/);
+  assert.match(skill, /team-sharing read-link "<url>" --format markdown/);
+  assert.match(skill, /not browser cookies/);
+  assert.match(skill, /server_membership_required/);
+  assert.match(skill, /unsupported_link/);
   assert.match(skill, /team-sharing search/);
   assert.match(skill, /team-sharing context/);
   assert.match(skill, /team-sharing share-artifact/);

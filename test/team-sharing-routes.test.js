@@ -1072,6 +1072,111 @@ test('team sharing route creates an authenticated share and protects it by works
   assert.match(shareRes.body, /Created by Ada PM/);
   assert.match(shareRes.body, /2026年06月01日 18:00:00/);
 
+  const fingerprint = `mfp_${'a'.repeat(64)}`;
+  const authStart = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    authStart,
+    new URL('https://magclaw.example/api/team-sharing/auth/start'),
+    {
+      ...deps,
+      readJson: async () => ({ machineFingerprint: fingerprint }),
+    },
+  ), true);
+  const authToken = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    authToken,
+    new URL('https://magclaw.example/api/team-sharing/auth/token'),
+    {
+      ...deps,
+      currentActor: () => null,
+      readJson: async () => ({ deviceCode: authStart.data.deviceCode, machineFingerprint: fingerprint }),
+    },
+  ), true);
+  const apiRead = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { authorization: `Bearer ${authToken.data.token}`, 'x-magclaw-machine-fingerprint': fingerprint, host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    apiRead,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(apiRead.statusCode, 200);
+  assert.equal(apiRead.data.kind, 'share');
+  assert.equal(apiRead.data.shareId, shareId);
+  assert.equal(apiRead.data.title, 'Rerank 方案摘要');
+  assert.equal(apiRead.data.contentType, 'markdown');
+  assert.match(apiRead.data.content, /团队结论/);
+  assert.equal(apiRead.data.creator.name, 'Ada PM');
+  assert.equal(apiRead.data.url, `https://magclaw.example/s/${shareId}`);
+  assert.equal(apiRead.data.source, undefined);
+  assert.doesNotMatch(JSON.stringify(apiRead.data), /rawToken|tokenHash|metadata/i);
+
+  const apiNoToken = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    apiNoToken,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(apiNoToken.statusCode, 401);
+  assert.equal(apiNoToken.data.reason, 'login_required');
+
+  const apiMismatch = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { authorization: `Bearer ${authToken.data.token}`, 'x-magclaw-machine-fingerprint': `mfp_${'b'.repeat(64)}` } },
+    apiMismatch,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(apiMismatch.statusCode, 401);
+  assert.equal(apiMismatch.data.reason, 'login_required');
+
+  const tokenRecord = Object.values(deps.state.teamSharing.auth.tokens)[0];
+  tokenRecord.expiresAt = '2000-01-01T00:00:00.000Z';
+  const apiExpired = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { authorization: `Bearer ${authToken.data.token}`, 'x-magclaw-machine-fingerprint': fingerprint } },
+    apiExpired,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(apiExpired.statusCode, 401);
+
+  tokenRecord.expiresAt = '2099-01-01T00:00:00.000Z';
+  tokenRecord.revoked = true;
+  const apiRevoked = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { authorization: `Bearer ${authToken.data.token}`, 'x-magclaw-machine-fingerprint': fingerprint } },
+    apiRevoked,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(apiRevoked.statusCode, 401);
+
+  tokenRecord.revoked = false;
+  tokenRecord.workspaceId = 'ws_other';
+  const apiWrongWorkspace = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { authorization: `Bearer ${authToken.data.token}`, 'x-magclaw-machine-fingerprint': fingerprint } },
+    apiWrongWorkspace,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(apiWrongWorkspace.statusCode, 403);
+  assert.equal(apiWrongWorkspace.data.reason, 'server_membership_required');
+
+  tokenRecord.workspaceId = 'ws_route';
+  const apiMissing = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { authorization: `Bearer ${authToken.data.token}`, 'x-magclaw-machine-fingerprint': fingerprint } },
+    apiMissing,
+    new URL('https://magclaw.example/api/team-sharing/shares/share_missing'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(apiMissing.statusCode, 404);
+  assert.equal(apiMissing.data.reason, 'not_found');
+
   deps.state.teamSharing.shares.push({
     ...deps.state.teamSharing.shares[0],
     id: 'share_other_server',

@@ -1946,6 +1946,176 @@ export async function readTeamSharingContext(flags = {}, env = process.env) {
   });
 }
 
+function parseTeamSharingReadableLink(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return { ok: false, reason: 'unsupported_link' };
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, reason: 'unsupported_link' };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, reason: 'unsupported_link' };
+  }
+  const scopedContextMatch = url.pathname.match(/^\/s\/([^/]+)\/team-sharing\/context\/([^/]+)\/?$/);
+  if (scopedContextMatch) {
+    return {
+      ok: true,
+      type: 'context',
+      url,
+      serverUrl: url.origin,
+      serverSlug: decodeURIComponent(scopedContextMatch[1] || ''),
+      sessionId: decodeURIComponent(scopedContextMatch[2] || ''),
+    };
+  }
+  const contextMatch = url.pathname.match(/^\/team-sharing\/context\/([^/]+)\/?$/);
+  if (contextMatch) {
+    return {
+      ok: true,
+      type: 'context',
+      url,
+      serverUrl: url.origin,
+      sessionId: decodeURIComponent(contextMatch[1] || ''),
+    };
+  }
+  const shareMatch = url.pathname.match(/^\/s\/([^/]+)\/?$/) || url.pathname.match(/^\/share\/([^/]+)\/?$/);
+  if (shareMatch) {
+    return {
+      ok: true,
+      type: 'share',
+      url,
+      serverUrl: url.origin,
+      shareId: decodeURIComponent(shareMatch[1] || ''),
+    };
+  }
+  return { ok: false, reason: 'unsupported_link' };
+}
+
+function contextLinkApiPath(parsed = {}) {
+  const params = new URLSearchParams();
+  const inputParams = parsed.url?.searchParams || new URLSearchParams();
+  for (const key of ['anchorEventId', 'anchor', 'direction', 'limit', 'order']) {
+    const value = inputParams.get(key);
+    if (value) params.set(key, value);
+  }
+  if (!params.has('limit')) params.set('limit', '21');
+  if (!params.has('order')) params.set('order', 'asc');
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return `/api/team-sharing/context/${encodeURIComponent(parsed.sessionId)}${suffix}`;
+}
+
+export async function readTeamSharingLink(flags = {}, env = process.env) {
+  const link = String(flags.url || flags.link || flags.href || flags._?.[1] || '').trim();
+  const parsed = parseTeamSharingReadableLink(link);
+  if (!parsed.ok) {
+    const error = new Error('Unsupported MagClaw Team Sharing link.');
+    error.reason = parsed.reason || 'unsupported_link';
+    error.status = 400;
+    throw error;
+  }
+  const requestServerUrl = normalizeServerUrl(flags.serverUrl || parsed.serverUrl);
+  const { token, machineFingerprint } = await resolveTeamSharingClient({
+    ...flags,
+    serverUrl: requestServerUrl,
+  }, env, { allowLogin: true });
+  if (parsed.type === 'share') {
+    const result = await teamSharingRequestJson({
+      serverUrl: requestServerUrl,
+      token,
+      machineFingerprint,
+      pathname: `/api/team-sharing/shares/${encodeURIComponent(parsed.shareId)}`,
+      timeoutMs: requestTimeoutMs(flags, env),
+    });
+    return {
+      ...result,
+      kind: result.kind || 'share',
+      linkUrl: parsed.url.toString(),
+      serverUrl: requestServerUrl,
+    };
+  }
+  const apiPath = contextLinkApiPath(parsed);
+  const result = await teamSharingRequestJson({
+    serverUrl: requestServerUrl,
+    token,
+    machineFingerprint,
+    pathname: apiPath,
+    timeoutMs: requestTimeoutMs(flags, env),
+  });
+  return enrichTeamSharingContextWebLinks({
+    ...result,
+    kind: 'context',
+    linkUrl: parsed.url.toString(),
+    serverUrl: requestServerUrl,
+    ...(parsed.serverSlug ? { serverSlug: parsed.serverSlug } : {}),
+  }, {
+    serverUrl: requestServerUrl,
+    fallbackContextUrl: apiPath.replace('/api/team-sharing/context/', '/team-sharing/context/'),
+  });
+}
+
+function displayTeamSharingEventText(event = {}) {
+  return String(
+    event.displayText
+    || event.cleanText
+    || event.text
+    || event.content
+    || '',
+  ).trim();
+}
+
+function formatTeamSharingContextMarkdown(result = {}) {
+  const session = result.session || {};
+  const title = String(session.title || result.sessionId || 'MagClaw Team Sharing Context').trim();
+  const lines = [
+    `# ${title}`,
+    '',
+    `Session: ${session.sessionId || result.sessionId || ''}`,
+    result.contextWebUrl ? `Link: ${result.contextWebUrl}` : '',
+    '',
+    '## Events',
+  ].filter((line, index) => line || index === 1 || index === 4);
+  for (const event of Array.isArray(result.events) ? result.events : []) {
+    const label = String(event.actor?.name || event.role || 'event').trim();
+    const time = String(event.createdAt || '').trim();
+    lines.push('', `### ${label}${time ? ` · ${time}` : ''}`, '', displayTeamSharingEventText(event));
+  }
+  return lines.join('\n').trim();
+}
+
+function formatTeamSharingShareMarkdown(result = {}) {
+  const title = String(result.title || result.shareId || 'MagClaw Shared Page').trim();
+  const content = String(result.content || '').trim();
+  const meta = [
+    result.url ? `Link: ${result.url}` : '',
+    result.contentType ? `Type: ${result.contentType}` : '',
+    result.createdAt ? `Created: ${result.createdAt}` : '',
+  ].filter(Boolean);
+  return [
+    `# ${title}`,
+    '',
+    ...meta,
+    ...(meta.length ? [''] : []),
+    content,
+  ].join('\n').trim();
+}
+
+export function formatTeamSharingReadLinkResult(result = {}, format = 'markdown') {
+  const cleanFormat = String(format || 'markdown').trim().toLowerCase();
+  if (cleanFormat === 'json') return JSON.stringify(result, null, 2);
+  const markdown = result.kind === 'context'
+    ? formatTeamSharingContextMarkdown(result)
+    : formatTeamSharingShareMarkdown(result);
+  if (cleanFormat === 'text') {
+    return markdown
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 <$2>')
+      .trim();
+  }
+  return markdown;
+}
+
 function inferShareArtifactType(explicit = '', filePath = '') {
   const clean = String(explicit || '').trim().toLowerCase();
   if (['html', 'markdown', 'md', 'svg', 'mermaid', 'mmd'].includes(clean)) {
