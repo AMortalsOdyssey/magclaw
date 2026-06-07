@@ -2005,6 +2005,91 @@ function contextLinkApiPath(parsed = {}) {
   return `/api/team-sharing/context/${encodeURIComponent(parsed.sessionId)}${suffix}`;
 }
 
+async function inspectTeamSharingReadableLink({ serverUrl, token = '', machineFingerprint = '', linkUrl = '', timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  return teamSharingRequest({
+    serverUrl,
+    token,
+    machineFingerprint,
+    pathname: `/api/team-sharing/links/inspect?url=${encodeURIComponent(linkUrl)}`,
+    timeoutMs,
+  });
+}
+
+function inspectUnavailableForReadLink(request = {}) {
+  if (!request) return true;
+  if (request.status === 0) return true;
+  if (request.status === 404 && !request.data?.reason && !request.data?.linkType) return true;
+  if (request.status === 405) return true;
+  return false;
+}
+
+function teamSharingReadLinkLoginAction(reason = 'login_required', serverUrl = '') {
+  const cleanReason = String(reason || 'login_required').trim();
+  const message = cleanReason === 'machine_mismatch'
+    ? 'Re-login to MagClaw Team Sharing on this machine.'
+    : cleanReason === 'login_expired'
+      ? 'Team Sharing CLI login expired; login again.'
+      : 'Team Sharing CLI login is required.';
+  return {
+    type: 'login',
+    command: `team-sharing login --server-url ${normalizeServerUrl(serverUrl)}`,
+    message,
+  };
+}
+
+function localReadLinkAccessFailure({ parsed = {}, serverUrl = '', reason = 'login_required', inspection = null } = {}) {
+  const inspectData = inspection?.data && typeof inspection.data === 'object' ? inspection.data : {};
+  return {
+    ok: false,
+    kind: inspectData.kind || parsed.type || '',
+    linkType: 'magclaw_team_sharing',
+    supported: true,
+    reason,
+    linkUrl: parsed.url?.toString() || '',
+    serverUrl,
+    target: inspectData.target || (
+      parsed.type === 'share'
+        ? { shareId: parsed.shareId || '' }
+        : { sessionId: parsed.sessionId || '', serverSlug: parsed.serverSlug || '' }
+    ),
+    auth: {
+      ...(inspectData.auth || {}),
+      loggedIn: false,
+    },
+    access: {
+      ok: false,
+      reason,
+      joinRequired: false,
+    },
+    action: teamSharingReadLinkLoginAction(reason, serverUrl),
+  };
+}
+
+function readLinkAccessResultFromInspection(inspection = {}, parsed = {}, serverUrl = '') {
+  const data = inspection?.data && typeof inspection.data === 'object' ? inspection.data : {};
+  const reason = String(data.reason || data.access?.reason || (inspection?.ok ? 'ok' : 'login_required')).trim();
+  return {
+    ...data,
+    ok: Boolean(data.ok),
+    kind: data.kind || parsed.type || '',
+    linkType: data.linkType || 'magclaw_team_sharing',
+    supported: data.supported !== false,
+    reason,
+    linkUrl: parsed.url?.toString() || '',
+    serverUrl,
+    access: data.access || { ok: Boolean(data.ok), reason, joinRequired: reason === 'server_membership_required' },
+    action: data.action || (
+      reason === 'server_membership_required'
+        ? {
+            type: 'open_browser_to_join',
+            url: parsed.url?.toString() || '',
+            message: 'Open this MagClaw link in the browser, sign in, and join the server.',
+          }
+        : teamSharingReadLinkLoginAction(reason, serverUrl)
+    ),
+  };
+}
+
 export async function readTeamSharingLink(flags = {}, env = process.env) {
   const link = String(flags.url || flags.link || flags.href || flags._?.[1] || '').trim();
   const parsed = parseTeamSharingReadableLink(link);
@@ -2015,10 +2100,32 @@ export async function readTeamSharingLink(flags = {}, env = process.env) {
     throw error;
   }
   const requestServerUrl = normalizeServerUrl(flags.serverUrl || parsed.serverUrl);
-  const { token, machineFingerprint } = await resolveTeamSharingClient({
+  const { token, machineFingerprint, authIssue } = await resolveTeamSharingClient({
     ...flags,
     serverUrl: requestServerUrl,
-  }, env, { allowLogin: true });
+  }, env, { allowLogin: false });
+  const usableToken = authIssue ? '' : token;
+  const inspect = await inspectTeamSharingReadableLink({
+    serverUrl: requestServerUrl,
+    token: usableToken,
+    machineFingerprint: usableToken ? machineFingerprint : '',
+    linkUrl: parsed.url.toString(),
+    timeoutMs: requestTimeoutMs(flags, env),
+  });
+  if (authIssue) {
+    return localReadLinkAccessFailure({
+      parsed,
+      serverUrl: requestServerUrl,
+      reason: authIssue.reason || 'login_required',
+      inspection: inspectUnavailableForReadLink(inspect) ? null : inspect,
+    });
+  }
+  if (!inspectUnavailableForReadLink(inspect)) {
+    const inspectionResult = readLinkAccessResultFromInspection(inspect, parsed, requestServerUrl);
+    if (!inspect.ok || inspectionResult.access?.ok === false || inspectionResult.ok === false) {
+      return inspectionResult;
+    }
+  }
   if (parsed.type === 'share') {
     const result = await teamSharingRequestJson({
       serverUrl: requestServerUrl,
@@ -2032,6 +2139,11 @@ export async function readTeamSharingLink(flags = {}, env = process.env) {
       kind: result.kind || 'share',
       linkUrl: parsed.url.toString(),
       serverUrl: requestServerUrl,
+      ...(!inspectUnavailableForReadLink(inspect) ? {
+        inspection: inspect.data,
+        access: inspect.data?.access,
+        target: inspect.data?.target,
+      } : {}),
     };
   }
   const apiPath = contextLinkApiPath(parsed);
@@ -2048,6 +2160,11 @@ export async function readTeamSharingLink(flags = {}, env = process.env) {
     linkUrl: parsed.url.toString(),
     serverUrl: requestServerUrl,
     ...(parsed.serverSlug ? { serverSlug: parsed.serverSlug } : {}),
+    ...(!inspectUnavailableForReadLink(inspect) ? {
+      inspection: inspect.data,
+      access: inspect.data?.access,
+      target: inspect.data?.target,
+    } : {}),
   }, {
     serverUrl: requestServerUrl,
     fallbackContextUrl: apiPath.replace('/api/team-sharing/context/', '/team-sharing/context/'),
@@ -2100,9 +2217,42 @@ function formatTeamSharingShareMarkdown(result = {}) {
   ].join('\n').trim();
 }
 
+function formatTeamSharingReadLinkAccessMarkdown(result = {}) {
+  const reason = String(result.reason || result.access?.reason || 'access_required').trim();
+  const target = result.target || {};
+  const server = target.server || {};
+  const action = result.action || {};
+  const lines = [
+    '# MagClaw Team Sharing link access required',
+    '',
+    `Reason: ${reason}`,
+    target.title ? `Title: ${target.title}` : '',
+    server.name || server.slug || server.id ? `Server: ${server.name || server.slug || server.id}` : '',
+    target.shareId ? `Share: ${target.shareId}` : '',
+    target.sessionId ? `Session: ${target.sessionId}` : '',
+    '',
+    action.type ? `Action: ${action.type}` : '',
+    action.message ? action.message : '',
+    action.command ? `Command: ${action.command}` : '',
+    action.url ? `URL: ${action.url}` : '',
+  ].filter((line, index) => line || index === 1 || index === 7);
+  return lines.join('\n').trim();
+}
+
 export function formatTeamSharingReadLinkResult(result = {}, format = 'markdown') {
   const cleanFormat = String(format || 'markdown').trim().toLowerCase();
   if (cleanFormat === 'json') return JSON.stringify(result, null, 2);
+  if (result?.ok === false || result?.access?.ok === false) {
+    const markdown = formatTeamSharingReadLinkAccessMarkdown(result);
+    if (cleanFormat === 'text') {
+      return markdown
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 <$2>')
+        .trim();
+    }
+    return markdown;
+  }
   const markdown = result.kind === 'context'
     ? formatTeamSharingContextMarkdown(result)
     : formatTeamSharingShareMarkdown(result);

@@ -11,12 +11,16 @@ Use this skill when the user asks what teammates discussed, wants to align with 
 
 ## Workflow
 
-1. If the user gives a MagClaw Team Sharing share or original-context URL and asks to read, summarize, explain, or inspect it, run `team-sharing read-link "<url>" --format markdown` from the configured project directory. This uses the Team Sharing CLI login token, not browser cookies.
+1. If the user gives a MagClaw Team Sharing share or original-context URL and asks to read, summarize, explain, or inspect it, first run `team-sharing read-link "<url>" --format json` from the configured project directory, then decide the next action from the returned `reason`, `access`, and `action` fields. This uses the Team Sharing CLI login state and machine fingerprint, not browser cookies.
    - Supported links include `/s/<shareId>`, `/share/<shareId>`, `/team-sharing/context/<sessionId>`, and `/s/<serverSlug>/team-sharing/context/<sessionId>`.
-   - If `read-link` fails with `login_required` or `login_expired`, tell the user to run `team-sharing login` or `team-sharing setup`.
-   - If it fails with `machine_mismatch`, tell the user to re-login on this machine.
-   - If it fails with `server_membership_required`, tell the user to join that MagClaw server in the browser first; do not auto-join on their behalf.
-   - If it fails with `unsupported_link`, explain that only MagClaw Team Sharing share/context links are supported.
+   - If `ok` is true, use the returned `content` or `events` directly. If a clean reading view is helpful, rerun `team-sharing read-link "<url>" --format markdown`.
+   - If `reason` is `login_required` or `login_expired`, run or ask the user to run the returned `action.command` such as `team-sharing login --server-url <host>` or `team-sharing setup`.
+   - If `reason` is `machine_mismatch`, tell the user to re-login on this machine with the returned `action.command`.
+   - If `reason` is `server_membership_required` and `action.type` is `open_browser_to_join`, open or ask the user to open `action.url` in the browser. That browser flow signs in if needed, creates a one-time join token bound to the browser user, and returns to the original link after the user joins.
+   - If `reason` is `not_found`, explain that the share/session was removed or does not exist.
+   - If `reason` is `unsupported_link`, explain that only MagClaw Team Sharing share/context links are supported.
+   - A current CLI profile may point at server A while the link belongs to server B. Trust the server-side preflight result: if the token user is an active member of B, `read-link` can read B; if not, it returns `server_membership_required`.
+   - Do not infer access from the current local server selection or browser login state. Always branch from `read-link` JSON state first, then perform the returned action and retry `read-link` after login or join completes.
 2. Run `team-sharing search --query "<question>" --limit 5` from the configured project directory.
 3. Add retrieval filters when the user gives a time or search preference. Keep the default retrieval combined: keyword/BM25 and semantic/vector recall run together, then rerank.
    - Time: `--time today`, `--time yesterday`, `--time this-week`, or explicit `--from <iso> --to <iso>`.

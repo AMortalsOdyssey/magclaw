@@ -1257,6 +1257,199 @@ test('team sharing route creates an authenticated share and protects it by works
   assert.equal(scopedWrongServerIndex.statusCode, 403);
 });
 
+test('team sharing link inspection reports server access actions and token user memberships', async () => {
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_route', name: 'Ada PM', email: 'ada@example.com' } }),
+  });
+  deps.state.cloud.workspaces.push({ id: 'ws_removed', slug: 'removed-server', name: 'Removed Server' });
+  deps.state.cloud.workspaceMembers = [
+    { workspaceId: 'ws_route', humanId: 'hum_route', userId: 'usr_route', email: 'ada@example.com', role: 'owner', status: 'active' },
+    { workspaceId: 'ws_other', humanId: 'hum_route', userId: 'usr_route', email: 'ada@example.com', role: 'member', status: 'active' },
+    { workspaceId: 'ws_removed', humanId: 'hum_route', userId: 'usr_route', email: 'ada@example.com', role: 'member', status: 'removed' },
+  ];
+  deps.state.teamSharing.shares = [];
+  deps.state.teamSharing.sessions = {};
+  deps.state.teamSharing.shares.push({
+    id: 'share_other_server',
+    workspaceId: 'ws_other',
+    title: 'Other server summary',
+    description: 'Other server protected page',
+    contentType: 'markdown',
+    content: '# Other server summary\n\n跨 server 内容。',
+    creator: { id: 'hum_route', name: 'Ada PM', email: 'ada@example.com' },
+    createdAt: '2026-06-01T10:00:00.000Z',
+    updatedAt: '2026-06-01T10:00:00.000Z',
+  });
+  deps.state.teamSharing.sessions.sess_other = {
+    sessionId: 'sess_other',
+    workspaceId: 'ws_other',
+    title: 'Other server context',
+    runtime: 'codex',
+  };
+  deps.state.teamSharing.events = {
+    sess_other: [
+      { eventId: 'evt_other_1', ordinal: 1, role: 'user', text: 'Other server question', cleanText: 'Other server question', createdAt: '2026-06-01T10:01:00.000Z' },
+    ],
+  };
+
+  const fingerprint = `mfp_${'c'.repeat(64)}`;
+  const authStart = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    authStart,
+    new URL('https://magclaw.example/api/team-sharing/auth/start'),
+    { ...deps, readJson: async () => ({ machineFingerprint: fingerprint }) },
+  ), true);
+  const authToken = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    authToken,
+    new URL('https://magclaw.example/api/team-sharing/auth/token'),
+    {
+      ...deps,
+      currentActor: () => null,
+      readJson: async () => ({ deviceCode: authStart.data.deviceCode, machineFingerprint: fingerprint }),
+    },
+  ), true);
+  const authHeaders = {
+    authorization: `Bearer ${authToken.data.token}`,
+    'x-magclaw-machine-fingerprint': fingerprint,
+    host: 'magclaw.example',
+    'x-forwarded-proto': 'https',
+  };
+
+  const serversRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: authHeaders },
+    serversRes,
+    new URL('https://magclaw.example/api/team-sharing/auth/servers'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(serversRes.statusCode, 200);
+  assert.deepEqual(serversRes.data.servers.map((server) => server.id).sort(), ['ws_other', 'ws_route']);
+  assert.equal(serversRes.data.servers.find((server) => server.id === 'ws_route').current, true);
+  assert.equal(serversRes.data.servers.find((server) => server.id === 'ws_other').role, 'member');
+  assert.doesNotMatch(JSON.stringify(serversRes.data), /rawToken|tokenHash|mc_join|Bearer/i);
+
+  const serversNoToken = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    serversNoToken,
+    new URL('https://magclaw.example/api/team-sharing/auth/servers'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(serversNoToken.statusCode, 401);
+  assert.equal(serversNoToken.data.reason, 'login_required');
+
+  const noAuthInspect = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    noAuthInspect,
+    new URL('https://magclaw.example/api/team-sharing/links/inspect?url=https%3A%2F%2Fmagclaw.example%2Fs%2Fshare_other_server'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(noAuthInspect.statusCode, 200);
+  assert.equal(noAuthInspect.data.ok, false);
+  assert.equal(noAuthInspect.data.reason, 'login_required');
+  assert.equal(noAuthInspect.data.action.type, 'login');
+  assert.match(noAuthInspect.data.action.command, /team-sharing login --server-url https:\/\/magclaw\.example/);
+
+  const shareInspect = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: authHeaders },
+    shareInspect,
+    new URL('https://magclaw.example/api/team-sharing/links/inspect?url=https%3A%2F%2Fmagclaw.example%2Fs%2Fshare_other_server'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(shareInspect.statusCode, 200);
+  assert.equal(shareInspect.data.ok, true);
+  assert.equal(shareInspect.data.reason, 'ok');
+  assert.equal(shareInspect.data.kind, 'share');
+  assert.equal(shareInspect.data.target.workspaceId, 'ws_other');
+  assert.equal(shareInspect.data.target.server.slug, 'other-server');
+  assert.equal(shareInspect.data.auth.via, 'token_membership');
+  assert.equal(shareInspect.data.action.type, 'read_link');
+
+  const shareRead = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: authHeaders },
+    shareRead,
+    new URL('https://magclaw.example/api/team-sharing/shares/share_other_server'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(shareRead.statusCode, 200);
+  assert.equal(shareRead.data.workspaceId, 'ws_other');
+  assert.match(shareRead.data.content, /跨 server 内容/);
+
+  const contextInspect = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: authHeaders },
+    contextInspect,
+    new URL('https://magclaw.example/api/team-sharing/links/inspect?url=https%3A%2F%2Fmagclaw.example%2Fs%2Fother-server%2Fteam-sharing%2Fcontext%2Fsess_other%3FanchorEventId%3Devt_1'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(contextInspect.statusCode, 200);
+  assert.equal(contextInspect.data.ok, true);
+  assert.equal(contextInspect.data.kind, 'context');
+  assert.equal(contextInspect.data.target.sessionId, 'sess_other');
+  assert.equal(contextInspect.data.auth.via, 'token_membership');
+
+  const contextRead = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: authHeaders },
+    contextRead,
+    new URL('https://magclaw.example/api/team-sharing/context/sess_other?limit=1&order=asc'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(contextRead.statusCode, 200);
+  assert.equal(contextRead.data.session.workspaceId, 'ws_other');
+
+  deps.state.cloud.workspaceMembers.find((member) => member.workspaceId === 'ws_other').status = 'removed';
+  const memberRequired = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: authHeaders },
+    memberRequired,
+    new URL('https://magclaw.example/api/team-sharing/links/inspect?url=https%3A%2F%2Fmagclaw.example%2Fs%2Fother-server%2Fteam-sharing%2Fcontext%2Fsess_other'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(memberRequired.statusCode, 200);
+  assert.equal(memberRequired.data.ok, false);
+  assert.equal(memberRequired.data.reason, 'server_membership_required');
+  assert.equal(memberRequired.data.access.joinRequired, true);
+  assert.equal(memberRequired.data.action.type, 'open_browser_to_join');
+  assert.equal(memberRequired.data.action.url, 'https://magclaw.example/s/other-server/team-sharing/context/sess_other');
+
+  const rejectedRead = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: authHeaders },
+    rejectedRead,
+    new URL('https://magclaw.example/api/team-sharing/shares/share_other_server'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(rejectedRead.statusCode, 403);
+  assert.equal(rejectedRead.data.reason, 'server_membership_required');
+
+  const missingInspect = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: authHeaders },
+    missingInspect,
+    new URL('https://magclaw.example/api/team-sharing/links/inspect?url=https%3A%2F%2Fmagclaw.example%2Fs%2Fshare_missing'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(missingInspect.statusCode, 404);
+  assert.equal(missingInspect.data.reason, 'not_found');
+
+  const unsupportedInspect = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: authHeaders },
+    unsupportedInspect,
+    new URL('https://magclaw.example/api/team-sharing/links/inspect?url=https%3A%2F%2Fmagclaw.example%2Fconsole'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(unsupportedInspect.statusCode, 400);
+  assert.equal(unsupportedInspect.data.reason, 'unsupported_link');
+});
+
 test('team sharing route serves a dynamic context html page without creating static files', async () => {
   const deps = routeDeps({ readJson: async () => syncBody() });
   await handleTeamSharingApi(

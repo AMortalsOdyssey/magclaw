@@ -1594,6 +1594,60 @@ test('team sharing cli read-link reads protected share and context links with pr
     calls.push({ url: String(url), init });
     assert.equal(init.headers.authorization, 'Bearer team-sharing-token-secret');
     assert.match(init.headers['x-magclaw-machine-fingerprint'], /^mfp_[a-f0-9]{64}$/);
+    if (String(url).includes('/api/team-sharing/links/inspect')) {
+      const inspected = new URL(String(url)).searchParams.get('url') || '';
+      if (inspected.includes('/s/share_cli')) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            kind: 'share',
+            linkType: 'magclaw_team_sharing',
+            supported: true,
+            reason: 'ok',
+            target: { shareId: 'share_cli', workspaceId: 'ws_team', server: { id: 'ws_team', slug: 'team-server', name: 'Team Server' }, title: 'Rerank 分享页' },
+            auth: { loggedIn: true, via: 'token', currentWorkspaceId: 'ws_team', servers: [] },
+            access: { ok: true, reason: 'ok', joinRequired: false },
+            action: { type: 'read_link' },
+          }),
+        };
+      }
+      if (inspected.includes('/team-sharing/context/sess_1')) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            kind: 'context',
+            linkType: 'magclaw_team_sharing',
+            supported: true,
+            reason: 'ok',
+            target: { sessionId: 'sess_1', workspaceId: 'ws_team', server: { id: 'ws_team', slug: 'team-server', name: 'Team Server' }, title: '原始上下文' },
+            auth: { loggedIn: true, via: 'token_membership', currentWorkspaceId: 'ws_team', servers: [] },
+            access: { ok: true, reason: 'ok', joinRequired: false },
+            action: { type: 'read_link' },
+          }),
+        };
+      }
+      if (inspected.includes('/s/share_denied')) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: false,
+            kind: 'share',
+            linkType: 'magclaw_team_sharing',
+            supported: true,
+            reason: 'server_membership_required',
+            target: { shareId: 'share_denied', workspaceId: 'ws_other', server: { id: 'ws_other', slug: 'other-server', name: 'Other Server' }, title: 'Denied share' },
+            auth: { loggedIn: true, via: 'token', currentWorkspaceId: 'ws_team', servers: [] },
+            access: { ok: false, reason: 'server_membership_required', joinRequired: true },
+            action: { type: 'open_browser_to_join', url: 'https://magclaw.example/s/share_denied', message: 'Open this MagClaw link in the browser, sign in, and join the server.' },
+          }),
+        };
+      }
+      if (inspected.includes('/s/share_legacy')) {
+        return { ok: false, status: 404, statusText: 'Not Found', json: async () => ({}) };
+      }
+    }
     if (String(url).includes('/api/team-sharing/shares/share_cli')) {
       return {
         ok: true,
@@ -1611,6 +1665,23 @@ test('team sharing cli read-link reads protected share and context links with pr
           creator: { id: 'hum_1', name: 'Ada' },
           createdAt: '2026-06-06T10:00:00.000Z',
           url: 'https://magclaw.example/s/share_cli',
+        }),
+      };
+    }
+    if (String(url).includes('/api/team-sharing/shares/share_legacy')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          kind: 'share',
+          shareId: 'share_legacy',
+          title: 'Legacy server share',
+          contentType: 'markdown',
+          content: '旧服务端 fallback 正文。',
+          workspaceId: 'ws_team',
+          creator: { id: 'hum_1', name: 'Ada' },
+          createdAt: '2026-06-06T10:00:00.000Z',
+          url: 'https://magclaw.example/s/share_legacy',
         }),
       };
     }
@@ -1641,7 +1712,10 @@ test('team sharing cli read-link reads protected share and context links with pr
     const shareJson = formatTeamSharingReadLinkResult(share, 'json');
 
     assert.equal(share.kind, 'share');
-    assert.equal(calls[0].url, 'https://magclaw.example/api/team-sharing/shares/share_cli');
+    assert.match(calls[0].url, /https:\/\/magclaw\.example\/api\/team-sharing\/links\/inspect\?/);
+    assert.equal(new URL(calls[0].url).searchParams.get('url'), 'https://magclaw.example/s/share_cli');
+    assert.equal(calls[1].url, 'https://magclaw.example/api/team-sharing/shares/share_cli');
+    assert.equal(share.access.ok, true);
     assert.match(shareMarkdown, /# Rerank 分享页/);
     assert.match(shareMarkdown, /先召回，再重排/);
     assert.match(shareText, /Rerank 分享页/);
@@ -1655,18 +1729,86 @@ test('team sharing cli read-link reads protected share and context links with pr
     }, env);
     const contextMarkdown = formatTeamSharingReadLinkResult(context, 'markdown');
     assert.equal(context.kind, 'context');
-    assert.match(calls[1].url, /https:\/\/magclaw\.example\/api\/team-sharing\/context\/sess_1\?/);
-    assert.match(calls[1].url, /anchorEventId=evt_1/);
-    assert.match(calls[1].url, /limit=2/);
+    assert.match(calls[2].url, /https:\/\/magclaw\.example\/api\/team-sharing\/links\/inspect\?/);
+    assert.match(calls[3].url, /https:\/\/magclaw\.example\/api\/team-sharing\/context\/sess_1\?/);
+    assert.match(calls[3].url, /anchorEventId=evt_1/);
+    assert.match(calls[3].url, /limit=2/);
     assert.match(context.contextWebUrl, /https:\/\/magclaw\.example\/team-sharing\/context\/sess_1/);
     assert.match(contextMarkdown, /# 原始上下文/);
     assert.match(contextMarkdown, /用户问题/);
     assert.match(contextMarkdown, /Agent 回答/);
 
+    const denied = await readTeamSharingLink({ cwd, _: ['read-link', 'https://magclaw.example/s/share_denied'] }, env);
+    const deniedMarkdown = formatTeamSharingReadLinkResult(denied, 'markdown');
+    const deniedText = formatTeamSharingReadLinkResult(denied, 'text');
+    assert.equal(denied.ok, false);
+    assert.equal(denied.reason, 'server_membership_required');
+    assert.equal(denied.action.type, 'open_browser_to_join');
+    assert.match(deniedMarkdown, /MagClaw Team Sharing link access required/);
+    assert.match(deniedMarkdown, /open_browser_to_join/);
+    assert.match(deniedText, /Other Server/);
+    assert.equal(calls.some((call) => String(call.url).includes('/api/team-sharing/shares/share_denied')), false);
+
+    const legacy = await readTeamSharingLink({ cwd, _: ['read-link', 'https://magclaw.example/s/share_legacy'] }, env);
+    assert.equal(legacy.kind, 'share');
+    assert.equal(legacy.shareId, 'share_legacy');
+    assert.match(legacy.content, /fallback/);
+
     await assert.rejects(
       () => readTeamSharingLink({ cwd, _: ['read-link', 'https://magclaw.example/console'] }, env),
       /Unsupported MagClaw Team Sharing link/,
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing cli read-link returns structured login action when CLI token is missing', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-read-link-login-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-read-link-login-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    assert.equal(init.headers.authorization, undefined);
+    assert.equal(init.headers['x-magclaw-machine-fingerprint'], undefined);
+    assert.match(String(url), /\/api\/team-sharing\/links\/inspect\?/);
+    return {
+      ok: true,
+      json: async () => ({
+        ok: false,
+        kind: 'share',
+        linkType: 'magclaw_team_sharing',
+        supported: true,
+        reason: 'login_required',
+        target: { shareId: 'share_cli', workspaceId: 'ws_team', server: { id: 'ws_team', slug: 'team-server', name: 'Team Server' } },
+        auth: { loggedIn: false, via: 'none', currentWorkspaceId: '', servers: [] },
+        access: { ok: false, reason: 'login_required', joinRequired: false },
+        action: { type: 'login', command: 'team-sharing login --server-url https://magclaw.example', message: 'Team Sharing CLI login is required.' },
+      }),
+    };
+  };
+  try {
+    const result = await readTeamSharingLink({ cwd, _: ['read-link', 'https://magclaw.example/s/share_cli'] }, env);
+    const markdown = formatTeamSharingReadLinkResult(result, 'markdown');
+    const json = formatTeamSharingReadLinkResult(result, 'json');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'login_required');
+    assert.equal(result.action.type, 'login');
+    assert.match(result.action.command, /team-sharing login --server-url https:\/\/magclaw\.example/);
+    assert.match(markdown, /MagClaw Team Sharing link access required/);
+    assert.match(markdown, /login_required/);
+    assert.equal(calls.length, 1);
+    assert.doesNotMatch(json, /team-sharing-token-secret|Bearer/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1786,9 +1928,16 @@ test('team sharing cli installs a local skill without writing token into skill f
   assert.equal(result.scope, 'project');
   assert.equal(result.feedback.status, 'ready');
   assert.match(result.feedback.sections.map((section) => section.title).join(','), /Skill 说明/);
-  assert.match(skill, /team-sharing read-link "<url>" --format markdown/);
+  assert.match(skill, /team-sharing read-link "<url>" --format json/);
+  assert.match(skill, /reason.*access.*action/);
+  assert.match(skill, /CLI login state and machine fingerprint/);
   assert.match(skill, /not browser cookies/);
+  assert.match(skill, /open_browser_to_join/);
+  assert.match(skill, /current CLI profile may point at server A/);
+  assert.match(skill, /link belongs to server B/);
+  assert.match(skill, /Trust the server-side preflight result/);
   assert.match(skill, /server_membership_required/);
+  assert.match(skill, /not_found/);
   assert.match(skill, /unsupported_link/);
   assert.match(skill, /team-sharing search/);
   assert.match(skill, /team-sharing context/);
