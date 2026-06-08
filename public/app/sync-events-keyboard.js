@@ -1848,6 +1848,7 @@ function eventStreamPathForCurrentSelection() {
   params.set('spaceId', selectedSpaceId || '');
   if (threadMessageId) params.set('threadMessageId', threadMessageId);
   if (lastSseSeq) params.set('lastSeq', String(lastSseSeq));
+  params.set('presence', 'defer');
   params.set('messageLimit', '80');
   params.set('threadRootLimit', '160');
   return `/api/events?${params.toString()}`;

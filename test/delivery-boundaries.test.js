@@ -22,11 +22,11 @@ test('root exposes separate web service and daemon delivery scripts', async () =
 
   const daemonPackage = await readJson('daemon/package.json');
   assert.equal(daemonPackage.name, '@magclaw/daemon');
-  assert.deepEqual(daemonPackage.files, ['bin/', 'README.md']);
+  assert.deepEqual(daemonPackage.files, ['bin/', 'RELEASE_NOTES.md', 'README.md']);
 
   const cliCorePackage = await readJson('cli-core/package.json');
   assert.equal(cliCorePackage.name, '@magclaw/cli-core');
-  assert.deepEqual(cliCorePackage.files, ['bin/', 'src/', 'README.md']);
+  assert.deepEqual(cliCorePackage.files, ['bin/', 'src/', 'RELEASE_NOTES.md', 'README.md']);
 });
 
 test('web Dockerfile builds the cloud service boundary and upload mount target', async () => {

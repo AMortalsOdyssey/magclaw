@@ -1355,8 +1355,13 @@ export function createStateCore(deps) {
     });
   }
 
-  function writePresenceHeartbeatPacket(res, entry, { force = false } = {}) {
+  function writePresenceHeartbeatPacket(res, entry, { force = false, seedOnly = false } = {}) {
     if (!res || !entry) return false;
+    if (seedOnly) {
+      res.magclawPresenceHeartbeatSignature = entry.signature;
+      writeSsePacket(res, entry.keepalivePacket, { coalesceKey: 'heartbeat-keepalive' });
+      return false;
+    }
     if (!force && res.magclawPresenceHeartbeatSignature === entry.signature) {
       writeSsePacket(res, entry.keepalivePacket, { coalesceKey: 'heartbeat-keepalive' });
       return false;

@@ -10,6 +10,7 @@ const BUDGETS = Object.freeze({
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 400_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
+  deferredOpenBytes: Number(process.env.MAGCLAW_PERF_DEFERRED_OPEN_BYTES || 10_000),
   repeatedHeartbeatBytes: Number(process.env.MAGCLAW_PERF_REPEATED_HEARTBEAT_BYTES || 10_000),
   stateChangeFanoutBytes: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_BYTES || 1_400_000),
   stateChangeFanoutEvents: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_EVENTS || 2_000),
@@ -270,13 +271,19 @@ async function measureRepeatedHeartbeatFanout(state) {
     }));
     for (const client of clients) sseClients.add(client);
 
+    for (const client of clients) {
+      core.writePresenceHeartbeat(client, client.magclawRequest, { seedOnly: true });
+    }
+    const deferredOpenWrites = clients.flatMap((client) => client.writes);
     core.broadcastHeartbeat();
-    const firstWrites = clients.flatMap((client) => client.writes);
+    const firstWrites = clients.flatMap((client) => client.writes.slice(1));
     core.broadcastHeartbeat();
-    const repeatedWrites = clients.flatMap((client) => client.writes.slice(1));
+    const repeatedWrites = clients.flatMap((client) => client.writes.slice(2));
 
     return {
       clients: clients.length,
+      deferredOpenBytes: deferredOpenWrites.reduce((sum, packet) => sum + Buffer.byteLength(packet, 'utf8'), 0),
+      deferredOpenHeartbeatEvents: deferredOpenWrites.filter((packet) => packet.startsWith('event: heartbeat\n')).length,
       firstBytes: firstWrites.reduce((sum, packet) => sum + Buffer.byteLength(packet, 'utf8'), 0),
       firstHeartbeatEvents: firstWrites.filter((packet) => packet.startsWith('event: heartbeat\n')).length,
       repeatedBytes: repeatedWrites.reduce((sum, packet) => sum + Buffer.byteLength(packet, 'utf8'), 0),
@@ -403,6 +410,8 @@ async function main() {
   assertBudget(heartbeat.ms <= BUDGETS.heartbeatMs, `heartbeat ${heartbeat.ms}ms exceeds ${BUDGETS.heartbeatMs}ms`);
   assertBudget(heartbeat.bytes <= BUDGETS.heartbeatBytes, `heartbeat ${heartbeat.bytes} bytes exceeds ${BUDGETS.heartbeatBytes}`);
   assertBudget(!heartbeat.hasInternalFields, 'heartbeat leaked internal payload fields');
+  assertBudget(repeatedHeartbeat.deferredOpenBytes <= BUDGETS.deferredOpenBytes, `deferred SSE open ${repeatedHeartbeat.deferredOpenBytes} bytes exceeds ${BUDGETS.deferredOpenBytes}`);
+  assertBudget(repeatedHeartbeat.deferredOpenHeartbeatEvents === 0, 'deferred SSE open sent heartbeat payload events');
   assertBudget(repeatedHeartbeat.repeatedBytes <= BUDGETS.repeatedHeartbeatBytes, `repeated heartbeat fanout ${repeatedHeartbeat.repeatedBytes} bytes exceeds ${BUDGETS.repeatedHeartbeatBytes}`);
   assertBudget(repeatedHeartbeat.repeatedHeartbeatEvents === 0, 'unchanged repeated heartbeat sent payload events');
   assertBudget(stateChangeFanout.totalBytes <= BUDGETS.stateChangeFanoutBytes, `state change fanout ${stateChangeFanout.totalBytes} bytes exceeds ${BUDGETS.stateChangeFanoutBytes}`);

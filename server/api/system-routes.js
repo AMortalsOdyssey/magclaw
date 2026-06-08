@@ -370,8 +370,9 @@ export async function handleSystemApi(req, res, url, deps) {
         }
       }
     }
+    const deferPresence = url.searchParams.get('presence') === 'defer';
     if (typeof writePresenceHeartbeat === 'function') {
-      writePresenceHeartbeat(res, req, { force: true });
+      writePresenceHeartbeat(res, req, deferPresence ? { seedOnly: true } : { force: true });
     } else {
       res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat(req))}\n\n`);
     }

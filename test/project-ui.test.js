@@ -2702,6 +2702,7 @@ test('event stream follows the selected conversation bootstrap window', async ()
   assert.match(eventSource, /new URLSearchParams\(\)/);
   assert.match(eventSource, /params\.set\('spaceType', selectedSpaceType/);
   assert.match(eventSource, /params\.set\('spaceId', selectedSpaceId/);
+  assert.match(eventSource, /params\.set\('presence', 'defer'\)/);
   assert.match(eventSource, /params\.set\('messageLimit', '80'\)/);
   assert.match(eventSource, /return `\/api\/events\?\$\{params\.toString\(\)\}`/);
   assert.match(eventSource, /eventSourcePath === eventPath/);

@@ -54,8 +54,9 @@ agents, 20000 messages, 1000 replies, and 2000 tasks. It currently enforces:
   history.
 - Presence heartbeat JSON is at most 400 KB and generated in at most 50 ms.
 - Heartbeats include no internal agent runtime payload fields.
-- Repeated unchanged heartbeat fanout to 100 SSE clients stays under 10 KB and
-  sends no `event: heartbeat` payloads.
+- Deferred post-bootstrap SSE open plus repeated unchanged heartbeat fanout to
+  100 SSE clients each stay under 10 KB and send no `event: heartbeat`
+  payloads.
 - A burst of 10 status-only agent updates fanned out to 100 SSE clients stays
   under 1.4 MB total, sends at most 2000 realtime events, and sends no
   heartbeat payloads or resync events.

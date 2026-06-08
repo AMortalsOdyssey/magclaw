@@ -260,6 +260,32 @@ test('system event stream opens without a full bootstrap state patch', async () 
   assert.equal(deps.sseClients.has(res), true);
 });
 
+test('system event stream can defer the initial presence heartbeat after bootstrap', async () => {
+  let writeHeartbeatCalls = 0;
+  const deps = routeDeps({
+    writePresenceHeartbeat: (outRes, _incomingReq, options = {}) => {
+      writeHeartbeatCalls += 1;
+      assert.deepEqual(options, { seedOnly: true });
+      outRes.write(': heartbeat-unchanged\n\n');
+    },
+  });
+  const res = makeResponse();
+  const req = { method: 'GET', url: '/api/events?presence=defer', on: () => {} };
+
+  assert.equal(await handleSystemApi(
+    req,
+    res,
+    new URL('http://local/api/events?presence=defer'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(eventNamesFromWrites(res.writes), []);
+  assert.equal(res.writes.join(''), ': heartbeat-unchanged\n\n');
+  assert.equal(writeHeartbeatCalls, 1);
+  assert.equal(deps.sseClients.has(res), true);
+});
+
 test('system event stream replays realtime events without sending bootstrap state', async () => {
   let publicBootstrapCalls = 0;
   const deps = routeDeps({
