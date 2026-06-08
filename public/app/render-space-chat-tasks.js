@@ -317,6 +317,7 @@ function renderDmTasks(tasks) {
         <button class="primary-btn" type="button" data-action="open-modal" data-modal="task">+ New Task</button>
       </div>
       ${visibleTasks.length ? `<div class="dm-task-list">${visibleTasks.map(renderTaskCard).join('')}</div>` : '<div class="dm-task-empty">No tasks yet. Create one to get started!</div>'}
+      ${renderTaskLoadMoreControl('space')}
     </section>
   `;
 }
@@ -2434,10 +2435,32 @@ function renderTaskPageEmptyState(variant) {
   `;
 }
 
+function renderTaskLoadMoreControl(scope = 'space', pageInfo = null) {
+  const info = pageInfo || (typeof currentTaskSurfacePage === 'function'
+    ? currentTaskSurfacePage(scope)
+    : null);
+  if (!info?.hasMore || !info.nextBefore) return '';
+  const loadingState = typeof taskHistoryLoading !== 'undefined'
+    ? taskHistoryLoading
+    : { space: {}, global: false };
+  const loading = scope === 'global'
+    ? Boolean(loadingState.global)
+    : Boolean(loadingState.space?.[typeof taskPageKey === 'function' ? taskPageKey() : '']);
+  return `
+    <div class="task-load-more-row">
+      <button class="secondary-btn task-load-more" type="button" data-action="load-older-tasks" data-scope="${escapeHtml(scope)}" ${loading ? 'disabled' : ''}>
+        ${loading ? 'Loading...' : 'Load older tasks'}
+      </button>
+    </div>
+  `;
+}
+
 function renderTaskSurface(tasks, options = {}) {
-  if (!tasks.length) return renderTaskPageEmptyState(options.emptyVariant || 'empty');
+  const loadMore = renderTaskLoadMoreControl(options.loadMoreScope || 'space', options.pageInfo || null);
+  if (!tasks.length) return `${renderTaskPageEmptyState(options.emptyVariant || 'empty')}${loadMore}`;
   const viewMode = currentTaskViewMode();
-  return viewMode === 'list' ? renderTaskListView(tasks) : renderTaskBoard(tasks);
+  const surface = viewMode === 'list' ? renderTaskListView(tasks) : renderTaskBoard(tasks);
+  return `${surface}${loadMore}`;
 }
 
 function renderTaskViewToggle() {
@@ -2596,6 +2619,7 @@ function renderGlobalTasks() {
       </header>
       ${renderTaskToolbar(channelTasks, filteredTasks)}
       ${filteredTasks.length ? (viewMode === 'list' ? renderTaskListView(filteredTasks) : renderTaskBoard(filteredTasks)) : renderTaskPageEmptyState(channelTasks.length ? 'filter' : 'empty')}
+      ${renderTaskLoadMoreControl('global', typeof currentGlobalTaskPage === 'function' ? currentGlobalTaskPage() : null)}
     </section>
   `;
 }

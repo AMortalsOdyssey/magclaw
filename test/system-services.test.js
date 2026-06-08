@@ -215,6 +215,53 @@ test('bootstrap state limits selected thread replies to the loaded page', () => 
   assert.equal(snapshot.replies.some((reply) => reply.id === 'rep_001'), false);
 });
 
+test('bootstrap state windows task hydration and keeps referenced task records', () => {
+  const baseTime = Date.parse('2026-05-18T00:00:00.000Z');
+  const services = makeServices((state) => {
+    state.tasks = Array.from({ length: 120 }, (_, index) => {
+      const position = index + 1;
+      const updatedAt = new Date(baseTime + position * 60_000).toISOString();
+      return {
+        id: `task_${String(position).padStart(3, '0')}`,
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        title: `Task ${position}`,
+        status: 'todo',
+        createdAt: updatedAt,
+        updatedAt,
+      };
+    });
+    state.messages.push({
+      id: 'msg_old_task_reference',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      taskId: 'task_001',
+      body: 'old referenced task',
+      createdAt: new Date(baseTime + 130 * 60_000).toISOString(),
+      updatedAt: new Date(baseTime + 130 * 60_000).toISOString(),
+    });
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&taskLimit=40',
+    headers: {},
+  });
+  const taskIds = snapshot.tasks.map((task) => task.id);
+
+  assert.equal(snapshot.bootstrap.tasks.limit, 40);
+  assert.equal(snapshot.bootstrap.tasks.openCount, 120);
+  assert.equal(snapshot.bootstrap.tasks.space.hasMore, true);
+  assert.equal(snapshot.bootstrap.tasks.space.nextBeforeId, 'task_081');
+  assert.equal(snapshot.bootstrap.tasks.global.hasMore, true);
+  assert.equal(taskIds.includes('task_120'), true);
+  assert.equal(taskIds.includes('task_081'), true);
+  assert.equal(taskIds.includes('task_080'), false);
+  assert.equal(taskIds.includes('task_001'), true);
+  assert.ok(snapshot.tasks.length <= 41);
+});
+
 test('bootstrap state formats Team Sharing interaction replies as paired questions and answers', () => {
   const services = makeServices((state) => {
     state.messages[0].replyCount = 1;

@@ -231,6 +231,16 @@
   font-size: 12px;
 }
 
+.task-load-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 12px 20px 18px;
+}
+
+.task-load-more {
+  min-width: 180px;
+}
+
 .task-channel-filter {
   position: relative;
 }

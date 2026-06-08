@@ -922,6 +922,31 @@ test('task clicks merge returned task updates before falling back to full refres
   assert.match(finallySource, /if \(!localOnlyActions\.has\(action\) && !skipFinalRefresh\) \{[\s\S]*await refreshStateOrAuthGate\(\)\.catch\(\(\) => \{\}\)/);
 });
 
+test('task surfaces load older pages through cursor-backed task API', async () => {
+  const app = await readAppSource();
+  const bootstrapSource = app.slice(
+    app.indexOf('function bootstrapStatePath()'),
+    app.indexOf('let packageVersionRefreshInFlight'),
+  );
+  const taskPagingSource = app.slice(
+    app.indexOf('async function loadOlderTasks'),
+    app.indexOf('function maybeLoadOlderConversationHistory'),
+  );
+  const clickStart = app.indexOf("document.addEventListener('click'");
+  const clickSource = app.slice(
+    clickStart,
+    app.indexOf('async function tryCopyTextToClipboard', clickStart),
+  );
+
+  assert.match(bootstrapSource, /params\.set\('taskLimit', '160'\)/);
+  assert.match(taskPagingSource, /async function loadOlderTasks\(scope = ''\)/);
+  assert.match(taskPagingSource, /params\.set\('before', pageInfo\.nextBefore\)/);
+  assert.match(taskPagingSource, /params\.set\('beforeId', pageInfo\.nextBeforeId\)/);
+  assert.match(taskPagingSource, /api\(`\/api\/tasks\?\$\{params\.toString\(\)\}`\)/);
+  assert.match(taskPagingSource, /mergeTaskPageIntoState\(appState, result\.tasks \|\| \[\]\)/);
+  assert.match(clickSource, /if \(action === 'load-older-tasks'\) \{[\s\S]*await loadOlderTasks\(target\.dataset\.scope \|\| ''\)/);
+});
+
 test('current human authors are marked and human inspector can return to the active thread', async () => {
   const app = await readAppSource();
   const actorNameSource = app.slice(

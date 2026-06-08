@@ -5,6 +5,7 @@ function bootstrapStatePath() {
   if (threadMessageId) params.set('threadMessageId', threadMessageId);
   params.set('messageLimit', '80');
   params.set('threadRootLimit', '160');
+  params.set('taskLimit', '160');
   return `/api/bootstrap?${params.toString()}`;
 }
 
@@ -371,6 +372,10 @@ function threadPageKey(messageId = threadMessageId) {
   return String(messageId || '');
 }
 
+function taskPageKey(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  return `${spaceType || 'channel'}:${spaceId || ''}`;
+}
+
 function normalizePageInfo(value = {}, fallbackLimit = CONVERSATION_HISTORY_PAGE_SIZE) {
   return {
     limit: Number(value.limit || fallbackLimit),
@@ -378,6 +383,47 @@ function normalizePageInfo(value = {}, fallbackLimit = CONVERSATION_HISTORY_PAGE
     nextBefore: value.nextBefore || '',
     nextBeforeId: value.nextBeforeId || '',
   };
+}
+
+function normalizeTaskPageInfo(value = {}, fallbackLimit = TASK_HISTORY_PAGE_SIZE) {
+  return {
+    limit: Number(value.limit || fallbackLimit),
+    loaded: Number(value.loaded || 0),
+    total: Number(value.total || 0),
+    hasMore: Boolean(value.hasMore),
+    nextBefore: value.nextBefore || '',
+    nextBeforeId: value.nextBeforeId || '',
+  };
+}
+
+function taskPageCursorRank(pageInfo = {}) {
+  const time = Date.parse(pageInfo.nextBefore || '');
+  return {
+    time: Number.isFinite(time) ? time : Number.POSITIVE_INFINITY,
+    id: String(pageInfo.nextBeforeId || ''),
+  };
+}
+
+function mergeTaskPageInfo(existing = null, incoming = {}) {
+  const next = normalizeTaskPageInfo(incoming);
+  if (!existing) return next;
+  const current = normalizeTaskPageInfo(existing);
+  if (current.hasMore === false && current.nextBefore) {
+    return { ...next, ...current, total: Math.max(next.total, current.total) };
+  }
+  const currentRank = taskPageCursorRank(current);
+  const nextRank = taskPageCursorRank(next);
+  const currentIsOlder = currentRank.time < nextRank.time
+    || (currentRank.time === nextRank.time && currentRank.id && nextRank.id && currentRank.id.localeCompare(nextRank.id) < 0);
+  if (currentIsOlder) {
+    return {
+      ...next,
+      ...current,
+      loaded: Math.max(next.loaded, current.loaded),
+      total: Math.max(next.total, current.total),
+    };
+  }
+  return next;
 }
 
 function updateMainHistoryPage(spaceType, spaceId, pagination = {}) {
@@ -409,6 +455,29 @@ function currentThreadHistoryPage(messageId = threadMessageId) {
   };
 }
 
+function updateSpaceTaskPage(spaceType, spaceId, pagination = {}) {
+  const key = taskPageKey(spaceType, spaceId);
+  taskHistoryPages.space[key] = mergeTaskPageInfo(taskHistoryPages.space[key], pagination);
+}
+
+function updateGlobalTaskPage(pagination = {}) {
+  taskHistoryPages.global = mergeTaskPageInfo(taskHistoryPages.global, pagination);
+}
+
+function currentSpaceTaskPage(spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  const key = taskPageKey(spaceType, spaceId);
+  return taskHistoryPages.space[key] || normalizeTaskPageInfo(appState?.bootstrap?.tasks?.space || {});
+}
+
+function currentGlobalTaskPage() {
+  return taskHistoryPages.global || normalizeTaskPageInfo(appState?.bootstrap?.tasks?.global || {});
+}
+
+function currentTaskSurfacePage(scope = '') {
+  if (scope === 'global' || activeView === 'tasks') return currentGlobalTaskPage();
+  return currentSpaceTaskPage();
+}
+
 function syncBootstrapPagination(stateSnapshot = appState) {
   const bootstrap = stateSnapshot?.bootstrap || {};
   if (bootstrap.spaceType && bootstrap.spaceId) {
@@ -421,6 +490,12 @@ function syncBootstrapPagination(stateSnapshot = appState) {
   }
   if (bootstrap.threadReplies && threadMessageId) {
     updateThreadHistoryPage(threadMessageId, bootstrap.threadReplies);
+  }
+  if (bootstrap.tasks?.space && bootstrap.spaceType && bootstrap.spaceId) {
+    updateSpaceTaskPage(bootstrap.spaceType, bootstrap.spaceId, bootstrap.tasks.space);
+  }
+  if (bootstrap.tasks?.global) {
+    updateGlobalTaskPage(bootstrap.tasks.global);
   }
 }
 
@@ -490,6 +565,38 @@ function mergeThreadReplyPageIntoState(stateSnapshot, parentMessageId, replies =
   };
 }
 
+function taskRecordFreshnessTime(record) {
+  return Math.max(
+    Date.parse(record?.updatedAt || '') || 0,
+    Date.parse(record?.createdAt || '') || 0,
+  );
+}
+
+function mergeTaskRecordKeepingFreshest(existing = null, incoming = null) {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  return taskRecordFreshnessTime(existing) >= taskRecordFreshnessTime(incoming)
+    ? { ...incoming, ...existing }
+    : { ...existing, ...incoming };
+}
+
+function mergeTaskPageIntoState(stateSnapshot, tasks = []) {
+  if (!stateSnapshot) return stateSnapshot;
+  const incoming = (tasks || []).filter((task) => task?.id);
+  if (!incoming.length) return stateSnapshot;
+  const taskById = new Map((stateSnapshot.tasks || []).map((task) => [task.id, task]));
+  for (const task of incoming) {
+    taskById.set(task.id, mergeTaskRecordKeepingFreshest(taskById.get(task.id), task));
+  }
+  const mergedTasks = [...taskById.values()]
+    .sort((a, b) => {
+      const timeDiff = taskRecordFreshnessTime(b) - taskRecordFreshnessTime(a);
+      if (timeDiff) return timeDiff;
+      return String(b?.id || '').localeCompare(String(a?.id || ''));
+    });
+  return { ...stateSnapshot, tasks: mergedTasks };
+}
+
 async function refreshOpenThreadReplies(parentMessageId = threadMessageId) {
   const messageId = String(parentMessageId || '').trim();
   if (!messageId || !appState) return false;
@@ -541,6 +648,21 @@ function preserveLoadedConversationHistory(previousState, nextState) {
     const previousReplies = stateThreadReplies(previousState, threadKey)
       .filter((record) => record.optimistic !== true);
     merged = mergeThreadReplyPageIntoState(merged, threadKey, previousReplies);
+  }
+  const taskPages = typeof taskHistoryPages !== 'undefined' ? taskHistoryPages : { space: {}, global: null };
+  if (taskPages.global) {
+    const previousGlobalTasks = (previousState.tasks || [])
+      .filter((task) => task?.spaceType === 'channel');
+    merged = mergeTaskPageIntoState(merged, previousGlobalTasks);
+  }
+  for (const key of Object.keys(taskPages.space || {})) {
+    const separator = key.indexOf(':');
+    const spaceType = separator >= 0 ? key.slice(0, separator) : '';
+    const spaceId = separator >= 0 ? key.slice(separator + 1) : '';
+    if (!spaceType || !spaceId) continue;
+    const previousSpaceTasks = (previousState.tasks || [])
+      .filter((task) => task?.spaceType === spaceType && String(task.spaceId || '') === spaceId);
+    merged = mergeTaskPageIntoState(merged, previousSpaceTasks);
   }
   return merged;
 }
@@ -614,6 +736,44 @@ async function loadOlderThreadReplies() {
     return false;
   } finally {
     conversationHistoryLoading.thread[messageId] = false;
+  }
+}
+
+async function loadOlderTasks(scope = '') {
+  if (!appState) return false;
+  const targetScope = scope === 'global' || activeView === 'tasks' ? 'global' : 'space';
+  const pageInfo = targetScope === 'global' ? currentGlobalTaskPage() : currentSpaceTaskPage();
+  const loadingKey = targetScope === 'global' ? 'global' : taskPageKey();
+  const isLoading = targetScope === 'global'
+    ? taskHistoryLoading.global
+    : taskHistoryLoading.space[loadingKey];
+  if (!pageInfo.hasMore || !pageInfo.nextBefore || isLoading) return false;
+  if (targetScope === 'global') taskHistoryLoading.global = true;
+  else taskHistoryLoading.space[loadingKey] = true;
+  try {
+    const params = new URLSearchParams();
+    params.set('limit', String(TASK_HISTORY_PAGE_SIZE));
+    params.set('before', pageInfo.nextBefore);
+    if (pageInfo.nextBeforeId) params.set('beforeId', pageInfo.nextBeforeId);
+    if (targetScope === 'global') {
+      params.set('spaceType', 'channel');
+    } else {
+      params.set('spaceType', selectedSpaceType || 'channel');
+      params.set('spaceId', selectedSpaceId || '');
+    }
+    const result = await api(`/api/tasks?${params.toString()}`);
+    if (targetScope === 'space' && loadingKey !== taskPageKey()) return false;
+    if (targetScope === 'global') updateGlobalTaskPage(result.pagination || {});
+    else updateSpaceTaskPage(selectedSpaceType, selectedSpaceId, result.pagination || {});
+    const nextState = mergeTaskPageIntoState(appState, result.tasks || []);
+    if (nextState !== appState) applyStateUpdate(nextState);
+    return true;
+  } catch (error) {
+    console.warn('Failed to load older tasks:', error);
+    return false;
+  } finally {
+    if (targetScope === 'global') taskHistoryLoading.global = false;
+    else taskHistoryLoading.space[loadingKey] = false;
   }
 }
 

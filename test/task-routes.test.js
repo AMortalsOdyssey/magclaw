@@ -127,6 +127,39 @@ test('task route group pages tasks with space and status filters', async () => {
   assert.deepEqual(res.data.tasks.map((task) => task.id), ['task_new', 'task_mid']);
   assert.equal(res.data.pagination.hasMore, true);
   assert.equal(res.data.pagination.nextBefore, '2026-05-02T00:00:00.000Z');
+  assert.equal(res.data.pagination.nextBeforeId, 'task_mid');
+});
+
+test('task route group pages stable cursors when tasks share timestamps', async () => {
+  const deps = routeDeps();
+  deps.state.tasks = [
+    { id: 'task_a', title: 'A', status: 'todo', spaceType: 'channel', spaceId: 'chan_all', updatedAt: '2026-05-02T00:00:00.000Z' },
+    { id: 'task_b', title: 'B', status: 'todo', spaceType: 'channel', spaceId: 'chan_all', updatedAt: '2026-05-02T00:00:00.000Z' },
+    { id: 'task_c', title: 'C', status: 'todo', spaceType: 'channel', spaceId: 'chan_all', updatedAt: '2026-05-02T00:00:00.000Z' },
+  ];
+  const first = makeResponse();
+
+  await handleTaskApi(
+    { method: 'GET' },
+    first,
+    new URL('http://local/api/tasks?spaceType=channel&spaceId=chan_all&limit=2'),
+    deps,
+  );
+
+  assert.deepEqual(first.data.tasks.map((task) => task.id), ['task_c', 'task_b']);
+  assert.equal(first.data.pagination.hasMore, true);
+  assert.equal(first.data.pagination.nextBeforeId, 'task_b');
+
+  const second = makeResponse();
+  await handleTaskApi(
+    { method: 'GET' },
+    second,
+    new URL(`http://local/api/tasks?spaceType=channel&spaceId=chan_all&limit=2&before=${encodeURIComponent(first.data.pagination.nextBefore)}&beforeId=${first.data.pagination.nextBeforeId}`),
+    deps,
+  );
+
+  assert.deepEqual(second.data.tasks.map((task) => task.id), ['task_a']);
+  assert.equal(second.data.pagination.hasMore, false);
 });
 
 test('task route group creates conversation-backed tasks', async () => {

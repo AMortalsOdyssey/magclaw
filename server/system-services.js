@@ -175,6 +175,24 @@ export function createSystemServices(deps) {
       .slice(0, limit);
   }
 
+  function compareTaskRecords(a, b) {
+    const timeDiff = recordTime(b) - recordTime(a);
+    if (timeDiff) return timeDiff;
+    return String(b?.id || '').localeCompare(String(a?.id || ''));
+  }
+
+  function taskPageInfo(candidates = [], page = [], limit = 0) {
+    const cursor = page.length ? page[page.length - 1] : null;
+    return {
+      limit,
+      loaded: page.length,
+      total: candidates.length,
+      hasMore: candidates.length > page.length,
+      nextBefore: cursor?.updatedAt || cursor?.createdAt || '',
+      nextBeforeId: cursor?.id || '',
+    };
+  }
+
   function usefulMetadataValue(value) {
     if (value === undefined || value === null || value === '') return false;
     if (Array.isArray(value) && value.length === 0) return false;
@@ -399,6 +417,7 @@ export function createSystemServices(deps) {
         messageLimit: url.searchParams.get('messageLimit') || '',
         threadRootLimit: url.searchParams.get('threadRootLimit') || '',
         eventLimit: url.searchParams.get('eventLimit') || '',
+        taskLimit: url.searchParams.get('taskLimit') || '',
       };
       if (req?.magclawBootstrapHydration) options.hydration = req.magclawBootstrapHydration;
       return options;
@@ -543,6 +562,7 @@ export function createSystemServices(deps) {
     const threadReplyLimit = clampLimit(effectiveOptions.replyLimit || effectiveOptions.messageLimit, 80, 300);
     const threadRootLimit = clampLimit(effectiveOptions.threadRootLimit, 120, 300);
     const eventLimit = clampLimit(effectiveOptions.eventLimit, 120, 300);
+    const taskLimit = clampLimit(effectiveOptions.taskLimit, 160, 500);
     const currentHumanId = snapshot.cloud?.auth?.currentMember?.humanId || null;
 
     const selectedMessages = records(snapshot.messages)
@@ -604,7 +624,7 @@ export function createSystemServices(deps) {
     for (const message of messageById.values()) {
       if (message.taskId) taskIds.add(message.taskId);
     }
-    const taskRecords = records(snapshot.tasks);
+    const taskRecords = records(snapshot.tasks).slice().sort(compareTaskRecords);
     const openStatuses = new Set(['todo', 'in_progress', 'in_review']);
     const memberChannelIds = new Set(records(snapshot.channels)
       .filter((channel) => (
@@ -613,12 +633,24 @@ export function createSystemServices(deps) {
         || records(channel.humanIds).includes(currentHumanId)
       ))
       .map((channel) => channel.id));
-    const visibleTasks = taskRecords.filter((task) => (
-      taskIds.has(task.id)
-      || (task.spaceType === spaceType && String(task.spaceId) === spaceId)
-      || (task.spaceType === 'channel' && memberChannelIds.has(task.spaceId))
-      || openStatuses.has(String(task.status || 'todo'))
+    const selectedSpaceTasks = taskRecords.filter((task) => (
+      task.spaceType === spaceType && String(task.spaceId) === spaceId
     ));
+    const globalChannelTasks = taskRecords.filter((task) => (
+      task.spaceType === 'channel'
+      && (!currentHumanId || memberChannelIds.has(task.spaceId))
+    ));
+    const openTaskCount = taskRecords.filter((task) => openStatuses.has(String(task.status || 'todo'))).length;
+    const selectedSpaceTaskPage = selectedSpaceTasks.slice(0, taskLimit);
+    const globalTaskPage = globalChannelTasks.slice(0, taskLimit);
+    const visibleTaskById = new Map();
+    for (const task of [...selectedSpaceTaskPage, ...globalTaskPage]) {
+      if (task?.id) visibleTaskById.set(task.id, task);
+    }
+    for (const task of taskRecords) {
+      if (taskIds.has(task.id)) visibleTaskById.set(task.id, task);
+    }
+    const visibleTasks = [...visibleTaskById.values()].sort(compareTaskRecords);
 
     const attachmentIds = new Set();
     for (const record of [...messageById.values(), ...replyById.values(), ...visibleTasks]) {
@@ -641,11 +673,18 @@ export function createSystemServices(deps) {
         nextBefore: hydratedMessagePagination?.nextBefore || selectedMessageCursor?.createdAt || '',
         nextBeforeId: hydratedMessagePagination?.nextBeforeId || selectedMessageCursor?.id || '',
         threadReplies: threadRepliesPagination,
+        tasks: {
+          limit: taskLimit,
+          loaded: visibleTasks.length,
+          openCount: openTaskCount,
+          space: taskPageInfo(selectedSpaceTasks, selectedSpaceTaskPage, taskLimit),
+          global: taskPageInfo(globalChannelTasks, globalTaskPage, taskLimit),
+        },
         unreadHydration,
       },
       messages: [...messageById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
       replies: [...replyById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
-      tasks: visibleTasks.sort((a, b) => recordTime(b) - recordTime(a)),
+      tasks: visibleTasks,
       runs: newestRecords(snapshot.runs, 80).sort((a, b) => recordTime(a) - recordTime(b)),
       workItems: newestRecords(snapshot.workItems, 200).sort((a, b) => recordTime(a) - recordTime(b)),
       events: newestRecords(snapshot.events, eventLimit).sort((a, b) => recordTime(a) - recordTime(b)),

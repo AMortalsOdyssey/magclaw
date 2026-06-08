@@ -49,6 +49,9 @@ agents, 20000 messages, 1000 replies, and 2000 tasks. It currently enforces:
 - Bootstrap includes no internal payload fields such as raw imports, startup
   collaboration internals, Team Sharing source anchors, or agent runtime caches.
 - Off-space unread hydration remains bounded to 80 records.
+- Task hydration remains windowed to at most 200 records in the synthetic smoke,
+  with selected-space and global task pagination cursors exposed for older
+  history.
 - Presence heartbeat JSON is at most 400 KB and generated in at most 50 ms.
 - Heartbeats include no internal agent runtime payload fields.
 
@@ -83,8 +86,6 @@ when the user or agent asks for it.
 
 ## Next Optimization Queue
 
-- Cap or paginate workspace task hydration so a workspace with many open tasks
-  does not send every task to every chat view.
 - Keep heartbeat useful for member and agent presence while reducing repeated
   all-member/all-agent payloads for very large workspaces.
 - Add browser-side performance marks for bootstrap, first render, SSE open,

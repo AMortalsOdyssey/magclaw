@@ -109,11 +109,29 @@ export async function handleTaskApi(req, res, url, deps) {
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
-  function beforeCursorTime(url) {
+  function compareTaskRecords(a, b) {
+    const timeDiff = recordTime(b) - recordTime(a);
+    if (timeDiff) return timeDiff;
+    return String(b?.id || '').localeCompare(String(a?.id || ''));
+  }
+
+  function beforeCursor(url) {
     const raw = url.searchParams.get('before') || '';
-    if (!raw) return Number.POSITIVE_INFINITY;
+    const id = String(url.searchParams.get('beforeId') || '');
+    if (!raw) return { time: Number.POSITIVE_INFINITY, id: '' };
     const parsed = Date.parse(raw);
-    return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+    return {
+      time: Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY,
+      id,
+    };
+  }
+
+  function recordBeforeCursor(record, cursor) {
+    if (!cursor || cursor.time === Number.POSITIVE_INFINITY) return true;
+    const time = recordTime(record);
+    if (time < cursor.time) return true;
+    if (time > cursor.time || !cursor.id) return false;
+    return String(record?.id || '').localeCompare(cursor.id) < 0;
   }
 
   function closeTask(task, actorId = 'hum_local', reason = 'Task closed.') {
@@ -138,21 +156,23 @@ export async function handleTaskApi(req, res, url, deps) {
     const requestedSpaceId = url.searchParams.get('spaceId') || '';
     const status = url.searchParams.get('status') || '';
     const limit = paginationLimit(url.searchParams.get('limit'));
-    const before = beforeCursorTime(url);
+    const before = beforeCursor(url);
     const matching = (state.tasks || [])
       .filter((task) => !requestedSpaceType || task.spaceType === requestedSpaceType)
       .filter((task) => !requestedSpaceId || String(task.spaceId || '') === requestedSpaceId)
       .filter((task) => !status || String(task.status || '') === status)
-      .filter((task) => recordTime(task) < before)
-      .sort((a, b) => recordTime(b) - recordTime(a));
+      .filter((task) => recordBeforeCursor(task, before))
+      .sort(compareTaskRecords);
     const page = matching.slice(0, limit);
     const nextBefore = page.length ? (page[page.length - 1].updatedAt || page[page.length - 1].createdAt || '') : '';
+    const nextBeforeId = page.length ? String(page[page.length - 1].id || '') : '';
     sendJson(res, 200, {
       tasks: page,
       pagination: {
         limit,
         hasMore: matching.length > page.length,
         nextBefore,
+        nextBeforeId,
       },
     });
     return true;

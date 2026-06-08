@@ -213,6 +213,7 @@ test('system route group returns bootstrap state with route query options', asyn
     messageLimit: '40',
     threadRootLimit: '',
     eventLimit: '',
+    taskLimit: '',
   });
 });
 

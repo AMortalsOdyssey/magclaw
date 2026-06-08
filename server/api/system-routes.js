@@ -268,6 +268,7 @@ export async function handleSystemApi(req, res, url, deps) {
       messageLimit: url.searchParams.get('messageLimit') || '',
       threadRootLimit: url.searchParams.get('threadRootLimit') || '',
       eventLimit: url.searchParams.get('eventLimit') || '',
+      taskLimit: url.searchParams.get('taskLimit') || '',
     };
     const hydration = typeof hydrateBootstrapWindow === 'function'
       ? await hydrateBootstrapWindow(req, options)

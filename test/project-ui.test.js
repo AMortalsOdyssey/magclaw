@@ -2284,6 +2284,8 @@ test('global task board follows MagClaw board list channel filtering without sto
   assert.match(app, /function renderTaskToolbar\(tasks, filteredTasks\)/);
   assert.match(app, /function renderTaskViewToggle\(\)/);
   assert.match(app, /function renderTaskChannelFilter\(\)/);
+  assert.match(app, /function renderTaskLoadMoreControl\(scope = 'space'/);
+  assert.match(app, /data-action="load-older-tasks"/);
   assert.match(app, /function renderTaskListView\(tasks\)/);
   assert.match(app, /const channelTasks = \(appState\.tasks \|\| \[\]\)\.filter\(isVisibleChannelTask\)/);
   assert.match(app, /viewMode === 'list' \? renderTaskListView\(filteredTasks\) : renderTaskBoard\(filteredTasks\)/);
@@ -2291,6 +2293,7 @@ test('global task board follows MagClaw board list channel filtering without sto
   assert.match(styles, /\.task-view-toggle/);
   assert.match(styles, /\.task-channel-menu/);
   assert.match(styles, /\.task-list-view/);
+  assert.match(styles, /\.task-load-more-row/);
 });
 
 test('task pages use scoped empty states for filters channels and status columns', async () => {

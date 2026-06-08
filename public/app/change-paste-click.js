@@ -1560,6 +1560,9 @@ document.addEventListener('click', async (event) => {
       toggleTaskColumn(target.dataset.status);
       render();
     }
+    if (action === 'load-older-tasks') {
+      await loadOlderTasks(target.dataset.scope || '');
+    }
     if (action === 'select-task') {
       const task = byId(appState.tasks, target.dataset.id);
       const thread = task ? taskThreadMessage(task) : null;

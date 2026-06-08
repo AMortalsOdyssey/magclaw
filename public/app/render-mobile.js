@@ -388,6 +388,7 @@ function renderMobileTaskSurface(tasks, options = {}) {
       <div class="mobile-task-view ${taskViewMode === 'list' ? 'is-list' : 'is-board'}">
         ${visibleTasks.length ? (taskViewMode === 'list' ? renderTaskListView(visibleTasks) : renderTaskBoard(visibleTasks)) : renderTaskPageEmptyState(emptyVariant)}
       </div>
+      ${typeof renderTaskLoadMoreControl === 'function' ? renderTaskLoadMoreControl(options.loadMoreScope || 'space', options.pageInfo || null) : ''}
     </section>
   `;
 }
@@ -399,7 +400,12 @@ function renderMobileTasksHome() {
   return `
     <section class="mobile-root mobile-tasks-root task-page">
       ${renderMobileRootHeader('Tasks', subtitle)}
-      ${renderMobileTaskSurface(channelTasks, { filteredTasks, showChannelFilter: true })}
+      ${renderMobileTaskSurface(channelTasks, {
+        filteredTasks,
+        showChannelFilter: true,
+        loadMoreScope: 'global',
+        pageInfo: typeof currentGlobalTaskPage === 'function' ? currentGlobalTaskPage() : null,
+      })}
     </section>
   `;
 }

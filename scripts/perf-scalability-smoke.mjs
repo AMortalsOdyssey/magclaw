@@ -11,6 +11,7 @@ const BUDGETS = Object.freeze({
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 400_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
   unreadHydrationRecords: Number(process.env.MAGCLAW_PERF_UNREAD_RECORDS || 80),
+  bootstrapTasks: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_TASKS || 200),
 });
 
 function assertBudget(condition, message) {
@@ -244,6 +245,7 @@ async function main() {
     messages: snapshot.messages.length,
     replies: snapshot.replies.length,
     tasks: snapshot.tasks.length,
+    taskHydration: snapshot.bootstrap?.tasks || null,
     agents: snapshot.agents.length,
     humans: snapshot.humans.length,
     unreadHydration: snapshot.bootstrap?.unreadHydration || null,
@@ -258,6 +260,9 @@ async function main() {
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
   assertBudget(!bootstrap.hasInternalFields, 'bootstrap leaked internal payload fields');
+  assertBudget(bootstrap.tasks <= BUDGETS.bootstrapTasks, `bootstrap ${bootstrap.tasks} tasks exceeds ${BUDGETS.bootstrapTasks}`);
+  assertBudget(bootstrap.taskHydration?.space?.hasMore === true, 'bootstrap task hydration did not expose selected-space pagination');
+  assertBudget(bootstrap.taskHydration?.global?.hasMore === true, 'bootstrap task hydration did not expose global pagination');
   assertBudget(bootstrap.unreadHydration?.included <= BUDGETS.unreadHydrationRecords, 'bootstrap unread hydration is unbounded');
   assertBudget(heartbeat.ms <= BUDGETS.heartbeatMs, `heartbeat ${heartbeat.ms}ms exceeds ${BUDGETS.heartbeatMs}ms`);
   assertBudget(heartbeat.bytes <= BUDGETS.heartbeatBytes, `heartbeat ${heartbeat.bytes} bytes exceeds ${BUDGETS.heartbeatBytes}`);

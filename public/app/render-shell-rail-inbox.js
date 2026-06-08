@@ -247,7 +247,10 @@ function renderRail() {
   const inbox = buildInboxModel();
   const spaceUnreadCounts = buildSpaceUnreadCounts(inbox.humanId);
   const unreadThreads = (appState.messages || []).filter((message) => message.replyCount > 0 || message.taskId).length;
-  const openTasks = (appState.tasks || []).filter((task) => task && !taskIsClosedStatus(task.status)).length;
+  const openTasks = Number(appState.bootstrap?.tasks?.openCount ?? NaN);
+  const openTaskBadge = Number.isFinite(openTasks)
+    ? openTasks
+    : (appState.tasks || []).filter((task) => task && !taskIsClosedStatus(task.status)).length;
   const saved = savedRecords().length;
   const normalAgents = channelAssignableAgents();
   const serverProfile = currentServerProfile();
@@ -287,7 +290,7 @@ function renderRail() {
       : railMode === 'desktop'
         ? renderComputersRail()
       : railTab === 'spaces'
-        ? renderChatRail({ channels, dms, inboxUnread: inbox.unreadCount, unreadThreads, openTasks, saved, spaceUnreadCounts })
+        ? renderChatRail({ channels, dms, inboxUnread: inbox.unreadCount, unreadThreads, openTasks: openTaskBadge, saved, spaceUnreadCounts })
         : renderMembersRail({ normalAgents });
   const railClass = `rail collab-rail magclaw-rail${railMode === 'settings' ? ' settings-rail' : ''}${railMode === 'console' ? ' console-rail' : ''}`;
   const leftRailHtml = `
