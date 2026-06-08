@@ -23,7 +23,6 @@ const TEAM_SHARING_SKILL_TEMPLATE = path.join(TEAM_SHARING_PACKAGE_ROOT, 'skills
 const TEAM_SHARING_SOURCE_COMMAND = path.join(TEAM_SHARING_PACKAGE_ROOT, 'bin', 'team-sharing.js');
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
 const TEAM_SHARING_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30;
-const TEAM_SHARING_SESSION_REPORTING_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
 function now() {
   return new Date().toISOString();
@@ -1646,12 +1645,6 @@ function explicitSessionReportingFlag(flags = {}, env = process.env) {
   return null;
 }
 
-function sessionReportingTtlMs(flags = {}, env = process.env) {
-  const hours = Number(flags.ttlHours || flags.ttl_hours || flags.sessionTtlHours || env.MAGCLAW_TEAM_SHARING_SESSION_REPORT_TTL_HOURS || 0);
-  if (Number.isFinite(hours) && hours > 0) return hours * 60 * 60 * 1000;
-  return TEAM_SHARING_SESSION_REPORTING_TTL_MS;
-}
-
 function sessionReportingIdentity({ runtime = 'codex', sessionId = '', transcript = '', transcriptPath = '', cwd = process.cwd() } = {}) {
   const cleanSessionId = stringFlagValue(sessionId);
   const cleanTranscriptPath = stringFlagValue(transcript || transcriptPath);
@@ -1674,20 +1667,17 @@ function sessionReportingOverrideMatches(record = {}, identity = {}) {
   return false;
 }
 
-function activeSessionReportingOverrides(store = {}, nowMs = Date.now()) {
+function activeSessionReportingOverrides(store = {}) {
   return (Array.isArray(store.overrides) ? store.overrides : [])
     .filter((record) => record && typeof record === 'object')
-    .filter((record) => {
-      const expiresAtMs = Date.parse(record.expiresAt || '');
-      return !Number.isFinite(expiresAtMs) || expiresAtMs > nowMs;
-    });
+    .map(({ expiresAt: _expiresAt, ...record }) => record);
 }
 
-async function readSessionReportingStore(file, nowMs = Date.now()) {
+async function readSessionReportingStore(file) {
   const store = await readJsonFile(file, { version: 1, overrides: [] });
   return {
     version: 1,
-    overrides: activeSessionReportingOverrides(store, nowMs),
+    overrides: activeSessionReportingOverrides(store),
   };
 }
 
@@ -1699,8 +1689,53 @@ function compactSessionReportingStatus(record = null, paths = {}) {
     report: record ? record.report !== false : true,
     matched: Boolean(record),
     reason: record?.reason || '',
-    expiresAt: record?.expiresAt || '',
+    expiresAt: '',
   };
+}
+
+function compactSessionIntentText(value = '') {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function detectTeamSharingSessionReportingIntent(text = '') {
+  const clean = compactSessionIntentText(text);
+  if (!clean) return null;
+  const mentionsSession = /(session|会话|本轮|本次|当前|这个|这次)/i.test(clean);
+  const mentionsReporting = /(magclaw|team sharing|上报|同步|report|reporting|upload|sync)/i.test(clean);
+  if (!mentionsSession || !mentionsReporting) return null;
+  const disable = /(?:不进行|不再|不要|别|停止|暂停|关闭|禁用|不|no|do not|don't|dont|disable|skip|mute|turn off)/i.test(clean)
+    && /(上报|同步|report|reporting|upload|sync|magclaw|team sharing)/i.test(clean);
+  if (disable) return { report: false, intent: 'disable', reason: 'user_disabled' };
+  const enable = /(?:开始|恢复|继续|可以|允许|打开|开启|启用|enable|resume|start|turn on|allow|report on)/i.test(clean)
+    && /(上报|同步|report|reporting|upload|sync|magclaw|team sharing)/i.test(clean);
+  if (enable) return { report: true, intent: 'enable', reason: 'user_enabled' };
+  return null;
+}
+
+function latestTeamSharingSessionReportingIntent(events = []) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.role !== 'user') continue;
+    const detected = detectTeamSharingSessionReportingIntent(event.text || '');
+    if (detected) {
+      return {
+        ...detected,
+        ordinal: Number(event.ordinal || 0) || 0,
+        eventId: event.eventId || '',
+        eventTextHash: stableHash(event.text || ''),
+      };
+    }
+  }
+  return null;
+}
+
+function lastParsedTeamSharingOrdinal(parsed = {}) {
+  const events = Array.isArray(parsed.events) ? parsed.events : [];
+  return Math.max(0, ...events.map((event) => Number(event?.ordinal || 0) || 0));
 }
 
 export async function getTeamSharingSessionReporting(flags = {}, env = process.env) {
@@ -1746,14 +1781,13 @@ export async function setTeamSharingSessionReporting(flags = {}, env = process.e
       reason: String(flags.reason || 'user_disabled').replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'user_disabled',
       createdAt: nowIso,
       updatedAt: nowIso,
-      expiresAt: new Date(Date.now() + sessionReportingTtlMs(flags, env)).toISOString(),
     };
     remaining.push(record);
   }
   await writeJsonFile(paths.sessionOverrides, {
     version: 1,
     updatedAt: now(),
-    overrides: remaining.slice(-500),
+    overrides: remaining,
   }, { privateFile: true });
   return compactSessionReportingStatus(record, paths);
 }
@@ -1856,7 +1890,6 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
         ...sessionReportingTarget,
         report: false,
         reason: 'user_disabled',
-        ttlHours: flags.sessionReportTtlHours || flags.ttlHours || flags.ttl_hours,
       }, env);
     } catch (error) {
       reporting = {
@@ -1873,9 +1906,6 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
       ...sessionReportingTarget,
       report: true,
     }, env).catch(() => {});
-  } else {
-    const reporting = await getTeamSharingSessionReporting(sessionReportingTarget, env);
-    if (reporting.report === false) return skipForSessionReporting(reporting);
   }
   if (!transcriptPath) {
     if (hookEvent) {
@@ -1888,6 +1918,88 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
       return { ok: true, empty: true, reason: 'missing_transcript_path' };
     }
     throw new Error('Usage: team-sharing sync --transcript <path>');
+  }
+  let content = '';
+  try {
+    content = await readFile(path.resolve(transcriptPath), 'utf8');
+  } catch (error) {
+    if (hookEvent && error?.code === 'ENOENT') {
+      await writeAudit({
+        ok: true,
+        status: 'skipped',
+        phase: 'read_transcript',
+        reason: 'transcript_file_missing',
+      });
+      return { ok: true, empty: true, reason: 'transcript_file_missing' };
+    }
+    throw error;
+  }
+  baseAudit.transcript.charCount = auditCharCount(content);
+  baseAudit.transcript.byteCount = byteLength(content);
+  baseAudit.transcript.hash = stableHash(content);
+  const explicitSessionTitle = resolveTeamSharingSessionTitle({ ...flags, runtime }, env, hookPayload);
+  const parsed = parseTeamSharingTranscript(content, {
+    runtime,
+    sessionId: flags.sessionId || sessionIdFromHookPayload(hookPayload) || '',
+    title: explicitSessionTitle,
+    projectDir: flags.cwd || process.cwd(),
+  });
+  sessionReportingTarget.sessionId = parsed.sessionId;
+  const currentSessionTitle = explicitSessionTitle
+    || await resolveRuntimeSessionTitle({
+      runtime: parsed.runtime,
+      sessionId: parsed.sessionId,
+      transcriptPath,
+    }, env)
+    || parsed.title
+    || path.basename(transcriptPath);
+  baseAudit.session = {
+    runtime: parsed.runtime,
+    sessionId: parsed.sessionId,
+    titleHash: stableHash(currentSessionTitle),
+    parsedEventCount: parsed.events.length,
+    parsedEventTextCharCount: auditCharCount(parsed.events.map((event) => event.text || '').join('\n')),
+  };
+  const lastParsedOrdinal = lastParsedTeamSharingOrdinal(parsed);
+  const sessionIntent = latestTeamSharingSessionReportingIntent(parsed.events);
+  let forcedLastOrdinal = null;
+  if (sessionIntent?.report === false) {
+    const reporting = await setTeamSharingSessionReporting({
+      ...sessionReportingTarget,
+      report: false,
+      reason: sessionIntent.reason || 'user_disabled',
+    }, env);
+    if (lastParsedOrdinal > 0) {
+      await writeTeamSharingCursor(auditPaths.projectCursor, parsed.runtime, {
+        sessionId: parsed.sessionId,
+        lastOrdinal: lastParsedOrdinal,
+        updatedAt: now(),
+      });
+    }
+    return skipForSessionReporting(reporting, {
+      intent: sessionIntent.intent,
+      eventOrdinal: sessionIntent.ordinal,
+      eventId: sessionIntent.eventId,
+    });
+  }
+  if (sessionIntent?.report === true) {
+    await setTeamSharingSessionReporting({
+      ...sessionReportingTarget,
+      report: true,
+    }, env);
+    forcedLastOrdinal = Math.max(0, Number(sessionIntent.ordinal || 0) - 1);
+  } else if (explicitReporting !== true) {
+    const reporting = await getTeamSharingSessionReporting(sessionReportingTarget, env);
+    if (reporting.report === false) {
+      if (lastParsedOrdinal > 0) {
+        await writeTeamSharingCursor(auditPaths.projectCursor, parsed.runtime, {
+          sessionId: parsed.sessionId,
+          lastOrdinal: lastParsedOrdinal,
+          updatedAt: now(),
+        });
+      }
+      return skipForSessionReporting(reporting);
+    }
   }
   try {
   const client = await resolveTeamSharingClient(flags, env, { allowLogin: !hookEvent });
@@ -1941,48 +2053,11 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     });
     return { ok: true, empty: true, reason: 'runtime_hooks_disabled' };
   }
-  let content = '';
-  try {
-    content = await readFile(path.resolve(transcriptPath), 'utf8');
-  } catch (error) {
-    if (hookEvent && error?.code === 'ENOENT') {
-      await writeAudit({
-        ok: true,
-        status: 'skipped',
-        phase: 'read_transcript',
-        reason: 'transcript_file_missing',
-      });
-      return { ok: true, empty: true, reason: 'transcript_file_missing' };
-    }
-    throw error;
-  }
-  baseAudit.transcript.charCount = auditCharCount(content);
-  baseAudit.transcript.byteCount = byteLength(content);
-  baseAudit.transcript.hash = stableHash(content);
-  const explicitSessionTitle = resolveTeamSharingSessionTitle({ ...flags, runtime }, env, hookPayload);
-  const parsed = parseTeamSharingTranscript(content, {
-    runtime,
-    sessionId: flags.sessionId || nestedStringValue(hookPayload, [['session_id'], ['sessionId']]) || '',
-    title: explicitSessionTitle,
-    projectDir: flags.cwd || process.cwd(),
-  });
-  const currentSessionTitle = explicitSessionTitle
-    || await resolveRuntimeSessionTitle({
-      runtime: parsed.runtime,
-      sessionId: parsed.sessionId,
-      transcriptPath,
-    }, env)
-    || parsed.title
-    || path.basename(transcriptPath);
-  baseAudit.session = {
-    runtime: parsed.runtime,
-    sessionId: parsed.sessionId,
-    titleHash: stableHash(currentSessionTitle),
-    parsedEventCount: parsed.events.length,
-    parsedEventTextCharCount: auditCharCount(parsed.events.map((event) => event.text || '').join('\n')),
-  };
   const cursor = await readJsonFile(project.paths.projectCursor, {});
-  const lastOrdinal = Number(flags.full ? 0 : cursorLastOrdinal(cursor, parsed.runtime, parsed.sessionId));
+  const cursorOrdinal = Number(flags.full ? 0 : cursorLastOrdinal(cursor, parsed.runtime, parsed.sessionId));
+  const lastOrdinal = forcedLastOrdinal !== null
+    ? Math.max(0, Number(forcedLastOrdinal || 0))
+    : cursorOrdinal;
   const syncPackage = buildTeamSharingSyncPackageFromTranscript(content, {
     runtime: parsed.runtime,
     sessionId: parsed.sessionId,

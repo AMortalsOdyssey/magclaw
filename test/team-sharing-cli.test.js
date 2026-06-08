@@ -299,12 +299,145 @@ test('team sharing session reporting override persists only hashed local identif
 
   assert.equal(disabled.ok, true);
   assert.equal(disabled.report, false);
+  assert.equal(disabled.expiresAt, '');
   assert.equal(status.ok, true);
   assert.equal(status.report, false);
   assert.equal(status.reason, 'user_disabled');
   assert.match(raw, /"sessionIdHash"/);
   assert.match(raw, /"transcriptPathHash"/);
+  assert.doesNotMatch(raw, /expiresAt|ttl/i);
   assert.doesNotMatch(raw, /sess_private_optout|private-session|magclaw-team-sharing-session-reporting-project/);
+});
+
+test('team sharing hook sync understands natural-language session opt-out before upload', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-natural-no-report-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-natural-no-report-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_natural_no_report', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '这个 session 不上报就可以了。' }] } }),
+  ].join('\n'));
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, init });
+    throw new Error('natural-language session opt-out should not upload');
+  };
+  try {
+    const result = await syncTeamSharingTranscript({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      hookEvent: 'Stop',
+      integration: 'team-sharing',
+    }, env);
+    const paths = teamSharingPaths({ cwd, env });
+    const auditRecord = JSON.parse((await readFile(paths.projectAuditLog, 'utf8')).trim());
+    const overrideRaw = await readFile(paths.sessionOverrides, 'utf8');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.empty, true);
+    assert.equal(result.reason, 'session_reporting_disabled');
+    assert.equal(result.sessionReporting.intent, 'disable');
+    assert.equal(calls.length, 0);
+    assert.equal(auditRecord.status, 'skipped');
+    assert.equal(auditRecord.phase, 'session_reporting');
+    assert.equal(auditRecord.sessionReporting.intent, 'disable');
+    assert.doesNotMatch(overrideRaw, /sess_natural_no_report|session\.jsonl|team-sharing-token-secret/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing hook sync resumes from natural-language report-on message only', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-natural-report-on-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-natural-report-on-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_natural_report_on', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '先讨论一个不会上报的隐私方案。' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '这段仍然不应该进入 MagClaw。' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:03.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '这个 session 可以进行 magclaw 上报。' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:04.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '恢复后第一条回答。' }] } }),
+  ].join('\n'));
+  await setTeamSharingSessionReporting({
+    cwd,
+    transcript,
+    runtime: 'codex',
+    sessionId: 'sess_natural_report_on',
+    report: false,
+  }, env);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, init, body: JSON.parse(init.body || '{}') });
+    return {
+      ok: true,
+      status: 202,
+      statusText: 'Accepted',
+      json: async () => ({ ok: true, appendedEventCount: calls[calls.length - 1].body.events.length }),
+    };
+  };
+  try {
+    const result = await syncTeamSharingTranscript({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      hookEvent: 'Stop',
+      integration: 'team-sharing',
+    }, env);
+    const paths = teamSharingPaths({ cwd, env });
+    const cursor = JSON.parse(await readFile(paths.projectCursor, 'utf8'));
+    const reporting = await getTeamSharingSessionReporting({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      sessionId: 'sess_natural_report_on',
+    }, env);
+
+    assert.equal(result.ok, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.fromOrdinal, 3);
+    assert.deepEqual(calls[0].body.events.map((event) => event.text), [
+      '这个 session 可以进行 magclaw 上报。',
+      '恢复后第一条回答。',
+    ]);
+    assert.doesNotMatch(JSON.stringify(calls[0].body.events), /隐私方案|仍然不应该进入/);
+    assert.equal(cursor.sessions.codex.sess_natural_report_on.lastOrdinal, 4);
+    assert.equal(reporting.report, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('team sharing hook sync disables reporting for the current session before upload', async () => {
