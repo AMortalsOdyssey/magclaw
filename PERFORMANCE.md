@@ -47,7 +47,7 @@ cloud members, 1000 agents, 20000 messages, 1000 replies, and 2000 tasks. The
 synthetic `#all` channel includes every human and agent to keep company-scale
 membership fanout visible in the budget. It currently enforces:
 
-- Bootstrap JSON is at most 850 KB and generated in at most 250 ms.
+- Bootstrap JSON is at most 800 KB and generated in at most 250 ms.
 - Bootstrap server-side projection is windowed: with 10000 source messages, the
   smoke test allows at most 500 conversation metadata reads while still exposing
   history pagination.
@@ -97,6 +97,9 @@ membership fanout visible in the budget. It currently enforces:
 - Browser member-directory rendering caches normalized workspace humans for a
   stable state snapshot, so repeated rail, channel, mention, and detail renders
   do not repeatedly sort and enrich the full cloud member list.
+- Browser member settings resolve member identity through cached Human identity
+  keys (`humanId`, cloud member id, auth user id, and email) instead of scanning
+  the full Human array for every displayed member row.
 - Browser channel, mention, and create-channel surfaces cache the active
   workspace Agent directory for a stable state snapshot, so repeated renders do
   not re-filter the full 1000-Agent list until Agent or Computer state changes.

@@ -1036,6 +1036,8 @@ function workspaceHumans() {
       addLookupKey(humanIdentityById, human.id, human);
       addLookupKey(humanIdentityById, human.cloudMemberId, human);
       addLookupKey(humanIdentityById, human.authUserId, human);
+      addLookupKey(humanIdentityById, human.email, human);
+      addLookupKey(humanIdentityById, String(human.email || '').toLowerCase(), human);
     }
     workspaceHumansCache = {
       cloudMembers,

@@ -1453,22 +1453,23 @@ function relativeMemberTime(value) {
 
 function memberHumanRecord(member) {
   if (member?.human) return member.human;
-  const humans = appState?.humans || [];
-  const humanId = String(member?.humanId || '').trim();
-  if (humanId) {
-    const byHumanId = humans.find((human) => human.id === humanId);
-    if (byHumanId) return byHumanId;
-  }
-  const userId = String(member?.userId || member?.user?.id || '').trim();
-  if (userId) {
-    const byUserId = humans.find((human) => human.authUserId === userId || human.userId === userId);
-    if (byUserId) return byUserId;
-  }
-  const email = normalizeInviteEmailValue(member?.user?.email || member?.email || '');
-  if (email) {
-    const byEmail = humans.find((human) => normalizeInviteEmailValue(human.email) === email);
-    if (byEmail) return byEmail;
-  }
+  const indexedHuman = (key, { email = false } = {}) => {
+    const target = email ? normalizeInviteEmailValue(key) : String(key || '').trim();
+    if (!target) return null;
+    if (typeof humanByIdAny === 'function') return humanByIdAny(target);
+    return (appState?.humans || []).find((human) => (
+      human.id === target
+      || human.authUserId === target
+      || human.userId === target
+      || normalizeInviteEmailValue(human.email) === target
+    )) || null;
+  };
+  const humanId = indexedHuman(member?.humanId);
+  if (humanId) return humanId;
+  const userId = indexedHuman(member?.userId || member?.user?.id);
+  if (userId) return userId;
+  const email = indexedHuman(member?.user?.email || member?.email, { email: true });
+  if (email) return email;
   return {};
 }
 
@@ -1569,11 +1570,12 @@ function buildMembersRows() {
     .filter((member) => (member.status || 'active') === 'active')
     .map((member) => {
       const invitation = acceptedInvitationForMember(member, invitations);
+      const human = memberHumanRecord(member);
       return {
         type: 'member',
         member,
         invitation,
-        sortAt: invitation?.createdAt || member.createdAt || member.joinedAt || memberHumanRecord(member).createdAt || memberHumanRecord(member).joinedAt || '',
+        sortAt: invitation?.createdAt || member.createdAt || member.joinedAt || human.createdAt || human.joinedAt || '',
       };
     });
   const pendingInvitations = invitations

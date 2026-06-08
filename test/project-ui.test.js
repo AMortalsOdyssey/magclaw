@@ -782,6 +782,7 @@ test('workspace people directories cache normalization without losing roles or a
   assert.equal(first.find((human) => human.id === 'hum_0002')?.avatar, 'https://avatar.example.test/human2.png');
   assert.equal(context.humanByIdAny('mem_0002')?.id, 'hum_0002');
   assert.equal(context.humanByIdAny('usr_0002')?.id, 'hum_0002');
+  assert.equal(context.humanByIdAny('human2@example.test')?.id, 'hum_0002');
   assert.equal(context.agentById('agt_0002')?.name, 'Agent 2');
   assert.equal(context.taskById('task_0999')?.title, 'Task 999');
   assert.equal(context.unreadEntryBySpace('channel', 'chan_0999')?.unreadCount, 999);
@@ -877,6 +878,17 @@ test('members directory sorts active before pending by invite time and paginates
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;'),
   };
+  let indexedHumanLookups = 0;
+  const humansByAnyId = new Map();
+  for (const human of context.appState.humans) {
+    humansByAnyId.set(human.id, human);
+    humansByAnyId.set(human.authUserId, human);
+    humansByAnyId.set(human.email.toLowerCase(), human);
+  }
+  context.humanByIdAny = (id) => {
+    indexedHumanLookups += 1;
+    return humansByAnyId.get(String(id || '').toLowerCase()) || humansByAnyId.get(String(id || '')) || null;
+  };
   vm.createContext(context);
   vm.runInContext(source, context);
 
@@ -893,6 +905,7 @@ test('members directory sorts active before pending by invite time and paginates
   assert.equal(context.memberDisplayName(rows[0].member), 'Early Invite');
   assert.equal(context.memberEmail(rows[0].member), 'early@example.com');
   assert.match(context.memberAvatar(rows[0].member), /early\.png/);
+  assert.ok(indexedHumanLookups > 0);
 
   const manyRows = Array.from({ length: 123 }, (_, index) => ({ type: 'member', member: { id: `m-${index}` } }));
   const page = context.membersPaginationModel(manyRows);
