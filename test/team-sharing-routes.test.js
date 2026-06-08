@@ -1728,6 +1728,41 @@ test('team sharing share assets are deduped, protected, and range-readable', asy
   ), true);
   assert.equal(denied.statusCode, 401);
 
+  const sharePage = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    sharePage,
+    new URL(`https://magclaw.example/s/${first.data.share.id}`),
+    deps,
+  ), true);
+  assert.equal(sharePage.statusCode, 200);
+  assert.match(sharePage.headers['content-security-policy'], /sandbox/);
+  assert.doesNotMatch(sharePage.headers['content-security-policy'], /allow-same-origin/);
+  const signedSrc = sharePage.body.match(/src="([^"]*\/api\/team-sharing\/assets\/[^"]*asset_token=[^"]+)"/)?.[1] || '';
+  assert.ok(signedSrc, 'expected share page to render signed asset url');
+  assert.doesNotMatch(deps.state.teamSharing.shareContents[0].content, /asset_token=/);
+
+  const signedRangeRes = makeStreamResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { range: 'bytes=0-10' } },
+    signedRangeRes,
+    new URL(`https://magclaw.example${signedSrc.replace(/&amp;/g, '&')}`),
+    { ...deps, currentActor: () => null, teamSharingAuthRequired: () => true },
+  ), true);
+  if (!signedRangeRes.writableFinished) await once(signedRangeRes, 'finish');
+  assert.equal(signedRangeRes.statusCode, 206);
+  assert.equal(signedRangeRes.headers['content-type'], 'video/mp4');
+  assert.equal(signedRangeRes.bodyBuffer().toString(), videoBytes.slice(0, 11).toString());
+
+  const badTokenRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    badTokenRes,
+    new URL(`https://magclaw.example${signedSrc.replace(/asset_token=[^&"]+/, 'asset_token=bad').replace(/&amp;/g, '&')}`),
+    { ...deps, currentActor: () => null, teamSharingAuthRequired: () => true },
+  ), true);
+  assert.equal(badTokenRes.statusCode, 401);
+
   const rangeRes = makeStreamResponse();
   assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: { range: 'bytes=0-10' } },

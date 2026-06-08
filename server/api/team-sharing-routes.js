@@ -154,6 +154,12 @@ function sha256Text(value = '') {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex');
 }
 
+function timingSafeStringEqual(left = '', right = '') {
+  const leftBuffer = Buffer.from(String(left || ''));
+  const rightBuffer = Buffer.from(String(right || ''));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
 function mimeExtension(mimeType = '') {
   const clean = String(mimeType || '').trim().toLowerCase();
   if (clean === 'image/jpeg') return 'jpg';
@@ -173,6 +179,43 @@ function teamSharingAssetPath(asset = {}) {
   if (!id) return '';
   const filename = safeFileName(asset.filename || asset.name || `asset-${id}`);
   return `/api/team-sharing/assets/${encodeURIComponent(id)}/${encodeURIComponent(filename)}`;
+}
+
+function teamSharingAssetShareGrant(asset = {}, share = {}) {
+  const parts = [
+    'team-sharing-asset-grant-v1',
+    share.id,
+    asset.id,
+    asset.workspaceId,
+    asset.checksumSha256,
+    asset.bytes,
+    asset.readToken || '',
+  ];
+  return sha256Text(parts.map((part) => String(part || '').trim()).join('\n'));
+}
+
+function signedTeamSharingAssetPath(asset = {}, share = {}) {
+  const path = teamSharingAssetPath(asset);
+  const shareId = String(share.id || '').trim();
+  if (!path || !shareId) return path;
+  const params = new URLSearchParams({
+    share: shareId,
+    asset_token: teamSharingAssetShareGrant(asset, share),
+  });
+  return `${path}?${params.toString()}`;
+}
+
+function signShareAssetRefs(content = '', { share = {}, teamSharingState = {}, assetIds = [] } = {}) {
+  const ids = new Set(asArray(assetIds).map(String).filter(Boolean));
+  if (!ids.size) return String(content || '');
+  let next = String(content || '');
+  for (const asset of ensureTeamSharingAssets(teamSharingState)) {
+    if (!asset || asset.revokedAt || !ids.has(String(asset.id || ''))) continue;
+    const rawPath = teamSharingAssetPath(asset);
+    const signedPath = signedTeamSharingAssetPath(asset, share);
+    if (rawPath && signedPath && rawPath !== signedPath) next = next.split(rawPath).join(signedPath);
+  }
+  return next;
 }
 
 function teamSharingAssetUrl(req, asset = {}) {
@@ -282,6 +325,7 @@ async function upsertTeamSharingAsset({
     storageKey: attachment.storageKey || attachment.relativePath || '',
     relativePath: attachment.relativePath || attachment.storageKey || '',
     path: attachment.path || '',
+    readToken: randomToken('mcasset'),
     createdBy: actorId,
     createdAt,
     updatedAt: createdAt,
@@ -786,6 +830,38 @@ function assetWorkspaceAccess(req, { actor, currentUser, teamSharingState, asset
   return { ok: false, status: 401, workspaceId, actorId: '', error: 'Sign in to MagClaw and join this server to open this asset.' };
 }
 
+function shareAssetGrantAccess(teamSharingState = {}, asset = {}, searchParams = new URLSearchParams()) {
+  const shareId = String(searchParams.get('share') || searchParams.get('shareId') || '').trim();
+  const grant = String(searchParams.get('asset_token') || searchParams.get('assetToken') || '').trim();
+  if (!shareId && !grant) return null;
+  const workspaceId = String(asset?.workspaceId || '').trim();
+  const share = ensureTeamSharingShares(teamSharingState).find((item) => (
+    item
+    && item.revokedAt == null
+    && String(item.id || '').trim() === shareId
+    && String(item.workspaceId || '').trim() === workspaceId
+  ));
+  const record = share ? shareContentRecord(teamSharingState, share) : null;
+  const assetIds = new Set(asArray(record?.assetIds).map(String).filter(Boolean));
+  const expected = share ? teamSharingAssetShareGrant(asset, share) : '';
+  const allowed = Boolean(
+    grant
+    && share
+    && assetIds.has(String(asset.id || ''))
+    && timingSafeStringEqual(grant, expected),
+  );
+  if (allowed) {
+    return { ok: true, status: 200, workspaceId, actorId: `share:${shareId}`, via: 'share_asset_token' };
+  }
+  return {
+    ok: false,
+    status: 401,
+    workspaceId,
+    actorId: '',
+    error: 'This Team Sharing asset token is invalid or expired.',
+  };
+}
+
 function identityForEditor({ actor = null, currentUser = null, tokenRecord = null } = {}) {
   const member = actor?.member || {};
   const user = currentUser || actor?.user || tokenRecord?.user || {};
@@ -1240,7 +1316,11 @@ function shareChromeHtml(share = {}, innerHtml = '') {
 function renderShareHtml(share = {}, teamSharingState = {}) {
   const title = htmlEscape(share.title || 'Shared page');
   const record = shareContentRecord(teamSharingState, share);
-  const content = String(record.content || '');
+  const content = signShareAssetRefs(String(record.content || ''), {
+    share,
+    teamSharingState,
+    assetIds: record.assetIds,
+  });
   const contentType = record.contentType || share.contentType;
   if (contentType === 'html') {
     const footer = shareFooterHtml(share);
@@ -5042,7 +5122,8 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendError(res, 404, 'Team Sharing asset not found.');
       return true;
     }
-    const access = assetWorkspaceAccess(req, { actor, currentUser: browserUser, teamSharingState, asset, state });
+    const access = shareAssetGrantAccess(teamSharingState, asset, url.searchParams)
+      || assetWorkspaceAccess(req, { actor, currentUser: browserUser, teamSharingState, asset, state });
     if (!access.ok) {
       sendError(res, access.status || 403, access.error || 'Join this server before opening this asset.');
       return true;
