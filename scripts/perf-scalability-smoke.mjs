@@ -5,8 +5,63 @@ import { createStateCore } from '../server/state-core.js';
 import { createSystemServices } from '../server/system-services.js';
 
 const NOW = '2026-06-08T00:00:00.000Z';
+const BOOTSTRAP_DIRECTORY_FORMAT = 'tuple-v1';
+const BOOTSTRAP_QUERY = 'spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160&directoryFormat=tuple-v1';
+const BOOTSTRAP_AGENT_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'name',
+  'description',
+  'status',
+  'runtime',
+  'model',
+  'createdAt',
+  'activeWorkItemIds',
+  'avatar',
+  'previousStatus',
+  'runtimeId',
+  'reasoningEffort',
+  'computerId',
+  'workspace',
+  'envVars',
+  'createdBy',
+  'createdByHumanId',
+  'ownerHumanId',
+  'createdByUserId',
+  'creatorName',
+  'creatorEmail',
+  'runtimeLastStartedAt',
+  'runtimeLastTurnAt',
+  'runtimeWarmAt',
+  'runtimeActivity',
+  'activitySeq',
+  'activityAt',
+  'disabledAt',
+  'disabledByServerDeletedAt',
+  'deletedAt',
+  'archivedAt',
+]);
+const BOOTSTRAP_HUMAN_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'name',
+  'role',
+  'status',
+  'createdAt',
+  'email',
+  'avatar',
+  'avatarUrl',
+  'authUserId',
+  'userId',
+  'identityReference',
+]);
+const BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'userId',
+  'humanId',
+  'user',
+  'role',
+]);
 const BUDGETS = Object.freeze({
-  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 800_000),
+  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 650_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 80_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
@@ -30,6 +85,29 @@ const BUDGETS = Object.freeze({
 function assertBudget(condition, message) {
   if (condition) return;
   throw new Error(message);
+}
+
+function usefulValue(value) {
+  if (value === undefined || value === null || value === '') return false;
+  if (Array.isArray(value) && value.length === 0) return false;
+  if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) return false;
+  return true;
+}
+
+function tupleRecordToObject(entry, fields = []) {
+  if (!Array.isArray(entry)) return entry && typeof entry === 'object' ? entry : {};
+  const record = {};
+  fields.forEach((field, index) => {
+    const value = entry[index];
+    if (usefulValue(value)) record[field] = value;
+  });
+  const extra = entry[fields.length];
+  if (extra && typeof extra === 'object' && !Array.isArray(extra)) Object.assign(record, extra);
+  return record;
+}
+
+function decodeTupleRecords(entries = [], fields = []) {
+  return (entries || []).map((entry) => tupleRecordToObject(entry, fields));
 }
 
 function timestamp(offsetMs = 0) {
@@ -586,7 +664,7 @@ function measureBootstrapProjectionWindow() {
   }
   const services = makeSystemServices(state);
   const snapshot = services.publicBootstrapState({
-    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160',
+    url: `/api/bootstrap?${BOOTSTRAP_QUERY}`,
     headers: {},
   });
   return {
@@ -672,7 +750,7 @@ function measureLargeBootstrapHistory() {
   const services = makeSystemServices(state);
   const started = performance.now();
   const snapshot = services.publicBootstrapState({
-    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160',
+    url: `/api/bootstrap?${BOOTSTRAP_QUERY}`,
     headers: {},
   });
   const body = JSON.stringify(snapshot);
@@ -768,7 +846,7 @@ function measureLargeUnreadBootstrap() {
   const services = makeSystemServices(state);
   const started = performance.now();
   const snapshot = services.publicBootstrapState({
-    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160',
+    url: `/api/bootstrap?${BOOTSTRAP_QUERY}`,
     headers: {},
   });
   const body = JSON.stringify(snapshot);
@@ -788,7 +866,7 @@ async function main() {
   const services = makeSystemServices(state);
   const started = performance.now();
   const snapshot = services.publicBootstrapState({
-    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160',
+    url: `/api/bootstrap?${BOOTSTRAP_QUERY}`,
     headers: {},
   });
   const body = JSON.stringify(snapshot);
@@ -796,9 +874,16 @@ async function main() {
     channel?.id === 'chan_all'
     || String(channel?.name || '').trim().toLowerCase() === 'all'
   ));
+  const decodedAgents = decodeTupleRecords(snapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
+  const decodedHumans = decodeTupleRecords(snapshot.humans, BOOTSTRAP_HUMAN_TUPLE_FIELDS);
+  const decodedCloudMembers = decodeTupleRecords(snapshot.cloud?.members || [], BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
   const bootstrap = {
     ms: Math.round(performance.now() - started),
     bytes: Buffer.byteLength(body, 'utf8'),
+    directoryFormat: snapshot.bootstrap?.directoryFormat || '',
+    hasBootstrapDirectoryTuples: (snapshot.agents || []).some(Array.isArray)
+      && (snapshot.humans || []).some(Array.isArray)
+      && (snapshot.cloud?.members || []).some(Array.isArray),
     messages: snapshot.messages.length,
     replies: snapshot.replies.length,
     tasks: snapshot.tasks.length,
@@ -812,19 +897,19 @@ async function main() {
       Array.isArray(bootstrapAllChannel?.[key])
     )),
     unreadHydration: snapshot.bootstrap?.unreadHydration || null,
-    hasBootstrapMemberChurnFields: snapshot.agents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
-      || snapshot.humans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
+    hasBootstrapMemberChurnFields: decodedAgents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
+      || decodedHumans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
     hasBootstrapConversationChurnFields: [...snapshot.messages, ...snapshot.replies].some((record) => (
       record.workspaceId || (record.updatedAt && record.createdAt && record.updatedAt === record.createdAt)
     )),
-    hasBootstrapEmptyAgentWorkItems: snapshot.agents.some((agent) => (
+    hasBootstrapEmptyAgentWorkItems: decodedAgents.some((agent) => (
       Array.isArray(agent.activeWorkItemIds) && agent.activeWorkItemIds.length === 0
     )),
-    hasBootstrapDuplicateAgentRuntimeState: snapshot.agents.some((agent) => (
+    hasBootstrapDuplicateAgentRuntimeState: decodedAgents.some((agent) => (
       (agent.runtime && agent.runtimeId && agent.runtime === agent.runtimeId)
       || (agent.status && agent.previousStatus && agent.previousStatus === agent.status)
     )),
-    hasBootstrapCloudMemberDuplication: (snapshot.cloud?.members || []).some((member) => (
+    hasBootstrapCloudMemberDuplication: decodedCloudMembers.some((member) => (
       member.human
       || member.workspaceId
       || member.updatedAt
@@ -851,6 +936,8 @@ async function main() {
 
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
+  assertBudget(bootstrap.directoryFormat === BOOTSTRAP_DIRECTORY_FORMAT, `bootstrap directory format expected ${BOOTSTRAP_DIRECTORY_FORMAT} but got ${bootstrap.directoryFormat || '[none]'}`);
+  assertBudget(bootstrap.hasBootstrapDirectoryTuples, 'bootstrap did not compact member directories into tuple rows');
   assertBudget(!bootstrap.hasInternalFields, 'bootstrap leaked internal payload fields');
   assertBudget(!bootstrap.hasBootstrapMemberChurnFields, 'bootstrap leaked member churn fields');
   assertBudget(!bootstrap.hasBootstrapConversationChurnFields, 'bootstrap leaked conversation churn fields');

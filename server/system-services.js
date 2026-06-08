@@ -17,6 +17,60 @@ const DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS = 10 * 60_000;
 const PACKAGE_UPDATE_CACHE_TTL_SECONDS = 12 * 60 * 60;
 const BOOTSTRAP_UNREAD_RECORD_LIMIT = 80;
 const BOOTSTRAP_UNREAD_CANDIDATE_LIMIT = BOOTSTRAP_UNREAD_RECORD_LIMIT * 2;
+const BOOTSTRAP_DIRECTORY_FORMAT_TUPLE = 'tuple-v1';
+const BOOTSTRAP_AGENT_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'name',
+  'description',
+  'status',
+  'runtime',
+  'model',
+  'createdAt',
+  'activeWorkItemIds',
+  'avatar',
+  'previousStatus',
+  'runtimeId',
+  'reasoningEffort',
+  'computerId',
+  'workspace',
+  'envVars',
+  'createdBy',
+  'createdByHumanId',
+  'ownerHumanId',
+  'createdByUserId',
+  'creatorName',
+  'creatorEmail',
+  'runtimeLastStartedAt',
+  'runtimeLastTurnAt',
+  'runtimeWarmAt',
+  'runtimeActivity',
+  'activitySeq',
+  'activityAt',
+  'disabledAt',
+  'disabledByServerDeletedAt',
+  'deletedAt',
+  'archivedAt',
+]);
+const BOOTSTRAP_HUMAN_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'name',
+  'role',
+  'status',
+  'createdAt',
+  'email',
+  'avatar',
+  'avatarUrl',
+  'authUserId',
+  'userId',
+  'identityReference',
+]);
+const BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'userId',
+  'humanId',
+  'user',
+  'role',
+]);
 const PACKAGE_RELEASE_COMPONENTS = Object.freeze({
   '@magclaw/web': 'web',
   '@magclaw/daemon': 'daemon',
@@ -637,6 +691,51 @@ export function createSystemServices(deps) {
     return next;
   }
 
+  function compactTuple(values = []) {
+    let lastIndex = values.length - 1;
+    while (lastIndex >= 0) {
+      if (usefulMetadataValue(values[lastIndex])) break;
+      lastIndex -= 1;
+    }
+    return values.slice(0, lastIndex + 1);
+  }
+
+  function bootstrapTupleRecord(record = {}, fields = []) {
+    if (!record || typeof record !== 'object') return record;
+    const fieldSet = new Set(fields);
+    const extra = {};
+    for (const [key, value] of Object.entries(record)) {
+      if (!fieldSet.has(key) && usefulMetadataValue(value)) extra[key] = value;
+    }
+    const values = fields.map((field) => (usefulMetadataValue(record[field]) ? record[field] : null));
+    values.push(Object.keys(extra).length ? extra : null);
+    return compactTuple(values);
+  }
+
+  function encodeBootstrapDirectories(snapshot = {}, options = {}) {
+    if (options.directoryFormat !== BOOTSTRAP_DIRECTORY_FORMAT_TUPLE) return snapshot;
+    const next = {
+      ...snapshot,
+      bootstrap: {
+        ...(snapshot.bootstrap || {}),
+        directoryFormat: BOOTSTRAP_DIRECTORY_FORMAT_TUPLE,
+      },
+    };
+    if (Array.isArray(snapshot.agents)) {
+      next.agents = snapshot.agents.map((agent) => bootstrapTupleRecord(agent, BOOTSTRAP_AGENT_TUPLE_FIELDS));
+    }
+    if (Array.isArray(snapshot.humans)) {
+      next.humans = snapshot.humans.map((human) => bootstrapTupleRecord(human, BOOTSTRAP_HUMAN_TUPLE_FIELDS));
+    }
+    if (snapshot.cloud && typeof snapshot.cloud === 'object' && Array.isArray(snapshot.cloud.members)) {
+      next.cloud = {
+        ...snapshot.cloud,
+        members: snapshot.cloud.members.map((member) => bootstrapTupleRecord(member, BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS)),
+      };
+    }
+    return next;
+  }
+
   function compactBootstrapChannelRecord(channel = {}) {
     if (!channel || typeof channel !== 'object') return channel;
     const record = { ...channel };
@@ -666,6 +765,8 @@ export function createSystemServices(deps) {
         eventLimit: url.searchParams.get('eventLimit') || '',
         taskLimit: url.searchParams.get('taskLimit') || '',
       };
+      const directoryFormat = url.searchParams.get('directoryFormat') || '';
+      if (directoryFormat) options.directoryFormat = directoryFormat;
       if (req?.magclawBootstrapHydration) options.hydration = req.magclawBootstrapHydration;
       return options;
     } catch {
@@ -975,7 +1076,7 @@ export function createSystemServices(deps) {
       currentState,
     );
 
-    return {
+    const snapshot = {
       ...publicStateBase(currentState),
       settings: publicSettings(cloud),
       channels: scopedChannels.filter((channel) => !channel.archived).map(compactBootstrapChannelRecord),
@@ -1032,6 +1133,7 @@ export function createSystemServices(deps) {
       systemNotifications: newestRecords(scopedRecords('systemNotifications'), 120).sort(compareOldestRecords),
       attachments: scopedRecords('attachments').filter((attachment) => attachmentIds.has(String(attachment.id))),
     };
+    return encodeBootstrapDirectories(snapshot, effectiveOptions);
   }
   
   function workspaceFanoutApiConfig(cloud = null) {

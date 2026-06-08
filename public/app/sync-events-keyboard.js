@@ -6,7 +6,14 @@ function bootstrapStatePath() {
   params.set('messageLimit', '80');
   params.set('threadRootLimit', '160');
   params.set('taskLimit', '160');
+  params.set('directoryFormat', 'tuple-v1');
   return `/api/bootstrap?${params.toString()}`;
+}
+
+function normalizeIncomingStateSnapshot(nextState) {
+  return typeof normalizeStateDirectorySnapshot === 'function'
+    ? normalizeStateDirectorySnapshot(nextState)
+    : nextState;
 }
 
 let packageVersionRefreshInFlight = null;
@@ -99,6 +106,8 @@ function refreshPackageVersionReminders() {
 async function refreshState() {
   rememberPinnedBottomBeforeStateChange();
   const nextState = await api(bootstrapStatePath());
+  const normalizedNextState = normalizeIncomingStateSnapshot(nextState);
+  if (normalizedNextState !== nextState) Object.assign(nextState, normalizedNextState);
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
   trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
   appState = nextState;
@@ -115,7 +124,8 @@ async function refreshState() {
   ) {
     routeServerSwitchAttempted = true;
     await api(`/api/console/servers/${encodeURIComponent(routeSlug)}/switch`, { method: 'POST', body: '{}' });
-    appState = await api(bootstrapStatePath());
+    const switchedState = await api(bootstrapStatePath());
+    appState = normalizeIncomingStateSnapshot(switchedState);
     syncBootstrapPagination(appState);
     if (typeof loadStoredComposerDrafts === 'function') loadStoredComposerDrafts({ force: true });
     if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
@@ -1371,6 +1381,7 @@ function computerDetailRenderSignature(stateSnapshot = appState) {
 }
 
 function applyStateUpdate(nextState) {
+  nextState = normalizeIncomingStateSnapshot(nextState);
   if (pendingStateUpdate && pendingStateUpdate !== nextState) clearPendingStateUpdate();
   nextState = preserveLoadedConversationHistory(appState, nextState);
   if (appState?.cloud?.unreadCounts && nextState?.cloud && !nextState.cloud.unreadCounts) {

@@ -47,7 +47,7 @@ cloud members, 1000 agents, 20000 messages, 1000 replies, and 2000 tasks. The
 synthetic `#all` channel includes every human and agent to keep company-scale
 membership fanout visible in the budget. It currently enforces:
 
-- Bootstrap JSON is at most 800 KB and generated in at most 250 ms.
+- Browser bootstrap JSON is at most 650 KB and generated in at most 250 ms.
 - Bootstrap server-side projection is windowed: with 10000 source messages, the
   smoke test allows at most 500 conversation metadata reads while still exposing
   history pagination.
@@ -64,6 +64,9 @@ membership fanout visible in the budget. It currently enforces:
 - Bootstrap cloud member rows do not duplicate nested Human payloads already
   available in the top-level Humans directory, and omit default `member` roles
   that the browser can safely infer.
+- Browser bootstrap requests use opt-in compact `tuple-v1` directory rows for
+  Agents, Humans, and cloud Members, then normalize them back to objects at the
+  frontend state boundary so rendering code keeps the same object UX contract.
 - Bootstrap represents `#all` membership with `membershipMode: all` and a
   count, instead of duplicating every human and agent ID in channel membership
   arrays.
@@ -156,8 +159,8 @@ asks for it.
 
 ## Next Optimization Queue
 
-- Move presence toward cursor hydration for very large workspaces where even the
-  compact first full heartbeat is too large.
+- Move member directories toward cursor hydration for very large workspaces
+  where even compact first-load directories are too large.
 - Add browser-side performance marks for bootstrap, first render, SSE open,
   resync fetch, and major surface patches.
 - Add production/test-environment verification that records response sizes,

@@ -498,6 +498,89 @@ test('bootstrap state includes terminal task updates for the current member chan
   assert.equal(snapshot.tasks.some((task) => task.id === 'task_outside_done'), false);
 });
 
+test('bootstrap state keeps object directories by default and supports tuple directory opt-in', () => {
+  const createdAt = '2026-05-18T00:00:00.000Z';
+  const services = makeServices((state) => {
+    state.agents = [{
+      id: 'agt_public',
+      workspaceId: 'local',
+      name: 'Public Agent',
+      description: 'Shown in members',
+      status: 'working',
+      runtime: 'codex',
+      runtimeId: 'codex',
+      model: 'gpt-test',
+      activeWorkItemIds: ['wi_1'],
+      createdAt,
+      updatedAt: createdAt,
+    }];
+    state.humans = [{
+      id: 'hum_1',
+      workspaceId: 'local',
+      name: 'Human One',
+      role: 'owner',
+      status: 'online',
+      lastSeenAt: createdAt,
+      createdAt,
+      updatedAt: createdAt,
+    }];
+  }, {
+    publicCloudState: () => ({
+      auth: {
+        currentUser: { id: 'usr_1' },
+        currentMember: { workspaceId: 'local', humanId: 'hum_1', role: 'owner' },
+        storageBackend: 'postgres',
+      },
+      workspace: { id: 'local', slug: 'local' },
+      members: [{
+        id: 'mem_1',
+        workspaceId: 'local',
+        userId: 'usr_1',
+        humanId: 'hum_1',
+        role: 'owner',
+        status: 'active',
+        createdAt,
+        updatedAt: createdAt,
+        user: { id: 'usr_1', name: 'Human One', email: 'human@example.test' },
+        human: { id: 'hum_1', name: 'Human One', email: 'human@example.test' },
+      }],
+    }),
+  });
+
+  const objectSnapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all',
+    headers: {},
+  });
+  assert.equal(Array.isArray(objectSnapshot.agents[0]), false);
+  assert.equal(objectSnapshot.bootstrap.directoryFormat, undefined);
+  assert.equal(objectSnapshot.agents[0].id, 'agt_public');
+  assert.equal(objectSnapshot.cloud.members[0].human, undefined);
+
+  const tupleSnapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&directoryFormat=tuple-v1',
+    headers: {},
+  });
+  assert.equal(tupleSnapshot.bootstrap.directoryFormat, 'tuple-v1');
+  assert.deepEqual(tupleSnapshot.agents[0].slice(0, 8), [
+    'agt_public',
+    'Public Agent',
+    'Shown in members',
+    'working',
+    'codex',
+    'gpt-test',
+    createdAt,
+    ['wi_1'],
+  ]);
+  assert.deepEqual(tupleSnapshot.humans[0].slice(0, 5), ['hum_1', 'Human One', 'owner', 'online', createdAt]);
+  assert.deepEqual(tupleSnapshot.cloud.members[0].slice(0, 5), [
+    'mem_1',
+    'usr_1',
+    'hum_1',
+    { email: 'human@example.test' },
+    'owner',
+  ]);
+});
+
 test('public state exposes configured public URL for share exports', () => {
   const previous = process.env.MAGCLAW_PUBLIC_URL;
   process.env.MAGCLAW_PUBLIC_URL = 'https://magclaw.multiego.me/';

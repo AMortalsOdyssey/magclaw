@@ -1,6 +1,104 @@
 let pendingStateUpdate = null;
 let pendingStateUpdateFrame = null;
 
+const BOOTSTRAP_AGENT_TUPLE_FIELDS = [
+  'id',
+  'name',
+  'description',
+  'status',
+  'runtime',
+  'model',
+  'createdAt',
+  'activeWorkItemIds',
+  'avatar',
+  'previousStatus',
+  'runtimeId',
+  'reasoningEffort',
+  'computerId',
+  'workspace',
+  'envVars',
+  'createdBy',
+  'createdByHumanId',
+  'ownerHumanId',
+  'createdByUserId',
+  'creatorName',
+  'creatorEmail',
+  'runtimeLastStartedAt',
+  'runtimeLastTurnAt',
+  'runtimeWarmAt',
+  'runtimeActivity',
+  'activitySeq',
+  'activityAt',
+  'disabledAt',
+  'disabledByServerDeletedAt',
+  'deletedAt',
+  'archivedAt',
+];
+const BOOTSTRAP_HUMAN_TUPLE_FIELDS = [
+  'id',
+  'name',
+  'role',
+  'status',
+  'createdAt',
+  'email',
+  'avatar',
+  'avatarUrl',
+  'authUserId',
+  'userId',
+  'identityReference',
+];
+const BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS = [
+  'id',
+  'userId',
+  'humanId',
+  'user',
+  'role',
+];
+
+function tupleValueIsUseful(value) {
+  if (value === undefined || value === null || value === '') return false;
+  if (Array.isArray(value) && value.length === 0) return false;
+  if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) return false;
+  return true;
+}
+
+function tupleRecordToObject(entry, fields = []) {
+  if (!Array.isArray(entry)) return entry && typeof entry === 'object' ? entry : {};
+  const record = {};
+  fields.forEach((field, index) => {
+    const value = entry[index];
+    if (tupleValueIsUseful(value)) record[field] = value;
+  });
+  const extra = entry[fields.length];
+  if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
+    Object.assign(record, extra);
+  }
+  return record;
+}
+
+function normalizeStateDirectorySnapshot(stateSnapshot = {}) {
+  if (!stateSnapshot || typeof stateSnapshot !== 'object') return stateSnapshot;
+  const hasTupleDirectories = stateSnapshot?.bootstrap?.directoryFormat === 'tuple-v1'
+    || (Array.isArray(stateSnapshot?.agents) && stateSnapshot.agents.some(Array.isArray))
+    || (Array.isArray(stateSnapshot?.humans) && stateSnapshot.humans.some(Array.isArray))
+    || (Array.isArray(stateSnapshot?.cloud?.members) && stateSnapshot.cloud.members.some(Array.isArray));
+  if (!hasTupleDirectories) return stateSnapshot;
+  const next = { ...stateSnapshot };
+  if (Array.isArray(stateSnapshot.agents)) {
+    next.agents = stateSnapshot.agents.map((agent) => tupleRecordToObject(agent, BOOTSTRAP_AGENT_TUPLE_FIELDS));
+  }
+  if (Array.isArray(stateSnapshot.humans)) {
+    next.humans = stateSnapshot.humans.map((human) => tupleRecordToObject(human, BOOTSTRAP_HUMAN_TUPLE_FIELDS));
+  }
+  if (stateSnapshot.cloud && typeof stateSnapshot.cloud === 'object' && Array.isArray(stateSnapshot.cloud.members)) {
+    next.cloud = {
+      ...stateSnapshot.cloud,
+      members: stateSnapshot.cloud.members.map((member) => tupleRecordToObject(member, BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS)),
+    };
+  }
+  return next;
+}
+
 function pendingStateUpdateBase() {
   return pendingStateUpdate || appState;
 }
@@ -24,6 +122,7 @@ function flushPendingStateUpdate() {
 
 function queueStateUpdate(nextState, { immediate = false } = {}) {
   if (!nextState) return false;
+  nextState = normalizeStateDirectorySnapshot(nextState);
   if (immediate) {
     clearPendingStateUpdate();
     if (typeof applyStateUpdate === 'function') applyStateUpdate(nextState);
@@ -41,6 +140,7 @@ function stateRecordArray(records) {
 }
 
 function normalizeConversationStateSnapshot(stateSnapshot = {}) {
+  stateSnapshot = normalizeStateDirectorySnapshot(stateSnapshot);
   return {
     ...stateSnapshot,
     messages: [...stateRecordArray(stateSnapshot?.messages)],

@@ -74,6 +74,64 @@ test('state sync immediate updates clear a queued frame before applying', async 
   assert.equal(context.appState.updatedAt, 'immediate');
 });
 
+test('state sync normalizes tuple bootstrap directories before applying', async () => {
+  const { context, updates } = await createHarness();
+  const createdAt = '2026-05-18T00:00:00.000Z';
+
+  context.queueStateUpdate({
+    bootstrap: { directoryFormat: 'tuple-v1' },
+    agents: [[
+      'agt_public',
+      'Public Agent',
+      'Shown in members',
+      'working',
+      'codex',
+      'gpt-test',
+      createdAt,
+      ['wi_1'],
+    ]],
+    humans: [['hum_1', 'Human One', 'owner', 'online', createdAt]],
+    cloud: {
+      members: [[
+        'mem_1',
+        'usr_1',
+        'hum_1',
+        { email: 'human@example.test' },
+        'owner',
+      ]],
+    },
+    messages: [],
+    replies: [],
+    tasks: [],
+  }, { immediate: true });
+
+  assert.equal(updates.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.appState.agents[0])), {
+    id: 'agt_public',
+    name: 'Public Agent',
+    description: 'Shown in members',
+    status: 'working',
+    runtime: 'codex',
+    model: 'gpt-test',
+    createdAt,
+    activeWorkItemIds: ['wi_1'],
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.appState.humans[0])), {
+    id: 'hum_1',
+    name: 'Human One',
+    role: 'owner',
+    status: 'online',
+    createdAt,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.appState.cloud.members[0])), {
+    id: 'mem_1',
+    userId: 'usr_1',
+    humanId: 'hum_1',
+    user: { email: 'human@example.test' },
+    role: 'owner',
+  });
+});
+
 test('submitted conversation merge replaces optimistic messages and replies without double counts', async () => {
   const { context, updates } = await createHarness({
     messages: [{

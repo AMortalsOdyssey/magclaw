@@ -272,6 +272,8 @@ export async function handleSystemApi(req, res, url, deps) {
       eventLimit: url.searchParams.get('eventLimit') || '',
       taskLimit: url.searchParams.get('taskLimit') || '',
     };
+    const directoryFormat = url.searchParams.get('directoryFormat') || '';
+    if (directoryFormat) options.directoryFormat = directoryFormat;
     const hydration = typeof hydrateBootstrapWindow === 'function'
       ? await hydrateBootstrapWindow(req, options)
       : null;
