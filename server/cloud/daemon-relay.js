@@ -2086,7 +2086,7 @@ export function createDaemonRelay(deps) {
         : (result.sent ? 'starting' : queuedCommandPresenceStatus(agent, result.delivery));
       setAgentStatus(agent, nextStatus, 'daemon_relay_start', { forceEvent: true });
       await persistRuntimeState(workspaceIdForAgent(agent), 'daemon_agent_start_queued');
-      broadcastState();
+      broadcastState({ realtimeOnly: true });
     }
     return result;
   }
@@ -2122,7 +2122,7 @@ export function createDaemonRelay(deps) {
     if (result.queued) {
       setAgentStatus(agent, result.sent ? 'starting' : queuedCommandPresenceStatus(agent, result.delivery), 'daemon_relay_restart', { forceEvent: true });
       await persistRuntimeState(workspaceIdForAgent(agent), 'daemon_agent_restart_queued');
-      broadcastState();
+      broadcastState({ realtimeOnly: true });
     }
     return result;
   }

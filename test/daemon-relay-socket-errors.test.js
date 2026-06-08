@@ -91,10 +91,13 @@ function createRelay(options = {}) {
     events: [],
   };
   const persistCalls = [];
+  const broadcasts = [];
   let nextId = 0;
   const relay = createDaemonRelay({
     addSystemEvent: () => {},
-    broadcastState: () => {},
+    broadcastState: options.broadcastState || ((broadcastOptions = {}) => {
+      broadcasts.push(broadcastOptions);
+    }),
     cloudAuth: {
       ensureCloudState: () => cloud,
       primaryWorkspace: () => cloud.workspaces[0],
@@ -118,7 +121,7 @@ function createRelay(options = {}) {
       if (agent) agent.status = status;
     },
   });
-  return { cloud, persistCalls, relay, state };
+  return { broadcasts, cloud, persistCalls, relay, state };
 }
 
 test('daemon relay rejects new daemon websockets while draining', async () => {
@@ -1182,6 +1185,37 @@ test('daemon relay rejects daemon upgrades when the reported background service 
   assert.equal(state.computers[0].status, 'connected');
   assert.equal(state.computers[0].metadata.daemonUpgrade, undefined);
   assert.equal(decodeServerMessages(socket).some((message) => message.type === 'daemon:upgrade'), false);
+});
+
+test('daemon relay broadcasts remote start and restart status through realtime events only', async () => {
+  const { broadcasts, cloud, persistCalls, relay, state } = createRelay();
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'offline',
+    connectedVia: 'daemon',
+  });
+  state.agents.push({
+    id: 'agt_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    name: 'Remote Agent',
+    runtime: 'codex',
+    status: 'idle',
+  });
+
+  const started = await relay.startAgent(state.agents[0]);
+  const restarted = await relay.restartAgent(state.agents[0]);
+
+  assert.equal(started.queued, true);
+  assert.equal(restarted.queued, true);
+  assert.equal(cloud.agentDeliveries.length, 2);
+  assert.deepEqual(broadcasts, [{ realtimeOnly: true }, { realtimeOnly: true }]);
+  assert.deepEqual(persistCalls.map((entry) => entry.reason), [
+    'daemon_agent_start_queued',
+    'daemon_agent_restart_queued',
+  ]);
 });
 
 test('daemon relay queues deliveries while computer upgrade is pending and replays after ready', async () => {
