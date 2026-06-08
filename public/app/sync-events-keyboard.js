@@ -127,8 +127,9 @@ async function refreshState() {
   if (!installedRuntimes.length && (selectedAgentId || activeView === 'members' || activeView === 'computers')) {
     await loadInstalledRuntimes().catch(() => {});
   }
-  await ensurePackageVersionsForCurrentServer({ renderAfter: false });
+  applyPackageVersionSnapshot(readCachedPackageVersionSnapshot());
   render();
+  refreshPackageVersionReminders();
 }
 
 function cloudAuthErrorMessage(error, { interactive = false } = {}) {

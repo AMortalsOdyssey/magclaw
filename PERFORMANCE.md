@@ -108,6 +108,9 @@ membership fanout visible in the budget. It currently enforces:
   state snapshot index for messages, replies, channels, DMs, agents, humans,
   tasks, computers, attachments, and projects, preserving linear fallback only
   for temporary local arrays.
+- Browser startup renders the post-bootstrap workspace before refreshing shared
+  package version reminders, so npm/package-version checks cannot keep the app
+  stuck on `MAGCLAW / BOOTING`.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 

@@ -460,7 +460,12 @@ test('left rail navigation refreshes shared package versions and renders update 
   assert.match(app, /api\('\/api\/package-versions'\)/);
   assert.doesNotMatch(packageCacheSource, /serverSlug/);
   assert.doesNotMatch(packageCacheSource, /activeView === 'computers'/);
-  assert.match(refreshStateSource, /await ensurePackageVersionsForCurrentServer\(\{ renderAfter: false \}\)/);
+  assert.match(refreshStateSource, /applyPackageVersionSnapshot\(readCachedPackageVersionSnapshot\(\)\);[\s\S]*render\(\);[\s\S]*refreshPackageVersionReminders\(\);/);
+  assert.doesNotMatch(refreshStateSource, /await ensurePackageVersionsForCurrentServer\(\{ renderAfter: false \}\)/);
+  assert.ok(
+    refreshStateSource.indexOf('render();') < refreshStateSource.indexOf('refreshPackageVersionReminders();'),
+    'package version refresh must not block the first post-bootstrap render',
+  );
   assert.match(navSource, /refreshPackageVersionReminders\(\)/);
   assert.match(selectComputerSource, /refreshPackageVersionReminders\(\)/);
   assert.match(applyStateSource, /if \(activeView === 'computers'\) \{[\s\S]*render\(\);[\s\S]*return;/);
