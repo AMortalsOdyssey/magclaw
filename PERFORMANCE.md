@@ -57,6 +57,9 @@ agents, 20000 messages, 1000 replies, and 2000 tasks. It currently enforces:
 - Deferred post-bootstrap SSE open plus repeated unchanged heartbeat fanout to
   100 SSE clients each stay under 10 KB and send no `event: heartbeat`
   payloads.
+- Timestamp-only human presence pings fanned out to 100 SSE clients stay under
+  10 KB and send no `event: heartbeat` payloads; only visible status changes
+  trigger a full presence heartbeat.
 - A burst of 10 status-only agent updates fanned out to 100 SSE clients stays
   under 700 KB total, sends at most 1000 realtime events, and sends no heartbeat
   payloads or resync events.

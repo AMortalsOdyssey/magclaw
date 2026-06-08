@@ -1351,7 +1351,12 @@ export function createStateCore(deps) {
   function presenceHeartbeatSignature(heartbeat = {}) {
     return JSON.stringify({
       agents: heartbeat.agents || [],
-      humans: heartbeat.humans || [],
+      humans: (heartbeat.humans || []).map((human) => ({
+        id: human.id,
+        // Browser pings refresh lastSeenAt frequently; only visible status changes
+        // should fan out a full heartbeat payload to every SSE client.
+        status: human.status || 'offline',
+      })),
     });
   }
 

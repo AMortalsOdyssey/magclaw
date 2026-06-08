@@ -12,6 +12,7 @@ const BUDGETS = Object.freeze({
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
   deferredOpenBytes: Number(process.env.MAGCLAW_PERF_DEFERRED_OPEN_BYTES || 10_000),
   repeatedHeartbeatBytes: Number(process.env.MAGCLAW_PERF_REPEATED_HEARTBEAT_BYTES || 10_000),
+  humanHeartbeatChurnBytes: Number(process.env.MAGCLAW_PERF_HUMAN_HEARTBEAT_CHURN_BYTES || 10_000),
   stateChangeFanoutBytes: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_BYTES || 700_000),
   stateChangeFanoutEvents: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_EVENTS || 1_000),
   unreadHydrationRecords: Number(process.env.MAGCLAW_PERF_UNREAD_RECORDS || 80),
@@ -295,6 +296,66 @@ async function measureRepeatedHeartbeatFanout(state) {
   }
 }
 
+async function measureHumanHeartbeatChurnFanout(state) {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-perf-scalability-human-heartbeat-'));
+  const sseClients = new Set();
+  try {
+    const core = createStateCore({
+      addSystemEvent: () => {},
+      broadcastState: () => {},
+      fanoutApiConfigured: () => false,
+      getState: () => state,
+      httpError: (status, message) => Object.assign(new Error(message), { status }),
+      makeId: (prefix) => `${prefix}_synthetic`,
+      now: () => NOW,
+      persistState: async () => {},
+      publicStateForSse: () => ({}),
+      sseClients,
+      DATA_DIR: tmp,
+      ROOT: process.cwd(),
+      RUNS_DIR: tmp,
+      STATE_FILE: path.join(tmp, 'state.json'),
+      STATE_DB_FILE: path.join(tmp, 'state.db'),
+      STATE_BROADCAST_DEBOUNCE_MS: 50,
+      USE_SQLITE_STATE: false,
+      WRITE_STATE_JSON: false,
+      SQLITE_BACKED_STATE_KEYS: [],
+    });
+    Object.assign(core.state, structuredClone(state));
+    const human = core.state.humans[0];
+    human.status = 'online';
+    human.lastSeenAt = new Date().toISOString();
+    human.presenceUpdatedAt = human.lastSeenAt;
+    const clients = Array.from({ length: 100 }, () => ({
+      magclawRequest: { magclawPresenceWorkspaceId: 'local' },
+      writes: [],
+      write(packet) {
+        this.writes.push(packet);
+        return true;
+      },
+      once() {},
+    }));
+    for (const client of clients) sseClients.add(client);
+
+    for (const client of clients) {
+      core.writePresenceHeartbeat(client, client.magclawRequest, { seedOnly: true });
+    }
+    human.lastSeenAt = new Date(Date.now() + 30_000).toISOString();
+    human.presenceUpdatedAt = human.lastSeenAt;
+    core.broadcastHeartbeat();
+    const packets = clients.flatMap((client) => client.writes.slice(1));
+
+    return {
+      clients: clients.length,
+      totalBytes: packets.reduce((sum, packet) => sum + Buffer.byteLength(packet, 'utf8'), 0),
+      heartbeatEvents: packets.filter((packet) => packet.startsWith('event: heartbeat\n')).length,
+      keepalives: packets.filter((packet) => packet.startsWith(': heartbeat-unchanged\n\n')).length,
+    };
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+}
+
 async function measureStateChangeFanout(state) {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-perf-scalability-state-change-'));
   const sseClients = new Set();
@@ -398,6 +459,7 @@ async function main() {
   };
   const heartbeat = await measureHeartbeat(state);
   const repeatedHeartbeat = await measureRepeatedHeartbeatFanout(state);
+  const humanHeartbeatChurn = await measureHumanHeartbeatChurnFanout(state);
   const stateChangeFanout = await measureStateChangeFanout(state);
 
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
@@ -414,13 +476,15 @@ async function main() {
   assertBudget(repeatedHeartbeat.deferredOpenHeartbeatEvents === 0, 'deferred SSE open sent heartbeat payload events');
   assertBudget(repeatedHeartbeat.repeatedBytes <= BUDGETS.repeatedHeartbeatBytes, `repeated heartbeat fanout ${repeatedHeartbeat.repeatedBytes} bytes exceeds ${BUDGETS.repeatedHeartbeatBytes}`);
   assertBudget(repeatedHeartbeat.repeatedHeartbeatEvents === 0, 'unchanged repeated heartbeat sent payload events');
+  assertBudget(humanHeartbeatChurn.totalBytes <= BUDGETS.humanHeartbeatChurnBytes, `human timestamp heartbeat churn ${humanHeartbeatChurn.totalBytes} bytes exceeds ${BUDGETS.humanHeartbeatChurnBytes}`);
+  assertBudget(humanHeartbeatChurn.heartbeatEvents === 0, 'human timestamp heartbeat churn sent payload events');
   assertBudget(stateChangeFanout.totalBytes <= BUDGETS.stateChangeFanoutBytes, `state change fanout ${stateChangeFanout.totalBytes} bytes exceeds ${BUDGETS.stateChangeFanoutBytes}`);
   assertBudget(stateChangeFanout.realtimeEvents <= BUDGETS.stateChangeFanoutEvents, `state change fanout ${stateChangeFanout.realtimeEvents} realtime events exceeds ${BUDGETS.stateChangeFanoutEvents}`);
   assertBudget(stateChangeFanout.stateResyncEvents === 0, 'status-only state change fanout sent resync events');
   assertBudget(stateChangeFanout.heartbeatEvents === 0, 'state change fanout sent heartbeat payload events');
   assertBudget(stateChangeFanout.heartbeatBytes === 0, 'state change fanout sent heartbeat payload bytes');
 
-  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat, stateChangeFanout }, null, 2));
+  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, stateChangeFanout }, null, 2));
 }
 
 main().catch((error) => {

@@ -531,11 +531,25 @@ test('state core skips unchanged presence heartbeat payloads after initial fanou
     assert.equal(ssePackets(client, 'heartbeat').length, 1);
     assert.equal(client.writes.at(-1).startsWith(': heartbeat-unchanged'), true);
 
+    core.state.humans[0].lastSeenAt = new Date(Date.now() + 30_000).toISOString();
+    core.state.humans[0].presenceUpdatedAt = core.state.humans[0].lastSeenAt;
+    core.broadcastHeartbeat();
+
+    assert.equal(ssePackets(client, 'heartbeat').length, 1);
+    assert.equal(client.writes.at(-1).startsWith(': heartbeat-unchanged'), true);
+
+    core.state.humans[0].status = 'offline';
+    core.broadcastHeartbeat();
+
+    let heartbeats = sseEnvelopes(client, 'heartbeat');
+    assert.equal(heartbeats.length, 2);
+    assert.equal(heartbeats.at(-1).humans[0].status, 'offline');
+
     core.state.agents[0].status = 'working';
     core.broadcastHeartbeat();
 
-    const heartbeats = sseEnvelopes(client, 'heartbeat');
-    assert.equal(heartbeats.length, 2);
+    heartbeats = sseEnvelopes(client, 'heartbeat');
+    assert.equal(heartbeats.length, 3);
     assert.equal(heartbeats.at(-1).agents[0].status, 'working');
   } finally {
     await rm(tmp, { recursive: true, force: true });
