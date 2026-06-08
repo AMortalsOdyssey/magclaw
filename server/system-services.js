@@ -373,6 +373,83 @@ export function createSystemServices(deps) {
     };
   }
 
+  function createNewestPageCollector(limit) {
+    const normalizedLimit = Math.floor(Number(limit) || 0);
+    return {
+      limit: normalizedLimit,
+      records: [],
+      heap: [],
+      total: 0,
+      writeIndex: 0,
+    };
+  }
+
+  function addMonotonicNewestRecord(collector, record) {
+    if (!record || collector.limit <= 0) return;
+    collector.total += 1;
+    if (collector.records.length < collector.limit) {
+      collector.records.push(record);
+      return;
+    }
+    collector.records[collector.writeIndex] = record;
+    collector.writeIndex = (collector.writeIndex + 1) % collector.limit;
+  }
+
+  function addHeapNewestRecord(collector, record) {
+    if (!record || collector.limit <= 0) return;
+    collector.total += 1;
+    addBoundedNewestRecord(collector.heap, record, collector.limit);
+  }
+
+  function finishNewestPageCollector(collector, recordsKey = 'records') {
+    const recordsValue = collector[recordsKey] || [];
+    recordsValue.sort(compareNewestRecords);
+    return {
+      records: recordsValue,
+      total: collector.total,
+      hasMore: collector.total > recordsValue.length,
+    };
+  }
+
+  function newestRecordPages(items, specs = []) {
+    const source = Array.isArray(items) ? items : [];
+    const collectors = records(specs).map((spec) => ({
+      predicate: typeof spec?.predicate === 'function' ? spec.predicate : null,
+      collector: createNewestPageCollector(spec?.limit),
+    }));
+    if (!collectors.length) return [];
+    let previous = null;
+    let monotonicOldestFirst = true;
+    for (const item of source) {
+      if (!item) continue;
+      if (previous && compareOldestRecords(previous, item) > 0) {
+        monotonicOldestFirst = false;
+        break;
+      }
+      for (const entry of collectors) {
+        if (entry.predicate && !entry.predicate(item)) continue;
+        addMonotonicNewestRecord(entry.collector, item);
+      }
+      previous = item;
+    }
+    if (monotonicOldestFirst) {
+      return collectors.map((entry) => finishNewestPageCollector(entry.collector, 'records'));
+    }
+
+    const heapCollectors = collectors.map((entry) => ({
+      predicate: entry.predicate,
+      collector: createNewestPageCollector(entry.collector.limit),
+    }));
+    for (const item of source) {
+      if (!item) continue;
+      for (const entry of heapCollectors) {
+        if (entry.predicate && !entry.predicate(item)) continue;
+        addHeapNewestRecord(entry.collector, item);
+      }
+    }
+    return heapCollectors.map((entry) => finishNewestPageCollector(entry.collector, 'heap'));
+  }
+
   function readByIncludesHuman(readBy, humanId) {
     const expected = String(humanId || '');
     if (!expected || !Array.isArray(readBy)) return false;
@@ -417,16 +494,16 @@ export function createSystemServices(deps) {
       }, BOOTSTRAP_UNREAD_CANDIDATE_LIMIT);
     };
     for (const message of sourceMessages) {
-      if (recordVisible && !recordVisible(message)) continue;
       if (!conversationRecordUnreadForHuman(message, currentHumanId)) continue;
       if (messageById.has(message.id)) continue;
+      if (recordVisible && !recordVisible(message)) continue;
       addUnreadCandidate('message', message);
     }
     for (const reply of sourceReplies) {
       if (!reply) continue;
-      if (recordVisible && !recordVisible(reply)) continue;
       if (!conversationRecordUnreadForHuman(reply, currentHumanId)) continue;
       if (replyById.has(reply.id)) continue;
+      if (recordVisible && !recordVisible(reply)) continue;
       addUnreadCandidate('reply', reply);
     }
     const unreadCandidates = unreadCandidateHeap.sort(compareNewestRecords);
@@ -1742,28 +1819,29 @@ export function createSystemServices(deps) {
       ? scopedChannels.find((channel) => String(channel?.id || '') === spaceId)
       : null;
 
-    const selectedMessagePage = newestRecordsPage(
-      sourceMessages,
-      messageLimit,
-      (message) => visibleConversationRecord(message)
-        && message.spaceType === spaceType
-        && String(message.spaceId) === spaceId,
-    );
+    const [selectedMessagePage, threadRootMessagePage] = newestRecordPages(sourceMessages, [
+      {
+        limit: messageLimit,
+        predicate: (message) => visibleConversationRecord(message)
+          && message.spaceType === spaceType
+          && String(message.spaceId) === spaceId,
+      },
+      {
+        limit: threadRootLimit,
+        predicate: (message) => (
+          visibleConversationRecord(message)
+          && (Number(message.replyCount || 0) > 0
+          || message.taskId
+          || records(message.savedBy).length
+          || String(message.id || '') === threadMessageId)
+        ),
+      },
+    ]);
     const selectedMessages = selectedMessagePage.records.slice().sort(compareOldestRecords);
     const fullMessageIds = new Set(selectedMessages.map((message) => String(message?.id || '')).filter(Boolean));
     const selectedMessageCursor = selectedMessages[0] || null;
     const hydratedMessagePagination = effectiveOptions.hydration?.messages?.pagination || null;
-    const threadRoots = newestRecordsPage(
-      sourceMessages,
-      threadRootLimit,
-      (message) => (
-        visibleConversationRecord(message)
-        && (Number(message.replyCount || 0) > 0
-        || message.taskId
-        || records(message.savedBy).length
-        || String(message.id || '') === threadMessageId)
-      ),
-    ).records;
+    const threadRoots = threadRootMessagePage.records;
     const messageById = new Map();
     for (const message of [...selectedMessages, ...threadRoots]) messageById.set(message.id, message);
     if (threadMessageId && !messageById.has(threadMessageId)) {

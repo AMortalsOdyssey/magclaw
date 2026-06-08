@@ -415,9 +415,15 @@ test('bootstrap state projects only the visible conversation window', () => {
 test('bootstrap state windows source conversation arrays without materializing filtered copies', () => {
   class CountingMessages extends Array {
     static filterCalls = 0;
+    static iteratorCalls = 0;
 
     static get [Symbol.species]() {
       return Array;
+    }
+
+    [Symbol.iterator]() {
+      CountingMessages.iteratorCalls += 1;
+      return super[Symbol.iterator]();
     }
 
     filter(...args) {
@@ -427,9 +433,15 @@ test('bootstrap state windows source conversation arrays without materializing f
   }
   class CountingReplies extends Array {
     static filterCalls = 0;
+    static iteratorCalls = 0;
 
     static get [Symbol.species]() {
       return Array;
+    }
+
+    [Symbol.iterator]() {
+      CountingReplies.iteratorCalls += 1;
+      return super[Symbol.iterator]();
     }
 
     filter(...args) {
@@ -467,6 +479,10 @@ test('bootstrap state windows source conversation arrays without materializing f
     state.replies = replies;
     state.agents = [{ id: 'agt_1', workspaceId: 'local', name: 'Ada', status: 'idle' }];
   });
+  CountingMessages.filterCalls = 0;
+  CountingMessages.iteratorCalls = 0;
+  CountingReplies.filterCalls = 0;
+  CountingReplies.iteratorCalls = 0;
 
   const snapshot = services.publicBootstrapState({
     url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20',
@@ -477,6 +493,8 @@ test('bootstrap state windows source conversation arrays without materializing f
   assert.equal(snapshot.bootstrap.hasMoreMessages, true);
   assert.equal(CountingMessages.filterCalls, 0);
   assert.equal(CountingReplies.filterCalls, 0);
+  assert.ok(CountingMessages.iteratorCalls <= 2, `messages should be scanned at most twice, got ${CountingMessages.iteratorCalls}`);
+  assert.ok(CountingReplies.iteratorCalls <= 2, `replies should be scanned at most twice, got ${CountingReplies.iteratorCalls}`);
 });
 
 test('bootstrap state selects newest conversation window from unsorted state arrays', () => {
