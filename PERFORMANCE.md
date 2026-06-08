@@ -104,6 +104,10 @@ membership fanout visible in the budget. It currently enforces:
 - Browser rail channel rows read server unread entries from a space-keyed index
   for the current state snapshot, so channel rendering does not scan the full
   unread-space list once per channel.
+- Generic browser `byId(appState.<collection>, id)` lookups use the current
+  state snapshot index for messages, replies, channels, DMs, agents, humans,
+  tasks, computers, attachments, and projects, preserving linear fallback only
+  for temporary local arrays.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 

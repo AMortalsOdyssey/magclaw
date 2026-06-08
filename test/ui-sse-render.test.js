@@ -140,6 +140,52 @@ test('rail unread entries use the current state lookup index instead of scanning
   assert.match(unreadEntrySource, /if \(typeof unreadEntryBySpace === 'function'\) return unreadEntryBySpace\(spaceType, spaceId, stateSnapshot\);/);
 });
 
+test('generic byId uses the current state lookup index for app state collections', async () => {
+  const stateCore = await readFile(new URL('../public/app/state-render-core.js', import.meta.url), 'utf8');
+  const dataSearch = await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8');
+  const source = [
+    'let stateEntityLookupCache = null;',
+    stateCore.slice(
+      stateCore.indexOf('function addLookupKey'),
+      stateCore.indexOf('function cloudMemberDisplayRole'),
+    ),
+    dataSearch.slice(
+      dataSearch.indexOf('function byId(list, id)'),
+      dataSearch.indexOf('function isAllChannel'),
+    ),
+    'globalThis.byId = byId;',
+  ].join('\n');
+  const context = {
+    appState: {
+      messages: Array.from({ length: 1000 }, (_item, index) => ({
+        id: `msg_${String(index).padStart(4, '0')}`,
+        body: `Message ${index}`,
+      })),
+      replies: [{ id: 'rep_1', parentMessageId: 'msg_0999', body: 'Reply' }],
+      channels: [{ id: 'chan_1', name: 'general' }],
+      dms: [{ id: 'dm_1' }],
+      agents: [{ id: 'agt_1', name: 'Agent' }],
+      humans: [{ id: 'hum_1', name: 'Human' }],
+      tasks: [{ id: 'task_1', title: 'Task' }],
+      computers: [{ id: 'cmp_1', name: 'Computer' }],
+      attachments: [{ id: 'att_1', name: 'Attachment' }],
+      projects: [{ id: 'prj_1', name: 'Project' }],
+      cloud: { unreadCounts: { spaces: [] } },
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+
+  context.appState.messages.find = () => {
+    throw new Error('byId scanned appState.messages');
+  };
+
+  assert.equal(context.byId(context.appState.messages, 'msg_0999').body, 'Message 999');
+  assert.equal(context.byId(context.appState.messages, 'msg_missing'), null);
+  assert.equal(context.byId(context.appState.attachments, 'att_1').name, 'Attachment');
+  assert.equal(context.byId([{ id: 'local_1', name: 'Local' }], 'local_1').name, 'Local');
+});
+
 test('state SSE updates route through the non-destructive state renderer', async () => {
   const app = await readAppSource();
   const connectEventsSource = app.slice(

@@ -1,4 +1,6 @@
 function byId(list, id) {
+  const indexed = typeof stateListItemById === 'function' ? stateListItemById(list, id) : undefined;
+  if (indexed !== undefined) return indexed;
   return (list || []).find((item) => item?.id === id) || null;
 }
 

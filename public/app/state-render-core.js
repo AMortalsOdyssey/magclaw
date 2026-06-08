@@ -793,52 +793,100 @@ function mapUnreadEntriesBySpaceKey(spaces = []) {
 }
 
 function stateEntityLookup(stateSnapshot = appState) {
+  const stateMessages = stateSnapshot?.messages || [];
+  const stateReplies = stateSnapshot?.replies || [];
+  const stateChannels = stateSnapshot?.channels || [];
+  const stateDms = stateSnapshot?.dms || [];
   const stateAgents = stateSnapshot?.agents || [];
   const stateHumans = stateSnapshot?.humans || [];
   const stateTasks = stateSnapshot?.tasks || [];
   const stateComputers = stateSnapshot?.computers || [];
-  const stateReplies = stateSnapshot?.replies || [];
+  const stateAttachments = stateSnapshot?.attachments || [];
+  const stateProjects = stateSnapshot?.projects || [];
   const stateUnreadSpaces = stateSnapshot?.cloud?.unreadCounts?.spaces || [];
   if (
     stateEntityLookupCache
     && stateEntityLookupCache.stateSnapshot === stateSnapshot
+    && stateEntityLookupCache.stateMessages === stateMessages
+    && stateEntityLookupCache.stateReplies === stateReplies
+    && stateEntityLookupCache.stateChannels === stateChannels
+    && stateEntityLookupCache.stateDms === stateDms
     && stateEntityLookupCache.stateAgents === stateAgents
     && stateEntityLookupCache.stateHumans === stateHumans
     && stateEntityLookupCache.stateTasks === stateTasks
     && stateEntityLookupCache.stateComputers === stateComputers
-    && stateEntityLookupCache.stateReplies === stateReplies
+    && stateEntityLookupCache.stateAttachments === stateAttachments
+    && stateEntityLookupCache.stateProjects === stateProjects
     && stateEntityLookupCache.stateUnreadSpaces === stateUnreadSpaces
+    && stateEntityLookupCache.messageCount === stateMessages.length
+    && stateEntityLookupCache.replyCount === stateReplies.length
+    && stateEntityLookupCache.channelCount === stateChannels.length
+    && stateEntityLookupCache.dmCount === stateDms.length
     && stateEntityLookupCache.agentCount === stateAgents.length
     && stateEntityLookupCache.humanCount === stateHumans.length
     && stateEntityLookupCache.taskCount === stateTasks.length
     && stateEntityLookupCache.computerCount === stateComputers.length
-    && stateEntityLookupCache.replyCount === stateReplies.length
+    && stateEntityLookupCache.attachmentCount === stateAttachments.length
+    && stateEntityLookupCache.projectCount === stateProjects.length
     && stateEntityLookupCache.unreadSpaceCount === stateUnreadSpaces.length
   ) {
     return stateEntityLookupCache;
   }
   stateEntityLookupCache = {
     stateSnapshot,
+    stateMessages,
+    stateReplies,
+    stateChannels,
+    stateDms,
     stateAgents,
     stateHumans,
     stateTasks,
     stateComputers,
-    stateReplies,
+    stateAttachments,
+    stateProjects,
     stateUnreadSpaces,
+    messageCount: stateMessages.length,
+    replyCount: stateReplies.length,
+    channelCount: stateChannels.length,
+    dmCount: stateDms.length,
     agentCount: stateAgents.length,
     humanCount: stateHumans.length,
     taskCount: stateTasks.length,
     computerCount: stateComputers.length,
-    replyCount: stateReplies.length,
+    attachmentCount: stateAttachments.length,
+    projectCount: stateProjects.length,
     unreadSpaceCount: stateUnreadSpaces.length,
+    messagesById: mapEntitiesById(stateMessages),
+    repliesById: mapEntitiesById(stateReplies),
+    channelsById: mapEntitiesById(stateChannels),
+    dmsById: mapEntitiesById(stateDms),
     agentsById: mapEntitiesById(stateAgents),
     humansById: mapEntitiesById(stateHumans),
     tasksById: mapEntitiesById(stateTasks),
     computersById: mapEntitiesById(stateComputers),
+    attachmentsById: mapEntitiesById(stateAttachments),
+    projectsById: mapEntitiesById(stateProjects),
     repliesByParentMessageId: mapRepliesByParentMessageId(stateReplies),
     unreadEntriesBySpaceKey: mapUnreadEntriesBySpaceKey(stateUnreadSpaces),
   };
   return stateEntityLookupCache;
+}
+
+function stateListItemById(list, id, stateSnapshot = appState) {
+  const target = String(id || '');
+  if (!target) return undefined;
+  const lookup = stateEntityLookup(stateSnapshot);
+  if (list === lookup.stateMessages) return lookup.messagesById.get(target) || null;
+  if (list === lookup.stateReplies) return lookup.repliesById.get(target) || null;
+  if (list === lookup.stateChannels) return lookup.channelsById.get(target) || null;
+  if (list === lookup.stateDms) return lookup.dmsById.get(target) || null;
+  if (list === lookup.stateAgents) return lookup.agentsById.get(target) || null;
+  if (list === lookup.stateHumans) return lookup.humansById.get(target) || null;
+  if (list === lookup.stateTasks) return lookup.tasksById.get(target) || null;
+  if (list === lookup.stateComputers) return lookup.computersById.get(target) || null;
+  if (list === lookup.stateAttachments) return lookup.attachmentsById.get(target) || null;
+  if (list === lookup.stateProjects) return lookup.projectsById.get(target) || null;
+  return undefined;
 }
 
 function agentById(id, stateSnapshot = appState) {
