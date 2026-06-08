@@ -938,6 +938,43 @@ test('bootstrap visible directory scope trims startup members and directory endp
   assert.equal(search.bootstrap.directory.humans.loaded, 1);
   assert.equal(search.bootstrap.directory.members.loaded, 1);
 
+  const leanSearch = makeServices((state) => {
+    class ConversationRecords extends Array {
+      static get [Symbol.species]() {
+        return Array;
+      }
+
+      filter() {
+        throw new Error('directory search should not filter conversation records');
+      }
+    }
+    state.messages = ConversationRecords.from(state.messages);
+    state.replies = ConversationRecords.from(state.replies);
+    state.agents = [
+      {
+        id: 'agt_other',
+        workspaceId: 'local',
+        name: 'Other Agent',
+        status: 'idle',
+        get envVars() {
+          throw new Error('directory search should not project non-matching agents');
+        },
+      },
+      {
+        id: 'agt_target',
+        workspaceId: 'local',
+        name: 'Target Agent',
+        status: 'idle',
+        envVars: { SAFE: '1' },
+      },
+    ];
+  }).publicDirectorySearchState({
+    url: '/api/directory/search?directoryFormat=tuple-v1&query=target&limit=1&types=agents',
+    headers: {},
+  });
+  assert.deepEqual(leanSearch.agents.map((agent) => agent[0]), ['agt_target']);
+  assert.equal(leanSearch.bootstrap.directory.agents.total, 1);
+
   const membersPage = services.publicMembersDirectoryState({
     url: '/api/members/directory?page=2&pageSize=1',
     headers: {},

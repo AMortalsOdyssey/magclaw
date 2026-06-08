@@ -121,6 +121,8 @@ const BUDGETS = Object.freeze({
   directoryPages: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGES || 4),
   directorySearchBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_SEARCH_BYTES || 20_000),
   directorySearchMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_SEARCH_MS || 250),
+  directoryBroadSearchBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_BROAD_SEARCH_BYTES || 20_000),
+  directoryBroadSearchMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_BROAD_SEARCH_MS || 250),
   membersDirectoryPageBytes: Number(process.env.MAGCLAW_PERF_MEMBERS_DIRECTORY_PAGE_BYTES || 35_000),
   membersDirectoryPageMs: Number(process.env.MAGCLAW_PERF_MEMBERS_DIRECTORY_PAGE_MS || 250),
   membersRailRows: Number(process.env.MAGCLAW_PERF_MEMBERS_RAIL_ROWS || 170),
@@ -268,7 +270,7 @@ function measureDirectoryHydration(services) {
   };
 }
 
-function measureDirectorySearch() {
+function measureDirectorySearch({ query = '9999', limit = 5 } = {}) {
   const sourceState = makeSyntheticState({
     humans: 10_000,
     agents: 10_000,
@@ -279,7 +281,7 @@ function measureDirectorySearch() {
   const services = makeSystemServices(sourceState);
   const started = performance.now();
   const snapshot = services.publicDirectorySearchState({
-    url: '/api/directory/search?directoryFormat=tuple-v1&query=9999&limit=5',
+    url: `/api/directory/search?directoryFormat=tuple-v1&query=${encodeURIComponent(query)}&limit=${limit}`,
     headers: {},
   });
   const body = JSON.stringify(snapshot);
@@ -308,6 +310,9 @@ function measureDirectorySearch() {
     hasDirectoryTuples: (snapshot.agents || []).some(Array.isArray)
       && (snapshot.humans || []).some(Array.isArray)
       && (snapshot.cloud?.members || []).some(Array.isArray),
+    hasAgentTuples: snapshot.agents.length === 0 || (snapshot.agents || []).some(Array.isArray),
+    hasHumanTuples: snapshot.humans.length === 0 || (snapshot.humans || []).some(Array.isArray),
+    hasMemberTuples: (snapshot.cloud?.members || []).length === 0 || (snapshot.cloud?.members || []).some(Array.isArray),
     hasInternalFields: body.includes('promptCache')
       || body.includes('runtimeSession')
       || body.includes('sourceAnchor'),
@@ -1400,6 +1405,7 @@ async function main() {
   const bootstrapSerializedAt = performance.now();
   const directory = measureDirectoryHydration(services);
   const directorySearch = measureDirectorySearch();
+  const directoryBroadSearch = measureDirectorySearch({ query: 'agent', limit: 5 });
   const membersDirectoryPage = measureMembersDirectoryPage();
   const membersRailWindow = await measureMembersRailWindow();
   const bootstrapAllChannel = (snapshot.channels || []).find((channel) => (
@@ -1567,6 +1573,21 @@ async function main() {
   assertBudget(directorySearch.hasDirectoryTuples, 'directory search did not compact member directories into tuple rows');
   assertBudget(!directorySearch.hasCloudMemberDuplication, 'directory search leaked duplicate cloud member human payloads');
   assertBudget(!directorySearch.hasInternalFields, 'directory search leaked internal payload fields');
+  assertBudget(directoryBroadSearch.sourceAgents === 10_000 && directoryBroadSearch.sourceHumans === 10_000, 'broad directory search smoke did not use the 10000-member fixture');
+  assertBudget(directoryBroadSearch.ms <= BUDGETS.directoryBroadSearchMs, `broad directory search ${directoryBroadSearch.ms}ms exceeds ${BUDGETS.directoryBroadSearchMs}ms`);
+  assertBudget(directoryBroadSearch.bytes <= BUDGETS.directoryBroadSearchBytes, `broad directory search ${directoryBroadSearch.bytes} bytes exceeds ${BUDGETS.directoryBroadSearchBytes}`);
+  assertBudget(directoryBroadSearch.query === 'agent', `broad directory search query expected agent but got ${directoryBroadSearch.query || '[none]'}`);
+  assertBudget(directoryBroadSearch.limit === 5, `broad directory search limit expected 5 but got ${directoryBroadSearch.limit}`);
+  assertBudget(directoryBroadSearch.agents === 5, `broad directory search expected 5 loaded agents but got ${directoryBroadSearch.agents}`);
+  assertBudget(directoryBroadSearch.humans === 0, `broad directory search expected 0 humans but got ${directoryBroadSearch.humans}`);
+  assertBudget(directoryBroadSearch.cloudMembers === 0, `broad directory search expected 0 members but got ${directoryBroadSearch.cloudMembers}`);
+  assertBudget(directoryBroadSearch.agentTotal === 10_000, `broad directory search expected 10000 matching agents but got ${directoryBroadSearch.agentTotal}`);
+  assertBudget(directoryBroadSearch.humanTotal === 0 && directoryBroadSearch.memberTotal === 0, 'broad directory search metadata reported non-agent matches');
+  assertBudget(directoryBroadSearch.hasAgentTuples, 'broad directory search did not compact agent rows into tuple rows');
+  assertBudget(directoryBroadSearch.hasHumanTuples, 'broad directory search returned non-tuple human rows');
+  assertBudget(directoryBroadSearch.hasMemberTuples, 'broad directory search returned non-tuple member rows');
+  assertBudget(!directoryBroadSearch.hasCloudMemberDuplication, 'broad directory search leaked duplicate cloud member human payloads');
+  assertBudget(!directoryBroadSearch.hasInternalFields, 'broad directory search leaked internal payload fields');
   assertBudget(membersDirectoryPage.sourceHumans === 10_000, 'members directory page smoke did not use the 10000-member fixture');
   assertBudget(membersDirectoryPage.ms <= BUDGETS.membersDirectoryPageMs, `members directory page ${membersDirectoryPage.ms}ms exceeds ${BUDGETS.membersDirectoryPageMs}ms`);
   assertBudget(membersDirectoryPage.bytes <= BUDGETS.membersDirectoryPageBytes, `members directory page ${membersDirectoryPage.bytes} bytes exceeds ${BUDGETS.membersDirectoryPageBytes}`);
@@ -1644,6 +1665,7 @@ async function main() {
     bootstrap,
     directory,
     directorySearch,
+    directoryBroadSearch,
     membersDirectoryPage,
     membersRailWindow,
     heartbeat,

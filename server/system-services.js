@@ -1035,31 +1035,43 @@ export function createSystemServices(deps) {
     return selected.length ? new Set(selected) : allowed;
   }
 
+  function limitedDirectorySearch(recordsInput, matcher, limit) {
+    const matched = [];
+    let total = 0;
+    for (const record of records(recordsInput)) {
+      if (!matcher(record)) continue;
+      total += 1;
+      if (matched.length < limit) matched.push(record);
+    }
+    return { records: matched, total };
+  }
+
   function directorySearchSnapshot({ agents = [], humans = [], cloud = null, query = '', limit = DIRECTORY_SEARCH_LIMIT_DEFAULT, types = null } = {}) {
     const selectedTypes = types instanceof Set ? types : directorySearchTypes();
-    const humansById = new Map(records(humans).map((human) => [String(human?.id || ''), human]).filter(([id]) => id));
-    const allMatchedAgents = selectedTypes.has('agents')
-      ? records(agents).filter((agent) => directorySearchMatches(agentDirectorySearchText(agent), query))
-      : [];
-    const allMatchedHumans = selectedTypes.has('humans')
-      ? records(humans).filter((human) => directorySearchMatches(humanDirectorySearchText(human), query))
-      : [];
-    const allMatchedMembers = selectedTypes.has('members')
-      ? records(cloud?.members).filter((member) => (
-          directorySearchMatches(memberDirectorySearchText(member, humansById.get(String(member?.humanId || ''))), query)
-        ))
-      : [];
-    const matchedAgents = allMatchedAgents.slice(0, limit);
-    const matchedHumans = allMatchedHumans.slice(0, limit);
-    const matchedMembers = allMatchedMembers.slice(0, limit);
+    const agentMatches = selectedTypes.has('agents')
+      ? limitedDirectorySearch(agents, (agent) => directorySearchMatches(agentDirectorySearchText(agent), query), limit)
+      : { records: [], total: 0 };
+    const humanMatches = selectedTypes.has('humans')
+      ? limitedDirectorySearch(humans, (human) => directorySearchMatches(humanDirectorySearchText(human), query), limit)
+      : { records: [], total: 0 };
+    const humansById = selectedTypes.has('members')
+      ? new Map(records(humans).map((human) => [String(human?.id || ''), human]).filter(([id]) => id))
+      : new Map();
+    const memberMatches = selectedTypes.has('members')
+      ? limitedDirectorySearch(
+          cloud?.members,
+          (member) => directorySearchMatches(memberDirectorySearchText(member, humansById.get(String(member?.humanId || ''))), query),
+          limit,
+        )
+      : { records: [], total: 0 };
     return {
-      agents: matchedAgents,
-      humans: matchedHumans,
-      cloud: cloud && typeof cloud === 'object' ? { ...cloud, members: matchedMembers } : cloud,
+      agents: agentMatches.records,
+      humans: humanMatches.records,
+      cloud: cloud && typeof cloud === 'object' ? { ...cloud, members: memberMatches.records } : cloud,
       totals: {
-        agents: allMatchedAgents.length,
-        humans: allMatchedHumans.length,
-        members: allMatchedMembers.length,
+        agents: agentMatches.total,
+        humans: humanMatches.total,
+        members: memberMatches.total,
       },
     };
   }
@@ -1916,7 +1928,7 @@ export function createSystemServices(deps) {
   }
 
   function publicDirectorySearchState(req = null, options = {}) {
-    const scope = publicStateScope(req);
+    const scope = publicStateScope(req, { includeConversationArrays: false });
     const {
       currentState,
       cloud,
@@ -1942,7 +1954,6 @@ export function createSystemServices(deps) {
       }, effectiveOptions);
     }
     const scopedHumans = scopedRecords('humans');
-    const rawAgents = scopedAgents.map(publicAgentRecord);
     const rawCloud = cloud && typeof cloud === 'object' ? {
       ...cloud,
       members: records(cloud.members).filter((member) => (
@@ -1952,14 +1963,14 @@ export function createSystemServices(deps) {
       )),
     } : cloud;
     const search = directorySearchSnapshot({
-      agents: rawAgents,
+      agents: scopedAgents,
       humans: scopedHumans,
       cloud: rawCloud,
       query,
       limit,
       types,
     });
-    const publicAgents = search.agents.map(compactBootstrapAgentRecord);
+    const publicAgents = search.agents.map(publicAgentRecord).map(compactBootstrapAgentRecord);
     const publicHumans = search.humans.map(compactBootstrapHumanRecord);
     const publicCloud = compactBootstrapCloudState(search.cloud, {
       humansById: new Map(scopedHumans.map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
