@@ -56,6 +56,7 @@ canonicalizeLegacyRoutePath();
 const initialRouteState = routeStateFromLocation(window.location.pathname || '');
 
 let appState = null;
+let workspaceHumansCache = null;
 const initialRouteSpace = initialRouteState.space || initialSpaceFromLocation(initialUiState.selectedSpaceType || 'channel', initialUiState.selectedSpaceId || 'chan_all');
 let selectedSpaceType = initialRouteSpace.type;
 let selectedSpaceId = initialRouteSpace.id;
@@ -747,9 +748,11 @@ function serverOwnerUserId(workspace = appState?.cloud?.workspace || {}) {
   return activeAdmins[0]?.userId || '';
 }
 
-function cloudMemberDisplayRole(member = {}) {
+function cloudMemberDisplayRole(member = {}, options = {}) {
   if (member?.role === 'owner') return 'owner';
-  const ownerUserId = serverOwnerUserId();
+  const ownerUserId = Object.hasOwn(options, 'ownerUserId')
+    ? options.ownerUserId
+    : serverOwnerUserId();
   if (ownerUserId && member?.userId === ownerUserId) return 'owner';
   return member?.role || 'member';
 }
@@ -820,7 +823,7 @@ function humanSecondaryIdentityText(human = {}) {
   return thirdPartyNameForHuman(human);
 }
 
-function humanFromCloudMember(member = {}) {
+function humanFromCloudMember(member = {}, options = {}) {
   const human = member.human || byId(appState?.humans, member.humanId) || {};
   const user = member.user || {};
   const thirdPartyName = human.thirdPartyName || thirdPartyNameForUser(user) || thirdPartyNameFromMetadata(human.metadata);
@@ -834,7 +837,7 @@ function humanFromCloudMember(member = {}) {
     thirdPartyName,
     thirdPartyProvider,
     avatar: human.avatar || human.avatarUrl || user.avatarUrl || '',
-    role: cloudMemberDisplayRole(member),
+    role: cloudMemberDisplayRole(member, options),
     status: human.status || member.presenceStatus || 'offline',
     joinedAt: member.joinedAt || member.createdAt || human.createdAt || '',
     cloudMemberId: member.id || '',
@@ -843,7 +846,31 @@ function humanFromCloudMember(member = {}) {
 }
 
 function workspaceHumans() {
-  const members = (appState?.cloud?.members || [])
+  const cloudMembers = appState?.cloud?.members || [];
+  const stateHumans = appState?.humans || [];
+  const workspaceId = appState?.cloud?.workspace?.id || '';
+  if (
+    workspaceHumansCache
+    && workspaceHumansCache.cloudMembers === cloudMembers
+    && workspaceHumansCache.stateHumans === stateHumans
+    && workspaceHumansCache.workspaceId === workspaceId
+    && workspaceHumansCache.cloudMemberCount === cloudMembers.length
+    && workspaceHumansCache.humanCount === stateHumans.length
+  ) {
+    return workspaceHumansCache.value;
+  }
+  const setWorkspaceHumansCache = (value) => {
+    workspaceHumansCache = {
+      cloudMembers,
+      stateHumans,
+      workspaceId,
+      cloudMemberCount: cloudMembers.length,
+      humanCount: stateHumans.length,
+      value,
+    };
+    return value;
+  };
+  const members = cloudMembers
     .filter((member) => member && (member.status || 'active') === 'active')
     .sort((a, b) => new Date(a.joinedAt || a.createdAt || 0) - new Date(b.joinedAt || b.createdAt || 0));
   if (members.length) {
@@ -853,15 +880,15 @@ function workspaceHumans() {
     const hasNonLegacyMembers = members.some((member) => member.humanId !== 'hum_local');
     for (const member of members) {
       if (hasNonLegacyMembers && member.humanId === 'hum_local' && member.userId !== ownerUserId) continue;
-      const human = humanFromCloudMember(member);
+      const human = humanFromCloudMember(member, { ownerUserId });
       const key = member.userId || human.authUserId || human.email?.toLowerCase() || human.id;
       if (!key || seen.has(key)) continue;
       seen.add(key);
       humans.push(human);
     }
-    return humans;
+    return setWorkspaceHumansCache(humans);
   }
-  return (appState?.humans || []).filter((human) => human && human.status !== 'removed');
+  return setWorkspaceHumansCache(stateHumans.filter((human) => human && human.status !== 'removed'));
 }
 
 function humanByIdAny(id) {

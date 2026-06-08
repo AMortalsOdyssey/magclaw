@@ -464,6 +464,7 @@ export function createSystemServices(deps) {
     if (Object.hasOwn(record, 'updatedAt')) delete record.updatedAt;
     if (Object.hasOwn(record, 'createdAt')) delete record.createdAt;
     if (record.status === 'active') delete record.status;
+    if (record.role === 'member') delete record.role;
     return record;
   }
 

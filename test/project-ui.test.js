@@ -695,6 +695,60 @@ test('members directory separates roles from top-centered manage actions', async
   assert.match(styles, /\.member-reset-link-modal/);
 });
 
+test('workspace human directory caches cloud member normalization without losing roles', async () => {
+  const source = await readFile(new URL('../public/app/state-render-core.js', import.meta.url), 'utf8');
+  const syncSource = await readFile(new URL('../public/app/sync-events-keyboard.js', import.meta.url), 'utf8');
+  const directorySource = [
+    'function byId(list, id) { return (list || []).find((item) => item?.id === id) || null; }',
+    'let workspaceHumansCache = null;',
+    source.slice(source.indexOf('function serverOwnerUserId'), source.indexOf('function currentAccountHuman')),
+    'globalThis.workspaceHumans = workspaceHumans;',
+  ].join('\n');
+  const members = Array.from({ length: 1000 }, (_item, index) => {
+    const suffix = String(index).padStart(4, '0');
+    return {
+      id: `mem_${suffix}`,
+      workspaceId: 'local',
+      userId: `usr_${suffix}`,
+      humanId: `hum_${suffix}`,
+      role: index === 0 ? 'owner' : index === 1 ? 'admin' : undefined,
+      status: 'active',
+      joinedAt: `2026-01-01T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      user: { email: `human${index}@example.test` },
+    };
+  });
+  const context = {
+    appState: {
+      cloud: { workspace: { id: 'local', ownerUserId: 'usr_0000' }, members },
+      humans: members.map((member, index) => ({
+        id: member.humanId,
+        name: `Human ${index}`,
+        status: 'online',
+      })),
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(directorySource, context);
+
+  const first = context.workspaceHumans();
+  const second = context.workspaceHumans();
+
+  assert.equal(first, second);
+  assert.equal(first.length, 1000);
+  assert.equal(first.find((human) => human.id === 'hum_0000')?.role, 'owner');
+  assert.equal(first.find((human) => human.id === 'hum_0001')?.role, 'admin');
+  assert.equal(first.find((human) => human.id === 'hum_0002')?.role, 'member');
+
+  context.appState = {
+    ...context.appState,
+    cloud: { ...context.appState.cloud, members: [...members] },
+  };
+  const third = context.workspaceHumans();
+
+  assert.notEqual(third, first);
+  assert.match(syncSource, /workspaceHumansCache = null/);
+});
+
 test('members directory sorts active before pending by invite time and paginates at 50 rows', async () => {
   const source = await readFile(new URL('../public/app/render-search-settings.js', import.meta.url), 'utf8');
   const context = {

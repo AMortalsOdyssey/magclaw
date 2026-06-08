@@ -785,6 +785,16 @@ test('bootstrap state compacts member directory churn fields without changing fu
           createdAt,
           updatedAt,
         },
+      }, {
+        id: 'mem_2',
+        workspaceId: 'local',
+        userId: 'usr_2',
+        humanId: 'hum_2',
+        role: 'member',
+        status: 'active',
+        createdAt,
+        updatedAt,
+        user: { id: 'usr_2', email: 'member@example.test' },
       }],
     }),
   });
@@ -835,7 +845,10 @@ test('bootstrap state compacts member directory churn fields without changing fu
   assert.equal(bootstrap.cloud.members[0].createdAt, undefined);
   assert.equal(bootstrap.cloud.members[0].updatedAt, undefined);
   assert.equal(bootstrap.cloud.members[0].status, undefined);
+  assert.equal(bootstrap.cloud.members[0].role, 'owner');
   assert.deepEqual(bootstrap.cloud.members[0].user, { email: 'owner@example.test' });
+  assert.equal(bootstrap.cloud.members[1].role, undefined);
+  assert.deepEqual(bootstrap.cloud.members[1].user, { email: 'member@example.test' });
   assert.equal(bootstrap.messages.find((message) => message.id === 'msg_redundant_update').workspaceId, undefined);
   assert.equal(bootstrap.messages.find((message) => message.id === 'msg_redundant_update').updatedAt, undefined);
   assert.equal(bootstrap.messages.find((message) => message.id === 'msg_edited').updatedAt, updatedAt);

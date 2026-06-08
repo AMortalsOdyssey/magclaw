@@ -601,6 +601,7 @@ async function main() {
       || member.updatedAt
       || member.createdAt
       || member.status === 'active'
+      || member.role === 'member'
       || member.user?.id
       || member.user?.name
     )),

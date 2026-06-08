@@ -1396,6 +1396,7 @@ function applyStateUpdate(nextState) {
   const computerDetailBefore = computerDetailRenderSignature(appState);
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
+  workspaceHumansCache = null;
   applyPackageVersionSnapshot(readCachedPackageVersionSnapshot());
   if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   startHumanPresenceHeartbeat();

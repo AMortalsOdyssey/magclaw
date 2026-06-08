@@ -53,7 +53,8 @@ membership fanout visible in the budget. It currently enforces:
 - Bootstrap compacts member-directory churn fields such as repeated workspace
   IDs, heartbeat timestamps, and per-record update timestamps.
 - Bootstrap cloud member rows do not duplicate nested Human payloads already
-  available in the top-level Humans directory.
+  available in the top-level Humans directory, and omit default `member` roles
+  that the browser can safely infer.
 - Bootstrap represents `#all` membership with `membershipMode: all` and a
   count, instead of duplicating every human and agent ID in channel membership
   arrays.
@@ -84,6 +85,9 @@ membership fanout visible in the budget. It currently enforces:
   one visible browser tab per signed-in user sends `/api/cloud/auth/heartbeat`
   while peer tabs receive the local presence result without issuing duplicate
   POSTs.
+- Browser member-directory rendering caches normalized workspace humans for a
+  stable state snapshot, so repeated rail, channel, mention, and detail renders
+  do not repeatedly sort and enrich the full cloud member list.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 
