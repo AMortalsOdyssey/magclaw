@@ -1658,10 +1658,21 @@ export function createSystemServices(deps) {
     const scopedReplies = includeConversationArrays ? replies.filter(inCurrentWorkspace) : [];
     const scopedRecords = (key) => records(currentState[key]).filter(inCurrentWorkspace);
     const scopedAgents = scopedRecords('agents');
+    let agentBoundComputerIds = null;
+    const boundComputerIds = () => {
+      if (agentBoundComputerIds) return agentBoundComputerIds;
+      agentBoundComputerIds = new Set();
+      for (const agent of scopedAgents) {
+        if (!agent || agent.deletedAt) continue;
+        const computerId = String(agent.computerId || '');
+        if (computerId) agentBoundComputerIds.add(computerId);
+      }
+      return agentBoundComputerIds;
+    };
     const visibleComputers = scopedRecords('computers').filter((computer) => {
       const status = String(computer?.status || '').toLowerCase();
       if (status === 'connected' || computer?.lastSeenAt) return true;
-      const hasBoundAgent = scopedAgents.some((agent) => agent?.computerId === computer?.id && !agent.deletedAt);
+      const hasBoundAgent = boundComputerIds().has(String(computer?.id || ''));
       if (hasBoundAgent) return true;
       if (computer?.metadata?.pairingProvisional) return false;
       return !(

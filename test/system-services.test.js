@@ -532,6 +532,41 @@ test('bootstrap state windows source conversation arrays without materializing f
   assert.ok(CountingReplies.iteratorCalls <= 2, `replies should be scanned at most twice, got ${CountingReplies.iteratorCalls}`);
 });
 
+test('bootstrap state resolves bound computers without scanning agents per computer', () => {
+  let computerIdReads = 0;
+  const agents = Array.from({ length: 120 }, (_value, index) => ({
+    id: `agt_bound_${index}`,
+    workspaceId: 'local',
+    name: `Agent ${index}`,
+    get computerId() {
+      computerIdReads += 1;
+      return 'comp_no_match';
+    },
+  }));
+  const services = makeServices((state) => {
+    state.agents = agents;
+    state.computers = Array.from({ length: 40 }, (_value, index) => ({
+      id: `comp_unbound_${index}`,
+      workspaceId: 'local',
+      name: `Computer ${index}`,
+      status: 'pairing',
+      connectedVia: 'daemon',
+      runtimeIds: [],
+    }));
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20&directoryScope=visible',
+    headers: {},
+  });
+
+  assert.equal(snapshot.computers.length, 0);
+  assert.ok(
+    computerIdReads <= agents.length + 5,
+    `computer binding lookup should scan agents once, got ${computerIdReads} reads`,
+  );
+});
+
 test('bootstrap state selects newest conversation window from unsorted state arrays', () => {
   const services = makeServices((state) => {
     state.messages = [
