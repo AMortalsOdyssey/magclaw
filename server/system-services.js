@@ -1916,30 +1916,39 @@ export function createSystemServices(deps) {
     for (const message of messageById.values()) {
       if (message.taskId) taskIds.add(message.taskId);
     }
-    const taskRecords = scopedRecords('tasks');
+    const sourceTasks = Array.isArray(currentState.tasks) ? currentState.tasks : [];
+    const taskInScope = (task) => Boolean(task) && inCurrentWorkspace(task);
     const openStatuses = new Set(['todo', 'in_progress', 'in_review']);
-    const memberChannelIds = new Set(records(scopedChannels)
-      .filter((channel) => (
+    const memberChannelIds = new Set();
+    for (const channel of scopedChannels) {
+      if (
         !currentHumanId
         || records(channel.memberIds).includes(currentHumanId)
         || records(channel.humanIds).includes(currentHumanId)
-      ))
-      .map((channel) => channel.id));
+      ) {
+        memberChannelIds.add(channel.id);
+      }
+    }
     const selectedSpaceTaskPage = [];
     const globalTaskPage = [];
     const referencedTaskById = new Map();
     let openTaskCount = 0;
-    const [selectedSpaceTasks, globalChannelTasks] = newestRecordPages(taskRecords, [
+    const [selectedSpaceTasks, globalChannelTasks] = newestRecordPages(sourceTasks, [
       {
         limit: taskLimit,
-        predicate: (task) => task.spaceType === spaceType && String(task.spaceId) === spaceId,
+        predicate: (task) => taskInScope(task)
+          && task.spaceType === spaceType
+          && String(task.spaceId) === spaceId,
       },
       {
         limit: taskLimit,
-        predicate: (task) => task.spaceType === 'channel' && (!currentHumanId || memberChannelIds.has(task.spaceId)),
+        predicate: (task) => taskInScope(task)
+          && task.spaceType === 'channel'
+          && (!currentHumanId || memberChannelIds.has(task.spaceId)),
       },
     ], {
       visit: (task) => {
+        if (!taskInScope(task)) return;
         if (openStatuses.has(String(task.status || 'todo'))) openTaskCount += 1;
         if (taskIds.has(task.id)) referencedTaskById.set(task.id, task);
       },
@@ -1998,6 +2007,22 @@ export function createSystemServices(deps) {
       cloud: compactBootstrapCloudState(rawDirectory.cloud, {
         humansById: new Map(directoryHumans.map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
       }),
+    };
+    const newestScopedRecords = (key, limit) => newestRecordsPage(
+      currentState[key],
+      limit,
+      (record) => Boolean(record) && inCurrentWorkspace(record),
+    ).records.sort(compareOldestRecords);
+    const scopedRecordsWithIds = (key, ids = new Set()) => {
+      if (!ids.size) return [];
+      const source = Array.isArray(currentState[key]) ? currentState[key] : [];
+      const matched = [];
+      for (const record of source) {
+        if (!record || !inCurrentWorkspace(record)) continue;
+        if (!ids.has(String(record.id))) continue;
+        matched.push(record);
+      }
+      return matched;
     };
 
     const snapshot = {
@@ -2059,12 +2084,12 @@ export function createSystemServices(deps) {
         .map((reply) => compactBootstrapConversationRecord(reply, {
           previewOnly: !fullReplyIds.has(String(reply?.id || '')),
         })),
-      runs: newestRecords(scopedRecords('runs'), 80).sort(compareOldestRecords),
-      workItems: newestRecords(scopedRecords('workItems'), 200).sort(compareOldestRecords),
-      events: newestRecords(scopedRecords('events'), eventLimit).sort(compareOldestRecords),
-      routeEvents: newestRecords(scopedRecords('routeEvents'), 80).sort(compareOldestRecords),
-      systemNotifications: newestRecords(scopedRecords('systemNotifications'), 120).sort(compareOldestRecords),
-      attachments: scopedRecords('attachments').filter((attachment) => attachmentIds.has(String(attachment.id))),
+      runs: newestScopedRecords('runs', 80),
+      workItems: newestScopedRecords('workItems', 200),
+      events: newestScopedRecords('events', eventLimit),
+      routeEvents: newestScopedRecords('routeEvents', 80),
+      systemNotifications: newestScopedRecords('systemNotifications', 120),
+      attachments: scopedRecordsWithIds('attachments', attachmentIds),
     };
     return encodeBootstrapDirectories(encodeBootstrapConversationRecords(snapshot, effectiveOptions), effectiveOptions);
   }

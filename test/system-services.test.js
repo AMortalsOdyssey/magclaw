@@ -449,6 +449,18 @@ test('bootstrap state windows source conversation arrays without materializing f
       return super.filter(...args);
     }
   }
+  class CountingAuxiliaryRecords extends Array {
+    static filterCalls = 0;
+
+    static get [Symbol.species]() {
+      return Array;
+    }
+
+    filter(...args) {
+      CountingAuxiliaryRecords.filterCalls += 1;
+      return super.filter(...args);
+    }
+  }
   const messages = CountingMessages.from(Array.from({ length: 240 }, (_value, index) => ({
     id: `msg_count_${String(index).padStart(3, '0')}`,
     workspaceId: 'local',
@@ -474,15 +486,37 @@ test('bootstrap state windows source conversation arrays without materializing f
     createdAt: `2026-05-18T01:00:${String(index).padStart(2, '0')}.000Z`,
     updatedAt: `2026-05-18T01:00:${String(index).padStart(2, '0')}.000Z`,
   })));
+  messages[230].taskId = 'task_count_230';
+  messages[230].attachmentIds = ['att_count_230'];
+  const auxiliaryRecords = (prefix, count, extra = {}) => CountingAuxiliaryRecords.from(Array.from({ length: count }, (_value, index) => ({
+    id: `${prefix}_${String(index).padStart(3, '0')}`,
+    workspaceId: 'local',
+    createdAt: `2026-05-18T02:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+    updatedAt: `2026-05-18T02:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+    ...extra,
+  })));
   const services = makeServices((state) => {
     state.messages = messages;
     state.replies = replies;
+    state.tasks = auxiliaryRecords('task_count', 240, {
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      title: 'counted task',
+      status: 'todo',
+    });
+    state.runs = auxiliaryRecords('run_count', 240);
+    state.workItems = auxiliaryRecords('work_count', 240);
+    state.events = auxiliaryRecords('evt_count', 240);
+    state.routeEvents = auxiliaryRecords('route_evt_count', 240);
+    state.systemNotifications = auxiliaryRecords('sys_count', 240);
+    state.attachments = auxiliaryRecords('att_count', 240);
     state.agents = [{ id: 'agt_1', workspaceId: 'local', name: 'Ada', status: 'idle' }];
   });
   CountingMessages.filterCalls = 0;
   CountingMessages.iteratorCalls = 0;
   CountingReplies.filterCalls = 0;
   CountingReplies.iteratorCalls = 0;
+  CountingAuxiliaryRecords.filterCalls = 0;
 
   const snapshot = services.publicBootstrapState({
     url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20&threadMessageId=msg_count_220',
@@ -493,6 +527,7 @@ test('bootstrap state windows source conversation arrays without materializing f
   assert.equal(snapshot.bootstrap.hasMoreMessages, true);
   assert.equal(CountingMessages.filterCalls, 0);
   assert.equal(CountingReplies.filterCalls, 0);
+  assert.equal(CountingAuxiliaryRecords.filterCalls, 0);
   assert.ok(CountingMessages.iteratorCalls <= 2, `messages should be scanned at most twice, got ${CountingMessages.iteratorCalls}`);
   assert.ok(CountingReplies.iteratorCalls <= 2, `replies should be scanned at most twice, got ${CountingReplies.iteratorCalls}`);
 });
