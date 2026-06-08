@@ -583,6 +583,12 @@ export function createSystemServices(deps) {
     if (Array.isArray(record.activeWorkItemIds) && record.activeWorkItemIds.length === 0) {
       delete record.activeWorkItemIds;
     }
+    if (record.runtime && record.runtimeId && record.runtime === record.runtimeId) {
+      delete record.runtimeId;
+    }
+    if (record.status && record.previousStatus && record.previousStatus === record.status) {
+      delete record.previousStatus;
+    }
     return record;
   }
 
@@ -594,16 +600,22 @@ export function createSystemServices(deps) {
     return record;
   }
 
-  function compactBootstrapCloudMember(member = {}) {
+  function compactBootstrapCloudMember(member = {}, options = {}) {
     if (!member || typeof member !== 'object') return member;
+    const humansById = options.humansById instanceof Map ? options.humansById : new Map();
     const record = { ...member };
     if (!record.humanId && record.human && typeof record.human === 'object' && record.human.id) {
       record.humanId = record.human.id;
     }
+    const identityHuman = record.humanId ? humansById.get(String(record.humanId)) : null;
     if (record.user && typeof record.user === 'object') {
       const user = {};
-      if (record.user.email) user.email = record.user.email;
-      if (record.user.avatarUrl) user.avatarUrl = record.user.avatarUrl;
+      const userEmail = String(record.user.email || '').trim();
+      const humanEmail = String(identityHuman?.email || '').trim();
+      if (userEmail && userEmail !== humanEmail) user.email = userEmail;
+      const userAvatarUrl = String(record.user.avatarUrl || '').trim();
+      const humanAvatarUrl = String(identityHuman?.avatarUrl || identityHuman?.avatar || '').trim();
+      if (userAvatarUrl && userAvatarUrl !== humanAvatarUrl) user.avatarUrl = userAvatarUrl;
       if (Object.keys(user).length) record.user = user;
       else delete record.user;
     }
@@ -616,10 +628,12 @@ export function createSystemServices(deps) {
     return record;
   }
 
-  function compactBootstrapCloudState(cloud = null) {
+  function compactBootstrapCloudState(cloud = null, options = {}) {
     if (!cloud || typeof cloud !== 'object') return cloud;
     const next = { ...cloud };
-    if (Array.isArray(cloud.members)) next.members = cloud.members.map(compactBootstrapCloudMember);
+    if (Array.isArray(cloud.members)) {
+      next.members = cloud.members.map((member) => compactBootstrapCloudMember(member, options));
+    }
     return next;
   }
 
@@ -975,7 +989,9 @@ export function createSystemServices(deps) {
       projects: scopedRecords('projects'),
       channelMemberProposals: scopedRecords('channelMemberProposals'),
       connection: publicConnection(),
-      cloud: compactBootstrapCloudState(cloud),
+      cloud: compactBootstrapCloudState(cloud, {
+        humansById: new Map(visibleHumans.map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
+      }),
       releaseNotes: publicReleaseNotes(),
       runtime: runtimeSnapshot(),
       runningRunIds: [...runningProcesses.keys()],

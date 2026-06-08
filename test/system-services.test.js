@@ -853,6 +853,7 @@ test('bootstrap state compacts member directory churn fields without changing fu
       description: 'Still searchable',
       role: 'agent',
       status: 'working',
+      previousStatus: 'working',
       runtime: 'codex',
       runtimeId: 'codex',
       model: 'gpt-test',
@@ -875,10 +876,22 @@ test('bootstrap state compacts member directory churn fields without changing fu
       id: 'hum_1',
       workspaceId: 'local',
       name: 'Owner',
+      email: 'owner@example.test',
+      avatarUrl: 'https://avatar.example.test/owner.png',
       role: 'owner',
       status: 'online',
       lastSeenAt: updatedAt,
       presenceUpdatedAt: updatedAt,
+      createdAt,
+      updatedAt,
+    }, {
+      id: 'hum_2',
+      workspaceId: 'local',
+      name: 'Member',
+      email: 'member@example.test',
+      avatarUrl: 'https://avatar.example.test/member.png',
+      role: 'member',
+      status: 'offline',
       createdAt,
       updatedAt,
     }];
@@ -933,11 +946,13 @@ test('bootstrap state compacts member directory churn fields without changing fu
         status: 'active',
         createdAt,
         updatedAt,
-        user: { id: 'usr_1', email: 'owner@example.test' },
+        user: { id: 'usr_1', email: 'owner@example.test', avatarUrl: 'https://avatar.example.test/owner.png' },
         human: {
           id: 'hum_1',
           workspaceId: 'local',
           name: 'Owner',
+          email: 'owner@example.test',
+          avatarUrl: 'https://avatar.example.test/owner.png',
           role: 'owner',
           status: 'online',
           lastSeenAt: updatedAt,
@@ -954,7 +969,28 @@ test('bootstrap state compacts member directory churn fields without changing fu
         status: 'active',
         createdAt,
         updatedAt,
-        user: { id: 'usr_2', email: 'member@example.test' },
+        user: { id: 'usr_2', email: 'member@example.test', avatarUrl: 'https://avatar.example.test/member.png' },
+      }, {
+        id: 'mem_external',
+        workspaceId: 'local',
+        userId: 'usr_external',
+        humanId: 'hum_external',
+        role: 'member',
+        status: 'active',
+        createdAt,
+        updatedAt,
+        user: { id: 'usr_external', email: 'external@example.test', avatarUrl: 'https://avatar.example.test/external.png' },
+        human: {
+          id: 'hum_external',
+          workspaceId: 'local',
+          name: 'External',
+          email: 'external@example.test',
+          avatarUrl: 'https://avatar.example.test/external.png',
+          role: 'member',
+          status: 'offline',
+          createdAt,
+          updatedAt,
+        },
       }],
     }),
   });
@@ -988,6 +1024,8 @@ test('bootstrap state compacts member directory churn fields without changing fu
   assert.equal(bootstrap.agents[0].updatedAt, undefined);
   assert.equal(bootstrap.agents[0].description, 'Still searchable');
   assert.equal(bootstrap.agents[0].runtime, 'codex');
+  assert.equal(bootstrap.agents[0].runtimeId, undefined);
+  assert.equal(bootstrap.agents[0].previousStatus, undefined);
   assert.equal(bootstrap.agents[0].model, 'gpt-test');
   assert.equal(bootstrap.agents[0].createdAt, createdAt);
   assert.deepEqual(bootstrap.agents[0].activeWorkItemIds, ['wi_1']);
@@ -1006,9 +1044,14 @@ test('bootstrap state compacts member directory churn fields without changing fu
   assert.equal(bootstrap.cloud.members[0].updatedAt, undefined);
   assert.equal(bootstrap.cloud.members[0].status, undefined);
   assert.equal(bootstrap.cloud.members[0].role, 'owner');
-  assert.deepEqual(bootstrap.cloud.members[0].user, { email: 'owner@example.test' });
+  assert.equal(bootstrap.cloud.members[0].user, undefined);
   assert.equal(bootstrap.cloud.members[1].role, undefined);
-  assert.deepEqual(bootstrap.cloud.members[1].user, { email: 'member@example.test' });
+  assert.equal(bootstrap.cloud.members[1].user, undefined);
+  assert.equal(bootstrap.cloud.members[2].human, undefined);
+  assert.deepEqual(bootstrap.cloud.members[2].user, {
+    email: 'external@example.test',
+    avatarUrl: 'https://avatar.example.test/external.png',
+  });
   assert.equal(bootstrap.messages.find((message) => message.id === 'msg_redundant_update').workspaceId, undefined);
   assert.equal(bootstrap.messages.find((message) => message.id === 'msg_redundant_update').updatedAt, undefined);
   assert.equal(bootstrap.messages.find((message) => message.id === 'msg_edited').updatedAt, updatedAt);

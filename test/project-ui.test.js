@@ -726,7 +726,6 @@ test('workspace people directories cache normalization without losing roles or a
       role: index === 0 ? 'owner' : index === 1 ? 'admin' : undefined,
       status: 'active',
       joinedAt: `2026-01-01T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
-      user: { email: `human${index}@example.test` },
     };
   });
   const agents = Array.from({ length: 1000 }, (_item, index) => ({
@@ -760,7 +759,10 @@ test('workspace people directories cache normalization without losing roles or a
       })),
       humans: members.map((member, index) => ({
         id: member.humanId,
+        authUserId: member.userId,
         name: `Human ${index}`,
+        email: `human${index}@example.test`,
+        avatarUrl: `https://avatar.example.test/human${index}.png`,
         status: 'online',
       })),
     },
@@ -776,6 +778,8 @@ test('workspace people directories cache normalization without losing roles or a
   assert.equal(first.find((human) => human.id === 'hum_0000')?.role, 'owner');
   assert.equal(first.find((human) => human.id === 'hum_0001')?.role, 'admin');
   assert.equal(first.find((human) => human.id === 'hum_0002')?.role, 'member');
+  assert.equal(first.find((human) => human.id === 'hum_0002')?.email, 'human2@example.test');
+  assert.equal(first.find((human) => human.id === 'hum_0002')?.avatar, 'https://avatar.example.test/human2.png');
   assert.equal(context.humanByIdAny('mem_0002')?.id, 'hum_0002');
   assert.equal(context.humanByIdAny('usr_0002')?.id, 'hum_0002');
   assert.equal(context.agentById('agt_0002')?.name, 'Agent 2');
@@ -825,29 +829,29 @@ test('members directory sorts active before pending by invite time and paginates
           {
             id: 'm-late-invite',
             userId: 'u-late',
+            humanId: 'h-late',
             role: 'member',
             status: 'active',
             joinedAt: '2026-01-02T00:00:00.000Z',
             createdAt: '2026-01-02T00:00:00.000Z',
-            user: { id: 'u-late', email: 'late@example.com', name: 'Late Invite' },
           },
           {
             id: 'm-early-invite',
             userId: 'u-early',
+            humanId: 'h-early',
             role: 'member',
             status: 'active',
             joinedAt: '2026-03-01T00:00:00.000Z',
             createdAt: '2026-03-01T00:00:00.000Z',
-            user: { id: 'u-early', email: 'early@example.com', name: 'Early Invite' },
           },
           {
             id: 'm-reset',
             userId: 'u-reset',
+            humanId: 'h-reset',
             role: 'member',
             status: 'active',
             joinedAt: '2026-04-01T00:00:00.000Z',
             createdAt: '2026-04-01T00:00:00.000Z',
-            user: { id: 'u-reset', email: 'reset@example.com', name: 'Reset Member' },
           },
         ],
         invitations: [
@@ -859,8 +863,19 @@ test('members directory sorts active before pending by invite time and paginates
           { id: 'inv-pending-a', email: 'pending-a@example.com', role: 'member', createdAt: '2026-01-01T00:00:00.000Z' },
         ],
       },
+      humans: [
+        { id: 'h-late', authUserId: 'u-late', name: 'Late Invite', email: 'late@example.com', avatarUrl: 'https://avatar.example.test/late.png' },
+        { id: 'h-early', authUserId: 'u-early', name: 'Early Invite', email: 'early@example.com', avatarUrl: 'https://avatar.example.test/early.png' },
+        { id: 'h-reset', authUserId: 'u-reset', name: 'Reset Member', email: 'reset@example.com', avatarUrl: 'https://avatar.example.test/reset.png' },
+      ],
     },
     memberDirectoryPage: 2,
+    escapeHtml: (value) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;'),
   };
   vm.createContext(context);
   vm.runInContext(source, context);
@@ -875,6 +890,9 @@ test('members directory sorts active before pending by invite time and paginates
     'inv-pending-b',
   ]);
   assert.equal(rows[0].member.joinedAt, '2026-03-01T00:00:00.000Z');
+  assert.equal(context.memberDisplayName(rows[0].member), 'Early Invite');
+  assert.equal(context.memberEmail(rows[0].member), 'early@example.com');
+  assert.match(context.memberAvatar(rows[0].member), /early\.png/);
 
   const manyRows = Array.from({ length: 123 }, (_, index) => ({ type: 'member', member: { id: `m-${index}` } }));
   const page = context.membersPaginationModel(manyRows);

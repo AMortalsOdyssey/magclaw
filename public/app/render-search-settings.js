@@ -1452,24 +1452,40 @@ function relativeMemberTime(value) {
 }
 
 function memberHumanRecord(member) {
-  const humanId = member?.humanId;
-  return member?.human || (humanId ? (appState?.humans || []).find((human) => human.id === humanId) : null) || {};
+  if (member?.human) return member.human;
+  const humans = appState?.humans || [];
+  const humanId = String(member?.humanId || '').trim();
+  if (humanId) {
+    const byHumanId = humans.find((human) => human.id === humanId);
+    if (byHumanId) return byHumanId;
+  }
+  const userId = String(member?.userId || member?.user?.id || '').trim();
+  if (userId) {
+    const byUserId = humans.find((human) => human.authUserId === userId || human.userId === userId);
+    if (byUserId) return byUserId;
+  }
+  const email = normalizeInviteEmailValue(member?.user?.email || member?.email || '');
+  if (email) {
+    const byEmail = humans.find((human) => normalizeInviteEmailValue(human.email) === email);
+    if (byEmail) return byEmail;
+  }
+  return {};
 }
 
 function memberDisplayName(member) {
   const human = memberHumanRecord(member);
-  return member?.user?.name || human.name || member?.user?.email || member?.humanId || 'Member';
+  return member?.user?.name || human.name || member?.name || member?.user?.email || member?.email || member?.humanId || 'Member';
 }
 
 function memberEmail(member) {
   const human = memberHumanRecord(member);
-  return member?.user?.email || human.email || member?.userId || '';
+  return member?.user?.email || human.email || member?.email || member?.userId || '';
 }
 
 function memberAvatar(member, pending = false) {
   const name = pending ? (member.name || member.email || 'I') : memberDisplayName(member);
   const human = memberHumanRecord(member);
-  const avatar = pending ? member.avatarUrl : (member.user?.avatarUrl || human.avatarUrl || human.avatar || '');
+  const avatar = pending ? member.avatarUrl : (member.user?.avatarUrl || human.avatarUrl || human.avatar || member.avatarUrl || member.avatar || '');
   if (avatar) return `<span class="member-avatar"><img src="${escapeHtml(avatar)}" alt="" /></span>`;
   return `<span class="member-avatar">${escapeHtml(String(name || 'M').trim().slice(0, 1).toUpperCase())}</span>`;
 }
