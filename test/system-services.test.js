@@ -133,6 +133,54 @@ test('bootstrap state includes visible off-space unread agent messages for rail 
   assert.equal(messageIds.includes('msg_hidden_unread_dm'), false);
 });
 
+test('bootstrap state bounds off-space unread hydration to newest records', () => {
+  const services = makeServices((state) => {
+    state.dms.push({
+      id: 'dm_bulk',
+      workspaceId: 'local',
+      participantIds: ['hum_1', 'agt_bulk'],
+      createdAt: '2026-05-18T00:10:00.000Z',
+      updatedAt: '2026-05-18T00:10:00.000Z',
+    });
+    const start = Date.parse('2026-05-18T00:10:00.000Z');
+    for (let index = 0; index < 300; index += 1) {
+      const timestamp = new Date(start + index * 1000).toISOString();
+      state.messages.push({
+        id: `msg_bulk_${String(index).padStart(3, '0')}`,
+        workspaceId: 'local',
+        spaceType: 'dm',
+        spaceId: 'dm_bulk',
+        authorType: 'agent',
+        authorId: 'agt_bulk',
+        body: `bulk unread ${index} ${'x'.repeat(4096)}`,
+        readBy: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+    }
+  });
+  const req = {
+    url: '/api/events?spaceType=dm&spaceId=dm_1&messageLimit=20&threadRootLimit=40',
+    headers: {},
+  };
+
+  const snapshot = services.publicBootstrapState(req);
+  const messageIds = snapshot.messages.map((message) => message.id);
+  const bulkIds = messageIds.filter((id) => id.startsWith('msg_bulk_'));
+
+  assert.equal(bulkIds.length, 80);
+  assert.ok(messageIds.includes('msg_bulk_299'));
+  assert.ok(messageIds.includes('msg_bulk_220'));
+  assert.equal(messageIds.includes('msg_bulk_219'), false);
+  assert.equal(messageIds.includes('msg_bulk_000'), false);
+  assert.deepEqual(snapshot.bootstrap.unreadHydration, {
+    limit: 80,
+    included: 80,
+    truncated: true,
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(snapshot), 'utf8') < 500_000);
+});
+
 test('bootstrap state limits selected thread replies to the loaded page', () => {
   const services = makeServices((state) => {
     state.messages[0].replyCount = 101;
@@ -404,6 +452,179 @@ test('package version snapshot falls back to local versions when NPM is unavaila
   assert.equal(snapshot.packages['@magclaw/daemon'].source, 'local');
   assert.equal(snapshot.packages['@magclaw/computer'].latest, '0.1.61');
   assert.equal(snapshot.packages['@magclaw/computer'].source, 'npm-cache');
+});
+
+test('bootstrap state omits large internal server indexes from public payloads', () => {
+  const services = makeServices((state) => {
+    state.teamSharing = {
+      sessions: { sess_big: { title: 'Large internal session' } },
+      events: { sess_big: [{ eventId: 'evt_big', cleanText: 'internal raw transcript' }] },
+      vectorDocuments: [{ id: 'vec_big', text: 'internal vector text'.repeat(1000) }],
+    };
+    state.agentRuntimeSessions = Array.from({ length: 20 }, (_, index) => ({
+      id: `runtime_${index}`,
+      rawLog: 'internal runtime log'.repeat(500),
+    }));
+    state.conversationGrants = [{ tokenHash: 'internal-token-hash' }];
+    state.packageVersions = { '@magclaw/daemon': { latest: '9.9.9' } };
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all',
+    headers: {},
+  });
+
+  assert.equal(snapshot.teamSharing, undefined);
+  assert.equal(snapshot.agentRuntimeSessions, undefined);
+  assert.equal(snapshot.conversationGrants, undefined);
+  assert.equal(snapshot.packageVersions, undefined);
+  assert.equal(snapshot.messages.some((message) => message.id === 'msg_channel'), true);
+});
+
+test('bootstrap state projects record metadata to frontend display fields only', () => {
+  const services = makeServices((state) => {
+    state.messages.push({
+      id: 'msg_feishu_public',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'system',
+      authorId: 'system',
+      body: 'Imported from Feishu\n\nContext:\n- 张三: 需要跟进',
+      metadata: {
+        systemKind: 'external_import',
+        origin: {
+          provider: 'feishu',
+          traceId: 'trace_public',
+          chatId: 'oc_chat',
+          chatName: '产品群',
+          chatType: 'group',
+          senderName: '张三',
+          senderAvatar: 'avatar.png',
+          senderOpenId: 'ou_public',
+          internalRawPayload: 'x'.repeat(5000),
+        },
+        externalImport: {
+          provider: 'feishu',
+          syncEnabled: true,
+          rawRequest: 'x'.repeat(5000),
+        },
+        feishu: {
+          attachmentCount: 2,
+          internalEvent: 'x'.repeat(5000),
+          contextRecords: [{
+            id: 'ctx_1',
+            senderName: '李四',
+            text: '上下文消息',
+            createdAt: '2026-05-18T00:02:00.000Z',
+            rawEvent: 'x'.repeat(5000),
+          }],
+        },
+      },
+      createdAt: '2026-05-18T00:02:00.000Z',
+      updatedAt: '2026-05-18T00:02:00.000Z',
+    });
+    state.replies.push({
+      id: 'rep_team_public',
+      workspaceId: 'local',
+      parentMessageId: 'msg_channel',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'team_sharing_codex',
+      body: 'Team Sharing display body',
+      metadata: {
+        systemKind: 'team_sharing_event',
+        teamSharing: {
+          runtime: 'codex',
+          sessionId: 'sess_public',
+          eventId: 'evt_internal',
+          sourceAnchor: 'raw/source#123',
+          ordinal: 99,
+          uploader: {
+            id: 'hum_1',
+            name: 'Owner',
+            email: 'owner@example.com',
+            avatar: 'owner.png',
+            privateToken: 'secret',
+          },
+          presentation: {
+            mode: 'plan',
+            interaction: { questions: [{ question: 'internal' }] },
+          },
+          contentSegments: [
+            { type: 'body', text: 'Team Sharing display body' },
+            { type: 'quote', label: '选取片段', text: '保留引用段' },
+          ],
+        },
+      },
+      createdAt: '2026-05-18T00:03:00.000Z',
+      updatedAt: '2026-05-18T00:03:00.000Z',
+    });
+    state.tasks.push({
+      id: 'task_internal_metadata',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      title: 'Task with internal startup metadata',
+      status: 'todo',
+      metadata: {
+        systemKind: 'external_import',
+        startupCollaboration: {
+          status: 'running',
+          deliveries: [{ agentId: 'agt_a', raw: 'x'.repeat(5000) }],
+          fallbackReason: { raw: 'x'.repeat(5000) },
+        },
+        origin: { provider: 'feishu', raw: 'x'.repeat(5000) },
+      },
+      createdAt: '2026-05-18T00:04:00.000Z',
+      updatedAt: '2026-05-18T00:04:00.000Z',
+    });
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160',
+    headers: {},
+  });
+  const message = snapshot.messages.find((item) => item.id === 'msg_feishu_public');
+  const reply = snapshot.replies.find((item) => item.id === 'rep_team_public');
+  const task = snapshot.tasks.find((item) => item.id === 'task_internal_metadata');
+
+  assert.equal(message.metadata.systemKind, 'external_import');
+  assert.equal(message.metadata.origin.senderName, '张三');
+  assert.equal(message.metadata.origin.internalRawPayload, undefined);
+  assert.equal(message.metadata.externalImport, undefined);
+  assert.equal(message.metadata.feishu.attachmentCount, 2);
+  assert.equal(message.metadata.feishu.contextRecords[0].text, '上下文消息');
+  assert.equal(message.metadata.feishu.contextRecords[0].rawEvent, undefined);
+  assert.equal(reply.body, 'Team Sharing display body');
+  assert.equal(reply.metadata.teamSharing.sessionId, 'sess_public');
+  assert.equal(reply.metadata.teamSharing.eventId, undefined);
+  assert.equal(reply.metadata.teamSharing.sourceAnchor, undefined);
+  assert.deepEqual(reply.metadata.teamSharing.presentation, { mode: 'plan' });
+  assert.deepEqual(reply.metadata.teamSharing.contentSegments, [{ type: 'quote', label: '选取片段', text: '保留引用段' }]);
+  assert.equal(reply.metadata.teamSharing.uploader.privateToken, undefined);
+  assert.deepEqual(task.metadata, { systemKind: 'external_import' });
+});
+
+test('public state for signed-in non-members keeps empty collection fields stable', () => {
+  const services = makeServices(null, {
+    publicCloudState: () => ({
+      auth: {
+        currentUser: { id: 'usr_pending' },
+        currentMember: null,
+        storageBackend: 'postgres',
+      },
+      workspace: { id: 'local', slug: 'local' },
+    }),
+  });
+
+  const snapshot = services.publicState();
+
+  for (const key of ['messages', 'replies', 'tasks', 'events', 'workItems', 'attachments', 'projects', 'runs']) {
+    assert.deepEqual(snapshot[key], [], key);
+  }
+  assert.equal(snapshot.teamSharing, undefined);
 });
 
 test('public state includes minimal identities for visible external human mentions', () => {

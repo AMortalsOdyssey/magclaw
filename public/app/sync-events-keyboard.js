@@ -1675,6 +1675,11 @@ function applyStateDeltaEnvelope(envelope) {
   }
 }
 
+function applyStateResyncRequiredEnvelope(envelope = {}) {
+  applySseSeq(envelope?.seq || envelope?.currentSeq);
+  refreshAfterSseGap(envelope);
+}
+
 function eventStreamPathForCurrentSelection() {
   const params = new URLSearchParams();
   const serverSlug = String(serverSlugFromPath() || currentServerSlug() || '').trim();
@@ -1704,9 +1709,15 @@ function connectEvents() {
     if (!eventAppliesToCurrentStream()) return;
     applyRealtimeJournalEvent(JSON.parse(event.data));
   });
-  eventSource.addEventListener('state-resync-required', () => {
+  eventSource.addEventListener('state-resync-required', (event) => {
     if (!eventAppliesToCurrentStream()) return;
-    refreshAfterSseGap();
+    let incoming = {};
+    try {
+      incoming = JSON.parse(event.data || '{}');
+    } catch {
+      incoming = {};
+    }
+    applyStateResyncRequiredEnvelope(incoming);
   });
   eventSource.addEventListener('state', (event) => {
     if (!eventAppliesToCurrentStream()) return;

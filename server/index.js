@@ -473,7 +473,6 @@ const {
   recordRealtimeEvent,
   setExternalStatePersister,
   setAgentStatus,
-  stateDeltaEnvelope,
   stateJsonSnapshot,
 } = stateCore;
 
@@ -1704,7 +1703,6 @@ function systemApiDeps() {
     sendError,
     sendJson,
     shareImageDownloadDir: process.env.MAGCLAW_SHARE_DOWNLOAD_DIR || path.join(os.homedir(), 'Downloads'),
-    stateDeltaEnvelope,
     realtimeEventsForRequest,
     sseClients,
     updateFanoutApiConfig,
@@ -2324,6 +2322,7 @@ async function serveStatic(req, res, url) {
 }
 
 async function handleRequest(req, res) {
+  res.magclawRequest = req;
   const url = new URL(req.url || '/', `http://${req.headers.host || `${HOST}:${PORT}`}`);
 
   try {

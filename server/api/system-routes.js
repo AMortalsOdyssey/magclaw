@@ -151,7 +151,6 @@ export async function handleSystemApi(req, res, url, deps) {
     sendJson,
     shareImageDownloadDir,
     realtimeEventsForRequest,
-    stateDeltaEnvelope,
     sseClients,
     updateFanoutApiConfig,
   } = deps;
@@ -304,17 +303,6 @@ export async function handleSystemApi(req, res, url, deps) {
       sendJson(res, 503, { ok: false, draining: true });
       return true;
     }
-    const streamOptions = {
-      spaceType: url.searchParams.get('spaceType') || '',
-      spaceId: url.searchParams.get('spaceId') || '',
-      threadMessageId: url.searchParams.get('threadMessageId') || '',
-      messageLimit: url.searchParams.get('messageLimit') || '',
-      threadRootLimit: url.searchParams.get('threadRootLimit') || '',
-      eventLimit: url.searchParams.get('eventLimit') || '',
-    };
-    if (typeof hydrateBootstrapWindow === 'function') {
-      req.magclawBootstrapHydration = await hydrateBootstrapWindow(req, streamOptions);
-    }
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-store, no-transform',
@@ -322,12 +310,22 @@ export async function handleSystemApi(req, res, url, deps) {
       'x-accel-buffering': 'no',
     });
     res.magclawRequest = req;
+    if (!req.magclawPresenceWorkspaceId) {
+      const actor = typeof cloudAuth?.currentActor === 'function' ? cloudAuth.currentActor(req) : null;
+      req.magclawPresenceWorkspaceId = String(
+        actor?.member?.workspaceId
+        || state.connection?.workspaceId
+        || state.cloud?.workspace?.id
+        || '',
+      ).trim();
+    }
     const lastSeq = Number(url.searchParams.get('lastSeq') || 0);
     if (lastSeq > 0 && typeof realtimeEventsForRequest === 'function') {
       const replay = realtimeEventsForRequest(req, lastSeq);
       if (replay.gap) {
         res.write(`event: state-resync-required\ndata: ${JSON.stringify({
           type: 'state_resync_required',
+          seq: replay.currentSeq,
           lastSeq,
           minSeq: replay.minSeq,
           currentSeq: replay.currentSeq,
@@ -339,11 +337,7 @@ export async function handleSystemApi(req, res, url, deps) {
         }
       }
     }
-    const initialPayload = typeof stateDeltaEnvelope === 'function'
-      ? stateDeltaEnvelope(req)
-      : { seq: 0, type: 'state_patch', payload: (publicBootstrapState || publicState)(req) };
-    res.write(`event: state-delta\ndata: ${JSON.stringify(initialPayload)}\n\n`);
-    res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat())}\n\n`);
+    res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat(req))}\n\n`);
     sseClients.add(res);
     const cleanup = () => sseClients.delete(res);
     req.on('close', cleanup);

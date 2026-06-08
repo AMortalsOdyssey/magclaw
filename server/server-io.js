@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { gzip } from 'node:zlib';
 import {
   baseNameFromProjectPath,
   normalizeProjectRelPath,
@@ -17,6 +18,8 @@ import {
 // HTTP request helpers plus local attachment/project reference utilities.
 // API route modules depend on this small surface for JSON IO, cloud-token
 // enforcement, uploads, and resolving @file/@folder project references.
+const JSON_GZIP_MIN_BYTES = 1024;
+
 export function createServerIo(deps) {
   const {
     addSystemEvent,
@@ -32,11 +35,37 @@ export function createServerIo(deps) {
   });
 
   function sendJson(res, statusCode, data) {
-    res.writeHead(statusCode, {
+    const body = JSON.stringify(data);
+    const req = res.magclawRequest || null;
+    const acceptsGzip = /\bgzip\b/i.test(String(req?.headers?.['accept-encoding'] || ''));
+    const baseHeaders = {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
+    };
+    if (!acceptsGzip || Buffer.byteLength(body) < JSON_GZIP_MIN_BYTES) {
+      res.writeHead(statusCode, {
+        ...baseHeaders,
+        vary: 'accept-encoding',
+      });
+      res.end(body);
+      return;
+    }
+    gzip(body, { level: 6 }, (error, compressed) => {
+      if (error || !compressed) {
+        res.writeHead(statusCode, {
+          ...baseHeaders,
+          vary: 'accept-encoding',
+        });
+        res.end(body);
+        return;
+      }
+      res.writeHead(statusCode, {
+        ...baseHeaders,
+        'content-encoding': 'gzip',
+        vary: 'accept-encoding',
+      });
+      res.end(compressed);
     });
-    res.end(JSON.stringify(data));
   }
   
   function sendError(res, statusCode, message) {

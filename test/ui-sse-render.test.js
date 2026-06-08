@@ -100,6 +100,7 @@ test('state SSE updates route through the non-destructive state renderer', async
 
   assert.match(app, /function applyStateUpdate\(nextState\)/);
   assert.match(app, /function applyStateDeltaEnvelope\(envelope\)/);
+  assert.match(app, /function applyStateResyncRequiredEnvelope\(envelope = \{\}\)/);
   assert.match(app, /function applyRealtimeJournalEvent\(envelope\)/);
   assert.match(app, /function refreshAfterSseGap\(envelope = \{\}\)/);
   assert.match(app, /function scheduleUnreadCountsRefresh\(\{ delay = 160, patch = true \} = \{\}\)/);
@@ -111,7 +112,7 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(app, /function activeConversationSignature\(stateSnapshot = appState\)/);
   assert.match(connectEventsSource, /addEventListener\('state-delta'[\s\S]*applyStateDeltaEnvelope\(JSON\.parse\(event\.data\)\)/);
   assert.match(connectEventsSource, /addEventListener\('realtime-event'[\s\S]*applyRealtimeJournalEvent\(JSON\.parse\(event\.data\)\)/);
-  assert.match(connectEventsSource, /addEventListener\('state-resync-required'[\s\S]*refreshAfterSseGap\(\)/);
+  assert.match(connectEventsSource, /addEventListener\('state-resync-required'[\s\S]*applyStateResyncRequiredEnvelope\(incoming\)/);
   assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*queueStateUpdate\(JSON\.parse\(event\.data\)\)/);
   assert.match(app, /function applySseSeq\(seqInput\)[\s\S]*seq > lastSseSeq \+ 1/);
   assert.match(connectEventsSource, /applyRunEventUpdate\(incoming\)/);
@@ -791,6 +792,7 @@ test('high-frequency SSE state updates are coalesced before scoped patching', as
   assert.match(realtimeSource, /queueStateUpdate\(\{ \.\.\.stateSnapshot, agents \}\)/);
   assert.match(realtimeSource, /queueStateUpdate\(\{[\s\S]*\.\.\.stateSnapshot,[\s\S]*agents,[\s\S]*humans,[\s\S]*updatedAt: heartbeat\.updatedAt \|\| stateSnapshot\.updatedAt/);
   assert.match(realtimeSource, /if \(envelope\?\.type === 'state_patch' && envelope\.payload\) \{[\s\S]*queueStateUpdate\(envelope\.payload\)/);
+  assert.match(realtimeSource, /function applyStateResyncRequiredEnvelope\(envelope = \{\}\)[\s\S]*applySseSeq\(envelope\?\.seq \|\| envelope\?\.currentSeq\)[\s\S]*refreshAfterSseGap\(envelope\)/);
   assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*queueStateUpdate\(JSON\.parse\(event\.data\)\)/);
   assert.match(browserHeartbeatSource, /const stateSnapshot = pendingStateUpdateBase\(\)/);
   assert.match(browserHeartbeatSource, /const humans = stateSnapshot\.humans\.map/);

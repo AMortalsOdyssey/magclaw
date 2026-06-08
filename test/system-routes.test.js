@@ -24,7 +24,13 @@ function makeResponse() {
       if (chunk) this.writes.push(chunk);
       this.ended = true;
     },
+    on() {},
   };
+}
+
+function eventNamesFromWrites(writes = []) {
+  return writes.flatMap((chunk) => String(chunk).match(/^event: ([^\n]+)/gm) || [])
+    .map((line) => line.replace(/^event: /, ''));
 }
 
 const TINY_PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lpC6iQAAAABJRU5ErkJggg==';
@@ -208,6 +214,76 @@ test('system route group returns bootstrap state with route query options', asyn
     threadRootLimit: '',
     eventLimit: '',
   });
+});
+
+test('system event stream opens without a full bootstrap state patch', async () => {
+  let publicBootstrapCalls = 0;
+  let hydrateCalls = 0;
+  let heartbeatWorkspaceId = '';
+  const deps = routeDeps({
+    cloudAuth: {
+      currentActor: () => ({ member: { workspaceId: 'wsp_events' } }),
+    },
+    hydrateBootstrapWindow: async () => {
+      hydrateCalls += 1;
+      return { messages: { messages: [] } };
+    },
+    publicBootstrapState: () => {
+      publicBootstrapCalls += 1;
+      return { large: 'bootstrap-payload-should-not-be-sent' };
+    },
+    presenceHeartbeat: (incomingReq) => {
+      heartbeatWorkspaceId = incomingReq?.magclawPresenceWorkspaceId || '';
+      return { agents: [], humans: [] };
+    },
+  });
+  const res = makeResponse();
+  const req = { method: 'GET', url: '/api/events?spaceType=channel&spaceId=chan_all&messageLimit=80', on: () => {} };
+
+  assert.equal(await handleSystemApi(
+    req,
+    res,
+    new URL('http://local/api/events?spaceType=channel&spaceId=chan_all&messageLimit=80'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(eventNamesFromWrites(res.writes), ['heartbeat']);
+  assert.equal(publicBootstrapCalls, 0);
+  assert.equal(hydrateCalls, 0);
+  assert.equal(heartbeatWorkspaceId, 'wsp_events');
+  assert.equal(deps.sseClients.has(res), true);
+});
+
+test('system event stream replays realtime events without sending bootstrap state', async () => {
+  let publicBootstrapCalls = 0;
+  const deps = routeDeps({
+    publicBootstrapState: () => {
+      publicBootstrapCalls += 1;
+      return { large: 'bootstrap-payload-should-not-be-sent' };
+    },
+    presenceHeartbeat: () => ({ agents: [], humans: [] }),
+    realtimeEventsForRequest: () => ({
+      gap: false,
+      events: [
+        { seq: 42, eventType: 'message_sent', payload: { messageId: 'msg_1' } },
+      ],
+    }),
+  });
+  const res = makeResponse();
+  const req = { method: 'GET', url: '/api/events?lastSeq=41', on: () => {} };
+
+  assert.equal(await handleSystemApi(
+    req,
+    res,
+    new URL('http://local/api/events?lastSeq=41'),
+    deps,
+  ), true);
+
+  assert.deepEqual(eventNamesFromWrites(res.writes), ['realtime-event', 'heartbeat']);
+  assert.match(res.writes.join(''), /"eventType":"message_sent"/);
+  assert.doesNotMatch(res.writes.join(''), /state-delta/);
+  assert.equal(publicBootstrapCalls, 0);
 });
 
 test('system route group returns package versions for computers page caching', async () => {

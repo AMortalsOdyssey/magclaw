@@ -13,6 +13,7 @@ import { teamSharingDisplayBodyForRecord } from './team-sharing.js';
 // detection, the native folder picker, and project folder registration.
 const RUNTIME_PACKAGE_NAMES = Object.freeze(['@magclaw/daemon', '@magclaw/computer']);
 const DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS = 10 * 60_000;
+const BOOTSTRAP_UNREAD_RECORD_LIMIT = 80;
 
 export function createSystemServices(deps) {
   const {
@@ -125,18 +126,46 @@ export function createSystemServices(deps) {
     messageById,
     replyById,
   }) {
-    if (!currentHumanId) return;
+    const hydration = {
+      limit: BOOTSTRAP_UNREAD_RECORD_LIMIT,
+      included: 0,
+      truncated: false,
+    };
+    if (!currentHumanId) return hydration;
     const sourceMessages = records(messages);
     const sourceMessageById = new Map(sourceMessages.map((message) => [message.id, message]).filter(([id]) => id));
+    const unreadCandidates = [];
     for (const message of sourceMessages) {
-      if (conversationRecordUnreadForHuman(message, currentHumanId)) messageById.set(message.id, message);
+      if (!conversationRecordUnreadForHuman(message, currentHumanId)) continue;
+      if (messageById.has(message.id)) continue;
+      unreadCandidates.push({ time: recordTime(message), message, reply: null, parent: null });
     }
     for (const reply of records(replies)) {
       if (!conversationRecordUnreadForHuman(reply, currentHumanId)) continue;
-      replyById.set(reply.id, reply);
+      if (replyById.has(reply.id)) continue;
       const parent = sourceMessageById.get(reply.parentMessageId);
-      if (parent) messageById.set(parent.id, parent);
+      unreadCandidates.push({ time: recordTime(reply), message: null, reply, parent });
     }
+    unreadCandidates.sort((a, b) => b.time - a.time);
+    let omitted = 0;
+    for (const candidate of unreadCandidates) {
+      const requiredRecords = (
+        (candidate.message && !messageById.has(candidate.message.id) ? 1 : 0)
+        + (candidate.reply && !replyById.has(candidate.reply.id) ? 1 : 0)
+        + (candidate.parent && !messageById.has(candidate.parent.id) ? 1 : 0)
+      );
+      if (!requiredRecords) continue;
+      if (hydration.included + requiredRecords > BOOTSTRAP_UNREAD_RECORD_LIMIT) {
+        omitted += requiredRecords;
+        continue;
+      }
+      if (candidate.parent) messageById.set(candidate.parent.id, candidate.parent);
+      if (candidate.message) messageById.set(candidate.message.id, candidate.message);
+      if (candidate.reply) replyById.set(candidate.reply.id, candidate.reply);
+      hydration.included += requiredRecords;
+    }
+    hydration.truncated = omitted > 0;
+    return hydration;
   }
 
   function newestRecords(items, limit) {
@@ -146,10 +175,176 @@ export function createSystemServices(deps) {
       .slice(0, limit);
   }
 
+  function usefulMetadataValue(value) {
+    if (value === undefined || value === null || value === '') return false;
+    if (Array.isArray(value) && value.length === 0) return false;
+    if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) return false;
+    return true;
+  }
+
+  function pickPublicFields(source = {}, fields = []) {
+    if (!source || typeof source !== 'object') return undefined;
+    const result = {};
+    for (const field of fields) {
+      const value = source[field];
+      if (usefulMetadataValue(value)) result[field] = value;
+    }
+    return Object.keys(result).length ? result : undefined;
+  }
+
+  function publicTeamSharingUploader(uploader = null) {
+    return pickPublicFields(uploader, [
+      'id',
+      'humanId',
+      'name',
+      'email',
+      'userEmail',
+      'authUserId',
+      'userId',
+      'avatar',
+      'avatarUrl',
+    ]);
+  }
+
+  function publicTeamSharingContentSegment(segment = {}) {
+    const type = String(segment?.type || '').trim().toLowerCase() || 'quote';
+    if (type === 'body') return null;
+    const text = String(segment?.text || segment?.content || '').trim();
+    if (!text) return null;
+    return {
+      type,
+      ...(segment.label ? { label: String(segment.label) } : {}),
+      text,
+    };
+  }
+
+  function publicTeamSharingMetadata(teamSharing = null) {
+    if (!teamSharing || typeof teamSharing !== 'object') return undefined;
+    const result = pickPublicFields(teamSharing, ['runtime', 'projectKey', 'sessionId', 'title']) || {};
+    const uploader = publicTeamSharingUploader(teamSharing.uploader);
+    if (uploader) result.uploader = uploader;
+    const presentationMode = String(teamSharing.presentation?.mode || '').trim();
+    if (presentationMode) result.presentation = { mode: presentationMode };
+    const contentSegments = records(teamSharing.contentSegments)
+      .map(publicTeamSharingContentSegment)
+      .filter(Boolean);
+    if (contentSegments.length) result.contentSegments = contentSegments;
+    return Object.keys(result).length ? result : undefined;
+  }
+
+  function publicFeishuContextRecord(record = {}, index = 0) {
+    const result = pickPublicFields(record, [
+      'id',
+      'messageId',
+      'author',
+      'authorId',
+      'senderName',
+      'senderType',
+      'openId',
+      'userId',
+      'unionId',
+      'appId',
+      'createdAt',
+      'time',
+      'timestamp',
+      'attachmentIds',
+    ]) || {};
+    if (record.sender && typeof record.sender === 'object') {
+      const sender = pickPublicFields(record.sender, ['id', 'name', 'type', 'appId']);
+      if (sender) result.sender = sender;
+    }
+    const text = String(record.text || record.body || record.content || '').trim();
+    if (text) result.text = text;
+    return Object.keys(result).length ? result : { id: `context_${index}` };
+  }
+
+  function publicFeishuMetadata(feishu = null) {
+    if (!feishu || typeof feishu !== 'object') return undefined;
+    const result = pickPublicFields(feishu, [
+      'ackMessageId',
+      'attachmentCount',
+      'selectedRecordCount',
+      'skippedAttachmentCount',
+      'skippedReferenceCount',
+    ]) || {};
+    const contextRecords = records(feishu.contextRecords).map(publicFeishuContextRecord);
+    if (contextRecords.length) result.contextRecords = contextRecords;
+    return Object.keys(result).length ? result : undefined;
+  }
+
+  function publicExternalDeliveryMetadata(externalDelivery = null) {
+    if (!externalDelivery || typeof externalDelivery !== 'object') return undefined;
+    const result = {};
+    const feishu = pickPublicFields(externalDelivery.feishu, [
+      'status',
+      'feishuMessageId',
+      'sentAt',
+      'traceId',
+      'deliveryKind',
+    ]);
+    if (feishu) result.feishu = feishu;
+    return Object.keys(result).length ? result : undefined;
+  }
+
+  function publicConversationMetadata(metadata = null) {
+    if (!metadata || typeof metadata !== 'object') return undefined;
+    const result = {};
+    if (metadata.systemKind) result.systemKind = metadata.systemKind;
+    const teamSharing = publicTeamSharingMetadata(metadata.teamSharing);
+    if (teamSharing) result.teamSharing = teamSharing;
+    const origin = pickPublicFields(metadata.origin, [
+      'provider',
+      'traceId',
+      'chatId',
+      'chatName',
+      'chatType',
+      'chatMode',
+      'chatAvatar',
+      'senderId',
+      'senderName',
+      'senderType',
+      'senderAvatar',
+      'senderOpenId',
+      'senderUserId',
+      'senderUnionId',
+      'senderAppId',
+      'triggerMessageId',
+    ]);
+    if (origin) result.origin = origin;
+    const feishu = publicFeishuMetadata(metadata.feishu);
+    if (feishu) result.feishu = feishu;
+    const externalDelivery = publicExternalDeliveryMetadata(metadata.externalDelivery);
+    if (externalDelivery) result.externalDelivery = externalDelivery;
+    const agentStream = pickPublicFields(metadata.agentStream, ['status', 'streamId']);
+    if (agentStream) result.agentStream = agentStream;
+    return Object.keys(result).length ? result : undefined;
+  }
+
   function publicConversationRecord(record) {
     const body = teamSharingDisplayBodyForRecord(record);
-    if (!body || body === record?.body) return record;
-    return { ...record, body };
+    const metadata = publicConversationMetadata(record?.metadata);
+    const changedBody = body && body !== record?.body;
+    if (!changedBody && metadata === record?.metadata) return record;
+    const next = { ...record };
+    if (changedBody) next.body = body;
+    if (metadata) next.metadata = metadata;
+    else if (Object.hasOwn(next, 'metadata')) delete next.metadata;
+    return next;
+  }
+
+  function publicTaskMetadata(metadata = null) {
+    if (!metadata || typeof metadata !== 'object') return undefined;
+    const result = {};
+    if (metadata.systemKind) result.systemKind = metadata.systemKind;
+    return Object.keys(result).length ? result : undefined;
+  }
+
+  function publicTaskRecord(task = {}) {
+    const metadata = publicTaskMetadata(task.metadata);
+    const next = { ...task };
+    if (metadata) next.metadata = metadata;
+    else if (Object.hasOwn(next, 'metadata')) delete next.metadata;
+    return next;
   }
 
   function bootstrapOptionsFromRequest(req) {
@@ -174,9 +369,10 @@ export function createSystemServices(deps) {
     const currentState = getState() || {};
     const cloud = typeof publicCloudState === 'function' ? publicCloudState(req) : undefined;
     const currentHumanId = cloud?.auth?.currentMember?.humanId || null;
+    const publicBase = publicStateBase(currentState);
     if (cloud?.auth?.currentUser && !cloud?.auth?.currentMember) {
       return {
-        ...currentState,
+        ...publicBase,
         channels: [],
         dms: [],
         messages: [],
@@ -185,7 +381,14 @@ export function createSystemServices(deps) {
         agents: [],
         computers: [],
         humans: [],
+        reminders: [],
+        missions: [],
+        runs: [],
+        attachments: [],
+        projects: [],
         channelMemberProposals: [],
+        workItems: [],
+        events: [],
         routeEvents: [],
         systemNotifications: [],
         settings: publicSettings(cloud),
@@ -238,13 +441,13 @@ export function createSystemServices(deps) {
       .map(publicConversationRecord);
     const visibleHumans = appendReferencedHumans(scopedRecords('humans'), [...visibleMessages, ...visibleReplies], currentState);
     return {
-      ...currentState,
+      ...publicBase,
       settings: publicSettings(cloud),
       channels: scopedChannels.filter((channel) => !channel.archived),
       dms: visibleDms,
       messages: visibleMessages,
       replies: visibleReplies,
-      tasks: scopedRecords('tasks'),
+      tasks: scopedRecords('tasks').map(publicTaskRecord),
       agents: scopedAgents,
       computers: visibleComputers,
       humans: visibleHumans,
@@ -264,6 +467,23 @@ export function createSystemServices(deps) {
       runtime: runtimeSnapshot(),
       runningRunIds: [...runningProcesses.keys()],
     };
+  }
+
+  function publicStateBase(currentState = {}) {
+    const base = {};
+    for (const key of ['createdAt', 'updatedAt', 'version']) {
+      if (Object.hasOwn(currentState, key)) base[key] = currentState[key];
+    }
+    if (currentState.router && typeof currentState.router === 'object') {
+      base.router = currentState.router;
+    }
+    if (currentState.storage && typeof currentState.storage === 'object') {
+      base.storage = currentState.storage;
+    }
+    if (currentState.inboxReads && typeof currentState.inboxReads === 'object') {
+      base.inboxReads = currentState.inboxReads;
+    }
+    return base;
   }
 
   function publicBootstrapState(req = null, options = {}) {
@@ -330,7 +550,7 @@ export function createSystemServices(deps) {
         : null);
     const replyById = new Map();
     for (const reply of [...latestReplyByParent.values(), ...selectedThreadReplies]) replyById.set(reply.id, reply);
-    includeUnreadConversationRecords({
+    const unreadHydration = includeUnreadConversationRecords({
       currentHumanId,
       messages: snapshot.messages,
       replies: snapshot.replies,
@@ -379,6 +599,7 @@ export function createSystemServices(deps) {
         nextBefore: hydratedMessagePagination?.nextBefore || selectedMessageCursor?.createdAt || '',
         nextBeforeId: hydratedMessagePagination?.nextBeforeId || selectedMessageCursor?.id || '',
         threadReplies: threadRepliesPagination,
+        unreadHydration,
       },
       messages: [...messageById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
       replies: [...replyById.values()].sort((a, b) => recordTime(a) - recordTime(b)),

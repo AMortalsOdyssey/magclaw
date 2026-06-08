@@ -1155,53 +1155,6 @@ export function createStateCore(deps) {
     return `event: ${type}\ndata: ${JSON.stringify(body)}\n\n`;
   }
 
-  function requestParam(req, name) {
-    try {
-      const url = new URL(req?.url || '/api/events', 'http://127.0.0.1');
-      return url.searchParams.get(name) || '';
-    } catch {
-      return '';
-    }
-  }
-
-  function requestPath(req) {
-    try {
-      const url = new URL(req?.url || '/api/events', 'http://127.0.0.1');
-      return url.pathname || '/api/events';
-    } catch {
-      return '/api/events';
-    }
-  }
-
-  function hashText(value) {
-    let hash = 2166136261;
-    const text = String(value || '');
-    for (let index = 0; index < text.length; index += 1) {
-      hash ^= text.charCodeAt(index);
-      hash = Math.imul(hash, 16777619);
-    }
-    return (hash >>> 0).toString(36);
-  }
-
-  function sseStateScopeCacheKey(req = null) {
-    const headers = req?.headers || {};
-    const cookieHash = hashText(`${headers.cookie || ''}|${headers.authorization || ''}`);
-    const scopeParts = [
-      requestPath(req),
-      headers['x-magclaw-workspace-id'] || '',
-      headers['x-magclaw-server-slug'] || '',
-      requestParam(req, 'workspaceId'),
-      requestParam(req, 'serverSlug'),
-      requestParam(req, 'spaceType'),
-      requestParam(req, 'spaceId'),
-      requestParam(req, 'threadMessageId'),
-      requestParam(req, 'messageLimit'),
-      requestParam(req, 'threadRootLimit'),
-      requestParam(req, 'eventLimit'),
-    ];
-    return `${scopeParts.map((part) => encodeURIComponent(part)).join('|')}|auth=${cookieHash}`;
-  }
-
   function ensureSseDrainHandler(res) {
     if (res.magclawSseDrainAttached || typeof res.once !== 'function') return;
     res.magclawSseDrainAttached = true;
@@ -1287,27 +1240,21 @@ export function createStateCore(deps) {
     return sseSeq;
   }
 
-  function stateDeltaEnvelope(req = null, seq = currentSseSeq()) {
+  function stateResyncEnvelope(seq = currentSseSeq(), reason = 'state_changed') {
     return {
       seq,
-      type: 'state_patch',
+      type: 'state_resync_required',
+      reason,
+      currentSeq: seq,
       createdAt: now(),
-      payload: publicStateForSse(req),
     };
   }
 
   function broadcastStateDelta() {
     const seq = currentSseSeq();
-    const packetsByScope = new Map();
+    const packet = ssePacket('state-resync-required', stateResyncEnvelope(seq));
     for (const res of sseClients) {
-      const req = res.magclawRequest || null;
-      const cacheKey = sseStateScopeCacheKey(req);
-      let packet = packetsByScope.get(cacheKey);
-      if (!packet) {
-        packet = ssePacket('state-delta', stateDeltaEnvelope(req, seq));
-        packetsByScope.set(cacheKey, packet);
-      }
-      writeSsePacket(res, packet, { coalesceKey: 'state-delta' });
+      writeSsePacket(res, packet, { coalesceKey: 'state-resync-required' });
     }
   }
 
@@ -1340,7 +1287,19 @@ export function createStateCore(deps) {
     if (!options.skipCloudPush) queueCloudPush('state_changed');
   }
 
-  function presenceHeartbeat() {
+  function presenceHeartbeat(req = null) {
+    const workspaceId = String(
+      req?.magclawPresenceWorkspaceId
+      || req?.daemonAuth?.workspaceId
+      || state?.connection?.workspaceId
+      || state?.cloud?.workspace?.id
+      || '',
+    ).trim();
+    const workspaceMatches = (record) => {
+      if (!workspaceId) return true;
+      const recordWorkspaceId = String(record?.workspaceId || '').trim();
+      return !recordWorkspaceId || recordWorkspaceId === workspaceId;
+    };
     const humanCutoff = Date.now() - HUMAN_PRESENCE_TIMEOUT_MS;
     const humanPresence = (human) => {
       const status = String(human?.status || 'offline').toLowerCase();
@@ -1351,7 +1310,7 @@ export function createStateCore(deps) {
     return {
       createdAt: now(),
       updatedAt: state?.updatedAt || null,
-      agents: (state?.agents || []).map((agent) => ({
+      agents: (state?.agents || []).filter(workspaceMatches).map((agent) => ({
         id: agent.id,
         name: agent.name,
         status: agent.status || 'offline',
@@ -1365,7 +1324,7 @@ export function createStateCore(deps) {
         activitySeq: Number(agent.activitySeq || 0),
         activityAt: agent.activityAt || null,
       })),
-      humans: (state?.humans || []).map((human) => ({
+      humans: (state?.humans || []).filter(workspaceMatches).map((human) => ({
         id: human.id,
         name: human.name,
         status: humanPresence(human),
@@ -1376,7 +1335,7 @@ export function createStateCore(deps) {
   }
   
   function broadcastHeartbeat() {
-    broadcast('heartbeat', presenceHeartbeat());
+    broadcast('heartbeat', (req) => presenceHeartbeat(req));
   }
   
   function agentStatusIsBusy(status) {
@@ -1603,7 +1562,6 @@ export function createStateCore(deps) {
     setAgentStatus,
     state: stateProxy,
     stateFullSnapshot,
-    stateDeltaEnvelope,
     stateJsonSnapshot,
   };
 }

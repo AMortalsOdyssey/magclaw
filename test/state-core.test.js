@@ -230,7 +230,7 @@ test('state core reads a deduped seven day agent activity window from state and 
   }
 });
 
-test('state core coalesces burst state broadcasts and reuses matching SSE scope payloads', async () => {
+test('state core coalesces burst state broadcasts into lightweight resync signals', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-sse-'));
   const sseClients = new Set();
   const cloudPushes = [];
@@ -265,23 +265,22 @@ test('state core coalesces burst state broadcasts and reuses matching SSE scope 
     core.broadcastState();
     core.broadcastState();
 
-    assert.equal(ssePackets(firstClient, 'state-delta').length, 0);
+    assert.equal(ssePackets(firstClient, 'state-resync-required').length, 0);
     assert.deepEqual(cloudPushes, ['state_changed', 'state_changed', 'state_changed']);
 
     await new Promise((resolve) => setTimeout(resolve, 60));
 
-    assert.equal(ssePackets(firstClient, 'state-delta').length, 1);
+    assert.equal(ssePackets(firstClient, 'state-resync-required').length, 1);
     assert.equal(ssePackets(firstClient, 'heartbeat').length, 1);
-    assert.equal(ssePackets(secondClient, 'state-delta').length, 1);
+    assert.equal(ssePackets(secondClient, 'state-resync-required').length, 1);
     assert.equal(ssePackets(secondClient, 'heartbeat').length, 1);
-    assert.equal(ssePackets(thirdClient, 'state-delta').length, 1);
+    assert.equal(ssePackets(thirdClient, 'state-resync-required').length, 1);
     assert.equal(ssePackets(thirdClient, 'heartbeat').length, 1);
-    assert.equal(publicStateCalls, 2);
-    assert.equal(ssePackets(firstClient, 'state-delta')[0], ssePackets(secondClient, 'state-delta')[0]);
-    assert.notEqual(ssePackets(firstClient, 'state-delta')[0], ssePackets(thirdClient, 'state-delta')[0]);
-    assert.match(ssePackets(firstClient, 'state-delta')[0], /"type":"state_patch"/);
-    assert.match(ssePackets(firstClient, 'state-delta')[0], /"spaceId":"chan_all"/);
-    assert.match(ssePackets(thirdClient, 'state-delta')[0], /"spaceId":"chan_design"/);
+    assert.equal(publicStateCalls, 0);
+    assert.equal(ssePackets(firstClient, 'state-resync-required')[0], ssePackets(secondClient, 'state-resync-required')[0]);
+    assert.equal(ssePackets(firstClient, 'state-resync-required')[0], ssePackets(thirdClient, 'state-resync-required')[0]);
+    assert.match(ssePackets(firstClient, 'state-resync-required')[0], /"type":"state_resync_required"/);
+    assert.doesNotMatch(ssePackets(firstClient, 'state-resync-required')[0], /"payload"/);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
@@ -389,7 +388,7 @@ test('state core broadcasts unread realtime events for lightweight count refresh
   }
 });
 
-test('state core coalesces pending state patches for backpressured SSE clients', async () => {
+test('state core coalesces pending resync signals for backpressured SSE clients', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-slow-sse-'));
   const sseClients = new Set();
   let publicStateCalls = 0;
@@ -408,14 +407,16 @@ test('state core coalesces pending state patches for backpressured SSE clients',
     core.broadcastState({ immediate: true });
     core.broadcastState({ immediate: true });
 
-    assert.equal(ssePackets(slowClient, 'state-delta').length, 1);
-    assert.equal(publicStateCalls, 3);
+    assert.equal(ssePackets(slowClient, 'state-resync-required').length, 1);
+    assert.equal(publicStateCalls, 0);
 
     slowClient.emitDrain();
 
-    const patches = sseEnvelopes(slowClient, 'state-delta');
+    const patches = sseEnvelopes(slowClient, 'state-resync-required');
     assert.equal(patches.length, 2);
-    assert.equal(patches.at(-1).payload.snapshotSeq, 3);
+    assert.equal(patches.at(-1).type, 'state_resync_required');
+    assert.equal(patches.at(-1).reason, 'state_changed');
+    assert.equal(publicStateCalls, 0);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
@@ -443,22 +444,48 @@ test('state core keeps state generation bounded for 100 SSE clients during agent
   try {
     await core.ensureStorage();
     core.broadcastState({ immediate: true, skipCloudPush: true });
-    assert.equal(publicStateCalls, 1);
-    assert.equal(clients.every((client) => ssePackets(client, 'state-delta').length === 1), true);
+    assert.equal(publicStateCalls, 0);
+    assert.equal(clients.every((client) => ssePackets(client, 'state-resync-required').length === 1), true);
 
     const agent = core.state.agents[0];
     for (let index = 0; index < 10; index += 1) {
       core.setAgentStatus(agent, index % 2 === 0 ? 'working' : 'thinking', 'load_test', { forceEvent: true });
     }
 
-    assert.equal(publicStateCalls, 1);
-    assert.equal(clients.every((client) => ssePackets(client, 'state-delta').length === 1), true);
+    assert.equal(publicStateCalls, 0);
+    assert.equal(clients.every((client) => ssePackets(client, 'state-resync-required').length === 1), true);
     assert.equal(clients.every((client) => ssePackets(client, 'realtime-event').length >= 10), true);
     const averagePacketBytes = clients
       .flatMap((client) => client.writes)
       .reduce((sum, packet) => sum + Buffer.byteLength(packet), 0) / clients.reduce((sum, client) => sum + client.writes.length, 0);
     assert.ok(averagePacketBytes > 0);
     await core.flushActivityLog();
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('state core filters presence heartbeats to the request workspace', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-heartbeat-'));
+  const core = makeStateCore(tmp, { USE_SQLITE_STATE: false });
+  try {
+    await core.ensureStorage();
+    core.state.connection.workspaceId = 'wsp_a';
+    core.state.agents = [
+      { id: 'agt_a', workspaceId: 'wsp_a', name: 'Agent A', status: 'idle' },
+      { id: 'agt_b', workspaceId: 'wsp_b', name: 'Agent B', status: 'working' },
+      { id: 'agt_legacy', name: 'Legacy Agent', status: 'idle' },
+    ];
+    core.state.humans = [
+      { id: 'hum_a', workspaceId: 'wsp_a', name: 'Human A', status: 'online', lastSeenAt: new Date().toISOString() },
+      { id: 'hum_b', workspaceId: 'wsp_b', name: 'Human B', status: 'online', lastSeenAt: new Date().toISOString() },
+      { id: 'hum_legacy', name: 'Legacy Human', status: 'offline' },
+    ];
+
+    const heartbeat = core.presenceHeartbeat({ magclawPresenceWorkspaceId: 'wsp_a' });
+
+    assert.deepEqual(heartbeat.agents.map((agent) => agent.id), ['agt_a', 'agt_legacy']);
+    assert.deepEqual(heartbeat.humans.map((human) => human.id), ['hum_a', 'hum_legacy']);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
