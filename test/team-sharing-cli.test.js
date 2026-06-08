@@ -15,10 +15,12 @@ import {
 } from '../team-sharing/src/onboarding-feedback.js';
 import {
   checkTeamSharingUpgrade,
+  deleteTeamSharingLink,
   editTeamSharingLink,
   installTeamSharingHooks,
   installTeamSharingSkill,
   initTeamSharingProject,
+  listTeamSharingLinks,
   loginTeamSharingProfile,
   logoutTeamSharingProfile,
   normalizeTeamSharingProjectConfig,
@@ -2068,6 +2070,103 @@ test('team sharing cli edit-link fills section hashes and patches the same share
   }
 });
 
+test('team sharing cli lists and deletes share links with profile token', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-manage-links-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-manage-links-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+
+  const parsedList = parseCli(['node', 'magclaw', 'team-sharing', 'list-links', '--include-revoked']);
+  assert.deepEqual(parsedList.flags._, ['list-links']);
+  const parsedDelete = parseCli(['node', 'magclaw', 'team-sharing', 'delete-link', 'https://magclaw.example/s/share_cli']);
+  assert.deepEqual(parsedDelete.flags._, ['delete-link', 'https://magclaw.example/s/share_cli']);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init, body: init.body ? JSON.parse(init.body) : null });
+    assert.equal(init.headers.authorization, 'Bearer team-sharing-token-secret');
+    assert.match(init.headers['x-magclaw-machine-fingerprint'], /^mfp_[a-f0-9]{64}$/);
+    if (String(url).includes('/api/team-sharing/shares?')) {
+      const parsed = new URL(String(url));
+      assert.equal(parsed.searchParams.get('workspaceId'), 'ws_team');
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          kind: 'share_list',
+          workspaceId: 'ws_team',
+          count: 1,
+          shares: [{
+            shareId: 'share_cli',
+            title: 'Rerank 分享页',
+            url: 'https://magclaw.example/s/share_cli',
+            canEdit: true,
+            status: 'active',
+          }],
+        }),
+      };
+    }
+    if (String(url).endsWith('/api/team-sharing/shares/share_cli')) {
+      assert.equal(init.method, 'DELETE');
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          kind: 'share_deleted',
+          shareId: 'share_cli',
+          deleted: true,
+          revokedAt: '2026-06-06T10:00:00.000Z',
+        }),
+      };
+    }
+    if (String(url).endsWith('/api/team-sharing/shares/share_old')) {
+      assert.equal(init.method, 'DELETE');
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          kind: 'share_deleted',
+          shareId: 'share_old',
+          deleted: false,
+          alreadyDeleted: true,
+        }),
+      };
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+  try {
+    const listed = await listTeamSharingLinks({ cwd }, env);
+    assert.equal(listed.ok, true);
+    assert.equal(listed.shares[0].shareId, 'share_cli');
+
+    const deleted = await deleteTeamSharingLink({ cwd, _: ['delete-link', 'https://magclaw.example/s/share_cli'] }, env);
+    assert.equal(deleted.ok, true);
+    assert.equal(deleted.deleted, true);
+
+    const deletedById = await deleteTeamSharingLink({ cwd, _: ['delete-link', 'share_old'] }, env);
+    assert.equal(deletedById.alreadyDeleted, true);
+    assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
+      '/api/team-sharing/shares',
+      '/api/team-sharing/shares/share_cli',
+      '/api/team-sharing/shares/share_old',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('team sharing cli infers artifact title and type from local documents', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-infer-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-infer-home-'));
@@ -2138,6 +2237,10 @@ test('team sharing cli installs a local skill without writing token into skill f
   assert.match(skill, /sections.*versionId.*contentHash.*assetRefs/s);
   assert.match(skill, /replace_section/);
   assert.match(skill, /version_conflict/);
+  assert.match(skill, /team-sharing list-links --format json/);
+  assert.match(skill, /team-sharing delete-link "<url-or-shareId>"/);
+  assert.match(skill, /workspace Owner, or workspace Admin/);
+  assert.match(skill, /--include-revoked/);
   assert.match(skill, /protected Team Sharing asset references/);
   assert.match(skill, /--time today/);
   assert.match(skill, /--time yesterday/);

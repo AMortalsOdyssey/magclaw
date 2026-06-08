@@ -557,6 +557,35 @@ function shareReadPayload(req, share = {}, teamSharingState = {}) {
   };
 }
 
+function shareListItemPayload(req, share = {}, teamSharingState = {}, extra = {}) {
+  const record = shareContentRecord(teamSharingState, share);
+  return {
+    id: String(share.id || '').trim(),
+    shareId: String(share.id || '').trim(),
+    title: String(share.title || '').trim(),
+    description: String(share.description || '').trim(),
+    contentType: String(record.contentType || share.contentType || '').trim(),
+    versionId: String(record.version?.id || share.currentVersionId || '').trim(),
+    contentHash: String(record.contentHash || '').trim(),
+    assetCount: record.assetIds.length,
+    workspaceId: String(share.workspaceId || '').trim(),
+    channelId: String(share.channelId || '').trim(),
+    channelPath: String(share.channelPath || '').trim(),
+    projectKey: String(share.projectKey || '').trim(),
+    creator: share.creator && typeof share.creator === 'object' ? {
+      id: String(share.creator.id || '').trim(),
+      name: String(share.creator.name || '').trim(),
+      email: String(share.creator.email || '').trim(),
+    } : null,
+    createdAt: String(share.createdAt || '').trim(),
+    updatedAt: String(share.updatedAt || '').trim(),
+    revokedAt: String(share.revokedAt || '').trim(),
+    status: share.revokedAt ? 'revoked' : 'active',
+    url: shareUrl(req, share.id || ''),
+    ...extra,
+  };
+}
+
 function shareSectionsPayload(req, share = {}, teamSharingState = {}) {
   const record = shareContentRecord(teamSharingState, share);
   const contentType = record.contentType || String(share.contentType || '').trim();
@@ -1360,6 +1389,18 @@ function sharesForShareRoot(teamSharingState = {}, workspaceId = '') {
   const scope = String(workspaceId || '').trim();
   if (!scope || scope === 'local') return shares;
   return shares.filter((share) => String(share.workspaceId || '').trim() === scope);
+}
+
+function shareListWorkspaceIdFromUrl(url, state = {}) {
+  const explicit = String(
+    url?.searchParams?.get('workspaceId')
+    || url?.searchParams?.get('serverId')
+    || url?.searchParams?.get('serverSlug')
+    || url?.searchParams?.get('server')
+    || '',
+  ).trim();
+  if (!explicit) return '';
+  return String(workspaceByIdOrSlug(state, explicit)?.id || explicit).trim();
 }
 
 function shareRootDeniedHtml(status = 401, message = '') {
@@ -4389,6 +4430,57 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/team-sharing/shares') {
+    const tokenRecord = tokenRecordForRequest(teamSharingState, req);
+    const targetWorkspaceId = shareListWorkspaceIdFromUrl(url, state)
+      || requestWorkspaceId({ actor, tokenRecord, state, fallback: workspaceId });
+    const access = shareRootAccess(req, {
+      actor,
+      currentUser: browserUser,
+      teamSharingState,
+      state,
+      targetWorkspaceId,
+    });
+    if (!access.ok) {
+      sendJson(res, access.status || 403, {
+        ok: false,
+        reason: access.status === 401 ? 'login_required' : 'server_membership_required',
+        error: access.error || 'Join this server before listing shared links.',
+      });
+      return true;
+    }
+    const includeRevoked = /^(1|true|yes|y|on)$/i.test(String(
+      url.searchParams.get('includeRevoked')
+      || url.searchParams.get('include_revoked')
+      || '',
+    ).trim());
+    const shares = sharesForShareRoot(teamSharingState, access.workspaceId || targetWorkspaceId)
+      .filter((share) => includeRevoked || !share.revokedAt)
+      .slice()
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    addSystemEvent('team_sharing_share_listed', 'Team sharing shares listed.', {
+      workspaceId: access.workspaceId || targetWorkspaceId,
+      actorId: access.actorId || '',
+      count: shares.length,
+      includeRevoked,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      kind: 'share_list',
+      workspaceId: access.workspaceId || targetWorkspaceId,
+      includeRevoked,
+      count: shares.length,
+      shares: shares.map((share) => {
+        const editAccess = shareEditAccess(req, { actor, currentUser: browserUser, teamSharingState, share, state });
+        return shareListItemPayload(req, share, teamSharingState, {
+          canEdit: Boolean(editAccess.ok && editAccess.canEdit),
+          editVia: editAccess.ok && editAccess.canEdit ? String(editAccess.editVia || '').trim() : '',
+        });
+      }),
+    });
+    return true;
+  }
+
   const shareSectionsMatch = url.pathname.match(/^\/api\/team-sharing\/shares\/([^/]+)\/sections$/);
   if (req.method === 'GET' && shareSectionsMatch) {
     const shareId = decodeURIComponent(shareSectionsMatch[1] || '');
@@ -4548,6 +4640,50 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendError(res, error.status || 500, error.message || 'Failed to patch shared page.');
       return true;
     }
+  }
+
+  if (req.method === 'DELETE' && sharePatchMatch) {
+    const shareId = decodeURIComponent(sharePatchMatch[1] || '');
+    const share = ensureTeamSharingShares(teamSharingState).find((item) => item.id === shareId);
+    if (!share) {
+      sendJson(res, 404, { ok: false, reason: 'not_found', error: 'Shared page not found.' });
+      return true;
+    }
+    const access = shareEditAccess(req, { actor, currentUser: browserUser, teamSharingState, share, state });
+    if (!access.ok) {
+      sendJson(res, access.status || 403, {
+        ok: false,
+        reason: access.status === 401 ? 'login_required' : 'share_delete_forbidden',
+        error: access.error || 'Only the creator, owner, or admin can delete this shared page.',
+      });
+      return true;
+    }
+    const alreadyDeleted = Boolean(share.revokedAt);
+    const revokedAt = share.revokedAt || now();
+    if (!alreadyDeleted) {
+      share.revokedAt = revokedAt;
+      share.revokedBy = { id: access.editorId || access.actorId || '', via: access.editVia || '' };
+      share.updatedAt = revokedAt;
+      share.updatedBy = { id: access.editorId || access.actorId || '', via: access.editVia || '' };
+      addSystemEvent('team_sharing_share_deleted', `Team sharing share deleted: ${compactText(share.title || shareId, 90)}`, {
+        workspaceId: share.workspaceId || workspaceId,
+        shareId,
+        actorId: access.editorId || access.actorId || '',
+        via: access.editVia || '',
+      });
+      await persistState({ workspaceId: share.workspaceId || workspaceId, reason: 'team_sharing_share_deleted' });
+      broadcastState();
+    }
+    sendJson(res, 200, {
+      ok: true,
+      kind: 'share_deleted',
+      shareId,
+      deleted: !alreadyDeleted,
+      alreadyDeleted,
+      revokedAt,
+      workspaceId: String(share.workspaceId || '').trim(),
+    });
+    return true;
   }
 
   const shareApiReadMatch = url.pathname.match(/^\/api\/team-sharing\/shares\/([^/]+)$/);

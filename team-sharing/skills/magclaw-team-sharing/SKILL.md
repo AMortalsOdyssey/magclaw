@@ -41,7 +41,11 @@ Use this skill when the user asks what teammates discussed, wants to align with 
    - Apply it with `team-sharing edit-link "<url>" --patch <patch.json>`. Use `--dry-run` before applying when the user is still deciding.
    - After applying, rerun `team-sharing read-link "<url>" --format json` and verify the target section hash changed, unrelated section hashes stayed the same, and video/image assets remain as `assetRefs` rather than large inline base64.
    - If the command returns `version_conflict`, reread the link, rebuild the patch against the latest `versionId` and section hashes, then retry.
-9. Return the MagClaw share URL from the command output. 访问遵循当前 MagClaw 服务的登录和权限策略, and the share page includes the creator and creation time in the footer.
+9. When the user asks to remove or distinguish specific MagClaw share links, first run `team-sharing list-links --format json` and match the exact `shareId`, `title`, `createdAt`, and `url` before deleting anything.
+   - `list-links` returns link metadata only, not share content. Add `--include-revoked` only when you need to audit already deleted links.
+   - Delete a specific link with `team-sharing delete-link "<url-or-shareId>"`. The server allows deletion only for the share creator, workspace Owner, or workspace Admin.
+   - After deletion, rerun `team-sharing list-links --format json` and verify the deleted `shareId` is absent unless `--include-revoked` is used.
+10. Return the MagClaw share URL from the command output. 访问遵循当前 MagClaw 服务的登录和权限策略, and the share page includes the creator and creation time in the footer.
 
 ## User-Facing Examples
 

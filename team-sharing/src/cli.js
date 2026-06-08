@@ -8,11 +8,13 @@ import {
 } from './onboarding-feedback.js';
 import {
   checkTeamSharingUpgrade,
+  deleteTeamSharingLink,
   disableTeamSharingSkill,
   editTeamSharingLink,
   initTeamSharingProject,
   installTeamSharingHooks,
   installTeamSharingSkill,
+  listTeamSharingLinks,
   listTeamSharingProjects,
   loginTeamSharingProfile,
   logoutTeamSharingProfile,
@@ -167,6 +169,8 @@ function renderTeamSharingHelp() {
     '  context  Read original context around an anchor',
     '  read-link Read a protected MagClaw share/context URL with the Team Sharing CLI login',
     '  edit-link Patch one section of an existing MagClaw share URL',
+    '  list-links List MagClaw share links for the current server',
+    '  delete-link Delete one MagClaw share link by URL or share ID',
     '  share-artifact Create a public MagClaw share link from a local file',
     '  sync     Upload one transcript file (--session-title or MAGCLAW_SESSION_TITLE controls the displayed title)',
     '  skills   Install/remove/status the local Team Sharing skill',
@@ -303,6 +307,20 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
     case 'edit-link':
     case 'editlink':
       printJson(await editTeamSharingLink(flags, env));
+      break;
+    case 'list-links':
+    case 'listlinks':
+    case 'list-shares':
+    case 'listshares':
+      printJson(await listTeamSharingLinks(flags, env));
+      break;
+    case 'delete-link':
+    case 'deletelink':
+    case 'delete-share':
+    case 'deleteshare':
+    case 'remove-link':
+    case 'removelink':
+      printJson(await deleteTeamSharingLink(flags, env));
       break;
     case 'share':
     case 'share-artifact':

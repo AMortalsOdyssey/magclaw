@@ -2337,6 +2337,66 @@ export async function editTeamSharingLink(flags = {}, env = process.env) {
   });
 }
 
+export async function listTeamSharingLinks(flags = {}, env = process.env) {
+  const { project, serverUrl, token, machineFingerprint } = await resolveTeamSharingClient(flags, env, { allowLogin: true });
+  const params = new URLSearchParams();
+  const workspaceId = stringFlagValue(
+    flags.workspaceId
+    || flags.workspace
+    || flags.serverId
+    || flags.serverSlug
+    || flags.server
+    || project.config.workspaceId
+    || '',
+  );
+  if (workspaceId) params.set('workspaceId', workspaceId);
+  if (booleanFlag(flags.includeRevoked || flags.include_revoked)) params.set('includeRevoked', '1');
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return teamSharingRequestJson({
+    serverUrl,
+    token,
+    machineFingerprint,
+    pathname: `/api/team-sharing/shares${suffix}`,
+    timeoutMs: requestTimeoutMs(flags, env),
+  });
+}
+
+export async function deleteTeamSharingLink(flags = {}, env = process.env) {
+  const target = String(flags.url || flags.link || flags.href || flags.shareId || flags.share || flags._?.[1] || '').trim();
+  if (!target) {
+    const error = new Error('Usage: team-sharing delete-link <share-url|share-id>');
+    error.status = 400;
+    throw error;
+  }
+  let shareId = '';
+  let parsedServerUrl = '';
+  if (/^https?:\/\//i.test(target)) {
+    const parsed = parseTeamSharingReadableLink(target);
+    if (!parsed.ok || parsed.type !== 'share') {
+      const error = new Error('Usage: team-sharing delete-link <share-url|share-id>');
+      error.reason = parsed.reason || 'unsupported_link';
+      error.status = 400;
+      throw error;
+    }
+    shareId = parsed.shareId;
+    parsedServerUrl = parsed.serverUrl;
+  } else {
+    shareId = target;
+  }
+  const { serverUrl, token, machineFingerprint } = await resolveTeamSharingClient({
+    ...flags,
+    ...(parsedServerUrl ? { serverUrl: flags.serverUrl || parsedServerUrl } : {}),
+  }, env, { allowLogin: true });
+  return teamSharingRequestJson({
+    serverUrl,
+    token,
+    machineFingerprint,
+    method: 'DELETE',
+    pathname: `/api/team-sharing/shares/${encodeURIComponent(shareId)}`,
+    timeoutMs: requestTimeoutMs(flags, env),
+  });
+}
+
 function displayTeamSharingEventText(event = {}) {
   return String(
     event.displayText

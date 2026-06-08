@@ -1502,6 +1502,148 @@ test('team sharing share patch updates one section in place with creator/admin p
   assert.equal(conflict.data.reason, 'version_conflict');
 });
 
+test('team sharing share list and delete links are scoped and role gated', async () => {
+  let nextBody = {};
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_creator', role: 'member', name: 'Creator' } }),
+    readJson: async () => nextBody,
+  });
+  deps.state.cloud.workspaceMembers = [
+    { workspaceId: 'ws_route', humanId: 'hum_creator', userId: 'usr_creator', role: 'member', status: 'active' },
+    { workspaceId: 'ws_route', humanId: 'hum_member', userId: 'usr_member', role: 'member', status: 'active' },
+    { workspaceId: 'ws_route', humanId: 'hum_admin', userId: 'usr_admin', role: 'admin', status: 'active' },
+    { workspaceId: 'ws_route', humanId: 'hum_owner', userId: 'usr_owner', role: 'owner', status: 'active' },
+  ];
+
+  nextBody = {
+    title: '需要保留的分享',
+    description: '保留项描述',
+    contentType: 'markdown',
+    content: '# 需要保留的分享\n\n正文 A',
+    workspaceId: 'ws_route',
+    channelPath: 'testing/share-list',
+  };
+  const first = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    first,
+    new URL('https://magclaw.example/api/team-sharing/shares'),
+    deps,
+  ), true);
+  const firstShareId = first.data.shareId;
+
+  nextBody = {
+    title: '可以删除的分享',
+    description: '删除项描述',
+    contentType: 'markdown',
+    content: '# 可以删除的分享\n\n正文 B',
+    workspaceId: 'ws_route',
+    channelPath: 'testing/share-list',
+  };
+  const second = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    second,
+    new URL('https://magclaw.example/api/team-sharing/shares'),
+    deps,
+  ), true);
+  const secondShareId = second.data.shareId;
+
+  deps.state.teamSharing.shares.push({
+    ...deps.state.teamSharing.shares[0],
+    id: 'share_other_server',
+    workspaceId: 'ws_other',
+    title: 'Other server share',
+  });
+
+  const memberList = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    memberList,
+    new URL('https://magclaw.example/api/team-sharing/shares?workspaceId=ws_route'),
+    { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_member', role: 'member' } }) },
+  ), true);
+  assert.equal(memberList.statusCode, 200);
+  assert.equal(memberList.data.kind, 'share_list');
+  assert.equal(memberList.data.count, 2);
+  assert.deepEqual(memberList.data.shares.map((share) => share.shareId).sort(), [firstShareId, secondShareId].sort());
+  assert.equal(memberList.data.shares.every((share) => share.workspaceId === 'ws_route'), true);
+  assert.equal(memberList.data.shares.every((share) => share.canEdit === false), true);
+  assert.equal(memberList.data.shares.every((share) => share.content === undefined), true);
+  assert.doesNotMatch(JSON.stringify(memberList.data), /正文 A|正文 B|Other server share/);
+
+  const memberDelete = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'DELETE', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    memberDelete,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${secondShareId}`),
+    { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_member', role: 'member' } }) },
+  ), true);
+  assert.equal(memberDelete.statusCode, 403);
+  assert.equal(memberDelete.data.reason, 'share_delete_forbidden');
+  assert.equal(deps.state.teamSharing.shares.find((share) => share.id === secondShareId).revokedAt, undefined);
+
+  const adminDelete = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'DELETE', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    adminDelete,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${secondShareId}`),
+    { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_admin', role: 'admin' } }) },
+  ), true);
+  assert.equal(adminDelete.statusCode, 200);
+  assert.equal(adminDelete.data.deleted, true);
+  assert.equal(deps.state.teamSharing.shares.find((share) => share.id === secondShareId).revokedAt, '2026-06-01T10:00:00.000Z');
+
+  const readDeleted = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    readDeleted,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${secondShareId}`),
+    deps,
+  ), true);
+  assert.equal(readDeleted.statusCode, 404);
+
+  const activeList = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    activeList,
+    new URL('https://magclaw.example/api/team-sharing/shares?workspaceId=ws_route'),
+    { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_owner', role: 'owner' } }) },
+  ), true);
+  assert.deepEqual(activeList.data.shares.map((share) => share.shareId), [firstShareId]);
+  assert.equal(activeList.data.shares[0].canEdit, true);
+
+  const auditList = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    auditList,
+    new URL('https://magclaw.example/api/team-sharing/shares?workspaceId=ws_route&includeRevoked=1'),
+    { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_owner', role: 'owner' } }) },
+  ), true);
+  assert.equal(auditList.data.count, 2);
+  assert.equal(auditList.data.shares.find((share) => share.shareId === secondShareId).status, 'revoked');
+
+  const creatorDelete = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'DELETE', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    creatorDelete,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${firstShareId}`),
+    deps,
+  ), true);
+  assert.equal(creatorDelete.statusCode, 200);
+  assert.equal(creatorDelete.data.deleted, true);
+
+  const deleteAgain = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'DELETE', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    deleteAgain,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${firstShareId}`),
+    deps,
+  ), true);
+  assert.equal(deleteAgain.statusCode, 200);
+  assert.equal(deleteAgain.data.alreadyDeleted, true);
+});
+
 test('team sharing link inspection reports server access actions and token user memberships', async () => {
   const deps = routeDeps({
     currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_route', name: 'Ada PM', email: 'ada@example.com' } }),
