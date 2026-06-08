@@ -1023,6 +1023,68 @@ test('team sharing search resolves a natural-language member mention and filters
   assert.ok(!searchRes.data.results.some((item) => item.sessionId === 'sess_zhang_bm25'));
 });
 
+test('team sharing member resolver dedupes the same uploader across identity sources', async () => {
+  const activeUploader = { id: 'hum_jhb', name: '蒋海波', email: '', avatar: 'https://avatar.example/jhb.png' };
+  const deps = routeDeps({
+    currentActor: () => ({
+      member: {
+        workspaceId: 'ws_route',
+        humanId: activeUploader.id,
+        userId: 'usr_jhb',
+        name: activeUploader.name,
+        email: activeUploader.email,
+        avatar: activeUploader.avatar,
+      },
+    }),
+    vectorSearch: null,
+    keywordSearch: null,
+    rerank: null,
+  });
+  deps.state.humans = [
+    { id: 'hum_jhb', authUserId: 'usr_jhb', name: '蒋海波', email: '', avatar: 'https://avatar.example/jhb.png' },
+    { id: 'hum_local', name: '蒋海波', email: '' },
+  ];
+  deps.state.cloud.users = [
+    { id: 'usr_jhb', name: '蒋海波', email: '', avatar: 'https://avatar.example/jhb-user.png' },
+  ];
+  deps.state.cloud.workspaceMembers = [
+    { id: 'wmem_jhb', workspaceId: 'ws_route', humanId: 'hum_jhb', userId: 'usr_jhb', email: '', status: 'active' },
+  ];
+
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_jhb_duplicate_sources',
+    idempotencyKey: 'route:member:duplicate-sources',
+    title: '蒋海波 共享链接索引验证',
+    events: [
+      { eventId: 'evt_jhb_duplicate_1', ordinal: 1, role: 'user', text: '共享链接索引 marker duplicate identity', createdAt: '2026-06-01T09:40:00.000Z' },
+    ],
+  });
+
+  const searchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    searchRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      readJson: async () => ({
+        query: '查蒋海关于 duplicate identity 的讨论',
+        channelId: 'chan_team',
+        limit: 5,
+      }),
+    },
+  ), true);
+
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.memberResolution.status, 'matched');
+  assert.equal(searchRes.data.memberResolution.needsClarification, false);
+  assert.deepEqual(searchRes.data.memberResolution.matched.map((item) => item.id), ['hum_jhb']);
+  assert.equal(searchRes.data.memberResolution.candidates.length, 0);
+  assert.ok(searchRes.data.results.length > 0);
+  assert.ok(searchRes.data.results.every((item) => item.uploader.id === 'hum_jhb'));
+});
+
 test('team sharing search returns clarification candidates for ambiguous partial member names', async () => {
   let activeUploader = { id: 'hum_jhb', name: '蒋海波', email: 'jhb@example.com' };
   const deps = routeDeps({

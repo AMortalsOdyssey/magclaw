@@ -3112,6 +3112,121 @@ function publicMemberCandidate(candidate = {}) {
   };
 }
 
+function memberStrongIdentityValues(candidate = {}) {
+  const values = [
+    candidate.id,
+    candidate.humanId,
+    candidate.userId,
+    candidate.email,
+    ...asArray(candidate.aliases).filter((alias) => {
+      const text = String(alias || '').trim();
+      return text.includes('@') || /^[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_-]+$/.test(text);
+    }),
+  ];
+  return new Set(values.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean));
+}
+
+function memberCandidatesShareStrongIdentity(left = {}, right = {}) {
+  const leftValues = memberStrongIdentityValues(left);
+  if (!leftValues.size) return false;
+  for (const value of memberStrongIdentityValues(right)) {
+    if (leftValues.has(value)) return true;
+  }
+  return false;
+}
+
+function memberCandidateEmailsCompatible(left = {}, right = {}) {
+  const leftEmail = String(left.email || '').trim().toLowerCase();
+  const rightEmail = String(right.email || '').trim().toLowerCase();
+  return !leftEmail || !rightEmail || leftEmail === rightEmail;
+}
+
+function authoritativeMemberCandidate(candidate = {}) {
+  const sources = new Set(asArray(candidate.sources).map((source) => String(source || '').trim()).filter(Boolean));
+  return sources.has('workspace_member') || Boolean(candidate.humanId && candidate.userId);
+}
+
+function mergeMemberCandidateRecords(left = {}, right = {}) {
+  const aliases = [
+    ...asArray(left.aliases),
+    ...asArray(right.aliases),
+    left.id,
+    right.id,
+    left.humanId,
+    right.humanId,
+    left.userId,
+    right.userId,
+    left.email,
+    right.email,
+    left.name,
+    right.name,
+  ].map((item) => String(item || '').trim()).filter(Boolean);
+  const humanId = String(left.humanId || right.humanId || '').trim();
+  const userId = String(left.userId || right.userId || '').trim();
+  return {
+    ...left,
+    ...right,
+    id: humanId || String(left.id || right.id || userId || '').trim(),
+    humanId,
+    userId,
+    name: String(left.name || right.name || '').trim(),
+    email: String(left.email || right.email || '').trim(),
+    avatar: left.avatar || right.avatar || '',
+    aliases: [...new Set(aliases)],
+    sources: [...new Set([...asArray(left.sources), ...asArray(right.sources)].filter(Boolean))],
+    lastActiveAt: [left.lastActiveAt, right.lastActiveAt].map((value) => String(value || '').trim()).sort().pop() || '',
+  };
+}
+
+function mergeEquivalentMemberCandidates(candidates = []) {
+  const merged = asArray(candidates).map((candidate) => ({
+    ...candidate,
+    aliases: asArray(candidate.aliases),
+    sources: asArray(candidate.sources),
+  }));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let leftIndex = 0; leftIndex < merged.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < merged.length; rightIndex += 1) {
+        if (!memberCandidatesShareStrongIdentity(merged[leftIndex], merged[rightIndex])) continue;
+        merged[leftIndex] = mergeMemberCandidateRecords(merged[leftIndex], merged[rightIndex]);
+        merged.splice(rightIndex, 1);
+        changed = true;
+        break;
+      }
+      if (changed) break;
+    }
+  }
+
+  const byName = new Map();
+  for (const candidate of merged) {
+    const name = normalizeMemberMatchText(candidate.name || '');
+    if (!name) continue;
+    const group = byName.get(name) || [];
+    group.push(candidate);
+    byName.set(name, group);
+  }
+  const weakMerged = new Set();
+  for (const group of byName.values()) {
+    if (group.length < 2) continue;
+    const authoritative = group.filter(authoritativeMemberCandidate);
+    if (authoritative.length !== 1) continue;
+    let target = authoritative[0];
+    for (const candidate of group) {
+      if (candidate === target || weakMerged.has(candidate)) continue;
+      if (!memberCandidateEmailsCompatible(target, candidate)) continue;
+      const targetIndex = merged.indexOf(target);
+      const candidateIndex = merged.indexOf(candidate);
+      if (targetIndex < 0 || candidateIndex < 0) continue;
+      target = mergeMemberCandidateRecords(merged[targetIndex], candidate);
+      merged[targetIndex] = target;
+      weakMerged.add(candidate);
+    }
+  }
+  return merged.filter((candidate) => !weakMerged.has(candidate));
+}
+
 function teamSharingMemberCandidates(state = {}, teamSharingState = {}, workspaceId = '') {
   const cleanWorkspaceId = String(workspaceId || '').trim();
   const byKey = new Map();
@@ -3203,7 +3318,11 @@ function teamSharingMemberCandidates(state = {}, teamSharingState = {}, workspac
       aliases: [creator.id, creator.name, creator.email],
     }, 'share_creator');
   }
-  return [...byKey.values()]
+  return mergeEquivalentMemberCandidates([...byKey.values()])
+    .map((candidate) => ({
+      ...candidate,
+      lastActiveAt: memberLastActiveAt(teamSharingState, candidate),
+    }))
     .map(publicMemberCandidate)
     .filter((candidate) => candidate.id || candidate.name || candidate.email)
     .sort((left, right) => String(right.lastActiveAt || '').localeCompare(String(left.lastActiveAt || '')) || String(left.name || left.id).localeCompare(String(right.name || right.id)));
