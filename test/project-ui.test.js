@@ -938,6 +938,66 @@ test('members directory sorts active before pending by invite time and paginates
   assert.equal(serverPage.rows[0].member.id, 'm-120');
 });
 
+test('members rail windows large rosters and searches through the server directory', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const source = app.slice(app.indexOf('function membersRailQueryValue'), app.indexOf('function renderMembersRailSearch'));
+  const agents = Array.from({ length: 1000 }, (_, index) => ({
+    id: `agt_${index}`,
+    name: index === 999 ? 'Needle Agent' : `Agent ${index}`,
+    status: 'idle',
+    runtime: 'codex',
+  }));
+  const humans = Array.from({ length: 1000 }, (_, index) => ({
+    id: `hum_${index}`,
+    name: index === 999 ? 'Needle Human' : `Human ${index}`,
+    email: `human${index}@example.test`,
+    status: 'offline',
+  }));
+  const context = {
+    MEMBERS_RAIL_WINDOW_SIZE: 80,
+    membersRailSearchQuery: '',
+    membersRailAgentLimit: 80,
+    membersRailHumanLimit: 80,
+    membersRailSearchState: { status: 'idle', query: '', total: 0, error: '' },
+    selectedAgentId: 'agt_999',
+    selectedHumanId: 'hum_999',
+    appState: {
+      bootstrap: {
+        directory: {
+          agents: { loaded: agents.length, total: agents.length, hasMore: false },
+          humans: { loaded: humans.length, total: humans.length, hasMore: false },
+          members: { loaded: humans.length, total: humans.length, hasMore: false },
+        },
+      },
+    },
+    humansByJoinOrder: () => humans,
+  };
+  vm.createContext(context);
+  vm.runInContext(`${source}; globalThis.membersRailModel = membersRailModel;`, context);
+
+  const model = context.membersRailModel(agents);
+  assert.equal(model.visibleAgents.length, 81);
+  assert.equal(model.visibleHumans.length, 81);
+  assert.equal(model.visibleAgents.at(-1).id, 'agt_999');
+  assert.equal(model.visibleHumans.at(-1).id, 'hum_999');
+
+  context.membersRailSearchQuery = 'needle';
+  const searchModel = context.membersRailModel(agents);
+  assert.deepEqual(searchModel.filteredAgents.map((agent) => agent.id), ['agt_999']);
+  assert.deepEqual(searchModel.filteredHumans.map((human) => human.id), ['hum_999']);
+
+  assert.match(app, /id="members-rail-search"/);
+  assert.match(app, /membersRailSearchPath\(query = membersRailSearchQuery\)/);
+  assert.match(app, /\/api\/directory\/search\?\$\{params\.toString\(\)\}/);
+  assert.match(app, /function ensureMembersRailDirectoryPage/);
+  assert.match(app, /membersRailSearchSeq \+= 1/);
+  assert.match(app, /membersRailSearchInFlight === request/);
+  assert.match(app, /data-action="members-rail-load-more"/);
+  assert.match(styles, /\.members-rail-search-wrap/);
+  assert.match(styles, /\.members-rail-more/);
+});
+
 test('member invitations dedupe input and show registered-user invite errors', async () => {
   const app = await readAppSource();
   const auth = await readFile(new URL('../server/cloud/auth.js', import.meta.url), 'utf8');
@@ -3543,8 +3603,8 @@ test('Fan-out API config is server-scoped in Server settings', async () => {
   const serverSettingsSource = app.slice(app.indexOf('function renderServerSettingsTab()'), app.indexOf('function consoleInvitationRows()'));
   const fanoutSource = app.slice(app.indexOf('function renderFanoutApiConfigCard()'), app.indexOf('function settingsPageMeta'));
 
-  assert.match(railSource, /const normalAgents = channelAssignableAgents\(\)/);
-  assert.match(railSource, /renderAgentGroupsByComputer\(normalAgents\)/);
+  assert.match(railSource, /renderMembersRail\(\{ normalAgents: channelAssignableAgents\(\) \}\)/);
+  assert.match(railSource, /renderAgentGroupsByComputer\(model\.visibleAgents\)/);
   assert.doesNotMatch(railSource, /System Config/);
   assert.doesNotMatch(app, /function renderSystemSettingsTab\(\)/);
   assert.doesNotMatch(app, /id: 'system'/);

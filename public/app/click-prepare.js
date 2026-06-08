@@ -407,6 +407,21 @@ async function prepareDocumentClick(event) {
       ensureMembersDirectoryPage({ renderAfter: true, force: true }).catch((error) => console.warn('Failed to load members directory:', error));
       return;
     }
+    if (action === 'members-rail-show-more') {
+      const kind = target.dataset.kind || '';
+      if (kind === 'agents') {
+        membersRailAgentLimit += MEMBERS_RAIL_WINDOW_SIZE;
+      } else if (kind === 'humans') {
+        membersRailHumanLimit += MEMBERS_RAIL_WINDOW_SIZE;
+      }
+      render();
+      scheduleMembersRailDirectoryPageLoad({ delay: 120 });
+      return;
+    }
+    if (action === 'members-rail-load-more') {
+      ensureMembersRailDirectoryPage({ renderAfter: true, force: true }).catch((error) => console.warn('Failed to load members rail directory:', error));
+      return;
+    }
     if (action === 'open-member-manage') {
       memberManageState = { memberId: target.dataset.id || null };
       modal = 'member-manage';

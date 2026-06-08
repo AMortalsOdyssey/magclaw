@@ -784,6 +784,7 @@ document.addEventListener('click', async (event) => {
       syncBrowserRouteForActiveView();
       if (activeView === 'search') focusSearchInputEnd();
       if (activeView === 'cloud' && settingsTab === 'members') scheduleMembersDirectoryPageLoad();
+      if (activeView === 'members' || railTab === 'members') scheduleMembersRailDirectoryPageLoad({ delay: 120 });
     }
     if (action === 'set-settings-tab') {
       settingsTab = target.dataset.tab || 'account';
@@ -1062,6 +1063,7 @@ document.addEventListener('click', async (event) => {
         const agentId = openMembersNav({ preserveSpace: activeView === 'space' });
         localStorage.setItem('railTab', railTab);
         render();
+        scheduleMembersRailDirectoryPageLoad({ delay: 120 });
         if (agentId) loadAgentSkills(agentId).catch((error) => toast(error.message));
         return;
       }
@@ -1115,6 +1117,7 @@ document.addEventListener('click', async (event) => {
         workspaceActivityDrawerOpen = false;
       } else if (nav === 'members') {
         const agentId = openMembersNav({ preserveSpace: activeView === 'space' });
+        scheduleMembersRailDirectoryPageLoad({ delay: 120 });
         if (agentId) loadAgentSkills(agentId).catch((error) => toast(error.message));
       } else if (nav === 'desktop') {
         railTab = 'computers';
@@ -1168,6 +1171,7 @@ document.addEventListener('click', async (event) => {
       }
       modal = null;
       render();
+      if (activeView === 'members' || railTab === 'members') scheduleMembersRailDirectoryPageLoad({ delay: 120 });
       syncBrowserRouteForActiveView();
       loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
     }
@@ -1191,6 +1195,7 @@ document.addEventListener('click', async (event) => {
         railTab = 'members';
       }
       render();
+      if (activeView === 'members' || railTab === 'members') scheduleMembersRailDirectoryPageLoad({ delay: 120 });
       if (activeView === 'members') syncBrowserRouteForActiveView();
     }
     if (action === 'select-human') {
@@ -1211,6 +1216,7 @@ document.addEventListener('click', async (event) => {
       modal = null;
       rememberMembersLayoutFromCurrent();
       render();
+      scheduleMembersRailDirectoryPageLoad({ delay: 120 });
       syncBrowserRouteForActiveView();
     }
     if (action === 'select-computer') {

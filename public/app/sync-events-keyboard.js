@@ -42,6 +42,12 @@ let membersDirectoryRequestInFlight = null;
 let membersDirectoryRequestKey = '';
 let membersDirectoryRequestSeq = 0;
 let membersDirectorySearchTimer = null;
+let membersRailDirectoryRequestInFlight = null;
+let membersRailDirectoryRequestKey = '';
+let membersRailSearchInFlight = null;
+let membersRailSearchRequestKey = '';
+let membersRailSearchSeq = 0;
+let membersRailSearchTimer = null;
 
 function currentDirectoryIsFull() {
   return typeof directorySnapshotIsFull === 'function'
@@ -195,6 +201,176 @@ function scheduleMembersDirectoryPageLoad({ delay = 0, force = false } = {}) {
   };
   if (delay > 0) {
     membersDirectorySearchTimer = timerHost.setTimeout(run, delay);
+  } else {
+    run();
+  }
+}
+
+function normalizedMembersRailSearchQuery(value = membersRailSearchQuery) {
+  return String(value || '').trim();
+}
+
+function membersRailIsVisible() {
+  return railTab === 'members' || activeView === 'members';
+}
+
+function membersRailSearchPath(query = membersRailSearchQuery) {
+  const params = new URLSearchParams();
+  params.set('directoryFormat', 'tuple-v1');
+  params.set('query', normalizedMembersRailSearchQuery(query));
+  params.set('limit', String(MEMBERS_RAIL_SEARCH_LIMIT));
+  params.set('types', 'agents,humans,members');
+  return `/api/directory/search?${params.toString()}`;
+}
+
+function membersRailFocusSnapshot() {
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  if (!active || active.id !== 'members-rail-search') return null;
+  return {
+    id: active.id,
+    selectionStart: active.selectionStart,
+    selectionEnd: active.selectionEnd,
+  };
+}
+
+function restoreMembersRailFocus(snapshot) {
+  if (!snapshot?.id || typeof document === 'undefined') return;
+  const target = document.getElementById(snapshot.id);
+  if (!target) return;
+  target.focus();
+  if (typeof target.setSelectionRange === 'function') {
+    const start = Number.isFinite(snapshot.selectionStart) ? snapshot.selectionStart : target.value.length;
+    const end = Number.isFinite(snapshot.selectionEnd) ? snapshot.selectionEnd : start;
+    target.setSelectionRange(start, end);
+  }
+}
+
+function membersRailDirectoryHasMore() {
+  if (!appState || currentDirectoryIsFull()) return false;
+  const directory = appState.bootstrap?.directory || {};
+  return Boolean(
+    directory.page?.hasMore
+    || directory.agents?.hasMore
+    || directory.humans?.hasMore
+    || directory.members?.hasMore
+  );
+}
+
+function membersRailDirectoryCursor() {
+  if (!membersRailDirectoryHasMore()) return null;
+  return String(appState?.bootstrap?.directory?.page?.nextCursor || '');
+}
+
+async function ensureMembersRailDirectoryPage({ renderAfter = true, force = false } = {}) {
+  if (!appState || !membersRailIsVisible() || !membersRailDirectoryHasMore()) return false;
+  const cursor = membersRailDirectoryCursor();
+  if (cursor === null) return false;
+  const requestKey = cursor || 'first';
+  if (membersRailDirectoryRequestInFlight && membersRailDirectoryRequestKey === requestKey) {
+    return membersRailDirectoryRequestInFlight;
+  }
+  membersRailDirectoryRequestKey = requestKey;
+  const focusSnapshot = membersRailFocusSnapshot();
+  membersRailDirectoryRequestInFlight = (async () => {
+    const snapshot = normalizeIncomingStateSnapshot(await api(directoryStatePath(cursor)));
+    const changed = applyDirectorySnapshot(snapshot, { renderAfter });
+    if (renderAfter) restoreMembersRailFocus(focusSnapshot);
+    return changed;
+  })().catch((error) => {
+    console.warn('Failed to load members rail directory page:', error);
+    return false;
+  }).finally(() => {
+    membersRailDirectoryRequestInFlight = null;
+    membersRailDirectoryRequestKey = '';
+  });
+  return membersRailDirectoryRequestInFlight;
+}
+
+function scheduleMembersRailDirectoryPageLoad({ delay = 0, force = false } = {}) {
+  if (!membersRailIsVisible() || normalizedMembersRailSearchQuery()) return;
+  const run = () => {
+    ensureMembersRailDirectoryPage({ renderAfter: true, force }).catch(() => {});
+  };
+  if (delay > 0) {
+    const timerHost = typeof window !== 'undefined' ? window : globalThis;
+    timerHost.setTimeout(run, delay);
+  } else {
+    run();
+  }
+}
+
+async function ensureMembersRailSearch({ renderAfter = true, force = false } = {}) {
+  if (!appState || !membersRailIsVisible()) return false;
+  const query = normalizedMembersRailSearchQuery();
+  if (!query) {
+    membersRailSearchState = { status: 'idle', query: '', total: 0, error: '' };
+    return false;
+  }
+  if (!force && membersRailSearchState?.status === 'ready' && membersRailSearchState.query === query) return false;
+  if (membersRailSearchInFlight && membersRailSearchRequestKey === query) return membersRailSearchInFlight;
+  const seq = ++membersRailSearchSeq;
+  const focusSnapshot = membersRailFocusSnapshot();
+  membersRailSearchRequestKey = query;
+  membersRailSearchState = {
+    ...(membersRailSearchState || {}),
+    status: 'loading',
+    query,
+    error: '',
+  };
+  if (renderAfter) {
+    render();
+    restoreMembersRailFocus(focusSnapshot);
+  }
+  const request = (async () => {
+    const snapshot = normalizeIncomingStateSnapshot(await api(membersRailSearchPath(query)));
+    if (seq !== membersRailSearchSeq) return false;
+    const changed = applyDirectorySnapshot(snapshot, { renderAfter: false });
+    const directorySearch = snapshot?.bootstrap?.directorySearch || {};
+    membersRailSearchState = {
+      status: 'ready',
+      query,
+      total: Number(directorySearch.total || 0) || 0,
+      error: '',
+    };
+    if (renderAfter) {
+      render();
+      restoreMembersRailFocus(focusSnapshot);
+    }
+    return changed;
+  })().catch((error) => {
+    if (seq === membersRailSearchSeq) {
+      membersRailSearchState = {
+        ...(membersRailSearchState || {}),
+        status: 'error',
+        query,
+        error: error?.message || 'Members search failed.',
+      };
+      if (renderAfter) {
+        render();
+        restoreMembersRailFocus(focusSnapshot);
+      }
+    }
+    return false;
+  }).finally(() => {
+    if (membersRailSearchInFlight === request) {
+      membersRailSearchInFlight = null;
+      membersRailSearchRequestKey = '';
+    }
+  });
+  membersRailSearchInFlight = request;
+  return membersRailSearchInFlight;
+}
+
+function scheduleMembersRailSearch({ delay = 0, force = false } = {}) {
+  if (!membersRailIsVisible()) return;
+  const timerHost = typeof window !== 'undefined' ? window : globalThis;
+  if (membersRailSearchTimer) timerHost.clearTimeout(membersRailSearchTimer);
+  const run = () => {
+    membersRailSearchTimer = null;
+    ensureMembersRailSearch({ renderAfter: true, force }).catch((error) => console.warn('Members rail search failed:', error));
+  };
+  if (delay > 0) {
+    membersRailSearchTimer = timerHost.setTimeout(run, delay);
   } else {
     run();
   }
@@ -377,6 +553,7 @@ async function refreshState() {
   applyPackageVersionSnapshot(readCachedPackageVersionSnapshot());
   render();
   scheduleMembersDirectoryPageLoad();
+  scheduleMembersRailDirectoryPageLoad({ delay: 120 });
   refreshPackageVersionReminders();
 }
 
@@ -2909,6 +3086,34 @@ document.addEventListener('input', async (event) => {
       error: '',
     };
     scheduleMembersDirectoryPageLoad({ delay: 180, force: true });
+    return;
+  }
+
+  if (event.target.id === 'members-rail-search') {
+    membersRailSearchQuery = event.target.value;
+    membersRailSearchSeq += 1;
+    membersRailAgentLimit = MEMBERS_RAIL_WINDOW_SIZE;
+    membersRailHumanLimit = MEMBERS_RAIL_WINDOW_SIZE;
+    const query = normalizedMembersRailSearchQuery();
+    membersRailSearchState = query
+      ? { ...(membersRailSearchState || {}), status: 'loading', query, error: '' }
+      : { status: 'idle', query: '', total: 0, error: '' };
+    render();
+    restoreMembersRailFocus({ id: 'members-rail-search', selectionStart: event.target.selectionStart, selectionEnd: event.target.selectionEnd });
+    if (query) {
+      scheduleMembersRailSearch({ delay: 180, force: true });
+    } else if (membersRailSearchTimer) {
+      const timerHost = typeof window !== 'undefined' ? window : globalThis;
+      timerHost.clearTimeout(membersRailSearchTimer);
+      membersRailSearchTimer = null;
+      membersRailSearchInFlight = null;
+      membersRailSearchRequestKey = '';
+      scheduleMembersRailDirectoryPageLoad({ delay: 120 });
+    } else {
+      membersRailSearchInFlight = null;
+      membersRailSearchRequestKey = '';
+      scheduleMembersRailDirectoryPageLoad({ delay: 120 });
+    }
     return;
   }
 

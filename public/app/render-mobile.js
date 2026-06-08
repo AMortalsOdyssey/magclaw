@@ -412,7 +412,17 @@ function renderMobileTasksHome() {
 
 function renderMobileMembersHome() {
   const normalAgents = channelAssignableAgents();
-  const humans = humansByJoinOrder();
+  const model = typeof membersRailModel === 'function'
+    ? membersRailModel(normalAgents)
+    : {
+      query: '',
+      visibleAgents: normalAgents,
+      visibleHumans: humansByJoinOrder(),
+      agents: normalAgents,
+      humans: humansByJoinOrder(),
+      agentsTotal: normalAgents.length,
+      humansTotal: humansByJoinOrder().length,
+    };
   const canCreateAgent = cloudCan('manage_agents');
   const inviteHumanAction = cloudCan('invite_member')
     ? `<button type="button" data-action="open-modal" data-modal="member-invite" aria-label="Invite human">${mobileIcon('plus')}</button>`
@@ -420,13 +430,17 @@ function renderMobileMembersHome() {
   return `
     <section class="mobile-root mobile-members-root">
       ${renderMobileRootHeader('Members', '')}
+      <div class="mobile-members-search">
+        ${typeof renderMembersRailSearch === 'function' ? renderMembersRailSearch(model) : ''}
+        ${typeof renderMembersRailStatus === 'function' ? renderMembersRailStatus(model) : ''}
+      </div>
       <section class="mobile-list-section">
-        ${renderMobileSectionTitle('Agents', normalAgents.length, canCreateAgent ? `<button type="button" data-action="open-modal" data-modal="agent" aria-label="Create agent">${mobileIcon('plus')}</button>` : '')}
-        <div class="mobile-list mobile-member-list">${renderAgentGroupsByComputer(normalAgents)}</div>
+        ${renderMobileSectionTitle('Agents', typeof membersRailCountLabel === 'function' ? membersRailCountLabel(model.agents.length, model.agentsTotal) : normalAgents.length, canCreateAgent ? `<button type="button" data-action="open-modal" data-modal="agent" aria-label="Create agent">${mobileIcon('plus')}</button>` : '')}
+        <div class="mobile-list mobile-member-list">${renderAgentGroupsByComputer(model.visibleAgents)}${typeof renderMembersRailFooter === 'function' ? renderMembersRailFooter('agents', model) : ''}</div>
       </section>
       <section class="mobile-list-section">
-        ${renderMobileSectionTitle('Humans', humans.length, inviteHumanAction)}
-        <div class="mobile-list mobile-member-list">${humans.length ? humans.map((human) => renderHumanListItem(human)).join('') : '<div class="empty-box small">No humans yet.</div>'}</div>
+        ${renderMobileSectionTitle('Humans', typeof membersRailCountLabel === 'function' ? membersRailCountLabel(model.humans.length, model.humansTotal) : model.humans.length, inviteHumanAction)}
+        <div class="mobile-list mobile-member-list">${model.visibleHumans.length ? model.visibleHumans.map((human) => renderHumanListItem(human)).join('') : '<div class="empty-box small">No humans yet.</div>'}${typeof renderMembersRailFooter === 'function' ? renderMembersRailFooter('humans', model) : ''}</div>
       </section>
     </section>
   `;

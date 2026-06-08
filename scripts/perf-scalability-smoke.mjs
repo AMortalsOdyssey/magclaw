@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { createStateCore } from '../server/state-core.js';
 import { createSystemServices } from '../server/system-services.js';
 
@@ -73,6 +74,8 @@ const BUDGETS = Object.freeze({
   directorySearchMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_SEARCH_MS || 250),
   membersDirectoryPageBytes: Number(process.env.MAGCLAW_PERF_MEMBERS_DIRECTORY_PAGE_BYTES || 35_000),
   membersDirectoryPageMs: Number(process.env.MAGCLAW_PERF_MEMBERS_DIRECTORY_PAGE_MS || 250),
+  membersRailRows: Number(process.env.MAGCLAW_PERF_MEMBERS_RAIL_ROWS || 170),
+  membersRailModelMs: Number(process.env.MAGCLAW_PERF_MEMBERS_RAIL_MODEL_MS || 50),
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 80_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
   deferredOpenBytes: Number(process.env.MAGCLAW_PERF_DEFERRED_OPEN_BYTES || 10_000),
@@ -302,6 +305,61 @@ function measureMembersDirectoryPage() {
       || body.includes('sourceAnchor')
       || body.includes('tokenHash')
       || body.includes('passwordHash'),
+  };
+}
+
+async function measureMembersRailWindow() {
+  const source = await readFile(path.join(process.cwd(), 'public', 'app', 'render-shell-rail-inbox.js'), 'utf8');
+  const start = source.indexOf('function membersRailQueryValue');
+  const end = source.indexOf('function renderMembersRailSearch');
+  if (start < 0 || end < 0 || end <= start) {
+    throw new Error('members rail model source slice not found');
+  }
+  const agents = Array.from({ length: 10_000 }, (_, index) => ({
+    id: `agt_${String(index).padStart(4, '0')}`,
+    name: `Agent ${index}`,
+    status: 'idle',
+    runtime: 'codex',
+  }));
+  const humans = Array.from({ length: 10_000 }, (_, index) => ({
+    id: `hum_${String(index).padStart(4, '0')}`,
+    name: `Human ${index}`,
+    email: `human${index}@example.test`,
+    status: 'offline',
+  }));
+  const context = {
+    MEMBERS_RAIL_WINDOW_SIZE: 80,
+    membersRailSearchQuery: '',
+    membersRailAgentLimit: 80,
+    membersRailHumanLimit: 80,
+    membersRailSearchState: { status: 'idle', query: '', total: 0, error: '' },
+    selectedAgentId: 'agt_9999',
+    selectedHumanId: 'hum_9999',
+    appState: {
+      bootstrap: {
+        directory: {
+          agents: { loaded: agents.length, total: agents.length, hasMore: false },
+          humans: { loaded: humans.length, total: humans.length, hasMore: false },
+          members: { loaded: humans.length, total: humans.length, hasMore: false },
+        },
+      },
+    },
+    humansByJoinOrder: () => humans,
+  };
+  const helpers = vm.runInNewContext(`${source.slice(start, end)}; ({ membersRailModel });`, context);
+  const started = performance.now();
+  const model = helpers.membersRailModel(agents);
+  return {
+    ms: Math.round(performance.now() - started),
+    sourceAgents: agents.length,
+    sourceHumans: humans.length,
+    visibleAgents: model.visibleAgents.length,
+    visibleHumans: model.visibleHumans.length,
+    visibleRows: model.visibleAgents.length + model.visibleHumans.length,
+    includesSelectedAgent: model.visibleAgents.some((agent) => agent.id === 'agt_9999'),
+    includesSelectedHuman: model.visibleHumans.some((human) => human.id === 'hum_9999'),
+    agentCount: model.agents.length,
+    humanCount: model.humans.length,
   };
 }
 
@@ -1068,6 +1126,7 @@ async function main() {
   const directory = measureDirectoryHydration(services);
   const directorySearch = measureDirectorySearch();
   const membersDirectoryPage = measureMembersDirectoryPage();
+  const membersRailWindow = await measureMembersRailWindow();
   const bootstrapAllChannel = (snapshot.channels || []).find((channel) => (
     channel?.id === 'chan_all'
     || String(channel?.name || '').trim().toLowerCase() === 'all'
@@ -1204,6 +1263,13 @@ async function main() {
   assertBudget(membersDirectoryPage.lastMemberId === 'mem_4999', `members directory last row expected mem_4999 but got ${membersDirectoryPage.lastMemberId || '[none]'}`);
   assertBudget(!membersDirectoryPage.hasOffPageFirstMember && !membersDirectoryPage.hasOffPageLastMember, 'members directory page leaked off-page member rows');
   assertBudget(!membersDirectoryPage.hasInternalFields, 'members directory page leaked internal payload fields');
+  assertBudget(membersRailWindow.sourceAgents === 10_000 && membersRailWindow.sourceHumans === 10_000, 'members rail window smoke did not use the 10000-agent/10000-human fixture');
+  assertBudget(membersRailWindow.ms <= BUDGETS.membersRailModelMs, `members rail model ${membersRailWindow.ms}ms exceeds ${BUDGETS.membersRailModelMs}ms`);
+  assertBudget(membersRailWindow.visibleRows <= BUDGETS.membersRailRows, `members rail rendered ${membersRailWindow.visibleRows} rows exceeds ${BUDGETS.membersRailRows}`);
+  assertBudget(membersRailWindow.visibleAgents < membersRailWindow.agentCount, 'members rail did not window agent rows');
+  assertBudget(membersRailWindow.visibleHumans < membersRailWindow.humanCount, 'members rail did not window human rows');
+  assertBudget(membersRailWindow.includesSelectedAgent, 'members rail window dropped the selected agent');
+  assertBudget(membersRailWindow.includesSelectedHuman, 'members rail window dropped the selected human');
   assertBudget(heartbeat.ms <= BUDGETS.heartbeatMs, `heartbeat ${heartbeat.ms}ms exceeds ${BUDGETS.heartbeatMs}ms`);
   assertBudget(heartbeat.bytes <= BUDGETS.heartbeatBytes, `heartbeat ${heartbeat.bytes} bytes exceeds ${BUDGETS.heartbeatBytes}`);
   assertBudget(!heartbeat.hasInternalFields, 'heartbeat leaked internal payload fields');
@@ -1239,7 +1305,7 @@ async function main() {
   assertBudget(bootstrapLargeUnread.ms <= BUDGETS.bootstrapLargeUnreadMs, `large-unread bootstrap ${bootstrapLargeUnread.ms}ms exceeds ${BUDGETS.bootstrapLargeUnreadMs}ms`);
   assertBudget(bootstrapLargeUnread.bytes <= BUDGETS.bootstrapLargeUnreadBytes, `large-unread bootstrap ${bootstrapLargeUnread.bytes} bytes exceeds ${BUDGETS.bootstrapLargeUnreadBytes}`);
 
-  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, directory, directorySearch, membersDirectoryPage, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory, bootstrapLargeUnread }, null, 2));
+  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, directory, directorySearch, membersDirectoryPage, membersRailWindow, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory, bootstrapLargeUnread }, null, 2));
 }
 
 main().catch((error) => {

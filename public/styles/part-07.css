@@ -370,6 +370,59 @@
   border-radius: 0;
 }
 
+.members-rail-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+.members-rail-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid #eadfe6;
+  border-radius: 6px;
+  background: #fff;
+  color: #8d7b86;
+}
+
+.members-rail-search-wrap input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #30262d;
+  font-size: 12px;
+}
+
+.members-rail-status {
+  color: #8d7b86;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.members-rail-more {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid #eadfe6;
+  border-radius: 6px;
+  background: #fff8fb;
+  color: #8f4f70;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.members-rail-more:hover,
+.members-rail-more:focus-visible {
+  border-color: #f3a8c9;
+  color: #6f2f50;
+}
+
 .collab-frame .runtime-chip {
   gap: 8px;
   margin: 8px;

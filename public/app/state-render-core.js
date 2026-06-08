@@ -194,6 +194,17 @@ let latestInvitationLink = null;
 let cloudInviteEmails = [];
 let cloudInviteDraft = '';
 let cloudGeneratedLinks = [];
+const MEMBERS_RAIL_WINDOW_SIZE = 80;
+const MEMBERS_RAIL_SEARCH_LIMIT = 100;
+let membersRailSearchQuery = '';
+let membersRailAgentLimit = MEMBERS_RAIL_WINDOW_SIZE;
+let membersRailHumanLimit = MEMBERS_RAIL_WINDOW_SIZE;
+let membersRailSearchState = {
+  status: 'idle',
+  query: '',
+  total: 0,
+  error: '',
+};
 let memberDirectoryPage = 1;
 let memberDirectoryQuery = '';
 let membersDirectoryState = {

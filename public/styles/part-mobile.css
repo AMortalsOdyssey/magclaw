@@ -303,6 +303,17 @@
   gap: 3px;
 }
 
+.mobile-members-search {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 16px 8px;
+}
+
+.mobile-members-search .members-rail-search-wrap {
+  min-height: 38px;
+}
+
 .mobile-app-shell .space-btn,
 .mobile-app-shell .member-btn,
 .mobile-app-shell .computer-agent-card,

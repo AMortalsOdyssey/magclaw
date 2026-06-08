@@ -252,7 +252,6 @@ function renderRail() {
     ? openTasks
     : (appState.tasks || []).filter((task) => task && !taskIsClosedStatus(task.status)).length;
   const saved = savedRecords().length;
-  const normalAgents = channelAssignableAgents();
   const serverProfile = currentServerProfile();
   const packageUpdateCount = typeof connectedComputerPackageUpdateCount === 'function'
     ? connectedComputerPackageUpdateCount()
@@ -291,7 +290,7 @@ function renderRail() {
         ? renderComputersRail()
       : railTab === 'spaces'
         ? renderChatRail({ channels, dms, inboxUnread: inbox.unreadCount, unreadThreads, openTasks: openTaskBadge, saved, spaceUnreadCounts })
-        : renderMembersRail({ normalAgents });
+        : renderMembersRail({ normalAgents: channelAssignableAgents() });
   const railClass = `rail collab-rail magclaw-rail${railMode === 'settings' ? ' settings-rail' : ''}${railMode === 'console' ? ' console-rail' : ''}`;
   const leftRailHtml = `
     <div class="magclaw-left-rail">
@@ -461,19 +460,142 @@ function renderChatRail({ channels, dms, inboxUnread, unreadThreads, openTasks, 
     `;
 }
 
-function renderMembersRail({ normalAgents }) {
+function membersRailQueryValue(value = membersRailSearchQuery) {
+  return String(value || '').trim();
+}
+
+function membersRailSearchText(item = {}, type = '') {
+  if (type === 'agent') {
+    return [
+      item.id,
+      item.name,
+      item.description,
+      item.runtime,
+      item.model,
+      item.status,
+      item.computerId,
+    ].map((value) => String(value || '').toLowerCase()).join(' ');
+  }
+  return [
+    item.id,
+    item.name,
+    item.email,
+    item.thirdPartyName,
+    item.thirdPartyProvider,
+    item.status,
+    item.role,
+  ].map((value) => String(value || '').toLowerCase()).join(' ');
+}
+
+function filterMembersRailItems(items = [], query = '', type = '') {
+  const q = membersRailQueryValue(query).toLowerCase();
+  if (!q) return items;
+  return items.filter((item) => membersRailSearchText(item, type).includes(q));
+}
+
+function membersRailWindow(items = [], limit = MEMBERS_RAIL_WINDOW_SIZE, selectedId = '') {
+  const safeLimit = Math.max(1, Number(limit || MEMBERS_RAIL_WINDOW_SIZE) || MEMBERS_RAIL_WINDOW_SIZE);
+  const visible = items.slice(0, safeLimit);
+  if (selectedId && !visible.some((item) => String(item?.id || '') === String(selectedId))) {
+    const selected = items.find((item) => String(item?.id || '') === String(selectedId));
+    if (selected) visible.push(selected);
+  }
+  return visible;
+}
+
+function membersRailCountLabel(loaded, total) {
+  const safeLoaded = Math.max(0, Number(loaded || 0) || 0);
+  const safeTotal = Math.max(safeLoaded, Number(total || 0) || 0);
+  return safeTotal > safeLoaded ? `${safeLoaded}/${safeTotal}` : safeLoaded;
+}
+
+function membersRailDirectoryMeta() {
+  const directory = appState?.bootstrap?.directory || {};
+  return {
+    agentsTotal: Math.max(0, Number(directory.agents?.total || 0) || 0),
+    humansTotal: Math.max(0, Number(directory.humans?.total || 0) || 0),
+    hasMore: Boolean(
+      directory.page?.hasMore
+      || directory.agents?.hasMore
+      || directory.humans?.hasMore
+      || directory.members?.hasMore
+    ),
+  };
+}
+
+function membersRailModel(normalAgents = []) {
+  const query = membersRailQueryValue();
+  const agents = Array.isArray(normalAgents) ? normalAgents : [];
   const humans = humansByJoinOrder();
+  const filteredAgents = filterMembersRailItems(agents, query, 'agent');
+  const filteredHumans = filterMembersRailItems(humans, query, 'human');
+  const agentLimit = Math.max(1, Number(membersRailAgentLimit || MEMBERS_RAIL_WINDOW_SIZE) || MEMBERS_RAIL_WINDOW_SIZE);
+  const humanLimit = Math.max(1, Number(membersRailHumanLimit || MEMBERS_RAIL_WINDOW_SIZE) || MEMBERS_RAIL_WINDOW_SIZE);
+  const meta = membersRailDirectoryMeta();
+  return {
+    query,
+    searchStatus: membersRailSearchState?.status || 'idle',
+    searchError: membersRailSearchState?.error || '',
+    agents,
+    humans,
+    filteredAgents,
+    filteredHumans,
+    visibleAgents: membersRailWindow(filteredAgents, agentLimit, selectedAgentId),
+    visibleHumans: membersRailWindow(filteredHumans, humanLimit, selectedHumanId),
+    agentLimit,
+    humanLimit,
+    agentsTotal: meta.agentsTotal,
+    humansTotal: meta.humansTotal,
+    directoryHasMore: meta.hasMore,
+  };
+}
+
+function renderMembersRailSearch(model) {
+  const icon = typeof renderSearchLensIcon === 'function' ? renderSearchLensIcon(14) : '';
+  return `
+    <label class="members-rail-search-wrap" for="members-rail-search">
+      <span>${icon}</span>
+      <input id="members-rail-search" value="${escapeHtml(model.query)}" placeholder="Search members" autocomplete="off" />
+    </label>
+  `;
+}
+
+function renderMembersRailFooter(kind, model) {
+  const isAgent = kind === 'agents';
+  const total = isAgent ? model.filteredAgents.length : model.filteredHumans.length;
+  const limit = isAgent ? model.agentLimit : model.humanLimit;
+  if (total > limit) {
+    return `<button class="members-rail-more" type="button" data-action="members-rail-show-more" data-kind="${escapeHtml(kind)}">Show more</button>`;
+  }
+  if (!model.query && model.directoryHasMore) {
+    return '<button class="members-rail-more" type="button" data-action="members-rail-load-more">Load more</button>';
+  }
+  return '';
+}
+
+function renderMembersRailStatus(model) {
+  if (model.searchStatus === 'error') return `<div class="members-rail-status">${escapeHtml(model.searchError || 'Search failed.')}</div>`;
+  if (model.searchStatus === 'loading') return '<div class="members-rail-status">Searching</div>';
+  return '';
+}
+
+function renderMembersRail({ normalAgents }) {
+  const model = membersRailModel(normalAgents);
   const agentModal = cloudCan('manage_agents') ? 'agent' : '';
   const humanModal = cloudCan('invite_member') ? 'member-invite' : '';
   return `
+    <div class="members-rail-tools">
+      ${renderMembersRailSearch(model)}
+      ${renderMembersRailStatus(model)}
+    </div>
     <div class="rail-section" data-rail-scroll-section="agents" data-scroll-key="rail:members:agents">
-      ${renderRailSectionTitle('agents', 'Agents', normalAgents.length, { modal: agentModal })}
-      ${collapsedSidebarSections.agents ? '' : renderAgentGroupsByComputer(normalAgents)}
+      ${renderRailSectionTitle('agents', 'Agents', membersRailCountLabel(model.agents.length, model.agentsTotal), { modal: agentModal })}
+      ${collapsedSidebarSections.agents ? '' : `${renderAgentGroupsByComputer(model.visibleAgents)}${renderMembersRailFooter('agents', model)}`}
     </div>
 
       <div class="rail-section" data-rail-scroll-section="humans" data-scroll-key="rail:members:humans">
-        ${renderRailSectionTitle('humans', 'Humans', humans.length, { modal: humanModal })}
-        ${collapsedSidebarSections.humans ? '' : humans.map((human) => renderHumanListItem(human)).join('')}
+        ${renderRailSectionTitle('humans', 'Humans', membersRailCountLabel(model.humans.length, model.humansTotal), { modal: humanModal })}
+        ${collapsedSidebarSections.humans ? '' : `${model.visibleHumans.map((human) => renderHumanListItem(human)).join('') || '<div class="empty-box small">No humans yet.</div>'}${renderMembersRailFooter('humans', model)}`}
       </div>
     `;
 }

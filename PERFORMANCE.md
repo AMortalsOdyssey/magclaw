@@ -58,6 +58,9 @@ membership fanout visible in the budget. It currently enforces:
 - Members administration is server-backed for large rosters: a 10000-member
   fixture must return a 50-row Members directory page without leaking off-page
   rows, staying below 35 KB and 250 ms.
+- Members rail rendering is windowed for large rosters: a 10000-Agent /
+  10000-Human fixture must expose only the visible rail window, keep selected
+  Agent/Human rows addressable, and build the model in at most 50 ms.
 - Bootstrap server-side projection is windowed: with 10000 source messages, the
   smoke test allows at most 500 conversation metadata reads while still exposing
   history pagination.
@@ -119,6 +122,9 @@ membership fanout visible in the budget. It currently enforces:
 - Browser member-directory rendering caches normalized workspace humans for a
   stable state snapshot, so repeated rail, channel, mention, and detail renders
   do not repeatedly sort and enrich the full cloud member list.
+- Browser Members rail renders a bounded visible window and uses server-backed
+  directory search plus manual page loading for deeper people lookup, so opening
+  Members does not create thousands of sidebar buttons.
 - Browser member settings resolve member identity through cached Human identity
   keys (`humanId`, cloud member id, auth user id, and email) instead of scanning
   the full Human array for every displayed member row.
@@ -175,8 +181,6 @@ asks for it.
 
 ## Next Optimization Queue
 
-- Move the members rail itself toward server-backed search/windowing so very
-  large organizations do not render every Human/Agent shortcut in the sidebar.
 - Add browser-side performance marks for bootstrap, first render, SSE open,
   resync fetch, and major surface patches.
 - Add production/test-environment verification that records response sizes,
