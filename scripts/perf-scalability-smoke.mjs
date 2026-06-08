@@ -9,6 +9,7 @@ const NOW = '2026-06-08T00:00:00.000Z';
 const BOOTSTRAP_DIRECTORY_FORMAT = 'tuple-v1';
 const BOOTSTRAP_CONVERSATION_FORMAT = 'tuple-v1';
 const BOOTSTRAP_DIRECTORY_SCOPE = 'visible';
+const BOOTSTRAP_CONVERSATION_PREVIEW_CHARS = 96;
 const BOOTSTRAP_QUERY = 'spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160&directoryFormat=tuple-v1&conversationFormat=tuple-v1&directoryScope=visible';
 const DIRECTORY_PAGE_LIMIT = 250;
 const BOOTSTRAP_AGENT_TUPLE_FIELDS = Object.freeze([
@@ -113,8 +114,9 @@ const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
   'metadata',
 ]);
 const BUDGETS = Object.freeze({
-  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 220_000),
+  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 190_000),
   bootstrapProfileHeavyBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_PROFILE_HEAVY_BYTES || 120_000),
+  bootstrapReadByHeavyBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_READ_BY_HEAVY_BYTES || 100_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 80),
   directoryPageBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_BYTES || 80_000),
   directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
@@ -539,6 +541,55 @@ function measureProfileHeavyBootstrapAgents() {
       && selectedAgent.runtimeActivity
     ),
     backgroundProfileFieldLeaked: profileFieldLeaked,
+  };
+}
+
+function readMarkerFixture({ includeCurrent = false, size = 240 } = {}) {
+  const ids = [];
+  if (includeCurrent) ids.push('hum_0000');
+  for (let index = 1; ids.length < size; index += 1) {
+    ids.push(`hum_${String(index).padStart(4, '0')}`);
+  }
+  return ids;
+}
+
+function measureReadByHeavyBootstrap() {
+  const state = makeSyntheticState({
+    humans: 300,
+    agents: 120,
+    messages: 800,
+    replies: 160,
+    tasks: 80,
+  });
+  const readByCurrent = readMarkerFixture({ includeCurrent: true });
+  const readByPeers = readMarkerFixture({ includeCurrent: false });
+  for (const [index, message] of state.messages.entries()) {
+    message.readBy = index % 2 ? readByCurrent : readByPeers;
+  }
+  for (const [index, reply] of state.replies.entries()) {
+    reply.readBy = index % 2 ? readByCurrent : readByPeers;
+  }
+  const services = makeSystemServices(state);
+  const started = performance.now();
+  const snapshot = services.publicBootstrapState({
+    url: `/api/bootstrap?${BOOTSTRAP_QUERY}`,
+    headers: {},
+  });
+  const body = JSON.stringify(snapshot);
+  const decodedMessages = decodeTupleRecords(snapshot.messages, BOOTSTRAP_MESSAGE_TUPLE_FIELDS);
+  const decodedReplies = decodeTupleRecords(snapshot.replies, BOOTSTRAP_REPLY_TUPLE_FIELDS);
+  const conversationRecords = [...decodedMessages, ...decodedReplies];
+  return {
+    ms: Math.round(performance.now() - started),
+    bytes: Buffer.byteLength(body, 'utf8'),
+    messages: snapshot.messages.length,
+    replies: snapshot.replies.length,
+    hasExpandedReadMarkers: conversationRecords.some((record) => (
+      (record.readBy || []).some((humanId) => String(humanId) !== 'hum_0000')
+    )),
+    readMarkerMaxSize: conversationRecords.reduce((max, record) => (
+      Math.max(max, Array.isArray(record.readBy) ? record.readBy.length : 0)
+    ), 0),
   };
 }
 
@@ -1531,6 +1582,7 @@ async function main() {
   const membersDirectoryPage = measureMembersDirectoryPage();
   const membersRailWindow = await measureMembersRailWindow();
   const bootstrapProfileHeavyAgents = measureProfileHeavyBootstrapAgents();
+  const bootstrapReadByHeavy = measureReadByHeavyBootstrap();
   const bootstrapAllChannel = (snapshot.channels || []).find((channel) => (
     channel?.id === 'chan_all'
     || String(channel?.name || '').trim().toLowerCase() === 'all'
@@ -1637,6 +1689,9 @@ async function main() {
   assertBudget(bootstrapProfileHeavyAgents.bytes <= BUDGETS.bootstrapProfileHeavyBytes, `profile-heavy bootstrap ${bootstrapProfileHeavyAgents.bytes} bytes exceeds ${BUDGETS.bootstrapProfileHeavyBytes}`);
   assertBudget(bootstrapProfileHeavyAgents.selectedHasProfileDetails, 'profile-heavy bootstrap dropped selected Agent profile details');
   assertBudget(!bootstrapProfileHeavyAgents.backgroundProfileFieldLeaked, 'profile-heavy bootstrap leaked non-selected Agent profile details');
+  assertBudget(bootstrapReadByHeavy.bytes <= BUDGETS.bootstrapReadByHeavyBytes, `readBy-heavy bootstrap ${bootstrapReadByHeavy.bytes} bytes exceeds ${BUDGETS.bootstrapReadByHeavyBytes}`);
+  assertBudget(!bootstrapReadByHeavy.hasExpandedReadMarkers, 'readBy-heavy bootstrap leaked peer read markers');
+  assertBudget(bootstrapReadByHeavy.readMarkerMaxSize <= 1, `readBy-heavy bootstrap emitted read marker arrays of size ${bootstrapReadByHeavy.readMarkerMaxSize}`);
   assertBudget(bootstrap.directoryFormat === BOOTSTRAP_DIRECTORY_FORMAT, `bootstrap directory format expected ${BOOTSTRAP_DIRECTORY_FORMAT} but got ${bootstrap.directoryFormat || '[none]'}`);
   assertBudget(bootstrap.conversationFormat === BOOTSTRAP_CONVERSATION_FORMAT, `bootstrap conversation format expected ${BOOTSTRAP_CONVERSATION_FORMAT} but got ${bootstrap.conversationFormat || '[none]'}`);
   assertBudget(bootstrap.directoryScope === BOOTSTRAP_DIRECTORY_SCOPE, `bootstrap directory scope expected ${BOOTSTRAP_DIRECTORY_SCOPE} but got ${bootstrap.directoryScope || '[none]'}`);
@@ -1644,7 +1699,7 @@ async function main() {
   assertBudget(bootstrap.hasBootstrapConversationTuples, 'bootstrap did not compact conversation records into tuple rows');
   assertBudget(bootstrap.previewTruncatedMessages > 0, 'bootstrap did not truncate background message preview bodies');
   assertBudget(bootstrap.previewTruncatedReplies > 0, 'bootstrap did not truncate background reply preview bodies');
-  assertBudget(bootstrap.previewMaxBodyChars <= 140, `bootstrap preview bodies exceeded 140 chars: ${bootstrap.previewMaxBodyChars}`);
+  assertBudget(bootstrap.previewMaxBodyChars <= BOOTSTRAP_CONVERSATION_PREVIEW_CHARS, `bootstrap preview bodies exceeded ${BOOTSTRAP_CONVERSATION_PREVIEW_CHARS} chars: ${bootstrap.previewMaxBodyChars}`);
   assertBudget(bootstrap.selectedPageTruncatedMessages === 0, 'bootstrap truncated active conversation page message bodies');
   assertBudget(bootstrap.agents < state.agents.length, 'bootstrap still loaded the full Agent directory');
   assertBudget(bootstrap.humans < state.humans.length, 'bootstrap still loaded the full Human directory');
@@ -1809,6 +1864,7 @@ async function main() {
     membersDirectoryPage,
     membersRailWindow,
     bootstrapProfileHeavyAgents,
+    bootstrapReadByHeavy,
     heartbeat,
     repeatedHeartbeat,
     humanHeartbeatChurn,

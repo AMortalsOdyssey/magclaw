@@ -932,9 +932,9 @@ test('bootstrap state truncates only background conversation preview bodies', ()
   const previewReply = preview.replies.find((reply) => reply.id === 'rep_thread');
   assert.equal(preview.messages.find((message) => message.id === 'msg_current').bodyTruncated, undefined);
   assert.equal(previewRoot.bodyTruncated, true);
-  assert.equal(previewRoot.body.length, 140);
+  assert.equal(previewRoot.body.length, 96);
   assert.equal(previewReply.bodyTruncated, true);
-  assert.equal(previewReply.body.length, 140);
+  assert.equal(previewReply.body.length, 96);
 
   const opened = services.publicBootstrapState({
     url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&threadMessageId=msg_thread&messageLimit=1&threadRootLimit=20',
@@ -944,6 +944,60 @@ test('bootstrap state truncates only background conversation preview bodies', ()
   assert.equal(opened.messages.find((message) => message.id === 'msg_thread').bodyTruncated, undefined);
   assert.equal(opened.replies.find((reply) => reply.id === 'rep_thread').body, longReplyBody);
   assert.equal(opened.replies.find((reply) => reply.id === 'rep_thread').bodyTruncated, undefined);
+});
+
+test('bootstrap state compacts read markers to the current human only', () => {
+  const base = Date.parse('2026-05-18T00:00:00.000Z');
+  const services = makeServices((state) => {
+    state.messages = [
+      {
+        id: 'msg_read_by_current',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'agent',
+        authorId: 'agt_1',
+        body: 'read by current human',
+        readBy: ['hum_2', 'hum_1', 'hum_3'],
+        createdAt: new Date(base + 2 * 60_000).toISOString(),
+        updatedAt: new Date(base + 2 * 60_000).toISOString(),
+      },
+      {
+        id: 'msg_unread_for_current',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'agent',
+        authorId: 'agt_1',
+        body: 'unread for current human',
+        readBy: ['hum_2', 'hum_3'],
+        createdAt: new Date(base + 1 * 60_000).toISOString(),
+        updatedAt: new Date(base + 1 * 60_000).toISOString(),
+      },
+    ];
+    state.replies = [{
+      id: 'rep_read_by_current',
+      workspaceId: 'local',
+      parentMessageId: 'msg_read_by_current',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_1',
+      body: 'reply read by current human',
+      readBy: ['hum_3', 'hum_1'],
+      createdAt: new Date(base + 3 * 60_000).toISOString(),
+      updatedAt: new Date(base + 3 * 60_000).toISOString(),
+    }];
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20',
+    headers: {},
+  });
+
+  assert.deepEqual(snapshot.messages.find((message) => message.id === 'msg_read_by_current').readBy, ['hum_1']);
+  assert.deepEqual(snapshot.messages.find((message) => message.id === 'msg_unread_for_current').readBy, []);
+  assert.deepEqual(snapshot.replies.find((reply) => reply.id === 'rep_read_by_current').readBy, ['hum_1']);
 });
 
 test('bootstrap state windows task hydration and keeps referenced task records', () => {

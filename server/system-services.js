@@ -17,7 +17,7 @@ const DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS = 10 * 60_000;
 const PACKAGE_UPDATE_CACHE_TTL_SECONDS = 12 * 60 * 60;
 const BOOTSTRAP_UNREAD_RECORD_LIMIT = 80;
 const BOOTSTRAP_UNREAD_CANDIDATE_LIMIT = BOOTSTRAP_UNREAD_RECORD_LIMIT * 2;
-const BOOTSTRAP_CONVERSATION_PREVIEW_CHARS = 140;
+const BOOTSTRAP_CONVERSATION_PREVIEW_CHARS = 96;
 const BOOTSTRAP_DIRECTORY_FORMAT_TUPLE = 'tuple-v1';
 const BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE = 'visible';
 const DIRECTORY_PAGE_LIMIT_DEFAULT = 0;
@@ -793,6 +793,10 @@ export function createSystemServices(deps) {
     const next = { ...record };
     if (Object.hasOwn(next, 'workspaceId')) delete next.workspaceId;
     if (next.updatedAt && next.createdAt && next.updatedAt === next.createdAt) delete next.updatedAt;
+    if (Array.isArray(next.readBy) && options.currentHumanId) {
+      const humanId = String(options.currentHumanId || '');
+      next.readBy = readByIncludesHuman(next.readBy, humanId) ? [humanId] : [];
+    }
     if (
       options.previewOnly
       && typeof next.body === 'string'
@@ -2176,12 +2180,14 @@ export function createSystemServices(deps) {
         .sort(compareOldestRecords)
         .map(publicConversationRecord)
         .map((message) => compactBootstrapConversationRecord(message, {
+          currentHumanId,
           previewOnly: !fullMessageIds.has(String(message?.id || '')),
         })),
       replies: [...replyById.values()]
         .sort(compareOldestRecords)
         .map(publicConversationRecord)
         .map((reply) => compactBootstrapConversationRecord(reply, {
+          currentHumanId,
           previewOnly: !fullReplyIds.has(String(reply?.id || '')),
         })),
       runs: newestScopedRecords('runs', 80),
