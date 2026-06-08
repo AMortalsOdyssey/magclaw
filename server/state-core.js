@@ -892,7 +892,7 @@ export function createStateCore(deps) {
     externalStatePersister = typeof persister === 'function' ? persister : null;
   }
   
-  function addSystemEvent(type, message, extra = {}) {
+  function addSystemEvent(type, message, extra = {}, options = {}) {
     if (!state) return;
     const event = {
       id: makeId('evt'),
@@ -904,7 +904,7 @@ export function createStateCore(deps) {
     state.events.push(event);
     trimEvents();
     activityLog.append(event).catch(() => {});
-    recordRealtimeEvent('system_event', { event }, extra);
+    if (!options.skipRealtime) recordRealtimeEvent('system_event', { event }, extra);
     return event;
   }
   
@@ -1526,7 +1526,7 @@ export function createStateCore(deps) {
         status: nextStatus,
         reason,
         ...(extra.event || {}),
-      });
+      }, { skipRealtime: true });
       recordRealtimeEvent('agent_status_changed', {
         agent: {
           id: agent.id,

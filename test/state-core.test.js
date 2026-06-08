@@ -318,8 +318,10 @@ test('state core broadcasts agent realtime events without forcing state patches'
     assert.ok(channelEvents.some((event) => event.eventType === 'agent_activity_changed'));
     assert.ok(otherEvents.some((event) => event.eventType === 'agent_status_changed'));
     assert.ok(otherEvents.some((event) => event.eventType === 'agent_activity_changed'));
+    assert.equal(channelEvents.some((event) => event.payload?.event?.type === 'agent_status_changed'), false);
     assert.ok(channelEvents.some((event) => event.payload?.event?.type === 'message_sent'));
     assert.equal(otherEvents.some((event) => event.payload?.event?.type === 'message_sent'), false);
+    assert.ok(core.state.events.some((event) => event.type === 'agent_status_changed'));
     assert.equal(ssePackets(channelClient, 'state-delta').length, 0);
     assert.equal(ssePackets(otherChannelClient, 'state-delta').length, 0);
     await core.flushActivityLog();
@@ -559,20 +561,21 @@ test('state core records scoped realtime journal events for SSE replay', async (
     core.setAgentStatus(core.state.agents[0], 'working', 'test', { forceEvent: true });
 
     const snapshot = core.stateFullSnapshot();
-    assert.equal(snapshot.cloud.realtimeEvents.length, 4);
-    assert.deepEqual(snapshot.cloud.realtimeEvents.map((item) => item.seq), [1, 2, 3, 4]);
+    assert.equal(snapshot.cloud.realtimeEvents.length, 3);
+    assert.deepEqual(snapshot.cloud.realtimeEvents.map((item) => item.seq), [1, 2, 3]);
     assert.equal(snapshot.cloud.realtimeEvents[0].payload.event.id, event.id);
     const activityEvent = snapshot.cloud.realtimeEvents.find((item) => item.eventType === 'agent_activity_changed');
     assert.equal(activityEvent.payload.agentId, core.state.agents[0].id);
     assert.ok(activityEvent.payload.activitySeq >= 1);
     assert.ok(Array.isArray(activityEvent.payload.entries));
+    assert.ok(snapshot.events.some((item) => item.type === 'agent_status_changed'));
 
     const replay = core.realtimeEventsForRequest({
       url: '/api/events?spaceType=channel&spaceId=chan_all',
     }, 0);
     assert.equal(replay.gap, false);
-    assert.equal(replay.currentSeq, 4);
-    assert.deepEqual(replay.events.map((item) => item.eventType), ['system_event', 'system_event', 'agent_status_changed', 'agent_activity_changed']);
+    assert.equal(replay.currentSeq, 3);
+    assert.deepEqual(replay.events.map((item) => item.eventType), ['system_event', 'agent_status_changed', 'agent_activity_changed']);
     await core.flushActivityLog();
   } finally {
     await rm(tmp, { recursive: true, force: true });
