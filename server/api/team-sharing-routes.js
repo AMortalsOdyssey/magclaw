@@ -62,6 +62,9 @@ function contextPagePath(sessionId = '', options = {}) {
 }
 
 function resultContextUrl(item, queryId = '') {
+  if (String(item.sourceKind || '').trim() === 'share' || item.shareId) {
+    return `/s/${encodeURIComponent(String(item.shareId || '').trim())}`;
+  }
   const anchorEventId = String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef);
   return contextPagePath(item.sessionId, {
     anchorEventId,
@@ -99,6 +102,10 @@ function absoluteContextPageUrl(req, state = {}, relativePath = '', workspaceId 
 }
 
 function resultContextWebUrl(req, state = {}, item = {}, queryId = '') {
+  if (String(item.sourceKind || '').trim() === 'share' || item.shareId) {
+    const shareId = String(item.shareId || '').trim();
+    return shareId ? shareUrl(req, shareId) : '';
+  }
   const session = state.teamSharing?.sessions?.[item.sessionId] || {};
   const workspaceId = String(item.workspaceId || session.workspaceId || '').trim();
   return absoluteContextPageUrl(req, state, resultContextUrl(item, queryId), workspaceId);
@@ -601,6 +608,144 @@ function shareSectionsPayload(req, share = {}, teamSharingState = {}) {
     assetRefs: shareAssetRefs(req, teamSharingState, record.assetIds),
     url: shareUrl(req, share.id || ''),
   };
+}
+
+function normalizeUploaderSearchText(uploader = {}) {
+  return [
+    uploader.id,
+    uploader.name,
+    uploader.email,
+  ].map((value) => compactText(value, 512)).filter(Boolean).join(' ');
+}
+
+function uploaderMetadataFromIdentity(identity = {}) {
+  const id = String(identity.id || identity.humanId || identity.userId || '').trim();
+  const name = compactText(identity.name || identity.displayName || '', 160);
+  const email = String(identity.email || '').trim();
+  const avatar = String(identity.avatar || identity.avatarUrl || '').trim();
+  return {
+    uploaderId: id,
+    uploaderName: name,
+    uploaderEmail: email,
+    uploaderAvatar: avatar,
+    uploaderSearchText: normalizeUploaderSearchText({ id, name, email }),
+  };
+}
+
+function searchableShareText(value = '', contentType = '') {
+  const text = String(value || '');
+  const type = String(contentType || '').trim().toLowerCase();
+  const withoutCode = type === 'html' || type === 'svg'
+    ? text
+        .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+    : text;
+  return withoutCode
+    .replace(/\b(?:src|href)=["']data:[^"']+["']/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function chunkSearchableText(text = '', maxChars = 6000, maxChunks = 80) {
+  const clean = String(text || '').trim();
+  if (!clean) return [];
+  const chunks = [];
+  for (let offset = 0; offset < clean.length && chunks.length < maxChunks; offset += maxChars) {
+    chunks.push(clean.slice(offset, offset + maxChars));
+  }
+  return chunks;
+}
+
+function upsertTeamSharingVectorDocument(teamSharingState = {}, document = {}) {
+  teamSharingState.vectorDocuments = Array.isArray(teamSharingState.vectorDocuments) ? teamSharingState.vectorDocuments : [];
+  const id = String(document.vectorDocumentId || '').trim();
+  if (!id) return null;
+  const index = teamSharingState.vectorDocuments.findIndex((item) => String(item.vectorDocumentId || '') === id);
+  if (index >= 0) {
+    teamSharingState.vectorDocuments[index] = { ...teamSharingState.vectorDocuments[index], ...document };
+    return teamSharingState.vectorDocuments[index];
+  }
+  teamSharingState.vectorDocuments.push(document);
+  return document;
+}
+
+function refreshShareVectorDocuments(teamSharingState = {}, share = {}) {
+  teamSharingState.vectorDocuments = Array.isArray(teamSharingState.vectorDocuments) ? teamSharingState.vectorDocuments : [];
+  const shareId = String(share.id || '').trim();
+  if (!shareId) return [];
+  const record = shareContentRecord(teamSharingState, share);
+  const contentType = record.contentType || String(share.contentType || '').trim();
+  const updatedAt = String(share.updatedAt || share.createdAt || new Date().toISOString()).trim();
+  const uploader = uploaderMetadataFromIdentity(share.creator || {});
+  for (const doc of teamSharingState.vectorDocuments) {
+    if (String(doc.sourceKind || '') === 'share' && String(doc.shareId || '') === shareId) doc.active = false;
+  }
+  if (share.revokedAt) return [];
+  const common = {
+    sourceKind: 'share',
+    workspaceId: String(share.workspaceId || 'local').trim(),
+    channelId: String(share.channelId || '').trim(),
+    projectKey: String(share.projectKey || '').trim(),
+    runtime: String(share.source?.runtime || 'skill').trim(),
+    sessionId: `share:${shareId}`,
+    shareId,
+    contentType,
+    title: compactText(share.title || 'MagClaw shared page', 180),
+    updatedAt,
+    active: true,
+    ...uploader,
+  };
+  const docs = [];
+  const overviewText = compactText(`${share.title || ''}\n${share.description || ''}`, 1800);
+  docs.push(upsertTeamSharingVectorDocument(teamSharingState, {
+    ...common,
+    vectorDocumentId: `share:${shareId}:L0`,
+    layer: 'L0',
+    topicId: '',
+    shareSectionId: '',
+    sourceRef: `share/${shareId}`,
+    text: overviewText || common.title,
+    vectorScore: 0,
+    keywordScore: 0,
+    freshnessScore: 1,
+  }));
+  const sections = extractShareSections(record.content, contentType);
+  for (const section of sections) {
+    const sectionText = searchableShareText(section.content, contentType);
+    const chunks = chunkSearchableText(sectionText);
+    chunks.forEach((chunk, chunkIndex) => {
+      const suffix = chunks.length > 1 ? `:${chunkIndex + 1}` : '';
+      docs.push(upsertTeamSharingVectorDocument(teamSharingState, {
+        ...common,
+        vectorDocumentId: `share:${shareId}:L1:${section.sectionId}${suffix}`,
+        layer: 'L1',
+        topicId: String(section.sectionId || '').trim(),
+        shareSectionId: String(section.sectionId || '').trim(),
+        sourceRef: `share/${shareId}/sections/${section.sectionId}${suffix}`,
+        text: `${common.title}\n${section.title || section.sectionId || 'Section'}\n${chunk}`,
+        vectorScore: 0,
+        keywordScore: 0,
+        freshnessScore: 1,
+      }));
+    });
+  }
+  return docs.filter(Boolean);
+}
+
+function deactivateShareVectorDocuments(teamSharingState = {}, share = {}) {
+  const shareId = String(share.id || '').trim();
+  if (!shareId) return [];
+  const changed = [];
+  teamSharingState.vectorDocuments = Array.isArray(teamSharingState.vectorDocuments) ? teamSharingState.vectorDocuments : [];
+  for (const doc of teamSharingState.vectorDocuments) {
+    if (String(doc.sourceKind || '') !== 'share' || String(doc.shareId || '') !== shareId) continue;
+    if (doc.active !== false) {
+      doc.active = false;
+      changed.push(doc);
+    }
+  }
+  return changed;
 }
 
 function parseAttachmentRange(rangeHeader, size) {
@@ -2884,6 +3029,361 @@ function isWithinDateRange(value = '', dateRange = null) {
   return true;
 }
 
+function normalizeMemberMatchText(value = '') {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s._\-@]+/g, '');
+}
+
+function memberLastActiveAt(teamSharingState = {}, identity = {}) {
+  const ids = new Set([identity.id, identity.humanId, identity.userId].map((value) => String(value || '').trim()).filter(Boolean));
+  const email = String(identity.email || '').trim().toLowerCase();
+  const names = new Set([identity.name, ...(identity.aliases || [])].map(normalizeMemberMatchText).filter(Boolean));
+  let latest = '';
+  const consider = (updatedAt = '') => {
+    const text = String(updatedAt || '').trim();
+    if (text && text > latest) latest = text;
+  };
+  for (const session of Object.values(teamSharingState?.sessions || {})) {
+    const uploader = session?.uploader || {};
+    const uploaderId = String(uploader.id || '').trim();
+    const uploaderEmail = String(uploader.email || '').trim().toLowerCase();
+    const uploaderName = normalizeMemberMatchText(uploader.name || '');
+    if ((uploaderId && ids.has(uploaderId)) || (email && uploaderEmail === email) || (uploaderName && names.has(uploaderName))) {
+      consider(session.updatedAt || session.createdAt);
+    }
+  }
+  for (const share of ensureTeamSharingShares(teamSharingState)) {
+    const creator = share?.creator || {};
+    const creatorId = String(creator.id || '').trim();
+    const creatorEmail = String(creator.email || '').trim().toLowerCase();
+    const creatorName = normalizeMemberMatchText(creator.name || '');
+    if ((creatorId && ids.has(creatorId)) || (email && creatorEmail === email) || (creatorName && names.has(creatorName))) {
+      consider(share.updatedAt || share.createdAt);
+    }
+  }
+  return latest;
+}
+
+function publicMemberCandidate(candidate = {}) {
+  return {
+    id: String(candidate.id || candidate.humanId || '').trim(),
+    userId: String(candidate.userId || '').trim(),
+    name: String(candidate.name || '').trim(),
+    email: String(candidate.email || '').trim(),
+    avatar: String(candidate.avatar || candidate.avatarUrl || '').trim(),
+    aliases: asArray(candidate.aliases).map((item) => String(item || '').trim()).filter(Boolean).slice(0, 12),
+    lastActiveAt: String(candidate.lastActiveAt || '').trim(),
+  };
+}
+
+function teamSharingMemberCandidates(state = {}, teamSharingState = {}, workspaceId = '') {
+  const cleanWorkspaceId = String(workspaceId || '').trim();
+  const byKey = new Map();
+  const humans = asArray(state.humans);
+  const users = asArray(state.cloud?.users);
+  const add = (raw = {}, source = '') => {
+    const humanId = String(raw.humanId || raw.id || '').trim();
+    const userId = String(raw.userId || raw.authUserId || '').trim();
+    const email = String(raw.email || '').trim();
+    const name = String(raw.name || raw.displayName || '').trim();
+    const key = humanId || userId || email.toLowerCase() || `${source}:${name}`;
+    if (!key) return;
+    const existing = byKey.get(key) || { aliases: [], sources: [] };
+    const aliases = [
+      ...asArray(existing.aliases),
+      ...asArray(raw.aliases),
+      humanId,
+      userId,
+      email,
+      name,
+    ].map((item) => String(item || '').trim()).filter(Boolean);
+    const next = {
+      ...existing,
+      id: existing.id || humanId || userId,
+      humanId: existing.humanId || humanId,
+      userId: existing.userId || userId,
+      name: existing.name || name,
+      email: existing.email || email,
+      avatar: existing.avatar || raw.avatar || raw.avatarUrl || '',
+      aliases: [...new Set(aliases)],
+      sources: [...new Set([...asArray(existing.sources), source].filter(Boolean))],
+    };
+    next.lastActiveAt = memberLastActiveAt(teamSharingState, next);
+    byKey.set(key, next);
+  };
+  for (const member of asArray(state.cloud?.workspaceMembers)) {
+    if (!member || String(member.status || 'active').trim() !== 'active') continue;
+    if (cleanWorkspaceId && String(member.workspaceId || '').trim() !== cleanWorkspaceId) continue;
+    const human = humans.find((item) => String(item.id || '') === String(member.humanId || '')) || {};
+    const user = users.find((item) => String(item.id || '') === String(member.userId || '')) || {};
+    add({
+      humanId: member.humanId || human.id,
+      userId: member.userId || user.id,
+      name: member.name || human.name || user.name,
+      email: member.email || human.email || user.email,
+      avatar: member.avatar || human.avatar || human.avatarUrl || user.avatar || user.avatarUrl,
+      aliases: [member.id, member.humanId, member.userId, human.authUserId],
+    }, 'workspace_member');
+  }
+  for (const human of humans) {
+    if (cleanWorkspaceId && human.workspaceId && String(human.workspaceId || '').trim() !== cleanWorkspaceId) continue;
+    add({
+      humanId: human.id,
+      userId: human.authUserId || human.userId,
+      name: human.name,
+      email: human.email,
+      avatar: human.avatar || human.avatarUrl,
+      aliases: [human.id, human.authUserId],
+    }, 'human');
+  }
+  for (const user of users) {
+    add({
+      userId: user.id,
+      name: user.name,
+      email: user.email,
+      avatar: user.avatar || user.avatarUrl,
+      aliases: [user.id],
+    }, 'user');
+  }
+  for (const session of Object.values(teamSharingState?.sessions || {})) {
+    if (cleanWorkspaceId && String(session.workspaceId || '').trim() !== cleanWorkspaceId) continue;
+    const uploader = session.uploader || {};
+    add({
+      humanId: uploader.id,
+      name: uploader.name,
+      email: uploader.email,
+      avatar: uploader.avatar,
+      aliases: [uploader.id, uploader.name, uploader.email],
+    }, 'session_uploader');
+  }
+  for (const share of ensureTeamSharingShares(teamSharingState)) {
+    if (cleanWorkspaceId && String(share.workspaceId || '').trim() !== cleanWorkspaceId) continue;
+    const creator = share.creator || {};
+    add({
+      humanId: creator.id,
+      name: creator.name,
+      email: creator.email,
+      avatar: creator.avatar,
+      aliases: [creator.id, creator.name, creator.email],
+    }, 'share_creator');
+  }
+  return [...byKey.values()]
+    .map(publicMemberCandidate)
+    .filter((candidate) => candidate.id || candidate.name || candidate.email)
+    .sort((left, right) => String(right.lastActiveAt || '').localeCompare(String(left.lastActiveAt || '')) || String(left.name || left.id).localeCompare(String(right.name || right.id)));
+}
+
+function exactMemberMatches(candidates = [], query = '') {
+  const normalized = normalizeMemberMatchText(query);
+  if (!normalized) return [];
+  return asArray(candidates).filter((candidate) => {
+    const values = [candidate.id, candidate.userId, candidate.email, candidate.name, ...asArray(candidate.aliases)];
+    return values.some((value) => normalizeMemberMatchText(value) === normalized);
+  });
+}
+
+function partialMemberMatches(candidates = [], query = '') {
+  const normalized = normalizeMemberMatchText(query);
+  if (!normalized || normalized.length < 2) return [];
+  return asArray(candidates).filter((candidate) => {
+    const values = [candidate.name, ...asArray(candidate.aliases)].map(normalizeMemberMatchText).filter(Boolean);
+    return values.some((value) => value.startsWith(normalized) || value.includes(normalized));
+  });
+}
+
+function resolveMemberQuery(candidates = [], query = '') {
+  const exact = exactMemberMatches(candidates, query);
+  if (exact.length) return { status: exact.length === 1 ? 'matched' : 'ambiguous', matches: exact, candidates: exact, matchType: 'exact' };
+  const partial = partialMemberMatches(candidates, query);
+  if (partial.length) return { status: partial.length === 1 ? 'matched' : 'ambiguous', matches: partial, candidates: partial, matchType: 'partial' };
+  return { status: 'not_found', matches: [], candidates: [], matchType: '' };
+}
+
+function extractNaturalMemberMention(query = '', candidates = []) {
+  const text = String(query || '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  const candidateNames = asArray(candidates)
+    .flatMap((candidate) => [candidate.name, ...asArray(candidate.aliases)])
+    .map((value) => String(value || '').trim())
+    .filter((value) => /[\u4e00-\u9fa5A-Za-z]/.test(value) && value.length >= 2)
+    .sort((a, b) => b.length - a.length);
+  for (const name of candidateNames) {
+    if (name && text.includes(name)) return { query: name, phrase: name };
+  }
+  const patterns = [
+    /(?:查|找|看|搜索|检索|查看|看看|看一下)\s*(?:同事|成员|上传者|上报者|负责人)?\s*([A-Za-z][A-Za-z0-9_.@-]{1,80}|[\u4e00-\u9fa5]{2,6})(?=\s*(?:关于|的|负责|上传|上报|讨论|会话|$))/i,
+    /([A-Za-z][A-Za-z0-9_.@-]{1,80}|[\u4e00-\u9fa5]{2,6})(?=\s*(?:关于|的讨论|的会话|上传|上报|负责))/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return { query: match[1].trim(), phrase: match[1].trim() };
+  }
+  return null;
+}
+
+function contentQueryWithoutMember(query = '', phrase = '') {
+  let text = String(query || '').replace(/\s+/g, ' ').trim();
+  const cleanPhrase = String(phrase || '').trim();
+  if (cleanPhrase) text = text.split(cleanPhrase).join(' ');
+  return text
+    .replace(/^(查|找|看|搜索|检索|查看|看看|看一下)\s*/i, '')
+    .replace(/^(同事|成员|上传者|上报者|负责人)\s*/i, '')
+    .replace(/^(关于|围绕|的)\s*/i, '')
+    .replace(/\s*(的)?(讨论|会话|内容|沉淀)\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function resolveTeamSharingMembers({ state = {}, teamSharingState = {}, workspaceId = '', body = {}, query = '' } = {}) {
+  const candidates = teamSharingMemberCandidates(state, teamSharingState, workspaceId);
+  const idQueries = uniqueSearchList([
+    ...normalizeSearchList(body.memberIds),
+    ...normalizeSearchList(body.memberId),
+    ...normalizeSearchList(body.uploaderIds),
+    ...normalizeSearchList(body.uploaderId),
+    ...normalizeSearchList(body.retrievalIntent?.member?.ids),
+  ], 24);
+  const nameQueries = uniqueSearchList([
+    ...normalizeSearchList(body.memberNames),
+    ...normalizeSearchList(body.memberName),
+    ...normalizeSearchList(body.members),
+    ...normalizeSearchList(body.member),
+    ...normalizeSearchList(body.uploaders),
+    ...normalizeSearchList(body.uploader),
+    ...normalizeSearchList(body.retrievalIntent?.member?.names),
+  ], 24);
+  const explicitMemberQuery = String(body.memberQuery || body.member_query || '').trim();
+  const explicit = Boolean(idQueries.length || nameQueries.length || explicitMemberQuery);
+  const inferred = !explicit ? extractNaturalMemberMention(query, candidates) : null;
+  const queryItems = [
+    ...idQueries,
+    ...nameQueries,
+    ...(explicitMemberQuery ? [explicitMemberQuery] : []),
+    ...(inferred?.query ? [inferred.query] : []),
+  ];
+  if (!queryItems.length) {
+    return {
+      status: 'none',
+      explicit: false,
+      query: '',
+      contentQuery: query,
+      matched: [],
+      candidates: [],
+      uploaderIds: [],
+      needsClarification: false,
+    };
+  }
+  const matched = new Map();
+  const ambiguous = [];
+  const notFound = [];
+  for (const item of queryItems) {
+    const resolved = resolveMemberQuery(candidates, item);
+    if (resolved.status === 'matched') {
+      const candidate = resolved.matches[0];
+      matched.set(candidate.id || candidate.email || candidate.name, candidate);
+    } else if (resolved.status === 'ambiguous') {
+      ambiguous.push(...resolved.candidates);
+    } else {
+      notFound.push(item);
+    }
+  }
+  if (ambiguous.length) {
+    const uniqueCandidates = [...new Map(ambiguous.map((candidate) => [candidate.id || candidate.email || candidate.name, candidate])).values()]
+      .sort((left, right) => String(right.lastActiveAt || '').localeCompare(String(left.lastActiveAt || '')));
+    return {
+      status: 'ambiguous',
+      explicit,
+      query: queryItems.join(', '),
+      contentQuery: inferred ? contentQueryWithoutMember(query, inferred.phrase) : query,
+      matched: [...matched.values()].map(publicMemberCandidate),
+      candidates: uniqueCandidates.map(publicMemberCandidate),
+      uploaderIds: [],
+      needsClarification: true,
+    };
+  }
+  const matchedList = [...matched.values()].map(publicMemberCandidate);
+  if (!matchedList.length) {
+    if (inferred && !explicit) {
+      return {
+        status: 'none',
+        explicit: false,
+        query: '',
+        contentQuery: query,
+        matched: [],
+        candidates: [],
+        uploaderIds: [],
+        needsClarification: false,
+      };
+    }
+    return {
+      status: 'not_found',
+      explicit,
+      query: queryItems.join(', '),
+      contentQuery: inferred ? contentQueryWithoutMember(query, inferred.phrase) : query,
+      matched: [],
+      candidates: [],
+      notFound,
+      uploaderIds: [],
+      needsClarification: false,
+    };
+  }
+  return {
+    status: 'matched',
+    explicit,
+    query: queryItems.join(', '),
+    contentQuery: inferred ? contentQueryWithoutMember(query, inferred.phrase) : query,
+    matched: matchedList,
+    candidates: [],
+    uploaderIds: matchedList.map((candidate) => candidate.id).filter(Boolean),
+    needsClarification: false,
+  };
+}
+
+function uploaderMatchesFilter(doc = {}, uploaderIds = []) {
+  const ids = new Set(asArray(uploaderIds).map((value) => String(value || '').trim()).filter(Boolean));
+  if (!ids.size) return true;
+  const docUploaderId = String(doc.uploaderId || '').trim();
+  return Boolean(docUploaderId && ids.has(docUploaderId));
+}
+
+function recentUploaderDocuments({ teamSharingState, uploaderIds = [], workspaceId = '', channelId = '', projectKey = '', dateRange = null, limit = 40 } = {}) {
+  const seen = new Set();
+  const candidates = asArray(teamSharingState?.vectorDocuments)
+    .filter((doc) => doc.active !== false)
+    .filter((doc) => !workspaceId || doc.workspaceId === workspaceId)
+    .filter((doc) => !channelId || doc.channelId === channelId)
+    .filter((doc) => !projectKey || doc.projectKey === projectKey)
+    .filter((doc) => uploaderMatchesFilter(doc, uploaderIds))
+    .filter((doc) => isWithinDateRange(doc.updatedAt, dateRange))
+    .filter((doc) => doc.layer === 'L0')
+    .map((doc) => {
+      const activeAt = String(
+        doc.sourceKind === 'share'
+          ? ensureTeamSharingShares(teamSharingState).find((share) => String(share.id || '') === String(doc.shareId || ''))?.updatedAt || doc.updatedAt
+          : teamSharingState?.sessions?.[doc.sessionId]?.updatedAt || doc.updatedAt,
+      ).trim();
+      return { ...doc, updatedAt: activeAt || doc.updatedAt || '' };
+    })
+    .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')))
+    .filter((doc) => {
+      const key = `${doc.sourceKind || 'session'}:${doc.shareId || doc.sessionId || doc.vectorDocumentId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit)
+    .map((doc, index) => ({
+      ...doc,
+      vectorScore: 0.1,
+      keywordScore: 0,
+      freshnessScore: Math.max(0.1, 1 - (index * 0.03)),
+      finalScore: Math.max(0.1, 1 - (index * 0.03)),
+    }));
+  return { ok: true, candidates };
+}
+
 function keywordSearchInputs({ query = '', keywordQuery = '', keywords = [], topics = [] } = {}) {
   const phrases = uniqueSearchList([
     ...normalizeSearchList(keywords),
@@ -2897,12 +3397,14 @@ function keywordSearchInputs({ query = '', keywordQuery = '', keywords = [], top
   return { phrases, terms };
 }
 
-function localVectorSearch({ teamSharingState, query = '', channelId = '', projectKey = '', dateRange = null, limit = 40 } = {}) {
+function localVectorSearch({ teamSharingState, query = '', workspaceId = '', channelId = '', projectKey = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
   const terms = queryTerms(query);
   const candidates = asArray(teamSharingState?.vectorDocuments)
     .filter((doc) => doc.active !== false)
+    .filter((doc) => !workspaceId || doc.workspaceId === workspaceId)
     .filter((doc) => !channelId || doc.channelId === channelId)
     .filter((doc) => !projectKey || doc.projectKey === projectKey)
+    .filter((doc) => uploaderMatchesFilter(doc, uploaderIds))
     .filter((doc) => isWithinDateRange(doc.updatedAt, dateRange))
     .map((doc) => {
       const haystack = `${doc.title || ''}\n${doc.topicId || ''}\n${doc.text || ''}`.toLowerCase();
@@ -2921,12 +3423,14 @@ function localVectorSearch({ teamSharingState, query = '', channelId = '', proje
   return { ok: true, candidates };
 }
 
-function localKeywordSearch({ teamSharingState, query = '', keywordQuery = '', keywords = [], topics = [], channelId = '', projectKey = '', dateRange = null, limit = 40 } = {}) {
+function localKeywordSearch({ teamSharingState, query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', projectKey = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
   const { phrases, terms } = keywordSearchInputs({ query, keywordQuery, keywords, topics });
   const candidates = asArray(teamSharingState?.vectorDocuments)
     .filter((doc) => doc.active !== false)
+    .filter((doc) => !workspaceId || doc.workspaceId === workspaceId)
     .filter((doc) => !channelId || doc.channelId === channelId)
     .filter((doc) => !projectKey || doc.projectKey === projectKey)
+    .filter((doc) => uploaderMatchesFilter(doc, uploaderIds))
     .filter((doc) => isWithinDateRange(doc.updatedAt, dateRange))
     .map((doc) => {
       const haystack = `${doc.title || ''}\n${doc.topicId || ''}\n${doc.text || ''}`.toLowerCase();
@@ -4610,6 +5114,24 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       share.updatedAt = updatedAt;
       share.updatedBy = { id: access.editorId || access.actorId || '', via: access.editVia || '' };
       delete share.content;
+      const shareDocuments = refreshShareVectorDocuments(teamSharingState, share);
+      let indexedDocumentCount = 0;
+      if (typeof indexTeamSharingDocuments === 'function' && shareDocuments.length) {
+        try {
+          const indexed = await indexTeamSharingDocuments({
+            workspaceId: share.workspaceId || workspaceId,
+            shareId,
+            documents: shareDocuments,
+            teamSharingState,
+          });
+          indexedDocumentCount = Number(indexed?.count || shareDocuments.length);
+        } catch (error) {
+          addSystemEvent('team_sharing_share_index_failed', `Team sharing share index failed: ${compactText(error?.message || error, 120)}`, {
+            workspaceId: share.workspaceId || workspaceId,
+            shareId,
+          });
+        }
+      }
       addSystemEvent('team_sharing_share_updated', `Team sharing share updated: ${share.title}`, {
         workspaceId: share.workspaceId,
         shareId,
@@ -4627,6 +5149,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         contentHash: blob.contentHash,
         changedSections: patched.changedSections,
         assetRefs: shareAssetRefs(req, teamSharingState, assetIds),
+        indexedDocumentCount,
       });
       return true;
     } catch (error) {
@@ -4667,6 +5190,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       share.revokedBy = { id: access.editorId || access.actorId || '', via: access.editVia || '' };
       share.updatedAt = revokedAt;
       share.updatedBy = { id: access.editorId || access.actorId || '', via: access.editVia || '' };
+      deactivateShareVectorDocuments(teamSharingState, share);
       addSystemEvent('team_sharing_share_deleted', `Team sharing share deleted: ${compactText(share.title || shareId, 90)}`, {
         workspaceId: share.workspaceId || workspaceId,
         shareId,
@@ -4806,6 +5330,24 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       updatedAt: createdAt,
     };
     ensureTeamSharingShares(teamSharingState).push(share);
+    const shareDocuments = refreshShareVectorDocuments(teamSharingState, share);
+    let indexedDocumentCount = 0;
+    if (typeof indexTeamSharingDocuments === 'function' && shareDocuments.length) {
+      try {
+        const indexed = await indexTeamSharingDocuments({
+          workspaceId: share.workspaceId || workspaceId,
+          shareId,
+          documents: shareDocuments,
+          teamSharingState,
+        });
+        indexedDocumentCount = Number(indexed?.count || shareDocuments.length);
+      } catch (error) {
+        addSystemEvent('team_sharing_share_index_failed', `Team sharing share index failed: ${compactText(error?.message || error, 120)}`, {
+          workspaceId: share.workspaceId,
+          shareId,
+        });
+      }
+    }
     addSystemEvent('team_sharing_share_created', `Team sharing share created: ${share.title}`, {
       workspaceId: share.workspaceId,
       shareId,
@@ -4820,6 +5362,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       ok: true,
       shareId,
       url: shareUrl(req, shareId),
+      indexedDocumentCount,
       share: {
         id: share.id,
         title: share.title,
@@ -4966,12 +5509,47 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const effectiveWorkspaceId = requestWorkspaceId({ actor, tokenRecord, state, fallback: body.workspaceId || workspaceId });
     const limit = Math.max(1, Math.min(20, Number(body.limit || 5)));
     const candidateK = Math.max(limit, Math.min(200, Number(body.candidateK || 40)));
-    const intent = normalizeTeamSharingSearchIntentBody(body, now?.());
+    const memberResolution = resolveTeamSharingMembers({
+      state,
+      teamSharingState,
+      workspaceId: effectiveWorkspaceId,
+      body,
+      query: body.query || '',
+    });
+    if (memberResolution.needsClarification || memberResolution.status === 'ambiguous') {
+      sendJson(res, 200, {
+        ok: true,
+        results: [],
+        needsClarification: true,
+        memberResolution,
+        candidateCount: 0,
+        semanticCandidateCount: 0,
+        keywordCandidateCount: 0,
+      });
+      return true;
+    }
+    if (memberResolution.status === 'not_found') {
+      sendJson(res, 200, {
+        ok: true,
+        results: [],
+        memberResolution,
+        candidateCount: 0,
+        semanticCandidateCount: 0,
+        keywordCandidateCount: 0,
+      });
+      return true;
+    }
+    const contentQuery = String(memberResolution.contentQuery ?? body.query ?? '').replace(/\s+/g, ' ').trim();
+    const searchBody = { ...body, query: contentQuery, semanticQuery: body.semanticQuery || body.semantic_query ? body.semanticQuery || body.semantic_query : undefined };
+    if (!body.semanticQuery && !body.semantic_query) searchBody.semanticQuery = contentQuery;
+    const intent = normalizeTeamSharingSearchIntentBody(searchBody, now?.());
     const searchMode = intent.searchMode;
     const sortBy = normalizeTeamSharingSearchSort(body.sortBy || body.sort || body.orderBy);
     const dateRange = intent.dateRange;
-    const needsSemantic = intent.useSemantic;
-    const needsKeyword = intent.useKeyword;
+    const uploaderIds = memberResolution.status === 'matched' ? memberResolution.uploaderIds : [];
+    const memberOnly = uploaderIds.length > 0 && !intent.query && !intent.keywords.length && !intent.topics.length;
+    const needsSemantic = !memberOnly && intent.useSemantic;
+    const needsKeyword = !memberOnly && intent.useKeyword;
     const semanticRemoteReady = needsSemantic && vectorSearch && (typeof zillizReady !== 'function' || zillizReady());
     if (needsSemantic && searchMode === 'semantic' && !semanticRemoteReady) {
       sendError(res, 503, 'Team sharing vector index is not ready.');
@@ -4982,12 +5560,13 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         ? vectorSearch({
           teamSharingState,
           query: intent.semanticQuery,
+          workspaceId: effectiveWorkspaceId,
           channelId: body.channelId || '',
           projectKey: body.projectKey || '',
+          uploaderIds,
           dateRange,
           limit: candidateK,
           actor,
-          workspaceId: effectiveWorkspaceId,
           searchMode,
           modeBias: intent.modeBias,
           keywords: intent.keywords,
@@ -4996,8 +5575,10 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         : Promise.resolve(localVectorSearch({
           teamSharingState,
           query: intent.semanticQuery,
+          workspaceId: effectiveWorkspaceId,
           channelId: body.channelId || '',
           projectKey: body.projectKey || '',
+          uploaderIds,
           dateRange,
           limit: candidateK,
         })))
@@ -5012,12 +5593,13 @@ export async function handleTeamSharingApi(req, res, url, deps) {
             keywordQuery: intent.keywordQuery,
             keywords: intent.keywords,
             topics: intent.topics,
+            workspaceId: effectiveWorkspaceId,
             channelId: body.channelId || '',
             projectKey: body.projectKey || '',
+            uploaderIds,
             dateRange,
             limit: candidateK,
             actor,
-            workspaceId: effectiveWorkspaceId,
             searchMode,
             modeBias: intent.modeBias,
           }).catch((error) => ({ ok: false, error: error?.message || 'Team sharing keyword search failed.' }));
@@ -5028,8 +5610,10 @@ export async function handleTeamSharingApi(req, res, url, deps) {
             keywordQuery: intent.keywordQuery,
             keywords: intent.keywords,
             topics: intent.topics,
+            workspaceId: effectiveWorkspaceId,
             channelId: body.channelId || '',
             projectKey: body.projectKey || '',
+            uploaderIds,
             dateRange,
             limit: candidateK,
           });
@@ -5041,20 +5625,37 @@ export async function handleTeamSharingApi(req, res, url, deps) {
           keywordQuery: intent.keywordQuery,
           keywords: intent.keywords,
           topics: intent.topics,
+          workspaceId: effectiveWorkspaceId,
           channelId: body.channelId || '',
           projectKey: body.projectKey || '',
+          uploaderIds,
           dateRange,
           limit: candidateK,
         });
         return { ...fallback, degraded: Boolean(keywordSearch), remoteError: keywordSearch ? 'keyword_search_not_ready' : '' };
       })()
       : Promise.resolve({ ok: true, candidates: [] });
-    const [semantic, keyword] = await Promise.all([semanticPromise, keywordPromise]);
+    const [semantic, keyword] = memberOnly
+      ? [
+          recentUploaderDocuments({
+            teamSharingState,
+            uploaderIds,
+            workspaceId: effectiveWorkspaceId,
+            channelId: body.channelId || '',
+            projectKey: body.projectKey || '',
+            dateRange,
+            limit: candidateK,
+          }),
+          { ok: true, candidates: [] },
+        ]
+      : await Promise.all([semanticPromise, keywordPromise]);
     if (needsSemantic && !semantic?.ok && searchMode === 'semantic') {
       sendError(res, 503, semantic?.error || 'Team sharing vector search failed.');
       return true;
     }
-    const candidates = searchMode === 'semantic'
+    const candidates = memberOnly
+      ? asArray(semantic.candidates)
+      : searchMode === 'semantic'
       ? asArray(semantic.candidates)
       : searchMode === 'keyword'
         ? asArray(keyword.candidates)
@@ -5068,7 +5669,9 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       intent.semanticQuery,
       intent.keywords.join(' '),
     ], 3).join('\n');
-    const rerankResults = rerank
+    const rerankResults = memberOnly
+      ? []
+      : rerank
       ? await rerank({ query: rerankQuery, candidates, limit: candidateK })
       : localRerank({ query: rerankQuery, candidates });
     const ranked = rankTeamSharingCandidates({
@@ -5110,29 +5713,49 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sortBy,
       keywordCount: intent.keywords.length,
       topicCount: intent.topics.length,
+      memberStatus: memberResolution.status,
+      uploaderIds,
     });
     await persistState({ workspaceId: effectiveWorkspaceId, reason: 'team_sharing_search' });
     sendJson(res, 200, {
       ok: true,
       queryId: ranked.queryId,
       traceId: ranked.queryId,
+      memberResolution,
+      needsClarification: false,
       results: ranked.results.map((item) => {
         const contextUrl = resultContextUrl(item, ranked.queryId);
         const contextWebUrl = resultContextWebUrl(req, state, item, ranked.queryId);
+        const sourceKind = String(item.sourceKind || (item.shareId ? 'share' : 'session')).trim() || 'session';
+        const uploader = {
+          id: String(item.uploaderId || '').trim(),
+          name: String(item.uploaderName || '').trim(),
+          email: String(item.uploaderEmail || '').trim(),
+          avatar: String(item.uploaderAvatar || '').trim(),
+        };
+        const anchorEventId = sourceKind === 'share'
+          ? ''
+          : String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef);
         return {
           vectorDocumentId: item.vectorDocumentId,
+          sourceKind,
           sessionId: item.sessionId,
+          shareId: String(item.shareId || '').trim(),
+          shareSectionId: String(item.shareSectionId || '').trim(),
+          contentType: String(item.contentType || '').trim(),
           topicId: item.topicId,
           layer: item.layer,
           title: item.title,
           conclusion: compactText(item.text || item.title, 320),
           evidence: compactText(item.text || '', 320),
           sourceRef: item.sourceRef,
-          rawEventId: String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef),
-          anchorEventId: String(item.rawEventId || '').trim() || sourceAnchorEventId(item.sourceRef),
+          rawEventId: anchorEventId,
+          anchorEventId,
           contextUrl,
           contextWebUrl,
           contextPageUrl: contextWebUrl,
+          shareUrl: sourceKind === 'share' ? contextWebUrl : '',
+          uploader,
           finalScore: item.finalScore,
           vectorScore: item.vectorScore,
           rerankScore: item.rerankScore,
@@ -5156,6 +5779,10 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         useKeyword: needsKeyword,
         useSemantic: needsSemantic,
         modeBias: intent.modeBias,
+        ...(memberResolution.status !== 'none' ? { member: {
+          uploaderIds,
+          status: memberResolution.status,
+        } } : {}),
       },
       degraded: {
         semantic: needsSemantic && !semantic?.ok ? (semantic?.error || 'semantic_search_failed') : '',

@@ -143,6 +143,21 @@ function syncBody() {
   };
 }
 
+async function syncRouteSession(deps, body) {
+  const res = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/team-sharing/sync'),
+    {
+      ...deps,
+      readJson: async () => body,
+    },
+  ), true);
+  assert.equal(res.statusCode, 202);
+  return res;
+}
+
 function createContextPageHarness(html = '', options = {}) {
   const script = String(html || '').match(/<script>([\s\S]*?)<\/script>/)?.[1] || '';
   assert.ok(script, 'context page should embed a script');
@@ -938,6 +953,263 @@ test('team sharing hybrid search fuses semantic and keyword candidates before re
   assert.ok(searchRes.data.trace.keywords.includes('BM25'));
 });
 
+test('team sharing search resolves a natural-language member mention and filters by uploader', async () => {
+  let activeUploader = { id: 'hum_jhb', name: '蒋海波', email: 'jhb@example.com', avatar: 'https://avatar.example/jhb.png' };
+  const deps = routeDeps({
+    currentActor: () => ({
+      member: {
+        workspaceId: 'ws_route',
+        humanId: activeUploader.id,
+        name: activeUploader.name,
+        email: activeUploader.email,
+        avatar: activeUploader.avatar,
+      },
+    }),
+    vectorSearch: null,
+    keywordSearch: null,
+    rerank: null,
+  });
+  deps.state.humans = [
+    { id: 'hum_jhb', name: '蒋海波', email: 'jhb@example.com', avatar: 'https://avatar.example/jhb.png' },
+    { id: 'hum_zhang', name: '张三', email: 'zhang@example.com', avatar: 'https://avatar.example/zhang.png' },
+  ];
+  deps.state.cloud.workspaceMembers = [
+    { workspaceId: 'ws_route', humanId: 'hum_jhb', userId: 'usr_jhb', email: 'jhb@example.com', status: 'active' },
+    { workspaceId: 'ws_route', humanId: 'hum_zhang', userId: 'usr_zhang', email: 'zhang@example.com', status: 'active' },
+  ];
+
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_jhb_bm25',
+    idempotencyKey: 'route:member:jhb',
+    title: '蒋海波 BM25 检索方案',
+    events: [
+      { eventId: 'evt_jhb_1', ordinal: 1, role: 'user', text: 'BM25 检索要和 vector 混合。', createdAt: '2026-06-01T09:40:00.000Z' },
+      { eventId: 'evt_jhb_2', ordinal: 2, role: 'assistant', text: '结论：BM25 负责精确召回。', createdAt: '2026-06-01T09:41:00.000Z' },
+    ],
+  });
+  activeUploader = { id: 'hum_zhang', name: '张三', email: 'zhang@example.com', avatar: 'https://avatar.example/zhang.png' };
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_zhang_bm25',
+    idempotencyKey: 'route:member:zhang',
+    title: '张三 BM25 讨论',
+    events: [
+      { eventId: 'evt_zhang_1', ordinal: 1, role: 'user', text: 'BM25 索引参数记录。', createdAt: '2026-06-01T09:50:00.000Z' },
+    ],
+  });
+
+  const searchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    searchRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      readJson: async () => ({
+        query: '查蒋海关于 BM25 的讨论',
+        channelId: 'chan_team',
+        limit: 5,
+      }),
+    },
+  ), true);
+
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.memberResolution.status, 'matched');
+  assert.deepEqual(searchRes.data.memberResolution.matched.map((item) => item.id), ['hum_jhb']);
+  assert.equal(searchRes.data.semanticQuery, 'BM25');
+  assert.ok(searchRes.data.results.length > 0);
+  assert.ok(searchRes.data.results.every((item) => item.uploader.name === '蒋海波'));
+  assert.ok(!searchRes.data.results.some((item) => item.sessionId === 'sess_zhang_bm25'));
+});
+
+test('team sharing search returns clarification candidates for ambiguous partial member names', async () => {
+  let activeUploader = { id: 'hum_jhb', name: '蒋海波', email: 'jhb@example.com' };
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: activeUploader.id, name: activeUploader.name, email: activeUploader.email } }),
+    vectorSearch: null,
+    keywordSearch: null,
+    rerank: null,
+  });
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_jhb_recent',
+    idempotencyKey: 'route:ambiguous:jhb',
+    title: '蒋海波 BM25 方案',
+    events: [{ eventId: 'evt_jhb_recent_1', ordinal: 1, role: 'user', text: 'BM25 方案', createdAt: '2026-06-01T09:20:00.000Z' }],
+  });
+  activeUploader = { id: 'hum_jhz', name: '蒋海舟', email: 'jhz@example.com' };
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_jhz_recent',
+    idempotencyKey: 'route:ambiguous:jhz',
+    title: '蒋海舟 BM25 方案',
+    events: [{ eventId: 'evt_jhz_recent_1', ordinal: 1, role: 'user', text: 'BM25 方案', createdAt: '2026-06-01T09:30:00.000Z' }],
+  });
+  deps.state.teamSharing.sessions.sess_jhb_recent.updatedAt = '2026-06-01T09:30:00.000Z';
+  deps.state.teamSharing.sessions.sess_jhz_recent.updatedAt = '2026-06-01T09:45:00.000Z';
+
+  const searchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    searchRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      readJson: async () => ({
+        query: '查蒋海关于 BM25',
+        channelId: 'chan_team',
+        limit: 5,
+      }),
+    },
+  ), true);
+
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.needsClarification, true);
+  assert.equal(searchRes.data.memberResolution.status, 'ambiguous');
+  assert.deepEqual(searchRes.data.results, []);
+  assert.deepEqual(searchRes.data.memberResolution.candidates.map((item) => item.name), ['蒋海舟', '蒋海波']);
+});
+
+test('team sharing search merges explicit multiple members and member-only queries return recent sessions', async () => {
+  let activeUploader = { id: 'hum_jhb', name: '蒋海波', email: 'jhb@example.com' };
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: activeUploader.id, name: activeUploader.name, email: activeUploader.email } }),
+    vectorSearch: null,
+    keywordSearch: null,
+    rerank: null,
+  });
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_jhb_old',
+    idempotencyKey: 'route:multi:jhb-old',
+    title: '蒋海波 旧 BM25 会话',
+    events: [{ eventId: 'evt_jhb_old_1', ordinal: 1, role: 'user', text: 'BM25 old', createdAt: '2026-06-01T09:00:00.000Z' }],
+  });
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_jhb_new',
+    idempotencyKey: 'route:multi:jhb-new',
+    title: '蒋海波 新 BM25 会话',
+    events: [{ eventId: 'evt_jhb_new_1', ordinal: 1, role: 'user', text: 'BM25 new', createdAt: '2026-06-01T09:10:00.000Z' }],
+  });
+  activeUploader = { id: 'hum_zhang', name: '张三', email: 'zhang@example.com' };
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_zhang_multi',
+    idempotencyKey: 'route:multi:zhang',
+    title: '张三 BM25 会话',
+    events: [{ eventId: 'evt_zhang_multi_1', ordinal: 1, role: 'user', text: 'BM25 zhang', createdAt: '2026-06-01T09:15:00.000Z' }],
+  });
+  activeUploader = { id: 'hum_li', name: '李四', email: 'li@example.com' };
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_li_multi',
+    idempotencyKey: 'route:multi:li',
+    title: '李四 BM25 会话',
+    events: [{ eventId: 'evt_li_multi_1', ordinal: 1, role: 'user', text: 'BM25 li', createdAt: '2026-06-01T09:17:00.000Z' }],
+  });
+  deps.state.teamSharing.sessions.sess_jhb_old.updatedAt = '2026-06-01T09:00:00.000Z';
+  deps.state.teamSharing.sessions.sess_jhb_new.updatedAt = '2026-06-01T09:20:00.000Z';
+
+  const multiRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    multiRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      readJson: async () => ({
+        query: 'BM25',
+        channelId: 'chan_team',
+        members: ['蒋海波', '张三'],
+        limit: 10,
+      }),
+    },
+  ), true);
+
+  assert.equal(multiRes.statusCode, 200);
+  assert.equal(multiRes.data.memberResolution.status, 'matched');
+  assert.deepEqual(new Set(multiRes.data.memberResolution.matched.map((item) => item.name)), new Set(['蒋海波', '张三']));
+  assert.deepEqual(new Set(multiRes.data.results.map((item) => item.uploader.name)), new Set(['蒋海波', '张三']));
+  assert.ok(!multiRes.data.results.some((item) => item.uploader.name === '李四'));
+
+  const recentRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    recentRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      readJson: async () => ({
+        member: '蒋海波',
+        channelId: 'chan_team',
+        limit: 5,
+      }),
+    },
+  ), true);
+
+  assert.equal(recentRes.statusCode, 200);
+  assert.equal(recentRes.data.memberResolution.status, 'matched');
+  assert.deepEqual(recentRes.data.results.map((item) => item.sessionId), ['sess_jhb_new', 'sess_jhb_old']);
+  assert.ok(recentRes.data.results.every((item) => item.layer === 'L0'));
+});
+
+test('team sharing route passes resolved uploader filters into remote hybrid search', async () => {
+  let activeUploader = { id: 'hum_jhb', name: '蒋海波', email: 'jhb@example.com' };
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: activeUploader.id, name: activeUploader.name, email: activeUploader.email } }),
+  });
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_remote_jhb',
+    idempotencyKey: 'route:remote:jhb',
+    title: '蒋海波 remote BM25',
+    events: [{ eventId: 'evt_remote_jhb_1', ordinal: 1, role: 'user', text: 'remote BM25', createdAt: '2026-06-01T09:30:00.000Z' }],
+  });
+
+  const seen = {};
+  const searchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    searchRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      vectorSearch: async ({ teamSharingState, uploaderIds }) => {
+        seen.semanticUploaderIds = uploaderIds;
+        return {
+          ok: true,
+          candidates: teamSharingState.vectorDocuments
+            .filter((doc) => doc.sessionId === 'sess_remote_jhb')
+            .map((doc) => ({ ...doc, vectorScore: 0.8, keywordScore: 0.2, freshnessScore: 0.5 })),
+        };
+      },
+      keywordSearch: async ({ teamSharingState, uploaderIds }) => {
+        seen.keywordUploaderIds = uploaderIds;
+        return {
+          ok: true,
+          candidates: teamSharingState.vectorDocuments
+            .filter((doc) => doc.sessionId === 'sess_remote_jhb')
+            .map((doc) => ({ ...doc, vectorScore: 0.05, keywordScore: 0.8, freshnessScore: 0.5 })),
+        };
+      },
+      keywordSearchReady: () => true,
+      readJson: async () => ({
+        query: 'BM25',
+        member: '蒋海波',
+        channelId: 'chan_team',
+        limit: 5,
+      }),
+    },
+  ), true);
+
+  assert.equal(searchRes.statusCode, 200);
+  assert.deepEqual(seen.semanticUploaderIds, ['hum_jhb']);
+  assert.deepEqual(seen.keywordUploaderIds, ['hum_jhb']);
+  assert.equal(searchRes.data.results[0].uploader.name, '蒋海波');
+});
+
 test('team sharing route records feedback and serves context windows', async () => {
   const deps = routeDeps({ readJson: async () => syncBody() });
   await handleTeamSharingApi(
@@ -1021,13 +1293,16 @@ test('team sharing route doctor can probe embedding dimension on demand', async 
 });
 
 test('team sharing route creates an authenticated share and protects it by workspace', async () => {
+  const indexed = [];
   const deps = routeDeps({
     currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_route', name: 'Ada PM', email: 'ada@example.com' } }),
+    indexTeamSharingDocuments: async ({ documents }) => indexed.push(...documents),
     readJson: async () => ({
       title: 'Rerank 方案摘要',
       contentType: 'markdown',
-      content: '# Rerank 方案摘要\n\n团队结论：先召回，再重排，最后记录反馈。',
+      content: '# Rerank 方案摘要\n\n团队结论：先召回，再重排，最后记录反馈。\n\n## BM25 验收\n\n共享链接里的 BM25 检索内容也需要被成员召回。',
       channelPath: 'feishu://docs/team/channel/product-sharing',
+      channelId: 'chan_team',
       projectKey: 'magclaw',
     }),
   });
@@ -1043,8 +1318,34 @@ test('team sharing route creates an authenticated share and protects it by works
   assert.equal(createRes.data.ok, true);
   assert.match(createRes.data.url, /^https:\/\/magclaw\.example\/s\/share_/);
   assert.equal(deps.state.teamSharing.shares.length, 1);
+  assert.ok(indexed.some((doc) => doc.sourceKind === 'share' && doc.layer === 'L0' && doc.uploaderName === 'Ada PM'));
+  assert.ok(indexed.some((doc) => doc.sourceKind === 'share' && doc.layer === 'L1' && /BM25 检索内容/.test(doc.text || '')));
 
   const shareId = createRes.data.shareId;
+  const searchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    searchRes,
+    new URL('https://magclaw.example/api/team-sharing/search'),
+    {
+      ...deps,
+      vectorSearch: null,
+      keywordSearch: null,
+      rerank: null,
+      readJson: async () => ({
+        query: '查 Ada PM 关于 BM25 检索内容',
+        channelId: 'chan_team',
+        limit: 5,
+      }),
+    },
+  ), true);
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.memberResolution.status, 'matched');
+  assert.equal(searchRes.data.results[0].sourceKind, 'share');
+  assert.equal(searchRes.data.results[0].shareId, shareId);
+  assert.equal(searchRes.data.results[0].uploader.name, 'Ada PM');
+  assert.equal(searchRes.data.results[0].shareUrl, `https://magclaw.example/s/${shareId}`);
+
   const rejectedShare = makeResponse();
   assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: {} },

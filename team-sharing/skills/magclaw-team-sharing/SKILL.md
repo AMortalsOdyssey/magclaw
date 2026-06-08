@@ -24,6 +24,9 @@ Use this skill when the user asks what teammates discussed, wants to align with 
 2. Run `team-sharing search --query "<question>" --limit 5` from the configured project directory.
 3. Add retrieval filters when the user gives a time or search preference. Keep the default retrieval combined: keyword/BM25 and semantic/vector recall run together, then rerank.
    - Time: `--time today`, `--time yesterday`, `--time this-week`, or explicit `--from <iso> --to <iso>`.
+   - Teammate/member focus: when the user names a colleague, uploader, reporter, or member, keep the natural-language name in `--query` or add an explicit filter such as `--member "蒋海波"`, `--members "蒋海波,张三"`, `--uploader "蒋海波"`, or `--member-id hum_...`. Examples: `team-sharing search --query "查蒋海波关于 BM25 的讨论" --limit 5`, `team-sharing search --member "蒋海波" --query "BM25" --limit 5`, and `team-sharing search --members "蒋海波,张三" --query "测试环境" --limit 5`.
+   - Member-only recent view: `team-sharing search --member "蒋海波" --limit 5` returns that member's recently active Team Sharing entries.
+   - Ambiguous short names: if the JSON has `memberResolution.status = "ambiguous"` or `needsClarification = true`, show the candidates sorted by `lastActiveAt` and ask the user which member they mean. Do not guess. If the user explicitly asks for multiple listed members, rerun with `--members "A,B"`.
    - Exact keyword/BM25 inputs: add `--keyword "<term>"` or `--keywords "A,B,C"` when the user gives product names, IDs, file names, commands, or literal phrases.
    - Topic hints: add `--topic "<topic>"` or `--topics "A,B,C"` when the user asks across several topics.
    - Semantic intent: keep the full natural-language question in `--query`; use `--semantic-query "<meaning>"` only when you need to rewrite a long request into a clean semantic query.
@@ -35,6 +38,7 @@ Use this skill when the user asks what teammates discussed, wants to align with 
 6. Cite session titles, semantic source links, and the original-session web context link from the command output.
 7. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `team-sharing share-artifact --file <path> --title "<title>" --type html`.
    - `share-artifact` optimizes large inline `data:image/*`, `data:video/*`, and `data:audio/*` assets into protected Team Sharing asset references when the server supports it. Do not manually paste large base64 payloads into replies.
+   - Published share links are searchable Team Sharing sources too. Search results may include `sourceKind: "share"` with `shareId`, `shareUrl`, `contentType`, and `uploader`; cite the share link instead of an original-session context page for those rows.
 8. When the user wants to improve only one chapter, section, screenshot-selected area, heading, button, or related copy inside an existing MagClaw share link, do not regenerate the whole document.
    - First run `team-sharing read-link "<url>" --format json` and use `sections`, `versionId`, `contentHash`, and `assetRefs`.
    - Prepare a patch with `baseVersionId` and `operations`. Prefer `replace_section` with the target `sectionId`, `expectedHash`, and replacement HTML/Markdown. Also update related local anchors, TOC labels, summaries, or button text through additional operations only when they directly reference the changed section.
@@ -63,6 +67,8 @@ Use this skill when the user asks what teammates discussed, wants to align with 
 - Treat workspace source links and original context links as different destinations.
 - Workspace source links (`Abstract`, `SessionSyncHooks`, `RerankFeedback`, and other topic labels) should open the Team Sharing workspace file in the MagClaw channel UI. When a MagClaw channel URL is known, build links like `<channelUrl>#team-sharing-workspace-file:abstract.md` or `<channelUrl>#team-sharing-workspace-file:topics%2Frerank-feedback.md`. If no channel URL is known, show the semantic label plus the workspace path instead of linking it to `contextUrl`.
 - Original context links should use `contextWebUrl` first, then `contextPageUrl`. These fields are absolute links to the standalone `/team-sharing/context/<sessionId>` page, often scoped under `/s/<serverSlug>`.
+- For share results (`sourceKind: "share"`), use `shareUrl` or `contextWebUrl` as `[共享链接](<shareUrl>)`. Do not call it `[原始会话]`.
+- Always show uploader information when present, for example `上传者：蒋海波`. The `uploader` object is the server-side logged-in member who uploaded the session or published the share link.
 - If only a relative `contextUrl` is available, combine it with the configured MagClaw server URL before showing it. Do not show bare `/team-sharing/context/...` paths in user-facing replies.
 - When showing source entry points, map `sourceRef` to user-friendly workspace labels and derive the workspace file path from the part after `<sessionId>/`:
   - `*/abstract.md#...` -> `[Abstract](<workspace-file-link-to-abstract.md>)`

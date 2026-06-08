@@ -25,6 +25,28 @@ function cleanText(value = '') {
     .trim();
 }
 
+function uploaderSearchText(uploader = {}) {
+  return [
+    uploader.id,
+    uploader.name,
+    uploader.email,
+  ].map((value) => cleanText(value)).filter(Boolean).join(' ');
+}
+
+function uploaderVectorMetadata(uploader = {}) {
+  const id = String(uploader.id || '').trim();
+  const name = cleanText(uploader.name || '');
+  const email = String(uploader.email || '').trim();
+  const avatar = String(uploader.avatar || '').trim();
+  return {
+    uploaderId: id,
+    uploaderName: name,
+    uploaderEmail: email,
+    uploaderAvatar: avatar,
+    uploaderSearchText: uploaderSearchText({ id, name, email }),
+  };
+}
+
 function cleanMultilineText(value = '') {
   return stripOperationalText(redactSecrets(value))
     .replace(/\r\n/g, '\n')
@@ -1265,6 +1287,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     updatedAt,
   };
   const common = {
+    sourceKind: 'session',
     workspaceId: session.workspaceId,
     channelId: session.channelId,
     projectKey: session.projectKey,
@@ -1273,6 +1296,7 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
     title,
     updatedAt,
     active: true,
+    ...uploaderVectorMetadata(session.uploader || {}),
   };
   const l0Presentations = presentationsForEventIds(sourceEventIds);
   upsertVectorDocument(teamSharingState, {
@@ -1306,6 +1330,27 @@ function updateSessionAbstract(teamSharingState, session, acceptedEvents, option
       freshnessScore: 1,
       presentationModes: presentationModesFor(topicPresentations),
       presentations: topicPresentations,
+    });
+  }
+  for (const event of allEvents) {
+    const rawEventId = String(event.rawEventId || event.eventId || '').trim();
+    if (!rawEventId) continue;
+    const eventText = cleanMultilineText(teamSharingDisplayBodyForRecord(event) || event.cleanText || '');
+    if (!eventText) continue;
+    upsertVectorDocument(teamSharingState, {
+      ...common,
+      vectorDocumentId: `${session.sessionId}:L2:${rawEventId}`,
+      layer: 'L2',
+      topicId: '',
+      rawEventId,
+      sourceEventIds: [rawEventId],
+      sourceRef: `${session.sessionId}/events/${rawEventId}.md#${rawEventId}`,
+      text: `${title}\n${event.role || 'message'}\n${eventText}`,
+      vectorScore: 0,
+      keywordScore: 0,
+      freshnessScore: 1,
+      presentationModes: presentationModesFor(presentationsForEventIds([rawEventId])),
+      presentations: presentationsForEventIds([rawEventId]),
     });
   }
   if (acceptedEvents.length) {

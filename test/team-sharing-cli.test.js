@@ -1572,6 +1572,12 @@ test('team sharing cli search and context use configured profile token', async (
       candidateK: 25,
       mode: 'exact',
       keywords: 'rerank、BM25',
+      member: '蒋海波',
+      members: '张三、李四',
+      uploader: '王五',
+      uploaders: ['赵六'],
+      memberId: 'hum_jhb',
+      memberIds: 'hum_zhang,hum_li',
       sort: 'recent',
       minScore: 0.2,
       now: '2026-06-04T03:00:00.000Z',
@@ -1602,10 +1608,16 @@ test('team sharing cli search and context use configured profile token', async (
       useSemantic: true,
       modeBias: 'keyword',
       source: 'team-sharing-cli',
+      member: {
+        names: ['蒋海波', '张三', '李四', '王五', '赵六'],
+        ids: ['hum_jhb', 'hum_zhang', 'hum_li'],
+      },
     });
     assert.ok(calls[0].body.keywords.includes('rerank'));
     assert.ok(calls[0].body.keywords.includes('BM25'));
     assert.ok(calls[0].body.topics.includes('rerank 结论'));
+    assert.deepEqual(calls[0].body.memberNames, ['蒋海波', '张三', '李四', '王五', '赵六']);
+    assert.deepEqual(calls[0].body.memberIds, ['hum_jhb', 'hum_zhang', 'hum_li']);
     assert.equal(calls[0].body.timePreference, 'yesterday');
     assert.equal(calls[0].body.sortBy, 'recent');
     assert.equal(calls[0].body.candidateK, 25);
@@ -2247,6 +2259,12 @@ test('team sharing cli installs a local skill without writing token into skill f
   assert.match(skill, /--keyword/);
   assert.match(skill, /--topics/);
   assert.match(skill, /--semantic-query/);
+  assert.match(skill, /--member "蒋海波"/);
+  assert.match(skill, /--members "蒋海波,张三"/);
+  assert.match(skill, /--member-id hum_/);
+  assert.match(skill, /memberResolution/);
+  assert.match(skill, /needsClarification/);
+  assert.match(skill, /uploader/);
   assert.match(skill, /--mode keyword/);
   assert.match(skill, /--mode semantic/);
   assert.match(skill, /--keyword-only/);

@@ -121,6 +121,13 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
   assert.ok(state.teamSharing.activities.some((item) => item.summary.includes('同步 2 条清洗事件')));
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L0' && doc.sessionId === 'sess_rerank_design'));
   assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback' && doc.rawEventId && /topics\/rerank-feedback\.md#/.test(doc.sourceRef)));
+  assert.ok(state.teamSharing.vectorDocuments.some((doc) => doc.layer === 'L2' && doc.rawEventId === 'evt_1' && /我们要给团队共享加入 rerank/.test(doc.text || '')));
+  for (const doc of state.teamSharing.vectorDocuments.filter((item) => item.sessionId === 'sess_rerank_design')) {
+    assert.equal(doc.uploaderId, 'hum_jhb');
+    assert.equal(doc.uploaderName, '蒋海波');
+    assert.match(doc.uploaderSearchText, /hum_jhb/);
+    assert.match(doc.uploaderSearchText, /蒋海波/);
+  }
 });
 
 test('team sharing sync deduplicates the same transcript event when parser ordinals change', async () => {

@@ -256,7 +256,14 @@ function dateBound(dateRange = {}, keys = []) {
   return '';
 }
 
-function buildZillizFilter({ workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', dateRange = null } = {}) {
+function zillizOrEquals(fieldName = '', values = []) {
+  const unique = [...new Set(normalizeTextList(values))];
+  if (!fieldName || !unique.length) return '';
+  const clauses = unique.map((value) => `${fieldName} == "${zillizFilterValue(value)}"`);
+  return clauses.length === 1 ? clauses[0] : `(${clauses.join(' || ')})`;
+}
+
+function buildZillizFilter({ workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', sourceKind = '', uploaderIds = [], dateRange = null } = {}) {
   const range = dateRange && typeof dateRange === 'object' ? dateRange : {};
   const from = dateBound(range, ['from', 'start', 'since', 'updatedAfter', 'updated_after']);
   const to = dateBound(range, ['to', 'end', 'until', 'updatedBefore', 'updated_before']);
@@ -266,6 +273,8 @@ function buildZillizFilter({ workspaceId = '', channelId = '', projectKey = '', 
     projectKey ? `project_key == "${zillizFilterValue(projectKey)}"` : '',
     sessionId ? `session_id == "${zillizFilterValue(sessionId)}"` : '',
     layer ? `layer == "${zillizFilterValue(layer)}"` : '',
+    sourceKind ? `source_kind == "${zillizFilterValue(sourceKind)}"` : '',
+    zillizOrEquals('uploader_id', uploaderIds),
     from ? `updated_at >= "${zillizFilterValue(from)}"` : '',
     to ? `updated_at <= "${zillizFilterValue(to)}"` : '',
   ].filter(Boolean).join(' && ');
@@ -281,11 +290,20 @@ function zillizCandidate(row = {}) {
   const entity = row.entity && typeof row.entity === 'object' ? row.entity : row;
   return {
     vectorDocumentId: String(entity.vector_document_id || entity.vectorDocumentId || entity.id || entity._id || ''),
+    sourceKind: String(entity.source_kind || entity.sourceKind || ''),
     workspaceId: String(entity.workspace_id || entity.workspaceId || ''),
     channelId: String(entity.channel_id || entity.channelId || ''),
     projectKey: String(entity.project_key || entity.projectKey || ''),
     runtime: String(entity.runtime || ''),
     sessionId: String(entity.session_id || entity.sessionId || ''),
+    shareId: String(entity.share_id || entity.shareId || ''),
+    shareSectionId: String(entity.share_section_id || entity.shareSectionId || ''),
+    contentType: String(entity.content_type || entity.contentType || ''),
+    uploaderId: String(entity.uploader_id || entity.uploaderId || ''),
+    uploaderName: String(entity.uploader_name || entity.uploaderName || ''),
+    uploaderEmail: String(entity.uploader_email || entity.uploaderEmail || ''),
+    uploaderAvatar: String(entity.uploader_avatar || entity.uploaderAvatar || ''),
+    uploaderSearchText: String(entity.uploader_search_text || entity.uploaderSearchText || ''),
     topicId: String(entity.topic_id || entity.topicId || ''),
     layer: String(entity.layer || ''),
     title: String(entity.title || ''),
@@ -354,11 +372,20 @@ function documentEntity(document = {}, embedding = []) {
   return {
     _id: String(document.vectorDocumentId || document.id || ''),
     vector_document_id: String(document.vectorDocumentId || document.id || ''),
+    source_kind: String(document.sourceKind || 'session'),
     workspace_id: String(document.workspaceId || ''),
     channel_id: String(document.channelId || ''),
     project_key: String(document.projectKey || ''),
     runtime: String(document.runtime || ''),
     session_id: String(document.sessionId || ''),
+    share_id: String(document.shareId || ''),
+    share_section_id: String(document.shareSectionId || ''),
+    content_type: String(document.contentType || ''),
+    uploader_id: String(document.uploaderId || ''),
+    uploader_name: String(document.uploaderName || ''),
+    uploader_email: String(document.uploaderEmail || ''),
+    uploader_avatar: String(document.uploaderAvatar || ''),
+    uploader_search_text: String(document.uploaderSearchText || ''),
     topic_id: String(document.topicId || ''),
     layer: String(document.layer || ''),
     title: String(document.title || ''),
@@ -403,11 +430,20 @@ export function createZillizTeamSharingClient(options = {}) {
   function outputFields() {
     return [
       'vector_document_id',
+      'source_kind',
       'workspace_id',
       'channel_id',
       'project_key',
       'runtime',
       'session_id',
+      'share_id',
+      'share_section_id',
+      'content_type',
+      'uploader_id',
+      'uploader_name',
+      'uploader_email',
+      'uploader_avatar',
+      'uploader_search_text',
       'topic_id',
       'layer',
       'title',
@@ -495,10 +531,19 @@ export function createZillizTeamSharingClient(options = {}) {
       { fieldName: '_id', dataType: 'VarChar', isPrimary: true, elementTypeParams: { max_length: 512 } },
       { fieldName: 'vector', dataType: 'FloatVector', elementTypeParams: { dim: collectionDimension } },
       { fieldName: 'vector_document_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'source_kind', dataType: 'VarChar', elementTypeParams: { max_length: 64 } },
       { fieldName: 'workspace_id', dataType: 'VarChar', elementTypeParams: { max_length: 256 } },
       { fieldName: 'channel_id', dataType: 'VarChar', elementTypeParams: { max_length: 256 } },
       { fieldName: 'project_key', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
       { fieldName: 'session_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'share_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'share_section_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'content_type', dataType: 'VarChar', elementTypeParams: { max_length: 64 } },
+      { fieldName: 'uploader_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'uploader_name', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'uploader_email', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
+      { fieldName: 'uploader_avatar', dataType: 'VarChar', elementTypeParams: { max_length: 2048 } },
+      { fieldName: 'uploader_search_text', dataType: 'VarChar', elementTypeParams: { max_length: 2048 } },
       { fieldName: 'topic_id', dataType: 'VarChar', elementTypeParams: { max_length: 512 } },
       { fieldName: 'layer', dataType: 'VarChar', elementTypeParams: { max_length: 32 } },
       { fieldName: 'title', dataType: 'VarChar', elementTypeParams: { max_length: 4096 } },
@@ -590,8 +635,8 @@ export function createZillizTeamSharingClient(options = {}) {
     }
   }
   return {
-    async search({ queryVector = [], workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', dateRange = null, limit = 40 } = {}) {
-      const filter = buildZillizFilter({ workspaceId, channelId, projectKey, sessionId, layer, dateRange });
+    async search({ queryVector = [], workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', sourceKind = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
+      const filter = buildZillizFilter({ workspaceId, channelId, projectKey, sessionId, layer, sourceKind, uploaderIds, dateRange });
       const data = await zillizRequest('/v2/vectordb/entities/search', {
         ...commonBody(),
         data: [queryVector],
@@ -605,8 +650,8 @@ export function createZillizTeamSharingClient(options = {}) {
         candidates: flattenZillizRows(data).map(zillizCandidate).filter((item) => item.vectorDocumentId),
       };
     },
-    async keywordSearch({ query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', dateRange = null, limit = 40 } = {}) {
-      const filter = buildZillizFilter({ workspaceId, channelId, projectKey, sessionId, layer, dateRange });
+    async keywordSearch({ query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', sourceKind = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
+      const filter = buildZillizFilter({ workspaceId, channelId, projectKey, sessionId, layer, sourceKind, uploaderIds, dateRange });
       const queries = zillizKeywordQueries({ query, keywordQuery, keywords, topics });
       if (!queries.length) return { ok: true, candidates: [] };
       const results = await Promise.all(queries.map((keyword) => zillizRequest('/v2/vectordb/entities/search', {

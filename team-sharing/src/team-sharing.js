@@ -232,6 +232,25 @@ function buildSearchIntent({ query = '', flags = {}, env = process.env } = {}) {
   };
 }
 
+function explicitMemberFilters(flags = {}) {
+  const memberNames = uniqueSearchList([
+    ...normalizeSearchList(flags.member),
+    ...normalizeSearchList(flags.memberName),
+    ...normalizeSearchList(flags.memberNames),
+    ...normalizeSearchList(flags.members),
+    ...normalizeSearchList(flags.uploader),
+    ...normalizeSearchList(flags.uploaders),
+  ], 24);
+  const memberIds = uniqueSearchList([
+    ...normalizeSearchList(flags.memberId),
+    ...normalizeSearchList(flags.memberIds),
+    ...normalizeSearchList(flags.uploaderId),
+    ...normalizeSearchList(flags.uploaderIds),
+  ], 24);
+  const memberQuery = String(flags.memberQuery || flags.member_query || '').trim();
+  return { memberNames, memberIds, memberQuery };
+}
+
 function searchTimeZoneOffsetMinutes(flags = {}, env = process.env) {
   return numberFlag(
     flags.timezoneOffsetMinutes
@@ -1937,9 +1956,15 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
 
 export async function searchTeamSharing(flags = {}, env = process.env) {
   const query = String(flags.query || flags._?.slice(1).join(' ') || '').trim();
-  if (!query) throw new Error('Usage: team-sharing search --query <text>');
+  const memberFilters = explicitMemberFilters(flags);
+  if (!query && !memberFilters.memberNames.length && !memberFilters.memberIds.length && !memberFilters.memberQuery) {
+    throw new Error('Usage: team-sharing search --query <text> [--member <name>]');
+  }
   const { project, serverUrl, token, machineFingerprint } = await resolveTeamSharingClient(flags, env, { allowLogin: true });
   const intent = buildSearchIntent({ query, flags, env });
+  const retrievalMember = memberFilters.memberNames.length || memberFilters.memberIds.length
+    ? { names: memberFilters.memberNames, ids: memberFilters.memberIds }
+    : undefined;
   const result = await teamSharingRequestJson({
     serverUrl,
     token,
@@ -1952,6 +1977,9 @@ export async function searchTeamSharing(flags = {}, env = process.env) {
       keywordQuery: intent.keywordQuery,
       keywords: intent.keywords,
       topics: intent.topics,
+      memberQuery: memberFilters.memberQuery || undefined,
+      memberNames: memberFilters.memberNames,
+      memberIds: memberFilters.memberIds,
       channelId: flags.channelId || project.config.channelId || '',
       projectKey: flags.projectKey || project.config.projectKey || '',
       dateRange: intent.dateRange,
@@ -1963,6 +1991,7 @@ export async function searchTeamSharing(flags = {}, env = process.env) {
         useSemantic: intent.useSemantic,
         modeBias: intent.modeBias,
         source: 'team-sharing-cli',
+        ...(retrievalMember ? { member: retrievalMember } : {}),
       },
       sortBy: normalizeSearchSort(flags.sortBy || flags.sort || flags.orderBy),
       candidateK: flags.candidateK ? numberFlag(flags.candidateK) : undefined,

@@ -130,6 +130,10 @@ test('zilliz client searches and upserts team-sharing vector documents with scop
                 channel_id: 'chan_team',
                 project_key: 'magclaw',
                 session_id: 'sess_1',
+                uploader_id: 'hum_jhb',
+                uploader_name: '蒋海波',
+                uploader_email: 'jhb@example.com',
+                uploader_search_text: 'hum_jhb 蒋海波 jhb@example.com',
                 topic_id: 'rerank-feedback',
                 layer: 'L1',
                 title: 'Rerank feedback',
@@ -150,6 +154,7 @@ test('zilliz client searches and upserts team-sharing vector documents with scop
     queryVector: [0.1, 0.2, 0.3],
     channelId: 'chan_team',
     projectKey: 'magclaw',
+    uploaderIds: ['hum_jhb', 'hum_zhang'],
     dateRange: {
       from: '2026-06-01T00:00:00.000Z',
       to: '2026-06-02T00:00:00.000Z',
@@ -164,6 +169,10 @@ test('zilliz client searches and upserts team-sharing vector documents with scop
         channelId: 'chan_team',
         projectKey: 'magclaw',
         sessionId: 'sess_1',
+        uploaderId: 'hum_jhb',
+        uploaderName: '蒋海波',
+        uploaderEmail: 'jhb@example.com',
+        uploaderSearchText: 'hum_jhb 蒋海波 jhb@example.com',
         topicId: 'rerank-feedback',
         layer: 'L1',
         title: 'Rerank feedback',
@@ -177,17 +186,23 @@ test('zilliz client searches and upserts team-sharing vector documents with scop
 
   assert.equal(search.ok, true);
   assert.equal(search.candidates[0].vectorDocumentId, 'doc_1');
+  assert.equal(search.candidates[0].uploaderName, '蒋海波');
   assert.equal(search.candidates[0].vectorScore, 0.82);
   assert.match(calls[0].url, /\/v2\/vectordb\/entities\/search$/);
   assert.equal(calls[0].body.dbName, 'ai_social_memory');
   assert.equal(calls[0].body.collectionName, 'magclaw_team_sharing_v1');
+  assert.ok(calls[0].body.outputFields.includes('uploader_name'));
   assert.match(calls[0].body.filter, /channel_id == "chan_team"/);
   assert.match(calls[0].body.filter, /project_key == "magclaw"/);
+  assert.match(calls[0].body.filter, /\(uploader_id == "hum_jhb" \|\| uploader_id == "hum_zhang"\)/);
   assert.match(calls[0].body.filter, /updated_at >= "2026-06-01T00:00:00.000Z"/);
   assert.match(calls[0].body.filter, /updated_at <= "2026-06-02T00:00:00.000Z"/);
   assert.equal(upsert.ok, true);
   assert.match(calls[1].url, /\/v2\/vectordb\/entities\/upsert$/);
   assert.equal(calls[1].body.data[0].vector.length, 3);
+  assert.equal(calls[1].body.data[0].uploader_id, 'hum_jhb');
+  assert.equal(calls[1].body.data[0].uploader_name, '蒋海波');
+  assert.equal(calls[1].body.data[0].uploader_email, 'jhb@example.com');
   assert.equal(calls[1].init.headers.authorization, 'Bearer zilliz-secret');
 });
 
@@ -208,6 +223,8 @@ test('zilliz client runs BM25 keyword search by default', async () => {
             channel_id: 'chan_team',
             project_key: 'magclaw',
             session_id: 'sess_keyword',
+            uploader_id: 'hum_jhb',
+            uploader_name: '蒋海波',
             topic_id: 'session-sync-hooks',
             layer: 'L1',
             title: 'Session sync hooks',
@@ -226,6 +243,7 @@ test('zilliz client runs BM25 keyword search by default', async () => {
     workspaceId: 'ws_team',
     channelId: 'chan_team',
     projectKey: 'magclaw',
+    uploaderIds: ['hum_jhb'],
     limit: 20,
   });
 
@@ -237,6 +255,7 @@ test('zilliz client runs BM25 keyword search by default', async () => {
   assert.equal(calls[0].body.metricType, 'BM25');
   assert.deepEqual(calls[0].body.data, ['rawEventId anchorEventId']);
   assert.match(calls[0].body.filter, /workspace_id == "ws_team"/);
+  assert.match(calls[0].body.filter, /uploader_id == "hum_jhb"/);
 });
 
 test('zilliz client runs multiple BM25 keyword queries and fuses results', async () => {
@@ -347,6 +366,9 @@ test('zilliz client creates BM25 schema and sparse index for new collections by 
   const result = await client.ensureCollection({ dimension: 3 });
   const createBody = calls.find((call) => String(call.url).endsWith('/collections/create')).body;
   const textField = createBody.schema.fields.find((field) => field.fieldName === 'text');
+  const uploaderIdField = createBody.schema.fields.find((field) => field.fieldName === 'uploader_id');
+  const uploaderNameField = createBody.schema.fields.find((field) => field.fieldName === 'uploader_name');
+  const uploaderSearchTextField = createBody.schema.fields.find((field) => field.fieldName === 'uploader_search_text');
   const sparseField = createBody.schema.fields.find((field) => field.fieldName === 'sparse');
   const sparseIndex = calls.find((call) => String(call.url).endsWith('/indexes/create') && call.body.indexParams[0].fieldName === 'sparse');
 
@@ -357,6 +379,9 @@ test('zilliz client creates BM25 schema and sparse index for new collections by 
     filter: ['lowercase', 'cnalphanumonly'],
   });
   assert.equal(sparseField.dataType, 'SparseFloatVector');
+  assert.equal(uploaderIdField.dataType, 'VarChar');
+  assert.equal(uploaderNameField.dataType, 'VarChar');
+  assert.equal(uploaderSearchTextField.dataType, 'VarChar');
   assert.equal(createBody.schema.functions[0].type, 'BM25');
   assert.equal(createBody.schema.functions[0].outputFieldNames[0], 'sparse');
   assert.equal(sparseIndex.body.indexParams[0].metricType, 'BM25');
