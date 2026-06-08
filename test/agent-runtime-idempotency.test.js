@@ -34,6 +34,35 @@ test('agent responses dedupe repeated delivery results before writing records', 
   );
 });
 
+test('agent process start status updates rely on realtime events instead of full state resyncs', async () => {
+  const source = await readFile(new URL('../server/agent-runtime/process-start.js', import.meta.url), 'utf8');
+  const startSource = source.slice(
+    source.indexOf('async function startAgentProcess'),
+    source.indexOf('function claudeStreamEvents'),
+  );
+  const claudeStartSource = source.slice(
+    source.indexOf('async function startClaudeAgent'),
+    source.indexOf('function startCodexAgent'),
+  );
+
+  assert.match(startSource, /setAgentStatus\(agent, 'starting', 'delivery_started'\);[\s\S]*?broadcastState\(\{ realtimeOnly: true \}\);/);
+  assert.match(claudeStartSource, /setAgentStatus\(agent, 'thinking', 'claude_turn_started', \{ activeWorkItemIds: deliveredWorkItemIds \}\);[\s\S]*?broadcastState\(\{ realtimeOnly: true \}\);/);
+  assert.doesNotMatch(
+    startSource.slice(
+      startSource.indexOf("setAgentStatus(agent, 'starting', 'delivery_started')"),
+      startSource.indexOf("addSystemEvent('agent_starting'"),
+    ),
+    /broadcastState\(\);/,
+  );
+  assert.doesNotMatch(
+    claudeStartSource.slice(
+      claudeStartSource.indexOf("setAgentStatus(agent, 'thinking', 'claude_turn_started'"),
+      claudeStartSource.indexOf('const claudeCommand'),
+    ),
+    /broadcastState\(\);/,
+  );
+});
+
 test('streaming agent responses update one record and finalize the same record', async () => {
   const source = await readFile(new URL('../server/agent-runtime/warm-control-relay.js', import.meta.url), 'utf8');
   const streamSource = source.slice(

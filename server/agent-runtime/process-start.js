@@ -57,7 +57,7 @@ async function startAgentProcess(agent, spaceType, spaceId, initialMessage) {
   // Update agent status
   setAgentStatus(agent, 'starting', 'delivery_started');
   await persistState();
-  broadcastState();
+  broadcastState({ realtimeOnly: true });
 
   addSystemEvent('agent_starting', `Starting ${agent.name} (${runtime})`, { agentId, sessionId });
 
@@ -217,7 +217,7 @@ async function startClaudeAgent(agent, proc, workspace) {
   const deliveredWorkItemIds = markWorkItemsDelivered(promptMessages, 'turn');
   setAgentStatus(agent, 'thinking', 'claude_turn_started', { activeWorkItemIds: deliveredWorkItemIds });
   await persistState();
-  broadcastState();
+  broadcastState({ realtimeOnly: true });
 
   const claudeCommand = process.env.CLAUDE_PATH || 'claude';
   const child = spawn(claudeCommand, args, {
