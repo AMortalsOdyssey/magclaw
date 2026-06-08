@@ -2006,6 +2006,47 @@ test('team sharing update check prefers server package update API and records co
   }
 });
 
+async function writeFakeTeamSharingPackage(packageRoot, version, options = {}) {
+  await mkdir(path.join(packageRoot, 'bin'), { recursive: true });
+  await mkdir(path.join(packageRoot, 'src'), { recursive: true });
+  await writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({
+    name: '@magclaw/team-sharing',
+    version,
+    type: 'module',
+    bin: { 'team-sharing': 'bin/team-sharing.js' },
+  }));
+  const mode = String(options.mode || 'ok');
+  const versionLine = mode === 'wrong-version'
+    ? `console.log(${JSON.stringify(options.reportedVersion || '9.9.9')});`
+    : `console.log(${JSON.stringify(version)});`;
+  const commandLines = mode === 'exit'
+    ? ['console.error("verify failed"); process.exit(42);']
+    : [
+      'if (process.argv.includes("-V") || process.argv.includes("--version")) {',
+      `  ${versionLine}`,
+      '  process.exit(0);',
+      '}',
+      'console.log(JSON.stringify({ ok: true, args: process.argv.slice(2) }));',
+    ];
+  await writeFile(path.join(packageRoot, 'bin', 'team-sharing.js'), [
+    '#!/usr/bin/env node',
+    ...commandLines,
+  ].join('\n'));
+  return {
+    version,
+    packageRoot,
+    bin: path.join(packageRoot, 'bin', 'team-sharing.js'),
+  };
+}
+
+async function writeUpdateState(paths, active) {
+  const state = { version: 1, active, previousActive: null, lastUpdate: null };
+  await mkdir(path.dirname(paths.updateState), { recursive: true });
+  await writeFile(paths.updateState, `${JSON.stringify(state, null, 2)}\n`);
+  await writeFile(paths.updateActive, `${JSON.stringify(state, null, 2)}\n`);
+  return state;
+}
+
 test('team sharing update stages a source package, activates it, and syncs registered projects best-effort', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-project-'));
   const source = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-source-'));
@@ -2050,14 +2091,217 @@ test('team sharing update stages a source package, activates it, and syncs regis
   }, env);
   const paths = teamSharingPaths({ cwd, env });
   const state = JSON.parse(await readFile(paths.updateState, 'utf8'));
+  const notifications = JSON.parse(await readFile(paths.updateNotifications, 'utf8'));
   const skill = await readFile(path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8');
 
   assert.equal(result.ok, true);
   assert.equal(result.activated, true);
   assert.equal(result.syncedProjects.length, 1);
   assert.equal(state.active.version, '0.1.56');
+  assert.equal(state.active.health.ok, true);
+  assert.equal(state.active.health.status, 'healthy');
+  assert.equal(state.active.health.version, '0.1.56');
+  assert.equal(state.active.health.method, 'smoke');
   assert.match(state.active.bin, /versions/);
+  assert.equal(notifications.notifications[0].version, '0.1.56');
   assert.match(skill, /@magclaw\/team-sharing@0\.1\.56/);
+});
+
+test('team sharing update rolls back to the previous active package only when its health record is healthy', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-rollback-home-'));
+  const oldPackage = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-rollback-old-'));
+  const badNewPackage = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-rollback-new-'));
+  const env = { HOME: home, MAGCLAW_TEAM_SHARING_VERSION: '0.1.55' };
+  const old = await writeFakeTeamSharingPackage(oldPackage, '0.1.55');
+  await writeFakeTeamSharingPackage(badNewPackage, '0.1.56', { mode: 'exit' });
+  const paths = teamSharingPaths({ env });
+  await writeUpdateState(paths, {
+    version: '0.1.55',
+    bin: old.bin,
+    packageRoot: old.packageRoot,
+    versionDir: old.packageRoot,
+    health: {
+      ok: true,
+      status: 'healthy',
+      version: '0.1.55',
+      method: 'smoke',
+      checkedAt: '2026-06-08T00:00:00.000Z',
+    },
+    lastHealthyAt: '2026-06-08T00:00:00.000Z',
+  });
+
+  const result = await updateTeamSharingPackage({
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+    sourceDir: badNewPackage,
+    yes: true,
+  }, env);
+  const state = JSON.parse(await readFile(paths.updateState, 'utf8'));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.rolledBack, true);
+  assert.equal(result.previousHealth.ok, true);
+  assert.equal(state.active.version, '0.1.55');
+  assert.equal(state.active.health.status, 'healthy');
+  assert.equal(state.lastUpdate.rolledBack, true);
+  assert.equal(state.lastUpdate.previousHealth.ok, true);
+});
+
+test('team sharing update does not roll back to an unhealthy previous active package', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-no-rollback-home-'));
+  const oldPackage = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-no-rollback-old-'));
+  const badNewPackage = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-no-rollback-new-'));
+  const env = { HOME: home, MAGCLAW_TEAM_SHARING_VERSION: '0.1.55' };
+  const old = await writeFakeTeamSharingPackage(oldPackage, '0.1.55');
+  await writeFakeTeamSharingPackage(badNewPackage, '0.1.56', { mode: 'wrong-version', reportedVersion: '0.1.54' });
+  const paths = teamSharingPaths({ env });
+  await writeUpdateState(paths, {
+    version: '0.1.55',
+    bin: old.bin,
+    packageRoot: old.packageRoot,
+    versionDir: old.packageRoot,
+    health: {
+      ok: false,
+      status: 'unhealthy',
+      version: '0.1.55',
+      method: 'smoke',
+      checkedAt: '2026-06-08T00:00:00.000Z',
+      error: 'previous smoke failed',
+    },
+  });
+
+  const result = await updateTeamSharingPackage({
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+    sourceDir: badNewPackage,
+    yes: true,
+  }, env);
+  const state = JSON.parse(await readFile(paths.updateState, 'utf8'));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.rolledBack, false);
+  assert.equal(result.previousHealth.ok, false);
+  assert.equal(state.active, null);
+  assert.equal(state.lastUpdate.rolledBack, false);
+  assert.equal(state.lastUpdate.previousHealth.status, 'unhealthy');
+});
+
+test('team sharing update records staging failure without switching the active package', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-stage-fail-home-'));
+  const oldPackage = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-stage-fail-old-'));
+  const missingSource = path.join(os.tmpdir(), `missing-team-sharing-${Date.now()}`);
+  const env = { HOME: home, MAGCLAW_TEAM_SHARING_VERSION: '0.1.55' };
+  const old = await writeFakeTeamSharingPackage(oldPackage, '0.1.55');
+  const paths = teamSharingPaths({ env });
+  await writeUpdateState(paths, {
+    version: '0.1.55',
+    bin: old.bin,
+    packageRoot: old.packageRoot,
+    versionDir: old.packageRoot,
+    health: {
+      ok: true,
+      status: 'healthy',
+      version: '0.1.55',
+      method: 'smoke',
+      checkedAt: '2026-06-08T00:00:00.000Z',
+    },
+  });
+
+  const result = await updateTeamSharingPackage({
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+    sourceDir: missingSource,
+    yes: true,
+  }, env);
+  const state = JSON.parse(await readFile(paths.updateState, 'utf8'));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.phase, 'stage');
+  assert.equal(result.activePreserved, true);
+  assert.equal(state.active.version, '0.1.55');
+  assert.equal(state.lastUpdate.phase, 'stage');
+  assert.equal(state.lastUpdate.activePreserved, true);
+});
+
+test('team sharing update all skips missing projects and isolates project sync failures', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-all-root-'));
+  const goodProject = path.join(root, 'good');
+  const missingProject = path.join(root, 'missing');
+  const badProject = path.join(root, 'bad');
+  const source = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-all-source-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-all-home-'));
+  const env = {
+    HOME: home,
+    CODEX_HOME: path.join(home, '.codex'),
+    MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'),
+    MAGCLAW_TEAM_SHARING_VERSION: '0.1.55',
+  };
+  await mkdir(goodProject, { recursive: true });
+  await mkdir(missingProject, { recursive: true });
+  await mkdir(badProject, { recursive: true });
+  await writeFile(path.join(goodProject, 'package.json'), '{"name":"good"}\n');
+  await writeFile(path.join(missingProject, 'package.json'), '{"name":"missing"}\n');
+  await writeFile(path.join(badProject, 'package.json'), '{"name":"bad"}\n');
+  await writeFile(path.join(badProject, '.agents'), 'not a directory\n');
+  await writeFakeTeamSharingPackage(source, '0.1.56');
+  await initTeamSharingProject({ cwd: goodProject, channel: 'chan_good', serverUrl: 'https://magclaw.example', workspaceId: 'ws_team', projectKey: 'good' }, env);
+  await initTeamSharingProject({ cwd: missingProject, channel: 'chan_missing', serverUrl: 'https://magclaw.example', workspaceId: 'ws_team', projectKey: 'missing' }, env);
+  await initTeamSharingProject({ cwd: badProject, channel: 'chan_bad', serverUrl: 'https://magclaw.example', workspaceId: 'ws_team', projectKey: 'bad' }, env);
+  await rm(missingProject, { recursive: true, force: true });
+
+  const result = await updateTeamSharingPackage({
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+    sourceDir: source,
+    all: true,
+    yes: true,
+    target: 'codex',
+  }, env);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.syncedProjects.length, 1);
+  assert.equal(result.syncedProjects[0].path, goodProject);
+  assert.equal(result.skippedProjects.length, 1);
+  assert.equal(result.skippedProjects[0].path, missingProject);
+  assert.equal(result.skippedProjects[0].reason, 'missing_project');
+  assert.equal(result.failedProjects.length, 1);
+  assert.equal(result.failedProjects[0].path, badProject);
+});
+
+test('team sharing update check falls back to npm registry when server package update API fails', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-fallback-home-'));
+  const env = {
+    HOME: home,
+    MAGCLAW_TEAM_SHARING_VERSION: '0.1.55',
+    MAGCLAW_PUBLIC_URL: 'https://magclaw.example',
+  };
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    if (String(url).includes('/api/package-updates')) {
+      return {
+        ok: false,
+        status: 503,
+        json: async () => ({ ok: false, error: 'server unavailable' }),
+      };
+    }
+    assert.match(String(url), /registry\.npmjs\.org\/%40magclaw%2Fteam-sharing/i);
+    return {
+      ok: true,
+      json: async () => ({ 'dist-tags': { latest: '0.1.56' } }),
+    };
+  };
+  try {
+    const result = await checkTeamSharingUpgrade({ nowMs: () => 1000, serverUrl: 'https://magclaw.example' }, env);
+    assert.equal(result.ok, true);
+    assert.equal(result.source, 'npm');
+    assert.equal(result.latestVersion, '0.1.56');
+    assert.equal(result.upgradeAvailable, true);
+    assert.equal(calls.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('team sharing cli search and context use configured profile token', async () => {

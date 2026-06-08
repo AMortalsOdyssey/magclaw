@@ -3594,6 +3594,7 @@ async function stageTeamSharingPackage(flags = {}, env = process.env) {
 }
 
 function verifyStagedTeamSharingPackage(stage, env = process.env) {
+  const checkedAt = now();
   if (!existsSync(stage.bin)) throw new Error(`Staged Team Sharing binary is missing: ${stage.bin}`);
   const result = spawnSync(process.execPath, [stage.bin, '-V'], {
     encoding: 'utf8',
@@ -3610,7 +3611,15 @@ function verifyStagedTeamSharingPackage(stage, env = process.env) {
   if (stdout && stdout !== stage.version) {
     throw new Error(`Team Sharing verify returned ${stdout}, expected ${stage.version}.`);
   }
-  return { ok: true, stdout };
+  return {
+    ok: true,
+    status: 'healthy',
+    method: 'smoke',
+    version: stage.version,
+    bin: stage.bin,
+    checkedAt,
+    stdout,
+  };
 }
 
 async function writeTeamSharingUpdateState(paths, nextState) {
@@ -3628,8 +3637,9 @@ async function activateTeamSharingPackage(stage, verify, metadata = {}, env = pr
     versionDir: stage.versionDir,
     source: stage.source,
     activatedAt: now(),
-    verifiedAt: now(),
-    lastHealthyAt: now(),
+    verifiedAt: verify.checkedAt || now(),
+    lastHealthyAt: verify.checkedAt || now(),
+    health: verify,
     verify,
   };
   const state = {
@@ -3661,8 +3671,42 @@ async function recordTeamSharingUpdateNotification(paths, notification) {
   await writeJsonFile(paths.updateNotifications, { version: 1, notifications }, { privateFile: true });
 }
 
+function previousTeamSharingHealth(previousActive) {
+  const health = previousActive?.health && typeof previousActive.health === 'object'
+    ? previousActive.health
+    : null;
+  if (!previousActive) return { ok: false, status: 'missing', reason: 'missing_previous_active' };
+  if (!previousActive.bin || !existsSync(previousActive.bin)) {
+    return {
+      ok: false,
+      status: health?.status || 'missing',
+      version: previousActive.version || health?.version || '',
+      checkedAt: health?.checkedAt || '',
+      reason: 'previous_bin_missing',
+    };
+  }
+  if (!health) {
+    return {
+      ok: false,
+      status: 'unknown',
+      version: previousActive.version || '',
+      reason: 'missing_health_record',
+    };
+  }
+  const healthy = health.ok === true && health.status === 'healthy' && Boolean(health.checkedAt);
+  return {
+    ok: healthy,
+    status: health.status || (healthy ? 'healthy' : 'unhealthy'),
+    version: health.version || previousActive.version || '',
+    checkedAt: health.checkedAt || '',
+    method: health.method || '',
+    reason: healthy ? 'healthy' : (health.reason || health.error || 'health_record_not_healthy'),
+  };
+}
+
 async function restorePreviousTeamSharingActive(paths, previousActive, error) {
-  const rollbackAvailable = Boolean(previousActive?.bin && existsSync(previousActive.bin));
+  const previousHealth = previousTeamSharingHealth(previousActive);
+  const rollbackAvailable = Boolean(previousHealth.ok);
   const state = {
     version: 1,
     active: rollbackAvailable ? previousActive : null,
@@ -3672,10 +3716,30 @@ async function restorePreviousTeamSharingActive(paths, previousActive, error) {
       error: error?.message || String(error),
       failedAt: now(),
       rolledBack: rollbackAvailable,
+      phase: 'verify',
+      previousHealth,
     },
   };
   await writeTeamSharingUpdateState(paths, state);
-  return { rolledBack: rollbackAvailable, state };
+  return { rolledBack: rollbackAvailable, previousHealth, state };
+}
+
+async function recordTeamSharingStageFailure(paths, previousState, error) {
+  const activePreserved = Boolean(previousState?.active);
+  const state = {
+    version: 1,
+    active: previousState?.active || null,
+    previousActive: previousState?.previousActive || null,
+    lastUpdate: {
+      ok: false,
+      phase: 'stage',
+      error: error?.message || String(error),
+      failedAt: now(),
+      activePreserved,
+    },
+  };
+  await writeTeamSharingUpdateState(paths, state);
+  return { ok: false, activated: false, phase: 'stage', activePreserved, state, error: error?.message || String(error) };
 }
 
 async function syncRegisteredTeamSharingProjectsForUpdate(flags = {}, env = process.env, stage) {
@@ -3768,8 +3832,12 @@ export async function updateTeamSharingPackage(flags = {}, env = process.env) {
   if (!lock.acquired) return { ok: true, skipped: true, reason: lock.reason || 'update_in_progress' };
   let stage = null;
   try {
-    stage = await stageTeamSharingPackage({ ...flags, latestVersion: check.latestVersion }, env);
     const previousState = await readJsonFile(paths.updateState, {});
+    try {
+      stage = await stageTeamSharingPackage({ ...flags, latestVersion: check.latestVersion }, env);
+    } catch (error) {
+      return await recordTeamSharingStageFailure(paths, previousState, error);
+    }
     let verify = null;
     try {
       verify = verifyStagedTeamSharingPackage(stage, env);
