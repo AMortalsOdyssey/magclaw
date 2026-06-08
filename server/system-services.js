@@ -393,6 +393,7 @@ export function createSystemServices(deps) {
     replies,
     messageById,
     replyById,
+    recordVisible = null,
   }) {
     const hydration = {
       limit: BOOTSTRAP_UNREAD_RECORD_LIMIT,
@@ -400,7 +401,8 @@ export function createSystemServices(deps) {
       truncated: false,
     };
     if (!currentHumanId) return hydration;
-    const sourceMessages = records(messages);
+    const sourceMessages = Array.isArray(messages) ? messages : [];
+    const sourceReplies = Array.isArray(replies) ? replies : [];
     const unreadCandidateHeap = [];
     let unreadCandidateCount = 0;
     const addUnreadCandidate = (kind, record) => {
@@ -415,11 +417,14 @@ export function createSystemServices(deps) {
       }, BOOTSTRAP_UNREAD_CANDIDATE_LIMIT);
     };
     for (const message of sourceMessages) {
+      if (recordVisible && !recordVisible(message)) continue;
       if (!conversationRecordUnreadForHuman(message, currentHumanId)) continue;
       if (messageById.has(message.id)) continue;
       addUnreadCandidate('message', message);
     }
-    for (const reply of records(replies)) {
+    for (const reply of sourceReplies) {
+      if (!reply) continue;
+      if (recordVisible && !recordVisible(reply)) continue;
       if (!conversationRecordUnreadForHuman(reply, currentHumanId)) continue;
       if (replyById.has(reply.id)) continue;
       addUnreadCandidate('reply', reply);
@@ -435,6 +440,8 @@ export function createSystemServices(deps) {
     if (parentIds.size) {
       for (let index = sourceMessages.length - 1; index >= 0; index -= 1) {
         const message = sourceMessages[index];
+        if (!message) continue;
+        if (recordVisible && !recordVisible(message)) continue;
         const id = String(message?.id || '');
         if (!parentIds.has(id)) continue;
         parentById.set(id, message);
@@ -1000,8 +1007,12 @@ export function createSystemServices(deps) {
 
   function directorySearchSingleValueMatches(value, query) {
     if (!query) return true;
-    const text = String(value || '').trim().toLowerCase();
-    return Boolean(text && text.includes(query));
+    if (value === undefined || value === null || value === '') return false;
+    const text = String(value);
+    if (!text) return false;
+    if (text.includes(query)) return true;
+    const lowered = text.toLowerCase();
+    return lowered !== text && lowered.includes(query);
   }
 
   function directorySearchHasWhitespace(query = '') {
@@ -1725,43 +1736,49 @@ export function createSystemServices(deps) {
     const visibleConversationRecord = (record) => Boolean(record)
       && inCurrentWorkspace(record)
       && conversationVisible(record);
-    const visibleMessages = (Array.isArray(currentState.messages) ? currentState.messages : [])
-      .filter(visibleConversationRecord);
-    const visibleReplies = (Array.isArray(currentState.replies) ? currentState.replies : [])
-      .filter(visibleConversationRecord);
+    const sourceMessages = Array.isArray(currentState.messages) ? currentState.messages : [];
+    const sourceReplies = Array.isArray(currentState.replies) ? currentState.replies : [];
     const selectedChannel = spaceType === 'channel'
       ? scopedChannels.find((channel) => String(channel?.id || '') === spaceId)
       : null;
 
     const selectedMessagePage = newestRecordsPage(
-      visibleMessages,
+      sourceMessages,
       messageLimit,
-      (message) => message.spaceType === spaceType && String(message.spaceId) === spaceId,
+      (message) => visibleConversationRecord(message)
+        && message.spaceType === spaceType
+        && String(message.spaceId) === spaceId,
     );
     const selectedMessages = selectedMessagePage.records.slice().sort(compareOldestRecords);
     const fullMessageIds = new Set(selectedMessages.map((message) => String(message?.id || '')).filter(Boolean));
     const selectedMessageCursor = selectedMessages[0] || null;
     const hydratedMessagePagination = effectiveOptions.hydration?.messages?.pagination || null;
     const threadRoots = newestRecordsPage(
-      visibleMessages,
+      sourceMessages,
       threadRootLimit,
       (message) => (
-        Number(message.replyCount || 0) > 0
+        visibleConversationRecord(message)
+        && (Number(message.replyCount || 0) > 0
         || message.taskId
         || records(message.savedBy).length
-        || String(message.id || '') === threadMessageId
+        || String(message.id || '') === threadMessageId)
       ),
     ).records;
     const messageById = new Map();
     for (const message of [...selectedMessages, ...threadRoots]) messageById.set(message.id, message);
     if (threadMessageId && !messageById.has(threadMessageId)) {
-      const threadRoot = records(visibleMessages).find((message) => String(message.id || '') === threadMessageId);
+      const threadRoot = sourceMessages.find((message) => (
+        visibleConversationRecord(message)
+        && String(message.id || '') === threadMessageId
+      ));
       if (threadRoot) messageById.set(threadRoot.id, threadRoot);
     }
     if (threadMessageId) fullMessageIds.add(threadMessageId);
 
     const latestReplyByParent = new Map();
-    for (const reply of records(visibleReplies)) {
+    for (const reply of sourceReplies) {
+      if (!reply) continue;
+      if (!visibleConversationRecord(reply)) continue;
       const parentMessageId = reply.parentMessageId;
       if (messageById.has(parentMessageId)) {
         const previous = latestReplyByParent.get(parentMessageId);
@@ -1770,9 +1787,10 @@ export function createSystemServices(deps) {
     }
     const selectedThreadReplyPage = threadMessageId
       ? newestRecordsPage(
-          visibleReplies,
+          sourceReplies,
           threadReplyLimit,
-          (reply) => String(reply?.parentMessageId || '') === threadMessageId,
+          (reply) => visibleConversationRecord(reply)
+            && String(reply?.parentMessageId || '') === threadMessageId,
         )
       : { records: [], total: 0, hasMore: false };
     const selectedThreadReplies = selectedThreadReplyPage.records.slice().sort(compareOldestRecords);
@@ -1791,10 +1809,11 @@ export function createSystemServices(deps) {
     for (const reply of [...latestReplyByParent.values(), ...selectedThreadReplies]) replyById.set(reply.id, reply);
     const unreadHydration = includeUnreadConversationRecords({
       currentHumanId,
-      messages: visibleMessages,
-      replies: visibleReplies,
+      messages: sourceMessages,
+      replies: sourceReplies,
       messageById,
       replyById,
+      recordVisible: visibleConversationRecord,
     });
 
     const taskIds = new Set();

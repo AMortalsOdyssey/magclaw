@@ -280,6 +280,61 @@ test('bootstrap state hydrates newest unread replies with parent context', () =>
   });
 });
 
+test('bootstrap unread reply hydration does not pull hidden parent context', () => {
+  const services = makeServices((state) => {
+    state.dms.push(
+      {
+        id: 'dm_visible_reply',
+        workspaceId: 'local',
+        participantIds: ['hum_1', 'agt_reply'],
+        createdAt: '2026-05-18T00:10:00.000Z',
+        updatedAt: '2026-05-18T00:10:00.000Z',
+      },
+      {
+        id: 'dm_hidden_parent',
+        workspaceId: 'local',
+        participantIds: ['hum_other', 'agt_reply'],
+        createdAt: '2026-05-18T00:10:00.000Z',
+        updatedAt: '2026-05-18T00:10:00.000Z',
+      },
+    );
+    state.messages.push({
+      id: 'msg_hidden_parent_context',
+      workspaceId: 'local',
+      spaceType: 'dm',
+      spaceId: 'dm_hidden_parent',
+      authorType: 'human',
+      authorId: 'hum_other',
+      body: 'hidden parent',
+      readBy: [],
+      createdAt: '2026-05-18T00:10:01.000Z',
+      updatedAt: '2026-05-18T00:10:01.000Z',
+    });
+    state.replies.push({
+      id: 'rep_visible_unread_orphan',
+      workspaceId: 'local',
+      parentMessageId: 'msg_hidden_parent_context',
+      spaceType: 'dm',
+      spaceId: 'dm_visible_reply',
+      authorType: 'agent',
+      authorId: 'agt_reply',
+      body: 'visible reply',
+      readBy: [],
+      createdAt: '2026-05-18T00:10:02.000Z',
+      updatedAt: '2026-05-18T00:10:02.000Z',
+    });
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/events?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=40',
+    headers: {},
+  });
+
+  assert.equal(snapshot.messages.some((message) => message.id === 'msg_hidden_parent_context'), false);
+  assert.ok(snapshot.replies.some((reply) => reply.id === 'rep_visible_unread_orphan'));
+  assert.equal(snapshot.bootstrap.unreadHydration.included, 1);
+});
+
 test('bootstrap state limits selected thread replies to the loaded page', () => {
   const services = makeServices((state) => {
     state.messages[0].replyCount = 101;
@@ -357,7 +412,7 @@ test('bootstrap state projects only the visible conversation window', () => {
   assert.ok(metadataReads < 80, `metadata reads should stay windowed, got ${metadataReads}`);
 });
 
-test('bootstrap state filters source conversation arrays once before windowing', () => {
+test('bootstrap state windows source conversation arrays without materializing filtered copies', () => {
   class CountingMessages extends Array {
     static filterCalls = 0;
 
@@ -420,8 +475,8 @@ test('bootstrap state filters source conversation arrays once before windowing',
 
   assert.equal(snapshot.messages.length, 20);
   assert.equal(snapshot.bootstrap.hasMoreMessages, true);
-  assert.equal(CountingMessages.filterCalls, 1);
-  assert.equal(CountingReplies.filterCalls, 1);
+  assert.equal(CountingMessages.filterCalls, 0);
+  assert.equal(CountingReplies.filterCalls, 0);
 });
 
 test('bootstrap state selects newest conversation window from unsorted state arrays', () => {
