@@ -486,6 +486,10 @@ test('state core filters presence heartbeats to the request workspace', async ()
 
     assert.deepEqual(heartbeat.agents.map((agent) => agent.id), ['agt_a', 'agt_legacy']);
     assert.deepEqual(heartbeat.humans.map((human) => human.id), ['hum_a', 'hum_legacy']);
+    assert.deepEqual(heartbeat.agents[0], { id: 'agt_a', status: 'idle' });
+    assert.equal(heartbeat.agents[0].name, undefined);
+    assert.equal(heartbeat.agents[0].activeWorkItemIds, undefined);
+    assert.equal(heartbeat.humans[0].name, undefined);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

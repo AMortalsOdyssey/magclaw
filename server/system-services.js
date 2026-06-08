@@ -347,6 +347,48 @@ export function createSystemServices(deps) {
     return next;
   }
 
+  function publicAgentRecord(agent = {}) {
+    return pickPublicFields(agent, [
+      'id',
+      'workspaceId',
+      'name',
+      'description',
+      'avatar',
+      'role',
+      'status',
+      'previousStatus',
+      'statusReason',
+      'runtime',
+      'runtimeId',
+      'model',
+      'reasoningEffort',
+      'computerId',
+      'workspace',
+      'envVars',
+      'createdBy',
+      'createdByHumanId',
+      'ownerHumanId',
+      'createdByUserId',
+      'creatorName',
+      'creatorEmail',
+      'activeWorkItemIds',
+      'statusUpdatedAt',
+      'heartbeatAt',
+      'runtimeLastStartedAt',
+      'runtimeLastTurnAt',
+      'runtimeWarmAt',
+      'runtimeActivity',
+      'activitySeq',
+      'activityAt',
+      'disabledAt',
+      'disabledByServerDeletedAt',
+      'deletedAt',
+      'archivedAt',
+      'createdAt',
+      'updatedAt',
+    ]) || { id: agent?.id || '' };
+  }
+
   function bootstrapOptionsFromRequest(req) {
     try {
       const url = new URL(req?.url || '/', 'http://magclaw.local');
@@ -448,7 +490,7 @@ export function createSystemServices(deps) {
       messages: visibleMessages,
       replies: visibleReplies,
       tasks: scopedRecords('tasks').map(publicTaskRecord),
-      agents: scopedAgents,
+      agents: scopedAgents.map(publicAgentRecord),
       computers: visibleComputers,
       humans: visibleHumans,
       reminders: scopedRecords('reminders'),

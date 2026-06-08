@@ -580,6 +580,30 @@ test('bootstrap state projects record metadata to frontend display fields only',
       createdAt: '2026-05-18T00:04:00.000Z',
       updatedAt: '2026-05-18T00:04:00.000Z',
     });
+    state.agents = [
+      {
+        id: 'agt_public',
+        workspaceId: 'local',
+        name: 'Public Agent',
+        description: 'Shown in members',
+        avatar: 'agent.png',
+        runtime: 'codex',
+        runtimeId: 'codex',
+        model: 'gpt-test',
+        reasoningEffort: 'medium',
+        computerId: 'cmp_local',
+        status: 'working',
+        statusUpdatedAt: '2026-05-18T00:04:30.000Z',
+        activeWorkItemIds: ['wi_1'],
+        envVars: [{ key: 'PUBLIC_MODE', value: 'on' }],
+        createdAt: '2026-05-18T00:04:00.000Z',
+        updatedAt: '2026-05-18T00:04:30.000Z',
+        metadata: {
+          promptCache: 'x'.repeat(5000),
+          runtimeSession: { raw: 'x'.repeat(5000) },
+        },
+      },
+    ];
   });
 
   const snapshot = services.publicBootstrapState({
@@ -589,6 +613,7 @@ test('bootstrap state projects record metadata to frontend display fields only',
   const message = snapshot.messages.find((item) => item.id === 'msg_feishu_public');
   const reply = snapshot.replies.find((item) => item.id === 'rep_team_public');
   const task = snapshot.tasks.find((item) => item.id === 'task_internal_metadata');
+  const agent = snapshot.agents.find((item) => item.id === 'agt_public');
 
   assert.equal(message.metadata.systemKind, 'external_import');
   assert.equal(message.metadata.origin.senderName, '张三');
@@ -605,6 +630,9 @@ test('bootstrap state projects record metadata to frontend display fields only',
   assert.deepEqual(reply.metadata.teamSharing.contentSegments, [{ type: 'quote', label: '选取片段', text: '保留引用段' }]);
   assert.equal(reply.metadata.teamSharing.uploader.privateToken, undefined);
   assert.deepEqual(task.metadata, { systemKind: 'external_import' });
+  assert.equal(agent.name, 'Public Agent');
+  assert.equal(agent.model, 'gpt-test');
+  assert.equal(agent.metadata, undefined);
 });
 
 test('public state for signed-in non-members keeps empty collection fields stable', () => {

@@ -13,6 +13,7 @@
     "test:flow": "node scripts/test-runner.mjs flow",
     "test:pg": "node scripts/test-runner.mjs pg",
     "test:all": "node scripts/test-runner.mjs all",
+    "perf:scalability": "node scripts/perf-scalability-smoke.mjs",
     "build:web-assets": "node scripts/build-web-assets.mjs",
     "web:build": "npm run build:web-assets",
     "check": "node --check server/index.js",

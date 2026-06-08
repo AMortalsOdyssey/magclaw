@@ -1307,26 +1307,27 @@ export function createStateCore(deps) {
       const seenAt = Date.parse(human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt || human.createdAt || '');
       return seenAt && seenAt >= humanCutoff ? 'online' : 'offline';
     };
+    const compact = (entry) => Object.fromEntries(Object.entries(entry).filter(([_key, value]) => {
+      if (value === undefined || value === null || value === '') return false;
+      if (Array.isArray(value) && value.length === 0) return false;
+      if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) return false;
+      return true;
+    }));
     return {
       createdAt: now(),
       updatedAt: state?.updatedAt || null,
-      agents: (state?.agents || []).filter(workspaceMatches).map((agent) => ({
+      agents: (state?.agents || []).filter(workspaceMatches).map((agent) => compact({
         id: agent.id,
-        name: agent.name,
         status: agent.status || 'offline',
-        runtime: agent.runtime || '',
-        statusUpdatedAt: agent.statusUpdatedAt || null,
-        heartbeatAt: agent.heartbeatAt || null,
-        activeWorkItemIds: normalizeIds(agent.activeWorkItemIds || []),
         runtimeLastStartedAt: agent.runtimeLastStartedAt || null,
         runtimeLastTurnAt: agent.runtimeLastTurnAt || null,
+        runtimeWarmAt: agent.runtimeWarmAt || null,
         runtimeActivity: agent.runtimeActivity || null,
-        activitySeq: Number(agent.activitySeq || 0),
+        activitySeq: Number(agent.activitySeq || 0) || null,
         activityAt: agent.activityAt || null,
       })),
-      humans: (state?.humans || []).filter(workspaceMatches).map((human) => ({
+      humans: (state?.humans || []).filter(workspaceMatches).map((human) => compact({
         id: human.id,
-        name: human.name,
         status: humanPresence(human),
         lastSeenAt: human.lastSeenAt || null,
         presenceUpdatedAt: human.presenceUpdatedAt || null,
