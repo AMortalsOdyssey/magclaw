@@ -373,6 +373,50 @@ test('agent route group rejects reserved agent names on rename', async () => {
   assert.equal(deps.state.agents[0].name, 'Ada');
 });
 
+test('agent route group broadcasts status-only patches through realtime events only', async () => {
+  const broadcasts = [];
+  const deps = routeDeps({
+    broadcastState: (options = {}) => {
+      broadcasts.push(options);
+    },
+    readJson: async () => ({ status: 'idle' }),
+  });
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'PATCH' },
+    res,
+    new URL('http://local/api/agents/agt_1'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(deps.state.agents[0].status, 'idle');
+  assert.deepEqual(broadcasts, [{ realtimeOnly: true }]);
+});
+
+test('agent route group keeps profile patches on the resync broadcast path', async () => {
+  const broadcasts = [];
+  const deps = routeDeps({
+    broadcastState: (options = {}) => {
+      broadcasts.push(options);
+    },
+    readJson: async () => ({ status: 'idle', name: 'Ada Profile' }),
+  });
+  const res = makeResponse();
+  const handled = await handleAgentApi(
+    { method: 'PATCH' },
+    res,
+    new URL('http://local/api/agents/agt_1'),
+    deps,
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(deps.state.agents[0].name, 'Ada Profile');
+  assert.deepEqual(broadcasts, [{}]);
+});
+
 test('agent route group starts only when no process is already running', async () => {
   let startCalls = 0;
   const deps = routeDeps({
@@ -419,8 +463,8 @@ test('agent route group warms an agent process for the selected space', async ()
 test('agent route group marks restart as starting before control handoff', async () => {
   const order = [];
   const deps = routeDeps({
-    broadcastState: () => {
-      order.push(`broadcast:${deps.state.agents[0].status}`);
+    broadcastState: (options = {}) => {
+      order.push(`broadcast:${deps.state.agents[0].status}:${Boolean(options.realtimeOnly)}`);
     },
     restartAgentFromControl: async () => {
       order.push(`restart:${deps.state.agents[0].status}`);
@@ -444,7 +488,7 @@ test('agent route group marks restart as starting before control handoff', async
   assert.equal(res.statusCode, 202);
   assert.deepEqual(order.slice(0, 3), [
     'status:starting:agent_restart_requested:true',
-    'broadcast:starting',
+    'broadcast:starting:true',
     'restart:starting',
   ]);
   assert.equal(res.data.agent.status, 'starting');

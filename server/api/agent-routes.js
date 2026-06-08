@@ -41,10 +41,27 @@ const RESERVED_AGENT_NAME_KEYS = new Set([
   'you',
 ]);
 
+const AGENT_PROFILE_PATCH_KEYS = [
+  'name',
+  'description',
+  'runtime',
+  'runtimeId',
+  'model',
+  'computerId',
+  'workspace',
+  'reasoningEffort',
+  'avatar',
+  'envVars',
+];
+
 function reservedAgentNameMessage(name) {
   const key = agentNameUniqueKey(name).toLowerCase();
   if (!key || !RESERVED_AGENT_NAME_KEYS.has(key)) return '';
   return 'Agent name is reserved. Choose a more specific name.';
+}
+
+function agentPatchRequiresStateResync(body = {}) {
+  return AGENT_PROFILE_PATCH_KEYS.some((key) => body[key] !== undefined);
 }
 
 function agentWorkspaceKey(agent = {}, fallback = 'local') {
@@ -479,7 +496,7 @@ export async function handleAgentApi(req, res, url, deps) {
     }
     const body = await readJson(req);
     setAgentStatus(agent, 'starting', 'agent_restart_requested', { forceEvent: true });
-    broadcastState();
+    broadcastState({ realtimeOnly: true });
     const result = await restartAgentFromControl(agent, String(body.mode || 'restart'));
     sendJson(res, 202, { agent, ...result });
     return true;
@@ -609,6 +626,7 @@ export async function handleAgentApi(req, res, url, deps) {
       return true;
     }
     const body = await readJson(req);
+    const statusOnlyPatch = body.status !== undefined && !agentPatchRequiresStateResync(body);
     if (body.name !== undefined) {
       const name = normalizeAgentName(body.name);
       if (!name) {
@@ -638,7 +656,7 @@ export async function handleAgentApi(req, res, url, deps) {
     agent.updatedAt = now();
     addCollabEvent('agent_updated', `Agent updated: ${agent.name}`, { agentId: agent.id });
     await persistState();
-    broadcastState();
+    broadcastState(statusOnlyPatch ? { realtimeOnly: true } : {});
     sendJson(res, 200, { agent });
     return true;
   }
