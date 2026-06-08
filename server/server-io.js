@@ -34,13 +34,14 @@ export function createServerIo(deps) {
     set(_target, prop, value) { getState()[prop] = value; return true; },
   });
 
-  function sendJson(res, statusCode, data) {
+  function sendJson(res, statusCode, data, headers = {}) {
     const body = JSON.stringify(data);
     const req = res.magclawRequest || null;
     const acceptsGzip = /\bgzip\b/i.test(String(req?.headers?.['accept-encoding'] || ''));
     const baseHeaders = {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
+      ...headers,
     };
     if (!acceptsGzip || Buffer.byteLength(body) < JSON_GZIP_MIN_BYTES) {
       res.writeHead(statusCode, {

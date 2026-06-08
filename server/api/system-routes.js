@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 // System-level API routes.
 // This group handles public state snapshots, SSE, runtime discovery, global
@@ -16,6 +17,32 @@ const SHARE_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 const SHARE_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const SHARE_AVATAR_FETCH_TIMEOUT_MS = 8000;
 const PNG_SIGNATURE_HEX = '89504e470d0a1a0a';
+
+function formatServerTimingDuration(ms) {
+  const safeMs = Math.max(0, Number(ms) || 0);
+  if (safeMs < 10) return safeMs.toFixed(1);
+  if (safeMs < 1000) return safeMs.toFixed(0);
+  return safeMs.toFixed(0);
+}
+
+function createServerTiming() {
+  const started = performance.now();
+  const entries = [];
+  return {
+    start() {
+      return performance.now();
+    },
+    mark(name, markStarted) {
+      entries.push(`${name};dur=${formatServerTimingDuration(performance.now() - markStarted)}`);
+    },
+    header() {
+      return [...entries, `total;dur=${formatServerTimingDuration(performance.now() - started)}`].join(', ');
+    },
+    headers() {
+      return { 'server-timing': this.header() };
+    },
+  };
+}
 
 function isLoopbackRequest(req) {
   const remoteAddress = String(req.socket?.remoteAddress || '');
@@ -176,10 +203,13 @@ export async function handleSystemApi(req, res, url, deps) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/readyz') {
+    const timing = createServerTiming();
+    const healthStarted = timing.start();
     const ready = typeof deploymentHealth === 'function'
       ? await deploymentHealth()
       : { ok: true };
-    sendJson(res, ready.ok ? 200 : 503, ready);
+    timing.mark('health', healthStarted);
+    sendJson(res, ready.ok ? 200 : 503, ready, timing.headers());
     return true;
   }
 
@@ -266,6 +296,7 @@ export async function handleSystemApi(req, res, url, deps) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
+    const timing = createServerTiming();
     const options = {
       spaceType: url.searchParams.get('spaceType') || '',
       spaceId: url.searchParams.get('spaceId') || '',
@@ -283,16 +314,22 @@ export async function handleSystemApi(req, res, url, deps) {
     if (selectedAgentId) options.selectedAgentId = selectedAgentId;
     const selectedHumanId = url.searchParams.get('selectedHumanId') || '';
     if (selectedHumanId) options.selectedHumanId = selectedHumanId;
+    const hydrateStarted = timing.start();
     const hydration = typeof hydrateBootstrapWindow === 'function'
       ? await hydrateBootstrapWindow(req, options)
       : null;
+    timing.mark('hydrate', hydrateStarted);
     if (hydration) req.magclawBootstrapHydration = hydration;
     const bootstrapOptions = hydration ? { ...options, hydration } : options;
-    sendJson(res, 200, (publicBootstrapState || publicState)(req, bootstrapOptions));
+    const projectStarted = timing.start();
+    const snapshot = (publicBootstrapState || publicState)(req, bootstrapOptions);
+    timing.mark('project', projectStarted);
+    sendJson(res, 200, snapshot, timing.headers());
     return true;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/directory/search') {
+    const timing = createServerTiming();
     const options = {};
     const directoryFormat = url.searchParams.get('directoryFormat') || '';
     if (directoryFormat) options.directoryFormat = directoryFormat;
@@ -302,11 +339,15 @@ export async function handleSystemApi(req, res, url, deps) {
     if (limit) options.limit = limit;
     const types = url.searchParams.get('types') || '';
     if (types) options.types = types;
-    sendJson(res, 200, (publicDirectorySearchState || publicDirectoryState || publicState)(req, options));
+    const searchStarted = timing.start();
+    const snapshot = (publicDirectorySearchState || publicDirectoryState || publicState)(req, options);
+    timing.mark('search', searchStarted);
+    sendJson(res, 200, snapshot, timing.headers());
     return true;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/directory') {
+    const timing = createServerTiming();
     const options = {};
     const directoryFormat = url.searchParams.get('directoryFormat') || '';
     if (directoryFormat) options.directoryFormat = directoryFormat;
@@ -314,11 +355,15 @@ export async function handleSystemApi(req, res, url, deps) {
     if (limit) options.limit = limit;
     const cursor = url.searchParams.get('cursor') || '';
     if (cursor) options.cursor = cursor;
-    sendJson(res, 200, (publicDirectoryState || publicState)(req, options));
+    const directoryStarted = timing.start();
+    const snapshot = (publicDirectoryState || publicState)(req, options);
+    timing.mark('directory', directoryStarted);
+    sendJson(res, 200, snapshot, timing.headers());
     return true;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/members/directory') {
+    const timing = createServerTiming();
     const options = {};
     const page = url.searchParams.get('page') || '';
     if (page) options.page = page;
@@ -326,7 +371,10 @@ export async function handleSystemApi(req, res, url, deps) {
     if (pageSize) options.pageSize = pageSize;
     const query = url.searchParams.get('q') || url.searchParams.get('query') || '';
     if (query) options.query = query;
-    sendJson(res, 200, (publicMembersDirectoryState || publicState)(req, options));
+    const membersStarted = timing.start();
+    const snapshot = (publicMembersDirectoryState || publicState)(req, options);
+    timing.mark('members', membersStarted);
+    sendJson(res, 200, snapshot, timing.headers());
     return true;
   }
 
@@ -381,17 +429,13 @@ export async function handleSystemApi(req, res, url, deps) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/events') {
+    const timing = createServerTiming();
     if (typeof isDraining === 'function' && isDraining()) {
-      sendJson(res, 503, { ok: false, draining: true });
+      sendJson(res, 503, { ok: false, draining: true }, timing.headers());
       return true;
     }
-    res.writeHead(200, {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-store, no-transform',
-      connection: 'keep-alive',
-      'x-accel-buffering': 'no',
-    });
     res.magclawRequest = req;
+    const scopeStarted = timing.start();
     if (!req.magclawPresenceWorkspaceId) {
       const actor = typeof cloudAuth?.currentActor === 'function' ? cloudAuth.currentActor(req) : null;
       req.magclawPresenceWorkspaceId = String(
@@ -401,11 +445,14 @@ export async function handleSystemApi(req, res, url, deps) {
         || '',
       ).trim();
     }
+    timing.mark('scope', scopeStarted);
+    const replayPackets = [];
     const lastSeq = Number(url.searchParams.get('lastSeq') || 0);
+    const replayStarted = timing.start();
     if (lastSeq > 0 && typeof realtimeEventsForRequest === 'function') {
       const replay = realtimeEventsForRequest(req, lastSeq);
       if (replay.gap) {
-        res.write(`event: state-resync-required\ndata: ${JSON.stringify({
+        replayPackets.push(`event: state-resync-required\ndata: ${JSON.stringify({
           type: 'state_resync_required',
           seq: replay.currentSeq,
           lastSeq,
@@ -415,10 +462,19 @@ export async function handleSystemApi(req, res, url, deps) {
         })}\n\n`);
       } else {
         for (const event of replay.events) {
-          res.write(`event: realtime-event\ndata: ${JSON.stringify(event)}\n\n`);
+          replayPackets.push(`event: realtime-event\ndata: ${JSON.stringify(event)}\n\n`);
         }
       }
     }
+    timing.mark('replay', replayStarted);
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-store, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+      ...timing.headers(),
+    });
+    for (const packet of replayPackets) res.write(packet);
     const deferPresence = url.searchParams.get('presence') === 'defer';
     if (typeof writePresenceHeartbeat === 'function') {
       writePresenceHeartbeat(res, req, deferPresence ? { seedOnly: true } : { force: true });

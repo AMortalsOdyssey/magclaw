@@ -161,6 +161,11 @@ membership fanout visible in the budget. It currently enforces:
   `MAGCLAW_PERF_AUTH_HEADER`, `MAGCLAW_PERF_BEARER_TOKEN`, or
   `MAGCLAW_PERF_EXTRA_HEADERS`; the JSON report only records whether auth was
   present and which extra header names were used.
+- System API responses expose Server-Timing for the performance-critical read
+  paths used by the environment smoke: `/api/readyz` reports health-check time,
+  `/api/bootstrap` reports hydration, projection, and total time,
+  `/api/directory*` and `/api/members/directory` report projection time, and
+  `/api/events` reports stream scope/replay setup before the SSE response opens.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 
@@ -206,4 +211,5 @@ asks for it.
 
 - Run and archive `perf:environment` JSON against Sentinel test and production
   before and after the next `magclaw-web` rollout, then compare bootstrap bytes,
+  bootstrap `hydrate/project/total` Server-Timing, SSE `scope/replay/total`
   Server-Timing, and SSE event mix with local baselines.

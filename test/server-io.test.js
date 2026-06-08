@@ -42,12 +42,13 @@ test('sendJson gzip-compresses large API payloads when accepted', async () => {
   const res = makeResponse(req);
   const data = { items: Array.from({ length: 300 }, (_, index) => ({ index, text: 'MagClaw payload '.repeat(20) })) };
 
-  sendJson(res, 200, data);
+  sendJson(res, 200, data, { 'server-timing': 'project;dur=4, total;dur=5' });
   await res.ended;
 
   const compressed = Buffer.concat(res.chunks);
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers['content-encoding'], 'gzip');
+  assert.equal(res.headers['server-timing'], 'project;dur=4, total;dur=5');
   assert.equal(res.headers.vary, 'accept-encoding');
   assert.deepEqual(JSON.parse(gunzipSync(compressed).toString('utf8')), data);
 });
@@ -58,9 +59,10 @@ test('sendJson leaves small API payloads uncompressed', async () => {
   const res = makeResponse(req);
   const data = { ok: true };
 
-  sendJson(res, 200, data);
+  sendJson(res, 200, data, { 'server-timing': 'total;dur=1' });
   await res.ended;
 
   assert.equal(res.headers['content-encoding'], undefined);
+  assert.equal(res.headers['server-timing'], 'total;dur=1');
   assert.equal(Buffer.concat(res.chunks).toString('utf8'), JSON.stringify(data));
 });

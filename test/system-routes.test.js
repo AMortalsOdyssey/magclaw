@@ -68,9 +68,10 @@ function routeDeps(overrides = {}) {
       res.statusCode = statusCode;
       res.error = message;
     },
-    sendJson: (res, statusCode, data) => {
+    sendJson: (res, statusCode, data, headers = {}) => {
       res.statusCode = statusCode;
       res.data = data;
+      res.headers = headers;
     },
     sseClients,
     updateFanoutApiConfig: (body, workspace = null) => {
@@ -112,6 +113,29 @@ test('share image save route writes PNG files to the configured local directory'
   assert.equal(saved.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
 });
 
+test('ready route includes server timing for deployment health', async () => {
+  let healthCalls = 0;
+  const deps = routeDeps({
+    deploymentHealth: async () => {
+      healthCalls += 1;
+      return { ok: true, deployment: 'cloud' };
+    },
+  });
+  const res = makeResponse();
+
+  assert.equal(await handleSystemApi(
+    { method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' }, on: () => {} },
+    res,
+    new URL('http://local/api/readyz'),
+    deps,
+  ), true);
+
+  assert.equal(healthCalls, 1);
+  assert.equal(res.statusCode, 200);
+  assert.match(res.headers['server-timing'], /health;dur=\d/);
+  assert.match(res.headers['server-timing'], /total;dur=\d/);
+});
+
 test('directory route forwards compact directory options', async () => {
   const deps = routeDeps();
   const res = makeResponse();
@@ -130,6 +154,8 @@ test('directory route forwards compact directory options', async () => {
     limit: '250',
     cursor: '250:250:250',
   });
+  assert.match(res.headers['server-timing'], /directory;dur=\d/);
+  assert.match(res.headers['server-timing'], /total;dur=\d/);
 });
 
 test('directory search route forwards compact search options', async () => {
@@ -151,6 +177,8 @@ test('directory search route forwards compact search options', async () => {
     limit: '12',
     types: 'agents,humans',
   });
+  assert.match(res.headers['server-timing'], /search;dur=\d/);
+  assert.match(res.headers['server-timing'], /total;dur=\d/);
 });
 
 test('members directory route forwards page and search options', async () => {
@@ -171,6 +199,8 @@ test('members directory route forwards page and search options', async () => {
     pageSize: '50',
     query: 'alice',
   });
+  assert.match(res.headers['server-timing'], /members;dur=\d/);
+  assert.match(res.headers['server-timing'], /total;dur=\d/);
 });
 
 test('share image save route rejects non-loopback callers', async () => {
@@ -260,7 +290,13 @@ test('system route group returns public state and ignores unrelated API paths', 
 });
 
 test('system route group returns bootstrap state with route query options', async () => {
-  const deps = routeDeps();
+  let hydrateOptions = null;
+  const deps = routeDeps({
+    hydrateBootstrapWindow: async (_req, options) => {
+      hydrateOptions = options;
+      return { messages: { messages: [] } };
+    },
+  });
   const res = makeResponse();
   assert.equal(await handleSystemApi(
     { method: 'GET', on: () => {} },
@@ -278,7 +314,20 @@ test('system route group returns bootstrap state with route query options', asyn
     threadRootLimit: '',
     eventLimit: '',
     taskLimit: '',
+    hydration: { messages: { messages: [] } },
   });
+  assert.deepEqual(hydrateOptions, {
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    threadMessageId: 'msg_1',
+    messageLimit: '40',
+    threadRootLimit: '',
+    eventLimit: '',
+    taskLimit: '',
+  });
+  assert.match(res.headers['server-timing'], /hydrate;dur=\d/);
+  assert.match(res.headers['server-timing'], /project;dur=\d/);
+  assert.match(res.headers['server-timing'], /total;dur=\d/);
 });
 
 test('system event stream opens without a full bootstrap state patch', async () => {
@@ -322,6 +371,9 @@ test('system event stream opens without a full bootstrap state patch', async () 
   assert.equal(writeHeartbeatCalls, 1);
   assert.equal(heartbeatWorkspaceId, 'wsp_events');
   assert.equal(deps.sseClients.has(res), true);
+  assert.match(res.headers['server-timing'], /scope;dur=\d/);
+  assert.match(res.headers['server-timing'], /replay;dur=\d/);
+  assert.match(res.headers['server-timing'], /total;dur=\d/);
 });
 
 test('system event stream can defer the initial presence heartbeat after bootstrap', async () => {
