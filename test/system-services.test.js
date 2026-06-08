@@ -979,6 +979,71 @@ test('bootstrap visible directory scope trims startup members and directory endp
   assert.deepEqual(firstPage.humans.map((human) => human[0]), ['hum_1']);
   assert.deepEqual(firstPage.cloud.members.map((member) => member[0]), ['mem_1']);
 
+  const leanDirectoryPage = makeServices((state) => {
+    state.agents = [
+      {
+        id: 'agt_visible',
+        workspaceId: 'local',
+        name: 'Visible Agent',
+        status: 'working',
+        runtime: 'codex',
+        model: 'gpt-test',
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: 'agt_hidden',
+        workspaceId: 'local',
+        name: 'Hidden Agent',
+        status: 'idle',
+        get envVars() {
+          throw new Error('directory page should not project off-page agents');
+        },
+      },
+    ];
+    state.humans = [
+      { id: 'hum_1', workspaceId: 'local', name: 'Current Human', role: 'owner', status: 'online', createdAt, updatedAt: createdAt },
+      {
+        id: 'hum_hidden',
+        workspaceId: 'local',
+        get name() {
+          throw new Error('directory page should not project off-page humans');
+        },
+      },
+    ];
+  }, {
+    publicCloudState: () => ({
+      auth: {
+        currentUser: { id: 'usr_1' },
+        currentMember: { id: 'mem_1', workspaceId: 'local', humanId: 'hum_1', role: 'owner' },
+        storageBackend: 'postgres',
+      },
+      workspace: { id: 'local', slug: 'local' },
+      members: [
+        { id: 'mem_1', workspaceId: 'local', userId: 'usr_1', humanId: 'hum_1', role: 'owner', status: 'active' },
+        {
+          id: 'mem_hidden',
+          workspaceId: 'local',
+          userId: 'usr_hidden',
+          humanId: 'hum_hidden',
+          get user() {
+            throw new Error('directory page should not project off-page members');
+          },
+        },
+      ],
+    }),
+  }).publicDirectoryState({
+    url: '/api/directory?directoryFormat=tuple-v1&limit=1',
+    headers: {},
+  });
+  assert.deepEqual(leanDirectoryPage.agents.map((agent) => agent[0]), ['agt_visible']);
+  assert.deepEqual(leanDirectoryPage.humans.map((human) => human[0]), ['hum_1']);
+  assert.deepEqual(leanDirectoryPage.cloud.members.map((member) => member[0]), ['mem_1']);
+  assert.equal(leanDirectoryPage.bootstrap.directory.agents.total, 2);
+  assert.equal(leanDirectoryPage.bootstrap.directory.humans.total, 2);
+  assert.equal(leanDirectoryPage.bootstrap.directory.members.total, 2);
+  assert.equal(leanDirectoryPage.bootstrap.directory.page.nextCursor, '1:1:1');
+
   const secondPage = services.publicDirectoryState({
     url: '/api/directory?directoryFormat=tuple-v1&limit=1&cursor=1:1:1',
     headers: {},

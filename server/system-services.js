@@ -789,6 +789,20 @@ export function createSystemServices(deps) {
     return next;
   }
 
+  function humansByIdForMembers(humans = [], members = [], options = {}) {
+    const includeAll = options.includeAll === true;
+    const memberHumanIds = includeAll
+      ? null
+      : new Set(records(members).map((member) => String(member?.humanId || member?.human?.id || '')).filter(Boolean));
+    const result = new Map();
+    for (const human of records(humans)) {
+      const id = String(human?.id || '');
+      if (!id) continue;
+      if (includeAll || memberHumanIds.has(id)) result.set(id, human);
+    }
+    return result;
+  }
+
   function directoryStats(records, total) {
     const loaded = Array.isArray(records) ? records.length : 0;
     const normalizedTotal = Math.max(loaded, Number(total || 0) || 0);
@@ -1888,20 +1902,26 @@ export function createSystemServices(deps) {
       }, options);
     }
     const effectiveOptions = { ...bootstrapOptionsFromRequest(req), ...options };
-    const publicAgents = scopedAgents.map(publicAgentRecord).map(compactBootstrapAgentRecord);
-    const publicHumans = scopedRecords('humans').map(compactBootstrapHumanRecord);
-    const publicCloud = compactBootstrapCloudState(cloud, {
-      humansById: new Map(scopedRecords('humans').map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
-    });
+    const scopedHumans = scopedRecords('humans');
+    const rawMemberCount = records(cloud?.members).length;
     const pageLimit = directoryPageLimit(effectiveOptions.limit);
     const pageCursor = parseDirectoryCursor(effectiveOptions.cursor);
-    const directoryPageSnapshot = applyDirectoryPagination({
-      agents: publicAgents,
-      humans: publicHumans,
-      cloud: publicCloud,
+    const rawDirectoryPage = applyDirectoryPagination({
+      agents: scopedAgents,
+      humans: scopedHumans,
+      cloud,
       limit: pageLimit,
       cursor: pageCursor,
     });
+    const pageHumans = records(rawDirectoryPage.humans);
+    const directoryPageSnapshot = {
+      agents: records(rawDirectoryPage.agents).map(publicAgentRecord).map(compactBootstrapAgentRecord),
+      humans: pageHumans.map(compactBootstrapHumanRecord),
+      cloud: compactBootstrapCloudState(rawDirectoryPage.cloud, {
+        humansById: humansByIdForMembers(scopedHumans, rawDirectoryPage.cloud?.members, { includeAll: !pageLimit }),
+      }),
+      page: rawDirectoryPage.page,
+    };
     const directory = {
       ...directoryMetadata({
         scope: pageLimit ? 'page' : 'full',
@@ -1909,9 +1929,9 @@ export function createSystemServices(deps) {
         humans: directoryPageSnapshot.humans,
         cloud: directoryPageSnapshot.cloud,
         totals: {
-          agents: publicAgents.length,
-          humans: publicHumans.length,
-          members: publicCloud?.members?.length || 0,
+          agents: scopedAgents.length,
+          humans: scopedHumans.length,
+          members: rawMemberCount,
         },
       }),
       page: directoryPageSnapshot.page,

@@ -119,6 +119,8 @@ const BUDGETS = Object.freeze({
   directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
   directoryTotalBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_TOTAL_BYTES || 280_000),
   directoryPages: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGES || 4),
+  directoryLargePageBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_LARGE_PAGE_BYTES || 80_000),
+  directoryLargePageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_LARGE_PAGE_MS || 120),
   directorySearchBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_SEARCH_BYTES || 20_000),
   directorySearchMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_SEARCH_MS || 250),
   directoryBroadSearchBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_BROAD_SEARCH_BYTES || 20_000),
@@ -267,6 +269,57 @@ function measureDirectoryHydration(services) {
     hasMemberChurnFields: allAgents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
       || allHumans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
     hasInternalFields,
+  };
+}
+
+function measureLargeDirectoryPage() {
+  const sourceState = makeSyntheticState({
+    humans: 10_000,
+    agents: 10_000,
+    messages: 0,
+    replies: 0,
+    tasks: 0,
+  });
+  const services = makeSystemServices(sourceState);
+  const started = performance.now();
+  const snapshot = services.publicDirectoryState({
+    url: directoryPagePath(''),
+    headers: {},
+  });
+  const body = JSON.stringify(snapshot);
+  const decodedAgents = decodeTupleRecords(snapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
+  const decodedHumans = decodeTupleRecords(snapshot.humans, BOOTSTRAP_HUMAN_TUPLE_FIELDS);
+  const decodedMembers = decodeTupleRecords(snapshot.cloud?.members || [], BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
+  return {
+    ms: Math.round(performance.now() - started),
+    bytes: Buffer.byteLength(body, 'utf8'),
+    sourceAgents: sourceState.agents.length,
+    sourceHumans: sourceState.humans.length,
+    agents: snapshot.agents.length,
+    humans: snapshot.humans.length,
+    cloudMembers: snapshot.cloud?.members?.length || 0,
+    agentTotal: snapshot.bootstrap?.directory?.agents?.total || 0,
+    humanTotal: snapshot.bootstrap?.directory?.humans?.total || 0,
+    memberTotal: snapshot.bootstrap?.directory?.members?.total || 0,
+    nextCursor: snapshot.bootstrap?.directory?.page?.nextCursor || '',
+    hasMore: Boolean(snapshot.bootstrap?.directory?.page?.hasMore),
+    hasDirectoryTuples: (snapshot.agents || []).some(Array.isArray)
+      && (snapshot.humans || []).some(Array.isArray)
+      && (snapshot.cloud?.members || []).some(Array.isArray),
+    hasInternalFields: body.includes('promptCache')
+      || body.includes('runtimeSession'),
+    hasCloudMemberDuplication: decodedMembers.some((member) => (
+      member.human
+      || member.workspaceId
+      || member.updatedAt
+      || member.createdAt
+      || member.status === 'active'
+      || member.role === 'member'
+      || member.user?.id
+      || member.user?.name
+    )),
+    hasMemberChurnFields: decodedAgents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
+      || decodedHumans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
   };
 }
 
@@ -1404,6 +1457,7 @@ async function main() {
   const body = JSON.stringify(snapshot);
   const bootstrapSerializedAt = performance.now();
   const directory = measureDirectoryHydration(services);
+  const directoryLargePage = measureLargeDirectoryPage();
   const directorySearch = measureDirectorySearch();
   const directoryBroadSearch = measureDirectorySearch({ query: 'agent', limit: 5 });
   const membersDirectoryPage = measureMembersDirectoryPage();
@@ -1555,6 +1609,19 @@ async function main() {
   assertBudget(!directory.hasCloudMemberDuplication, 'directory leaked duplicate cloud member human payloads');
   assertBudget(!directory.hasMemberChurnFields, 'directory leaked member churn fields');
   assertBudget(!directory.hasInternalFields, 'directory leaked internal payload fields');
+  assertBudget(directoryLargePage.sourceAgents === 10_000 && directoryLargePage.sourceHumans === 10_000, 'large directory page smoke did not use the 10000-member fixture');
+  assertBudget(directoryLargePage.ms <= BUDGETS.directoryLargePageMs, `large directory page ${directoryLargePage.ms}ms exceeds ${BUDGETS.directoryLargePageMs}ms`);
+  assertBudget(directoryLargePage.bytes <= BUDGETS.directoryLargePageBytes, `large directory page ${directoryLargePage.bytes} bytes exceeds ${BUDGETS.directoryLargePageBytes}`);
+  assertBudget(directoryLargePage.agents === DIRECTORY_PAGE_LIMIT, `large directory page expected ${DIRECTORY_PAGE_LIMIT} agents but got ${directoryLargePage.agents}`);
+  assertBudget(directoryLargePage.humans === DIRECTORY_PAGE_LIMIT, `large directory page expected ${DIRECTORY_PAGE_LIMIT} humans but got ${directoryLargePage.humans}`);
+  assertBudget(directoryLargePage.cloudMembers === DIRECTORY_PAGE_LIMIT, `large directory page expected ${DIRECTORY_PAGE_LIMIT} members but got ${directoryLargePage.cloudMembers}`);
+  assertBudget(directoryLargePage.agentTotal === 10_000 && directoryLargePage.humanTotal === 10_000 && directoryLargePage.memberTotal === 10_000, 'large directory page metadata did not preserve full totals');
+  assertBudget(directoryLargePage.nextCursor === `${DIRECTORY_PAGE_LIMIT}:${DIRECTORY_PAGE_LIMIT}:${DIRECTORY_PAGE_LIMIT}`, `large directory page next cursor was ${directoryLargePage.nextCursor || '[none]'}`);
+  assertBudget(directoryLargePage.hasMore, 'large directory page did not expose additional pages');
+  assertBudget(directoryLargePage.hasDirectoryTuples, 'large directory page did not compact member directories into tuple rows');
+  assertBudget(!directoryLargePage.hasCloudMemberDuplication, 'large directory page leaked duplicate cloud member human payloads');
+  assertBudget(!directoryLargePage.hasMemberChurnFields, 'large directory page leaked member churn fields');
+  assertBudget(!directoryLargePage.hasInternalFields, 'large directory page leaked internal payload fields');
   assertBudget(directorySearch.sourceAgents === 10_000 && directorySearch.sourceHumans === 10_000, 'directory search smoke did not use the 10000-member fixture');
   assertBudget(directorySearch.ms <= BUDGETS.directorySearchMs, `directory search ${directorySearch.ms}ms exceeds ${BUDGETS.directorySearchMs}ms`);
   assertBudget(directorySearch.bytes <= BUDGETS.directorySearchBytes, `directory search ${directorySearch.bytes} bytes exceeds ${BUDGETS.directorySearchBytes}`);
@@ -1664,6 +1731,7 @@ async function main() {
     budgets: BUDGETS,
     bootstrap,
     directory,
+    directoryLargePage,
     directorySearch,
     directoryBroadSearch,
     membersDirectoryPage,
