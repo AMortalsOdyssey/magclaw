@@ -173,7 +173,17 @@ export function createSystemServices(deps) {
   const packageVersionPollingIntervalMs = Math.max(1000, Number(packageVersionPollIntervalMs) || packageVersionSnapshotTtlMs);
 
   function records(value) {
-    return Array.isArray(value) ? value.filter(Boolean) : [];
+    if (!Array.isArray(value)) return [];
+    const output = new Array(value.length);
+    let count = 0;
+    for (const item of value) {
+      if (item) {
+        output[count] = item;
+        count += 1;
+      }
+    }
+    output.length = count;
+    return output;
   }
 
   function mentionedHumanIdsForRecords(items = []) {
