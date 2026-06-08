@@ -30,6 +30,8 @@ import {
   statusTeamSharingProject,
   statusTeamSharingSkill,
   syncTeamSharingTranscript,
+  getTeamSharingSessionReporting,
+  setTeamSharingSessionReporting,
   unsetTeamSharingProject,
   formatTeamSharingReadLinkResult,
   whoamiTeamSharingProfile,
@@ -173,6 +175,7 @@ function renderTeamSharingHelp() {
     '  delete-link Delete one MagClaw share link by URL or share ID',
     '  share-artifact Create a public MagClaw share link from a local file',
     '  sync     Upload one transcript file (--session-title or MAGCLAW_SESSION_TITLE controls the displayed title)',
+    '  session-reporting Control reporting for one local session (off|on|status)',
     '  skills   Install/remove/status the local Team Sharing skill',
     '  hooks    Install/remove/status Team Sharing hooks',
     '',
@@ -335,6 +338,22 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
           if (hookPayload) syncFlags.hookPayload = hookPayload;
         }
         printJson(await syncTeamSharingTranscript(syncFlags, env));
+      }
+      break;
+    case 'session-reporting':
+    case 'session-report':
+    case 'reporting':
+      {
+        const action = String(flags._?.[1] || flags.action || 'status').trim().toLowerCase();
+        if (['off', 'disable', 'disabled', 'no-report', 'skip', 'mute'].includes(action)) {
+          printJson(await setTeamSharingSessionReporting({ ...flags, report: false }, env));
+        } else if (['on', 'enable', 'enabled', 'report', 'unmute'].includes(action)) {
+          printJson(await setTeamSharingSessionReporting({ ...flags, report: true }, env));
+        } else if (['status', 'show', 'get'].includes(action)) {
+          printJson(await getTeamSharingSessionReporting(flags, env));
+        } else {
+          throw new Error('Usage: team-sharing session-reporting <off|on|status> --session-id <id> or --transcript <path>');
+        }
       }
       break;
     case 'skills':

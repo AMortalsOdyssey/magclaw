@@ -38,6 +38,8 @@ import {
   statusTeamSharingProject,
   statusTeamSharingSkill,
   syncTeamSharingTranscript,
+  getTeamSharingSessionReporting,
+  setTeamSharingSessionReporting,
   teamSharingMachineFingerprint,
   teamSharingPaths,
   formatTeamSharingReadLinkResult,
@@ -270,6 +272,165 @@ test('team sharing cli init infers workspace id from signed MagClaw channel path
   const yaml = await readFile(path.join(cwd, '.magclaw', 'team-sharing.yaml'), 'utf8');
   assert.match(yaml, /workspace_id: ws_from_path/);
   assert.match(yaml, /server_url: https:\/\/magclaw\.example/);
+});
+
+test('team sharing session reporting override persists only hashed local identifiers', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-session-reporting-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-session-reporting-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const transcript = path.join(cwd, 'private-session.jsonl');
+
+  const disabled = await setTeamSharingSessionReporting({
+    cwd,
+    runtime: 'codex',
+    sessionId: 'sess_private_optout',
+    transcript,
+    report: false,
+    ttlHours: 24,
+  }, env);
+  const paths = teamSharingPaths({ cwd, env });
+  const raw = await readFile(paths.sessionOverrides, 'utf8');
+  const status = await getTeamSharingSessionReporting({
+    cwd,
+    runtime: 'codex',
+    sessionId: 'sess_private_optout',
+    transcript,
+  }, env);
+
+  assert.equal(disabled.ok, true);
+  assert.equal(disabled.report, false);
+  assert.equal(status.ok, true);
+  assert.equal(status.report, false);
+  assert.equal(status.reason, 'user_disabled');
+  assert.match(raw, /"sessionIdHash"/);
+  assert.match(raw, /"transcriptPathHash"/);
+  assert.doesNotMatch(raw, /sess_private_optout|private-session|magclaw-team-sharing-session-reporting-project/);
+});
+
+test('team sharing hook sync disables reporting for the current session before upload', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-session-no-report-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-session-no-report-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_no_report', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '这轮不要上报' }] } }),
+  ].join('\n'));
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, init });
+    throw new Error('session opt-out hook sync should not upload');
+  };
+  try {
+    const first = await syncTeamSharingTranscript({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      hookEvent: 'SessionStart',
+      integration: 'team-sharing',
+    }, { ...env, MAGCLAW_TEAM_SHARING_REPORT: '0' });
+    const second = await syncTeamSharingTranscript({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      hookEvent: 'Stop',
+      integration: 'team-sharing',
+    }, env);
+    const paths = teamSharingPaths({ cwd, env });
+    const auditText = await readFile(paths.projectAuditLog, 'utf8');
+    const auditRecords = auditText.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    const overrideRaw = await readFile(paths.sessionOverrides, 'utf8');
+
+    assert.equal(first.ok, true);
+    assert.equal(first.empty, true);
+    assert.equal(first.reason, 'session_reporting_disabled');
+    assert.equal(second.ok, true);
+    assert.equal(second.empty, true);
+    assert.equal(second.reason, 'session_reporting_disabled');
+    assert.equal(calls.length, 0);
+    assert.equal(auditRecords.length, 2);
+    assert.equal(auditRecords[0].status, 'skipped');
+    assert.equal(auditRecords[0].phase, 'session_reporting');
+    assert.equal(auditRecords[0].reason, 'session_reporting_disabled');
+    assert.equal(auditRecords[1].phase, 'session_reporting');
+    assert.doesNotMatch(overrideRaw, /sess_no_report|session\.jsonl|team-sharing-token-secret/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing session-reporting command toggles a local session override', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-session-reporting-command-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-session-reporting-command-home-'));
+  const env = {
+    ...process.env,
+    HOME: home,
+    MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'),
+  };
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, '');
+
+  const off = spawnSync(process.execPath, [
+    path.resolve('team-sharing', 'bin', 'team-sharing.js'),
+    'session-reporting',
+    'off',
+    '--runtime',
+    'codex',
+    '--session-id',
+    'sess_cli_optout',
+    '--transcript',
+    transcript,
+    '--cwd',
+    cwd,
+  ], { cwd: path.resolve('.'), env, encoding: 'utf8' });
+  const status = spawnSync(process.execPath, [
+    path.resolve('team-sharing', 'bin', 'team-sharing.js'),
+    'session-reporting',
+    'status',
+    '--runtime',
+    'codex',
+    '--session-id',
+    'sess_cli_optout',
+    '--transcript',
+    transcript,
+    '--cwd',
+    cwd,
+  ], { cwd: path.resolve('.'), env, encoding: 'utf8' });
+  const on = spawnSync(process.execPath, [
+    path.resolve('team-sharing', 'bin', 'team-sharing.js'),
+    'session-reporting',
+    'on',
+    '--runtime',
+    'codex',
+    '--session-id',
+    'sess_cli_optout',
+    '--transcript',
+    transcript,
+    '--cwd',
+    cwd,
+  ], { cwd: path.resolve('.'), env, encoding: 'utf8' });
+
+  assert.equal(off.status, 0, off.stderr);
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(on.status, 0, on.stderr);
+  assert.equal(JSON.parse(off.stdout).report, false);
+  assert.equal(JSON.parse(status.stdout).report, false);
+  assert.equal(JSON.parse(on.stdout).report, true);
 });
 
 test('team sharing cli init defaults to MagClaw production server url', async () => {

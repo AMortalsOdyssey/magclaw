@@ -23,6 +23,7 @@ const TEAM_SHARING_SKILL_TEMPLATE = path.join(TEAM_SHARING_PACKAGE_ROOT, 'skills
 const TEAM_SHARING_SOURCE_COMMAND = path.join(TEAM_SHARING_PACKAGE_ROOT, 'bin', 'team-sharing.js');
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
 const TEAM_SHARING_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const TEAM_SHARING_SESSION_REPORTING_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
 function now() {
   return new Date().toISOString();
@@ -636,9 +637,10 @@ async function readJsonFile(file, fallback = {}) {
   }
 }
 
-async function writeJsonFile(file, value) {
+async function writeJsonFile(file, value, { privateFile = false } = {}) {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
+  if (privateFile) await chmod(file, 0o600).catch(() => {});
 }
 
 function auditCharCount(value = '') {
@@ -940,6 +942,7 @@ export function teamSharingPaths({ profile = DEFAULT_PROFILE, cwd = process.cwd(
     profile: cleanProfile,
     sharingHome,
     profileConfig: path.join(sharingHome, 'profiles', cleanProfile, 'config.yaml'),
+    sessionOverrides: path.join(sharingHome, 'profiles', cleanProfile, 'session-overrides.json'),
     projectsConfig: path.join(sharingHome, 'projects.yaml'),
     versionCache: path.join(sharingHome, 'version-cache.json'),
     projectConfig: path.join(projectDir, '.magclaw', 'team-sharing.yaml'),
@@ -1623,6 +1626,138 @@ export function resolveTeamSharingSessionTitle(flags = {}, env = process.env, ho
   return sessionTitleFromMetadata(hookPayload || {});
 }
 
+function sessionIdFromHookPayload(hookPayload = null) {
+  return nestedStringValue(hookPayload || {}, [
+    ['session_id'],
+    ['sessionId'],
+    ['event_payload', 'session_id'],
+    ['event_payload', 'sessionId'],
+    ['payload', 'session_id'],
+    ['payload', 'sessionId'],
+  ]);
+}
+
+function explicitSessionReportingFlag(flags = {}, env = process.env) {
+  if (flags.noReport || flags.noReporting || flags.skipReport || flags.skipReporting) return false;
+  if (flags.report !== undefined) return boolFlag(flags.report, true);
+  if (flags.reporting !== undefined) return boolFlag(flags.reporting, true);
+  if (env.MAGCLAW_TEAM_SHARING_REPORT !== undefined) return boolFlag(env.MAGCLAW_TEAM_SHARING_REPORT, true);
+  if (env.MAGCLAW_TEAM_SHARING_REPORTING !== undefined) return boolFlag(env.MAGCLAW_TEAM_SHARING_REPORTING, true);
+  return null;
+}
+
+function sessionReportingTtlMs(flags = {}, env = process.env) {
+  const hours = Number(flags.ttlHours || flags.ttl_hours || flags.sessionTtlHours || env.MAGCLAW_TEAM_SHARING_SESSION_REPORT_TTL_HOURS || 0);
+  if (Number.isFinite(hours) && hours > 0) return hours * 60 * 60 * 1000;
+  return TEAM_SHARING_SESSION_REPORTING_TTL_MS;
+}
+
+function sessionReportingIdentity({ runtime = 'codex', sessionId = '', transcript = '', transcriptPath = '', cwd = process.cwd() } = {}) {
+  const cleanSessionId = stringFlagValue(sessionId);
+  const cleanTranscriptPath = stringFlagValue(transcript || transcriptPath);
+  return {
+    runtime: normalizeRuntime(runtime),
+    sessionIdHash: cleanSessionId ? sha256Hex(cleanSessionId) : '',
+    transcriptPathHash: cleanTranscriptPath ? sha256Hex(path.resolve(cleanTranscriptPath)) : '',
+    cwdHash: stableHash(path.resolve(cwd || process.cwd())),
+  };
+}
+
+function sessionReportingIdentityPresent(identity = {}) {
+  return Boolean(identity.sessionIdHash || identity.transcriptPathHash);
+}
+
+function sessionReportingOverrideMatches(record = {}, identity = {}) {
+  if (!record || record.runtime !== identity.runtime) return false;
+  if (identity.sessionIdHash && record.sessionIdHash === identity.sessionIdHash) return true;
+  if (identity.transcriptPathHash && record.transcriptPathHash === identity.transcriptPathHash) return true;
+  return false;
+}
+
+function activeSessionReportingOverrides(store = {}, nowMs = Date.now()) {
+  return (Array.isArray(store.overrides) ? store.overrides : [])
+    .filter((record) => record && typeof record === 'object')
+    .filter((record) => {
+      const expiresAtMs = Date.parse(record.expiresAt || '');
+      return !Number.isFinite(expiresAtMs) || expiresAtMs > nowMs;
+    });
+}
+
+async function readSessionReportingStore(file, nowMs = Date.now()) {
+  const store = await readJsonFile(file, { version: 1, overrides: [] });
+  return {
+    version: 1,
+    overrides: activeSessionReportingOverrides(store, nowMs),
+  };
+}
+
+function compactSessionReportingStatus(record = null, paths = {}) {
+  return {
+    ok: true,
+    profile: paths.profile || DEFAULT_PROFILE,
+    sessionOverrides: paths.sessionOverrides || '',
+    report: record ? record.report !== false : true,
+    matched: Boolean(record),
+    reason: record?.reason || '',
+    expiresAt: record?.expiresAt || '',
+  };
+}
+
+export async function getTeamSharingSessionReporting(flags = {}, env = process.env) {
+  const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
+  const paths = teamSharingPaths({ profile, cwd: flags.cwd || process.cwd(), env });
+  const identity = sessionReportingIdentity({
+    runtime: flags.runtime || 'codex',
+    sessionId: flags.sessionId || flags.session_id || '',
+    transcript: flags.transcript || flags.file || flags.transcriptPath || '',
+    cwd: flags.cwd || process.cwd(),
+  });
+  const store = await readSessionReportingStore(paths.sessionOverrides);
+  const record = sessionReportingIdentityPresent(identity)
+    ? store.overrides.find((item) => sessionReportingOverrideMatches(item, identity))
+    : null;
+  return compactSessionReportingStatus(record, paths);
+}
+
+export async function setTeamSharingSessionReporting(flags = {}, env = process.env) {
+  const profile = safeProfileName(flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
+  const paths = teamSharingPaths({ profile, cwd: flags.cwd || process.cwd(), env });
+  const identity = sessionReportingIdentity({
+    runtime: flags.runtime || 'codex',
+    sessionId: flags.sessionId || flags.session_id || '',
+    transcript: flags.transcript || flags.file || flags.transcriptPath || '',
+    cwd: flags.cwd || process.cwd(),
+  });
+  if (!sessionReportingIdentityPresent(identity)) {
+    throw new Error('Usage: team-sharing session-reporting <off|on|status> --session-id <id> or --transcript <path>');
+  }
+  const report = boolFlag(flags.report, true);
+  const store = await readSessionReportingStore(paths.sessionOverrides);
+  const remaining = store.overrides.filter((item) => !sessionReportingOverrideMatches(item, identity));
+  let record = null;
+  if (!report) {
+    const nowIso = now();
+    record = {
+      runtime: identity.runtime,
+      sessionIdHash: identity.sessionIdHash,
+      transcriptPathHash: identity.transcriptPathHash,
+      cwdHash: identity.cwdHash,
+      report: false,
+      reason: String(flags.reason || 'user_disabled').replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'user_disabled',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      expiresAt: new Date(Date.now() + sessionReportingTtlMs(flags, env)).toISOString(),
+    };
+    remaining.push(record);
+  }
+  await writeJsonFile(paths.sessionOverrides, {
+    version: 1,
+    updatedAt: now(),
+    overrides: remaining.slice(-500),
+  }, { privateFile: true });
+  return compactSessionReportingStatus(record, paths);
+}
+
 async function writeTeamSharingCursor(file, runtime, cursor) {
   const existing = await readJsonFile(file, {});
   const sessions = existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {};
@@ -1641,6 +1776,7 @@ async function writeTeamSharingCursor(file, runtime, cursor) {
 export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
   const auditStartedAtMs = Date.now();
   const auditStartedAt = now();
+  const runtime = normalizeRuntime(flags.runtime || 'codex');
   const auditPaths = teamSharingPaths({
     profile: flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE,
     cwd: flags.cwd || process.cwd(),
@@ -1652,7 +1788,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     startedAt: auditStartedAt,
     cwdHash: stableHash(path.resolve(flags.cwd || process.cwd())),
     trigger: {
-      runtime: normalizeRuntime(flags.runtime || 'codex'),
+      runtime,
       hookEvent: stringFlagValue(flags.hookEvent || flags.hookEventName),
       integration: String(flags.integration || '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''),
       dryRun: Boolean(flags.dryRun || flags.dry_run),
@@ -1675,11 +1811,72 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
       ['event_payload', 'hook_event_name'],
       ['payload', 'hook_event_name'],
     ]);
+  const initialSessionId = stringFlagValue(flags.sessionId || flags.session_id) || sessionIdFromHookPayload(hookPayload);
   baseAudit.trigger.hookEvent = hookEvent || baseAudit.trigger.hookEvent;
   baseAudit.transcript = {
     pathSource: resolvedTranscript.source || '',
     pathHash: transcriptPath ? stableHash(path.resolve(transcriptPath)) : '',
   };
+  const sessionReportingTarget = {
+    profile: flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE,
+    cwd: flags.cwd || process.cwd(),
+    runtime,
+    sessionId: initialSessionId,
+    transcript: transcriptPath,
+  };
+  const sessionReportingAudit = (reporting = {}, patch = {}) => ({
+    report: reporting.report !== false,
+    matched: Boolean(reporting.matched),
+    reason: reporting.reason || '',
+    expiresAt: reporting.expiresAt || '',
+    persisted: reporting.ok !== false,
+    ...patch,
+  });
+  const skipForSessionReporting = async (reporting = {}, patch = {}) => {
+    await writeAudit({
+      ok: true,
+      status: 'skipped',
+      phase: 'session_reporting',
+      reason: 'session_reporting_disabled',
+      sessionReporting: sessionReportingAudit(reporting, patch),
+    });
+    return {
+      ok: true,
+      empty: true,
+      reason: 'session_reporting_disabled',
+      report: false,
+      sessionReporting: sessionReportingAudit(reporting, patch),
+    };
+  };
+  const explicitReporting = explicitSessionReportingFlag(flags, env);
+  if (explicitReporting === false) {
+    let reporting = { ok: false, report: false, reason: 'user_disabled' };
+    try {
+      reporting = await setTeamSharingSessionReporting({
+        ...sessionReportingTarget,
+        report: false,
+        reason: 'user_disabled',
+        ttlHours: flags.sessionReportTtlHours || flags.ttlHours || flags.ttl_hours,
+      }, env);
+    } catch (error) {
+      reporting = {
+        ok: false,
+        report: false,
+        reason: 'user_disabled',
+        error: String(error?.message || error),
+      };
+    }
+    return skipForSessionReporting(reporting, { explicit: true, error: reporting.error || '' });
+  }
+  if (explicitReporting === true) {
+    await setTeamSharingSessionReporting({
+      ...sessionReportingTarget,
+      report: true,
+    }, env).catch(() => {});
+  } else {
+    const reporting = await getTeamSharingSessionReporting(sessionReportingTarget, env);
+    if (reporting.report === false) return skipForSessionReporting(reporting);
+  }
   if (!transcriptPath) {
     if (hookEvent) {
       await writeAudit({
@@ -1693,7 +1890,6 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     throw new Error('Usage: team-sharing sync --transcript <path>');
   }
   try {
-  const runtime = normalizeRuntime(flags.runtime || 'codex');
   const client = await resolveTeamSharingClient(flags, env, { allowLogin: !hookEvent });
   const { project, profile, serverUrl, token, machineFingerprint, authIssue } = client;
   auditFile = project.paths.projectAuditLog || auditFile;
