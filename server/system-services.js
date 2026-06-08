@@ -1249,6 +1249,22 @@ export function createSystemServices(deps) {
     return compareMemberDirectorySortParts(left, right);
   }
 
+  function compactMembersDirectoryRow(row = {}, humansById = new Map()) {
+    if (row.type === 'invitation') {
+      return {
+        type: 'invitation',
+        invitation: compactMembersDirectoryInvitation(row.invitation),
+        sortAt: row.sortAt || '',
+      };
+    }
+    return {
+      type: 'member',
+      member: compactMembersDirectoryMember(row.member, humansById),
+      invitation: row.invitation ? compactMembersDirectoryInvitation(row.invitation) : null,
+      sortAt: row.sortAt || '',
+    };
+  }
+
   function buildMembersDirectoryRows({ cloud = null, humans = [], query = '' } = {}) {
     const workspaceId = membersDirectoryWorkspaceId(cloud);
     const humansById = new Map();
@@ -1293,31 +1309,19 @@ export function createSystemServices(deps) {
     const filteredRows = query
       ? rows.filter((row) => directorySearchMatches(memberDirectoryRowSearchText(row, humansById), query))
       : rows;
-    return filteredRows
-      .sort((a, b) => compareMembersDirectoryRows(a, b, humansById))
-      .map((row) => {
-        if (row.type === 'invitation') {
-          return {
-            type: 'invitation',
-            invitation: compactMembersDirectoryInvitation(row.invitation),
-            sortAt: row.sortAt || '',
-          };
-        }
-        return {
-          type: 'member',
-          member: compactMembersDirectoryMember(row.member, humansById),
-          invitation: row.invitation ? compactMembersDirectoryInvitation(row.invitation) : null,
-          sortAt: row.sortAt || '',
-        };
-      });
+    return {
+      rows: filteredRows.sort((a, b) => compareMembersDirectoryRows(a, b, humansById)),
+      humansById,
+    };
   }
 
   function membersDirectoryPageSnapshot({ cloud = null, humans = [], query = '', page = 1, pageSize = MEMBERS_DIRECTORY_PAGE_SIZE_DEFAULT } = {}) {
-    const rows = buildMembersDirectoryRows({ cloud, humans, query });
+    const { rows, humansById } = buildMembersDirectoryRows({ cloud, humans, query });
     const total = rows.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const safePage = Math.min(Math.max(1, Number(page) || 1), totalPages);
     const start = (safePage - 1) * pageSize;
+    const pageRows = rows.slice(start, start + pageSize).map((row) => compactMembersDirectoryRow(row, humansById));
     return {
       mode: 'members-directory',
       query,
@@ -1326,7 +1330,7 @@ export function createSystemServices(deps) {
       total,
       totalPages,
       hasMore: safePage < totalPages,
-      rows: rows.slice(start, start + pageSize),
+      rows: pageRows,
     };
   }
 

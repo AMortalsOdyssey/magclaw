@@ -1129,6 +1129,70 @@ test('bootstrap visible directory scope trims startup members and directory endp
   assert.equal(memberSearch.rows[0].invitation.id, 'inv_pending');
 });
 
+test('members directory compacts only visible page rows', () => {
+  const firstAt = '2026-05-18T00:00:00.000Z';
+  const secondAt = '2026-05-19T00:00:00.000Z';
+  const page = makeServices((state) => {
+    state.humans = [
+      { id: 'hum_1', workspaceId: 'local', name: 'Visible Human', email: 'visible@example.test', createdAt: firstAt },
+      {
+        id: 'hum_hidden',
+        workspaceId: 'local',
+        name: 'Hidden Human',
+        email: 'hidden@example.test',
+        createdAt: secondAt,
+        get lastSeenAt() {
+          throw new Error('members directory should not compact off-page humans');
+        },
+      },
+    ];
+  }, {
+    publicCloudState: () => ({
+      auth: {
+        currentUser: { id: 'usr_1' },
+        currentMember: { id: 'mem_1', workspaceId: 'local', humanId: 'hum_1', role: 'owner' },
+        storageBackend: 'postgres',
+      },
+      workspace: { id: 'local', slug: 'local' },
+      members: [
+        {
+          id: 'mem_1',
+          workspaceId: 'local',
+          userId: 'usr_1',
+          humanId: 'hum_1',
+          role: 'owner',
+          status: 'active',
+          createdAt: firstAt,
+        },
+        {
+          id: 'mem_hidden',
+          workspaceId: 'local',
+          userId: 'usr_hidden',
+          humanId: 'hum_hidden',
+          status: 'active',
+          createdAt: secondAt,
+          get role() {
+            throw new Error('members directory should not compact off-page members');
+          },
+        },
+      ],
+    }),
+  }).publicMembersDirectoryState({
+    url: '/api/members/directory?page=1&pageSize=1',
+    headers: {},
+  });
+
+  assert.equal(page.mode, 'members-directory');
+  assert.equal(page.page, 1);
+  assert.equal(page.pageSize, 1);
+  assert.equal(page.total, 2);
+  assert.equal(page.totalPages, 2);
+  assert.equal(page.hasMore, true);
+  assert.equal(page.rows.length, 1);
+  assert.equal(page.rows[0].member.id, 'mem_1');
+  assert.equal(page.rows[0].member.human.name, 'Visible Human');
+});
+
 test('public state exposes configured public URL for share exports', () => {
   const previous = process.env.MAGCLAW_PUBLIC_URL;
   process.env.MAGCLAW_PUBLIC_URL = 'https://magclaw.multiego.me/';
