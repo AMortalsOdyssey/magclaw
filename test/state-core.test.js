@@ -271,11 +271,11 @@ test('state core coalesces burst state broadcasts into lightweight resync signal
     await new Promise((resolve) => setTimeout(resolve, 60));
 
     assert.equal(ssePackets(firstClient, 'state-resync-required').length, 1);
-    assert.equal(ssePackets(firstClient, 'heartbeat').length, 1);
+    assert.equal(ssePackets(firstClient, 'heartbeat').length, 0);
     assert.equal(ssePackets(secondClient, 'state-resync-required').length, 1);
-    assert.equal(ssePackets(secondClient, 'heartbeat').length, 1);
+    assert.equal(ssePackets(secondClient, 'heartbeat').length, 0);
     assert.equal(ssePackets(thirdClient, 'state-resync-required').length, 1);
-    assert.equal(ssePackets(thirdClient, 'heartbeat').length, 1);
+    assert.equal(ssePackets(thirdClient, 'heartbeat').length, 0);
     assert.equal(publicStateCalls, 0);
     assert.equal(ssePackets(firstClient, 'state-resync-required')[0], ssePackets(secondClient, 'state-resync-required')[0]);
     assert.equal(ssePackets(firstClient, 'state-resync-required')[0], ssePackets(thirdClient, 'state-resync-required')[0]);
@@ -446,6 +446,7 @@ test('state core keeps state generation bounded for 100 SSE clients during agent
     core.broadcastState({ immediate: true, skipCloudPush: true });
     assert.equal(publicStateCalls, 0);
     assert.equal(clients.every((client) => ssePackets(client, 'state-resync-required').length === 1), true);
+    assert.equal(clients.every((client) => ssePackets(client, 'heartbeat').length === 0), true);
 
     const agent = core.state.agents[0];
     for (let index = 0; index < 10; index += 1) {
@@ -455,6 +456,7 @@ test('state core keeps state generation bounded for 100 SSE clients during agent
     assert.equal(publicStateCalls, 0);
     assert.equal(clients.every((client) => ssePackets(client, 'state-resync-required').length === 1), true);
     assert.equal(clients.every((client) => ssePackets(client, 'realtime-event').length >= 10), true);
+    assert.equal(clients.every((client) => ssePackets(client, 'heartbeat').length === 0), true);
     const averagePacketBytes = clients
       .flatMap((client) => client.writes)
       .reduce((sum, packet) => sum + Buffer.byteLength(packet), 0) / clients.reduce((sum, client) => sum + client.writes.length, 0);

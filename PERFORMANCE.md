@@ -56,6 +56,8 @@ agents, 20000 messages, 1000 replies, and 2000 tasks. It currently enforces:
 - Heartbeats include no internal agent runtime payload fields.
 - Repeated unchanged heartbeat fanout to 100 SSE clients stays under 10 KB and
   sends no `event: heartbeat` payloads.
+- A burst of 10 agent status changes fanned out to 100 SSE clients stays under
+  2 MB total and sends no heartbeat payload bytes.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 

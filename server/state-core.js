@@ -1269,7 +1269,6 @@ export function createStateCore(deps) {
     }
     if (!sseClients.size) return;
     broadcastStateDelta();
-    broadcastHeartbeat();
   }
 
   function scheduleStateBroadcast(options = {}) {

@@ -206,3 +206,29 @@ export async function readSseEventFromReader(reader, decoder, expectedEvent, tim
   }
   throw new Error(`Timed out waiting for ${expectedEvent}`);
 }
+
+export async function readRealtimeEventTypeFromReader(reader, decoder, expectedEventType, timeoutMs = 1500) {
+  let buffer = '';
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remaining = Math.max(1, deadline - Date.now());
+    const chunk = await Promise.race([
+      reader.read(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`Timed out waiting for realtime ${expectedEventType}`)), remaining)),
+    ]);
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const records = buffer.split(/\n\n/);
+    buffer = records.pop() || '';
+    for (const record of records) {
+      const lines = record.split(/\n/);
+      const eventLine = lines.find((line) => line.startsWith('event: '));
+      const dataLine = lines.find((line) => line.startsWith('data: '));
+      const event = eventLine?.slice('event: '.length);
+      if (event !== 'realtime-event') continue;
+      const payload = JSON.parse(dataLine?.slice('data: '.length) || '{}');
+      if (payload.eventType === expectedEventType) return payload;
+    }
+  }
+  throw new Error(`Timed out waiting for realtime ${expectedEventType}`);
+}

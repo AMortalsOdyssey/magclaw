@@ -11,6 +11,7 @@ const BUDGETS = Object.freeze({
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 400_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
   repeatedHeartbeatBytes: Number(process.env.MAGCLAW_PERF_REPEATED_HEARTBEAT_BYTES || 10_000),
+  stateChangeFanoutBytes: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_BYTES || 2_000_000),
   unreadHydrationRecords: Number(process.env.MAGCLAW_PERF_UNREAD_RECORDS || 80),
   bootstrapTasks: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_TASKS || 200),
 });
@@ -286,6 +287,82 @@ async function measureRepeatedHeartbeatFanout(state) {
   }
 }
 
+async function measureStateChangeFanout(state) {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-perf-scalability-state-change-'));
+  const sseClients = new Set();
+  try {
+    const core = createStateCore({
+      addSystemEvent: () => {},
+      broadcastState: () => {},
+      fanoutApiConfigured: () => false,
+      getState: () => state,
+      httpError: (status, message) => Object.assign(new Error(message), { status }),
+      makeId: (prefix) => `${prefix}_synthetic`,
+      now: () => NOW,
+      persistState: async () => {},
+      publicStateForSse: () => ({}),
+      sseClients,
+      DATA_DIR: tmp,
+      ROOT: process.cwd(),
+      RUNS_DIR: tmp,
+      STATE_FILE: path.join(tmp, 'state.json'),
+      STATE_DB_FILE: path.join(tmp, 'state.db'),
+      STATE_BROADCAST_DEBOUNCE_MS: 0,
+      USE_SQLITE_STATE: false,
+      WRITE_STATE_JSON: false,
+      SQLITE_BACKED_STATE_KEYS: [],
+    });
+    Object.assign(core.state, state);
+    core.state.cloud = {
+      schemaVersion: 1,
+      workspaces: [{ id: 'local', slug: 'local', name: 'MagClaw', createdAt: NOW }],
+      workspaceMembers: [],
+      users: [],
+      sessions: [],
+      invitations: [],
+      pairingTokens: [],
+      computerTokens: [],
+      agentDeliveries: [],
+      daemonEvents: [],
+      realtimeEvents: [],
+    };
+    const clients = Array.from({ length: 100 }, () => ({
+      magclawRequest: {
+        url: '/api/events?spaceType=channel&spaceId=chan_all',
+        magclawPresenceWorkspaceId: 'local',
+      },
+      writes: [],
+      write(packet) {
+        this.writes.push(packet);
+        return true;
+      },
+      once() {},
+    }));
+    for (const client of clients) sseClients.add(client);
+
+    const agent = core.state.agents[0];
+    for (let index = 0; index < 10; index += 1) {
+      core.setAgentStatus(agent, index % 2 === 0 ? 'working' : 'thinking', 'perf_state_change', { forceEvent: true });
+      core.broadcastState({ immediate: true, skipCloudPush: true });
+    }
+
+    const packets = clients.flatMap((client) => client.writes);
+    const heartbeatPackets = packets.filter((packet) => packet.startsWith('event: heartbeat\n'));
+    return {
+      clients: clients.length,
+      statusChanges: 10,
+      totalBytes: packets.reduce((sum, packet) => sum + Buffer.byteLength(packet, 'utf8'), 0),
+      packets: packets.length,
+      realtimeEvents: packets.filter((packet) => packet.startsWith('event: realtime-event\n')).length,
+      stateResyncEvents: packets.filter((packet) => packet.startsWith('event: state-resync-required\n')).length,
+      heartbeatEvents: heartbeatPackets.length,
+      heartbeatBytes: heartbeatPackets.reduce((sum, packet) => sum + Buffer.byteLength(packet, 'utf8'), 0),
+    };
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   const state = makeSyntheticState();
   const services = makeSystemServices(state);
@@ -313,6 +390,7 @@ async function main() {
   };
   const heartbeat = await measureHeartbeat(state);
   const repeatedHeartbeat = await measureRepeatedHeartbeatFanout(state);
+  const stateChangeFanout = await measureStateChangeFanout(state);
 
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
@@ -326,8 +404,11 @@ async function main() {
   assertBudget(!heartbeat.hasInternalFields, 'heartbeat leaked internal payload fields');
   assertBudget(repeatedHeartbeat.repeatedBytes <= BUDGETS.repeatedHeartbeatBytes, `repeated heartbeat fanout ${repeatedHeartbeat.repeatedBytes} bytes exceeds ${BUDGETS.repeatedHeartbeatBytes}`);
   assertBudget(repeatedHeartbeat.repeatedHeartbeatEvents === 0, 'unchanged repeated heartbeat sent payload events');
+  assertBudget(stateChangeFanout.totalBytes <= BUDGETS.stateChangeFanoutBytes, `state change fanout ${stateChangeFanout.totalBytes} bytes exceeds ${BUDGETS.stateChangeFanoutBytes}`);
+  assertBudget(stateChangeFanout.heartbeatEvents === 0, 'state change fanout sent heartbeat payload events');
+  assertBudget(stateChangeFanout.heartbeatBytes === 0, 'state change fanout sent heartbeat payload bytes');
 
-  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat }, null, 2));
+  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat, stateChangeFanout }, null, 2));
 }
 
 main().catch((error) => {

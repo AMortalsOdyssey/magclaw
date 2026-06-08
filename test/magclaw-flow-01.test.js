@@ -7,6 +7,7 @@ import {
   ROOT,
   launchIsolatedServer,
   readJsonLines,
+  readRealtimeEventTypeFromReader,
   readSseEvent,
   readSseEventFromReader,
   request,
@@ -372,7 +373,7 @@ test('stale runtime statuses reset to idle when the local server restarts', asyn
   }
 });
 
-test('status changes publish an immediate heartbeat without waiting for the interval', async () => {
+test('status changes publish an immediate realtime event without waiting for the heartbeat interval', async () => {
   const server = await startIsolatedServer({ MAGCLAW_STATE_HEARTBEAT_MS: '10000' });
   const controller = new AbortController();
   const response = await fetch(`${server.baseUrl}/api/events`, { signal: controller.signal });
@@ -385,8 +386,10 @@ test('status changes publish an immediate heartbeat without waiting for the inte
       method: 'PATCH',
       body: JSON.stringify({ status: 'working' }),
     });
-    const heartbeat = await readSseEventFromReader(reader, decoder, 'heartbeat', 600);
-    assert.equal(heartbeat.agents.find((agent) => agent.id === 'agt_codex')?.status, 'working');
+    const realtime = await readRealtimeEventTypeFromReader(reader, decoder, 'agent_status_changed', 600);
+    assert.equal(realtime.eventType, 'agent_status_changed');
+    assert.equal(realtime.payload?.agent?.id, 'agt_codex');
+    assert.equal(realtime.payload?.agent?.status, 'working');
   } finally {
     controller.abort();
     await reader.cancel().catch(() => {});
