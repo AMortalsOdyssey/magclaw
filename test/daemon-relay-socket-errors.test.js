@@ -1218,6 +1218,88 @@ test('daemon relay broadcasts remote start and restart status through realtime e
   ]);
 });
 
+test('daemon relay broadcasts nonterminal delivery status and activity through realtime events only', async () => {
+  const { broadcasts, cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_delivery_activity';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+  });
+  state.agents.push({
+    id: 'agt_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    name: 'Remote Agent',
+    runtime: 'codex',
+    status: 'idle',
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+  cloud.agentDeliveries.push({
+    id: 'adl_error',
+    workspaceId: 'wsp_test',
+    agentId: 'agt_remote',
+    computerId: 'cmp_remote',
+    status: 'sent',
+    commandType: 'agent:deliver',
+    workItemId: null,
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  broadcasts.length = 0;
+  socket.emit('data', encodeFrame({
+    type: 'agent:status',
+    agentId: 'agt_remote',
+    deliveryId: 'adl_status',
+    status: 'thinking',
+    activity: { detail: 'Starting remote turn.' },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  socket.emit('data', encodeFrame({
+    type: 'agent:activity',
+    agentId: 'agt_remote',
+    deliveryId: 'adl_activity',
+    status: 'working',
+    activity: { detail: 'Running remote tool.' },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(broadcasts, [{ realtimeOnly: true }, { realtimeOnly: true }]);
+
+  broadcasts.length = 0;
+  socket.emit('data', encodeFrame({
+    type: 'agent:activity',
+    agentId: 'agt_remote',
+    deliveryId: 'adl_error',
+    status: 'working',
+    activity: {
+      source: 'codex-stderr',
+      text: 'ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Connection reset by peer',
+    },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(cloud.agentDeliveries[0].status, 'failed');
+  assert.deepEqual(broadcasts, [{}]);
+});
+
 test('daemon relay queues deliveries while computer upgrade is pending and replays after ready', async () => {
   const { cloud, relay, state } = createRelay();
   state.computers.push({

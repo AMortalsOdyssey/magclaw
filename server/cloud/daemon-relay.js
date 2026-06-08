@@ -2440,7 +2440,7 @@ export function createDaemonRelay(deps) {
       broadcastState();
     } else if (message.deliveryId) {
       await persistRuntimeState(workspaceIdForAgent(agent), 'daemon_agent_status');
-      broadcastState();
+      broadcastState({ realtimeOnly: true });
     } else {
       scheduleRuntimePersist(workspaceIdForAgent(agent), 'daemon_agent_status', {
         broadcast: true,
@@ -2480,7 +2480,11 @@ export function createDaemonRelay(deps) {
     }
     if (message.deliveryId) {
       await persistRuntimeState(workspaceIdForAgent(agent), 'daemon_agent_activity');
-      broadcastState();
+      if (nextStatus === 'error') {
+        broadcastState();
+      } else {
+        broadcastState({ realtimeOnly: true });
+      }
       return;
     }
     scheduleRuntimePersist(workspaceIdForAgent(agent), 'daemon_agent_activity', {
