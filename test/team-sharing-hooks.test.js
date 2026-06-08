@@ -220,6 +220,34 @@ test('team sharing hook parser strips Claude Code skill wrappers and keeps proje
   assert.match(parsed.events[1].text, /team-sharing read-link/);
 });
 
+test('team sharing hook parser preserves Claude Code string-content user prompts', () => {
+  const transcript = [
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:00.000Z',
+      type: 'user',
+      message: { role: 'user', content: '请只回复这一行：MAGCLAW_CLAUDE_SMOKE_123' },
+      cwd: '/repo/magclaw',
+      sessionId: '0d4bab5d-8030-4430-b263-c68c2623f9b1',
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:01.000Z',
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'MAGCLAW_CLAUDE_SMOKE_123' }] },
+      cwd: '/repo/magclaw',
+      sessionId: '0d4bab5d-8030-4430-b263-c68c2623f9b1',
+    }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'claude_code' });
+
+  assert.equal(parsed.sessionId, '0d4bab5d-8030-4430-b263-c68c2623f9b1');
+  assert.deepEqual(parsed.events.map((event) => event.role), ['user', 'assistant']);
+  assert.deepEqual(parsed.events.map((event) => event.text), [
+    '请只回复这一行：MAGCLAW_CLAUDE_SMOKE_123',
+    'MAGCLAW_CLAUDE_SMOKE_123',
+  ]);
+});
+
 test('team sharing hook parser extracts Codex plan events and hides implementation prompts', () => {
   const transcript = [
     JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-plan', cwd: '/repo/magclaw' } }),

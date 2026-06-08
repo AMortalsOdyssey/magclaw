@@ -68,6 +68,16 @@ function textFromContentBlocks(content) {
     .join('\n\n');
 }
 
+function claudeTextBlocksFromContent(content) {
+  if (typeof content === 'string') return [content];
+  return asArray(content)
+    .map((block) => {
+      if (typeof block === 'string') return block;
+      return block?.type === 'text' ? block.text || '' : '';
+    })
+    .filter(Boolean);
+}
+
 function pushUnique(target, value) {
   const clean = String(value || '').trim();
   if (clean && !target.includes(clean)) target.push(clean);
@@ -428,9 +438,7 @@ function claudeTextEvent(item, context) {
     return null;
   }
   if (raw?.type === 'assistant' || raw?.type === 'user') {
-    const textBlocks = asArray(raw.message?.content)
-      .map((block) => (block?.type === 'text' ? block.text : ''))
-      .filter(Boolean);
+    const textBlocks = claudeTextBlocksFromContent(raw.message?.content);
     const rawText = textBlocks.join('\n\n');
     const text = redactTeamSharingText(raw.type === 'user' ? claudeVisibleUserText(rawText) : rawText);
     if (!text) return null;
@@ -733,10 +741,9 @@ function extractClaudeTranscriptEvents(parsed = [], context = {}) {
       continue;
     }
     if (raw?.type === 'assistant') {
-      const textBlocks = [];
+      const textBlocks = claudeTextBlocksFromContent(raw.message?.content);
       for (const block of asArray(raw.message?.content)) {
         if (block?.type === 'text' && block.text) {
-          textBlocks.push(block.text);
           continue;
         }
         if (block?.type !== 'tool_use') continue;
@@ -762,10 +769,9 @@ function extractClaudeTranscriptEvents(parsed = [], context = {}) {
       continue;
     }
     if (raw?.type === 'user') {
-      const textBlocks = [];
+      const textBlocks = claudeTextBlocksFromContent(raw.message?.content);
       for (const block of asArray(raw.message?.content)) {
         if (block?.type === 'text' && block.text) {
-          textBlocks.push(block.text);
           continue;
         }
         if (block?.type !== 'tool_result') continue;
