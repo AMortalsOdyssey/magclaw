@@ -566,7 +566,6 @@ export async function handleTaskApi(req, res, url, deps) {
       return true;
     }
     const body = await readJson(req);
-    let taskStatusChanged = false;
     if (body.title !== undefined) task.title = String(body.title || task.title).trim();
     if (body.body !== undefined) task.body = String(body.body || '').trim();
     if (body.status !== undefined && body.status !== task.status) {
@@ -589,7 +588,6 @@ export async function handleTaskApi(req, res, url, deps) {
         return true;
       }
       task.status = nextStatus;
-      taskStatusChanged = true;
       if (nextStatus === 'todo' || nextStatus === 'in_progress') {
         task.reviewRequestedAt = null;
         task.completedAt = null;
@@ -625,8 +623,7 @@ export async function handleTaskApi(req, res, url, deps) {
     task.updatedAt = now();
     addCollabEvent('task_updated', `Task updated: ${task.title}`, { taskId: task.id });
     await persistTaskState(task, 'task_updated');
-    if (taskStatusChanged) broadcastTaskRealtimeState(task);
-    else broadcastState();
+    broadcastTaskRealtimeState(task);
     sendJson(res, 200, { task });
     return true;
   }

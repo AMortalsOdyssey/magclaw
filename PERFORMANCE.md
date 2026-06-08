@@ -146,11 +146,11 @@ membership fanout visible in the budget. It currently enforces:
   total, sends exactly one realtime event per matching client, sends no
   heartbeat or `state-resync-required` packets, and does not leak the event to
   unrelated channel subscribers.
-- Common task creation, status, and lifecycle actions (new task, status menu
-  moves, claim, unclaim, review, approve, close, reopen, and Codex mission
-  start) also return local task/thread/mission/run patches and broadcast
-  lightweight `conversation_record_changed` events instead of forcing every tab
-  through a full state refresh.
+- Common task creation, edit, status, and lifecycle actions (new task, title or
+  assignee edits, status menu moves, claim, unclaim, review, approve, close,
+  reopen, and Codex mission start) also return local task/thread/mission/run
+  patches and broadcast lightweight `conversation_record_changed` events
+  instead of forcing every tab through a full state refresh.
 - Browser human-presence writes are coordinated by a same-origin tab lease so
   one visible browser tab per signed-in user sends `/api/cloud/auth/heartbeat`
   while peer tabs receive the local presence result without issuing duplicate

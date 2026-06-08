@@ -550,6 +550,45 @@ test('task route group records direct manual status transitions and lets SSE deb
   });
 });
 
+test('task route group broadcasts lightweight task edit patches', async () => {
+  const broadcastOptions = [];
+  const realtimeEvents = [];
+  const deps = routeDeps({
+    broadcastState: (options = {}) => {
+      broadcastOptions.push(options);
+    },
+    recordRealtimeEvent: (...args) => {
+      realtimeEvents.push(args);
+      return { id: `rte_${realtimeEvents.length}` };
+    },
+    readJson: async () => ({
+      title: 'Updated task title',
+      assigneeIds: ['agt_one', 'agt_two'],
+    }),
+  });
+  const res = makeResponse();
+  const handled = await handleTaskApi(
+    { method: 'PATCH' },
+    res,
+    new URL('http://local/api/tasks/task_1'),
+    deps,
+  );
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.task.title, 'Updated task title');
+  assert.deepEqual(res.data.task.assigneeIds, ['agt_one', 'agt_two']);
+  assert.deepEqual(broadcastOptions, [{ realtimeOnly: true }]);
+  assert.equal(realtimeEvents[0]?.[0], 'conversation_record_changed');
+  assert.equal(realtimeEvents[0]?.[1].task.id, 'task_1');
+  assert.equal(realtimeEvents[0]?.[1].recordKind, 'task');
+  assert.deepEqual(realtimeEvents[0]?.[2], {
+    workspaceId: 'local',
+    scopeType: 'channel',
+    scopeId: 'chan_all',
+    threadMessageId: 'msg_1',
+  });
+});
+
 test('task lifecycle routes broadcast lightweight task and thread patches', async () => {
   const broadcastOptions = [];
   const realtimeEvents = [];
