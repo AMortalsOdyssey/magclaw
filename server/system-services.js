@@ -998,6 +998,16 @@ export function createSystemServices(deps) {
     return String(text || '').includes(query);
   }
 
+  function directorySearchSingleValueMatches(value, query) {
+    if (!query) return true;
+    const text = String(value || '').trim().toLowerCase();
+    return Boolean(text && text.includes(query));
+  }
+
+  function directorySearchHasWhitespace(query = '') {
+    return /\s/.test(String(query || ''));
+  }
+
   function agentDirectorySearchText(agent = {}) {
     return directorySearchText([
       agent.id,
@@ -1009,6 +1019,19 @@ export function createSystemServices(deps) {
       agent.creatorName,
       agent.creatorEmail,
     ]);
+  }
+
+  function agentDirectorySearchMatches(agent = {}, query = '') {
+    if (!query) return true;
+    if (directorySearchHasWhitespace(query)) return directorySearchMatches(agentDirectorySearchText(agent), query);
+    return directorySearchSingleValueMatches(agent.id, query)
+      || directorySearchSingleValueMatches(agent.name, query)
+      || directorySearchSingleValueMatches(agent.description, query)
+      || directorySearchSingleValueMatches(agent.runtime, query)
+      || directorySearchSingleValueMatches(agent.runtimeId, query)
+      || directorySearchSingleValueMatches(agent.model, query)
+      || directorySearchSingleValueMatches(agent.creatorName, query)
+      || directorySearchSingleValueMatches(agent.creatorEmail, query);
   }
 
   function humanDirectorySearchText(human = {}) {
@@ -1023,6 +1046,20 @@ export function createSystemServices(deps) {
       human.thirdPartyName,
       human.third_party_name,
     ]);
+  }
+
+  function humanDirectorySearchMatches(human = {}, query = '') {
+    if (!query) return true;
+    if (directorySearchHasWhitespace(query)) return directorySearchMatches(humanDirectorySearchText(human), query);
+    return directorySearchSingleValueMatches(human.id, query)
+      || directorySearchSingleValueMatches(human.name, query)
+      || directorySearchSingleValueMatches(human.email, query)
+      || directorySearchSingleValueMatches(human.authUserId, query)
+      || directorySearchSingleValueMatches(human.userId, query)
+      || directorySearchSingleValueMatches(human.identityReference, query)
+      || directorySearchSingleValueMatches(human.role, query)
+      || directorySearchSingleValueMatches(human.thirdPartyName, query)
+      || directorySearchSingleValueMatches(human.third_party_name, query);
   }
 
   function memberDirectorySearchText(member = {}, human = null) {
@@ -1046,6 +1083,29 @@ export function createSystemServices(deps) {
       human?.thirdPartyName,
       human?.third_party_name,
     ]);
+  }
+
+  function memberDirectorySearchMatches(member = {}, human = null, query = '') {
+    if (!query) return true;
+    if (directorySearchHasWhitespace(query)) return directorySearchMatches(memberDirectorySearchText(member, human), query);
+    return directorySearchSingleValueMatches(member.id, query)
+      || directorySearchSingleValueMatches(member.userId, query)
+      || directorySearchSingleValueMatches(member.humanId, query)
+      || directorySearchSingleValueMatches(member.email, query)
+      || directorySearchSingleValueMatches(member.role, query)
+      || directorySearchSingleValueMatches(member.user?.id, query)
+      || directorySearchSingleValueMatches(member.user?.name, query)
+      || directorySearchSingleValueMatches(member.user?.email, query)
+      || directorySearchSingleValueMatches(member.user?.thirdPartyName, query)
+      || directorySearchSingleValueMatches(member.user?.third_party_name, query)
+      || directorySearchSingleValueMatches(member.human?.name, query)
+      || directorySearchSingleValueMatches(member.human?.email, query)
+      || directorySearchSingleValueMatches(human?.name, query)
+      || directorySearchSingleValueMatches(human?.email, query)
+      || directorySearchSingleValueMatches(human?.authUserId, query)
+      || directorySearchSingleValueMatches(human?.userId, query)
+      || directorySearchSingleValueMatches(human?.thirdPartyName, query)
+      || directorySearchSingleValueMatches(human?.third_party_name, query);
   }
 
   function directorySearchTypes(value = '') {
@@ -1072,10 +1132,10 @@ export function createSystemServices(deps) {
   function directorySearchSnapshot({ agents = [], humans = [], cloud = null, query = '', limit = DIRECTORY_SEARCH_LIMIT_DEFAULT, types = null } = {}) {
     const selectedTypes = types instanceof Set ? types : directorySearchTypes();
     const agentMatches = selectedTypes.has('agents')
-      ? limitedDirectorySearch(agents, (agent) => directorySearchMatches(agentDirectorySearchText(agent), query), limit)
+      ? limitedDirectorySearch(agents, (agent) => agentDirectorySearchMatches(agent, query), limit)
       : { records: [], total: 0 };
     const humanMatches = selectedTypes.has('humans')
-      ? limitedDirectorySearch(humans, (human) => directorySearchMatches(humanDirectorySearchText(human), query), limit)
+      ? limitedDirectorySearch(humans, (human) => humanDirectorySearchMatches(human, query), limit)
       : { records: [], total: 0 };
     const humansById = selectedTypes.has('members')
       ? new Map(records(humans).map((human) => [String(human?.id || ''), human]).filter(([id]) => id))
@@ -1083,7 +1143,7 @@ export function createSystemServices(deps) {
     const memberMatches = selectedTypes.has('members')
       ? limitedDirectorySearch(
           cloud?.members,
-          (member) => directorySearchMatches(memberDirectorySearchText(member, humansById.get(String(member?.humanId || ''))), query),
+          (member) => memberDirectorySearchMatches(member, humansById.get(String(member?.humanId || '')), query),
           limit,
         )
       : { records: [], total: 0 };

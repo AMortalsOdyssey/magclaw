@@ -1140,6 +1140,38 @@ test('bootstrap visible directory scope trims startup members and directory endp
   assert.deepEqual(leanSearch.agents.map((agent) => agent[0]), ['agt_target']);
   assert.equal(leanSearch.bootstrap.directory.agents.total, 1);
 
+  const leanMemberSearch = makeServices(null, {
+    publicCloudState: () => ({
+      auth: {
+        currentUser: { id: 'usr_1' },
+        currentMember: { id: 'mem_1', workspaceId: 'local', humanId: 'hum_1', role: 'owner' },
+        storageBackend: 'postgres',
+      },
+      workspace: { id: 'local', slug: 'local' },
+      members: [
+        {
+          id: 'mem_target',
+          workspaceId: 'local',
+          userId: 'usr_target',
+          humanId: 'hum_1',
+          role: 'member',
+          status: 'active',
+          user: {
+            email: 'target@example.test',
+            get thirdPartyName() {
+              throw new Error('single-token member search should short-circuit before heavy identity fields');
+            },
+          },
+        },
+      ],
+    }),
+  }).publicDirectorySearchState({
+    url: '/api/directory/search?directoryFormat=tuple-v1&query=target&limit=1&types=members',
+    headers: {},
+  });
+  assert.deepEqual(leanMemberSearch.cloud.members.map((member) => member[0]), ['mem_target']);
+  assert.equal(leanMemberSearch.bootstrap.directory.members.total, 1);
+
   const membersPage = services.publicMembersDirectoryState({
     url: '/api/members/directory?page=2&pageSize=1',
     headers: {},
