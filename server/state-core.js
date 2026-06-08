@@ -1095,6 +1095,9 @@ export function createStateCore(deps) {
   }
 
   function realtimeEventMatchesRequest(event, req = null) {
+    const eventWorkspaceId = String(event?.workspaceId || primaryWorkspaceId() || '').trim();
+    const requestWorkspaceId = presenceWorkspaceIdForRequest(req);
+    if (eventWorkspaceId && requestWorkspaceId && eventWorkspaceId !== requestWorkspaceId) return false;
     const requestScope = requestRealtimeScope(req);
     if (!requestScope.spaceType && !requestScope.spaceId && !requestScope.threadMessageId) return true;
     if (event.scopeType === 'workspace' || event.scopeType === 'agent') return true;

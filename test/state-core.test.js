@@ -349,8 +349,13 @@ test('state core broadcasts unread realtime events for lightweight count refresh
   });
   const channelClient = fakeSseClient({ url: '/api/events?spaceType=channel&spaceId=chan_all' });
   const unrelatedClient = fakeSseClient({ url: '/api/events?spaceType=channel&spaceId=chan_other' });
+  const otherWorkspaceClient = fakeSseClient({
+    url: '/api/events?spaceType=channel&spaceId=chan_all',
+    magclawPresenceWorkspaceId: 'other',
+  });
   sseClients.add(channelClient);
   sseClients.add(unrelatedClient);
+  sseClients.add(otherWorkspaceClient);
 
   try {
     await core.ensureStorage();
@@ -376,6 +381,7 @@ test('state core broadcasts unread realtime events for lightweight count refresh
 
     const channelEvents = sseEnvelopes(channelClient, 'realtime-event');
     const unrelatedEvents = sseEnvelopes(unrelatedClient, 'realtime-event');
+    const otherWorkspaceEvents = sseEnvelopes(otherWorkspaceClient, 'realtime-event');
     assert.deepEqual(channelEvents.map((event) => event.eventType), [
       'unread_counts_invalidated',
       'unread_counts_updated',
@@ -384,6 +390,7 @@ test('state core broadcasts unread realtime events for lightweight count refresh
       'unread_counts_invalidated',
       'unread_counts_updated',
     ]);
+    assert.deepEqual(otherWorkspaceEvents, []);
     assert.equal(ssePackets(channelClient, 'state-delta').length, 0);
 
     const replay = core.realtimeEventsForRequest({

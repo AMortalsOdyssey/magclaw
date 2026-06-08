@@ -151,6 +151,11 @@ membership fanout visible in the budget. It currently enforces:
   reopen, and Codex mission start) also return local task/thread/mission/run
   patches and broadcast lightweight `conversation_record_changed` events
   instead of forcing every tab through a full state refresh.
+- Read acknowledgements use the targeted `unread_counts_updated` realtime event
+  and skip both full-state SSE resyncs and cloud `state_changed` pushes. The
+  100-client fanout smoke stays under 80 KB total with no heartbeat or
+  `state-resync-required` packets, so opening channels or threads does not fan
+  out an entire workspace snapshot to peer tabs.
 - Browser human-presence writes are coordinated by a same-origin tab lease so
   one visible browser tab per signed-in user sends `/api/cloud/auth/heartbeat`
   while peer tabs receive the local presence result without issuing duplicate

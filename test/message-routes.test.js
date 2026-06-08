@@ -682,8 +682,12 @@ test('inbox read endpoint still rejects unjoined private channel scopes', async 
 
 test('inbox read endpoint sends durable thread scope for replies that are not loaded yet', async () => {
   let durableOptions = null;
+  const broadcastOptions = [];
   const realtimeEvents = [];
   const deps = routeDeps({
+    broadcastState: (options = {}) => {
+      broadcastOptions.push(options);
+    },
     markConversationRecordsRead: async (options) => {
       durableOptions = options;
       return { messageIds: ['msg_3'], replyIds: ['rep_remote'], count: 1 };
@@ -732,8 +736,14 @@ test('inbox read endpoint sends durable thread scope for replies that are not lo
   assert.ok(deps.state.replies[0].readBy.includes('hum_local'));
   assert.ok(res.data.readRecordIds.includes('rep_remote'));
   assert.equal(res.data.unreadCounts.globalUnread, 2);
+  assert.deepEqual(broadcastOptions, [{ realtimeOnly: true, skipCloudPush: true }]);
   assert.equal(realtimeEvents[0]?.[0], 'unread_counts_updated');
   assert.equal(realtimeEvents[0]?.[1]?.targetHumanId, 'hum_local');
+  assert.deepEqual(realtimeEvents[0]?.[2], {
+    workspaceId: 'local',
+    scopeType: 'workspace',
+    scopeId: 'local',
+  });
 });
 
 test('unread counts endpoint returns repository counts scoped to the current human', async () => {

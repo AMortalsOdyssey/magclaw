@@ -1054,7 +1054,7 @@ export async function handleMessageApi(req, res, url, deps) {
         }, { workspaceId: readWorkspaceId, scopeType: 'workspace', scopeId: readWorkspaceId });
       }
       await persistState({ workspaceId: readWorkspaceId, reason: 'conversation_read_state_changed' });
-      broadcastState();
+      broadcastState({ realtimeOnly: true, skipCloudPush: true });
     }
     sendJson(res, 200, {
       ok: true,
