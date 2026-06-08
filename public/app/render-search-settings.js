@@ -1451,17 +1451,25 @@ function relativeMemberTime(value) {
   return `${years} yr${years === 1 ? '' : 's'} ago`;
 }
 
+function memberHumanRecord(member) {
+  const humanId = member?.humanId;
+  return member?.human || (humanId ? (appState?.humans || []).find((human) => human.id === humanId) : null) || {};
+}
+
 function memberDisplayName(member) {
-  return member?.user?.name || member?.human?.name || member?.user?.email || member?.humanId || 'Member';
+  const human = memberHumanRecord(member);
+  return member?.user?.name || human.name || member?.user?.email || member?.humanId || 'Member';
 }
 
 function memberEmail(member) {
-  return member?.user?.email || member?.human?.email || member?.userId || '';
+  const human = memberHumanRecord(member);
+  return member?.user?.email || human.email || member?.userId || '';
 }
 
 function memberAvatar(member, pending = false) {
   const name = pending ? (member.name || member.email || 'I') : memberDisplayName(member);
-  const avatar = pending ? member.avatarUrl : (member.user?.avatarUrl || member.human?.avatarUrl || member.human?.avatar || '');
+  const human = memberHumanRecord(member);
+  const avatar = pending ? member.avatarUrl : (member.user?.avatarUrl || human.avatarUrl || human.avatar || '');
   if (avatar) return `<span class="member-avatar"><img src="${escapeHtml(avatar)}" alt="" /></span>`;
   return `<span class="member-avatar">${escapeHtml(String(name || 'M').trim().slice(0, 1).toUpperCase())}</span>`;
 }
@@ -1501,9 +1509,10 @@ function memberDirectorySortParts(row) {
       id: row.invitation?.id || row.invitation?.email || '',
     };
   }
+  const human = memberHumanRecord(row?.member);
   return {
     group: 0,
-    invitedAt: row?.invitation?.createdAt || row?.member?.createdAt || row?.member?.joinedAt,
+    invitedAt: row?.invitation?.createdAt || row?.member?.createdAt || row?.member?.joinedAt || human.createdAt || human.joinedAt,
     id: row?.invitation?.id || row?.member?.id || row?.member?.userId || memberEmail(row?.member),
   };
 }
@@ -1517,8 +1526,9 @@ function compareMemberDirectoryRows(a, b) {
 }
 
 function memberLastActivityAt(member) {
-  return member?.human?.lastSeenAt
-    || member?.human?.presenceUpdatedAt
+  const human = memberHumanRecord(member);
+  return human.lastSeenAt
+    || human.presenceUpdatedAt
     || member?.user?.lastLoginAt
     || member?.joinedAt
     || member?.createdAt;
@@ -1547,7 +1557,7 @@ function buildMembersRows() {
         type: 'member',
         member,
         invitation,
-        sortAt: invitation?.createdAt || member.createdAt || member.joinedAt || '',
+        sortAt: invitation?.createdAt || member.createdAt || member.joinedAt || memberHumanRecord(member).createdAt || memberHumanRecord(member).joinedAt || '',
       };
     });
   const pendingInvitations = invitations

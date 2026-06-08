@@ -436,12 +436,23 @@ export function createSystemServices(deps) {
 
   function compactBootstrapCloudMember(member = {}) {
     if (!member || typeof member !== 'object') return member;
-    return {
-      ...member,
-      human: member.human && typeof member.human === 'object'
-        ? compactBootstrapHumanRecord(member.human)
-        : member.human,
-    };
+    const record = { ...member };
+    if (!record.humanId && record.human && typeof record.human === 'object' && record.human.id) {
+      record.humanId = record.human.id;
+    }
+    if (record.user && typeof record.user === 'object') {
+      const user = {};
+      if (record.user.email) user.email = record.user.email;
+      if (record.user.avatarUrl) user.avatarUrl = record.user.avatarUrl;
+      if (Object.keys(user).length) record.user = user;
+      else delete record.user;
+    }
+    if (Object.hasOwn(record, 'human')) delete record.human;
+    if (Object.hasOwn(record, 'workspaceId')) delete record.workspaceId;
+    if (Object.hasOwn(record, 'updatedAt')) delete record.updatedAt;
+    if (Object.hasOwn(record, 'createdAt')) delete record.createdAt;
+    if (record.status === 'active') delete record.status;
+    return record;
   }
 
   function compactBootstrapCloudState(cloud = null) {

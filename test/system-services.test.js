@@ -773,9 +773,13 @@ test('bootstrap state compacts member directory churn fields without changing fu
   assert.equal(bootstrap.humans[0].updatedAt, undefined);
   assert.equal(bootstrap.humans[0].role, 'owner');
   assert.equal(bootstrap.humans[0].createdAt, createdAt);
-  assert.equal(bootstrap.cloud.members[0].human.workspaceId, undefined);
-  assert.equal(bootstrap.cloud.members[0].human.lastSeenAt, undefined);
-  assert.equal(bootstrap.cloud.members[0].human.createdAt, createdAt);
+  assert.equal(bootstrap.cloud.members[0].human, undefined);
+  assert.equal(bootstrap.cloud.members[0].humanId, 'hum_1');
+  assert.equal(bootstrap.cloud.members[0].workspaceId, undefined);
+  assert.equal(bootstrap.cloud.members[0].createdAt, undefined);
+  assert.equal(bootstrap.cloud.members[0].updatedAt, undefined);
+  assert.equal(bootstrap.cloud.members[0].status, undefined);
+  assert.deepEqual(bootstrap.cloud.members[0].user, { email: 'owner@example.test' });
 });
 
 test('public state for signed-in non-members keeps empty collection fields stable', () => {

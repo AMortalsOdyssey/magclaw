@@ -172,6 +172,25 @@ function makeSyntheticState({
 }
 
 function makeSystemServices(state) {
+  const cloudMembers = (state.humans || []).map((human, index) => ({
+    id: `mem_${String(index).padStart(4, '0')}`,
+    workspaceId: 'local',
+    userId: `usr_${String(index).padStart(4, '0')}`,
+    humanId: human.id,
+    role: index === 0 ? 'owner' : 'member',
+    status: 'active',
+    createdAt: human.createdAt || NOW,
+    updatedAt: human.updatedAt || NOW,
+    user: {
+      id: `usr_${String(index).padStart(4, '0')}`,
+      name: human.name,
+      email: `human${index}@example.test`,
+    },
+    human: {
+      ...human,
+      email: `human${index}@example.test`,
+    },
+  }));
   return createSystemServices({
     addSystemEvent: () => {},
     broadcastState: () => {},
@@ -188,6 +207,7 @@ function makeSystemServices(state) {
         storageBackend: 'postgres',
       },
       workspace: { id: 'local', slug: 'local' },
+      members: cloudMembers,
     }),
     projectsForSpace: () => [],
     runningProcesses: new Map(),
@@ -550,9 +570,19 @@ async function main() {
     taskHydration: snapshot.bootstrap?.tasks || null,
     agents: snapshot.agents.length,
     humans: snapshot.humans.length,
+    cloudMembers: snapshot.cloud?.members?.length || 0,
     unreadHydration: snapshot.bootstrap?.unreadHydration || null,
     hasBootstrapMemberChurnFields: snapshot.agents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
       || snapshot.humans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
+    hasBootstrapCloudMemberDuplication: (snapshot.cloud?.members || []).some((member) => (
+      member.human
+      || member.workspaceId
+      || member.updatedAt
+      || member.createdAt
+      || member.status === 'active'
+      || member.user?.id
+      || member.user?.name
+    )),
     hasInternalFields: body.includes('externalImport')
       || body.includes('startupCollaboration')
       || body.includes('promptCache')
@@ -569,6 +599,8 @@ async function main() {
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
   assertBudget(!bootstrap.hasInternalFields, 'bootstrap leaked internal payload fields');
   assertBudget(!bootstrap.hasBootstrapMemberChurnFields, 'bootstrap leaked member churn fields');
+  assertBudget(bootstrap.cloudMembers === state.humans.length, `bootstrap cloud member fixture expected ${state.humans.length} members but got ${bootstrap.cloudMembers}`);
+  assertBudget(!bootstrap.hasBootstrapCloudMemberDuplication, 'bootstrap leaked duplicate cloud member human payloads');
   assertBudget(bootstrap.tasks <= BUDGETS.bootstrapTasks, `bootstrap ${bootstrap.tasks} tasks exceeds ${BUDGETS.bootstrapTasks}`);
   assertBudget(bootstrap.taskHydration?.space?.hasMore === true, 'bootstrap task hydration did not expose selected-space pagination');
   assertBudget(bootstrap.taskHydration?.global?.hasMore === true, 'bootstrap task hydration did not expose global pagination');

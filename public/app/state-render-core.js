@@ -735,13 +735,14 @@ function cloudRoleLabel(role) {
 }
 
 function serverOwnerUserId(workspace = appState?.cloud?.workspace || {}) {
+  const workspaceMatches = (member = {}) => !member.workspaceId || member.workspaceId === workspace?.id;
   const activeOwners = (appState?.cloud?.members || [])
-    .filter((member) => member.workspaceId === workspace?.id && member.status !== 'removed' && member.role === 'owner')
+    .filter((member) => workspaceMatches(member) && member.status !== 'removed' && member.role === 'owner')
     .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0));
   if (activeOwners[0]?.userId) return activeOwners[0].userId;
   if (workspace?.ownerUserId) return workspace.ownerUserId;
   const activeAdmins = (appState?.cloud?.members || [])
-    .filter((member) => member.workspaceId === workspace?.id && member.status !== 'removed' && member.role === 'admin')
+    .filter((member) => workspaceMatches(member) && member.status !== 'removed' && member.role === 'admin')
     .sort((a, b) => Date.parse(a.joinedAt || a.createdAt || 0) - Date.parse(b.joinedAt || b.createdAt || 0));
   return activeAdmins[0]?.userId || '';
 }
