@@ -2404,6 +2404,12 @@ function eventStreamPathForCurrentSelection() {
 }
 
 function connectEvents() {
+  if (document.visibilityState === 'hidden') {
+    eventSourceSuspendedForHiddenTab = true;
+    if (eventSource) disconnectEvents();
+    return;
+  }
+  eventSourceSuspendedForHiddenTab = false;
   const eventPath = eventStreamPathForCurrentSelection();
   if (eventSource && eventSourcePath === eventPath) return;
   if (eventSource) disconnectEvents();
@@ -2472,6 +2478,44 @@ function disconnectEvents() {
   eventSource.close();
   eventSource = null;
   eventSourcePath = '';
+}
+
+function suspendEventStreamForHiddenTab() {
+  if (document.visibilityState !== 'hidden') return false;
+  eventSourceSuspendedForHiddenTab = true;
+  if (eventSource) disconnectEvents();
+  if (typeof magclawPerfMark === 'function') {
+    magclawPerfMark('magclaw:sse:suspend-hidden', { spaceType: selectedSpaceType, thread: Boolean(threadMessageId) });
+  }
+  return true;
+}
+
+async function resumeEventStreamAfterHiddenTab() {
+  if (document.visibilityState === 'hidden') return false;
+  if (eventSourceResumeInFlight) return false;
+  if (!eventSourceSuspendedForHiddenTab) {
+    if (!eventSource && initialLoadComplete && appState) connectEvents();
+    return false;
+  }
+  if (!initialLoadComplete || !appState) {
+    eventSourceSuspendedForHiddenTab = false;
+    return false;
+  }
+  eventSourceSuspendedForHiddenTab = false;
+  eventSourceResumeInFlight = true;
+  if (typeof magclawPerfMark === 'function') {
+    magclawPerfMark('magclaw:sse:resume-visible', { spaceType: selectedSpaceType, thread: Boolean(threadMessageId) });
+  }
+  try {
+    await refreshRealtimeBusinessObject();
+  } catch (error) {
+    console.warn('Failed to refresh hidden tab before reconnecting SSE:', error);
+  } finally {
+    eventSourceResumeInFlight = false;
+    if (document.visibilityState !== 'hidden') connectEvents();
+    scheduleUnreadCountsRefresh({ delay: 0 });
+  }
+  return true;
 }
 
 function currentHumanPresenceLeaseUserId() {
@@ -2632,6 +2676,7 @@ document.addEventListener('scroll', (event) => {
 window.addEventListener('focus', () => {
   windowFocused = true;
   sendHumanPresenceHeartbeat();
+  resumeEventStreamAfterHiddenTab();
 });
 
 window.addEventListener('blur', () => {
@@ -2640,12 +2685,22 @@ window.addEventListener('blur', () => {
 
 document.addEventListener('visibilitychange', () => {
   windowFocused = document.visibilityState === 'visible' && document.hasFocus();
-  if (document.visibilityState === 'visible') sendHumanPresenceHeartbeat();
-  else releaseHumanPresenceLease();
+  if (document.visibilityState === 'visible') {
+    sendHumanPresenceHeartbeat();
+    resumeEventStreamAfterHiddenTab();
+  } else {
+    releaseHumanPresenceLease();
+    suspendEventStreamForHiddenTab();
+  }
 });
 
 window.addEventListener('pagehide', () => {
   releaseHumanPresenceLease();
+  suspendEventStreamForHiddenTab();
+});
+
+window.addEventListener('pageshow', () => {
+  if (document.visibilityState === 'visible') resumeEventStreamAfterHiddenTab();
 });
 
 window.addEventListener('storage', (event) => {

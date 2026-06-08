@@ -929,6 +929,48 @@ test('human presence heartbeat uses one cross-tab lease per browser user', async
   assert.equal(context.localStorage.getItem(context.HUMAN_PRESENCE_LEASE_KEY), null);
 });
 
+test('hidden browser tabs suspend SSE and resync before reconnecting', async () => {
+  const app = await readAppSource();
+  const stateCoreSource = app.slice(
+    app.indexOf('let eventSource = null'),
+    app.indexOf('const SSE_LAST_SEQ_STORAGE_KEY'),
+  );
+  const connectEventsSource = app.slice(
+    app.indexOf('function connectEvents()'),
+    app.indexOf('function disconnectEvents()'),
+  );
+  const suspendSource = app.slice(
+    app.indexOf('function suspendEventStreamForHiddenTab()'),
+    app.indexOf('function currentHumanPresenceLeaseUserId()'),
+  );
+  const resumeSource = app.slice(
+    app.indexOf('async function resumeEventStreamAfterHiddenTab()'),
+    app.indexOf('function currentHumanPresenceLeaseUserId()'),
+  );
+  const visibilitySource = app.slice(
+    app.indexOf("document.addEventListener('visibilitychange'"),
+    app.indexOf("window.addEventListener('storage'"),
+  );
+
+  assert.match(stateCoreSource, /let eventSourceSuspendedForHiddenTab = false/);
+  assert.match(stateCoreSource, /let eventSourceResumeInFlight = false/);
+  assert.match(connectEventsSource, /document\.visibilityState === 'hidden'[\s\S]*eventSourceSuspendedForHiddenTab = true[\s\S]*disconnectEvents\(\)[\s\S]*return/);
+  assert.match(suspendSource, /function suspendEventStreamForHiddenTab\(\)/);
+  assert.match(suspendSource, /document\.visibilityState !== 'hidden'[\s\S]*return false/);
+  assert.match(suspendSource, /eventSourceSuspendedForHiddenTab = true[\s\S]*if \(eventSource\) disconnectEvents\(\)/);
+  assert.match(resumeSource, /async function resumeEventStreamAfterHiddenTab\(\)/);
+  assert.ok(
+    resumeSource.indexOf('if (eventSourceResumeInFlight) return false;') < resumeSource.indexOf('if (!eventSourceSuspendedForHiddenTab)'),
+    'resume must block duplicate visibility/focus/page events before reconnecting a non-suspended stream',
+  );
+  assert.match(resumeSource, /if \(!eventSourceSuspendedForHiddenTab\)[\s\S]*if \(!eventSource && initialLoadComplete && appState\) connectEvents\(\)/);
+  assert.match(resumeSource, /eventSourceResumeInFlight = true[\s\S]*await refreshRealtimeBusinessObject\(\)[\s\S]*connectEvents\(\)[\s\S]*scheduleUnreadCountsRefresh\(\{ delay: 0 \}\)/);
+  assert.match(visibilitySource, /document\.visibilityState === 'visible'[\s\S]*sendHumanPresenceHeartbeat\(\);[\s\S]*resumeEventStreamAfterHiddenTab\(\)/);
+  assert.match(visibilitySource, /releaseHumanPresenceLease\(\);[\s\S]*suspendEventStreamForHiddenTab\(\)/);
+  assert.match(visibilitySource, /window\.addEventListener\('pagehide'[\s\S]*suspendEventStreamForHiddenTab\(\)/);
+  assert.match(visibilitySource, /window\.addEventListener\('pageshow'[\s\S]*resumeEventStreamAfterHiddenTab\(\)/);
+});
+
 test('high-frequency SSE state updates are coalesced before scoped patching', async () => {
   const app = await readAppSource();
   const queueSource = app.slice(

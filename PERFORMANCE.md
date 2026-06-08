@@ -123,6 +123,10 @@ membership fanout visible in the budget. It currently enforces:
   one visible browser tab per signed-in user sends `/api/cloud/auth/heartbeat`
   while peer tabs receive the local presence result without issuing duplicate
   POSTs.
+- Hidden browser tabs suspend `/api/events` SSE streams and resync before
+  reconnecting when visible again, so extra open tabs do not multiply long-lived
+  server fanout or background JSON parsing while the user is not looking at
+  them.
 - Browser member-directory rendering caches normalized workspace humans for a
   stable state snapshot, so repeated rail, channel, mention, and detail renders
   do not repeatedly sort and enrich the full cloud member list.
