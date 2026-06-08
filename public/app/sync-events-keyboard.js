@@ -2261,6 +2261,19 @@ function applyAgentActivityChangedEvent(payload = {}, stateSnapshot = pendingSta
   return true;
 }
 
+function applyConversationRecordChangedEvent(payload = {}) {
+  if (typeof applySubmittedConversationResult !== 'function') return false;
+  return applySubmittedConversationResult({
+    message: payload.message || null,
+    reply: payload.reply || null,
+    task: payload.task || null,
+    createdTask: payload.createdTask || null,
+    createdTaskMessage: payload.createdTaskMessage || null,
+    endedTask: payload.endedTask || null,
+    stoppedTask: payload.stoppedTask || null,
+  });
+}
+
 function applyRealtimeJournalEvent(envelope) {
   if (applySseSeq(envelope?.seq, envelope?.seqStart)) {
     refreshAfterSseGap(envelope);
@@ -2279,6 +2292,14 @@ function applyRealtimeJournalEvent(envelope) {
   if (eventType === 'unread_counts_updated') {
     if (!payload.targetHumanId || payload.targetHumanId === currentHumanId()) {
       scheduleUnreadCountsRefresh({ delay: 80 });
+    }
+    return;
+  }
+  if (eventType === 'conversation_record_changed') {
+    if (!applyConversationRecordChangedEvent(payload)) {
+      refreshRealtimeBusinessObject(realtimeBusinessObjectTarget(envelope)).catch((error) => {
+        console.warn('Failed to refresh conversation record event:', error);
+      });
     }
     return;
   }

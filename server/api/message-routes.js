@@ -861,6 +861,30 @@ export async function handleMessageApi(req, res, url, deps) {
     });
   }
 
+  function recordConversationRealtimeChange(payload = {}, record = null, options = {}) {
+    const source = record || payload.reply || payload.message || payload.createdTaskMessage || null;
+    if (typeof recordRealtimeEvent !== 'function' || !source?.workspaceId || !source?.spaceType || !source?.spaceId) return null;
+    const parentMessageId = String(options.parentMessageId || payload.reply?.parentMessageId || source.parentMessageId || '');
+    return recordRealtimeEvent('conversation_record_changed', {
+      workspaceId: source.workspaceId,
+      spaceType: source.spaceType,
+      spaceId: source.spaceId,
+      recordId: source.id,
+      parentMessageId,
+      recordKind: parentMessageId ? 'reply' : 'message',
+      ...payload,
+    }, {
+      workspaceId: source.workspaceId,
+      scopeType: source.spaceType,
+      scopeId: source.spaceId,
+      threadMessageId: parentMessageId || null,
+    });
+  }
+
+  function broadcastConversationRealtimeOnly() {
+    broadcastState({ realtimeOnly: true });
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/search/messages') {
     const criteria = searchCriteriaFromUrl(url);
     const limit = paginationLimit(url.searchParams.get('limit'), 80, 200);
@@ -1387,8 +1411,9 @@ export async function handleMessageApi(req, res, url, deps) {
 
     addCollabEvent('message_sent', 'Message sent.', { messageId: message.id, spaceType, spaceId });
     await persistConversationState(message, spaceType, spaceId, req);
+    recordConversationRealtimeChange({ message, task }, message);
     recordUnreadInvalidation(message);
-    broadcastState();
+    broadcastConversationRealtimeOnly();
 
     await scheduleMessageMemoryWritebacks({
       record: message,
@@ -1630,8 +1655,15 @@ export async function handleMessageApi(req, res, url, deps) {
       }
     }
     await persistConversationState(reply, message.spaceType, message.spaceId, req);
+    recordConversationRealtimeChange({
+      reply,
+      createdTask: createdThreadTask,
+      createdTaskMessage: createdThreadTaskMessage,
+      endedTask: endedThreadTask,
+      stoppedTask: stoppedThreadTask,
+    }, reply, { parentMessageId: message.id });
     recordUnreadInvalidation(reply, { parentMessageId: message.id });
-    broadcastState();
+    broadcastConversationRealtimeOnly();
 
     if (createdThreadTask && createdThreadTaskMessage && !createdThreadTask.metadata?.startupCollaboration) {
       const taskAgent = findAgent(createdThreadTask.claimedBy || createdThreadTask.assigneeId);
@@ -1708,7 +1740,7 @@ export async function handleMessageApi(req, res, url, deps) {
 
     if (routeDecision) {
       await persistConversationState(reply, message.spaceType, message.spaceId, req);
-      broadcastState();
+      broadcastConversationRealtimeOnly();
     }
 
     if (typeof syncExternalThreadReply === 'function') {

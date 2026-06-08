@@ -399,6 +399,59 @@ test('state core broadcasts unread realtime events for lightweight count refresh
   }
 });
 
+test('state core broadcasts conversation record changes as scoped realtime events', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-conversation-realtime-'));
+  const sseClients = new Set();
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    STATE_BROADCAST_DEBOUNCE_MS: 0,
+    sseClients,
+  });
+  const channelClient = fakeSseClient({ url: '/api/events?spaceType=channel&spaceId=chan_all' });
+  const threadClient = fakeSseClient({ url: '/api/events?spaceType=channel&spaceId=chan_all&threadMessageId=msg_parent' });
+  const unrelatedClient = fakeSseClient({ url: '/api/events?spaceType=channel&spaceId=chan_other' });
+  sseClients.add(channelClient);
+  sseClients.add(threadClient);
+  sseClients.add(unrelatedClient);
+
+  try {
+    await core.ensureStorage();
+    core.recordRealtimeEvent('conversation_record_changed', {
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      parentMessageId: 'msg_parent',
+      recordKind: 'reply',
+      reply: {
+        id: 'rep_new',
+        parentMessageId: 'msg_parent',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        body: 'reply',
+      },
+    }, {
+      workspaceId: 'local',
+      scopeType: 'channel',
+      scopeId: 'chan_all',
+      threadMessageId: 'msg_parent',
+    });
+
+    const channelEvents = sseEnvelopes(channelClient, 'realtime-event');
+    const threadEvents = sseEnvelopes(threadClient, 'realtime-event');
+    const unrelatedEvents = sseEnvelopes(unrelatedClient, 'realtime-event');
+    assert.equal(channelEvents.length, 1);
+    assert.equal(threadEvents.length, 1);
+    assert.equal(unrelatedEvents.length, 0);
+    assert.equal(channelEvents[0].eventType, 'conversation_record_changed');
+    assert.equal(channelEvents[0].payload.reply.id, 'rep_new');
+    assert.equal(threadEvents[0].threadMessageId, 'msg_parent');
+    assert.equal(ssePackets(channelClient, 'state-resync-required').length, 0);
+    assert.equal(ssePackets(threadClient, 'state-resync-required').length, 0);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('state core coalesces pending resync signals for backpressured SSE clients', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-slow-sse-'));
   const sseClients = new Set();

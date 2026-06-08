@@ -1054,6 +1054,7 @@ export function createStateCore(deps) {
   const REALTIME_BROADCAST_EVENT_TYPES = new Set([
     'agent_activity_changed',
     'agent_status_changed',
+    'conversation_record_changed',
     'system_event',
     'run_event',
     'unread_counts_invalidated',

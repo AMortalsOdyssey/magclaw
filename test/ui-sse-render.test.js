@@ -32,6 +32,7 @@ async function createRealtimeHarness() {
   const context = {
     console,
     localStorage,
+    sessionStorage: localStorage,
     URL,
     URLSearchParams,
     setTimeout,
@@ -51,6 +52,7 @@ async function createRealtimeHarness() {
     taskChannelFilterIds: [],
     threadMessageId: null,
     lastSseSeq: 0,
+    SSE_LAST_SEQ_STORAGE_KEY: 'magclaw:last-sse-seq:test',
     CONVERSATION_HISTORY_PAGE_SIZE: 80,
     conversationHistoryPages: { main: {}, thread: {} },
     conversationHistoryLoading: { main: {}, thread: {} },
@@ -306,6 +308,7 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(connectEventsSource, /addEventListener\('state-resync-required'[\s\S]*applyStateResyncRequiredEnvelope\(incoming\)/);
   assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*queueStateUpdate\(JSON\.parse\(event\.data\)\)/);
   assert.match(app, /function applySseSeq\(seqInput, seqStartInput = 0\)[\s\S]*seqStart > expectedNextSeq[\s\S]*seq > expectedNextSeq/);
+  assert.match(app, /eventType === 'conversation_record_changed'[\s\S]*applyConversationRecordChangedEvent\(payload\)/);
   assert.match(connectEventsSource, /applyRunEventUpdate\(incoming\)/);
   assert.match(connectEventsSource, /eventSource\.addEventListener\('heartbeat'/);
   assert.match(connectEventsSource, /applyPresenceHeartbeat\(JSON\.parse\(event\.data\)\)/);
@@ -320,6 +323,37 @@ test('state SSE updates route through the non-destructive state renderer', async
     /EventSource\('\/api\/events'\)[\s\S]*addEventListener\('state'[\s\S]*appState = JSON\.parse\(event\.data\);[\s\S]*render\(\);/.test(connectEventsSource),
     false,
   );
+});
+
+test('conversation realtime events merge records without a bootstrap resync fetch', async () => {
+  const context = await createRealtimeHarness();
+  const applied = [];
+  const refreshTargets = [];
+  context.applySubmittedConversationResult = (payload) => {
+    applied.push(payload);
+    return true;
+  };
+  context.refreshRealtimeBusinessObject = async (target) => {
+    refreshTargets.push(target);
+    return true;
+  };
+
+  context.applyRealtimeJournalEvent({
+    seq: 1,
+    eventType: 'conversation_record_changed',
+    payload: {
+      message: {
+        id: 'msg_realtime',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        body: 'hello from another tab',
+      },
+    },
+  });
+
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].message.id, 'msg_realtime');
+  assert.equal(refreshTargets.length, 0);
 });
 
 test('preserved conversation history does not overwrite fresher reply counts from SSE', async () => {

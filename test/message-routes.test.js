@@ -244,6 +244,65 @@ test('message route group can page thread replies from repository when parent is
   assert.deepEqual(res.data.replies.map((reply) => reply.id), ['pg_rep']);
 });
 
+test('message writes broadcast lightweight conversation realtime events instead of full resync', async () => {
+  const realtimeEvents = [];
+  const broadcastOptions = [];
+  const deps = routeDeps({
+    broadcastState: (options = {}) => {
+      broadcastOptions.push(options);
+    },
+    recordRealtimeEvent: (...args) => {
+      realtimeEvents.push(args);
+      return { id: `rte_${realtimeEvents.length}` };
+    },
+    readJson: async () => ({ body: 'hello realtime' }),
+  });
+
+  const messageRes = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    messageRes,
+    new URL('http://local/api/spaces/channel/chan_all/messages'),
+    deps,
+  );
+
+  assert.equal(messageRes.statusCode, 201);
+  assert.equal(realtimeEvents[0]?.[0], 'conversation_record_changed');
+  assert.equal(realtimeEvents[0]?.[1].message.id, messageRes.data.message.id);
+  assert.equal(realtimeEvents[0]?.[1].recordKind, 'message');
+  assert.deepEqual(realtimeEvents[0]?.[2], {
+    workspaceId: 'local',
+    scopeType: 'channel',
+    scopeId: 'chan_all',
+    threadMessageId: null,
+  });
+  assert.equal(realtimeEvents[1]?.[0], 'unread_counts_invalidated');
+  assert.deepEqual(broadcastOptions[0], { realtimeOnly: true });
+
+  deps.readJson = async () => ({ body: 'reply realtime' });
+  const replyRes = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    replyRes,
+    new URL(`http://local/api/messages/${messageRes.data.message.id}/replies`),
+    deps,
+  );
+
+  assert.equal(replyRes.statusCode, 201);
+  assert.equal(realtimeEvents[2]?.[0], 'conversation_record_changed');
+  assert.equal(realtimeEvents[2]?.[1].reply.id, replyRes.data.reply.id);
+  assert.equal(realtimeEvents[2]?.[1].parentMessageId, messageRes.data.message.id);
+  assert.equal(realtimeEvents[2]?.[1].recordKind, 'reply');
+  assert.deepEqual(realtimeEvents[2]?.[2], {
+    workspaceId: 'local',
+    scopeType: 'channel',
+    scopeId: 'chan_all',
+    threadMessageId: messageRes.data.message.id,
+  });
+  assert.equal(realtimeEvents[3]?.[0], 'unread_counts_invalidated');
+  assert.deepEqual(broadcastOptions[1], { realtimeOnly: true });
+});
+
 test('message search supports filter-only newest-first results and conversation privacy', async () => {
   const deps = routeDeps();
   deps.state.channels = [

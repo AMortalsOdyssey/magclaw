@@ -135,6 +135,8 @@ const BUDGETS = Object.freeze({
   stateChangeFanoutBytes: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_BYTES || 700_000),
   stateChangeFanoutBytesCoalesced: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_COALESCED_BYTES || 90_000),
   stateChangeFanoutEvents: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_EVENTS || 100),
+  conversationRecordFanoutBytes: Number(process.env.MAGCLAW_PERF_CONVERSATION_RECORD_FANOUT_BYTES || 80_000),
+  conversationRecordFanoutEvents: Number(process.env.MAGCLAW_PERF_CONVERSATION_RECORD_FANOUT_EVENTS || 100),
   bootstrapProjectedConversationReads: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_PROJECTED_CONVERSATION_READS || 500),
   unreadHydrationRecords: Number(process.env.MAGCLAW_PERF_UNREAD_RECORDS || 80),
   bootstrapTasks: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_TASKS || 200),
@@ -952,6 +954,120 @@ async function measureStateChangeFanout(state) {
   }
 }
 
+async function measureConversationRecordFanout(state) {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-perf-scalability-conversation-record-'));
+  const sseClients = new Set();
+  try {
+    const core = createStateCore({
+      addSystemEvent: () => {},
+      broadcastState: () => {},
+      fanoutApiConfigured: () => false,
+      getState: () => state,
+      httpError: (status, message) => Object.assign(new Error(message), { status }),
+      makeId: (prefix) => `${prefix}_synthetic`,
+      now: () => NOW,
+      persistState: async () => {},
+      publicStateForSse: () => ({}),
+      sseClients,
+      DATA_DIR: tmp,
+      ROOT: process.cwd(),
+      RUNS_DIR: tmp,
+      STATE_FILE: path.join(tmp, 'state.json'),
+      STATE_DB_FILE: path.join(tmp, 'state.db'),
+      STATE_BROADCAST_DEBOUNCE_MS: 0,
+      USE_SQLITE_STATE: false,
+      WRITE_STATE_JSON: false,
+      SQLITE_BACKED_STATE_KEYS: [],
+    });
+    Object.assign(core.state, structuredClone(state));
+    core.state.cloud = {
+      schemaVersion: 1,
+      workspaces: [{ id: 'local', slug: 'local', name: 'MagClaw', createdAt: NOW }],
+      workspaceMembers: [],
+      users: [],
+      sessions: [],
+      invitations: [],
+      pairingTokens: [],
+      computerTokens: [],
+      agentDeliveries: [],
+      daemonEvents: [],
+      realtimeEvents: [],
+    };
+    const clients = Array.from({ length: 100 }, () => ({
+      magclawRequest: {
+        url: '/api/events?spaceType=channel&spaceId=chan_all',
+        magclawPresenceWorkspaceId: 'local',
+      },
+      writes: [],
+      write(packet) {
+        this.writes.push(packet);
+        return true;
+      },
+      once() {},
+    }));
+    const unrelatedClient = {
+      magclawRequest: {
+        url: '/api/events?spaceType=channel&spaceId=chan_other',
+        magclawPresenceWorkspaceId: 'local',
+      },
+      writes: [],
+      write(packet) {
+        this.writes.push(packet);
+        return true;
+      },
+      once() {},
+    };
+    for (const client of clients) sseClients.add(client);
+    sseClients.add(unrelatedClient);
+
+    const message = {
+      id: 'msg_perf_realtime',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_0000',
+      body: 'A realtime conversation event should let peers patch the visible chat without a bootstrap refetch.',
+      readBy: ['hum_0000'],
+      replyCount: 0,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    core.recordRealtimeEvent('conversation_record_changed', {
+      workspaceId: message.workspaceId,
+      spaceType: message.spaceType,
+      spaceId: message.spaceId,
+      recordId: message.id,
+      parentMessageId: '',
+      recordKind: 'message',
+      message,
+    }, {
+      workspaceId: message.workspaceId,
+      scopeType: message.spaceType,
+      scopeId: message.spaceId,
+      threadMessageId: null,
+    });
+
+    const packets = clients.flatMap((client) => client.writes);
+    const unrelatedPackets = unrelatedClient.writes;
+    const realtimePackets = packets.filter((packet) => packet.startsWith('event: realtime-event\n'));
+    const realtimeEnvelopes = realtimePackets.map((packet) => JSON.parse(packet.match(/^event: realtime-event\ndata: ([\s\S]*)\n\n$/)?.[1] || '{}'));
+    return {
+      clients: clients.length,
+      totalBytes: packets.reduce((sum, packet) => sum + Buffer.byteLength(packet, 'utf8'), 0),
+      packets: packets.length,
+      realtimeEvents: realtimePackets.length,
+      eventTypes: [...new Set(realtimeEnvelopes.map((envelope) => envelope.eventType))],
+      messageIds: [...new Set(realtimeEnvelopes.map((envelope) => envelope.payload?.message?.id).filter(Boolean))],
+      stateResyncEvents: packets.filter((packet) => packet.startsWith('event: state-resync-required\n')).length,
+      heartbeatEvents: packets.filter((packet) => packet.startsWith('event: heartbeat\n')).length,
+      unrelatedPackets: unrelatedPackets.length,
+    };
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+}
+
 function measureBootstrapProjectionWindow() {
   const state = makeSyntheticState({
     humans: 10,
@@ -1283,6 +1399,7 @@ async function main() {
   const humanHeartbeatChurn = await measureHumanHeartbeatChurnFanout(state);
   const presenceMemberDelta = await measurePresenceMemberDeltaFanout(state);
   const stateChangeFanout = await measureStateChangeFanout(state);
+  const conversationRecordFanout = await measureConversationRecordFanout(state);
   const bootstrapProjection = measureBootstrapProjectionWindow();
   const bootstrapLargeHistory = measureLargeBootstrapHistory();
   const bootstrapLargeUnread = measureLargeUnreadBootstrap();
@@ -1398,6 +1515,13 @@ async function main() {
   assertBudget(stateChangeFanout.stateResyncEvents === 0, 'status-only state change fanout sent resync events');
   assertBudget(stateChangeFanout.heartbeatEvents === 0, 'state change fanout sent heartbeat payload events');
   assertBudget(stateChangeFanout.heartbeatBytes === 0, 'state change fanout sent heartbeat payload bytes');
+  assertBudget(conversationRecordFanout.totalBytes <= BUDGETS.conversationRecordFanoutBytes, `conversation record fanout ${conversationRecordFanout.totalBytes} bytes exceeds ${BUDGETS.conversationRecordFanoutBytes}`);
+  assertBudget(conversationRecordFanout.realtimeEvents === BUDGETS.conversationRecordFanoutEvents, `conversation record fanout ${conversationRecordFanout.realtimeEvents} realtime events exceeds ${BUDGETS.conversationRecordFanoutEvents}`);
+  assertBudget(conversationRecordFanout.eventTypes.length === 1 && conversationRecordFanout.eventTypes[0] === 'conversation_record_changed', 'conversation record fanout did not use conversation realtime events');
+  assertBudget(conversationRecordFanout.messageIds.length === 1 && conversationRecordFanout.messageIds[0] === 'msg_perf_realtime', 'conversation record fanout did not carry the changed message');
+  assertBudget(conversationRecordFanout.stateResyncEvents === 0, 'conversation record fanout sent resync events');
+  assertBudget(conversationRecordFanout.heartbeatEvents === 0, 'conversation record fanout sent heartbeat events');
+  assertBudget(conversationRecordFanout.unrelatedPackets === 0, 'conversation record fanout leaked to unrelated channel clients');
   assertBudget(bootstrapProjection.hasMoreMessages === true, 'bootstrap projection smoke did not expose history pagination');
   assertBudget(bootstrapProjection.projectedMetadataReads <= BUDGETS.bootstrapProjectedConversationReads, `bootstrap projected ${bootstrapProjection.projectedMetadataReads} conversation metadata reads from ${bootstrapProjection.sourceMessages} source messages`);
   assertBudget(bootstrapLargeHistory.hasMoreMessages === true, 'large-history bootstrap did not expose history pagination');
@@ -1421,6 +1545,7 @@ async function main() {
     humanHeartbeatChurn,
     presenceMemberDelta,
     stateChangeFanout,
+    conversationRecordFanout,
     bootstrapProjection,
     bootstrapLargeHistory,
     bootstrapLargeUnread,
