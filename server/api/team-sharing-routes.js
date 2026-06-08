@@ -1005,11 +1005,38 @@ function applyReplaceSelectorTextOperation(content = '', operation = {}) {
   };
 }
 
+function applyReplaceContentOperation(content = '', operation = {}) {
+  const expectedHash = String(operation.expectedHash || operation.expected_hash || '').trim();
+  const currentHash = sha256Text(content);
+  if (expectedHash && expectedHash !== currentHash) {
+    const error = new Error('Content hash does not match the latest version.');
+    error.status = 409;
+    error.reason = 'version_conflict';
+    error.section = { selector: 'document', expectedHash, actualHash: currentHash };
+    throw error;
+  }
+  const replacement = String(operation.content ?? operation.replacement ?? operation.html ?? operation.markdown ?? '');
+  return {
+    content: replacement,
+    changed: {
+      type: 'replace_content',
+      previousHash: currentHash,
+      nextHash: sha256Text(replacement),
+    },
+  };
+}
+
 function applySharePatchOperations(content = '', contentType = '', operations = []) {
   let nextContent = String(content || '');
   const changedSections = [];
   for (const operation of operations) {
     const type = String(operation?.op || operation?.type || '').trim();
+    if (type === 'replace_content') {
+      const result = applyReplaceContentOperation(nextContent, operation);
+      nextContent = result.content;
+      changedSections.push(result.changed);
+      continue;
+    }
     if (type === 'replace_section') {
       const result = applyReplaceSectionOperation(nextContent, contentType, operation);
       nextContent = result.content;
@@ -1040,6 +1067,13 @@ function applySharePatchOperations(content = '', contentType = '', operations = 
     throw error;
   }
   return { content: nextContent, changedSections };
+}
+
+function sharePatchChangesContent(operations = []) {
+  return asArray(operations).some((operation) => {
+    const type = String(operation?.op || operation?.type || '').trim();
+    return ['replace_content', 'replace_section', 'replace_selector_text', 'replace_asset_ref'].includes(type);
+  });
 }
 
 function creatorFromActor(actor = {}, tokenRecord = null) {
@@ -5051,48 +5085,71 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       return true;
     }
     try {
-      const contentType = current.contentType || normalizeShareContentType(share.contentType, current.content);
-      const patched = applySharePatchOperations(current.content, contentType, operations);
+      const currentContentType = current.contentType || normalizeShareContentType(share.contentType, current.content);
+      const patched = applySharePatchOperations(current.content, currentContentType, operations);
       const metadataOperation = operations.find((operation) => String(operation?.op || operation?.type || '') === 'set_metadata') || {};
+      const contentChanged = sharePatchChangesContent(operations);
+      const contentType = normalizeShareContentType(body.contentType || metadataOperation.contentType || currentContentType, patched.content);
       const nextTitle = compactText(body.title || metadataOperation.title || share.title || 'MagClaw shared page', 140);
       const nextDescription = compactText(body.description || metadataOperation.description || share.description || patched.content, 260);
-      const optimized = await optimizeInlineShareAssets({
-        req,
-        content: patched.content,
-        workspaceId: share.workspaceId || workspaceId,
-        teamSharingState,
-        state,
-        saveAttachmentBuffer,
-        makeId,
-        now,
-        actorId: access.editorId || access.actorId || '',
-      });
-      if (optimized.content.length > MAX_SHARE_CONTENT_LENGTH) {
-        sendError(res, 413, 'Share content is too large.');
-        return true;
-      }
-      const assetIds = Array.from(new Set([
+      let blob = current.blob;
+      let contentHash = current.contentHash;
+      let assetIds = Array.from(new Set([
         ...current.assetIds,
         ...asArray(body.assetIds).map(String).filter(Boolean),
-        ...optimized.assetIds,
       ]));
-      const blob = upsertShareContentBlob(teamSharingState, {
-        workspaceId: share.workspaceId || workspaceId,
-        contentType,
-        content: optimized.content,
-        assetIds,
-        now,
-        makeId,
-      });
+      let contentForFallback = current.content;
+      if (!contentChanged && current.content && !blob) {
+        blob = upsertShareContentBlob(teamSharingState, {
+          workspaceId: share.workspaceId || workspaceId,
+          contentType,
+          content: current.content,
+          assetIds,
+          now,
+          makeId,
+        });
+        contentHash = blob.contentHash;
+      }
+      if (contentChanged) {
+        const optimized = await optimizeInlineShareAssets({
+          req,
+          content: patched.content,
+          workspaceId: share.workspaceId || workspaceId,
+          teamSharingState,
+          state,
+          saveAttachmentBuffer,
+          makeId,
+          now,
+          actorId: access.editorId || access.actorId || '',
+        });
+        if (optimized.content.length > MAX_SHARE_CONTENT_LENGTH) {
+          sendError(res, 413, 'Share content is too large.');
+          return true;
+        }
+        assetIds = Array.from(new Set([
+          ...assetIds,
+          ...optimized.assetIds,
+        ]));
+        blob = upsertShareContentBlob(teamSharingState, {
+          workspaceId: share.workspaceId || workspaceId,
+          contentType,
+          content: optimized.content,
+          assetIds,
+          now,
+          makeId,
+        });
+        contentHash = blob.contentHash;
+        contentForFallback = optimized.content;
+      }
       const updatedAt = now();
       const version = {
-        id: typeof makeId === 'function' ? makeId('shv') : `shv_${blob.contentHash.slice(0, 16)}`,
+        id: typeof makeId === 'function' ? makeId('shv') : `shv_${contentHash.slice(0, 16)}`,
         shareId: share.id,
         title: nextTitle,
         description: nextDescription,
         contentType,
-        contentHash: blob.contentHash,
-        contentBlobId: blob.id,
+        contentHash,
+        contentBlobId: blob?.id || current.version?.contentBlobId || '',
         assetIds,
         baseVersionId,
         operations: operations.map((operation) => ({
@@ -5109,11 +5166,11 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       share.title = nextTitle;
       share.description = nextDescription;
       share.contentType = contentType;
-      share.contentHash = blob.contentHash;
+      share.contentHash = contentHash;
       share.assetIds = assetIds;
       share.updatedAt = updatedAt;
       share.updatedBy = { id: access.editorId || access.actorId || '', via: access.editVia || '' };
-      delete share.content;
+      if (contentForFallback) share.content = contentForFallback;
       const shareDocuments = refreshShareVectorDocuments(teamSharingState, share);
       let indexedDocumentCount = 0;
       if (typeof indexTeamSharingDocuments === 'function' && shareDocuments.length) {
@@ -5146,7 +5203,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         url: shareUrl(req, shareId),
         versionId: version.id,
         previousVersionId: baseVersionId,
-        contentHash: blob.contentHash,
+        contentHash,
         changedSections: patched.changedSections,
         assetRefs: shareAssetRefs(req, teamSharingState, assetIds),
         indexedDocumentCount,

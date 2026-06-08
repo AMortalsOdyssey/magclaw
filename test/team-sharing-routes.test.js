@@ -1803,6 +1803,92 @@ test('team sharing share patch updates one section in place with creator/admin p
   assert.equal(conflict.data.reason, 'version_conflict');
 });
 
+test('team sharing metadata-only patch preserves content and replace_content restores the page', async () => {
+  const html = '<!doctype html><html><body><section id="guide"><h2>Guide</h2><p>完整正文。</p></section></body></html>';
+  const restoredHtml = '<!doctype html><html><body><section id="guide"><h2>Guide v2</h2><p>恢复后的完整正文。</p></section></body></html>';
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_creator', role: 'owner', name: 'Creator' } }),
+    readJson: async () => ({
+      title: '外层标题',
+      contentType: 'html',
+      content: html,
+      workspaceId: 'ws_route',
+    }),
+  });
+
+  const created = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    created,
+    new URL('https://magclaw.example/api/team-sharing/shares'),
+    deps,
+  ), true);
+  const shareId = created.data.shareId;
+
+  const sections = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    sections,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}/sections`),
+    deps,
+  ), true);
+
+  const metadataOnly = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'PATCH', headers: {}, url: `/api/team-sharing/shares/${shareId}` },
+    metadataOnly,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    {
+      ...deps,
+      readJson: async () => ({
+        baseVersionId: sections.data.versionId,
+        operations: [{ op: 'set_metadata', title: '外层标题 v2' }],
+      }),
+    },
+  ), true);
+  assert.equal(metadataOnly.statusCode, 200);
+  assert.equal(metadataOnly.data.contentHash, sections.data.contentHash);
+  assert.deepEqual(metadataOnly.data.changedSections, []);
+
+  const afterMetadata = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    afterMetadata,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    deps,
+  ), true);
+  assert.equal(afterMetadata.data.title, '外层标题 v2');
+  assert.match(afterMetadata.data.content, /完整正文/);
+  assert.match(deps.state.teamSharing.shares[0].content, /完整正文/);
+
+  const replaceContent = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'PATCH', headers: {}, url: `/api/team-sharing/shares/${shareId}` },
+    replaceContent,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    {
+      ...deps,
+      readJson: async () => ({
+        baseVersionId: afterMetadata.data.versionId,
+        operations: [{ op: 'replace_content', expectedHash: afterMetadata.data.contentHash, content: restoredHtml }],
+      }),
+    },
+  ), true);
+  assert.equal(replaceContent.statusCode, 200);
+  assert.notEqual(replaceContent.data.contentHash, afterMetadata.data.contentHash);
+
+  const afterRestore = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    afterRestore,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    deps,
+  ), true);
+  assert.match(afterRestore.data.content, /Guide v2/);
+  assert.match(afterRestore.data.content, /恢复后的完整正文/);
+  assert.match(deps.state.teamSharing.shares[0].content, /恢复后的完整正文/);
+});
+
 test('team sharing share list and delete links are scoped and role gated', async () => {
   let nextBody = {};
   const deps = routeDeps({

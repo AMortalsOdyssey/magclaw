@@ -208,6 +208,10 @@ function mergeTeamSharingState(leftValue, rightValue) {
   };
   const shares = mergeTeamSharingArrays('shares', left.shares, right.shares);
   if (shares.length) merged.shares = shares;
+  const assets = mergeTeamSharingArrays('assets', left.assets, right.assets);
+  if (assets.length) merged.assets = assets;
+  const shareContents = mergeTeamSharingArrays('shareContents', left.shareContents, right.shareContents);
+  if (shareContents.length) merged.shareContents = shareContents;
   const auth = mergeTeamSharingAuth(left.auth, right.auth);
   if (auth) merged.auth = auth;
   return merged;
@@ -224,7 +228,7 @@ function teamSharingSessionIdsForWorkspace(teamSharingState, workspaceId, option
       sessionIds.add(cleanIdentifier(session?.sessionId || sessionId));
     }
   }
-  for (const collection of [source.activities, source.feedback, source.vectorDocuments, source.shares]) {
+  for (const collection of [source.activities, source.feedback, source.vectorDocuments, source.shares, source.assets, source.shareContents]) {
     for (const record of safeArray(collection)) {
       if (teamSharingRecordWorkspaceId(record) !== cleanWorkspaceId) continue;
       const sessionId = teamSharingRecordSessionId(record);
@@ -310,6 +314,10 @@ function filterTeamSharingStateForWorkspace(teamSharingState, workspaceId, optio
   };
   const shares = safeArray(source.shares).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue);
   if (shares.length) result.shares = shares;
+  const assets = safeArray(source.assets).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue);
+  if (assets.length) result.assets = assets;
+  const shareContents = safeArray(source.shareContents).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue);
+  if (shareContents.length) result.shareContents = shareContents;
   const auth = filterTeamSharingAuthForWorkspace(source.auth, cleanWorkspaceId, includeMatches);
   if (auth) result.auth = auth;
   return result;
@@ -326,6 +334,8 @@ function hasTeamSharingContent(teamSharingState) {
     || safeArray(source.vectorDocuments).length > 0
     || safeArray(source.searchTraces).length > 0
     || safeArray(source.shares).length > 0
+    || safeArray(source.assets).length > 0
+    || safeArray(source.shareContents).length > 0
     || objectHasKeys(source.auth?.deviceRequests)
     || objectHasKeys(source.auth?.tokens);
 }

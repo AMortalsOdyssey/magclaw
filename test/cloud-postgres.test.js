@@ -1233,6 +1233,18 @@ test('postgres store persists scoped team sharing state to the requested workspa
         { vectorDocumentId: 'sess_main:L0', sessionId: 'sess_main', workspaceId: 'wsp_main', layer: 'L0' },
         { vectorDocumentId: 'sess_other:L0', sessionId: 'sess_other', workspaceId: 'wsp_other', layer: 'L0' },
       ],
+      shares: [
+        { id: 'share_main', workspaceId: 'wsp_main', title: 'Main share', updatedAt: createdAt },
+        { id: 'share_other', workspaceId: 'wsp_other', title: 'Other share', updatedAt: createdAt },
+      ],
+      assets: [
+        { id: 'asset_main', workspaceId: 'wsp_main', filename: 'main.mp4', updatedAt: createdAt },
+        { id: 'asset_other', workspaceId: 'wsp_other', filename: 'other.mp4', updatedAt: createdAt },
+      ],
+      shareContents: [
+        { id: 'shc_main', workspaceId: 'wsp_main', contentHash: 'hash_main', content: '<h1>Main</h1>', updatedAt: createdAt },
+        { id: 'shc_other', workspaceId: 'wsp_other', contentHash: 'hash_other', content: '<h1>Other</h1>', updatedAt: createdAt },
+      ],
     },
     cloud: {
       workspaces: [
@@ -1261,6 +1273,9 @@ test('postgres store persists scoped team sharing state to the requested workspa
   assert.equal(payload.abstracts.sess_main.revision, 2);
   assert.equal(payload.sessions.sess_other, undefined);
   assert.equal(payload.vectorDocuments.some((doc) => doc.sessionId === 'sess_other'), false);
+  assert.deepEqual(payload.shares.map((share) => share.id), ['share_main']);
+  assert.deepEqual(payload.assets.map((asset) => asset.id), ['asset_main']);
+  assert.deepEqual(payload.shareContents.map((blob) => blob.id), ['shc_main']);
 });
 
 test('postgres store skips default local placeholder workspace runtime persistence', async () => {
